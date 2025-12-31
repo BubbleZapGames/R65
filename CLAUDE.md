@@ -16,6 +16,33 @@ A Rust-inspired compiler for 6502/65816 processors targeting WLA-DX assembly syn
 
 ## Language Features
 
+### Comments
+
+Standard Rust/C-style comments:
+
+```rust
+// Single-line comment
+
+/*
+   Multi-line
+   block comment
+*/
+
+fn example() {
+    let x = 10;  // Inline comment
+
+    /* Block comment
+       can span multiple lines */
+    let y = 20;
+}
+```
+
+**Comment rules:**
+- `//` starts a line comment (until end of line)
+- `/* */` for block comments (can be multi-line)
+- Block comments do not nest
+- Comments are ignored by compiler (no doc comments)
+
 ### Global Hardware Registers
 
 The 6502/65816 hardware registers are exposed as global mutable variables:
@@ -32,6 +59,605 @@ A = 0x0F;
 X = A;
 Y = X + 1;
 ```
+
+### Arrays
+
+Fixed-size arrays with no bounds checking:
+
+```rust
+#[ram]
+static mut BUFFER: [u8; 256] = [0; 256];
+
+fn process() {
+    BUFFER[0] = 42;      // OK
+    BUFFER[255] = 99;    // OK
+    BUFFER[300] = 1;     // No bounds check - undefined behavior!
+
+    let index = 10;
+    BUFFER[index] = 5;   // No runtime bounds check
+}
+```
+
+**Array indexing rules:**
+- No compile-time bounds checking (even for constant indices)
+- No runtime bounds checking (too expensive on 6502/65816)
+- Programmer is responsible for ensuring valid indices
+- Out-of-bounds access is undefined behavior
+- Matches hardware-level programming expectations
+
+### Error Handling
+
+No built-in error handling patterns - programmer's responsibility:
+
+```rust
+// Pattern 1: Return codes
+fn read_controller() -> u8 {
+    let value @ A = CONTROLLER;
+    if value == 0xFF {
+        return 0;  // Error indicator
+    }
+    return value;
+}
+
+// Pattern 2: Global error flag
+#[zeropage]
+static mut ERROR_CODE: u8 = 0;
+
+fn parse_data() -> u8 {
+    if /* error condition */ {
+        ERROR_CODE = 1;
+        return 0;
+    }
+    ERROR_CODE = 0;
+    return result;
+}
+
+// Pattern 3: Multiple return values
+fn divide(a: u8, b: u8) -> (u8, u8) {
+    if b == 0 {
+        return 0, 1;  // result=0, error=1
+    }
+    return a / b, 0;  // result, error=0
+}
+```
+
+**Error handling rules:**
+- No `Result`, `Option`, or exception types
+- No built-in `panic!()` or `assert!()` macros
+- Programmer defines their own error conventions
+- Common patterns: return codes, error flags, sentinel values
+- Hardware-level control and responsibility
+
+### Type Conversions and Casting
+
+All type conversions require explicit `as` keyword. No implicit conversions.
+
+**Supported types:** `u8`, `i8`, `u16`, `i16`, `bool`
+
+**Conversion strategy:** Context-aware code generation - compiler chooses optimal method based on:
+- Value location (register vs memory)
+- Current processor mode
+- Subsequent operations (stay in converted mode?)
+- Batching opportunities
+
+#### Basic Conversion Rules
+
+```rust
+// 1. Widening: u8 → u16 (zero-extend)
+let x: u8 = 255;
+let y: u16 = x as u16;  // 0x00FF
+
+// 2. Widening: i8 → i16 (sign-extend)
+let x: i8 = -1;
+let y: i16 = x as i16;  // 0xFFFF
+
+// 3. Narrowing: u16 → u8 (truncate)
+let x: u16 = 0x1234;
+let y: u8 = x as u8;    // 0x34
+
+// 4. Narrowing: i16 → i8 (truncate)
+let x: i16 = -300;
+let y: i8 = x as i8;    // -44
+
+// 5. Reinterpret: u8 ↔ i8 (same size, zero cost)
+let x: u8 = 255;
+let y: i8 = x as i8;    // -1
+
+// 6. Reinterpret: u16 ↔ i16 (same size, zero cost)
+let x: u16 = 65535;
+let y: i16 = x as i16;  // -1
+
+// 7. bool → integer (normalize to 0 or 1)
+let flag: bool = true;
+let x: u8 = flag as u8; // 1
+
+// 8. integer → bool (unstrict: any non-zero = true)
+let x: u8 = 5;
+let b: bool = x as bool; // true (stored as 5)
+```
+
+#### Context-Aware Code Generation
+
+**Strategy 1: Memory-to-Memory (simple cases)**
+```rust
+#[zeropage(0x20)]
+static mut X: u8;
+#[ram]
+static mut Y: u16;
+
+fn convert() {
+    Y = X as u16;  // Simple memory-to-memory
+}
+```
+```asm
+; u8 → u16: Zero-extend
+LDA $20         ; Load X
+STA Y           ; Store low byte
+STZ Y+1         ; Zero high byte
+; 3 instructions, ~11 cycles
+```
+
+**Strategy 2: REP/SEP (value in A, staying in mode)**
+```rust
+#[mode(m8, x8)]
+fn calculate(input @ A: u8) -> u16 {
+    let wide = input as u16;  // A already has value
+    let result = wide + 100;  // More 16-bit work
+    return result;            // Returning u16
+}
+```
+```asm
+; Value in A, doing more 16-bit work
+REP #$20        ; Switch to m16 mode
+AND #$00FF      ; Zero-extend A
+CLC
+ADC #$0064      ; Add 100 (16-bit)
+; Stay in m16, return via A
+; No SEP needed - caller handles mode
+; 3 instructions, ~12 cycles
+```
+
+**Strategy 3: Batched Mode Changes**
+```rust
+#[mode(m8, x8)]
+fn process() {
+    let a: u8 = 10;
+    let b: u16 = a as u16;
+    let c: u16 = b * 2;
+    let d: u16 = c + 50;
+    let e: u8 = d as u8;
+}
+```
+```asm
+; Batch conversions - single mode switch
+.A8
+LDA #$0A        ; a = 10
+REP #$20        ; Switch to m16 once
+AND #$00FF      ; Zero-extend to u16
+ASL A           ; Multiply by 2
+CLC
+ADC #$0032      ; Add 50
+; Truncate back to u8
+SEP #$20        ; Switch to m8 once
+STA result
+; 2 mode switches total vs 4 if done individually
+```
+
+**Strategy 4: Sign Extension (i8 → i16)**
+```rust
+let x: i8 = -50;
+let y: i16 = x as i16;
+```
+
+*Method A: Branch-based (memory)*
+```asm
+LDA x           ; Load signed byte
+STA y           ; Store low byte
+BPL positive    ; Test sign bit
+LDA #$FF        ; Negative: high = FF
+BRA store_hi
+positive:
+LDA #$00        ; Positive: high = 00
+store_hi:
+STA y+1
+; 6-7 instructions, ~15-20 cycles, variable timing
+```
+
+*Method B: REP-based (A register, more work ahead)*
+```asm
+LDA x           ; Load signed byte
+REP #$20        ; Switch to m16
+AND #$00FF      ; Clear high byte
+BIT #$0080      ; Test sign bit
+BEQ positive
+ORA #$FF00      ; Extend sign
+positive:
+; A now sign-extended, stay in m16 for more ops
+; 5 instructions, ~17 cycles, consistent timing
+```
+
+**Compiler chooses based on:**
+- Branch method: Memory-to-memory, single conversion
+- REP method: Value in A, subsequent 16-bit operations
+
+#### Conversion Rules Summary
+
+- **No implicit conversions** - always require `as`
+- **Unsigned widening**: Zero-extend high byte(s)
+- **Signed widening**: Sign-extend high byte(s)
+- **Narrowing**: Truncate (take low byte), no overflow check
+- **Same-size**: Reinterpret bits (zero cost)
+- **bool → integer**: Normalize to 0 or 1
+- **integer → bool**: Store as-is (unstrict bool)
+- **Pointer conversions**: Not supported
+
+#### Cost Analysis
+
+| Conversion | Memory Method | REP/SEP Method | Best For |
+|------------|---------------|----------------|----------|
+| u8 → u16 | 6 bytes, ~11 cycles | 6 bytes, ~6 cycles (stay) | REP if in A + more work |
+| i8 → i16 | 10-13 bytes, ~15-20 cycles | ~20 bytes, ~17 cycles | Branch for simple, REP for consistent timing |
+| u16 → u8 | 4 bytes, ~7 cycles | 6 bytes, ~9 cycles | Memory always |
+| Same-size | 0-4 bytes, 0-7 cycles | N/A | Type-only or simple move |
+| bool ↔ int | 6-8 bytes, ~10-14 cycles | Similar | Context-dependent |
+
+### File Inclusion
+
+No module system, but textual file inclusion is supported:
+
+```rust
+// main.65r
+include!("hardware.65r")  // Insert contents of hardware.65r here
+include!("player.65r")    // Insert contents of player.65r here
+
+fn main() {
+    init_hardware();
+    update_player();
+}
+
+// hardware.65r
+#[hw(0x2100)]
+static mut INIDISP: u8;
+
+fn init_hardware() {
+    INIDISP = 0x0F;
+}
+
+// player.65r
+#[zeropage(0x20)]
+static mut PLAYER_X: u8;
+
+fn update_player() {
+    PLAYER_X = PLAYER_X + 1;
+}
+```
+
+**File inclusion rules:**
+- `include!("path")` performs textual inclusion (like C `#include`)
+- Path is relative to the including file
+- All included code shares the same namespace (no modules)
+- All items are visible to all code (no privacy/visibility)
+- Circular includes are an error
+- Include happens at compile time (no runtime cost)
+
+**Use cases:**
+- Organize hardware register definitions in separate files
+- Split large programs across multiple files
+- Share common code between projects
+- Keep ROM data tables in separate files
+
+```rust
+// Typical organization
+include!("snes_hardware.65r")  // Hardware register definitions
+include!("constants.65r")      // Game constants
+include!("player.65r")         // Player code
+include!("enemy.65r")          // Enemy code
+include!("graphics.65r")       // Graphics routines
+```
+
+**No module system:**
+- No `mod`, `pub`, or visibility modifiers
+- No namespacing (everything in global scope)
+- Programmer responsible for avoiding name collisions
+- Simple and predictable
+
+### Inline Assembly
+
+Embed raw 65816 assembly instructions directly:
+
+```rust
+// Single instruction
+fn wait_for_interrupt() {
+    asm!("WAI");
+}
+
+// Multiple instructions
+fn save_and_wait() {
+    asm!(
+        "PHP"
+        "WAI"
+    );
+}
+
+// Complex assembly blocks
+fn custom_dma_transfer() {
+    asm!(
+        "LDA #$80"
+        "STA $2100"
+        "LDA #$01"
+        "STA $420B"
+        "NOP"
+        "NOP"
+    );
+}
+```
+
+**Inline assembly rules:**
+- Two forms: `asm!("instruction")` for single line, `asm!("line1" "line2" ...)` for multiple
+- No commas between instruction strings (string concatenation)
+- Raw assembly emitted verbatim to output
+- No variable interpolation or references to Rust variables
+- No explicit clobber lists - compiler assumes all registers may be modified
+- Use for special instructions, precise timing, or hardware-specific operations
+
+**Interaction with compiler:**
+- Compiler treats inline asm as black box
+- All registers considered potentially clobbered
+- No optimization across asm boundaries
+- Programmer responsible for preserving registers if needed
+
+```rust
+// Example: Manual register preservation
+#[preserves(X, Y)]
+fn careful_asm() {
+    asm!(
+        "PHX"           // Save X
+        "PHY"           // Save Y
+        "LDX #$00"      // Use X
+        "LDY #$00"      // Use Y
+        "; custom code here"
+        "PLY"           // Restore Y
+        "PLX"           // Restore X
+    );
+}
+```
+
+### Const Evaluation
+
+Compile-time constant evaluation is supported for expressions:
+
+```rust
+// Const variables with computed values
+const SCREEN_WIDTH: u16 = 256;
+const SCREEN_HEIGHT: u16 = 224;
+const TILE_SIZE: u8 = 8;
+
+// Arithmetic operations
+const TILES_PER_ROW: u16 = SCREEN_WIDTH / TILE_SIZE;  // 32
+const TILES_PER_COL: u16 = SCREEN_HEIGHT / TILE_SIZE; // 28
+const TOTAL_TILES: u16 = TILES_PER_ROW * TILES_PER_COL; // 896
+
+// Bitwise and logical operations
+const BIT_MASK: u8 = 0x80 | 0x40;  // 0xC0
+const FLAG_ENABLED: bool = true;
+
+// Use in array sizes
+static TILE_BUFFER: [u8; TOTAL_TILES] = [0; TOTAL_TILES];
+
+// Use in attributes
+const PLAYER_ADDR: u16 = 0x7E0000;
+#[zeropage(TILE_SIZE * 2)]  // Address 0x10
+static mut TEMP_DATA: u16;
+```
+
+**Const evaluation rules:**
+- Arithmetic, bitwise, and logical operations on constants
+- Type casts between numeric types
+- Can be used for array sizes and attribute parameters
+- **No const functions** - only expressions are evaluated
+- All evaluation happens at compile time (zero runtime cost)
+
+```rust
+// NOT SUPPORTED - const functions
+const fn calculate_offset(x: u8, y: u8) -> u16 {  // Error!
+    return (y as u16) * 32 + (x as u16);
+}
+```
+
+### Enums
+
+C-style enums with explicit or auto-increment values:
+
+```rust
+// Explicit values
+enum Direction {
+    North = 0,
+    East = 1,
+    South = 2,
+    West = 3,
+}
+
+// Auto-increment (starts at 0)
+enum State {
+    Idle,      // 0
+    Running,   // 1
+    Jumping,   // 2
+}
+
+// Mixed explicit and auto-increment
+enum Priority {
+    Low = 0,
+    Medium,    // 1
+    High,      // 2
+    Critical = 10,
+    Urgent,    // 11
+}
+
+// Usage
+let dir: Direction = Direction::North;
+let state: State = State::Running;
+
+// Comparison
+if dir == Direction::North {
+    // ...
+}
+
+// In structs and arrays
+struct Entity {
+    direction: Direction,
+    state: State,
+}
+
+static MOVE_TABLE: [Direction; 4] = [
+    Direction::North,
+    Direction::East,
+    Direction::South,
+    Direction::West,
+];
+```
+
+**Enum rules:**
+- C-style enums only (no data-carrying variants)
+- Values are compile-time constants
+- Auto-increment starts at 0, or from previous value + 1
+- No explicit underlying type specification (compiler infers smallest type)
+- Access variants with `EnumName::Variant` syntax
+- Comparable with `==` and `!=`
+- Can cast to/from integers with `as`
+
+```rust
+// Casting between enum and integer
+let dir: Direction = Direction::East;
+let value: u8 = dir as u8;          // 1
+let back: Direction = value as Direction;  // Direction::East
+
+// Can be used in const contexts
+const DEFAULT_DIR: Direction = Direction::North;
+```
+
+### Structs
+
+Structs are packed by default with no alignment padding:
+
+```rust
+struct Player {
+    x: u8,      // Offset 0
+    y: u8,      // Offset 1
+    health: u16, // Offset 2-3 (no alignment, packed)
+    flags: u8,  // Offset 4
+}  // Total size: 5 bytes
+
+// Structs can be placed in different storage classes
+#[zeropage(0x30)]
+static mut PLAYER: Player;
+
+#[ram]
+static mut ENEMIES: [Player; 8];
+
+#[rom(0x8000)]
+static PLAYER_INITIAL: Player = Player {
+    x: 10,
+    y: 20,
+    health: 100,
+    flags: 0,
+};
+```
+
+**Struct layout rules:**
+- All structs are packed (no padding between fields)
+- No alignment requirements
+- Fields are laid out in declaration order
+- Total size is the sum of all field sizes
+- Matches hand-optimized assembly data structures
+
+**Struct field access:**
+
+Use `.` operator to access struct fields:
+
+```rust
+struct Point {
+    x: u8,
+    y: u8,
+}
+
+struct Entity {
+    pos: Point,
+    health: u8,
+}
+
+fn example() {
+    // Read fields
+    let mut p: Point;
+    p.x = 10;           // Write field
+    p.y = 20;           // Write field
+    let x = p.x;        // Read field
+
+    // Nested structs
+    let mut e: Entity;
+    e.pos.x = 5;        // Nested field access
+    e.pos.y = 10;
+    e.health = 100;
+
+    // Structs in arrays
+    static mut ENEMIES: [Entity; 8];
+    ENEMIES[0].pos.x = 50;
+    ENEMIES[0].health = 100;
+}
+```
+
+**Field access rules:**
+- Use `.` operator for field access
+- Works with nested structs (e.g., `entity.pos.x`)
+- Works with arrays of structs (e.g., `array[0].field`)
+- Fields can be read or written if variable is mutable
+- No methods on structs (use free functions)
+
+### Volatile Semantics
+
+All hardware register variables are automatically volatile - every access goes directly to hardware:
+
+```rust
+#[hw(0x4212)]
+static mut HVBJOY: u8;  // SNES hardware status register
+
+// Polling loop - each read accesses hardware
+loop {
+    let status = HVBJOY;  // Always reads from $4212
+    if status & 0x01 != 0 { break; }
+}
+
+// Every write goes to hardware
+#[hw(0x2100)]
+static mut INIDISP: u8;
+
+INIDISP = 0x80;  // Write 1: Force blank
+INIDISP = 0x0F;  // Write 2: Both writes execute (not optimized away)
+```
+
+**Volatile rules for `#[hw]` variables:**
+- Every read must access hardware (no caching in registers)
+- Every write must go to hardware (no elimination of "redundant" writes)
+- Accesses cannot be reordered relative to other `#[hw]` accesses
+- Compiler treats each access as having side effects
+- Critical for memory-mapped I/O, polling loops, and timing-sensitive code
+
+```rust
+// This works correctly (not optimized)
+#[hw(0x2100)]
+static mut INIDISP: u8;
+#[hw(0x2101)]
+static mut OBSEL: u8;
+
+fn setup_ppu() {
+    INIDISP = 0x80;  // Force blank first
+    OBSEL = 0x03;    // Configure sprites
+    INIDISP = 0x0F;  // Unblank
+    // All three writes execute in order
+}
+```
+
+**Non-hardware volatile memory:**
+Regular variables (`#[zeropage]`, `#[ram]`, `#[rom]`) are not volatile - the compiler may optimize accesses. For volatile non-hardware memory (DMA buffers, shared memory), use `#[hw]` attribute even if not technically a hardware register, or ensure proper barriers with `asm!()`.
 
 ### Memory Storage Classes
 
@@ -60,214 +686,47 @@ static mut INIDISP: u8;  // Screen brightness register
 Functions specify 8-bit or 16-bit modes with optional transition handling:
 
 ```rust
-// Basic mode specification (transition=none by default)
 #[mode(m8, x8)]  // 8-bit accumulator and index registers
-fn process_byte() {
-    // Compiler knows A, X, Y are all u8 here
-    // No automatic mode transitions - for disassembled/convention-based code
-}
+fn process_byte() { }
 
 #[mode(m16, x16)]  // 16-bit mode
-fn process_word() {
-    // Compiler knows A, X, Y are all u16 here
-}
+fn process_word() { }
 
-#[mode(x16)]  // 16-bit index mode, accumulator mode is undetermined
-fn process_word() {
-    // Compiler knows X and Y are both u16 here
-}
+#[mode(x16)]  // 16-bit index mode only
+fn mixed_mode() { }
 
-// Automatic callee wrapper (for new safe code)
-#[mode(m16, x16, transition=auto)]
-fn safe_routine() {
-    // Compiler generates wrapper in callee: PHP, REP #$30, ..., PLP
-    // Safe regardless of caller's mode
-}
+#[mode(m16, x16, transition=auto)]  // Callee wrapper (safe)
+fn safe_routine() { }
 
-// Caller-side mode transitions
-#[mode(m16, x16, transition=caller)]
-fn needs_16bit() {
-    // Compiler generates mode switch at call site (in caller)
-    // Callee assumes correct mode, no wrapper
-    A = 0x1234;
-}
-
-// No mode annotation - mode unknown
-fn legacy_routine() {
-    // Compiler doesn't know A, X, Y sizes
-    // Some code
-}
-
-// Mode changes are mixed, indeterminate modes, or modes not defined at beginning of routine then no [mode] attribute generated.
-fn process_mixed() {
-    // Some mixed code
-}
+#[mode(m16, x16, transition=caller)]  // Caller wrapper (allows batching)
+fn needs_16bit() { }
 ```
 
 **Mode transition options:**
-- `transition=none` (default): No automatic transitions - assumes correct mode or programmer handles transitions manually with `SEP()` and `REP()` built-in functions
-- `transition=auto`: Compiler generates PHP, REP/SEP, ..., PLP wrapper inside callee (callee-side); safe regardless of caller mode
-- `transition=caller`: Compiler generates PHP, REP/SEP, ..., PLP at call site (caller-side); callee assumes correct mode; enables batching optimization
-
-**Caller vs Callee transitions - Generated code comparison:**
-
-```rust
-// Example functions
-#[mode(m16, x16, transition=auto)]
-fn callee_side() {
-    A = 0x1234;
-}
-
-#[mode(m16, x16, transition=caller)]
-fn caller_side() {
-    A = 0x5678;
-}
-
-#[mode(m8, x8)]
-fn main() {
-    callee_side();  // Callee handles transition
-    caller_side();  // Caller handles transition
-}
-```
-
-**Generated assembly:**
-
-```asm
-main:
-    ; Call callee_side - no wrapper needed at call site
-    JSR callee_side
-
-    ; Call caller_side - compiler generates wrapper at call site
-    PHP             ; Save mode
-    REP #$30        ; Switch to m16,x16
-    JSR caller_side
-    PLP             ; Restore mode
-    RTS
-
-callee_side:
-    ; Callee-side wrapper
-    PHP             ; Save mode
-    REP #$30        ; Switch to m16,x16
-    LDA #$1234      ; Function body
-    PLP             ; Restore mode
-    RTS
-
-caller_side:
-    ; No wrapper - assumes caller set mode
-    LDA #$5678      ; Function body
-    RTS
-```
-
-**When to use each:**
-- `transition=none`: Convention-based code, disassembled ROMs, or manual mode handling with `SEP()`/`REP()`; maximum performance
-- `transition=auto`: Function called from many different places/modes; self-contained and safe
-- `transition=caller`: Multiple calls to same-mode functions; enables batching optimization for performance
-
-**Batching optimization with `transition=caller`:**
-
-```rust
-// Multiple 16-bit functions
-#[mode(m16, x16, transition=caller)]
-fn process_a() { A = A + 1; }
-
-#[mode(m16, x16, transition=caller)]
-fn process_b() { A = A * 2; }
-
-#[mode(m16, x16, transition=caller)]
-fn process_c() { A = A - 5; }
-
-#[mode(m8, x8)]
-fn optimized_caller() {
-    // Compiler can batch the mode transition for all three calls
-    PHP();          // Save once
-    REP(0x30);      // Switch to m16 once
-
-    process_a();    // All three assume m16
-    process_b();
-    process_c();
-
-    PLP();          // Restore once
-}
-```
-
-**Generated assembly (optimized):**
-```asm
-optimized_caller:
-    PHP             ; Save mode once
-    REP #$30        ; Switch to m16,x16 once
-
-    JSR process_a   ; Simple calls
-    JSR process_b
-    JSR process_c
-
-    PLP             ; Restore once
-    RTS
-
-process_a:
-    INC A           ; No wrapper
-    RTS
-
-process_b:
-    ASL A           ; No wrapper
-    RTS
-
-process_c:
-    SEC             ; No wrapper
-    SBC #$0005
-    RTS
-```
-
-**Overhead comparison:**
-- `transition=auto` for 3 calls: 30 cycles (3× PHP+REP+PLP)
-- `transition=caller` batched: 10 cycles (1× PHP+REP+PLP)
-- Savings: 20 cycles
-
-```
+- `transition=none` (default): No automatic transitions - programmer handles with `SEP()`/`REP()` or relies on calling convention
+- `transition=auto`: Compiler generates PHP/REP/SEP/PLP wrapper inside callee; safe regardless of caller mode
+- `transition=caller`: Compiler generates wrapper at call site; enables batching optimization when calling multiple same-mode functions
 
 ### Register Aliasing
 
-Register aliases provide named references to hardware registers for better code readability while maintaining zero-cost abstraction:
+Register aliases provide named references to hardware registers using `let name @ register = value` syntax:
 
 ```rust
-// Local variable aliasing
 fn process_player() {
-    // Create alias 'hitpoints' for A register
-    let hitpoints @ A = PLAYER[0].hitpoints;
-    // A now contains the hitpoints value
-    // 'hitpoints' is just another name for A
-
-    hitpoints = hitpoints - 1;  // Same as: A = A - 1
-
-    PLAYER[0].hitpoints = hitpoints;  // Write back from A
+    let hitpoints @ A = PLAYER[0].hitpoints;  // A now holds hitpoints
+    hitpoints = hitpoints - 1;                 // Same as: A = A - 1
+    PLAYER[0].hitpoints = hitpoints;
 }
 
-// Multiple aliases
 fn calculate() {
-    let x_coord @ X = entity.x;  // X register
-    let y_coord @ Y = entity.y;  // Y register
-
+    let x_coord @ X = entity.x;
+    let y_coord @ Y = entity.y;
     x_coord = x_coord + 1;  // Modifies X
     y_coord = y_coord + 1;  // Modifies Y
 }
-
-// Aliases are true register references, not copies
-fn alias_demo() {
-    let value @ A = 10;
-    A = 20;
-    // 'value' is now 20 (same register)
-
-    value = 30;
-    // A is now 30 (same register)
-}
 ```
 
-**Aliasing rules:**
-- Syntax: `let name @ register = expression`
-- The alias is a true reference to the register, not a copy
-- Reading the alias reads the register
-- Writing to the alias writes the register
-- Multiple aliases to the same register refer to the same value
-- Aliases are compile-time only - zero runtime cost
+**Aliasing rules:** The alias is a true reference to the register (not a copy), zero runtime cost
 
 ### Register Preservation
 
@@ -314,639 +773,224 @@ fn wild_function() {
 - `#[preserves(...)]` lists registers that **must remain unchanged** by function exit
 - Available registers: `A, X, Y, Status, D, DBR`
 - Compiler enforces preservation - error if register modified without save/restore
-- No attribute means no preservation guarantees (all registers may be modified)
 - Programmer is responsible for manual save/restore (compiler does not auto-generate)
 - Registers in the return signature cannot be in the preserves list
-- **Compiler warning**: If a register is in `#[preserves(...)]` but never used/modified in the function body, warn about redundant preservation declaration
+- **Compiler warning**: If a register is in `#[preserves(...)]` but never modified in the function body
 
-**Interaction with returns:**
+**Example:**
 ```rust
-// ERROR: Cannot preserve A when returning it
-#[preserves(A)]
-fn bad_function() -> u8 {
-    return A;  // Compiler error: A is modified by return
-}
-
-// OK: Preserve non-returned registers
 #[preserves(X, Y)]
 fn good_function() -> u8 {
     A = 42;
-    return A;
-}
-
-// OK: Multiple return registers not in preserves
-#[preserves(Y)]
-fn divide(dividend @ A: u8, divisor @ X: u8) -> (u8, u8) {
-    // Calculate quotient and remainder...
-    return A, X;  // Y must be preserved
+    return A;  // OK: X and Y not modified, A returned
 }
 ```
 
-**Warnings for redundant preservation:**
-```rust
-// WARNING: X is in preserves list but never used
-#[preserves(X, Y)]
-fn only_uses_a() -> u8 {
-    A = 42;
-    return A;
-    // Compiler: "Warning: X in #[preserves] but never modified - remove from list"
-}
+### Function Parameters
 
-// OK: No warning - Y is actually used
-#[preserves(X, Y)]
-fn uses_y_temporarily() -> u8 {
-    let saved_y = Y;
-    Y = 100;
-    A = some_calculation();
-    Y = saved_y;  // Restored
-    return A;
-}
-
-// Suggested fix: Remove unused registers from preserves
-#[preserves(Y)]  // Only list what's actually needed
-fn only_uses_a_fixed() -> u8 {
-    A = 42;
-    return A;
-}
-```
-
-### Function Parameters and Register Aliasing
-
-Function parameters can be bound to registers using the same aliasing syntax:
-
-```rust
-// Parameters with register aliases
-fn add(left @ A: u8, right @ X: u8) -> u8 {
-    // 'left' is an alias for A register
-    // 'right' is an alias for X register
-    return left + right;  // Same as: return A + X
-}
-
-// Parameters without aliases are stack parameters
-fn process(value: u8, count: u8) {
-    // 'value' and 'count' are on the stack
-    A = value;  // Load from stack to A
-    X = count;  // Load from stack to X
-}
-
-// Mix register and stack parameters
-fn hybrid(dividend @ A: u8, divisor: u8) -> u8 {
-    // 'dividend' is in A register (zero-cost)
-    // 'divisor' is on stack (requires load)
-    X = divisor;
-    return dividend / X;
-}
-
-// Calling functions
-fn caller() {
-    // Register parameters - direct pass
-    A = 10;
-    X = 20;
-    let sum = add(A, X);
-
-    // Or with expressions (compiler loads into registers)
-    let sum = add(5, 15);  // Compiler: A=5, X=15, then call
-
-    // Stack parameters
-    let result = process(100, 200);  // Pushed to stack
-}
-```
-
-**Parameter rules:**
-- Parameters with `@ register` syntax are register aliases (zero-cost)
-- Parameters with `@ VARIABLE` syntax are bound to existing static variables (zero-cost)
-- Parameters without `@` are stack parameters (storage cost)
-- Register parameters provide named access to hardware registers
-- Variable-bound parameters provide named access to existing global/static variables
-- Stack parameters use callee cleanup convention (callee removes from stack before return)
-- Mix all types based on performance needs
-
-**Variable-bound parameters:**
-
-Parameters can be bound to existing static variables (zero-page, RAM, or hardware registers):
-
-```rust
-// Declare static variables
-#[zeropage(0x12)]
-static mut COUNTER: u8 = 0;
-
-#[zeropage(0x13)]
-static mut FLAGS: u8 = 0;
-
-#[ram]
-static mut BUFFER_SIZE: u16;
-
-#[hw(0x2100)]
-static mut INIDISP: u8;
-
-// Bind parameters to existing variables
-fn process(
-    counter @ COUNTER: u8,      // Bound to zero-page variable
-    flags @ FLAGS: u8,          // Bound to zero-page variable
-    size @ BUFFER_SIZE: u16,    // Bound to RAM variable
-    brightness @ INIDISP: u8    // Bound to hardware register
-) -> u8 {
-    // 'counter' is an alias for COUNTER
-    // 'flags' is an alias for FLAGS
-    // etc.
-    return counter + flags;
-}
-
-fn caller() {
-    // Caller writes to the variables
-    COUNTER = 10;
-    FLAGS = 20;
-    BUFFER_SIZE = 256;
-    INIDISP = 0x0F;
-
-    // Call function - variables already set
-    let result = process(COUNTER, FLAGS, BUFFER_SIZE, INIDISP);
-}
-```
-
-**Generated assembly:**
-```asm
-; Variables already defined
-COUNTER = $12           ; Zero-page
-FLAGS = $13             ; Zero-page
-BUFFER_SIZE = $7E0100   ; RAM
-INIDISP = $2100         ; Hardware register
-
-caller:
-    LDA #10
-    STA COUNTER         ; Write to zero-page (3 cycles)
-    LDA #20
-    STA FLAGS
-
-    LDA #$00
-    STA BUFFER_SIZE     ; Write to RAM (4 cycles)
-    LDA #$01
-    STA BUFFER_SIZE+1
-
-    LDA #$0F
-    STA INIDISP         ; Write to hardware register
-
-    JSR process
-    ; Result in A
-
-process:
-    LDA COUNTER         ; Read from zero-page (3 cycles)
-    CLC
-    ADC FLAGS
-    RTS                 ; No cleanup needed - variables are persistent
-```
-
-**Benefits of variable-bound parameters:**
-- **Zero-cost**: No stack manipulation, no parameter passing overhead
-- **Fast**: Direct memory access (especially zero-page: 3 cycles)
-- **Clear**: Function signature shows exactly which globals are used
-- **Flexible**: Works with zero-page, RAM, and hardware registers
-- **No cleanup**: Variables persist, no stack cleanup needed
-
-**Stack parameter calling convention:**
-
-```rust
-// Function with stack parameters
-fn process(a: u8, b: u8, c: u8) -> u8 {
-    // a, b, c are stack parameters
-    let result = a + b + c;
-    return result;
-}
-
-fn caller() {
-    let val = process(10, 20, 30);
-}
-```
-
-**Generated assembly (callee cleanup):**
-```asm
-caller:
-    ; Caller pushes parameters (right-to-left)
-    LDA #30
-    PHA         ; Push c
-    LDA #20
-    PHA         ; Push b
-    LDA #10
-    PHA         ; Push a
-
-    JSR process ; Call - no cleanup needed
-
-    ; Result in A, stack already cleaned by callee
-    STA val
-
-process:
-    ; Stack layout after JSR:
-    ; SP+1, SP+2: Return address (pushed by JSR)
-    ; SP+3: Parameter a
-    ; SP+4: Parameter b
-    ; SP+5: Parameter c
-
-    TSX
-    LDA $0104,X ; Load a (SP+3 in absolute addressing)
-    STA temp_a
-    LDA $0105,X ; Load b
-    STA temp_b
-    LDA $0106,X ; Load c
-
-    ; ... function body ...
-
-    ; Callee cleanup: remove 3 parameters from stack
-    PLA         ; Remove a
-    PLA         ; Remove b
-    PLA         ; Remove c
-
-    RTS         ; Return with stack cleaned
-```
-
-**Why callee cleanup:**
-- Cleanup code appears only once (in callee)
-- Smaller code size (important for ROM)
-- More efficient than caller cleanup
-- Standard pattern for 6502/65816 assembly
-
-**Complete parameter example - mixing all types:**
+Three parameter types support different performance/flexibility tradeoffs:
 
 ```rust
 #[zeropage(0x20)]
 static mut TEMP: u8;
 
-#[ram]
-static mut GLOBAL_COUNT: u16;
-
-// Function using all parameter types
-fn complex_function(
-    // Register parameters (fastest - 2 cycles)
-    status @ A: u8,
-    index @ X: u8,
-
-    // Variable-bound parameters (very fast - 3-4 cycles)
-    temp @ TEMP: u8,
-    count @ GLOBAL_COUNT: u16,
-
-    // Stack parameters (slower - 7+ cycles, but reentrant)
-    extra1: u8,
-    extra2: u8
-) -> u8 {
-    // Use all parameters
-    let result = status + index + temp + (count as u8) + extra1 + extra2;
-    return result;
+// Register parameters (@ A/X/Y) - fastest, zero-cost
+fn add(left @ A: u8, right @ X: u8) -> u8 {
+    return left + right;
 }
 
-fn caller() {
-    // Set up variable-bound parameters
-    TEMP = 5;
-    GLOBAL_COUNT = 100;
+// Variable-bound parameters (@ VAR) - fast, zero-cost
+fn process(temp @ TEMP: u8, flags @ FLAGS: u8) -> u8 {
+    return temp + flags;
+}
 
-    // Call with mixed parameter types
-    A = 10;                    // Register param
-    X = 20;                    // Register param
-    let result = complex_function(A, X, TEMP, GLOBAL_COUNT, 30, 40);
+// Stack parameters (no @) - slower, reentrant
+fn calculate(a: u8, b: u8, c: u8) -> u8 {
+    return a + b + c;
+}
+
+// Mix all types
+fn hybrid(
+    status @ A: u8,        // Register (2 cycles)
+    temp @ TEMP: u8,       // Variable-bound (3-4 cycles)
+    extra: u8              // Stack (7+ cycles)
+) -> u8 {
+    return status + temp + extra;
 }
 ```
 
-**Parameter type decision guide:**
+**Parameter types:**
+- `param @ A/X/Y`: Register alias (fastest, zero-cost)
+- `param @ VAR`: Bound to existing static variable (fast, zero-cost, shows dependencies)
+- `param`: Stack parameter with callee cleanup (slower, reentrant)
 
-| Parameter Type | When to Use | Speed | Reentrant | Cleanup |
-|---------------|-------------|-------|-----------|---------|
-| Register `@ A/X/Y` | Critical path, up to 3 params | Fastest (2 cycles) | Yes | None |
-| Variable `@ VAR` | Frequently used, non-reentrant OK | Very fast (3-4 cycles) | No | None |
-| Stack `param` | Many parameters, needs reentrancy | Slow (7+ cycles) | Yes | Callee |
+**Parameter ordering rules:**
+- Stack parameters (no `@`) must come before aliased parameters (`@ register` or `@ variable`)
+- Mixing parameter types requires stack parameters first, otherwise compiler error
+
+```rust
+// VALID: Stack parameters first, then aliased parameters
+fn valid(a: u8, b: u8, reg @ A: u8, temp @ TEMP: u8) -> u8 { }
+
+// INVALID: Aliased parameter before stack parameter
+fn invalid(reg @ A: u8, a: u8) -> u8 { }  // Compiler error!
+```
+
+**Argument alias optimization:**
+
+When calling functions with aliased parameters, the compiler skips parameter setup if the arguments already match the parameter aliases:
+
+```rust
+#[zeropage(0x20)]
+static mut TEMP: u8;
+
+fn process(input @ A: u8, temp @ TEMP: u8) -> u8 {
+    return input + temp;
+}
+
+fn caller() {
+    // Case 1: Arguments already in correct locations - zero setup cost
+    A = 5;
+    TEMP = 10;
+    let result = process(A, TEMP);  // No code generated for parameter passing
+
+    // Case 2: Arguments in different locations - setup required
+    X = 7;
+    Y = 3;
+    let result = process(X, Y);     // Generates: TXA, STY TEMP, then JSR
+
+    // Case 3: Mixed - partial setup
+    A = 5;
+    Y = 10;
+    let result = process(A, Y);     // Generates: STY TEMP, then JSR
+}
+```
+
+**Optimization details:**
+- If argument expression matches parameter alias exactly, no setup code generated
+- If argument is in different register/variable, compiler generates transfer/store
+- Works with all alias types: registers (`@ A/X/Y`) and variables (`@ VAR`)
+- Enables zero-cost calling conventions when arguments are pre-positioned
+- Programmer can manually arrange data for optimal performance
+
+### Function Pointers
+
+Function pointers encode calling convention in the type. Near (`fn()`) for same-bank, far (`far fn()`) for cross-bank:
+
+```rust
+// Function pointer types
+type RegCallback = fn(a @ A: u8, b @ X: u8) -> u8;
+type VarCallback = fn(a @ TEMP1: u8, b @ TEMP2: u8) -> u8;
+type StackCallback = fn(a: u8, b: u8) -> u8;
+type FarCallback = far fn(a @ A: u8) -> u8;
+
+// Static function pointer (state machine example)
+#[ram]
+static mut CURRENT_HANDLER: InputHandler;
+
+fn init() {
+    CURRENT_HANDLER = menu_handler;
+}
+
+fn update() {
+    let action = CURRENT_HANDLER(INPUT_STATE);  // Indirect call via trampoline
+    if action == 1 {
+        CURRENT_HANDLER = game_handler;
+    }
+}
+```
+
+**Rules:**
+- Type system enforces matching calling conventions
+- Compiler generates trampolines for indirect calls (JMP through pointer)
+- Useful for callbacks, state machines, dispatch tables
 
 ### Cross-Bank Function Calls
 
-The `#[bank]` attribute controls function placement and calling convention:
+The `far` keyword indicates JSL/RTL calling convention, while `#[bank]` controls placement:
 
 ```rust
-// Normal function - uses JSR/RTS (same bank)
-#[bank(0)]
-fn local_function() {
-    // Called with JSR, returns with RTS
-}
+fn local_function() { }                 // JSR/RTS (near call, default)
 
-// Long call function - uses JSL/RTL (cross-bank capable)
-#[bank(1, long_call)]  // Default: data_bank=none
-fn sound_engine() {
-    // Called with JSL, returns with RTL
-    // DBR not changed - programmer handles if needed
-}
+#[bank(1)]
+far fn sound_engine() { }               // JSL/RTL, data_bank=none (default)
 
-// Long call with automatic DBR management
-#[bank(1, long_call, data_bank=auto)]
-fn graphics_code() {
-    // Called with JSL
-    // Callee automatically sets DBR to bank 1
-    // Callee restores DBR before returning
+#[bank(1, data_bank=auto)]
+far fn graphics_code() { }              // JSL/RTL, callee manages DBR
 
-    // Can safely access data in bank 1
-    let data = GRAPHICS_BUFFER;
-}
-
-// Long call with caller-managed DBR
-#[bank(2, long_call, data_bank=caller)]
-fn decompression_routine() {
-    // Called with JSL
-    // Caller sets DBR before call
-    // Caller restores DBR after call
-}
-
-fn caller() {
-    local_function();           // JSR (same bank)
-    sound_engine();             // JSL (no DBR change)
-    graphics_code();            // JSL (callee manages DBR)
-    decompression_routine();    // JSL (caller manages DBR)
-}
+#[bank(2, data_bank=caller)]
+far fn decompression_routine() { }     // JSL/RTL, caller manages DBR
 ```
 
-**Generated assembly:**
+**Calling conventions:**
+- `fn()`: Near call using JSR/RTS (16-bit address, same bank)
+- `far fn()`: Far call using JSL/RTL (24-bit address, cross-bank)
 
-```asm
-caller:
-    ; Local function - same bank
-    JSR local_function    ; JSR/RTS
-
-    ; Long call - no DBR management
-    JSL sound_engine      ; JSL/RTL, DBR unchanged
-
-    ; Long call - callee manages DBR (data_bank=auto)
-    JSL graphics_code     ; JSL/RTL, function handles DBR
-
-    ; Long call - caller manages DBR (data_bank=caller)
-    PHB                   ; Save current DBR
-    LDA #$02              ; Bank 2
-    PHA
-    PLB                   ; Set DBR to bank 2
-    JSL decompression_routine
-    PLB                   ; Restore DBR
-
-    RTS
-
-local_function:
-    ; ... code ...
-    RTS                   ; Normal return
-
-sound_engine:
-    ; ... code ...
-    RTL                   ; Long return, DBR unchanged
-
-graphics_code:
-    ; Auto DBR management
-    PHB                   ; Save DBR
-    PHK                   ; Push Program Bank (K register)
-    PLB                   ; Set DBR = Program Bank (bank 1)
-
-    ; ... code that accesses bank 1 data ...
-
-    PLB                   ; Restore original DBR
-    RTL                   ; Long return
-
-decompression_routine:
-    ; Caller manages DBR
-    ; Assumes DBR already set to bank 2
-    ; ... code ...
-    RTL                   ; Long return
-```
-
-**Data Bank Register options:**
-
-- `data_bank=none` (default): No DBR management, programmer handles manually if needed
-- `data_bank=auto`: Callee automatically sets DBR to its program bank and restores before return
-- `data_bank=caller`: Caller sets DBR before call and restores after call
-
-**When to use each:**
-
-| data_bank | Use Case | Overhead |
-|-----------|----------|----------|
-| `none` | Function doesn't access data in its bank, or uses long addressing | Zero |
-| `auto` | Function accesses data in its own bank, called from multiple places | 6 cycles (PHB, PHK, PLB, ..., PLB) |
-| `caller` | Caller knows required bank, multiple calls to same bank | Varies (one-time per batch) |
-
-**Bank attribute syntax:**
-
-```rust
-#[bank(n)]                                    // long_call=false (default), uses JSR/RTS
-#[bank(n, long_call)]                         // long_call=true, uses JSL/RTL, data_bank=none (default)
-#[bank(n, long_call, data_bank=auto)]         // JSL/RTL, callee manages DBR
-#[bank(n, long_call, data_bank=caller)]       // JSL/RTL, caller manages DBR
-```
-
-**Defaults:**
-- `long_call`: `false` (uses JSR/RTS)
-- `data_bank`: `none` (only applies when `long_call=true`)
-
-**Batching optimization with `data_bank=caller`:**
-
-```rust
-#[bank(1, long_call, data_bank=caller)]
-fn sound_init() { }
-
-#[bank(1, long_call, data_bank=caller)]
-fn sound_update() { }
-
-fn game_init() {
-    // Set DBR once for multiple calls to bank 1
-    set_data_bank(1);
-    sound_init();
-    sound_update();
-    restore_data_bank();
-}
-```
+**Data Bank Register (DBR) options:**
+- `data_bank=none` (default): No DBR management - programmer handles manually
+- `data_bank=auto`: Callee sets/restores DBR to its program bank
+- `data_bank=caller`: Caller sets/restores DBR (enables batching multiple calls)
 
 ### Interrupt Handlers
 
-Interrupt handlers are special functions called by hardware events. They use the `#[interrupt(vector)]` attribute:
+Interrupt handlers use `#[interrupt(vector)]` attribute. Available vectors: `nmi`, `irq`, `brk`, `cop`, `abort`.
 
 ```rust
-// V-Blank interrupt (fires every frame on SNES)
+// Automatic preservation (default)
 #[interrupt(nmi)]
 fn vblank_handler() {
     FRAME_COUNT = FRAME_COUNT + 1;
-    // Compiler auto-generates register preservation and RTI
+    // Compiler auto-generates: PHP, PHA, PHX, PHY, PHD, PHB at entry
+    // and PLB, PLD, PLY, PLX, PLA, PLP, RTI at exit
 }
 
-// IRQ interrupt (timers, H-blank, etc.)
-#[interrupt(irq)]
-fn irq_handler() {
-    // Handle IRQ event
-}
-
-// Software interrupt (BRK instruction)
-#[interrupt(brk)]
-fn break_handler() {
-    // Handle BRK
-}
-
-// Coprocessor interrupt (COP instruction)
-#[interrupt(cop)]
-fn cop_handler() {
-    // Handle COP
-}
-
-// Abort interrupt
-#[interrupt(abort)]
-fn abort_handler() {
-    // Handle ABORT
-}
-```
-
-**Available interrupt vectors:**
-- `nmi` - Non-Maskable Interrupt (V-Blank on SNES) - Vector at `$FFEA`
-- `irq` - Interrupt Request (maskable) - Vector at `$FFEE`
-- `brk` - Software interrupt - Vector at `$FFE6`
-- `cop` - Coprocessor instruction - Vector at `$FFE4`
-- `abort` - Abort interrupt - Vector at `$FFE8`
-
-**Interrupt handler rules:**
-- Must use `#[interrupt(vector)]` or `#[interrupt(vector, preserve=true/false)]` attribute
-- `preserve` parameter controls automatic register preservation (defaults to `true`)
-- If `#[preserves(...)]` attribute is present, `preserve` is implicitly set to `false`
-- Cannot have parameters (called by hardware, not by code)
-- Cannot have return values (use RTI, not RTS)
-- When `preserve=true`: Compiler auto-generates `PHP, PHA, PHX, PHY, PHD, PHB` at entry and `PLB, PLD, PLY, PLX, PLA, PLP` before RTI
-- When `preserve=false`: No automatic preservation - programmer must handle it manually
-- Compiler always generates `RTI` (Return from Interrupt) instead of `RTS`
-- Compiler automatically populates interrupt vector table with handler address
-- Only one handler allowed per interrupt vector (compiler error if duplicate)
-
-**Generated assembly example:**
-```rust
-#[interrupt(nmi)]
-fn vblank() {
-    A = A + 1;
-}
-```
-
-Generates:
-```asm
-vblank:
-    PHP             ; Auto-generated: Push Status
-    PHA             ; Auto-generated: Push A
-    PHX             ; Auto-generated: Push X
-    PHY             ; Auto-generated: Push Y
-    PHD             ; Auto-generated: Push Direct Page
-    PHB             ; Auto-generated: Push Data Bank
-
-    INC A           ; Function body
-
-    PLB             ; Auto-generated: Restore Data Bank
-    PLD             ; Auto-generated: Restore Direct Page
-    PLY             ; Auto-generated: Restore Y
-    PLX             ; Auto-generated: Restore X
-    PLA             ; Auto-generated: Restore A
-    PLP             ; Auto-generated: Restore Status
-    RTI             ; Auto-generated: Return from Interrupt
-
-; Vector table (auto-generated)
-.org $FFEA
-.dw vblank
-```
-
-**Automatic preservation options:**
-
-```rust
-// Default: Automatic preservation (preserve=true)
-#[interrupt(nmi)]
-fn auto_handler() {
-    A = A + 1;
-    // Compiler auto-generates all preservation
-}
-
-// Explicit automatic preservation
-#[interrupt(nmi, preserve=true)]
-fn explicit_auto() {
-    A = A + 1;
-    // Same as default - compiler auto-generates preservation
-}
-
-// Manual preservation - advanced usage
-#[interrupt(nmi, preserve=false)]
+// Manual control
+#[interrupt(irq, preserve=false)]
 fn manual_handler() {
-    // Programmer must manually preserve what's needed
-    // Use this for performance-critical handlers
-    A = A + 1;
+    // Programmer handles preservation
 }
 
 // Using #[preserves] implies preserve=false
-#[interrupt(irq)]  // preserve=false is implicit
-#[preserves(X, Y, Status, D, DBR)]  // Only preserve these
+#[interrupt(irq)]
+#[preserves(X, Y, Status, D, DBR)]
 fn selective_handler() {
-    // Programmer controls preservation via #[preserves]
     let saved_x = X;
-    let saved_y = Y;
-
     A = compute_value();  // Can modify A freely
-
-    Y = saved_y;
     X = saved_x;
 }
 ```
 
-**Why automatic preservation is the default:**
-
-Interrupt handlers default to automatic preservation (`preserve=true`) because:
-
-1. Interrupts can fire at **any time**, interrupting any code
-2. **Must** preserve all processor state (requirement for correctness)
-3. Preservation code is identical boilerplate for every interrupt
-4. Missing preservation is **catastrophic** (corrupts interrupted code state)
-5. Safe default for beginners - advanced users can opt out with `preserve=false`
+**Rules:**
+- `preserve=true` (default): Compiler auto-generates all register preservation and RTI
+- `preserve=false`: Manual preservation for performance-critical handlers
+- If `#[preserves(...)]` present, `preserve` is implicitly `false`
+- Compiler populates interrupt vector table automatically
 
 ### Function Return Values
 
-**Functions implicitly return the A register value** unless an explicit `return` statement specifies otherwise:
+Functions implicitly return A unless an explicit `return` statement specifies otherwise:
 
 ```rust
-// No explicit return - implicitly returns A
-#[mode(m8, x8)]
 fn read_status() {
-    A = HVBJOY;
-    // Implicitly: return A
+    A = HVBJOY;      // Implicitly returns A
 }
 
-// Explicit register returns
-#[mode(m8, x8)]
-fn get_value() -> u8 {
-    A = 42;
-    return A;  // Return via A register
-}
-
-#[mode(m8, x8)]
 fn get_x_value() -> u8 {
     X = 100;
-    return X;  // Return via X register
+    return X;        // Return via X register
 }
 
-// Multiple register return (tuple)
-#[mode(m8, x8)]
 fn divide(dividend: u8, divisor: u8) -> (u8, u8) {
-    A = quotient;
-    X = remainder;
-    return A, X;  // Return both A and X
+    return A, X;     // Return multiple registers
 }
 
-// Local variable return - uses stack
-#[mode(m8, x8)]
 fn calculate() -> u8 {
     let result = 42;
-    return result;  // Returned via stack (not a register)
-}
-
-// Caller usage
-fn caller() {
-    let status = read_status();      // Gets A
-    let val = get_x_value();         // Gets X
-    let (q, r) = divide(10, 3);      // Gets A and X
-    A, X = divide(10, 3);            // Signature matches. Caller does not have to handle returned values
-    X, A = divide(10, 3);            // Signature register set matches but register order does not. Throw compilation error.
-    let calc = calculate();          // Gets value from stack. Caller is responsible for decrementing stack pointer when it is done with value
+    return result;   // Return local variable via stack
 }
 ```
 
-**Return conventions:**
-- No `return` statement: A register value returned implicitly
-- `return A`, `return X`, `return Y`: Return via specific hardware register
-- `return A, X`: Return multiple registers as tuple
-- `return variable`: Return local variable via stack
-- Never type (`!`): Function never returns (infinite loops, handlers)
+**Return conventions:** No `return` = A implicitly returned; `return X/Y` = specific register; `return A, X` = multiple registers; `return variable` = stack return
 
 ### Built-in Functions for Special Instructions
 
@@ -1016,9 +1060,11 @@ main:
 - ✅ Basic types: `u8, i8, u16, i16, bool`
 - ✅ Fixed-size arrays: `[T; N]`
 - ✅ Structs (no methods initially)
+- ✅ C-style enums: Explicit or auto-increment values; no data-carrying variants
 - ✅ Functions with parameters and return types
 - ✅ Register aliasing: `let name @ A = expr` for named register access
 - ✅ Hybrid function parameters: register aliases (`param @ A`), variable-bound (`param @ VAR`), or stack values (`param`)
+- ✅ Function pointers: `fn()` (near) and `far fn()` (cross-bank) with calling convention encoded in type
 - ✅ Register preservation: `#[preserves(A, X, Y, Status, D, DBR)]` to declare preservation guarantees
 - ✅ Interrupt handlers: `#[interrupt(nmi/irq/brk/cop/abort)]` with automatic register preservation and RTI
 - ✅ Control flow: `if/else, loop, break, continue, return`
@@ -1028,51 +1074,50 @@ main:
 - ✅ Storage attributes: `#[zeropage]`, `#[ram]`, `#[rom]`, `#[hw]`
 - ✅ Mode annotations: `#[mode(m8/m16, x8/x16)]` with optional `transition=none/auto/caller`
 - ✅ Built-in mode control: `SEP()` and `REP()` functions for manual mode transitions
-- ✅ Bank management: `#[bank(n, long_call, data_bank=none/auto/caller)]` for function placement and cross-bank calls with JSL/RTL
+- ✅ Far/near calling conventions: `far fn()` for JSL/RTL cross-bank calls; `fn()` for JSR/RTS near calls
+- ✅ Bank management: `#[bank(n)]` for function placement with optional `data_bank=none/auto/caller` for DBR management
+- ✅ Const evaluation: Compile-time evaluation of constant expressions (arithmetic, bitwise, logical operations); no const functions
+- ✅ Inline assembly: `asm!("instruction")` for embedding raw 65816 assembly; no variable interpolation
+- ✅ File inclusion: `include!("file")` for textual inclusion (C-style); no module system
 
 ## What's Omitted (Too Complex or Incompatible)
 
 - ❌ Lifetimes and borrowing
 - ❌ Traits and generics
-- ❌ Advanced enums (keep simple C-style enums only)
+- ❌ Error handling types (`Result`, `Option`, `panic!()`)
+- ❌ Advanced enums (data-carrying variants)
 - ❌ Closures
 - ❌ Async/await
 - ❌ Macros (maybe add `include_bytes!()` later)
 - ❌ Pattern matching (initially - can add later)
 - ❌ String types (`String`, `&str`)
 - ❌ Dynamic collections (`Vec`, `HashMap`)
-- ❌ Modules (initially - single file programs)
+- ❌ Module system (`mod`, `pub`, visibility, namespacing)
 - ❌ Methods and `impl` blocks (initially - use free functions)
 - ❌ `unsafe` keyword (all code has direct hardware access)
+- ❌ Bounds checking (compile-time or runtime)
 
 ## Example Program
 
 ```rust
-// Hardware register declarations
-#[hw(0x2100)]
-static mut INIDISP: u8;
+// Hardware registers
+#[hw(0x2100)] static mut INIDISP: u8;
+#[hw(0x4200)] static mut JOYPAD1: u8;
 
-#[hw(0x4212)]
-static HVBJOY: u8;
+// Direct page variables
+#[zeropage(0x20)] static mut FRAME_COUNT: u16 = 0;
+#[zeropage(0x22)] static mut VBLANK_FLAG: u8 = 0;
 
-// Direct page variable
-#[zeropage(0x20)]
-static mut FRAME_COUNT: u16 = 0;
-
-#[zeropage(0x22)]
-static mut VBLANK_FLAG: u8 = 0;
-
-// V-Blank interrupt handler
+// Interrupt handler with automatic preservation
 #[interrupt(nmi)]
-#[mode(m8, x8)]
 fn vblank_handler() {
     FRAME_COUNT = FRAME_COUNT + 1;
     VBLANK_FLAG = 1;
-    // Compiler auto-generates register preservation and RTI
 }
 
+// Functions with register preservation
 #[mode(m8, x8)]
-#[preserves(X, Y)]  // Only modifies A
+#[preserves(X, Y)]
 fn wait_vblank() {
     loop {
         let flag @ A = VBLANK_FLAG;
@@ -1084,115 +1129,22 @@ fn wait_vblank() {
 }
 
 #[mode(m8, x8)]
-#[preserves(X, Y)]  // Only modifies A
+#[preserves(X, Y)]
 fn update_brightness(frame @ A: u16) {
-    // 'frame' is an alias for A register (parameter)
     let brightness @ A = frame as u8;
     INIDISP = brightness;
 }
 
+// Entry point
 #[entry]
 #[mode(m8, x8)]
 fn main() -> ! {
-    INIDISP = 0x0F;  // Set screen brightness
-
+    INIDISP = 0x0F;
     loop {
         wait_vblank();
-
-        // Pass via A register
         update_brightness(FRAME_COUNT);
     }
 }
-```
-
-## Example: Reverse Engineering ROM with Mixed Conventions
-
-```rust
-// Disassembled SNES ROM with various calling conventions
-
-// ============= Main Game Loop (Convention: m8,x8) =============
-
-#[mode(m8, x8)]
-fn game_main_loop() {
-    init_ppu();          // Calls m8,x8 function
-    init_controller();   // Calls m8,x8 function
-
-    loop {
-        read_controller();
-        update_game_logic();
-        copy_sprites_to_oam();  // Calls m16,x16 function - compiler warns
-        wait_vblank();
-    }
-}
-
-#[mode(m8, x8)]
-#[preserves(X, Y)]
-fn read_controller() {
-    A = JOYPAD1;
-    CONTROLLER_STATE = A;
-}
-
-// ============= DMA Routines (Manual Mode Switching) =============
-
-#[mode(m16, x16, transition=manual)]
-fn copy_sprites_to_oam() {
-    // Original disassembled code had manual mode switching
-    PHP();           // Save processor status
-    REP(0x30);       // Switch to 16-bit A and X
-
-    A = 0x0220;      // 544 bytes to copy
-    X = SPRITE_BUFFER_ADDR;
-    Y = 0x0000;      // OAM starts at $0000
-
-    mvn(0x7E, 0x00); // Block move from WRAM to OAM
-
-    PLP();           // Restore processor status
-}
-
-// ============= PPU Initialization (Convention: m8,x8) =============
-
-#[mode(m8, x8)]
-fn init_ppu() {
-    A = 0x80;
-    INIDISP = A;     // Force blank
-
-    A = 0x00;
-    OBSEL = A;       // 8x8 and 16x16 sprites, CHR at $0000
-
-    // ... more initialization ...
-}
-
-// ============= New Feature You're Adding (Safe Auto Mode) =============
-
-#[mode(m8, x8, transition=auto)]
-fn my_new_feature() {
-    // New code with automatic safety
-    // Compiler generates PHP/REP/SEP/PLP wrapper
-    // Safe to call from anywhere
-
-    check_collision();
-    update_score();
-}
-
-#[mode(m8, x8)]
-#[preserves(X, Y)]
-fn check_collision() -> u8 {
-    // Your new game logic
-    return A;
-}
-
-// ============= Interrupt Handlers =============
-
-#[interrupt(nmi)]
-fn vblank_handler() {
-    FRAME_COUNTER = FRAME_COUNTER + 1;
-    VBLANK_FLAG = 1;
-}
-```
-
-**Compiling this ROM hack:**
-```bash
-65rustic build rom_hack.65r -o rom_hack.asm
 ```
 
 ## Compiler Architecture
@@ -1269,16 +1221,27 @@ Performance characteristics of different storage:
 
 1. **No `unsafe` keyword**: All code has direct hardware access by default
 2. **Global registers**: A, X, Y, Status exposed as built-in global variables
-3. **Register aliasing**: `let name @ A = expr` creates zero-cost aliases for registers; improves readability without runtime overhead
-4. **Hybrid parameters**: Three parameter types: register aliases (`param @ A`), variable-bound (`param @ VAR` for existing static variables), or stack values (`param` with callee cleanup)
-5. **Explicit preservation**: `#[preserves(...)]` declares register preservation contract; compiler enforces but programmer implements; no automatic save/restore
-6. **Interrupt preservation**: `#[interrupt(vector)]` defaults to automatic register preservation (`preserve=true`); can be disabled with `preserve=false` or `#[preserves(...)]` for manual control
-7. **Implicit A return**: Functions without explicit `return` statements return A register value
-8. **Explicit register returns**: `return X`, `return Y`, `return A, X` return via hardware registers; local variables returned via stack
-9. **Storage attributes**: Memory location separate from type (`near<T>` can be in zero-page or RAM)
-10. **Flexible mode handling**: `#[mode(...)]` with three transition strategies: `none` (convention-based, default), `auto` (callee wrapper), `caller` (caller-side wrapper with batching)
-11. **Automatic initialization**: `__init_start()` generated for non-zero static initializers
-12. **Cross-bank calls**: `#[bank(n, long_call)]` uses JSL/RTL; optional `data_bank` parameter controls Data Bank Register management (none/auto/caller)
+3. **Automatic volatile**: All `#[hw]` variables are automatically volatile; every access goes to hardware, no caching or reordering
+4. **No bounds checking**: Arrays have no compile-time or runtime bounds checking; programmer responsible for safety
+5. **No error handling**: No built-in Result, Option, or panic; programmer defines own error conventions
+6. **Context-aware type conversions**: Compiler chooses between memory-based and REP/SEP-based conversions for optimal performance; batches mode changes when beneficial
+7. **Const expressions only**: Compile-time evaluation of constant expressions supported; const functions not supported
+8. **Inline assembly**: `asm!()` for raw assembly with simple string syntax; compiler treats as black box, assumes all registers clobbered
+9. **C-style enums**: Simple enums with explicit or auto-increment values; no explicit underlying type; cast to/from integers
+10. **File inclusion only**: `include!()` for textual file inclusion (C-style); no module system, visibility, or namespacing
+11. **Packed structs**: All structs are packed by default with no alignment padding; fields laid out in declaration order
+12. **Register aliasing**: `let name @ A = expr` creates zero-cost aliases for registers; improves readability without runtime overhead
+13. **Hybrid parameters**: Three parameter types: register aliases (`param @ A`), variable-bound (`param @ VAR` for existing static variables), or stack values (`param` with callee cleanup)
+14. **Parameter ordering**: Stack parameters must precede aliased parameters; compiler error otherwise
+15. **Argument alias optimization**: No setup code generated when call arguments already match parameter aliases; enables zero-cost calling conventions
+16. **Explicit preservation**: `#[preserves(...)]` declares register preservation contract; compiler enforces but programmer implements; no automatic save/restore
+17. **Interrupt preservation**: `#[interrupt(vector)]` defaults to automatic register preservation (`preserve=true`); can be disabled with `preserve=false` or `#[preserves(...)]` for manual control
+18. **Implicit A return**: Functions without explicit `return` statements return A register value
+19. **Explicit register returns**: `return X`, `return Y`, `return A, X` return via hardware registers; local variables returned via stack
+20. **Storage attributes**: Memory location separate from type (`near<T>` can be in zero-page or RAM)
+21. **Flexible mode handling**: `#[mode(...)]` with three transition strategies: `none` (convention-based, default), `auto` (callee wrapper), `caller` (caller-side wrapper with batching)
+22. **Automatic initialization**: `__init_start()` generated for non-zero static initializers
+23. **Consistent far/near**: `far fn()` for both function definitions and pointers indicates JSL/RTL calling convention; `fn()` indicates JSR/RTS; `#[bank(n)]` controls placement with optional `data_bank` parameter
 
 ## Use Cases
 
