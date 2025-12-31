@@ -45,20 +45,33 @@ fn example() {
 
 ### Global Hardware Registers
 
-The 6502/65816 hardware registers are exposed as global mutable variables:
+All 65816 processor registers are exposed as global variables:
 
 ```rust
 // Built-in global registers (always in scope)
 A: u8       // Accumulator (u16 in m16 mode)
 X: u8       // X index register (u16 in x16 mode)
 Y: u8       // Y index register (u16 in x16 mode)
-Status: u8  // Processor status register (NVMXDIZC flags)
+Status: u8  // Processor status flags (NVMXDIZC)
+D: u16      // Direct Page register (zero-page base)
+DBR: u8     // Data Bank Register (default data bank)
+PBR: u8     // Program Bank Register (read-only)
+S: u16      // Stack Pointer
 
-// Direct usage
+// Basic usage
 A = 0x0F;
 X = A;
-Y = X + 1;
+D = 0x2000;              // Change zero-page base
+DBR = 0x7E;              // Set data bank
+let bank = PBR;          // Read current bank (write = error)
 ```
+
+**Rules:**
+- All registers mutable except `PBR` (read-only, write is compile error)
+- `A`, `X`, `Y` types change with processor mode (u8/u16)
+- `D`, `S` always u16; `Status`, `DBR`, `PBR` always u8
+- All usable in aliasing (`let name @ D = expr`) and `#[preserves(...)]` (except `PBR`)
+- **Safety**: Modifying `D`, `DBR`, `S` without restoration causes bugs/crashes
 
 ### Arrays
 
@@ -130,534 +143,137 @@ fn divide(a: u8, b: u8) -> (u8, u8) {
 
 ### Type Conversions and Casting
 
-All type conversions require explicit `as` keyword. No implicit conversions.
-
-**Supported types:** `u8`, `i8`, `u16`, `i16`, `bool`
-
-**Conversion strategy:** Context-aware code generation - compiler chooses optimal method based on:
-- Value location (register vs memory)
-- Current processor mode
-- Subsequent operations (stay in converted mode?)
-- Batching opportunities
-
-#### Basic Conversion Rules
+All conversions require explicit `as` keyword. No implicit conversions.
 
 ```rust
-// 1. Widening: u8 → u16 (zero-extend)
-let x: u8 = 255;
-let y: u16 = x as u16;  // 0x00FF
+// Widening (zero/sign extend)
+let y: u16 = (x: u8) as u16;  // 0x00FF (zero-extend)
+let y: i16 = (x: i8) as i16;  // 0xFFFF if negative (sign-extend)
 
-// 2. Widening: i8 → i16 (sign-extend)
-let x: i8 = -1;
-let y: i16 = x as i16;  // 0xFFFF
+// Narrowing (truncate)
+let y: u8 = (x: u16) as u8;   // Keep low byte only
 
-// 3. Narrowing: u16 → u8 (truncate)
-let x: u16 = 0x1234;
-let y: u8 = x as u8;    // 0x34
+// Reinterpret (zero cost)
+let y: i8 = (x: u8) as i8;    // Same bits, different type
 
-// 4. Narrowing: i16 → i8 (truncate)
-let x: i16 = -300;
-let y: i8 = x as i8;    // -44
-
-// 5. Reinterpret: u8 ↔ i8 (same size, zero cost)
-let x: u8 = 255;
-let y: i8 = x as i8;    // -1
-
-// 6. Reinterpret: u16 ↔ i16 (same size, zero cost)
-let x: u16 = 65535;
-let y: i16 = x as i16;  // -1
-
-// 7. bool → integer (normalize to 0 or 1)
-let flag: bool = true;
-let x: u8 = flag as u8; // 1
-
-// 8. integer → bool (unstrict: any non-zero = true)
-let x: u8 = 5;
-let b: bool = x as bool; // true (stored as 5)
+// Boolean conversions
+let x: u8 = true as u8;       // Normalize to 0 or 1
+let b: bool = (x: u8) as bool;  // Any non-zero = true (unstrict)
 ```
 
-#### Context-Aware Code Generation
+**Context-aware code generation**: Compiler chooses between memory-based (LDA/STA) or mode-switching (REP/SEP) strategies based on value location, current mode, and subsequent operations. Batches mode changes when beneficial.
 
-**Strategy 1: Memory-to-Memory (simple cases)**
-```rust
-#[zeropage(0x20)]
-static mut X: u8;
-#[ram]
-static mut Y: u16;
-
-fn convert() {
-    Y = X as u16;  // Simple memory-to-memory
-}
-```
-```asm
-; u8 → u16: Zero-extend
-LDA $20         ; Load X
-STA Y           ; Store low byte
-STZ Y+1         ; Zero high byte
-; 3 instructions, ~11 cycles
-```
-
-**Strategy 2: REP/SEP (value in A, staying in mode)**
-```rust
-#[mode(m8, x8)]
-fn calculate(input @ A: u8) -> u16 {
-    let wide = input as u16;  // A already has value
-    let result = wide + 100;  // More 16-bit work
-    return result;            // Returning u16
-}
-```
-```asm
-; Value in A, doing more 16-bit work
-REP #$20        ; Switch to m16 mode
-AND #$00FF      ; Zero-extend A
-CLC
-ADC #$0064      ; Add 100 (16-bit)
-; Stay in m16, return via A
-; No SEP needed - caller handles mode
-; 3 instructions, ~12 cycles
-```
-
-**Strategy 3: Batched Mode Changes**
-```rust
-#[mode(m8, x8)]
-fn process() {
-    let a: u8 = 10;
-    let b: u16 = a as u16;
-    let c: u16 = b * 2;
-    let d: u16 = c + 50;
-    let e: u8 = d as u8;
-}
-```
-```asm
-; Batch conversions - single mode switch
-.A8
-LDA #$0A        ; a = 10
-REP #$20        ; Switch to m16 once
-AND #$00FF      ; Zero-extend to u16
-ASL A           ; Multiply by 2
-CLC
-ADC #$0032      ; Add 50
-; Truncate back to u8
-SEP #$20        ; Switch to m8 once
-STA result
-; 2 mode switches total vs 4 if done individually
-```
-
-**Strategy 4: Sign Extension (i8 → i16)**
-```rust
-let x: i8 = -50;
-let y: i16 = x as i16;
-```
-
-*Method A: Branch-based (memory)*
-```asm
-LDA x           ; Load signed byte
-STA y           ; Store low byte
-BPL positive    ; Test sign bit
-LDA #$FF        ; Negative: high = FF
-BRA store_hi
-positive:
-LDA #$00        ; Positive: high = 00
-store_hi:
-STA y+1
-; 6-7 instructions, ~15-20 cycles, variable timing
-```
-
-*Method B: REP-based (A register, more work ahead)*
-```asm
-LDA x           ; Load signed byte
-REP #$20        ; Switch to m16
-AND #$00FF      ; Clear high byte
-BIT #$0080      ; Test sign bit
-BEQ positive
-ORA #$FF00      ; Extend sign
-positive:
-; A now sign-extended, stay in m16 for more ops
-; 5 instructions, ~17 cycles, consistent timing
-```
-
-**Compiler chooses based on:**
-- Branch method: Memory-to-memory, single conversion
-- REP method: Value in A, subsequent 16-bit operations
-
-#### Conversion Rules Summary
-
-- **No implicit conversions** - always require `as`
-- **Unsigned widening**: Zero-extend high byte(s)
-- **Signed widening**: Sign-extend high byte(s)
-- **Narrowing**: Truncate (take low byte), no overflow check
-- **Same-size**: Reinterpret bits (zero cost)
-- **bool → integer**: Normalize to 0 or 1
-- **integer → bool**: Store as-is (unstrict bool)
-- **Pointer conversions**: Not supported
-
-#### Cost Analysis
-
-| Conversion | Memory Method | REP/SEP Method | Best For |
-|------------|---------------|----------------|----------|
-| u8 → u16 | 6 bytes, ~11 cycles | 6 bytes, ~6 cycles (stay) | REP if in A + more work |
-| i8 → i16 | 10-13 bytes, ~15-20 cycles | ~20 bytes, ~17 cycles | Branch for simple, REP for consistent timing |
-| u16 → u8 | 4 bytes, ~7 cycles | 6 bytes, ~9 cycles | Memory always |
-| Same-size | 0-4 bytes, 0-7 cycles | N/A | Type-only or simple move |
-| bool ↔ int | 6-8 bytes, ~10-14 cycles | Similar | Context-dependent |
+**Rules**: Unsigned widening zero-extends; signed widening sign-extends; narrowing truncates (no overflow check); same-size reinterprets bits (zero cost); no pointer conversions.
 
 ### File Inclusion
 
-No module system, but textual file inclusion is supported:
+C-style textual file inclusion (no module system):
 
 ```rust
-// main.65r
-include!("hardware.65r")  // Insert contents of hardware.65r here
-include!("player.65r")    // Insert contents of player.65r here
+include!("hardware.65r")  // Insert file contents here
+include!("player.65r")
 
 fn main() {
     init_hardware();
     update_player();
 }
-
-// hardware.65r
-#[hw(0x2100)]
-static mut INIDISP: u8;
-
-fn init_hardware() {
-    INIDISP = 0x0F;
-}
-
-// player.65r
-#[zeropage(0x20)]
-static mut PLAYER_X: u8;
-
-fn update_player() {
-    PLAYER_X = PLAYER_X + 1;
-}
 ```
 
-**File inclusion rules:**
-- `include!("path")` performs textual inclusion (like C `#include`)
-- Path is relative to the including file
-- All included code shares the same namespace (no modules)
-- All items are visible to all code (no privacy/visibility)
-- Circular includes are an error
-- Include happens at compile time (no runtime cost)
-
-**Use cases:**
-- Organize hardware register definitions in separate files
-- Split large programs across multiple files
-- Share common code between projects
-- Keep ROM data tables in separate files
-
-```rust
-// Typical organization
-include!("snes_hardware.65r")  // Hardware register definitions
-include!("constants.65r")      // Game constants
-include!("player.65r")         // Player code
-include!("enemy.65r")          // Enemy code
-include!("graphics.65r")       // Graphics routines
-```
-
-**No module system:**
-- No `mod`, `pub`, or visibility modifiers
-- No namespacing (everything in global scope)
-- Programmer responsible for avoiding name collisions
-- Simple and predictable
+**Rules**: `include!("path")` performs textual inclusion like C `#include`; path relative to including file; all code shares global namespace (no modules, no `mod`/`pub`); circular includes are errors.
 
 ### Inline Assembly
 
-Embed raw 65816 assembly instructions directly:
+Embed raw 65816 assembly:
 
 ```rust
-// Single instruction
-fn wait_for_interrupt() {
+fn wait() {
     asm!("WAI");
 }
 
-// Multiple instructions
-fn save_and_wait() {
-    asm!(
-        "PHP"
-        "WAI"
-    );
-}
-
-// Complex assembly blocks
-fn custom_dma_transfer() {
-    asm!(
-        "LDA #$80"
-        "STA $2100"
-        "LDA #$01"
-        "STA $420B"
-        "NOP"
-        "NOP"
-    );
+fn multi_instruction() {
+    asm!("PHP" "WAI");  // No commas between strings
 }
 ```
 
-**Inline assembly rules:**
-- Two forms: `asm!("instruction")` for single line, `asm!("line1" "line2" ...)` for multiple
-- No commas between instruction strings (string concatenation)
-- Raw assembly emitted verbatim to output
-- No variable interpolation or references to Rust variables
-- No explicit clobber lists - compiler assumes all registers may be modified
-- Use for special instructions, precise timing, or hardware-specific operations
-
-**Interaction with compiler:**
-- Compiler treats inline asm as black box
-- All registers considered potentially clobbered
-- No optimization across asm boundaries
-- Programmer responsible for preserving registers if needed
-
-```rust
-// Example: Manual register preservation
-#[preserves(X, Y)]
-fn careful_asm() {
-    asm!(
-        "PHX"           // Save X
-        "PHY"           // Save Y
-        "LDX #$00"      // Use X
-        "LDY #$00"      // Use Y
-        "; custom code here"
-        "PLY"           // Restore Y
-        "PLX"           // Restore X
-    );
-}
-```
+**Rules**: `asm!("inst1" "inst2" ...)` emits raw assembly verbatim; no variable interpolation; compiler assumes all registers clobbered; no optimization across boundaries; programmer handles register preservation.
 
 ### Const Evaluation
 
-Compile-time constant evaluation is supported for expressions:
+Compile-time evaluation of constant expressions:
 
 ```rust
-// Const variables with computed values
-const SCREEN_WIDTH: u16 = 256;
-const SCREEN_HEIGHT: u16 = 224;
 const TILE_SIZE: u8 = 8;
+const TILES_PER_ROW: u16 = 256 / TILE_SIZE;  // Arithmetic
+const BIT_MASK: u8 = 0x80 | 0x40;            // Bitwise
 
-// Arithmetic operations
-const TILES_PER_ROW: u16 = SCREEN_WIDTH / TILE_SIZE;  // 32
-const TILES_PER_COL: u16 = SCREEN_HEIGHT / TILE_SIZE; // 28
-const TOTAL_TILES: u16 = TILES_PER_ROW * TILES_PER_COL; // 896
-
-// Bitwise and logical operations
-const BIT_MASK: u8 = 0x80 | 0x40;  // 0xC0
-const FLAG_ENABLED: bool = true;
-
-// Use in array sizes
-static TILE_BUFFER: [u8; TOTAL_TILES] = [0; TOTAL_TILES];
-
-// Use in attributes
-const PLAYER_ADDR: u16 = 0x7E0000;
-#[zeropage(TILE_SIZE * 2)]  // Address 0x10
-static mut TEMP_DATA: u16;
+static BUFFER: [u8; TILES_PER_ROW] = [0; TILES_PER_ROW];  // Array size
+#[zeropage(TILE_SIZE * 2)]  // Attribute parameter
+static mut TEMP: u16;
 ```
 
-**Const evaluation rules:**
-- Arithmetic, bitwise, and logical operations on constants
-- Type casts between numeric types
-- Can be used for array sizes and attribute parameters
-- **No const functions** - only expressions are evaluated
-- All evaluation happens at compile time (zero runtime cost)
-
-```rust
-// NOT SUPPORTED - const functions
-const fn calculate_offset(x: u8, y: u8) -> u16 {  // Error!
-    return (y as u16) * 32 + (x as u16);
-}
-```
+**Rules**: Supports arithmetic, bitwise, logical ops, and type casts; usable in array sizes and attribute parameters; **no const functions** - expressions only.
 
 ### Enums
 
 C-style enums with explicit or auto-increment values:
 
 ```rust
-// Explicit values
-enum Direction {
-    North = 0,
-    East = 1,
-    South = 2,
-    West = 3,
-}
+enum Direction { North = 0, East, South, West }  // Auto-increment after 0
+enum State { Idle, Running, Jumping }            // Starts at 0
 
-// Auto-increment (starts at 0)
-enum State {
-    Idle,      // 0
-    Running,   // 1
-    Jumping,   // 2
-}
-
-// Mixed explicit and auto-increment
-enum Priority {
-    Low = 0,
-    Medium,    // 1
-    High,      // 2
-    Critical = 10,
-    Urgent,    // 11
-}
-
-// Usage
-let dir: Direction = Direction::North;
-let state: State = State::Running;
-
-// Comparison
-if dir == Direction::North {
-    // ...
-}
-
-// In structs and arrays
-struct Entity {
-    direction: Direction,
-    state: State,
-}
-
-static MOVE_TABLE: [Direction; 4] = [
-    Direction::North,
-    Direction::East,
-    Direction::South,
-    Direction::West,
-];
+let dir = Direction::North;
+if dir == Direction::North { }
+let value: u8 = dir as u8;  // Cast to/from integers
 ```
 
-**Enum rules:**
-- C-style enums only (no data-carrying variants)
-- Values are compile-time constants
-- Auto-increment starts at 0, or from previous value + 1
-- No explicit underlying type specification (compiler infers smallest type)
-- Access variants with `EnumName::Variant` syntax
-- Comparable with `==` and `!=`
-- Can cast to/from integers with `as`
-
-```rust
-// Casting between enum and integer
-let dir: Direction = Direction::East;
-let value: u8 = dir as u8;          // 1
-let back: Direction = value as Direction;  // Direction::East
-
-// Can be used in const contexts
-const DEFAULT_DIR: Direction = Direction::North;
-```
+**Rules**: No data-carrying variants; auto-increment from 0 or previous + 1; compiler infers smallest type; access with `Enum::Variant`; comparable with `==`/`!=`; cast to/from integers.
 
 ### Structs
 
-Structs are packed by default with no alignment padding:
+Packed structs (no alignment padding):
 
 ```rust
 struct Player {
-    x: u8,      // Offset 0
-    y: u8,      // Offset 1
-    health: u16, // Offset 2-3 (no alignment, packed)
-    flags: u8,  // Offset 4
-}  // Total size: 5 bytes
+    x: u8,       // Offset 0
+    y: u8,       // Offset 1
+    health: u16, // Offset 2-3 (packed, no alignment)
+}  // Size: 4 bytes
 
-// Structs can be placed in different storage classes
 #[zeropage(0x30)]
 static mut PLAYER: Player;
 
 #[ram]
 static mut ENEMIES: [Player; 8];
 
-#[rom(0x8000)]
-static PLAYER_INITIAL: Player = Player {
-    x: 10,
-    y: 20,
-    health: 100,
-    flags: 0,
-};
+// Field access with . operator
+PLAYER.x = 10;
+PLAYER.health = 100;
+ENEMIES[0].x = 5;  // Array access
 ```
 
-**Struct layout rules:**
-- All structs are packed (no padding between fields)
-- No alignment requirements
-- Fields are laid out in declaration order
-- Total size is the sum of all field sizes
-- Matches hand-optimized assembly data structures
-
-**Struct field access:**
-
-Use `.` operator to access struct fields:
-
-```rust
-struct Point {
-    x: u8,
-    y: u8,
-}
-
-struct Entity {
-    pos: Point,
-    health: u8,
-}
-
-fn example() {
-    // Read fields
-    let mut p: Point;
-    p.x = 10;           // Write field
-    p.y = 20;           // Write field
-    let x = p.x;        // Read field
-
-    // Nested structs
-    let mut e: Entity;
-    e.pos.x = 5;        // Nested field access
-    e.pos.y = 10;
-    e.health = 100;
-
-    // Structs in arrays
-    static mut ENEMIES: [Entity; 8];
-    ENEMIES[0].pos.x = 50;
-    ENEMIES[0].health = 100;
-}
-```
-
-**Field access rules:**
-- Use `.` operator for field access
-- Works with nested structs (e.g., `entity.pos.x`)
-- Works with arrays of structs (e.g., `array[0].field`)
-- Fields can be read or written if variable is mutable
-- No methods on structs (use free functions)
+**Rules**: All structs packed (no padding); fields in declaration order; size = sum of field sizes; use `.` for field access; nested/array access supported; no methods (use free functions).
 
 ### Volatile Semantics
 
-All hardware register variables are automatically volatile - every access goes directly to hardware:
+`#[hw]` variables are automatically volatile - every access goes to hardware:
 
 ```rust
 #[hw(0x4212)]
-static mut HVBJOY: u8;  // SNES hardware status register
+static mut HVBJOY: u8;
 
-// Polling loop - each read accesses hardware
+#[hw(0x2100)]
+static mut INIDISP: u8;
+
 loop {
-    let status = HVBJOY;  // Always reads from $4212
+    let status = HVBJOY;  // Always reads hardware
     if status & 0x01 != 0 { break; }
 }
 
-// Every write goes to hardware
-#[hw(0x2100)]
-static mut INIDISP: u8;
-
-INIDISP = 0x80;  // Write 1: Force blank
-INIDISP = 0x0F;  // Write 2: Both writes execute (not optimized away)
+INIDISP = 0x80;  // Write 1
+INIDISP = 0x0F;  // Write 2 (not eliminated)
 ```
 
-**Volatile rules for `#[hw]` variables:**
-- Every read must access hardware (no caching in registers)
-- Every write must go to hardware (no elimination of "redundant" writes)
-- Accesses cannot be reordered relative to other `#[hw]` accesses
-- Compiler treats each access as having side effects
-- Critical for memory-mapped I/O, polling loops, and timing-sensitive code
-
-```rust
-// This works correctly (not optimized)
-#[hw(0x2100)]
-static mut INIDISP: u8;
-#[hw(0x2101)]
-static mut OBSEL: u8;
-
-fn setup_ppu() {
-    INIDISP = 0x80;  // Force blank first
-    OBSEL = 0x03;    // Configure sprites
-    INIDISP = 0x0F;  // Unblank
-    // All three writes execute in order
-}
-```
-
-**Non-hardware volatile memory:**
-Regular variables (`#[zeropage]`, `#[ram]`, `#[rom]`) are not volatile - the compiler may optimize accesses. For volatile non-hardware memory (DMA buffers, shared memory), use `#[hw]` attribute even if not technically a hardware register, or ensure proper barriers with `asm!()`.
+**Rules**: Every read/write accesses hardware; no caching, elimination, or reordering of `#[hw]` accesses; critical for memory-mapped I/O and polling. Non-hardware volatiles: use `#[hw]` or `asm!()` barriers.
 
 ### Memory Storage Classes
 
@@ -771,7 +387,8 @@ fn wild_function() {
 
 **Preservation rules:**
 - `#[preserves(...)]` lists registers that **must remain unchanged** by function exit
-- Available registers: `A, X, Y, Status, D, DBR`
+- Available registers: `A, X, Y, Status, D, DBR, S`
+- `PBR` cannot be in preserves list (it's read-only and cannot be modified)
 - Compiler enforces preservation - error if register modified without save/restore
 - Programmer is responsible for manual save/restore (compiler does not auto-generate)
 - Registers in the return signature cannot be in the preserves list
@@ -788,90 +405,19 @@ fn good_function() -> u8 {
 
 ### Function Parameters
 
-Three parameter types support different performance/flexibility tradeoffs:
+Three parameter types with different performance tradeoffs:
 
 ```rust
 #[zeropage(0x20)]
 static mut TEMP: u8;
 
-// Register parameters (@ A/X/Y) - fastest, zero-cost
-fn add(left @ A: u8, right @ X: u8) -> u8 {
-    return left + right;
-}
-
-// Variable-bound parameters (@ VAR) - fast, zero-cost
-fn process(temp @ TEMP: u8, flags @ FLAGS: u8) -> u8 {
-    return temp + flags;
-}
-
-// Stack parameters (no @) - slower, reentrant
-fn calculate(a: u8, b: u8, c: u8) -> u8 {
-    return a + b + c;
-}
-
-// Mix all types
-fn hybrid(
-    status @ A: u8,        // Register (2 cycles)
-    temp @ TEMP: u8,       // Variable-bound (3-4 cycles)
-    extra: u8              // Stack (7+ cycles)
-) -> u8 {
-    return status + temp + extra;
-}
+fn add(left @ A: u8, right @ X: u8) -> u8 { }      // Register alias (fastest)
+fn process(temp @ TEMP: u8) -> u8 { }               // Variable-bound (fast)
+fn calculate(a: u8, b: u8) -> u8 { }                // Stack (slower, reentrant)
+fn hybrid(a: u8, reg @ A: u8, var @ TEMP: u8) { }   // Mixed (stack first!)
 ```
 
-**Parameter types:**
-- `param @ A/X/Y`: Register alias (fastest, zero-cost)
-- `param @ VAR`: Bound to existing static variable (fast, zero-cost, shows dependencies)
-- `param`: Stack parameter with callee cleanup (slower, reentrant)
-
-**Parameter ordering rules:**
-- Stack parameters (no `@`) must come before aliased parameters (`@ register` or `@ variable`)
-- Mixing parameter types requires stack parameters first, otherwise compiler error
-
-```rust
-// VALID: Stack parameters first, then aliased parameters
-fn valid(a: u8, b: u8, reg @ A: u8, temp @ TEMP: u8) -> u8 { }
-
-// INVALID: Aliased parameter before stack parameter
-fn invalid(reg @ A: u8, a: u8) -> u8 { }  // Compiler error!
-```
-
-**Argument alias optimization:**
-
-When calling functions with aliased parameters, the compiler skips parameter setup if the arguments already match the parameter aliases:
-
-```rust
-#[zeropage(0x20)]
-static mut TEMP: u8;
-
-fn process(input @ A: u8, temp @ TEMP: u8) -> u8 {
-    return input + temp;
-}
-
-fn caller() {
-    // Case 1: Arguments already in correct locations - zero setup cost
-    A = 5;
-    TEMP = 10;
-    let result = process(A, TEMP);  // No code generated for parameter passing
-
-    // Case 2: Arguments in different locations - setup required
-    X = 7;
-    Y = 3;
-    let result = process(X, Y);     // Generates: TXA, STY TEMP, then JSR
-
-    // Case 3: Mixed - partial setup
-    A = 5;
-    Y = 10;
-    let result = process(A, Y);     // Generates: STY TEMP, then JSR
-}
-```
-
-**Optimization details:**
-- If argument expression matches parameter alias exactly, no setup code generated
-- If argument is in different register/variable, compiler generates transfer/store
-- Works with all alias types: registers (`@ A/X/Y`) and variables (`@ VAR`)
-- Enables zero-cost calling conventions when arguments are pre-positioned
-- Programmer can manually arrange data for optimal performance
+**Rules**: `param @ A/X/Y` = register alias; `param @ VAR` = bound to static variable; `param` = stack with callee cleanup. **Ordering**: Stack parameters must precede aliased parameters (compiler error otherwise). **Optimization**: No setup code when arguments already match parameter aliases (e.g., `process(A, TEMP)` when params are `@ A, @ TEMP`).
 
 ### Function Pointers
 
@@ -880,20 +426,24 @@ Function pointers encode calling convention in the type. Near (`fn()`) for same-
 ```rust
 // Function pointer types
 type RegCallback = fn(a @ A: u8, b @ X: u8) -> u8;
-type VarCallback = fn(a @ TEMP1: u8, b @ TEMP2: u8) -> u8;
 type StackCallback = fn(a: u8, b: u8) -> u8;
 type FarCallback = far fn(a @ A: u8) -> u8;
 
-// Static function pointer (state machine example)
+// State machine example
+type Handler = fn(input @ A: u8) -> u8;
+
 #[ram]
-static mut CURRENT_HANDLER: InputHandler;
+static mut CURRENT_HANDLER: Handler;
+
+fn menu_handler(input @ A: u8) -> u8 { return 0; }
+fn game_handler(input @ A: u8) -> u8 { return 1; }
 
 fn init() {
     CURRENT_HANDLER = menu_handler;
 }
 
-fn update() {
-    let action = CURRENT_HANDLER(INPUT_STATE);  // Indirect call via trampoline
+fn update(input @ A: u8) {
+    let action = CURRENT_HANDLER(input);  // Indirect call via trampoline
     if action == 1 {
         CURRENT_HANDLER = game_handler;
     }
@@ -996,15 +546,15 @@ fn calculate() -> u8 {
 
 ```rust
 // Block move instructions (65816 only)
-A = count - 1;
-X = src_addr;
-Y = dest_addr;
-mvn(src_bank, dest_bank);  // Move forward
-mvp(src_bank, dest_bank);  // Move backward
+A = 255;        // count - 1
+X = 0x1000;     // src_addr
+Y = 0x2000;     // dest_addr
+mvn(0x00, 0x7E);  // Move forward from bank 0x00 to bank 0x7E
+mvp(0x7E, 0x00);  // Move backward from bank 0x7E to bank 0x00
 
 // Processor mode control
-SEP(flags: u8);  // Set processor status bits (e.g., SEP(0x30) for m8,x8)
-REP(flags: u8);  // Reset processor status bits (e.g., REP(0x30) for m16,x16)
+SEP(0x30);  // Set processor status bits (m8, x8 mode)
+REP(0x30);  // Reset processor status bits (m16, x16 mode)
 
 // Control instructions
 wai();  // Wait for interrupt
@@ -1065,12 +615,12 @@ main:
 - ✅ Register aliasing: `let name @ A = expr` for named register access
 - ✅ Hybrid function parameters: register aliases (`param @ A`), variable-bound (`param @ VAR`), or stack values (`param`)
 - ✅ Function pointers: `fn()` (near) and `far fn()` (cross-bank) with calling convention encoded in type
-- ✅ Register preservation: `#[preserves(A, X, Y, Status, D, DBR)]` to declare preservation guarantees
+- ✅ Register preservation: `#[preserves(A, X, Y, Status, D, DBR, S)]` to declare preservation guarantees
 - ✅ Interrupt handlers: `#[interrupt(nmi/irq/brk/cop/abort)]` with automatic register preservation and RTI
 - ✅ Control flow: `if/else, loop, break, continue, return`
 - ✅ All arithmetic, logical, bitwise, and comparison operators
 - ✅ `let` bindings (immutable by default, `let mut` for mutable)
-- ✅ Global registers A, X, Y, Status
+- ✅ All 65816 processor registers: A, X, Y, Status, D, DBR, S (mutable); PBR (read-only)
 - ✅ Storage attributes: `#[zeropage]`, `#[ram]`, `#[rom]`, `#[hw]`
 - ✅ Mode annotations: `#[mode(m8/m16, x8/x16)]` with optional `transition=none/auto/caller`
 - ✅ Built-in mode control: `SEP()` and `REP()` functions for manual mode transitions
@@ -1220,7 +770,7 @@ Performance characteristics of different storage:
 ## Key Technical Decisions
 
 1. **No `unsafe` keyword**: All code has direct hardware access by default
-2. **Global registers**: A, X, Y, Status exposed as built-in global variables
+2. **All processor registers exposed**: A, X, Y, Status, D, DBR, S exposed as mutable global variables; PBR exposed as read-only global (write is compile error)
 3. **Automatic volatile**: All `#[hw]` variables are automatically volatile; every access goes to hardware, no caching or reordering
 4. **No bounds checking**: Arrays have no compile-time or runtime bounds checking; programmer responsible for safety
 5. **No error handling**: No built-in Result, Option, or panic; programmer defines own error conventions
@@ -1252,13 +802,11 @@ Performance characteristics of different storage:
 
 ## Future Enhancements
 
-- Simple C-style enums
 - Tuples for multiple returns
 - Pattern matching on integers
 - Basic module system
 - Methods and `impl` blocks
 - Limited generics (monomorphization)
-- Inline assembly support
 
 ## References
 
@@ -1277,5 +825,5 @@ Performance characteristics of different storage:
 
 ---
 
-*Last Updated: 2025-12-29*
+*Last Updated: 2025-12-31*
 *Status: Design Complete, Implementation Pending*
