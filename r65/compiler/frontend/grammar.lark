@@ -1,0 +1,277 @@
+// R65 Grammar for Lark Parser
+// Complete grammar for both lexing and parsing
+
+// ============================================================================
+// Parser Rules (lowercase names)
+// ============================================================================
+
+// Starting rule - a source file is a list of items
+start: item*
+
+// Top-level items
+?item: function_decl
+     | static_decl
+     | const_decl
+     | struct_decl
+     | enum_decl
+     | type_alias
+     | include_stmt
+     | _reserved_keyword  // Dummy rule to make reserved keywords valid tokens
+
+// Dummy rule to tell Lark that these terminals are valid (never actually matched in valid code)
+_reserved_keyword: KEYWORD
+
+// Function declaration
+function_decl: attribute* FAR? FN IDENT "(" param_list? ")" return_type? block
+
+param_list: param ("," param)* ","?
+param: IDENT ("@" binding)? ":" type_expr
+
+binding: REGISTER | IDENT
+
+return_type: "->" (type_expr | "!")
+
+// Static variable declaration
+static_decl: attribute* STATIC MUT? IDENT ":" type_expr ("=" expr)? ";"
+
+// Const declaration
+const_decl: CONST IDENT ":" type_expr "=" expr ";"
+
+// Struct declaration
+struct_decl: STRUCT IDENT "{" struct_field* "}"
+struct_field: IDENT ":" type_expr ","?
+
+// Enum declaration
+enum_decl: ENUM IDENT "{" enum_variant ("," enum_variant)* ","? "}"
+enum_variant: IDENT ("=" expr)?
+
+// Type alias
+type_alias: TYPE IDENT "=" type_expr ";"
+
+// Include statement
+include_stmt: INCLUDE "!" "(" STRING ")"
+
+// Attributes
+attribute: "#" "[" attribute_inner "]"
+attribute_inner: IDENT ("(" attribute_args? ")")?
+attribute_args: attribute_arg ("," attribute_arg)* ","?
+attribute_arg: expr
+
+// Block
+block: "{" statement* "}"
+
+// Statements
+?statement: let_stmt
+          | expr_stmt
+          | return_stmt
+          | break_stmt
+          | continue_stmt
+          | if_stmt
+          | loop_stmt
+          | while_stmt
+          | block
+          | asm_stmt
+
+let_stmt: LET MUT? IDENT ("@" binding)? (":" type_expr)? "=" expr ";"
+expr_stmt: expr ";"
+return_stmt: RETURN (expr ("," expr)*)? ";"
+break_stmt: BREAK ";"
+continue_stmt: CONTINUE ";"
+
+if_stmt: IF expr block (ELSE else_clause)?
+else_clause: if_stmt | block
+
+loop_stmt: LOOP block
+while_stmt: WHILE expr block
+
+asm_stmt: ASM "!" "(" STRING ("," STRING)* ")" ";"
+
+// Expressions (precedence from low to high)
+?expr: assignment
+
+?assignment: logical_or
+           | lvalue "=" assignment              -> assign
+
+lvalue: IDENT                                   -> lvalue_ident
+      | REGISTER                                -> lvalue_register
+      | postfix "[" expr "]"                    -> lvalue_array
+      | postfix "." IDENT                       -> lvalue_field
+
+?logical_or: logical_and
+           | logical_or "||" logical_and        -> or_expr
+
+?logical_and: equality
+            | logical_and "&&" equality         -> and_expr
+
+?equality: comparison
+         | equality "==" comparison             -> eq
+         | equality "!=" comparison             -> ne
+
+?comparison: bitwise_or
+           | comparison "<" bitwise_or          -> lt
+           | comparison "<=" bitwise_or         -> le
+           | comparison ">" bitwise_or          -> gt
+           | comparison ">=" bitwise_or         -> ge
+
+?bitwise_or: bitwise_xor
+           | bitwise_or "|" bitwise_xor         -> bitor
+
+?bitwise_xor: bitwise_and
+            | bitwise_xor "^" bitwise_and       -> bitxor
+
+?bitwise_and: shift
+            | bitwise_and "&" shift             -> bitand
+
+?shift: addition
+      | shift "<<" addition                     -> lshift
+      | shift ">>" addition                     -> rshift
+
+?addition: multiplication
+         | addition "+" multiplication          -> add
+         | addition "-" multiplication          -> sub
+
+?multiplication: cast
+               | multiplication "*" cast        -> mul
+               | multiplication "/" cast        -> div
+               | multiplication "%" cast        -> mod
+
+?cast: unary
+     | cast AS type_expr                        -> type_cast
+
+?unary: postfix
+      | "!" unary                               -> not_expr
+      | "~" unary                               -> bitnot
+      | "-" unary                               -> neg
+      | "*" unary                               -> deref
+
+?postfix: primary
+        | postfix "(" arg_list? ")"             -> call
+        | postfix "[" expr "]"                  -> array_index
+        | postfix "." IDENT                     -> field_access
+
+arg_list: expr ("," expr)* ","?
+
+?primary: INTEGER                               -> integer
+        | BOOLEAN                               -> boolean
+        | IDENT                                 -> identifier
+        | REGISTER                              -> register_ref
+        | "(" expr ")"                          -> paren
+
+// Types
+?type_expr: type_basic
+          | type_array
+          | type_pointer
+          | type_fn
+
+type_basic: TYPE_NAME
+type_array: "[" type_expr ";" expr "]"
+type_pointer: (NEAR | FAR) "<" type_expr ">"
+type_fn: FAR? FN "(" type_list? ")" ("->" type_expr)?
+
+type_list: type_expr ("," type_expr)* ","?
+
+// ============================================================================
+// Lexer Rules (uppercase names - Terminals)
+// ============================================================================
+
+// Keywords, registers, types, and booleans
+// Ordered to check longer patterns first and avoid partial matches
+// Within same priority (.10), definition order matters - first defined has priority
+
+// Keywords used in parser rules - priority .10 to match before IDENT
+// Order: longer keywords first to avoid partial matches
+CONTINUE.10: /continue\b/
+INCLUDE.10: /include\b/
+RETURN.10: /return\b/
+STRUCT.10: /struct\b/
+STATIC.10: /static\b/
+BREAK.10: /break\b/
+CONST.10: /const\b/
+WHILE.10: /while\b/
+ENUM.10: /enum\b/
+LOOP.10: /loop\b/
+TYPE.10: /type\b/
+ELSE.10: /else\b/
+NEAR.10: /near\b/
+LET.10: /let\b/
+MUT.10: /mut\b/
+ASM.10: /asm\b/
+FAR.10: /far\b/
+FN.10: /fn\b/
+IF.10: /if\b/
+AS.10: /as\b/
+
+// Reserved keywords (not used in parser, but reserved for future use)
+// Includes built-in functions and Rust reserved words
+KEYWORD.10: /abstract\b/ | /override\b/ | /unsized\b/ | /virtual\b/ | /typeof\b/ | /unsafe\b/ | /extern\b/ | /become\b/ | /async\b/ | /await\b/ | /match\b/ | /where\b/ | /super\b/ | /trait\b/ | /yield\b/ | /crate\b/ | /final\b/ | /macro\b/ | /impl\b/ | /move\b/ | /priv\b/ | /self\b/ | /Self\b/ | /SEP\b/ | /REP\b/ | /box\b/ | /dyn\b/ | /for\b/ | /mod\b/ | /mul\b/ | /div\b/ | /pub\b/ | /ref\b/ | /shl\b/ | /shr\b/ | /stp\b/ | /try\b/ | /use\b/ | /wai\b/ | /mvn\b/ | /mvp\b/ | /in\b/ | /do\b/
+
+// Booleans
+BOOLEAN.10: /true\b/ | /false\b/
+
+// Registers and types (with word boundaries)
+REGISTER.10: /STATUS\b/ | /DBR\b/ | /PBR\b/ | /[AXYDS]\b/
+TYPE_NAME.10: /bool\b/ | /u16\b/ | /i16\b/ | /u8\b/ | /i8\b/
+
+// Literals
+INTEGER: HEX_INTEGER | BIN_INTEGER | DEC_INTEGER
+// Allow zero digits after prefix - validation happens in lexer
+HEX_INTEGER: /0[xX][0-9a-fA-F_]*/
+BIN_INTEGER: /0[bB][01_]*/
+DEC_INTEGER: /[0-9][0-9_]*/
+
+STRING: ESCAPED_STRING
+
+// Two-character operators (must come before single-char)
+LSHIFT: "<<"
+RSHIFT: ">>"
+EQEQUAL: "=="
+NOTEQUAL: "!="
+LESSEQUAL: "<="
+GREATEREQUAL: ">="
+AND: "&&"
+OR: "||"
+RARROW: "->"
+
+// Single-character operators
+PLUS: "+"
+MINUS: "-"
+STAR: "*"
+SLASH: "/"
+PERCENT: "%"
+AMPER: "&"
+VBAR: "|"
+CIRCUMFLEX: "^"
+TILDE: "~"
+EQUAL: "="
+LESS: "<"
+GREATER: ">"
+EXCLAMATION: "!"
+AT: "@"
+
+// Delimiters
+LPAR: "("
+RPAR: ")"
+LBRACE: "{"
+RBRACE: "}"
+LSQB: "["
+RSQB: "]"
+SEMI: ";"
+COLON: ":"
+COMMA: ","
+DOT: "."
+HASH: "#"
+
+// Identifiers (lowest priority)
+// Use negative lookahead to exclude all keywords, registers, types, and booleans
+// Identifiers - lowest priority, with negative lookahead to exclude all keywords, registers, types, and booleans
+IDENT.1: /(?!(continue|include|return|struct|static|break|const|while|enum|loop|type|else|near|let|mut|asm|far|fn|if|as|abstract|override|unsized|virtual|typeof|unsafe|extern|become|async|await|match|where|super|trait|yield|crate|final|macro|impl|move|priv|self|Self|SEP|REP|box|dyn|for|mod|mul|div|pub|ref|shl|shr|stp|try|use|wai|mvn|mvp|in|do|STATUS|DBR|PBR|bool|u16|i16|u8|i8|true|false|[AXYDS])$)[a-zA-Z_][a-zA-Z0-9_]*/
+
+// Imports and ignores
+%import common.ESCAPED_STRING
+%import common.WS
+%import common.C_COMMENT
+%import common.CPP_COMMENT
+
+%ignore WS
+%ignore C_COMMENT
+%ignore CPP_COMMENT

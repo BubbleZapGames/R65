@@ -1,4 +1,4 @@
-# 65Rustic Compiler
+# R65 Compiler
 
 A Rust-inspired compiler for 6502/65816 processors targeting WLA-DX assembly syntax, designed specifically for SNES ROM development and reverse engineering.
 
@@ -52,7 +52,7 @@ All 65816 processor registers are exposed as global variables:
 A: u8       // Accumulator (u16 in m16 mode)
 X: u8       // X index register (u16 in x16 mode)
 Y: u8       // Y index register (u16 in x16 mode)
-Status: u8  // Processor status flags (NVMXDIZC)
+STATUS: u8  // Processor status flags (NVMXDIZC)
 D: u16      // Direct Page register (zero-page base)
 DBR: u8     // Data Bank Register (default data bank)
 PBR: u8     // Program Bank Register (read-only)
@@ -69,7 +69,7 @@ let bank = PBR;          // Read current bank (write = error)
 **Rules:**
 - All registers mutable except `PBR` (read-only, write is compile error)
 - `A`, `X`, `Y` types change with processor mode (u8/u16)
-- `D`, `S` always u16; `Status`, `DBR`, `PBR` always u8
+- `D`, `S` always u16; `STATUS`, `DBR`, `PBR` always u8
 - All usable in aliasing (`let name @ D = expr`) and `#[preserves(...)]` (except `PBR`)
 - **Safety**: Modifying `D`, `DBR`, `S` without restoration causes bugs/crashes
 
@@ -170,8 +170,8 @@ let b: bool = (x: u8) as bool;  // Any non-zero = true (unstrict)
 C-style textual file inclusion (no module system):
 
 ```rust
-include!("hardware.65r")  // Insert file contents here
-include!("player.65r")
+include!("hardware.r65")  // Insert file contents here
+include!("player.r65")
 
 fn main() {
     init_hardware();
@@ -191,11 +191,11 @@ fn wait() {
 }
 
 fn multi_instruction() {
-    asm!("PHP" "WAI");  // No commas between strings
+    asm!("PHP","WAI");
 }
 ```
 
-**Rules**: `asm!("inst1" "inst2" ...)` emits raw assembly verbatim; no variable interpolation; compiler assumes all registers clobbered; no optimization across boundaries; programmer handles register preservation.
+**Rules**: `asm!("inst1","inst2" ...)` emits raw assembly verbatim; no variable interpolation; compiler assumes all registers clobbered; no optimization across boundaries; programmer handles register preservation.
 
 ### Const Evaluation
 
@@ -361,14 +361,14 @@ fn careful_add(value @ A: u8) -> u8 {
 }
 
 // Function that preserves everything except what it returns
-#[preserves(X, Y, Status)]
+#[preserves(X, Y, STATUS)]
 fn get_input() -> u8 {
     A = CONTROLLER;
     return A;
 }
 
 // Function that preserves processor state registers
-#[preserves(A, X, Y, Status, D, DBR)]
+#[preserves(A, X, Y, STATUS, D, DBR)]
 fn safe_helper() {
     // Must manually save/restore all registers if we need to use them
     let saved_a = A;
@@ -387,7 +387,7 @@ fn wild_function() {
 
 **Preservation rules:**
 - `#[preserves(...)]` lists registers that **must remain unchanged** by function exit
-- Available registers: `A, X, Y, Status, D, DBR, S`
+- Available registers: `A, X, Y, STATUS, D, DBR, S`
 - `PBR` cannot be in preserves list (it's read-only and cannot be modified)
 - Compiler enforces preservation - error if register modified without save/restore
 - Programmer is responsible for manual save/restore (compiler does not auto-generate)
@@ -502,7 +502,7 @@ fn manual_handler() {
 
 // Using #[preserves] implies preserve=false
 #[interrupt(irq)]
-#[preserves(X, Y, Status, D, DBR)]
+#[preserves(X, Y, STATUS, D, DBR)]
 fn selective_handler() {
     let saved_x = X;
     A = compute_value();  // Can modify A freely
@@ -605,6 +605,55 @@ main:
     ; ... rest of main
 ```
 
+### Operators and Hardware Cost Model
+
+R65 uses a **hardware-aware operator design** where the syntax clearly indicates performance cost:
+
+**Operators = Fast (hardware instructions or simple sequences)**
+```rust
+let sum = a + b;          // ADC instruction (2-4 cycles)
+let diff = a - b;         // SBC instruction (2-4 cycles)
+let x = a * 8;            // ASL, ASL, ASL (6 cycles)
+let x = a / 4;            // LSR, LSR (4 cycles)
+let x = a << 3;           // Constant shift (6 cycles)
+let masked = a & 0x0F;    // AND instruction (2-4 cycles)
+```
+
+**Functions = Slow (subroutine calls)**
+```rust
+let product = mul(a, b);     // JSR __mul (20-100+ cycles)
+let quotient = div(a, b);    // JSR __div (50-200+ cycles)
+let remainder = mod(a, b);   // JSR __mod (50-200+ cycles)
+let shifted = shl(a, n);     // Variable shift loop (8+ cycles)
+```
+
+**Operator Restrictions:**
+- `*` operator: Only allows constants 1, 2, 4, or 8 (optimized to shifts)
+- `/` operator: Only allows constants 1, 2, 4, or 8 (optimized to shifts)
+- `<<`, `>>` operators: Only allow constant shift amounts
+- General multiplication/division requires `mul()`, `div()` functions
+- Variable shifts require `shl()`, `shr()` functions
+
+**Examples:**
+```rust
+// Valid - uses operators (fast)
+let x = a * 8;        // Compiles to 3 shift instructions
+let y = b / 2;        // Compiles to 1 shift instruction
+let z = c << 4;       // Constant shift
+
+// Invalid - must use functions
+let x = a * 3;        // ERROR: Use mul(a, 3)
+let y = b / 7;        // ERROR: Use div(b, 7)
+let z = c << count;   // ERROR: Use shl(c, count)
+
+// Correct usage with functions
+let x = mul(a, 3);       // General multiplication
+let y = div(b, 7);       // General division
+let z = shl(c, count);   // Variable shift
+```
+
+This design makes the programmer **immediately aware** when they're using expensive operations, encouraging optimization-conscious coding.
+
 ## What's Included (Minimal Feature Set)
 
 - ✅ Basic types: `u8, i8, u16, i16, bool`
@@ -615,12 +664,17 @@ main:
 - ✅ Register aliasing: `let name @ A = expr` for named register access
 - ✅ Hybrid function parameters: register aliases (`param @ A`), variable-bound (`param @ VAR`), or stack values (`param`)
 - ✅ Function pointers: `fn()` (near) and `far fn()` (cross-bank) with calling convention encoded in type
-- ✅ Register preservation: `#[preserves(A, X, Y, Status, D, DBR, S)]` to declare preservation guarantees
+- ✅ Register preservation: `#[preserves(A, X, Y, STATUS, D, DBR, S)]` to declare preservation guarantees
 - ✅ Interrupt handlers: `#[interrupt(nmi/irq/brk/cop/abort)]` with automatic register preservation and RTI
-- ✅ Control flow: `if/else, loop, break, continue, return`
-- ✅ All arithmetic, logical, bitwise, and comparison operators
+- ✅ Control flow: `if/else, loop, while, loop-while, break, continue, return, never type (!)`
+- ✅ Operators with hardware cost model:
+  - Arithmetic: `+`, `-`, `*` (constants 1/2/4/8 only), `/` (constants 1/2/4/8 only)
+  - Functions for expensive ops: `mul()`, `div()`, `mod()`, `shl()`, `shr()`
+  - Bitwise: `&`, `|`, `^`, `~`, `<<` (constant), `>>` (constant)
+  - Comparison: `==`, `!=`, `<`, `<=`, `>`, `>=`
+  - Logical: `&&`, `||`, `!` (with short-circuit evaluation)
 - ✅ `let` bindings (immutable by default, `let mut` for mutable)
-- ✅ All 65816 processor registers: A, X, Y, Status, D, DBR, S (mutable); PBR (read-only)
+- ✅ All 65816 processor registers: A, X, Y, STATUS, D, DBR, S (mutable); PBR (read-only)
 - ✅ Storage attributes: `#[zeropage]`, `#[ram]`, `#[rom]`, `#[hw]`
 - ✅ Mode annotations: `#[mode(m8/m16, x8/x16)]` with optional `transition=none/auto/caller`
 - ✅ Built-in mode control: `SEP()` and `REP()` functions for manual mode transitions
@@ -702,7 +756,7 @@ fn main() -> ! {
 ### Pipeline
 
 ```
-Source (.65r) → Lexer → Parser → AST → HIR → Type Checking → MIR →
+Source (.r65) → Lexer → Parser → AST → HIR → Type Checking → MIR →
 Code Generation → WLA-DX Assembly (.asm)
 ```
 
@@ -716,7 +770,7 @@ Code Generation → WLA-DX Assembly (.asm)
 6. **Optimization**: Constant propagation, dead code elimination, zero-page allocation
 7. **Code Generation**: Register allocation, addressing mode selection, WLA-DX emission
 
-## Implementation Status
+## Implementation STATUS
 
 **Current**: Planning complete, no code written yet
 
@@ -729,7 +783,7 @@ Code Generation → WLA-DX Assembly (.asm)
 ## Directory Structure (Planned)
 
 ```
-/home/nathan/65rustic/
+/home/nathan/r65/
 ├── compiler/
 │   ├── main.py              # CLI entry point
 │   ├── frontend/            # Lexer, parser, AST
@@ -770,28 +824,29 @@ Performance characteristics of different storage:
 ## Key Technical Decisions
 
 1. **No `unsafe` keyword**: All code has direct hardware access by default
-2. **All processor registers exposed**: A, X, Y, Status, D, DBR, S exposed as mutable global variables; PBR exposed as read-only global (write is compile error)
+2. **All processor registers exposed**: A, X, Y, STATUS, D, DBR, S exposed as mutable global variables; PBR exposed as read-only global (write is compile error)
 3. **Automatic volatile**: All `#[hw]` variables are automatically volatile; every access goes to hardware, no caching or reordering
 4. **No bounds checking**: Arrays have no compile-time or runtime bounds checking; programmer responsible for safety
 5. **No error handling**: No built-in Result, Option, or panic; programmer defines own error conventions
-6. **Context-aware type conversions**: Compiler chooses between memory-based and REP/SEP-based conversions for optimal performance; batches mode changes when beneficial
-7. **Const expressions only**: Compile-time evaluation of constant expressions supported; const functions not supported
-8. **Inline assembly**: `asm!()` for raw assembly with simple string syntax; compiler treats as black box, assumes all registers clobbered
-9. **C-style enums**: Simple enums with explicit or auto-increment values; no explicit underlying type; cast to/from integers
-10. **File inclusion only**: `include!()` for textual file inclusion (C-style); no module system, visibility, or namespacing
-11. **Packed structs**: All structs are packed by default with no alignment padding; fields laid out in declaration order
-12. **Register aliasing**: `let name @ A = expr` creates zero-cost aliases for registers; improves readability without runtime overhead
-13. **Hybrid parameters**: Three parameter types: register aliases (`param @ A`), variable-bound (`param @ VAR` for existing static variables), or stack values (`param` with callee cleanup)
-14. **Parameter ordering**: Stack parameters must precede aliased parameters; compiler error otherwise
-15. **Argument alias optimization**: No setup code generated when call arguments already match parameter aliases; enables zero-cost calling conventions
-16. **Explicit preservation**: `#[preserves(...)]` declares register preservation contract; compiler enforces but programmer implements; no automatic save/restore
-17. **Interrupt preservation**: `#[interrupt(vector)]` defaults to automatic register preservation (`preserve=true`); can be disabled with `preserve=false` or `#[preserves(...)]` for manual control
-18. **Implicit A return**: Functions without explicit `return` statements return A register value
-19. **Explicit register returns**: `return X`, `return Y`, `return A, X` return via hardware registers; local variables returned via stack
-20. **Storage attributes**: Memory location separate from type (`near<T>` can be in zero-page or RAM)
-21. **Flexible mode handling**: `#[mode(...)]` with three transition strategies: `none` (convention-based, default), `auto` (callee wrapper), `caller` (caller-side wrapper with batching)
-22. **Automatic initialization**: `__init_start()` generated for non-zero static initializers
-23. **Consistent far/near**: `far fn()` for both function definitions and pointers indicates JSL/RTL calling convention; `fn()` indicates JSR/RTS; `#[bank(n)]` controls placement with optional `data_bank` parameter
+6. **Hardware-aware operators**: Operators (`*`, `/`, `<<`, `>>`) restricted to cheap operations (constants 1/2/4/8 for multiply/divide, constant shifts); expensive operations use explicit functions (`mul()`, `div()`, `mod()`, `shl()`, `shr()`); syntax immediately reveals performance cost
+7. **Context-aware type conversions**: Compiler chooses between memory-based and REP/SEP-based conversions for optimal performance; batches mode changes when beneficial
+8. **Const expressions only**: Compile-time evaluation of constant expressions supported; const functions not supported
+9. **Inline assembly**: `asm!()` for raw assembly with simple string syntax; compiler treats as black box, assumes all registers clobbered
+10. **C-style enums**: Simple enums with explicit or auto-increment values; no explicit underlying type; cast to/from integers
+11. **File inclusion only**: `include!()` for textual file inclusion (C-style); no module system, visibility, or namespacing
+12. **Packed structs**: All structs are packed by default with no alignment padding; fields laid out in declaration order
+13. **Register aliasing**: `let name @ A = expr` creates zero-cost aliases for registers; improves readability without runtime overhead
+14. **Hybrid parameters**: Three parameter types: register aliases (`param @ A`), variable-bound (`param @ VAR` for existing static variables), or stack values (`param` with callee cleanup)
+15. **Parameter ordering**: Stack parameters must precede aliased parameters; compiler error otherwise
+16. **Argument alias optimization**: No setup code generated when call arguments already match parameter aliases; enables zero-cost calling conventions
+17. **Explicit preservation**: `#[preserves(...)]` declares register preservation contract; compiler enforces but programmer implements; no automatic save/restore
+18. **Interrupt preservation**: `#[interrupt(vector)]` defaults to automatic register preservation (`preserve=true`); can be disabled with `preserve=false` or `#[preserves(...)]` for manual control
+19. **Implicit A return**: Functions without explicit `return` statements return A register value
+20. **Explicit register returns**: `return X`, `return Y`, `return A, X` return via hardware registers; local variables returned via stack
+21. **Storage attributes**: Memory location separate from type (`near<T>` can be in zero-page or RAM)
+22. **Flexible mode handling**: `#[mode(...)]` with three transition strategies: `none` (convention-based, default), `auto` (callee wrapper), `caller` (caller-side wrapper with batching)
+23. **Automatic initialization**: `__init_start()` generated for non-zero static initializers
+24. **Consistent far/near**: `far fn()` for both function definitions and pointers indicates JSL/RTL calling convention; `fn()` indicates JSR/RTS; `#[bank(n)]` controls placement with optional `data_bank` parameter
 
 ## Use Cases
 
@@ -807,6 +862,12 @@ Performance characteristics of different storage:
 - Basic module system
 - Methods and `impl` blocks
 - Limited generics (monomorphization)
+
+## Detailed Design Documents
+
+- [Operators and Cost Model](docs/operators.md) - Integer operators with hardware-aware design
+- [Control Flow Structures](docs/control-flow.md) - If/else, loops, break, continue, return
+- [Pointers and Memory Model](docs/pointers-memory.md) - Near/far pointers, addressing modes, memory layout
 
 ## References
 
@@ -826,4 +887,4 @@ Performance characteristics of different storage:
 ---
 
 *Last Updated: 2025-12-31*
-*Status: Design Complete, Implementation Pending*
+*STATUS: Design Complete, Implementation Pending*
