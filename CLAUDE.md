@@ -145,29 +145,25 @@ fn divide(a: u8, b: u8) -> (u8, u8) {
 
 ### Type Conversions and Casting
 
-All conversions require explicit `as` keyword. No implicit conversions.
+All conversions require explicit `as` keyword - no implicit conversions.
+
+| Conversion | Syntax | Behavior | Cost |
+|------------|--------|----------|------|
+| Widening (unsigned) | `(x: u8) as u16` | Zero-extend | 2-4 cycles |
+| Widening (signed) | `(x: i8) as i16` | Sign-extend | 4-8 cycles |
+| Narrowing | `(x: u16) as u8` | Truncate (keep low byte) | 0-2 cycles |
+| Reinterpret | `(x: u8) as i8` | Same bits, new type | 0 cycles |
+| To boolean | `(x: u8) as bool` | 0=false, non-zero=true | 2 cycles |
+| From boolean | `true as u8` | Normalize to 0 or 1 | 2 cycles |
 
 ```rust
-// Widening (zero/sign extend)
-let y: u16 = (x: u8) as u16;  // 0x00FF (zero-extend)
-let y: i16 = (x: i8) as i16;  // 0xFFFF if negative (sign-extend)
-
-// Narrowing (truncate)
-let y: u8 = (x: u16) as u8;   // Keep low byte only
-
-// Reinterpret (zero cost)
-let y: i8 = (x: u8) as i8;    // Same bits, different type
-
-// Boolean conversions
-let x: u8 = true as u8;       // Normalize to 0 or 1
-let b: bool = (x: u8) as bool;  // Any non-zero = true (unstrict)
+let wide: u16 = (narrow: u8) as u16;  // Zero-extend
+let byte: u8 = (word: u16) as u8;     // Truncate
 ```
 
-**Context-aware code generation**: Compiler chooses between memory-based (LDA/STA) or mode-switching (REP/SEP) strategies based on value location, current mode, and subsequent operations. Batches mode changes when beneficial.
+**Code generation**: Compiler chooses between memory-based (LDA/STA) or mode-switching (REP/SEP) strategies; batches mode changes when beneficial.
 
-**Rules**: Unsigned widening zero-extends; signed widening sign-extends; narrowing truncates (no overflow check); same-size reinterprets bits (zero cost); no pointer conversions.
-
-*(See [docs/type-system.md](docs/type-system.md) for detailed type system semantics)*
+*(See [docs/type-system.md](docs/type-system.md) for type system rules and mode-aware casting)*
 
 ### File Inclusion
 
@@ -303,31 +299,31 @@ static mut INIDISP: u8;  // Screen brightness register
 
 ### Processor Mode Annotations
 
-Functions specify 8-bit or 16-bit modes with optional transition handling:
+Functions specify register sizes (8-bit or 16-bit) with `#[mode(...)]`:
 
 ```rust
-#[mode(m8, x8)]  // 8-bit accumulator and index registers
-fn process_byte() { }
-
-#[mode(m16, x16)]  // 16-bit mode
-fn process_word() { }
-
-#[mode(x16)]  // 16-bit index mode only
-fn mixed_mode() { }
-
-#[mode(m16, x16, transition=auto)]  // Callee wrapper (safe)
-fn safe_routine() { }
-
-#[mode(m16, x16, transition=caller)]  // Caller wrapper (allows batching)
-fn needs_16bit() { }
+#[mode(m8, x8)]   // 8-bit accumulator and index: A=u8, X=u8, Y=u8
+#[mode(m16, x16)] // 16-bit mode: A=u16, X=u16, Y=u16
+#[mode(x16)]      // Partial mode: only X/Y size specified
 ```
 
-**Mode transition options:**
-- `transition=none` (default): No automatic transitions - programmer handles with `SEP()`/`REP()` or relies on calling convention
-- `transition=auto`: Compiler generates PHP/REP/SEP/PLP wrapper inside callee; safe regardless of caller mode
-- `transition=caller`: Compiler generates wrapper at call site; enables batching optimization when calling multiple same-mode functions
+**Mode Transition Strategies:**
 
-*(See [docs/mode-transition-analysis.md](docs/mode-transition-analysis.md) for mode transition design and [docs/mode-transition-status.md](docs/mode-transition-status.md) for implementation status)*
+| Option | Behavior | Use Case |
+|--------|----------|----------|
+| `transition=none` (default) | Programmer handles mode changes | Manual control, performance |
+| `transition=auto` | Callee saves/restores mode | Safe, works from any caller mode |
+| `transition=caller` | Caller manages mode transition | Enables batching multiple calls |
+
+```rust
+#[mode(m16, x16, transition=auto)]
+fn safe_16bit() { }  // Callable from any mode
+
+#[mode(m16, x16, transition=caller)]
+fn batch_me() { }    // Caller can batch multiple same-mode calls
+```
+
+*(See [docs/mode-transition-analysis.md](docs/mode-transition-analysis.md) and [docs/type-system.md](docs/type-system.md) for mode tracking and type system details)*
 
 ### Register Aliasing
 
@@ -354,80 +350,46 @@ fn calculate() {
 
 ### Register Preservation
 
-Functions can declare which registers and processor state they preserve using the `#[preserves(...)]` attribute:
+Functions declare which registers they preserve with `#[preserves(...)]`:
 
 ```rust
-// Function that only modifies A
 #[preserves(X, Y)]
 fn careful_add(value @ A: u8) -> u8 {
-    // Can freely use A (not in preserves list)
-    A = A + 1;
-
-    // X and Y must remain unchanged
-    // Compiler error if we modify X or Y without saving/restoring
-    return A;
+    A = A + 1;  // Can modify A (not in preserves list)
+    return A;   // X and Y guaranteed unchanged
 }
 
-// Function that preserves everything except what it returns
-#[preserves(X, Y, STATUS)]
-fn get_input() -> u8 {
-    A = CONTROLLER;
-    return A;
-}
-
-// Function that preserves processor state registers
 #[preserves(A, X, Y, STATUS, D, DBR)]
 fn safe_helper() {
-    // Must manually save/restore all registers if we need to use them
     let saved_a = A;
-    A = HWREG;  // Use A temporarily
-    A = saved_a;  // Restore before return
-}
-
-// No preserves attribute = no guarantees (any register may be modified)
-fn wild_function() {
-    A = 1;
-    X = 2;
-    Y = 3;
-    // Caller cannot assume any register is preserved
+    A = HWREG;     // Use A temporarily
+    A = saved_a;   // Restore before return (programmer's responsibility)
 }
 ```
 
-**Preservation rules:**
-- `#[preserves(...)]` lists registers that **must remain unchanged** by function exit
-- Available registers: `A, X, Y, STATUS, D, DBR, S`
-- `PBR` cannot be in preserves list (it's read-only and cannot be modified)
-- Compiler enforces preservation - error if register modified without save/restore
-- Programmer is responsible for manual save/restore (compiler does not auto-generate)
-- Registers in the return signature cannot be in the preserves list
-- **Compiler warning**: If a register is in `#[preserves(...)]` but never modified in the function body
+**Rules**: Compiler enforces but does not auto-generate save/restore; programmer manually preserves registers; no preserves = caller-save (default).
 
-**Example:**
-```rust
-#[preserves(X, Y)]
-fn good_function() -> u8 {
-    A = 42;
-    return A;  // OK: X and Y not modified, A returned
-}
-```
-
-*(See [docs/calling-convention.md](docs/calling-convention.md) for complete calling convention and ABI details)*
+*(See [docs/calling-convention.md](docs/calling-convention.md) for complete ABI and preservation details)*
 
 ### Function Parameters
 
-Three parameter types with different performance tradeoffs:
+R65 supports three parameter-passing mechanisms for maximum flexibility:
+
+| Type | Syntax | Speed | Use Case |
+|------|--------|-------|----------|
+| Register alias | `param @ A: u8` | Fastest (0-3 cycles) | Performance-critical, few parameters |
+| Variable-bound | `param @ VAR: u8` | Fast (3-6 cycles) | Zero-page communication patterns |
+| Stack | `param: u8` | Slower (5-10 cycles) | Many parameters, reentrancy |
 
 ```rust
-#[zeropage(0x20)]
-static mut TEMP: u8;
-
-fn add(left @ A: u8, right @ X: u8) -> u8 { }      // Register alias (fastest)
-fn process(temp @ TEMP: u8) -> u8 { }               // Variable-bound (fast)
-fn calculate(a: u8, b: u8) -> u8 { }                // Stack (slower, reentrant)
-fn hybrid(a: u8, reg @ A: u8, var @ TEMP: u8) { }   // Mixed (stack first!)
+fn add(left @ A: u8, right @ X: u8) -> u8 { }     // Register parameters
+fn process(temp @ TEMP: u8) -> u8 { }              // Zero-page parameter
+fn calculate(a: u8, b: u8) -> u8 { }               // Stack parameters
 ```
 
-**Rules**: `param @ A/X/Y` = register alias; `param @ VAR` = bound to static variable; `param` = stack with callee cleanup. **Ordering**: Stack parameters must precede aliased parameters (compiler error otherwise). **Optimization**: No setup code when arguments already match parameter aliases (e.g., `process(A, TEMP)` when params are `@ A, @ TEMP`).
+**Key Rules**: Stack parameters must come first; zero-cost calls when arguments match parameter aliases.
+
+*(See [docs/calling-convention.md](docs/calling-convention.md) for ABI details, stack layout, and calling conventions)*
 
 ### Function Pointers
 
@@ -495,40 +457,24 @@ far fn decompression_routine() { }     // JSL/RTL, caller manages DBR
 
 ### Interrupt Handlers
 
-Interrupt handlers use `#[interrupt(vector)]` attribute. Available vectors: `nmi`, `irq`, `brk`, `cop`, `abort`.
+Interrupt handlers use `#[interrupt(vector)]` where vector is `nmi`, `irq`, `brk`, `cop`, or `abort`.
 
 ```rust
-// Automatic preservation (default)
 #[interrupt(nmi)]
 fn vblank_handler() {
     FRAME_COUNT = FRAME_COUNT + 1;
-    // Compiler auto-generates: PHP, PHA, PHX, PHY, PHD, PHB at entry
-    // and PLB, PLD, PLY, PLX, PLA, PLP, RTI at exit
+    // Auto-generates: PHP, register saves, body, register restores, PLP, RTI
 }
 
-// Manual control
-#[interrupt(irq, preserve=false)]
-fn manual_handler() {
-    // Programmer handles preservation
-}
-
-// Using #[preserves] implies preserve=false
-#[interrupt(irq)]
-#[preserves(X, Y, STATUS, D, DBR)]
-fn selective_handler() {
-    let saved_x = X;
-    A = compute_value();  // Can modify A freely
-    X = saved_x;
+#[interrupt(irq, preserve=false)]  // Manual control for performance
+fn fast_handler() {
+    // Programmer handles all preservation
 }
 ```
 
-**Rules:**
-- `preserve=true` (default): Compiler auto-generates all register preservation and RTI
-- `preserve=false`: Manual preservation for performance-critical handlers
-- If `#[preserves(...)]` present, `preserve` is implicitly `false`
-- Compiler populates interrupt vector table automatically
+**Preservation**: `preserve=true` (default) auto-generates PHP/PLP and register saves/restores; `preserve=false` for manual control; using `#[preserves(...)]` implies `preserve=false`.
 
-*(See [docs/interrupt-mode-transition.md](docs/interrupt-mode-transition.md) for interrupt handler mode transitions)*
+*(See [docs/interrupt-mode-transition.md](docs/interrupt-mode-transition.md) for interrupt mode transition details)*
 
 ### Function Return Values
 
@@ -627,54 +573,40 @@ main:
 
 ### Operators and Hardware Cost Model
 
-R65 uses a **hardware-aware operator design** where the syntax clearly indicates performance cost:
+R65 uses a **hardware-aware operator design** where operators map to fast hardware instructions, and functions represent expensive operations.
 
-**Operators = Fast (hardware instructions or simple sequences)**
+**Design Philosophy**: Syntax indicates performance cost
+- **Operators** (`+`, `-`, `*`, `/`) = Fast hardware instructions (2-8 cycles)
+- **Functions** (`mul()`, `div()`, `mod()`) = Slow subroutine calls (20-200+ cycles)
+
+**Quick Reference:**
+
+| Category | Operator | Restriction | Speed | Function Alternative |
+|----------|----------|-------------|-------|---------------------|
+| Arithmetic | `+`, `-` | None | 2-4 cycles | - |
+| Multiply | `*` | Constants 1,2,4,8 only | 2-6 cycles | `mul(a,b)` for general |
+| Divide | `/` | Constants 1,2,4,8 only | 2-8 cycles | `div(a,b)` for general |
+| Bitwise | `&`, `\|`, `^`, `~` | None | 2-4 cycles | - |
+| Shift | `<<`, `>>` | Constant amounts only | 2-8 cycles | `shl(a,n)`, `shr(a,n)` for variable |
+| Compare | `==`, `!=`, `<`, `>`, `<=`, `>=` | None | 4-6 cycles | - |
+| Logical | `&&`, `\|\|`, `!` | None | 2-8 cycles | - |
+
+**Example:**
 ```rust
-let sum = a + b;          // ADC instruction (2-4 cycles)
-let diff = a - b;         // SBC instruction (2-4 cycles)
-let x = a * 8;            // ASL, ASL, ASL (6 cycles)
-let x = a / 4;            // LSR, LSR (4 cycles)
-let x = a << 3;           // Constant shift (6 cycles)
-let masked = a & 0x0F;    // AND instruction (2-4 cycles)
+// Fast operations (use operators)
+let x = a + b;        // Hardware ADC instruction
+let y = a * 8;        // Optimized to shifts: ASL, ASL, ASL
+let z = a << 3;       // Same as above
+
+// Slow operations (use functions)
+let p = mul(a, 3);    // General multiplication (not power of 2)
+let q = div(a, 7);    // General division
+let s = shl(a, n);    // Variable shift amount
 ```
 
-**Functions = Slow (subroutine calls)**
-```rust
-let product = mul(a, b);     // JSR __mul (20-100+ cycles)
-let quotient = div(a, b);    // JSR __div (50-200+ cycles)
-let remainder = mod(a, b);   // JSR __mod (50-200+ cycles)
-let shifted = shl(a, n);     // Variable shift loop (8+ cycles)
-```
+All operations wrap on overflow (no runtime checks).
 
-**Operator Restrictions:**
-- `*` operator: Only allows constants 1, 2, 4, or 8 (optimized to shifts)
-- `/` operator: Only allows constants 1, 2, 4, or 8 (optimized to shifts)
-- `<<`, `>>` operators: Only allow constant shift amounts
-- General multiplication/division requires `mul()`, `div()` functions
-- Variable shifts require `shl()`, `shr()` functions
-
-**Examples:**
-```rust
-// Valid - uses operators (fast)
-let x = a * 8;        // Compiles to 3 shift instructions
-let y = b / 2;        // Compiles to 1 shift instruction
-let z = c << 4;       // Constant shift
-
-// Invalid - must use functions
-let x = a * 3;        // ERROR: Use mul(a, 3)
-let y = b / 7;        // ERROR: Use div(b, 7)
-let z = c << count;   // ERROR: Use shl(c, count)
-
-// Correct usage with functions
-let x = mul(a, 3);       // General multiplication
-let y = div(b, 7);       // General division
-let z = shl(c, count);   // Variable shift
-```
-
-This design makes the programmer **immediately aware** when they're using expensive operations, encouraging optimization-conscious coding.
-
-*(See [docs/operators.md](docs/operators.md) for complete operator semantics and implementation)*
+*(See [docs/operators.md](docs/operators.md) for complete operator semantics, assembly mappings, and performance details)*
 
 ## What's Included (Minimal Feature Set)
 
@@ -782,7 +714,7 @@ Source (.r65) → Lexer → Parser → AST → HIR → Type Checking → MIR →
 Code Generation → WLA-DX Assembly (.asm)
 ```
 
-### Phases
+### Compiler Passes
 
 1. **Lexer**: Tokenize source code, recognize register keywords - See [docs/parser-complete.md](docs/parser-complete.md)
 2. **Parser**: Build AST with special nodes for register operations - See [docs/parser-complete.md](docs/parser-complete.md)
@@ -790,7 +722,7 @@ Code Generation → WLA-DX Assembly (.asm)
 4. **Type Checking**: Validate types, modes, register usage, bank boundaries - See [docs/type-system.md](docs/type-system.md)
 5. **MIR (Mid-level IR)**: CFG construction, virtual registers - See [docs/mir-implementation-status.md](docs/mir-implementation-status.md)
 6. **Optimization**: Constant propagation, dead code elimination, zero-page allocation
-7. **Code Generation**: Register allocation, addressing mode selection, WLA-DX emission - See [docs/codegen-*.md](docs/) for detailed phases
+7. **Code Generation**: Memory allocation, register allocation, instruction selection, addressing modes, WLA-DX emission - See [docs/code-generation.md](docs/code-generation.md)
 
 ## Implementation STATUS
 
@@ -849,7 +781,7 @@ Performance characteristics of different storage:
 1. **No `unsafe` keyword**: All code has direct hardware access by default
 2. **All processor registers exposed**: A, X, Y, STATUS, D, DBR, S exposed as mutable global variables; PBR exposed as read-only global (write is compile error)
 3. **Automatic volatile**: All `#[hw]` variables are automatically volatile; every access goes to hardware, no caching or reordering
-4. **No bounds checking**: Arrays have no compile-time or runtime bounds checking; programmer responsible for safety
+4. **Limited bounds checking**: Compile-time bounds checking for constant array indices; no runtime bounds checking; programmer responsible for dynamic index safety
 5. **No error handling**: No built-in Result, Option, or panic; programmer defines own error conventions
 6. **Hardware-aware operators**: Operators (`*`, `/`, `<<`, `>>`) restricted to cheap operations (constants 1/2/4/8 for multiply/divide, constant shifts); expensive operations use explicit functions (`mul()`, `div()`, `mod()`, `shl()`, `shr()`); syntax immediately reveals performance cost
 7. **Context-aware type conversions**: Compiler chooses between memory-based and REP/SEP-based conversions for optimal performance; batches mode changes when beneficial
@@ -909,15 +841,8 @@ Performance characteristics of different storage:
 - [Documentation Update Status](docs/documentation-update-STATUS.md) - Documentation maintenance tracking
 
 ### Code Generation
-- [Code Generation Overview](docs/codegen-assembly.md) - Assembly generation strategy
-- [Implementation Plan](docs/codegen-implementation-plan.md) - Overall codegen architecture
-- [Phase 2: Memory Allocation](docs/codegen-phase2-memory-allocation.md) - Memory layout and allocation
-- [Phase 3: Register Allocation](docs/codegen-phase3-register-allocation.md) - Register allocation pass
-- [Phase 4: Instruction Selection](docs/codegen-phase4-instruction-selection.md) - Instruction selection
-- [Phase 5: Addressing Modes](docs/codegen-phase5-addressing-mode.md) - Addressing mode selection
-- [Phase 6: Function Generation](docs/codegen-phase6-function-generation.md) - Function code generation
-- [Phase 7: Program Assembly](docs/codegen-phase7-program-assembly.md) - Final program assembly
-- [Phase 7 Advanced Features](docs/phase-7-advanced-features.md) - Advanced codegen features
+- [Code Generation](docs/code-generation.md) - Complete code generation reference: memory allocation, register allocation, instruction selection, addressing modes, function generation, and WLA-DX assembly output
+- [MIR Advanced Features](docs/phase-7-advanced-features.md) - MIR implementation of interrupt handlers and static initialization
 
 ## References
 
