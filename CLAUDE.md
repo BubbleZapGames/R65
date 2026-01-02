@@ -98,6 +98,8 @@ fn process() {
 - Out-of-bounds access is undefined behavior
 - Matches hardware-level programming expectations
 
+*(See [docs/array-bounds-checking.md](docs/array-bounds-checking.md) for design rationale)*
+
 ### Error Handling
 
 No built-in error handling patterns - programmer's responsibility:
@@ -164,6 +166,8 @@ let b: bool = (x: u8) as bool;  // Any non-zero = true (unstrict)
 **Context-aware code generation**: Compiler chooses between memory-based (LDA/STA) or mode-switching (REP/SEP) strategies based on value location, current mode, and subsequent operations. Batches mode changes when beneficial.
 
 **Rules**: Unsigned widening zero-extends; signed widening sign-extends; narrowing truncates (no overflow check); same-size reinterprets bits (zero cost); no pointer conversions.
+
+*(See [docs/type-system.md](docs/type-system.md) for detailed type system semantics)*
 
 ### File Inclusion
 
@@ -323,6 +327,8 @@ fn needs_16bit() { }
 - `transition=auto`: Compiler generates PHP/REP/SEP/PLP wrapper inside callee; safe regardless of caller mode
 - `transition=caller`: Compiler generates wrapper at call site; enables batching optimization when calling multiple same-mode functions
 
+*(See [docs/mode-transition-analysis.md](docs/mode-transition-analysis.md) for mode transition design and [docs/mode-transition-status.md](docs/mode-transition-status.md) for implementation status)*
+
 ### Register Aliasing
 
 Register aliases provide named references to hardware registers using `let name @ register = value` syntax:
@@ -343,6 +349,8 @@ fn calculate() {
 ```
 
 **Aliasing rules:** The alias is a true reference to the register (not a copy), zero runtime cost
+
+*(See [docs/register-allocation.md](docs/register-allocation.md) for register allocation strategy)*
 
 ### Register Preservation
 
@@ -402,6 +410,8 @@ fn good_function() -> u8 {
     return A;  // OK: X and Y not modified, A returned
 }
 ```
+
+*(See [docs/calling-convention.md](docs/calling-convention.md) for complete calling convention and ABI details)*
 
 ### Function Parameters
 
@@ -481,6 +491,8 @@ far fn decompression_routine() { }     // JSL/RTL, caller manages DBR
 - `data_bank=auto`: Callee sets/restores DBR to its program bank
 - `data_bank=caller`: Caller sets/restores DBR (enables batching multiple calls)
 
+*(Function parameters, pointers, and cross-bank calls detailed in [docs/calling-convention.md](docs/calling-convention.md))*
+
 ### Interrupt Handlers
 
 Interrupt handlers use `#[interrupt(vector)]` attribute. Available vectors: `nmi`, `irq`, `brk`, `cop`, `abort`.
@@ -515,6 +527,8 @@ fn selective_handler() {
 - `preserve=false`: Manual preservation for performance-critical handlers
 - If `#[preserves(...)]` present, `preserve` is implicitly `false`
 - Compiler populates interrupt vector table automatically
+
+*(See [docs/interrupt-mode-transition.md](docs/interrupt-mode-transition.md) for interrupt handler mode transitions)*
 
 ### Function Return Values
 
@@ -575,18 +589,20 @@ static mut PTR: near<u8>;
 PTR[Y] = 5;    // Generates: LDA #$05, STA ($42),Y
 ```
 
+*(See [docs/pointers-memory.md](docs/pointers-memory.md) for pointer types and memory model)*
+
 ### Variable Initialization
 
-The compiler automatically generates an `__init_start()` routine for non-zero initializers:
+The compiler automatically generates an `__init_start()` routine for all static variables with explicit initializers:
 
 ```rust
 #[zeropage]
-static mut FLAGS: u8 = 0x80;     // Non-zero initializer
+static mut FLAGS: u8 = 0x80;     // Explicit initializer (non-zero)
 
 #[zeropage]
-static mut COUNTER: u8 = 0;      // Zero initializer
+static mut COUNTER: u8 = 0;      // Explicit initializer (zero)
 
-static mut LIVES: u8;      // Not assigned - no init needed
+static mut LIVES: u8;      // No initializer - undefined value!
 
 fn main() {
     // __init_start() automatically called here
@@ -598,12 +614,16 @@ Generated assembly:
 __init_start:
     LDA #$80
     STA FLAGS
+    LDA #$00
+    STA COUNTER
     RTS
 
 main:
     JSR __init_start
     ; ... rest of main
 ```
+
+**Important:** On SNES hardware, RAM contents at power-on are **unpredictable**. Variables without explicit initializers have undefined values. Always initialize variables that need known starting values, even if initializing to zero.
 
 ### Operators and Hardware Cost Model
 
@@ -654,6 +674,8 @@ let z = shl(c, count);   // Variable shift
 
 This design makes the programmer **immediately aware** when they're using expensive operations, encouraging optimization-conscious coding.
 
+*(See [docs/operators.md](docs/operators.md) for complete operator semantics and implementation)*
+
 ## What's Included (Minimal Feature Set)
 
 - ✅ Basic types: `u8, i8, u16, i16, bool`
@@ -666,7 +688,7 @@ This design makes the programmer **immediately aware** when they're using expens
 - ✅ Function pointers: `fn()` (near) and `far fn()` (cross-bank) with calling convention encoded in type
 - ✅ Register preservation: `#[preserves(A, X, Y, STATUS, D, DBR, S)]` to declare preservation guarantees
 - ✅ Interrupt handlers: `#[interrupt(nmi/irq/brk/cop/abort)]` with automatic register preservation and RTI
-- ✅ Control flow: `if/else, loop, while, loop-while, break, continue, return, never type (!)`
+- ✅ Control flow: `if/else, loop, while, loop-while, break, continue, return, never type (!)` - See [docs/control-flow.md](docs/control-flow.md)
 - ✅ Operators with hardware cost model:
   - Arithmetic: `+`, `-`, `*` (constants 1/2/4/8 only), `/` (constants 1/2/4/8 only)
   - Functions for expensive ops: `mul()`, `div()`, `mod()`, `shl()`, `shr()`
@@ -762,13 +784,13 @@ Code Generation → WLA-DX Assembly (.asm)
 
 ### Phases
 
-1. **Lexer**: Tokenize source code, recognize register keywords
-2. **Parser**: Build AST with special nodes for register operations
+1. **Lexer**: Tokenize source code, recognize register keywords - See [docs/parser-complete.md](docs/parser-complete.md)
+2. **Parser**: Build AST with special nodes for register operations - See [docs/parser-complete.md](docs/parser-complete.md)
 3. **HIR (High-level IR)**: Desugar syntax, resolve names, process attributes
-4. **Type Checking**: Validate types, modes, register usage, bank boundaries
-5. **MIR (Mid-level IR)**: CFG construction, virtual registers
+4. **Type Checking**: Validate types, modes, register usage, bank boundaries - See [docs/type-system.md](docs/type-system.md)
+5. **MIR (Mid-level IR)**: CFG construction, virtual registers - See [docs/mir-implementation-status.md](docs/mir-implementation-status.md)
 6. **Optimization**: Constant propagation, dead code elimination, zero-page allocation
-7. **Code Generation**: Register allocation, addressing mode selection, WLA-DX emission
+7. **Code Generation**: Register allocation, addressing mode selection, WLA-DX emission - See [docs/codegen-*.md](docs/) for detailed phases
 
 ## Implementation STATUS
 
@@ -783,21 +805,22 @@ Code Generation → WLA-DX Assembly (.asm)
 ## Directory Structure (Planned)
 
 ```
-/home/nathan/r65/
-├── compiler/
-│   ├── main.py              # CLI entry point
-│   ├── frontend/            # Lexer, parser, AST
-│   ├── hir/                 # High-level IR
-│   ├── typeck/              # Type checking, mode checking
-│   ├── mir/                 # Mid-level IR
-│   ├── optimize/            # Optimization passes
-│   ├── codegen/             # Code generation
-│   ├── builtins/            # Built-in functions (mvn, mvp, etc.)
-│   └── utils/               # Errors, diagnostics
+/home/nathan/R65/
+├── r65/
+│   └─ compiler/
+│      ├── main.py              # CLI entry point
+│      ├── frontend/            # Lexer, parser, AST
+│      ├── hir/                 # High-level IR
+│      ├── typeck/              # Type checking, mode checking
+│      ├── mir/                 # Mid-level IR
+│      ├── optimize/            # Optimization passes
+│      ├── codegen/             # Code generation
+│      ├── builtins/            # Built-in functions (mvn, mvp, etc.)
+│      ├── tests/               # Unit and integration tests
+│      └── utils/               # Errors, diagnostics
 ├── stdlib/                  # Standard library
 │   └── core65/
 │       └── hw/              # Hardware register definitions
-├── tests/                   # Unit and integration tests
 ├── docs/                    # Documentation
 ├── setup.py
 ├── requirements.txt
@@ -845,7 +868,7 @@ Performance characteristics of different storage:
 20. **Explicit register returns**: `return X`, `return Y`, `return A, X` return via hardware registers; local variables returned via stack
 21. **Storage attributes**: Memory location separate from type (`near<T>` can be in zero-page or RAM)
 22. **Flexible mode handling**: `#[mode(...)]` with three transition strategies: `none` (convention-based, default), `auto` (callee wrapper), `caller` (caller-side wrapper with batching)
-23. **Automatic initialization**: `__init_start()` generated for non-zero static initializers
+23. **Automatic initialization**: `__init_start()` generated for all static variables with explicit initializers (RAM is not zeroed on SNES power-on)
 24. **Consistent far/near**: `far fn()` for both function definitions and pointers indicates JSL/RTL calling convention; `fn()` indicates JSR/RTS; `#[bank(n)]` controls placement with optional `data_bank` parameter
 
 ## Use Cases
@@ -865,9 +888,36 @@ Performance characteristics of different storage:
 
 ## Detailed Design Documents
 
+### Language Features
 - [Operators and Cost Model](docs/operators.md) - Integer operators with hardware-aware design
 - [Control Flow Structures](docs/control-flow.md) - If/else, loops, break, continue, return
 - [Pointers and Memory Model](docs/pointers-memory.md) - Near/far pointers, addressing modes, memory layout
+- [Type System](docs/type-system.md) - Type checking, conversions, and mode-aware types
+- [Array Bounds Checking](docs/array-bounds-checking.md) - Design rationale for no bounds checking
+- [Calling Convention](docs/calling-convention.md) - ABI, parameter passing, register preservation
+- [Mode Transitions](docs/mode-transition-analysis.md) - Mode transition strategies and optimization
+- [Interrupt Handling](docs/interrupt-mode-transition.md) - Interrupt handler mode transitions
+- [Register Allocation](docs/register-allocation.md) - Register allocation strategy
+- [Reserved Keywords](docs/reserved-keywords.md) - Language keyword reference
+- [Register Case Sensitivity](docs/register-case-sensitivity.md) - Register naming conventions
+
+### Implementation Status
+- [Parser Implementation](docs/parser-complete.md) - Parser status and AST structure
+- [Parser Named Attributes](docs/parser-named-attributes.md) - Attribute syntax implementation
+- [MIR Implementation](docs/mir-implementation-status.md) - Mid-level IR implementation status
+- [Mode Transition Status](docs/mode-transition-status.md) - Mode transition implementation status
+- [Documentation Update Status](docs/documentation-update-STATUS.md) - Documentation maintenance tracking
+
+### Code Generation
+- [Code Generation Overview](docs/codegen-assembly.md) - Assembly generation strategy
+- [Implementation Plan](docs/codegen-implementation-plan.md) - Overall codegen architecture
+- [Phase 2: Memory Allocation](docs/codegen-phase2-memory-allocation.md) - Memory layout and allocation
+- [Phase 3: Register Allocation](docs/codegen-phase3-register-allocation.md) - Register allocation pass
+- [Phase 4: Instruction Selection](docs/codegen-phase4-instruction-selection.md) - Instruction selection
+- [Phase 5: Addressing Modes](docs/codegen-phase5-addressing-mode.md) - Addressing mode selection
+- [Phase 6: Function Generation](docs/codegen-phase6-function-generation.md) - Function code generation
+- [Phase 7: Program Assembly](docs/codegen-phase7-program-assembly.md) - Final program assembly
+- [Phase 7 Advanced Features](docs/phase-7-advanced-features.md) - Advanced codegen features
 
 ## References
 
