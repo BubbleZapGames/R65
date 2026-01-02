@@ -1,0 +1,30 @@
+// Simple R65 program - Hello SNES!
+// Demonstrates basic compilation
+
+#[zeropage(0x20)]
+static mut counter: u8 = 0;
+
+#[hw(0x2100)]
+static mut INIDISP: u8;
+
+const BRIGHTNESS: u8 = 15;
+
+#[entry]
+#[mode(m8, x8)]
+fn init() {
+    counter = 0;
+    INIDISP = BRIGHTNESS;
+}
+
+#[mode(m8, x8)]
+fn increment() -> u8 {
+    let old @ A = counter;
+    counter = old + 1;
+    return counter;
+}
+
+#[interrupt(nmi)]
+#[mode(m8, x8, transition=auto)]
+fn vblank() {
+    counter = counter + 1;
+}

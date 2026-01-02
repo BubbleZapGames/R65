@@ -1,0 +1,21 @@
+// Simple interrupt handler test
+
+#[zeropage(0x20)]
+static mut FLAG: u8 = 0;
+
+// Interrupt handler with mode and transition=auto
+#[interrupt(nmi)]
+#[mode(m8, x8, transition=auto)]
+fn nmi_handler() {
+    A = 0x42;
+    FLAG = A;
+    return;
+}
+
+// Main function
+#[mode(m8, x8)]
+fn main() -> ! {
+    loop {
+        A = FLAG;
+    }
+}

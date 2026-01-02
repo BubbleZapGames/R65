@@ -6,7 +6,7 @@ Scans source code and produces a stream of tokens.
 from typing import List, Optional
 from pathlib import Path
 from lark import Lark, Token as LarkToken
-from .tokens import Token, TokenType, LexerError
+from r65.compiler.frontend.tokens import *
 
 
 # Load the grammar

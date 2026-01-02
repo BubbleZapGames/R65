@@ -1,0 +1,185 @@
+# Reserved Keywords in R65
+
+R65 reserves all Rust keywords to maintain compatibility and prevent future conflicts. This document lists all reserved keywords organized by category.
+
+## Currently Implemented Keywords (18)
+
+These keywords are actively used in R65:
+
+| Keyword | Purpose |
+|---------|---------|
+| `fn` | Function definition |
+| `let` | Variable binding |
+| `mut` | Mutable modifier |
+| `const` | Compile-time constant |
+| `static` | Static variable |
+| `if` | Conditional statement |
+| `else` | Conditional alternative |
+| `loop` | Infinite loop |
+| `while` | Conditional loop |
+| `break` | Exit loop |
+| `continue` | Skip to next iteration |
+| `return` | Return from function |
+| `struct` | Structure definition |
+| `enum` | Enumeration definition |
+| `type` | Type alias |
+| `include` | File inclusion |
+| `asm` | Inline assembly |
+| `as` | Type casting |
+
+## Built-in Functions (11)
+
+These are treated as keywords because they map to special hardware instructions:
+
+| Keyword | Purpose |
+|---------|---------|
+| `SEP` | Set processor status bits (65816) |
+| `REP` | Reset processor status bits (65816) |
+| `mvn` | Block move forward (65816) |
+| `mvp` | Block move backward (65816) |
+| `wai` | Wait for interrupt |
+| `stp` | Stop processor |
+| `mul` | General multiplication |
+| `div` | General division |
+| `mod` | Modulo operation |
+| `shl` | Variable left shift |
+| `shr` | Variable right shift |
+
+## Reserved Rust Keywords (20)
+
+Currently unused but reserved for future implementation:
+
+| Keyword | Rust Purpose | R65 STATUS |
+|---------|-------------|----------------|
+| `impl` | Trait/method implementation | Reserved for future methods |
+| `trait` | Trait definition | Reserved for future traits |
+| `for` | For loop | Reserved for future iteration |
+| `in` | For loop iterator | Reserved for future iteration |
+| `match` | Pattern matching | Reserved for future pattern matching |
+| `where` | Generic constraints | Reserved for future generics |
+| `use` | Import items | Reserved (we use `include!` instead) |
+| `pub` | Public visibility | Reserved (no module system currently) |
+| `mod` | Module definition | Reserved (no module system currently) |
+| `crate` | Crate root | Reserved (no module system currently) |
+| `self` | Current module/instance | Reserved for future methods |
+| `Self` | Current type | Reserved for future methods |
+| `super` | Parent module | Reserved (no module system currently) |
+| `async` | Async function | Reserved (not planned for 65816) |
+| `await` | Await async value | Reserved (not planned for 65816) |
+| `move` | Move closure | Reserved (closures not planned) |
+| `ref` | Reference binding | Reserved (no lifetimes) |
+| `dyn` | Trait object | Reserved (no traits currently) |
+| `extern` | External linkage | Reserved for future FFI |
+| `unsafe` | Unsafe code block | Reserved (but **not used** - all R65 code has direct hardware access) |
+
+## Strict Reserved Keywords (13)
+
+Reserved by Rust for future use - we reserve them for compatibility:
+
+| Keyword | STATUS |
+|---------|--------|
+| `abstract` | Reserved for future use |
+| `become` | Reserved for future use |
+| `box` | Reserved for future use |
+| `do` | Reserved for future use |
+| `final` | Reserved for future use |
+| `macro` | Reserved for future use |
+| `override` | Reserved for future use |
+| `priv` | Reserved for future use |
+| `typeof` | Reserved for future use |
+| `unsized` | Reserved for future use |
+| `virtual` | Reserved for future use |
+| `yield` | Reserved for future use |
+| `try` | Reserved for future use |
+
+## Special Modifier Keyword (1)
+
+| Keyword | Purpose |
+|---------|---------|
+| `far` | Far function call (JSL/RTL) or far pointer type |
+
+## Total Count
+
+**62 reserved keywords** in total:
+- 18 currently implemented
+- 11 built-in functions
+- 20 reserved Rust keywords
+- 13 strict reserved keywords
+- 1 special modifier (`far`)
+
+## Important Notes
+
+1. **Case Sensitivity**: All keywords are **case-sensitive** and must be lowercase (except `Self`).
+   - ✅ `fn` is a keyword
+   - ❌ `Fn` and `FN` are valid identifiers
+
+2. **Word Boundaries**: Keywords use word boundaries, so they don't match partial words.
+   - ✅ `impl` is a keyword
+   - ✅ `implementation` is a valid identifier
+
+3. **No Keyword as Identifiers**: You **cannot** use any reserved keyword as:
+   - Variable names
+   - Function names
+   - Type names
+   - Field names
+   - Any other identifier
+
+4. **Future Compatibility**: By reserving all Rust keywords, we ensure that:
+   - R65 code won't break if we add new features
+   - The language remains familiar to Rust programmers
+   - Migration from Rust is easier
+
+## Examples
+
+### Valid Code
+```rust
+// Keywords used correctly
+fn calculate(value: u8) -> u8 {
+    let mut result = value;
+    if result > 10 {
+        result = 10;
+    }
+    return result;
+}
+
+// 'implementation' is NOT a keyword
+let implementation = 42;
+
+// 'Impl' and 'IMPL' are NOT keywords (case-sensitive)
+struct Impl { }
+const IMPL: u8 = 5;
+```
+
+### Invalid Code
+```rust
+// ERROR: 'impl' is a reserved keyword
+let impl = 42;
+
+// ERROR: 'trait' is a reserved keyword
+fn trait() { }
+
+// ERROR: 'unsafe' is a reserved keyword
+struct unsafe { }
+
+// ERROR: 'match' is a reserved keyword
+let match = 10;
+```
+
+## Rationale
+
+### Why Reserve Unused Keywords?
+
+1. **Future-Proofing**: Allows adding features later without breaking existing code
+2. **Rust Compatibility**: Makes the language familiar to Rust programmers
+3. **Consistency**: Prevents confusion about which Rust keywords work in R65
+4. **Best Practice**: Following Rust's example of reserving keywords early
+
+### Keywords We'll Never Use
+
+Some reserved keywords will likely **never** be implemented in R65:
+
+- `async`/`await` - No async runtime on 65816
+- `move` - No closures planned
+- `unsafe` - All R65 code has direct hardware access by design
+
+However, we still reserve them to maintain maximum compatibility with Rust syntax highlighters and tools.

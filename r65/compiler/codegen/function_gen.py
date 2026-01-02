@@ -1,0 +1,368 @@
+"""
+Function code generation: MIR functions → assembly.
+
+Generates complete function bodies with headers, labels, and instructions.
+"""
+
+from typing import List, Set, Dict, Optional
+from r65.compiler.mir.nodes import MIRFunction, BasicBlock
+from r65.compiler.codegen.emitter import *
+from r65.compiler.codegen.instruction_select import InstructionSelector
+from r65.compiler.codegen.register_alloc import *
+from r65.compiler.codegen.memory_alloc import *
+
+
+class FunctionCodeGenerator:
+    """
+    Generates complete assembly functions from MIR.
+
+    Orchestrates function-level code generation including:
+    - Function headers with metadata
+    - Basic block ordering and labels
+    - Instruction selection
+    - Register allocation
+    """
+
+    def __init__(self,
+                 emitter: AssemblyEmitter,
+                 memory_allocator: MemoryAllocator):
+        """
+        Initialize function code generator.
+
+        Args:
+            emitter: Assembly emitter
+            memory_allocator: Memory allocator for static variables
+        """
+        self.emitter = emitter
+        self.mem_alloc = memory_allocator
+
+    # ========================================================================
+    # Main Generation
+    # ========================================================================
+
+    def generate_function(self, mir_func: MIRFunction):
+        """
+        Generate complete assembly for MIR function.
+
+        Args:
+            mir_func: MIR function to generate
+        """
+        # Setup register allocator for this function
+        # TODO: Get scratch pool from function attributes or global config
+        scratch_pool = self._create_scratch_pool()
+        reg_alloc = RegisterAllocator(scratch_pool=scratch_pool)
+
+        # Allocate all virtual registers in function
+        self._allocate_function_registers(mir_func, reg_alloc)
+
+        # Create instruction selector
+        instr_selector = InstructionSelector(self.emitter, reg_alloc, self.mem_alloc)
+
+        # Emit function header comment
+        self.emit_function_header(mir_func)
+
+        # Emit function label
+        self.emitter.emit_label(mir_func.name)
+
+        # TODO: Emit prologue (if needed)
+        # self.emit_prologue(mir_func, reg_alloc)
+
+        # Generate basic blocks
+        block_order = self._compute_block_order(mir_func)
+
+        for block_id in block_order:
+            block = mir_func.blocks[block_id]
+
+            # Emit block label (except entry block which uses function label)
+            if block_id != mir_func.entry_block_id:
+                self.emitter.emit_label(f"__L{block_id}")
+
+            # Emit instructions in block
+            for instr in block.instructions:
+                instr_selector.select_instruction(instr)
+
+        # TODO: Emit epilogue (if needed)
+        # self.emit_epilogue(mir_func, reg_alloc)
+
+        # Blank line after function
+        self.emitter.emit_blank_line()
+
+    # ========================================================================
+    # Function Header
+    # ========================================================================
+
+    def emit_function_header(self, mir_func: MIRFunction):
+        """
+        Emit function header comment with metadata.
+
+        Args:
+            mir_func: MIR function
+        """
+        # Main divider
+        divider = "-" * 76
+        self.emitter.emit_comment(divider)
+
+        # Function name
+        self.emitter.emit_comment(f"{mir_func.name}")
+
+        # Source location (if available)
+        # TODO: Add source location tracking
+        # self.emitter.emit_comment(f"Source: {mir_func.source_file}:{start}-{end}")
+
+        self.emitter.emit_comment("")
+
+        # Parameters
+        if mir_func.parameters:
+            self.emitter.emit_comment("Parameters:")
+            for param in mir_func.parameters:
+                param_desc = f"  {param.name}: {param.param_type}"
+                self.emitter.emit_comment(param_desc)
+            self.emitter.emit_comment("")
+
+        # Return type
+        if mir_func.return_type:
+            self.emitter.emit_comment(f"Returns: {mir_func.return_type}")
+            self.emitter.emit_comment("")
+
+        # Attributes
+        if mir_func.mode_attr:
+            mode_str = f"Mode: {mir_func.mode_attr}"
+            self.emitter.emit_comment(mode_str)
+
+        if mir_func.preserves_attr:
+            preserves = ", ".join(mir_func.preserves_attr.registers)
+            self.emitter.emit_comment(f"Preserves: {preserves}")
+
+        if mir_func.is_entry:
+            self.emitter.emit_comment("Entry: true")
+
+        if mir_func.is_far:
+            self.emitter.emit_comment("Far: true (JSL/RTL)")
+
+        # Closing divider
+        self.emitter.emit_comment(divider)
+
+    # ========================================================================
+    # Basic Block Ordering
+    # ========================================================================
+
+    def _compute_block_order(self, mir_func: MIRFunction) -> List[int]:
+        """
+        Compute optimal ordering of basic blocks.
+
+        For now, simple DFS traversal from entry block.
+        Future: optimize for fall-through and minimize jumps.
+
+        Args:
+            mir_func: MIR function
+
+        Returns:
+            List of block IDs in emission order
+        """
+        visited: Set[int] = set()
+        order: List[int] = []
+
+        def visit(block_id: int):
+            if block_id in visited:
+                return
+
+            visited.add(block_id)
+            order.append(block_id)
+
+            # Visit successors
+            block = mir_func.blocks.get(block_id)
+            if block:
+                for successor_id in block.successors:
+                    visit(successor_id)
+
+        # Start from entry block
+        visit(mir_func.entry_block_id)
+
+        # Visit any unreachable blocks (shouldn't happen, but be safe)
+        for block_id in mir_func.blocks.keys():
+            if block_id not in visited:
+                visit(block_id)
+
+        return order
+
+    # ========================================================================
+    # Register Allocation
+    # ========================================================================
+
+    def _allocate_function_registers(self,
+                                    mir_func: MIRFunction,
+                                    reg_alloc: RegisterAllocator):
+        """
+        Allocate all virtual registers in function.
+
+        Args:
+            mir_func: MIR function
+            reg_alloc: Register allocator
+        """
+        # Collect all virtual registers used in function
+        vregs = set()
+
+        for block in mir_func.blocks.values():
+            for instr in block.instructions:
+                # Extract virtual registers from instruction
+                # This is simplified - actual implementation would use visitor pattern
+                vregs.update(self._extract_vregs_from_instruction(instr))
+
+        # Allocate all at once
+        reg_alloc.allocate_all(list(vregs))
+
+    def _extract_vregs_from_instruction(self, instr) -> Set:
+        """
+        Extract virtual registers from instruction.
+
+        This is a simplified implementation. A real implementation
+        would use a visitor pattern or instruction introspection.
+
+        Args:
+            instr: MIR instruction
+
+        Returns:
+            Set of VirtualRegister objects
+        """
+        from r65.compiler.mir.nodes import VirtualRegister
+        vregs = set()
+
+        # Check all attributes of instruction for VirtualRegisters
+        for attr_name in dir(instr):
+            if attr_name.startswith('_'):
+                continue
+
+            attr = getattr(instr, attr_name)
+
+            if isinstance(attr, VirtualRegister):
+                vregs.add(attr)
+            elif isinstance(attr, list):
+                for item in attr:
+                    if isinstance(item, VirtualRegister):
+                        vregs.add(item)
+
+        return vregs
+
+    # ========================================================================
+    # Scratch Pool Creation
+    # ========================================================================
+
+    def _create_scratch_pool(self) -> ScratchRegisterPool:
+        """
+        Create scratch register pool.
+
+        For now, hardcoded pool. Future: get from function attributes
+        or global configuration.
+
+        Returns:
+            ScratchRegisterPool
+        """
+        pool = ScratchRegisterPool()
+
+        # Default scratch registers
+        # TODO: Make configurable
+        pool.add_scratch(0x16, 1, "SCRATCH0")
+        pool.add_scratch(0x17, 1, "SCRATCH1")
+        pool.add_scratch(0x18, 2, "SCRATCH2")  # 2-byte scratch
+        pool.add_scratch(0x1A, 2, "SCRATCH3")  # 2-byte scratch
+
+        return pool
+
+    # ========================================================================
+    # Prologue/Epilogue (TODO)
+    # ========================================================================
+
+    def emit_prologue(self, mir_func: MIRFunction, reg_alloc: RegisterAllocator):
+        """
+        Emit function prologue.
+
+        Prologue may include:
+        - Stack frame setup
+        - Register preservation
+        - Mode transitions
+
+        Args:
+            mir_func: MIR function
+            reg_alloc: Register allocator
+        """
+        # TODO: Implement prologue generation
+        # - Check if stack frame needed (spilled registers)
+        # - Emit register saves (if preserves_attr)
+        # - Emit mode transition (if mode_attr with transition=auto)
+        pass
+
+    def emit_epilogue(self, mir_func: MIRFunction, reg_alloc: RegisterAllocator):
+        """
+        Emit function epilogue.
+
+        Epilogue may include:
+        - Stack frame teardown
+        - Register restoration
+        - Mode restoration
+
+        Args:
+            mir_func: MIR function
+            reg_alloc: Register allocator
+        """
+        # TODO: Implement epilogue generation
+        # - Emit mode restoration
+        # - Emit register restores
+        # - Stack cleanup
+        # Note: RTS/RTL already emitted by Return instruction
+        pass
+
+
+class ProgramFunctionGenerator:
+    """
+    Generates all functions in a program.
+
+    Orchestrates function generation for entire MIR program.
+    """
+
+    def __init__(self,
+                 emitter: AssemblyEmitter,
+                 memory_allocator: MemoryAllocator):
+        """
+        Initialize program function generator.
+
+        Args:
+            emitter: Assembly emitter
+            memory_allocator: Memory allocator
+        """
+        self.emitter = emitter
+        self.mem_alloc = memory_allocator
+        self.func_gen = FunctionCodeGenerator(emitter, memory_allocator)
+
+    def generate_all_functions(self, mir_program):
+        """
+        Generate all functions in MIR program.
+
+        Args:
+            mir_program: MIRProgram to generate
+        """
+        # Emit section header
+        self.emitter.emit_section_header("Functions")
+
+        # Generate each function
+        for mir_func in mir_program.functions:
+            self.func_gen.generate_function(mir_func)
+
+        # Blank line after all functions
+        self.emitter.emit_blank_line()
+
+    def generate_initialization_function(self, mir_program):
+        """
+        Generate __init_start function if needed.
+
+        Args:
+            mir_program: MIR program
+        """
+        # Check if __init_start exists in functions
+        init_func = None
+        for func in mir_program.functions:
+            if func.name == "__init_start":
+                init_func = func
+                break
+
+        if init_func:
+            self.func_gen.generate_function(init_func)

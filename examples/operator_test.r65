@@ -1,0 +1,16 @@
+// Test operator restrictions
+
+#[zeropage(0x20)]
+static mut VALUE: u8 = 0;
+
+#[mode(m8, x8)]
+fn test_multiply() {
+    let a: u8 = 10;
+
+    // Valid: multiply by power-of-two constant
+    let b: u8 = a * 2;
+    let c: u8 = a * 4;
+
+    // This should error: multiply by 3
+    let d: u8 = a * 3;
+}

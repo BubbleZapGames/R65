@@ -5,7 +5,7 @@ Transforms Lark parse trees into our custom AST.
 """
 from pathlib import Path
 from lark import Lark, Transformer, Token as LarkToken, Tree
-from . import ast
+from r65.compiler.frontend import ast
 from typing import List, Union, Optional
 
 
@@ -295,18 +295,33 @@ class ASTBuilder(Transformer):
 
     def attribute_args(self, items):
         """Attribute arguments."""
-        # Filter out comma tokens, keep only expressions
-        # Convert each expression to an AttributeArg
+        # Filter out comma tokens, keep only AttributeArg objects
         result = []
         for item in items:
             if not isinstance(item, LarkToken):
-                result.append(ast.AttributeArg(name=None, value=item))
+                result.append(item)
         return result
 
     def attribute_arg(self, items):
-        """Attribute argument."""
-        # Items should be filtered to just contain the expression
-        return items[0]  # Just return the expression
+        """
+        Attribute argument - can be named or positional.
+
+        Grammar: (IDENT "=")? expr
+
+        Returns AttributeArg with optional name.
+        """
+        items = self._filter_tokens(items, keep_types={'IDENT'})
+
+        # Check if we have a name (IDENT token followed by expression)
+        if len(items) == 2 and isinstance(items[0], LarkToken):
+            # Named argument: name=value
+            name = items[0].value
+            value = items[1]
+            return ast.AttributeArg(name=name, value=value)
+        else:
+            # Positional argument: just value
+            value = items[0]
+            return ast.AttributeArg(name=None, value=value)
 
     # ========================================================================
     # Statements

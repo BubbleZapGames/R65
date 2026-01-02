@@ -1,0 +1,23 @@
+// Test static initialization with __init_start()
+
+#[zeropage(0x20)]
+static mut FLAGS: u8 = 0x80;
+
+#[zeropage(0x21)]
+static mut COUNTER: u8 = 0;  // Zero initializer - no init needed
+
+#[zeropage(0x22)]
+static mut VALUE: u16 = 0x1234;
+
+#[ram]
+static mut LIVES: u8 = 3;
+
+// Entry point - should call __init_start() automatically
+#[entry]
+#[mode(m8, x8)]
+fn main() -> ! {
+    // After __init_start(), FLAGS should be 0x80, VALUE should be 0x1234, LIVES should be 3
+    loop {
+        A = FLAGS;
+    }
+}

@@ -1,0 +1,14 @@
+// Minimal working example
+
+#[hw(0x2100)]
+static mut INIDISP: u8;
+
+#[entry]
+#[mode(m8, x8)]
+fn main() -> ! {
+    INIDISP = 0x0F;
+    loop {
+        A = 0x80;
+        INIDISP = A;
+    }
+}

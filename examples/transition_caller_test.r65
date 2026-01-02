@@ -1,0 +1,36 @@
+// Test transition=caller mode handling
+
+#[zeropage(0x20)]
+static mut VALUE: u8 = 0;
+
+// M16 mode function with transition=caller
+#[mode(m16, x16, transition=caller)]
+fn process_16bit_caller() {
+    A = 0x1234;
+}
+
+// M16 mode function with transition=caller AND preserves(STATUS)
+#[mode(m16, x16, transition=caller)]
+#[preserves(STATUS)]
+fn process_16bit_preserves() {
+    A = 0xABCD;
+}
+
+// M8 mode caller
+#[mode(m8, x8)]
+fn caller() {
+    // Mixed mode with transition=caller - should generate PHP/PLP wrapper
+    process_16bit_caller();
+
+    // Mixed mode with transition=caller + preserves(STATUS) - should generate SEP/REP wrapper
+    process_16bit_preserves();
+}
+
+// Entry point
+#[mode(m8, x8)]
+fn main() -> ! {
+    caller();
+    loop {
+        VALUE = 0;
+    }
+}

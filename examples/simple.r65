@@ -1,0 +1,25 @@
+// Simple 65Rustic example
+
+#[hw(0x2100)]
+static mut INIDISP: u8;
+
+#[zeropage(0x20)]
+static mut COUNTER: u16 = 0;
+
+#[mode(m16, x8)]
+#[preserves(X, Y)]
+fn increment_counter() -> u16 {
+    let value @ A = COUNTER;
+    value = value + 1 as u16;
+    COUNTER = value;
+    return value;
+}
+
+#[entry]
+#[mode(m8, x8)]
+fn main() -> ! {
+    INIDISP = 0x0F;
+    loop {
+        increment_counter();
+    }
+}

@@ -1,0 +1,85 @@
+// Test function call lowering with different calling conventions
+
+#[zeropage(0x20)]
+static mut TEMP: u8 = 0;
+
+#[zeropage(0x21)]
+static mut RESULT: u8 = 0;
+
+// Test 1: Register alias parameters
+#[mode(m8, x8)]
+fn add_registers(a @ A: u8, b @ X: u8) -> u8 {
+    A = a + b;
+    return A;
+}
+
+// Test 2: Stack parameters
+#[mode(m8, x8)]
+fn add_stack(a: u8, b: u8) -> u8 {
+    let sum @ A = a + b;
+    return sum;
+}
+
+// Test 3: Variable-bound parameters
+#[mode(m8, x8)]
+fn add_variable(a @ A: u8, temp @ TEMP: u8) -> u8 {
+    A = a + temp;
+    return A;
+}
+
+// Test 4: Mixed parameters (stack first, then aliases)
+#[mode(m8, x8)]
+fn mixed(stack_param: u8, reg_param @ A: u8) -> u8 {
+    A = stack_param + reg_param;
+    return A;
+}
+
+// Test 5: Void function (no return value)
+#[mode(m8, x8)]
+fn store_result(value @ A: u8) {
+    RESULT = value;
+}
+
+// Test 6: Call chain - function calling other functions
+#[mode(m8, x8)]
+fn compute() -> u8 {
+    // Call with register arguments
+    let x: u8 = add_registers(5, 10);
+
+    // Call with stack arguments
+    let y: u8 = add_stack(3, 7);
+
+    // Call with mixed arguments
+    let z: u8 = mixed(x, y);
+
+    // Void call
+    store_result(z);
+
+    return z;
+}
+
+// Test 7: Function calls in expressions
+#[mode(m8, x8)]
+fn expression_calls() -> u8 {
+    let result @ A = add_registers(1, 2) + add_registers(3, 4);
+    return result;
+}
+
+// Test 8: Function call with variable-bound parameter
+#[mode(m8, x8)]
+fn test_variable_bound() {
+    TEMP = 42;
+    let result: u8 = add_variable(10, TEMP);
+    RESULT = result;
+}
+
+// Test 9: Entry point with calls
+#[mode(m8, x8)]
+fn main() -> ! {
+    let mut value: u8 = compute();
+
+    loop {
+        store_result(value);
+        value = value + 1;
+    }
+}

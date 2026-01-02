@@ -1,0 +1,40 @@
+// Test interrupt handlers with mode transitions
+
+#[zeropage(0x20)]
+static mut FRAME_COUNT: u16 = 0;
+
+#[zeropage(0x22)]
+static mut NMI_FLAG: u8 = 0;
+
+// Interrupt handler with mode - automatically gets transition=auto
+#[interrupt(nmi)]
+#[mode(m8, x8)]
+fn nmi_handler() {
+    // Handler runs in m8/x8 mode
+    A = 0xFF;
+    NMI_FLAG = A;
+
+    // Increment frame count
+    A = FRAME_COUNT as u8;
+    A = A + 1;
+    FRAME_COUNT = A as u16;
+}
+
+// Interrupt handler without explicit mode (unknown mode)
+#[interrupt(irq)]
+fn irq_handler() {
+    // No mode specified - runs in whatever mode interrupted
+    NMI_FLAG = 0;
+}
+
+// Main function
+#[mode(m16, x16)]
+fn main() -> ! {
+    // Main runs in m16 mode
+    A = 0x1234;
+
+    loop {
+        // Wait for interrupt
+        A = NMI_FLAG as u16;
+    }
+}
