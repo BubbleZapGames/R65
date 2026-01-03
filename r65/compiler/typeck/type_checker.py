@@ -370,7 +370,7 @@ class TypeChecker:
             # include_bytes! returns an array of bytes
             # The exact type will be inferred from context (variable declaration)
             # For now, return a generic array type
-            from r65.compiler.hir.types import ArrayTypeInfo, BasicTypeInfo
+            from r65.compiler.hir.types import ArrayTypeInfo
             elem_type = BasicTypeInfo(name='u8')
             # Size is unknown here - will be validated against variable type
             array_type = ArrayTypeInfo(element_type=elem_type, size=0)
@@ -482,18 +482,20 @@ class TypeChecker:
         Supports both:
         - Direct calls: expr.func is HIRIdentifier pointing to function
         - Indirect calls: expr.func is expression with function pointer type
+        - Built-in calls: expr.builtin_name is set
 
         Checks:
         - Argument types match parameters
         - Return type
         - Mode compatibility between caller and callee (for direct calls)
         """
-        from r65.compiler.hir.types import FunctionTypeInfo
+        from r65.compiler.builtins import BuiltinRegistry
 
-        # Type check the function expression
-        func_type = self.check_expression(expr.func)
+        # Check if this is a built-in function call
+        if expr.builtin_name:
+            return self._check_builtin_call(expr)
 
-        # Handle direct call (HIRIdentifier)
+        # Handle direct call (HIRIdentifier) - don't type check the function name itself
         if isinstance(expr.func, HIRIdentifier):
             func_symbol = expr.func.symbol
 
@@ -522,8 +524,17 @@ class TypeChecker:
                 # Void function
                 expr.expr_type = BasicTypeInfo('void')
 
-        # Handle indirect call (function pointer)
-        elif isinstance(func_type, FunctionTypeInfo):
+        else:
+            # Handle indirect call (function pointer) - type check the expression
+            from r65.compiler.hir.types import FunctionTypeInfo
+            func_type = self.check_expression(expr.func)
+
+            if not isinstance(func_type, FunctionTypeInfo):
+                raise TypeCheckError(
+                    f"Cannot call expression of type {func_type}, expected function or function pointer",
+                    source_loc=expr.source_loc
+                )
+
             # Check argument count matches function type
             if len(expr.args) != len(func_type.param_types):
                 raise TypeCheckError(
@@ -542,11 +553,44 @@ class TypeChecker:
             else:
                 expr.expr_type = BasicTypeInfo('void')
 
-        else:
+        return expr.expr_type
+
+    def _check_builtin_call(self, expr: HIRFunctionCall) -> TypeInfo:
+        """
+        Type check built-in function call.
+
+        Built-ins are validated at HIR construction, so we just need to:
+        1. Type check arguments
+        2. Set the return type
+
+        Args:
+            expr: HIRFunctionCall with builtin_name set
+
+        Returns:
+            Return type of the built-in
+        """
+        from r65.compiler.builtins import BuiltinRegistry
+
+        builtin = BuiltinRegistry.get_builtin(expr.builtin_name)
+        if not builtin:
             raise TypeCheckError(
-                f"Cannot call expression of type {func_type}, expected function or function pointer",
+                f"Unknown built-in function: {expr.builtin_name}",
                 source_loc=expr.source_loc
             )
+
+        # Type check arguments
+        for arg in expr.args:
+            self.check_expression(arg)
+
+        # Set return type
+        if builtin.returns_value:
+            # Built-ins that return values return u8 or u16 depending on mode
+            # For simplicity, assume u8 for now
+            # TODO: Infer return type from argument types
+            expr.expr_type = BasicTypeInfo('u8')
+        else:
+            # Void return
+            expr.expr_type = BasicTypeInfo('void')
 
         return expr.expr_type
 

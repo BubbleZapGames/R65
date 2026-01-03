@@ -352,6 +352,7 @@ class HIRFunctionCall(HIRExpression):
     """Function call."""
     func: Optional[HIRExpression] = None  # Usually HIRIdentifier (resolved)
     args: List[HIRExpression] = field(default_factory=list)
+    builtin_name: Optional[str] = None  # Set if this is a built-in function call
 
 
 @dataclass

@@ -1,0 +1,8 @@
+# R65 Compiler Development Dependencies
+
+# Include core dependencies
+-r requirements.txt
+
+# Testing
+pytest>=7.0.0
+pytest-cov>=3.0.0

@@ -1035,11 +1035,18 @@ class MIRBuilder:
         if isinstance(call_expr.func, HIRIdentifier):
             # Direct call
             func_symbol = call_expr.func.symbol
-            # Look up HIR function declaration from our mapping
-            func_decl = self.function_decls.get(func_symbol.name)
-            if not func_decl:
-                raise Exception(f"Function call to {func_symbol.name}: function not found in HIR")
-            func_ptr_vreg = None
+
+            # Handle built-in function calls
+            if call_expr.builtin_name:
+                # Built-in call - no function declaration needed
+                func_decl = None
+                func_ptr_vreg = None
+            else:
+                # Regular function call - look up HIR function declaration
+                func_decl = self.function_decls.get(func_symbol.name)
+                if not func_decl:
+                    raise Exception(f"Function call to {func_symbol.name}: function not found in HIR")
+                func_ptr_vreg = None
         else:
             # Indirect call (function pointer)
             # Lower the function expression to get the virtual register holding the pointer
@@ -1075,6 +1082,19 @@ class MIRBuilder:
             )
             returns.append(result_vreg)
 
+        # Handle built-in calls
+        if call_expr.builtin_name:
+            # Built-in call - no mode transition handling needed
+            self.emit(Call(
+                function=func_symbol.name,
+                args=args,
+                returns=returns,
+                is_far=False,
+                bank_attr=None,
+                builtin_name=call_expr.builtin_name
+            ))
+            return returns[0] if returns else None
+
         # For indirect calls, skip mode transition handling (we don't have mode info)
         if is_indirect_call:
             # Emit indirect call
@@ -1087,12 +1107,13 @@ class MIRBuilder:
                 args=args,
                 returns=returns,
                 is_far=is_far,
-                bank_attr=None  # No bank attribute for indirect calls
+                bank_attr=None,  # No bank attribute for indirect calls
+                builtin_name=call_expr.builtin_name
             ))
             return returns[0] if returns else None
 
         # Direct call - handle mode transitions using helper
-        self._emit_call_with_mode_transition(func_decl, args, returns)
+        self._emit_call_with_mode_transition(func_decl, args, returns, call_expr.builtin_name)
 
         # Return result (or None for void functions)
         return returns[0] if returns else None
@@ -1407,7 +1428,8 @@ class MIRBuilder:
         self,
         func_decl: HIRFunctionDecl,
         args: List[Argument],
-        returns: List[VirtualRegister]
+        returns: List[VirtualRegister],
+        builtin_name: Optional[str] = None
     ):
         """
         Emit function call with mode transition handling.
@@ -1421,6 +1443,7 @@ class MIRBuilder:
             func_decl: Function being called
             args: Prepared arguments
             returns: Virtual registers for return values
+            builtin_name: Name of built-in function if this is a built-in call
         """
         caller_mode = self.current_mode
         callee_mode = ProcessorMode.from_attribute(func_decl.mode_attr) if func_decl.mode_attr else ProcessorMode.unknown()
@@ -1440,7 +1463,8 @@ class MIRBuilder:
                 args=args,
                 returns=returns,
                 is_far=func_decl.is_far,
-                bank_attr=func_decl.bank_attr
+                bank_attr=func_decl.bank_attr,
+                builtin_name=builtin_name
             ))
             return
 
@@ -1458,7 +1482,8 @@ class MIRBuilder:
                 args=args,
                 returns=returns,
                 is_far=func_decl.is_far,
-                bank_attr=func_decl.bank_attr
+                bank_attr=func_decl.bank_attr,
+                builtin_name=builtin_name
             ))
             self._emit_mode_transition(callee_mode, caller_mode)
         else:
@@ -1470,7 +1495,8 @@ class MIRBuilder:
                 args=args,
                 returns=returns,
                 is_far=func_decl.is_far,
-                bank_attr=func_decl.bank_attr
+                bank_attr=func_decl.bank_attr,
+                builtin_name=builtin_name
             ))
             self.emit(Pull(register=HardwareRegister('STATUS')))
 

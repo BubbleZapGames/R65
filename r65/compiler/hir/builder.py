@@ -625,9 +625,23 @@ class HIRBuilder:
             return hir.HIRTypeCast(expr=inner, target_type=target)
 
         elif isinstance(expr, ast.FunctionCall):
+            from r65.compiler.builtins import BuiltinRegistry
+
             func = self._build_expression(expr.func)
             args = [self._build_expression(a) for a in expr.args]
-            return hir.HIRFunctionCall(func=func, args=args)
+
+            # Check if this is a built-in function call
+            builtin_name = None
+            if isinstance(expr.func, ast.Identifier):
+                func_name = expr.func.name
+                if BuiltinRegistry.is_builtin(func_name):
+                    # Validate built-in call
+                    is_valid, error_msg = BuiltinRegistry.validate_call(func_name, len(args))
+                    if not is_valid:
+                        raise HIRError(error_msg)
+                    builtin_name = func_name
+
+            return hir.HIRFunctionCall(func=func, args=args, builtin_name=builtin_name)
 
         elif isinstance(expr, ast.ArrayIndex):
             array = self._build_expression(expr.array)

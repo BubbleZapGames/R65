@@ -1,0 +1,23 @@
+// Test built-in functions
+
+#[mode(m8, x8)]
+fn test_processor_control() {
+    wai();  // Wait for interrupt
+}
+
+#[mode(m8, x8)]
+fn test_mode_control() {
+    SEP(0x30);  // Set m8, x8 mode
+    REP(0x20);  // Reset m (m16 mode)
+}
+
+#[entry]
+#[mode(m8, x8)]
+fn main() -> ! {
+    test_processor_control();
+    test_mode_control();
+
+    loop {
+        wai();
+    }
+}

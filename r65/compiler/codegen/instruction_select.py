@@ -787,11 +787,17 @@ class InstructionSelector:
         Generate code for Call instruction.
 
         Handles argument setup, call, and return value collection.
+        Also handles built-in function calls.
 
         Args:
             instr: Call instruction
         """
         from r65.compiler.mir.nodes import ArgumentMechanism, Immediate
+
+        # Handle built-in functions
+        if instr.builtin_name:
+            self._emit_builtin_call(instr)
+            return
 
         # Step 1: Set up arguments
         # Process in order: stack arguments first, then register/variable arguments
@@ -947,6 +953,113 @@ class InstructionSelector:
                         self.emitter.emit_instruction("STX", self._format_operand(dest_loc))
                     elif source_reg == 'Y':
                         self.emitter.emit_instruction("STY", self._format_operand(dest_loc))
+
+    def _emit_builtin_call(self, instr: Call):
+        """
+        Emit code for built-in function call.
+
+        Built-in categories:
+        - Processor control: wai(), stp()
+        - Mode control: SEP(flags), REP(flags)
+        - Block moves: mvn(src_bank, dst_bank), mvp(src_bank, dst_bank)
+        - Arithmetic: mul(a, b), div(a, b), mod(a, b) - call runtime library
+        - Shifts: shl(a, n), shr(a, n) - call runtime library
+
+        Args:
+            instr: Call instruction with builtin_name set
+        """
+        from r65.compiler.mir.nodes import ArgumentMechanism, Immediate
+        from r65.compiler.builtins import BuiltinRegistry, BuiltinKind
+
+        builtin = BuiltinRegistry.get_builtin(instr.builtin_name)
+        if not builtin:
+            raise Exception(f"Unknown built-in function: {instr.builtin_name}")
+
+        if builtin.kind == BuiltinKind.PROCESSOR_CONTROL:
+            # wai(), stp() - no arguments, no return value
+            self.emitter.emit_instruction(builtin.instruction)
+
+        elif builtin.kind == BuiltinKind.MODE_CONTROL:
+            # SEP(flags), REP(flags) - 1 argument (flags immediate), no return value
+            if len(instr.args) != 1:
+                raise Exception(f"{instr.builtin_name}() expects 1 argument, got {len(instr.args)}")
+
+            arg = instr.args[0]
+            arg_loc = self._get_operand_location(arg.value)
+
+            # Load flags into A
+            if isinstance(arg.value, Immediate):
+                self.emitter.emit_instruction(builtin.instruction, f"#${arg.value.value:02X}")
+            else:
+                # Load from memory into A, then emit instruction
+                self.emitter.emit_instruction("LDA", self._format_operand(arg_loc))
+                self.emitter.emit_instruction(builtin.instruction, "A")
+
+        elif builtin.kind == BuiltinKind.BLOCK_MOVE:
+            # mvn(src_bank, dst_bank), mvp(src_bank, dst_bank)
+            # Convention: A = count-1, X = src_addr, Y = dst_addr (set by caller)
+            # Banks are passed as immediate arguments
+            if len(instr.args) != 2:
+                raise Exception(f"{instr.builtin_name}() expects 2 arguments, got {len(instr.args)}")
+
+            src_bank_arg = instr.args[0]
+            dst_bank_arg = instr.args[1]
+
+            # Both banks should be immediates
+            if not isinstance(src_bank_arg.value, Immediate) or not isinstance(dst_bank_arg.value, Immediate):
+                raise Exception(f"{instr.builtin_name}() expects immediate bank numbers")
+
+            src_bank = src_bank_arg.value.value
+            dst_bank = dst_bank_arg.value.value
+
+            # Emit MVN/MVP with operands: src_bank, dst_bank
+            self.emitter.emit_instruction(builtin.instruction, f"${dst_bank:02X}", f"${src_bank:02X}")
+
+        elif builtin.kind == BuiltinKind.ARITHMETIC or builtin.kind == BuiltinKind.SHIFT:
+            # mul(a, b), div(a, b), mod(a, b), shl(a, n), shr(a, n)
+            # Call runtime library functions
+            # These will be implemented as regular function calls to runtime library
+            # Convention: arguments in A and X, result in A
+
+            if len(instr.args) != 2:
+                raise Exception(f"{instr.builtin_name}() expects 2 arguments, got {len(instr.args)}")
+
+            # Load first argument into A
+            arg0 = instr.args[0]
+            arg0_loc = self._get_operand_location(arg0.value)
+            if isinstance(arg0.value, Immediate):
+                self.emitter.emit_instruction("LDA", f"#${arg0.value.value:02X}")
+            elif arg0_loc.kind == LocationKind.HARDWARE and arg0_loc.hw_register == 'A':
+                # Already in A
+                pass
+            else:
+                self.emitter.emit_instruction("LDA", self._format_operand(arg0_loc))
+
+            # Load second argument into X
+            arg1 = instr.args[1]
+            arg1_loc = self._get_operand_location(arg1.value)
+            if isinstance(arg1.value, Immediate):
+                self.emitter.emit_instruction("LDX", f"#${arg1.value.value:02X}")
+            elif arg1_loc.kind == LocationKind.HARDWARE and arg1_loc.hw_register == 'X':
+                # Already in X
+                pass
+            else:
+                self.emitter.emit_instruction("LDX", self._format_operand(arg1_loc))
+
+            # Call runtime library function
+            runtime_func_name = f"__builtin_{instr.builtin_name}"
+            self.emitter.emit_instruction("JSR", runtime_func_name)
+
+            # Result is in A - store to return value location if specified
+            if instr.returns:
+                return_vreg = instr.returns[0]
+                dest_loc = self._get_operand_location(return_vreg)
+
+                if dest_loc.kind == LocationKind.HARDWARE and dest_loc.hw_register == 'A':
+                    # Already in A
+                    pass
+                else:
+                    self.emitter.emit_instruction("STA", self._format_operand(dest_loc))
 
     def _emit_indirect_call_trampoline(self, func_ptr_vreg, is_far: bool):
         """
