@@ -487,7 +487,7 @@ class MIRBuilder:
                     type_info=expr.left.expr_type
                 ))
                 # Result = 1 when temp == 0 (i.e., when condition is zero)
-                return self._emit_conditional_set(temp, false_when_nonzero=False, result_type=expr.expr_type, hint="eq_result")
+                return self._emit_conditional_set(temp, true_when_nonzero=False, result_type=expr.expr_type, hint="eq_result")
 
             elif expr.op == '!=':
                 # For inequality: compute (left ^ right) and check if non-zero
@@ -745,6 +745,27 @@ class MIRBuilder:
         Returns:
             VirtualRegister or HardwareRegister with assigned value
         """
+        # OPTIMIZATION: Detect pattern `target = target op value` for hardware registers
+        # Generate BinaryOp(dest=target, left=target, op, right=value) directly
+        # instead of temp = target op value; target = temp
+        if isinstance(expr.value, HIRBinaryOp) and isinstance(expr.target, HIRRegister):
+            binary_op = expr.value
+            # Check if it's target = target op value
+            if (isinstance(binary_op.left, HIRRegister) and
+                binary_op.left.name == expr.target.name):
+                # Direct hardware register op: X = X + 1 becomes BinaryOp(dest=X, left=X, right=1)
+                hw_reg = HardwareRegister(expr.target.name)
+                right = self.lower_expression(binary_op.right)
+
+                self.emit(BinaryOp(
+                    dest=hw_reg,
+                    left=hw_reg,
+                    op=binary_op.op,
+                    right=right,
+                    type_info=expr.expr_type
+                ))
+                return hw_reg
+
         # Lower value
         value = self.lower_expression(expr.value)
 
