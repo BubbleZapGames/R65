@@ -17,7 +17,24 @@ class Instruction:
     comment: Optional[str] = None
 
     def __str__(self):
-        result = f"    {self.opcode}"
+        # Check if this is a directive or label (no indentation needed)
+        if (self.opcode.startswith('.') or
+            self.opcode.endswith(':') or
+            self.opcode.startswith(';') or
+            not self.opcode or
+            # Special SNES header keywords (no indentation)
+            self.opcode in ('ID', 'NAME', 'LOROM', 'HIROM', 'FASTROM',
+                           'CARTRIDGETYPE', 'ROMSIZE', 'SRAMSIZE', 'COUNTRY',
+                           'LICENSEECODE', 'VERSION',
+                           # Vector keywords (no indentation)
+                           'COP', 'BRK', 'ABORT', 'NMI', 'UNUSED', 'IRQ',
+                           'RESET', 'IRQBRK')):
+            # No indentation for directives, labels, and special keywords
+            result = self.opcode
+        else:
+            # Regular instruction - add indentation
+            result = f"    {self.opcode}"
+
         if self.operand:
             result += f" {self.operand}"
         if self.comment:

@@ -138,10 +138,10 @@ class ProgramCodeGenerator:
 
     def _emit_interrupt_vectors(self, mir_program: MIRProgram):
         """
-        Emit interrupt vector table.
+        Emit SNES ROM header and interrupt vector table.
 
         Scans functions for #[interrupt(vector)] attributes and
-        generates the interrupt vector table.
+        generates the SNES header and interrupt vector table.
 
         Args:
             mir_program: MIR program
@@ -166,8 +166,12 @@ class ProgramCodeGenerator:
             if func.is_entry:
                 reset_handler = func.name
 
-        # Emit vectors if any handlers found
+        # Emit SNES header and vectors if any handlers found
         if nmi_handler or irq_handler or reset_handler:
+            # Emit SNES ROM header
+            self.emitter.emit_snes_header(rom_name="R65 Compiled ROM", version=0)
+
+            # Emit interrupt vectors
             self.emitter.emit_interrupt_vectors(
                 nmi=nmi_handler,
                 irq=irq_handler,

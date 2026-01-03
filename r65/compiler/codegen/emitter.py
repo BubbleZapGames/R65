@@ -382,9 +382,48 @@ class AssemblyEmitter:
     # Interrupt Vectors
     # ========================================================================
 
+    def emit_snes_header(self, rom_name="R65 ROM", version=0):
+        """
+        Emit SNES ROM header using .SNESHEADER directive.
+
+        Args:
+            rom_name: ROM name (max 21 characters)
+            version: ROM version number
+
+        Generated:
+            .SNESHEADER
+              ID "SNES"
+              NAME "ROM NAME          "
+              LOROM
+              CARTRIDGETYPE $00
+              ROMSIZE $08
+              SRAMSIZE $00
+              COUNTRY $01
+              LICENSEECODE $00
+              VERSION $00
+            .ENDSNES
+        """
+        self.emit_section_header("SNES ROM Header")
+
+        # Pad or truncate ROM name to exactly 21 characters
+        padded_name = rom_name[:21].ljust(21)
+
+        self.emit_line(".SNESHEADER")
+        self.emit_line('ID "SNES"')
+        self.emit_line(f'NAME "{padded_name}"')
+        self.emit_line("LOROM")
+        self.emit_line("CARTRIDGETYPE $00")
+        self.emit_line("ROMSIZE $08")
+        self.emit_line("SRAMSIZE $00")
+        self.emit_line("COUNTRY $01")
+        self.emit_line("LICENSEECODE $00")
+        self.emit_line(f"VERSION ${version:02X}")
+        self.emit_line(".ENDSNES")
+        self.emit_blank_line()
+
     def emit_interrupt_vectors(self, nmi=None, irq=None, reset=None):
         """
-        Emit interrupt vector table.
+        Emit interrupt vector table using .SNESNATIVEVECTOR and .SNESEUVECTOR.
 
         Args:
             nmi: NMI handler label (or None for 0)
@@ -392,35 +431,46 @@ class AssemblyEmitter:
             reset: RESET handler label (or None for 0)
 
         Generated:
-            ; ============================================================================
-            ; Interrupt Vectors (Native Mode)
-            ; ============================================================================
-            .ORGA $FFE4
-            .dw 0                       ; COP
-            .dw 0                       ; BRK
-            .dw 0                       ; ABORT
-            .dw nmi_handler             ; NMI
-            .dw 0                       ; (unused)
-            .dw 0                       ; IRQ
+            .SNESNATIVEVECTOR
+              COP 0
+              BRK 0
+              ABORT 0
+              NMI nmi_handler
+              UNUSED 0
+              IRQ 0
+            .ENDNATIVEVECTOR
+
+            .SNESEUVECTOR
+              COP 0
+              UNUSED 0
+              ABORT 0
+              NMI 0
+              RESET main
+              IRQBRK 0
+            .ENDEMUVECTOR
         """
+        # Native mode vectors
         self.emit_section_header("Interrupt Vectors (Native Mode)")
-        self.emit_line(".ORGA $FFE4")
-        self.emit_instruction(".dw", "0", "COP")
-        self.emit_instruction(".dw", "0", "BRK")
-        self.emit_instruction(".dw", "0", "ABORT")
-        self.emit_instruction(".dw", nmi or "0", "NMI")
-        self.emit_instruction(".dw", "0", "(unused)")
-        self.emit_instruction(".dw", irq or "0", "IRQ")
+        self.emit_line(".SNESNATIVEVECTOR")
+        self.emit_line(f"COP {nmi or '0'}")
+        self.emit_line("BRK 0")
+        self.emit_line("ABORT 0")
+        self.emit_line(f"NMI {nmi or '0'}")
+        self.emit_line("UNUSED 0")
+        self.emit_line(f"IRQ {irq or '0'}")
+        self.emit_line(".ENDNATIVEVECTOR")
         self.emit_blank_line()
 
+        # Emulation mode vectors
         self.emit_section_header("Interrupt Vectors (Emulation Mode)")
-        self.emit_line(".ORGA $FFF4")
-        self.emit_instruction(".dw", "0", "COP")
-        self.emit_instruction(".dw", "0", "(unused)")
-        self.emit_instruction(".dw", "0", "ABORT")
-        self.emit_instruction(".dw", "0", "NMI")
-        self.emit_instruction(".dw", reset or "0", "RESET")
-        self.emit_instruction(".dw", "0", "IRQ/BRK")
+        self.emit_line(".SNESEUVECTOR")
+        self.emit_line("COP 0")
+        self.emit_line("UNUSED 0")
+        self.emit_line("ABORT 0")
+        self.emit_line("NMI 0")
+        self.emit_line(f"RESET {reset or '0'}")
+        self.emit_line(f"IRQBRK {irq or '0'}")
+        self.emit_line(".ENDEMUVECTOR")
         self.emit_blank_line()
 
     # ========================================================================
