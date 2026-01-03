@@ -697,6 +697,11 @@ class ASTBuilder(Transformer):
         items = self._filter_tokens(items, keep_types={'IDENT'})
         return ast.FieldAccess(base=items[0], field=items[1].value if isinstance(items[1], LarkToken) else items[1])
 
+    def lvalue_deref(self, items):
+        """Lvalue pointer dereference."""
+        items = self._filter_tokens(items)
+        return ast.Dereference(pointer=items[0])
+
     # ========================================================================
     # Types
     # ========================================================================

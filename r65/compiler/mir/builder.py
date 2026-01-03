@@ -12,7 +12,7 @@ from r65.compiler.hir import (
     HIRIfStmt, HIRWhileStmt, HIRBreakStmt, HIRContinueStmt,
     HIRExpression, HIRIntegerLiteral, HIRBooleanLiteral, HIRIdentifier,
     HIRFunctionAddress, HIRRegister, HIRBinaryOp, HIRUnaryOp, HIRTypeCast, HIRAssignment,
-    HIRFunctionCall, HIRArrayIndex, HIRFieldAccess,
+    HIRFunctionCall, HIRArrayIndex, HIRFieldAccess, HIRDereference, HIRAddressOf,
     RegisterLetBinding, VariableLetBinding,
     RegisterBinding, VariableBinding,
     SymbolKind,
@@ -23,7 +23,7 @@ from r65.compiler.hir.attributes import StorageKind
 from r65.compiler.mir.nodes import (
     MIRInstruction, MIRProgram, MIRFunction, BasicBlock,
     VirtualRegister, HardwareRegister, Immediate, FunctionPointer, MemoryLocation,
-    Load, Store, Move, TypeConvert, BinaryOp, UnaryOp, Compare,
+    Load, Store, LoadIndirect, StoreIndirect, Move, TypeConvert, BinaryOp, UnaryOp, Compare,
     Jump, CondBranch, Return, ReturnFromInterrupt, Call, Argument, ArgumentMechanism,
     SetMode, SaveRegister, RestoreRegister,
     Push, Pull,
@@ -452,6 +452,12 @@ class MIRBuilder:
         elif isinstance(expr, HIRFieldAccess):
             return self.lower_field_access(expr)
 
+        elif isinstance(expr, HIRDereference):
+            return self.lower_dereference(expr)
+
+        elif isinstance(expr, HIRAddressOf):
+            return self.lower_addressof(expr)
+
         else:
             # Unsupported expression type (placeholder)
             # Allocate placeholder virtual register
@@ -791,6 +797,93 @@ class MIRBuilder:
         self.emit(Load(dest=result, source=field_memloc, type_info=expr.expr_type))
         return result
 
+    def lower_dereference(self, expr: HIRDereference) -> VirtualRegister:
+        """
+        Lower pointer dereference (*ptr).
+
+        Generates LoadIndirect instruction to read through pointer.
+
+        Args:
+            expr: HIR dereference expression
+
+        Returns:
+            VirtualRegister holding dereferenced value
+        """
+        from r65.compiler.hir.types import PointerTypeInfo
+
+        # Lower the pointer expression
+        ptr_operand = self.lower_expression(expr.pointer)
+
+        # Get pointer type to determine if far or near
+        pointer_type = expr.pointer.expr_type
+        if not isinstance(pointer_type, PointerTypeInfo):
+            raise Exception(f"Dereference of non-pointer type: {pointer_type}")
+
+        # Allocate result register
+        result = self.current_function.vreg_allocator.alloc(
+            expr.expr_type,
+            "deref_result"
+        )
+
+        # Emit LoadIndirect
+        self.emit(LoadIndirect(
+            dest=result,
+            pointer=ptr_operand,
+            is_far=pointer_type.is_far,
+            type_info=expr.expr_type
+        ))
+
+        return result
+
+    def lower_addressof(self, expr: HIRAddressOf) -> VirtualRegister:
+        """
+        Lower address-of operator (&variable).
+
+        For static variables, loads the address as an immediate value.
+        The address is determined by the memory allocator.
+
+        Args:
+            expr: HIR address-of expression
+
+        Returns:
+            VirtualRegister holding the address
+        """
+        from r65.compiler.hir import HIRIdentifier
+        from r65.compiler.hir.types import PointerTypeInfo
+
+        # Currently only support address-of static variables
+        if not isinstance(expr.operand, HIRIdentifier):
+            raise Exception(f"Address-of only supports static variables, got: {type(expr.operand)}")
+
+        symbol = expr.operand.symbol
+
+        # Get the memory location of the variable
+        mem_loc = self.get_memory_location(symbol)
+
+        # Allocate result register for the pointer
+        result = self.current_function.vreg_allocator.alloc(
+            expr.expr_type,
+            f"addr_of_{symbol.name}"
+        )
+
+        # For now, we'll store the symbol reference in the virtual register
+        # The actual address will be resolved during code generation
+        # We need a way to represent "address of variable" in MIR
+        # For simplicity, create an Immediate with a special marker
+        # TODO: This is a simplification - need better address representation
+
+        # Create a symbolic address immediate
+        # The code generator will resolve this to the actual address
+        from r65.compiler.mir.nodes import Immediate
+        addr_immediate = Immediate(0)  # Placeholder - will be resolved in codegen
+        # Store symbol info for codegen (hack for now)
+        addr_immediate.symbol = symbol  # Add symbol attribute
+
+        # Move the address into the result register
+        self.emit(Move(dest=result, source=addr_immediate, type_info=expr.expr_type))
+
+        return result
+
     def lower_assignment(self, expr: HIRAssignment) -> Union[VirtualRegister, HardwareRegister]:
         """
         Lower assignment.
@@ -970,6 +1063,28 @@ class MIRBuilder:
                 # Emit store using indexed addressing (e.g., STA $20,X)
                 self.emit(Store(source=value, dest=indexed_memloc, type_info=element_type))
                 return value
+
+        elif isinstance(expr.target, HIRDereference):
+            # Pointer dereference assignment: *ptr = value
+            from r65.compiler.hir.types import PointerTypeInfo
+
+            deref = expr.target
+            pointer_type = deref.pointer.expr_type
+
+            if not isinstance(pointer_type, PointerTypeInfo):
+                raise Exception(f"Dereference of non-pointer type: {pointer_type}")
+
+            # Lower the pointer expression to get the pointer value
+            ptr_operand = self.lower_expression(deref.pointer)
+
+            # Emit StoreIndirect
+            self.emit(StoreIndirect(
+                source=value,
+                pointer=ptr_operand,
+                is_far=pointer_type.is_far,
+                type_info=expr.expr_type
+            ))
+            return value
 
         else:
             # Unsupported target

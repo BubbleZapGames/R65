@@ -105,6 +105,7 @@ lvalue: IDENT                                   -> lvalue_ident
       | REGISTER                                -> lvalue_register
       | postfix "[" expr "]"                    -> lvalue_array
       | postfix "." IDENT                       -> lvalue_field
+      | "*" unary                               -> lvalue_deref
 
 ?logical_or: logical_and
            | logical_or "||" logical_and        -> or_expr

@@ -55,6 +55,10 @@ class InstructionSelector:
             self.select_load(instr)
         elif isinstance(instr, Store):
             self.select_store(instr)
+        elif isinstance(instr, LoadIndirect):
+            self.select_load_indirect(instr)
+        elif isinstance(instr, StoreIndirect):
+            self.select_store_indirect(instr)
         elif isinstance(instr, Move):
             self.select_move(instr)
         elif isinstance(instr, TypeConvert):
@@ -178,6 +182,124 @@ class InstructionSelector:
             self.emitter.emit_instruction("LDA", self._format_operand(src_loc))
             self.emitter.emit_instruction("STA", self._format_operand(dest_loc))
 
+    def select_load_indirect(self, instr):
+        """
+        Generate code for LoadIndirect instruction.
+
+        dest = *ptr  (indirect addressing)
+
+        For 65816:
+        - near pointers use (zp) or (zp),Y addressing modes
+        - far pointers use [zp] or [zp],Y addressing modes
+
+        Args:
+            instr: LoadIndirect instruction
+        """
+        from r65.compiler.mir.nodes import LoadIndirect
+
+        # Get the location where the pointer value is stored
+        ptr_loc = self._get_operand_location(instr.pointer)
+        dest_loc = self._get_operand_location(instr.dest)
+
+        # Pointer should be in memory (zero-page, stack, or static memory)
+        # SCRATCH is zero-page, which is perfect for indirect addressing
+        if ptr_loc.kind == LocationKind.HARDWARE or ptr_loc.kind == LocationKind.IMMEDIATE:
+            raise Exception(f"Pointer for indirect addressing must be in memory, got: {ptr_loc}")
+
+        # Format indirect addressing mode
+        ptr_addr = self._format_operand(ptr_loc)
+
+        # Determine addressing mode based on pointer type and indexing
+        if instr.is_far:
+            # Far pointer - long indirect [zp] or [zp],Y
+            if instr.index_register:
+                indirect_mode = f"[{ptr_addr}],{instr.index_register}"
+            else:
+                indirect_mode = f"[{ptr_addr}]"
+        else:
+            # Near pointer - indirect (zp) or (zp),Y
+            if instr.index_register:
+                indirect_mode = f"({ptr_addr}),{instr.index_register}"
+            else:
+                indirect_mode = f"({ptr_addr})"
+
+        # Load through pointer
+        is_u16 = self._is_16bit(instr.type_info)
+
+        if is_u16:
+            # 16-bit load through pointer - load low then high byte
+            self.emitter.emit_instruction("LDA", indirect_mode, "Load through pointer")
+            self.emitter.emit_instruction("STA", self._format_operand(dest_loc))
+            # For 16-bit, we'd need to increment pointer and load again
+            # This is complex - for now, only support 8-bit indirect loads
+            raise Exception("16-bit indirect loads not yet supported")
+        else:
+            # 8-bit load through pointer
+            self.emitter.emit_instruction("LDA", indirect_mode, "Load through pointer")
+            self.emitter.emit_instruction("STA", self._format_operand(dest_loc))
+
+    def select_store_indirect(self, instr):
+        """
+        Generate code for StoreIndirect instruction.
+
+        *ptr = source  (indirect addressing)
+
+        For 65816:
+        - near pointers use (zp) or (zp),Y addressing modes
+        - far pointers use [zp] or [zp],Y addressing modes
+
+        Args:
+            instr: StoreIndirect instruction
+        """
+        from r65.compiler.mir.nodes import StoreIndirect, Immediate
+
+        # Get the location where the pointer value is stored
+        ptr_loc = self._get_operand_location(instr.pointer)
+        src_loc = self._get_operand_location(instr.source)
+
+        # Pointer should be in memory (zero-page, stack, or static memory)
+        # SCRATCH is zero-page, which is perfect for indirect addressing
+        if ptr_loc.kind == LocationKind.HARDWARE or ptr_loc.kind == LocationKind.IMMEDIATE:
+            raise Exception(f"Pointer for indirect addressing must be in memory, got: {ptr_loc}")
+
+        # Format indirect addressing mode
+        ptr_addr = self._format_operand(ptr_loc)
+
+        # Determine addressing mode based on pointer type and indexing
+        if instr.is_far:
+            # Far pointer - long indirect [zp] or [zp],Y
+            if instr.index_register:
+                indirect_mode = f"[{ptr_addr}],{instr.index_register}"
+            else:
+                indirect_mode = f"[{ptr_addr}]"
+        else:
+            # Near pointer - indirect (zp) or (zp),Y
+            if instr.index_register:
+                indirect_mode = f"({ptr_addr}),{instr.index_register}"
+            else:
+                indirect_mode = f"({ptr_addr})"
+
+        # Load source value into A, then store through pointer
+        is_u16 = self._is_16bit(instr.type_info)
+
+        if isinstance(instr.source, Immediate):
+            # Immediate value - load into A first
+            value = instr.source.value & 0xFF
+            self.emitter.emit_instruction("LDA", f"#${value:02X}")
+        elif src_loc.kind == LocationKind.HARDWARE and src_loc.hw_register == 'A':
+            # Already in A
+            pass
+        else:
+            # Load from source location
+            self.emitter.emit_instruction("LDA", self._format_operand(src_loc))
+
+        # Store through pointer
+        if is_u16:
+            raise Exception("16-bit indirect stores not yet supported")
+        else:
+            # 8-bit store through pointer
+            self.emitter.emit_instruction("STA", indirect_mode, "Store through pointer")
+
     def select_move(self, instr: Move):
         """
         Generate code for Move instruction.
@@ -266,6 +388,31 @@ class InstructionSelector:
 
         # Handle immediate values
         if isinstance(src_operand, Immediate):
+            # Check if this is a symbolic address (from address-of operator)
+            if hasattr(src_operand, 'symbol') and src_operand.symbol is not None:
+                # This is an address-of a variable
+                # Get the allocation for the symbol
+                symbol = src_operand.symbol
+                alloc = self.mem_alloc.get_allocation(symbol)
+                if alloc:
+                    # Emit address of the symbol
+                    if is_u16:
+                        # 16-bit address
+                        # Low byte
+                        self.emitter.emit_instruction("LDA", f"#<${alloc.address:04X}", f"Load address of {symbol.name}")
+                        self.emitter.emit_instruction("STA", self._format_operand(dest_loc))
+                        # High byte
+                        dest_high = self._offset_location(dest_loc, 1)
+                        self.emitter.emit_instruction("LDA", f"#>${alloc.address:04X}")
+                        self.emitter.emit_instruction("STA", self._format_operand(dest_high))
+                    else:
+                        # 8-bit address (low byte only)
+                        self.emitter.emit_instruction("LDA", f"#<${alloc.address:04X}", f"Load address of {symbol.name}")
+                        self.emitter.emit_instruction("STA", self._format_operand(dest_loc))
+                else:
+                    raise Exception(f"No allocation for symbol: {symbol.name}")
+                return
+
             value = src_operand.value
 
             if is_u16:
