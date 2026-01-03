@@ -954,81 +954,13 @@ class MIRBuilder:
             \        /
             merge_block
         """
-        # OPTIMIZATION: Detect comparison operators and emit Compare + CondBranch directly
-        # instead of materializing to boolean
-        comparison_ops = {'==', '!=', '<', '<=', '>', '>='}
+        # Create target blocks
+        then_block = self.cfg_builder.new_block()
+        merge_block = self.cfg_builder.new_block()
+        else_block = self.cfg_builder.new_block() if stmt.else_block else merge_block
 
-        if isinstance(stmt.condition, HIRBinaryOp) and stmt.condition.op in comparison_ops:
-            # Direct comparison - emit Compare instruction
-            left = self.lower_expression(stmt.condition.left)
-            right = self.lower_expression(stmt.condition.right)
-
-            # Emit Compare instruction
-            self.emit(Compare(
-                left=left,
-                right=right,
-                comparison=stmt.condition.op,
-                type_info=stmt.condition.left.expr_type
-            ))
-
-            # Create blocks
-            then_block = self.cfg_builder.new_block()
-            merge_block = self.cfg_builder.new_block()
-
-            if stmt.else_block:
-                else_block = self.cfg_builder.new_block()
-                # Emit conditional branch based on comparison result
-                self.emit(CondBranch(
-                    condition=None,  # No condition vreg - uses flags from Compare
-                    true_target=then_block.block_id,
-                    false_target=else_block.block_id,
-                    comparison=stmt.condition.op
-                ))
-                # Add CFG edges
-                self.cfg_builder.add_edge(self.current_block, then_block)
-                self.cfg_builder.add_edge(self.current_block, else_block)
-            else:
-                # No else block: branch to then or merge based on comparison
-                self.emit(CondBranch(
-                    condition=None,  # No condition vreg - uses flags from Compare
-                    true_target=then_block.block_id,
-                    false_target=merge_block.block_id,
-                    comparison=stmt.condition.op
-                ))
-                # Add CFG edges
-                self.cfg_builder.add_edge(self.current_block, then_block)
-                self.cfg_builder.add_edge(self.current_block, merge_block)
-        else:
-            # General condition - evaluate to boolean and branch on != 0
-            cond_value = self.lower_expression(stmt.condition)
-
-            # Create blocks
-            then_block = self.cfg_builder.new_block()
-            merge_block = self.cfg_builder.new_block()
-
-            if stmt.else_block:
-                else_block = self.cfg_builder.new_block()
-                # Emit conditional branch: if condition != 0 goto then, else goto else
-                self.emit(CondBranch(
-                    condition=cond_value,
-                    true_target=then_block.block_id,
-                    false_target=else_block.block_id,
-                    comparison='!='
-                ))
-                # Add CFG edges
-                self.cfg_builder.add_edge(self.current_block, then_block)
-                self.cfg_builder.add_edge(self.current_block, else_block)
-            else:
-                # No else block: if condition != 0 goto then, else goto merge
-                self.emit(CondBranch(
-                    condition=cond_value,
-                    true_target=then_block.block_id,
-                    false_target=merge_block.block_id,
-                    comparison='!='
-                ))
-                # Add CFG edges
-                self.cfg_builder.add_edge(self.current_block, then_block)
-                self.cfg_builder.add_edge(self.current_block, merge_block)
+        # Lower condition with short-circuit evaluation
+        self._lower_condition(stmt.condition, then_block.block_id, else_block.block_id)
 
         # Lower then branch
         self.current_block = then_block
@@ -1041,18 +973,100 @@ class MIRBuilder:
         # Lower else branch if present
         if stmt.else_block:
             self.current_block = else_block
-            # Check if else_block is another if statement (else-if chain)
-            if isinstance(stmt.else_block, HIRIfStmt):
-                self.lower_if_statement(stmt.else_block)
-            else:
-                self.lower_block(stmt.else_block)
-            # Jump to merge (unless else block ends with terminator)
+            self.lower_block(stmt.else_block)
+            # Jump to merge
             if not self._block_has_terminator():
                 self.emit(Jump(target=merge_block.block_id))
                 self.cfg_builder.add_edge(else_block, merge_block)
 
         # Continue at merge block
         self.current_block = merge_block
+
+    def _lower_condition(self, condition: HIRExpression, true_target: int, false_target: int):
+        """
+        Lower condition expression with short-circuit evaluation.
+
+        Generates control flow that branches to true_target or false_target based
+        on condition result, with short-circuit for && and || operators.
+
+        Args:
+            condition: Condition expression to evaluate
+            true_target: Block ID to jump to if condition is true
+            false_target: Block ID to jump to if condition is false
+        """
+        comparison_ops = {'==', '!=', '<', '<=', '>', '>='}
+
+        # OPTIMIZATION 1: Short-circuit AND (&&)
+        if isinstance(condition, HIRBinaryOp) and condition.op == '&&':
+            # For: if (left && right)
+            # - Evaluate left
+            # - If left is false, jump to false_target (short-circuit)
+            # - Otherwise, evaluate right and use its result
+            right_eval_block = self.cfg_builder.new_block()
+
+            # Evaluate left condition
+            self._lower_condition(condition.left, right_eval_block.block_id, false_target)
+
+            # If left was true, evaluate right
+            self.current_block = right_eval_block
+            self._lower_condition(condition.right, true_target, false_target)
+            return
+
+        # OPTIMIZATION 2: Short-circuit OR (||)
+        elif isinstance(condition, HIRBinaryOp) and condition.op == '||':
+            # For: if (left || right)
+            # - Evaluate left
+            # - If left is true, jump to true_target (short-circuit)
+            # - Otherwise, evaluate right and use its result
+            right_eval_block = self.cfg_builder.new_block()
+
+            # Evaluate left condition
+            self._lower_condition(condition.left, true_target, right_eval_block.block_id)
+
+            # If left was false, evaluate right
+            self.current_block = right_eval_block
+            self._lower_condition(condition.right, true_target, false_target)
+            return
+
+        # OPTIMIZATION 3: Direct comparison - emit Compare + CondBranch
+        elif isinstance(condition, HIRBinaryOp) and condition.op in comparison_ops:
+            # Direct comparison - emit Compare instruction
+            left = self.lower_expression(condition.left)
+            right = self.lower_expression(condition.right)
+
+            # Emit Compare instruction
+            self.emit(Compare(
+                left=left,
+                right=right,
+                comparison=condition.op,
+                type_info=condition.left.expr_type
+            ))
+
+            # Emit conditional branch based on comparison flags
+            self.emit(CondBranch(
+                condition=None,  # No condition vreg - uses flags from Compare
+                true_target=true_target,
+                false_target=false_target,
+                comparison=condition.op
+            ))
+            # Add CFG edges
+            self.cfg_builder.add_edge(self.current_block, self.current_function.blocks[true_target])
+            self.cfg_builder.add_edge(self.current_block, self.current_function.blocks[false_target])
+
+        else:
+            # General condition - evaluate to boolean and branch on != 0
+            cond_value = self.lower_expression(condition)
+
+            # Emit conditional branch: if condition != 0 goto true, else goto false
+            self.emit(CondBranch(
+                condition=cond_value,
+                true_target=true_target,
+                false_target=false_target,
+                comparison='!='
+            ))
+            # Add CFG edges
+            self.cfg_builder.add_edge(self.current_block, self.current_function.blocks[true_target])
+            self.cfg_builder.add_edge(self.current_block, self.current_function.blocks[false_target])
 
     def lower_while_statement(self, stmt: HIRWhileStmt):
         r"""
