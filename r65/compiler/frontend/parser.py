@@ -707,8 +707,8 @@ class ASTBuilder(Transformer):
     # ========================================================================
 
     def type_basic(self, items):
-        """Basic type."""
-        items = self._filter_tokens(items, keep_types={'TYPE_NAME'})
+        """Basic type (built-in types or user-defined type names)."""
+        items = self._filter_tokens(items, keep_types={'TYPE_NAME', 'IDENT'})
         return ast.BasicType(name=items[0].value if isinstance(items[0], LarkToken) else items[0])
 
     def type_array(self, items):

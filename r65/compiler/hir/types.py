@@ -116,7 +116,13 @@ class TypeResolver:
     def resolve_type(self, ast_type: ast.Type) -> TypeInfo:
         """Convert AST type to HIR TypeInfo."""
         if isinstance(ast_type, ast.BasicType):
-            return BasicTypeInfo(name=ast_type.name)
+            # Check if this is a built-in type or a user-defined type
+            built_in_types = {'u8', 'i8', 'u16', 'i16', 'bool', 'void'}
+            if ast_type.name in built_in_types:
+                return BasicTypeInfo(name=ast_type.name)
+            else:
+                # User-defined type (struct, enum, or type alias)
+                return self.resolve_named_type(ast_type.name)
 
         elif isinstance(ast_type, ast.ArrayType):
             elem_type = self.resolve_type(ast_type.element_type)

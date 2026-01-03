@@ -1,0 +1,64 @@
+// Test function pointers
+
+// Simple function that returns a value
+#[mode(m8, x8)]
+fn add_ten(value @ A: u8) -> u8 {
+    A = A + 10;
+    return A;
+}
+
+// Another function with same signature
+#[mode(m8, x8)]
+fn add_twenty(value @ A: u8) -> u8 {
+    A = A + 20;
+    return A;
+}
+
+// Function pointer type
+type MathFunc = fn(u8) -> u8;
+
+// Global function pointer variable
+#[zeropage(0x40)]
+static mut MATH_FUNC: MathFunc;
+
+// Test: Assign function to function pointer
+#[mode(m8, x8)]
+fn test_assign_function_pointer() {
+    MATH_FUNC = add_ten;
+}
+
+// Test: Call through function pointer
+#[mode(m8, x8)]
+fn test_call_through_pointer() {
+    let result @ A = MATH_FUNC(5);  // Should return 15
+}
+
+// Test: Change function pointer and call again
+#[mode(m8, x8)]
+fn test_change_pointer() {
+    MATH_FUNC = add_twenty;
+    let result @ A = MATH_FUNC(5);  // Should return 25
+}
+
+// Test: Local function pointer variable
+#[mode(m8, x8)]
+fn test_local_function_pointer() {
+    let mut local_func: MathFunc = add_ten;
+    let result1 @ A = local_func(3);  // Should return 13
+
+    local_func = add_twenty;
+    let result2 @ A = local_func(3);  // Should return 23
+}
+
+#[entry]
+#[mode(m8, x8)]
+fn main() -> ! {
+    test_assign_function_pointer();
+    test_call_through_pointer();
+    test_change_pointer();
+    test_local_function_pointer();
+
+    loop {
+        // Infinite loop
+    }
+}

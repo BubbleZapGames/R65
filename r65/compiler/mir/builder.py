@@ -399,6 +399,16 @@ class MIRBuilder:
         elif isinstance(expr, HIRIdentifier):
             symbol = expr.symbol
 
+            # Check if this is a function identifier (function pointer)
+            from r65.compiler.hir.symbol_table import SymbolKind
+            from r65.compiler.hir.types import FunctionTypeInfo
+            if symbol.kind == SymbolKind.FUNCTION:
+                # Function identifier used as a value - load function address
+                vreg = self.current_function.vreg_allocator.alloc(expr.expr_type, f"fn_ptr_{symbol.name}")
+                func_ptr = FunctionPointer(function_name=symbol.name)
+                self.emit(Move(dest=vreg, source=func_ptr, type_info=expr.expr_type))
+                return vreg
+
             # Check if aliased to hardware register
             hw_reg = self.current_function.alias_tracker.get_alias(symbol)
             if hw_reg:
@@ -1145,10 +1155,12 @@ class MIRBuilder:
         # Get function symbol and declaration
         # func is usually HIRIdentifier for direct calls
         # For indirect calls (function pointers), func is an expression with FunctionTypeInfo
-        is_indirect_call = not isinstance(call_expr.func, HIRIdentifier)
+        from r65.compiler.hir.symbol_table import SymbolKind
+        is_direct_call = isinstance(call_expr.func, HIRIdentifier) and call_expr.func.symbol.kind == SymbolKind.FUNCTION
+        is_indirect_call = not is_direct_call
 
-        if isinstance(call_expr.func, HIRIdentifier):
-            # Direct call
+        if is_direct_call:
+            # Direct call to a function
             func_symbol = call_expr.func.symbol
 
             # Handle built-in function calls

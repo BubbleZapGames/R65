@@ -176,7 +176,7 @@ arg_list: expr ("," expr)* ","?
           | type_pointer
           | type_fn
 
-type_basic: TYPE_NAME
+type_basic: TYPE_NAME | IDENT
 type_array: "[" type_expr ";" expr "]"
 type_pointer: (NEAR | FAR) "<" type_expr ">"
 type_fn: FAR? FN "(" type_list? ")" ("->" type_expr)?

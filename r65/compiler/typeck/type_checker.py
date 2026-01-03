@@ -321,6 +321,20 @@ class TypeChecker:
             # Get type from symbol
             if symbol.kind in (SymbolKind.PARAMETER, SymbolKind.LOCAL_VAR, SymbolKind.STATIC_VAR, SymbolKind.CONST):
                 expr.expr_type = symbol.var_type
+            elif symbol.kind == SymbolKind.FUNCTION:
+                # Function identifier used as value (function pointer)
+                # Look up function declaration to get its type
+                func_decl = self._lookup_function_decl(symbol.name, expr.source_loc)
+
+                # Build FunctionTypeInfo from function signature
+                from r65.compiler.hir.types import FunctionTypeInfo
+                param_types = [param.param_type for param in func_decl.parameters]
+
+                expr.expr_type = FunctionTypeInfo(
+                    is_far=func_decl.is_far,
+                    param_types=param_types,
+                    return_type=func_decl.return_type
+                )
             else:
                 raise TypeCheckError(
                     f"'{expr.name}' is not a value",
@@ -501,8 +515,9 @@ class TypeChecker:
         if expr.builtin_name:
             return self._check_builtin_call(expr)
 
-        # Handle direct call (HIRIdentifier) - don't type check the function name itself
-        if isinstance(expr.func, HIRIdentifier):
+        # Handle direct call vs indirect call
+        if isinstance(expr.func, HIRIdentifier) and expr.func.symbol.kind == SymbolKind.FUNCTION:
+            # Direct call to a function
             func_symbol = expr.func.symbol
 
             # Look up HIR function declaration from program

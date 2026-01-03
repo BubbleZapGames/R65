@@ -388,30 +388,70 @@ class InstructionSelector:
 
         # Handle immediate values
         if isinstance(src_operand, Immediate):
-            # Check if this is a symbolic address (from address-of operator)
+            # Check if this is a symbolic address (from address-of operator or function identifier)
             if hasattr(src_operand, 'symbol') and src_operand.symbol is not None:
-                # This is an address-of a variable
-                # Get the allocation for the symbol
+                from r65.compiler.hir.symbol_table import SymbolKind
                 symbol = src_operand.symbol
-                alloc = self.mem_alloc.get_allocation(symbol)
-                if alloc:
-                    # Emit address of the symbol
-                    if is_u16:
-                        # 16-bit address
-                        # Low byte
-                        self.emitter.emit_instruction("LDA", f"#<${alloc.address:04X}", f"Load address of {symbol.name}")
+
+                # Check if this is a function symbol
+                if symbol.kind == SymbolKind.FUNCTION:
+                    # Function pointer - emit address of function label
+                    # Same as FunctionPointer handling
+                    func_name = symbol.name
+
+                    # Determine if this is near (2 bytes) or far (3 bytes) based on type
+                    from r65.compiler.hir.types import FunctionTypeInfo
+                    is_far_ptr = False
+                    if instr.type_info and isinstance(instr.type_info, FunctionTypeInfo):
+                        is_far_ptr = instr.type_info.is_far
+
+                    if is_far_ptr:
+                        # Far function pointer (3 bytes: bank, high, low)
+                        # Load low byte
+                        self.emitter.emit_instruction("LDA", f"#<{func_name}", "Load function address low byte")
                         self.emitter.emit_instruction("STA", self._format_operand(dest_loc))
-                        # High byte
+
+                        # Load high byte
                         dest_high = self._offset_location(dest_loc, 1)
-                        self.emitter.emit_instruction("LDA", f"#>${alloc.address:04X}")
+                        self.emitter.emit_instruction("LDA", f"#>{func_name}", "Load function address high byte")
                         self.emitter.emit_instruction("STA", self._format_operand(dest_high))
+
+                        # Load bank byte
+                        dest_bank = self._offset_location(dest_loc, 2)
+                        self.emitter.emit_instruction("LDA", f"#^{func_name}", "Load function bank byte")
+                        self.emitter.emit_instruction("STA", self._format_operand(dest_bank))
                     else:
-                        # 8-bit address (low byte only)
-                        self.emitter.emit_instruction("LDA", f"#<${alloc.address:04X}", f"Load address of {symbol.name}")
+                        # Near function pointer (2 bytes: high, low)
+                        # Load low byte
+                        self.emitter.emit_instruction("LDA", f"#<{func_name}", "Load function address low byte")
                         self.emitter.emit_instruction("STA", self._format_operand(dest_loc))
+
+                        # Load high byte
+                        dest_high = self._offset_location(dest_loc, 1)
+                        self.emitter.emit_instruction("LDA", f"#>{func_name}", "Load function address high byte")
+                        self.emitter.emit_instruction("STA", self._format_operand(dest_high))
+                    return
                 else:
-                    raise Exception(f"No allocation for symbol: {symbol.name}")
-                return
+                    # Variable address - get allocation
+                    alloc = self.mem_alloc.get_allocation(symbol)
+                    if alloc:
+                        # Emit address of the symbol
+                        if is_u16:
+                            # 16-bit address
+                            # Low byte
+                            self.emitter.emit_instruction("LDA", f"#<${alloc.address:04X}", f"Load address of {symbol.name}")
+                            self.emitter.emit_instruction("STA", self._format_operand(dest_loc))
+                            # High byte
+                            dest_high = self._offset_location(dest_loc, 1)
+                            self.emitter.emit_instruction("LDA", f"#>${alloc.address:04X}")
+                            self.emitter.emit_instruction("STA", self._format_operand(dest_high))
+                        else:
+                            # 8-bit address (low byte only)
+                            self.emitter.emit_instruction("LDA", f"#<${alloc.address:04X}", f"Load address of {symbol.name}")
+                            self.emitter.emit_instruction("STA", self._format_operand(dest_loc))
+                    else:
+                        raise Exception(f"No allocation for symbol: {symbol.name}")
+                    return
 
             value = src_operand.value
 
