@@ -55,6 +55,7 @@ from r65.compiler.hir.nodes import (
     HIRArrayIndex,
     HIRFieldAccess,
     HIRDereference,
+    HIRAddressOf,
     HIRAssignment,
     HIRFunctionAddress,
 
@@ -121,6 +122,7 @@ __all__ = [
     'HIRArrayIndex',
     'HIRFieldAccess',
     'HIRDereference',
+    'HIRAddressOf',
     'HIRAssignment',
     'HIRFunctionAddress',
 

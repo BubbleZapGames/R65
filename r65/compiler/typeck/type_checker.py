@@ -9,7 +9,7 @@ from r65.compiler.hir import (
     HIRProgram, HIRFunctionDecl, HIRExpression, HIRStatement,
     HIRBinaryOp, HIRUnaryOp, HIRIntegerLiteral, HIRBooleanLiteral,
     HIRIdentifier, HIRFunctionAddress, HIRRegister, HIRIncludeBytesExpr, HIRTypeCast, HIRFunctionCall,
-    HIRArrayIndex, HIRFieldAccess, HIRAssignment,
+    HIRArrayIndex, HIRFieldAccess, HIRDereference, HIRAddressOf, HIRAssignment,
     HIRLetStmt, HIRExprStmt, HIRReturnStmt, HIRIfStmt, HIRWhileStmt,
     HIRStaticDecl, HIRConstDecl,
     BasicTypeInfo, TypeInfo, SymbolKind,
@@ -365,6 +365,12 @@ class TypeChecker:
 
         elif isinstance(expr, HIRAssignment):
             return self.check_assignment(expr)
+
+        elif isinstance(expr, HIRDereference):
+            return self.check_dereference(expr)
+
+        elif isinstance(expr, HIRAddressOf):
+            return self.check_addressof(expr)
 
         elif isinstance(expr, HIRIncludeBytesExpr):
             # include_bytes! returns an array of bytes
@@ -745,6 +751,44 @@ class TypeChecker:
             )
 
         expr.expr_type = field.field_type
+        return expr.expr_type
+
+    def check_dereference(self, expr: HIRDereference) -> TypeInfo:
+        """Type check pointer dereference (*ptr)."""
+        from r65.compiler.hir.types import PointerTypeInfo
+
+        pointer_type = self.check_expression(expr.pointer)
+
+        # Pointer must be a pointer type
+        if not isinstance(pointer_type, PointerTypeInfo):
+            raise TypeCheckError(
+                f"Cannot dereference non-pointer type {pointer_type}",
+                source_loc=expr.pointer.source_loc
+            )
+
+        # Dereference yields the pointee type
+        expr.expr_type = pointer_type.pointee_type
+        return expr.expr_type
+
+    def check_addressof(self, expr: HIRAddressOf) -> TypeInfo:
+        """Type check address-of operator (&variable)."""
+        from r65.compiler.hir.types import PointerTypeInfo
+        from r65.compiler.hir import HIRIdentifier, HIRArrayIndex, HIRFieldAccess
+
+        operand_type = self.check_expression(expr.operand)
+
+        # Operand must be an lvalue (identifier, array index, or field access)
+        if not isinstance(expr.operand, (HIRIdentifier, HIRArrayIndex, HIRFieldAccess)):
+            raise TypeCheckError(
+                f"Cannot take address of non-lvalue expression",
+                source_loc=expr.operand.source_loc
+            )
+
+        # Address-of yields a near pointer to the operand type
+        # For now, all pointers are near (16-bit)
+        # TODO: Support far pointers based on variable's storage attribute
+        pointer_type = PointerTypeInfo(is_far=False, pointee_type=operand_type)
+        expr.expr_type = pointer_type
         return expr.expr_type
 
     def check_assignment(self, expr: HIRAssignment) -> TypeInfo:

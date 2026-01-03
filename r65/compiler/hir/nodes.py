@@ -380,6 +380,12 @@ class HIRDereference(HIRExpression):
 
 
 @dataclass
+class HIRAddressOf(HIRExpression):
+    """Address-of operator (&variable)."""
+    operand: Optional[HIRExpression] = None
+
+
+@dataclass
 class HIRAssignment(HIRExpression):
     """Assignment expression."""
     target: Optional[HIRExpression] = None  # Must be lvalue

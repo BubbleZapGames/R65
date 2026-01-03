@@ -152,6 +152,7 @@ lvalue: IDENT                                   -> lvalue_ident
       | "~" unary                               -> bitnot
       | "-" unary                               -> neg
       | "*" unary                               -> deref
+      | "&" unary                               -> addressof
 
 ?postfix: primary
         | postfix "(" arg_list? ")"             -> call

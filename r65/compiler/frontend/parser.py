@@ -576,6 +576,10 @@ class ASTBuilder(Transformer):
         items = self._filter_tokens(items)
         return ast.Dereference(pointer=items[0])
 
+    def addressof(self, items):
+        items = self._filter_tokens(items)
+        return ast.AddressOf(operand=items[0])
+
     # Postfix operations
     def call(self, items):
         """Function call."""

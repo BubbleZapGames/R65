@@ -657,6 +657,10 @@ class HIRBuilder:
             pointer = self._build_expression(expr.pointer)
             return hir.HIRDereference(pointer=pointer)
 
+        elif isinstance(expr, ast.AddressOf):
+            operand = self._build_expression(expr.operand)
+            return hir.HIRAddressOf(operand=operand)
+
         elif isinstance(expr, ast.Assignment):
             target = self._build_expression(expr.target)
             value = self._build_expression(expr.value)

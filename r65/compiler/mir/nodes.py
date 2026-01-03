@@ -152,6 +152,54 @@ class Store(MIRInstruction):
 
 
 @dataclass
+class LoadIndirect(MIRInstruction):
+    """
+    Load from memory through pointer (indirect addressing).
+
+    dest = *ptr
+
+    For 65816:
+    - near pointers use (zp) or (zp),Y addressing
+    - far pointers use [zp] or [zp],Y addressing
+    """
+    dest: VirtualRegister
+    pointer: VirtualRegister  # Points to memory location holding the address
+    is_far: bool  # True for far pointer (long indirect), False for near
+    index_register: Optional[str] = None  # 'Y' for indexed indirect
+    type_info: Any = None  # TypeInfo for size/sign extension
+
+    def __repr__(self):
+        far_str = "[" if self.is_far else "("
+        close_str = "]" if self.is_far else ")"
+        index_str = f",{self.index_register}" if self.index_register else ""
+        return f"{self.dest} = LoadIndirect {far_str}{self.pointer}{close_str}{index_str} : {self.type_info}"
+
+
+@dataclass
+class StoreIndirect(MIRInstruction):
+    """
+    Store to memory through pointer (indirect addressing).
+
+    *ptr = source
+
+    For 65816:
+    - near pointers use (zp) or (zp),Y addressing
+    - far pointers use [zp] or [zp],Y addressing
+    """
+    source: Union[VirtualRegister, HardwareRegister, Immediate]
+    pointer: VirtualRegister  # Points to memory location holding the address
+    is_far: bool  # True for far pointer (long indirect), False for near
+    index_register: Optional[str] = None  # 'Y' for indexed indirect
+    type_info: Any = None  # TypeInfo for size
+
+    def __repr__(self):
+        far_str = "[" if self.is_far else "("
+        close_str = "]" if self.is_far else ")"
+        index_str = f",{self.index_register}" if self.index_register else ""
+        return f"StoreIndirect {self.source} -> {far_str}{self.pointer}{close_str}{index_str} : {self.type_info}"
+
+
+@dataclass
 class Move(MIRInstruction):
     """
     Move between registers or load immediate.

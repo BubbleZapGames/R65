@@ -352,6 +352,12 @@ class Dereference(Expression):
 
 
 @dataclass
+class AddressOf(Expression):
+    """Address-of operator (&variable)."""
+    operand: Expression
+
+
+@dataclass
 class Assignment(Expression):
     """Assignment expression."""
     target: Union[Identifier, ArrayIndex, FieldAccess]
