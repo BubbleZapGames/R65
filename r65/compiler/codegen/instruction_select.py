@@ -61,6 +61,8 @@ class InstructionSelector:
             self.select_binary_op(instr)
         elif isinstance(instr, UnaryOp):
             self.select_unary_op(instr)
+        elif isinstance(instr, Compare):
+            self.select_compare(instr)
         elif isinstance(instr, Jump):
             self.select_jump(instr)
         elif isinstance(instr, CondBranch):
@@ -480,6 +482,45 @@ class InstructionSelector:
         # Store result
         self.emitter.emit_instruction("STA", self._format_operand(dest_loc))
 
+    def select_compare(self, instr: 'Compare'):
+        """
+        Generate code for Compare instruction.
+
+        Emits CMP/CPX/CPY instruction and sets processor flags for subsequent
+        conditional branch.
+
+        Args:
+            instr: Compare instruction
+        """
+        left_loc = self._get_operand_location(instr.left)
+        right_loc = self._get_operand_location(instr.right)
+
+        # Determine which comparison instruction to use based on left operand
+        if left_loc.kind == LocationKind.HARDWARE:
+            # Hardware register comparison
+            if left_loc.hw_register == 'X':
+                # CPX instruction
+                self.emitter.emit_instruction("CPX", self._format_operand(right_loc))
+            elif left_loc.hw_register == 'Y':
+                # CPY instruction
+                self.emitter.emit_instruction("CPY", self._format_operand(right_loc))
+            elif left_loc.hw_register == 'A':
+                # CMP instruction (A is implicit)
+                self.emitter.emit_instruction("CMP", self._format_operand(right_loc))
+            else:
+                # Other hardware registers - load to A first
+                self.emitter.emit_instruction("LDA", self._format_operand(left_loc))
+                self.emitter.emit_instruction("CMP", self._format_operand(right_loc))
+        else:
+            # Memory or virtual register - load to A and compare
+            self.emitter.emit_instruction("LDA", self._format_operand(left_loc))
+            self.emitter.emit_instruction("CMP", self._format_operand(right_loc))
+
+        # Flags are now set for conditional branch
+        # Z flag: set if left == right
+        # C flag: set if left >= right (unsigned)
+        # N flag: set if result is negative (signed)
+
     # ========================================================================
     # Arithmetic Helpers
     # ========================================================================
@@ -543,27 +584,67 @@ class InstructionSelector:
         """
         Generate code for CondBranch instruction.
 
+        Two modes:
+        1. If condition is None: Branch based on flags from preceding Compare instruction
+        2. If condition is a vreg: Load condition and branch on zero/non-zero
+
         Args:
             instr: CondBranch instruction
         """
-        # Load condition into A
-        cond_loc = self._get_operand_location(instr.condition)
-        self.emitter.emit_instruction("LDA", self._format_operand(cond_loc))
+        if instr.condition is None:
+            # Branch based on comparison flags from preceding Compare instruction
+            # Flags are already set by CMP/CPX/CPY instruction
+            # Z flag: set if left == right
+            # C flag: set if left >= right (unsigned)
+            # N flag: set if result is negative (signed)
 
-        # Compare based on comparison type
-        if instr.comparison == '!=':
-            # Branch if not equal to zero
-            self.emitter.emit_instruction("BEQ", f"__L{instr.false_target}", "Branch if zero")
-            self.emitter.emit_instruction("JMP", f"__L{instr.true_target}")
-        elif instr.comparison == '==':
-            # Branch if equal to zero
-            self.emitter.emit_instruction("BNE", f"__L{instr.false_target}", "Branch if non-zero")
-            self.emitter.emit_instruction("JMP", f"__L{instr.true_target}")
+            if instr.comparison == '==':
+                # Branch if equal (Z flag set)
+                self.emitter.emit_instruction("BEQ", f"__L{instr.true_target}", "Branch if equal")
+                self.emitter.emit_instruction("JMP", f"__L{instr.false_target}")
+            elif instr.comparison == '!=':
+                # Branch if not equal (Z flag clear)
+                self.emitter.emit_instruction("BNE", f"__L{instr.true_target}", "Branch if not equal")
+                self.emitter.emit_instruction("JMP", f"__L{instr.false_target}")
+            elif instr.comparison == '<':
+                # Branch if less than (unsigned: C flag clear)
+                # For signed, we'd need to check N and V flags
+                self.emitter.emit_instruction("BCC", f"__L{instr.true_target}", "Branch if less than (unsigned)")
+                self.emitter.emit_instruction("JMP", f"__L{instr.false_target}")
+            elif instr.comparison == '>=':
+                # Branch if greater or equal (unsigned: C flag set)
+                self.emitter.emit_instruction("BCS", f"__L{instr.true_target}", "Branch if >= (unsigned)")
+                self.emitter.emit_instruction("JMP", f"__L{instr.false_target}")
+            elif instr.comparison == '>':
+                # Branch if greater than: !(left <= right) = !(C clear OR Z set)
+                # Equivalent to: (C set) AND (Z clear)
+                self.emitter.emit_instruction("BEQ", f"__L{instr.false_target}", "Skip if equal")
+                self.emitter.emit_instruction("BCS", f"__L{instr.true_target}", "Branch if > (unsigned)")
+                self.emitter.emit_instruction("JMP", f"__L{instr.false_target}")
+            elif instr.comparison == '<=':
+                # Branch if less or equal: (C clear) OR (Z set)
+                self.emitter.emit_instruction("BEQ", f"__L{instr.true_target}", "Branch if equal")
+                self.emitter.emit_instruction("BCC", f"__L{instr.true_target}", "Branch if less than")
+                self.emitter.emit_instruction("JMP", f"__L{instr.false_target}")
+            else:
+                raise Exception(f"Unsupported comparison type for flag-based branch: {instr.comparison}")
         else:
-            # For other comparisons, we'd need to do actual comparison
-            # For now, treat as != 0
-            self.emitter.emit_instruction("BEQ", f"__L{instr.false_target}")
-            self.emitter.emit_instruction("JMP", f"__L{instr.true_target}")
+            # Branch based on condition value (zero/non-zero)
+            cond_loc = self._get_operand_location(instr.condition)
+            self.emitter.emit_instruction("LDA", self._format_operand(cond_loc))
+
+            if instr.comparison == '!=':
+                # Branch if not equal to zero
+                self.emitter.emit_instruction("BEQ", f"__L{instr.false_target}", "Branch if zero")
+                self.emitter.emit_instruction("JMP", f"__L{instr.true_target}")
+            elif instr.comparison == '==':
+                # Branch if equal to zero
+                self.emitter.emit_instruction("BNE", f"__L{instr.false_target}", "Branch if non-zero")
+                self.emitter.emit_instruction("JMP", f"__L{instr.true_target}")
+            else:
+                # For other comparisons on boolean values, treat as != 0
+                self.emitter.emit_instruction("BEQ", f"__L{instr.false_target}")
+                self.emitter.emit_instruction("JMP", f"__L{instr.true_target}")
 
     def select_return(self, instr: Return):
         """

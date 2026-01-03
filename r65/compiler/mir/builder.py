@@ -22,7 +22,7 @@ from r65.compiler.hir import (
 from r65.compiler.mir.nodes import (
     MIRInstruction, MIRProgram, MIRFunction, BasicBlock,
     VirtualRegister, HardwareRegister, Immediate, FunctionPointer, MemoryLocation,
-    Load, Store, Move, BinaryOp, UnaryOp,
+    Load, Store, Move, BinaryOp, UnaryOp, Compare,
     Jump, CondBranch, Return, ReturnFromInterrupt, Call, Argument, ArgumentMechanism,
     SetMode, SaveRegister, RestoreRegister,
     Push, Pull,
@@ -954,36 +954,81 @@ class MIRBuilder:
             \        /
             merge_block
         """
-        # Evaluate condition
-        cond_value = self.lower_expression(stmt.condition)
+        # OPTIMIZATION: Detect comparison operators and emit Compare + CondBranch directly
+        # instead of materializing to boolean
+        comparison_ops = {'==', '!=', '<', '<=', '>', '>='}
 
-        # Create blocks
-        then_block = self.cfg_builder.new_block()
-        merge_block = self.cfg_builder.new_block()
+        if isinstance(stmt.condition, HIRBinaryOp) and stmt.condition.op in comparison_ops:
+            # Direct comparison - emit Compare instruction
+            left = self.lower_expression(stmt.condition.left)
+            right = self.lower_expression(stmt.condition.right)
 
-        if stmt.else_block:
-            else_block = self.cfg_builder.new_block()
-            # Emit conditional branch: if condition != 0 goto then, else goto else
-            self.emit(CondBranch(
-                condition=cond_value,
-                true_target=then_block.block_id,
-                false_target=else_block.block_id,
-                comparison='!='
+            # Emit Compare instruction
+            self.emit(Compare(
+                left=left,
+                right=right,
+                comparison=stmt.condition.op,
+                type_info=stmt.condition.left.expr_type
             ))
-            # Add CFG edges
-            self.cfg_builder.add_edge(self.current_block, then_block)
-            self.cfg_builder.add_edge(self.current_block, else_block)
+
+            # Create blocks
+            then_block = self.cfg_builder.new_block()
+            merge_block = self.cfg_builder.new_block()
+
+            if stmt.else_block:
+                else_block = self.cfg_builder.new_block()
+                # Emit conditional branch based on comparison result
+                self.emit(CondBranch(
+                    condition=None,  # No condition vreg - uses flags from Compare
+                    true_target=then_block.block_id,
+                    false_target=else_block.block_id,
+                    comparison=stmt.condition.op
+                ))
+                # Add CFG edges
+                self.cfg_builder.add_edge(self.current_block, then_block)
+                self.cfg_builder.add_edge(self.current_block, else_block)
+            else:
+                # No else block: branch to then or merge based on comparison
+                self.emit(CondBranch(
+                    condition=None,  # No condition vreg - uses flags from Compare
+                    true_target=then_block.block_id,
+                    false_target=merge_block.block_id,
+                    comparison=stmt.condition.op
+                ))
+                # Add CFG edges
+                self.cfg_builder.add_edge(self.current_block, then_block)
+                self.cfg_builder.add_edge(self.current_block, merge_block)
         else:
-            # No else block: if condition != 0 goto then, else goto merge
-            self.emit(CondBranch(
-                condition=cond_value,
-                true_target=then_block.block_id,
-                false_target=merge_block.block_id,
-                comparison='!='
-            ))
-            # Add CFG edges
-            self.cfg_builder.add_edge(self.current_block, then_block)
-            self.cfg_builder.add_edge(self.current_block, merge_block)
+            # General condition - evaluate to boolean and branch on != 0
+            cond_value = self.lower_expression(stmt.condition)
+
+            # Create blocks
+            then_block = self.cfg_builder.new_block()
+            merge_block = self.cfg_builder.new_block()
+
+            if stmt.else_block:
+                else_block = self.cfg_builder.new_block()
+                # Emit conditional branch: if condition != 0 goto then, else goto else
+                self.emit(CondBranch(
+                    condition=cond_value,
+                    true_target=then_block.block_id,
+                    false_target=else_block.block_id,
+                    comparison='!='
+                ))
+                # Add CFG edges
+                self.cfg_builder.add_edge(self.current_block, then_block)
+                self.cfg_builder.add_edge(self.current_block, else_block)
+            else:
+                # No else block: if condition != 0 goto then, else goto merge
+                self.emit(CondBranch(
+                    condition=cond_value,
+                    true_target=then_block.block_id,
+                    false_target=merge_block.block_id,
+                    comparison='!='
+                ))
+                # Add CFG edges
+                self.cfg_builder.add_edge(self.current_block, then_block)
+                self.cfg_builder.add_edge(self.current_block, merge_block)
 
         # Lower then branch
         self.current_block = then_block
