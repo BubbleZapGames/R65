@@ -49,11 +49,14 @@ class Lexer:
         'MVP': TokenType.KEYWORD,
         'WAI': TokenType.KEYWORD,
         'STP': TokenType.KEYWORD,
+        'NOP': TokenType.KEYWORD,
         'MUL': TokenType.KEYWORD,
         'DIV': TokenType.KEYWORD,
         'MOD': TokenType.KEYWORD,
         'SHL': TokenType.KEYWORD,
         'SHR': TokenType.KEYWORD,
+        'ROTATE_LEFT': TokenType.KEYWORD,
+        'ROTATE_RIGHT': TokenType.KEYWORD,
 
         # Reserved Rust keywords
         'IMPL': TokenType.KEYWORD,

@@ -1,0 +1,49 @@
+// Test rotate_left and rotate_right methods
+
+#[zeropage]
+static mut FLAGS: u8 = 0x81;  // Binary: 10000001
+
+#[mode(m8, x8)]
+fn test_rotate_left() -> u8 {
+    // Rotate left by 1: 10000001 -> 00000011
+    let result @ A = FLAGS.rotate_left(1);
+    return result;
+}
+
+#[mode(m8, x8)]
+fn test_rotate_right() -> u8 {
+    // Rotate right by 1: 10000001 -> 11000000
+    let result @ A = FLAGS.rotate_right(1);
+    return result;
+}
+
+#[mode(m8, x8)]
+fn test_rotate_left_multiple() -> u8 {
+    // Rotate left by 3: 10000001 -> 00001100
+    let result @ A = FLAGS.rotate_left(3);
+    return result;
+}
+
+#[mode(m8, x8)]
+fn test_rotate_right_multiple() -> u8 {
+    // Rotate right by 4: 10000001 -> 00011000
+    let result @ A = FLAGS.rotate_right(4);
+    return result;
+}
+
+#[mode(m8, x8)]
+fn test_rotate_expression() -> u8 {
+    let value: u8 = 0xFF;
+    // Rotate expression result
+    let rotated @ A = value.rotate_left(2);
+    return rotated;
+}
+
+#[entry]
+#[mode(m8, x8)]
+fn main() -> ! {
+    let r1 @ A = test_rotate_left();
+    let r2 @ A = test_rotate_right();
+    let r3 @ A = test_rotate_left_multiple();
+    loop {}
+}

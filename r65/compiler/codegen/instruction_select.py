@@ -71,6 +71,8 @@ class InstructionSelector:
             self.select_compare(instr)
         elif isinstance(instr, BitTest):
             self.select_bit_test(instr)
+        elif isinstance(instr, Rotate):
+            self.select_rotate(instr)
         elif isinstance(instr, Jump):
             self.select_jump(instr)
         elif isinstance(instr, JumpTable):
@@ -807,6 +809,31 @@ class InstructionSelector:
         # - For bit 6 test: V flag indicates bit 6 value
         # - Z flag can also be used if needed
 
+    def select_rotate(self, instr: 'Rotate'):
+        """
+        Generate code for Rotate instruction using ROL/ROR instructions.
+
+        Emits ROL (rotate left) or ROR (rotate right) instructions.
+        Each rotation is performed count times.
+
+        Args:
+            instr: Rotate instruction
+        """
+        # Load source into A
+        source_loc = self._get_operand_location(instr.source)
+        self.emitter.emit_instruction("LDA", self._format_operand(source_loc))
+
+        # Determine instruction based on direction
+        rotate_instr = "ROL" if instr.direction == 'left' else "ROR"
+
+        # Emit rotate instruction 'count' times
+        for _ in range(instr.count):
+            self.emitter.emit_instruction(rotate_instr)
+
+        # Store result to destination
+        dest_loc = self._get_operand_location(instr.dest)
+        self.emitter.emit_instruction("STA", self._format_operand(dest_loc))
+
     # ========================================================================
     # Arithmetic Helpers
     # ========================================================================
@@ -1246,7 +1273,7 @@ class InstructionSelector:
         Emit code for built-in function call.
 
         Built-in categories:
-        - Processor control: wai(), stp()
+        - Processor control: wai(), stp(), NOP([count])
         - Mode control: SEP(flags), REP(flags)
         - Block moves: mvn(src_bank, dst_bank), mvp(src_bank, dst_bank)
         - Arithmetic: mul(a, b), div(a, b), mod(a, b) - call runtime library
@@ -1263,8 +1290,24 @@ class InstructionSelector:
             raise Exception(f"Unknown built-in function: {instr.builtin_name}")
 
         if builtin.kind == BuiltinKind.PROCESSOR_CONTROL:
-            # wai(), stp() - no arguments, no return value
-            self.emitter.emit_instruction(builtin.instruction)
+            # wai(), stp(), NOP() - no arguments (except NOP which can take optional count)
+            if instr.builtin_name == 'NOP':
+                # NOP() or NOP(count)
+                count = 1  # Default: single NOP
+                if len(instr.args) == 1:
+                    # NOP(count) - extract count from argument
+                    arg = instr.args[0]
+                    if isinstance(arg.value, Immediate):
+                        count = arg.value.value
+                    else:
+                        raise Exception(f"NOP() count must be a constant immediate value")
+
+                # Emit NOP instruction 'count' times
+                for _ in range(count):
+                    self.emitter.emit_instruction(builtin.instruction)
+            else:
+                # wai(), stp() - simple single instruction
+                self.emitter.emit_instruction(builtin.instruction)
 
         elif builtin.kind == BuiltinKind.MODE_CONTROL:
             # SEP(flags), REP(flags) - 1 argument (flags immediate), no return value

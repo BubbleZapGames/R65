@@ -356,6 +356,14 @@ class HIRFunctionCall(HIRExpression):
 
 
 @dataclass
+class HIRMethodCall(HIRExpression):
+    """Method call (e.g., value.rotate_left(3))."""
+    receiver: Optional[HIRExpression] = None  # The object/value the method is called on
+    method_name: str = ""  # Name of the method
+    args: List[HIRExpression] = field(default_factory=list)
+
+
+@dataclass
 class HIRArrayIndex(HIRExpression):
     """Array indexing."""
     array: Optional[HIRExpression] = None

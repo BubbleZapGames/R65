@@ -627,19 +627,57 @@ class HIRBuilder:
         elif isinstance(expr, ast.FunctionCall):
             from r65.compiler.builtins import BuiltinRegistry
 
-            func = self._build_expression(expr.func)
-            args = [self._build_expression(a) for a in expr.args]
+            # Check if this is a method call (e.g., value.rotate_left(3))
+            if isinstance(expr.func, ast.FieldAccess):
+                method_name = expr.func.field
+                if method_name in ['rotate_left', 'rotate_right']:
+                    # This is a rotate method call
+                    # Validate: must have exactly 1 argument
+                    if len(expr.args) != 1:
+                        raise HIRError(f"{method_name}() takes exactly 1 argument, got {len(expr.args)}")
 
-            # Check if this is a built-in function call
+                    # Build the base expression (the value being rotated)
+                    base = self._build_expression(expr.func.base)
+
+                    # Build the argument (rotation count)
+                    count_arg = self._build_expression(expr.args[0])
+
+                    # Return a special HIRMethodCall node for rotate methods
+                    return hir.HIRMethodCall(
+                        receiver=base,
+                        method_name=method_name,
+                        args=[count_arg]
+                    )
+
+            # Check if this is a built-in function call BEFORE trying to build func expression
+            # This prevents "undefined identifier" errors for built-in function names
             builtin_name = None
             if isinstance(expr.func, ast.Identifier):
                 func_name = expr.func.name
                 if BuiltinRegistry.is_builtin(func_name):
-                    # Validate built-in call
-                    is_valid, error_msg = BuiltinRegistry.validate_call(func_name, len(args))
+                    # Validate built-in call (use expr.args length, not built args yet)
+                    is_valid, error_msg = BuiltinRegistry.validate_call(func_name, len(expr.args))
                     if not is_valid:
                         raise HIRError(error_msg)
                     builtin_name = func_name
+
+            # Build func expression
+            # For built-ins, create a dummy symbol to avoid "undefined identifier" errors
+            if builtin_name:
+                # Create a dummy symbol for the built-in function
+                from r65.compiler.hir.symbol_table import Symbol, SymbolKind
+                builtin_symbol = Symbol(
+                    name=expr.func.name,
+                    kind=SymbolKind.FUNCTION,
+                    definition=None,
+                    scope_id=0,  # Global scope
+                    var_type=None
+                )
+                func = hir.HIRIdentifier(name=expr.func.name, symbol=builtin_symbol)
+            else:
+                func = self._build_expression(expr.func)
+
+            args = [self._build_expression(a) for a in expr.args]
 
             return hir.HIRFunctionCall(func=func, args=args, builtin_name=builtin_name)
 

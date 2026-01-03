@@ -9,7 +9,7 @@ from r65.compiler.hir import (
     HIRProgram, HIRFunctionDecl, HIRExpression, HIRStatement,
     HIRBinaryOp, HIRUnaryOp, HIRIntegerLiteral, HIRBooleanLiteral,
     HIRIdentifier, HIRFunctionAddress, HIRRegister, HIRIncludeBytesExpr, HIRTypeCast, HIRFunctionCall,
-    HIRArrayIndex, HIRFieldAccess, HIRDereference, HIRAddressOf, HIRAssignment,
+    HIRMethodCall, HIRArrayIndex, HIRFieldAccess, HIRDereference, HIRAddressOf, HIRAssignment,
     HIRLetStmt, HIRExprStmt, HIRReturnStmt, HIRIfStmt, HIRWhileStmt,
     HIRStaticDecl, HIRConstDecl,
     HIRMatchExpression, HIRPattern, HIRLiteralPattern, HIREnumPattern, HIRWildcardPattern, HIRIdentifierPattern, HIROrPattern,
@@ -372,6 +372,9 @@ class TypeChecker:
         elif isinstance(expr, HIRFunctionCall):
             return self.check_function_call(expr)
 
+        elif isinstance(expr, HIRMethodCall):
+            return self.check_method_call(expr)
+
         elif isinstance(expr, HIRArrayIndex):
             return self.check_array_index(expr)
 
@@ -617,6 +620,66 @@ class TypeChecker:
             # Void return
             expr.expr_type = BasicTypeInfo('void')
 
+        return expr.expr_type
+
+    def check_method_call(self, expr: HIRMethodCall) -> TypeInfo:
+        """
+        Type check method call (e.g., value.rotate_left(3)).
+
+        Currently only supports rotate_left and rotate_right methods on integer types.
+
+        Args:
+            expr: HIRMethodCall to type check
+
+        Returns:
+            Return type of the method
+        """
+        from r65.compiler.hir import HIRIntegerLiteral
+
+        # Type check receiver
+        receiver_type = self.check_expression(expr.receiver)
+
+        # Validate receiver is an integer type
+        if not isinstance(receiver_type, BasicTypeInfo) or receiver_type.name not in ['u8', 'i8', 'u16', 'i16']:
+            raise TypeCheckError(
+                f"Method '{expr.method_name}' can only be called on integer types, not {receiver_type}",
+                source_loc=expr.source_loc
+            )
+
+        # Validate method name
+        if expr.method_name not in ['rotate_left', 'rotate_right']:
+            raise TypeCheckError(
+                f"Unknown method '{expr.method_name}' for type {receiver_type}",
+                source_loc=expr.source_loc
+            )
+
+        # Type check argument (rotation count)
+        if len(expr.args) != 1:
+            raise TypeCheckError(
+                f"{expr.method_name}() takes exactly 1 argument, got {len(expr.args)}",
+                source_loc=expr.source_loc
+            )
+
+        count_arg = expr.args[0]
+        count_type = self.check_expression(count_arg)
+
+        # Validate count is an integer literal (compile-time constant)
+        if not isinstance(count_arg, HIRIntegerLiteral):
+            raise TypeCheckError(
+                f"{expr.method_name}() count must be a constant integer literal",
+                source_loc=count_arg.source_loc
+            )
+
+        # Validate count is in range 1-8
+        count_value = count_arg.value
+        if not (1 <= count_value <= 8):
+            raise TypeCheckError(
+                f"{expr.method_name}() count must be between 1 and 8, got {count_value}",
+                source_loc=count_arg.source_loc
+            )
+
+        # Return type is same as receiver type
+        expr.expr_type = receiver_type
         return expr.expr_type
 
     def check_function_address(self, expr: HIRFunctionAddress) -> TypeInfo:

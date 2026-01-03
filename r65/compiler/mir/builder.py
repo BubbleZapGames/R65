@@ -12,7 +12,7 @@ from r65.compiler.hir import (
     HIRIfStmt, HIRWhileStmt, HIRBreakStmt, HIRContinueStmt,
     HIRExpression, HIRIntegerLiteral, HIRBooleanLiteral, HIRIdentifier,
     HIRFunctionAddress, HIRRegister, HIRBinaryOp, HIRUnaryOp, HIRTypeCast, HIRAssignment,
-    HIRFunctionCall, HIRArrayIndex, HIRFieldAccess, HIRDereference, HIRAddressOf,
+    HIRFunctionCall, HIRMethodCall, HIRArrayIndex, HIRFieldAccess, HIRDereference, HIRAddressOf,
     HIRMatchExpression, HIRPattern, HIRLiteralPattern, HIREnumPattern, HIRWildcardPattern, HIRIdentifierPattern, HIROrPattern,
     RegisterLetBinding, VariableLetBinding,
     RegisterBinding, VariableBinding,
@@ -453,6 +453,9 @@ class MIRBuilder:
 
         elif isinstance(expr, HIRFunctionCall):
             return self.lower_function_call(expr)
+
+        elif isinstance(expr, HIRMethodCall):
+            return self.lower_method_call(expr)
 
         elif isinstance(expr, HIRTypeCast):
             return self.lower_type_cast(expr)
@@ -1588,6 +1591,51 @@ class MIRBuilder:
         # Return result (or None for void functions)
         return returns[0] if returns else None
 
+    def lower_method_call(self, call_expr: HIRMethodCall) -> VirtualRegister:
+        """
+        Lower method call (e.g., value.rotate_left(3)).
+
+        Currently only supports rotate_left and rotate_right methods.
+
+        Args:
+            call_expr: HIRMethodCall expression
+
+        Returns:
+            VirtualRegister holding the result
+        """
+        from r65.compiler.hir import HIRIntegerLiteral
+        from r65.compiler.mir.nodes import Rotate
+
+        # Lower the receiver (value being rotated)
+        receiver_value = self.lower_expression(call_expr.receiver)
+
+        # Get rotation count from argument (already validated as constant 1-8 in type checker)
+        count_arg = call_expr.args[0]
+        assert isinstance(count_arg, HIRIntegerLiteral), "Rotation count must be a constant"
+        count = count_arg.value
+
+        # Determine direction
+        if call_expr.method_name == 'rotate_left':
+            direction = 'left'
+        elif call_expr.method_name == 'rotate_right':
+            direction = 'right'
+        else:
+            raise Exception(f"Unknown rotate method: {call_expr.method_name}")
+
+        # Create result register
+        result_vreg = self.current_function.vreg_allocator.alloc(call_expr.expr_type, "rotate_result")
+
+        # Emit Rotate instruction
+        self.emit(Rotate(
+            dest=result_vreg,
+            source=receiver_value,
+            direction=direction,
+            count=count,
+            type_info=call_expr.expr_type
+        ))
+
+        return result_vreg
+
     def lower_if_statement(self, stmt: HIRIfStmt):
         r"""
         Lower if statement to conditional branches.
@@ -1711,8 +1759,19 @@ class MIRBuilder:
         if bit_test:
             value_expr, bit_number, inverted = bit_test
 
-            # Lower the value being tested
-            value = self.lower_expression(value_expr)
+            # OPTIMIZATION: For direct variable access (especially hardware registers),
+            # use MemoryLocation directly instead of loading the value
+            # This allows: BIT $4212 instead of: LDA $4212; STA temp; BIT temp
+            from r65.compiler.hir import HIRIdentifier
+
+            if isinstance(value_expr, HIRIdentifier) and self.has_explicit_location(value_expr.symbol):
+                # Direct variable access - use MemoryLocation to avoid load/store
+                # This optimization only works for static variables (especially hardware registers)
+                symbol = value_expr.symbol
+                value = self.get_memory_location(symbol)
+            else:
+                # Complex expression - need to evaluate it first
+                value = self.lower_expression(value_expr)
 
             # Only use BIT if value is not in a hardware register
             # BIT requires a memory operand

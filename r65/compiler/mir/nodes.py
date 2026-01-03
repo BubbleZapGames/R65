@@ -313,6 +313,27 @@ class BitTest(MIRInstruction):
         return f"BitTest {self.value} bit {self.test_bit}"
 
 
+@dataclass
+class Rotate(MIRInstruction):
+    """
+    Rotate operation (ROL/ROR instruction).
+
+    Rotates bits left or right through carry flag.
+    - ROL: shifts left, bit 7 → carry, carry → bit 0
+    - ROR: shifts right, bit 0 → carry, carry → bit 7
+
+    count is compile-time constant (1-8).
+    """
+    dest: Union[VirtualRegister, HardwareRegister]
+    source: Union[VirtualRegister, HardwareRegister]
+    direction: str  # 'left' or 'right'
+    count: int  # Number of rotations (1-8)
+    type_info: Any  # TypeInfo
+
+    def __repr__(self):
+        return f"{self.dest} = Rotate{self.direction.capitalize()} {self.source} by {self.count}"
+
+
 # ============================================================================
 # Control Flow
 # ============================================================================
