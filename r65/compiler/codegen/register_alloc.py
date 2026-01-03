@@ -45,6 +45,9 @@ class PhysicalLocation:
     # For IMMEDIATE: constant value
     immediate_value: Optional[int] = None
 
+    # For indexed addressing: 'X' or 'Y'
+    index_register: Optional[str] = None
+
     # Size in bytes
     size: int = 1
 

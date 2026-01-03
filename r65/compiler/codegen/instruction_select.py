@@ -57,6 +57,8 @@ class InstructionSelector:
             self.select_store(instr)
         elif isinstance(instr, Move):
             self.select_move(instr)
+        elif isinstance(instr, TypeConvert):
+            self.select_type_convert(instr)
         elif isinstance(instr, BinaryOp):
             self.select_binary_op(instr)
         elif isinstance(instr, UnaryOp):
@@ -312,6 +314,75 @@ class InstructionSelector:
                     # 8-bit move
                     self.emitter.emit_instruction("LDA", self._format_operand(src_loc))
                     self.emitter.emit_instruction("STA", self._format_operand(dest_loc))
+
+    def select_type_convert(self, instr: 'TypeConvert'):
+        """
+        Generate code for TypeConvert instruction.
+
+        Handles:
+        - Widening: u8→u16 (zero-extend), i8→i16 (sign-extend)
+        - Narrowing: u16→u8 (truncate to low byte)
+        - Reinterpret: u8↔i8 (no operation, same bits)
+
+        Args:
+            instr: TypeConvert instruction
+        """
+        src_operand = instr.source
+        dest_loc = self._get_operand_location(instr.dest)
+
+        # Get type information
+        source_type = str(instr.source_type)
+        target_type = str(instr.target_type)
+        source_size = 1 if source_type in ['u8', 'i8', 'bool'] else 2
+        target_size = 1 if target_type in ['u8', 'i8', 'bool'] else 2
+        source_signed = source_type.startswith('i')
+
+        # Case 1: Widening (8-bit → 16-bit)
+        if source_size == 1 and target_size == 2:
+            # Load source into A
+            if isinstance(src_operand, Immediate):
+                value = src_operand.value & 0xFF
+                self.emitter.emit_instruction("LDA", f"#${value:02X}")
+            else:
+                src_loc = self._get_operand_location(src_operand)
+                self.emitter.emit_instruction("LDA", self._format_operand(src_loc))
+
+            # Store low byte
+            self.emitter.emit_instruction("STA", self._format_operand(dest_loc))
+
+            if source_signed:
+                # Sign extension for i8 → i16
+                # If high bit is set (negative), extend with 0xFF, else 0x00
+                self.emitter.emit_instruction("AND", "#$80", "Check sign bit")
+                self.emitter.emit_instruction("BEQ", "+", "Branch if positive")
+                self.emitter.emit_instruction("LDA", "#$FF", "Negative: extend with $FF")
+                self.emitter.emit_instruction("BRA", "++")
+                self.emitter.emit_label("+")
+                self.emitter.emit_instruction("LDA", "#$00", "Positive: extend with $00")
+                self.emitter.emit_label("++")
+            else:
+                # Zero extension for u8 → u16
+                self.emitter.emit_instruction("LDA", "#$00", "Zero-extend high byte")
+
+            # Store high byte
+            dest_high = self._offset_location(dest_loc, 1)
+            self.emitter.emit_instruction("STA", self._format_operand(dest_high))
+
+        # Case 2: Narrowing (16-bit → 8-bit)
+        elif source_size == 2 and target_size == 1:
+            # Truncate to low byte - just copy low byte
+            if isinstance(src_operand, Immediate):
+                value = src_operand.value & 0xFF
+                self.emitter.emit_instruction("LDA", f"#${value:02X}")
+            else:
+                src_loc = self._get_operand_location(src_operand)
+                self.emitter.emit_instruction("LDA", self._format_operand(src_loc), "Load low byte")
+
+            self.emitter.emit_instruction("STA", self._format_operand(dest_loc))
+
+        # Case 3: Same size - should not happen (handled as Move in MIR builder)
+        else:
+            raise Exception(f"Unexpected type conversion: {source_type} to {target_type}")
 
     # ========================================================================
     # Arithmetic Operations
@@ -1199,16 +1270,27 @@ class InstructionSelector:
         elif isinstance(operand, HardwareRegister):
             return self.reg_alloc.get_hw_location(operand)
         elif isinstance(operand, MemoryLocation):
-            # Get address from memory allocator
-            alloc = self.mem_alloc.get_allocation(operand.symbol)
-            if alloc:
+            # Check if MemoryLocation has explicit address (for offsets)
+            if operand.address is not None:
+                # Use explicit address (already includes offset for arrays/structs)
                 return PhysicalLocation(
                     kind=LocationKind.MEMORY,
-                    memory_addr=alloc.address,
-                    size=alloc.size
+                    memory_addr=operand.address,
+                    size=1,  # Size determined by context
+                    index_register=operand.index_register  # Pass indexed addressing info
                 )
             else:
-                raise Exception(f"No allocation for symbol: {operand.symbol.name}")
+                # Get address from memory allocator
+                alloc = self.mem_alloc.get_allocation(operand.symbol)
+                if alloc:
+                    return PhysicalLocation(
+                        kind=LocationKind.MEMORY,
+                        memory_addr=alloc.address,
+                        size=alloc.size,
+                        index_register=operand.index_register  # Pass indexed addressing info
+                    )
+                else:
+                    raise Exception(f"No allocation for symbol: {operand.symbol.name}")
         elif isinstance(operand, Immediate):
             # Immediate value - return as immediate location
             return PhysicalLocation(
@@ -1234,14 +1316,21 @@ class InstructionSelector:
             # This shouldn't happen in normal code generation
             raise Exception(f"Cannot use hardware register as memory operand: {location.hw_register}")
         elif location.kind == LocationKind.SCRATCH:
-            return f"${location.scratch_addr:02X}"
+            base = f"${location.scratch_addr:02X}"
+            if location.index_register:
+                return f"{base},{location.index_register}"
+            return base
         elif location.kind == LocationKind.MEMORY:
             if location.memory_addr < 0x100:
                 # Zero-page
-                return f"${location.memory_addr:02X}"
+                base = f"${location.memory_addr:02X}"
             else:
                 # Absolute
-                return f"${location.memory_addr:04X}"
+                base = f"${location.memory_addr:04X}"
+            # Add index register if present (e.g., "$20,X")
+            if location.index_register:
+                return f"{base},{location.index_register}"
+            return base
         elif location.kind == LocationKind.STACK:
             # Stack-relative addressing using 65816 stack-relative mode
             # Format: $XX,S where XX is the offset from stack pointer

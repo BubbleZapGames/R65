@@ -301,7 +301,8 @@ class HIRBuilder:
         # Get static symbol
         static_symbol = self.symbol_table.lookup(static.name)
 
-        return hir.HIRStaticDecl(
+        # Create HIR node
+        hir_static = hir.HIRStaticDecl(
             name=static.name,
             is_mutable=static.is_mut,
             var_type=var_type,
@@ -309,6 +310,11 @@ class HIRBuilder:
             storage_attr=storage_attr,
             symbol=static_symbol
         )
+
+        # Update symbol's definition to point to HIR node (not AST node)
+        static_symbol.definition = hir_static
+
+        return hir_static
 
     def _build_const(self, const: ast.ConstDecl) -> hir.HIRConstDecl:
         """Build HIR const declaration from AST."""

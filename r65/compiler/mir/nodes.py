@@ -94,11 +94,14 @@ class MemoryLocation:
     address: Optional[int]  # Explicit address or None (auto-allocated)
     symbol: Any  # Symbol from symbol table
     is_volatile: bool = False  # True for #[hw] variables
+    index_register: Optional[str] = None  # 'X' or 'Y' for indexed addressing (e.g., LDA $20,X)
 
     def __repr__(self):
         if self.address is not None:
-            return f"[{self.storage_type}:${self.address:04X}]"
-        return f"[{self.storage_type}:{self.symbol.name}]"
+            indexed = f",{self.index_register}" if self.index_register else ""
+            return f"[{self.storage_type}:${self.address:04X}{indexed}]"
+        indexed = f",{self.index_register}" if self.index_register else ""
+        return f"[{self.storage_type}:{self.symbol.name}{indexed}]"
 
 
 # ============================================================================
@@ -161,6 +164,28 @@ class Move(MIRInstruction):
 
     def __repr__(self):
         return f"{self.dest} = Move {self.source} : {self.type_info}"
+
+
+@dataclass
+class TypeConvert(MIRInstruction):
+    """
+    Type conversion (cast) instruction.
+
+    dest = (target_type)source
+
+    Handles:
+    - Widening: u8→u16 (zero-extend), i8→i16 (sign-extend)
+    - Narrowing: u16→u8 (truncate)
+    - Reinterpret: u8↔i8 (same bits, different interpretation)
+    - Boolean: any→bool (0=false, ≠0=true), bool→int (normalize)
+    """
+    dest: Union[VirtualRegister, HardwareRegister]
+    source: Union[VirtualRegister, HardwareRegister, Immediate]
+    source_type: Any  # TypeInfo for source
+    target_type: Any  # TypeInfo for destination
+
+    def __repr__(self):
+        return f"{self.dest} = TypeConvert {self.source} from {self.source_type} to {self.target_type}"
 
 
 # ============================================================================

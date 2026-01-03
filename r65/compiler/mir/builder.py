@@ -18,11 +18,12 @@ from r65.compiler.hir import (
     SymbolKind,
     ModeTransition
 )
+from r65.compiler.hir.attributes import StorageKind
 
 from r65.compiler.mir.nodes import (
     MIRInstruction, MIRProgram, MIRFunction, BasicBlock,
     VirtualRegister, HardwareRegister, Immediate, FunctionPointer, MemoryLocation,
-    Load, Store, Move, BinaryOp, UnaryOp, Compare,
+    Load, Store, Move, TypeConvert, BinaryOp, UnaryOp, Compare,
     Jump, CondBranch, Return, ReturnFromInterrupt, Call, Argument, ArgumentMechanism,
     SetMode, SaveRegister, RestoreRegister,
     Push, Pull,
@@ -608,22 +609,25 @@ class MIRBuilder:
 
         # Widening conversions (8-bit → 16-bit)
         elif source_size == 1 and target_size == 2:
-            if source_signed:
-                # Sign extension: i8 → i16
-                # Strategy: Load into vreg, then sign-extend
-                # For now, emit a Move and rely on codegen to handle sign extension
-                # TODO: Add explicit sign-extension instruction or handle in codegen
-                self.emit(Move(dest=result, source=source_operand, type_info=target_type))
-            else:
-                # Zero extension: u8 → u16
-                # Just move - high byte will be zero
-                self.emit(Move(dest=result, source=source_operand, type_info=target_type))
+            # Emit TypeConvert instruction for widening
+            # Codegen will handle zero-extension (unsigned) or sign-extension (signed)
+            self.emit(TypeConvert(
+                dest=result,
+                source=source_operand,
+                source_type=source_type,
+                target_type=target_type
+            ))
             return result
 
         # Narrowing conversions (16-bit → 8-bit)
         elif source_size == 2 and target_size == 1:
-            # Truncate to low byte - just move, codegen will handle low byte extraction
-            self.emit(Move(dest=result, source=source_operand, type_info=target_type))
+            # Emit TypeConvert instruction for narrowing (truncation)
+            self.emit(TypeConvert(
+                dest=result,
+                source=source_operand,
+                source_type=source_type,
+                target_type=target_type
+            ))
             return result
 
         # Boolean conversions
@@ -691,13 +695,65 @@ class MIRBuilder:
             self.emit(Load(dest=result, source=elem_memloc, type_info=element_type))
             return result
         else:
-            # Variable index - need runtime address calculation
-            # This is more complex and requires:
-            # 1. Multiply index by element_size
-            # 2. Add to base address
-            # 3. Load from computed address
-            # For now, throw exception - this needs indexed addressing mode support
-            raise Exception("Variable array indexing not yet fully implemented - needs indexed addressing modes")
+            # Variable index - use indexed addressing mode
+            # Strategy:
+            # 1. Calculate offset = index * element_size (if element_size > 1)
+            # 2. Move offset to X register
+            # 3. Use indexed addressing: LDA base,X
+
+            offset_operand = index_operand
+
+            # If element size > 1, multiply index by element_size
+            if element_size > 1:
+                offset_vreg = self.current_function.vreg_allocator.alloc(
+                    element_type, "array_offset"
+                )
+                # Check if element_size is power of 2 - use shift instead of multiply
+                if element_size & (element_size - 1) == 0:  # Is power of 2
+                    # Calculate shift amount: log2(element_size)
+                    shift_amount = 0
+                    temp = element_size
+                    while temp > 1:
+                        shift_amount += 1
+                        temp >>= 1
+                    shift_immediate = Immediate(shift_amount)
+                    # offset = index << shift_amount
+                    self.emit(BinaryOp(
+                        dest=offset_vreg,
+                        left=index_operand,
+                        right=shift_immediate,
+                        op='<<',
+                        type_info=element_type
+                    ))
+                else:
+                    # Non-power-of-2: use multiplication
+                    size_immediate = Immediate(element_size)
+                    self.emit(BinaryOp(
+                        dest=offset_vreg,
+                        left=index_operand,
+                        right=size_immediate,
+                        op='*',
+                        type_info=element_type
+                    ))
+                offset_operand = offset_vreg
+
+            # Move offset to X register for indexed addressing
+            x_reg = HardwareRegister('X')
+            self.emit(Move(dest=x_reg, source=offset_operand, type_info=element_type))
+
+            # Create indexed memory location with X register
+            base_memloc = self.get_memory_location(array_symbol)
+            indexed_memloc = MemoryLocation(
+                storage_type=base_memloc.storage_type,
+                address=base_memloc.address,
+                symbol=array_symbol,
+                is_volatile=base_memloc.is_volatile,
+                index_register='X'  # Mark as indexed with X
+            )
+
+            # Emit load using indexed addressing (e.g., LDA $20,X)
+            self.emit(Load(dest=result, source=indexed_memloc, type_info=element_type))
+            return result
 
     def lower_field_access(self, expr: HIRFieldAccess) -> VirtualRegister:
         """
@@ -809,10 +865,115 @@ class MIRBuilder:
                 self.emit(Move(dest=hw_reg, source=value, type_info=expr.expr_type))
             return hw_reg
 
-        else:
-            # Unsupported target (array index, field access, etc.)
-            # Placeholder for future expansion
+        elif isinstance(expr.target, HIRFieldAccess):
+            # Field access assignment: struct.field = value
+            field_access = expr.target
+            field_offset = field_access.field_offset
+            if field_offset is None:
+                raise Exception(f"Field offset not computed for field: {field_access.field_name}")
+
+            # Get the struct symbol
+            if not isinstance(field_access.base, HIRIdentifier):
+                raise Exception(f"Field access only supports static structs currently, got: {type(field_access.base)}")
+
+            struct_symbol = field_access.base.symbol
+
+            # Get base memory location
+            base_memloc = self.get_memory_location(struct_symbol)
+
+            # Create offset memory location
+            field_memloc = self._create_offset_memloc(base_memloc, field_offset, struct_symbol)
+
+            # Emit store to the field location
+            self.emit(Store(source=value, dest=field_memloc, type_info=expr.expr_type))
             return value
+
+        elif isinstance(expr.target, HIRArrayIndex):
+            # Array index assignment: array[index] = value
+            array_index = expr.target
+            element_type = expr.expr_type
+            element_size = self._get_type_size(element_type)
+
+            # Lower index expression
+            index_operand = self.lower_expression(array_index.index)
+
+            # Get the array symbol
+            if not isinstance(array_index.array, HIRIdentifier):
+                raise Exception(f"Array indexing only supports static arrays currently, got: {type(array_index.array)}")
+
+            array_symbol = array_index.array.symbol
+
+            # Calculate offset and create memory location
+            if isinstance(index_operand, Immediate):
+                # Constant index - compute offset at compile time
+                offset = index_operand.value * element_size
+                base_memloc = self.get_memory_location(array_symbol)
+
+                # Create offset memory location
+                elem_memloc = self._create_offset_memloc(base_memloc, offset, array_symbol)
+
+                # Emit store to the element location
+                self.emit(Store(source=value, dest=elem_memloc, type_info=element_type))
+                return value
+            else:
+                # Variable index - use indexed addressing mode
+                offset_operand = index_operand
+
+                # If element size > 1, multiply index by element_size
+                if element_size > 1:
+                    offset_vreg = self.current_function.vreg_allocator.alloc(
+                        element_type, "array_offset"
+                    )
+                    # Check if element_size is power of 2 - use shift instead of multiply
+                    if element_size & (element_size - 1) == 0:  # Is power of 2
+                        # Calculate shift amount: log2(element_size)
+                        shift_amount = 0
+                        temp = element_size
+                        while temp > 1:
+                            shift_amount += 1
+                            temp >>= 1
+                        shift_immediate = Immediate(shift_amount)
+                        # offset = index << shift_amount
+                        self.emit(BinaryOp(
+                            dest=offset_vreg,
+                            left=index_operand,
+                            right=shift_immediate,
+                            op='<<',
+                            type_info=element_type
+                        ))
+                    else:
+                        # Non-power-of-2: use multiplication
+                        size_immediate = Immediate(element_size)
+                        self.emit(BinaryOp(
+                            dest=offset_vreg,
+                            left=index_operand,
+                            right=size_immediate,
+                            op='*',
+                            type_info=element_type
+                        ))
+                    offset_operand = offset_vreg
+
+                # Move offset to X register for indexed addressing
+                x_reg = HardwareRegister('X')
+                self.emit(Move(dest=x_reg, source=offset_operand, type_info=element_type))
+
+                # Create indexed memory location with X register
+                base_memloc = self.get_memory_location(array_symbol)
+                indexed_memloc = MemoryLocation(
+                    storage_type=base_memloc.storage_type,
+                    address=base_memloc.address,
+                    symbol=array_symbol,
+                    is_volatile=base_memloc.is_volatile,
+                    index_register='X'  # Mark as indexed with X
+                )
+
+                # Emit store using indexed addressing (e.g., STA $20,X)
+                self.emit(Store(source=value, dest=indexed_memloc, type_info=element_type))
+                return value
+
+        else:
+            # Unsupported target
+            raise Exception(f"Unsupported assignment target: {type(expr.target)}")
 
     def _emit_mode_transition(self, from_mode: ProcessorMode, to_mode: ProcessorMode):
         """
@@ -1480,11 +1641,12 @@ class MIRBuilder:
             # Check if definition has storage_attr (HIR node)
             if hasattr(static_decl, 'storage_attr') and static_decl.storage_attr:
                 storage_attr = static_decl.storage_attr
+                storage_type = storage_attr.storage_kind.value  # Get string value from enum
                 return MemoryLocation(
-                    storage_type=storage_attr.storage_type,
+                    storage_type=storage_type,
                     address=storage_attr.address,
                     symbol=symbol,
-                    is_volatile=storage_attr.storage_type == 'hw'
+                    is_volatile=storage_attr.storage_kind == StorageKind.HW
                 )
 
         # Default: unknown storage (will be allocated later)
