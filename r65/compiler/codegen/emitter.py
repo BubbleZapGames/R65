@@ -362,6 +362,22 @@ class AssemblyEmitter:
         """
         self.emit_line(f"    .DSB {size}, {fill_value}")
 
+    def emit_incbin(self, filepath: str, label: Optional[str] = None):
+        """
+        Emit binary file inclusion (.INCBIN directive).
+
+        Args:
+            filepath: Path to binary file to include
+            label: Optional label for the data
+
+        Generated:
+            LABEL:
+            .INCBIN "path/to/file.bin"
+        """
+        if label:
+            self.emit_label(label)
+        self.emit_line(f'    .INCBIN "{filepath}"')
+
     # ========================================================================
     # Interrupt Vectors
     # ========================================================================

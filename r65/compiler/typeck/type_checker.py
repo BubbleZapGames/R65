@@ -8,7 +8,7 @@ from typing import Optional
 from r65.compiler.hir import (
     HIRProgram, HIRFunctionDecl, HIRExpression, HIRStatement,
     HIRBinaryOp, HIRUnaryOp, HIRIntegerLiteral, HIRBooleanLiteral,
-    HIRIdentifier, HIRFunctionAddress, HIRRegister, HIRTypeCast, HIRFunctionCall,
+    HIRIdentifier, HIRFunctionAddress, HIRRegister, HIRIncludeBytesExpr, HIRTypeCast, HIRFunctionCall,
     HIRArrayIndex, HIRFieldAccess, HIRAssignment,
     HIRLetStmt, HIRExprStmt, HIRReturnStmt, HIRIfStmt, HIRWhileStmt,
     HIRStaticDecl, HIRConstDecl,
@@ -365,6 +365,17 @@ class TypeChecker:
 
         elif isinstance(expr, HIRAssignment):
             return self.check_assignment(expr)
+
+        elif isinstance(expr, HIRIncludeBytesExpr):
+            # include_bytes! returns an array of bytes
+            # The exact type will be inferred from context (variable declaration)
+            # For now, return a generic array type
+            from r65.compiler.hir.types import ArrayTypeInfo, BasicTypeInfo
+            elem_type = BasicTypeInfo(name='u8')
+            # Size is unknown here - will be validated against variable type
+            array_type = ArrayTypeInfo(element_type=elem_type, size=0)
+            expr.expr_type = array_type
+            return array_type
 
         else:
             raise TypeCheckError(

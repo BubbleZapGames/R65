@@ -320,6 +320,12 @@ class HIRRegister(HIRExpression):
 
 
 @dataclass
+class HIRIncludeBytesExpr(HIRExpression):
+    """Include binary data from file."""
+    path: str = ""  # Path to binary file
+
+
+@dataclass
 class HIRBinaryOp(HIRExpression):
     """Binary operation."""
     op: str = ""  # "+", "-", "*", "/", etc.

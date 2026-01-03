@@ -158,6 +158,59 @@ class SymbolDefinitionGenerator:
         self.emitter.emit_blank_line()
 
     # ========================================================================
+    # ROM Data Definitions
+    # ========================================================================
+
+    def emit_rom_data(self):
+        """
+        Emit ROM data with initializers.
+
+        For static variables in ROM with include_bytes! initializers,
+        emits .INCBIN directives.
+
+        Generated:
+            ; ============================================================================
+            ; ROM Data
+            ; ============================================================================
+            GRAPHICS_DATA:
+            .INCBIN "gfx.bin"
+        """
+        from r65.compiler.hir import HIRIncludeBytesExpr
+
+        allocations = self.allocator.get_allocations_by_type('rom')
+
+        if not allocations:
+            return
+
+        # Check if any ROM allocations have include_bytes initializers
+        has_rom_data = False
+        for alloc in allocations:
+            if hasattr(alloc.symbol, 'definition') and alloc.symbol.definition:
+                static_decl = alloc.symbol.definition
+                if hasattr(static_decl, 'initializer') and static_decl.initializer:
+                    if isinstance(static_decl.initializer, HIRIncludeBytesExpr):
+                        has_rom_data = True
+                        break
+
+        if not has_rom_data:
+            return
+
+        self.emitter.emit_section_header("ROM Data")
+
+        # Emit ROM data for each allocation with include_bytes initializer
+        for alloc in allocations:
+            if hasattr(alloc.symbol, 'definition') and alloc.symbol.definition:
+                static_decl = alloc.symbol.definition
+                if hasattr(static_decl, 'initializer') and static_decl.initializer:
+                    if isinstance(static_decl.initializer, HIRIncludeBytesExpr):
+                        # Emit label and .INCBIN directive
+                        label = f"{alloc.symbol.name}_data"
+                        filepath = static_decl.initializer.path
+                        self.emitter.emit_incbin(filepath, label=label)
+
+        self.emitter.emit_blank_line()
+
+    # ========================================================================
     # All Definitions
     # ========================================================================
 
@@ -173,6 +226,7 @@ class SymbolDefinitionGenerator:
         2. Direct Page (.DEFINE)
         3. Hardware Registers (.DEFINE)
         4. RAM (.DEFINE)
+        5. ROM Data (.INCBIN)
         """
         # Constants first
         if constants:
@@ -182,6 +236,9 @@ class SymbolDefinitionGenerator:
         self.emit_zeropage_definitions()
         self.emit_hw_definitions()
         self.emit_ram_definitions()
+
+        # ROM data with initializers
+        self.emit_rom_data()
 
     # ========================================================================
     # Helper Methods

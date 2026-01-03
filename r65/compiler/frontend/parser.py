@@ -487,6 +487,13 @@ class ASTBuilder(Transformer):
         """Register reference."""
         return ast.Register(name=items[0].value)
 
+    def include_bytes_expr(self, items):
+        """Include bytes expression (e.g., include_bytes!("data.bin"))."""
+        # items: [INCLUDE_BYTES, "!", "(", STRING, ")"]
+        # STRING token is at index 3, value includes quotes
+        path = items[3].value.strip('"')
+        return ast.IncludeBytesExpr(path=path)
+
     def paren(self, items):
         """Parenthesized expression."""
         return items[0]  # Just return the inner expression

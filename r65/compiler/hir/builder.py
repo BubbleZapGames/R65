@@ -585,6 +585,10 @@ class HIRBuilder:
             symbol = self.symbol_table.lookup(expr.name)
             return hir.HIRRegister(name=expr.name, symbol=symbol)
 
+        elif isinstance(expr, ast.IncludeBytesExpr):
+            # Include binary data from file
+            return hir.HIRIncludeBytesExpr(path=expr.path)
+
         elif isinstance(expr, ast.EnumVariantExpr):
             # Resolve enum variant to integer literal
             # Lookup enum type

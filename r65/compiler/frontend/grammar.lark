@@ -162,6 +162,7 @@ arg_list: expr ("," expr)* ","?
 
 ?primary: INTEGER                               -> integer
         | BOOLEAN                               -> boolean
+        | INCLUDE_BYTES "!" "(" STRING ")"      -> include_bytes_expr
         | IDENT "::" IDENT                      -> enum_variant_expr
         | IDENT                                 -> identifier
         | REGISTER                              -> register_ref
@@ -190,6 +191,7 @@ type_list: type_expr ("," type_expr)* ","?
 
 // Keywords used in parser rules - priority .10 to match before IDENT
 // Order: longer keywords first to avoid partial matches
+INCLUDE_BYTES.10: /include_bytes\b/
 CONTINUE.10: /continue\b/
 INCLUDE.10: /include\b/
 RETURN.10: /return\b/
@@ -288,7 +290,7 @@ HASH: "#"
 // Identifiers (lowest priority)
 // Use negative lookahead to exclude all keywords, registers, types, and booleans
 // Identifiers - lowest priority, with negative lookahead to exclude all keywords, registers, types, and booleans
-IDENT.1: /(?!(continue|include|return|struct|static|break|const|while|enum|loop|type|else|near|let|mut|asm|far|fn|if|as|abstract|override|unsized|virtual|typeof|unsafe|extern|become|async|await|match|where|super|trait|yield|crate|final|macro|impl|move|priv|self|Self|SEP|REP|box|dyn|for|mod|mul|div|pub|ref|shl|shr|stp|try|use|wai|mvn|mvp|in|do|STATUS|DBR|PBR|bool|u16|i16|u8|i8|true|false|[AXYDS])$)[a-zA-Z_][a-zA-Z0-9_]*/
+IDENT.1: /(?!(include_bytes|continue|include|return|struct|static|break|const|while|enum|loop|type|else|near|let|mut|asm|far|fn|if|as|abstract|override|unsized|virtual|typeof|unsafe|extern|become|async|await|match|where|super|trait|yield|crate|final|macro|impl|move|priv|self|Self|SEP|REP|box|dyn|for|mod|mul|div|pub|ref|shl|shr|stp|try|use|wai|mvn|mvp|in|do|STATUS|DBR|PBR|bool|u16|i16|u8|i8|true|false|[AXYDS])$)[a-zA-Z_][a-zA-Z0-9_]*/
 
 // Imports and ignores
 %import common.ESCAPED_STRING

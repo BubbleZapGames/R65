@@ -297,6 +297,12 @@ class Register(Expression):
 
 
 @dataclass
+class IncludeBytesExpr(Expression):
+    """Include binary data from file (e.g., include_bytes!("data.bin"))."""
+    path: str
+
+
+@dataclass
 class BinaryOp(Expression):
     """Binary operation."""
     op: str  # "+", "-", "*", "/", etc.
