@@ -390,3 +390,62 @@ class HIRAssignment(HIRExpression):
     """Assignment expression."""
     target: Optional[HIRExpression] = None  # Must be lvalue
     value: Optional[HIRExpression] = None
+
+
+# ============================================================================
+# Pattern Matching
+# ============================================================================
+
+@dataclass
+class HIRPattern(ASTNode):
+    """Base class for HIR pattern nodes."""
+    pass
+
+
+@dataclass
+class HIRLiteralPattern(HIRPattern):
+    """Literal pattern (integer or boolean)."""
+    value: Union[int, bool] = 0
+
+
+@dataclass
+class HIREnumPattern(HIRPattern):
+    """Enum variant pattern."""
+    enum_name: str = ""
+    variant_name: str = ""
+    variant_value: Optional[int] = None  # Resolved during HIR building
+
+
+@dataclass
+class HIRWildcardPattern(HIRPattern):
+    """Wildcard pattern (_) - matches anything."""
+    pass
+
+
+@dataclass
+class HIRIdentifierPattern(HIRPattern):
+    """Identifier pattern - binds value to variable."""
+    name: str = ""
+    symbol: Optional[Any] = None  # Will be Symbol
+
+
+@dataclass
+class HIROrPattern(HIRPattern):
+    """Or pattern (p1 | p2 | ...)."""
+    patterns: List[HIRPattern] = field(default_factory=list)
+
+
+@dataclass
+class HIRMatchArm(ASTNode):
+    """Single arm of a match expression."""
+    pattern: Optional[HIRPattern] = None
+    body: Optional[HIRExpression] = None
+    # Scope for pattern bindings
+    scope_id: Optional[int] = None
+
+
+@dataclass
+class HIRMatchExpression(HIRExpression):
+    """Match expression."""
+    scrutinee: Optional[HIRExpression] = None  # Expression being matched
+    arms: List[HIRMatchArm] = field(default_factory=list)

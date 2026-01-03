@@ -681,12 +681,83 @@ class HIRBuilder:
             # Create assignment: target = (target op value)
             return hir.HIRAssignment(target=target, value=binary_op)
 
+        elif isinstance(expr, ast.MatchExpression):
+            # Build match expression
+            return self._build_match_expression(expr)
+
         else:
             raise HIRError(f"Unknown expression type: {type(expr).__name__}")
 
     # =========================================================================
     # Helpers
     # =========================================================================
+
+    def _build_match_expression(self, expr: ast.MatchExpression) -> hir.HIRMatchExpression:
+        """Build HIR match expression from AST."""
+        # Build scrutinee
+        scrutinee = self._build_expression(expr.scrutinee)
+
+        # Build each arm
+        arms = []
+        for ast_arm in expr.arms:
+            # Enter new scope for pattern bindings
+            scope_id = self.symbol_table.enter_scope(ScopeKind.BLOCK)
+
+            # Build pattern (may create bindings in scope)
+            pattern = self._build_pattern(ast_arm.pattern)
+
+            # Build body expression
+            body = self._build_expression(ast_arm.body)
+
+            # Exit scope
+            self.symbol_table.exit_scope()
+
+            arms.append(hir.HIRMatchArm(pattern=pattern, body=body, scope_id=scope_id))
+
+        return hir.HIRMatchExpression(scrutinee=scrutinee, arms=arms)
+
+    def _build_pattern(self, pattern: ast.Pattern) -> hir.HIRPattern:
+        """Build HIR pattern from AST pattern."""
+        if isinstance(pattern, ast.LiteralPattern):
+            return hir.HIRLiteralPattern(value=pattern.value)
+
+        elif isinstance(pattern, ast.EnumPattern):
+            # Resolve enum variant value
+            enum_symbol = self.symbol_table.lookup(pattern.enum_name)
+            if not enum_symbol or enum_symbol.kind != SymbolKind.ENUM:
+                raise HIRError(f"Undefined enum: {pattern.enum_name}")
+
+            qualified_name = f"{pattern.enum_name}::{pattern.variant_name}"
+            variant_symbol = self.symbol_table.lookup(qualified_name)
+            if not variant_symbol or variant_symbol.kind != SymbolKind.ENUM_VARIANT:
+                raise HIRError(f"Undefined enum variant: {qualified_name}")
+
+            variant_value = variant_symbol.const_value
+            return hir.HIREnumPattern(
+                enum_name=pattern.enum_name,
+                variant_name=pattern.variant_name,
+                variant_value=variant_value
+            )
+
+        elif isinstance(pattern, ast.WildcardPattern):
+            return hir.HIRWildcardPattern()
+
+        elif isinstance(pattern, ast.IdentifierPattern):
+            # Create a new binding in current scope
+            # Determine type from scrutinee during type checking
+            symbol = self.symbol_table.define(
+                name=pattern.name,
+                kind=SymbolKind.LOCAL_VAR,
+                var_type=None  # Will be set during type checking
+            )
+            return hir.HIRIdentifierPattern(name=pattern.name, symbol=symbol)
+
+        elif isinstance(pattern, ast.OrPattern):
+            patterns = [self._build_pattern(p) for p in pattern.patterns]
+            return hir.HIROrPattern(patterns=patterns)
+
+        else:
+            raise HIRError(f"Unknown pattern type: {type(pattern).__name__}")
 
     def _extract_attributes(self, processed_attrs: list) -> dict:
         """Extract specific attribute types from processed attributes list.

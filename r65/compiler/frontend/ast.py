@@ -373,6 +373,61 @@ class CompoundAssignment(Expression):
 
 
 # ============================================================================
+# Pattern Matching
+# ============================================================================
+
+@dataclass
+class Pattern(ASTNode):
+    """Base class for pattern nodes."""
+    pass
+
+
+@dataclass
+class LiteralPattern(Pattern):
+    """Literal pattern (integer or boolean)."""
+    value: Union[int, bool]
+
+
+@dataclass
+class EnumPattern(Pattern):
+    """Enum variant pattern (e.g., State::Idle)."""
+    enum_name: str
+    variant_name: str
+
+
+@dataclass
+class WildcardPattern(Pattern):
+    """Wildcard pattern (_)."""
+    pass
+
+
+@dataclass
+class IdentifierPattern(Pattern):
+    """Identifier pattern (binds value to variable)."""
+    name: str
+
+
+@dataclass
+class OrPattern(Pattern):
+    """Or pattern (pattern1 | pattern2 | ...)."""
+    patterns: List[Pattern]
+
+
+@dataclass
+class MatchArm(ASTNode):
+    """Single arm of a match expression."""
+    pattern: Pattern
+    body: Expression
+
+
+@dataclass
+class MatchExpression(Expression):
+    """Match expression."""
+    scrutinee: Expression  # Expression being matched
+    arms: List[MatchArm]
+
+
+# ============================================================================
 # Utility Functions
 # ============================================================================
 

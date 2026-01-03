@@ -499,6 +499,56 @@ class ASTBuilder(Transformer):
         return items[0]  # Just return the inner expression
 
     # ========================================================================
+    # Pattern Matching
+    # ========================================================================
+
+    def match_expr(self, items):
+        """Match expression."""
+        items = self._filter_tokens(items)
+        # items[0] is scrutinee, rest are match arms
+        scrutinee = items[0]
+        arms = items[1:]
+        return ast.MatchExpression(scrutinee=scrutinee, arms=arms)
+
+    def match_arm(self, items):
+        """Match arm."""
+        items = self._filter_tokens(items)
+        # items[0] is pattern, items[1] is body expression
+        return ast.MatchArm(pattern=items[0], body=items[1])
+
+    def pattern_literal(self, items):
+        """Literal pattern."""
+        items = self._filter_tokens(items, keep_types={'INTEGER', 'BOOLEAN'})
+        token = items[0]
+        if token.type == 'INTEGER':
+            value = self._parse_integer(token.value)
+        else:  # BOOLEAN
+            value = token.value == 'true'
+        return ast.LiteralPattern(value=value)
+
+    def pattern_enum(self, items):
+        """Enum variant pattern."""
+        items = self._filter_tokens(items, keep_types={'IDENT'})
+        return ast.EnumPattern(enum_name=items[0].value, variant_name=items[1].value)
+
+    def pattern_wildcard(self, items):
+        """Wildcard pattern (_)."""
+        return ast.WildcardPattern()
+
+    def pattern_ident(self, items):
+        """Identifier pattern."""
+        items = self._filter_tokens(items, keep_types={'IDENT'})
+        return ast.IdentifierPattern(name=items[0].value)
+
+    def pattern_or(self, items):
+        """Or pattern (pattern1 | pattern2 | ...)."""
+        items = self._filter_tokens(items)
+        if len(items) == 1:
+            # Single pattern, not an or-pattern
+            return items[0]
+        return ast.OrPattern(patterns=items)
+
+    # ========================================================================
     # Operation Handler Factories
     # ========================================================================
 

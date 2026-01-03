@@ -90,6 +90,25 @@ while_stmt: WHILE expr block
 
 asm_stmt: ASM "!" "(" STRING ("," STRING)* ")" ";"
 
+// Match expression
+match_expr: MATCH expr "{" match_arm ("," match_arm)* ","? "}"
+match_arm: pattern "=>" expr
+
+// Patterns
+?pattern: pattern_or
+
+pattern_or: pattern_primary ("|" pattern_primary)*
+
+?pattern_primary: pattern_literal
+                | pattern_enum
+                | pattern_wildcard
+                | pattern_ident
+
+pattern_literal: INTEGER | BOOLEAN
+pattern_enum: IDENT "::" IDENT
+pattern_wildcard: "_"
+pattern_ident: IDENT
+
 // Expressions (precedence from low to high)
 ?expr: assignment
 
@@ -169,6 +188,7 @@ arg_list: expr ("," expr)* ","?
         | IDENT                                 -> identifier
         | REGISTER                              -> register_ref
         | "(" expr ")"                          -> paren
+        | match_expr
 
 // Types
 ?type_expr: type_basic
@@ -202,6 +222,7 @@ STATIC.10: /static\b/
 BREAK.10: /break\b/
 CONST.10: /const\b/
 WHILE.10: /while\b/
+MATCH.10: /match\b/
 ENUM.10: /enum\b/
 LOOP.10: /loop\b/
 TYPE.10: /type\b/
@@ -217,7 +238,7 @@ AS.10: /as\b/
 
 // Reserved keywords (not used in parser, but reserved for future use)
 // Includes built-in functions and Rust reserved words
-KEYWORD.10: /abstract\b/ | /override\b/ | /unsized\b/ | /virtual\b/ | /typeof\b/ | /unsafe\b/ | /extern\b/ | /become\b/ | /async\b/ | /await\b/ | /match\b/ | /where\b/ | /super\b/ | /trait\b/ | /yield\b/ | /crate\b/ | /final\b/ | /macro\b/ | /impl\b/ | /move\b/ | /priv\b/ | /self\b/ | /Self\b/ | /SEP\b/ | /REP\b/ | /box\b/ | /dyn\b/ | /for\b/ | /mod\b/ | /mul\b/ | /div\b/ | /pub\b/ | /ref\b/ | /shl\b/ | /shr\b/ | /stp\b/ | /try\b/ | /use\b/ | /wai\b/ | /mvn\b/ | /mvp\b/ | /in\b/ | /do\b/
+KEYWORD.10: /abstract\b/ | /override\b/ | /unsized\b/ | /virtual\b/ | /typeof\b/ | /unsafe\b/ | /extern\b/ | /become\b/ | /async\b/ | /await\b/ | /where\b/ | /super\b/ | /trait\b/ | /yield\b/ | /crate\b/ | /final\b/ | /macro\b/ | /impl\b/ | /move\b/ | /priv\b/ | /self\b/ | /Self\b/ | /SEP\b/ | /REP\b/ | /box\b/ | /dyn\b/ | /for\b/ | /mod\b/ | /mul\b/ | /div\b/ | /pub\b/ | /ref\b/ | /shl\b/ | /shr\b/ | /stp\b/ | /try\b/ | /use\b/ | /wai\b/ | /mvn\b/ | /mvp\b/ | /in\b/ | /do\b/
 
 // Booleans
 BOOLEAN.10: /true\b/ | /false\b/

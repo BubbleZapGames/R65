@@ -59,6 +59,16 @@ from r65.compiler.hir.nodes import (
     HIRAssignment,
     HIRFunctionAddress,
 
+    # Pattern Matching
+    HIRPattern,
+    HIRLiteralPattern,
+    HIREnumPattern,
+    HIRWildcardPattern,
+    HIRIdentifierPattern,
+    HIROrPattern,
+    HIRMatchArm,
+    HIRMatchExpression,
+
     # Bindings
     ParameterBinding,
     RegisterBinding,
@@ -125,6 +135,16 @@ __all__ = [
     'HIRAddressOf',
     'HIRAssignment',
     'HIRFunctionAddress',
+
+    # Pattern Matching
+    'HIRPattern',
+    'HIRLiteralPattern',
+    'HIREnumPattern',
+    'HIRWildcardPattern',
+    'HIRIdentifierPattern',
+    'HIROrPattern',
+    'HIRMatchArm',
+    'HIRMatchExpression',
 
     # Bindings
     'ParameterBinding',
