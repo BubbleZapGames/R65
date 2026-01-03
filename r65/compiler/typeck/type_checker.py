@@ -8,7 +8,7 @@ from typing import Optional
 from r65.compiler.hir import (
     HIRProgram, HIRFunctionDecl, HIRExpression, HIRStatement,
     HIRBinaryOp, HIRUnaryOp, HIRIntegerLiteral, HIRBooleanLiteral,
-    HIRIdentifier, HIRRegister, HIRTypeCast, HIRFunctionCall,
+    HIRIdentifier, HIRFunctionAddress, HIRRegister, HIRTypeCast, HIRFunctionCall,
     HIRArrayIndex, HIRFieldAccess, HIRAssignment,
     HIRLetStmt, HIRExprStmt, HIRReturnStmt, HIRIfStmt, HIRWhileStmt,
     HIRStaticDecl, HIRConstDecl,
@@ -58,6 +58,87 @@ class TypeChecker:
         """Emit a type checking warning."""
         warning = TypeCheckWarning(message, source_loc)
         self.warnings.append(warning)
+
+    # ========================================================================
+    # Helper Methods
+    # ========================================================================
+
+    def _lookup_function_decl(self, func_name: str, source_loc=None) -> HIRFunctionDecl:
+        """
+        Look up function declaration by name.
+
+        Args:
+            func_name: Name of function to find
+            source_loc: Source location for error reporting
+
+        Returns:
+            HIRFunctionDecl
+
+        Raises:
+            TypeCheckError: If function not found
+        """
+        for decl in self.program.declarations:
+            if isinstance(decl, HIRFunctionDecl) and decl.name == func_name:
+                return decl
+
+        raise TypeCheckError(
+            f"Function '{func_name}' not found",
+            source_loc=source_loc
+        )
+
+    def _get_mode_at(self, stmt_or_expr) -> ProcessorMode:
+        """
+        Get processor mode at a statement or expression.
+
+        Args:
+            stmt_or_expr: Statement or expression node
+
+        Returns:
+            ProcessorMode (from mode tracker if available, else current mode)
+        """
+        if self.mode_tracker:
+            return self.mode_tracker.get_mode_at_statement(stmt_or_expr)
+        return self.current_mode
+
+    def _require_boolean_type(self, expr_type: TypeInfo, context: str, source_loc=None):
+        """
+        Validate that a type is boolean, raise error if not.
+
+        Args:
+            expr_type: Type to check
+            context: Context string for error message (e.g., "if condition")
+            source_loc: Source location for error
+
+        Raises:
+            TypeCheckError: If type is not boolean
+        """
+        if not TypeUtils.is_boolean_type(expr_type):
+            raise TypeCheckError(
+                f"{context} must be boolean, found {expr_type}",
+                source_loc=source_loc
+            )
+
+    def _require_integer_type(self, expr_type: TypeInfo, context: str, source_loc=None):
+        """
+        Validate that a type is integer, raise error if not.
+
+        Args:
+            expr_type: Type to check
+            context: Context string for error message (e.g., "array index")
+            source_loc: Source location for error
+
+        Raises:
+            TypeCheckError: If type is not integer
+        """
+        if not TypeUtils.is_integer_type(expr_type):
+            raise TypeCheckError(
+                f"{context} must be integer, found {expr_type}",
+                source_loc=source_loc
+            )
+
+    # ========================================================================
+    # Main Type Checking
+    # ========================================================================
 
     def check(self):
         """Perform type checking on entire program."""
@@ -147,11 +228,7 @@ class TypeChecker:
         elif isinstance(stmt, HIRIfStmt):
             # Check condition
             cond_type = self.check_expression(stmt.condition)
-            if not TypeUtils.is_boolean_type(cond_type):
-                raise TypeCheckError(
-                    f"If condition must be boolean, found {cond_type}",
-                    source_loc=stmt.condition.source_loc
-                )
+            self._require_boolean_type(cond_type, "If condition", stmt.condition.source_loc)
 
             # Check branches
             self.check_block(stmt.then_block)
@@ -164,20 +241,13 @@ class TypeChecker:
         elif isinstance(stmt, HIRWhileStmt):
             if stmt.condition:
                 cond_type = self.check_expression(stmt.condition)
-                if not TypeUtils.is_boolean_type(cond_type):
-                    raise TypeCheckError(
-                        f"While condition must be boolean, found {cond_type}",
-                        source_loc=stmt.condition.source_loc
-                    )
+                self._require_boolean_type(cond_type, "While condition", stmt.condition.source_loc)
             self.check_block(stmt.body)
 
     def check_let_statement(self, stmt: HIRLetStmt):
         """Type check let binding."""
         # Get mode at this statement
-        if self.mode_tracker:
-            mode = self.mode_tracker.get_mode_at_statement(stmt)
-        else:
-            mode = self.current_mode
+        mode = self._get_mode_at(stmt)
 
         # Determine variable type
         if stmt.var_type:
@@ -261,11 +331,7 @@ class TypeChecker:
 
         elif isinstance(expr, HIRRegister):
             # Get register type from current mode
-            if self.mode_tracker:
-                mode = self.mode_tracker.get_mode_at_statement(expr)
-            else:
-                mode = self.current_mode
-
+            mode = self._get_mode_at(expr)
             reg_type = mode.get_register_type(expr.name)
             if reg_type is None:
                 raise TypeCheckError(
@@ -275,6 +341,9 @@ class TypeChecker:
 
             expr.expr_type = reg_type
             return reg_type
+
+        elif isinstance(expr, HIRFunctionAddress):
+            return self.check_function_address(expr)
 
         elif isinstance(expr, HIRBinaryOp):
             return self.check_binary_op(expr)
@@ -342,16 +411,8 @@ class TypeChecker:
 
         elif expr.op in ['&&', '||']:
             # Logical: operands must be bool
-            if not TypeUtils.is_boolean_type(left_type):
-                raise TypeCheckError(
-                    f"Left operand of '{expr.op}' must be bool, found {left_type}",
-                    source_loc=expr.left.source_loc
-                )
-            if not TypeUtils.is_boolean_type(right_type):
-                raise TypeCheckError(
-                    f"Right operand of '{expr.op}' must be bool, found {right_type}",
-                    source_loc=expr.right.source_loc
-                )
+            self._require_boolean_type(left_type, f"Left operand of '{expr.op}'", expr.left.source_loc)
+            self._require_boolean_type(right_type, f"Right operand of '{expr.op}'", expr.right.source_loc)
 
             expr.expr_type = BasicTypeInfo('bool')
             return expr.expr_type
@@ -368,29 +429,17 @@ class TypeChecker:
 
         if expr.op == '!':
             # Logical NOT: operand must be bool
-            if not TypeUtils.is_boolean_type(operand_type):
-                raise TypeCheckError(
-                    f"Operand of '!' must be bool, found {operand_type}",
-                    source_loc=expr.operand.source_loc
-                )
+            self._require_boolean_type(operand_type, "Operand of '!'", expr.operand.source_loc)
             expr.expr_type = BasicTypeInfo('bool')
 
         elif expr.op == '~':
             # Bitwise NOT: operand must be integer
-            if not TypeUtils.is_integer_type(operand_type):
-                raise TypeCheckError(
-                    f"Operand of '~' must be integer, found {operand_type}",
-                    source_loc=expr.operand.source_loc
-                )
+            self._require_integer_type(operand_type, "Operand of '~'", expr.operand.source_loc)
             expr.expr_type = operand_type
 
         elif expr.op == '-':
             # Negation: operand must be integer
-            if not TypeUtils.is_integer_type(operand_type):
-                raise TypeCheckError(
-                    f"Operand of '-' must be integer, found {operand_type}",
-                    source_loc=expr.operand.source_loc
-                )
+            self._require_integer_type(operand_type, "Operand of '-'", expr.operand.source_loc)
             expr.expr_type = operand_type
 
         else:
@@ -419,56 +468,107 @@ class TypeChecker:
         """
         Type check function call.
 
+        Supports both:
+        - Direct calls: expr.func is HIRIdentifier pointing to function
+        - Indirect calls: expr.func is expression with function pointer type
+
         Checks:
         - Argument types match parameters
         - Return type
-        - Mode compatibility between caller and callee
+        - Mode compatibility between caller and callee (for direct calls)
         """
-        # Get function symbol and declaration
-        if not isinstance(expr.func, HIRIdentifier):
-            raise TypeCheckError(
-                "Function pointers not yet supported",
-                source_loc=expr.func.source_loc if hasattr(expr.func, 'source_loc') else None
-            )
+        from r65.compiler.hir.types import FunctionTypeInfo
 
-        func_symbol = expr.func.symbol
+        # Type check the function expression
+        func_type = self.check_expression(expr.func)
 
-        # Look up HIR function declaration from program
-        func_decl = None
-        for decl in self.program.declarations:
-            if isinstance(decl, HIRFunctionDecl) and decl.name == func_symbol.name:
-                func_decl = decl
-                break
+        # Handle direct call (HIRIdentifier)
+        if isinstance(expr.func, HIRIdentifier):
+            func_symbol = expr.func.symbol
 
-        if not func_decl:
-            raise TypeCheckError(
-                f"Function '{func_symbol.name}' not found",
-                source_loc=expr.source_loc
-            )
+            # Look up HIR function declaration from program
+            func_decl = self._lookup_function_decl(func_symbol.name, expr.source_loc)
 
-        # Check argument count
-        if len(expr.args) != len(func_decl.parameters):
-            raise TypeCheckError(
-                f"Function '{func_symbol.name}' expects {len(func_decl.parameters)} arguments, got {len(expr.args)}",
-                source_loc=expr.source_loc
-            )
+            # Check argument count
+            if len(expr.args) != len(func_decl.parameters):
+                raise TypeCheckError(
+                    f"Function '{func_symbol.name}' expects {len(func_decl.parameters)} arguments, got {len(expr.args)}",
+                    source_loc=expr.source_loc
+                )
 
-        # Type check each argument
-        for arg, param in zip(expr.args, func_decl.parameters):
-            arg_type = self.check_expression(arg)
-            # TODO: Check arg_type matches param.param_type
+            # Type check each argument
+            for arg, param in zip(expr.args, func_decl.parameters):
+                arg_type = self.check_expression(arg)
+                # TODO: Check arg_type matches param.param_type
 
-        # Check mode compatibility
-        self._check_call_mode_compatibility(func_symbol.name, func_decl, expr.source_loc)
+            # Check mode compatibility (only for direct calls)
+            self._check_call_mode_compatibility(func_symbol.name, func_decl, expr.source_loc)
 
-        # Set return type
-        if func_decl.return_type:
-            expr.expr_type = func_decl.return_type
+            # Set return type
+            if func_decl.return_type:
+                expr.expr_type = func_decl.return_type
+            else:
+                # Void function
+                expr.expr_type = BasicTypeInfo('void')
+
+        # Handle indirect call (function pointer)
+        elif isinstance(func_type, FunctionTypeInfo):
+            # Check argument count matches function type
+            if len(expr.args) != len(func_type.param_types):
+                raise TypeCheckError(
+                    f"Function pointer expects {len(func_type.param_types)} arguments, got {len(expr.args)}",
+                    source_loc=expr.source_loc
+                )
+
+            # Type check each argument against function type
+            for arg, param_type in zip(expr.args, func_type.param_types):
+                arg_type = self.check_expression(arg)
+                # TODO: Check arg_type matches param_type
+
+            # Set return type from function type
+            if func_type.return_type:
+                expr.expr_type = func_type.return_type
+            else:
+                expr.expr_type = BasicTypeInfo('void')
+
         else:
-            # Void function
-            expr.expr_type = BasicTypeInfo('void')
+            raise TypeCheckError(
+                f"Cannot call expression of type {func_type}, expected function or function pointer",
+                source_loc=expr.source_loc
+            )
 
         return expr.expr_type
+
+    def check_function_address(self, expr: HIRFunctionAddress) -> TypeInfo:
+        """
+        Type check function address expression.
+
+        Returns a FunctionTypeInfo representing the function pointer type.
+        """
+        from r65.compiler.hir.types import FunctionTypeInfo
+
+        # Look up function symbol
+        func_symbol = expr.symbol
+        if not func_symbol:
+            raise TypeCheckError(
+                f"Function '{expr.function_name}' not resolved",
+                source_loc=expr.source_loc
+            )
+
+        # Find function declaration
+        func_decl = self._lookup_function_decl(func_symbol.name, expr.source_loc)
+
+        # Build function type from declaration
+        param_types = [param.param_type for param in func_decl.parameters]
+
+        func_type = FunctionTypeInfo(
+            is_far=func_decl.is_far,
+            param_types=param_types,
+            return_type=func_decl.return_type
+        )
+
+        expr.expr_type = func_type
+        return func_type
 
     def _check_call_mode_compatibility(self, func_name: str, func_decl: HIRFunctionDecl, source_loc):
         """
@@ -531,11 +631,7 @@ class TypeChecker:
             )
 
         # Index must be integer
-        if not TypeUtils.is_integer_type(index_type):
-            raise TypeCheckError(
-                f"Array index must be integer, found {index_type}",
-                source_loc=expr.index.source_loc
-            )
+        self._require_integer_type(index_type, "Array index", expr.index.source_loc)
 
         # Constant index bounds checking
         if expr.original_ast and self.const_evaluator.is_constant(expr.original_ast.index):

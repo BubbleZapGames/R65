@@ -86,6 +86,24 @@ class ASTBuilder(Transformer):
                     f"Did you mean '{register}'? Register names are case-sensitive and must be uppercase."
                 )
 
+    def _collect_attributes(self, items: list, start_idx: int):
+        """
+        Collect attributes from items list starting at index.
+
+        Args:
+            items: Filtered items list
+            start_idx: Starting index
+
+        Returns:
+            Tuple of (attributes_list, next_index)
+        """
+        attrs = []
+        idx = start_idx
+        while idx < len(items) and isinstance(items[idx], ast.Attribute):
+            attrs.append(items[idx])
+            idx += 1
+        return attrs, idx
+
     # ========================================================================
     # Program
     # ========================================================================
@@ -102,16 +120,11 @@ class ASTBuilder(Transformer):
         """Function declaration."""
         items = self._filter_tokens(items)
 
-        attrs = []
-        is_far = False
-        idx = 0
-
         # Collect attributes
-        while idx < len(items) and isinstance(items[idx], ast.Attribute):
-            attrs.append(items[idx])
-            idx += 1
+        attrs, idx = self._collect_attributes(items, 0)
 
         # Check for far
+        is_far = False
         if idx < len(items) and isinstance(items[idx], LarkToken) and items[idx].type == 'FAR':
             is_far = True
             idx += 1
@@ -192,16 +205,11 @@ class ASTBuilder(Transformer):
         """Static variable declaration."""
         items = self._filter_tokens(items)
 
-        attrs = []
-        is_mut = False
-        idx = 0
-
         # Collect attributes
-        while idx < len(items) and isinstance(items[idx], ast.Attribute):
-            attrs.append(items[idx])
-            idx += 1
+        attrs, idx = self._collect_attributes(items, 0)
 
         # Check for mut token
+        is_mut = False
         if idx < len(items) and isinstance(items[idx], LarkToken) and items[idx].type == 'MUT':
             is_mut = True
             idx += 1
@@ -452,91 +460,79 @@ class ASTBuilder(Transformer):
         """Parenthesized expression."""
         return items[0]  # Just return the inner expression
 
-    # Binary operations
-    def add(self, items):
-        items = self._filter_tokens(items)
-        return ast.BinaryOp(op='+', left=items[0], right=items[1])
+    # ========================================================================
+    # Operation Handler Factories
+    # ========================================================================
 
-    def sub(self, items):
-        items = self._filter_tokens(items)
-        return ast.BinaryOp(op='-', left=items[0], right=items[1])
+    @staticmethod
+    def _make_binary_op_handler(operator: str):
+        """
+        Create a binary operation handler for a given operator.
 
-    def mul(self, items):
-        items = self._filter_tokens(items)
-        return ast.BinaryOp(op='*', left=items[0], right=items[1])
+        Args:
+            operator: The operator string ('+', '-', '*', etc.)
 
-    def div(self, items):
-        items = self._filter_tokens(items)
-        return ast.BinaryOp(op='/', left=items[0], right=items[1])
+        Returns:
+            A handler function for Lark Transformer
+        """
+        def handler(self, items):
+            items = self._filter_tokens(items)
+            return ast.BinaryOp(op=operator, left=items[0], right=items[1])
+        return handler
 
-    def mod(self, items):
-        items = self._filter_tokens(items)
-        return ast.BinaryOp(op='%', left=items[0], right=items[1])
+    @staticmethod
+    def _make_unary_op_handler(operator: str):
+        """
+        Create a unary operation handler for a given operator.
 
-    def bitand(self, items):
-        items = self._filter_tokens(items)
-        return ast.BinaryOp(op='&', left=items[0], right=items[1])
+        Args:
+            operator: The operator string ('!', '~', '-')
 
-    def bitor(self, items):
-        items = self._filter_tokens(items)
-        return ast.BinaryOp(op='|', left=items[0], right=items[1])
+        Returns:
+            A handler function for Lark Transformer
+        """
+        def handler(self, items):
+            items = self._filter_tokens(items)
+            return ast.UnaryOp(op=operator, operand=items[0])
+        return handler
 
-    def bitxor(self, items):
-        items = self._filter_tokens(items)
-        return ast.BinaryOp(op='^', left=items[0], right=items[1])
+    # ========================================================================
+    # Binary Operations (generated via factory)
+    # ========================================================================
 
-    def lshift(self, items):
-        items = self._filter_tokens(items)
-        return ast.BinaryOp(op='<<', left=items[0], right=items[1])
+    # Arithmetic operators
+    add = _make_binary_op_handler('+')
+    sub = _make_binary_op_handler('-')
+    mul = _make_binary_op_handler('*')
+    div = _make_binary_op_handler('/')
+    mod = _make_binary_op_handler('%')
 
-    def rshift(self, items):
-        items = self._filter_tokens(items)
-        return ast.BinaryOp(op='>>', left=items[0], right=items[1])
+    # Bitwise operators
+    bitand = _make_binary_op_handler('&')
+    bitor = _make_binary_op_handler('|')
+    bitxor = _make_binary_op_handler('^')
+    lshift = _make_binary_op_handler('<<')
+    rshift = _make_binary_op_handler('>>')
 
-    def eq(self, items):
-        items = self._filter_tokens(items)
-        return ast.BinaryOp(op='==', left=items[0], right=items[1])
+    # Comparison operators
+    eq = _make_binary_op_handler('==')
+    ne = _make_binary_op_handler('!=')
+    lt = _make_binary_op_handler('<')
+    le = _make_binary_op_handler('<=')
+    gt = _make_binary_op_handler('>')
+    ge = _make_binary_op_handler('>=')
 
-    def ne(self, items):
-        items = self._filter_tokens(items)
-        return ast.BinaryOp(op='!=', left=items[0], right=items[1])
+    # Logical operators
+    and_expr = _make_binary_op_handler('&&')
+    or_expr = _make_binary_op_handler('||')
 
-    def lt(self, items):
-        items = self._filter_tokens(items)
-        return ast.BinaryOp(op='<', left=items[0], right=items[1])
+    # ========================================================================
+    # Unary Operations (generated via factory)
+    # ========================================================================
 
-    def le(self, items):
-        items = self._filter_tokens(items)
-        return ast.BinaryOp(op='<=', left=items[0], right=items[1])
-
-    def gt(self, items):
-        items = self._filter_tokens(items)
-        return ast.BinaryOp(op='>', left=items[0], right=items[1])
-
-    def ge(self, items):
-        items = self._filter_tokens(items)
-        return ast.BinaryOp(op='>=', left=items[0], right=items[1])
-
-    def and_expr(self, items):
-        items = self._filter_tokens(items)
-        return ast.BinaryOp(op='&&', left=items[0], right=items[1])
-
-    def or_expr(self, items):
-        items = self._filter_tokens(items)
-        return ast.BinaryOp(op='||', left=items[0], right=items[1])
-
-    # Unary operations
-    def not_expr(self, items):
-        items = self._filter_tokens(items)
-        return ast.UnaryOp(op='!', operand=items[0])
-
-    def bitnot(self, items):
-        items = self._filter_tokens(items)
-        return ast.UnaryOp(op='~', operand=items[0])
-
-    def neg(self, items):
-        items = self._filter_tokens(items)
-        return ast.UnaryOp(op='-', operand=items[0])
+    not_expr = _make_unary_op_handler('!')
+    bitnot = _make_unary_op_handler('~')
+    neg = _make_unary_op_handler('-')
 
     def deref(self, items):
         items = self._filter_tokens(items)

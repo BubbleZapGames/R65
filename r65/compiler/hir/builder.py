@@ -182,23 +182,12 @@ class HIRBuilder:
         )
 
         # Extract specific attributes
-        mode_attr = None
-        preserves_attr = None
-        bank_attr = None
-        interrupt_attr = None
-        is_entry = False
-
-        for attr in processed_attrs:
-            if isinstance(attr, ModeAttribute):
-                mode_attr = attr
-            elif isinstance(attr, PreservesAttribute):
-                preserves_attr = attr
-            elif isinstance(attr, BankAttribute):
-                bank_attr = attr
-            elif isinstance(attr, InterruptAttribute):
-                interrupt_attr = attr
-            elif isinstance(attr, EntryAttribute):
-                is_entry = True
+        attrs = self._extract_attributes(processed_attrs)
+        mode_attr = attrs['mode']
+        preserves_attr = attrs['preserves']
+        bank_attr = attrs['bank']
+        interrupt_attr = attrs['interrupt']
+        is_entry = attrs['is_entry']
 
         # Enter function scope
         func_scope_id = self.symbol_table.enter_scope(ScopeKind.FUNCTION)
@@ -225,6 +214,14 @@ class HIRBuilder:
 
         # Get function symbol
         func_symbol = self.symbol_table.lookup(func.name)
+
+        # Validate: DBR management modes require far functions
+        if bank_attr and bank_attr.data_bank != DataBankMode.NONE:
+            if not func.is_far:
+                raise HIRError(
+                    f"Function '{func.name}' uses data_bank={bank_attr.data_bank.value} "
+                    f"but is not a far function. DBR management requires 'far fn'."
+                )
 
         return hir.HIRFunctionDecl(
             name=func.name,
@@ -627,6 +624,37 @@ class HIRBuilder:
     # Helpers
     # =========================================================================
 
+    def _extract_attributes(self, processed_attrs: list) -> dict:
+        """Extract specific attribute types from processed attributes list.
+
+        Args:
+            processed_attrs: List of processed attributes
+
+        Returns:
+            Dictionary with keys: mode, preserves, bank, interrupt, is_entry
+        """
+        result = {
+            'mode': None,
+            'preserves': None,
+            'bank': None,
+            'interrupt': None,
+            'is_entry': False
+        }
+
+        for attr in processed_attrs:
+            if isinstance(attr, ModeAttribute):
+                result['mode'] = attr
+            elif isinstance(attr, PreservesAttribute):
+                result['preserves'] = attr
+            elif isinstance(attr, BankAttribute):
+                result['bank'] = attr
+            elif isinstance(attr, InterruptAttribute):
+                result['interrupt'] = attr
+            elif isinstance(attr, EntryAttribute):
+                result['is_entry'] = True
+
+        return result
+
     def _add_implicit_return(self, hir_body: hir.HIRBlock, return_type, interrupt_attr=None):
         """Add implicit return A if function doesn't have explicit return.
 
@@ -668,7 +696,7 @@ class HIRBuilder:
 
     def _get_type_size(self, type_info) -> int:
         """Get size of a type in bytes."""
-        from .types import BasicTypeInfo, ArrayTypeInfo, PointerTypeInfo
+        from .types import BasicTypeInfo, ArrayTypeInfo, PointerTypeInfo, FunctionTypeInfo
 
         if isinstance(type_info, BasicTypeInfo):
             if type_info.name in ['u8', 'i8', 'bool']:
@@ -683,6 +711,10 @@ class HIRBuilder:
             return elem_size * type_info.size
 
         elif isinstance(type_info, PointerTypeInfo):
+            return 3 if type_info.is_far else 2
+
+        elif isinstance(type_info, FunctionTypeInfo):
+            # Function pointers: 2 bytes for near fn(), 3 bytes for far fn()
             return 3 if type_info.is_far else 2
 
         else:

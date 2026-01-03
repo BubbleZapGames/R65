@@ -11,8 +11,8 @@ from r65.compiler.hir import (
     HIRStatement, HIRBlock, HIRLetStmt, HIRExprStmt, HIRReturnStmt,
     HIRIfStmt, HIRWhileStmt, HIRBreakStmt, HIRContinueStmt,
     HIRExpression, HIRIntegerLiteral, HIRBooleanLiteral, HIRIdentifier,
-    HIRRegister, HIRBinaryOp, HIRUnaryOp, HIRTypeCast, HIRAssignment,
-    HIRFunctionCall,
+    HIRFunctionAddress, HIRRegister, HIRBinaryOp, HIRUnaryOp, HIRTypeCast, HIRAssignment,
+    HIRFunctionCall, HIRArrayIndex, HIRFieldAccess,
     RegisterLetBinding, VariableLetBinding,
     RegisterBinding, VariableBinding,
     SymbolKind,
@@ -21,7 +21,7 @@ from r65.compiler.hir import (
 
 from r65.compiler.mir.nodes import (
     MIRInstruction, MIRProgram, MIRFunction, BasicBlock,
-    VirtualRegister, HardwareRegister, Immediate, MemoryLocation,
+    VirtualRegister, HardwareRegister, Immediate, FunctionPointer, MemoryLocation,
     Load, Store, Move, BinaryOp, UnaryOp,
     Jump, CondBranch, Return, ReturnFromInterrupt, Call, Argument, ArgumentMechanism,
     SetMode, SaveRegister, RestoreRegister,
@@ -159,6 +159,45 @@ class MIRBuilder:
         mir_func.entry_block_id = entry_block.block_id
         self.current_block = entry_block
 
+        # Register function parameters with alias tracker and allocate vregs
+        # Three parameter types need handling:
+        # 1. Register aliases (param @ A): track in alias tracker
+        # 2. Variable-bound (param @ VAR): track as alias to static variable
+        # 3. Stack parameters (param): allocate virtual register
+        for param in hir_func.parameters:
+            if isinstance(param.binding, RegisterBinding):
+                # Register-aliased parameter: add to alias tracker
+                hw_reg = HardwareRegister(param.binding.register_name)
+                self.current_function.alias_tracker.add_alias(
+                    param.symbol,
+                    hw_reg,
+                    param.symbol.scope_id
+                )
+            elif isinstance(param.binding, VariableBinding):
+                # Variable-bound parameter: treat it as an alias to the bound variable
+                # When the parameter is referenced in the function, it should load from the bound variable
+                # The bound variable already exists and has a memory allocation
+                # We don't need to do anything special here - when the param symbol is referenced,
+                # the HIR should already have resolved it to refer to the bound variable
+                # Actually, we need to create a MemoryLocation for the bound variable
+                # But that happens when lowering expressions - no setup needed here
+                pass
+            else:
+                # Stack parameter: allocate a virtual register for it
+                # The function prologue will load from stack into this vreg
+                # For now, we'll just allocate the vreg and let the rest of the function use it
+                param_vreg = self.current_function.vreg_allocator.alloc(
+                    param.param_type,
+                    f"param_{param.name}"
+                )
+                self.symbol_to_vreg[id(param.symbol)] = param_vreg
+
+                # TODO: Emit prologue code to load from stack
+                # The parameter is at a specific offset from the stack pointer
+                # based on the calling convention (right-to-left push order)
+                # For now, we're not emitting the load - the vreg will be allocated
+                # but never initialized. This is a placeholder.
+
         # If this is an entry point function, call __init_start() first
         if hir_func.is_entry and self.has_init_start:
             # Emit call to __init_start()
@@ -166,7 +205,8 @@ class MIRBuilder:
                 function="__init_start",
                 args=[],
                 returns=[],
-                is_far=False
+                is_far=False,
+                bank_attr=None  # __init_start is always near, no DBR management
             ))
 
         # Generate interrupt handler entry wrapper if needed
@@ -379,6 +419,17 @@ class MIRBuilder:
             # Direct hardware register reference
             return HardwareRegister(expr.name)
 
+        elif isinstance(expr, HIRFunctionAddress):
+            # Function address - load function pointer into virtual register
+            # The actual address will be resolved during linking
+            # For now, we create a virtual register and store a symbolic reference
+            vreg = self.current_function.vreg_allocator.alloc(expr.expr_type, f"fn_ptr_{expr.function_name}")
+            # We'll emit a special "load function address" operation
+            # The function name will be resolved during code generation
+            func_ptr = FunctionPointer(function_name=expr.function_name)
+            self.emit(Move(dest=vreg, source=func_ptr, type_info=expr.expr_type))
+            return vreg
+
         elif isinstance(expr, HIRBinaryOp):
             return self.lower_binary_op(expr)
 
@@ -390,6 +441,15 @@ class MIRBuilder:
 
         elif isinstance(expr, HIRFunctionCall):
             return self.lower_function_call(expr)
+
+        elif isinstance(expr, HIRTypeCast):
+            return self.lower_type_cast(expr)
+
+        elif isinstance(expr, HIRArrayIndex):
+            return self.lower_array_index(expr)
+
+        elif isinstance(expr, HIRFieldAccess):
+            return self.lower_field_access(expr)
 
         else:
             # Unsupported expression type (placeholder)
@@ -407,23 +467,74 @@ class MIRBuilder:
         Returns:
             VirtualRegister holding result
         """
-        # Lower operands
-        left = self.lower_expression(expr.left)
-        right = self.lower_expression(expr.right)
+        # Check if this is a comparison operator
+        comparison_ops = {'==', '!=', '<', '<=', '>', '>='}
 
-        # Allocate virtual register for result
-        result = self.current_function.vreg_allocator.alloc(expr.expr_type, f"{expr.op}_result")
+        if expr.op in comparison_ops:
+            # Comparisons need special handling - convert to boolean value (0 or 1)
+            left = self.lower_expression(expr.left)
+            right = self.lower_expression(expr.right)
 
-        # Emit binary operation
-        self.emit(BinaryOp(
-            dest=result,
-            left=left,
-            right=right,
-            op=expr.op,
-            type_info=expr.expr_type
-        ))
+            if expr.op == '==':
+                # For equality: compute (left ^ right) and check if zero
+                # If left == right, then left ^ right == 0
+                temp = self.current_function.vreg_allocator.alloc(expr.left.expr_type, "eq_temp")
+                self.emit(BinaryOp(
+                    dest=temp,
+                    left=left,
+                    right=right,
+                    op='^',
+                    type_info=expr.left.expr_type
+                ))
+                # Result = 1 when temp == 0 (i.e., when condition is zero)
+                return self._emit_conditional_set(temp, false_when_nonzero=False, result_type=expr.expr_type, hint="eq_result")
 
-        return result
+            elif expr.op == '!=':
+                # For inequality: compute (left ^ right) and check if non-zero
+                temp = self.current_function.vreg_allocator.alloc(expr.left.expr_type, "ne_temp")
+                self.emit(BinaryOp(
+                    dest=temp,
+                    left=left,
+                    right=right,
+                    op='^',
+                    type_info=expr.left.expr_type
+                ))
+                # Result = 1 when temp != 0 (i.e., when condition is nonzero)
+                return self._emit_conditional_set(temp, true_when_nonzero=True, result_type=expr.expr_type, hint="ne_result")
+
+            else:
+                # For <, <=, >, >=: use subtraction to set flags
+                # TODO: This is a simplified placeholder implementation
+                # A proper implementation needs to check processor flags (carry, negative, overflow)
+                # For now, just use subtraction and check if result is non-zero
+                temp = self.current_function.vreg_allocator.alloc(expr.left.expr_type, "cmp_temp")
+                self.emit(BinaryOp(
+                    dest=temp,
+                    left=left,
+                    right=right,
+                    op='-',
+                    type_info=expr.left.expr_type
+                ))
+                # Placeholder: result = 1 when temp != 0
+                return self._emit_conditional_set(temp, true_when_nonzero=True, result_type=expr.expr_type, hint=f"{expr.op}_result")
+        else:
+            # Regular arithmetic/bitwise operation
+            left = self.lower_expression(expr.left)
+            right = self.lower_expression(expr.right)
+
+            # Allocate virtual register for result
+            result = self.current_function.vreg_allocator.alloc(expr.expr_type, f"{expr.op}_result")
+
+            # Emit binary operation
+            self.emit(BinaryOp(
+                dest=result,
+                left=left,
+                right=right,
+                op=expr.op,
+                type_info=expr.expr_type
+            ))
+
+            return result
 
     def lower_unary_op(self, expr: HIRUnaryOp) -> VirtualRegister:
         """
@@ -455,6 +566,173 @@ class MIRBuilder:
             type_info=expr.expr_type
         ))
 
+        return result
+
+    def lower_type_cast(self, expr: HIRTypeCast) -> VirtualRegister:
+        """
+        Lower type cast (explicit conversion).
+
+        Handles:
+        - Widening: u8→u16 (zero-extend), i8→i16 (sign-extend)
+        - Narrowing: u16→u8 (truncate to low byte)
+        - Same-size reinterpretation: u8↔i8, u16↔i16 (zero-cost)
+        - Boolean conversions: any→bool (0=false, non-zero=true), bool→integer
+
+        Args:
+            expr: HIR type cast expression
+
+        Returns:
+            VirtualRegister holding converted value
+        """
+        # Lower the expression being cast
+        source_operand = self.lower_expression(expr.expr)
+        source_type = expr.expr.expr_type
+        target_type = expr.target_type
+
+        # Get type sizes
+        source_size = self._get_type_size(source_type)
+        target_size = self._get_type_size(target_type)
+
+        # Check if source/target are signed
+        source_signed = str(source_type).startswith('i')
+        target_signed = str(target_type).startswith('i')
+
+        # Allocate result register
+        result = self.current_function.vreg_allocator.alloc(target_type, "cast_result")
+
+        # Same size reinterpretation (zero-cost bit reinterpretation)
+        if source_size == target_size:
+            # Just move - same bits, different interpretation
+            self.emit(Move(dest=result, source=source_operand, type_info=target_type))
+            return result
+
+        # Widening conversions (8-bit → 16-bit)
+        elif source_size == 1 and target_size == 2:
+            if source_signed:
+                # Sign extension: i8 → i16
+                # Strategy: Load into vreg, then sign-extend
+                # For now, emit a Move and rely on codegen to handle sign extension
+                # TODO: Add explicit sign-extension instruction or handle in codegen
+                self.emit(Move(dest=result, source=source_operand, type_info=target_type))
+            else:
+                # Zero extension: u8 → u16
+                # Just move - high byte will be zero
+                self.emit(Move(dest=result, source=source_operand, type_info=target_type))
+            return result
+
+        # Narrowing conversions (16-bit → 8-bit)
+        elif source_size == 2 and target_size == 1:
+            # Truncate to low byte - just move, codegen will handle low byte extraction
+            self.emit(Move(dest=result, source=source_operand, type_info=target_type))
+            return result
+
+        # Boolean conversions
+        elif str(target_type) == 'bool':
+            # Convert to boolean: 0 → false, non-zero → true
+            # Use the source operand directly (or wrap in temp if it's immediate)
+            if isinstance(source_operand, Immediate):
+                # For immediate, we can optimize: just return 0 or 1 directly
+                # But for consistency with the pattern, we'll still use the helper
+                temp = self.current_function.vreg_allocator.alloc(source_type, "bool_temp")
+                self.emit(Move(dest=temp, source=source_operand, type_info=source_type))
+                source_operand = temp
+
+            # Result = 1 when source_operand != 0
+            return self._emit_conditional_set(source_operand, true_when_nonzero=True, result_type=target_type, hint="bool_result")
+
+        elif str(source_type) == 'bool':
+            # Convert from boolean to integer: normalize to 0 or 1, then extend if needed
+            # Booleans are already 0 or 1, so just move
+            self.emit(Move(dest=result, source=source_operand, type_info=target_type))
+            return result
+
+        else:
+            # Unsupported conversion
+            raise Exception(f"Unsupported type cast: {source_type} to {target_type}")
+
+    def lower_array_index(self, expr: HIRArrayIndex) -> VirtualRegister:
+        """
+        Lower array indexing.
+
+        Computes: array[index] → Load from (base_address + index * element_size)
+
+        Args:
+            expr: HIR array index expression
+
+        Returns:
+            VirtualRegister holding array element value
+        """
+        # Get element type and size
+        element_type = expr.expr_type
+        element_size = self._get_type_size(element_type)
+
+        # Lower index expression
+        index_operand = self.lower_expression(expr.index)
+
+        # Get the array symbol (should be HIRIdentifier for static arrays)
+        if not isinstance(expr.array, HIRIdentifier):
+            raise Exception(f"Array indexing only supports static arrays currently, got: {type(expr.array)}")
+
+        array_symbol = expr.array.symbol
+
+        # Allocate result register
+        result = self.current_function.vreg_allocator.alloc(element_type, "array_elem")
+
+        # Calculate offset and create memory location
+        if isinstance(index_operand, Immediate):
+            # Constant index - compute offset at compile time
+            offset = index_operand.value * element_size
+            base_memloc = self.get_memory_location(array_symbol)
+
+            # Create offset memory location using helper
+            elem_memloc = self._create_offset_memloc(base_memloc, offset, array_symbol)
+
+            # Emit load from the element location
+            self.emit(Load(dest=result, source=elem_memloc, type_info=element_type))
+            return result
+        else:
+            # Variable index - need runtime address calculation
+            # This is more complex and requires:
+            # 1. Multiply index by element_size
+            # 2. Add to base address
+            # 3. Load from computed address
+            # For now, throw exception - this needs indexed addressing mode support
+            raise Exception("Variable array indexing not yet fully implemented - needs indexed addressing modes")
+
+    def lower_field_access(self, expr: HIRFieldAccess) -> VirtualRegister:
+        """
+        Lower struct field access.
+
+        Computes: struct.field → Load from (base_address + field_offset)
+
+        Args:
+            expr: HIR field access expression
+
+        Returns:
+            VirtualRegister holding field value
+        """
+        # Get field offset (computed during HIR construction)
+        field_offset = expr.field_offset
+        if field_offset is None:
+            raise Exception(f"Field offset not computed for field: {expr.field_name}")
+
+        # Get the struct symbol (should be HIRIdentifier for static structs)
+        if not isinstance(expr.base, HIRIdentifier):
+            raise Exception(f"Field access only supports static structs currently, got: {type(expr.base)}")
+
+        struct_symbol = expr.base.symbol
+
+        # Allocate result register
+        result = self.current_function.vreg_allocator.alloc(expr.expr_type, f"field_{expr.field_name}")
+
+        # Get base memory location
+        base_memloc = self.get_memory_location(struct_symbol)
+
+        # Create offset memory location using helper
+        field_memloc = self._create_offset_memloc(base_memloc, field_offset, struct_symbol)
+
+        # Emit load from the field location
+        self.emit(Load(dest=result, source=field_memloc, type_info=expr.expr_type))
         return result
 
     def lower_assignment(self, expr: HIRAssignment) -> Union[VirtualRegister, HardwareRegister]:
@@ -568,122 +846,71 @@ class MIRBuilder:
             VirtualRegister or HardwareRegister holding return value, or None for void
         """
         # Get function symbol and declaration
-        # func is usually HIRIdentifier
+        # func is usually HIRIdentifier for direct calls
+        # For indirect calls (function pointers), func is an expression with FunctionTypeInfo
+        is_indirect_call = not isinstance(call_expr.func, HIRIdentifier)
+
         if isinstance(call_expr.func, HIRIdentifier):
+            # Direct call
             func_symbol = call_expr.func.symbol
             # Look up HIR function declaration from our mapping
             func_decl = self.function_decls.get(func_symbol.name)
             if not func_decl:
                 raise Exception(f"Function call to {func_symbol.name}: function not found in HIR")
+            func_ptr_vreg = None
         else:
-            # Function pointer call - not yet implemented
-            raise Exception("Function pointer calls not yet implemented")
+            # Indirect call (function pointer)
+            # Lower the function expression to get the virtual register holding the pointer
+            func_ptr_vreg = self.lower_expression(call_expr.func)
+            # For indirect calls, we don't have func_decl, so we'll use the function type
+            # from the expression type
+            func_decl = None
 
-        # Prepare arguments
-        args = []
-        for i, arg_expr in enumerate(call_expr.args):
-            param = func_decl.parameters[i]
-            arg_value = self.lower_expression(arg_expr)
-
-            # Determine argument passing mechanism
-            if isinstance(param.binding, RegisterBinding):
-                # Register alias parameter: param @ A/X/Y
-                mechanism = ArgumentMechanism.REGISTER
-                location = HardwareRegister(param.binding.register_name)
-
-                # Move argument to hardware register if not already there
-                if not (isinstance(arg_value, HardwareRegister) and arg_value.name == location.name):
-                    self.emit(Move(dest=location, source=arg_value, type_info=param.param_type))
-
-            elif isinstance(param.binding, VariableBinding):
-                # Variable-bound parameter: param @ VAR
-                mechanism = ArgumentMechanism.VARIABLE
-                location = self.get_memory_location(param.binding.variable_symbol)
-
-                # Store argument to variable location
-                self.emit(Store(source=arg_value, dest=location, type_info=param.param_type))
-
-            else:
-                # Stack parameter (default)
-                mechanism = ArgumentMechanism.STACK
-                location = None
-                # Stack setup will be handled by code generator
-
-            args.append(Argument(value=arg_value, mechanism=mechanism, location=location))
+        # Prepare arguments using helper
+        args = self._lower_call_arguments(call_expr, func_decl)
 
         # Allocate virtual register(s) for return value(s)
         returns = []
-        if func_decl.return_type:
+        return_type = None
+
+        if func_decl:
+            # Direct call - get return type from function declaration
+            return_type = func_decl.return_type
+        else:
+            # Indirect call - get return type from function type
+            from r65.compiler.hir.types import FunctionTypeInfo
+            func_type = call_expr.func.expr_type
+            if isinstance(func_type, FunctionTypeInfo):
+                return_type = func_type.return_type
+
+        if return_type:
             # For now, assume single return value
             # TODO: Handle multiple return values (tuples)
+            call_name = func_decl.name if func_decl else "indirect_call"
             result_vreg = self.current_function.vreg_allocator.alloc(
-                func_decl.return_type,
-                f"call_{func_decl.name}_result"
+                return_type,
+                f"call_{call_name}_result"
             )
             returns.append(result_vreg)
 
-        # Check for mode transition requirements
-        caller_mode = self.current_mode
-        callee_mode = ProcessorMode.from_attribute(func_decl.mode_attr) if func_decl.mode_attr else ProcessorMode.unknown()
+        # For indirect calls, skip mode transition handling (we don't have mode info)
+        if is_indirect_call:
+            # Emit indirect call
+            from r65.compiler.hir.types import FunctionTypeInfo
+            func_type = call_expr.func.expr_type
+            is_far = isinstance(func_type, FunctionTypeInfo) and func_type.is_far
 
-        # Determine transition strategy
-        transition = ModeTransition.NONE  # Default
-        if func_decl.mode_attr and hasattr(func_decl.mode_attr, 'transition'):
-            transition = func_decl.mode_attr.transition
-
-        # Generate mode transition wrapper if needed
-        mode_mismatch = (caller_mode != callee_mode and
-                        caller_mode.is_fully_known() and
-                        callee_mode.is_fully_known())
-
-        if mode_mismatch and transition == ModeTransition.CALLER:
-            # Caller handles mode transition
-            # Check if callee preserves STATUS
-            preserves_status = (func_decl.preserves_attr and
-                              'STATUS' in func_decl.preserves_attr.registers)
-
-            if preserves_status:
-                # Callee preserves STATUS - use explicit SEP/REP before and after
-                # Switch to callee's mode
-                self._emit_mode_transition(caller_mode, callee_mode)
-
-                # Emit call
-                self.emit(Call(
-                    function=func_decl.name,
-                    args=args,
-                    returns=returns,
-                    is_far=func_decl.is_far
-                ))
-
-                # Restore caller's mode
-                self._emit_mode_transition(callee_mode, caller_mode)
-            else:
-                # Callee doesn't preserve STATUS - use PHP/PLP
-                # Save STATUS
-                self.emit(Push(register=HardwareRegister('STATUS')))
-
-                # Switch to callee's mode
-                self._emit_mode_transition(caller_mode, callee_mode)
-
-                # Emit call
-                self.emit(Call(
-                    function=func_decl.name,
-                    args=args,
-                    returns=returns,
-                    is_far=func_decl.is_far
-                ))
-
-                # Restore STATUS (includes mode bits)
-                self.emit(Pull(register=HardwareRegister('STATUS')))
-        else:
-            # No wrapper needed (transition=none or transition=auto or same mode)
-            # For transition=auto, the callee will handle the wrapper
             self.emit(Call(
-                function=func_decl.name,
+                function=func_ptr_vreg,  # VirtualRegister holding function pointer
                 args=args,
                 returns=returns,
-                is_far=func_decl.is_far
+                is_far=is_far,
+                bank_attr=None  # No bank attribute for indirect calls
             ))
+            return returns[0] if returns else None
+
+        # Direct call - handle mode transitions using helper
+        self._emit_call_with_mode_transition(func_decl, args, returns)
 
         # Return result (or None for void functions)
         return returns[0] if returns else None
@@ -863,6 +1090,263 @@ class MIRBuilder:
     # Helper Methods
     # ========================================================================
 
+    def _emit_conditional_set(
+        self,
+        condition_vreg: VirtualRegister,
+        true_when_nonzero: bool,
+        result_type: Any,
+        hint: str = "cond_result"
+    ) -> VirtualRegister:
+        r"""
+        Emit conditional set pattern: result = condition ? 1 : 0
+
+        Creates control flow:
+            condition check
+                |
+            CondBranch
+            /        \
+        true_block  false_block
+            |          |
+        result=1   result=0
+            \          /
+             merge_block
+
+        Args:
+            condition_vreg: Virtual register holding condition value
+            true_when_nonzero: If True, result=1 when condition!=0
+                               If False, result=1 when condition==0
+            result_type: Type for result register
+            hint: Name hint for result vreg
+
+        Returns:
+            VirtualRegister holding result (0 or 1)
+        """
+        result = self.current_function.vreg_allocator.alloc(result_type, hint)
+
+        # Create blocks
+        true_block = self.cfg_builder.new_block()
+        false_block = self.cfg_builder.new_block()
+        merge_block = self.cfg_builder.new_block()
+
+        # Emit conditional branch
+        if true_when_nonzero:
+            true_target = true_block.block_id
+            false_target = false_block.block_id
+        else:
+            true_target = false_block.block_id
+            false_target = true_block.block_id
+
+        self.emit(CondBranch(
+            condition=condition_vreg,
+            true_target=true_target,
+            false_target=false_target,
+            comparison='!='
+        ))
+        self.cfg_builder.add_edge(self.current_block, true_block)
+        self.cfg_builder.add_edge(self.current_block, false_block)
+
+        # True block: result = 1
+        self.current_block = true_block
+        self.emit(Move(dest=result, source=Immediate(1), type_info=result_type))
+        self.emit(Jump(target=merge_block.block_id))
+        self.cfg_builder.add_edge(true_block, merge_block)
+
+        # False block: result = 0
+        self.current_block = false_block
+        self.emit(Move(dest=result, source=Immediate(0), type_info=result_type))
+        self.emit(Jump(target=merge_block.block_id))
+        self.cfg_builder.add_edge(false_block, merge_block)
+
+        # Continue in merge block
+        self.current_block = merge_block
+
+        return result
+
+    def _emit_call_with_mode_transition(
+        self,
+        func_decl: HIRFunctionDecl,
+        args: List[Argument],
+        returns: List[VirtualRegister]
+    ):
+        """
+        Emit function call with mode transition handling.
+
+        Handles three cases:
+        1. transition=none: No wrapper (default)
+        2. transition=auto: Callee handles it
+        3. transition=caller + mode mismatch: Caller handles it
+
+        Args:
+            func_decl: Function being called
+            args: Prepared arguments
+            returns: Virtual registers for return values
+        """
+        caller_mode = self.current_mode
+        callee_mode = ProcessorMode.from_attribute(func_decl.mode_attr) if func_decl.mode_attr else ProcessorMode.unknown()
+        transition = func_decl.mode_attr.transition if func_decl.mode_attr and hasattr(func_decl.mode_attr, 'transition') else ModeTransition.NONE
+
+        # Check if mode transition needed
+        mode_mismatch = (
+            caller_mode != callee_mode and
+            caller_mode.is_fully_known() and
+            callee_mode.is_fully_known()
+        )
+
+        if not mode_mismatch or transition != ModeTransition.CALLER:
+            # No wrapper needed (transition=none, transition=auto, or same mode)
+            self.emit(Call(
+                function=func_decl.name,
+                args=args,
+                returns=returns,
+                is_far=func_decl.is_far,
+                bank_attr=func_decl.bank_attr
+            ))
+            return
+
+        # Caller handles mode transition
+        preserves_status = (
+            func_decl.preserves_attr and
+            'STATUS' in func_decl.preserves_attr.registers
+        )
+
+        if preserves_status:
+            # Use SEP/REP before and after
+            self._emit_mode_transition(caller_mode, callee_mode)
+            self.emit(Call(
+                function=func_decl.name,
+                args=args,
+                returns=returns,
+                is_far=func_decl.is_far,
+                bank_attr=func_decl.bank_attr
+            ))
+            self._emit_mode_transition(callee_mode, caller_mode)
+        else:
+            # Use PHP/PLP wrapper
+            self.emit(Push(register=HardwareRegister('STATUS')))
+            self._emit_mode_transition(caller_mode, callee_mode)
+            self.emit(Call(
+                function=func_decl.name,
+                args=args,
+                returns=returns,
+                is_far=func_decl.is_far,
+                bank_attr=func_decl.bank_attr
+            ))
+            self.emit(Pull(register=HardwareRegister('STATUS')))
+
+    def _lower_call_arguments(
+        self,
+        call_expr: HIRFunctionCall,
+        func_decl: Optional[HIRFunctionDecl]
+    ) -> List[Argument]:
+        """
+        Lower function call arguments to MIR Arguments.
+
+        Handles three parameter passing mechanisms:
+        - Register alias (param @ A)
+        - Variable-bound (param @ VAR)
+        - Stack (default)
+
+        Args:
+            call_expr: HIR function call
+            func_decl: Function declaration (None for indirect calls)
+
+        Returns:
+            List of MIR Arguments
+        """
+        args = []
+
+        for i, arg_expr in enumerate(call_expr.args):
+            arg_value = self.lower_expression(arg_expr)
+
+            # Determine mechanism based on parameter binding (if available)
+            if func_decl and i < len(func_decl.parameters):
+                param = func_decl.parameters[i]
+                mechanism, location = self._get_argument_mechanism(param, arg_value)
+            else:
+                # Indirect call or no binding info - use stack
+                mechanism = ArgumentMechanism.STACK
+                location = None
+
+            args.append(Argument(value=arg_value, mechanism=mechanism, location=location))
+
+        return args
+
+    def _get_argument_mechanism(
+        self,
+        param: Any,  # HIRParameter
+        arg_value: Union[VirtualRegister, HardwareRegister, Immediate]
+    ) -> tuple:
+        """
+        Determine argument passing mechanism and emit setup code.
+
+        Args:
+            param: Parameter declaration
+            arg_value: Lowered argument value
+
+        Returns:
+            (mechanism, location) tuple
+        """
+        if isinstance(param.binding, RegisterBinding):
+            # Register alias parameter
+            mechanism = ArgumentMechanism.REGISTER
+            location = HardwareRegister(param.binding.register_name)
+
+            # Move argument to hardware register if needed
+            if not (isinstance(arg_value, HardwareRegister) and arg_value.name == location.name):
+                self.emit(Move(dest=location, source=arg_value, type_info=param.param_type))
+
+            return mechanism, location
+
+        elif isinstance(param.binding, VariableBinding):
+            # Variable-bound parameter
+            mechanism = ArgumentMechanism.VARIABLE
+            location = self.get_memory_location(param.binding.variable_symbol)
+
+            # Store argument to variable location
+            self.emit(Store(source=arg_value, dest=location, type_info=param.param_type))
+
+            return mechanism, location
+
+        else:
+            # Stack parameter
+            return ArgumentMechanism.STACK, None
+
+    def _create_offset_memloc(
+        self,
+        base_memloc: MemoryLocation,
+        offset: int,
+        symbol: Any
+    ) -> MemoryLocation:
+        """
+        Create a memory location with an offset from a base location.
+
+        Used for array indexing and struct field access.
+
+        Args:
+            base_memloc: Base memory location
+            offset: Byte offset from base
+            symbol: Symbol for reference
+
+        Returns:
+            MemoryLocation at base + offset
+        """
+        if base_memloc.address is not None:
+            # Address known - compute absolute address
+            return MemoryLocation(
+                storage_type=base_memloc.storage_type,
+                address=base_memloc.address + offset,
+                symbol=symbol,
+                is_volatile=base_memloc.is_volatile
+            )
+        else:
+            # Address not known - store offset for later resolution
+            return MemoryLocation(
+                storage_type=base_memloc.storage_type,
+                address=offset,  # Just the offset
+                symbol=symbol,
+                is_volatile=base_memloc.is_volatile
+            )
+
     def _block_has_terminator(self) -> bool:
         """
         Check if current block already has a terminator instruction.
@@ -930,6 +1414,47 @@ class MIRBuilder:
             symbol=symbol,
             is_volatile=False
         )
+
+    def _get_type_size(self, type_info) -> int:
+        """
+        Get size in bytes for a type.
+
+        Args:
+            type_info: TypeInfo
+
+        Returns:
+            Size in bytes (1 for u8/i8/bool, 2 for u16/i16/near<T>/fn(), 3 for far<T>/far fn())
+        """
+        from r65.compiler.hir.types import FunctionTypeInfo
+
+        type_str = str(type_info)
+
+        # Basic types
+        if type_str in ('u8', 'i8', 'bool'):
+            return 1
+        elif type_str in ('u16', 'i16'):
+            return 2
+
+        # Function pointers
+        if isinstance(type_info, FunctionTypeInfo):
+            return 3 if type_info.is_far else 2
+
+        # Pointer types
+        if type_str.startswith('near'):
+            return 2
+        elif type_str.startswith('far'):
+            return 3
+
+        # Function type (check string representation as fallback)
+        if type_str.startswith('far fn'):
+            return 3
+        elif type_str.startswith('fn'):
+            return 2
+
+        # Array types - get element size * length
+        # For now, return 1 as default
+        # TODO: Handle arrays and structs properly
+        return 1
 
     def _generate_init_start_function(self, statics: List[HIRStaticDecl]) -> MIRFunction:
         """
