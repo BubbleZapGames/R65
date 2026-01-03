@@ -608,6 +608,8 @@ All operations wrap on overflow (no runtime checks).
 
 **Compound assignments:** R65 supports `+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `|=`, `^=`, `<<=`, `>>=` for all lvalue types (variables, registers, array elements, struct fields). These desugar to regular assignments at compile time with no performance overhead.
 
+**Increment/decrement:** R65 supports `++` and `--` as statement-only operators (postfix form only). `x++;` desugars to `x += 1;` with zero overhead.
+
 *(See [docs/operators.md](docs/operators.md) for complete operator semantics, assembly mappings, and performance details)*
 
 ## What's Included (Minimal Feature Set)
@@ -630,6 +632,7 @@ All operations wrap on overflow (no runtime checks).
   - Comparison: `==`, `!=`, `<`, `<=`, `>`, `>=`
   - Logical: `&&`, `||`, `!` (with short-circuit evaluation)
   - Compound assignment: `+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `|=`, `^=`, `<<=`, `>>=`
+  - Increment/decrement: `++`, `--` (statement-only, postfix)
 - ✅ `let` bindings (immutable by default, `let mut` for mutable)
 - ✅ All 65816 processor registers: A, X, Y, STATUS, D, DBR, S (mutable); PBR (read-only)
 - ✅ Storage attributes: `#[zeropage]`, `#[ram]`, `#[rom]`, `#[hw]`

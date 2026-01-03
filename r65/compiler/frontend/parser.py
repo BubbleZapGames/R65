@@ -398,6 +398,30 @@ class ASTBuilder(Transformer):
         """Continue statement."""
         return ast.ContinueStmt()
 
+    def increment_stmt(self, items):
+        """Increment statement (x++;) - desugars to x += 1;"""
+        items = self._filter_tokens(items)
+        lvalue = items[0]
+        # Desugar to compound assignment: x++ becomes x += 1
+        compound_assign = ast.CompoundAssignment(
+            target=lvalue,
+            operator='+',
+            value=ast.IntegerLiteral(value=1)
+        )
+        return ast.ExprStmt(expr=compound_assign)
+
+    def decrement_stmt(self, items):
+        """Decrement statement (x--;) - desugars to x -= 1;"""
+        items = self._filter_tokens(items)
+        lvalue = items[0]
+        # Desugar to compound assignment: x-- becomes x -= 1
+        compound_assign = ast.CompoundAssignment(
+            target=lvalue,
+            operator='-',
+            value=ast.IntegerLiteral(value=1)
+        )
+        return ast.ExprStmt(expr=compound_assign)
+
     def if_stmt(self, items):
         """If statement."""
         items = self._filter_tokens(items)

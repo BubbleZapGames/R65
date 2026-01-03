@@ -55,8 +55,8 @@ class FunctionCodeGenerator:
         # Allocate all virtual registers in function
         self._allocate_function_registers(mir_func, reg_alloc)
 
-        # Create instruction selector
-        instr_selector = InstructionSelector(self.emitter, reg_alloc, self.mem_alloc)
+        # Create instruction selector with current function context
+        instr_selector = InstructionSelector(self.emitter, reg_alloc, self.mem_alloc, mir_func)
 
         # Emit function header comment
         self.emit_function_header(mir_func)
@@ -64,8 +64,8 @@ class FunctionCodeGenerator:
         # Emit function label
         self.emitter.emit_label(mir_func.name)
 
-        # TODO: Emit prologue (if needed)
-        # self.emit_prologue(mir_func, reg_alloc)
+        # Emit prologue (if needed)
+        self.emit_prologue(mir_func, reg_alloc)
 
         # Generate basic blocks
         block_order = self._compute_block_order(mir_func)
@@ -81,7 +81,9 @@ class FunctionCodeGenerator:
             for instr in block.instructions:
                 instr_selector.select_instruction(instr)
 
-        # TODO: Emit epilogue (if needed)
+        # Emit epilogue (if needed)
+        # Note: Epilogue is emitted BEFORE the Return instruction in each block
+        # So we don't emit it here. Instead, we handle it in the Return instruction
         # self.emit_epilogue(mir_func, reg_alloc)
 
         # Blank line after function
@@ -280,16 +282,29 @@ class FunctionCodeGenerator:
         - Stack frame setup
         - Register preservation
         - Mode transitions
+        - DBR management (data_bank=auto)
 
         Args:
             mir_func: MIR function
             reg_alloc: Register allocator
         """
-        # TODO: Implement prologue generation
+        # Handle DBR management for far functions with data_bank=auto
+        if mir_func.is_far and mir_func.bank_attr:
+            from r65.compiler.hir.attributes import DataBankMode
+
+            if mir_func.bank_attr.data_bank == DataBankMode.AUTO:
+                # Save current DBR and set to function's bank
+                # Sequence: PHB, LDA #bank, PHA, PLB
+                self.emitter.emit_instruction("PHB", comment="Save current data bank")
+                self.emitter.emit_instruction("LDA", f"#${mir_func.bank_attr.bank_number:02X}",
+                                            "Load function's bank number")
+                self.emitter.emit_instruction("PHA", comment="Push bank number")
+                self.emitter.emit_instruction("PLB", comment="Set data bank register")
+
+        # TODO: Implement other prologue features
         # - Check if stack frame needed (spilled registers)
         # - Emit register saves (if preserves_attr)
         # - Emit mode transition (if mode_attr with transition=auto)
-        pass
 
     def emit_epilogue(self, mir_func: MIRFunction, reg_alloc: RegisterAllocator):
         """

@@ -71,12 +71,16 @@ block: "{" statement* "}"
           | while_stmt
           | block
           | asm_stmt
+          | increment_stmt
+          | decrement_stmt
 
 let_stmt: LET MUT? IDENT ("@" binding)? (":" type_expr)? "=" expr ";"
 expr_stmt: expr ";"
 return_stmt: RETURN (expr ("," expr)*)? ";"
 break_stmt: BREAK ";"
 continue_stmt: CONTINUE ";"
+increment_stmt: lvalue PLUSPLUS ";"
+decrement_stmt: lvalue MINUSMINUS ";"
 
 if_stmt: IF expr block (ELSE else_clause)?
 else_clause: if_stmt | block
@@ -236,6 +240,8 @@ GREATEREQUAL: ">="
 AND: "&&"
 OR: "||"
 RARROW: "->"
+PLUSPLUS: "++"
+MINUSMINUS: "--"
 
 // Compound assignment operators (must come before single-char operators)
 LSHIFTEQUAL: "<<="

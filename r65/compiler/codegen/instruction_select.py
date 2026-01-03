@@ -327,6 +327,41 @@ class InstructionSelector:
         op = instr.op
         is_u16 = self._is_16bit(instr.type_info)
 
+        # OPTIMIZATION: Detect register increment/decrement patterns
+        # reg = reg + 1  →  INX/INY/INC A
+        # reg = reg - 1  →  DEX/DEY/DEC A
+        # Check this BEFORE getting operand locations
+        if (op in ('+', '-') and
+            isinstance(instr.right, Immediate) and
+            instr.right.value == 1 and
+            isinstance(instr.left, HardwareRegister) and
+            isinstance(instr.dest, HardwareRegister) and
+            instr.left.name == instr.dest.name):
+
+            register = instr.dest.name
+            if op == '+':
+                # Increment
+                if register == 'X':
+                    self.emitter.emit_instruction("INX", comment=f"{register}++")
+                    return
+                elif register == 'Y':
+                    self.emitter.emit_instruction("INY", comment=f"{register}++")
+                    return
+                elif register == 'A':
+                    self.emitter.emit_instruction("INC", "A", comment="A++")
+                    return
+            else:  # op == '-'
+                # Decrement
+                if register == 'X':
+                    self.emitter.emit_instruction("DEX", comment=f"{register}--")
+                    return
+                elif register == 'Y':
+                    self.emitter.emit_instruction("DEY", comment=f"{register}--")
+                    return
+                elif register == 'A':
+                    self.emitter.emit_instruction("DEC", "A", comment="A--")
+                    return
+
         # Get operand locations
         left_loc = self._get_operand_location(instr.left)
         dest_loc = self._get_operand_location(instr.dest)

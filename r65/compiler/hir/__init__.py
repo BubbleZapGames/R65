@@ -55,7 +55,8 @@ from r65.compiler.hir.nodes import (
     HIRFieldAccess,
     HIRDereference,
     HIRAssignment,
-    
+    HIRFunctionAddress,
+
     # Bindings
     ParameterBinding,
     RegisterBinding,
@@ -119,6 +120,7 @@ __all__ = [
     'HIRFieldAccess',
     'HIRDereference',
     'HIRAssignment',
+    'HIRFunctionAddress',
 
     # Bindings
     'ParameterBinding',

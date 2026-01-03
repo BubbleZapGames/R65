@@ -297,6 +297,22 @@ class HIRIdentifier(HIRExpression):
 
 
 @dataclass
+class HIRFunctionAddress(HIRExpression):
+    """
+    Function address expression.
+
+    Represents taking the address of a function to store in a function pointer.
+    Used when assigning a function to a function pointer variable.
+
+    Example: let handler: fn(u8) -> u8 = some_function;
+    The 'some_function' becomes HIRFunctionAddress.
+    """
+    function_name: str = ""
+    symbol: Any = None  # Resolved function Symbol
+    # expr_type will be FunctionTypeInfo
+
+
+@dataclass
 class HIRRegister(HIRExpression):
     """Hardware register reference."""
     name: str = ""  # "A", "X", "Y", "STATUS", "D", "DBR", "PBR", "S"

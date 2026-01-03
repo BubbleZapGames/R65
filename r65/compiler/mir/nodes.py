@@ -69,6 +69,21 @@ class Immediate:
 
 
 @dataclass
+class FunctionPointer:
+    """
+    Function pointer operand.
+
+    Represents a reference to a function's address. Used when loading
+    function addresses into registers for indirect calls or function
+    pointer assignments.
+    """
+    function_name: str  # Name of the function being referenced
+
+    def __repr__(self):
+        return f"&{self.function_name}"
+
+
+@dataclass
 class MemoryLocation:
     """
     Memory location with storage type and address.
@@ -302,6 +317,7 @@ class Call(MIRInstruction):
     args: List[Argument] = field(default_factory=list)
     returns: List[VirtualRegister] = field(default_factory=list)
     is_far: bool = False  # True for JSL/RTL, False for JSR/RTS
+    bank_attr: Optional[Any] = None  # BankAttribute from callee (for caller-managed DBR)
 
     def __repr__(self):
         args_str = ', '.join(str(arg) for arg in self.args)

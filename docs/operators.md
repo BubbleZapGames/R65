@@ -1186,16 +1186,64 @@ x <<= 3;
 x <<= n;  // Compiler error
 ```
 
+### Increment/Decrement Operators
+
+R65 supports increment (`++`) and decrement (`--`) operators as statement-only syntax:
+
+```rust
+x++;        // Desugars to: x += 1 (then to: x = x + 1)
+counter--;  // Desugars to: counter -= 1 (then to: counter = counter - 1)
+```
+
+**Design decisions:**
+- **Statement-only**: Not expressions (no return value)
+- **Postfix form only**: `x++`, not `++x`
+- **Works with all lvalue types**: variables, registers, arrays, struct fields
+- **Zero overhead**: Desugars to compound assignment in parser
+
+**Hardware register optimization:**
+
+When incrementing or decrementing hardware registers (A, X, Y), the compiler generates optimal single-cycle instructions:
+
+```rust
+X++;   // Generates: INX     (2 cycles)
+Y++;   // Generates: INY     (2 cycles)
+A++;   // Generates: INC A   (2 cycles)
+
+X--;   // Generates: DEX     (2 cycles)
+Y--;   // Generates: DEY     (2 cycles)
+A--;   // Generates: DEC A   (2 cycles)
+```
+
+Without optimization, `X++` would generate the verbose sequence `TXA; CLC; ADC #1; TAX` (8+ cycles). The compiler automatically detects the pattern `reg = reg ± 1` and emits the efficient instruction.
+
+**Examples:**
+```rust
+// Variables
+counter++;
+
+// Registers (optimized)
+A++;
+X--;
+
+// Array elements
+buffer[i]++;
+
+// Struct fields
+player.health--;
+```
+
+**Implementation:** `x++` desugars to `x += 1` in the parser (which then desugars to `x = x + 1` in HIR). Generates same code as manual increment.
+
 ### Not Included
 
 **Logical compound assignments** (`&&=`, `||=`):
 - Rarely useful in systems programming
 - Can be added if use case emerges
 
-**Increment/decrement operators** (`++`, `--`):
-- Not currently implemented
-- Can use `x += 1` and `x -= 1` instead
-- May be added in future for convenience
+**Prefix increment/decrement** (`++x`, `--x`):
+- Only postfix form currently supported
+- Prefix form unnecessary since operators don't return values
 
 ---
 

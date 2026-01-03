@@ -414,6 +414,77 @@ def test_compound_assignment():
     print("✓ Compound assignment test passed")
 
 
+def test_increment_decrement():
+    """Test parsing increment/decrement operators."""
+    source = """
+    fn test() {
+        x++;
+        y--;
+        A++;
+        X--;
+        array[i]++;
+        array[j]--;
+        player.health++;
+        player.score--;
+    }
+    """
+
+    program = parse(source)
+    func = program.items[0]
+
+    # Test increment on variable
+    stmt1 = func.body.statements[0]
+    assert isinstance(stmt1.expr, ast.CompoundAssignment)
+    assert stmt1.expr.operator == '+'
+    assert isinstance(stmt1.expr.target, ast.Identifier)
+    assert stmt1.expr.target.name == 'x'
+    assert isinstance(stmt1.expr.value, ast.IntegerLiteral)
+    assert stmt1.expr.value.value == 1
+
+    # Test decrement on variable
+    stmt2 = func.body.statements[1]
+    assert isinstance(stmt2.expr, ast.CompoundAssignment)
+    assert stmt2.expr.operator == '-'
+    assert isinstance(stmt2.expr.target, ast.Identifier)
+    assert stmt2.expr.target.name == 'y'
+    assert isinstance(stmt2.expr.value, ast.IntegerLiteral)
+    assert stmt2.expr.value.value == 1
+
+    # Test increment on register
+    stmt3 = func.body.statements[2]
+    assert isinstance(stmt3.expr, ast.CompoundAssignment)
+    assert isinstance(stmt3.expr.target, ast.Register)
+    assert stmt3.expr.target.name == 'A'
+
+    # Test decrement on register
+    stmt4 = func.body.statements[3]
+    assert isinstance(stmt4.expr, ast.CompoundAssignment)
+    assert isinstance(stmt4.expr.target, ast.Register)
+    assert stmt4.expr.target.name == 'X'
+
+    # Test increment on array element
+    stmt5 = func.body.statements[4]
+    assert isinstance(stmt5.expr, ast.CompoundAssignment)
+    assert isinstance(stmt5.expr.target, ast.ArrayIndex)
+
+    # Test decrement on array element
+    stmt6 = func.body.statements[5]
+    assert isinstance(stmt6.expr, ast.CompoundAssignment)
+    assert isinstance(stmt6.expr.target, ast.ArrayIndex)
+
+    # Test increment on struct field
+    stmt7 = func.body.statements[6]
+    assert isinstance(stmt7.expr, ast.CompoundAssignment)
+    assert isinstance(stmt7.expr.target, ast.FieldAccess)
+
+    # Test decrement on struct field
+    stmt8 = func.body.statements[7]
+    assert isinstance(stmt8.expr, ast.CompoundAssignment)
+    assert isinstance(stmt8.expr.target, ast.FieldAccess)
+
+    print("✓ Increment/decrement test passed")
+
+
 def test_far_function():
     """Test parsing far functions."""
     source = """
@@ -547,6 +618,7 @@ if __name__ == '__main__':
     test_type_cast()
     test_assignment()
     test_compound_assignment()
+    test_increment_decrement()
     test_far_function()
     test_never_type()
     test_array_type()
