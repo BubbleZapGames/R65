@@ -13,6 +13,7 @@ from r65.compiler.hir import (
     HIRExpression, HIRIntegerLiteral, HIRBooleanLiteral, HIRIdentifier,
     HIRFunctionAddress, HIRRegister, HIRBinaryOp, HIRUnaryOp, HIRTypeCast, HIRAssignment,
     HIRFunctionCall, HIRArrayIndex, HIRFieldAccess, HIRDereference, HIRAddressOf,
+    HIRMatchExpression, HIRPattern, HIRLiteralPattern, HIREnumPattern, HIRWildcardPattern, HIRIdentifierPattern, HIROrPattern,
     RegisterLetBinding, VariableLetBinding,
     RegisterBinding, VariableBinding,
     SymbolKind,
@@ -468,6 +469,9 @@ class MIRBuilder:
         elif isinstance(expr, HIRAddressOf):
             return self.lower_addressof(expr)
 
+        elif isinstance(expr, HIRMatchExpression):
+            return self.lower_match_expression(expr)
+
         else:
             # Unsupported expression type (placeholder)
             # Allocate placeholder virtual register
@@ -893,6 +897,156 @@ class MIRBuilder:
         self.emit(Move(dest=result, source=addr_immediate, type_info=expr.expr_type))
 
         return result
+
+    def lower_match_expression(self, expr: HIRMatchExpression) -> VirtualRegister:
+        """
+        Lower match expression to conditional branches.
+
+        Lowers to a chain of if-then-else blocks:
+        - Compare scrutinee against each pattern
+        - Branch to arm body if match
+        - Fall through to next pattern if no match
+        - Collect results into a result vreg
+
+        Args:
+            expr: HIR match expression
+
+        Returns:
+            VirtualRegister holding the match result
+        """
+        from r65.compiler.hir import (HIRLiteralPattern, HIREnumPattern, HIRWildcardPattern,
+                                       HIRIdentifierPattern, HIROrPattern)
+
+        # Lower scrutinee once
+        scrutinee_vreg = self.lower_expression(expr.scrutinee)
+        scrutinee_type = expr.scrutinee.expr_type
+
+        # Allocate result register
+        result_vreg = self.current_function.vreg_allocator.alloc(
+            expr.expr_type,
+            "match_result"
+        )
+
+        # Create merge block (where all arms converge)
+        merge_block = self.cfg_builder.new_block()
+
+        # Lower each arm to a chain of conditional branches
+        for i, arm in enumerate(expr.arms):
+            is_last_arm = (i == len(expr.arms) - 1)
+
+            # Create block for this arm's body
+            arm_block = self.cfg_builder.new_block()
+
+            # Create block for next pattern check (or merge if last arm)
+            next_block = merge_block if is_last_arm else self.cfg_builder.new_block()
+
+            # Emit pattern matching logic
+            self._lower_pattern_match(arm.pattern, scrutinee_vreg, scrutinee_type, arm_block, next_block)
+
+            # Emit arm body in arm_block
+            self.current_block = arm_block
+
+            # Handle identifier pattern binding
+            if isinstance(arm.pattern, HIRIdentifierPattern):
+                # Bind scrutinee to the pattern variable
+                binding_vreg = self.current_function.vreg_allocator.alloc(
+                    arm.pattern.symbol.var_type,
+                    arm.pattern.name
+                )
+                self.symbol_to_vreg[id(arm.pattern.symbol)] = binding_vreg
+                self.emit(Move(dest=binding_vreg, source=scrutinee_vreg, type_info=arm.pattern.symbol.var_type))
+
+            # Lower arm body
+            arm_result = self.lower_expression(arm.body)
+
+            # Move result to result_vreg
+            self.emit(Move(dest=result_vreg, source=arm_result, type_info=expr.expr_type))
+
+            # Jump to merge block
+            self.emit(Jump(target=merge_block.block_id))
+            self.cfg_builder.add_edge(arm_block, merge_block)
+
+            # Continue with next pattern (if not last)
+            if not is_last_arm:
+                self.current_block = next_block
+
+        # Set current block to merge
+        self.current_block = merge_block
+
+        return result_vreg
+
+    def _lower_pattern_match(self, pattern, scrutinee_vreg, scrutinee_type, match_block, no_match_block):
+        """
+        Emit code to test if scrutinee matches pattern.
+        Branch to match_block if matches, no_match_block otherwise.
+        """
+        from r65.compiler.hir import (HIRLiteralPattern, HIREnumPattern, HIRWildcardPattern,
+                                       HIRIdentifierPattern, HIROrPattern)
+
+        if isinstance(pattern, HIRLiteralPattern):
+            # Compare scrutinee with literal value
+            literal_vreg = self.current_function.vreg_allocator.alloc(
+                scrutinee_type,
+                f"literal_{pattern.value}"
+            )
+            self.emit(Move(dest=literal_vreg, source=Immediate(pattern.value), type_info=scrutinee_type))
+
+            # Emit comparison and conditional branch
+            self.emit(Compare(left=scrutinee_vreg, right=literal_vreg, comparison="==", type_info=scrutinee_type))
+            self.emit(CondBranch(
+                condition=None,
+                true_target=match_block.block_id,
+                false_target=no_match_block.block_id,
+                comparison="=="
+            ))
+            # Add CFG edges
+            self.cfg_builder.add_edge(self.current_block, match_block)
+            self.cfg_builder.add_edge(self.current_block, no_match_block)
+
+        elif isinstance(pattern, HIREnumPattern):
+            # Compare scrutinee with enum variant value
+            variant_vreg = self.current_function.vreg_allocator.alloc(
+                scrutinee_type,
+                f"{pattern.enum_name}_{pattern.variant_name}"
+            )
+            self.emit(Move(dest=variant_vreg, source=Immediate(pattern.variant_value), type_info=scrutinee_type))
+
+            # Emit comparison and conditional branch
+            self.emit(Compare(left=scrutinee_vreg, right=variant_vreg, comparison="==", type_info=scrutinee_type))
+            self.emit(CondBranch(
+                condition=None,
+                true_target=match_block.block_id,
+                false_target=no_match_block.block_id,
+                comparison="=="
+            ))
+            # Add CFG edges
+            self.cfg_builder.add_edge(self.current_block, match_block)
+            self.cfg_builder.add_edge(self.current_block, no_match_block)
+
+        elif isinstance(pattern, HIRWildcardPattern):
+            # Wildcard always matches - unconditional jump
+            self.emit(Jump(target=match_block.block_id))
+            self.cfg_builder.add_edge(self.current_block, match_block)
+
+        elif isinstance(pattern, HIRIdentifierPattern):
+            # Identifier always matches - unconditional jump
+            # Binding happens in the arm block
+            self.emit(Jump(target=match_block.block_id))
+            self.cfg_builder.add_edge(self.current_block, match_block)
+
+        elif isinstance(pattern, HIROrPattern):
+            # Or pattern: try each sub-pattern, jump to match_block if any matches
+            for i, subpat in enumerate(pattern.patterns):
+                is_last = (i == len(pattern.patterns) - 1)
+                next_subpat_block = no_match_block if is_last else self.cfg_builder.new_block()
+
+                self._lower_pattern_match(subpat, scrutinee_vreg, scrutinee_type, match_block, next_subpat_block)
+
+                if not is_last:
+                    self.current_block = next_subpat_block
+
+        else:
+            raise Exception(f"Unknown pattern type in MIR lowering: {type(pattern).__name__}")
 
     def lower_assignment(self, expr: HIRAssignment) -> Union[VirtualRegister, HardwareRegister]:
         """

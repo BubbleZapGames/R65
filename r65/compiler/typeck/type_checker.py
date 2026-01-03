@@ -12,6 +12,7 @@ from r65.compiler.hir import (
     HIRArrayIndex, HIRFieldAccess, HIRDereference, HIRAddressOf, HIRAssignment,
     HIRLetStmt, HIRExprStmt, HIRReturnStmt, HIRIfStmt, HIRWhileStmt,
     HIRStaticDecl, HIRConstDecl,
+    HIRMatchExpression, HIRPattern, HIRLiteralPattern, HIREnumPattern, HIRWildcardPattern, HIRIdentifierPattern, HIROrPattern,
     BasicTypeInfo, TypeInfo, SymbolKind,
     RegisterLetBinding, ArrayTypeInfo,
     ModeTransition
@@ -396,6 +397,9 @@ class TypeChecker:
             array_type = ArrayTypeInfo(element_type=elem_type, size=0)
             expr.expr_type = array_type
             return array_type
+
+        elif isinstance(expr, HIRMatchExpression):
+            return self.check_match_expression(expr)
 
         else:
             raise TypeCheckError(
@@ -805,6 +809,96 @@ class TypeChecker:
         pointer_type = PointerTypeInfo(is_far=False, pointee_type=operand_type)
         expr.expr_type = pointer_type
         return expr.expr_type
+
+    def check_match_expression(self, expr: HIRMatchExpression) -> TypeInfo:
+        """Type check match expression."""
+        from r65.compiler.hir import (HIRLiteralPattern, HIREnumPattern, HIRWildcardPattern,
+                                       HIRIdentifierPattern, HIROrPattern)
+
+        # Check scrutinee type
+        scrutinee_type = self.check_expression(expr.scrutinee)
+
+        # Check each arm
+        arm_types = []
+        has_wildcard = False
+
+        for arm in expr.arms:
+            # Check pattern matches scrutinee type and check for wildcard/identifier
+            if self._check_pattern(arm.pattern, scrutinee_type):
+                has_wildcard = True
+
+            # Check arm body
+            body_type = self.check_expression(arm.body)
+            arm_types.append(body_type)
+
+        # All arms must return compatible types
+        if not arm_types:
+            raise TypeCheckError(
+                "Match expression must have at least one arm",
+                source_loc=expr.source_loc
+            )
+
+        # Use first arm's type as the expected type
+        result_type = arm_types[0]
+        for i, arm_type in enumerate(arm_types[1:], 1):
+            if not TypeUtils.types_equal(result_type, arm_type):
+                raise TypeCheckError(
+                    f"Match arm {i} returns type {arm_type}, expected {result_type}",
+                    source_loc=expr.arms[i].body.source_loc
+                )
+
+        # Basic exhaustiveness check: must have wildcard/identifier pattern or cover all cases
+        if not has_wildcard:
+            # For now, just warn - full exhaustiveness checking is complex
+            # TODO: Implement proper exhaustiveness checking
+            pass
+
+        expr.expr_type = result_type
+        return result_type
+
+    def _check_pattern(self, pattern, scrutinee_type: TypeInfo) -> bool:
+        """
+        Check if pattern is valid for scrutinee type.
+        Returns True if pattern is a catch-all (wildcard or identifier).
+        """
+        from r65.compiler.hir import (HIRLiteralPattern, HIREnumPattern, HIRWildcardPattern,
+                                       HIRIdentifierPattern, HIROrPattern)
+
+        if isinstance(pattern, HIRLiteralPattern):
+            # Literal must match scrutinee type
+            if isinstance(pattern.value, bool):
+                if scrutinee_type.name != 'bool':
+                    raise TypeCheckError(f"Cannot match bool literal against {scrutinee_type}")
+            elif isinstance(pattern.value, int):
+                if scrutinee_type.name not in ('u8', 'i8', 'u16', 'i16'):
+                    raise TypeCheckError(f"Cannot match integer literal against {scrutinee_type}")
+            return False
+
+        elif isinstance(pattern, HIREnumPattern):
+            # Enum pattern must match enum type
+            # scrutinee should be the enum's underlying integer type
+            return False
+
+        elif isinstance(pattern, HIRWildcardPattern):
+            # Wildcard always matches
+            return True
+
+        elif isinstance(pattern, HIRIdentifierPattern):
+            # Identifier pattern always matches and binds the value
+            # Set the symbol's type to the scrutinee type
+            pattern.symbol.var_type = scrutinee_type
+            return True
+
+        elif isinstance(pattern, HIROrPattern):
+            # Or pattern: check all sub-patterns
+            is_catchall = False
+            for subpat in pattern.patterns:
+                if self._check_pattern(subpat, scrutinee_type):
+                    is_catchall = True
+            return is_catchall
+
+        else:
+            raise TypeCheckError(f"Unknown pattern type: {type(pattern).__name__}")
 
     def check_assignment(self, expr: HIRAssignment) -> TypeInfo:
         """Type check assignment."""

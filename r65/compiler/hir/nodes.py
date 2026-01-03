@@ -397,7 +397,7 @@ class HIRAssignment(HIRExpression):
 # ============================================================================
 
 @dataclass
-class HIRPattern(ASTNode):
+class HIRPattern(HIRNode):
     """Base class for HIR pattern nodes."""
     pass
 
@@ -436,7 +436,7 @@ class HIROrPattern(HIRPattern):
 
 
 @dataclass
-class HIRMatchArm(ASTNode):
+class HIRMatchArm(HIRNode):
     """Single arm of a match expression."""
     pattern: Optional[HIRPattern] = None
     body: Optional[HIRExpression] = None
