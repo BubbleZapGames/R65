@@ -617,6 +617,21 @@ class HIRBuilder:
             value = self._build_expression(expr.value)
             return hir.HIRAssignment(target=target, value=value)
 
+        elif isinstance(expr, ast.CompoundAssignment):
+            # Desugar compound assignment: x += 5 becomes x = x + 5
+            target = self._build_expression(expr.target)
+            value = self._build_expression(expr.value)
+
+            # Create binary operation: target op value
+            binary_op = hir.HIRBinaryOp(
+                op=expr.operator,
+                left=target,  # Read from target
+                right=value
+            )
+
+            # Create assignment: target = (target op value)
+            return hir.HIRAssignment(target=target, value=binary_op)
+
         else:
             raise HIRError(f"Unknown expression type: {type(expr).__name__}")
 

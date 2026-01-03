@@ -606,6 +606,8 @@ let s = shl(a, n);    // Variable shift amount
 
 All operations wrap on overflow (no runtime checks).
 
+**Compound assignments:** R65 supports `+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `|=`, `^=`, `<<=`, `>>=` for all lvalue types (variables, registers, array elements, struct fields). These desugar to regular assignments at compile time with no performance overhead.
+
 *(See [docs/operators.md](docs/operators.md) for complete operator semantics, assembly mappings, and performance details)*
 
 ## What's Included (Minimal Feature Set)
@@ -627,6 +629,7 @@ All operations wrap on overflow (no runtime checks).
   - Bitwise: `&`, `|`, `^`, `~`, `<<` (constant), `>>` (constant)
   - Comparison: `==`, `!=`, `<`, `<=`, `>`, `>=`
   - Logical: `&&`, `||`, `!` (with short-circuit evaluation)
+  - Compound assignment: `+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `|=`, `^=`, `<<=`, `>>=`
 - ✅ `let` bindings (immutable by default, `let mut` for mutable)
 - ✅ All 65816 processor registers: A, X, Y, STATUS, D, DBR, S (mutable); PBR (read-only)
 - ✅ Storage attributes: `#[zeropage]`, `#[ram]`, `#[rom]`, `#[hw]`

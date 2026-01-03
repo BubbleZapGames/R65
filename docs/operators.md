@@ -1054,6 +1054,151 @@ let x = mul(a: u8, b: u16);
 
 ---
 
+## Compound Assignment Operators
+
+### Overview
+
+R65 supports compound assignment operators that combine a binary operation with assignment. These are **syntactic sugar** that desugar during HIR lowering:
+
+```rust
+x += 5;  // Desugars to: x = x + 5
+```
+
+**No performance difference** - compound assignments compile to the same code as manual expansion.
+
+### Supported Operators
+
+| Operator | Example | Desugars To | Category |
+|----------|---------|-------------|----------|
+| `+=` | `x += 5` | `x = x + 5` | Arithmetic |
+| `-=` | `x -= 3` | `x = x - 3` | Arithmetic |
+| `*=` | `x *= 2` | `x = x * 2` | Arithmetic |
+| `/=` | `x /= 4` | `x = x / 4` | Arithmetic |
+| `%=` | `x %= 8` | `x = x % 8` | Arithmetic |
+| `&=` | `x &= 0x0F` | `x = x & 0x0F` | Bitwise |
+| `\|=` | `x \|= 0x80` | `x = x \| 0x80` | Bitwise |
+| `^=` | `x ^= 0xFF` | `x = x ^ 0xFF` | Bitwise |
+| `<<=` | `x <<= 2` | `x = x << 2` | Shift |
+| `>>=` | `x >>= 1` | `x = x >> 1` | Shift |
+
+### Semantics
+
+**Left-hand side evaluated once:**
+```rust
+array[get_index()] += 5;
+// get_index() called only ONCE
+// Equivalent to:
+let temp_idx = get_index();
+array[temp_idx] = array[temp_idx] + 5;
+```
+
+**Type checking:** Same rules as the underlying binary operation
+- Left and right types must be compatible
+- Result type must match left-hand side type
+- Same restrictions (e.g., `*=` requires constant power-of-2 or uses `mul()`)
+
+### Examples
+
+#### Variables
+```rust
+#[zeropage]
+static mut COUNTER: u8 = 0;
+
+fn increment() {
+    COUNTER += 1;  // Clearer than COUNTER = COUNTER + 1
+}
+```
+
+#### Registers
+```rust
+fn process_value(input @ A: u8) {
+    A += 10;        // Add 10 to accumulator
+    A &= 0x0F;      // Mask low nibble
+    A <<= 2;        // Shift left 2 bits
+}
+```
+
+#### Array Elements
+```rust
+#[ram]
+static mut BUFFER: [u8; 256] = [0; 256];
+
+fn update_buffer(index: u8, delta: u8) {
+    BUFFER[index] += delta;
+}
+```
+
+#### Struct Fields
+```rust
+struct Player {
+    health: u8,
+    score: u16,
+}
+
+fn take_damage(p: near<Player>, damage: u8) {
+    (*p).health -= damage;
+}
+
+fn add_score(p: near<Player>, points: u16) {
+    (*p).score += points;
+}
+```
+
+### Assembly Output
+
+Compound assignments compile to the same code as manual expansion:
+
+```rust
+// Source
+A += 5;
+
+// Assembly (same as A = A + 5)
+CLC
+ADC #$05
+```
+
+```rust
+// Source
+COUNTER += 1;
+
+// Assembly (same as COUNTER = COUNTER + 1)
+LDA COUNTER
+CLC
+ADC #$01
+STA COUNTER
+```
+
+### Operator Restrictions Apply
+
+Compound assignments inherit restrictions from their underlying operators:
+
+```rust
+// OK: Constant power-of-2 multiplication
+x *= 8;  // Uses shifts
+
+// ERROR: Variable multiplication requires mul()
+x *= y;  // Compiler error
+
+// OK: Constant shift
+x <<= 3;
+
+// ERROR: Variable shift requires shl()
+x <<= n;  // Compiler error
+```
+
+### Not Included
+
+**Logical compound assignments** (`&&=`, `||=`):
+- Rarely useful in systems programming
+- Can be added if use case emerges
+
+**Increment/decrement operators** (`++`, `--`):
+- Not currently implemented
+- Can use `x += 1` and `x -= 1` instead
+- May be added in future for convenience
+
+---
+
 ## Future Enhancements
 
 ### Checked Operations
@@ -1080,5 +1225,5 @@ let overflow = STATUS & OVERFLOW_FLAG;
 ---
 
 **STATUS**: Design Complete
-**Last Updated**: 2025-12-31
+**Last Updated**: 2026-01-02
 **Next Steps**: Implement in compiler frontend (lexer/parser) and MIR

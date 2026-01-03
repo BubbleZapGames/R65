@@ -345,6 +345,14 @@ class Assignment(Expression):
     value: Expression
 
 
+@dataclass
+class CompoundAssignment(Expression):
+    """Compound assignment expression (e.g., +=, -=, &=)."""
+    target: Union[Identifier, Register, ArrayIndex, FieldAccess]
+    operator: str  # "+", "-", "*", "/", "%", "&", "|", "^", "<<", ">>"
+    value: Expression
+
+
 # ============================================================================
 # Utility Functions
 # ============================================================================

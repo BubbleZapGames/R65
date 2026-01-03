@@ -583,6 +583,53 @@ class ASTBuilder(Transformer):
 
         return ast.Assignment(target=target, value=value)
 
+    def compound_assign(self, items):
+        """Compound assignment (+=, -=, etc.)."""
+        # Keep compound operator tokens
+        items = self._filter_tokens(items, keep_types={
+            'PLUSEQUAL', 'MINUSEQUAL', 'STAREQUAL', 'SLASHEQUAL', 'PERCENTEQUAL',
+            'AMPEREQUAL', 'VBAREQUAL', 'CIRCUMFLEXEQUAL', 'LSHIFTEQUAL', 'RSHIFTEQUAL'
+        })
+        lvalue = items[0]
+        # items[1] is the compound_op result (a token like PLUSEQUAL)
+        compound_op_token = items[1]
+        value = items[2]
+
+        # Map compound operator token to binary operator
+        op_map = {
+            'PLUSEQUAL': '+',
+            'MINUSEQUAL': '-',
+            'STAREQUAL': '*',
+            'SLASHEQUAL': '/',
+            'PERCENTEQUAL': '%',
+            'AMPEREQUAL': '&',
+            'VBAREQUAL': '|',
+            'CIRCUMFLEXEQUAL': '^',
+            'LSHIFTEQUAL': '<<',
+            'RSHIFTEQUAL': '>>'
+        }
+
+        # Get the operator type
+        if isinstance(compound_op_token, LarkToken):
+            op_type = compound_op_token.type
+        else:
+            # It might be wrapped; extract the actual token type
+            op_type = str(compound_op_token)
+
+        operator = op_map.get(op_type, '+')  # Default to '+' if unknown
+
+        return ast.CompoundAssignment(target=lvalue, operator=operator, value=value)
+
+    def compound_op(self, items):
+        """Compound operator."""
+        # Return the first token which is the compound operator
+        # Keep all compound operator tokens
+        items = self._filter_tokens(items, keep_types={
+            'PLUSEQUAL', 'MINUSEQUAL', 'STAREQUAL', 'SLASHEQUAL', 'PERCENTEQUAL',
+            'AMPEREQUAL', 'VBAREQUAL', 'CIRCUMFLEXEQUAL', 'LSHIFTEQUAL', 'RSHIFTEQUAL'
+        })
+        return items[0]
+
     def lvalue_ident(self, items):
         """Lvalue identifier."""
         items = self._filter_tokens(items)

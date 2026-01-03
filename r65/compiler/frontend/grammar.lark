@@ -90,7 +90,12 @@ asm_stmt: ASM "!" "(" STRING ("," STRING)* ")" ";"
 ?expr: assignment
 
 ?assignment: logical_or
-           | lvalue "=" assignment              -> assign
+           | lvalue "=" assignment                          -> assign
+           | lvalue compound_op assignment                  -> compound_assign
+
+compound_op: PLUSEQUAL | MINUSEQUAL | STAREQUAL | SLASHEQUAL | PERCENTEQUAL
+           | AMPEREQUAL | VBAREQUAL | CIRCUMFLEXEQUAL
+           | LSHIFTEQUAL | RSHIFTEQUAL
 
 lvalue: IDENT                                   -> lvalue_ident
       | REGISTER                                -> lvalue_register
@@ -231,6 +236,18 @@ GREATEREQUAL: ">="
 AND: "&&"
 OR: "||"
 RARROW: "->"
+
+// Compound assignment operators (must come before single-char operators)
+LSHIFTEQUAL: "<<="
+RSHIFTEQUAL: ">>="
+PLUSEQUAL: "+="
+MINUSEQUAL: "-="
+STAREQUAL: "*="
+SLASHEQUAL: "/="
+PERCENTEQUAL: "%="
+AMPEREQUAL: "&="
+VBAREQUAL: "|="
+CIRCUMFLEXEQUAL: "^="
 
 // Single-character operators
 PLUS: "+"
