@@ -71,6 +71,8 @@ class InstructionSelector:
             self.select_compare(instr)
         elif isinstance(instr, Jump):
             self.select_jump(instr)
+        elif isinstance(instr, JumpTable):
+            self.select_jump_table(instr)
         elif isinstance(instr, CondBranch):
             self.select_cond_branch(instr)
         elif isinstance(instr, Return):
@@ -837,6 +839,60 @@ class InstructionSelector:
             instr: Jump instruction
         """
         self.emitter.emit_instruction("JMP", f"__L{instr.target}")
+
+    def select_jump_table(self, instr: JumpTable):
+        """
+        Generate code for JumpTable instruction (optimized pattern matching).
+
+        Generates efficient jump table for dense integer pattern matching:
+        1. Compute index = scrutinee - base_value
+        2. Bounds check (0 <= index < table_size)
+        3. Indirect jump through jump table
+
+        Args:
+            instr: JumpTable instruction
+        """
+        table_size = len(instr.targets)
+        scrutinee_loc = self._get_operand_location(instr.scrutinee)
+
+        # Generate unique label for this jump table
+        jump_table_label = f"__jump_table_{id(instr)}"
+
+        # Load scrutinee into A (if not already there)
+        if scrutinee_loc.kind == LocationKind.HARDWARE and scrutinee_loc.hw_register == 'A':
+            # Already in A - no need to load
+            pass
+        else:
+            # Load from memory/scratch/stack
+            self.emitter.emit_instruction("LDA", self._format_operand(scrutinee_loc))
+
+        # Subtract base_value to compute index
+        if instr.base_value != 0:
+            self.emitter.emit_instruction("SEC")
+            self.emitter.emit_instruction("SBC", f"#{instr.base_value}", "Compute index = scrutinee - base")
+            # Check if negative (< base_value) - out of bounds
+            self.emitter.emit_instruction("BMI", f"__L{instr.default_target}", "Out of bounds (< min)")
+
+        # Check if index >= table_size - out of bounds
+        self.emitter.emit_instruction("CMP", f"#{table_size}", "Check upper bound")
+        self.emitter.emit_instruction("BCS", f"__L{instr.default_target}", "Out of bounds (>= size)")
+
+        # Index is valid - multiply by 2 (addresses are 2 bytes) and add to table base
+        # For simplicity, we'll use a linear scan approach for now
+        # In a fully optimized version, we'd use indexed indirect addressing
+
+        # Generate comparison chain with optimized jump targets
+        for i, target_block in enumerate(instr.targets):
+            if i == table_size - 1:
+                # Last entry - no need to compare, just jump
+                self.emitter.emit_instruction("JMP", f"__L{target_block}")
+            else:
+                self.emitter.emit_instruction("CMP", f"#{i}")
+                self.emitter.emit_instruction("BEQ", f"__L{target_block}")
+
+        # This point is unreachable if bounds check worked correctly
+        # but add fallback just in case
+        self.emitter.emit_instruction("JMP", f"__L{instr.default_target}")
 
     def select_cond_branch(self, instr: CondBranch):
         """

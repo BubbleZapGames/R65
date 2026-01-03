@@ -323,6 +323,24 @@ class CondBranch(MIRInstruction):
 
 
 @dataclass
+class JumpTable(MIRInstruction):
+    """
+    Jump table for efficient dense integer pattern matching.
+
+    Computes index = (scrutinee - base_value), bounds checks, then jumps to targets[index].
+    Falls through to default_target if out of bounds.
+    """
+    scrutinee: Union[VirtualRegister, HardwareRegister]  # Value to switch on
+    base_value: int  # Minimum value in the range (subtracted from scrutinee)
+    targets: List[int]  # Block IDs indexed by (scrutinee - base_value)
+    default_target: int  # Block ID for out-of-range or missing entries
+    type_info: Any  # TypeInfo for scrutinee
+
+    def __repr__(self):
+        return f"JumpTable {self.scrutinee} (base={self.base_value}, size={len(self.targets)}) -> {self.targets}, default -> Block {self.default_target}"
+
+
+@dataclass
 class Return(MIRInstruction):
     """
     Return from function with values.

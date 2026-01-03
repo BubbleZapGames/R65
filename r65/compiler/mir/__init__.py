@@ -9,7 +9,7 @@ from r65.compiler.mir.nodes import (
     MIRInstruction,
     Load, Store, Move,
     BinaryOp, UnaryOp,
-    Jump, CondBranch, Return, ReturnFromInterrupt,
+    Jump, CondBranch, JumpTable, Return, ReturnFromInterrupt,
     Call, Argument, ArgumentMechanism,
     SetMode, Push, Pull, SaveRegister, RestoreRegister,
     # Operands
@@ -28,7 +28,7 @@ __all__ = [
     'MIRInstruction',
     'Load', 'Store', 'Move',
     'BinaryOp', 'UnaryOp',
-    'Jump', 'CondBranch', 'Return', 'ReturnFromInterrupt',
+    'Jump', 'CondBranch', 'JumpTable', 'Return', 'ReturnFromInterrupt',
     'Call', 'Argument', 'ArgumentMechanism',
     'SetMode', 'Push', 'Pull', 'SaveRegister', 'RestoreRegister',
     # Operands
