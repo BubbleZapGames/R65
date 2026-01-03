@@ -24,7 +24,7 @@ from r65.compiler.hir.attributes import StorageKind
 from r65.compiler.mir.nodes import (
     MIRInstruction, MIRProgram, MIRFunction, BasicBlock,
     VirtualRegister, HardwareRegister, Immediate, FunctionPointer, MemoryLocation,
-    Load, Store, LoadIndirect, StoreIndirect, Move, TypeConvert, BinaryOp, UnaryOp, Compare,
+    Load, Store, LoadIndirect, StoreIndirect, Move, TypeConvert, BinaryOp, UnaryOp, Compare, BitTest,
     Jump, CondBranch, JumpTable, Return, ReturnFromInterrupt, Call, Argument, ArgumentMechanism,
     SetMode, SaveRegister, RestoreRegister,
     Push, Pull,
@@ -1634,6 +1634,64 @@ class MIRBuilder:
         # Continue at merge block
         self.current_block = merge_block
 
+    def _detect_bit_test_pattern(self, condition: HIRExpression):
+        """
+        Detect if condition is a bit-testing pattern suitable for BIT instruction.
+
+        Detects patterns:
+        - (value & 0x80) != 0  =>  bit 7 test
+        - (value & 0x40) != 0  =>  bit 6 test
+        - (value & 0x80) == 0  =>  bit 7 test (inverted)
+        - (value & 0x40) == 0  =>  bit 6 test (inverted)
+
+        Returns:
+            tuple: (value_expr, bit_number, inverted) or None
+        """
+        from r65.compiler.hir import HIRBinaryOp, HIRIntegerLiteral
+
+        # Check if it's a comparison with 0
+        if not isinstance(condition, HIRBinaryOp):
+            return None
+
+        if condition.op not in ('==', '!='):
+            return None
+
+        # Check pattern: (value & mask) op 0
+        left = condition.left
+        right = condition.right
+
+        # Swap if needed: 0 op (value & mask)
+        if isinstance(left, HIRIntegerLiteral) and left.value == 0:
+            left, right = right, left
+
+        # Now check: (value & mask) op 0
+        if not isinstance(right, HIRIntegerLiteral) or right.value != 0:
+            return None
+
+        # Check if left is (value & mask)
+        if not isinstance(left, HIRBinaryOp) or left.op != '&':
+            return None
+
+        # Check the mask value
+        mask_expr = left.right
+        if not isinstance(mask_expr, HIRIntegerLiteral):
+            return None
+
+        mask = mask_expr.value
+        bit_number = None
+
+        if mask == 0x80:
+            bit_number = 7
+        elif mask == 0x40:
+            bit_number = 6
+        else:
+            return None  # Only support bit 6 and 7
+
+        # Determine if test is inverted (== 0 means inverted)
+        inverted = (condition.op == '==')
+
+        return (left.left, bit_number, inverted)
+
     def _lower_condition(self, condition: HIRExpression, true_target: int, false_target: int):
         """
         Lower condition expression with short-circuit evaluation.
@@ -1647,6 +1705,58 @@ class MIRBuilder:
             false_target: Block ID to jump to if condition is false
         """
         comparison_ops = {'==', '!=', '<', '<=', '>', '>='}
+
+        # OPTIMIZATION 0: BIT instruction for bit testing
+        bit_test = self._detect_bit_test_pattern(condition)
+        if bit_test:
+            value_expr, bit_number, inverted = bit_test
+
+            # Lower the value being tested
+            value = self.lower_expression(value_expr)
+
+            # Only use BIT if value is not in a hardware register
+            # BIT requires a memory operand
+            if not isinstance(value, HardwareRegister):
+                # Value is in memory - can use BIT optimization
+                # Emit BitTest instruction
+                self.emit(BitTest(
+                    value=value,
+                    test_bit=bit_number,
+                    type_info=value_expr.expr_type
+                ))
+
+                # Branch based on bit value
+                # BMI/BPL for bit 7, BVS/BVC for bit 6
+                if inverted:
+                    # Test is (value & mask) == 0, so bit is clear
+                    # Swap targets: if bit clear goto true, else goto false
+                    actual_true = true_target
+                    actual_false = false_target
+                else:
+                    # Test is (value & mask) != 0, so bit is set
+                    # Normal: if bit set goto true, else goto false
+                    actual_true = true_target
+                    actual_false = false_target
+
+                # Emit conditional branch
+                # We'll use a special comparison string to indicate BIT-based branch
+                if bit_number == 7:
+                    comparison = 'bit7_set' if not inverted else 'bit7_clear'
+                else:  # bit_number == 6
+                    comparison = 'bit6_set' if not inverted else 'bit6_clear'
+
+                self.emit(CondBranch(
+                    condition=None,  # Uses flags from BitTest
+                    true_target=actual_true,
+                    false_target=actual_false,
+                    comparison=comparison
+                ))
+
+                # Add CFG edges
+                self.cfg_builder.add_edge(self.current_block, self.current_function.blocks[true_target])
+                self.cfg_builder.add_edge(self.current_block, self.current_function.blocks[false_target])
+                return
+            # If value is in hardware register, fall through to normal comparison handling
 
         # OPTIMIZATION 1: Short-circuit AND (&&)
         if isinstance(condition, HIRBinaryOp) and condition.op == '&&':

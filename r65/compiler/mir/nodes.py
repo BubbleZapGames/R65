@@ -289,6 +289,30 @@ class Compare(MIRInstruction):
         return f"Compare {self.left} {self.comparison} {self.right} : {self.type_info}"
 
 
+@dataclass
+class BitTest(MIRInstruction):
+    """
+    Bit test operation using BIT instruction.
+
+    Tests specific bits in memory without modifying accumulator.
+    Sets flags: N = bit 7, V = bit 6, Z = (A & value) == 0
+
+    Used for optimizing:
+    - Boolean flag tests
+    - Bit 7 tests (sign bit)
+    - Bit 6 tests (overflow bit)
+    - Hardware register polling
+    """
+    value: Union[VirtualRegister, HardwareRegister, MemoryLocation]  # Value to test
+    test_bit: int  # Bit number to test (6 or 7, or -1 for Z flag test)
+    type_info: Any  # TypeInfo
+
+    def __repr__(self):
+        if self.test_bit == -1:
+            return f"BitTest {self.value} (Z flag)"
+        return f"BitTest {self.value} bit {self.test_bit}"
+
+
 # ============================================================================
 # Control Flow
 # ============================================================================

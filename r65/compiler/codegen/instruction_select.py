@@ -69,6 +69,8 @@ class InstructionSelector:
             self.select_unary_op(instr)
         elif isinstance(instr, Compare):
             self.select_compare(instr)
+        elif isinstance(instr, BitTest):
+            self.select_bit_test(instr)
         elif isinstance(instr, Jump):
             self.select_jump(instr)
         elif isinstance(instr, JumpTable):
@@ -781,6 +783,30 @@ class InstructionSelector:
         # C flag: set if left >= right (unsigned)
         # N flag: set if result is negative (signed)
 
+    def select_bit_test(self, instr: 'BitTest'):
+        """
+        Generate code for BitTest instruction using BIT instruction.
+
+        BIT instruction sets flags based on memory value:
+        - N flag = bit 7 of memory
+        - V flag = bit 6 of memory
+        - Z flag = (A & memory) == 0
+
+        Args:
+            instr: BitTest instruction
+        """
+        value_loc = self._get_operand_location(instr.value)
+
+        # BIT instruction requires a memory operand
+        # If value is in a hardware register, we can't use BIT directly
+        # Just emit BIT with the memory location
+        self.emitter.emit_instruction("BIT", self._format_operand(value_loc))
+
+        # Flags are now set:
+        # - For bit 7 test: N flag indicates bit 7 value
+        # - For bit 6 test: V flag indicates bit 6 value
+        # - Z flag can also be used if needed
+
     # ========================================================================
     # Arithmetic Helpers
     # ========================================================================
@@ -906,13 +932,31 @@ class InstructionSelector:
             instr: CondBranch instruction
         """
         if instr.condition is None:
-            # Branch based on comparison flags from preceding Compare instruction
-            # Flags are already set by CMP/CPX/CPY instruction
+            # Branch based on comparison flags from preceding Compare or BitTest instruction
+            # Flags are already set by CMP/CPX/CPY or BIT instruction
             # Z flag: set if left == right
             # C flag: set if left >= right (unsigned)
-            # N flag: set if result is negative (signed)
+            # N flag: set if result is negative (signed) OR bit 7 (from BIT)
+            # V flag: bit 6 (from BIT)
 
-            if instr.comparison == '==':
+            # Handle BIT-based comparisons first
+            if instr.comparison == 'bit7_set':
+                # Bit 7 is set - N flag is set
+                self.emitter.emit_instruction("BMI", f"__L{instr.true_target}", "Branch if bit 7 set")
+                self.emitter.emit_instruction("JMP", f"__L{instr.false_target}")
+            elif instr.comparison == 'bit7_clear':
+                # Bit 7 is clear - N flag is clear
+                self.emitter.emit_instruction("BPL", f"__L{instr.true_target}", "Branch if bit 7 clear")
+                self.emitter.emit_instruction("JMP", f"__L{instr.false_target}")
+            elif instr.comparison == 'bit6_set':
+                # Bit 6 is set - V flag is set
+                self.emitter.emit_instruction("BVS", f"__L{instr.true_target}", "Branch if bit 6 set")
+                self.emitter.emit_instruction("JMP", f"__L{instr.false_target}")
+            elif instr.comparison == 'bit6_clear':
+                # Bit 6 is clear - V flag is clear
+                self.emitter.emit_instruction("BVC", f"__L{instr.true_target}", "Branch if bit 6 clear")
+                self.emitter.emit_instruction("JMP", f"__L{instr.false_target}")
+            elif instr.comparison == '==':
                 # Branch if equal (Z flag set)
                 self.emitter.emit_instruction("BEQ", f"__L{instr.true_target}", "Branch if equal")
                 self.emitter.emit_instruction("JMP", f"__L{instr.false_target}")
