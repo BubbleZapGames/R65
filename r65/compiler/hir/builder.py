@@ -585,6 +585,27 @@ class HIRBuilder:
             symbol = self.symbol_table.lookup(expr.name)
             return hir.HIRRegister(name=expr.name, symbol=symbol)
 
+        elif isinstance(expr, ast.EnumVariantExpr):
+            # Resolve enum variant to integer literal
+            # Lookup enum type
+            enum_symbol = self.symbol_table.lookup(expr.enum_name)
+            if not enum_symbol:
+                raise HIRError(f"Undefined enum: {expr.enum_name}")
+            if enum_symbol.kind != SymbolKind.ENUM:
+                raise HIRError(f"{expr.enum_name} is not an enum")
+
+            # Lookup variant with qualified name
+            qualified_name = f"{expr.enum_name}::{expr.variant_name}"
+            variant_symbol = self.symbol_table.lookup(qualified_name)
+            if not variant_symbol:
+                raise HIRError(f"Undefined enum variant: {qualified_name}")
+            if variant_symbol.kind != SymbolKind.ENUM_VARIANT:
+                raise HIRError(f"{qualified_name} is not an enum variant")
+
+            # Get variant value from symbol (stored in const_value field)
+            variant_value = variant_symbol.const_value
+            return hir.HIRIntegerLiteral(value=variant_value)
+
         elif isinstance(expr, ast.BinaryOp):
             left = self._build_expression(expr.left)
             right = self._build_expression(expr.right)

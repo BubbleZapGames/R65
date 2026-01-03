@@ -284,6 +284,13 @@ class Identifier(Expression):
 
 
 @dataclass
+class EnumVariantExpr(Expression):
+    """Enum variant expression (e.g., Direction::North)."""
+    enum_name: str
+    variant_name: str
+
+
+@dataclass
 class Register(Expression):
     """Hardware register reference."""
     name: str  # "A", "X", "Y", "Status", "D", "DBR", "PBR", "S"

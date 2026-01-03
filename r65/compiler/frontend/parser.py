@@ -476,6 +476,13 @@ class ASTBuilder(Transformer):
         self._validate_identifier_not_register(identifier, token)
         return ast.Identifier(name=identifier)
 
+    def enum_variant_expr(self, items):
+        """Enum variant expression (e.g., Direction::North)."""
+        # items: [IDENT, "::", IDENT]
+        enum_name = items[0].value
+        variant_name = items[2].value
+        return ast.EnumVariantExpr(enum_name=enum_name, variant_name=variant_name)
+
     def register_ref(self, items):
         """Register reference."""
         return ast.Register(name=items[0].value)

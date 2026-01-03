@@ -162,6 +162,7 @@ arg_list: expr ("," expr)* ","?
 
 ?primary: INTEGER                               -> integer
         | BOOLEAN                               -> boolean
+        | IDENT "::" IDENT                      -> enum_variant_expr
         | IDENT                                 -> identifier
         | REGISTER                              -> register_ref
         | "(" expr ")"                          -> paren
