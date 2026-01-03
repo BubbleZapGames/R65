@@ -11,6 +11,7 @@ from r65.compiler.codegen.emitter import *
 from r65.compiler.codegen.memory_alloc import *
 from r65.compiler.codegen.symbol_gen import *
 from r65.compiler.codegen.function_gen import *
+from r65.compiler.codegen.peephole import optimize_assembly
 
 
 class ProgramCodeGenerator:
@@ -87,9 +88,18 @@ class ProgramCodeGenerator:
         # Get assembly
         assembly = self.emitter.to_string()
 
+        # Apply peephole optimizations
+        assembly_lines = assembly.split('\n')
+        optimized_lines, num_optimizations = optimize_assembly(assembly_lines)
+        assembly = '\n'.join(optimized_lines)
+
+        if num_optimizations > 0:
+            print(f"Peephole optimizer: {num_optimizations} optimization(s) applied")
+
         # Write to file if specified
         if output_file:
-            self.emitter.write_to_file(output_file)
+            with open(output_file, 'w') as f:
+                f.write(assembly)
 
         return assembly
 
