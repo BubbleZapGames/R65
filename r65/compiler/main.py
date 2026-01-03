@@ -2,19 +2,16 @@
 """
 R65 Compiler - Command Line Interface
 
-Usage:
-    python -m compiler.main lex <file>          # Tokenize a file
-    python -m compiler.main lex -                # Tokenize from stdin
-    python -m compiler.main parse <file>        # Parse a file
-    python -m compiler.main parse -              # Parse from stdin
-    python -m compiler.main build-hir <file>    # Build HIR from file
-    python -m compiler.main build-hir -          # Build HIR from stdin
-    python -m compiler.main typecheck <file>    # Type check a file
-    python -m compiler.main typecheck -          # Type check from stdin
-    python -m compiler.main build-mir <file>    # Build MIR from file
-    python -m compiler.main build-mir -          # Build MIR from stdin
-    python -m compiler.main compile <file>      # Compile to assembly
-    python -m compiler.main compile <file> -o <output.asm>  # Compile with output file
+Simple usage:
+    r65c input.r65 -o output.asm        # Compile to assembly
+    r65c input.r65                      # Compile to stdout
+    r65c -                              # Compile from stdin
+
+Advanced usage (for compiler development):
+    r65c input.r65 --dump-ast           # Dump AST and exit
+    r65c input.r65 --dump-hir           # Dump HIR and exit
+    r65c input.r65 --dump-mir           # Dump MIR and exit
+    r65c input.r65 --stop-after parse   # Stop after specific phase
 """
 import sys
 import argparse
@@ -26,321 +23,159 @@ from r65.compiler.mir import MIRBuilder
 from r65.compiler.codegen import ProgramCodeGenerator
 
 
-def lex_file(filepath: str):
-    """Tokenize a source file and print the tokens."""
+def read_source(filepath: str) -> tuple[str, str]:
+    """Read source code from file or stdin."""
     if filepath == '-':
-        # Read from stdin
         source = sys.stdin.read()
         filename = '<stdin>'
     else:
-        # Read from file
         path = Path(filepath)
         if not path.exists():
             print(f"Error: File '{filepath}' not found", file=sys.stderr)
             sys.exit(1)
-
         source = path.read_text()
         filename = str(path)
-
-    try:
-        tokens = tokenize(source, filename)
-
-        print(f"Tokenized {filename}:")
-        print("-" * 80)
-
-        for i, token in enumerate(tokens):
-            if token.type == TokenType.EOF:
-                print(f"{i:4d}: {token.type.name:15s} (EOF)")
-            else:
-                print(f"{i:4d}: {token.type.name:15s} {token.value!r:20s} [{token.line}:{token.column}]")
-
-        print("-" * 80)
-        print(f"Total tokens: {len(tokens)}")
-
-    except LexerError as e:
-        print(f"\nLexer error: {e}", file=sys.stderr)
-        sys.exit(1)
+    return source, filename
 
 
-def parse_file(filepath: str):
-    """Parse a source file and print the AST."""
-    if filepath == '-':
-        # Read from stdin
-        source = sys.stdin.read()
-        filename = '<stdin>'
-    else:
-        # Read from file
-        path = Path(filepath)
-        if not path.exists():
-            print(f"Error: File '{filepath}' not found", file=sys.stderr)
-            sys.exit(1)
+def dump_tokens(source: str, filename: str):
+    """Dump tokenized output."""
+    tokens = tokenize(source, filename)
 
-        source = path.read_text()
-        filename = str(path)
+    print(f"Tokens for {filename}:")
+    print("-" * 80)
 
-    try:
-        program = parse(source, filename)
+    for i, token in enumerate(tokens):
+        if token.type == TokenType.EOF:
+            print(f"{i:4d}: {token.type.name:15s} (EOF)")
+        else:
+            print(f"{i:4d}: {token.type.name:15s} {token.value!r:20s} [{token.line}:{token.column}]")
 
-        print(f"Parsed {filename}:")
-        print("=" * 80)
-        print(ast.ast_to_string(program))
-        print("=" * 80)
-
-    except (LexerError, ParseError) as e:
-        print(f"\nParse error: {e}", file=sys.stderr)
-        sys.exit(1)
+    print("-" * 80)
+    print(f"Total tokens: {len(tokens)}")
 
 
-def build_hir_file(filepath: str):
-    """Parse a source file and build HIR."""
-    if filepath == '-':
-        # Read from stdin
-        source = sys.stdin.read()
-        filename = '<stdin>'
-    else:
-        # Read from file
-        path = Path(filepath)
-        if not path.exists():
-            print(f"Error: File '{filepath}' not found", file=sys.stderr)
-            sys.exit(1)
+def dump_ast(source: str, filename: str):
+    """Dump parsed AST."""
+    program = parse(source, filename)
 
-        source = path.read_text()
-        filename = str(path)
-
-    try:
-        # Parse to AST
-        program = parse(source, filename)
-
-        # Build HIR
-        builder = HIRBuilder()
-        hir_program = builder.build_program(program)
-
-        print(f"Built HIR for {filename}:")
-        print("=" * 80)
-        print(f"Symbol Table Scopes: {len(hir_program.symbol_table.scopes)}")
-        print(f"Declarations: {len(hir_program.declarations)}")
-        print()
-
-        # Print declarations summary
-        for decl in hir_program.declarations:
-            decl_type = type(decl).__name__
-            if hasattr(decl, 'name'):
-                print(f"  - {decl_type}: {decl.name}")
-            else:
-                print(f"  - {decl_type}")
-
-        print("=" * 80)
-        print("HIR built successfully!")
-
-    except (LexerError, ParseError) as e:
-        print(f"\nParse error: {e}", file=sys.stderr)
-        sys.exit(1)
-    except HIRError as e:
-        print(f"\nHIR error: {e}", file=sys.stderr)
-        sys.exit(1)
+    print(f"AST for {filename}:")
+    print("=" * 80)
+    print(ast.ast_to_string(program))
+    print("=" * 80)
 
 
-def typecheck_file(filepath: str):
-    """Parse a source file, build HIR, and type check it."""
-    if filepath == '-':
-        # Read from stdin
-        source = sys.stdin.read()
-        filename = '<stdin>'
-    else:
-        # Read from file
-        path = Path(filepath)
-        if not path.exists():
-            print(f"Error: File '{filepath}' not found", file=sys.stderr)
-            sys.exit(1)
+def dump_hir(source: str, filename: str):
+    """Dump HIR."""
+    program = parse(source, filename)
+    builder = HIRBuilder()
+    hir_program = builder.build_program(program)
 
-        source = path.read_text()
-        filename = str(path)
+    print(f"HIR for {filename}:")
+    print("=" * 80)
+    print(f"Symbol Table Scopes: {len(hir_program.symbol_table.scopes)}")
+    print(f"Declarations: {len(hir_program.declarations)}")
+    print()
 
-    try:
-        # Parse to AST
-        program = parse(source, filename)
+    for decl in hir_program.declarations:
+        decl_type = type(decl).__name__
+        if hasattr(decl, 'name'):
+            print(f"  - {decl_type}: {decl.name}")
+        else:
+            print(f"  - {decl_type}")
 
-        # Build HIR
-        builder = HIRBuilder()
-        hir_program = builder.build_program(program)
-
-        # Type check
-        type_checker = TypeChecker(hir_program)
-        type_checker.check()
-
-        # Print warnings if any
-        if type_checker.warnings:
-            print(f"\n{'=' * 80}")
-            print(f"Type checking warnings ({len(type_checker.warnings)}):")
-            print(f"{'=' * 80}")
-            for warning in type_checker.warnings:
-                print(f"\n{warning}", file=sys.stderr)
-            print(f"{'=' * 80}\n")
-
-        print(f"Type checked {filename}:")
-        print("=" * 80)
-        print("Type checking succeeded!")
-        print()
-        print(f"Declarations checked: {len(hir_program.declarations)}")
-
-        # Count functions
-        func_count = sum(1 for d in hir_program.declarations if hasattr(d, 'body') and d.body is not None)
-        print(f"Functions type checked: {func_count}")
-
-        print("=" * 80)
-
-    except (LexerError, ParseError) as e:
-        print(f"\nParse error: {e}", file=sys.stderr)
-        sys.exit(1)
-    except HIRError as e:
-        print(f"\nHIR error: {e}", file=sys.stderr)
-        sys.exit(1)
-    except TypeCheckError as e:
-        print(f"\nType error: {e.message}", file=sys.stderr)
-        if e.source_loc:
-            print(f"  at {e.source_loc.filename}:{e.source_loc.line}:{e.source_loc.column}", file=sys.stderr)
-        sys.exit(1)
+    print("=" * 80)
 
 
-def build_mir_file(filepath: str):
-    """Parse a source file, build HIR, type check, and build MIR."""
-    if filepath == '-':
-        # Read from stdin
-        source = sys.stdin.read()
-        filename = '<stdin>'
-    else:
-        # Read from file
-        path = Path(filepath)
-        if not path.exists():
-            print(f"Error: File '{filepath}' not found", file=sys.stderr)
-            sys.exit(1)
+def dump_mir(source: str, filename: str):
+    """Dump MIR."""
+    program = parse(source, filename)
+    builder = HIRBuilder()
+    hir_program = builder.build_program(program)
+    type_checker = TypeChecker(hir_program)
+    type_checker.check()
+    mir_builder = MIRBuilder()
+    mir_program = mir_builder.build_program(hir_program)
 
-        source = path.read_text()
-        filename = str(path)
+    print(f"MIR for {filename}:")
+    print("=" * 80)
+    print(f"Functions: {len(mir_program.functions)}")
+    print()
 
-    try:
-        # Parse to AST
-        program = parse(source, filename)
+    for mir_func in mir_program.functions:
+        print(f"  {mir_func.name}:")
+        print(f"    Blocks: {len(mir_func.blocks)}")
+        print(f"    Virtual registers: {mir_func.vreg_allocator.next_id}")
+        print(f"    Entry block: {mir_func.entry_block_id}")
+        print(f"    Exit blocks: {mir_func.exit_block_ids}")
 
-        # Build HIR
-        builder = HIRBuilder()
-        hir_program = builder.build_program(program)
+        for block_id, block in mir_func.blocks.items():
+            print(f"      Block {block_id}: {len(block.instructions)} instructions")
 
-        # Type check
-        type_checker = TypeChecker(hir_program)
-        type_checker.check()
-
-        # Print warnings if any
-        if type_checker.warnings:
-            print(f"\n{'=' * 80}")
-            print(f"Type checking warnings ({len(type_checker.warnings)}):")
-            print(f"{'=' * 80}")
-            for warning in type_checker.warnings:
-                print(f"\n{warning}", file=sys.stderr)
-            print(f"{'=' * 80}\n")
-
-        # Build MIR
-        mir_builder = MIRBuilder()
-        mir_program = mir_builder.build_program(hir_program)
-
-        print(f"Built MIR for {filename}:")
-        print("=" * 80)
-        print(f"Functions: {len(mir_program.functions)}")
-        print()
-
-        # Print function details
-        for mir_func in mir_program.functions:
-            print(f"  {mir_func.name}:")
-            print(f"    Blocks: {len(mir_func.blocks)}")
-            print(f"    Virtual registers allocated: {mir_func.vreg_allocator.next_id}")
-            print(f"    Entry block: {mir_func.entry_block_id}")
-            print(f"    Exit blocks: {mir_func.exit_block_ids}")
-
-            # Print basic block summary
-            for block_id, block in mir_func.blocks.items():
-                print(f"      Block {block_id}: {len(block.instructions)} instructions")
-
-        print("=" * 80)
-        print("MIR built successfully!")
-
-    except (LexerError, ParseError) as e:
-        print(f"\nParse error: {e}", file=sys.stderr)
-        sys.exit(1)
-    except HIRError as e:
-        print(f"\nHIR error: {e}", file=sys.stderr)
-        sys.exit(1)
-    except TypeCheckError as e:
-        print(f"\nType error: {e.message}", file=sys.stderr)
-        if e.source_loc:
-            print(f"  at {e.source_loc.filename}:{e.source_loc.line}:{e.source_loc.column}", file=sys.stderr)
-        sys.exit(1)
+    print("=" * 80)
 
 
-def compile_file(filepath: str, output_file: str = None):
+def compile_source(source: str, filename: str, output_file: str = None,
+                   verbose: bool = False, quiet: bool = False):
     """Compile R65 source to WLA-DX assembly."""
 
-def compile_file(filepath: str, output_file: str = None):
-    """Compile R65 source to WLA-DX assembly."""
-    if filepath == '-':
-        # Read from stdin
-        source = sys.stdin.read()
-        filename = '<stdin>'
-    else:
-        # Read from file
-        path = Path(filepath)
-        if not path.exists():
-            print(f"Error: File '{filepath}' not found", file=sys.stderr)
-            sys.exit(1)
-
-        source = path.read_text()
-        filename = str(path)
+    def log(msg: str):
+        if not quiet:
+            print(msg, file=sys.stderr)
 
     try:
-        # Parse to AST
-        print(f"Compiling {filename}...", file=sys.stderr)
-        print(f"  [1/5] Parsing...", file=sys.stderr)
+        # Parse
+        if verbose:
+            log(f"Compiling {filename}...")
+            log(f"  [1/5] Parsing...")
         program = parse(source, filename)
 
         # Build HIR
-        print(f"  [2/5] Building HIR...", file=sys.stderr)
+        if verbose:
+            log(f"  [2/5] Building HIR...")
         builder = HIRBuilder()
         hir_program = builder.build_program(program)
 
         # Type check
-        print(f"  [3/5] Type checking...", file=sys.stderr)
+        if verbose:
+            log(f"  [3/5] Type checking...")
         type_checker = TypeChecker(hir_program)
         type_checker.check()
 
-        # Print warnings if any
+        # Print warnings
         if type_checker.warnings:
-            print(f"\n{'=' * 80}", file=sys.stderr)
-            print(f"Type checking warnings ({len(type_checker.warnings)}):", file=sys.stderr)
-            print(f"{'=' * 80}", file=sys.stderr)
+            log(f"\n{'=' * 80}")
+            log(f"Warnings ({len(type_checker.warnings)}):")
+            log(f"{'=' * 80}")
             for warning in type_checker.warnings:
-                print(f"\n{warning}", file=sys.stderr)
-            print(f"{'=' * 80}\n", file=sys.stderr)
+                log(f"{warning}")
+            log(f"{'=' * 80}\n")
 
         # Build MIR
-        print(f"  [4/5] Building MIR...", file=sys.stderr)
+        if verbose:
+            log(f"  [4/5] Building MIR...")
         mir_builder = MIRBuilder()
         mir_program = mir_builder.build_program(hir_program)
 
         # Generate assembly
-        print(f"  [5/5] Generating assembly...", file=sys.stderr)
+        if verbose:
+            log(f"  [5/5] Generating assembly...")
         codegen = ProgramCodeGenerator()
         assembly = codegen.generate(mir_program, output_file=output_file)
 
-        # Determine output destination
+        # Output
         if output_file:
-            print(f"\n✓ Successfully compiled to {output_file}", file=sys.stderr)
-            print(f"  Functions: {len(mir_program.functions)}", file=sys.stderr)
-            print(f"  Assembly size: {len(assembly)} bytes", file=sys.stderr)
+            if not quiet:
+                log(f"\n✓ Compiled to {output_file}")
+                if verbose:
+                    log(f"  Functions: {len(mir_program.functions)}")
+                    log(f"  Assembly size: {len(assembly)} bytes")
         else:
             # Print to stdout
             print(assembly)
 
     except (LexerError, ParseError) as e:
-        print(f"\nParse error: {e}", file=sys.stderr)
+        print(f"\nParse error in {filename}: {e}", file=sys.stderr)
         sys.exit(1)
     except HIRError as e:
         print(f"\nHIR error: {e}", file=sys.stderr)
@@ -348,18 +183,28 @@ def compile_file(filepath: str, output_file: str = None):
     except TypeCheckError as e:
         print(f"\nType error: {e.message}", file=sys.stderr)
         if e.source_loc:
-            print(f"  at {e.source_loc.filename}:{e.source_loc.line}:{e.source_loc.column}", file=sys.stderr)
+            print(f"  at {e.source_loc.filename}:{e.source_loc.line}:{e.source_loc.column}",
+                  file=sys.stderr)
         sys.exit(1)
     except Exception as e:
         print(f"\nCompilation error: {e}", file=sys.stderr)
-        import traceback
-        traceback.print_exc(file=sys.stderr)
+        if verbose:
+            import traceback
+            traceback.print_exc(file=sys.stderr)
         sys.exit(1)
 
 
-def main():
-    """Simple compile function for tests - compiles and returns assembly string."""
-    # Minimal compile without verbose output
+def compile_string(source: str, filename: str = "<string>") -> str:
+    """
+    Simple compile function for tests - compiles and returns assembly string.
+
+    Args:
+        source: Source code to compile
+        filename: Filename for error messages
+
+    Returns:
+        Generated assembly code as string
+    """
     program = parse(source, filename)
     builder = HIRBuilder()
     hir_program = builder.build_program(program)
@@ -370,69 +215,123 @@ def main():
     codegen = ProgramCodeGenerator()
     return codegen.generate(mir_program)
 
-def compile_string(source: str, filename: str = "<string>"):
-    """Simple compile function for tests - compiles and returns assembly string."""
-    # Minimal compile without verbose output
-    program = parse(source, filename)
-    builder = HIRBuilder()
-    hir_program = builder.build_program(program)
-    type_checker = TypeChecker(hir_program)
-    type_checker.check()
-    mir_builder = MIRBuilder()
-    mir_program = mir_builder.build_program(hir_program)
-    codegen = ProgramCodeGenerator()
-    return codegen.generate(mir_program)
 
 def main():
-    # Create argument parser
+    """Main entry point for R65 compiler."""
     parser = argparse.ArgumentParser(
-        description='R65 Compiler - Compile R65 source code to WLA-DX assembly',
-        formatter_class=argparse.RawDescriptionHelpFormatter
+        prog='r65c',
+        description='R65 Compiler - Compile R65 source code to WLA-DX assembly for 65816',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+examples:
+  r65c game.r65 -o game.asm        Compile game.r65 to game.asm
+  r65c game.r65                     Compile game.r65 to stdout
+  r65c -                            Compile from stdin to stdout
+  r65c game.r65 -v -o game.asm     Compile with verbose output
+  r65c game.r65 --dump-ast          Dump AST for debugging
+        """
     )
 
-    subparsers = parser.add_subparsers(dest='command', help='Command to run')
+    # Positional argument
+    parser.add_argument('file',
+                       help='Source file to compile (use - for stdin)')
 
-    # Lex command
-    lex_parser = subparsers.add_parser('lex', help='Tokenize source code')
-    lex_parser.add_argument('file', help='Source file to tokenize (use - for stdin)')
+    # Output options
+    parser.add_argument('-o', '--output',
+                       dest='output',
+                       help='Output assembly file (default: stdout)')
 
-    # Parse command
-    parse_parser = subparsers.add_parser('parse', help='Parse source code')
-    parse_parser.add_argument('file', help='Source file to parse (use - for stdin)')
+    # Verbosity options
+    parser.add_argument('-v', '--verbose',
+                       action='store_true',
+                       help='Show compilation progress')
 
-    # Build HIR command
-    hir_parser = subparsers.add_parser('build-hir', help='Build HIR from source code')
-    hir_parser.add_argument('file', help='Source file to build HIR from (use - for stdin)')
+    parser.add_argument('-q', '--quiet',
+                       action='store_true',
+                       help='Suppress all output except errors')
 
-    # Type check command
-    typecheck_parser = subparsers.add_parser('typecheck', help='Type check source code')
-    typecheck_parser.add_argument('file', help='Source file to type check (use - for stdin)')
+    # Debug options (for compiler developers)
+    debug_group = parser.add_argument_group('debug options (for compiler development)')
 
-    # Build MIR command
-    mir_parser = subparsers.add_parser('build-mir', help='Build MIR from source code')
-    mir_parser.add_argument('file', help='Source file to build MIR from (use - for stdin)')
+    debug_group.add_argument('--dump-tokens',
+                            action='store_true',
+                            help='Dump tokenized output and exit')
 
-    # Compile command
-    compile_parser = subparsers.add_parser('compile', help='Compile to WLA-DX assembly')
-    compile_parser.add_argument('file', help='Source file to compile (use - for stdin)')
-    compile_parser.add_argument('-o', '--output', dest='output', help='Output assembly file (default: stdout)')
+    debug_group.add_argument('--dump-ast',
+                            action='store_true',
+                            help='Dump AST and exit')
+
+    debug_group.add_argument('--dump-hir',
+                            action='store_true',
+                            help='Dump HIR and exit')
+
+    debug_group.add_argument('--dump-mir',
+                            action='store_true',
+                            help='Dump MIR and exit')
+
+    debug_group.add_argument('--stop-after',
+                            choices=['parse', 'hir', 'typecheck', 'mir'],
+                            help='Stop compilation after specified phase')
 
     args = parser.parse_args()
 
-    if args.command == 'lex':
-        lex_file(args.file)
-    elif args.command == 'parse':
-        parse_file(args.file)
-    elif args.command == 'build-hir':
-        build_hir_file(args.file)
-    elif args.command == 'typecheck':
-        typecheck_file(args.file)
-    elif args.command == 'build-mir':
-        build_mir_file(args.file)
-    elif args.command == 'compile':
-        compile_file(args.file, output_file=args.output)
-    else:
-        parser.print_help()
+    # Read source
+    try:
+        source, filename = read_source(args.file)
+    except Exception as e:
+        print(f"Error reading file: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    # Handle debug dumps
+    try:
+        if args.dump_tokens:
+            dump_tokens(source, filename)
+            return
+
+        if args.dump_ast:
+            dump_ast(source, filename)
+            return
+
+        if args.dump_hir:
+            dump_hir(source, filename)
+            return
+
+        if args.dump_mir:
+            dump_mir(source, filename)
+            return
+
+        # Handle stop-after
+        if args.stop_after == 'parse':
+            dump_ast(source, filename)
+            return
+        elif args.stop_after == 'hir':
+            dump_hir(source, filename)
+            return
+        elif args.stop_after == 'typecheck':
+            # Just run through typecheck and report success
+            program = parse(source, filename)
+            builder = HIRBuilder()
+            hir_program = builder.build_program(program)
+            type_checker = TypeChecker(hir_program)
+            type_checker.check()
+            if not args.quiet:
+                print(f"✓ Type checking succeeded for {filename}", file=sys.stderr)
+            return
+        elif args.stop_after == 'mir':
+            dump_mir(source, filename)
+            return
+
+        # Normal compilation
+        compile_source(source, filename, args.output, args.verbose, args.quiet)
+
+    except (LexerError, ParseError, HIRError, TypeCheckError) as e:
+        # These are already handled in dump/compile functions
+        raise
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        if args.verbose:
+            import traceback
+            traceback.print_exc(file=sys.stderr)
         sys.exit(1)
 
 
