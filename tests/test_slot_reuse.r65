@@ -1,0 +1,29 @@
+// Test that demonstrates slot reuse for non-overlapping variable lifetimes
+
+#[mode(m8, x8)]
+fn compute_values() -> u8 {
+    // First phase: x is live
+    let x: u8 = 10;
+    let temp1: u8 = x + 5;
+    A = temp1;
+    // x and temp1 are now dead
+
+    // Second phase: y is live (should reuse x's slot)
+    let y: u8 = 20;
+    let temp2: u8 = y + 3;
+    A = temp2;
+    // y and temp2 are now dead
+
+    // Third phase: z is live (should reuse x or y's slot)
+    let z: u8 = 30;
+    let temp3: u8 = z + 7;
+
+    return temp3;
+}
+
+#[entry]
+#[mode(m8, x8)]
+fn main() -> ! {
+    let result @ A = compute_values();
+    loop {}
+}

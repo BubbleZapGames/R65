@@ -9,7 +9,8 @@ Maps MIR virtual registers to:
 from typing import Dict, List, Optional, Set, Union
 from dataclasses import dataclass
 from enum import Enum
-from r65.compiler.mir.nodes import VirtualRegister, HardwareRegister
+from r65.compiler.mir.nodes import VirtualRegister, HardwareRegister, MIRFunction
+from r65.compiler.codegen.slot_allocator import StackSlotAllocator, SlotAllocation
 
 
 class LocationKind(Enum):
@@ -227,19 +228,27 @@ class RegisterAllocator:
     Allocation priority:
     1. Hardware registers (A, X, Y) - already handled by MIR
     2. Scratch registers (designated zero-page locations)
-    3. Stack slots (spill when scratch exhausted)
+    3. Stack slots (spill when scratch exhausted, with reuse optimization)
     """
 
-    def __init__(self, scratch_pool: Optional[ScratchRegisterPool] = None):
+    def __init__(self,
+                 scratch_pool: Optional[ScratchRegisterPool] = None,
+                 mir_func: Optional[MIRFunction] = None):
         """
         Initialize register allocator.
 
         Args:
             scratch_pool: Pool of scratch registers (or None for empty pool)
+            mir_func: MIR function for liveness analysis (enables slot reuse)
         """
         self.scratch_pool = scratch_pool or ScratchRegisterPool()
-        self.stack_alloc = StackAllocator()
+        self.mir_func = mir_func
+        self.slot_allocator: Optional[StackSlotAllocator] = None
+        self.slot_allocation: Optional[SlotAllocation] = None
         self.allocations: Dict[int, PhysicalLocation] = {}  # vreg.id → PhysicalLocation
+
+        # Base offset for stack slots (starts after scratch registers)
+        self.stack_base_offset = 0x16  # Start after common scratch locations
 
     def allocate_vreg(self, vreg: VirtualRegister) -> PhysicalLocation:
         """
@@ -247,7 +256,7 @@ class RegisterAllocator:
 
         Strategy:
         1. Try scratch register first
-        2. Spill to stack if no scratch available
+        2. Spill to stack if no scratch available (using slot reuse if available)
 
         Args:
             vreg: Virtual register to allocate
@@ -270,8 +279,27 @@ class RegisterAllocator:
             self.allocations[vreg.id] = location
             return location
 
-        # Spill to stack
-        stack_offset = self.stack_alloc.allocate(vreg)
+        # Spill to stack using slot allocation if available
+        if self.slot_allocation:
+            # Get slot number from slot allocation
+            slot_num = self.slot_allocation.register_to_slot.get(vreg)
+            if slot_num is not None:
+                # Convert slot number to stack offset
+                stack_offset = self.stack_base_offset + slot_num
+                location = PhysicalLocation(
+                    kind=LocationKind.STACK,
+                    stack_offset=stack_offset,
+                    size=self._get_vreg_size(vreg)
+                )
+                self.allocations[vreg.id] = location
+                return location
+
+        # Fallback: sequential allocation (shouldn't happen if allocate_all called)
+        # This is for backwards compatibility if slot allocation fails
+        stack_offset = self.stack_base_offset + len([
+            loc for loc in self.allocations.values()
+            if loc.kind == LocationKind.STACK
+        ])
         location = PhysicalLocation(
             kind=LocationKind.STACK,
             stack_offset=stack_offset,
@@ -315,15 +343,34 @@ class RegisterAllocator:
         """
         Allocate all virtual registers at once.
 
+        Performs slot reuse optimization if MIR function is available.
+
         Args:
             vregs: List of virtual registers to allocate
         """
+        # Run slot allocation with liveness analysis if MIR function available
+        if self.mir_func:
+            self.slot_allocator = StackSlotAllocator(self.mir_func)
+            self.slot_allocation = self.slot_allocator.allocate()
+
+            # Print statistics if any slots were saved
+            if self.slot_allocation.slots_saved > 0:
+                print(f"Stack slot reuse: {self.slot_allocation.slots_saved} slot(s) saved "
+                      f"({self.slot_allocation.total_slots}/{self.slot_allocation.variables_count} slots used)")
+
+        # Allocate each virtual register
         for vreg in vregs:
             self.allocate_vreg(vreg)
 
     def get_stack_frame_size(self) -> int:
         """Get total stack frame size for spilled registers."""
-        return self.stack_alloc.get_frame_size()
+        if self.slot_allocation:
+            return self.slot_allocation.total_slots
+        # Fallback: count stack allocations
+        return len([
+            loc for loc in self.allocations.values()
+            if loc.kind == LocationKind.STACK
+        ])
 
     def _get_vreg_size(self, vreg: VirtualRegister) -> int:
         """Get size of virtual register in bytes."""

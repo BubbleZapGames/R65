@@ -1,0 +1,38 @@
+// Test with many variables to force stack slot allocation and reuse
+
+#[mode(m8, x8)]
+fn many_variables() -> u8 {
+    // Phase 1: First group of variables
+    let a: u8 = 1;
+    let b: u8 = a + 1;
+    let c: u8 = b + 1;
+    let d: u8 = c + 1;
+    let e: u8 = d + 1;
+    let f: u8 = e + 1;
+    A = f;
+    // a, b, c, d, e, f are now dead
+
+    // Phase 2: Second group (should reuse slots from phase 1)
+    let g: u8 = 10;
+    let h: u8 = g + 1;
+    let i: u8 = h + 1;
+    let j: u8 = i + 1;
+    let k: u8 = j + 1;
+    let l: u8 = k + 1;
+    A = l;
+    // g, h, i, j, k, l are now dead
+
+    // Phase 3: Third group (should reuse slots again)
+    let m: u8 = 20;
+    let n: u8 = m + 1;
+    let o: u8 = n + 1;
+
+    return o;
+}
+
+#[entry]
+#[mode(m8, x8)]
+fn main() -> ! {
+    let result @ A = many_variables();
+    loop {}
+}

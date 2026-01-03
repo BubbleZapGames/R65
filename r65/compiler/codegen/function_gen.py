@@ -50,7 +50,7 @@ class FunctionCodeGenerator:
         # Setup register allocator for this function
         # TODO: Get scratch pool from function attributes or global config
         scratch_pool = self._create_scratch_pool()
-        reg_alloc = RegisterAllocator(scratch_pool=scratch_pool)
+        reg_alloc = RegisterAllocator(scratch_pool=scratch_pool, mir_func=mir_func)
 
         # Allocate all virtual registers in function
         self._allocate_function_registers(mir_func, reg_alloc)

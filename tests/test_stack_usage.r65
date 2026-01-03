@@ -1,0 +1,15 @@
+// Test stack parameter and local variable allocation
+
+#[mode(m8, x8)]
+fn set_flag(a: u8) -> u8 {
+    let b: u8 = a + 1;
+    A = 3;
+    return b;
+}
+
+#[entry]
+#[mode(m8, x8)]
+fn main() -> ! {
+    let result @ A = set_flag(5);
+    loop {}
+}
