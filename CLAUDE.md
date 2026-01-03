@@ -740,6 +740,51 @@ Code Generation → WLA-DX Assembly (.asm)
 **Phase 4**: Full hardware features (banks, DMA, interrupts)
 **Phase 5**: Standard library
 
+## Using the Compiler
+
+The R65 compiler (`r65c`) provides a simple, user-friendly command-line interface:
+
+### Basic Usage
+
+```bash
+# Compile R65 source to WLA-DX assembly
+r65c game.r65 -o game.asm
+
+# Compile to stdout
+r65c game.r65
+
+# Compile from stdin
+cat source.r65 | r65c - -o output.asm
+
+# Verbose output (show compilation phases)
+r65c game.r65 -o game.asm -v
+
+# Quiet mode (suppress all non-error output)
+r65c game.r65 -o game.asm -q
+```
+
+### Development/Debugging Options
+
+For compiler developers and debugging:
+
+```bash
+# Dump intermediate representations
+r65c game.r65 --dump-ast         # Show parsed AST
+r65c game.r65 --dump-hir         # Show High-Level IR
+r65c game.r65 --dump-mir         # Show Mid-Level IR
+r65c game.r65 --dump-tokens      # Show tokenized output
+
+# Stop at specific compilation phase
+r65c game.r65 --stop-after parse      # Stop after parsing
+r65c game.r65 --stop-after hir        # Stop after HIR building
+r65c game.r65 --stop-after typecheck  # Stop after type checking
+r65c game.r65 --stop-after mir        # Stop after MIR building
+```
+
+### Installation
+
+After installing via `pip install -e .`, the `r65c` command becomes available system-wide.
+
 ## Directory Structure (Planned)
 
 ```

@@ -103,14 +103,39 @@ pip install -r requirements-dev.txt
 ### Compile R65 Source
 
 ```bash
-# Compile to WLA-DX assembly
-r65c compile examples/simple.r65 -o output.asm
+# Basic compilation
+r65c examples/simple.r65 -o output.asm
 
-# Tokenize source (development/debugging)
-r65c lex examples/simple.r65
+# Compile to stdout
+r65c examples/simple.r65
 
-# Parse source (development/debugging)
-r65c parse examples/simple.r65
+# Compile with verbose output
+r65c examples/simple.r65 -o output.asm -v
+
+# Compile from stdin
+cat source.r65 | r65c - -o output.asm
+
+# Quiet mode (only errors)
+r65c examples/simple.r65 -o output.asm -q
+```
+
+### Development/Debugging
+
+```bash
+# Dump AST (parser output)
+r65c examples/simple.r65 --dump-ast
+
+# Dump HIR (high-level IR)
+r65c examples/simple.r65 --dump-hir
+
+# Dump MIR (mid-level IR)
+r65c examples/simple.r65 --dump-mir
+
+# Stop after specific phase
+r65c examples/simple.r65 --stop-after typecheck
+
+# Dump tokens (lexer output)
+r65c examples/simple.r65 --dump-tokens
 ```
 
 ### Running Tests
