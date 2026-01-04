@@ -337,6 +337,7 @@ class FunctionCodeGenerator:
         Emit function prologue.
 
         Prologue may include:
+        - Stack pointer initialization (entry functions with custom stack)
         - Stack frame setup
         - Register preservation
         - Mode transitions
@@ -346,6 +347,15 @@ class FunctionCodeGenerator:
             mir_func: MIR function
             reg_alloc: Register allocator
         """
+        # Initialize stack pointer for entry functions with custom stack region
+        if mir_func.is_entry and self.mem_alloc.stack_upper is not None:
+            if self.mem_alloc.stack_upper != 0x1FFF:
+                stack_addr = self.mem_alloc.stack_upper
+                self.emitter.emit_instruction("REP", "#$20", "16-bit A for stack setup")
+                self.emitter.emit_instruction("LDA", f"#${stack_addr:04X}", "Stack top")
+                self.emitter.emit_instruction("TCS", comment="Set stack pointer")
+                self.emitter.emit_instruction("SEP", "#$20", "Restore 8-bit A")
+
         # Handle DBR management for far functions with data_bank=inline
         if mir_func.is_far and mir_func.bank_attr:
             from r65.compiler.hir.attributes import DataBankMode

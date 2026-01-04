@@ -33,19 +33,25 @@ class MemoryAllocator:
     def __init__(self):
         """Initialize memory allocator."""
         # Address ranges
-        self.zeropage_start = 0x10  # Reserve $00-$0F for system
+        self.zeropage_start = 0x00  # Full zeropage range available
         self.zeropage_end = 0xFF
-        self.zeropage_next = self.zeropage_start
 
-        self.ram_start = 0x7E0000  # SNES Work RAM starts at $7E0000
+        self.ram_start = 0x7E2000  # SNES Work RAM (above low RAM mirror)
         self.ram_end = 0x7FFFFF
-        self.ram_next = self.ram_start
+
+        self.lowram_start = 0x0100  # Low RAM (after zeropage)
+        self.lowram_end = 0x1FFF
+
+        # Stack reservation (set via #[stack(lower, upper)])
+        self.stack_lower: Optional[int] = None
+        self.stack_upper: Optional[int] = None
 
         # Allocations: symbol name → AllocationInfo
         self.allocations: Dict[str, AllocationInfo] = {}
 
         # Address usage tracking (for conflict detection)
         self.zeropage_used: Set[int] = set()  # Individual bytes
+        self.lowram_used: Set[int] = set()  # Individual bytes
         self.ram_used: Set[Tuple[int, int]] = set()  # (start, end) ranges
 
     # ========================================================================
@@ -99,6 +105,27 @@ class MemoryAllocator:
     # Zero-Page Allocation
     # ========================================================================
 
+    def _find_zeropage_fit(self, size: int) -> int:
+        """
+        Find first available zeropage address that fits 'size' bytes.
+
+        Args:
+            size: Number of contiguous bytes needed
+
+        Returns:
+            First available address
+
+        Raises:
+            Exception: If no contiguous block available
+        """
+        addr = self.zeropage_start
+        while addr + size - 1 <= self.zeropage_end:
+            # Check if all bytes in range are free
+            if all(i not in self.zeropage_used for i in range(addr, addr + size)):
+                return addr
+            addr += 1
+        raise Exception(f"Out of zero-page space (need {size} contiguous bytes)")
+
     def allocate_zeropage(self, symbol: Symbol, static_decl: HIRStaticDecl,
                          explicit_addr: Optional[int] = None) -> AllocationInfo:
         """
@@ -113,45 +140,25 @@ class MemoryAllocator:
             AllocationInfo for the allocation
 
         Raises:
-            Exception: If address conflicts or out of range
+            Exception: If address out of range or no space for auto-allocation
         """
-        # Get size
         size = self.get_type_size(static_decl.var_type)
 
-        # Determine address
         if explicit_addr is not None:
-            # Explicit address
+            # Explicit address - use as-is, no collision check
             address = explicit_addr
             is_explicit = True
 
-            # Validate range
+            # Validate range only
             if address < 0 or address + size - 1 > self.zeropage_end:
                 raise Exception(
                     f"Zero-page address ${address:02X} for '{symbol.name}' "
                     f"out of range ($00-$FF)"
                 )
-
-            # Check for conflicts
-            for i in range(address, address + size):
-                if i in self.zeropage_used:
-                    raise Exception(
-                        f"Zero-page address ${i:02X} already allocated "
-                        f"(conflict with '{symbol.name}')"
-                    )
         else:
-            # Auto-allocate
-            address = self.zeropage_next
+            # Auto-allocate - find next available address that fits
+            address = self._find_zeropage_fit(size)
             is_explicit = False
-
-            # Check if we have space
-            if address + size - 1 > self.zeropage_end:
-                raise Exception(
-                    f"Out of zero-page space for '{symbol.name}' "
-                    f"(need {size} bytes, only {self.zeropage_end - address + 1} available)"
-                )
-
-            # Advance next pointer
-            self.zeropage_next = address + size
 
         # Mark as used
         for i in range(address, address + size):
@@ -164,7 +171,115 @@ class MemoryAllocator:
             size=size,
             storage_type='zeropage',
             is_explicit=is_explicit,
-            source_info=None  # Will be filled in later
+            source_info=None
+        )
+
+        self.allocations[symbol.name] = alloc
+        return alloc
+
+    # ========================================================================
+    # Stack Reservation
+    # ========================================================================
+
+    def set_stack_region(self, lower: int, upper: int):
+        """
+        Reserve a region for the stack.
+
+        Args:
+            lower: Lower bound of stack region (e.g., 0x1000)
+            upper: Upper bound of stack region (e.g., 0x1FFF)
+
+        The stack grows downward, so 'upper' is where S is initialized,
+        and 'lower' is the minimum address the stack can reach.
+        """
+        if lower < self.lowram_start or upper > self.lowram_end:
+            raise Exception(
+                f"Stack region ${lower:04X}-${upper:04X} must be within "
+                f"low RAM (${self.lowram_start:04X}-${self.lowram_end:04X})"
+            )
+        if lower > upper:
+            raise Exception(
+                f"Stack lower bound ${lower:04X} must be <= upper bound ${upper:04X}"
+            )
+
+        self.stack_lower = lower
+        self.stack_upper = upper
+
+        # Mark stack region as used in lowram
+        for i in range(lower, upper + 1):
+            self.lowram_used.add(i)
+
+    # ========================================================================
+    # Low RAM Allocation
+    # ========================================================================
+
+    def _find_lowram_fit(self, size: int) -> int:
+        """
+        Find first available low RAM address that fits 'size' bytes.
+
+        Args:
+            size: Number of contiguous bytes needed
+
+        Returns:
+            First available address
+
+        Raises:
+            Exception: If no contiguous block available
+        """
+        addr = self.lowram_start
+        while addr + size - 1 <= self.lowram_end:
+            # Check if all bytes in range are free
+            if all(i not in self.lowram_used for i in range(addr, addr + size)):
+                return addr
+            addr += 1
+        raise Exception(f"Out of low RAM space (need {size} contiguous bytes)")
+
+    def allocate_lowram(self, symbol: Symbol, static_decl: HIRStaticDecl,
+                        explicit_addr: Optional[int] = None) -> AllocationInfo:
+        """
+        Allocate low RAM location ($0100-$1FFF).
+
+        Args:
+            symbol: Symbol to allocate
+            static_decl: Static declaration from HIR
+            explicit_addr: User-specified address (or None for auto)
+
+        Returns:
+            AllocationInfo for the allocation
+
+        Raises:
+            Exception: If address out of range or no space for auto-allocation
+        """
+        size = self.get_type_size(static_decl.var_type)
+
+        if explicit_addr is not None:
+            # Explicit address - use as-is, no collision check
+            address = explicit_addr
+            is_explicit = True
+
+            # Validate range only
+            if address < self.lowram_start or address + size - 1 > self.lowram_end:
+                raise Exception(
+                    f"Low RAM address ${address:04X} for '{symbol.name}' "
+                    f"out of range (${self.lowram_start:04X}-${self.lowram_end:04X})"
+                )
+        else:
+            # Auto-allocate - find next available address that fits
+            address = self._find_lowram_fit(size)
+            is_explicit = False
+
+        # Mark as used
+        for i in range(address, address + size):
+            self.lowram_used.add(i)
+
+        # Create allocation info
+        alloc = AllocationInfo(
+            symbol=symbol,
+            address=address,
+            size=size,
+            storage_type='lowram',
+            is_explicit=is_explicit,
+            source_info=None
         )
 
         self.allocations[symbol.name] = alloc
@@ -173,6 +288,38 @@ class MemoryAllocator:
     # ========================================================================
     # RAM Allocation
     # ========================================================================
+
+    def _find_ram_fit(self, size: int) -> int:
+        """
+        Find first available RAM address that fits 'size' bytes.
+
+        Args:
+            size: Number of contiguous bytes needed
+
+        Returns:
+            First available address
+
+        Raises:
+            Exception: If no space available
+        """
+        address = self.ram_start
+
+        # Find first free address that doesn't conflict
+        while True:
+            if address + size - 1 > self.ram_end:
+                raise Exception(f"Out of RAM space (need {size} bytes)")
+
+            # Check for conflicts with existing allocations
+            conflict = False
+            for start, end in self.ram_used:
+                if not (address + size - 1 < start or address > end):
+                    # Conflict found - try after this allocation
+                    address = end + 1
+                    conflict = True
+                    break
+
+            if not conflict:
+                return address
 
     def allocate_ram(self, symbol: Symbol, static_decl: HIRStaticDecl,
                     explicit_addr: Optional[int] = None) -> AllocationInfo:
@@ -188,60 +335,25 @@ class MemoryAllocator:
             AllocationInfo for the allocation
 
         Raises:
-            Exception: If address conflicts or out of range
+            Exception: If address out of range or no space for auto-allocation
         """
-        # Get size
         size = self.get_type_size(static_decl.var_type)
 
-        # Determine address
         if explicit_addr is not None:
-            # Explicit address
+            # Explicit address - use as-is, no collision check
             address = explicit_addr
             is_explicit = True
 
-            # Validate range
+            # Validate range only
             if address < self.ram_start or address + size - 1 > self.ram_end:
                 raise Exception(
                     f"RAM address ${address:06X} for '{symbol.name}' "
                     f"out of range (${self.ram_start:06X}-${self.ram_end:06X})"
                 )
-
-            # Check for conflicts
-            for start, end in self.ram_used:
-                if not (address + size - 1 < start or address > end):
-                    raise Exception(
-                        f"RAM address ${address:06X} conflicts with existing allocation "
-                        f"(${start:06X}-${end:06X})"
-                    )
         else:
-            # Auto-allocate - find first free spot
-            address = self.ram_next
+            # Auto-allocate - find next available address that fits
+            address = self._find_ram_fit(size)
             is_explicit = False
-
-            # Find first free address that doesn't conflict
-            while True:
-                # Check if we're out of space
-                if address + size - 1 > self.ram_end:
-                    raise Exception(
-                        f"Out of RAM space for '{symbol.name}' "
-                        f"(need {size} bytes)"
-                    )
-
-                # Check for conflicts with existing allocations
-                conflict = False
-                for start, end in self.ram_used:
-                    if not (address + size - 1 < start or address > end):
-                        # Conflict found - try after this allocation
-                        address = end + 1
-                        conflict = True
-                        break
-
-                if not conflict:
-                    # Found free spot
-                    break
-
-            # Update next pointer for subsequent allocations
-            self.ram_next = address + size
 
         # Mark as used
         self.ram_used.add((address, address + size - 1))
@@ -331,32 +443,20 @@ class MemoryAllocator:
 
     def allocate_all(self, static_decls: list[HIRStaticDecl]):
         """
-        Allocate all static declarations.
+        Allocate all static declarations in source order.
 
         Args:
             static_decls: List of static declarations from HIR
 
-        Processes in order:
-        1. Explicit allocations first (to reserve addresses)
-        2. Auto allocations second (to fill gaps)
+        Allocates addresses in the order declarations appear in source code.
+        Auto-allocated variables get the next available address that fits.
+        Explicit addresses are used as-is without collision checking.
         """
-        # Separate explicit and auto allocations
-        explicit = []
-        auto = []
-
         for decl in static_decls:
             if decl.storage_attr and decl.storage_attr.address is not None:
-                explicit.append(decl)
+                self._allocate_static(decl, explicit_addr=decl.storage_attr.address)
             else:
-                auto.append(decl)
-
-        # Allocate explicit first
-        for decl in explicit:
-            self._allocate_static(decl, explicit_addr=decl.storage_attr.address)
-
-        # Then auto-allocate
-        for decl in auto:
-            self._allocate_static(decl, explicit_addr=None)
+                self._allocate_static(decl, explicit_addr=None)
 
     def _allocate_static(self, static_decl: HIRStaticDecl, explicit_addr: Optional[int]):
         """
@@ -378,6 +478,8 @@ class MemoryAllocator:
 
         if storage_kind == StorageKind.ZEROPAGE:
             self.allocate_zeropage(symbol, static_decl, explicit_addr)
+        elif storage_kind == StorageKind.LOWRAM:
+            self.allocate_lowram(symbol, static_decl, explicit_addr)
         elif storage_kind == StorageKind.RAM:
             self.allocate_ram(symbol, static_decl, explicit_addr)
         elif storage_kind == StorageKind.HW:

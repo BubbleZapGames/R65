@@ -92,6 +92,37 @@ class SymbolDefinitionGenerator:
         self.emitter.emit_blank_line()
 
     # ========================================================================
+    # Low RAM Definitions
+    # ========================================================================
+
+    def emit_lowram_definitions(self):
+        """
+        Emit low RAM variable definitions ($0100-$1FFF).
+
+        Generated:
+            ; ============================================================================
+            ; Low RAM Allocations
+            ; ============================================================================
+            .DEFINE BUFFER $0100        ; 256 bytes
+            .DEFINE TEMP $0200          ; Auto-allocated
+        """
+        allocations = self.allocator.get_allocations_by_type('lowram')
+
+        if not allocations:
+            return
+
+        self.emitter.emit_section_header("Low RAM Allocations")
+
+        # Sort by address
+        allocations.sort(key=lambda a: a.address)
+
+        for alloc in allocations:
+            comment = self._make_allocation_comment(alloc)
+            self.emitter.emit_define(alloc.symbol.name, alloc.address, comment)
+
+        self.emitter.emit_blank_line()
+
+    # ========================================================================
     # Hardware Register Definitions
     # ========================================================================
 
@@ -224,9 +255,10 @@ class SymbolDefinitionGenerator:
         Order:
         1. Constants (.EQU)
         2. Direct Page (.DEFINE)
-        3. Hardware Registers (.DEFINE)
-        4. RAM (.DEFINE)
-        5. ROM Data (.INCBIN)
+        3. Low RAM (.DEFINE)
+        4. Hardware Registers (.DEFINE)
+        5. RAM (.DEFINE)
+        6. ROM Data (.INCBIN)
         """
         # Constants first
         if constants:
@@ -234,6 +266,7 @@ class SymbolDefinitionGenerator:
 
         # Then variables by storage type
         self.emit_zeropage_definitions()
+        self.emit_lowram_definitions()
         self.emit_hw_definitions()
         self.emit_ram_definitions()
 

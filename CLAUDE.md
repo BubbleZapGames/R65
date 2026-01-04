@@ -76,34 +76,6 @@ let bank = PBR;          // Read current bank (write = error)
 - All usable in aliasing (`let name @ D = expr`) and `#[preserves(...)]` (except `PBR` and `B`)
 - **Safety**: Modifying `D`, `DBR`, `S` without restoration causes bugs/crashes
 
-### B Register (Hidden Accumulator High Byte)
-
-In `#[mode(m8)]`, the 65816's 16-bit accumulator splits into A (low byte) and B (high byte). The `XBA` instruction exchanges these bytes. R65 exposes B as a first-class register for parameter passing, return values, and aliasing.
-
-```rust
-#[mode(m8, x8)]
-fn pack_word(low @ A: u8, high @ B: u8) -> u16 {
-    return A as u16 | ((B as u16) << 8);
-}
-
-#[mode(m8, x8)]
-fn unpack_word(value: u16) -> (u8, u8) {
-    A = value as u8;           // Low byte
-    B = (value >> 8) as u8;    // High byte
-    return A, B;
-}
-```
-
-**Key Rules:**
-- **Mode Restriction**: B only available in `#[mode(m8)]` (compile error in m16)
-- **Parameter Passing**: `fn example(a @ A: u8, b @ B: u8)` - B can combine with other registers
-- **Return Values**: `return B;`, `return A, B;`, `return B, X;` all valid
-- **Caller Responsibility**: Caller sets up B before calls, reads B after, preserves A if needed
-- **No Preservation**: B cannot appear in `#[preserves(...)]` (tied to A hardware)
-- **XBA Optimization**: Compiler batches B operations to minimize XBA instructions
-
-**Performance**: XBA costs 3 cycles. Compiler eliminates redundant XBAs between consecutive B operations.
-
 *(See [docs/b-register.md](docs/b-register.md) for complete details, code generation tables, and optimization patterns)*
 
 ### Arrays
@@ -285,12 +257,25 @@ Variables can be placed in different memory regions with explicit attributes:
 
 ```rust
 // Direct page (zero-page) - fastest (2-3 cycles)
+// Range: $0000-$00FF
 #[zeropage(0x42)]
 static mut TEMP: u8 = 0;
 
-// Regular RAM - slower (4-5 cycles)
+#[zeropage]
+static mut AUTO_ZP: u8;  // Auto-allocated to next available address
+
+// Low RAM - shared with stack
+// Range: $0100-$1FFF
+#[lowram(0x0200)]
+static mut BUFFER: [u8; 256];
+
+#[lowram]
+static mut AUTO_LOW: u8;  // Auto-allocated (avoids stack region)
+
+// Main RAM - slower (4-5 cycles)
+// Range: $7E2000-$7FFFFF
 #[ram]
-static mut BUFFER: [u8; 256] = [0; 256];
+static mut WORK_RAM: [u8; 256] = [0; 256];
 
 // ROM data - read-only
 #[rom(0x8000)]
@@ -300,6 +285,34 @@ static GRAPHICS: [u8; 4096] = include_bytes!("gfx.bin");
 #[hw(0x2100)]
 static mut INIDISP: u8;  // Screen brightness register
 ```
+
+### Stack Reservation
+
+Reserve a region in low RAM for the stack using `#[stack(lower, upper)]`:
+
+```rust
+// Reserve $1F00-$1FFF for stack (256 bytes)
+#[stack(0x1F00, 0x1FFF)]
+static STACK: u8;
+
+// Low RAM auto-allocation will skip the stack region
+#[lowram]
+static mut VAR: u8;  // Gets $0100, not $1F00
+```
+
+**Memory Map:**
+| Region | Range | Storage Class |
+|--------|-------|---------------|
+| Direct Page | `$0000-$00FF` | `#[zeropage]` |
+| Low RAM | `$0100-$1FFF` | `#[lowram]` |
+| Stack | (within low RAM) | `#[stack(lower, upper)]` |
+| Main RAM | `$7E2000-$7FFFFF` | `#[ram]` |
+| Hardware | I/O addresses | `#[hw(addr)]` |
+
+**Auto-Allocation:**
+- Variables without explicit addresses are auto-allocated in source order
+- Auto-allocation finds the next available address that fits the variable's size
+- Explicit addresses are used as-is without collision checking
 
 ### Scratch Registers (Compiler-Managed Memory)
 
@@ -610,7 +623,7 @@ R65 uses **hardware-aware operators**: syntax indicates performance cost.
 - ✅ `let` bindings (immutable by default, `let mut` for mutable)
 - ✅ All 65816 processor registers: A, X, Y, STATUS, D, DBR, S (mutable); PBR (read-only); B (m8 mode only)
 - ✅ B register support: Hidden accumulator high byte in m8 mode with parameter passing, return values, and XBA context tracking optimization
-- ✅ Storage attributes: `#[zeropage]`, `#[ram]`, `#[rom]`, `#[hw]`
+- ✅ Storage attributes: `#[zeropage]`, `#[lowram]`, `#[ram]`, `#[rom]`, `#[hw]`, `#[stack(lower, upper)]`
 - ✅ Mode annotations: `#[mode(m8/m16, x8/x16)]` with optional `transition=none/auto/caller`
 - ✅ Built-in mode control: `SEP()`, `REP()`, and `xba()` functions for manual mode and register control
 - ✅ Far/near calling conventions: `far fn()` for JSL/RTL cross-bank calls; `fn()` for JSR/RTS near calls
@@ -636,55 +649,6 @@ R65 uses **hardware-aware operators**: syntax indicates performance cost.
 - ❌ `unsafe` keyword (all code has direct hardware access)
 - ❌ Bounds checking (compile-time or runtime)
 
-## Example Program
-
-```rust
-// Hardware registers
-#[hw(0x2100)] static mut INIDISP: u8;
-#[hw(0x4200)] static mut JOYPAD1: u8;
-
-// Direct page variables
-#[zeropage(0x20)] static mut FRAME_COUNT: u16 = 0;
-#[zeropage(0x22)] static mut VBLANK_FLAG: u8 = 0;
-
-// Interrupt handler with automatic preservation
-#[interrupt(nmi)]
-fn vblank_handler() {
-    FRAME_COUNT = FRAME_COUNT + 1;
-    VBLANK_FLAG = 1;
-}
-
-// Functions with register preservation
-#[mode(m8, x8)]
-#[preserves(X, Y)]
-fn wait_vblank() {
-    loop {
-        let flag @ A = VBLANK_FLAG;
-        if flag != 0 {
-            VBLANK_FLAG = 0;
-            break;
-        }
-    }
-}
-
-#[mode(m8, x8)]
-#[preserves(X, Y)]
-fn update_brightness(frame @ A: u16) {
-    let brightness @ A = frame as u8;
-    INIDISP = brightness;
-}
-
-// Entry point
-#[entry]
-#[mode(m8, x8)]
-fn main() -> ! {
-    INIDISP = 0x0F;
-    loop {
-        wait_vblank();
-        update_brightness(FRAME_COUNT);
-    }
-}
-```
 
 ## Compiler Architecture
 
@@ -704,16 +668,6 @@ Code Generation → WLA-DX Assembly (.asm)
 5. **MIR (Mid-level IR)**: CFG construction, virtual registers - See [docs/mir-implementation-status.md](docs/mir-implementation-status.md)
 6. **Optimization**: Constant propagation, dead code elimination, zero-page allocation
 7. **Code Generation**: Memory allocation, register allocation, instruction selection, addressing modes, WLA-DX emission - See [docs/code-generation.md](docs/code-generation.md)
-
-## Implementation STATUS
-
-**Current**: Planning complete, no code written yet
-
-**Phase 1 (MVP)**: Basic compiler - lexer, parser, simple codegen
-**Phase 2**: Type system with mode checking
-**Phase 3**: MIR and optimization
-**Phase 4**: Full hardware features (banks, DMA, interrupts)
-**Phase 5**: Standard library
 
 ## Using the Compiler
 
@@ -790,10 +744,11 @@ After installing via `pip install -e .`, the `r65c` command becomes available sy
 Performance characteristics of different storage:
 
 1. **Registers** (A, X, Y): Fastest - in CPU (2 cycles)
-2. **Direct Page**: Very fast - special addressing mode (2-3 cycles)
-3. **RAM**: Slower - absolute addressing (4-5 cycles)
-4. **ROM**: Read-only data (4-5 cycles)
-5. **Hardware Registers**: Memory-mapped I/O (4-6 cycles)
+2. **Direct Page** ($0000-$00FF): Very fast - special addressing mode (2-3 cycles)
+3. **Low RAM** ($0100-$1FFF): Fast - same bank as direct page (3-4 cycles)
+4. **Main RAM** ($7E2000-$7FFFFF): Slower - requires bank switching (4-5 cycles)
+5. **ROM**: Read-only data (4-5 cycles)
+6. **Hardware Registers**: Memory-mapped I/O (4-6 cycles)
 
 ## Target Platform
 
@@ -838,8 +793,6 @@ Performance characteristics of different storage:
 
 ## Future Enhancements
 
-- Tuples for multiple returns
-- Pattern matching on integers
 - Basic module system
 - Methods and `impl` blocks
 - Limited generics (monomorphization)
@@ -878,15 +831,6 @@ Performance characteristics of different storage:
 - [Super Famicom Development Wiki](https://wiki.superfamicom.org/)
 - [Rust Compiler Architecture](https://rustc-dev-guide.rust-lang.org/)
 
-## License
-
-[To be determined]
-
-## Contributors
-
-[To be determined]
-
----
 
 *Last Updated: 2026-01-03*
 *STATUS: Design Complete, Implementation Pending*

@@ -137,6 +137,7 @@ class HIRStaticDecl(HIRDeclaration):
 
     # Processed attributes
     storage_attr: Optional[Any] = None  # Will be StorageAttribute
+    stack_attr: Optional[Any] = None    # Will be StackAttribute (stack reservation marker)
 
     # Symbol reference
     symbol: Optional[Any] = None  # Will be Symbol

@@ -61,10 +61,11 @@ class PreservesAttribute(ProcessedAttribute):
 # Storage attributes
 class StorageKind(Enum):
     """Storage location kind."""
-    ZEROPAGE = "zeropage"
-    RAM = "ram"
+    ZEROPAGE = "zeropage"  # Direct page ($0000-$00FF)
+    LOWRAM = "lowram"      # Low RAM ($0100-$1FFF)
+    RAM = "ram"            # Main RAM ($7E2000-$7FFFFF)
     ROM = "rom"
-    HW = "hw"  # Hardware-mapped I/O (automatically volatile)
+    HW = "hw"              # Hardware-mapped I/O (automatically volatile)
 
 
 @dataclass
@@ -114,6 +115,14 @@ class EntryAttribute(ProcessedAttribute):
     pass
 
 
+# Stack attribute
+@dataclass
+class StackAttribute(ProcessedAttribute):
+    """#[stack(lower, upper)] - reserves stack region in low RAM"""
+    lower: int = 0x1F00  # Lower bound of stack region
+    upper: int = 0x1FFF  # Upper bound of stack region
+
+
 # =============================================================================
 # Attribute Processor
 # =============================================================================
@@ -134,8 +143,10 @@ class AttributeProcessor:
                 processed.append(self._process_mode(attr, context))
             elif attr.name == 'preserves':
                 processed.append(self._process_preserves(attr, context))
-            elif attr.name in ['zeropage', 'ram', 'rom', 'hw']:
+            elif attr.name in ['zeropage', 'lowram', 'ram', 'rom', 'hw']:
                 processed.append(self._process_storage(attr, context))
+            elif attr.name == 'stack':
+                processed.append(self._process_stack(attr, context))
             elif attr.name == 'bank':
                 processed.append(self._process_bank(attr, context))
             elif attr.name == 'interrupt':
@@ -237,6 +248,7 @@ class AttributeProcessor:
         # Map attribute name to storage kind
         storage_map = {
             'zeropage': StorageKind.ZEROPAGE,
+            'lowram': StorageKind.LOWRAM,
             'ram': StorageKind.RAM,
             'rom': StorageKind.ROM,
             'hw': StorageKind.HW,
@@ -388,6 +400,46 @@ class AttributeProcessor:
             raise HIRError(f"#[entry] does not accept arguments")
 
         return EntryAttribute(name='entry')
+
+    def _process_stack(self, attr: ast.Attribute, context: str) -> StackAttribute:
+        """Process #[stack(lower, upper)] attribute."""
+        if context not in ['static']:
+            raise HIRError(f"#[stack] attribute only valid on static declarations")
+
+        lower = None
+        upper = None
+
+        for i, arg in enumerate(attr.args):
+            if arg.name is not None:
+                raise HIRError(f"#[stack] only accepts positional arguments")
+
+            if not isinstance(arg.value, ast.IntegerLiteral):
+                raise HIRError(f"#[stack] arguments must be integer literals")
+
+            if i == 0:
+                lower = arg.value.value
+            elif i == 1:
+                upper = arg.value.value
+            else:
+                raise HIRError(f"#[stack] accepts exactly 2 arguments (lower, upper)")
+
+        if lower is None or upper is None:
+            raise HIRError(f"#[stack] requires both lower and upper bounds: #[stack(lower, upper)]")
+
+        if lower > upper:
+            raise HIRError(f"Stack lower bound ${lower:04X} must be <= upper bound ${upper:04X}")
+
+        if lower < 0x0100 or upper > 0x1FFF:
+            raise HIRError(
+                f"Stack region ${lower:04X}-${upper:04X} must be within "
+                f"low RAM ($0100-$1FFF)"
+            )
+
+        return StackAttribute(
+            name='stack',
+            lower=lower,
+            upper=upper
+        )
 
     def _get_arg_identifier(self, value) -> str:
         """Extract identifier name from argument value."""

@@ -308,9 +308,12 @@ class HIRBuilder:
         )
 
         storage_attr = None
+        stack_attr = None
         for attr in processed_attrs:
             if isinstance(attr, StorageAttribute):
                 storage_attr = attr
+            elif isinstance(attr, StackAttribute):
+                stack_attr = attr
 
         # Resolve type
         var_type = self.type_resolver.resolve_type(static.var_type)
@@ -330,6 +333,7 @@ class HIRBuilder:
             var_type=var_type,
             initializer=initializer,
             storage_attr=storage_attr,
+            stack_attr=stack_attr,
             symbol=static_symbol
         )
 

@@ -60,7 +60,20 @@ class ProgramCodeGenerator:
 
         # Phase 1: Memory allocation
         self.allocator = MemoryAllocator()
-        self.allocator.allocate_all(mir_program.statics)
+
+        # Process stack reservations first (statics with #[stack] attribute)
+        allocatable_statics = []
+        for static in mir_program.statics:
+            if hasattr(static, 'stack_attr') and static.stack_attr:
+                # This is a stack reservation, not a variable
+                self.allocator.set_stack_region(
+                    static.stack_attr.lower,
+                    static.stack_attr.upper
+                )
+            else:
+                allocatable_statics.append(static)
+
+        self.allocator.allocate_all(allocatable_statics)
 
         # Phase 2: Symbol definitions
         symbol_gen = SymbolDefinitionGenerator(self.emitter, self.allocator)

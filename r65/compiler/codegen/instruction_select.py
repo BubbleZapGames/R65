@@ -492,6 +492,21 @@ class InstructionSelector:
                     self.emitter.emit_instruction("LDA", f"#${value_masked:02X}")
                     self._mark_a_modified()
                     self._store_to_b_from_a()
+                elif dest_loc.hw_register == 'S':
+                    # Set stack pointer: load 16-bit value into A, then TCS
+                    # TCS always transfers full 16-bit A to S regardless of M flag
+                    self.emitter.emit_instruction("REP", "#$20", "16-bit A for stack")
+                    self.emitter.emit_instruction("LDA", f"#${value:04X}")
+                    self.emitter.emit_instruction("TCS", comment="Set stack pointer")
+                    self.emitter.emit_instruction("SEP", "#$20", "Restore 8-bit A")
+                    self._mark_a_modified()
+                elif dest_loc.hw_register == 'D':
+                    # Set direct page register: load 16-bit value into A, then TCD
+                    self.emitter.emit_instruction("REP", "#$20", "16-bit A for direct page")
+                    self.emitter.emit_instruction("LDA", f"#${value:04X}")
+                    self.emitter.emit_instruction("TCD", comment="Set direct page")
+                    self.emitter.emit_instruction("SEP", "#$20", "Restore 8-bit A")
+                    self._mark_a_modified()
                 else:
                     raise Exception(f"Cannot load immediate into register {dest_loc.hw_register}")
             else:
