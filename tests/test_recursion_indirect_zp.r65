@@ -1,0 +1,25 @@
+// Test: Indirect recursion with zero-page parameter
+// Expected: ERROR - unsafe recursion detected
+
+#[zeropage(0x20)]
+static mut N: u8;
+
+#[mode(m8, x8)]
+fn factorial(n @ N: u8) -> u8 {
+    if n <= 1 {
+        return 1;
+    }
+    return mul(n, factorial_helper(n - 1));
+}
+
+#[mode(m8, x8)]
+fn factorial_helper(n @ N: u8) -> u8 {
+    return factorial(n);  // Indirect recursion through factorial_helper
+}
+
+#[entry]
+#[mode(m8, x8)]
+fn main() -> ! {
+    let result @ A = factorial(5);
+    loop {}
+}

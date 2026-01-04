@@ -1,0 +1,21 @@
+// Test: Non-recursive function with stack parameters
+// Expected: Compiles successfully (no recursion, no zero-page/register params)
+
+#[mode(m8, x8)]
+fn add_one(value: u8) -> u8 {
+    return value + 1;  // No recursion, stack parameters
+}
+
+#[mode(m8, x8)]
+fn process() -> u8 {
+    let x: u8 = add_one(5);
+    let y: u8 = add_one(10);
+    return x + y;
+}
+
+#[entry]
+#[mode(m8, x8)]
+fn main() -> ! {
+    let result @ A = process();
+    loop {}
+}

@@ -153,13 +153,20 @@ def compile_source(source: str, filename: str, output_file: str = None,
 
         # Build MIR
         if verbose:
-            log(f"  [4/5] Building MIR...")
+            log(f"  [4/6] Building MIR...")
         mir_builder = MIRBuilder()
         mir_program = mir_builder.build_program(hir_program)
 
+        # Check for unsafe recursion
+        if verbose:
+            log(f"  [5/6] Checking for unsafe recursion...")
+        from r65.compiler.analysis import RecursionChecker
+        recursion_checker = RecursionChecker(mir_program)
+        recursion_checker.check()
+
         # Generate assembly
         if verbose:
-            log(f"  [5/5] Generating assembly...")
+            log(f"  [6/6] Generating assembly...")
         codegen = ProgramCodeGenerator()
         assembly = codegen.generate(mir_program, output_file=output_file)
 
@@ -205,6 +212,8 @@ def compile_string(source: str, filename: str = "<string>") -> str:
     Returns:
         Generated assembly code as string
     """
+    from r65.compiler.analysis import RecursionChecker
+
     program = parse(source, filename)
     builder = HIRBuilder()
     hir_program = builder.build_program(program)
@@ -212,6 +221,11 @@ def compile_string(source: str, filename: str = "<string>") -> str:
     type_checker.check()
     mir_builder = MIRBuilder()
     mir_program = mir_builder.build_program(hir_program)
+
+    # Check for unsafe recursion
+    recursion_checker = RecursionChecker(mir_program)
+    recursion_checker.check()
+
     codegen = ProgramCodeGenerator()
     return codegen.generate(mir_program)
 
