@@ -1,0 +1,69 @@
+// Test memory allocation with unified low RAM tracking
+// Low RAM: $0000-$1FFF
+// - Zeropage ($0000-$00FF) uses direct page addressing
+// - Stack can be anywhere in low RAM
+// - Lowram auto-allocates from $0100+
+
+// Reserve stack from $1F00 to $1FFF
+#[stack(0x1F00, 0x1FFF)]
+static mut STACK_MARKER: u8;
+
+// Zeropage auto-allocation (should get $00, $01, $02)
+#[zeropage]
+static mut ZP_AUTO1: u8;
+
+#[zeropage]
+static mut ZP_AUTO2: u8;
+
+#[zeropage]
+static mut ZP_AUTO3: u8;
+
+// Zeropage explicit address
+#[zeropage(0x10)]
+static mut ZP_EXPLICIT: u16;
+
+// More zeropage auto (should skip around $10-$11)
+#[zeropage]
+static mut ZP_AUTO4: u8;
+
+// Lowram auto-allocation (should start at $0100)
+#[lowram]
+static mut LR_AUTO1: u8;
+
+#[lowram]
+static mut LR_AUTO2: u16;
+
+// Lowram explicit (can be anywhere in $0000-$1FFF)
+#[lowram(0x0200)]
+static mut LR_EXPLICIT: u8;
+
+// More lowram auto (should skip around explicit and stack)
+#[lowram]
+static mut LR_AUTO3: u8;
+
+// RAM auto-allocation (should start at $7E2000)
+#[ram]
+static mut RAM_AUTO1: u8;
+
+#[ram]
+static mut RAM_AUTO2: u16;
+
+#[mode(m8, x8)]
+#[entry]
+fn main() -> ! {
+    ZP_AUTO1 = 1;
+    ZP_AUTO2 = 2;
+    ZP_AUTO3 = 3;
+    ZP_EXPLICIT = 0x1234;
+    ZP_AUTO4 = 4;
+
+    LR_AUTO1 = 10;
+    LR_AUTO2 = 0x2000;
+    LR_EXPLICIT = 20;
+    LR_AUTO3 = 30;
+
+    RAM_AUTO1 = 100;
+    RAM_AUTO2 = 0x7E00;
+
+    loop {}
+}

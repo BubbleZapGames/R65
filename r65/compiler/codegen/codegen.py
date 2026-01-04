@@ -73,6 +73,10 @@ class ProgramCodeGenerator:
             else:
                 allocatable_statics.append(static)
 
+        # Set default stack region if none specified: $0100-$01FF (256 bytes)
+        if self.allocator.stack_lower is None:
+            self.allocator.set_stack_region(0x0100, 0x01FF)
+
         self.allocator.allocate_all(allocatable_statics)
 
         # Phase 2: Symbol definitions

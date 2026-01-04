@@ -264,13 +264,13 @@ static mut TEMP: u8 = 0;
 #[zeropage]
 static mut AUTO_ZP: u8;  // Auto-allocated to next available address
 
-// Low RAM - shared with stack
-// Range: $0100-$1FFF
+// Low RAM - shared with zeropage and stack
+// Range: $0000-$1FFF (explicit), auto-allocation starts at $0100
 #[lowram(0x0200)]
 static mut BUFFER: [u8; 256];
 
 #[lowram]
-static mut AUTO_LOW: u8;  // Auto-allocated (avoids stack region)
+static mut AUTO_LOW: u8;  // Auto-allocated from $0100+ (avoids stack)
 
 // Main RAM - slower (4-5 cycles)
 // Range: $7E2000-$7FFFFF
@@ -300,19 +300,22 @@ static STACK: u8;
 static mut VAR: u8;  // Gets $0100, not $1F00
 ```
 
+**Default Stack:** If no `#[stack]` attribute is specified, the default stack region is `$0100-$01FF` (256 bytes). The stack pointer is automatically initialized in the `#[entry]` function prologue if the upper bound is not `$1FFF`.
+
 **Memory Map:**
-| Region | Range | Storage Class |
-|--------|-------|---------------|
-| Direct Page | `$0000-$00FF` | `#[zeropage]` |
-| Low RAM | `$0100-$1FFF` | `#[lowram]` |
-| Stack | (within low RAM) | `#[stack(lower, upper)]` |
-| Main RAM | `$7E2000-$7FFFFF` | `#[ram]` |
-| Hardware | I/O addresses | `#[hw(addr)]` |
+| Region | Range | Storage Class | Notes |
+|--------|-------|---------------|-------|
+| Direct Page | `$0000-$00FF` | `#[zeropage]` | Faster DP addressing |
+| Low RAM | `$0000-$1FFF` | `#[lowram]` | Auto starts at `$0100` |
+| Stack | (any slice in low RAM) | `#[stack(lo, hi)]` | Default: `$0100-$01FF` |
+| Main RAM | `$7E2000-$7FFFFF` | `#[ram]` | SNES work RAM |
+| Hardware | I/O addresses | `#[hw(addr)]` | Auto-volatile |
 
 **Auto-Allocation:**
 - Variables without explicit addresses are auto-allocated in source order
 - Auto-allocation finds the next available address that fits the variable's size
 - Explicit addresses are used as-is without collision checking
+- Zeropage and lowram share the same physical memory ($0000-$1FFF)
 
 ### Scratch Registers (Compiler-Managed Memory)
 

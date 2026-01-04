@@ -1,0 +1,21 @@
+// Test stack pointer initialization for non-default stack location
+// Stack at $0800-$0FFF (not the default $1FFF)
+
+#[stack(0x0800, 0x0FFF)]
+static mut STACK_MARKER: u8;
+
+#[zeropage]
+static mut COUNTER: u8;
+
+// This lowram variable should NOT be allocated in stack region
+#[lowram]
+static mut BUFFER: [u8; 256];
+
+#[mode(m8, x8)]
+#[entry]
+fn main() -> ! {
+    COUNTER = 0;
+    loop {
+        COUNTER = COUNTER + 1;
+    }
+}

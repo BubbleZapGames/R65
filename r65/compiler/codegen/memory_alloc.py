@@ -33,14 +33,16 @@ class MemoryAllocator:
     def __init__(self):
         """Initialize memory allocator."""
         # Address ranges
-        self.zeropage_start = 0x00  # Full zeropage range available
-        self.zeropage_end = 0xFF
+        # Low RAM is $0000-$1FFF (8KB)
+        # - Zeropage ($0000-$00FF) uses direct page addressing
+        # - Rest of low RAM ($0100-$1FFF) uses absolute addressing
+        # - Stack can occupy any slice within low RAM
+        self.lowram_start = 0x0000
+        self.lowram_end = 0x1FFF
+        self.zeropage_end = 0x00FF  # Upper bound for direct page addressing
 
         self.ram_start = 0x7E2000  # SNES Work RAM (above low RAM mirror)
         self.ram_end = 0x7FFFFF
-
-        self.lowram_start = 0x0100  # Low RAM (after zeropage)
-        self.lowram_end = 0x1FFF
 
         # Stack reservation (set via #[stack(lower, upper)])
         self.stack_lower: Optional[int] = None
@@ -50,7 +52,7 @@ class MemoryAllocator:
         self.allocations: Dict[str, AllocationInfo] = {}
 
         # Address usage tracking (for conflict detection)
-        self.zeropage_used: Set[int] = set()  # Individual bytes
+        # Single tracking for all of low RAM ($0000-$1FFF)
         self.lowram_used: Set[int] = set()  # Individual bytes
         self.ram_used: Set[Tuple[int, int]] = set()  # (start, end) ranges
 
@@ -102,12 +104,14 @@ class MemoryAllocator:
         return 1
 
     # ========================================================================
-    # Zero-Page Allocation
+    # Zero-Page Allocation (subset of low RAM with direct page addressing)
     # ========================================================================
 
     def _find_zeropage_fit(self, size: int) -> int:
         """
         Find first available zeropage address that fits 'size' bytes.
+
+        Zeropage is $0000-$00FF within low RAM, using direct page addressing.
 
         Args:
             size: Number of contiguous bytes needed
@@ -118,10 +122,10 @@ class MemoryAllocator:
         Raises:
             Exception: If no contiguous block available
         """
-        addr = self.zeropage_start
+        addr = self.lowram_start  # Start at $0000
         while addr + size - 1 <= self.zeropage_end:
-            # Check if all bytes in range are free
-            if all(i not in self.zeropage_used for i in range(addr, addr + size)):
+            # Check if all bytes in range are free (shared with low RAM)
+            if all(i not in self.lowram_used for i in range(addr, addr + size)):
                 return addr
             addr += 1
         raise Exception(f"Out of zero-page space (need {size} contiguous bytes)")
@@ -129,7 +133,9 @@ class MemoryAllocator:
     def allocate_zeropage(self, symbol: Symbol, static_decl: HIRStaticDecl,
                          explicit_addr: Optional[int] = None) -> AllocationInfo:
         """
-        Allocate zero-page location.
+        Allocate zero-page location ($0000-$00FF).
+
+        Zeropage is part of low RAM but uses direct page addressing.
 
         Args:
             symbol: Symbol to allocate
@@ -160,9 +166,9 @@ class MemoryAllocator:
             address = self._find_zeropage_fit(size)
             is_explicit = False
 
-        # Mark as used
+        # Mark as used in shared low RAM tracking
         for i in range(address, address + size):
-            self.zeropage_used.add(i)
+            self.lowram_used.add(i)
 
         # Create allocation info
         alloc = AllocationInfo(
@@ -210,12 +216,15 @@ class MemoryAllocator:
             self.lowram_used.add(i)
 
     # ========================================================================
-    # Low RAM Allocation
+    # Low RAM Allocation (above zeropage, $0100-$1FFF for auto-allocation)
     # ========================================================================
 
     def _find_lowram_fit(self, size: int) -> int:
         """
         Find first available low RAM address that fits 'size' bytes.
+
+        Auto-allocation starts at $0100 (after zeropage section).
+        Uses shared lowram_used tracking with zeropage.
 
         Args:
             size: Number of contiguous bytes needed
@@ -226,7 +235,8 @@ class MemoryAllocator:
         Raises:
             Exception: If no contiguous block available
         """
-        addr = self.lowram_start
+        # Start auto-allocation after zeropage ($0100+)
+        addr = self.zeropage_end + 1
         while addr + size - 1 <= self.lowram_end:
             # Check if all bytes in range are free
             if all(i not in self.lowram_used for i in range(addr, addr + size)):
@@ -237,7 +247,10 @@ class MemoryAllocator:
     def allocate_lowram(self, symbol: Symbol, static_decl: HIRStaticDecl,
                         explicit_addr: Optional[int] = None) -> AllocationInfo:
         """
-        Allocate low RAM location ($0100-$1FFF).
+        Allocate low RAM location.
+
+        Auto-allocation: $0100-$1FFF (after zeropage)
+        Explicit: $0000-$1FFF (full low RAM range)
 
         Args:
             symbol: Symbol to allocate
@@ -254,17 +267,17 @@ class MemoryAllocator:
 
         if explicit_addr is not None:
             # Explicit address - use as-is, no collision check
+            # Allow full low RAM range ($0000-$1FFF)
             address = explicit_addr
             is_explicit = True
 
-            # Validate range only
             if address < self.lowram_start or address + size - 1 > self.lowram_end:
                 raise Exception(
                     f"Low RAM address ${address:04X} for '{symbol.name}' "
                     f"out of range (${self.lowram_start:04X}-${self.lowram_end:04X})"
                 )
         else:
-            # Auto-allocate - find next available address that fits
+            # Auto-allocate - find next available address (starts at $0100)
             address = self._find_lowram_fit(size)
             is_explicit = False
 

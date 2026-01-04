@@ -61,8 +61,8 @@ class PreservesAttribute(ProcessedAttribute):
 # Storage attributes
 class StorageKind(Enum):
     """Storage location kind."""
-    ZEROPAGE = "zeropage"  # Direct page ($0000-$00FF)
-    LOWRAM = "lowram"      # Low RAM ($0100-$1FFF)
+    ZEROPAGE = "zeropage"  # Direct page ($0000-$00FF) - uses DP addressing
+    LOWRAM = "lowram"      # Low RAM ($0000-$1FFF) - auto starts at $0100
     RAM = "ram"            # Main RAM ($7E2000-$7FFFFF)
     ROM = "rom"
     HW = "hw"              # Hardware-mapped I/O (automatically volatile)
@@ -429,10 +429,10 @@ class AttributeProcessor:
         if lower > upper:
             raise HIRError(f"Stack lower bound ${lower:04X} must be <= upper bound ${upper:04X}")
 
-        if lower < 0x0100 or upper > 0x1FFF:
+        if lower < 0x0000 or upper > 0x1FFF:
             raise HIRError(
                 f"Stack region ${lower:04X}-${upper:04X} must be within "
-                f"low RAM ($0100-$1FFF)"
+                f"low RAM ($0000-$1FFF)"
             )
 
         return StackAttribute(
