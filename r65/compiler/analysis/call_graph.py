@@ -8,6 +8,7 @@ to check for unsafe use of zero-page or register parameters.
 from typing import Dict, List, Set, Optional
 from dataclasses import dataclass, field
 from r65.compiler.mir.nodes import MIRProgram, MIRFunction, Call
+from r65.compiler.errors import get_diagnostics
 
 
 class RecursionError(Exception):
@@ -27,6 +28,9 @@ class CallGraph:
 
     # Functions that have their address taken (potential indirect calls)
     address_taken: Set[str] = field(default_factory=set)
+
+    # Functions that make indirect calls (via function pointers)
+    indirect_callers: Set[str] = field(default_factory=set)
 
     def add_edge(self, caller: str, callee: str):
         """Add a call edge from caller to callee."""
@@ -91,8 +95,10 @@ class CallGraphAnalyzer:
                     # Indirect calls (function pointers) are handled separately
                     if isinstance(instr.function, str):
                         self.graph.add_edge(func.name, instr.function)
-                    # else: function pointer - mark caller as having address taken
-                    # (TODO: we could track this for warnings)
+                    else:
+                        # Indirect call via function pointer - track caller for warnings
+                        # The caller might be calling any function whose address is taken
+                        self.graph.indirect_callers.add(func.name)
 
     def find_cycles(self) -> List[List[str]]:
         """
@@ -237,9 +243,14 @@ class RecursionChecker:
         """
         Warn about functions with zero-page/register params that have address taken.
 
+        Functions whose address is taken can be called indirectly, which means
+        the caller cannot guarantee that parameters are set up correctly.
+
         Args:
             graph: Call graph
         """
+        diagnostics = get_diagnostics()
+
         for func_name in graph.address_taken:
             if func_name not in self.func_map:
                 continue
@@ -249,15 +260,34 @@ class RecursionChecker:
             # Check for zero-page or register parameters
             for param in func.parameters:
                 if hasattr(param, 'binding') and param.binding:
-                    if hasattr(param.binding, 'storage_class'):
-                        if param.binding.storage_class == 'zeropage':
-                            # TODO: Emit warning instead of error
-                            # For now, just skip - warnings infrastructure needed
-                            pass
+                    from r65.compiler.hir.nodes import RegisterBinding, VariableBinding
 
-                if hasattr(param, 'register') and param.register:
-                    # TODO: Emit warning
-                    pass
+                    if isinstance(param.binding, RegisterBinding):
+                        # Register parameter on function whose address is taken
+                        diagnostics.warning(
+                            f"Function '{func_name}' has register parameter "
+                            f"'{param.name}' bound to '{param.binding.register_name}', "
+                            f"but its address is taken for indirect calls",
+                            code="W001",
+                            hint=f"Indirect callers must ensure {param.binding.register_name} "
+                                 f"is set before calling. Consider using stack parameters."
+                        )
+                    elif isinstance(param.binding, VariableBinding):
+                        # Variable-bound parameter - check if zero-page
+                        var_symbol = param.binding.variable_symbol
+                        if var_symbol and hasattr(var_symbol, 'definition'):
+                            var_def = var_symbol.definition
+                            if hasattr(var_def, 'storage_attr') and var_def.storage_attr:
+                                from r65.compiler.hir.attributes import StorageKind
+                                if var_def.storage_attr.storage_kind == StorageKind.ZEROPAGE:
+                                    diagnostics.warning(
+                                        f"Function '{func_name}' has zero-page parameter "
+                                        f"'{param.name}' bound to '{param.binding.variable_name}', "
+                                        f"but its address is taken for indirect calls",
+                                        code="W002",
+                                        hint="Indirect callers must set the zero-page variable "
+                                             "before calling. Consider using stack parameters."
+                                    )
 
     def _raise_recursion_error(self, func_name: str, param_name: str,
                                cycle: List[str], param_type: str,

@@ -5,8 +5,16 @@ Provides structured exceptions for different compilation phases,
 enabling better error handling and more informative error messages.
 """
 
-from typing import Optional
-from dataclasses import dataclass
+from enum import Enum
+from typing import Optional, List
+from dataclasses import dataclass, field
+
+
+class DiagnosticSeverity(Enum):
+    """Severity levels for diagnostics."""
+    WARNING = "warning"
+    ERROR = "error"
+    NOTE = "note"
 
 
 @dataclass
@@ -20,6 +28,116 @@ class SourceLocation:
         if self.line > 0:
             return f"{self.file}:{self.line}:{self.column}"
         return self.file
+
+
+@dataclass
+class Diagnostic:
+    """
+    A compiler diagnostic (warning, error, or note).
+
+    Diagnostics can be collected during compilation and reported together.
+    """
+    severity: DiagnosticSeverity
+    message: str
+    source_loc: Optional[SourceLocation] = None
+    code: Optional[str] = None  # e.g., "W001" for warning categories
+    hint: Optional[str] = None  # Suggestion for fixing the issue
+
+    def __str__(self) -> str:
+        parts = []
+
+        # Location prefix
+        if self.source_loc:
+            parts.append(f"{self.source_loc}: ")
+
+        # Severity and code
+        severity_str = self.severity.value
+        if self.code:
+            severity_str = f"{severity_str}[{self.code}]"
+        parts.append(f"{severity_str}: ")
+
+        # Message
+        parts.append(self.message)
+
+        # Hint on new line if present
+        if self.hint:
+            parts.append(f"\n  hint: {self.hint}")
+
+        return "".join(parts)
+
+
+@dataclass
+class DiagnosticCollector:
+    """
+    Collects diagnostics during compilation.
+
+    Allows warnings to be accumulated without stopping compilation,
+    then reported at the end.
+    """
+    diagnostics: List[Diagnostic] = field(default_factory=list)
+
+    def add(self, diagnostic: Diagnostic):
+        """Add a diagnostic."""
+        self.diagnostics.append(diagnostic)
+
+    def warning(self, message: str, source_loc: Optional[SourceLocation] = None,
+                code: Optional[str] = None, hint: Optional[str] = None):
+        """Add a warning diagnostic."""
+        self.add(Diagnostic(
+            severity=DiagnosticSeverity.WARNING,
+            message=message,
+            source_loc=source_loc,
+            code=code,
+            hint=hint
+        ))
+
+    def note(self, message: str, source_loc: Optional[SourceLocation] = None):
+        """Add a note diagnostic."""
+        self.add(Diagnostic(
+            severity=DiagnosticSeverity.NOTE,
+            message=message,
+            source_loc=source_loc
+        ))
+
+    def has_warnings(self) -> bool:
+        """Check if any warnings were collected."""
+        return any(d.severity == DiagnosticSeverity.WARNING for d in self.diagnostics)
+
+    def has_errors(self) -> bool:
+        """Check if any errors were collected."""
+        return any(d.severity == DiagnosticSeverity.ERROR for d in self.diagnostics)
+
+    def get_warnings(self) -> List[Diagnostic]:
+        """Get all warning diagnostics."""
+        return [d for d in self.diagnostics if d.severity == DiagnosticSeverity.WARNING]
+
+    def clear(self):
+        """Clear all diagnostics."""
+        self.diagnostics.clear()
+
+    def __len__(self) -> int:
+        return len(self.diagnostics)
+
+    def __iter__(self):
+        return iter(self.diagnostics)
+
+
+# Global diagnostic collector for use across compilation phases
+_global_diagnostics: Optional['DiagnosticCollector'] = None
+
+
+def get_diagnostics() -> DiagnosticCollector:
+    """Get the global diagnostic collector, creating one if needed."""
+    global _global_diagnostics
+    if _global_diagnostics is None:
+        _global_diagnostics = DiagnosticCollector()
+    return _global_diagnostics
+
+
+def reset_diagnostics():
+    """Reset the global diagnostic collector."""
+    global _global_diagnostics
+    _global_diagnostics = DiagnosticCollector()
 
 
 class CompilerError(Exception):
