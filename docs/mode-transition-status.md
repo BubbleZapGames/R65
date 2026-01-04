@@ -3,9 +3,9 @@
 ## Summary
 
 The mode transition logic is **fully implemented** for:
-- `transition=none` (default) - No automatic mode switching
+- `transition=none` (default) - No inline mode switching
 - `transition=caller` - Caller-side wrapper generation
-- `transition=auto` - Callee-side wrapper generation (interrupt handlers)
+- `transition=inline` - Callee-side wrapper generation (interrupt handlers)
 
 ## Implementation Complete ✅
 
@@ -28,13 +28,13 @@ The mode transition logic is **fully implemented** for:
 - **Use case**: New code with explicit mode management
 - **Testing**: ⚠️ Cannot test - parser doesn't support `transition=caller`
 
-### 4. transition=auto (Interrupt Handlers)
+### 4. transition=inline (Interrupt Handlers)
 - **Behavior**: Callee-side wrapper at function entry/exit
   - Entry: PHP, PHA, PHX, PHY, PHD, PHB + SEP/REP
   - Exit: PLB, PLD, PLY, PLX, PLA, PLP + RTI
 - **Status**: ✅ Implemented in MIR builder
-- **Requirement**: Interrupt handlers with mode MUST specify `transition=auto`
-- **Testing**: ⚠️ Cannot test - parser doesn't support `transition=auto`
+- **Requirement**: Interrupt handlers with mode MUST specify `transition=inline`
+- **Testing**: ⚠️ Cannot test - parser doesn't support `transition=inline`
 
 ## Parser Limitation ⚠️
 
@@ -43,7 +43,7 @@ The mode transition logic is **fully implemented** for:
 **Impact:**
 ```rust
 // ❌ Parser Error: "Expected identifier, got Assignment"
-#[mode(m8, x8, transition=auto)]
+#[mode(m8, x8, transition=inline)]
 #[mode(m16, x16, transition=caller)]
 ```
 
@@ -62,7 +62,7 @@ fn process() {
 ```rust
 // ❌ Cannot parse
 #[interrupt(nmi)]
-#[mode(m8, x8, transition=auto)]
+#[mode(m8, x8, transition=inline)]
 fn nmi_handler() { }
 
 // ❌ Cannot parse
@@ -75,7 +75,7 @@ fn needs_16bit() { }
 ### Type Checker Validation
 
 ✅ **Implemented:**
-- `transition=auto` + `#[preserves(STATUS)]` → Error (conflicting)
+- `transition=inline` + `#[preserves(STATUS)]` → Error (conflicting)
 - Interrupt + mode + (transition != auto) → Error (requires explicit auto)
 
 ⚠️ **Cannot Test:**
@@ -99,7 +99,7 @@ fn needs_16bit() { }
 ### Blocked Tests ⚠️
 
 **`examples/interrupt_mode_test.r65`** - Cannot parse
-- Requires `transition=auto` syntax
+- Requires `transition=inline` syntax
 - Parser error on named parameters
 
 **`examples/transition_caller_test.r65`** - Cannot parse
@@ -120,7 +120,7 @@ elif arg.name == 'transition':
     if value_str == 'none':
         transition = ModeTransition.NONE
     elif value_str == 'auto':
-        transition = ModeTransition.AUTO
+        transition = ModeTransition.INLINE
     elif value_str == 'caller':
         transition = ModeTransition.CALLER
 ```
@@ -143,13 +143,13 @@ AttributeArg(name=None, value=Assignment(...))  # Treats as expression!
 
 ### Medium Priority 🟡
 
-**2. Implement transition=auto for Regular Functions**
+**2. Implement transition=inline for Regular Functions**
 
 Currently only implemented for interrupt handlers. For regular functions:
 
 ```rust
 // Not yet supported for regular functions:
-#[mode(m16, x16, transition=auto)]
+#[mode(m16, x16, transition=inline)]
 fn helper() {
     // Would need entry/exit wrapper like interrupts
     // But use RTS instead of RTI
@@ -203,7 +203,7 @@ Options:
 
 ### Immediate Action Items
 
-1. **✅ DONE** - Update validation to require explicit `transition=auto`
+1. **✅ DONE** - Update validation to require explicit `transition=inline`
 2. **✅ DONE** - Update documentation to reflect parser limitation
 3. **🔴 TODO** - Fix parser to support named attribute arguments
 4. **🟡 TODO** - Add comprehensive tests once parser is fixed
@@ -219,25 +219,25 @@ Current implementation is **perfect** for reverse engineering:
 
 **Blocked** until parser is fixed, but implementation is ready:
 - `transition=caller` fully implemented
-- `transition=auto` implemented for interrupts
+- `transition=inline` implemented for interrupts
 - Just need parser support to test/use
 
 ## Error Messages
 
 ### With Current Implementation
 
-**Interrupt + mode without transition=auto:**
+**Interrupt + mode without transition=inline:**
 ```
 Type error: Interrupt handler 'nmi_handler' has #[mode] attribute but transition=none
-  Interrupt handlers with mode attributes MUST use transition=auto
-  Example: #[mode(m8, x8, transition=auto)]
-  Reason: Interrupts can fire from any mode and need automatic mode management
+  Interrupt handlers with mode attributes MUST use transition=inline
+  Example: #[mode(m8, x8, transition=inline)]
+  Reason: Interrupts can fire from any mode and need inline mode management
 ```
 
-**transition=auto + preserves(STATUS):**
+**transition=inline + preserves(STATUS):**
 ```
-Type error: Function 'helper' cannot use transition=auto with #[preserves(STATUS)]
-  transition=auto requires modifying STATUS to switch modes, which conflicts with preservation
+Type error: Function 'helper' cannot use transition=inline with #[preserves(STATUS)]
+  transition=inline requires modifying STATUS to switch modes, which conflicts with preservation
 ```
 
 ## Files Modified

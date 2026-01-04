@@ -293,7 +293,7 @@ class EnumVariantExpr(Expression):
 @dataclass
 class Register(Expression):
     """Hardware register reference."""
-    name: str  # "A", "X", "Y", "Status", "D", "DBR", "PBR", "S"
+    name: str  # "A", "X", "Y", "B", "Status", "D", "DBR", "PBR", "S"
 
 
 @dataclass

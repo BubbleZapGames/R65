@@ -212,7 +212,7 @@ def _emit_call_with_mode_transition(
 
     Handles three cases:
     1. transition=none: No wrapper (default)
-    2. transition=auto: Callee handles it
+    2. transition=inline: Callee handles it
     3. transition=caller + mode mismatch: Caller handles it
 
     Args:
@@ -232,7 +232,7 @@ def _emit_call_with_mode_transition(
     )
 
     if not mode_mismatch or transition != ModeTransition.CALLER:
-        # No wrapper needed (transition=none, transition=auto, or same mode)
+        # No wrapper needed (transition=none, transition=inline, or same mode)
         self.emit(Call(
             function=func_decl.name,
             args=args,

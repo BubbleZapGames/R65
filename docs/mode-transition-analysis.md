@@ -286,7 +286,7 @@ fn indirect_call() {
 - Generates same wrappers for JSR and JSL ✅
 
 **DBR + Mode interaction:**
-- `data_bank=auto`: Callee sets DBR to its program bank
+- `data_bank=inline`: Callee sets DBR to its program bank
 - Could combine with mode transition for single wrapper
 - **Optimization opportunity:** Combine PHB+PHP → PHB+PHP+SEP/REP+... ⚡
 
@@ -346,16 +346,16 @@ SEP #$30     ; Restore once
 
 ---
 
-### 9. transition=auto Implementation Status
+### 9. transition=inline Implementation Status
 
 **Current status:** Validation only, not implemented
 
 **What's validated:**
 ```python
-if transition == ModeTransition.AUTO:
+if transition == ModeTransition.INLINE:
     if func_decl.preserves_attr and 'STATUS' in func_decl.preserves_attr.registers:
         raise TypeCheckError(
-            "Function cannot use transition=auto with #[preserves(STATUS)]"
+            "Function cannot use transition=inline with #[preserves(STATUS)]"
         )
 ```
 
@@ -479,7 +479,7 @@ fn new_func() {
 #### ⚠️ **Interrupt Mode Mismatch**
 - Interrupts can fire in any mode
 - Handler might expect specific mode
-- No automatic mode setup on interrupt entry
+- No inline mode setup on interrupt entry
 - **Needs design:** Auto-insert SEP/REP at interrupt entry?
 
 ---
@@ -494,7 +494,7 @@ fn new_func() {
    - STATUS preservation: Correct
 
 2. **🔴 TODO - Implement interrupt handler mode entry**
-   - Add automatic mode transition at interrupt entry if mode declared
+   - Add inline mode transition at interrupt entry if mode declared
    - Structure:
      ```
      nmi_handler:
@@ -533,7 +533,7 @@ fn new_func() {
    - Hoist mode transitions outside call sequence
    - Significant performance win for tight loops
 
-5. **🔴 TODO - Design and implement transition=auto**
+5. **🔴 TODO - Design and implement transition=inline**
    - Callee-side wrapper generation
    - Handle multiple return paths
    - Coordinate with register preservation
@@ -570,7 +570,7 @@ fn new_func() {
 
 **Key gaps:**
 - Interrupt handler mode entry (safety issue)
-- transition=auto not implemented (functional gap)
+- transition=inline not implemented (functional gap)
 - No batching optimization (performance opportunity)
 - Parser doesn't support named attributes (tooling issue)
 

@@ -49,7 +49,14 @@ class ProgramCodeGenerator:
         # Emit file header and processor directives
         self.emitter.emit_file_header()
         self.emitter.emit_processor_directive()
-        self.emitter.emit_memory_map()
+
+        # Organize functions by bank first to determine bank count
+        functions_by_bank = self._organize_functions_by_bank(mir_program.functions)
+        max_bank = max(functions_by_bank.keys()) if functions_by_bank else 0
+        bank_count = max_bank + 1  # Banks are 0-indexed
+
+        # Emit memory map with correct bank count
+        self.emitter.emit_memory_map(banks=bank_count)
 
         # Phase 1: Memory allocation
         self.allocator = MemoryAllocator()
@@ -62,9 +69,6 @@ class ProgramCodeGenerator:
         # Phase 3-6: Function code generation
         # (Phases 3-6 are integrated within function generation)
         self.func_gen = ProgramFunctionGenerator(self.emitter, self.allocator)
-
-        # Organize functions by bank
-        functions_by_bank = self._organize_functions_by_bank(mir_program.functions)
 
         # Generate code for each bank
         for bank_num in sorted(functions_by_bank.keys()):

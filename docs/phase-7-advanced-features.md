@@ -52,7 +52,7 @@ RTI          ; Return from interrupt
 
 - **Automatic register preservation**: All 6 hardware registers saved/restored
 - **Mode forcing**: If handler has `#[mode]` attribute, compiler emits SEP/REP to force the mode
-- **Validation**: Type checker enforces `transition=auto` for interrupt handlers with mode
+- **Validation**: Type checker enforces `transition=inline` for interrupt handlers with mode
 - **RTI instruction**: Returns using RTI instead of RTS/RTL
 
 #### Example
@@ -60,7 +60,7 @@ RTI          ; Return from interrupt
 **Source code:**
 ```rust
 #[interrupt(nmi)]
-#[mode(m8, x8, transition=auto)]
+#[mode(m8, x8, transition=inline)]
 fn nmi_handler() {
     A = 0x42;
     FLAG = A;
@@ -365,7 +365,7 @@ Function: nmi_handler
 
 ### Mode Transitions
 
-- Interrupt handlers use `transition=auto` (required by type checker)
+- Interrupt handlers use `transition=inline` (required by type checker)
 - Static initialization uses `transition=none` (no mode requirement)
 - Entry point mode transitions work normally after `__init_start()` call
 
@@ -377,7 +377,7 @@ Function: nmi_handler
 
 ### Type Checking
 
-- Type checker validates interrupt handler `transition=auto` requirement
+- Type checker validates interrupt handler `transition=inline` requirement
 - Static initializer types checked during HIR phase
 - `__init_start()` inherits type safety from HIR
 

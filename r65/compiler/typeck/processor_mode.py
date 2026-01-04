@@ -96,6 +96,13 @@ class ProcessorMode:
             return self.get_x_type()
         elif reg_name == 'Y':
             return self.get_y_type()
+        elif reg_name == 'B':
+            # B register only available in m8 mode
+            if self.m_mode == ModeState.M8:
+                return BasicTypeInfo("u8")
+            else:
+                # B not available in m16 mode or unknown mode
+                return None
         elif reg_name == 'STATUS':
             return BasicTypeInfo("u8")
         elif reg_name == 'D':

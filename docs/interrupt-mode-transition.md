@@ -2,43 +2,43 @@
 
 ## Design Decision
 
-**Rule:** Interrupt handlers with `#[mode]` attributes MUST explicitly specify `transition=auto`
+**Rule:** Interrupt handlers with `#[mode]` attributes MUST explicitly specify `transition=inline`
 
 ## Rationale
 
 1. **Interrupts fire from unknown mode**: An NMI/IRQ can occur while processor is in any mode (m8 or m16, x8 or x16)
 2. **Handler needs specific mode**: Handler code expects to run in its declared mode
 3. **Must restore original mode**: After handling interrupt, must return to interrupted code's mode
-4. **Only callee-side works**: Handler cannot know caller's mode (there is no caller!) → must use `transition=auto`
+4. **Only callee-side works**: Handler cannot know caller's mode (there is no caller!) → must use `transition=inline`
 
 ## Implementation
 
 ### 1. Required Explicit Transition
 
-Type checker enforces `transition=auto` for interrupt handlers with mode attributes:
+Type checker enforces `transition=inline` for interrupt handlers with mode attributes:
 
 ```python
 # In TypeChecker.check_function()
 if func.interrupt_attr and func.mode_attr:
-    if func.mode_attr.transition != ModeTransition.AUTO:
+    if func.mode_attr.transition != ModeTransition.INLINE:
         raise TypeCheckError(
-            "Interrupt handlers with mode attributes MUST use transition=auto"
+            "Interrupt handlers with mode attributes MUST use transition=inline"
         )
 ```
 
-**User experience:** Must explicitly specify `transition=auto` - makes the requirement visible!
+**User experience:** Must explicitly specify `transition=inline` - makes the requirement visible!
 
 ```rust
-// ❌ ERROR - Missing transition=auto:
+// ❌ ERROR - Missing transition=inline:
 #[interrupt(nmi)]
 #[mode(m8, x8)]
 fn nmi_handler() {
     // handler code
 }
 
-// ✅ CORRECT - Explicit transition=auto:
+// ✅ CORRECT - Explicit transition=inline:
 #[interrupt(nmi)]
-#[mode(m8, x8, transition=auto)]
+#[mode(m8, x8, transition=inline)]
 fn nmi_handler() {
     // handler code
 }
@@ -47,7 +47,7 @@ fn nmi_handler() {
 **Rationale:** Making it explicit:
 - Self-documenting: Reader immediately sees special behavior
 - Forces programmer awareness: Can't accidentally forget
-- Clear intent: Explicitly states "this needs automatic mode management"
+- Clear intent: Explicitly states "this needs inline mode management"
 
 ### 2. Entry Wrapper Generation
 
@@ -116,7 +116,7 @@ class ReturnFromInterrupt(MIRInstruction):
 
 ```rust
 #[interrupt(nmi)]
-#[mode(m8, x8, transition=auto)]  // Required!
+#[mode(m8, x8, transition=inline)]  // Required!
 fn nmi_handler() {
     A = 0x42;
     FLAG = A;
@@ -124,7 +124,7 @@ fn nmi_handler() {
 }
 ```
 
-**Note:** Named attribute parameters (`transition=auto`) require parser support (currently not implemented). Until parser is updated, interrupt handlers cannot use mode attributes.
+**Note:** Named attribute parameters (`transition=inline`) require parser support (currently not implemented). Until parser is updated, interrupt handlers cannot use mode attributes.
 
 ### Generated MIR
 
@@ -323,7 +323,7 @@ fn caller() {
 **Knows incoming mode:** Yes (caller's mode)
 **Restoration:** Via PLP or explicit SEP/REP
 
-### Interrupt Handler (transition=auto)
+### Interrupt Handler (transition=inline)
 
 ```rust
 #[interrupt(nmi)]
@@ -367,7 +367,7 @@ fn nmi_handler() {
 ## Implementation Files Modified
 
 1. **`r65/compiler/typeck/type_checker.py`**
-   - Auto-set `transition=auto` for interrupt handlers with mode
+   - Auto-set `transition=inline` for interrupt handlers with mode
 
 2. **`r65/compiler/mir/nodes.py`**
    - Added `ReturnFromInterrupt` instruction

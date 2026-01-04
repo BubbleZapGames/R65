@@ -2194,13 +2194,10 @@ class MIRBuilder:
         """
         if isinstance(param.binding, RegisterBinding):
             # Register alias parameter
+            # Note: Don't emit Move here - let Call instruction handler set up arguments
+            # This avoids duplicate setup code
             mechanism = ArgumentMechanism.REGISTER
             location = HardwareRegister(param.binding.register_name)
-
-            # Move argument to hardware register if needed
-            if not (isinstance(arg_value, HardwareRegister) and arg_value.name == location.name):
-                self.emit(Move(dest=location, source=arg_value, type_info=param.param_type))
-
             return mechanism, location
 
         elif isinstance(param.binding, VariableBinding):

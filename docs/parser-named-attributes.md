@@ -12,8 +12,8 @@ The parser only supported positional arguments in attributes:
 // ✅ Worked before
 #[mode(m8, x8)]
 
-// ❌ Failed before - parsed 'transition=auto' as assignment expression
-#[mode(m8, x8, transition=auto)]
+// ❌ Failed before - parsed 'transition=inline' as assignment expression
+#[mode(m8, x8, transition=inline)]
 ```
 
 **Error:** `HIR error: Expected identifier, got Assignment`
@@ -27,7 +27,7 @@ The parser only supported positional arguments in attributes:
 attribute_arg: expr
 ```
 
-This treated `transition=auto` as an assignment expression, creating:
+This treated `transition=inline` as an assignment expression, creating:
 ```python
 AttributeArg(name=None, value=Assignment(target='transition', value='auto'))
 ```
@@ -46,7 +46,7 @@ attribute_arg: (IDENT "=")? expr  -> attribute_arg
 ```
 
 This makes the `IDENT "="` part optional:
-- With name: `transition=auto` → captures IDENT + expr
+- With name: `transition=inline` → captures IDENT + expr
 - Without name: `m8` → captures just expr
 
 ### 2. Updated Transformer
@@ -93,7 +93,7 @@ Now creates correct `AttributeArg` structure:
 
 ### Test 1: Named Arguments ✅
 ```rust
-#[mode(m8, x8, transition=auto)]
+#[mode(m8, x8, transition=inline)]
 ```
 
 **Parsed:**
@@ -113,7 +113,7 @@ Now creates correct `AttributeArg` structure:
 ### Test 3: Interrupt Handler ✅
 ```rust
 #[interrupt(nmi)]
-#[mode(m8, x8, transition=auto)]
+#[mode(m8, x8, transition=inline)]
 fn nmi_handler() {
     return;
 }
@@ -153,7 +153,7 @@ fn caller() {
 ### Interrupt Handlers
 ```rust
 #[interrupt(nmi)]
-#[mode(m8, x8, transition=auto)]
+#[mode(m8, x8, transition=inline)]
 fn nmi_handler() {
     A = 0x42;
     FLAG = A;
@@ -203,14 +203,14 @@ fn caller() {
 
 ## Benefits
 
-1. **Self-Documenting Code**: `transition=auto` is visible in source
+1. **Self-Documenting Code**: `transition=inline` is visible in source
 2. **Type Safety**: Named arguments prevent errors
 3. **Flexibility**: Mix positional and named arguments
 4. **Backward Compatible**: Old code still works
 
 ## Validation Now Working
 
-### Interrupt + Mode Requires transition=auto
+### Interrupt + Mode Requires transition=inline
 ```rust
 // ❌ ERROR
 #[interrupt(nmi)]
@@ -219,23 +219,23 @@ fn handler() { }
 
 // ✅ CORRECT
 #[interrupt(nmi)]
-#[mode(m8, x8, transition=auto)]
+#[mode(m8, x8, transition=inline)]
 fn handler() { }
 ```
 
-### transition=auto + preserves(STATUS) Conflicts
+### transition=inline + preserves(STATUS) Conflicts
 ```rust
 // ❌ ERROR
-#[mode(m8, x8, transition=auto)]
+#[mode(m8, x8, transition=inline)]
 #[preserves(STATUS)]
 fn helper() { }
 ```
 
-**Error:** `transition=auto requires modifying STATUS, conflicts with preservation`
+**Error:** `transition=inline requires modifying STATUS, conflicts with preservation`
 
 ## Full Pipeline Working
 
-1. **Parser** ✅ - Parses `transition=auto` correctly
+1. **Parser** ✅ - Parses `transition=inline` correctly
 2. **HIR Builder** ✅ - Processes named arguments correctly
 3. **Type Checker** ✅ - Validates interrupt handler rules
 4. **MIR Builder** ✅ - Generates correct wrappers
@@ -243,7 +243,7 @@ fn helper() { }
 ## Test Files
 
 ### Working Examples
-- `examples/interrupt_simple_test.r65` - Interrupt with transition=auto
+- `examples/interrupt_simple_test.r65` - Interrupt with transition=inline
 - `examples/transition_caller_working.r65` - transition=caller tests
 - `examples/mixed_mode_test.r65` - transition=none (backward compat)
 
@@ -258,7 +258,7 @@ fn helper() { }
 
 All mode transition features now functional:
 - `transition=none` (default)
-- `transition=auto` (interrupt handlers)
+- `transition=inline` (interrupt handlers)
 - `transition=caller` (explicit mode management)
 
 ---

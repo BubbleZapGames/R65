@@ -245,7 +245,7 @@ KEYWORD.10: /abstract\b/ | /override\b/ | /unsized\b/ | /virtual\b/ | /typeof\b/
 BOOLEAN.10: /true\b/ | /false\b/
 
 // Registers and types (with word boundaries)
-REGISTER.10: /STATUS\b/ | /DBR\b/ | /PBR\b/ | /[AXYDS]\b/
+REGISTER.10: /STATUS\b/ | /DBR\b/ | /PBR\b/ | /[ABXYDS]\b/
 TYPE_NAME.10: /bool\b/ | /u16\b/ | /i16\b/ | /u8\b/ | /i8\b/
 
 // Literals

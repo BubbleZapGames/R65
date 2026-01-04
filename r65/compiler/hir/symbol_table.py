@@ -85,8 +85,9 @@ class SymbolTable:
         )
 
         # Add hardware registers
-        # A, X, Y are mode-dependent; STATUS, D, DBR, PBR, S are fixed
-        for reg_name in ['A', 'X', 'Y', 'STATUS', 'D', 'DBR', 'PBR', 'S']:
+        # A, X, Y, B are mode-dependent; STATUS, D, DBR, PBR, S are fixed
+        # B is only valid in m8 mode (type checker enforces this)
+        for reg_name in ['A', 'X', 'Y', 'B', 'STATUS', 'D', 'DBR', 'PBR', 'S']:
             global_scope.symbols[reg_name] = Symbol(
                 name=reg_name,
                 kind=SymbolKind.REGISTER,

@@ -66,6 +66,9 @@ class FunctionCodeGenerator:
         # Emit function label
         self.emitter.emit_label(mir_func.name)
 
+        # Emit mode directives for WLA-DX assembler
+        self._emit_mode_directives(mir_func)
+
         # Emit prologue (if needed)
         self.emit_prologue(mir_func, reg_alloc)
 
@@ -303,6 +306,32 @@ class FunctionCodeGenerator:
     # Prologue/Epilogue (TODO)
     # ========================================================================
 
+    def _emit_mode_directives(self, mir_func: MIRFunction):
+        """
+        Emit WLA-DX mode directives to inform the assembler of the expected processor mode.
+
+        These directives (.ACCU and .INDEX) tell WLA-DX what size the accumulator and
+        index registers are, so it can assemble instructions correctly. They don't
+        emit any code - they're just for the assembler.
+
+        Args:
+            mir_func: MIR function
+        """
+        if mir_func.mode_attr:
+            from r65.compiler.hir.attributes import MMode, XMode
+
+            # Emit accumulator mode directive
+            if mir_func.mode_attr.m_mode == MMode.M16:
+                self.emitter.emit_line("    .ACCU 16")
+            elif mir_func.mode_attr.m_mode == MMode.M8:
+                self.emitter.emit_line("    .ACCU 8")
+
+            # Emit index mode directive
+            if mir_func.mode_attr.x_mode == XMode.X16:
+                self.emitter.emit_line("    .INDEX 16")
+            elif mir_func.mode_attr.x_mode == XMode.X8:
+                self.emitter.emit_line("    .INDEX 8")
+
     def emit_prologue(self, mir_func: MIRFunction, reg_alloc: RegisterAllocator):
         """
         Emit function prologue.
@@ -311,17 +340,17 @@ class FunctionCodeGenerator:
         - Stack frame setup
         - Register preservation
         - Mode transitions
-        - DBR management (data_bank=auto)
+        - DBR management (data_bank=inline)
 
         Args:
             mir_func: MIR function
             reg_alloc: Register allocator
         """
-        # Handle DBR management for far functions with data_bank=auto
+        # Handle DBR management for far functions with data_bank=inline
         if mir_func.is_far and mir_func.bank_attr:
             from r65.compiler.hir.attributes import DataBankMode
 
-            if mir_func.bank_attr.data_bank == DataBankMode.AUTO:
+            if mir_func.bank_attr.data_bank == DataBankMode.INLINE:
                 # Save current DBR and set to function's bank
                 # Sequence: PHB, LDA #bank, PHA, PLB
                 self.emitter.emit_instruction("PHB", comment="Save current data bank")
@@ -330,10 +359,64 @@ class FunctionCodeGenerator:
                 self.emitter.emit_instruction("PHA", comment="Push bank number")
                 self.emitter.emit_instruction("PLB", comment="Set data bank register")
 
-        # TODO: Implement other prologue features
-        # - Check if stack frame needed (spilled registers)
-        # - Emit register saves (if preserves_attr)
-        # - Emit mode transition (if mode_attr with transition=auto)
+        # Handle processor mode transitions with transition=inline
+        if mir_func.mode_attr:
+            from r65.compiler.hir.attributes import ModeTransition, MMode, XMode
+
+            if mir_func.mode_attr.transition == ModeTransition.INLINE:
+                # Save current processor status and set required mode
+                # Sequence: PHP, REP/SEP #bits, body, PLP, RTS
+                self.emitter.emit_instruction("PHP", comment="Save processor status")
+
+                # Determine which bits to set/clear based on mode
+                # STATUS register bits: NV-BDIZC (- is unused, M is bit 5, X is bit 4)
+                # Bit 5 (0x20): M flag (0=16-bit accumulator, 1=8-bit accumulator)
+                # Bit 4 (0x10): X flag (0=16-bit index, 1=8-bit index)
+                bits_to_clear = 0  # REP (Reset bits)
+                bits_to_set = 0    # SEP (Set bits)
+
+                # Determine M mode
+                if mir_func.mode_attr.m_mode == MMode.M16:
+                    bits_to_clear |= 0x20  # Clear M bit for 16-bit accumulator
+                elif mir_func.mode_attr.m_mode == MMode.M8:
+                    bits_to_set |= 0x20    # Set M bit for 8-bit accumulator
+
+                # Determine X mode
+                if mir_func.mode_attr.x_mode == XMode.X16:
+                    bits_to_clear |= 0x10  # Clear X bit for 16-bit index
+                elif mir_func.mode_attr.x_mode == XMode.X8:
+                    bits_to_set |= 0x10    # Set X bit for 8-bit index
+
+                # Emit REP and/or SEP instructions
+                if bits_to_clear:
+                    self.emitter.emit_instruction("REP", f"#${bits_to_clear:02X}",
+                                                comment=f"Set mode: {'m16 ' if bits_to_clear & 0x20 else ''}{'x16' if bits_to_clear & 0x10 else ''}".strip())
+                if bits_to_set:
+                    self.emitter.emit_instruction("SEP", f"#${bits_to_set:02X}",
+                                                comment=f"Set mode: {'m8 ' if bits_to_set & 0x20 else ''}{'x8' if bits_to_set & 0x10 else ''}".strip())
+
+        # Emit register saves for #[preserves(...)]
+        # Registers are pushed in order: STATUS, A, X, Y, D, DBR
+        # (Popped in reverse order in epilogue/select_return)
+        if mir_func.preserves_attr:
+            preserved_regs = mir_func.preserves_attr.registers
+
+            # Push in defined order (reverse order for pop)
+            push_order = ['STATUS', 'A', 'X', 'Y', 'D', 'DBR']
+            for reg in push_order:
+                if reg in preserved_regs:
+                    if reg == 'STATUS':
+                        self.emitter.emit_instruction("PHP", comment="Preserve STATUS")
+                    elif reg == 'A':
+                        self.emitter.emit_instruction("PHA", comment="Preserve A")
+                    elif reg == 'X':
+                        self.emitter.emit_instruction("PHX", comment="Preserve X")
+                    elif reg == 'Y':
+                        self.emitter.emit_instruction("PHY", comment="Preserve Y")
+                    elif reg == 'D':
+                        self.emitter.emit_instruction("PHD", comment="Preserve D")
+                    elif reg == 'DBR':
+                        self.emitter.emit_instruction("PHB", comment="Preserve DBR")
 
     def emit_epilogue(self, mir_func: MIRFunction, reg_alloc: RegisterAllocator):
         """

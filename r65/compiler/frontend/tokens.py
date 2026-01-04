@@ -77,12 +77,12 @@ KEYWORDS = {
 
 # Built-in function names (treated as keywords)
 BUILTIN_FUNCTIONS = {
-    'SEP', 'REP', 'mvn', 'mvp', 'wai', 'stp', 'mul', 'div', 'mod', 'shl', 'shr',
+    'SEP', 'REP', 'mvn', 'mvp', 'wai', 'stp', 'mul', 'div', 'mod', 'shl', 'shr', 'xba',
 }
 
 # Hardware register names (special global variables)
 REGISTERS = {
-    'A', 'X', 'Y', 'Status', 'D', 'DBR', 'PBR', 'S',
+    'A', 'X', 'Y', 'B', 'Status', 'D', 'DBR', 'PBR', 'S',
 }
 
 # Type names (note: 'near' and 'far' are also keywords when used as function modifiers)

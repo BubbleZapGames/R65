@@ -63,7 +63,7 @@ class ParameterBinding:
 @dataclass
 class RegisterBinding(ParameterBinding):
     """Parameter bound to hardware register (e.g., param @ A)."""
-    register_name: str  # "A", "X", "Y"
+    register_name: str  # "A", "X", "Y", "B"
 
 
 @dataclass
@@ -315,7 +315,7 @@ class HIRFunctionAddress(HIRExpression):
 @dataclass
 class HIRRegister(HIRExpression):
     """Hardware register reference."""
-    name: str = ""  # "A", "X", "Y", "STATUS", "D", "DBR", "PBR", "S"
+    name: str = ""  # "A", "X", "Y", "B", "STATUS", "D", "DBR", "PBR", "S"
     symbol: Any = None  # Points to register symbol
 
 

@@ -248,28 +248,38 @@ class HIRBuilder:
             if isinstance(param.binding, ast.Register):
                 binding = hir.RegisterBinding(register_name=param.binding.name)
             elif isinstance(param.binding, ast.Identifier):
-                # Variable binding - resolve variable
+                # Could be register or variable binding - resolve
                 var_name = param.binding.name
                 var_symbol = self.symbol_table.lookup(var_name)
                 if not var_symbol:
                     raise HIRError(f"Undefined variable: {var_name}")
-                if var_symbol.kind != SymbolKind.STATIC_VAR:
-                    raise HIRError(f"Parameter binding must be static variable, got {var_symbol.kind.value}")
-                binding = hir.VariableBinding(
-                    variable_name=var_name,
-                    variable_symbol=var_symbol
-                )
+                if var_symbol.kind == SymbolKind.REGISTER:
+                    # Register binding
+                    binding = hir.RegisterBinding(register_name=var_name)
+                elif var_symbol.kind == SymbolKind.STATIC_VAR:
+                    # Variable binding
+                    binding = hir.VariableBinding(
+                        variable_name=var_name,
+                        variable_symbol=var_symbol
+                    )
+                else:
+                    raise HIRError(f"Parameter binding must be register or static variable, got {var_symbol.kind.value}")
             elif isinstance(param.binding, str):
-                # Variable binding - resolve variable (legacy string support)
+                # Could be register or variable binding - resolve (legacy string support)
                 var_symbol = self.symbol_table.lookup(param.binding)
                 if not var_symbol:
                     raise HIRError(f"Undefined variable: {param.binding}")
-                if var_symbol.kind != SymbolKind.STATIC_VAR:
-                    raise HIRError(f"Parameter binding must be static variable, got {var_symbol.kind.value}")
-                binding = hir.VariableBinding(
-                    variable_name=param.binding,
-                    variable_symbol=var_symbol
-                )
+                if var_symbol.kind == SymbolKind.REGISTER:
+                    # Register binding
+                    binding = hir.RegisterBinding(register_name=param.binding)
+                elif var_symbol.kind == SymbolKind.STATIC_VAR:
+                    # Variable binding
+                    binding = hir.VariableBinding(
+                        variable_name=param.binding,
+                        variable_symbol=var_symbol
+                    )
+                else:
+                    raise HIRError(f"Parameter binding must be register or static variable, got {var_symbol.kind.value}")
 
         # Declare parameter in function scope
         param_symbol = Symbol(

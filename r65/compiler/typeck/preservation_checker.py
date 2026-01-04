@@ -1,8 +1,10 @@
 """
 Register preservation validation.
 
-Validates that functions correctly preserve registers declared
-in #[preserves(...)] attribute.
+With auto-generated save/restore, this checker now only validates
+that invalid registers (B, PBR) are not in the preserves list.
+The actual register modifications are allowed since the compiler
+generates PHA/PLA, PHX/PLX, PHY/PLY, PHD/PLD, PHB/PLB automatically.
 """
 
 from typing import Set
@@ -13,6 +15,12 @@ from r65.compiler.hir import *
 class PreservationChecker:
     """Validates register preservation contracts."""
 
+    # Registers that cannot be preserved
+    INVALID_PRESERVES = {'B', 'PBR'}
+
+    # Valid registers for preservation
+    VALID_PRESERVES = {'A', 'X', 'Y', 'D', 'DBR', 'STATUS'}
+
     def __init__(self, func_decl, cfg):
         self.func_decl = func_decl
         self.cfg = cfg
@@ -20,52 +28,42 @@ class PreservationChecker:
 
     def check(self):
         """
-        Validate register preservation.
+        Validate register preservation attribute.
 
-        Simplified: just checks if preserved registers are modified.
+        Only checks for invalid registers (B, PBR).
+        Modifications to preserved registers are allowed since
+        the compiler auto-generates save/restore code.
         """
         if not self.preserves_attr:
             return  # No preservation contract
 
         preserved_regs = set(self.preserves_attr.registers)
 
-        # Track which registers are modified
-        modified_regs = self._find_modified_registers()
-
-        # Check each preserved register
+        # Check for invalid registers
         for reg in preserved_regs:
-            if reg in modified_regs:
-                # Register is modified - error
+            if reg in self.INVALID_PRESERVES:
+                if reg == 'B':
+                    raise TypeCheckError(
+                        f"B register cannot be in #[preserves(...)]\n"
+                        f"  B is the high byte of the A register and cannot be preserved independently\n"
+                        f"  Remove B from the preserves list",
+                        source_loc=self.func_decl.source_loc
+                    )
+                elif reg == 'PBR':
+                    raise TypeCheckError(
+                        f"PBR (Program Bank Register) cannot be in #[preserves(...)]\n"
+                        f"  PBR is read-only and cannot be modified\n"
+                        f"  Remove PBR from the preserves list",
+                        source_loc=self.func_decl.source_loc
+                    )
+
+            if reg not in self.VALID_PRESERVES and reg not in self.INVALID_PRESERVES:
                 raise TypeCheckError(
-                    f"Register {reg} is in #[preserves(...)] but is modified in function\n"
-                    f"  Functions must manually save/restore preserved registers\n"
-                    f"  Example:\n"
-                    f"    let saved = {reg};\n"
-                    f"    {reg} = ...;  // use register\n"
-                    f"    {reg} = saved;  // restore before return",
+                    f"Unknown register '{reg}' in #[preserves(...)]\n"
+                    f"  Valid registers: A, X, Y, D, DBR, STATUS\n"
+                    f"  Invalid registers: B (tied to A), PBR (read-only)",
                     source_loc=self.func_decl.source_loc
                 )
 
-    def _find_modified_registers(self) -> Set[str]:
-        """Find all registers modified in the function."""
-        modified = set()
-
-        for block in self.cfg.blocks.values():
-            for stmt in block.statements:
-                self._check_statement(stmt, modified)
-
-        return modified
-
-    def _check_statement(self, stmt, modified: Set[str]):
-        """Check if statement modifies any registers."""
-        if isinstance(stmt, HIRAssignment):
-            # Check if target is a register
-            if isinstance(stmt.target, HIRRegister):
-                modified.add(stmt.target.name)
-
-        elif isinstance(stmt, HIRLetStmt):
-            # Register alias bindings alias the register
-            if isinstance(stmt.binding, RegisterLetBinding):
-                # If variable is mutable, register can be modified through it
-                if stmt.is_mutable:
-                    modified.add(stmt.binding.register_name)
+        # Note: We no longer check for modifications since the compiler
+        # automatically generates PHA/PLA, PHX/PLX, etc. for preserved registers

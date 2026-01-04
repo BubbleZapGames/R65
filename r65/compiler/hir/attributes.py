@@ -38,9 +38,9 @@ class XMode(Enum):
 
 class ModeTransition(Enum):
     """Mode transition strategy."""
-    NONE = "none"      # No automatic transitions (default)
-    AUTO = "auto"      # Callee manages transition (PHP/REP/SEP/PLP)
-    CALLER = "caller"  # Caller manages transition (batching)
+    NONE = "none"        # No automatic transitions (default)
+    INLINE = "inline"    # Callee manages transition (PHP/REP/SEP/PLP inlined in function)
+    CALLER = "caller"    # Caller manages transition (batching)
 
 
 @dataclass
@@ -54,7 +54,7 @@ class ModeAttribute(ProcessedAttribute):
 # Preserves attribute
 @dataclass
 class PreservesAttribute(ProcessedAttribute):
-    """#[preserves(A, X, Y, STATUS, D, DBR, S)]"""
+    """#[preserves(A, X, Y, STATUS, D, DBR, S)] - B and PBR not allowed"""
     registers: List[str] = field(default_factory=list)
 
 
@@ -78,9 +78,9 @@ class StorageAttribute(ProcessedAttribute):
 # Bank attribute
 class DataBankMode(Enum):
     """Data bank register management mode."""
-    NONE = "none"      # No DBR management (default)
-    AUTO = "auto"      # Callee manages DBR
-    CALLER = "caller"  # Caller manages DBR
+    NONE = "none"        # No DBR management (default)
+    INLINE = "inline"    # Callee manages DBR (inlined in function)
+    CALLER = "caller"    # Caller manages DBR
 
 
 @dataclass
@@ -175,8 +175,8 @@ class AttributeProcessor:
 
                 if value_str == 'none':
                     transition = ModeTransition.NONE
-                elif value_str == 'auto':
-                    transition = ModeTransition.AUTO
+                elif value_str == 'inline':
+                    transition = ModeTransition.INLINE
                 elif value_str == 'caller':
                     transition = ModeTransition.CALLER
                 else:
@@ -208,6 +208,13 @@ class AttributeProcessor:
                 reg_name = arg.value.name
             else:
                 raise HIRError(f"#[preserves] expects register names")
+
+            if reg_name == 'B':
+                raise HIRError(
+                    f"B register not allowed in preserves attribute\n"
+                    f"  B cannot be preserved separately from A\n"
+                    f"  B is the high byte of the A register"
+                )
 
             if reg_name not in valid_registers:
                 raise HIRError(f"Invalid register in #[preserves]: {reg_name}")
@@ -301,8 +308,8 @@ class AttributeProcessor:
 
                 if value_str == 'none':
                     data_bank = DataBankMode.NONE
-                elif value_str == 'auto':
-                    data_bank = DataBankMode.AUTO
+                elif value_str == 'inline':
+                    data_bank = DataBankMode.INLINE
                 elif value_str == 'caller':
                     data_bank = DataBankMode.CALLER
                 else:

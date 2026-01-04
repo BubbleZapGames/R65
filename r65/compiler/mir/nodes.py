@@ -44,10 +44,11 @@ class HardwareRegister:
     """
     Reference to a 65816 hardware register.
 
-    Hardware registers: A, X, Y, STATUS, D, DBR, S
+    Hardware registers: A, X, Y, B, STATUS, D, DBR, S
     (PBR is read-only and handled separately)
+    (B is only valid in m8 mode)
     """
-    name: str  # 'A', 'X', 'Y', 'STATUS', 'D', 'DBR', 'S'
+    name: str  # 'A', 'X', 'Y', 'B', 'STATUS', 'D', 'DBR', 'S'
 
     def __repr__(self):
         return self.name

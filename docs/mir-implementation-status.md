@@ -115,18 +115,18 @@ Complete implementation status of the MIR (Mid-level Intermediate Representation
 - Mode join at merge points
 - **Mode transition support** (none/auto/caller)
 - **Caller-side wrappers** (PHP/PLP or SEP/REP based on preserves(STATUS))
-- **Callee-side wrappers** (transition=auto for interrupt handlers)
+- **Callee-side wrappers** (transition=inline for interrupt handlers)
 
 **Tests:**
 - Functions with mode transitions
 - Mode mismatches detected and wrapped
 - transition=caller generates correct wrappers
-- transition=auto for interrupt handlers
+- transition=inline for interrupt handlers
 
 **Documentation:**
 - `docs/mode-transition-analysis.md` - Comprehensive mode transition review
 - `docs/interrupt-mode-transition.md` - Interrupt handler implementation
-- `docs/parser-named-attributes.md` - Parser fix for `transition=auto` syntax
+- `docs/parser-named-attributes.md` - Parser fix for `transition=inline` syntax
 
 ---
 
@@ -146,7 +146,7 @@ Complete implementation status of the MIR (Mid-level Intermediate Representation
 - Mode forcing: SEP/REP to set handler's declared mode
 - Automatic exit wrapper: PLB/PLD/PLY/PLX/PLA/PLP
 - RTI instruction (Return from Interrupt)
-- Validation: requires `transition=auto` with mode attribute
+- Validation: requires `transition=inline` with mode attribute
 
 #### 3. Static Initialization Lowering
 - `__init_start()` function generation for all explicit initializers
@@ -170,7 +170,7 @@ Complete implementation status of the MIR (Mid-level Intermediate Representation
 ### Unit Tests
 
 1. **Parser Tests**
-   - `test_named_attributes.py` - Named attribute arguments (transition=auto)
+   - `test_named_attributes.py` - Named attribute arguments (transition=inline)
 
 2. **MIR Generation Tests**
    - `test_interrupt_mir.py` - Interrupt handler MIR

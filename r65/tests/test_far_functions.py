@@ -67,8 +67,8 @@ def test_basic_far_function():
     print("✓ Basic far function test passed")
 
 
-def test_far_function_with_data_bank_auto():
-    """Test far function with data_bank=auto (callee manages DBR)."""
+def test_far_function_with_data_bank_inline():
+    """Test far function with data_bank=inline (callee manages DBR)."""
 
     vreg_alloc = VirtualRegisterAllocator()
 
@@ -92,7 +92,7 @@ def test_far_function_with_data_bank_auto():
         bank_attr=BankAttribute(
             name='bank',
             bank_number=2,
-            data_bank=DataBankMode.AUTO  # Callee manages DBR
+            data_bank=DataBankMode.INLINE  # Callee manages DBR
         ),
         vreg_allocator=vreg_alloc
     )
@@ -104,9 +104,9 @@ def test_far_function_with_data_bank_auto():
     asm_output = codegen.generate(program)
 
     # Verify DBR management prologue/epilogue
-    assert 'PHB' in asm_output, "data_bank=auto should save DBR (PHB)"
-    assert 'PLB' in asm_output, "data_bank=auto should restore DBR (PLB)"
-    assert '#$02' in asm_output, "data_bank=auto should load bank number"
+    assert 'PHB' in asm_output, "data_bank=inline should save DBR (PHB)"
+    assert 'PLB' in asm_output, "data_bank=inline should restore DBR (PLB)"
+    assert '#$02' in asm_output, "data_bank=inline should load bank number"
     assert 'RTL' in asm_output, "Far function should emit RTL"
 
     # Verify correct sequence
@@ -136,7 +136,7 @@ def test_far_function_with_data_bank_auto():
     assert phb_idx < plb_set < plb_restore < rtl_idx, \
         "DBR sequence should be: PHB ... PLB (set) ... PLB (restore) ... RTL"
 
-    print("✓ data_bank=auto test passed")
+    print("✓ data_bank=inline test passed")
 
 
 def test_far_function_with_data_bank_caller():
@@ -389,7 +389,7 @@ def run_all_tests():
     print("\n=== Running Far Function Tests ===\n")
 
     test_basic_far_function()
-    test_far_function_with_data_bank_auto()
+    test_far_function_with_data_bank_inline()
     test_far_function_with_data_bank_caller()
     test_near_function_uses_rts()
     test_far_call_jsl()

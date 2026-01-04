@@ -6,10 +6,24 @@ addressing modes and register usage.
 """
 
 from typing import Union, Optional
+from enum import Enum
 from r65.compiler.mir.nodes import *
 from r65.compiler.codegen.emitter import AssemblyEmitter
 from r65.compiler.codegen.register_alloc import *
 from r65.compiler.codegen.memory_alloc import MemoryAllocator
+
+
+class XBAState(Enum):
+    """
+    Tracks the current state of A and B registers after XBA operations.
+
+    NORMAL: A contains its original value, B contains its original value
+    SWAPPED: A contains B's original value, B contains A's original value
+    UNKNOWN: State is unknown (after branches, calls, or other invalidations)
+    """
+    NORMAL = "normal"
+    SWAPPED = "swapped"
+    UNKNOWN = "unknown"
 
 
 class InstructionSelector:
@@ -39,6 +53,125 @@ class InstructionSelector:
         self.reg_alloc = register_allocator
         self.mem_alloc = memory_allocator
         self.current_function = current_function
+
+        # XBA state tracking for optimization
+        self.xba_state = XBAState.NORMAL
+
+        # Track type info from last Compare instruction for signed/unsigned branching
+        self.last_comparison_type = None
+
+        # Counter for generating unique labels
+        self._label_counter = 0
+
+    def _get_unique_label(self) -> str:
+        """Generate a unique label for inline branching."""
+        self._label_counter += 1
+        return f"__SCMP{self._label_counter}"
+
+    # ========================================================================
+    # XBA State Management
+    # ========================================================================
+
+    def _invalidate_xba_state(self):
+        """
+        Invalidate XBA state tracking.
+
+        Called at control flow boundaries (branches, labels, calls) where
+        we can't be certain about the A/B register state.
+        """
+        self.xba_state = XBAState.UNKNOWN
+
+    def _emit_xba(self, comment: str = None):
+        """
+        Emit XBA instruction with state tracking.
+
+        Automatically updates state tracking and skips redundant XBAs.
+
+        Args:
+            comment: Optional comment for the XBA instruction
+        """
+        # Emit the XBA instruction
+        self.emitter.emit_instruction("XBA", comment=comment)
+
+        # Update state: swap toggles between NORMAL and SWAPPED
+        if self.xba_state == XBAState.NORMAL:
+            self.xba_state = XBAState.SWAPPED
+        elif self.xba_state == XBAState.SWAPPED:
+            self.xba_state = XBAState.NORMAL
+        else:
+            # After unknown state, we still don't know
+            self.xba_state = XBAState.UNKNOWN
+
+    def _ensure_xba_state_normal(self, comment: str = None):
+        """
+        Ensure A and B are in normal positions (A=A, B=B).
+
+        Emits XBA only if currently swapped.
+
+        Args:
+            comment: Optional comment for XBA if needed
+        """
+        if self.xba_state == XBAState.SWAPPED:
+            self._emit_xba(comment or "Restore A/B to normal positions")
+        elif self.xba_state == XBAState.UNKNOWN:
+            # Can't optimize - must emit XBA to be safe
+            self._emit_xba(comment or "Restore A/B to normal positions")
+
+    def _ensure_xba_state_swapped(self, comment: str = None):
+        """
+        Ensure A and B are swapped (A=B, B=A).
+
+        Emits XBA only if currently normal.
+
+        Args:
+            comment: Optional comment for XBA if needed
+        """
+        if self.xba_state == XBAState.NORMAL:
+            self._emit_xba(comment or "Swap A and B")
+        elif self.xba_state == XBAState.UNKNOWN:
+            # Can't optimize - must emit XBA to be safe
+            self._emit_xba(comment or "Swap A and B")
+
+    def _mark_a_modified(self):
+        """
+        Mark A register as modified.
+
+        Note: This does NOT invalidate XBA state! XBA state tracks whether
+        A and B are swapped, not their actual values. Loading a new value
+        into A doesn't change whether we're in swapped state.
+        """
+        # Don't invalidate state - value modification is independent of swap state
+        pass
+
+    def _mark_b_modified(self):
+        """
+        Mark B register as modified.
+
+        Note: This does NOT invalidate XBA state! XBA state tracks whether
+        A and B are swapped, not their actual values.
+        """
+        # Don't invalidate state - value modification is independent of swap state
+        pass
+
+    def _access_b_value_in_a(self):
+        """
+        Make B register value available in A for reading.
+
+        Optimized: If already swapped, A already contains B value.
+        Otherwise, swaps B to A.
+
+        Note: Caller is responsible for restoring state if needed.
+        """
+        self._ensure_xba_state_swapped("Access B register")
+
+    def _store_to_b_from_a(self):
+        """
+        Store current A value into B register.
+
+        Assumes A contains the value to store. Swaps A to B.
+        """
+        self._emit_xba("Store to B register")
+        self._mark_b_modified()
 
     # ========================================================================
     # Main Dispatch
@@ -134,12 +267,33 @@ class InstructionSelector:
         Args:
             instr: Store instruction
         """
+        # Get destination location first (needed for B register check)
+        dest_loc = self._get_operand_location(instr.dest)
+        is_u16 = self._is_16bit(instr.type_info)
+
+        # SPECIAL CASE: Storing to B register
+        if dest_loc.kind == LocationKind.HARDWARE and dest_loc.hw_register == 'B':
+            # B register store: load value into A, then XBA to move to B
+            if isinstance(instr.source, Immediate):
+                value = instr.source.value & 0xFF
+                self.emitter.emit_instruction("LDA", f"#${value:02X}")
+                self._mark_a_modified()
+                self._store_to_b_from_a()
+            else:
+                src_loc = self._get_operand_location(instr.source)
+                if src_loc.kind == LocationKind.HARDWARE and src_loc.hw_register == 'A':
+                    # A to B: just XBA
+                    self._store_to_b_from_a()
+                else:
+                    # Load from memory/other register to A, then XBA
+                    self.emitter.emit_instruction("LDA", self._format_operand(src_loc))
+                    self._mark_a_modified()
+                    self._store_to_b_from_a()
+            return
+
         # SPECIAL CASE: Handle immediate values
         # 65816 cannot store immediates directly - must go through accumulator
         if isinstance(instr.source, Immediate):
-            dest_loc = self._get_operand_location(instr.dest)
-            is_u16 = self._is_16bit(instr.type_info)
-
             if is_u16:
                 # 16-bit immediate store
                 self._emit_16bit_immediate_store(instr.source.value, dest_loc)
@@ -153,10 +307,6 @@ class InstructionSelector:
 
         # Normal case: memory-to-memory or register-to-memory store
         src_loc = self._get_operand_location(instr.source)
-        dest_loc = self._get_operand_location(instr.dest)
-
-        # Determine size
-        is_u16 = self._is_16bit(instr.type_info)
 
         # Check if source is a hardware register
         if src_loc.kind == LocationKind.HARDWARE:
@@ -168,18 +318,25 @@ class InstructionSelector:
             }
 
             reg = src_loc.hw_register
-            if reg not in store_instructions:
-                raise Exception(f"Cannot store from hardware register: {reg}")
 
-            # Emit appropriate store instruction
-            # Note: Hardware register width (8-bit vs 16-bit) is determined by processor mode:
-            # - A: 8-bit in m8 mode, 16-bit in m16 mode
-            # - X/Y: 8-bit in x8 mode, 16-bit in x16 mode
-            # The STA/STX/STY instruction stores the full register width automatically
-            # Note: STX and STY have addressing mode restrictions on 65816:
-            # - STX: zero-page, zero-page,Y, absolute only
-            # - STY: zero-page, zero-page,X, absolute only
-            self.emitter.emit_instruction(store_instructions[reg], self._format_operand(dest_loc))
+            # Special handling for B register (requires XBA to access)
+            if reg == 'B':
+                # B register: swap to A, store, swap back
+                self._access_b_value_in_a()
+                self.emitter.emit_instruction("STA", self._format_operand(dest_loc))
+                self._ensure_xba_state_normal("Restore A register")
+            elif reg not in store_instructions:
+                raise Exception(f"Cannot store from hardware register: {reg}")
+            else:
+                # Emit appropriate store instruction
+                # Note: Hardware register width (8-bit vs 16-bit) is determined by processor mode:
+                # - A: 8-bit in m8 mode, 16-bit in m16 mode
+                # - X/Y: 8-bit in x8 mode, 16-bit in x16 mode
+                # The STA/STX/STY instruction stores the full register width automatically
+                # Note: STX and STY have addressing mode restrictions on 65816:
+                # - STX: zero-page, zero-page,Y, absolute only
+                # - STY: zero-page, zero-page,X, absolute only
+                self.emitter.emit_instruction(store_instructions[reg], self._format_operand(dest_loc))
         elif is_u16:
             # 16-bit store (memory-to-memory)
             self._emit_16bit_mem_to_mem(src_loc, dest_loc)
@@ -329,6 +486,12 @@ class InstructionSelector:
                 value = src_operand.value
                 if dest_loc.hw_register in ['A', 'X', 'Y']:
                     self._emit_load_immediate_to_register(dest_loc.hw_register, value, is_u16)
+                elif dest_loc.hw_register == 'B':
+                    # Load immediate into B: load into A, then XBA
+                    value_masked = value & 0xFF
+                    self.emitter.emit_instruction("LDA", f"#${value_masked:02X}")
+                    self._mark_a_modified()
+                    self._store_to_b_from_a()
                 else:
                     raise Exception(f"Cannot load immediate into register {dest_loc.hw_register}")
             else:
@@ -347,6 +510,10 @@ class InstructionSelector:
                         self.emitter.emit_instruction("LDX", operand)
                     elif dest_loc.hw_register == 'Y':
                         self.emitter.emit_instruction("LDY", operand)
+                    elif dest_loc.hw_register == 'B':
+                        # Load from memory into B: load into A, then XBA
+                        self.emitter.emit_instruction("LDA", operand)
+                        self.emitter.emit_instruction("XBA", comment="Load into B register")
                     else:
                         raise Exception(f"Cannot load into register {dest_loc.hw_register}")
             return
@@ -658,6 +825,10 @@ class InstructionSelector:
             self._emit_shift_left(instr.right, is_u16)
         elif op == '>>':
             self._emit_shift_right(instr.right, is_u16)
+        elif op == '*':
+            self._emit_multiply(instr.right, is_u16)
+        elif op == '/':
+            self._emit_divide(instr.right, is_u16)
         else:
             raise Exception(f"Unsupported binary operation: {op}")
 
@@ -756,29 +927,59 @@ class InstructionSelector:
         Args:
             instr: Compare instruction
         """
+        from r65.compiler.mir.nodes import Immediate
+
+        # Store type info for subsequent CondBranch (for signed/unsigned detection)
+        self.last_comparison_type = instr.type_info
+
         left_loc = self._get_operand_location(instr.left)
-        right_loc = self._get_operand_location(instr.right)
+
+        # Handle right operand - if it's a hardware register (including B), store to temp
+        if isinstance(instr.right, Immediate):
+            right_operand = f"#${instr.right.value:02X}"
+        else:
+            right_loc = self._get_operand_location(instr.right)
+            if right_loc.kind == LocationKind.HARDWARE:
+                # Store hardware register to temp location for comparison
+                if right_loc.hw_register == 'B':
+                    self._access_b_value_in_a()
+                    self.emitter.emit_instruction("STA", "$00", "Store B to temp")
+                    self._ensure_xba_state_normal("Restore A")
+                    right_operand = "$00"
+                elif right_loc.hw_register in ['A', 'X', 'Y']:
+                    store_instr = {'A': 'STA', 'X': 'STX', 'Y': 'STY'}[right_loc.hw_register]
+                    self.emitter.emit_instruction(store_instr, "$00", f"Store {right_loc.hw_register} to temp")
+                    right_operand = "$00"
+                else:
+                    raise Exception(f"Unsupported hardware register: {right_loc.hw_register}")
+            else:
+                right_operand = self._format_operand(right_loc)
 
         # Determine which comparison instruction to use based on left operand
         if left_loc.kind == LocationKind.HARDWARE:
             # Hardware register comparison
             if left_loc.hw_register == 'X':
                 # CPX instruction
-                self.emitter.emit_instruction("CPX", self._format_operand(right_loc))
+                self.emitter.emit_instruction("CPX", right_operand)
             elif left_loc.hw_register == 'Y':
                 # CPY instruction
-                self.emitter.emit_instruction("CPY", self._format_operand(right_loc))
+                self.emitter.emit_instruction("CPY", right_operand)
             elif left_loc.hw_register == 'A':
                 # CMP instruction (A is implicit)
-                self.emitter.emit_instruction("CMP", self._format_operand(right_loc))
+                self.emitter.emit_instruction("CMP", right_operand)
+            elif left_loc.hw_register == 'B':
+                # B register - transfer to A and compare
+                self._access_b_value_in_a()
+                self.emitter.emit_instruction("CMP", right_operand)
+                # Note: Don't restore A since this is just a comparison
+                # State is now SWAPPED (A=B, B=A)
             else:
-                # Other hardware registers - load to A first
-                self.emitter.emit_instruction("LDA", self._format_operand(left_loc))
-                self.emitter.emit_instruction("CMP", self._format_operand(right_loc))
+                # Other hardware registers (shouldn't reach here)
+                raise Exception(f"Unsupported hardware register for comparison: {left_loc.hw_register}")
         else:
             # Memory or virtual register - load to A and compare
             self.emitter.emit_instruction("LDA", self._format_operand(left_loc))
-            self.emitter.emit_instruction("CMP", self._format_operand(right_loc))
+            self.emitter.emit_instruction("CMP", right_operand)
 
         # Flags are now set for conditional branch
         # Z flag: set if left == right
@@ -867,6 +1068,14 @@ class InstructionSelector:
             raise Exception("Shift count must be constant")
 
         count = right_operand.value
+        bit_width = 16 if is_u16 else 8
+
+        # Optimization: shifting by >= bit width always produces 0
+        if count >= bit_width:
+            self.emitter.emit_instruction("LDA", f"#$00", comment=f"Shift by {count} >= {bit_width} bits = 0")
+            return
+
+        # Generate shift instructions
         for _ in range(count):
             self.emitter.emit_instruction("ASL", "A")
 
@@ -877,7 +1086,51 @@ class InstructionSelector:
             raise Exception("Shift count must be constant")
 
         count = right_operand.value
+        bit_width = 16 if is_u16 else 8
+
+        # Optimization: shifting by >= bit width always produces 0
+        if count >= bit_width:
+            self.emitter.emit_instruction("LDA", f"#$00", comment=f"Shift by {count} >= {bit_width} bits = 0")
+            return
+
+        # Generate shift instructions
         for _ in range(count):
+            self.emitter.emit_instruction("LSR", "A")
+
+    def _emit_multiply(self, right_operand, is_u16: bool):
+        """Emit multiply by power of 2 (A * 1/2/4/8) using ASL instructions."""
+        if not isinstance(right_operand, Immediate):
+            raise Exception("Multiplier must be constant")
+
+        value = right_operand.value
+
+        # Convert power of 2 to shift count: 1→0, 2→1, 4→2, 8→3
+        shift_map = {1: 0, 2: 1, 4: 2, 8: 3}
+        shift_count = shift_map.get(value)
+
+        if shift_count is None:
+            raise Exception(f"Multiply operator only supports 1, 2, 4, 8 (got {value}). Use mul() for general multiplication.")
+
+        # Generate ASL instructions (shift left = multiply by 2)
+        for _ in range(shift_count):
+            self.emitter.emit_instruction("ASL", "A")
+
+    def _emit_divide(self, right_operand, is_u16: bool):
+        """Emit divide by power of 2 (A / 1/2/4/8) using LSR instructions."""
+        if not isinstance(right_operand, Immediate):
+            raise Exception("Divisor must be constant")
+
+        value = right_operand.value
+
+        # Convert power of 2 to shift count: 1→0, 2→1, 4→2, 8→3
+        shift_map = {1: 0, 2: 1, 4: 2, 8: 3}
+        shift_count = shift_map.get(value)
+
+        if shift_count is None:
+            raise Exception(f"Divide operator only supports 1, 2, 4, 8 (got {value}). Use div() for general division.")
+
+        # Generate LSR instructions (shift right = divide by 2)
+        for _ in range(shift_count):
             self.emitter.emit_instruction("LSR", "A")
 
     # ========================================================================
@@ -958,6 +1211,14 @@ class InstructionSelector:
         Args:
             instr: CondBranch instruction
         """
+        # Check if last comparison was signed or unsigned
+        is_signed = False
+        if self.last_comparison_type is not None:
+            from r65.compiler.hir.types import BasicTypeInfo
+            if isinstance(self.last_comparison_type, BasicTypeInfo):
+                # Signed types are i8, i16 (start with 'i')
+                is_signed = self.last_comparison_type.name.startswith('i')
+
         if instr.condition is None:
             # Branch based on comparison flags from preceding Compare or BitTest instruction
             # Flags are already set by CMP/CPX/CPY or BIT instruction
@@ -992,25 +1253,66 @@ class InstructionSelector:
                 self.emitter.emit_instruction("BNE", f"__L{instr.true_target}", "Branch if not equal")
                 self.emitter.emit_instruction("JMP", f"__L{instr.false_target}")
             elif instr.comparison == '<':
-                # Branch if less than (unsigned: C flag clear)
-                # For signed, we'd need to check N and V flags
-                self.emitter.emit_instruction("BCC", f"__L{instr.true_target}", "Branch if less than (unsigned)")
-                self.emitter.emit_instruction("JMP", f"__L{instr.false_target}")
+                # Branch if less than
+                if is_signed:
+                    # Signed less than: N XOR V = 1
+                    # Use BVC/EOR trick to compute N XOR V
+                    label = self._get_unique_label()
+                    self.emitter.emit_instruction("BVC", label, "Skip if no overflow")
+                    self.emitter.emit_instruction("EOR", "#$80", "Flip sign bit if overflow")
+                    self.emitter.emit_label(label)
+                    self.emitter.emit_instruction("BMI", f"__L{instr.true_target}", "Branch if less than (signed)")
+                    self.emitter.emit_instruction("JMP", f"__L{instr.false_target}")
+                else:
+                    # Unsigned less than: C flag clear
+                    self.emitter.emit_instruction("BCC", f"__L{instr.true_target}", "Branch if less than (unsigned)")
+                    self.emitter.emit_instruction("JMP", f"__L{instr.false_target}")
             elif instr.comparison == '>=':
-                # Branch if greater or equal (unsigned: C flag set)
-                self.emitter.emit_instruction("BCS", f"__L{instr.true_target}", "Branch if >= (unsigned)")
-                self.emitter.emit_instruction("JMP", f"__L{instr.false_target}")
+                # Branch if greater or equal
+                if is_signed:
+                    # Signed >= : N XOR V = 0
+                    label = self._get_unique_label()
+                    self.emitter.emit_instruction("BVC", label, "Skip if no overflow")
+                    self.emitter.emit_instruction("EOR", "#$80", "Flip sign bit if overflow")
+                    self.emitter.emit_label(label)
+                    self.emitter.emit_instruction("BPL", f"__L{instr.true_target}", "Branch if >= (signed)")
+                    self.emitter.emit_instruction("JMP", f"__L{instr.false_target}")
+                else:
+                    # Unsigned >=: C flag set
+                    self.emitter.emit_instruction("BCS", f"__L{instr.true_target}", "Branch if >= (unsigned)")
+                    self.emitter.emit_instruction("JMP", f"__L{instr.false_target}")
             elif instr.comparison == '>':
-                # Branch if greater than: !(left <= right) = !(C clear OR Z set)
-                # Equivalent to: (C set) AND (Z clear)
-                self.emitter.emit_instruction("BEQ", f"__L{instr.false_target}", "Skip if equal")
-                self.emitter.emit_instruction("BCS", f"__L{instr.true_target}", "Branch if > (unsigned)")
-                self.emitter.emit_instruction("JMP", f"__L{instr.false_target}")
+                # Branch if greater than
+                if is_signed:
+                    # Signed >: (N XOR V = 0) AND Z = 0
+                    self.emitter.emit_instruction("BEQ", f"__L{instr.false_target}", "Skip if equal")
+                    label = self._get_unique_label()
+                    self.emitter.emit_instruction("BVC", label, "Skip if no overflow")
+                    self.emitter.emit_instruction("EOR", "#$80", "Flip sign bit if overflow")
+                    self.emitter.emit_label(label)
+                    self.emitter.emit_instruction("BPL", f"__L{instr.true_target}", "Branch if > (signed)")
+                    self.emitter.emit_instruction("JMP", f"__L{instr.false_target}")
+                else:
+                    # Unsigned >: (C set) AND (Z clear)
+                    self.emitter.emit_instruction("BEQ", f"__L{instr.false_target}", "Skip if equal")
+                    self.emitter.emit_instruction("BCS", f"__L{instr.true_target}", "Branch if > (unsigned)")
+                    self.emitter.emit_instruction("JMP", f"__L{instr.false_target}")
             elif instr.comparison == '<=':
-                # Branch if less or equal: (C clear) OR (Z set)
-                self.emitter.emit_instruction("BEQ", f"__L{instr.true_target}", "Branch if equal")
-                self.emitter.emit_instruction("BCC", f"__L{instr.true_target}", "Branch if less than")
-                self.emitter.emit_instruction("JMP", f"__L{instr.false_target}")
+                # Branch if less or equal
+                if is_signed:
+                    # Signed <=: (N XOR V = 1) OR Z = 1
+                    self.emitter.emit_instruction("BEQ", f"__L{instr.true_target}", "Branch if equal")
+                    label = self._get_unique_label()
+                    self.emitter.emit_instruction("BVC", label, "Skip if no overflow")
+                    self.emitter.emit_instruction("EOR", "#$80", "Flip sign bit if overflow")
+                    self.emitter.emit_label(label)
+                    self.emitter.emit_instruction("BMI", f"__L{instr.true_target}", "Branch if <= (signed)")
+                    self.emitter.emit_instruction("JMP", f"__L{instr.false_target}")
+                else:
+                    # Unsigned <=: (C clear) OR (Z set)
+                    self.emitter.emit_instruction("BEQ", f"__L{instr.true_target}", "Branch if equal")
+                    self.emitter.emit_instruction("BCC", f"__L{instr.true_target}", "Branch if less than")
+                    self.emitter.emit_instruction("JMP", f"__L{instr.false_target}")
             else:
                 raise Exception(f"Unsupported comparison type for flag-based branch: {instr.comparison}")
         else:
@@ -1057,18 +1359,8 @@ class InstructionSelector:
                     # Already in correct register
                     pass
                 elif value_loc.kind == LocationKind.HARDWARE:
-                    # Transfer from one hardware register to another
-                    if value_loc.hw_register == 'A' and target_reg == 'X':
-                        self.emitter.emit_instruction("TAX", comment="Transfer return value A to X")
-                    elif value_loc.hw_register == 'A' and target_reg == 'Y':
-                        self.emitter.emit_instruction("TAY", comment="Transfer return value A to Y")
-                    elif value_loc.hw_register == 'X' and target_reg == 'A':
-                        self.emitter.emit_instruction("TXA", comment="Transfer return value X to A")
-                    elif value_loc.hw_register == 'Y' and target_reg == 'A':
-                        self.emitter.emit_instruction("TYA", comment="Transfer return value Y to A")
-                    else:
-                        # Complex transfer - go through A or memory
-                        raise Exception(f"Cannot transfer {value_loc.hw_register} to {target_reg}")
+                    # Transfer from one hardware register to another (including B register)
+                    self._emit_register_transfer(value_loc.hw_register, target_reg)
                 else:
                     # Load from memory/stack into return register
                     if target_reg == 'A':
@@ -1078,13 +1370,43 @@ class InstructionSelector:
                     elif target_reg == 'Y':
                         self.emitter.emit_instruction("LDY", self._format_operand(value_loc))
 
-        # Emit epilogue (DBR restoration for data_bank=auto)
+        # Emit epilogue: restore preserved registers
+        # Registers are popped in reverse order: DBR, D, Y, X, A, STATUS
+        if self.current_function and self.current_function.preserves_attr:
+            preserved_regs = self.current_function.preserves_attr.registers
+
+            # Pop in reverse order of push
+            pop_order = ['DBR', 'D', 'Y', 'X', 'A', 'STATUS']
+            for reg in pop_order:
+                if reg in preserved_regs:
+                    if reg == 'DBR':
+                        self.emitter.emit_instruction("PLB", comment="Restore DBR")
+                    elif reg == 'D':
+                        self.emitter.emit_instruction("PLD", comment="Restore D")
+                    elif reg == 'Y':
+                        self.emitter.emit_instruction("PLY", comment="Restore Y")
+                    elif reg == 'X':
+                        self.emitter.emit_instruction("PLX", comment="Restore X")
+                    elif reg == 'A':
+                        self.emitter.emit_instruction("PLA", comment="Restore A")
+                    elif reg == 'STATUS':
+                        self.emitter.emit_instruction("PLP", comment="Restore STATUS")
+
+        # Emit epilogue (DBR restoration for data_bank=inline)
         if self.current_function and self.current_function.is_far and self.current_function.bank_attr:
             from r65.compiler.hir.attributes import DataBankMode
 
-            if self.current_function.bank_attr.data_bank == DataBankMode.AUTO:
+            if self.current_function.bank_attr.data_bank == DataBankMode.INLINE:
                 # Restore original DBR before returning
                 self.emitter.emit_instruction("PLB", comment="Restore data bank")
+
+        # Emit epilogue (mode restoration for transition=inline)
+        if self.current_function and self.current_function.mode_attr:
+            from r65.compiler.hir.attributes import ModeTransition
+
+            if self.current_function.mode_attr.transition == ModeTransition.INLINE:
+                # Restore original processor status before returning
+                self.emitter.emit_instruction("PLP", comment="Restore processor status")
 
         # Emit return instruction (RTL for far functions, RTS for near)
         if self.current_function and self.current_function.is_far:
@@ -1114,10 +1436,33 @@ class InstructionSelector:
             return
 
         # Step 1: Set up arguments
-        # Process in order: stack arguments first, then register/variable arguments
+        # Process in specific order to avoid clobbering:
+        # 1. Stack arguments (pushed in order)
+        # 2. Variable-bound arguments
+        # 3. B register arguments (these clobber A via XBA)
+        # 4. X and Y register arguments
+        # 5. A register arguments (set up last to avoid being clobbered)
         stack_arg_count = 0
 
-        for arg in instr.args:
+        def arg_sort_key(arg):
+            """Sort key for argument processing order."""
+            if arg.mechanism == ArgumentMechanism.STACK:
+                return 0  # Stack first
+            elif arg.mechanism == ArgumentMechanism.VARIABLE:
+                return 1  # Variable-bound second
+            elif arg.mechanism == ArgumentMechanism.REGISTER:
+                target_reg = arg.location.name if hasattr(arg.location, 'name') else str(arg.location)
+                if target_reg == 'B':
+                    return 2  # B third (clobbers A)
+                elif target_reg in ['X', 'Y']:
+                    return 3  # X, Y fourth
+                elif target_reg == 'A':
+                    return 4  # A last (to avoid being clobbered)
+            return 5
+
+        sorted_args = sorted(instr.args, key=arg_sort_key)
+
+        for arg in sorted_args:
             arg_loc = self._get_operand_location(arg.value)
 
             if arg.mechanism == ArgumentMechanism.STACK:
@@ -1150,6 +1495,21 @@ class InstructionSelector:
                 if arg_loc.kind == LocationKind.HARDWARE and arg_loc.hw_register == target_reg:
                     # Already in correct register
                     pass
+                elif target_reg == 'B':
+                    # B register requires special handling
+                    if isinstance(arg.value, Immediate):
+                        # Load immediate into A, then swap to B
+                        self.emitter.emit_instruction("LDA", f"#${arg.value.value:02X}")
+                        self._store_to_b_from_a()
+                    elif arg_loc.kind == LocationKind.HARDWARE:
+                        # Transfer from another register to B
+                        if arg_loc.hw_register != 'A':
+                            self._emit_register_transfer(arg_loc.hw_register, 'A')
+                        self._store_to_b_from_a()
+                    else:
+                        # Load from memory into A, then swap to B
+                        self.emitter.emit_instruction("LDA", self._format_operand(arg_loc))
+                        self._store_to_b_from_a()
                 elif isinstance(arg.value, Immediate):
                     # Load immediate into target register
                     if target_reg == 'A':
@@ -1204,6 +1564,7 @@ class InstructionSelector:
                 self.emitter.emit_instruction("PLB", comment="Set data bank for callee")
 
         # Step 3: Make the call
+        # Note: transition=caller is handled by MIR builder emitting Push/Pull/SetMode instructions
         # Check if this is an indirect call (function pointer)
         from r65.compiler.mir.nodes import VirtualRegister
 
@@ -1218,6 +1579,9 @@ class InstructionSelector:
                 self.emitter.emit_instruction("JSR", instr.function)
         else:
             raise Exception(f"Unknown function type in Call: {type(instr.function)}")
+
+        # Invalidate XBA state after call (function may have modified A/B)
+        self._invalidate_xba_state()
 
         # Step 4: Restore DBR if caller-managed
         if needs_dbr_restore:
@@ -1272,7 +1636,7 @@ class InstructionSelector:
         Emit code for built-in function call.
 
         Built-in categories:
-        - Processor control: wai(), stp(), NOP([count])
+        - Processor control: wai(), stp(), xba(), NOP([count])
         - Mode control: SEP(flags), REP(flags)
         - Block moves: mvn(src_bank, dst_bank), mvp(src_bank, dst_bank)
         - Arithmetic: mul(a, b), div(a, b), mod(a, b) - call runtime library
@@ -1289,7 +1653,7 @@ class InstructionSelector:
             raise Exception(f"Unknown built-in function: {instr.builtin_name}")
 
         if builtin.kind == BuiltinKind.PROCESSOR_CONTROL:
-            # wai(), stp(), NOP() - no arguments (except NOP which can take optional count)
+            # wai(), stp(), xba(), NOP() - no arguments (except NOP which can take optional count)
             if instr.builtin_name == 'NOP':
                 # NOP() or NOP(count)
                 count = 1  # Default: single NOP
@@ -1305,7 +1669,7 @@ class InstructionSelector:
                 for _ in range(count):
                     self.emitter.emit_instruction(builtin.instruction)
             else:
-                # wai(), stp() - simple single instruction
+                # wai(), stp(), xba() - simple single instruction
                 self.emitter.emit_instruction(builtin.instruction)
 
         elif builtin.kind == BuiltinKind.MODE_CONTROL:
@@ -1600,7 +1964,13 @@ class InstructionSelector:
             if right_loc.kind == LocationKind.HARDWARE:
                 # Hardware register - must store to temp location first
                 # (65816 can't use hardware registers as operands for these ops)
-                if right_loc.hw_register in ['A', 'X', 'Y']:
+                if right_loc.hw_register == 'B':
+                    # B register requires XBA to access
+                    self._access_b_value_in_a()
+                    self.emitter.emit_instruction("STA", "$00", "Store B to temp")
+                    self._ensure_xba_state_normal("Restore A")
+                    self.emitter.emit_instruction(operation, "$00")
+                elif right_loc.hw_register in ['A', 'X', 'Y']:
                     store_instr = {'A': 'STA', 'X': 'STX', 'Y': 'STY'}[right_loc.hw_register]
                     self.emitter.emit_instruction(store_instr, "$00", f"Store {right_loc.hw_register} to temp")
                     self.emitter.emit_instruction(operation, "$00")
@@ -1655,14 +2025,41 @@ class InstructionSelector:
 
         Handles all valid 65816 register transfer combinations.
         For indirect transfers (e.g., X to Y), routes through A.
+        B register transfers use XBA instruction.
 
         Args:
-            src_reg: Source register name ('A', 'X', 'Y')
-            dest_reg: Destination register name ('A', 'X', 'Y')
+            src_reg: Source register name ('A', 'X', 'Y', 'B')
+            dest_reg: Destination register name ('A', 'X', 'Y', 'B')
         """
         if src_reg == dest_reg:
             # No-op
             return
+
+        # Special handling for B register
+        if src_reg == 'B' or dest_reg == 'B':
+            if src_reg == 'B' and dest_reg == 'A':
+                # B to A: If we're swapped, A already has B's value
+                self._ensure_xba_state_swapped("Transfer B to A")
+                return
+            elif src_reg == 'A' and dest_reg == 'B':
+                # A to B: XBA swaps them
+                self._emit_xba("Transfer A to B")
+                return
+            elif src_reg == 'B':
+                # B to X/Y: B -> A -> X/Y
+                self._access_b_value_in_a()
+                self._emit_register_transfer('A', dest_reg)
+                self._ensure_xba_state_normal("Restore A")
+                return
+            elif dest_reg == 'B':
+                # X/Y to B: X/Y -> A -> B
+                # Save current A
+                self.emitter.emit_instruction("PHA", comment="Save A")
+                self._emit_register_transfer(src_reg, 'A')
+                self._emit_xba("Move to B")
+                self.emitter.emit_instruction("PLA", comment="Restore A")
+                self._invalidate_xba_state()  # State unknown after PLA
+                return
 
         # Direct transfers
         transfer_map = {

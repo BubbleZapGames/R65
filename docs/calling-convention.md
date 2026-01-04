@@ -136,11 +136,79 @@ add:
 
 **Characteristics**:
 - Fastest (no stack access)
-- Limited to 3 registers (A, X, Y)
+- Limited to 3 registers (A, X, Y) in most modes
+- **In `#[mode(m8)]` mode: 4 registers available (A, X, Y, B)**
 - Zero overhead if values already in registers
 - Order: Any order (explicit)
 
 **Use when**: Performance critical, few parameters, matching register-based calling convention
+
+---
+
+### 2a. B Register Parameters (m8 Mode Only)
+
+**In `#[mode(m8)]` mode**, the B register (high byte of accumulator) can be used for parameters:
+
+**Syntax**: `param @ B: Type`
+
+**Mechanism**: Caller places value in B register (via XBA instruction)
+
+```rust
+#[mode(m8, x8)]
+fn pack_word(low @ A: u8, high @ B: u8) -> u16 {
+    // Both A and B are available as parameters
+    return A as u16 | ((B as u16) << 8);
+}
+
+#[mode(m8, x8)]
+fn process_high_byte(value @ B: u8) -> u8 {
+    B = B & 0xF0;
+    return B;
+}
+```
+
+**Generated Assembly**:
+
+**Caller**:
+```asm
+LDA #$34       ; Load low byte into A
+LDX #$12       ; Temporarily store high byte in X
+XBA            ; Exchange A and B (A now in B)
+TXA            ; Move X to A (high byte)
+XBA            ; Exchange again (high byte now in B)
+LDA #$34       ; Restore low byte to A
+JSR pack_word  ; Call with A=low, B=high
+```
+
+**Callee**:
+```asm
+pack_word:
+    ; A contains low byte
+    ; B contains high byte (accessible via XBA)
+    ; ... function body ...
+    RTS
+```
+
+**Key Points**:
+- **Mode restriction**: B register only available in `#[mode(m8)]` mode
+  - Compiler error if B used in `#[mode(m16)]`
+  - B is meaningless when accumulator is 16-bit
+- **Caller responsibility**: Caller must set up B register before call
+  - Typically via XBA instruction to exchange A and B
+- **Mixed parameters**: B can be combined with A, X, Y
+  ```rust
+  fn example(a @ A: u8, b @ B: u8, x @ X: u8)  // All valid
+  ```
+- **Not preserved**: B cannot appear in `#[preserves(...)]` attribute
+  - B is part of the same hardware register as A
+  - Preserving B without A is meaningless
+
+**Performance**:
+- B access via XBA: 3 cycles
+- Efficient for byte manipulation patterns
+- Common in hand-written 65816 assembly for 16-bit operations
+
+**Use when**: Byte packing/unpacking, 16-bit decomposition, matching hand-written assembly patterns
 
 ---
 
@@ -325,6 +393,97 @@ divide:
 ```rust
 let (q @ A, r @ X) = divide(dividend, divisor);
 ```
+
+---
+
+### B Register Return Values (m8 Mode Only)
+
+**In `#[mode(m8)]` mode**, B register can be returned alone or with other registers:
+
+```rust
+#[mode(m8, x8)]
+fn get_high_byte(value: u16) -> u8 {
+    B = (value >> 8) as u8;
+    return B;  // Return B only
+}
+
+#[mode(m8, x8)]
+fn unpack_word(value: u16) -> (u8, u8) {
+    A = value as u8;
+    B = (value >> 8) as u8;
+    return A, B;  // Return both A and B
+}
+
+#[mode(m8, x8)]
+fn swap_bytes(low @ A: u8, high @ B: u8) -> (u8, u8) {
+    return B, A;  // Return B first, A second
+}
+```
+
+**Return Conventions with B**:
+
+| Return Statement | Meaning | A Status | B Status |
+|-----------------|---------|----------|----------|
+| `return B;` | Return B only | **Caller must preserve A** | Returns in B |
+| `return A, B;` | Return A first, B second | Returns in A | Returns in B |
+| `return B, A;` | Return B first, A second | Returns in A (but as 2nd value) | Returns in B (as 1st value) |
+| `return B, X;` | Return B and X | **Caller must preserve A** | Returns in B |
+
+**Critical Rule: Caller Responsibility for A**
+
+When a function returns only B (or B with non-A registers), the callee does **not** restore A:
+
+```rust
+#[mode(m8, x8)]
+fn get_high_byte(value: u16) -> u8 {
+    B = (value >> 8) as u8;
+    return B;  // A is NOT restored
+}
+
+// Caller must preserve A if needed:
+#[mode(m8, x8)]
+fn caller() {
+    let saved_a = A;           // Save A before call
+    let high = get_high_byte(0x1234);
+    A = saved_a;               // Restore A after call
+    // 'high' is in B register
+}
+```
+
+**Generated Assembly**:
+
+**Return B only**:
+```asm
+get_high_byte:
+    ; ... code that sets B ...
+    ; A is NOT saved/restored
+    RTS            ; Return with B containing value, A clobbered
+```
+
+**Return A and B**:
+```asm
+unpack_word:
+    ; ... code that sets both A and B ...
+    RTS            ; Return with both A and B containing values
+```
+
+**Caller reading B return**:
+```asm
+    JSR get_high_byte  ; Call function
+    XBA                ; Exchange to get B value into A
+    STA result         ; Store the returned value
+```
+
+**Key Points**:
+- **Caller responsibility**: When B is returned, caller must handle:
+  - Preserving A if needed before call
+  - Restoring A if needed after call
+  - Reading B value (via XBA or direct B access)
+- **No implicit A preservation**: Unlike typical calling conventions, returning B doesn't preserve A
+- **Explicit contract**: Function signature makes it clear B is being returned
+- **Mixed returns allowed**: `return B, X;` or `return B, A;` are both valid
+
+**Use when**: Returning high byte, byte unpacking, matching hand-written assembly patterns
 
 ---
 
@@ -755,9 +914,9 @@ far fn no_dbr_change() {
 }
 ```
 
-**Option 2: data_bank=auto**
+**Option 2: data_bank=inline**
 ```rust
-#[bank(1, data_bank=auto)]
+#[bank(1, data_bank=inline)]
 far fn auto_dbr() {
     // Compiler generates DBR save/restore
 }
@@ -961,10 +1120,10 @@ fn caller() {
 
 ---
 
-### Automatic Mode Handling (transition=auto)
+### Inline Mode Handling (transition=inline)
 
 ```rust
-#[mode(m16, x16, transition=auto)]
+#[mode(m16, x16, transition=inline)]
 fn safe_function(value @ A: u16) -> u16 {
     return value + 1;
 }
@@ -1101,7 +1260,7 @@ Mode transition (auto):   +12 cycles (PHP/PLP)
 
 **5. Choose mode transition**:
 - Manual control → `transition=none`
-- Safe/flexible → `transition=auto`
+- Safe/flexible → `transition=inline`
 - Performance (batching) → `transition=caller`
 
 **6. Declare preservation**:

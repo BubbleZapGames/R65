@@ -729,7 +729,7 @@ wait:
 
 **Mode Transitions** (not in original source):
 ```asm
-    ; | #[mode(m16, x16, transition=auto)]
+    ; | #[mode(m16, x16, transition=inline)]
     ; | fn process() {
     PHP             ; Compiler-generated (no source line)
     REP #$30        ; Compiler-generated

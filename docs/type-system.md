@@ -41,9 +41,11 @@ Hardware registers have **mode-dependent types**:
 ```rust
 // In m8 mode (8-bit accumulator):
 A: u8
+B: u8  // High byte of accumulator (m8 mode only)
 
 // In m16 mode (16-bit accumulator):
 A: u16
+// B: not available (compile error if used)
 
 // In x8 mode (8-bit index):
 X: u8
@@ -62,6 +64,13 @@ S: u16       // Always 16-bit (Stack Pointer)
 ```
 
 **Type at Compile Time**: Determined by current mode annotation
+
+**Special Case: B Register**
+- **Only available in `#[mode(m8)]`** - compiler error if used in m16 mode
+- B is the **hidden high byte** of the 16-bit accumulator
+- Accessed via XBA (Exchange B and A) instruction
+- Cannot appear in `#[preserves(...)]` attribute (compile error)
+- See [docs/b-register.md](b-register.md) for complete details
 
 ---
 
@@ -258,10 +267,10 @@ fn example() {
 
 ### Automatic Transitions
 
-Functions can specify `transition=auto` for automatic mode management:
+Functions can specify `transition=inline` for automatic mode management:
 
 ```rust
-#[mode(m16, x16, transition=auto)]
+#[mode(m16, x16, transition=inline)]
 fn needs_16bit() {
     // Compiler generates:
     // PHP          ; Save status (including mode bits)
@@ -344,7 +353,7 @@ fn caller() {
 }
 
 // OR use transition:
-#[mode(m16, x16, transition=auto)]
+#[mode(m16, x16, transition=inline)]
 fn needs_16bit_safe() { }
 
 fn caller() {
@@ -703,7 +712,7 @@ fn caller() {
 //   REP(0x30);
 //   needs_16bit();
 //   SEP(0x30);
-// or: add `transition=auto` to `needs_16bit`
+// or: add `transition=inline` to `needs_16bit`
 ```
 
 ### Mode Exit Mismatch

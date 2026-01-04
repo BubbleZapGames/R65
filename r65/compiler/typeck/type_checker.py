@@ -164,13 +164,13 @@ class TypeChecker:
 
         # Validate interrupt handler mode transition
         if func.interrupt_attr and func.mode_attr:
-            # Interrupt handlers with mode attributes MUST explicitly use transition=auto
+            # Interrupt handlers with mode attributes MUST explicitly use transition=inline
             # because interrupts can fire from any mode and must restore properly
-            if func.mode_attr.transition != ModeTransition.AUTO:
+            if func.mode_attr.transition != ModeTransition.INLINE:
                 raise TypeCheckError(
                     f"Interrupt handler '{func.name}' has #[mode] attribute but transition={func.mode_attr.transition.value}\n"
-                    f"  Interrupt handlers with mode attributes MUST use transition=auto\n"
-                    f"  Example: #[mode(m8, x8, transition=auto)]\n"
+                    f"  Interrupt handlers with mode attributes MUST use transition=inline\n"
+                    f"  Example: #[mode(m8, x8, transition=inline)]\n"
                     f"  Reason: Interrupts can fire from any mode and need automatic mode management",
                     source_loc=func.source_loc
                 )
@@ -349,10 +349,26 @@ class TypeChecker:
             mode = self._get_mode_at(expr)
             reg_type = mode.get_register_type(expr.name)
             if reg_type is None:
-                raise TypeCheckError(
-                    f"Cannot determine type of register {expr.name} in unknown mode",
-                    source_loc=expr.source_loc
-                )
+                # Special error message for B register in wrong mode
+                if expr.name == 'B':
+                    from r65.compiler.typeck.processor_mode import ModeState
+                    if mode.m_mode == ModeState.M16:
+                        raise TypeCheckError(
+                            f"B register only available in m8 mode\n"
+                            f"  Function has mode m16 where accumulator is 16-bit",
+                            source_loc=expr.source_loc
+                        )
+                    else:
+                        raise TypeCheckError(
+                            f"B register only available in m8 mode\n"
+                            f"  B requires #[mode(m8, ...)]",
+                            source_loc=expr.source_loc
+                        )
+                else:
+                    raise TypeCheckError(
+                        f"Cannot determine type of register {expr.name} in unknown mode",
+                        source_loc=expr.source_loc
+                    )
 
             expr.expr_type = reg_type
             return reg_type
@@ -750,16 +766,24 @@ class TypeChecker:
         else:
             transition = ModeTransition.NONE  # Default
 
-        # Validate transition=auto doesn't conflict with preserves(STATUS)
-        if transition == ModeTransition.AUTO:
+        # Validate transition=inline doesn't conflict with preserves(STATUS)
+        if transition == ModeTransition.INLINE:
             if func_decl.preserves_attr and 'STATUS' in func_decl.preserves_attr.registers:
                 raise TypeCheckError(
-                    f"Function '{func_name}' cannot use transition=auto with #[preserves(STATUS)]\n"
-                    f"  transition=auto requires modifying STATUS to switch modes, which conflicts with preservation",
+                    f"Function '{func_name}' cannot use transition=inline with #[preserves(STATUS)]\n"
+                    f"  transition=inline requires modifying STATUS to switch modes, which conflicts with preservation",
                     source_loc=source_loc
                 )
 
-        # Mixed-mode calls are allowed - code generation will handle wrappers based on transition mode
+        # If modes don't match and transition=none, this is an error
+        if transition == ModeTransition.NONE:
+            raise TypeCheckError(
+                f"Cannot call function '{func_name}' with mismatched processor modes\n"
+                f"  Caller mode: {caller_mode}\n"
+                f"  Callee mode: {callee_mode}\n"
+                f"  Fix: Add transition attribute to callee: #[mode(..., transition=inline)] or #[mode(..., transition=caller)]",
+                source_loc=source_loc
+            )
 
     def check_array_index(self, expr: HIRArrayIndex) -> TypeInfo:
         """Type check array indexing."""
