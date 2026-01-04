@@ -6,7 +6,7 @@ addressing modes for the 65816 processor.
 """
 
 from typing import TYPE_CHECKING
-from r65.compiler.mir.nodes import Load, Store, LoadIndirect, StoreIndirect, Immediate
+from r65.compiler.mir.nodes import Load, Store, LoadIndirect, StoreIndirect, Immediate, FunctionPointer
 from r65.compiler.codegen.register_alloc import LocationKind
 from r65.compiler.errors import InstructionSelectionError
 
@@ -81,6 +81,11 @@ class MemoryOperationSelector:
             self._store_immediate(instr.source.value, dest_loc, is_u16)
             return
 
+        # SPECIAL CASE: Handle function pointers
+        if isinstance(instr.source, FunctionPointer):
+            self._store_function_pointer(instr.source, dest_loc, instr.type_info)
+            return
+
         # Normal case: memory-to-memory or register-to-memory store
         self._store_from_location(instr, dest_loc, is_u16)
 
@@ -135,6 +140,36 @@ class MemoryOperationSelector:
             raise InstructionSelectionError(f"Cannot store from hardware register: {reg}")
         else:
             self.emitter.emit_instruction(store_instructions[reg], self.parent._format_operand(dest_loc))
+
+    def _store_function_pointer(self, func_ptr: FunctionPointer, dest_loc, type_info):
+        """Store a function pointer address directly to memory."""
+        from r65.compiler.hir.types import FunctionTypeInfo
+
+        func_name = func_ptr.function_name
+        is_far = False
+        if type_info and isinstance(type_info, FunctionTypeInfo):
+            is_far = type_info.is_far
+
+        if is_far:
+            # Far pointer: 3 bytes (low, high, bank)
+            self.emitter.emit_instruction("LDA", f"#<{func_name}", "Load function address low byte")
+            self.emitter.emit_instruction("STA", self.parent._format_operand(dest_loc))
+
+            dest_high = self.parent._offset_location(dest_loc, 1)
+            self.emitter.emit_instruction("LDA", f"#>{func_name}", "Load function address high byte")
+            self.emitter.emit_instruction("STA", self.parent._format_operand(dest_high))
+
+            dest_bank = self.parent._offset_location(dest_loc, 2)
+            self.emitter.emit_instruction("LDA", f"#^{func_name}", "Load function bank byte")
+            self.emitter.emit_instruction("STA", self.parent._format_operand(dest_bank))
+        else:
+            # Near pointer: 2 bytes (low, high)
+            self.emitter.emit_instruction("LDA", f"#<{func_name}", "Load function address low byte")
+            self.emitter.emit_instruction("STA", self.parent._format_operand(dest_loc))
+
+            dest_high = self.parent._offset_location(dest_loc, 1)
+            self.emitter.emit_instruction("LDA", f"#>{func_name}", "Load function address high byte")
+            self.emitter.emit_instruction("STA", self.parent._format_operand(dest_high))
 
     # ========================================================================
     # Indirect Memory Operations

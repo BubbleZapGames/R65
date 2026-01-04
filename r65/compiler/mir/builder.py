@@ -1053,6 +1053,16 @@ class MIRBuilder:
                 # Struct literal: use BlockCopy instruction (MVN from ROM)
                 self._emit_struct_literal_init(static_decl, mem_loc, initializer)
 
+            elif self._is_function_pointer_init(initializer):
+                # Function pointer: emit Store with FunctionPointer directly
+                func_name = self._get_function_name(initializer)
+                func_ptr = FunctionPointer(function_name=func_name)
+                self.emit(Store(
+                    source=func_ptr,
+                    dest=mem_loc,
+                    type_info=static_decl.var_type
+                ))
+
             else:
                 # Scalar value: simple store
                 init_value = self.lower_expression(initializer)
@@ -1069,6 +1079,25 @@ class MIRBuilder:
         mir_func.exit_block_ids = self.cfg_builder.find_exit_blocks()
 
         return mir_func
+
+    def _is_function_pointer_init(self, initializer: HIRExpression) -> bool:
+        """Check if initializer is a function pointer (identifier or address-of function)."""
+        # Direct function reference: handler
+        if isinstance(initializer, HIRIdentifier):
+            if initializer.symbol and initializer.symbol.kind == SymbolKind.FUNCTION:
+                return True
+        # Explicit function address: &handler (HIRFunctionAddress)
+        if isinstance(initializer, HIRFunctionAddress):
+            return True
+        return False
+
+    def _get_function_name(self, initializer: HIRExpression) -> str:
+        """Extract function name from function pointer initializer."""
+        if isinstance(initializer, HIRIdentifier):
+            return initializer.name
+        if isinstance(initializer, HIRFunctionAddress):
+            return initializer.function_name
+        raise MIRLoweringError(f"Cannot extract function name from {type(initializer).__name__}")
 
     def _emit_array_fill_init(
         self,
