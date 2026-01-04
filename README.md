@@ -202,6 +202,7 @@ R65/
 - **[Operators](docs/operators.md)** - Hardware-aware operator design with cost model
 - **[Control Flow](docs/control-flow.md)** - If/else, loops, break, continue, return semantics
 - **[Type System](docs/type-system.md)** - Type checking and mode tracking
+- **[B Register](docs/b-register.md)** - Hidden accumulator high byte (m8 mode only)
 - **[Calling Convention](docs/calling-convention.md)** - ABI, parameters, register preservation
 - **[Pointers & Memory](docs/pointers-memory.md)** - Near/far pointers, addressing modes, memory layout
 - **[Code Generation](docs/code-generation.md)** - Complete codegen pipeline reference
