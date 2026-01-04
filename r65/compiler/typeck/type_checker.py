@@ -1015,14 +1015,75 @@ class TypeChecker:
                     source_loc=expr.arms[i].body.source_loc
                 )
 
-        # Basic exhaustiveness check: must have wildcard/identifier pattern or cover all cases
+        # Exhaustiveness check: must have wildcard/identifier pattern or cover all cases
         if not has_wildcard:
-            # For now, just warn - full exhaustiveness checking is complex
-            # TODO: Implement proper exhaustiveness checking
-            pass
+            self._check_match_exhaustiveness(expr, scrutinee_type)
 
         expr.expr_type = result_type
         return result_type
+
+    def _check_match_exhaustiveness(self, expr: HIRMatchExpression, scrutinee_type: TypeInfo):
+        """
+        Check that match expression covers all possible values.
+
+        For bool: must cover both true and false
+        For enum: must cover all variants
+        For integers: must have wildcard (too many values to enumerate)
+        """
+        from r65.compiler.hir import HIRLiteralPattern, HIREnumPattern, HIROrPattern
+        from r65.compiler.hir.types import EnumTypeInfo
+
+        # Collect all covered values/variants
+        covered_values = set()
+        covered_variants = set()
+
+        def collect_patterns(pattern):
+            """Recursively collect covered values from pattern."""
+            if isinstance(pattern, HIRLiteralPattern):
+                covered_values.add(pattern.value)
+            elif isinstance(pattern, HIREnumPattern):
+                covered_variants.add(pattern.variant_name)
+            elif isinstance(pattern, HIROrPattern):
+                for subpat in pattern.patterns:
+                    collect_patterns(subpat)
+
+        for arm in expr.arms:
+            collect_patterns(arm.pattern)
+
+        # Check exhaustiveness based on scrutinee type
+        if isinstance(scrutinee_type, BasicTypeInfo):
+            if scrutinee_type.name == 'bool':
+                # Bool must cover both true and false
+                missing = []
+                if True not in covered_values:
+                    missing.append('true')
+                if False not in covered_values:
+                    missing.append('false')
+                if missing:
+                    raise TypeCheckError(
+                        f"Non-exhaustive match: missing patterns for {', '.join(missing)}",
+                        source_loc=expr.source_loc
+                    )
+            elif scrutinee_type.name in ('u8', 'i8', 'u16', 'i16'):
+                # Integer types need wildcard - too many values to enumerate
+                raise TypeCheckError(
+                    f"Non-exhaustive match on {scrutinee_type}: "
+                    f"add a wildcard pattern '_' to cover remaining values",
+                    source_loc=expr.source_loc
+                )
+
+        elif isinstance(scrutinee_type, EnumTypeInfo):
+            # Enum must cover all variants
+            if scrutinee_type.definition:
+                all_variants = {v.name for v in scrutinee_type.definition.variants}
+                missing = all_variants - covered_variants
+                if missing:
+                    missing_list = ', '.join(sorted(missing))
+                    raise TypeCheckError(
+                        f"Non-exhaustive match on {scrutinee_type.name}: "
+                        f"missing patterns for {missing_list}",
+                        source_loc=expr.source_loc
+                    )
 
     def _check_pattern(self, pattern, scrutinee_type: TypeInfo) -> bool:
         """
