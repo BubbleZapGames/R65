@@ -201,6 +201,69 @@ class StoreIndirect(MIRInstruction):
 
 
 @dataclass
+class MemoryFill(MIRInstruction):
+    """
+    Fill a memory region with a constant value using a loop.
+
+    For array fill expressions like [0; 256].
+
+    Generates:
+        LDA #fill_value
+        LDX #count
+    .loop:
+        STA dest,X
+        DEX
+        BNE .loop
+    """
+    dest: MemoryLocation  # Base address to fill
+    fill_value: int       # Value to fill with (constant)
+    count: int            # Number of elements
+    element_size: int     # Size of each element (1 or 2 bytes)
+
+    def __repr__(self):
+        return f"MemoryFill {self.dest} with #{self.fill_value} x {self.count} ({self.element_size}B each)"
+
+
+@dataclass
+class ROMDataRef:
+    """
+    Reference to ROM data section for array literals.
+
+    Used by BlockCopy to reference ROM data by label.
+    """
+    label: str            # Label for the ROM data section
+    data: List[int]       # Raw bytes to store in ROM
+    element_size: int     # Size of each element (for display)
+
+    def __repr__(self):
+        return f"ROMDataRef({self.label}, {len(self.data)} bytes)"
+
+
+@dataclass
+class BlockCopy(MIRInstruction):
+    """
+    Copy a block of data from ROM to RAM using MVN/MVP.
+
+    For array literal expressions like [1, 2, 3, 4].
+
+    Generates (using MVN for forward copy):
+        LDA #count-1          ; A = byte count - 1
+        LDX #<source_addr     ; X = source low word
+        LDY #<dest_addr       ; Y = dest low word
+        MVN #src_bank, #dst_bank
+
+    Note: MVN uses banks as operands, source/dest addresses in X/Y,
+    and count-1 in A. Copies A+1 bytes.
+    """
+    dest: MemoryLocation   # Destination address in RAM
+    rom_data: ROMDataRef   # Reference to ROM data section
+    count: int             # Number of bytes to copy
+
+    def __repr__(self):
+        return f"BlockCopy {self.rom_data.label} -> {self.dest} ({self.count} bytes)"
+
+
+@dataclass
 class Move(MIRInstruction):
     """
     Move between registers or load immediate.
@@ -656,6 +719,7 @@ class MIRProgram:
     - Static declarations (preserved from HIR)
     - Symbol table
     - Global attributes (e.g., stack)
+    - ROM data sections for array literal initialization
     """
     functions: List[MIRFunction] = field(default_factory=list)
     statics: List[Any] = field(default_factory=list)    # HIRStaticDecl list
@@ -664,6 +728,7 @@ class MIRProgram:
     enums: List[Any] = field(default_factory=list)      # HIREnumDecl list
     symbol_table: Optional[Any] = None  # SymbolTable from HIR
     stack_attr: Optional[Any] = None    # StackAttribute from #[stack(...)]
+    rom_data_sections: List['ROMDataRef'] = field(default_factory=list)  # Array literal data
 
     def __repr__(self):
         return f"MIRProgram({len(self.functions)} functions, {len(self.statics)} statics)"

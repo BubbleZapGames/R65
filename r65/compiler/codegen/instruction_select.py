@@ -16,6 +16,7 @@ from r65.compiler.mir.nodes import (
     Move, Return, Jump, JumpTable, CondBranch, Call,
     BinaryOp, UnaryOp, Compare, BitTest, Rotate, SetMode, TypeConvert,
     Push, Pull, SaveRegister, RestoreRegister, ReturnFromInterrupt,
+    MemoryFill, BlockCopy, ROMDataRef,
     VirtualRegister, HardwareRegister, Immediate, MemoryLocation
 )
 from r65.compiler.codegen.emitter import AssemblyEmitter
@@ -188,6 +189,10 @@ class InstructionSelector:
             self.select_pull(instr)
         elif isinstance(instr, ReturnFromInterrupt):
             self.select_return_from_interrupt(instr)
+        elif isinstance(instr, MemoryFill):
+            self.select_memory_fill(instr)
+        elif isinstance(instr, BlockCopy):
+            self.select_block_copy(instr)
         else:
             raise InstructionSelectionError(f"Unsupported MIR instruction: {type(instr).__name__}")
 
@@ -854,3 +859,135 @@ class InstructionSelector:
         if hasattr(type_info, 'name'):
             return type_info.name in ('u16', 'i16')
         return False
+
+    # ========================================================================
+    # Array Initialization Operations
+    # ========================================================================
+
+    def select_memory_fill(self, instr: MemoryFill):
+        """
+        Generate code for MemoryFill instruction.
+
+        Fills a memory region with a constant value using a loop.
+        Used for array fill expressions like [0; 256].
+
+        For 8-bit elements:
+            LDA #fill_value
+            LDX #count-1
+        .loop:
+            STA dest,X
+            DEX
+            BPL .loop
+
+        Args:
+            instr: MemoryFill instruction
+        """
+        dest_loc = self._get_operand_location(instr.dest)
+        fill_value = instr.fill_value
+        count = instr.count
+        element_size = instr.element_size
+
+        # Total bytes to fill
+        total_bytes = count * element_size
+
+        # Generate unique label for this loop
+        loop_label = self._get_unique_label()
+
+        self.emitter.emit_comment(f"Fill {count} x {element_size}B elements with #{fill_value}")
+
+        if element_size == 1:
+            # 8-bit element fill
+            if total_bytes <= 256:
+                # Can use X as counter (0-255)
+                self.emitter.emit_instruction("LDA", f"#${fill_value & 0xFF:02X}")
+                self.emitter.emit_instruction("LDX", f"#${total_bytes - 1:02X}")
+                self.emitter.emit_label(loop_label)
+                self.emitter.emit_instruction("STA", f"{self._format_operand(dest_loc)},X")
+                self.emitter.emit_instruction("DEX")
+                self.emitter.emit_instruction("BPL", loop_label)
+            else:
+                # Large array - use 16-bit counter
+                # Use Y for counting, X for offset
+                self.emitter.emit_instruction("LDA", f"#${fill_value & 0xFF:02X}")
+                self.emitter.emit_instruction("LDX", "#$00")
+                self.emitter.emit_instruction("LDY", f"#${total_bytes & 0xFFFF:04X}")
+                self.emitter.emit_label(loop_label)
+                self.emitter.emit_instruction("STA", f"{self._format_operand(dest_loc)},X")
+                self.emitter.emit_instruction("INX")
+                self.emitter.emit_instruction("DEY")
+                self.emitter.emit_instruction("BNE", loop_label)
+
+        elif element_size == 2:
+            # 16-bit element fill - need to fill low and high bytes
+            low_byte = fill_value & 0xFF
+            high_byte = (fill_value >> 8) & 0xFF
+
+            # Use X as index (forward), Y as counter (decrement)
+            self.emitter.emit_instruction("LDX", "#$00")
+            self.emitter.emit_instruction("LDY", f"#${count:02X}")
+            self.emitter.emit_label(loop_label)
+            # Store low byte at base+X
+            self.emitter.emit_instruction("LDA", f"#${low_byte:02X}")
+            self.emitter.emit_instruction("STA", f"{self._format_operand(dest_loc)},X")
+            self.emitter.emit_instruction("INX")
+            # Store high byte at base+X+1
+            self.emitter.emit_instruction("LDA", f"#${high_byte:02X}")
+            self.emitter.emit_instruction("STA", f"{self._format_operand(dest_loc)},X")
+            self.emitter.emit_instruction("INX")
+            # Decrement counter and loop
+            self.emitter.emit_instruction("DEY")
+            self.emitter.emit_instruction("BNE", loop_label)
+
+    def select_block_copy(self, instr: BlockCopy):
+        """
+        Generate code for BlockCopy instruction.
+
+        Copies a block of data from ROM to RAM using MVN instruction.
+        Used for array literal expressions like [1, 2, 3, 4].
+
+        Generated code:
+            LDA #count-1          ; A = byte count - 1
+            LDX #<source_addr     ; X = source low word
+            LDY #<dest_addr       ; Y = dest low word
+            MVN src_bank, dst_bank
+
+        Note: MVN copies A+1 bytes from src_bank:X to dst_bank:Y.
+
+        Args:
+            instr: BlockCopy instruction
+        """
+        dest_loc = self._get_operand_location(instr.dest)
+        rom_label = instr.rom_data.label
+        count = instr.count
+
+        self.emitter.emit_comment(f"Block copy {count} bytes from ROM to RAM")
+
+        # Set up for MVN: A = count - 1, X = source, Y = dest
+        # For 16-bit index mode, we need REP #$10 first
+        self.emitter.emit_instruction("REP", "#$30", "16-bit A and index")
+
+        # Load count - 1 into A
+        self.emitter.emit_instruction("LDA", f"#${count - 1:04X}")
+
+        # Load source address (ROM data label)
+        self.emitter.emit_instruction("LDX", f"#{rom_label}")
+
+        # Load destination address
+        self.emitter.emit_instruction("LDY", f"#${dest_loc.memory_addr:04X}")
+
+        # Perform block move
+        # MVN src_bank, dst_bank
+        # Assuming ROM is in bank 0 and RAM destination bank is $7E
+        # For now, use bank 0 for ROM and calculate destination bank from address
+        dest_addr = dest_loc.memory_addr
+        if dest_addr >= 0x7E0000:
+            dest_bank = 0x7E
+        elif dest_addr >= 0x7F0000:
+            dest_bank = 0x7F
+        else:
+            dest_bank = 0x00  # Low RAM or zeropage
+
+        self.emitter.emit_instruction("MVN", f"$00, ${dest_bank:02X}")
+
+        # Restore 8-bit mode if needed (depends on context)
+        self.emitter.emit_instruction("SEP", "#$30", "Restore 8-bit mode")

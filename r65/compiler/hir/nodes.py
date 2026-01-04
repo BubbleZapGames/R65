@@ -356,6 +356,50 @@ class HIRIncludeBytesExpr(HIRExpression):
 
 
 @dataclass
+class HIRArrayFillExpr(HIRExpression):
+    """
+    Array fill expression (e.g., [0; 256]).
+
+    Creates an array filled with a repeated value.
+    Used for efficient memory initialization.
+    """
+    fill_value: Optional[HIRExpression] = None  # Value to repeat
+    count: int = 0  # Number of repetitions (evaluated at compile time)
+
+
+@dataclass
+class HIRArrayLiteralExpr(HIRExpression):
+    """
+    Array literal expression (e.g., [1, 2, 3, 4]).
+
+    Creates an array with explicit element values.
+    Used for ROM data that gets block-copied to RAM.
+    """
+    elements: List[HIRExpression] = field(default_factory=list)
+
+
+@dataclass
+class HIRStructFieldInit(HIRNode):
+    """Field initializer in a struct literal."""
+    name: str = ""
+    value: Optional[HIRExpression] = None
+    field_offset: Optional[int] = None  # Computed during HIR construction
+
+
+@dataclass
+class HIRStructLiteralExpr(HIRExpression):
+    """
+    Struct literal expression (e.g., Player { x: 10, y: 20, health: 100 }).
+
+    Creates a struct with explicit field values.
+    Used for ROM data that gets block-copied to RAM.
+    """
+    struct_name: str = ""
+    struct_decl: Optional['HIRStructDecl'] = None  # Resolved during HIR construction
+    fields: List[HIRStructFieldInit] = field(default_factory=list)
+
+
+@dataclass
 class HIRBinaryOp(HIRExpression):
     """Binary operation."""
     op: str = ""  # "+", "-", "*", "/", etc.

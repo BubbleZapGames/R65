@@ -191,10 +191,21 @@ arg_list: expr ("," expr)* ","?
         | BOOLEAN                               -> boolean
         | INCLUDE_BYTES "!" "(" STRING ")"      -> include_bytes_expr
         | IDENT "::" IDENT                      -> enum_variant_expr
+        | struct_literal_expr
         | IDENT                                 -> identifier
         | REGISTER                              -> register_ref
         | "(" expr ")"                          -> paren
         | match_expr
+        | array_fill_expr
+        | array_literal_expr
+
+// Array expressions
+array_fill_expr: "[" expr ";" expr "]"          // [value; count] - e.g., [0; 256]
+array_literal_expr: "[" (expr ("," expr)* ","?)? "]"  // [a, b, c] - explicit elements
+
+// Struct literal expression
+struct_literal_expr: IDENT "{" struct_field_init ("," struct_field_init)* ","? "}"
+struct_field_init: IDENT ":" expr
 
 // Types
 ?type_expr: type_basic

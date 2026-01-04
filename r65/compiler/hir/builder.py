@@ -626,6 +626,22 @@ class HIRBuilder:
             # Include binary data from file
             return hir.HIRIncludeBytesExpr(path=expr.path)
 
+        elif isinstance(expr, ast.ArrayFillExpr):
+            # Array fill expression: [value; count]
+            fill_value = self._build_expression(expr.value)
+            # Count must be a constant - evaluate at compile time
+            count = self.const_evaluator.eval(expr.count)
+            return hir.HIRArrayFillExpr(fill_value=fill_value, count=count)
+
+        elif isinstance(expr, ast.ArrayLiteralExpr):
+            # Array literal expression: [a, b, c, ...]
+            elements = [self._build_expression(e) for e in expr.elements]
+            return hir.HIRArrayLiteralExpr(elements=elements)
+
+        elif isinstance(expr, ast.StructLiteralExpr):
+            # Struct literal expression: Player { x: 10, y: 20, health: 100 }
+            return self._build_struct_literal(expr)
+
         elif isinstance(expr, ast.EnumVariantExpr):
             # Resolve enum variant to integer literal
             # Lookup enum type
@@ -834,6 +850,58 @@ class HIRBuilder:
         else:
             raise HIRError(f"Unknown pattern type: {type(pattern).__name__}")
 
+    def _build_struct_literal(self, expr: ast.StructLiteralExpr) -> hir.HIRStructLiteralExpr:
+        """Build HIR struct literal from AST."""
+        # Lookup struct definition
+        struct_symbol = self.symbol_table.lookup(expr.struct_name)
+        if not struct_symbol:
+            raise HIRError(f"Undefined struct: {expr.struct_name}")
+        if struct_symbol.kind != SymbolKind.STRUCT:
+            raise HIRError(f"{expr.struct_name} is not a struct")
+
+        # Get the struct declaration to access field information
+        struct_decl = struct_symbol.definition
+
+        # Build field offsets mapping
+        field_offsets = {}
+        field_types = {}
+        if isinstance(struct_decl, hir.HIRStructDecl):
+            # Already built
+            for field in struct_decl.fields:
+                field_offsets[field.name] = field.offset
+                field_types[field.name] = field.field_type
+        elif isinstance(struct_decl, ast.StructDecl):
+            # Need to calculate offsets
+            current_offset = 0
+            for field in struct_decl.fields:
+                field_type = self.type_resolver.resolve_type(field.field_type)
+                field_offsets[field.name] = current_offset
+                field_types[field.name] = field_type
+                current_offset += self._get_type_size(field_type)
+
+        # Build field initializers
+        hir_fields = []
+        for field_init in expr.fields:
+            if field_init.name not in field_offsets:
+                raise HIRError(f"Unknown field: {expr.struct_name}.{field_init.name}")
+
+            value_expr = self._build_expression(field_init.value)
+            hir_field = hir.HIRStructFieldInit(
+                name=field_init.name,
+                value=value_expr,
+                field_offset=field_offsets[field_init.name]
+            )
+            hir_fields.append(hir_field)
+
+        # Create HIR struct literal
+        # Note: struct_decl may be AST node (pass 1 not complete) or HIR node
+        # Type checker will resolve this properly
+        return hir.HIRStructLiteralExpr(
+            struct_name=expr.struct_name,
+            struct_decl=struct_decl if isinstance(struct_decl, hir.HIRStructDecl) else None,
+            fields=hir_fields
+        )
+
     def _extract_attributes(self, processed_attrs: list) -> dict:
         """Extract specific attribute types from processed attributes list.
 
@@ -927,7 +995,27 @@ class HIRBuilder:
             # Function pointers: 2 bytes for near fn(), 3 bytes for far fn()
             return 3 if type_info.is_far else 2
 
-        else:
-            # For struct/enum, would need to look up definition
-            # Simplified for now
+        elif isinstance(type_info, StructTypeInfo):
+            # Look up struct definition and sum field sizes
+            struct_symbol = self.symbol_table.lookup(type_info.name)
+            if struct_symbol and struct_symbol.definition:
+                struct_def = struct_symbol.definition
+                if isinstance(struct_def, hir.HIRStructDecl):
+                    # Sum up field sizes
+                    return sum(self._get_type_size(f.field_type) for f in struct_def.fields)
+                elif isinstance(struct_def, ast.StructDecl):
+                    # Calculate from AST definition
+                    size = 0
+                    for field in struct_def.fields:
+                        field_type = self.type_resolver.resolve_type(field.field_type)
+                        size += self._get_type_size(field_type)
+                    return size
+            raise HIRError(f"Cannot determine size of struct: {type_info.name}")
+
+        elif isinstance(type_info, EnumTypeInfo):
+            # Enums are sized based on their underlying type
+            # Default to u8 (1 byte) if not specified
             return 1
+
+        else:
+            raise HIRError(f"Cannot determine size of type: {type(type_info).__name__}")

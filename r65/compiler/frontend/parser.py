@@ -528,6 +528,36 @@ class ASTBuilder(Transformer):
         path = items[3].value.strip('"')
         return ast.IncludeBytesExpr(path=path)
 
+    def array_fill_expr(self, items):
+        """Array fill expression (e.g., [0; 256])."""
+        # items: ["[", value_expr, ";", count_expr, "]"]
+        items = self._filter_tokens(items)
+        value = items[0]
+        count = items[1]
+        return ast.ArrayFillExpr(value=value, count=count)
+
+    def array_literal_expr(self, items):
+        """Array literal expression (e.g., [1, 2, 3])."""
+        # items: ["[", expr, ",", expr, ..., "]"]
+        items = self._filter_tokens(items)
+        # All items are now the expressions
+        return ast.ArrayLiteralExpr(elements=items)
+
+    def struct_literal_expr(self, items):
+        """Struct literal expression (e.g., Player { x: 10, y: 20 })."""
+        # items: [struct_name, field_init, field_init, ...]
+        items = self._filter_tokens(items)
+        struct_name = items[0].value if isinstance(items[0], LarkToken) else items[0]
+        fields = [f for f in items[1:] if isinstance(f, ast.StructFieldInit)]
+        return ast.StructLiteralExpr(struct_name=struct_name, fields=fields)
+
+    def struct_field_init(self, items):
+        """Struct field initializer (e.g., x: 10)."""
+        items = self._filter_tokens(items)
+        name = items[0].value if isinstance(items[0], LarkToken) else items[0]
+        value = items[1]
+        return ast.StructFieldInit(name=name, value=value)
+
     def paren(self, items):
         """Parenthesized expression."""
         return items[0]  # Just return the inner expression

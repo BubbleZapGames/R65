@@ -13,6 +13,7 @@ from r65.compiler.hir import (
     HIRExpression, HIRIntegerLiteral, HIRBooleanLiteral, HIRIdentifier,
     HIRFunctionAddress, HIRRegister, HIRBinaryOp, HIRUnaryOp, HIRTypeCast, HIRAssignment,
     HIRFunctionCall, HIRMethodCall, HIRArrayIndex, HIRFieldAccess, HIRDereference, HIRAddressOf,
+    HIRArrayFillExpr, HIRArrayLiteralExpr, HIRStructLiteralExpr,
     HIRMatchExpression, HIRPattern, HIRLiteralPattern, HIREnumPattern, HIRWildcardPattern, HIRIdentifierPattern, HIROrPattern,
     RegisterLetBinding, VariableLetBinding,
     RegisterBinding, VariableBinding,
@@ -28,6 +29,7 @@ from r65.compiler.mir.nodes import (
     Jump, CondBranch, JumpTable, Return, ReturnFromInterrupt, Call, Argument, ArgumentMechanism,
     SetMode, SaveRegister, RestoreRegister,
     Push, Pull,
+    MemoryFill, BlockCopy, ROMDataRef,
 )
 
 from r65.compiler.mir.virtual_registers import VirtualRegisterAllocator
@@ -67,6 +69,13 @@ class MIRBuilder:
         self.call_lowerer = CallLowerer(self)
         self.assign_lowerer = AssignmentLowerer(self)
         self.cond_lowerer = ConditionLowerer(self)
+
+        # ROM data section tracking for array literals
+        self._rom_data_counter = 0
+        self._rom_data_sections: List[ROMDataRef] = []
+
+        # Current HIR program being lowered (for symbol table lookups)
+        self._hir_program: Optional[HIRProgram] = None
 
     # ========================================================================
     # Context Property Accessors (for gradual migration)
@@ -136,6 +145,13 @@ class MIRBuilder:
         Returns:
             MIRProgram ready for code generation
         """
+        # Reset ROM data tracking for this program
+        self._rom_data_counter = 0
+        self._rom_data_sections = []
+
+        # Store reference to HIR program for symbol table lookups
+        self._hir_program = hir_program
+
         # Build function name → HIRFunctionDecl mapping
         for decl in hir_program.declarations:
             if isinstance(decl, HIRFunctionDecl):
@@ -171,7 +187,8 @@ class MIRBuilder:
             structs=hir_program.structs,
             enums=hir_program.enums,
             symbol_table=hir_program.symbol_table,
-            stack_attr=hir_program.stack_attr
+            stack_attr=hir_program.stack_attr,
+            rom_data_sections=self._rom_data_sections
         )
 
     def lower_function(self, hir_func: HIRFunctionDecl) -> MIRFunction:
@@ -973,8 +990,13 @@ class MIRBuilder:
         """
         Generate __init_start() function for static initialization.
 
-        This function initializes all static variables with non-zero initializers.
+        This function initializes all static variables with initializers.
         It should be called at the beginning of the program's entry point.
+
+        Initialization strategies:
+        - Array fill [value; count]: Loop fill (efficient for zero fills)
+        - Array literal [a, b, c]: Block copy from ROM (MVN instruction)
+        - Scalar values: Simple store
 
         Args:
             statics: List of HIRStaticDecl with initializers
@@ -1014,18 +1036,31 @@ class MIRBuilder:
 
         # Generate initialization code for each static variable
         for static_decl in statics:
-            # Lower the initializer expression
-            init_value = self.lower_expression(static_decl.initializer)
-
             # Get memory location for the static
             mem_loc = self.get_memory_location(static_decl.symbol)
+            initializer = static_decl.initializer
 
-            # Store the initialized value to the static's location
-            self.emit(Store(
-                source=init_value,
-                dest=mem_loc,
-                type_info=static_decl.var_type
-            ))
+            # Handle different initializer types
+            if isinstance(initializer, HIRArrayFillExpr):
+                # Array fill: use MemoryFill instruction (loop-based)
+                self._emit_array_fill_init(static_decl, mem_loc, initializer)
+
+            elif isinstance(initializer, HIRArrayLiteralExpr):
+                # Array literal: use BlockCopy instruction (MVN from ROM)
+                self._emit_array_literal_init(static_decl, mem_loc, initializer)
+
+            elif isinstance(initializer, HIRStructLiteralExpr):
+                # Struct literal: use BlockCopy instruction (MVN from ROM)
+                self._emit_struct_literal_init(static_decl, mem_loc, initializer)
+
+            else:
+                # Scalar value: simple store
+                init_value = self.lower_expression(initializer)
+                self.emit(Store(
+                    source=init_value,
+                    dest=mem_loc,
+                    type_info=static_decl.var_type
+                ))
 
         # Emit return instruction
         self.emit(Return(values=[]))
@@ -1034,3 +1069,219 @@ class MIRBuilder:
         mir_func.exit_block_ids = self.cfg_builder.find_exit_blocks()
 
         return mir_func
+
+    def _emit_array_fill_init(
+        self,
+        static_decl: HIRStaticDecl,
+        mem_loc: MemoryLocation,
+        fill_expr: 'HIRArrayFillExpr'
+    ):
+        """
+        Emit MemoryFill instruction for array fill expression.
+
+        Example: [0; 256] fills 256 elements with 0 using a loop.
+
+        Args:
+            static_decl: Static declaration being initialized
+            mem_loc: Memory location of the array
+            fill_expr: HIR array fill expression
+        """
+        from r65.compiler.hir.types import ArrayTypeInfo
+        from r65.compiler.hir import HIRIntegerLiteral, HIRTypeCast
+
+        # Get element type and size
+        array_type = static_decl.var_type
+        if isinstance(array_type, ArrayTypeInfo):
+            element_size = self._get_type_size(array_type.element_type)
+        else:
+            element_size = 1  # Default to 1 byte
+
+        # Get fill value - must be constant for efficient code gen
+        # Extract constant value without emitting instructions
+        fill_value = self._extract_constant_value(fill_expr.fill_value)
+        if fill_value is None:
+            fill_value = 0  # Fallback
+
+        self.emit(MemoryFill(
+            dest=mem_loc,
+            fill_value=fill_value,
+            count=fill_expr.count,
+            element_size=element_size
+        ))
+
+    def _extract_constant_value(self, expr: HIRExpression) -> Optional[int]:
+        """
+        Extract constant value from expression without emitting instructions.
+
+        Handles integer literals, casts of literals, and boolean literals.
+
+        Args:
+            expr: HIR expression to evaluate
+
+        Returns:
+            Constant value if extractable, None otherwise
+        """
+        from r65.compiler.hir import HIRIntegerLiteral, HIRBooleanLiteral, HIRTypeCast
+
+        if isinstance(expr, HIRIntegerLiteral):
+            return expr.value
+        elif isinstance(expr, HIRBooleanLiteral):
+            return 1 if expr.value else 0
+        elif isinstance(expr, HIRTypeCast):
+            # Recursively extract from the inner expression
+            inner_value = self._extract_constant_value(expr.expr)
+            return inner_value
+        else:
+            # Not a constant expression
+            return None
+
+    def _emit_array_literal_init(
+        self,
+        static_decl: HIRStaticDecl,
+        mem_loc: MemoryLocation,
+        literal_expr: 'HIRArrayLiteralExpr'
+    ):
+        """
+        Emit BlockCopy instruction for array literal expression.
+
+        Example: [1, 2, 3, 4] stores data in ROM and copies to RAM.
+
+        Args:
+            static_decl: Static declaration being initialized
+            mem_loc: Memory location of the array
+            literal_expr: HIR array literal expression
+        """
+        from r65.compiler.hir.types import ArrayTypeInfo
+
+        # Get element type and size
+        array_type = static_decl.var_type
+        if isinstance(array_type, ArrayTypeInfo):
+            element_size = self._get_type_size(array_type.element_type)
+        else:
+            element_size = 1  # Default to 1 byte
+
+        # Extract constant values from all elements without emitting instructions
+        data_bytes = []
+        for elem in literal_expr.elements:
+            value = self._extract_constant_value(elem)
+            if value is None:
+                value = 0  # Fallback for non-constant
+
+            # Store as little-endian bytes
+            if element_size == 1:
+                data_bytes.append(value & 0xFF)
+            elif element_size == 2:
+                data_bytes.append(value & 0xFF)
+                data_bytes.append((value >> 8) & 0xFF)
+            else:
+                # Handle larger types if needed
+                for i in range(element_size):
+                    data_bytes.append((value >> (i * 8)) & 0xFF)
+
+        # Create ROM data reference using variable name
+        label = f"__{static_decl.name}_data"
+
+        rom_data = ROMDataRef(
+            label=label,
+            data=data_bytes,
+            element_size=element_size
+        )
+        self._rom_data_sections.append(rom_data)
+
+        # Emit block copy instruction
+        self.emit(BlockCopy(
+            dest=mem_loc,
+            rom_data=rom_data,
+            count=len(data_bytes)
+        ))
+
+    def _emit_struct_literal_init(
+        self,
+        static_decl: HIRStaticDecl,
+        mem_loc: MemoryLocation,
+        struct_expr: 'HIRStructLiteralExpr'
+    ):
+        """
+        Emit BlockCopy instruction for struct literal expression.
+
+        Example: Player { x: 10, y: 20, health: 100 } stores data in ROM and copies to RAM.
+
+        Args:
+            static_decl: Static declaration being initialized
+            mem_loc: Memory location of the struct
+            struct_expr: HIR struct literal expression
+        """
+        from r65.compiler.hir.types import StructTypeInfo
+        from r65.compiler.hir import HIRStructDecl
+        from r65.compiler.frontend import ast
+
+        # Get struct definition to know field sizes and offsets
+        struct_decl = struct_expr.struct_decl
+        if struct_decl is None:
+            # Look up from symbol table
+            symbol = self._hir_program.symbol_table.lookup(struct_expr.struct_name)
+            if symbol:
+                struct_decl = symbol.definition
+
+        if struct_decl is None:
+            raise MIRLoweringError(f"Cannot find struct definition for {struct_expr.struct_name}")
+
+        # Calculate total size of struct and field offsets
+        # Handle both HIR and AST struct declarations
+        total_size = 0
+        field_info = {}  # name -> (offset, size)
+
+        if isinstance(struct_decl, HIRStructDecl):
+            # HIR struct has pre-computed offsets
+            for field in struct_decl.fields:
+                field_size = self._get_type_size(field.field_type)
+                field_info[field.name] = (field.offset, field_size)
+                total_size = max(total_size, field.offset + field_size)
+        elif isinstance(struct_decl, ast.StructDecl):
+            # AST struct - need to compute offsets
+            from r65.compiler.hir.types import TypeResolver
+            from r65.compiler.hir.const_eval import ConstEvaluator
+            type_resolver = TypeResolver(self._hir_program.symbol_table, ConstEvaluator(self._hir_program.symbol_table))
+            current_offset = 0
+            for field in struct_decl.fields:
+                field_type = type_resolver.resolve_type(field.field_type)
+                field_size = self._get_type_size(field_type)
+                field_info[field.name] = (current_offset, field_size)
+                current_offset += field_size
+            total_size = current_offset
+        else:
+            raise MIRLoweringError(f"Unexpected struct definition type: {type(struct_decl).__name__}")
+
+        # Create byte array for struct data
+        data_bytes = [0] * total_size
+
+        # Fill in field values at their offsets
+        for field_init in struct_expr.fields:
+            if field_init.name not in field_info:
+                continue
+
+            offset, field_size = field_info[field_init.name]
+            value = self._extract_constant_value(field_init.value)
+            if value is None:
+                value = 0  # Fallback for non-constant
+
+            # Store as little-endian bytes at the field's offset
+            for i in range(field_size):
+                data_bytes[offset + i] = (value >> (i * 8)) & 0xFF
+
+        # Create ROM data reference using variable name
+        label = f"__{static_decl.name}_data"
+
+        rom_data = ROMDataRef(
+            label=label,
+            data=data_bytes,
+            element_size=1  # Struct is treated as a block of bytes
+        )
+        self._rom_data_sections.append(rom_data)
+
+        # Emit block copy instruction
+        self.emit(BlockCopy(
+            dest=mem_loc,
+            rom_data=rom_data,
+            count=len(data_bytes)
+        ))

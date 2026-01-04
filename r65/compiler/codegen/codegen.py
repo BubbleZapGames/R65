@@ -95,7 +95,10 @@ class ProgramCodeGenerator:
             for mir_func in bank_functions:
                 self.func_gen.func_gen.generate_function(mir_func)
 
-        # Phase 7: Interrupt vectors
+        # Phase 7: ROM data sections (for array literal initialization)
+        self._emit_rom_data_sections(mir_program)
+
+        # Phase 8: Interrupt vectors
         self._emit_interrupt_vectors(mir_program)
 
         # Symbol exports (for debugging and linking)
@@ -196,6 +199,33 @@ class ProgramCodeGenerator:
                 irq=irq_handler,
                 reset=reset_handler
             )
+
+    def _emit_rom_data_sections(self, mir_program: MIRProgram):
+        """
+        Emit ROM data sections for array literal initialization.
+
+        Creates labeled data sections in ROM that will be copied to RAM
+        during initialization using BlockCopy (MVN instruction).
+
+        Args:
+            mir_program: MIR program
+        """
+        if not mir_program.rom_data_sections:
+            return
+
+        self.emitter.emit_section_header("ROM Data Sections (array literal init data)")
+
+        for rom_data in mir_program.rom_data_sections:
+            # Emit label
+            self.emitter.emit_label(rom_data.label)
+
+            # Emit data bytes
+            # Format as .db directives in groups of 16 bytes for readability
+            data = rom_data.data
+            for i in range(0, len(data), 16):
+                chunk = data[i:i+16]
+                bytes_str = ', '.join(f'${b:02X}' for b in chunk)
+                self.emitter.emit_instruction(".db", bytes_str)
 
     def _emit_symbol_exports(self, mir_program: MIRProgram):
         """

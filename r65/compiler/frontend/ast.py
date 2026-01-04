@@ -315,6 +315,33 @@ class IncludeBytesExpr(Expression):
 
 
 @dataclass
+class ArrayFillExpr(Expression):
+    """Array fill expression (e.g., [0; 256] - fill with value repeated count times)."""
+    value: Expression  # The value to repeat
+    count: Expression  # Number of repetitions (must be const)
+
+
+@dataclass
+class ArrayLiteralExpr(Expression):
+    """Array literal expression (e.g., [1, 2, 3, 4] - explicit elements)."""
+    elements: List[Expression]
+
+
+@dataclass
+class StructFieldInit(ASTNode):
+    """Field initializer in a struct literal."""
+    name: str
+    value: Expression
+
+
+@dataclass
+class StructLiteralExpr(Expression):
+    """Struct literal expression (e.g., Player { x: 10, y: 20, health: 100 })."""
+    struct_name: str
+    fields: List[StructFieldInit]
+
+
+@dataclass
 class BinaryOp(Expression):
     """Binary operation."""
     op: str  # "+", "-", "*", "/", etc.

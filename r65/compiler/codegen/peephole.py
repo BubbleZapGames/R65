@@ -163,6 +163,13 @@ class PeepholeOptimizer:
             if instr.opcode == "STA" and i + 1 < len(instructions):
                 store_addr = instr.operand
 
+                # Skip indexed addressing - if the address uses ,X or ,Y, we can't reliably
+                # determine if two stores are to the same location since the index may change
+                if store_addr and (',' in store_addr):
+                    optimized.append(instr)
+                    i += 1
+                    continue
+
                 # Look ahead to see if there's another store to same address
                 j = i + 1
                 is_dead = False

@@ -8,13 +8,15 @@ from typing import Optional
 from r65.compiler.hir import (
     HIRProgram, HIRFunctionDecl, HIRExpression, HIRStatement,
     HIRBinaryOp, HIRUnaryOp, HIRIntegerLiteral, HIRBooleanLiteral,
-    HIRIdentifier, HIRFunctionAddress, HIRRegister, HIRIncludeBytesExpr, HIRTypeCast, HIRFunctionCall,
+    HIRIdentifier, HIRFunctionAddress, HIRRegister, HIRIncludeBytesExpr, HIRArrayFillExpr, HIRArrayLiteralExpr,
+    HIRStructFieldInit, HIRStructLiteralExpr,
+    HIRTypeCast, HIRFunctionCall,
     HIRMethodCall, HIRArrayIndex, HIRFieldAccess, HIRDereference, HIRAddressOf, HIRAssignment,
     HIRLetStmt, HIRExprStmt, HIRReturnStmt, HIRIfStmt, HIRWhileStmt,
     HIRStaticDecl, HIRConstDecl,
     HIRMatchExpression, HIRPattern, HIRLiteralPattern, HIREnumPattern, HIRWildcardPattern, HIRIdentifierPattern, HIROrPattern,
     BasicTypeInfo, TypeInfo, SymbolKind, NeverTypeInfo,
-    RegisterLetBinding, ArrayTypeInfo,
+    RegisterLetBinding, ArrayTypeInfo, StructTypeInfo,
     ModeTransition
 )
 from r65.compiler.typeck.processor_mode import ProcessorMode
@@ -481,6 +483,42 @@ class TypeChecker:
             array_type = ArrayTypeInfo(element_type=elem_type, size=0)
             expr.expr_type = array_type
             return array_type
+
+        elif isinstance(expr, HIRArrayFillExpr):
+            # Array fill: [value; count]
+            # Type check the fill value
+            from r65.compiler.hir.types import ArrayTypeInfo
+            fill_type = self.check_expression(expr.fill_value)
+            # Create array type with the fill value type and count
+            array_type = ArrayTypeInfo(element_type=fill_type, size=expr.count)
+            expr.expr_type = array_type
+            return array_type
+
+        elif isinstance(expr, HIRArrayLiteralExpr):
+            # Array literal: [a, b, c, ...]
+            from r65.compiler.hir.types import ArrayTypeInfo
+            if not expr.elements:
+                raise TypeCheckError(
+                    "Empty array literals are not allowed",
+                    source_loc=expr.source_loc
+                )
+            # Type check first element to determine element type
+            first_type = self.check_expression(expr.elements[0])
+            # Type check remaining elements, ensuring they match
+            for i, elem in enumerate(expr.elements[1:], 2):
+                elem_type = self.check_expression(elem)
+                if not TypeUtils.types_equal(first_type, elem_type):
+                    raise TypeCheckError(
+                        f"Array element {i} has type {elem_type}, expected {first_type}",
+                        source_loc=elem.source_loc
+                    )
+            array_type = ArrayTypeInfo(element_type=first_type, size=len(expr.elements))
+            expr.expr_type = array_type
+            return array_type
+
+        elif isinstance(expr, HIRStructLiteralExpr):
+            # Struct literal: Player { x: 10, y: 20, health: 100 }
+            return self.check_struct_literal(expr)
 
         elif isinstance(expr, HIRMatchExpression):
             return self.check_match_expression(expr)
@@ -1201,3 +1239,86 @@ class TypeChecker:
 
         expr.expr_type = target_type
         return target_type
+
+    def check_struct_literal(self, expr: HIRStructLiteralExpr) -> TypeInfo:
+        """Type check struct literal expression."""
+        from r65.compiler.hir import HIRStructDecl
+
+        # Look up struct declaration
+        struct_symbol = self.symbol_table.lookup(expr.struct_name)
+        if not struct_symbol:
+            raise TypeCheckError(
+                f"Undefined struct: {expr.struct_name}",
+                source_loc=expr.source_loc
+            )
+
+        if struct_symbol.kind != SymbolKind.STRUCT:
+            raise TypeCheckError(
+                f"'{expr.struct_name}' is not a struct type",
+                source_loc=expr.source_loc
+            )
+
+        # Get struct definition
+        struct_def = struct_symbol.definition
+        if not struct_def:
+            raise TypeCheckError(
+                f"Struct '{expr.struct_name}' has no definition",
+                source_loc=expr.source_loc
+            )
+
+        # Build expected fields map from struct definition
+        expected_fields = {}
+        if isinstance(struct_def, HIRStructDecl):
+            for field in struct_def.fields:
+                expected_fields[field.name] = field.field_type
+        else:
+            # AST struct definition - resolve types
+            from r65.compiler.hir.types import TypeResolver
+            type_resolver = TypeResolver(self.symbol_table, self.const_evaluator)
+            for field in struct_def.fields:
+                expected_fields[field.name] = type_resolver.resolve_type(field.field_type)
+
+        # Check each field initializer
+        provided_fields = set()
+        for field_init in expr.fields:
+            if field_init.name in provided_fields:
+                raise TypeCheckError(
+                    f"Field '{field_init.name}' initialized multiple times",
+                    source_loc=expr.source_loc
+                )
+            provided_fields.add(field_init.name)
+
+            if field_init.name not in expected_fields:
+                raise TypeCheckError(
+                    f"Struct '{expr.struct_name}' has no field '{field_init.name}'",
+                    source_loc=expr.source_loc
+                )
+
+            expected_type = expected_fields[field_init.name]
+            actual_type = self.check_expression(field_init.value, expected_type)
+
+            if not TypeUtils.types_equal(expected_type, actual_type):
+                self._raise_type_mismatch_error(
+                    expected_type=expected_type,
+                    actual_type=actual_type,
+                    expr=field_init.value,
+                    context=f"field '{field_init.name}'",
+                    source_loc=expr.source_loc
+                )
+
+        # Check for missing fields
+        missing_fields = set(expected_fields.keys()) - provided_fields
+        if missing_fields:
+            missing_list = ', '.join(sorted(missing_fields))
+            raise TypeCheckError(
+                f"Missing fields in struct literal: {missing_list}",
+                source_loc=expr.source_loc
+            )
+
+        # Create struct type
+        struct_type = StructTypeInfo(
+            name=expr.struct_name,
+            definition=struct_def if isinstance(struct_def, HIRStructDecl) else None
+        )
+        expr.expr_type = struct_type
+        return struct_type
