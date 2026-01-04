@@ -72,6 +72,20 @@ preserves_xy:
 
 ---
 
+### 9. **Const/Literal Overflow Detection** - FIXED
+**Severity**: Low
+
+**Issue**: Compiler detected literal overflow but reported "type mismatch" instead of explicit overflow error.
+
+**Fix**: Added overflow detection in `_raise_type_mismatch_error` helper. Now reports:
+```
+Literal value 256 exceeds maximum for type u8 (255)
+  Valid range for u8: 0 to 255
+  Suggestion: Use a larger type (e.g., u16) or reduce the value
+```
+
+---
+
 ## USABILITY IMPROVEMENTS
 
 ### 2. **Register Aliasing Semantics** - Documentation Needed
@@ -88,20 +102,6 @@ fn test_alias_and_call() -> u8 {
 ```
 
 **Recommendation**: Add prominent documentation that register aliases are **live references**. Consider warning when alias is used after non-preserving call.
-
----
-
-### 9. **Const/Literal Overflow Detection** - Better Error Messages
-**Severity**: Low
-
-**Issue**: Compiler detects literal overflow but reports "type mismatch" instead of explicit overflow error.
-
-```rust
-#[zeropage]
-static mut VAR1: u8 = 256;  // Reports "Type mismatch" not "overflow"
-```
-
-**Recommendation**: Improve error message to explicitly mention overflow when literal exceeds target type's range.
 
 ---
 
@@ -153,7 +153,7 @@ let result: u8 = get_value();  // OK
 - [x] Division operator - **FIXED** (#10)
 - [x] Multiplication operator - **FIXED** (#11)
 - [x] Register alias after function call - **DOCUMENTED** (#2)
-- [x] Const expression overflow - **Works, needs better error** (#9)
+- [x] Const expression overflow - **FIXED** (#9)
 - [x] Preserves violation detection - **FIXED** (#7)
 
 ### Pending
@@ -175,15 +175,15 @@ let result: u8 = get_value();  // OK
 | 10 | Division operator | Medium | **Fixed** |
 | 11 | Multiplication operator | Medium | **Fixed** |
 | 7 | Register preservation | Medium | **Fixed** |
-| 9 | Literal overflow error messages | Low | Improvement |
+| 9 | Literal overflow error messages | Low | **Fixed** |
 | 2 | Register alias semantics | Low | Document |
 | 3 | Uninitialized static variables | Low | By Design |
 | 4 | Type inference limitations | Low | By Design |
 | 5 | Division by zero | High | To Verify |
 
 ### Priority Order
-1. **#9**: Improve overflow error messages
-2. **#2**: Document register alias semantics
+1. **#2**: Document register alias semantics
+2. **#5**: Verify/document division by zero behavior
 
 ---
 

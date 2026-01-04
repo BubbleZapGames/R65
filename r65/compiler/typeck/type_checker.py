@@ -137,6 +137,54 @@ class TypeChecker:
                 source_loc=source_loc
             )
 
+    def _raise_type_mismatch_error(self, expected_type: TypeInfo, actual_type: TypeInfo,
+                                    expr: HIRExpression, context: str, source_loc=None):
+        """
+        Raise a type mismatch error with improved messages for literal overflow.
+
+        Detects when the mismatch is due to an integer literal exceeding
+        the target type's range and provides a clearer error message.
+        """
+        # Check if this is a literal overflow case
+        if isinstance(expr, HIRIntegerLiteral) and isinstance(expected_type, BasicTypeInfo):
+            value = expr.value
+            type_name = expected_type.name
+
+            # Get range for expected type
+            ranges = {
+                'u8': (0, 255),
+                'i8': (-128, 127),
+                'u16': (0, 65535),
+                'i16': (-32768, 32767),
+            }
+
+            if type_name in ranges:
+                min_val, max_val = ranges[type_name]
+                if value < min_val or value > max_val:
+                    # This is a literal overflow!
+                    if value > max_val:
+                        raise TypeCheckError(
+                            f"Literal value {value} exceeds maximum for type {type_name} ({max_val})\n"
+                            f"  Valid range for {type_name}: {min_val} to {max_val}\n"
+                            f"  Suggestion: Use a larger type (e.g., u16) or reduce the value",
+                            source_loc=source_loc
+                        )
+                    else:  # value < min_val
+                        raise TypeCheckError(
+                            f"Literal value {value} is below minimum for type {type_name} ({min_val})\n"
+                            f"  Valid range for {type_name}: {min_val} to {max_val}\n"
+                            f"  Suggestion: Use a signed type (e.g., i8, i16) for negative values",
+                            source_loc=source_loc
+                        )
+
+        # Default type mismatch error
+        raise TypeCheckError(
+            f"Type mismatch in {context}\n"
+            f"  Expected: {expected_type}\n"
+            f"  Found: {actual_type}",
+            source_loc=source_loc
+        )
+
     # ========================================================================
     # Main Type Checking
     # ========================================================================
@@ -147,11 +195,27 @@ class TypeChecker:
         for decl in self.program.declarations:
             if isinstance(decl, HIRStaticDecl):
                 if decl.initializer:
-                    self.check_expression(decl.initializer, decl.var_type)
+                    init_type = self.check_expression(decl.initializer, decl.var_type)
+                    if not TypeUtils.types_equal(decl.var_type, init_type):
+                        self._raise_type_mismatch_error(
+                            expected_type=decl.var_type,
+                            actual_type=init_type,
+                            expr=decl.initializer,
+                            context="static variable initializer",
+                            source_loc=decl.source_loc
+                        )
 
             elif isinstance(decl, HIRConstDecl):
                 if decl.value:
-                    self.check_expression(decl.value, decl.const_type)
+                    value_type = self.check_expression(decl.value, decl.const_type)
+                    if not TypeUtils.types_equal(decl.const_type, value_type):
+                        self._raise_type_mismatch_error(
+                            expected_type=decl.const_type,
+                            actual_type=value_type,
+                            expr=decl.value,
+                            context="const declaration",
+                            source_loc=decl.source_loc
+                        )
 
         # Type check all functions
         for decl in self.program.declarations:
@@ -282,10 +346,11 @@ class TypeChecker:
             init_type = self.check_expression(stmt.initializer, var_type)
 
             if not TypeUtils.types_equal(var_type, init_type):
-                raise TypeCheckError(
-                    f"Type mismatch in let binding\n"
-                    f"  Expected: {var_type}\n"
-                    f"  Found: {init_type}",
+                self._raise_type_mismatch_error(
+                    expected_type=var_type,
+                    actual_type=init_type,
+                    expr=stmt.initializer,
+                    context="let binding",
                     source_loc=stmt.source_loc
                 )
 
@@ -994,10 +1059,11 @@ class TypeChecker:
 
         # Types must match exactly
         if not TypeUtils.types_equal(target_type, value_type):
-            raise TypeCheckError(
-                f"Type mismatch in assignment\n"
-                f"  Target: {target_type}\n"
-                f"  Value: {value_type}",
+            self._raise_type_mismatch_error(
+                expected_type=target_type,
+                actual_type=value_type,
+                expr=expr.value,
+                context="assignment",
                 source_loc=expr.source_loc
             )
 
