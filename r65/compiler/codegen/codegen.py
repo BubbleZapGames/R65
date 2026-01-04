@@ -168,6 +168,9 @@ class ProgramCodeGenerator:
 
         # Emit SNES header and vectors if any handlers found
         if nmi_handler or irq_handler or reset_handler:
+            # Emit empty interrupt handler for unused vectors
+            self.emitter.emit_empty_interrupt_handler()
+
             # Emit SNES ROM header
             self.emitter.emit_snes_header(rom_name="R65 Compiled ROM", version=0)
 

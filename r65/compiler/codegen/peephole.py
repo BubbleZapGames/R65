@@ -26,9 +26,7 @@ class Instruction:
             self.opcode in ('ID', 'NAME', 'LOROM', 'HIROM', 'FASTROM',
                            'CARTRIDGETYPE', 'ROMSIZE', 'SRAMSIZE', 'COUNTRY',
                            'LICENSEECODE', 'VERSION',
-                           # Vector keywords (no indentation)
-                           'COP', 'BRK', 'ABORT', 'NMI', 'UNUSED', 'IRQ',
-                           'RESET', 'IRQBRK')):
+                           'NATIVEVECTOR', 'EMUVECTOR')):
             # No indentation for directives, labels, and special keywords
             result = self.opcode
         else:

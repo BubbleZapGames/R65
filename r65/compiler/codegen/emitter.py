@@ -402,6 +402,8 @@ class AssemblyEmitter:
               LICENSEECODE $00
               VERSION $00
             .ENDSNES
+
+        Note: Vectors are placed separately using .ORGA directives.
         """
         self.emit_section_header("SNES ROM Header")
 
@@ -421,56 +423,71 @@ class AssemblyEmitter:
         self.emit_line(".ENDSNES")
         self.emit_blank_line()
 
-    def emit_interrupt_vectors(self, nmi=None, irq=None, reset=None):
+    def emit_empty_interrupt_handler(self):
         """
-        Emit interrupt vector table using .SNESNATIVEVECTOR and .SNESEUVECTOR.
-
-        Args:
-            nmi: NMI handler label (or None for 0)
-            irq: IRQ handler label (or None for 0)
-            reset: RESET handler label (or None for 0)
+        Emit empty interrupt handler for unused vectors.
 
         Generated:
-            .SNESNATIVEVECTOR
-              COP 0
-              BRK 0
-              ABORT 0
-              NMI nmi_handler
-              UNUSED 0
-              IRQ 0
-            .ENDNATIVEVECTOR
-
-            .SNESEUVECTOR
-              COP 0
-              UNUSED 0
-              ABORT 0
-              NMI 0
-              RESET main
-              IRQBRK 0
-            .ENDEMUVECTOR
+            __empty_handler:
+                RTI
         """
+        self.emit_label("__empty_handler")
+        self.emit_instruction("RTI")
+        self.emit_blank_line()
+
+    def emit_interrupt_vectors(self, nmi=None, irq=None, reset=None):
+        """
+        Emit interrupt vector table using .ORGA directives.
+
+        Args:
+            nmi: NMI handler label (or None for __empty_handler)
+            irq: IRQ handler label (or None for __empty_handler)
+            reset: RESET handler label (or None for __empty_handler)
+
+        Generated:
+            ; Native Mode Vectors
+            .ORGA $FFE4
+            .dw __empty_handler        ; COP
+            .dw __empty_handler        ; BRK
+            .dw __empty_handler        ; ABORT
+            .dw nmi_handler            ; NMI
+            .dw __empty_handler        ; (unused)
+            .dw __empty_handler        ; IRQ
+
+            ; Emulation Mode Vectors
+            .ORGA $FFF4
+            .dw __empty_handler        ; COP
+            .dw __empty_handler        ; (unused)
+            .dw __empty_handler        ; ABORT
+            .dw __empty_handler        ; NMI
+            .dw main                   ; RESET
+            .dw __empty_handler        ; IRQ/BRK
+        """
+        # Default to empty handler
+        nmi = nmi or "__empty_handler"
+        irq = irq or "__empty_handler"
+        reset = reset or "__empty_handler"
+
         # Native mode vectors
         self.emit_section_header("Interrupt Vectors (Native Mode)")
-        self.emit_line(".SNESNATIVEVECTOR")
-        self.emit_line(f"COP {nmi or '0'}")
-        self.emit_line("BRK 0")
-        self.emit_line("ABORT 0")
-        self.emit_line(f"NMI {nmi or '0'}")
-        self.emit_line("UNUSED 0")
-        self.emit_line(f"IRQ {irq or '0'}")
-        self.emit_line(".ENDNATIVEVECTOR")
+        self.emit_line(".ORGA $FFE4")
+        self.emit_instruction(".dw", "__empty_handler", "COP")
+        self.emit_instruction(".dw", "__empty_handler", "BRK")
+        self.emit_instruction(".dw", "__empty_handler", "ABORT")
+        self.emit_instruction(".dw", nmi, "NMI")
+        self.emit_instruction(".dw", "__empty_handler", "(unused)")
+        self.emit_instruction(".dw", irq, "IRQ")
         self.emit_blank_line()
 
         # Emulation mode vectors
         self.emit_section_header("Interrupt Vectors (Emulation Mode)")
-        self.emit_line(".SNESEUVECTOR")
-        self.emit_line("COP 0")
-        self.emit_line("UNUSED 0")
-        self.emit_line("ABORT 0")
-        self.emit_line("NMI 0")
-        self.emit_line(f"RESET {reset or '0'}")
-        self.emit_line(f"IRQBRK {irq or '0'}")
-        self.emit_line(".ENDEMUVECTOR")
+        self.emit_line(".ORGA $FFF4")
+        self.emit_instruction(".dw", "__empty_handler", "COP")
+        self.emit_instruction(".dw", "__empty_handler", "(unused)")
+        self.emit_instruction(".dw", "__empty_handler", "ABORT")
+        self.emit_instruction(".dw", "__empty_handler", "NMI")
+        self.emit_instruction(".dw", reset, "RESET")
+        self.emit_instruction(".dw", irq, "IRQ/BRK")
         self.emit_blank_line()
 
     # ========================================================================
