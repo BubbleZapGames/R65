@@ -349,7 +349,7 @@ class FunctionCodeGenerator:
         """
         # Initialize stack pointer for entry functions with custom stack region
         if mir_func.is_entry and self.mem_alloc.stack_upper is not None:
-            if self.mem_alloc.stack_upper != 0x1FFF:
+            if self.mem_alloc.stack_upper != 0x01FF:
                 stack_addr = self.mem_alloc.stack_upper
                 self.emitter.emit_instruction("REP", "#$20", "16-bit A for stack setup")
                 self.emitter.emit_instruction("LDA", f"#${stack_addr:04X}", "Stack top")

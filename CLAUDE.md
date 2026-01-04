@@ -299,7 +299,7 @@ Reserve a region in low RAM for the stack using `#[stack(lower, upper)]`:
 static mut VAR: u8;  // Gets $0100, not $1F00
 ```
 
-**Default Stack:** If no `#[stack]` attribute is specified, the default stack region is `$0100-$01FF` (256 bytes). The stack pointer is automatically initialized in the `#[entry]` function prologue if the upper bound is not `$1FFF`.
+**Default Stack:** If no `#[stack]` attribute is specified, the default stack region is `$0100-$01FF` (256 bytes). The stack pointer is automatically initialized in the `#[entry]` function prologue if the upper bound is not `$01FF`.
 
 **Memory Map:**
 | Region | Range | Storage Class | Notes |
