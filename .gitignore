@@ -25,3 +25,9 @@ htmlcov/
 # Temporary files
 *.tmp
 .DS_Store
+
+# Generated test outputs
+tests/*.asm
+tests/*.o
+tests/*.sfc
+tests/linkfile

@@ -1,0 +1,20 @@
+// Simple hardware register BIT test
+
+#[hw(0x4212)]
+static mut HVBJOY: u8;
+
+#[mode(m8, x8)]
+fn test_hw_direct() -> u8 {
+    // Direct if test - should use BIT $4212, BMI
+    if HVBJOY & 0x80 != 0 {
+        return 1;
+    }
+    return 0;
+}
+
+#[entry]
+#[mode(m8, x8)]
+fn main() -> ! {
+    let result @ A = test_hw_direct();
+    loop {}
+}

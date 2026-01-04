@@ -1,0 +1,26 @@
+// Test NOP built-in function
+
+#[mode(m8, x8)]
+fn test_single_nop() {
+    NOP();  // Single NOP
+}
+
+#[mode(m8, x8)]
+fn test_multiple_nop() {
+    NOP(5);  // Five NOPs
+}
+
+#[mode(m8, x8)]
+fn test_timing_delay() {
+    // Use NOP for precise timing control
+    NOP(10);  // 10 cycles of delay (2 cycles per NOP)
+}
+
+#[entry]
+#[mode(m8, x8)]
+fn main() -> ! {
+    test_single_nop();
+    test_multiple_nop();
+    test_timing_delay();
+    loop {}
+}
