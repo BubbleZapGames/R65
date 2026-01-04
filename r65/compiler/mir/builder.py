@@ -198,6 +198,7 @@ class MIRBuilder:
             interrupt_attr=hir_func.interrupt_attr,
             is_entry=hir_func.is_entry,
             is_far=hir_func.is_far,
+            source_loc=hir_func.source_loc,  # Propagate source location
             vreg_allocator=VirtualRegisterAllocator(),
             alias_tracker=RegisterAliasTracker()
         )

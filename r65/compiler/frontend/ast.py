@@ -3,9 +3,12 @@ Abstract Syntax Tree (AST) node definitions for R65.
 
 Each node represents a syntactic construct in the language.
 """
-from dataclasses import dataclass
-from typing import List, Optional, Union
+from dataclasses import dataclass, field
+from typing import List, Optional, Union, TYPE_CHECKING
 from enum import Enum
+
+if TYPE_CHECKING:
+    from r65.compiler.hir.errors import SourceLocation
 
 
 # ============================================================================
@@ -15,7 +18,9 @@ from enum import Enum
 @dataclass
 class ASTNode:
     """Base class for all AST nodes."""
-    pass
+    # Source location (populated by parser from Lark meta)
+    # Using kw_only=True to allow subclasses to have non-default fields
+    source_loc: Optional['SourceLocation'] = field(default=None, repr=False, kw_only=True)
 
 
 @dataclass

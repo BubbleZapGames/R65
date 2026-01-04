@@ -627,6 +627,9 @@ class MIRFunction:
     is_entry: bool = False
     is_far: bool = False
 
+    # Source location for debugging (from HIR)
+    source_loc: Optional[Any] = None  # SourceLocation
+
     # Virtual register allocator
     vreg_allocator: Optional[Any] = None  # VirtualRegisterAllocator
 

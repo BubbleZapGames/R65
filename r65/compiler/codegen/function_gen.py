@@ -116,8 +116,15 @@ class FunctionCodeGenerator:
         self.emitter.emit_comment(f"{mir_func.name}")
 
         # Source location (if available)
-        # TODO: Add source location tracking
-        # self.emitter.emit_comment(f"Source: {mir_func.source_file}:{start}-{end}")
+        if mir_func.source_loc:
+            loc = mir_func.source_loc
+            self.emitter.emit_comment(f"Source: {loc.file_path}:{loc.line}")
+            # Show include chain if this is from an included file
+            if loc.included_from:
+                parent = loc.included_from
+                while parent:
+                    self.emitter.emit_comment(f"  included from {parent.file_path}:{parent.line}")
+                    parent = parent.included_from
 
         self.emitter.emit_comment("")
 

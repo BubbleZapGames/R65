@@ -4,7 +4,7 @@ Parser for R65 using Lark.
 Transforms Lark parse trees into our custom AST.
 """
 from pathlib import Path
-from lark import Lark, Transformer, Token as LarkToken, Tree
+from lark import Lark, Transformer, Token as LarkToken, Tree, v_args
 from r65.compiler.frontend import ast
 from typing import List, Union, Optional
 
@@ -22,6 +22,30 @@ class ASTBuilder(Transformer):
     Each method corresponds to a grammar rule and transforms
     the matched nodes into AST nodes.
     """
+
+    def __init__(self, filename: str = "<input>", included_from=None):
+        """
+        Initialize the AST builder.
+
+        Args:
+            filename: Current source file name
+            included_from: SourceLocation of include! statement if this is included
+        """
+        super().__init__()
+        self.filename = filename
+        self.included_from = included_from
+
+    def _make_source_loc(self, meta):
+        """Create a SourceLocation from Lark meta info."""
+        from r65.compiler.hir.errors import SourceLocation
+        if meta is None:
+            return None
+        return SourceLocation(
+            file_path=self.filename,
+            line=getattr(meta, 'line', 0),
+            column=getattr(meta, 'column', 0),
+            included_from=self.included_from
+        )
 
     def _parse_integer(self, value: str) -> int:
         """Parse an integer literal."""
@@ -116,9 +140,10 @@ class ASTBuilder(Transformer):
     # Declarations
     # ========================================================================
 
-    def function_decl(self, items):
+    @v_args(tree=True)
+    def function_decl(self, tree):
         """Function declaration."""
-        items = self._filter_tokens(items)
+        items = self._filter_tokens(tree.children)
 
         # Collect attributes
         attrs, idx = self._collect_attributes(items, 0)
@@ -153,7 +178,8 @@ class ASTBuilder(Transformer):
             name=name.value if isinstance(name, LarkToken) else name,
             params=params,
             return_type=return_type,
-            body=body
+            body=body,
+            source_loc=self._make_source_loc(tree.meta)
         )
 
     def param_list(self, items):
@@ -821,16 +847,23 @@ class Parser:
 
     def __init__(self):
         """Initialize the parser."""
-        self.lark = Lark(GRAMMAR, parser='lalr', start='start', keep_all_tokens=True)
-        self.transformer = ASTBuilder()
+        self.lark = Lark(
+            GRAMMAR,
+            parser='lalr',
+            start='start',
+            keep_all_tokens=True,
+            propagate_positions=True  # Enable source location tracking
+        )
 
-    def parse(self, source: str, filename: str = "<input>") -> ast.Program:
+    def parse(self, source: str, filename: str = "<input>",
+              included_from=None) -> ast.Program:
         """
         Parse source code into an AST.
 
         Args:
             source: Source code to parse
             filename: Name of the source file (for error messages)
+            included_from: SourceLocation of include! statement if parsing included file
 
         Returns:
             Program AST node
@@ -840,7 +873,8 @@ class Parser:
         """
         try:
             tree = self.lark.parse(source)
-            program = self.transformer.transform(tree)
+            transformer = ASTBuilder(filename=filename, included_from=included_from)
+            program = transformer.transform(tree)
             return program
         except Exception as e:
             raise ParseError(f"Parse error in {filename}: {e}") from e

@@ -248,7 +248,8 @@ class HIRBuilder:
             bank_attr=bank_attr,
             interrupt_attr=interrupt_attr,
             is_entry=is_entry,
-            symbol=func_symbol
+            symbol=func_symbol,
+            source_loc=func.source_loc  # Propagate source location from AST
         )
 
     def _build_parameter(self, param: ast.Parameter) -> hir.HIRParameter:
