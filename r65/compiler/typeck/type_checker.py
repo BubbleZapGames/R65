@@ -13,7 +13,7 @@ from r65.compiler.hir import (
     HIRLetStmt, HIRExprStmt, HIRReturnStmt, HIRIfStmt, HIRWhileStmt,
     HIRStaticDecl, HIRConstDecl,
     HIRMatchExpression, HIRPattern, HIRLiteralPattern, HIREnumPattern, HIRWildcardPattern, HIRIdentifierPattern, HIROrPattern,
-    BasicTypeInfo, TypeInfo, SymbolKind,
+    BasicTypeInfo, TypeInfo, SymbolKind, NeverTypeInfo,
     RegisterLetBinding, ArrayTypeInfo,
     ModeTransition
 )
@@ -619,9 +619,17 @@ class TypeChecker:
                 )
 
             # Type check each argument
-            for arg, param in zip(expr.args, func_decl.parameters):
+            for i, (arg, param) in enumerate(zip(expr.args, func_decl.parameters)):
                 arg_type = self.check_expression(arg)
-                # TODO: Check arg_type matches param.param_type
+                # Check arg_type matches param.param_type
+                # NeverTypeInfo is compatible with any type (represents non-returning code)
+                if not isinstance(arg_type, NeverTypeInfo):
+                    if not TypeUtils.types_equal(arg_type, param.param_type):
+                        raise TypeCheckError(
+                            f"Argument {i + 1} to '{func_symbol.name}' has type {arg_type}, "
+                            f"expected {param.param_type} for parameter '{param.name}'",
+                            source_loc=arg.source_loc if hasattr(arg, 'source_loc') else expr.source_loc
+                        )
 
             # Check mode compatibility (only for direct calls)
             self._check_call_mode_compatibility(func_symbol.name, func_decl, expr.source_loc)
@@ -652,9 +660,17 @@ class TypeChecker:
                 )
 
             # Type check each argument against function type
-            for arg, param_type in zip(expr.args, func_type.param_types):
+            for i, (arg, param_type) in enumerate(zip(expr.args, func_type.param_types)):
                 arg_type = self.check_expression(arg)
-                # TODO: Check arg_type matches param_type
+                # Check arg_type matches param_type
+                # NeverTypeInfo is compatible with any type (represents non-returning code)
+                if not isinstance(arg_type, NeverTypeInfo):
+                    if not TypeUtils.types_equal(arg_type, param_type):
+                        raise TypeCheckError(
+                            f"Argument {i + 1} to function pointer has type {arg_type}, "
+                            f"expected {param_type}",
+                            source_loc=arg.source_loc if hasattr(arg, 'source_loc') else expr.source_loc
+                        )
 
             # Set return type from function type
             if func_type.return_type:

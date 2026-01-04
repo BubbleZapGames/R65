@@ -300,7 +300,7 @@ class FunctionCodeGenerator:
         return get_type_size(type_info)
 
     # ========================================================================
-    # Prologue/Epilogue (TODO)
+    # Prologue/Epilogue
     # ========================================================================
 
     def _emit_mode_directives(self, mir_func: MIRFunction):
