@@ -10,6 +10,10 @@ from dataclasses import dataclass
 from r65.compiler.hir import HIRStaticDecl, Symbol
 from r65.compiler.hir.attributes import StorageKind
 from r65.compiler.errors import MemoryAllocationError
+from r65.compiler.codegen.type_utils import get_type_size as _get_type_size
+from r65.compiler.codegen.constants import (
+    LOWRAM_START, LOWRAM_END, ZEROPAGE_END, RAM_START, RAM_END
+)
 
 
 @dataclass
@@ -33,17 +37,17 @@ class MemoryAllocator:
 
     def __init__(self):
         """Initialize memory allocator."""
-        # Address ranges
+        # Address ranges (from constants.py)
         # Low RAM is $0000-$1FFF (8KB)
         # - Zeropage ($0000-$00FF) uses direct page addressing
         # - Rest of low RAM ($0100-$1FFF) uses absolute addressing
         # - Stack can occupy any slice within low RAM
-        self.lowram_start = 0x0000
-        self.lowram_end = 0x1FFF
-        self.zeropage_end = 0x00FF  # Upper bound for direct page addressing
+        self.lowram_start = LOWRAM_START
+        self.lowram_end = LOWRAM_END
+        self.zeropage_end = ZEROPAGE_END
 
-        self.ram_start = 0x7E2000  # SNES Work RAM (above low RAM mirror)
-        self.ram_end = 0x7FFFFF
+        self.ram_start = RAM_START
+        self.ram_end = RAM_END
 
         # Stack reservation (set via #[stack(lower, upper)])
         self.stack_lower: Optional[int] = None
@@ -71,38 +75,7 @@ class MemoryAllocator:
         Returns:
             Size in bytes
         """
-        # Get type name
-        if hasattr(type_info, 'name'):
-            type_name = type_info.name
-        else:
-            type_name = str(type_info)
-
-        # Basic types
-        if type_name in ('u8', 'i8', 'bool'):
-            return 1
-        elif type_name in ('u16', 'i16'):
-            return 2
-
-        # Array types
-        if hasattr(type_info, 'element_type') and hasattr(type_info, 'size'):
-            element_size = self.get_type_size(type_info.element_type)
-            return element_size * type_info.size
-
-        # Struct types
-        if hasattr(type_info, 'fields'):
-            total = 0
-            for field in type_info.fields:
-                total += self.get_type_size(field.field_type)
-            return total
-
-        # Pointer types
-        if type_name.startswith('near<'):
-            return 2  # 16-bit pointer
-        elif type_name.startswith('far<'):
-            return 3  # 24-bit pointer
-
-        # Default: assume 1 byte
-        return 1
+        return _get_type_size(type_info)
 
     # ========================================================================
     # Zero-Page Allocation (subset of low RAM with direct page addressing)

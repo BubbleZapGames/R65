@@ -6,10 +6,13 @@ Generates complete function bodies with headers, labels, and instructions.
 
 from typing import List, Set, Dict, Optional
 from r65.compiler.mir.nodes import MIRFunction, BasicBlock
-from r65.compiler.codegen.emitter import *
+from r65.compiler.codegen.emitter import AssemblyEmitter
 from r65.compiler.codegen.instruction_select import InstructionSelector
-from r65.compiler.codegen.register_alloc import *
-from r65.compiler.codegen.memory_alloc import *
+from r65.compiler.codegen.register_alloc import ScratchRegisterPool, RegisterAllocator
+from r65.compiler.codegen.memory_alloc import MemoryAllocator
+from r65.compiler.codegen.instruction_select_helpers import RegisterMappings
+from r65.compiler.codegen.type_utils import get_type_size
+from r65.compiler.codegen.constants import DEFAULT_STACK_UPPER
 
 
 class FunctionCodeGenerator:
@@ -294,13 +297,7 @@ class FunctionCodeGenerator:
 
     def _get_variable_size(self, type_info) -> int:
         """Get size of variable in bytes from type info."""
-        if hasattr(type_info, 'name'):
-            type_name = type_info.name
-            if type_name in ('u8', 'i8', 'bool'):
-                return 1
-            elif type_name in ('u16', 'i16'):
-                return 2
-        return 1  # Default to 1 byte
+        return get_type_size(type_info)
 
     # ========================================================================
     # Prologue/Epilogue (TODO)
@@ -349,7 +346,7 @@ class FunctionCodeGenerator:
         """
         # Initialize stack pointer for entry functions with custom stack region
         if mir_func.is_entry and self.mem_alloc.stack_upper is not None:
-            if self.mem_alloc.stack_upper != 0x01FF:
+            if self.mem_alloc.stack_upper != DEFAULT_STACK_UPPER:
                 stack_addr = self.mem_alloc.stack_upper
                 self.emitter.emit_instruction("REP", "#$20", "16-bit A for stack setup")
                 self.emitter.emit_instruction("LDA", f"#${stack_addr:04X}", "Stack top")
@@ -415,18 +412,9 @@ class FunctionCodeGenerator:
             push_order = ['STATUS', 'A', 'X', 'Y', 'D', 'DBR']
             for reg in push_order:
                 if reg in preserved_regs:
-                    if reg == 'STATUS':
-                        self.emitter.emit_instruction("PHP", comment="Preserve STATUS")
-                    elif reg == 'A':
-                        self.emitter.emit_instruction("PHA", comment="Preserve A")
-                    elif reg == 'X':
-                        self.emitter.emit_instruction("PHX", comment="Preserve X")
-                    elif reg == 'Y':
-                        self.emitter.emit_instruction("PHY", comment="Preserve Y")
-                    elif reg == 'D':
-                        self.emitter.emit_instruction("PHD", comment="Preserve D")
-                    elif reg == 'DBR':
-                        self.emitter.emit_instruction("PHB", comment="Preserve DBR")
+                    push_instr = RegisterMappings.PUSH.get(reg)
+                    if push_instr:
+                        self.emitter.emit_instruction(push_instr, comment=f"Preserve {reg}")
 
     def emit_epilogue(self, mir_func: MIRFunction, reg_alloc: RegisterAllocator):
         """

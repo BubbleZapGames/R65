@@ -12,6 +12,7 @@ from r65.compiler.mir.nodes import (
     Compare, Move, Call, SetMode
 )
 from r65.compiler.errors import MIRLoweringError
+from r65.compiler.codegen.type_utils import get_type_size
 
 if TYPE_CHECKING:
     from r65.compiler.mir.builder import MIRBuilder
@@ -114,41 +115,7 @@ class TypeSizeCalculator:
     @classmethod
     def _calculate_size(cls, type_info) -> int:
         """Calculate size of a type."""
-        if type_info is None:
-            return 1
-
-        # Handle BasicTypeInfo
-        if hasattr(type_info, 'name'):
-            type_name = type_info.name
-            size_map = {
-                'u8': 1, 'i8': 1, 'bool': 1,
-                'u16': 2, 'i16': 2,
-                'u24': 3,  # For far pointers
-            }
-            if type_name in size_map:
-                return size_map[type_name]
-
-        # Handle ArrayTypeInfo
-        if hasattr(type_info, 'element_type') and hasattr(type_info, 'size'):
-            elem_size = cls.get_size(type_info.element_type)
-            return elem_size * type_info.size
-
-        # Handle StructTypeInfo
-        if hasattr(type_info, 'fields'):
-            total = 0
-            for field in type_info.fields:
-                total += cls.get_size(field.field_type)
-            return total
-
-        # Handle PointerTypeInfo
-        if hasattr(type_info, 'pointee_type'):
-            # Near pointer = 2 bytes, far pointer = 3 bytes
-            if hasattr(type_info, 'is_far') and type_info.is_far:
-                return 3
-            return 2
-
-        # Default to 1 byte
-        return 1
+        return get_type_size(type_info)
 
     @classmethod
     def clear_cache(cls):

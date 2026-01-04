@@ -6,8 +6,8 @@ Generates symbol definitions from memory allocations and constants.
 
 from typing import Optional
 from r65.compiler.hir import HIRConstDecl
-from r65.compiler.codegen.memory_alloc import *
-from r65.compiler.codegen.emitter import *
+from r65.compiler.codegen.memory_alloc import MemoryAllocator, AllocationInfo
+from r65.compiler.codegen.emitter import AssemblyEmitter
 
 
 class SymbolDefinitionGenerator:

@@ -7,11 +7,12 @@ into WLA-DX assembly output.
 
 from typing import Optional, Dict, List
 from r65.compiler.mir import MIRProgram, MIRFunction
-from r65.compiler.codegen.emitter import *
-from r65.compiler.codegen.memory_alloc import *
-from r65.compiler.codegen.symbol_gen import *
-from r65.compiler.codegen.function_gen import *
+from r65.compiler.codegen.emitter import AssemblyEmitter
+from r65.compiler.codegen.memory_alloc import MemoryAllocator
+from r65.compiler.codegen.symbol_gen import SymbolDefinitionGenerator
+from r65.compiler.codegen.function_gen import ProgramFunctionGenerator
 from r65.compiler.codegen.peephole import optimize_assembly
+from r65.compiler.codegen.constants import DEFAULT_STACK_LOWER, DEFAULT_STACK_UPPER
 
 
 class ProgramCodeGenerator:
@@ -69,7 +70,7 @@ class ProgramCodeGenerator:
             )
         else:
             # Default stack region: $0100-$01FF (256 bytes)
-            self.allocator.set_stack_region(0x0100, 0x01FF)
+            self.allocator.set_stack_region(DEFAULT_STACK_LOWER, DEFAULT_STACK_UPPER)
 
         self.allocator.allocate_all(mir_program.statics)
 

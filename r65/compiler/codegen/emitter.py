@@ -23,6 +23,13 @@ SUBSECTION_DIVIDER = "-" * DIVIDER_WIDTH
 # Column alignment for comments
 COMMENT_COLUMN = 32
 
+# Import memory constants (delay import to avoid circular dependency)
+def _get_rom_constants():
+    from r65.compiler.codegen.constants import (
+        LOROM_SLOT_SIZE, LOROM_SLOT_ADDR, HIROM_SLOT_SIZE, HIROM_SLOT_ADDR
+    )
+    return LOROM_SLOT_SIZE, LOROM_SLOT_ADDR, HIROM_SLOT_SIZE, HIROM_SLOT_ADDR
+
 
 class AssemblyEmitter:
     """
@@ -173,12 +180,13 @@ class AssemblyEmitter:
         """
         self.emit_section_header(f"Memory Map ({rom_type.upper()})")
 
+        lorom_size, lorom_addr, hirom_size, hirom_addr = _get_rom_constants()
         if rom_type.lower() == "lorom":
-            slot_size = 0x8000  # 32KB
-            slot_addr = 0x8000
+            slot_size = lorom_size
+            slot_addr = lorom_addr
         else:  # hirom
-            slot_size = 0x10000  # 64KB
-            slot_addr = 0x0000
+            slot_size = hirom_size
+            slot_addr = hirom_addr
 
         # Memory map
         self.emit_line(".MEMORYMAP")

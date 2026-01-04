@@ -7,8 +7,9 @@ address range, and instruction requirements.
 
 from typing import Optional, Tuple
 from enum import Enum
-from r65.compiler.codegen.register_alloc import *
+from r65.compiler.codegen.register_alloc import PhysicalLocation, LocationKind
 from r65.compiler.errors import AddressingModeError
+from r65.compiler.codegen.constants import DP_MAX, ABSOLUTE_MIN, ABSOLUTE_MAX
 
 
 class AddressingMode(Enum):
@@ -121,9 +122,9 @@ class AddressingModeSelector:
             Tuple of (AddressingMode, operand_string)
         """
         # Determine address range
-        is_direct_page = (0 <= addr <= 0xFF)
-        is_absolute = (0x100 <= addr <= 0xFFFF)
-        is_long = (addr > 0xFFFF)
+        is_direct_page = (0 <= addr <= DP_MAX)
+        is_absolute = (ABSOLUTE_MIN <= addr <= ABSOLUTE_MAX)
+        is_long = (addr > ABSOLUTE_MAX)
 
         # Indirect addressing
         if is_indirect:

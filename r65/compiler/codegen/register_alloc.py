@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from enum import Enum
 from r65.compiler.mir.nodes import VirtualRegister, HardwareRegister, MIRFunction
 from r65.compiler.codegen.slot_allocator import StackSlotAllocator, SlotAllocation
+from r65.compiler.codegen.type_utils import get_type_size
 
 
 class LocationKind(Enum):
@@ -155,13 +156,7 @@ class ScratchRegisterPool:
 
     def _get_vreg_size(self, vreg: VirtualRegister) -> int:
         """Get size of virtual register in bytes."""
-        if hasattr(vreg.type_info, 'name'):
-            type_name = vreg.type_info.name
-            if type_name in ('u8', 'i8', 'bool'):
-                return 1
-            elif type_name in ('u16', 'i16'):
-                return 2
-        return 1  # Default to 1 byte
+        return get_type_size(vreg.type_info)
 
 
 class StackAllocator:
@@ -212,13 +207,7 @@ class StackAllocator:
 
     def _get_vreg_size(self, vreg: VirtualRegister) -> int:
         """Get size of virtual register in bytes."""
-        if hasattr(vreg.type_info, 'name'):
-            type_name = vreg.type_info.name
-            if type_name in ('u8', 'i8', 'bool'):
-                return 1
-            elif type_name in ('u16', 'i16'):
-                return 2
-        return 1
+        return get_type_size(vreg.type_info)
 
 
 class RegisterAllocator:
@@ -374,10 +363,4 @@ class RegisterAllocator:
 
     def _get_vreg_size(self, vreg: VirtualRegister) -> int:
         """Get size of virtual register in bytes."""
-        if hasattr(vreg.type_info, 'name'):
-            type_name = vreg.type_info.name
-            if type_name in ('u8', 'i8', 'bool'):
-                return 1
-            elif type_name in ('u16', 'i16'):
-                return 2
-        return 1
+        return get_type_size(vreg.type_info)

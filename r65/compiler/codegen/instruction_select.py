@@ -7,13 +7,22 @@ addressing modes and register usage.
 
 from typing import Union, Optional
 from enum import Enum
-from r65.compiler.mir.nodes import *
+from r65.compiler.mir.nodes import (
+    MIRFunction, MIRInstruction,
+    Load, Store, LoadIndirect, StoreIndirect,
+    Move, Return, Jump, JumpTable, CondBranch, Call,
+    BinaryOp, UnaryOp, Compare, BitTest, Rotate, SetMode, TypeConvert,
+    Push, Pull, SaveRegister, RestoreRegister, ReturnFromInterrupt,
+    VirtualRegister, HardwareRegister, Immediate, MemoryLocation
+)
 from r65.compiler.codegen.emitter import AssemblyEmitter
-from r65.compiler.codegen.register_alloc import *
+from r65.compiler.codegen.register_alloc import (
+    RegisterAllocator, PhysicalLocation, LocationKind
+)
 from r65.compiler.codegen.memory_alloc import MemoryAllocator
 from r65.compiler.errors import InstructionSelectionError, compiler_assert
 from r65.compiler.codegen.instruction_select_helpers import (
-    XBAState, XBAStateManager, BinaryOpEmitter
+    XBAState, XBAStateManager, BinaryOpEmitter, RegisterMappings
 )
 
 
@@ -1783,19 +1792,9 @@ class InstructionSelector:
             instr: SaveRegister instruction
         """
         reg_name = instr.register.name
-
-        if reg_name == 'A':
-            self.emitter.emit_instruction("PHA")
-        elif reg_name == 'X':
-            self.emitter.emit_instruction("PHX")
-        elif reg_name == 'Y':
-            self.emitter.emit_instruction("PHY")
-        elif reg_name == 'STATUS':
-            self.emitter.emit_instruction("PHP")
-        elif reg_name == 'D':
-            self.emitter.emit_instruction("PHD")
-        elif reg_name == 'DBR':
-            self.emitter.emit_instruction("PHB")
+        push_instr = RegisterMappings.PUSH.get(reg_name)
+        if push_instr:
+            self.emitter.emit_instruction(push_instr)
         else:
             raise InstructionSelectionError(f"Cannot push register: {reg_name}")
 
@@ -1807,19 +1806,9 @@ class InstructionSelector:
             instr: RestoreRegister instruction
         """
         reg_name = instr.register.name
-
-        if reg_name == 'A':
-            self.emitter.emit_instruction("PLA")
-        elif reg_name == 'X':
-            self.emitter.emit_instruction("PLX")
-        elif reg_name == 'Y':
-            self.emitter.emit_instruction("PLY")
-        elif reg_name == 'STATUS':
-            self.emitter.emit_instruction("PLP")
-        elif reg_name == 'D':
-            self.emitter.emit_instruction("PLD")
-        elif reg_name == 'DBR':
-            self.emitter.emit_instruction("PLB")
+        pull_instr = RegisterMappings.PULL.get(reg_name)
+        if pull_instr:
+            self.emitter.emit_instruction(pull_instr)
         else:
             raise InstructionSelectionError(f"Cannot pull register: {reg_name}")
 
@@ -1835,18 +1824,9 @@ class InstructionSelector:
             instr: Push instruction
         """
         reg = instr.register.name
-        if reg == 'STATUS':
-            self.emitter.emit_instruction("PHP")  # Push processor status
-        elif reg == 'A':
-            self.emitter.emit_instruction("PHA")  # Push accumulator
-        elif reg == 'X':
-            self.emitter.emit_instruction("PHX")  # Push X
-        elif reg == 'Y':
-            self.emitter.emit_instruction("PHY")  # Push Y
-        elif reg == 'D':
-            self.emitter.emit_instruction("PHD")  # Push direct page
-        elif reg == 'DBR':
-            self.emitter.emit_instruction("PHB")  # Push data bank
+        push_instr = RegisterMappings.PUSH.get(reg)
+        if push_instr:
+            self.emitter.emit_instruction(push_instr)
         else:
             raise InstructionSelectionError(f"Cannot push register: {reg}")
 
@@ -1858,18 +1838,9 @@ class InstructionSelector:
             instr: Pull instruction
         """
         reg = instr.register.name
-        if reg == 'STATUS':
-            self.emitter.emit_instruction("PLP")  # Pull processor status
-        elif reg == 'A':
-            self.emitter.emit_instruction("PLA")  # Pull accumulator
-        elif reg == 'X':
-            self.emitter.emit_instruction("PLX")  # Pull X
-        elif reg == 'Y':
-            self.emitter.emit_instruction("PLY")  # Pull Y
-        elif reg == 'D':
-            self.emitter.emit_instruction("PLD")  # Pull direct page
-        elif reg == 'DBR':
-            self.emitter.emit_instruction("PLB")  # Pull data bank
+        pull_instr = RegisterMappings.PULL.get(reg)
+        if pull_instr:
+            self.emitter.emit_instruction(pull_instr)
         else:
             raise InstructionSelectionError(f"Cannot pull register: {reg}")
 
