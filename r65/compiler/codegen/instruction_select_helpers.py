@@ -5,10 +5,76 @@ Extracted from InstructionSelector to improve modularity and testability.
 """
 
 from enum import Enum
-from typing import Optional
+from typing import Optional, Dict
 from r65.compiler.codegen.emitter import AssemblyEmitter
 from r65.compiler.mir.nodes import Immediate
 from r65.compiler.errors import InstructionSelectionError
+
+
+# =============================================================================
+# Register Instruction Mappings
+# =============================================================================
+
+class RegisterMappings:
+    """
+    Centralized mappings for register-related instructions.
+
+    Provides consistent instruction selection for hardware registers.
+    """
+
+    # Load instructions by register
+    LOAD = {'A': 'LDA', 'X': 'LDX', 'Y': 'LDY'}
+
+    # Store instructions by register
+    STORE = {'A': 'STA', 'X': 'STX', 'Y': 'STY'}
+
+    # Compare instructions by register
+    COMPARE = {'A': 'CMP', 'X': 'CPX', 'Y': 'CPY'}
+
+    # Push instructions by register
+    PUSH = {'A': 'PHA', 'X': 'PHX', 'Y': 'PHY', 'STATUS': 'PHP', 'D': 'PHD', 'DBR': 'PHB'}
+
+    # Pull instructions by register
+    PULL = {'A': 'PLA', 'X': 'PLX', 'Y': 'PLY', 'STATUS': 'PLP', 'D': 'PLD', 'DBR': 'PLB'}
+
+    # Transfer instructions (from, to) → mnemonic
+    TRANSFER = {
+        ('A', 'X'): 'TAX', ('A', 'Y'): 'TAY',
+        ('X', 'A'): 'TXA', ('X', 'Y'): 'TXY',
+        ('Y', 'A'): 'TYA', ('Y', 'X'): 'TYX',
+        ('A', 'S'): 'TCS', ('S', 'A'): 'TSC',
+        ('A', 'D'): 'TCD', ('D', 'A'): 'TDC',
+    }
+
+    @classmethod
+    def get_load(cls, register: str) -> Optional[str]:
+        """Get load instruction for register."""
+        return cls.LOAD.get(register)
+
+    @classmethod
+    def get_store(cls, register: str) -> Optional[str]:
+        """Get store instruction for register."""
+        return cls.STORE.get(register)
+
+    @classmethod
+    def get_compare(cls, register: str) -> Optional[str]:
+        """Get compare instruction for register."""
+        return cls.COMPARE.get(register)
+
+    @classmethod
+    def get_push(cls, register: str) -> Optional[str]:
+        """Get push instruction for register."""
+        return cls.PUSH.get(register)
+
+    @classmethod
+    def get_pull(cls, register: str) -> Optional[str]:
+        """Get pull instruction for register."""
+        return cls.PULL.get(register)
+
+    @classmethod
+    def get_transfer(cls, from_reg: str, to_reg: str) -> Optional[str]:
+        """Get transfer instruction between registers."""
+        return cls.TRANSFER.get((from_reg, to_reg))
 
 
 class XBAState(Enum):
@@ -216,3 +282,158 @@ class BinaryOpEmitter:
                 f"Use div() for general division.")
 
         self.emit_repeated("LSR", "A", shift_count)
+
+
+# =============================================================================
+# Branch Instruction Helpers
+# =============================================================================
+
+class BranchEmitter:
+    """
+    Emits conditional branch instructions.
+
+    Handles the common pattern of:
+    - Simple branch + fallthrough JMP
+    - Complex signed comparison patterns
+    """
+
+    # Simple comparison → branch instruction mapping (unsigned)
+    UNSIGNED_BRANCHES = {
+        '==': 'BEQ',
+        '!=': 'BNE',
+        '<': 'BCC',
+        '>=': 'BCS',
+        'bit7_set': 'BMI',
+        'bit7_clear': 'BPL',
+        'bit6_set': 'BVS',
+        'bit6_clear': 'BVC',
+    }
+
+    # Comments for branch instructions
+    BRANCH_COMMENTS = {
+        '==': "Branch if equal",
+        '!=': "Branch if not equal",
+        '<': "Branch if less than (unsigned)",
+        '>=': "Branch if >= (unsigned)",
+        'bit7_set': "Branch if bit 7 set",
+        'bit7_clear': "Branch if bit 7 clear",
+        'bit6_set': "Branch if bit 6 set",
+        'bit6_clear': "Branch if bit 6 clear",
+    }
+
+    def __init__(self, emitter: AssemblyEmitter, label_counter_fn):
+        """
+        Initialize branch emitter.
+
+        Args:
+            emitter: Assembly emitter
+            label_counter_fn: Function to get unique labels
+        """
+        self.emitter = emitter
+        self.get_unique_label = label_counter_fn
+
+    def emit_simple_branch(self, branch_instr: str, true_target: int,
+                           false_target: int, comment: Optional[str] = None):
+        """
+        Emit simple branch + fallthrough JMP pattern.
+
+        Args:
+            branch_instr: Branch instruction (BEQ, BNE, BCC, etc.)
+            true_target: Block ID for true branch
+            false_target: Block ID for false branch
+            comment: Optional comment
+        """
+        self.emitter.emit_instruction(branch_instr, f"__L{true_target}", comment)
+        self.emitter.emit_instruction("JMP", f"__L{false_target}")
+
+    def emit_unsigned_comparison(self, comparison: str, true_target: int, false_target: int):
+        """
+        Emit unsigned comparison branch.
+
+        Args:
+            comparison: Comparison operator ('==', '!=', '<', '>=', '>', '<=')
+            true_target: Block ID for true branch
+            false_target: Block ID for false branch
+        """
+        if comparison in ('>', '<='):
+            # Compound comparisons need special handling
+            if comparison == '>':
+                # Unsigned >: (C set) AND (Z clear)
+                self.emitter.emit_instruction("BEQ", f"__L{false_target}", "Skip if equal")
+                self.emitter.emit_instruction("BCS", f"__L{true_target}", "Branch if > (unsigned)")
+                self.emitter.emit_instruction("JMP", f"__L{false_target}")
+            else:  # <=
+                # Unsigned <=: (C clear) OR (Z set)
+                self.emitter.emit_instruction("BEQ", f"__L{true_target}", "Branch if equal")
+                self.emitter.emit_instruction("BCC", f"__L{true_target}", "Branch if less than")
+                self.emitter.emit_instruction("JMP", f"__L{false_target}")
+        else:
+            branch_instr = self.UNSIGNED_BRANCHES.get(comparison)
+            comment = self.BRANCH_COMMENTS.get(comparison)
+            self.emit_simple_branch(branch_instr, true_target, false_target, comment)
+
+    def _emit_signed_xor_setup(self) -> str:
+        """
+        Emit the signed comparison N XOR V setup pattern.
+
+        Uses BVC/EOR trick to compute N XOR V.
+
+        Returns:
+            Label used for skip
+        """
+        label = self.get_unique_label()
+        self.emitter.emit_instruction("BVC", label, "Skip if no overflow")
+        self.emitter.emit_instruction("EOR", "#$80", "Flip sign bit if overflow")
+        self.emitter.emit_label(label)
+        return label
+
+    def emit_signed_comparison(self, comparison: str, true_target: int, false_target: int):
+        """
+        Emit signed comparison branch.
+
+        Args:
+            comparison: Comparison operator ('<', '>=', '>', '<=')
+            true_target: Block ID for true branch
+            false_target: Block ID for false branch
+        """
+        if comparison == '<':
+            # Signed less than: N XOR V = 1
+            self._emit_signed_xor_setup()
+            self.emitter.emit_instruction("BMI", f"__L{true_target}", "Branch if less than (signed)")
+            self.emitter.emit_instruction("JMP", f"__L{false_target}")
+        elif comparison == '>=':
+            # Signed >= : N XOR V = 0
+            self._emit_signed_xor_setup()
+            self.emitter.emit_instruction("BPL", f"__L{true_target}", "Branch if >= (signed)")
+            self.emitter.emit_instruction("JMP", f"__L{false_target}")
+        elif comparison == '>':
+            # Signed >: (N XOR V = 0) AND Z = 0
+            self.emitter.emit_instruction("BEQ", f"__L{false_target}", "Skip if equal")
+            self._emit_signed_xor_setup()
+            self.emitter.emit_instruction("BPL", f"__L{true_target}", "Branch if > (signed)")
+            self.emitter.emit_instruction("JMP", f"__L{false_target}")
+        elif comparison == '<=':
+            # Signed <=: (N XOR V = 1) OR Z = 1
+            self.emitter.emit_instruction("BEQ", f"__L{true_target}", "Branch if equal")
+            self._emit_signed_xor_setup()
+            self.emitter.emit_instruction("BMI", f"__L{true_target}", "Branch if <= (signed)")
+            self.emitter.emit_instruction("JMP", f"__L{false_target}")
+
+    def emit_comparison_branch(self, comparison: str, is_signed: bool,
+                                true_target: int, false_target: int):
+        """
+        Emit comparison branch, choosing signed or unsigned path.
+
+        Args:
+            comparison: Comparison operator
+            is_signed: True for signed comparison
+            true_target: Block ID for true branch
+            false_target: Block ID for false branch
+        """
+        # Bit tests and equality don't care about signed/unsigned
+        if comparison in ('==', '!=', 'bit7_set', 'bit7_clear', 'bit6_set', 'bit6_clear'):
+            self.emit_unsigned_comparison(comparison, true_target, false_target)
+        elif is_signed:
+            self.emit_signed_comparison(comparison, true_target, false_target)
+        else:
+            self.emit_unsigned_comparison(comparison, true_target, false_target)

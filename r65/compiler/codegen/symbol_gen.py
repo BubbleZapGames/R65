@@ -30,6 +30,44 @@ class SymbolDefinitionGenerator:
         self.allocator = allocator
 
     # ========================================================================
+    # Allocation Section Emission (Common Pattern)
+    # ========================================================================
+
+    def _emit_allocation_section(self, storage_type: str, section_title: str,
+                                  use_hw_comment: bool = False):
+        """
+        Emit a section of variable definitions.
+
+        Common pattern for emitting allocation sections:
+        1. Get allocations by type
+        2. Skip if empty
+        3. Emit section header
+        4. Sort by address
+        5. Emit definitions
+        6. Emit blank line
+
+        Args:
+            storage_type: Storage type to query ('zeropage', 'ram', 'hw', etc.)
+            section_title: Title for section header
+            use_hw_comment: Use hardware register comment format
+        """
+        allocations = self.allocator.get_allocations_by_type(storage_type)
+
+        if not allocations:
+            return
+
+        self.emitter.emit_section_header(section_title)
+
+        # Sort by address for readability
+        allocations.sort(key=lambda a: a.address)
+
+        for alloc in allocations:
+            comment = self._make_hw_comment(alloc) if use_hw_comment else self._make_allocation_comment(alloc)
+            self.emitter.emit_define(alloc.symbol.name, alloc.address, comment)
+
+        self.emitter.emit_blank_line()
+
+    # ========================================================================
     # Direct Page (Zero-Page) Definitions
     # ========================================================================
 
@@ -44,21 +82,7 @@ class SymbolDefinitionGenerator:
             .DEFINE TEMP $20            ; main.r65:5
             .DEFINE COUNTER $22         ; Auto-allocated
         """
-        allocations = self.allocator.get_allocations_by_type('zeropage')
-
-        if not allocations:
-            return
-
-        self.emitter.emit_section_header("Direct Page Allocations")
-
-        # Sort by address for readability
-        allocations.sort(key=lambda a: a.address)
-
-        for alloc in allocations:
-            comment = self._make_allocation_comment(alloc)
-            self.emitter.emit_define(alloc.symbol.name, alloc.address, comment)
-
-        self.emitter.emit_blank_line()
+        self._emit_allocation_section('zeropage', "Direct Page Allocations")
 
     # ========================================================================
     # RAM Definitions
@@ -75,21 +99,7 @@ class SymbolDefinitionGenerator:
             .DEFINE BUFFER $7E0000      ; 256 bytes
             .DEFINE PLAYER_DATA $7E0100 ; 100 bytes
         """
-        allocations = self.allocator.get_allocations_by_type('ram')
-
-        if not allocations:
-            return
-
-        self.emitter.emit_section_header("RAM Allocations")
-
-        # Sort by address
-        allocations.sort(key=lambda a: a.address)
-
-        for alloc in allocations:
-            comment = self._make_allocation_comment(alloc)
-            self.emitter.emit_define(alloc.symbol.name, alloc.address, comment)
-
-        self.emitter.emit_blank_line()
+        self._emit_allocation_section('ram', "RAM Allocations")
 
     # ========================================================================
     # Low RAM Definitions
@@ -106,21 +116,7 @@ class SymbolDefinitionGenerator:
             .DEFINE BUFFER $0100        ; 256 bytes
             .DEFINE TEMP $0200          ; Auto-allocated
         """
-        allocations = self.allocator.get_allocations_by_type('lowram')
-
-        if not allocations:
-            return
-
-        self.emitter.emit_section_header("Low RAM Allocations")
-
-        # Sort by address
-        allocations.sort(key=lambda a: a.address)
-
-        for alloc in allocations:
-            comment = self._make_allocation_comment(alloc)
-            self.emitter.emit_define(alloc.symbol.name, alloc.address, comment)
-
-        self.emitter.emit_blank_line()
+        self._emit_allocation_section('lowram', "Low RAM Allocations")
 
     # ========================================================================
     # Hardware Register Definitions
@@ -137,21 +133,7 @@ class SymbolDefinitionGenerator:
             .DEFINE INIDISP $2100       ; Screen brightness
             .DEFINE HVBJOY $4212        ; VBlank/HBlank status
         """
-        allocations = self.allocator.get_allocations_by_type('hw')
-
-        if not allocations:
-            return
-
-        self.emitter.emit_section_header("Hardware Register Definitions")
-
-        # Sort by address
-        allocations.sort(key=lambda a: a.address)
-
-        for alloc in allocations:
-            comment = self._make_hw_comment(alloc)
-            self.emitter.emit_define(alloc.symbol.name, alloc.address, comment)
-
-        self.emitter.emit_blank_line()
+        self._emit_allocation_section('hw', "Hardware Register Definitions", use_hw_comment=True)
 
     # ========================================================================
     # Constant Definitions

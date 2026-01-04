@@ -9,6 +9,21 @@ from typing import List, Optional
 from datetime import datetime
 
 
+# =============================================================================
+# Assembly Formatting Constants
+# =============================================================================
+
+# Width of section dividers
+DIVIDER_WIDTH = 76
+
+# Pre-computed divider strings
+SECTION_DIVIDER = "=" * DIVIDER_WIDTH
+SUBSECTION_DIVIDER = "-" * DIVIDER_WIDTH
+
+# Column alignment for comments
+COMMENT_COLUMN = 32
+
+
 class AssemblyEmitter:
     """
     Emits WLA-DX assembly code.
@@ -72,10 +87,9 @@ class AssemblyEmitter:
         Args:
             title: Section title
         """
-        divider = "=" * 76
-        self.emit_comment(divider)
+        self.emit_comment(SECTION_DIVIDER)
         self.emit_comment(title)
-        self.emit_comment(divider)
+        self.emit_comment(SECTION_DIVIDER)
 
     def emit_subsection_header(self, title: str):
         """
@@ -89,10 +103,9 @@ class AssemblyEmitter:
         Args:
             title: Subsection title
         """
-        divider = "-" * 76
-        self.emit_comment(divider)
+        self.emit_comment(SUBSECTION_DIVIDER)
         self.emit_comment(title)
-        self.emit_comment(divider)
+        self.emit_comment(SUBSECTION_DIVIDER)
 
     # ========================================================================
     # File Header
@@ -116,7 +129,7 @@ class AssemblyEmitter:
         self.emit_comment(f"Source: {self.source_file}")
         self.emit_comment(f"Generated: {now}")
         self.emit_comment("Compiler Version: 0.1.0")
-        self.emit_comment("=" * 76)
+        self.emit_comment(SECTION_DIVIDER)
         self.emit_blank_line()
 
     # ========================================================================
@@ -260,8 +273,8 @@ class AssemblyEmitter:
 
         # Add comment if provided
         if comment:
-            # Pad to column 32 for alignment
-            padding = max(1, 32 - len(instr))
+            # Pad to comment column for alignment
+            padding = max(1, COMMENT_COLUMN - len(instr))
             instr += " " * padding + f"; {comment}"
 
         self.emit_line(instr)
@@ -285,7 +298,7 @@ class AssemblyEmitter:
         line = f".DEFINE {name} ${value:04X}"
 
         if comment:
-            padding = max(1, 32 - len(line))
+            padding = max(1, COMMENT_COLUMN - len(line))
             line += " " * padding + f"; {comment}"
 
         self.emit_line(line)
@@ -305,7 +318,7 @@ class AssemblyEmitter:
         line = f".EQU {name} {value}"
 
         if comment:
-            padding = max(1, 32 - len(line))
+            padding = max(1, COMMENT_COLUMN - len(line))
             line += " " * padding + f"; {comment}"
 
         self.emit_line(line)
