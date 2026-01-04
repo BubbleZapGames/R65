@@ -437,7 +437,7 @@ class AssemblyEmitter:
 
     def emit_interrupt_vectors(self, nmi=None, irq=None, reset=None):
         """
-        Emit interrupt vector table using .ORGA directives.
+        Emit interrupt vector table using .SNESNATIVEVECTOR and .SNESEMUVECTOR.
 
         Args:
             nmi: NMI handler label (or None for __empty_handler)
@@ -445,49 +445,47 @@ class AssemblyEmitter:
             reset: RESET handler label (or None for __empty_handler)
 
         Generated:
-            ; Native Mode Vectors
-            .ORGA $FFE4
-            .dw __empty_handler        ; COP
-            .dw __empty_handler        ; BRK
-            .dw __empty_handler        ; ABORT
-            .dw nmi_handler            ; NMI
-            .dw __empty_handler        ; (unused)
-            .dw __empty_handler        ; IRQ
+            .SNESNATIVEVECTOR
+              COP __empty_handler
+              BRK __empty_handler
+              ABORT __empty_handler
+              NMI nmi_handler
+              IRQ __empty_handler
+            .ENDNATIVEVECTOR
 
-            ; Emulation Mode Vectors
-            .ORGA $FFF4
-            .dw __empty_handler        ; COP
-            .dw __empty_handler        ; (unused)
-            .dw __empty_handler        ; ABORT
-            .dw __empty_handler        ; NMI
-            .dw main                   ; RESET
-            .dw __empty_handler        ; IRQ/BRK
+            .SNESEMUVECTOR
+              COP __empty_handler
+              ABORT __empty_handler
+              NMI __empty_handler
+              RESET main
+              IRQBRK __empty_handler
+            .ENDEMUVECTOR
         """
         # Default to empty handler
         nmi = nmi or "__empty_handler"
         irq = irq or "__empty_handler"
         reset = reset or "__empty_handler"
 
-        # Native mode vectors
+        # Native mode vectors (5 vectors, no UNUSED)
         self.emit_section_header("Interrupt Vectors (Native Mode)")
-        self.emit_line(".ORGA $FFE4")
-        self.emit_instruction(".dw", "__empty_handler", "COP")
-        self.emit_instruction(".dw", "__empty_handler", "BRK")
-        self.emit_instruction(".dw", "__empty_handler", "ABORT")
-        self.emit_instruction(".dw", nmi, "NMI")
-        self.emit_instruction(".dw", "__empty_handler", "(unused)")
-        self.emit_instruction(".dw", irq, "IRQ")
+        self.emit_line(".SNESNATIVEVECTOR")
+        self.emit_line(f"COP {nmi}")
+        self.emit_line(f"BRK __empty_handler")
+        self.emit_line(f"ABORT __empty_handler")
+        self.emit_line(f"NMI {nmi}")
+        self.emit_line(f"IRQ {irq}")
+        self.emit_line(".ENDNATIVEVECTOR")
         self.emit_blank_line()
 
-        # Emulation mode vectors
+        # Emulation mode vectors (5 vectors, no UNUSED)
         self.emit_section_header("Interrupt Vectors (Emulation Mode)")
-        self.emit_line(".ORGA $FFF4")
-        self.emit_instruction(".dw", "__empty_handler", "COP")
-        self.emit_instruction(".dw", "__empty_handler", "(unused)")
-        self.emit_instruction(".dw", "__empty_handler", "ABORT")
-        self.emit_instruction(".dw", "__empty_handler", "NMI")
-        self.emit_instruction(".dw", reset, "RESET")
-        self.emit_instruction(".dw", irq, "IRQ/BRK")
+        self.emit_line(".SNESEMUVECTOR")
+        self.emit_line(f"COP __empty_handler")
+        self.emit_line(f"ABORT __empty_handler")
+        self.emit_line(f"NMI __empty_handler")
+        self.emit_line(f"RESET {reset}")
+        self.emit_line(f"IRQBRK {irq}")
+        self.emit_line(".ENDEMUVECTOR")
         self.emit_blank_line()
 
     # ========================================================================
