@@ -11,19 +11,10 @@ from r65.compiler.mir.nodes import *
 from r65.compiler.codegen.emitter import AssemblyEmitter
 from r65.compiler.codegen.register_alloc import *
 from r65.compiler.codegen.memory_alloc import MemoryAllocator
-
-
-class XBAState(Enum):
-    """
-    Tracks the current state of A and B registers after XBA operations.
-
-    NORMAL: A contains its original value, B contains its original value
-    SWAPPED: A contains B's original value, B contains A's original value
-    UNKNOWN: State is unknown (after branches, calls, or other invalidations)
-    """
-    NORMAL = "normal"
-    SWAPPED = "swapped"
-    UNKNOWN = "unknown"
+from r65.compiler.errors import InstructionSelectionError, compiler_assert
+from r65.compiler.codegen.instruction_select_helpers import (
+    XBAState, XBAStateManager, BinaryOpEmitter
+)
 
 
 class InstructionSelector:
@@ -54,8 +45,9 @@ class InstructionSelector:
         self.mem_alloc = memory_allocator
         self.current_function = current_function
 
-        # XBA state tracking for optimization
-        self.xba_state = XBAState.NORMAL
+        # Helper classes for modular instruction selection
+        self.xba_manager = XBAStateManager(emitter)
+        self.binary_op_emitter = BinaryOpEmitter(emitter)
 
         # Track type info from last Compare instruction for signed/unsigned branching
         self.last_comparison_type = None
@@ -63,115 +55,56 @@ class InstructionSelector:
         # Counter for generating unique labels
         self._label_counter = 0
 
+    @property
+    def xba_state(self) -> XBAState:
+        """XBA state (delegated to manager for backward compatibility)."""
+        return self.xba_manager.state
+
+    @xba_state.setter
+    def xba_state(self, value: XBAState):
+        """Set XBA state (delegated to manager)."""
+        self.xba_manager.state = value
+
     def _get_unique_label(self) -> str:
         """Generate a unique label for inline branching."""
         self._label_counter += 1
         return f"__SCMP{self._label_counter}"
 
     # ========================================================================
-    # XBA State Management
+    # XBA State Management (delegates to XBAStateManager)
     # ========================================================================
 
     def _invalidate_xba_state(self):
-        """
-        Invalidate XBA state tracking.
-
-        Called at control flow boundaries (branches, labels, calls) where
-        we can't be certain about the A/B register state.
-        """
-        self.xba_state = XBAState.UNKNOWN
+        """Invalidate XBA state at control flow boundaries."""
+        self.xba_manager.invalidate()
 
     def _emit_xba(self, comment: str = None):
-        """
-        Emit XBA instruction with state tracking.
-
-        Automatically updates state tracking and skips redundant XBAs.
-
-        Args:
-            comment: Optional comment for the XBA instruction
-        """
-        # Emit the XBA instruction
-        self.emitter.emit_instruction("XBA", comment=comment)
-
-        # Update state: swap toggles between NORMAL and SWAPPED
-        if self.xba_state == XBAState.NORMAL:
-            self.xba_state = XBAState.SWAPPED
-        elif self.xba_state == XBAState.SWAPPED:
-            self.xba_state = XBAState.NORMAL
-        else:
-            # After unknown state, we still don't know
-            self.xba_state = XBAState.UNKNOWN
+        """Emit XBA instruction with state tracking."""
+        self.xba_manager.emit_xba(comment)
 
     def _ensure_xba_state_normal(self, comment: str = None):
-        """
-        Ensure A and B are in normal positions (A=A, B=B).
-
-        Emits XBA only if currently swapped.
-
-        Args:
-            comment: Optional comment for XBA if needed
-        """
-        if self.xba_state == XBAState.SWAPPED:
-            self._emit_xba(comment or "Restore A/B to normal positions")
-        elif self.xba_state == XBAState.UNKNOWN:
-            # Can't optimize - must emit XBA to be safe
-            self._emit_xba(comment or "Restore A/B to normal positions")
+        """Ensure A and B are in normal positions (A=A, B=B)."""
+        self.xba_manager.ensure_normal(comment)
 
     def _ensure_xba_state_swapped(self, comment: str = None):
-        """
-        Ensure A and B are swapped (A=B, B=A).
-
-        Emits XBA only if currently normal.
-
-        Args:
-            comment: Optional comment for XBA if needed
-        """
-        if self.xba_state == XBAState.NORMAL:
-            self._emit_xba(comment or "Swap A and B")
-        elif self.xba_state == XBAState.UNKNOWN:
-            # Can't optimize - must emit XBA to be safe
-            self._emit_xba(comment or "Swap A and B")
+        """Ensure A and B are swapped (A=B, B=A)."""
+        self.xba_manager.ensure_swapped(comment)
 
     def _mark_a_modified(self):
-        """
-        Mark A register as modified.
-
-        Note: This does NOT invalidate XBA state! XBA state tracks whether
-        A and B are swapped, not their actual values. Loading a new value
-        into A doesn't change whether we're in swapped state.
-        """
-        # Don't invalidate state - value modification is independent of swap state
-        pass
+        """Mark A register as modified."""
+        self.xba_manager.mark_a_modified()
 
     def _mark_b_modified(self):
-        """
-        Mark B register as modified.
-
-        Note: This does NOT invalidate XBA state! XBA state tracks whether
-        A and B are swapped, not their actual values.
-        """
-        # Don't invalidate state - value modification is independent of swap state
-        pass
+        """Mark B register as modified."""
+        self.xba_manager.mark_b_modified()
 
     def _access_b_value_in_a(self):
-        """
-        Make B register value available in A for reading.
-
-        Optimized: If already swapped, A already contains B value.
-        Otherwise, swaps B to A.
-
-        Note: Caller is responsible for restoring state if needed.
-        """
-        self._ensure_xba_state_swapped("Access B register")
+        """Make B register value available in A for reading."""
+        self.xba_manager.access_b_value_in_a()
 
     def _store_to_b_from_a(self):
-        """
-        Store current A value into B register.
-
-        Assumes A contains the value to store. Swaps A to B.
-        """
-        self._emit_xba("Store to B register")
-        self._mark_b_modified()
+        """Store current A value into B register."""
+        self.xba_manager.store_to_b_from_a()
 
     # ========================================================================
     # Main Dispatch
@@ -229,7 +162,7 @@ class InstructionSelector:
         elif isinstance(instr, ReturnFromInterrupt):
             self.select_return_from_interrupt(instr)
         else:
-            raise Exception(f"Unsupported MIR instruction: {type(instr).__name__}")
+            raise InstructionSelectionError(f"Unsupported MIR instruction: {type(instr).__name__}")
 
     # ========================================================================
     # Memory Operations
@@ -326,7 +259,7 @@ class InstructionSelector:
                 self.emitter.emit_instruction("STA", self._format_operand(dest_loc))
                 self._ensure_xba_state_normal("Restore A register")
             elif reg not in store_instructions:
-                raise Exception(f"Cannot store from hardware register: {reg}")
+                raise InstructionSelectionError(f"Cannot store from hardware register: {reg}")
             else:
                 # Emit appropriate store instruction
                 # Note: Hardware register width (8-bit vs 16-bit) is determined by processor mode:
@@ -367,7 +300,7 @@ class InstructionSelector:
         # Pointer should be in memory (zero-page, stack, or static memory)
         # SCRATCH is zero-page, which is perfect for indirect addressing
         if ptr_loc.kind == LocationKind.HARDWARE or ptr_loc.kind == LocationKind.IMMEDIATE:
-            raise Exception(f"Pointer for indirect addressing must be in memory, got: {ptr_loc}")
+            raise InstructionSelectionError(f"Pointer for indirect addressing must be in memory, got: {ptr_loc}")
 
         # Format indirect addressing mode
         ptr_addr = self._format_operand(ptr_loc)
@@ -395,7 +328,7 @@ class InstructionSelector:
             self.emitter.emit_instruction("STA", self._format_operand(dest_loc))
             # For 16-bit, we'd need to increment pointer and load again
             # This is complex - for now, only support 8-bit indirect loads
-            raise Exception("16-bit indirect loads not yet supported")
+            raise InstructionSelectionError("16-bit indirect loads not yet supported")
         else:
             # 8-bit load through pointer
             self.emitter.emit_instruction("LDA", indirect_mode, "Load through pointer")
@@ -423,7 +356,7 @@ class InstructionSelector:
         # Pointer should be in memory (zero-page, stack, or static memory)
         # SCRATCH is zero-page, which is perfect for indirect addressing
         if ptr_loc.kind == LocationKind.HARDWARE or ptr_loc.kind == LocationKind.IMMEDIATE:
-            raise Exception(f"Pointer for indirect addressing must be in memory, got: {ptr_loc}")
+            raise InstructionSelectionError(f"Pointer for indirect addressing must be in memory, got: {ptr_loc}")
 
         # Format indirect addressing mode
         ptr_addr = self._format_operand(ptr_loc)
@@ -458,7 +391,7 @@ class InstructionSelector:
 
         # Store through pointer
         if is_u16:
-            raise Exception("16-bit indirect stores not yet supported")
+            raise InstructionSelectionError("16-bit indirect stores not yet supported")
         else:
             # 8-bit store through pointer
             self.emitter.emit_instruction("STA", indirect_mode, "Store through pointer")
@@ -508,7 +441,7 @@ class InstructionSelector:
                     self.emitter.emit_instruction("SEP", "#$20", "Restore 8-bit A")
                     self._mark_a_modified()
                 else:
-                    raise Exception(f"Cannot load immediate into register {dest_loc.hw_register}")
+                    raise InstructionSelectionError(f"Cannot load immediate into register {dest_loc.hw_register}")
             else:
                 # Load from memory/register into hardware register
                 src_loc = self._get_operand_location(src_operand)
@@ -530,7 +463,7 @@ class InstructionSelector:
                         self.emitter.emit_instruction("LDA", operand)
                         self.emitter.emit_instruction("XBA", comment="Load into B register")
                     else:
-                        raise Exception(f"Cannot load into register {dest_loc.hw_register}")
+                        raise InstructionSelectionError(f"Cannot load into register {dest_loc.hw_register}")
             return
 
         # Normal case: destination is memory/scratch
@@ -638,7 +571,7 @@ class InstructionSelector:
                             self.emitter.emit_instruction("LDA", f"#<${alloc.address:04X}", f"Load address of {symbol.name}")
                             self.emitter.emit_instruction("STA", self._format_operand(dest_loc))
                     else:
-                        raise Exception(f"No allocation for symbol: {symbol.name}")
+                        raise InstructionSelectionError(f"No allocation for symbol: {symbol.name}")
                     return
 
             value = src_operand.value
@@ -669,7 +602,7 @@ class InstructionSelector:
                     elif src_reg == 'Y':
                         self.emitter.emit_instruction("STY", self._format_operand(dest_loc))
                     else:
-                        raise Exception(f"Cannot move 16-bit value from register {src_reg} to memory")
+                        raise InstructionSelectionError(f"Cannot move 16-bit value from register {src_reg} to memory")
                 else:
                     # 8-bit move from hardware register to memory
                     if src_reg == 'A':
@@ -679,7 +612,7 @@ class InstructionSelector:
                     elif src_reg == 'Y':
                         self.emitter.emit_instruction("STY", self._format_operand(dest_loc))
                     else:
-                        raise Exception(f"Cannot move from register {src_reg} to memory")
+                        raise InstructionSelectionError(f"Cannot move from register {src_reg} to memory")
             else:
                 # Moving from memory to memory
                 if is_u16:
@@ -757,7 +690,7 @@ class InstructionSelector:
 
         # Case 3: Same size - should not happen (handled as Move in MIR builder)
         else:
-            raise Exception(f"Unexpected type conversion: {source_type} to {target_type}")
+            raise InstructionSelectionError(f"Unexpected type conversion: {source_type} to {target_type}")
 
     # ========================================================================
     # Arithmetic Operations
@@ -845,7 +778,7 @@ class InstructionSelector:
         elif op == '/':
             self._emit_divide(instr.right, is_u16)
         else:
-            raise Exception(f"Unsupported binary operation: {op}")
+            raise InstructionSelectionError(f"Unsupported binary operation: {op}")
 
         # Store result from A (if destination is not A)
         if dest_loc.kind == LocationKind.HARDWARE and dest_loc.hw_register == 'A':
@@ -927,7 +860,7 @@ class InstructionSelector:
             self.emitter.emit_instruction("EOR", "#$FF", "Complement")
             self.emitter.emit_instruction("INC", "A", "Add 1 for two's complement")
         else:
-            raise Exception(f"Unsupported unary operation: {op}")
+            raise InstructionSelectionError(f"Unsupported unary operation: {op}")
 
         # Store result
         self.emitter.emit_instruction("STA", self._format_operand(dest_loc))
@@ -966,7 +899,7 @@ class InstructionSelector:
                     self.emitter.emit_instruction(store_instr, "$00", f"Store {right_loc.hw_register} to temp")
                     right_operand = "$00"
                 else:
-                    raise Exception(f"Unsupported hardware register: {right_loc.hw_register}")
+                    raise InstructionSelectionError(f"Unsupported hardware register: {right_loc.hw_register}")
             else:
                 right_operand = self._format_operand(right_loc)
 
@@ -990,7 +923,7 @@ class InstructionSelector:
                 # State is now SWAPPED (A=B, B=A)
             else:
                 # Other hardware registers (shouldn't reach here)
-                raise Exception(f"Unsupported hardware register for comparison: {left_loc.hw_register}")
+                raise InstructionSelectionError(f"Unsupported hardware register for comparison: {left_loc.hw_register}")
         else:
             # Memory or virtual register - load to A and compare
             self.emitter.emit_instruction("LDA", self._format_operand(left_loc))
@@ -1076,77 +1009,71 @@ class InstructionSelector:
         """Emit bitwise XOR operation."""
         self._emit_binary_operation_with_operand("EOR", right_operand, is_u16)
 
+    # ========================================================================
+    # Shift/Multiply/Divide Helpers
+    # ========================================================================
+
+    def _require_immediate(self, operand, operation: str) -> int:
+        """Validate operand is immediate and return its value."""
+        if not isinstance(operand, Immediate):
+            raise InstructionSelectionError(f"{operation} requires constant operand")
+        return operand.value
+
+    def _emit_repeated(self, mnemonic: str, operand: str, count: int):
+        """Emit an instruction repeated count times."""
+        for _ in range(count):
+            self.emitter.emit_instruction(mnemonic, operand)
+
     def _emit_shift_left(self, right_operand, is_u16: bool):
         """Emit left shift operation (A << count)."""
-        # Right operand must be immediate constant for shifts
-        if not isinstance(right_operand, Immediate):
-            raise Exception("Shift count must be constant")
-
-        count = right_operand.value
+        count = self._require_immediate(right_operand, "Shift")
         bit_width = 16 if is_u16 else 8
 
-        # Optimization: shifting by >= bit width always produces 0
         if count >= bit_width:
-            self.emitter.emit_instruction("LDA", f"#$00", comment=f"Shift by {count} >= {bit_width} bits = 0")
+            self.emitter.emit_instruction("LDA", "#$00",
+                comment=f"Shift by {count} >= {bit_width} bits = 0")
             return
 
-        # Generate shift instructions
-        for _ in range(count):
-            self.emitter.emit_instruction("ASL", "A")
+        self._emit_repeated("ASL", "A", count)
 
     def _emit_shift_right(self, right_operand, is_u16: bool):
         """Emit right shift operation (A >> count)."""
-        # Right operand must be immediate constant for shifts
-        if not isinstance(right_operand, Immediate):
-            raise Exception("Shift count must be constant")
-
-        count = right_operand.value
+        count = self._require_immediate(right_operand, "Shift")
         bit_width = 16 if is_u16 else 8
 
-        # Optimization: shifting by >= bit width always produces 0
         if count >= bit_width:
-            self.emitter.emit_instruction("LDA", f"#$00", comment=f"Shift by {count} >= {bit_width} bits = 0")
+            self.emitter.emit_instruction("LDA", "#$00",
+                comment=f"Shift by {count} >= {bit_width} bits = 0")
             return
 
-        # Generate shift instructions
-        for _ in range(count):
-            self.emitter.emit_instruction("LSR", "A")
+        self._emit_repeated("LSR", "A", count)
+
+    # Power-of-2 to shift count mapping
+    _POWER_OF_2_SHIFTS = {1: 0, 2: 1, 4: 2, 8: 3}
 
     def _emit_multiply(self, right_operand, is_u16: bool):
         """Emit multiply by power of 2 (A * 1/2/4/8) using ASL instructions."""
-        if not isinstance(right_operand, Immediate):
-            raise Exception("Multiplier must be constant")
-
-        value = right_operand.value
-
-        # Convert power of 2 to shift count: 1→0, 2→1, 4→2, 8→3
-        shift_map = {1: 0, 2: 1, 4: 2, 8: 3}
-        shift_count = shift_map.get(value)
+        value = self._require_immediate(right_operand, "Multiply")
+        shift_count = self._POWER_OF_2_SHIFTS.get(value)
 
         if shift_count is None:
-            raise Exception(f"Multiply operator only supports 1, 2, 4, 8 (got {value}). Use mul() for general multiplication.")
+            raise InstructionSelectionError(
+                f"Multiply operator only supports 1, 2, 4, 8 (got {value}). "
+                f"Use mul() for general multiplication.")
 
-        # Generate ASL instructions (shift left = multiply by 2)
-        for _ in range(shift_count):
-            self.emitter.emit_instruction("ASL", "A")
+        self._emit_repeated("ASL", "A", shift_count)
 
     def _emit_divide(self, right_operand, is_u16: bool):
         """Emit divide by power of 2 (A / 1/2/4/8) using LSR instructions."""
-        if not isinstance(right_operand, Immediate):
-            raise Exception("Divisor must be constant")
-
-        value = right_operand.value
-
-        # Convert power of 2 to shift count: 1→0, 2→1, 4→2, 8→3
-        shift_map = {1: 0, 2: 1, 4: 2, 8: 3}
-        shift_count = shift_map.get(value)
+        value = self._require_immediate(right_operand, "Divide")
+        shift_count = self._POWER_OF_2_SHIFTS.get(value)
 
         if shift_count is None:
-            raise Exception(f"Divide operator only supports 1, 2, 4, 8 (got {value}). Use div() for general division.")
+            raise InstructionSelectionError(
+                f"Divide operator only supports 1, 2, 4, 8 (got {value}). "
+                f"Use div() for general division.")
 
-        # Generate LSR instructions (shift right = divide by 2)
-        for _ in range(shift_count):
-            self.emitter.emit_instruction("LSR", "A")
+        self._emit_repeated("LSR", "A", shift_count)
 
     # ========================================================================
     # Control Flow
@@ -1329,7 +1256,7 @@ class InstructionSelector:
                     self.emitter.emit_instruction("BCC", f"__L{instr.true_target}", "Branch if less than")
                     self.emitter.emit_instruction("JMP", f"__L{instr.false_target}")
             else:
-                raise Exception(f"Unsupported comparison type for flag-based branch: {instr.comparison}")
+                raise InstructionSelectionError(f"Unsupported comparison type for flag-based branch: {instr.comparison}")
         else:
             # Branch based on condition value (zero/non-zero)
             cond_loc = self._get_operand_location(instr.condition)
@@ -1364,7 +1291,7 @@ class InstructionSelector:
 
             for i, value in enumerate(instr.values):
                 if i >= len(return_registers):
-                    raise Exception(f"Too many return values (max {len(return_registers)})")
+                    raise InstructionSelectionError(f"Too many return values (max {len(return_registers)})")
 
                 target_reg = return_registers[i]
                 value_loc = self._get_operand_location(value)
@@ -1593,7 +1520,7 @@ class InstructionSelector:
             else:
                 self.emitter.emit_instruction("JSR", instr.function)
         else:
-            raise Exception(f"Unknown function type in Call: {type(instr.function)}")
+            raise InstructionSelectionError(f"Unknown function type in Call: {type(instr.function)}")
 
         # Invalidate XBA state after call (function may have modified A/B)
         self._invalidate_xba_state()
@@ -1618,7 +1545,7 @@ class InstructionSelector:
 
             for i, return_vreg in enumerate(instr.returns):
                 if i >= len(return_registers):
-                    raise Exception(f"Too many return values (max {len(return_registers)})")
+                    raise InstructionSelectionError(f"Too many return values (max {len(return_registers)})")
 
                 source_reg = return_registers[i]
                 dest_loc = self._get_operand_location(return_vreg)
@@ -1665,7 +1592,7 @@ class InstructionSelector:
 
         builtin = BuiltinRegistry.get_builtin(instr.builtin_name)
         if not builtin:
-            raise Exception(f"Unknown built-in function: {instr.builtin_name}")
+            raise InstructionSelectionError(f"Unknown built-in function: {instr.builtin_name}")
 
         if builtin.kind == BuiltinKind.PROCESSOR_CONTROL:
             # wai(), stp(), xba(), NOP() - no arguments (except NOP which can take optional count)
@@ -1678,7 +1605,7 @@ class InstructionSelector:
                     if isinstance(arg.value, Immediate):
                         count = arg.value.value
                     else:
-                        raise Exception(f"NOP() count must be a constant immediate value")
+                        raise InstructionSelectionError(f"NOP() count must be a constant immediate value")
 
                 # Emit NOP instruction 'count' times
                 for _ in range(count):
@@ -1690,7 +1617,7 @@ class InstructionSelector:
         elif builtin.kind == BuiltinKind.MODE_CONTROL:
             # SEP(flags), REP(flags) - 1 argument (flags immediate), no return value
             if len(instr.args) != 1:
-                raise Exception(f"{instr.builtin_name}() expects 1 argument, got {len(instr.args)}")
+                raise InstructionSelectionError(f"{instr.builtin_name}() expects 1 argument, got {len(instr.args)}")
 
             arg = instr.args[0]
             arg_loc = self._get_operand_location(arg.value)
@@ -1708,14 +1635,14 @@ class InstructionSelector:
             # Convention: A = count-1, X = src_addr, Y = dst_addr (set by caller)
             # Banks are passed as immediate arguments
             if len(instr.args) != 2:
-                raise Exception(f"{instr.builtin_name}() expects 2 arguments, got {len(instr.args)}")
+                raise InstructionSelectionError(f"{instr.builtin_name}() expects 2 arguments, got {len(instr.args)}")
 
             src_bank_arg = instr.args[0]
             dst_bank_arg = instr.args[1]
 
             # Both banks should be immediates
             if not isinstance(src_bank_arg.value, Immediate) or not isinstance(dst_bank_arg.value, Immediate):
-                raise Exception(f"{instr.builtin_name}() expects immediate bank numbers")
+                raise InstructionSelectionError(f"{instr.builtin_name}() expects immediate bank numbers")
 
             src_bank = src_bank_arg.value.value
             dst_bank = dst_bank_arg.value.value
@@ -1730,7 +1657,7 @@ class InstructionSelector:
             # Convention: arguments in A and X, result in A
 
             if len(instr.args) != 2:
-                raise Exception(f"{instr.builtin_name}() expects 2 arguments, got {len(instr.args)}")
+                raise InstructionSelectionError(f"{instr.builtin_name}() expects 2 arguments, got {len(instr.args)}")
 
             # Load first argument into A
             arg0 = instr.args[0]
@@ -1870,7 +1797,7 @@ class InstructionSelector:
         elif reg_name == 'DBR':
             self.emitter.emit_instruction("PHB")
         else:
-            raise Exception(f"Cannot push register: {reg_name}")
+            raise InstructionSelectionError(f"Cannot push register: {reg_name}")
 
     def select_restore_register(self, instr: RestoreRegister):
         """
@@ -1894,7 +1821,7 @@ class InstructionSelector:
         elif reg_name == 'DBR':
             self.emitter.emit_instruction("PLB")
         else:
-            raise Exception(f"Cannot pull register: {reg_name}")
+            raise InstructionSelectionError(f"Cannot pull register: {reg_name}")
 
     # ========================================================================
     # Interrupt Handler Instructions
@@ -1921,7 +1848,7 @@ class InstructionSelector:
         elif reg == 'DBR':
             self.emitter.emit_instruction("PHB")  # Push data bank
         else:
-            raise Exception(f"Cannot push register: {reg}")
+            raise InstructionSelectionError(f"Cannot push register: {reg}")
 
     def select_pull(self, instr: Pull):
         """
@@ -1944,7 +1871,7 @@ class InstructionSelector:
         elif reg == 'DBR':
             self.emitter.emit_instruction("PLB")  # Pull data bank
         else:
-            raise Exception(f"Cannot pull register: {reg}")
+            raise InstructionSelectionError(f"Cannot pull register: {reg}")
 
     def select_return_from_interrupt(self, instr: ReturnFromInterrupt):
         """
@@ -1990,7 +1917,7 @@ class InstructionSelector:
                     self.emitter.emit_instruction(store_instr, "$00", f"Store {right_loc.hw_register} to temp")
                     self.emitter.emit_instruction(operation, "$00")
                 else:
-                    raise Exception(f"Cannot use hardware register in operation: {right_loc.hw_register}")
+                    raise InstructionSelectionError(f"Cannot use hardware register in operation: {right_loc.hw_register}")
             else:
                 # Memory location
                 self.emitter.emit_instruction(operation, self._format_operand(right_loc))
@@ -2144,7 +2071,7 @@ class InstructionSelector:
                         index_register=operand.index_register  # Pass indexed addressing info
                     )
                 else:
-                    raise Exception(f"No allocation for symbol: {operand.symbol.name}")
+                    raise InstructionSelectionError(f"No allocation for symbol: {operand.symbol.name}")
         elif isinstance(operand, Immediate):
             # Immediate value - return as immediate location
             return PhysicalLocation(
@@ -2153,7 +2080,7 @@ class InstructionSelector:
                 size=1  # Will be determined by context
             )
         else:
-            raise Exception(f"Unknown operand type: {type(operand)}")
+            raise InstructionSelectionError(f"Unknown operand type: {type(operand)}")
 
     def _format_operand(self, location: PhysicalLocation) -> str:
         """
@@ -2168,7 +2095,7 @@ class InstructionSelector:
         if location.kind == LocationKind.HARDWARE:
             # Hardware register - can't be used as memory operand
             # This shouldn't happen in normal code generation
-            raise Exception(f"Cannot use hardware register as memory operand: {location.hw_register}")
+            raise InstructionSelectionError(f"Cannot use hardware register as memory operand: {location.hw_register}")
         elif location.kind == LocationKind.SCRATCH:
             base = f"${location.scratch_addr:02X}"
             if location.index_register:
@@ -2193,7 +2120,7 @@ class InstructionSelector:
             # Immediate value
             return f"#{location.immediate_value}"
         else:
-            raise Exception(f"Unknown location kind: {location.kind}")
+            raise InstructionSelectionError(f"Unknown location kind: {location.kind}")
 
     def _offset_location(self, location: PhysicalLocation, offset: int) -> PhysicalLocation:
         """
@@ -2225,7 +2152,7 @@ class InstructionSelector:
                 size=1
             )
         else:
-            raise Exception(f"Cannot offset location kind: {location.kind}")
+            raise InstructionSelectionError(f"Cannot offset location kind: {location.kind}")
 
     def _is_16bit(self, type_info) -> bool:
         """

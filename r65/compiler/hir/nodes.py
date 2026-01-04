@@ -50,6 +50,35 @@ class HIRProgram(HIRNode):
     symbol_table: Any = None  # Will be SymbolTable
     stack_attr: Any = None  # StackAttribute from #[stack(...)]
 
+    def get_declarations_by_type(self, decl_type: type) -> List[HIRDeclaration]:
+        """Filter declarations by type."""
+        return [d for d in self.declarations if isinstance(d, decl_type)]
+
+    @property
+    def functions(self) -> List['HIRFunctionDecl']:
+        """Get all function declarations."""
+        return self.get_declarations_by_type(HIRFunctionDecl)
+
+    @property
+    def statics(self) -> List['HIRStaticDecl']:
+        """Get all static variable declarations."""
+        return self.get_declarations_by_type(HIRStaticDecl)
+
+    @property
+    def constants(self) -> List['HIRConstDecl']:
+        """Get all constant declarations."""
+        return self.get_declarations_by_type(HIRConstDecl)
+
+    @property
+    def structs(self) -> List['HIRStructDecl']:
+        """Get all struct declarations."""
+        return self.get_declarations_by_type(HIRStructDecl)
+
+    @property
+    def enums(self) -> List['HIREnumDecl']:
+        """Get all enum declarations."""
+        return self.get_declarations_by_type(HIREnumDecl)
+
 
 # =============================================================================
 # Bindings (for parameters and let statements)

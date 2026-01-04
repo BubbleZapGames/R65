@@ -8,6 +8,7 @@ address range, and instruction requirements.
 from typing import Optional, Tuple
 from enum import Enum
 from r65.compiler.codegen.register_alloc import *
+from r65.compiler.errors import AddressingModeError
 
 
 class AddressingMode(Enum):
@@ -63,7 +64,7 @@ class AddressingModeSelector:
                 return (AddressingMode.ACCUMULATOR, "A")
             else:
                 # X, Y cannot be used as addressing mode operands
-                raise Exception(f"Cannot use {location.hw_register} as operand")
+                raise AddressingModeError(f"Cannot use {location.hw_register} as operand")
 
         # Get effective address
         if location.kind == LocationKind.SCRATCH:
@@ -73,9 +74,9 @@ class AddressingModeSelector:
         elif location.kind == LocationKind.STACK:
             # Stack addressing requires special handling
             # For now, not supported
-            raise Exception("Stack addressing not yet implemented")
+            raise AddressingModeError("Stack addressing not yet implemented")
         else:
-            raise Exception(f"Unknown location kind: {location.kind}")
+            raise AddressingModeError(f"Unknown location kind: {location.kind}")
 
         # Select addressing mode based on address range and modifiers
         return self._select_mode(addr, index_register, is_indirect)
@@ -127,7 +128,7 @@ class AddressingModeSelector:
         # Indirect addressing
         if is_indirect:
             if not is_direct_page:
-                raise Exception("Indirect addressing requires zero-page pointer")
+                raise AddressingModeError("Indirect addressing requires zero-page pointer")
 
             if index_register == 'Y':
                 # ($42),Y - indirect indexed
@@ -146,7 +147,7 @@ class AddressingModeSelector:
                     operand = f"${addr:06X},X"
                     return (AddressingMode.LONG_X, operand)
                 else:
-                    raise Exception("Long addressing only supports X indexing")
+                    raise AddressingModeError("Long addressing only supports X indexing")
 
             elif is_absolute:
                 # Absolute indexed

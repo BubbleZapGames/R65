@@ -34,8 +34,10 @@ from r65.compiler.mir.virtual_registers import VirtualRegisterAllocator
 from r65.compiler.mir.register_tracker import RegisterAliasTracker
 from r65.compiler.mir.cfg import CFGBuilder
 from r65.compiler.mir.mode_tracker import MIRModeTracker
+from r65.compiler.mir.builder_helpers import TypeSizeCalculator, MemoryLocationBuilder
 from r65.compiler.typeck.processor_mode import ProcessorMode, ModeState, XModeState
 from r65.compiler.hir import ModeTransition
+from r65.compiler.errors import MIRLoweringError
 
 
 class MIRBuilder:
@@ -109,10 +111,10 @@ class MIRBuilder:
         # Create MIR program (keep HIR declarations for statics, etc.)
         return MIRProgram(
             functions=mir_functions,
-            statics=[d for d in hir_program.declarations if isinstance(d, HIRStaticDecl)],
-            constants=[d for d in hir_program.declarations if isinstance(d, HIRConstDecl)],
-            structs=[d for d in hir_program.declarations if isinstance(d, HIRStructDecl)],
-            enums=[d for d in hir_program.declarations if isinstance(d, HIREnumDecl)],
+            statics=hir_program.statics,
+            constants=hir_program.constants,
+            structs=hir_program.structs,
+            enums=hir_program.enums,
             symbol_table=hir_program.symbol_table,
             stack_attr=hir_program.stack_attr
         )
@@ -257,7 +259,7 @@ class MIRBuilder:
         mode_tracker = MIRModeTracker(mir_func)
         success = mode_tracker.analyze()
         if not success:
-            raise Exception(f"Mode tracking failed for function '{mir_func.name}': mode conflicts detected")
+            raise MIRLoweringError(f"Mode tracking failed for function '{mir_func.name}': mode conflicts detected")
 
         return mir_func
 
@@ -374,7 +376,7 @@ class MIRBuilder:
             # Return from interrupt (RTI)
             # Note: Interrupt handlers shouldn't return values
             if return_values:
-                raise Exception(f"Interrupt handler '{self.current_function.name}' cannot return values")
+                raise MIRLoweringError(f"Interrupt handler '{self.current_function.name}' cannot return values")
             self.emit(ReturnFromInterrupt())
         else:
             # Regular function return
@@ -676,7 +678,7 @@ class MIRBuilder:
 
         else:
             # Unsupported conversion
-            raise Exception(f"Unsupported type cast: {source_type} to {target_type}")
+            raise MIRLoweringError(f"Unsupported type cast: {source_type} to {target_type}")
 
     def lower_array_index(self, expr: HIRArrayIndex) -> VirtualRegister:
         """
@@ -699,7 +701,7 @@ class MIRBuilder:
 
         # Get the array symbol (should be HIRIdentifier for static arrays)
         if not isinstance(expr.array, HIRIdentifier):
-            raise Exception(f"Array indexing only supports static arrays currently, got: {type(expr.array)}")
+            raise MIRLoweringError(f"Array indexing only supports static arrays currently, got: {type(expr.array)}")
 
         array_symbol = expr.array.symbol
 
@@ -794,11 +796,11 @@ class MIRBuilder:
         # Get field offset (computed during HIR construction)
         field_offset = expr.field_offset
         if field_offset is None:
-            raise Exception(f"Field offset not computed for field: {expr.field_name}")
+            raise MIRLoweringError(f"Field offset not computed for field: {expr.field_name}")
 
         # Get the struct symbol (should be HIRIdentifier for static structs)
         if not isinstance(expr.base, HIRIdentifier):
-            raise Exception(f"Field access only supports static structs currently, got: {type(expr.base)}")
+            raise MIRLoweringError(f"Field access only supports static structs currently, got: {type(expr.base)}")
 
         struct_symbol = expr.base.symbol
 
@@ -835,7 +837,7 @@ class MIRBuilder:
         # Get pointer type to determine if far or near
         pointer_type = expr.pointer.expr_type
         if not isinstance(pointer_type, PointerTypeInfo):
-            raise Exception(f"Dereference of non-pointer type: {pointer_type}")
+            raise MIRLoweringError(f"Dereference of non-pointer type: {pointer_type}")
 
         # Allocate result register
         result = self.current_function.vreg_allocator.alloc(
@@ -871,7 +873,7 @@ class MIRBuilder:
 
         # Currently only support address-of static variables
         if not isinstance(expr.operand, HIRIdentifier):
-            raise Exception(f"Address-of only supports static variables, got: {type(expr.operand)}")
+            raise MIRLoweringError(f"Address-of only supports static variables, got: {type(expr.operand)}")
 
         symbol = expr.operand.symbol
 
@@ -1239,7 +1241,7 @@ class MIRBuilder:
                     self.current_block = next_subpat_block
 
         else:
-            raise Exception(f"Unknown pattern type in MIR lowering: {type(pattern).__name__}")
+            raise MIRLoweringError(f"Unknown pattern type in MIR lowering: {type(pattern).__name__}")
 
     def lower_assignment(self, expr: HIRAssignment) -> Union[VirtualRegister, HardwareRegister]:
         """
@@ -1320,11 +1322,11 @@ class MIRBuilder:
             field_access = expr.target
             field_offset = field_access.field_offset
             if field_offset is None:
-                raise Exception(f"Field offset not computed for field: {field_access.field_name}")
+                raise MIRLoweringError(f"Field offset not computed for field: {field_access.field_name}")
 
             # Get the struct symbol
             if not isinstance(field_access.base, HIRIdentifier):
-                raise Exception(f"Field access only supports static structs currently, got: {type(field_access.base)}")
+                raise MIRLoweringError(f"Field access only supports static structs currently, got: {type(field_access.base)}")
 
             struct_symbol = field_access.base.symbol
 
@@ -1349,7 +1351,7 @@ class MIRBuilder:
 
             # Get the array symbol
             if not isinstance(array_index.array, HIRIdentifier):
-                raise Exception(f"Array indexing only supports static arrays currently, got: {type(array_index.array)}")
+                raise MIRLoweringError(f"Array indexing only supports static arrays currently, got: {type(array_index.array)}")
 
             array_symbol = array_index.array.symbol
 
@@ -1429,7 +1431,7 @@ class MIRBuilder:
             pointer_type = deref.pointer.expr_type
 
             if not isinstance(pointer_type, PointerTypeInfo):
-                raise Exception(f"Dereference of non-pointer type: {pointer_type}")
+                raise MIRLoweringError(f"Dereference of non-pointer type: {pointer_type}")
 
             # Lower the pointer expression to get the pointer value
             ptr_operand = self.lower_expression(deref.pointer)
@@ -1445,7 +1447,7 @@ class MIRBuilder:
 
         else:
             # Unsupported target
-            raise Exception(f"Unsupported assignment target: {type(expr.target)}")
+            raise MIRLoweringError(f"Unsupported assignment target: {type(expr.target)}")
 
     def _emit_mode_transition(self, from_mode: ProcessorMode, to_mode: ProcessorMode):
         """
@@ -1519,7 +1521,7 @@ class MIRBuilder:
                 # Regular function call - look up HIR function declaration
                 func_decl = self.function_decls.get(func_symbol.name)
                 if not func_decl:
-                    raise Exception(f"Function call to {func_symbol.name}: function not found in HIR")
+                    raise MIRLoweringError(f"Function call to {func_symbol.name}: function not found in HIR")
                 func_ptr_vreg = None
         else:
             # Indirect call (function pointer)
@@ -1621,7 +1623,7 @@ class MIRBuilder:
         elif call_expr.method_name == 'rotate_right':
             direction = 'right'
         else:
-            raise Exception(f"Unknown rotate method: {call_expr.method_name}")
+            raise MIRLoweringError(f"Unknown rotate method: {call_expr.method_name}")
 
         # Create result register
         result_vreg = self.current_function.vreg_allocator.alloc(call_expr.expr_type, "rotate_result")
@@ -1962,7 +1964,7 @@ class MIRBuilder:
         """
         if not self.loop_stack:
             # Should have been caught by type checker, but be defensive
-            raise Exception("Break statement outside of loop")
+            raise MIRLoweringError("Break statement outside of loop")
 
         _, break_target = self.loop_stack[-1]
         self.emit(Jump(target=break_target))
@@ -1979,7 +1981,7 @@ class MIRBuilder:
         """
         if not self.loop_stack:
             # Should have been caught by type checker, but be defensive
-            raise Exception("Continue statement outside of loop")
+            raise MIRLoweringError("Continue statement outside of loop")
 
         continue_target, _ = self.loop_stack[-1]
         self.emit(Jump(target=continue_target))
@@ -2338,14 +2340,21 @@ class MIRBuilder:
         """
         Get size in bytes for a type.
 
+        Delegates to TypeSizeCalculator for consistent type size handling.
+
         Args:
             type_info: TypeInfo
 
         Returns:
-            Size in bytes (1 for u8/i8/bool, 2 for u16/i16/near<T>/fn(), 3 for far<T>/far fn())
+            Size in bytes
         """
         from r65.compiler.hir.types import FunctionTypeInfo
 
+        # Handle function types specially (FunctionTypeInfo has is_far)
+        if isinstance(type_info, FunctionTypeInfo):
+            return 3 if type_info.is_far else 2
+
+        # Use TypeSizeCalculator for standard types
         type_str = str(type_info)
 
         # Basic types
@@ -2354,26 +2363,14 @@ class MIRBuilder:
         elif type_str in ('u16', 'i16'):
             return 2
 
-        # Function pointers
-        if isinstance(type_info, FunctionTypeInfo):
-            return 3 if type_info.is_far else 2
-
-        # Pointer types
-        if type_str.startswith('near'):
-            return 2
-        elif type_str.startswith('far'):
+        # Pointer/function types by string
+        if type_str.startswith('far'):
             return 3
-
-        # Function type (check string representation as fallback)
-        if type_str.startswith('far fn'):
-            return 3
-        elif type_str.startswith('fn'):
+        elif type_str.startswith('near') or type_str.startswith('fn'):
             return 2
 
-        # Array types - get element size * length
-        # For now, return 1 as default
-        # TODO: Handle arrays and structs properly
-        return 1
+        # Delegate to TypeSizeCalculator for complex types
+        return TypeSizeCalculator.get_size(type_info)
 
     def _generate_init_start_function(self, statics: List[HIRStaticDecl]) -> MIRFunction:
         """

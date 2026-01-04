@@ -9,6 +9,7 @@ from typing import Dict, Optional, Set, Tuple
 from dataclasses import dataclass
 from r65.compiler.hir import HIRStaticDecl, Symbol
 from r65.compiler.hir.attributes import StorageKind
+from r65.compiler.errors import MemoryAllocationError
 
 
 @dataclass
@@ -128,7 +129,7 @@ class MemoryAllocator:
             if all(i not in self.lowram_used for i in range(addr, addr + size)):
                 return addr
             addr += 1
-        raise Exception(f"Out of zero-page space (need {size} contiguous bytes)")
+        raise MemoryAllocationError(f"Out of zero-page space (need {size} contiguous bytes)")
 
     def allocate_zeropage(self, symbol: Symbol, static_decl: HIRStaticDecl,
                          explicit_addr: Optional[int] = None) -> AllocationInfo:
@@ -157,7 +158,7 @@ class MemoryAllocator:
 
             # Validate range only
             if address < 0 or address + size - 1 > self.zeropage_end:
-                raise Exception(
+                raise MemoryAllocationError(
                     f"Zero-page address ${address:02X} for '{symbol.name}' "
                     f"out of range ($00-$FF)"
                 )
@@ -199,12 +200,12 @@ class MemoryAllocator:
         and 'lower' is the minimum address the stack can reach.
         """
         if lower < self.lowram_start or upper > self.lowram_end:
-            raise Exception(
+            raise MemoryAllocationError(
                 f"Stack region ${lower:04X}-${upper:04X} must be within "
                 f"low RAM (${self.lowram_start:04X}-${self.lowram_end:04X})"
             )
         if lower > upper:
-            raise Exception(
+            raise MemoryAllocationError(
                 f"Stack lower bound ${lower:04X} must be <= upper bound ${upper:04X}"
             )
 
@@ -242,7 +243,7 @@ class MemoryAllocator:
             if all(i not in self.lowram_used for i in range(addr, addr + size)):
                 return addr
             addr += 1
-        raise Exception(f"Out of low RAM space (need {size} contiguous bytes)")
+        raise MemoryAllocationError(f"Out of low RAM space (need {size} contiguous bytes)")
 
     def allocate_lowram(self, symbol: Symbol, static_decl: HIRStaticDecl,
                         explicit_addr: Optional[int] = None) -> AllocationInfo:
@@ -272,7 +273,7 @@ class MemoryAllocator:
             is_explicit = True
 
             if address < self.lowram_start or address + size - 1 > self.lowram_end:
-                raise Exception(
+                raise MemoryAllocationError(
                     f"Low RAM address ${address:04X} for '{symbol.name}' "
                     f"out of range (${self.lowram_start:04X}-${self.lowram_end:04X})"
                 )
@@ -320,7 +321,7 @@ class MemoryAllocator:
         # Find first free address that doesn't conflict
         while True:
             if address + size - 1 > self.ram_end:
-                raise Exception(f"Out of RAM space (need {size} bytes)")
+                raise MemoryAllocationError(f"Out of RAM space (need {size} bytes)")
 
             # Check for conflicts with existing allocations
             conflict = False
@@ -359,7 +360,7 @@ class MemoryAllocator:
 
             # Validate range only
             if address < self.ram_start or address + size - 1 > self.ram_end:
-                raise Exception(
+                raise MemoryAllocationError(
                     f"RAM address ${address:06X} for '{symbol.name}' "
                     f"out of range (${self.ram_start:06X}-${self.ram_end:06X})"
                 )
@@ -497,12 +498,12 @@ class MemoryAllocator:
             self.allocate_ram(symbol, static_decl, explicit_addr)
         elif storage_kind == StorageKind.HW:
             if explicit_addr is None:
-                raise Exception(f"Hardware register '{symbol.name}' must have explicit address")
+                raise MemoryAllocationError(f"Hardware register '{symbol.name}' must have explicit address")
             self.allocate_hw(symbol, static_decl, explicit_addr)
         elif storage_kind == StorageKind.ROM:
             self.allocate_rom(symbol, static_decl, explicit_addr)
         else:
-            raise Exception(f"Unknown storage kind: {storage_kind}")
+            raise MemoryAllocationError(f"Unknown storage kind: {storage_kind}")
 
     # ========================================================================
     # Query
