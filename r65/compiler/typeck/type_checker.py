@@ -971,12 +971,59 @@ class TypeChecker:
                 source_loc=expr.operand.source_loc
             )
 
-        # Address-of yields a near pointer to the operand type
-        # For now, all pointers are near (16-bit)
-        # TODO: Support far pointers based on variable's storage attribute
-        pointer_type = PointerTypeInfo(is_far=False, pointee_type=operand_type)
+        # Determine if far pointer is needed based on storage attribute
+        # RAM ($7E2000+) and ROM are in different banks, requiring far pointers
+        is_far = self._needs_far_pointer(expr.operand)
+
+        pointer_type = PointerTypeInfo(is_far=is_far, pointee_type=operand_type)
         expr.expr_type = pointer_type
         return expr.expr_type
+
+    def _needs_far_pointer(self, operand: HIRExpression) -> bool:
+        """
+        Determine if taking address of operand requires a far pointer.
+
+        Far pointers (24-bit) are needed for:
+        - #[ram] variables: stored in bank $7E ($7E2000-$7FFFFF)
+        - #[rom] variables: stored in ROM banks
+
+        Near pointers (16-bit) are sufficient for:
+        - #[zeropage] variables: bank 0 ($0000-$00FF)
+        - #[lowram] variables: bank 0 ($0000-$1FFF)
+        - #[hw] variables: typically bank 0
+        - Local variables: on stack in current bank
+
+        Args:
+            operand: The expression being addressed
+
+        Returns:
+            True if far pointer needed, False for near pointer
+        """
+        from r65.compiler.hir import HIRStaticDecl
+        from r65.compiler.hir.attributes import StorageAttribute, StorageKind
+
+        # Only identifiers can have storage attributes
+        if not isinstance(operand, HIRIdentifier):
+            return False
+
+        symbol = operand.symbol
+        if not symbol or not symbol.definition:
+            return False
+
+        # Check if it's a static variable with storage attribute
+        if not isinstance(symbol.definition, HIRStaticDecl):
+            return False
+
+        static_decl = symbol.definition
+        if not static_decl.storage_attr:
+            return False
+
+        if not isinstance(static_decl.storage_attr, StorageAttribute):
+            return False
+
+        # RAM and ROM require far pointers (different banks)
+        storage_kind = static_decl.storage_attr.storage_kind
+        return storage_kind in (StorageKind.RAM, StorageKind.ROM)
 
     def check_match_expression(self, expr: HIRMatchExpression) -> TypeInfo:
         """Type check match expression."""

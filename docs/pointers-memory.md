@@ -98,8 +98,16 @@ if ptr as u16 != 0 {  // Manual check required
 #[zeropage(0x20)]
 static mut TEMP: u8;
 
-let ptr: near<u8> = &TEMP;  // Get address
+#[ram]
+static mut BUFFER: [u8; 256];
+
+let zp_ptr = &TEMP;      // near<u8> - zeropage is bank 0
+let ram_ptr = &BUFFER;   // far<[u8; 256]> - ram is bank $7E
 ```
+
+**Automatic type inference**: The compiler infers `near<T>` or `far<T>` based on storage:
+- `#[zeropage]`, `#[lowram]`, `#[hw]` → `near<T>` (16-bit, bank 0)
+- `#[ram]`, `#[rom]` → `far<T>` (24-bit, includes bank)
 
 **Restrictions**:
 - Cannot take address of register aliases (`&A` is error)
