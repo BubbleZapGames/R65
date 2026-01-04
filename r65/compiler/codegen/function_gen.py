@@ -61,7 +61,7 @@ class FunctionCodeGenerator:
         self._allocate_function_registers(mir_func, reg_alloc)
 
         # Create instruction selector with current function context
-        instr_selector = InstructionSelector(self.emitter, reg_alloc, self.mem_alloc, mir_func)
+        instr_selector = InstructionSelector(self.emitter, reg_alloc, self.mem_alloc, mir_func, func_gen=self)
 
         # Emit function header comment
         self.emit_function_header(mir_func)
@@ -416,25 +416,217 @@ class FunctionCodeGenerator:
                     if push_instr:
                         self.emitter.emit_instruction(push_instr, comment=f"Preserve {reg}")
 
-    def emit_epilogue(self, mir_func: MIRFunction, reg_alloc: RegisterAllocator):
-        """
-        Emit function epilogue.
+        # Emit stack parameter loads (must be after all prologue pushes)
+        self._emit_stack_parameter_loads(mir_func, reg_alloc)
 
-        Epilogue may include:
-        - Stack frame teardown
-        - Register restoration
-        - Mode restoration
+    def _get_prologue_stack_bytes(self, mir_func: MIRFunction) -> int:
+        """
+        Calculate bytes pushed by prologue that affect stack parameter offsets.
+
+        The prologue may push registers for DBR management, mode transitions,
+        and register preservation. These pushes change the stack pointer,
+        so stack parameter offsets must be adjusted accordingly.
+
+        Args:
+            mir_func: MIR function
+
+        Returns:
+            Number of bytes pushed by prologue
+        """
+        bytes_pushed = 0
+
+        # DBR management: PHB pushes 1 byte
+        if mir_func.is_far and mir_func.bank_attr:
+            from r65.compiler.hir.attributes import DataBankMode
+            if mir_func.bank_attr.data_bank == DataBankMode.INLINE:
+                bytes_pushed += 1
+
+        # Mode transition: PHP pushes 1 byte
+        if mir_func.mode_attr:
+            from r65.compiler.hir.attributes import ModeTransition
+            if mir_func.mode_attr.transition == ModeTransition.INLINE:
+                bytes_pushed += 1
+
+        # Register preservation pushes
+        if mir_func.preserves_attr:
+            from r65.compiler.hir.attributes import MMode, XMode
+            for reg in mir_func.preserves_attr.registers:
+                if reg == 'STATUS':
+                    bytes_pushed += 1  # PHP pushes 1 byte
+                elif reg == 'A':
+                    # PHA pushes 1 or 2 bytes depending on M mode
+                    if mir_func.mode_attr and mir_func.mode_attr.m_mode == MMode.M16:
+                        bytes_pushed += 2
+                    else:
+                        bytes_pushed += 1
+                elif reg in ('X', 'Y'):
+                    # PHX/PHY pushes 1 or 2 bytes depending on X mode
+                    if mir_func.mode_attr and mir_func.mode_attr.x_mode == XMode.X16:
+                        bytes_pushed += 2
+                    else:
+                        bytes_pushed += 1
+                elif reg == 'D':
+                    bytes_pushed += 2  # Direct page is always 16-bit
+                elif reg == 'DBR':
+                    bytes_pushed += 1  # Data bank is always 8-bit
+
+        return bytes_pushed
+
+    def _emit_stack_parameter_loads(self, mir_func: MIRFunction, reg_alloc: RegisterAllocator):
+        """
+        Emit code to load stack parameters into their allocated locations.
+
+        Uses stack-relative addressing (LDA offset,S) to load parameters
+        from the caller's stack frame into virtual register locations.
 
         Args:
             mir_func: MIR function
             reg_alloc: Register allocator
         """
-        # TODO: Implement epilogue generation
-        # - Emit mode restoration
-        # - Emit register restores
-        # - Stack cleanup
-        # Note: RTS/RTL already emitted by Return instruction
-        pass
+        if not mir_func.stack_param_offsets:
+            return
+
+        # Calculate adjustment for bytes pushed by prologue
+        prologue_bytes = self._get_prologue_stack_bytes(mir_func)
+
+        self.emitter.emit_blank_line()
+        self.emitter.emit_comment("Load stack parameters")
+
+        for param_idx in sorted(mir_func.stack_param_offsets.keys()):
+            base_offset = mir_func.stack_param_offsets[param_idx]
+            vreg = mir_func.param_to_vreg.get(param_idx)
+            if not vreg:
+                continue
+
+            # Adjust offset for prologue pushes
+            adjusted_offset = base_offset + prologue_bytes
+
+            # Get physical location for this vreg
+            phys_loc = reg_alloc.get_location(vreg)
+
+            # Get parameter size
+            param_size = get_type_size(vreg.type_info)
+
+            # Emit load from stack to physical location
+            if param_size == 1:
+                # 8-bit load: LDA offset,S ; STA dest
+                self.emitter.emit_instruction(
+                    "LDA", f"${adjusted_offset:02X},S",
+                    comment=f"Load param {param_idx}"
+                )
+                self._emit_store_to_location(phys_loc)
+            else:
+                # 16-bit load: LDA offset,S ; STA dest ; LDA offset+1,S ; STA dest+1
+                # Or if in 16-bit mode, single LDA/STA
+                # For simplicity, use byte-by-byte approach
+                self.emitter.emit_instruction(
+                    "LDA", f"${adjusted_offset:02X},S",
+                    comment=f"Load param {param_idx} low"
+                )
+                self._emit_store_to_location(phys_loc)
+                self.emitter.emit_instruction(
+                    "LDA", f"${adjusted_offset + 1:02X},S",
+                    comment=f"Load param {param_idx} high"
+                )
+                self._emit_store_to_location(self._offset_location(phys_loc, 1))
+
+    def _emit_store_to_location(self, location):
+        """Emit STA instruction to physical location."""
+        from r65.compiler.codegen.register_alloc import LocationKind
+
+        if location.kind == LocationKind.SCRATCH:
+            self.emitter.emit_instruction("STA", f"${location.scratch_addr:02X}")
+        elif location.kind == LocationKind.MEMORY:
+            if location.memory_addr < 0x100:
+                self.emitter.emit_instruction("STA", f"${location.memory_addr:02X}")
+            else:
+                self.emitter.emit_instruction("STA", f"${location.memory_addr:04X}")
+        elif location.kind == LocationKind.STACK:
+            self.emitter.emit_instruction("STA", f"${location.stack_offset:02X},S")
+        else:
+            raise ValueError(f"Cannot store to location kind: {location.kind}")
+
+    def _offset_location(self, location, offset: int):
+        """Create new location offset from given location."""
+        from r65.compiler.codegen.register_alloc import PhysicalLocation, LocationKind
+
+        if location.kind == LocationKind.SCRATCH:
+            return PhysicalLocation(
+                kind=LocationKind.SCRATCH,
+                scratch_addr=location.scratch_addr + offset,
+                size=1
+            )
+        elif location.kind == LocationKind.MEMORY:
+            return PhysicalLocation(
+                kind=LocationKind.MEMORY,
+                memory_addr=location.memory_addr + offset,
+                size=1
+            )
+        elif location.kind == LocationKind.STACK:
+            return PhysicalLocation(
+                kind=LocationKind.STACK,
+                stack_offset=location.stack_offset + offset,
+                size=1
+            )
+        else:
+            raise ValueError(f"Cannot offset location kind: {location.kind}")
+
+    def emit_epilogue(self, mir_func: MIRFunction, reg_alloc: RegisterAllocator):
+        """
+        Emit function epilogue.
+
+        Epilogue includes (in order):
+        1. Preserved register restoration (reverse of prologue push order)
+        2. DBR restoration (for data_bank=inline)
+        3. Mode restoration (for transition=inline)
+
+        Note: Return value loading and RTS/RTL are handled separately
+        by the return instruction.
+
+        Args:
+            mir_func: MIR function
+            reg_alloc: Register allocator
+        """
+        self._emit_preserved_register_restores(mir_func)
+        self._emit_dbr_restore(mir_func)
+        self._emit_mode_restore(mir_func)
+
+    def _emit_preserved_register_restores(self, mir_func: MIRFunction):
+        """
+        Restore preserved registers in reverse order of prologue pushes.
+
+        Prologue pushes: STATUS, A, X, Y, D, DBR
+        Epilogue pops:   DBR, D, Y, X, A, STATUS
+        """
+        if not mir_func.preserves_attr:
+            return
+
+        preserved_regs = mir_func.preserves_attr.registers
+        pop_order = ['DBR', 'D', 'Y', 'X', 'A', 'STATUS']
+
+        for reg in pop_order:
+            if reg in preserved_regs:
+                pull_instr = RegisterMappings.PULL.get(reg)
+                if pull_instr:
+                    self.emitter.emit_instruction(pull_instr, comment=f"Restore {reg}")
+
+    def _emit_dbr_restore(self, mir_func: MIRFunction):
+        """Restore DBR for data_bank=inline functions."""
+        if not (mir_func.is_far and mir_func.bank_attr):
+            return
+
+        from r65.compiler.hir.attributes import DataBankMode
+        if mir_func.bank_attr.data_bank == DataBankMode.INLINE:
+            self.emitter.emit_instruction("PLB", comment="Restore data bank")
+
+    def _emit_mode_restore(self, mir_func: MIRFunction):
+        """Restore processor mode for transition=inline functions."""
+        if not mir_func.mode_attr:
+            return
+
+        from r65.compiler.hir.attributes import ModeTransition
+        if mir_func.mode_attr.transition == ModeTransition.INLINE:
+            self.emitter.emit_instruction("PLP", comment="Restore processor status")
 
 
 class ProgramFunctionGenerator:

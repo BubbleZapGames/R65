@@ -5,8 +5,11 @@ Converts MIR instructions to WLA-DX assembly mnemonics with proper
 addressing modes and register usage.
 """
 
-from typing import Union, Optional
+from typing import Union, Optional, TYPE_CHECKING
 from enum import Enum
+
+if TYPE_CHECKING:
+    from r65.compiler.codegen.function_gen import FunctionCodeGenerator
 from r65.compiler.mir.nodes import (
     MIRFunction, MIRInstruction,
     Load, Store, LoadIndirect, StoreIndirect,
@@ -45,7 +48,8 @@ class InstructionSelector:
                  emitter: AssemblyEmitter,
                  register_allocator: RegisterAllocator,
                  memory_allocator: MemoryAllocator,
-                 current_function: 'MIRFunction' = None):
+                 current_function: 'MIRFunction' = None,
+                 func_gen: 'FunctionCodeGenerator' = None):
         """
         Initialize instruction selector.
 
@@ -54,11 +58,13 @@ class InstructionSelector:
             register_allocator: Register allocator for virtual registers
             memory_allocator: Memory allocator for static variables
             current_function: Current MIR function being generated (for far/near context)
+            func_gen: Function code generator (for epilogue emission)
         """
         self.emitter = emitter
         self.reg_alloc = register_allocator
         self.mem_alloc = memory_allocator
         self.current_function = current_function
+        self.func_gen = func_gen
 
         # Helper classes for modular instruction selection
         self.xba_manager = XBAStateManager(emitter)

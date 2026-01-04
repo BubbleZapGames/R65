@@ -126,7 +126,7 @@ class CallLowerer:
 
         if return_type:
             # For now, assume single return value
-            # TODO: Handle multiple return values (tuples)
+            # TODO: Handle multiple return values
             call_name = func_decl.name if func_decl else "indirect_call"
             result_vreg = self.ctx.alloc_vreg(
                 return_type,

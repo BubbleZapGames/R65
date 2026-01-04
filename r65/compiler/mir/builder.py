@@ -224,7 +224,11 @@ class MIRBuilder:
         # 1. Register aliases (param @ A): track in alias tracker
         # 2. Variable-bound (param @ VAR): track as alias to static variable
         # 3. Stack parameters (param): allocate virtual register
-        for param in hir_func.parameters:
+        #
+        # Track stack parameters for offset calculation
+        stack_params = []
+
+        for idx, param in enumerate(hir_func.parameters):
             if isinstance(param.binding, RegisterBinding):
                 # Register-aliased parameter: add to alias tracker
                 hw_reg = HardwareRegister(param.binding.register_name)
@@ -237,26 +241,42 @@ class MIRBuilder:
                 # Variable-bound parameter: treat it as an alias to the bound variable
                 # When the parameter is referenced in the function, it should load from the bound variable
                 # The bound variable already exists and has a memory allocation
-                # We don't need to do anything special here - when the param symbol is referenced,
-                # the HIR should already have resolved it to refer to the bound variable
-                # Actually, we need to create a MemoryLocation for the bound variable
-                # But that happens when lowering expressions - no setup needed here
+                # No setup needed here - lowering expressions handles the load
                 pass
             else:
                 # Stack parameter: allocate a virtual register for it
                 # The function prologue will load from stack into this vreg
-                # For now, we'll just allocate the vreg and let the rest of the function use it
                 param_vreg = self.current_function.vreg_allocator.alloc(
                     param.param_type,
                     f"param_{param.name}"
                 )
                 self.symbol_to_vreg[id(param.symbol)] = param_vreg
 
-                # TODO: Emit prologue code to load from stack
-                # The parameter is at a specific offset from the stack pointer
-                # based on the calling convention (right-to-left push order)
-                # For now, we're not emitting the load - the vreg will be allocated
-                # but never initialized. This is a placeholder.
+                # Track for offset calculation
+                stack_params.append((idx, param, param_vreg))
+
+        # Calculate stack parameter offsets for prologue generation
+        # Stack-relative addressing: LDA offset,S
+        #
+        # Stack layout after JSR/JSL (caller pushes params right-to-left):
+        #     | param N             |  <- higher offset (pushed first)
+        #     | ...                 |
+        #     | param 0             |  <- SP + return_addr_size + 1 (pushed last)
+        #     | return addr (2-3b)  |  <- SP + 1
+        #     SP ->
+        #
+        # Parameters with lower index are at lower stack offsets
+        if stack_params:
+            return_addr_size = 3 if hir_func.is_far else 2
+            current_offset = return_addr_size + 1  # First param starts after return address
+
+            for idx, param, param_vreg in stack_params:
+                mir_func.stack_param_offsets[idx] = current_offset
+                mir_func.param_to_vreg[idx] = param_vreg
+
+                # Advance offset by parameter size
+                param_size = self._get_type_size(param.param_type)
+                current_offset += param_size
 
         # If this is an entry point function, call __init_start() first
         if hir_func.is_entry and self.has_init_start:

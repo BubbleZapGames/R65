@@ -633,6 +633,12 @@ class MIRFunction:
     # Register aliasing tracker
     alias_tracker: Optional[Any] = None  # RegisterAliasTracker
 
+    # Stack parameter tracking for prologue generation
+    # Maps parameter index to stack offset (from SP after return address)
+    stack_param_offsets: Dict[int, int] = field(default_factory=dict)
+    # Maps parameter index to allocated virtual register
+    param_to_vreg: Dict[int, 'VirtualRegister'] = field(default_factory=dict)
+
     def __repr__(self):
         return f"MIRFunction({self.name}, {len(self.blocks)} blocks)"
 

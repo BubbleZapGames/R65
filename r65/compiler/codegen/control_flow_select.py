@@ -264,9 +264,16 @@ class ControlFlowInstructionSelector:
             instr: Return instruction
         """
         self._emit_return_values(instr)
-        self._emit_preserved_register_restores()
-        self._emit_dbr_restore()
-        self._emit_mode_restore()
+
+        # Use consolidated emit_epilogue from FunctionCodeGenerator
+        if self.parent.func_gen:
+            self.parent.func_gen.emit_epilogue(self.current_function, self.parent.reg_alloc)
+        else:
+            # Fallback to inline methods if func_gen not available
+            self._emit_preserved_register_restores()
+            self._emit_dbr_restore()
+            self._emit_mode_restore()
+
         self._emit_return_instruction()
 
     def _emit_return_values(self, instr: Return):
