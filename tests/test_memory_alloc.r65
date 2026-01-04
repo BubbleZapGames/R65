@@ -4,9 +4,8 @@
 // - Stack can be anywhere in low RAM
 // - Lowram auto-allocates from $0100+
 
-// Reserve stack from $1F00 to $1FFF
+// Reserve stack from $1F00 to $1FFF (global directive)
 #[stack(0x1F00, 0x1FFF)]
-static mut STACK_MARKER: u8;
 
 // Zeropage auto-allocation (should get $00, $01, $02)
 #[zeropage]

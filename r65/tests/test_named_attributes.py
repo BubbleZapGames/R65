@@ -5,7 +5,7 @@ from r65.compiler.frontend import parse
 
 # Test 1: Named arguments
 source1 = """
-#[mode(m8, x8, transition=auto)]
+#[mode(m8, x8, transition=inline)]
 fn test1() {
 }
 """
@@ -75,13 +75,13 @@ except Exception as e:
 # Test 4: Interrupt handler with mode and transition
 source4 = """
 #[interrupt(nmi)]
-#[mode(m8, x8, transition=auto)]
+#[mode(m8, x8, transition=inline)]
 fn nmi_handler() {
     return;
 }
 """
 
-print("Test 4: Interrupt handler with transition=auto")
+print("Test 4: Interrupt handler with transition=inline")
 print("Source:", source4.strip())
 try:
     ast = parse(source4, "test4.r65")

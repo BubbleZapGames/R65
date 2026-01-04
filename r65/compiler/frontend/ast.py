@@ -190,6 +190,13 @@ class IncludeStmt(Declaration):
     path: str
 
 
+@dataclass
+class StackDirective(Declaration):
+    """Stack region directive: #[stack(lower, upper)]"""
+    lower: int
+    upper: int
+
+
 # ============================================================================
 # Statements
 # ============================================================================

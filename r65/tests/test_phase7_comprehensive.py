@@ -17,7 +17,7 @@ static mut VBLANK_FLAG: u8 = 1;
 
 // Interrupt handler with automatic preservation
 #[interrupt(nmi)]
-#[mode(m8, x8, transition=auto)]
+#[mode(m8, x8, transition=inline)]
 fn vblank_handler() {
     VBLANK_FLAG = 1;
     return;

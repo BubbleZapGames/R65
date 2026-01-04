@@ -291,9 +291,8 @@ static mut INIDISP: u8;  // Screen brightness register
 Reserve a region in low RAM for the stack using `#[stack(lower, upper)]`:
 
 ```rust
-// Reserve $1F00-$1FFF for stack (256 bytes)
+// Reserve $1F00-$1FFF for stack (256 bytes) - global directive
 #[stack(0x1F00, 0x1FFF)]
-static STACK: u8;
 
 // Low RAM auto-allocation will skip the stack region
 #[lowram]

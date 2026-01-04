@@ -30,7 +30,7 @@ static mut FLAGS: u8 = 0;
 static mut PLAYER_X: u8 = 10;
 
 // RAM variables (explicit address)
-#[ram(0x7E0000)]
+#[ram(0x7E2000)]
 static mut BUFFER: [u8; 256];
 
 // RAM variables (auto-allocated)
@@ -126,7 +126,7 @@ fn main() -> ! {
         ("COUNTER", 0x22, 2, 'zeropage', True),
         ("FLAGS", None, 1, 'zeropage', False),  # Auto-allocated
         ("PLAYER_X", None, 1, 'zeropage', False),  # Auto-allocated
-        ("BUFFER", 0x7E0000, 256, 'ram', True),
+        ("BUFFER", 0x7E2000, 256, 'ram', True),
         ("SCORE", None, 2, 'ram', False),  # Auto-allocated
         ("LIVES", None, 1, 'ram', False),  # Auto-allocated
         ("INIDISP", 0x2100, 1, 'hw', True),
@@ -192,7 +192,7 @@ fn main() -> ! {
         ".DEFINE COUNTER $0022",
         ".DEFINE INIDISP $2100",
         ".DEFINE HVBJOY $4212",
-        ".DEFINE BUFFER $7E0000",
+        ".DEFINE BUFFER $7E2000",
     ]
 
     assembly_passed = True

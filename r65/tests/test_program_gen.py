@@ -83,7 +83,7 @@ def create_test_program():
             storage_attr=StorageAttribute(
                 name="ram",
                 storage_kind=StorageKind.RAM,
-                address=0x7E0000
+                address=0x7E2000
             ),
             is_mutable=True,
             symbol=buffer_symbol,

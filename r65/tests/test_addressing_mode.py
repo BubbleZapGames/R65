@@ -56,7 +56,7 @@ def test_direct_page_vs_absolute():
 
     # Test long addresses (24-bit)
     test_cases = [
-        (0x7E0000, AddressingMode.LONG, "$7E0000"),
+        (0x7E2000, AddressingMode.LONG, "$7E0000"),
         (0x7FFFFF, AddressingMode.LONG, "$7FFFFF"),
     ]
 
@@ -115,7 +115,7 @@ def test_indexed_addressing():
 
     # Long indexed (only X)
     print("Long indexed (24-bit):")
-    loc = PhysicalLocation(kind=LocationKind.MEMORY, memory_addr=0x7E0000, size=1)
+    loc = PhysicalLocation(kind=LocationKind.MEMORY, memory_addr=0x7E2000, size=1)
     mode, operand = selector.select_for_location(loc, index_register='X')
 
     expected_mode = AddressingMode.LONG_X

@@ -646,6 +646,7 @@ class MIRProgram:
     - All function MIRs
     - Static declarations (preserved from HIR)
     - Symbol table
+    - Global attributes (e.g., stack)
     """
     functions: List[MIRFunction] = field(default_factory=list)
     statics: List[Any] = field(default_factory=list)    # HIRStaticDecl list
@@ -653,6 +654,7 @@ class MIRProgram:
     structs: List[Any] = field(default_factory=list)    # HIRStructDecl list
     enums: List[Any] = field(default_factory=list)      # HIREnumDecl list
     symbol_table: Optional[Any] = None  # SymbolTable from HIR
+    stack_attr: Optional[Any] = None    # StackAttribute from #[stack(...)]
 
     def __repr__(self):
         return f"MIRProgram({len(self.functions)} functions, {len(self.statics)} statics)"

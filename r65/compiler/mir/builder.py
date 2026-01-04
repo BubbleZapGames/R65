@@ -113,7 +113,8 @@ class MIRBuilder:
             constants=[d for d in hir_program.declarations if isinstance(d, HIRConstDecl)],
             structs=[d for d in hir_program.declarations if isinstance(d, HIRStructDecl)],
             enums=[d for d in hir_program.declarations if isinstance(d, HIREnumDecl)],
-            symbol_table=hir_program.symbol_table
+            symbol_table=hir_program.symbol_table,
+            stack_attr=hir_program.stack_attr
         )
 
     def lower_function(self, hir_func: HIRFunctionDecl) -> MIRFunction:

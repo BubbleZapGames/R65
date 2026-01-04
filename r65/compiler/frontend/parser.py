@@ -284,6 +284,13 @@ class ASTBuilder(Transformer):
         path = items[0].value.strip('"')  # Remove quotes
         return ast.IncludeStmt(path=path)
 
+    def stack_directive(self, items):
+        """Stack directive: #[stack(lower, upper)]"""
+        items = self._filter_tokens(items, keep_types={'INTEGER'})
+        lower = int(items[0].value, 0)  # Parse with base detection (0x prefix)
+        upper = int(items[1].value, 0)
+        return ast.StackDirective(lower=lower, upper=upper)
+
     # ========================================================================
     # Attributes
     # ========================================================================

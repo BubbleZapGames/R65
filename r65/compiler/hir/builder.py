@@ -36,19 +36,33 @@ class HIRBuilder:
         Returns:
             HIRProgram with symbol table
         """
+        # Track global attributes
+        stack_attr = None
+
         # Pass 1: Declare all top-level symbols
         for decl in ast_program.items:
-            self._declare_toplevel(decl)
+            if isinstance(decl, ast.StackDirective):
+                # Create stack attribute from directive
+                stack_attr = StackAttribute(
+                    name='stack',
+                    lower=decl.lower,
+                    upper=decl.upper
+                )
+            else:
+                self._declare_toplevel(decl)
 
         # Pass 2: Build HIR nodes with resolved references
         hir_decls = []
         for decl in ast_program.items:
+            if isinstance(decl, ast.StackDirective):
+                continue  # Skip stack directives, already processed
             hir_decl = self._build_declaration(decl)
             hir_decls.append(hir_decl)
 
         return hir.HIRProgram(
             declarations=hir_decls,
-            symbol_table=self.symbol_table
+            symbol_table=self.symbol_table,
+            stack_attr=stack_attr
         )
 
     # =========================================================================
@@ -308,12 +322,9 @@ class HIRBuilder:
         )
 
         storage_attr = None
-        stack_attr = None
         for attr in processed_attrs:
             if isinstance(attr, StorageAttribute):
                 storage_attr = attr
-            elif isinstance(attr, StackAttribute):
-                stack_attr = attr
 
         # Resolve type
         var_type = self.type_resolver.resolve_type(static.var_type)
@@ -333,7 +344,6 @@ class HIRBuilder:
             var_type=var_type,
             initializer=initializer,
             storage_attr=storage_attr,
-            stack_attr=stack_attr,
             symbol=static_symbol
         )
 

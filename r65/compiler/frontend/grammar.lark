@@ -16,7 +16,12 @@ start: item*
      | enum_decl
      | type_alias
      | include_stmt
+     | stack_directive
      | _reserved_keyword  // Dummy rule to make reserved keywords valid tokens
+
+// Stack directive - global attribute for stack region
+// Uses explicit syntax to avoid grammar ambiguity
+stack_directive: "#" "[" "stack" "(" INTEGER "," INTEGER ")" "]"
 
 // Dummy rule to tell Lark that these terminals are valid (never actually matched in valid code)
 _reserved_keyword: KEYWORD

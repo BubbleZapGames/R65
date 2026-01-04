@@ -48,6 +48,7 @@ class HIRProgram(HIRNode):
     """Top-level program."""
     declarations: List[HIRDeclaration] = field(default_factory=list)
     symbol_table: Any = None  # Will be SymbolTable
+    stack_attr: Any = None  # StackAttribute from #[stack(...)]
 
 
 # =============================================================================
@@ -137,7 +138,6 @@ class HIRStaticDecl(HIRDeclaration):
 
     # Processed attributes
     storage_attr: Optional[Any] = None  # Will be StorageAttribute
-    stack_attr: Optional[Any] = None    # Will be StackAttribute (stack reservation marker)
 
     # Symbol reference
     symbol: Optional[Any] = None  # Will be Symbol
