@@ -1185,10 +1185,9 @@ class InstructionSelector:
                     self.emitter.emit_instruction("LDA", self._format_operand(arg_loc))
 
                 # Store to variable location
-                # arg.location should be a symbol or memory location
-                # For now, assume it's a simple memory address
-                # TODO: Handle symbol resolution properly
-                self.emitter.emit_instruction("STA", str(arg.location))
+                # arg.location is a MemoryLocation - convert to physical location
+                var_loc = self._get_operand_location(arg.location)
+                self.emitter.emit_instruction("STA", self._format_operand(var_loc))
 
         # Step 2: Handle caller-managed DBR (data_bank=caller)
         needs_dbr_restore = False

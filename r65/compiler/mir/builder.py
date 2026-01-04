@@ -2300,6 +2300,20 @@ class MIRBuilder:
         Returns:
             MemoryLocation
         """
+        # Handle variable-bound parameters
+        if symbol.kind == SymbolKind.PARAMETER:
+            # Find the HIR parameter in the current function's parameter list
+            if self.current_function:
+                for param in self.current_function.parameters:
+                    if param.symbol == symbol:
+                        # Check if parameter has a variable binding
+                        if hasattr(param, 'binding') and param.binding:
+                            if isinstance(param.binding, VariableBinding):
+                                # Parameter is bound to a variable - return that variable's location
+                                return self.get_memory_location(param.binding.variable_symbol)
+                        # If no variable binding, fall through to default (stack parameter)
+                        break
+
         # Get storage attribute from symbol's definition
         if symbol.kind == SymbolKind.STATIC_VAR:
             static_decl = symbol.definition
