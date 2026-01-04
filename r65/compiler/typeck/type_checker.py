@@ -709,10 +709,18 @@ class TypeChecker:
 
         # Set return type
         if builtin.returns_value:
-            # Built-ins that return values return u8 or u16 depending on mode
-            # For simplicity, assume u8 for now
-            # TODO: Infer return type from argument types
-            expr.expr_type = BasicTypeInfo('u8')
+            # Built-ins that return values (mul, div, mod, shl, shr, rotate_*)
+            # return the same type as their first argument
+            if expr.args:
+                first_arg_type = expr.args[0].expr_type
+                if isinstance(first_arg_type, BasicTypeInfo) and first_arg_type.name in ('u8', 'i8', 'u16', 'i16'):
+                    expr.expr_type = first_arg_type
+                else:
+                    # Fallback for non-integer types (shouldn't happen with valid code)
+                    expr.expr_type = BasicTypeInfo('u8')
+            else:
+                # No arguments - shouldn't happen for value-returning builtins
+                expr.expr_type = BasicTypeInfo('u8')
         else:
             # Void return
             expr.expr_type = BasicTypeInfo('void')
