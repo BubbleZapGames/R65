@@ -72,6 +72,7 @@ class StorageAttribute(ProcessedAttribute):
     """#[zeropage], #[ram], #[rom], #[hw]"""
     storage_kind: StorageKind = StorageKind.RAM
     address: Optional[int] = None  # For explicit addresses
+    is_register: bool = False  # True if marked as scratch register with 'register' parameter
 
 
 # Bank attribute
@@ -235,24 +236,46 @@ class AttributeProcessor:
         }
         storage_kind = storage_map[attr.name]
 
-        # Optional address argument
+        # Parse arguments: address (positional) and register (named or flag)
         address = None
-        if len(attr.args) == 1:
-            arg = attr.args[0]
-            if arg.name is not None:
-                raise HIRError(f"#{attr.name} does not accept named arguments")
+        is_register = False
 
-            if isinstance(arg.value, ast.IntegerLiteral):
-                address = arg.value.value
+        for arg in attr.args:
+            if arg.name is None:  # Positional argument
+                # Check if this is a flag keyword (bare identifier)
+                if isinstance(arg.value, ast.Identifier) and arg.value.name == 'register':
+                    # Flag-style: #[zeropage(0x10, register)]
+                    is_register = True
+                elif address is not None:
+                    raise HIRError(f"#{attr.name} can only have one positional argument (address)")
+                elif isinstance(arg.value, ast.IntegerLiteral):
+                    # Address argument
+                    address = arg.value.value
+                else:
+                    raise HIRError(f"#{attr.name} address must be an integer literal")
+
+            elif arg.name == 'register':
+                # Handle register parameter: 'register' (keyword only)
+                # No value means register=true
+                if arg.value is None:
+                    is_register = True
+                elif isinstance(arg.value, ast.BooleanLiteral):
+                    is_register = arg.value.value
+                elif isinstance(arg.value, ast.Identifier) and arg.value.name == 'true':
+                    is_register = True
+                elif isinstance(arg.value, ast.Identifier) and arg.value.name == 'false':
+                    is_register = False
+                else:
+                    raise HIRError(f"#{attr.name} register parameter must be boolean or omitted")
+
             else:
-                raise HIRError(f"#{attr.name} address must be an integer literal")
-        elif len(attr.args) > 1:
-            raise HIRError(f"#{attr.name} accepts at most one argument (address)")
+                raise HIRError(f"Unknown argument to #{attr.name}: {arg.name}")
 
         return StorageAttribute(
             name=attr.name,
             storage_kind=storage_kind,
-            address=address
+            address=address,
+            is_register=is_register
         )
 
     def _process_bank(self, attr: ast.Attribute, context: str) -> BankAttribute:

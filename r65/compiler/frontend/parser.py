@@ -310,26 +310,27 @@ class ASTBuilder(Transformer):
                 result.append(item)
         return result
 
-    def attribute_arg(self, items):
+    def named_arg(self, items):
         """
-        Attribute argument - can be named or positional.
+        Named attribute argument: name=value
 
-        Grammar: (IDENT "=")? expr
-
-        Returns AttributeArg with optional name.
+        Grammar: IDENT "=" expr
         """
         items = self._filter_tokens(items, keep_types={'IDENT'})
+        name = items[0].value
+        value = items[1]
+        return ast.AttributeArg(name=name, value=value)
 
-        # Check if we have a name (IDENT token followed by expression)
-        if len(items) == 2 and isinstance(items[0], LarkToken):
-            # Named argument: name=value
-            name = items[0].value
-            value = items[1]
-            return ast.AttributeArg(name=name, value=value)
-        else:
-            # Positional argument: just value
-            value = items[0]
-            return ast.AttributeArg(name=None, value=value)
+    def positional_arg(self, items):
+        """
+        Positional attribute argument: value (expr)
+
+        Grammar: expr
+
+        Can be an integer literal, identifier (for flags), or other expression.
+        """
+        value = items[0]
+        return ast.AttributeArg(name=None, value=value)
 
     # ========================================================================
     # Statements

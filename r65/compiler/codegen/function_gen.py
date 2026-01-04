@@ -40,16 +40,18 @@ class FunctionCodeGenerator:
     # Main Generation
     # ========================================================================
 
-    def generate_function(self, mir_func: MIRFunction):
+    def generate_function(self, mir_func: MIRFunction, scratch_pool: ScratchRegisterPool = None):
         """
         Generate complete assembly for MIR function.
 
         Args:
             mir_func: MIR function to generate
+            scratch_pool: Optional scratch register pool (if None, no scratch registers available)
         """
         # Setup register allocator for this function
-        # TODO: Get scratch pool from function attributes or global config
-        scratch_pool = self._create_scratch_pool()
+        if scratch_pool is None:
+            scratch_pool = ScratchRegisterPool()  # Empty pool if not provided
+
         reg_alloc = RegisterAllocator(scratch_pool=scratch_pool, mir_func=mir_func)
 
         # Allocate all virtual registers in function
@@ -249,26 +251,53 @@ class FunctionCodeGenerator:
     # Scratch Pool Creation
     # ========================================================================
 
-    def _create_scratch_pool(self) -> ScratchRegisterPool:
+    def _create_scratch_pool(self, mir_program) -> ScratchRegisterPool:
         """
-        Create scratch register pool.
+        Create scratch register pool from user-defined register variables.
 
-        For now, hardcoded pool. Future: get from function attributes
-        or global configuration.
+        Scans static variables for those marked with register=true attribute.
+        Memory management is the programmer's responsibility - the compiler
+        only uses scratch registers explicitly defined by the programmer.
+
+        Args:
+            mir_program: MIR program containing static variable declarations
 
         Returns:
-            ScratchRegisterPool
+            ScratchRegisterPool populated with user-defined registers
         """
         pool = ScratchRegisterPool()
 
-        # Default scratch registers
-        # TODO: Make configurable
-        pool.add_scratch(0x16, 1, "SCRATCH0")
-        pool.add_scratch(0x17, 1, "SCRATCH1")
-        pool.add_scratch(0x18, 2, "SCRATCH2")  # 2-byte scratch
-        pool.add_scratch(0x1A, 2, "SCRATCH3")  # 2-byte scratch
+        # Scan static variables for register-marked variables
+        for static_var in mir_program.statics:
+            if hasattr(static_var, 'storage_attr') and static_var.storage_attr:
+                storage_attr = static_var.storage_attr
+
+                # Only use variables explicitly marked as registers
+                if storage_attr.is_register:
+                    # Get the variable's address from memory allocator
+                    alloc = self.mem_alloc.get_allocation(static_var.symbol)
+                    if alloc:
+                        # Determine size from type
+                        size = self._get_variable_size(static_var.var_type)
+
+                        # Add to scratch pool
+                        pool.add_scratch(
+                            address=alloc.address,
+                            size=size,
+                            name=static_var.name
+                        )
 
         return pool
+
+    def _get_variable_size(self, type_info) -> int:
+        """Get size of variable in bytes from type info."""
+        if hasattr(type_info, 'name'):
+            type_name = type_info.name
+            if type_name in ('u8', 'i8', 'bool'):
+                return 1
+            elif type_name in ('u16', 'i16'):
+                return 2
+        return 1  # Default to 1 byte
 
     # ========================================================================
     # Prologue/Epilogue (TODO)
@@ -355,12 +384,15 @@ class ProgramFunctionGenerator:
         Args:
             mir_program: MIRProgram to generate
         """
+        # Create scratch pool from user-defined register variables
+        scratch_pool = self.func_gen._create_scratch_pool(mir_program)
+
         # Emit section header
         self.emitter.emit_section_header("Functions")
 
-        # Generate each function
+        # Generate each function with the same scratch pool
         for mir_func in mir_program.functions:
-            self.func_gen.generate_function(mir_func)
+            self.func_gen.generate_function(mir_func, scratch_pool=scratch_pool)
 
         # Blank line after all functions
         self.emitter.emit_blank_line()

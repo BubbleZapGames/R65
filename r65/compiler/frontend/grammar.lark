@@ -55,7 +55,8 @@ include_stmt: INCLUDE "!" "(" STRING ")"
 attribute: "#" "[" attribute_inner "]"
 attribute_inner: IDENT ("(" attribute_args? ")")?
 attribute_args: attribute_arg ("," attribute_arg)* ","?
-attribute_arg: (IDENT "=")? expr  -> attribute_arg
+attribute_arg: IDENT "=" expr      -> named_arg
+             | expr                -> positional_arg
 
 // Block
 block: "{" statement* "}"

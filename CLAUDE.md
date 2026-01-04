@@ -297,6 +297,57 @@ static GRAPHICS: [u8; 4096] = include_bytes!("gfx.bin");
 static mut INIDISP: u8;  // Screen brightness register
 ```
 
+### Scratch Registers (Compiler-Managed Memory)
+
+The compiler uses **scratch registers** for temporary values during expression evaluation and register allocation. **Memory management is the programmer's responsibility** - scratch registers must be explicitly defined using the `register` parameter:
+
+```rust
+// Define scratch registers for compiler use
+#[zeropage(0x10, register)]
+static mut SCRATCH0: u8;
+
+#[zeropage(0x11, register)]
+static mut SCRATCH1: u8;
+
+#[zeropage(0x12, register)]
+static mut SCRATCH2: u16;  // 2-byte scratch
+
+// Can also use RAM for scratch (slower but more available)
+#[ram(0x7E0000, register)]
+static mut RAM_SCRATCH: u8;
+
+// Regular user variable (NOT a scratch register)
+#[zeropage(0x20)]
+static mut TEMP: u8;
+```
+
+**Rules:**
+- The compiler **never** auto-allocates scratch space
+- You control exactly which memory locations are used for temporary values
+- Without scratch registers, all temporary values use the stack (slower but always works)
+- More scratch registers = better performance, fewer stack operations
+- Scratch registers are automatically managed by the compiler's register allocator
+- Regular variables without the `register` keyword are never used as scratch space
+
+**Example without scratch registers:**
+```rust
+#[mode(m8, x8)]
+fn add(a: u8, b: u8) -> u8 {
+    return a + b;  // Uses stack for intermediate values
+}
+```
+
+**Example with scratch registers:**
+```rust
+#[zeropage(0x10, register)]
+static mut SCRATCH: u8;
+
+#[mode(m8, x8)]
+fn add(a: u8, b: u8) -> u8 {
+    return a + b;  // May use SCRATCH for intermediate values
+}
+```
+
 ### Processor Mode Annotations
 
 Functions specify register sizes (8-bit or 16-bit) with `#[mode(...)]`:
