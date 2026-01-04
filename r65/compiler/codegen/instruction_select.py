@@ -26,6 +26,10 @@ from r65.compiler.codegen.instruction_select_helpers import (
 )
 from r65.compiler.codegen.control_flow_select import ControlFlowInstructionSelector
 from r65.compiler.codegen.call_select import CallInstructionSelector
+from r65.compiler.codegen.memory_select import MemoryOperationSelector
+from r65.compiler.codegen.move_select import MoveOperationSelector
+from r65.compiler.codegen.type_conversion_select import TypeConversionSelector
+from r65.compiler.codegen.compare_select import CompareSelector
 
 
 class InstructionSelector:
@@ -61,6 +65,10 @@ class InstructionSelector:
         self.binary_op_emitter = BinaryOpEmitter(emitter)
         self.control_flow_selector = ControlFlowInstructionSelector(self)
         self.call_selector = CallInstructionSelector(self)
+        self.memory_selector = MemoryOperationSelector(self)
+        self.move_selector = MoveOperationSelector(self)
+        self.type_conversion_selector = TypeConversionSelector(self)
+        self.compare_selector = CompareSelector(self)
 
         # Track type info from last Compare instruction for signed/unsigned branching
         self.last_comparison_type = None
@@ -131,27 +139,27 @@ class InstructionSelector:
             instr: MIR instruction to convert
         """
         if isinstance(instr, Load):
-            self.select_load(instr)
+            self.memory_selector.select_load(instr)
         elif isinstance(instr, Store):
-            self.select_store(instr)
+            self.memory_selector.select_store(instr)
         elif isinstance(instr, LoadIndirect):
-            self.select_load_indirect(instr)
+            self.memory_selector.select_load_indirect(instr)
         elif isinstance(instr, StoreIndirect):
-            self.select_store_indirect(instr)
+            self.memory_selector.select_store_indirect(instr)
         elif isinstance(instr, Move):
-            self.select_move(instr)
+            self.move_selector.select_move(instr)
         elif isinstance(instr, TypeConvert):
-            self.select_type_convert(instr)
+            self.type_conversion_selector.select_type_convert(instr)
         elif isinstance(instr, BinaryOp):
             self.select_binary_op(instr)
         elif isinstance(instr, UnaryOp):
             self.select_unary_op(instr)
         elif isinstance(instr, Compare):
-            self.select_compare(instr)
+            self.compare_selector.select_compare(instr)
         elif isinstance(instr, BitTest):
-            self.select_bit_test(instr)
+            self.compare_selector.select_bit_test(instr)
         elif isinstance(instr, Rotate):
-            self.select_rotate(instr)
+            self.compare_selector.select_rotate(instr)
         elif isinstance(instr, Jump):
             self.control_flow_selector.select_jump(instr)
         elif isinstance(instr, JumpTable):
@@ -178,532 +186,12 @@ class InstructionSelector:
             raise InstructionSelectionError(f"Unsupported MIR instruction: {type(instr).__name__}")
 
     # ========================================================================
-    # Memory Operations
+    # Memory/Move/TypeConvert Operations (delegated)
     # ========================================================================
-
-    def select_load(self, instr: Load):
-        """
-        Generate code for Load instruction.
-
-        Load dest = *source
-
-        Args:
-            instr: Load instruction
-        """
-        dest_loc = self._get_operand_location(instr.dest)
-        src_loc = self._get_operand_location(instr.source)
-
-        # Determine size
-        is_u16 = self._is_16bit(instr.type_info)
-
-        if is_u16:
-            # 16-bit load
-            self._emit_16bit_mem_to_mem(src_loc, dest_loc)
-        else:
-            # 8-bit load
-            self.emitter.emit_instruction("LDA", self._format_operand(src_loc))
-            self.emitter.emit_instruction("STA", self._format_operand(dest_loc))
-
-    def select_store(self, instr: Store):
-        """
-        Generate code for Store instruction.
-
-        *dest = source
-
-        Args:
-            instr: Store instruction
-        """
-        # Get destination location first (needed for B register check)
-        dest_loc = self._get_operand_location(instr.dest)
-        is_u16 = self._is_16bit(instr.type_info)
-
-        # SPECIAL CASE: Storing to B register
-        if dest_loc.kind == LocationKind.HARDWARE and dest_loc.hw_register == 'B':
-            # B register store: load value into A, then XBA to move to B
-            if isinstance(instr.source, Immediate):
-                value = instr.source.value & 0xFF
-                self.emitter.emit_instruction("LDA", f"#${value:02X}")
-                self._mark_a_modified()
-                self._store_to_b_from_a()
-            else:
-                src_loc = self._get_operand_location(instr.source)
-                if src_loc.kind == LocationKind.HARDWARE and src_loc.hw_register == 'A':
-                    # A to B: just XBA
-                    self._store_to_b_from_a()
-                else:
-                    # Load from memory/other register to A, then XBA
-                    self.emitter.emit_instruction("LDA", self._format_operand(src_loc))
-                    self._mark_a_modified()
-                    self._store_to_b_from_a()
-            return
-
-        # SPECIAL CASE: Handle immediate values
-        # 65816 cannot store immediates directly - must go through accumulator
-        if isinstance(instr.source, Immediate):
-            if is_u16:
-                # 16-bit immediate store
-                self._emit_16bit_immediate_store(instr.source.value, dest_loc)
-            else:
-                # 8-bit immediate store
-                value = instr.source.value & 0xFF
-                self.emitter.emit_instruction("LDA", f"#${value:02X}")
-                self.emitter.emit_instruction("STA", self._format_operand(dest_loc))
-
-            return
-
-        # Normal case: memory-to-memory or register-to-memory store
-        src_loc = self._get_operand_location(instr.source)
-
-        # Check if source is a hardware register
-        if src_loc.kind == LocationKind.HARDWARE:
-            # Map hardware registers to their store instructions
-            store_instructions = {
-                'A': 'STA',
-                'X': 'STX',
-                'Y': 'STY'
-            }
-
-            reg = src_loc.hw_register
-
-            # Special handling for B register (requires XBA to access)
-            if reg == 'B':
-                # B register: swap to A, store, swap back
-                self._access_b_value_in_a()
-                self.emitter.emit_instruction("STA", self._format_operand(dest_loc))
-                self._ensure_xba_state_normal("Restore A register")
-            elif reg not in store_instructions:
-                raise InstructionSelectionError(f"Cannot store from hardware register: {reg}")
-            else:
-                # Emit appropriate store instruction
-                # Note: Hardware register width (8-bit vs 16-bit) is determined by processor mode:
-                # - A: 8-bit in m8 mode, 16-bit in m16 mode
-                # - X/Y: 8-bit in x8 mode, 16-bit in x16 mode
-                # The STA/STX/STY instruction stores the full register width automatically
-                # Note: STX and STY have addressing mode restrictions on 65816:
-                # - STX: zero-page, zero-page,Y, absolute only
-                # - STY: zero-page, zero-page,X, absolute only
-                self.emitter.emit_instruction(store_instructions[reg], self._format_operand(dest_loc))
-        elif is_u16:
-            # 16-bit store (memory-to-memory)
-            self._emit_16bit_mem_to_mem(src_loc, dest_loc)
-        else:
-            # 8-bit store (memory-to-memory)
-            self.emitter.emit_instruction("LDA", self._format_operand(src_loc))
-            self.emitter.emit_instruction("STA", self._format_operand(dest_loc))
-
-    def select_load_indirect(self, instr):
-        """
-        Generate code for LoadIndirect instruction.
-
-        dest = *ptr  (indirect addressing)
-
-        For 65816:
-        - near pointers use (zp) or (zp),Y addressing modes
-        - far pointers use [zp] or [zp],Y addressing modes
-
-        Args:
-            instr: LoadIndirect instruction
-        """
-        from r65.compiler.mir.nodes import LoadIndirect
-
-        # Get the location where the pointer value is stored
-        ptr_loc = self._get_operand_location(instr.pointer)
-        dest_loc = self._get_operand_location(instr.dest)
-
-        # Pointer should be in memory (zero-page, stack, or static memory)
-        # SCRATCH is zero-page, which is perfect for indirect addressing
-        if ptr_loc.kind == LocationKind.HARDWARE or ptr_loc.kind == LocationKind.IMMEDIATE:
-            raise InstructionSelectionError(f"Pointer for indirect addressing must be in memory, got: {ptr_loc}")
-
-        # Format indirect addressing mode
-        ptr_addr = self._format_operand(ptr_loc)
-
-        # Determine addressing mode based on pointer type and indexing
-        if instr.is_far:
-            # Far pointer - long indirect [zp] or [zp],Y
-            if instr.index_register:
-                indirect_mode = f"[{ptr_addr}],{instr.index_register}"
-            else:
-                indirect_mode = f"[{ptr_addr}]"
-        else:
-            # Near pointer - indirect (zp) or (zp),Y
-            if instr.index_register:
-                indirect_mode = f"({ptr_addr}),{instr.index_register}"
-            else:
-                indirect_mode = f"({ptr_addr})"
-
-        # Load through pointer
-        is_u16 = self._is_16bit(instr.type_info)
-
-        if is_u16:
-            # 16-bit load through pointer - load low then high byte
-            self.emitter.emit_instruction("LDA", indirect_mode, "Load through pointer")
-            self.emitter.emit_instruction("STA", self._format_operand(dest_loc))
-            # For 16-bit, we'd need to increment pointer and load again
-            # This is complex - for now, only support 8-bit indirect loads
-            raise InstructionSelectionError("16-bit indirect loads not yet supported")
-        else:
-            # 8-bit load through pointer
-            self.emitter.emit_instruction("LDA", indirect_mode, "Load through pointer")
-            self.emitter.emit_instruction("STA", self._format_operand(dest_loc))
-
-    def select_store_indirect(self, instr):
-        """
-        Generate code for StoreIndirect instruction.
-
-        *ptr = source  (indirect addressing)
-
-        For 65816:
-        - near pointers use (zp) or (zp),Y addressing modes
-        - far pointers use [zp] or [zp],Y addressing modes
-
-        Args:
-            instr: StoreIndirect instruction
-        """
-        from r65.compiler.mir.nodes import StoreIndirect, Immediate
-
-        # Get the location where the pointer value is stored
-        ptr_loc = self._get_operand_location(instr.pointer)
-        src_loc = self._get_operand_location(instr.source)
-
-        # Pointer should be in memory (zero-page, stack, or static memory)
-        # SCRATCH is zero-page, which is perfect for indirect addressing
-        if ptr_loc.kind == LocationKind.HARDWARE or ptr_loc.kind == LocationKind.IMMEDIATE:
-            raise InstructionSelectionError(f"Pointer for indirect addressing must be in memory, got: {ptr_loc}")
-
-        # Format indirect addressing mode
-        ptr_addr = self._format_operand(ptr_loc)
-
-        # Determine addressing mode based on pointer type and indexing
-        if instr.is_far:
-            # Far pointer - long indirect [zp] or [zp],Y
-            if instr.index_register:
-                indirect_mode = f"[{ptr_addr}],{instr.index_register}"
-            else:
-                indirect_mode = f"[{ptr_addr}]"
-        else:
-            # Near pointer - indirect (zp) or (zp),Y
-            if instr.index_register:
-                indirect_mode = f"({ptr_addr}),{instr.index_register}"
-            else:
-                indirect_mode = f"({ptr_addr})"
-
-        # Load source value into A, then store through pointer
-        is_u16 = self._is_16bit(instr.type_info)
-
-        if isinstance(instr.source, Immediate):
-            # Immediate value - load into A first
-            value = instr.source.value & 0xFF
-            self.emitter.emit_instruction("LDA", f"#${value:02X}")
-        elif src_loc.kind == LocationKind.HARDWARE and src_loc.hw_register == 'A':
-            # Already in A
-            pass
-        else:
-            # Load from source location
-            self.emitter.emit_instruction("LDA", self._format_operand(src_loc))
-
-        # Store through pointer
-        if is_u16:
-            raise InstructionSelectionError("16-bit indirect stores not yet supported")
-        else:
-            # 8-bit store through pointer
-            self.emitter.emit_instruction("STA", indirect_mode, "Store through pointer")
-
-    def select_move(self, instr: Move):
-        """
-        Generate code for Move instruction.
-
-        dest = source
-
-        Args:
-            instr: Move instruction
-        """
-        dest_loc = self._get_operand_location(instr.dest)
-        src_operand = instr.source
-
-        # Determine size
-        is_u16 = self._is_16bit(instr.type_info)
-
-        # SPECIAL CASE: Destination is hardware register
-        if dest_loc.kind == LocationKind.HARDWARE:
-            # Moving TO a hardware register
-            if isinstance(src_operand, Immediate):
-                # Load immediate into hardware register
-                value = src_operand.value
-                if dest_loc.hw_register in ['A', 'X', 'Y']:
-                    self._emit_load_immediate_to_register(dest_loc.hw_register, value, is_u16)
-                elif dest_loc.hw_register == 'B':
-                    # Load immediate into B: load into A, then XBA
-                    value_masked = value & 0xFF
-                    self.emitter.emit_instruction("LDA", f"#${value_masked:02X}")
-                    self._mark_a_modified()
-                    self._store_to_b_from_a()
-                elif dest_loc.hw_register == 'S':
-                    # Set stack pointer: load 16-bit value into A, then TCS
-                    # TCS always transfers full 16-bit A to S regardless of M flag
-                    self.emitter.emit_instruction("REP", "#$20", "16-bit A for stack")
-                    self.emitter.emit_instruction("LDA", f"#${value:04X}")
-                    self.emitter.emit_instruction("TCS", comment="Set stack pointer")
-                    self.emitter.emit_instruction("SEP", "#$20", "Restore 8-bit A")
-                    self._mark_a_modified()
-                elif dest_loc.hw_register == 'D':
-                    # Set direct page register: load 16-bit value into A, then TCD
-                    self.emitter.emit_instruction("REP", "#$20", "16-bit A for direct page")
-                    self.emitter.emit_instruction("LDA", f"#${value:04X}")
-                    self.emitter.emit_instruction("TCD", comment="Set direct page")
-                    self.emitter.emit_instruction("SEP", "#$20", "Restore 8-bit A")
-                    self._mark_a_modified()
-                else:
-                    raise InstructionSelectionError(f"Cannot load immediate into register {dest_loc.hw_register}")
-            else:
-                # Load from memory/register into hardware register
-                src_loc = self._get_operand_location(src_operand)
-
-                if src_loc.kind == LocationKind.HARDWARE:
-                    # Register-to-register transfer
-                    self._emit_register_transfer(src_loc.hw_register, dest_loc.hw_register)
-                else:
-                    # Load from memory into hardware register
-                    operand = self._format_operand(src_loc)
-                    if dest_loc.hw_register == 'A':
-                        self.emitter.emit_instruction("LDA", operand)
-                    elif dest_loc.hw_register == 'X':
-                        self.emitter.emit_instruction("LDX", operand)
-                    elif dest_loc.hw_register == 'Y':
-                        self.emitter.emit_instruction("LDY", operand)
-                    elif dest_loc.hw_register == 'B':
-                        # Load from memory into B: load into A, then XBA
-                        self.emitter.emit_instruction("LDA", operand)
-                        self.emitter.emit_instruction("XBA", comment="Load into B register")
-                    else:
-                        raise InstructionSelectionError(f"Cannot load into register {dest_loc.hw_register}")
-            return
-
-        # Normal case: destination is memory/scratch
-        # Handle function pointers
-        from r65.compiler.mir.nodes import FunctionPointer
-        if isinstance(src_operand, FunctionPointer):
-            # Load address of function into destination
-            # The address is a label that will be resolved by the assembler
-            func_name = src_operand.function_name
-
-            # Determine if this is near (2 bytes) or far (3 bytes) based on type
-            from r65.compiler.hir.types import FunctionTypeInfo
-            is_far_ptr = False
-            if instr.type_info and isinstance(instr.type_info, FunctionTypeInfo):
-                is_far_ptr = instr.type_info.is_far
-
-            if is_far_ptr:
-                # Far function pointer (3 bytes: bank, high, low)
-                # Load low byte
-                self.emitter.emit_instruction("LDA", f"#<{func_name}", "Load function address low byte")
-                self.emitter.emit_instruction("STA", self._format_operand(dest_loc))
-
-                # Load high byte
-                dest_high = self._offset_location(dest_loc, 1)
-                self.emitter.emit_instruction("LDA", f"#>{func_name}", "Load function address high byte")
-                self.emitter.emit_instruction("STA", self._format_operand(dest_high))
-
-                # Load bank byte
-                dest_bank = self._offset_location(dest_loc, 2)
-                self.emitter.emit_instruction("LDA", f"#^{func_name}", "Load function bank byte")
-                self.emitter.emit_instruction("STA", self._format_operand(dest_bank))
-            else:
-                # Near function pointer (2 bytes: high, low)
-                # Load low byte
-                self.emitter.emit_instruction("LDA", f"#<{func_name}", "Load function address low byte")
-                self.emitter.emit_instruction("STA", self._format_operand(dest_loc))
-
-                # Load high byte
-                dest_high = self._offset_location(dest_loc, 1)
-                self.emitter.emit_instruction("LDA", f"#>{func_name}", "Load function address high byte")
-                self.emitter.emit_instruction("STA", self._format_operand(dest_high))
-            return
-
-        # Handle immediate values
-        if isinstance(src_operand, Immediate):
-            # Check if this is a symbolic address (from address-of operator or function identifier)
-            if hasattr(src_operand, 'symbol') and src_operand.symbol is not None:
-                from r65.compiler.hir.symbol_table import SymbolKind
-                symbol = src_operand.symbol
-
-                # Check if this is a function symbol
-                if symbol.kind == SymbolKind.FUNCTION:
-                    # Function pointer - emit address of function label
-                    # Same as FunctionPointer handling
-                    func_name = symbol.name
-
-                    # Determine if this is near (2 bytes) or far (3 bytes) based on type
-                    from r65.compiler.hir.types import FunctionTypeInfo
-                    is_far_ptr = False
-                    if instr.type_info and isinstance(instr.type_info, FunctionTypeInfo):
-                        is_far_ptr = instr.type_info.is_far
-
-                    if is_far_ptr:
-                        # Far function pointer (3 bytes: bank, high, low)
-                        # Load low byte
-                        self.emitter.emit_instruction("LDA", f"#<{func_name}", "Load function address low byte")
-                        self.emitter.emit_instruction("STA", self._format_operand(dest_loc))
-
-                        # Load high byte
-                        dest_high = self._offset_location(dest_loc, 1)
-                        self.emitter.emit_instruction("LDA", f"#>{func_name}", "Load function address high byte")
-                        self.emitter.emit_instruction("STA", self._format_operand(dest_high))
-
-                        # Load bank byte
-                        dest_bank = self._offset_location(dest_loc, 2)
-                        self.emitter.emit_instruction("LDA", f"#^{func_name}", "Load function bank byte")
-                        self.emitter.emit_instruction("STA", self._format_operand(dest_bank))
-                    else:
-                        # Near function pointer (2 bytes: high, low)
-                        # Load low byte
-                        self.emitter.emit_instruction("LDA", f"#<{func_name}", "Load function address low byte")
-                        self.emitter.emit_instruction("STA", self._format_operand(dest_loc))
-
-                        # Load high byte
-                        dest_high = self._offset_location(dest_loc, 1)
-                        self.emitter.emit_instruction("LDA", f"#>{func_name}", "Load function address high byte")
-                        self.emitter.emit_instruction("STA", self._format_operand(dest_high))
-                    return
-                else:
-                    # Variable address - get allocation
-                    alloc = self.mem_alloc.get_allocation(symbol)
-                    if alloc:
-                        # Emit address of the symbol
-                        if is_u16:
-                            # 16-bit address
-                            # Low byte
-                            self.emitter.emit_instruction("LDA", f"#<${alloc.address:04X}", f"Load address of {symbol.name}")
-                            self.emitter.emit_instruction("STA", self._format_operand(dest_loc))
-                            # High byte
-                            dest_high = self._offset_location(dest_loc, 1)
-                            self.emitter.emit_instruction("LDA", f"#>${alloc.address:04X}")
-                            self.emitter.emit_instruction("STA", self._format_operand(dest_high))
-                        else:
-                            # 8-bit address (low byte only)
-                            self.emitter.emit_instruction("LDA", f"#<${alloc.address:04X}", f"Load address of {symbol.name}")
-                            self.emitter.emit_instruction("STA", self._format_operand(dest_loc))
-                    else:
-                        raise InstructionSelectionError(f"No allocation for symbol: {symbol.name}")
-                    return
-
-            value = src_operand.value
-
-            if is_u16:
-                # 16-bit immediate
-                self._emit_16bit_immediate_store(value, dest_loc)
-            else:
-                # 8-bit immediate
-                self.emitter.emit_instruction("LDA", f"#${value:02X}")
-                self.emitter.emit_instruction("STA", self._format_operand(dest_loc))
-        else:
-            # Move from register/memory
-            src_loc = self._get_operand_location(src_operand)
-
-            # Check if source is a hardware register
-            if src_loc.kind == LocationKind.HARDWARE:
-                # Moving FROM a hardware register TO memory
-                src_reg = src_loc.hw_register
-
-                if is_u16:
-                    # 16-bit move from hardware register to memory
-                    # In 16-bit mode, a single store instruction handles the full width
-                    if src_reg == 'A':
-                        self.emitter.emit_instruction("STA", self._format_operand(dest_loc))
-                    elif src_reg == 'X':
-                        self.emitter.emit_instruction("STX", self._format_operand(dest_loc))
-                    elif src_reg == 'Y':
-                        self.emitter.emit_instruction("STY", self._format_operand(dest_loc))
-                    else:
-                        raise InstructionSelectionError(f"Cannot move 16-bit value from register {src_reg} to memory")
-                else:
-                    # 8-bit move from hardware register to memory
-                    if src_reg == 'A':
-                        self.emitter.emit_instruction("STA", self._format_operand(dest_loc))
-                    elif src_reg == 'X':
-                        self.emitter.emit_instruction("STX", self._format_operand(dest_loc))
-                    elif src_reg == 'Y':
-                        self.emitter.emit_instruction("STY", self._format_operand(dest_loc))
-                    else:
-                        raise InstructionSelectionError(f"Cannot move from register {src_reg} to memory")
-            else:
-                # Moving from memory to memory
-                if is_u16:
-                    # 16-bit move
-                    self._emit_16bit_mem_to_mem(src_loc, dest_loc)
-                else:
-                    # 8-bit move
-                    self.emitter.emit_instruction("LDA", self._format_operand(src_loc))
-                    self.emitter.emit_instruction("STA", self._format_operand(dest_loc))
-
-    def select_type_convert(self, instr: 'TypeConvert'):
-        """
-        Generate code for TypeConvert instruction.
-
-        Handles:
-        - Widening: u8→u16 (zero-extend), i8→i16 (sign-extend)
-        - Narrowing: u16→u8 (truncate to low byte)
-        - Reinterpret: u8↔i8 (no operation, same bits)
-
-        Args:
-            instr: TypeConvert instruction
-        """
-        src_operand = instr.source
-        dest_loc = self._get_operand_location(instr.dest)
-
-        # Get type information
-        source_type = str(instr.source_type)
-        target_type = str(instr.target_type)
-        source_size = 1 if source_type in ['u8', 'i8', 'bool'] else 2
-        target_size = 1 if target_type in ['u8', 'i8', 'bool'] else 2
-        source_signed = source_type.startswith('i')
-
-        # Case 1: Widening (8-bit → 16-bit)
-        if source_size == 1 and target_size == 2:
-            # Load source into A
-            if isinstance(src_operand, Immediate):
-                value = src_operand.value & 0xFF
-                self.emitter.emit_instruction("LDA", f"#${value:02X}")
-            else:
-                src_loc = self._get_operand_location(src_operand)
-                self.emitter.emit_instruction("LDA", self._format_operand(src_loc))
-
-            # Store low byte
-            self.emitter.emit_instruction("STA", self._format_operand(dest_loc))
-
-            if source_signed:
-                # Sign extension for i8 → i16
-                # If high bit is set (negative), extend with 0xFF, else 0x00
-                self.emitter.emit_instruction("AND", "#$80", "Check sign bit")
-                self.emitter.emit_instruction("BEQ", "+", "Branch if positive")
-                self.emitter.emit_instruction("LDA", "#$FF", "Negative: extend with $FF")
-                self.emitter.emit_instruction("BRA", "++")
-                self.emitter.emit_label("+")
-                self.emitter.emit_instruction("LDA", "#$00", "Positive: extend with $00")
-                self.emitter.emit_label("++")
-            else:
-                # Zero extension for u8 → u16
-                self.emitter.emit_instruction("LDA", "#$00", "Zero-extend high byte")
-
-            # Store high byte
-            dest_high = self._offset_location(dest_loc, 1)
-            self.emitter.emit_instruction("STA", self._format_operand(dest_high))
-
-        # Case 2: Narrowing (16-bit → 8-bit)
-        elif source_size == 2 and target_size == 1:
-            # Truncate to low byte - just copy low byte
-            if isinstance(src_operand, Immediate):
-                value = src_operand.value & 0xFF
-                self.emitter.emit_instruction("LDA", f"#${value:02X}")
-            else:
-                src_loc = self._get_operand_location(src_operand)
-                self.emitter.emit_instruction("LDA", self._format_operand(src_loc), "Load low byte")
-
-            self.emitter.emit_instruction("STA", self._format_operand(dest_loc))
-
-        # Case 3: Same size - should not happen (handled as Move in MIR builder)
-        else:
-            raise InstructionSelectionError(f"Unexpected type conversion: {source_type} to {target_type}")
+    # See memory_select.py for: select_load, select_store, select_load_indirect,
+    # select_store_indirect
+    # See move_select.py for: select_move
+    # See type_conversion_select.py for: select_type_convert
 
     # ========================================================================
     # Arithmetic Operations
@@ -878,123 +366,10 @@ class InstructionSelector:
         # Store result
         self.emitter.emit_instruction("STA", self._format_operand(dest_loc))
 
-    def select_compare(self, instr: 'Compare'):
-        """
-        Generate code for Compare instruction.
-
-        Emits CMP/CPX/CPY instruction and sets processor flags for subsequent
-        conditional branch.
-
-        Args:
-            instr: Compare instruction
-        """
-        from r65.compiler.mir.nodes import Immediate
-
-        # Store type info for subsequent CondBranch (for signed/unsigned detection)
-        self.last_comparison_type = instr.type_info
-
-        left_loc = self._get_operand_location(instr.left)
-
-        # Handle right operand - if it's a hardware register (including B), store to temp
-        if isinstance(instr.right, Immediate):
-            right_operand = f"#${instr.right.value:02X}"
-        else:
-            right_loc = self._get_operand_location(instr.right)
-            if right_loc.kind == LocationKind.HARDWARE:
-                # Store hardware register to temp location for comparison
-                if right_loc.hw_register == 'B':
-                    self._access_b_value_in_a()
-                    self.emitter.emit_instruction("STA", "$00", "Store B to temp")
-                    self._ensure_xba_state_normal("Restore A")
-                    right_operand = "$00"
-                elif right_loc.hw_register in ['A', 'X', 'Y']:
-                    store_instr = {'A': 'STA', 'X': 'STX', 'Y': 'STY'}[right_loc.hw_register]
-                    self.emitter.emit_instruction(store_instr, "$00", f"Store {right_loc.hw_register} to temp")
-                    right_operand = "$00"
-                else:
-                    raise InstructionSelectionError(f"Unsupported hardware register: {right_loc.hw_register}")
-            else:
-                right_operand = self._format_operand(right_loc)
-
-        # Determine which comparison instruction to use based on left operand
-        if left_loc.kind == LocationKind.HARDWARE:
-            # Hardware register comparison
-            if left_loc.hw_register == 'X':
-                # CPX instruction
-                self.emitter.emit_instruction("CPX", right_operand)
-            elif left_loc.hw_register == 'Y':
-                # CPY instruction
-                self.emitter.emit_instruction("CPY", right_operand)
-            elif left_loc.hw_register == 'A':
-                # CMP instruction (A is implicit)
-                self.emitter.emit_instruction("CMP", right_operand)
-            elif left_loc.hw_register == 'B':
-                # B register - transfer to A and compare
-                self._access_b_value_in_a()
-                self.emitter.emit_instruction("CMP", right_operand)
-                # Note: Don't restore A since this is just a comparison
-                # State is now SWAPPED (A=B, B=A)
-            else:
-                # Other hardware registers (shouldn't reach here)
-                raise InstructionSelectionError(f"Unsupported hardware register for comparison: {left_loc.hw_register}")
-        else:
-            # Memory or virtual register - load to A and compare
-            self.emitter.emit_instruction("LDA", self._format_operand(left_loc))
-            self.emitter.emit_instruction("CMP", right_operand)
-
-        # Flags are now set for conditional branch
-        # Z flag: set if left == right
-        # C flag: set if left >= right (unsigned)
-        # N flag: set if result is negative (signed)
-
-    def select_bit_test(self, instr: 'BitTest'):
-        """
-        Generate code for BitTest instruction using BIT instruction.
-
-        BIT instruction sets flags based on memory value:
-        - N flag = bit 7 of memory
-        - V flag = bit 6 of memory
-        - Z flag = (A & memory) == 0
-
-        Args:
-            instr: BitTest instruction
-        """
-        value_loc = self._get_operand_location(instr.value)
-
-        # BIT instruction requires a memory operand
-        # If value is in a hardware register, we can't use BIT directly
-        # Just emit BIT with the memory location
-        self.emitter.emit_instruction("BIT", self._format_operand(value_loc))
-
-        # Flags are now set:
-        # - For bit 7 test: N flag indicates bit 7 value
-        # - For bit 6 test: V flag indicates bit 6 value
-        # - Z flag can also be used if needed
-
-    def select_rotate(self, instr: 'Rotate'):
-        """
-        Generate code for Rotate instruction using ROL/ROR instructions.
-
-        Emits ROL (rotate left) or ROR (rotate right) instructions.
-        Each rotation is performed count times.
-
-        Args:
-            instr: Rotate instruction
-        """
-        # Load source into A
-        source_loc = self._get_operand_location(instr.source)
-        self.emitter.emit_instruction("LDA", self._format_operand(source_loc))
-
-        # Determine instruction based on direction
-        rotate_instr = "ROL" if instr.direction == 'left' else "ROR"
-
-        # Emit rotate instruction 'count' times
-        for _ in range(instr.count):
-            self.emitter.emit_instruction(rotate_instr)
-
-        # Store result to destination
-        dest_loc = self._get_operand_location(instr.dest)
-        self.emitter.emit_instruction("STA", self._format_operand(dest_loc))
+    # ========================================================================
+    # Compare/BitTest/Rotate Operations (delegated)
+    # ========================================================================
+    # See compare_select.py for: select_compare, select_bit_test, select_rotate
 
     # ========================================================================
     # Arithmetic Helpers
