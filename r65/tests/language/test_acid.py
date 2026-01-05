@@ -63,6 +63,18 @@ struct GameState {
     paused: bool
 }
 
+// Struct with array field
+struct Palette {
+    colors: [u8; 16],
+    count: u8
+}
+
+// Struct for dispatch table
+struct Handler {
+    callback: fn(u8) -> u8,
+    priority: u8
+}
+
 // -----------------------------------------------------------------------------
 // Hardware Registers
 // -----------------------------------------------------------------------------
@@ -92,9 +104,20 @@ struct GameState {
 #[rom(0x8000)] static SINE_TABLE: [u8; 256] = [0; 256];
 
 // -----------------------------------------------------------------------------
-// Function Pointer
+// Function Pointers and Pointer Types
 // -----------------------------------------------------------------------------
 #[ram] static mut UPDATE_HANDLER: fn(u8);
+
+// Array of function pointers (dispatch table)
+#[ram] static mut STATE_HANDLERS: [fn(u8) -> u8; 4];
+
+// Array of handlers with function pointer fields
+#[ram] static mut HANDLER_TABLE: [Handler; 4];
+
+// Pointer types
+#[zeropage(0x10)] static mut DATA_PTR: near<u8>;
+#[zeropage(0x12)] static mut FAR_PTR: far<u8>;
+#[zeropage(0x15)] static mut STRUCT_PTR: near<Entity>;
 
 // -----------------------------------------------------------------------------
 // Entry Point
@@ -401,6 +424,157 @@ fn set_8bit_mode() {
 fn swap_accum_bytes() {
     xba();
 }
+
+// -----------------------------------------------------------------------------
+// Compound Assignment and Increment/Decrement
+// -----------------------------------------------------------------------------
+fn test_compound_ops() {
+    let mut value: u8 = 10;
+    value += 5;
+    value -= 2;
+    value &= 0x0F;
+    value |= 0x80;
+    value ^= 0x01;
+
+    let mut shift_val: u16 = 1;
+    shift_val <<= 4;
+    shift_val >>= 2;
+
+    // Increment/decrement
+    let mut counter: u8 = 0;
+    counter++;
+    counter++;
+    counter--;
+}
+
+// -----------------------------------------------------------------------------
+// Bitwise and Logical NOT
+// -----------------------------------------------------------------------------
+fn test_not_operators() {
+    let mask: u8 = 0x0F;
+    let inverted: u8 = ~mask;  // Bitwise NOT
+
+    let flag: bool = true;
+    let negated: bool = !flag;  // Logical NOT
+
+    // Complex boolean with NOT
+    if !GAME.paused && PLAYER.health > 0 {
+        A = 1;
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Shift Operators
+// -----------------------------------------------------------------------------
+fn test_shifts() {
+    let val: u8 = 1;
+    let shifted_left: u8 = val << 4;   // 0x10
+    let shifted_right: u8 = val >> 1;  // 0x00
+
+    // Shift in expressions
+    let tile_offset: u16 = (A as u16) << 4;
+}
+
+// -----------------------------------------------------------------------------
+// Pointer Operations
+// -----------------------------------------------------------------------------
+fn test_pointers() {
+    // Dereference pointer
+    let byte: u8 = *DATA_PTR;
+    *DATA_PTR = 42;
+
+    // Indexed pointer access
+    let indexed: u8 = DATA_PTR[Y];
+    DATA_PTR[X] = 0xFF;
+
+    // Pointer to struct
+    STRUCT_PTR = &PLAYER;
+}
+
+// -----------------------------------------------------------------------------
+// Function Pointer Dispatch
+// -----------------------------------------------------------------------------
+fn dummy_handler(input @ A: u8) -> u8 {
+    return A;
+}
+
+fn init_handlers() {
+    // Initialize array of function pointers
+    STATE_HANDLERS[0] = dummy_handler;
+    STATE_HANDLERS[1] = dummy_handler;
+
+    // Initialize struct with function pointer
+    HANDLER_TABLE[0].callback = dummy_handler;
+    HANDLER_TABLE[0].priority = 10;
+}
+
+fn dispatch_handler(state @ X: u8, input @ A: u8) -> u8 {
+    // Call through function pointer array
+    let handler: fn(u8) -> u8 = STATE_HANDLERS[X];
+    return handler(input);
+}
+
+// -----------------------------------------------------------------------------
+// Multiple Return Values (via return statement, not tuple types)
+// -----------------------------------------------------------------------------
+fn get_position() {
+    // Multiple values returned via registers
+    return PLAYER.pos.x, PLAYER.pos.y;
+}
+
+fn get_registers() {
+    // Return all three registers
+    return A, X, Y;
+}
+
+// -----------------------------------------------------------------------------
+// Complex Array Indexing
+// -----------------------------------------------------------------------------
+fn test_complex_indexing() {
+    let base: u8 = 4;
+    let offset: u8 = 2;
+
+    // Array index with expression
+    let val: u8 = SINE_TABLE[base + offset];
+
+    // Chained access with computed index
+    ENEMIES[X + 1].health = 50;
+}
+
+// -----------------------------------------------------------------------------
+// Struct with Array Field
+// -----------------------------------------------------------------------------
+#[ram] static mut CURRENT_PALETTE: Palette;
+
+fn init_palette() {
+    CURRENT_PALETTE.count = 8;
+    CURRENT_PALETTE.colors[0] = 0x00;
+    CURRENT_PALETTE.colors[1] = 0x15;
+
+    // Access array in struct with index
+    let color @ A = CURRENT_PALETTE.colors[X];
+}
+
+// -----------------------------------------------------------------------------
+// Block Move Operations
+// -----------------------------------------------------------------------------
+fn test_block_move() {
+    // Setup for block move
+    A = 255;        // count - 1
+    X = 0x1000;     // src_addr
+    Y = 0x2000;     // dest_addr
+    mvn(0x00, 0x7E);  // Move forward
+
+    A = 127;
+    mvp(0x7E, 0x00);  // Move backward
+}
+
+// -----------------------------------------------------------------------------
+// Software Interrupt
+// -----------------------------------------------------------------------------
+fn trigger_cop() {
+    cop(0x00);  // COP with signature byte
+}
 """
 
 
@@ -447,9 +621,9 @@ class TestAcidTest:
         # Verify we have multiple of each type
         assert counts['const'] >= 5, f"Expected at least 5 constants, got {counts['const']}"
         assert counts['enum'] >= 2, f"Expected at least 2 enums, got {counts['enum']}"
-        assert counts['struct'] >= 3, f"Expected at least 3 structs, got {counts['struct']}"
-        assert counts['static'] >= 10, f"Expected at least 10 statics, got {counts['static']}"
-        assert counts['function'] >= 15, f"Expected at least 15 functions, got {counts['function']}"
+        assert counts['struct'] >= 5, f"Expected at least 5 structs, got {counts['struct']}"
+        assert counts['static'] >= 15, f"Expected at least 15 statics, got {counts['static']}"
+        assert counts['function'] >= 25, f"Expected at least 25 functions, got {counts['function']}"
 
     def test_acid_test_builds_hir(self):
         """Test that the acid test builds HIR successfully."""
@@ -458,9 +632,9 @@ class TestAcidTest:
         hir_program = builder.build_program(program)
 
         # Verify HIR structure
-        assert len(hir_program.functions) >= 15
-        assert len(hir_program.statics) >= 10
-        assert len(hir_program.structs) >= 3
+        assert len(hir_program.functions) >= 25
+        assert len(hir_program.statics) >= 15
+        assert len(hir_program.structs) >= 5
         assert len(hir_program.enums) >= 2
 
     def test_acid_test_features(self):
@@ -481,6 +655,12 @@ class TestAcidTest:
             'match_expr': False,
             'register_param': False,
             'register_alias': False,
+            'compound_assign': False,
+            'unary_not': False,
+            'pointer_deref': False,
+            'address_of': False,
+            'fn_ptr_array': False,
+            'multiple_return': False,
         }
 
         for item in program.items:
@@ -519,6 +699,11 @@ class TestAcidTest:
                     elif attr.name == 'rom':
                         features_found['rom_attr'] = True
 
+                # Check for array of function pointers
+                if isinstance(item.var_type, ast.ArrayType):
+                    if isinstance(item.var_type.element_type, ast.FunctionType):
+                        features_found['fn_ptr_array'] = True
+
         # Verify all features found
         for feature, found in features_found.items():
             assert found, f"Feature '{feature}' not found in acid test"
@@ -531,7 +716,16 @@ class TestAcidTest:
                     features_found['register_alias'] = True
                 if isinstance(stmt.initializer, ast.MatchExpression):
                     features_found['match_expr'] = True
+                # Check initializer for expressions
+                if stmt.initializer:
+                    self._check_expression(stmt.initializer, features_found)
+            elif isinstance(stmt, ast.ExprStmt):
+                self._check_expression(stmt.expr, features_found)
+            elif isinstance(stmt, ast.ReturnStmt):
+                if stmt.values and len(stmt.values) > 1:
+                    features_found['multiple_return'] = True
             elif isinstance(stmt, ast.IfStmt):
+                self._check_expression(stmt.condition, features_found)
                 self._check_statements(stmt.then_block.statements, features_found)
                 if stmt.else_block:
                     if isinstance(stmt.else_block, ast.Block):
@@ -542,3 +736,20 @@ class TestAcidTest:
                 self._check_statements(stmt.body.statements, features_found)
             elif isinstance(stmt, ast.LoopStmt):
                 self._check_statements(stmt.body.statements, features_found)
+
+    def _check_expression(self, expr, features_found):
+        """Check expression for features."""
+        if isinstance(expr, ast.CompoundAssignment):
+            features_found['compound_assign'] = True
+        elif isinstance(expr, ast.UnaryOp):
+            if expr.op in ('!', '~'):
+                features_found['unary_not'] = True
+        elif isinstance(expr, ast.Dereference):
+            features_found['pointer_deref'] = True
+        elif isinstance(expr, ast.AddressOf):
+            features_found['address_of'] = True
+        elif isinstance(expr, ast.BinaryOp):
+            self._check_expression(expr.left, features_found)
+            self._check_expression(expr.right, features_found)
+        elif isinstance(expr, ast.Assignment):
+            self._check_expression(expr.value, features_found)
