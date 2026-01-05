@@ -911,6 +911,11 @@ class ParseError(Exception):
     pass
 
 
+# Module-level parser instance - Lark LALR table construction is expensive,
+# so we reuse the same parser for all parse calls
+_parser = Parser()
+
+
 def parse(source: str, filename: str = "<input>") -> ast.Program:
     """
     Convenience function to parse source code.
@@ -922,5 +927,4 @@ def parse(source: str, filename: str = "<input>") -> ast.Program:
     Returns:
         Program AST node
     """
-    parser = Parser()
-    return parser.parse(source, filename)
+    return _parser.parse(source, filename)
