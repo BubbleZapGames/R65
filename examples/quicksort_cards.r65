@@ -1,5 +1,5 @@
 // Quicksort Demo - Sorting Playing Cards
-// Demonstrates: structs, arrays, recursion, comparisons, bit manipulation
+// Demonstrates: enums, structs, arrays, recursion, comparisons, bit manipulation
 //
 // This example sorts a hand of playing cards first by suit, then by rank.
 // It showcases R65's support for recursive algorithms on the 65816 processor.
@@ -8,10 +8,36 @@
 // Card Definitions
 // ============================================================================
 
+// Suit enum - ordered for sorting (Hearts < Diamonds < Clubs < Spades)
+enum Suit {
+    Hearts = 0,
+    Diamonds = 1,
+    Clubs = 2,
+    Spades = 3
+}
+
+// Rank enum - standard card ranks
+enum Rank {
+    Ace = 1,
+    Two = 2,
+    Three = 3,
+    Four = 4,
+    Five = 5,
+    Six = 6,
+    Seven = 7,
+    Eight = 8,
+    Nine = 9,
+    Ten = 10,
+    Jack = 11,
+    Queen = 12,
+    King = 13
+}
+
 // Card struct with suit and rank
+// Fields are u8 to allow arithmetic in sort key calculation
 struct Card {
-    suit: u8,   // Hearts=0, Diamonds=1, Clubs=2, Spades=3
-    rank: u8    // Ace=1, 2-10, Jack=11, Queen=12, King=13
+    suit: u8,
+    rank: u8
 }
 
 // ============================================================================
@@ -43,36 +69,36 @@ static mut SCRATCH1: u16;
 #[mode(m8, x8)]
 fn init_hand() {
     // Card 0: 7 of Spades
-    CARDS[0].suit = 3;
-    CARDS[0].rank = 7;
+    CARDS[0].suit = Suit::Spades as u8;
+    CARDS[0].rank = Rank::Seven as u8;
 
     // Card 1: King of Hearts
-    CARDS[1].suit = 0;
-    CARDS[1].rank = 13;
+    CARDS[1].suit = Suit::Hearts as u8;
+    CARDS[1].rank = Rank::King as u8;
 
     // Card 2: Ace of Clubs
-    CARDS[2].suit = 2;
-    CARDS[2].rank = 1;
+    CARDS[2].suit = Suit::Clubs as u8;
+    CARDS[2].rank = Rank::Ace as u8;
 
     // Card 3: 2 of Hearts
-    CARDS[3].suit = 0;
-    CARDS[3].rank = 2;
+    CARDS[3].suit = Suit::Hearts as u8;
+    CARDS[3].rank = Rank::Two as u8;
 
     // Card 4: Jack of Diamonds
-    CARDS[4].suit = 1;
-    CARDS[4].rank = 11;
+    CARDS[4].suit = Suit::Diamonds as u8;
+    CARDS[4].rank = Rank::Jack as u8;
 
     // Card 5: Ace of Spades
-    CARDS[5].suit = 3;
-    CARDS[5].rank = 1;
+    CARDS[5].suit = Suit::Spades as u8;
+    CARDS[5].rank = Rank::Ace as u8;
 
     // Card 6: 5 of Diamonds
-    CARDS[6].suit = 1;
-    CARDS[6].rank = 5;
+    CARDS[6].suit = Suit::Diamonds as u8;
+    CARDS[6].rank = Rank::Five as u8;
 
     // Card 7: Queen of Clubs
-    CARDS[7].suit = 2;
-    CARDS[7].rank = 12;
+    CARDS[7].suit = Suit::Clubs as u8;
+    CARDS[7].rank = Rank::Queen as u8;
 }
 
 // ============================================================================
@@ -198,18 +224,18 @@ fn main() -> ! {
 
     // After sorting, cards will be ordered by suit, then rank:
     //
-    // Suit order: Hearts(0) < Diamonds(1) < Clubs(2) < Spades(3)
-    // Rank order: Ace(1) < 2 < ... < 10 < Jack(11) < Queen(12) < King(13)
+    // Suit order: Hearts < Diamonds < Clubs < Spades
+    // Rank order: Ace < 2 < ... < 10 < Jack < Queen < King
     //
     // Result:
-    // Index 0: 2 of Hearts      (suit=0, rank=2)
-    // Index 1: King of Hearts   (suit=0, rank=13)
-    // Index 2: 5 of Diamonds    (suit=1, rank=5)
-    // Index 3: Jack of Diamonds (suit=1, rank=11)
-    // Index 4: Ace of Clubs     (suit=2, rank=1)
-    // Index 5: Queen of Clubs   (suit=2, rank=12)
-    // Index 6: Ace of Spades    (suit=3, rank=1)
-    // Index 7: 7 of Spades      (suit=3, rank=7)
+    // Index 0: 2 of Hearts
+    // Index 1: King of Hearts
+    // Index 2: 5 of Diamonds
+    // Index 3: Jack of Diamonds
+    // Index 4: Ace of Clubs
+    // Index 5: Queen of Clubs
+    // Index 6: Ace of Spades
+    // Index 7: 7 of Spades
 
     loop {
         wai();
