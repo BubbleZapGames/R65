@@ -13,6 +13,7 @@ class BuiltinKind(Enum):
     """Categories of built-in functions."""
     PROCESSOR_CONTROL = "processor_control"  # wai, stp, NOP, xba
     MODE_CONTROL = "mode_control"            # SEP, REP
+    SOFTWARE_INTERRUPT = "software_interrupt"  # cop, brk
     BLOCK_MOVE = "block_move"                # mvn, mvp
     ARITHMETIC = "arithmetic"                 # mul, div, mod
     SHIFT = "shift"                           # shl, shr
@@ -91,6 +92,16 @@ class BuiltinRegistry:
             returns_value=False,
             description='Reset processor status bits',
             instruction='REP'
+        ),
+
+        # Software interrupts (1 parameter: signature byte, no return value)
+        'cop': BuiltinSignature(
+            name='cop',
+            kind=BuiltinKind.SOFTWARE_INTERRUPT,
+            param_count=1,
+            returns_value=False,
+            description='Trigger co-processor interrupt with signature byte',
+            instruction='COP'
         ),
 
         # Block moves (2 parameters: src_bank, dst_bank, no return value)

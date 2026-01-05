@@ -401,6 +401,8 @@ class CallInstructionSelector:
             self._emit_processor_control_builtin(instr, builtin)
         elif builtin.kind == BuiltinKind.MODE_CONTROL:
             self._emit_mode_control_builtin(instr, builtin)
+        elif builtin.kind == BuiltinKind.SOFTWARE_INTERRUPT:
+            self._emit_software_interrupt_builtin(instr, builtin)
         elif builtin.kind == BuiltinKind.BLOCK_MOVE:
             self._emit_block_move_builtin(instr, builtin)
         elif builtin.kind in (BuiltinKind.ARITHMETIC, BuiltinKind.SHIFT):
@@ -436,6 +438,21 @@ class CallInstructionSelector:
         else:
             self.emitter.emit_instruction("LDA", self.parent._format_operand(arg_loc))
             self.emitter.emit_instruction(builtin.instruction, "A")
+
+    def _emit_software_interrupt_builtin(self, instr: Call, builtin):
+        """Emit software interrupt built-in (cop)."""
+        if len(instr.args) != 1:
+            raise InstructionSelectionError(
+                f"{instr.builtin_name}() expects 1 argument, got {len(instr.args)}")
+
+        arg = instr.args[0]
+
+        # COP requires an immediate signature byte
+        if isinstance(arg.value, Immediate):
+            self.emitter.emit_instruction(builtin.instruction, f"#${arg.value.value:02X}")
+        else:
+            raise InstructionSelectionError(
+                f"{instr.builtin_name}() requires a constant signature byte")
 
     def _emit_block_move_builtin(self, instr: Call, builtin):
         """Emit block move built-in (mvn, mvp)."""
