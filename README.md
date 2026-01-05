@@ -209,10 +209,6 @@ R65/
 - **[Mode Transitions](docs/mode-transition-analysis.md)** - Mode transition strategies
 - **[Register Allocation](docs/register-allocation.md)** - Register allocation strategy
 
-### Implementation Status
-- **[Parser Status](docs/parser-complete.md)** - Parser implementation details
-- **[MIR Status](docs/mir-implementation-status.md)** - MIR implementation status
-
 ## Use Cases
 
 1. **SNES Game Development**: Write new games with modern syntax and type safety

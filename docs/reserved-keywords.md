@@ -183,3 +183,42 @@ Some reserved keywords will likely **never** be implemented in R65:
 - `unsafe` - All R65 code has direct hardware access by design
 
 However, we still reserve them to maintain maximum compatibility with Rust syntax highlighters and tools.
+
+---
+
+## Hardware Register Names
+
+65816 processor registers are **not keywords** but are recognized as special identifiers. All register names must be **uppercase**:
+
+| Register | Type | Description |
+|----------|------|-------------|
+| `A` | u8/u16 | Accumulator |
+| `X` | u8/u16 | X index register |
+| `Y` | u8/u16 | Y index register |
+| `D` | u16 | Direct Page register |
+| `S` | u16 | Stack Pointer |
+| `DBR` | u8 | Data Bank Register |
+| `PBR` | u8 | Program Bank Register (read-only) |
+| `STATUS` | u8 | Processor status flags |
+
+### Case Sensitivity Rules
+
+**Registers must be uppercase:**
+```rust
+A = 10;           // OK - register A
+STATUS = 0x00;    // OK - register STATUS
+DBR = 0x7E;       // OK - register DBR
+```
+
+**Lowercase/mixed-case are valid variable names:**
+```rust
+let a = 5;        // OK - variable 'a'
+let x: u8 = 10;   // OK - variable 'x'
+let status = 0;   // OK - variable 'status'
+```
+
+### Validation Strategy
+
+- **Single-letter** lowercase (a, x, y, d, s) are allowed as variable names (common in programming)
+- **Multi-character** wrong-case (status, dbr, pbr) trigger helpful errors suggesting the uppercase version
+- Example: `status = 10;` → Error: "Did you mean 'STATUS'?"

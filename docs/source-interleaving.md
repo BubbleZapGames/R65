@@ -940,5 +940,47 @@ RTS
 
 ---
 
+## Alternative Format Options
+
+The default **Vertical Pipe** format (`; |`) can be changed via command-line flags. Available formats:
+
+| Format | Flag | Best For |
+|--------|------|----------|
+| **Vertical Pipe** (default) | `--format=pipe` | General development, assembles directly |
+| **Side-by-Side** | `--format=sidebyside` | Documentation, learning (40-char columns) |
+| **Block Sections** | `--format=blocks` | Teaching, detailed debugging |
+| **Nested Indent** | `--format=nested` | Understanding compiler transformations |
+| **Statement IDs** | `--format=debug` | Debuggers, precise traceability |
+| **Compact Reference** | `--format=minimal` | Space-constrained output |
+
+### Side-by-Side Example
+
+```asm
+fn calculate(a @ A: u8, b @ X: u8)  |  calculate:
+    -> u8 {                          |
+    let sum @ A = a + b; // Add      |      STX $16        ; Save b
+                                     |      LDA $16        ; Load b
+                                     |      CLC            ; Clear carry
+    return sum;                      |      RTS
+}                                    |
+```
+
+### Statement ID Example
+
+```asm
+; [S1] fn calculate(a @ A: u8, b @ X: u8) -> u8 {
+calculate:
+; [S2] let sum @ A = a + b;
+    STX $16             ; [S2] Save b
+    LDA $16             ; [S2] Load b
+    CLC                 ; [S2] Clear carry
+; [S3] return sum;
+    RTS                 ; [S3]
+```
+
+**Note**: Only the Vertical Pipe format produces directly-assemblable output. Other formats are for documentation and debugging.
+
+---
+
 **Status**: Design Complete - Ready for Implementation
 **Last Updated**: 2026-01-02

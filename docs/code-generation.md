@@ -596,6 +596,72 @@ Generated at the end of the program:
 
 ---
 
+## Static Initialization
+
+### Overview
+
+The compiler automatically generates an `__init_start()` function for all static variables with explicit initializers. This is critical because **SNES RAM is NOT zeroed on power-on** - contents are unpredictable.
+
+### Generation Rules
+
+1. **Variables with initializers are included** - Even `= 0` initializers are included
+2. **Variables without initializers are excluded** - They have undefined values
+3. **Entry point integration** - `#[entry]` functions automatically call `__init_start()`
+
+### Example
+
+**Source code**:
+```rust
+#[zeropage(0x20)]
+static mut FLAGS: u8 = 0x80;     // Initialized (non-zero)
+
+#[zeropage(0x21)]
+static mut COUNTER: u8 = 0;      // Initialized (zero) - MUST initialize!
+
+#[ram]
+static mut TEMP: u8;             // Uninitialized - undefined value!
+
+#[entry]
+#[mode(m8, x8)]
+fn main() -> ! {
+    TEMP = 0;  // Must initialize manually
+    loop { }
+}
+```
+
+**Generated `__init_start()`**:
+```asm
+__init_start:
+    LDA #$80
+    STA FLAGS           ; FLAGS = 0x80
+    STZ COUNTER         ; COUNTER = 0 (must initialize even if zero!)
+    RTS
+```
+
+**Generated `main()`**:
+```asm
+main:
+    JSR __init_start    ; Initialize all statics first
+    ; ... rest of main
+```
+
+### Edge Cases
+
+| Scenario | Behavior |
+|----------|----------|
+| No explicit initializers | `__init_start()` not generated |
+| Zero initializers | Included (RAM not zeroed on SNES) |
+| Complex expressions | Evaluated and stored |
+| Multiple entry points | Each calls `__init_start()` |
+
+### Design Rationale
+
+- **Hardware accuracy**: SNES RAM has unpredictable contents at power-on
+- **Explicit over implicit**: Only variables with `= value` are initialized
+- **Automatic integration**: Programmer doesn't need to remember to call init
+
+---
+
 ## Key Components Summary
 
 | Component | Responsibility | Input | Output |

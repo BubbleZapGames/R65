@@ -1,8 +1,0 @@
-// Absolutely minimal R65 program
-// Just an empty entry point
-
-#[entry]
-#[mode(m8, x8)]
-fn main() {
-    return;
-}

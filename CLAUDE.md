@@ -708,11 +708,11 @@ Code Generation → WLA-DX Assembly (.asm)
 
 ### Compiler Passes
 
-1. **Lexer**: Tokenize source code, recognize register keywords - See [docs/parser-complete.md](docs/parser-complete.md)
-2. **Parser**: Build AST with special nodes for register operations - See [docs/parser-complete.md](docs/parser-complete.md)
+1. **Lexer**: Tokenize source code, recognize register keywords
+2. **Parser**: Build AST with special nodes for register operations
 3. **HIR (High-level IR)**: Desugar syntax, resolve names, process attributes
 4. **Type Checking**: Validate types, modes, register usage, bank boundaries - See [docs/type-system.md](docs/type-system.md)
-5. **MIR (Mid-level IR)**: CFG construction, virtual registers - See [docs/mir-implementation-status.md](docs/mir-implementation-status.md)
+5. **MIR (Mid-level IR)**: CFG construction, virtual registers
 6. **Optimization**: Constant propagation, dead code elimination, zero-page allocation
 7. **Code Generation**: Memory allocation, register allocation, instruction selection, addressing modes, WLA-DX emission - See [docs/code-generation.md](docs/code-generation.md)
 
@@ -857,19 +857,10 @@ Performance characteristics of different storage:
 - [Mode Transitions](docs/mode-transition-analysis.md) - Mode transition strategies and optimization
 - [Interrupt Handling](docs/interrupt-mode-transition.md) - Interrupt handler mode transitions
 - [Register Allocation](docs/register-allocation.md) - Register allocation strategy
-- [Reserved Keywords](docs/reserved-keywords.md) - Language keyword reference
-- [Register Case Sensitivity](docs/register-case-sensitivity.md) - Register naming conventions
-
-### Implementation Status
-- [Parser Implementation](docs/parser-complete.md) - Parser status and AST structure
-- [Parser Named Attributes](docs/parser-named-attributes.md) - Attribute syntax implementation
-- [MIR Implementation](docs/mir-implementation-status.md) - Mid-level IR implementation status
-- [Mode Transition Status](docs/mode-transition-status.md) - Mode transition implementation status
-- [Documentation Update Status](docs/documentation-update-STATUS.md) - Documentation maintenance tracking
+- [Reserved Keywords](docs/reserved-keywords.md) - Language keyword and register name reference
 
 ### Code Generation
 - [Code Generation](docs/code-generation.md) - Complete code generation reference: memory allocation, register allocation, instruction selection, addressing modes, function generation, and WLA-DX assembly output
-- [MIR Advanced Features](docs/phase-7-advanced-features.md) - MIR implementation of interrupt handlers and static initialization
 
 ## References
 
