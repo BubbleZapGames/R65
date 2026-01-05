@@ -83,32 +83,20 @@ class ASTBuilder(Transformer):
 
     def _validate_identifier_not_register(self, identifier: str, token: LarkToken):
         """
-        Validate that an identifier is not a wrong-case multi-character register name.
+        Validate identifier (currently a no-op).
 
-        Only validates multi-character register names to avoid false positives with
-        common variable names like 'x', 'y', 'd', 's', etc.
+        Lowercase and mixed-case identifiers are valid variable names, even if they
+        match register names case-insensitively. Only uppercase names (A, X, Y,
+        STATUS, D, DBR, PBR, S) are treated as registers by the grammar.
 
-        Multi-character registers that must be exact case (all uppercase):
-        - DBR, PBR, STATUS
-
-        Args:
-            identifier: The identifier to validate
-            token: The Lark token for error reporting
-
-        Raises:
-            ParseError: If identifier is a wrong-case register name
+        Examples of valid variable names:
+        - let x: u8 = 0;      // 'x' is a variable, not register X
+        - let status: u8 = 1; // 'status' is a variable, not register STATUS
+        - let Status: u8 = 2; // Mixed case also valid
         """
-        # Only validate multi-character register names
-        # Single-letter identifiers (a, x, y, d, s) are common variable names
-        multi_char_registers = {'DBR', 'PBR', 'STATUS'}
-
-        # Check case-insensitive match
-        for register in multi_char_registers:
-            if identifier.lower() == register.lower() and identifier != register:
-                raise ParseError(
-                    f"Invalid register name '{identifier}' at line {token.line}, column {token.column}. "
-                    f"Did you mean '{register}'? Register names are case-sensitive and must be uppercase."
-                )
+        # No validation needed - the grammar's REGISTER terminal only matches
+        # uppercase register names. All other identifiers are valid variable names.
+        pass
 
     def _collect_attributes(self, items: list, start_idx: int):
         """
@@ -567,7 +555,8 @@ class ASTBuilder(Transformer):
 
     def paren(self, items):
         """Parenthesized expression."""
-        return items[0]  # Just return the inner expression
+        # items = [LPAR, expr, RPAR] - return the middle element (the expression)
+        return items[1]
 
     # ========================================================================
     # Pattern Matching

@@ -191,32 +191,15 @@ class Lexer:
 
     def _validate_identifier_not_register(self, identifier: str, line: int, column: int):
         """
-        Validate that an identifier is not a wrong-case register name.
+        Validate identifier (currently a no-op, kept for API compatibility).
 
-        Registers must be exact case (all uppercase):
-        - A, X, Y, D, S
-        - DBR, PBR
-        - STATUS
-
-        Args:
-            identifier: The identifier to validate
-            line: Line number for error reporting
-            column: Column number for error reporting
-
-        Raises:
-            LexerError: If identifier is a wrong-case register name
+        Lowercase and mixed-case identifiers are valid variable names, even if they
+        match register names case-insensitively. Only uppercase names (A, X, Y,
+        STATUS, D, DBR, PBR, S) are treated as registers by the grammar.
         """
-        # Check if this identifier matches a register name in wrong case
-        valid_registers = {'A', 'X', 'Y', 'STATUS', 'D', 'DBR', 'PBR', 'S'}
-
-        # Check case-insensitive match
-        for register in valid_registers:
-            if identifier.lower() == register.lower() and identifier != register:
-                raise LexerError(
-                    f"Invalid register name '{identifier}' at line {line}, column {column}. "
-                    f"Did you mean '{register}'? Register names are case-sensitive and must be uppercase.",
-                    line, column
-                )
+        # No validation needed - the grammar's REGISTER terminal only matches
+        # uppercase register names. All other identifiers are valid variable names.
+        pass
 
     def _convert_token(self, lark_token: LarkToken) -> Token:
         """Convert a Lark token to our Token type."""

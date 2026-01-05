@@ -721,7 +721,7 @@ class HIRBuilder:
             # For built-ins, create a dummy symbol to avoid "undefined identifier" errors
             if builtin_name:
                 # Create a dummy symbol for the built-in function
-                from r65.compiler.hir.symbol_table import Symbol, SymbolKind
+                # Note: Symbol and SymbolKind imported at module level via "from ... import *"
                 builtin_symbol = Symbol(
                     name=expr.func.name,
                     kind=SymbolKind.FUNCTION,
