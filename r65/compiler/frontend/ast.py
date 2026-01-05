@@ -290,6 +290,12 @@ class BooleanLiteral(Expression):
 
 
 @dataclass
+class StringLiteral(Expression):
+    """String literal for byte array initialization."""
+    value: str  # Raw string value (escape sequences not yet processed)
+
+
+@dataclass
 class Identifier(Expression):
     """Identifier reference."""
     name: str

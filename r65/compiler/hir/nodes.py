@@ -379,6 +379,22 @@ class HIRArrayLiteralExpr(HIRExpression):
 
 
 @dataclass
+class HIRStringLiteral(HIRExpression):
+    """
+    String literal for byte array initialization.
+
+    Only valid in static array initializers. The raw string value is preserved
+    here and converted to bytes during type checking/code generation.
+
+    Escape sequences supported: \\n, \\t, \\r, \\0, \\\\, \\", \\x##
+    Extended ASCII characters (0x00-0xFF) are allowed.
+    UTF-8 multi-byte characters (code points > 255) are an error.
+    """
+    value: str = ""  # Raw string value (escape sequences not yet processed)
+    processed_bytes: List[int] = field(default_factory=list)  # Populated by type checker
+
+
+@dataclass
 class HIRStructFieldInit(HIRNode):
     """Field initializer in a struct literal."""
     name: str = ""

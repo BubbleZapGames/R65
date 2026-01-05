@@ -13,7 +13,7 @@ from r65.compiler.hir import (
     HIRExpression, HIRIntegerLiteral, HIRBooleanLiteral, HIRIdentifier,
     HIRFunctionAddress, HIRRegister, HIRBinaryOp, HIRUnaryOp, HIRTypeCast, HIRAssignment,
     HIRFunctionCall, HIRMethodCall, HIRArrayIndex, HIRFieldAccess, HIRDereference, HIRAddressOf,
-    HIRArrayFillExpr, HIRArrayLiteralExpr, HIRStructLiteralExpr,
+    HIRArrayFillExpr, HIRArrayLiteralExpr, HIRStringLiteral, HIRStructLiteralExpr,
     HIRMatchExpression, HIRPattern, HIRLiteralPattern, HIREnumPattern, HIRWildcardPattern, HIRIdentifierPattern, HIROrPattern,
     RegisterLetBinding, VariableLetBinding,
     RegisterBinding, VariableBinding,
@@ -1049,6 +1049,10 @@ class MIRBuilder:
                 # Array literal: use BlockCopy instruction (MVN from ROM)
                 self._emit_array_literal_init(static_decl, mem_loc, initializer)
 
+            elif isinstance(initializer, HIRStringLiteral):
+                # String literal: use BlockCopy instruction (MVN from ROM)
+                self._emit_string_literal_init(static_decl, mem_loc, initializer)
+
             elif isinstance(initializer, HIRStructLiteralExpr):
                 # Struct literal: use BlockCopy instruction (MVN from ROM)
                 self._emit_struct_literal_init(static_decl, mem_loc, initializer)
@@ -1214,6 +1218,58 @@ class MIRBuilder:
             label=label,
             data=data_bytes,
             element_size=element_size
+        )
+        self._rom_data_sections.append(rom_data)
+
+        # Emit block copy instruction
+        self.emit(BlockCopy(
+            dest=mem_loc,
+            rom_data=rom_data,
+            count=len(data_bytes)
+        ))
+
+    def _emit_string_literal_init(
+        self,
+        static_decl: HIRStaticDecl,
+        mem_loc: MemoryLocation,
+        string_literal: 'HIRStringLiteral'
+    ):
+        """
+        Emit BlockCopy instruction for string literal initialization.
+
+        String literals are converted to byte arrays. The processed_bytes field
+        contains the escape-sequence-processed byte values from type checking.
+        Zero-padding is applied to match the declared array size.
+
+        Args:
+            static_decl: Static declaration being initialized
+            mem_loc: Memory location of the array
+            string_literal: HIR string literal expression
+        """
+        from r65.compiler.hir.types import ArrayTypeInfo
+
+        # Get the array size from the declared type
+        array_type = static_decl.var_type
+        if isinstance(array_type, ArrayTypeInfo):
+            array_size = array_type.size
+        else:
+            # Shouldn't happen if type checking passed
+            array_size = len(string_literal.processed_bytes)
+
+        # Get processed bytes (escape sequences already handled by type checker)
+        data_bytes = list(string_literal.processed_bytes)
+
+        # Zero-pad to match array size
+        while len(data_bytes) < array_size:
+            data_bytes.append(0)
+
+        # Create ROM data reference using variable name
+        label = f"__{static_decl.name}_data"
+
+        rom_data = ROMDataRef(
+            label=label,
+            data=data_bytes,
+            element_size=1  # Strings are always u8 arrays
         )
         self._rom_data_sections.append(rom_data)
 

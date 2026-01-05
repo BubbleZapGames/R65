@@ -610,6 +610,9 @@ class HIRBuilder:
         elif isinstance(expr, ast.BooleanLiteral):
             return hir.HIRBooleanLiteral(value=expr.value)
 
+        elif isinstance(expr, ast.StringLiteral):
+            return hir.HIRStringLiteral(value=expr.value)
+
         elif isinstance(expr, ast.Identifier):
             # Resolve identifier
             symbol = self.symbol_table.lookup(expr.name)

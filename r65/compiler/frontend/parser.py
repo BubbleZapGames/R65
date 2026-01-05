@@ -521,6 +521,13 @@ class ASTBuilder(Transformer):
         """Register reference."""
         return ast.Register(name=items[0].value)
 
+    def string_literal(self, items):
+        """String literal for byte array initialization."""
+        token = items[0]
+        # Remove surrounding quotes
+        raw_value = token.value[1:-1]
+        return ast.StringLiteral(value=raw_value)
+
     def include_bytes_expr(self, items):
         """Include bytes expression (e.g., include_bytes!("data.bin"))."""
         # items: [INCLUDE_BYTES, "!", "(", STRING, ")"]

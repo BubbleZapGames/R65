@@ -189,6 +189,7 @@ arg_list: expr ("," expr)* ","?
 
 ?primary: INTEGER                               -> integer
         | BOOLEAN                               -> boolean
+        | STRING                                -> string_literal
         | INCLUDE_BYTES "!" "(" STRING ")"      -> include_bytes_expr
         | IDENT "::" IDENT                      -> enum_variant_expr
         | struct_literal_expr

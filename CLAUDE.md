@@ -105,6 +105,45 @@ fn process() {
 
 *(See [docs/array-bounds-checking.md](docs/array-bounds-checking.md) for design rationale)*
 
+### String Literals for Byte Arrays
+
+String literals can be used to initialize `[u8; N]` arrays in static declarations:
+
+```rust
+#[ram]
+static mut MESSAGE: [u8; 16] = "Hello, World!";  // Zero-padded to 16 bytes
+
+#[ram]
+static mut ESCAPED: [u8; 8] = "A\nB\tC\0";  // With escape sequences
+
+#[ram]
+static mut HEX_DATA: [u8; 4] = "\xC0\xC1\xFE\xFF";  // Hex escapes for high bytes
+```
+
+**String literal rules:**
+- Only allowed in static array initializers (no inline string expressions)
+- Target type must be `[u8; N]` (compile error otherwise)
+- Extended ASCII (0x00-0xFF) allowed; UTF-8 multi-byte characters are rejected
+- If string is shorter than array, remaining bytes are zero-padded
+- If string is longer than array, compile error
+
+**Supported escape sequences:**
+| Escape | Value | Description |
+|--------|-------|-------------|
+| `\n` | 0x0A | Newline |
+| `\t` | 0x09 | Tab |
+| `\r` | 0x0D | Carriage return |
+| `\0` | 0x00 | Null |
+| `\\` | 0x5C | Backslash |
+| `\"` | 0x22 | Double quote |
+| `\x##` | 0x00-0xFF | Hex byte value |
+
+**No automatic null termination:** Strings are not null-terminated by default. Add explicit `\0` if needed:
+```rust
+#[ram]
+static mut C_STRING: [u8; 8] = "Hello\0";  // Null-terminated
+```
+
 ### Error Handling
 
 No built-in error handling - programmer defines conventions:
