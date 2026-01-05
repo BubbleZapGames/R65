@@ -171,21 +171,121 @@ class AssignmentLowerer:
         if field_offset is None:
             raise MIRLoweringError(f"Field offset not computed for field: {field_access.field_name}")
 
-        # Get the struct symbol
-        if not isinstance(field_access.base, HIRIdentifier):
-            raise MIRLoweringError(f"Field access only supports static structs currently, got: {type(field_access.base)}")
+        if isinstance(field_access.base, HIRIdentifier):
+            # Simple case: static_struct.field = value
+            struct_symbol = field_access.base.symbol
+            base_memloc = self.builder.get_memory_location(struct_symbol)
+            field_memloc = self.builder._create_offset_memloc(base_memloc, field_offset, struct_symbol)
+            self.emit(Store(source=value, dest=field_memloc, type_info=expr.expr_type))
 
-        struct_symbol = field_access.base.symbol
+        elif isinstance(field_access.base, HIRArrayIndex):
+            # Array case: array[index].field = value
+            self._lower_array_field_assignment(field_access, value, field_offset, expr.expr_type)
 
-        # Get base memory location
-        base_memloc = self.builder.get_memory_location(struct_symbol)
+        else:
+            raise MIRLoweringError(
+                f"Field access only supports static structs and array indexing, got: {type(field_access.base)}"
+            )
 
-        # Create offset memory location
-        field_memloc = self.builder._create_offset_memloc(base_memloc, field_offset, struct_symbol)
-
-        # Emit store to the field location
-        self.emit(Store(source=value, dest=field_memloc, type_info=expr.expr_type))
         return value
+
+    def _lower_array_field_assignment(self, field_access: HIRFieldAccess, value, field_offset: int, type_info):
+        """
+        Lower array[index].field = value assignment.
+
+        Computes: store to (array_base + index * struct_size + field_offset)
+        """
+        array_index_expr = field_access.base  # HIRArrayIndex
+
+        if not isinstance(array_index_expr.array, HIRIdentifier):
+            raise MIRLoweringError(
+                f"Array field assignment requires static array, got: {type(array_index_expr.array)}"
+            )
+
+        array_symbol = array_index_expr.array.symbol
+        struct_type = array_index_expr.expr_type  # The struct type (element type of array)
+        struct_size = self.builder._get_type_size(struct_type)
+
+        # Lower the index expression
+        index_operand = self.builder.lower_expression(array_index_expr.index)
+
+        if isinstance(index_operand, Immediate):
+            # Constant index: compute offset at compile time
+            total_offset = (index_operand.value * struct_size) + field_offset
+            base_memloc = self.builder.get_memory_location(array_symbol)
+            field_memloc = self.builder._create_offset_memloc(base_memloc, total_offset, array_symbol)
+            self.emit(Store(source=value, dest=field_memloc, type_info=type_info))
+        else:
+            # Variable index: compute offset at runtime
+            offset_operand = self._compute_array_field_offset(
+                index_operand, struct_size, field_offset, struct_type
+            )
+
+            # Move offset to X register for indexed addressing
+            x_reg = HardwareRegister('X')
+            self.emit(Move(dest=x_reg, source=offset_operand, type_info=struct_type))
+
+            # Create indexed memory location
+            base_memloc = self.builder.get_memory_location(array_symbol)
+            indexed_memloc = MemoryLocation(
+                storage_type=base_memloc.storage_type,
+                address=base_memloc.address,
+                symbol=array_symbol,
+                is_volatile=base_memloc.is_volatile,
+                index_register='X'
+            )
+
+            self.emit(Store(source=value, dest=indexed_memloc, type_info=type_info))
+
+    def _compute_array_field_offset(self, index_operand, struct_size: int, field_offset: int, type_info):
+        """
+        Compute byte offset for array[index].field access.
+
+        Result = (index * struct_size) + field_offset
+        """
+        # First compute index * struct_size
+        if struct_size == 1:
+            scaled_index = index_operand
+        elif struct_size & (struct_size - 1) == 0:
+            # Power of 2: use shift
+            shift_amount = 0
+            temp = struct_size
+            while temp > 1:
+                shift_amount += 1
+                temp >>= 1
+
+            scaled_index = self.ctx.alloc_vreg(type_info, "scaled_index")
+            self.emit(BinaryOp(
+                dest=scaled_index,
+                left=index_operand,
+                right=Immediate(shift_amount),
+                op='<<',
+                type_info=type_info
+            ))
+        else:
+            # Non-power-of-2: use multiplication
+            scaled_index = self.ctx.alloc_vreg(type_info, "scaled_index")
+            self.emit(BinaryOp(
+                dest=scaled_index,
+                left=index_operand,
+                right=Immediate(struct_size),
+                op='*',
+                type_info=type_info
+            ))
+
+        # Add field offset if non-zero
+        if field_offset == 0:
+            return scaled_index
+        else:
+            final_offset = self.ctx.alloc_vreg(type_info, "field_offset")
+            self.emit(BinaryOp(
+                dest=final_offset,
+                left=scaled_index,
+                right=Immediate(field_offset),
+                op='+',
+                type_info=type_info
+            ))
+            return final_offset
 
     # ========================================================================
     # Array Assignment

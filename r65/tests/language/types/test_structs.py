@@ -92,3 +92,86 @@ class TestStructHIR:
         """)
         assert len(hir_prog.structs) >= 1
         assert len(hir_prog.statics) >= 1
+
+
+class TestStructArrayTypeCheck:
+    """Tests for struct array type checking (requires full type check)."""
+
+    def test_array_index_field_assignment(self):
+        """Test that array[index].field = value type checks correctly.
+
+        This was a regression where the type checker compared AST BasicType
+        with HIR BasicTypeInfo, causing false type mismatch errors.
+        """
+        from r65.compiler.frontend import Parser
+        from r65.compiler.hir import HIRBuilder
+        from r65.compiler.typeck import TypeChecker
+
+        source = """
+            struct Card { suit: u8, rank: u8 }
+            #[ram] static mut CARDS: [Card; 8];
+
+            #[mode(m8, x8)]
+            fn test() {
+                let idx: u8 = 0;
+                CARDS[idx].suit = 3;
+                CARDS[idx].rank = 7;
+            }
+        """
+
+        parser = Parser()
+        ast_prog = parser.parse(source)
+        hir_builder = HIRBuilder()
+        hir_prog = hir_builder.build_program(ast_prog)
+        type_checker = TypeChecker(hir_prog)
+        # Should not raise - this was the bug
+        type_checker.check()
+
+    def test_array_const_index_field_assignment(self):
+        """Test array[constant].field = value."""
+        from r65.compiler.frontend import Parser
+        from r65.compiler.hir import HIRBuilder
+        from r65.compiler.typeck import TypeChecker
+
+        source = """
+            struct Point { x: u8, y: u8 }
+            #[ram] static mut POINTS: [Point; 4];
+
+            #[mode(m8, x8)]
+            fn init() {
+                POINTS[0].x = 10;
+                POINTS[0].y = 20;
+                POINTS[1].x = 30;
+                POINTS[1].y = 40;
+            }
+        """
+
+        parser = Parser()
+        ast_prog = parser.parse(source)
+        hir_builder = HIRBuilder()
+        hir_prog = hir_builder.build_program(ast_prog)
+        type_checker = TypeChecker(hir_prog)
+        type_checker.check()
+
+    def test_array_field_read(self):
+        """Test reading array[index].field."""
+        from r65.compiler.frontend import Parser
+        from r65.compiler.hir import HIRBuilder
+        from r65.compiler.typeck import TypeChecker
+
+        source = """
+            struct Entity { x: u8, y: u8, health: u16 }
+            #[ram] static mut ENTITIES: [Entity; 8];
+
+            #[mode(m8, x8)]
+            fn get_health(idx @ X: u8) -> u16 {
+                return ENTITIES[idx].health;
+            }
+        """
+
+        parser = Parser()
+        ast_prog = parser.parse(source)
+        hir_builder = HIRBuilder()
+        hir_prog = hir_builder.build_program(ast_prog)
+        type_checker = TypeChecker(hir_prog)
+        type_checker.check()

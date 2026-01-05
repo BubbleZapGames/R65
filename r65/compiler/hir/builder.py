@@ -395,11 +395,18 @@ class HIRBuilder:
         # Get struct symbol
         struct_symbol = self.symbol_table.lookup(struct.name)
 
-        return hir.HIRStructDecl(
+        hir_struct = hir.HIRStructDecl(
             name=struct.name,
             fields=hir_fields,
             symbol=struct_symbol
         )
+
+        # Update symbol to point to HIR definition (not AST)
+        # This ensures type checking uses HIR types (BasicTypeInfo)
+        # instead of AST types (BasicType) for field access
+        struct_symbol.definition = hir_struct
+
+        return hir_struct
 
     def _build_enum(self, enum: ast.EnumDecl) -> hir.HIREnumDecl:
         """Build HIR enum declaration from AST."""
@@ -434,12 +441,17 @@ class HIRBuilder:
         # Get enum symbol
         enum_symbol = self.symbol_table.lookup(enum.name)
 
-        return hir.HIREnumDecl(
+        hir_enum = hir.HIREnumDecl(
             name=enum.name,
             variants=hir_variants,
             underlying_type=underlying_type,
             symbol=enum_symbol
         )
+
+        # Update symbol to point to HIR definition (not AST)
+        enum_symbol.definition = hir_enum
+
+        return hir_enum
 
     def _build_type_alias(self, alias: ast.TypeAlias) -> hir.HIRTypeAlias:
         """Build HIR type alias from AST."""
@@ -449,11 +461,16 @@ class HIRBuilder:
         # Get alias symbol
         alias_symbol = self.symbol_table.lookup(alias.name)
 
-        return hir.HIRTypeAlias(
+        hir_alias = hir.HIRTypeAlias(
             name=alias.name,
             aliased_type=aliased_type,
             symbol=alias_symbol
         )
+
+        # Update symbol to point to HIR definition (not AST)
+        alias_symbol.definition = hir_alias
+
+        return hir_alias
 
     # =========================================================================
     # Build Statements

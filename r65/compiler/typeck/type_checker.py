@@ -968,8 +968,16 @@ class TypeChecker:
                 source_loc=expr.base.source_loc
             )
 
-        # Find field in struct
-        struct_def = base_type.definition
+        # Look up struct definition from symbol table (not cached in StructTypeInfo)
+        # This ensures we get the HIR definition, not the AST definition that may
+        # have been cached during early type resolution in Pass 1.
+        struct_symbol = self.program.symbol_table.lookup(base_type.name)
+        if struct_symbol is None:
+            raise TypeCheckError(
+                f"Struct {base_type.name} definition not found",
+                source_loc=expr.source_loc
+            )
+        struct_def = struct_symbol.definition
         if struct_def is None:
             raise TypeCheckError(
                 f"Struct {base_type.name} definition not found",
@@ -977,9 +985,11 @@ class TypeChecker:
             )
 
         field = None
-        for f in struct_def.fields:
+        field_index = None
+        for i, f in enumerate(struct_def.fields):
             if f.name == expr.field_name:
                 field = f
+                field_index = i
                 break
 
         if field is None:
@@ -989,6 +999,8 @@ class TypeChecker:
             )
 
         expr.expr_type = field.field_type
+        expr.field_index = field_index
+        expr.field_offset = field.offset
         return expr.expr_type
 
     def check_dereference(self, expr: HIRDereference) -> TypeInfo:
