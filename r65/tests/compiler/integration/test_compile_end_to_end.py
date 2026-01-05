@@ -153,9 +153,7 @@ MINIMAL_PROGRAM = '''
 #[mode(m8, x8)]
 #[entry]
 fn main() -> ! {
-    loop {
-        asm!("WAI");
-    }
+    A = 42;
 }
 '''
 
@@ -235,7 +233,6 @@ fn main() -> ! {
 
     loop {
         COUNTER = COUNTER + 1;
-        asm!("WAI");
     }
 }
 '''
@@ -359,10 +356,6 @@ fn process() {
 fn main() -> ! {
     XPOS = 20;
     process();
-
-    loop {
-        asm!("WAI");
-    }
 }
 '''
 
