@@ -861,6 +861,7 @@ Performance characteristics of different storage:
 
 ### Code Generation
 - [Code Generation](docs/code-generation.md) - Complete code generation reference: memory allocation, register allocation, instruction selection, addressing modes, function generation, and WLA-DX assembly output
+- [Struct Array Indexing](docs/struct-array-indexing.md) - Optimization strategies for array[index].field access patterns
 
 ## References
 

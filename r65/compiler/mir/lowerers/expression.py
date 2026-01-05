@@ -15,6 +15,7 @@ from r65.compiler.hir import (
 from r65.compiler.mir.nodes import (
     VirtualRegister, HardwareRegister, Immediate, MemoryLocation,
     Move, Load, LoadIndirect, BinaryOp, UnaryOp, TypeConvert,
+    Call, Argument,
 )
 from r65.compiler.errors import MIRLoweringError
 
@@ -443,9 +444,16 @@ class ExpressionLowerer:
         Compute byte offset for array[index].field access.
 
         Result = (index * struct_size) + field_offset
-        """
-        from r65.compiler.hir.types import BasicTypeInfo
 
+        Optimization strategies (see docs/struct-array-indexing.md):
+        - struct_size == 1: no multiplication needed
+        - Power of 2: use left shift
+        - Non-power-of-2: call mul() runtime function
+
+        Future optimizations could include:
+        - Shift-and-add decomposition for small multipliers
+        - Offset lookup tables for small arrays
+        """
         # First compute index * struct_size
         if struct_size == 1:
             scaled_index = index_operand
@@ -466,14 +474,18 @@ class ExpressionLowerer:
                 type_info=type_info
             ))
         else:
-            # Non-power-of-2: use multiplication
+            # Non-power-of-2: use mul() runtime function
+            # TODO: Future optimization - shift-and-add for small multipliers
+            # TODO: Future optimization - LUT for small arrays
             scaled_index = self.ctx.alloc_vreg(type_info, "scaled_index")
-            self.emit(BinaryOp(
-                dest=scaled_index,
-                left=index_operand,
-                right=Immediate(struct_size),
-                op='*',
-                type_info=type_info
+            self.emit(Call(
+                function='mul',
+                args=[
+                    Argument(value=index_operand, type_info=type_info),
+                    Argument(value=Immediate(struct_size), type_info=type_info),
+                ],
+                returns=[scaled_index],
+                builtin_name='mul'
             ))
 
         # Add field offset if non-zero
