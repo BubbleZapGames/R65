@@ -4,8 +4,8 @@ Assembly emitter: generates WLA-DX assembly text.
 Provides methods for emitting instructions, labels, comments, and sections
 in WLA-DX assembly format for the 65816 processor.
 
-Also builds structured AsmNode objects alongside strings for use by
-optimization passes.
+Builds structured AsmNode objects which are converted to assembly text
+via emit_nodes().
 """
 
 from typing import List, Optional
@@ -38,11 +38,11 @@ class AssemblyEmitter:
     """
     Emits WLA-DX assembly code.
 
-    Manages the assembly output buffer and provides high-level methods
+    Builds structured AsmNode objects and provides high-level methods
     for generating properly formatted assembly sections and instructions.
 
-    Also builds structured AsmNode objects for use by optimization passes.
-    Call get_nodes() to retrieve the structured representation.
+    Call get_nodes() to retrieve the structured representation, or
+    to_string() to get the final assembly text.
     """
 
     def __init__(self, source_file: Optional[str] = None):
@@ -53,11 +53,8 @@ class AssemblyEmitter:
             source_file: Original R65 source file path (for header)
         """
         self.source_file = source_file or "unknown.r65"
-        self.output: List[str] = []
-        self.indent_level = 0
-        self.current_column = 0
 
-        # Structured node output (built alongside strings)
+        # Structured node output
         from r65.compiler.codegen.node_emitter import NodeEmitter
         self._node_emitter = NodeEmitter()
 
@@ -65,36 +62,17 @@ class AssemblyEmitter:
     # Low-Level Emission
     # ========================================================================
 
-    def emit_line(self, text: str = ""):
-        """
-        Emit a single line of text to string output only.
-
-        This method is for internal use by higher-level emit methods.
-        It does NOT add to the node emitter - the calling method should
-        handle node emission separately.
-
-        Args:
-            text: Line to emit (without newline)
-        """
-        self.output.append(text)
-        self.current_column = 0
-
     def emit_directive(self, text: str):
         """
         Emit a WLA-DX directive (e.g., .65816, .MEMORYMAP).
 
-        This method adds to both string output and node emitter.
-
         Args:
             text: Directive text
         """
-        self.output.append(text)
-        self.current_column = 0
         self._node_emitter.emit_raw(text)
 
     def emit_blank_line(self):
         """Emit a blank line for spacing."""
-        self.output.append("")
         self._node_emitter.emit_blank_line()
 
     def emit_comment(self, text: str):
@@ -104,7 +82,6 @@ class AssemblyEmitter:
         Args:
             text: Comment text (without ; prefix)
         """
-        self.emit_line(f"; {text}")
         self._node_emitter.emit_comment(text)
 
     # ========================================================================
@@ -271,10 +248,6 @@ class AssemblyEmitter:
         label_name = label.rstrip(':')
         self._node_emitter.emit_label(label_name)
 
-        if not label.endswith(':'):
-            label += ':'
-        self.emit_line(label)
-
     def emit_local_label(self, label: str):
         """
         Emit a local label with indentation.
@@ -306,22 +279,7 @@ class AssemblyEmitter:
             STA $20                 ; Store to zero-page
             RTS
         """
-        # Also emit to node emitter for structured representation
         self._node_emitter.emit_instruction(mnemonic, operand, comment)
-
-        # Build instruction string
-        if operand:
-            instr = f"    {mnemonic} {operand}"
-        else:
-            instr = f"    {mnemonic}"
-
-        # Add comment if provided
-        if comment:
-            # Pad to comment column for alignment
-            padding = max(1, COMMENT_COLUMN - len(instr))
-            instr += " " * padding + f"; {comment}"
-
-        self.emit_line(instr)
 
     # ========================================================================
     # Symbol Definitions
@@ -594,23 +552,13 @@ class AssemblyEmitter:
     # Output Generation
     # ========================================================================
 
-    def to_string(self) -> str:
+    def clear(self):
         """
-        Generate complete assembly as string.
+        Clear all emitted content.
 
-        Returns:
-            Complete assembly text with newlines
+        Resets the emitter to its initial empty state.
         """
-        return '\n'.join(self.output)
-
-    def to_lines(self) -> List[str]:
-        """
-        Get output as list of lines.
-
-        Returns:
-            List of assembly lines
-        """
-        return self.output.copy()
+        self._node_emitter.nodes.clear()
 
     def get_nodes(self):
         """
@@ -629,6 +577,25 @@ class AssemblyEmitter:
             nodes: List of AsmNode objects
         """
         self._node_emitter.nodes = nodes
+
+    def to_string(self) -> str:
+        """
+        Generate complete assembly as string.
+
+        Returns:
+            Complete assembly text with newlines
+        """
+        from r65.compiler.codegen.asm_nodes import emit_nodes
+        return emit_nodes(self.get_nodes())
+
+    def to_lines(self) -> List[str]:
+        """
+        Get output as list of lines.
+
+        Returns:
+            List of assembly lines
+        """
+        return self.to_string().split('\n')
 
     def write_to_file(self, filepath: str):
         """

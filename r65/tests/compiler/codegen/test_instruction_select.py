@@ -54,7 +54,7 @@ def test_memory_operations():
     )
     selector.select_instruction(move_instr)
     print(emitter.to_string())
-    emitter.output.clear()
+    emitter.clear()
     print()
 
     # Test Move register to register
@@ -66,7 +66,7 @@ def test_memory_operations():
     )
     selector.select_instruction(move_instr2)
     print(emitter.to_string())
-    emitter.output.clear()
+    emitter.clear()
     print()
 
     return True
@@ -106,7 +106,7 @@ def test_arithmetic_operations():
     )
     selector.select_instruction(add_instr)
     print(emitter.to_string())
-    emitter.output.clear()
+    emitter.clear()
     print()
 
     # Test addition with immediate: result = a + 5
@@ -120,7 +120,7 @@ def test_arithmetic_operations():
     )
     selector.select_instruction(add_imm_instr)
     print(emitter.to_string())
-    emitter.output.clear()
+    emitter.clear()
     print()
 
     # Test subtraction
@@ -134,7 +134,7 @@ def test_arithmetic_operations():
     )
     selector.select_instruction(sub_instr)
     print(emitter.to_string())
-    emitter.output.clear()
+    emitter.clear()
     print()
 
     # Test bitwise AND
@@ -148,7 +148,7 @@ def test_arithmetic_operations():
     )
     selector.select_instruction(and_instr)
     print(emitter.to_string())
-    emitter.output.clear()
+    emitter.clear()
     print()
 
     # Test shift left
@@ -162,7 +162,7 @@ def test_arithmetic_operations():
     )
     selector.select_instruction(shl_instr)
     print(emitter.to_string())
-    emitter.output.clear()
+    emitter.clear()
     print()
 
     return True
@@ -188,7 +188,7 @@ def test_control_flow():
     jump_instr = Jump(target=5)
     selector.select_instruction(jump_instr)
     print(emitter.to_string())
-    emitter.output.clear()
+    emitter.clear()
     print()
 
     # Test conditional branch
@@ -202,7 +202,7 @@ def test_control_flow():
     )
     selector.select_instruction(branch_instr)
     print(emitter.to_string())
-    emitter.output.clear()
+    emitter.clear()
     print()
 
     # Test return
@@ -210,7 +210,7 @@ def test_control_flow():
     return_instr = Return(values=[])
     selector.select_instruction(return_instr)
     print(emitter.to_string())
-    emitter.output.clear()
+    emitter.clear()
     print()
 
     return True
@@ -234,7 +234,7 @@ def test_mode_control():
     sep_instr = SetMode(mask=0x30, is_set=True)
     selector.select_instruction(sep_instr)
     print(emitter.to_string())
-    emitter.output.clear()
+    emitter.clear()
     print()
 
     # Test REP
@@ -242,7 +242,7 @@ def test_mode_control():
     rep_instr = SetMode(mask=0x30, is_set=False)
     selector.select_instruction(rep_instr)
     print(emitter.to_string())
-    emitter.output.clear()
+    emitter.clear()
     print()
 
     return True
@@ -271,7 +271,7 @@ def test_register_save_restore():
     selector.select_instruction(save_x)
     selector.select_instruction(save_y)
     print(emitter.to_string())
-    emitter.output.clear()
+    emitter.clear()
     print()
 
     # Test restore registers
@@ -284,7 +284,7 @@ def test_register_save_restore():
     selector.select_instruction(restore_x)
     selector.select_instruction(restore_a)
     print(emitter.to_string())
-    emitter.output.clear()
+    emitter.clear()
     print()
 
     return True
@@ -320,7 +320,7 @@ def test_16bit_operations():
     )
     selector.select_instruction(move_instr)
     print(emitter.to_string())
-    emitter.output.clear()
+    emitter.clear()
     print()
 
     # Test 16-bit addition
@@ -334,7 +334,7 @@ def test_16bit_operations():
     )
     selector.select_instruction(add_instr)
     print(emitter.to_string())
-    emitter.output.clear()
+    emitter.clear()
     print()
 
     return True
