@@ -9,7 +9,7 @@ from r65.compiler.hir import (
     HIRProgram, HIRDeclaration, HIRFunctionDecl, HIRStaticDecl, HIRConstDecl,
     HIRStructDecl, HIREnumDecl,
     HIRStatement, HIRBlock, HIRLetStmt, HIRExprStmt, HIRReturnStmt,
-    HIRIfStmt, HIRWhileStmt, HIRBreakStmt, HIRContinueStmt,
+    HIRIfStmt, HIRWhileStmt, HIRBreakStmt, HIRContinueStmt, HIRAsmStmt,
     HIRExpression, HIRIntegerLiteral, HIRBooleanLiteral, HIRIdentifier,
     HIRFunctionAddress, HIRRegister, HIRBinaryOp, HIRUnaryOp, HIRTypeCast, HIRAssignment,
     HIRFunctionCall, HIRMethodCall, HIRArrayIndex, HIRFieldAccess, HIRDereference, HIRAddressOf,
@@ -30,6 +30,7 @@ from r65.compiler.mir.nodes import (
     SetMode, SaveRegister, RestoreRegister,
     Push, Pull,
     MemoryFill, BlockCopy, ROMDataRef,
+    InlineAsm,
 )
 
 from r65.compiler.mir.virtual_registers import VirtualRegisterAllocator
@@ -387,6 +388,8 @@ class MIRBuilder:
             self.lower_break_statement(stmt)
         elif isinstance(stmt, HIRContinueStmt):
             self.lower_continue_statement(stmt)
+        elif isinstance(stmt, HIRAsmStmt):
+            self.lower_asm_statement(stmt)
         else:
             # Unsupported statement type (placeholder for future expansion)
             pass
@@ -751,6 +754,14 @@ class MIRBuilder:
         # Add CFG edge
         continue_block = self.cfg_builder.get_block(continue_target)
         self.cfg_builder.add_edge(self.current_block, continue_block)
+
+    def lower_asm_statement(self, stmt: HIRAsmStmt):
+        """
+        Lower inline assembly statement.
+
+        Emits raw assembly instructions verbatim.
+        """
+        self.emit(InlineAsm(instructions=stmt.instructions))
 
     # ========================================================================
     # Helper Methods

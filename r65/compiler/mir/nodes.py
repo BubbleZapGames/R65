@@ -633,6 +633,22 @@ class RestoreRegister(MIRInstruction):
         return f"{self.register} = Restore {self.save_location}"
 
 
+@dataclass
+class InlineAsm(MIRInstruction):
+    """
+    Inline assembly instruction(s).
+
+    Emits raw assembly instructions verbatim. The compiler assumes all
+    registers may be clobbered after inline assembly.
+
+    asm!("NOP", "NOP", ...)
+    """
+    instructions: List[str]  # List of assembly instruction strings
+
+    def __repr__(self):
+        return f"InlineAsm({', '.join(self.instructions)})"
+
+
 # ============================================================================
 # CFG Structures
 # ============================================================================

@@ -12,6 +12,7 @@ from r65.compiler.codegen.memory_alloc import MemoryAllocator
 from r65.compiler.codegen.symbol_gen import SymbolDefinitionGenerator
 from r65.compiler.codegen.function_gen import ProgramFunctionGenerator
 from r65.compiler.codegen.peephole import optimize_assembly
+from r65.compiler.codegen.branch_fixup import fixup_long_branches
 from r65.compiler.codegen.constants import DEFAULT_STACK_LOWER, DEFAULT_STACK_UPPER
 
 
@@ -110,10 +111,17 @@ class ProgramCodeGenerator:
         # Apply peephole optimizations
         assembly_lines = assembly.split('\n')
         optimized_lines, num_optimizations = optimize_assembly(assembly_lines)
-        assembly = '\n'.join(optimized_lines)
 
         if num_optimizations > 0:
             print(f"Peephole optimizer: {num_optimizations} optimization(s) applied")
+
+        # Apply long branch fixup (after peephole to work with final sizes)
+        fixed_lines, num_branch_fixups = fixup_long_branches(optimized_lines)
+
+        if num_branch_fixups > 0:
+            print(f"Branch fixup: {num_branch_fixups} long branch(es) fixed")
+
+        assembly = '\n'.join(fixed_lines)
 
         # Write to file if specified
         if output_file:
@@ -229,19 +237,17 @@ class ProgramCodeGenerator:
 
     def _emit_symbol_exports(self, mir_program: MIRProgram):
         """
-        Emit symbol exports for debugging and linking.
+        Emit symbol exports for linking with external modules.
 
-        Exports all public functions and the entry point.
+        Note: In WLA-DX, .EXPORT is only for .DEFINE symbols, not labels.
+        Function labels are automatically visible within single-file assembly.
+        This method is currently a no-op but preserved for future multi-file
+        linking support where we might export .DEFINE symbols.
 
         Args:
             mir_program: MIR program
         """
-        exports = []
-
-        # Export all functions (for debugging)
-        for func in mir_program.functions:
-            exports.append(func.name)
-
-        # Emit exports
-        if exports:
-            self.emitter.emit_exports(exports)
+        # In WLA-DX, labels (function entry points) don't need .EXPORT
+        # They are automatically visible within the assembly file.
+        # .EXPORT is only for .DEFINE symbols used in multi-file linking.
+        pass

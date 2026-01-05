@@ -44,6 +44,10 @@ class ControlFlowInstructionSelector:
     def last_comparison_type(self):
         return self.parent.last_comparison_type
 
+    def _block_label(self, block_id: int) -> str:
+        """Format a block label with function-scoped naming."""
+        return self.parent._block_label(block_id)
+
     # ========================================================================
     # Jump Instructions
     # ========================================================================
@@ -55,7 +59,7 @@ class ControlFlowInstructionSelector:
         Args:
             instr: Jump instruction
         """
-        self.emitter.emit_instruction("JMP", f"__L{instr.target}")
+        self.emitter.emit_instruction("JMP", self._block_label(instr.target))
 
     def select_jump_table(self, instr: JumpTable):
         """
@@ -82,22 +86,22 @@ class ControlFlowInstructionSelector:
         if instr.base_value != 0:
             self.emitter.emit_instruction("SEC")
             self.emitter.emit_instruction("SBC", f"#{instr.base_value}", "Compute index = scrutinee - base")
-            self.emitter.emit_instruction("BMI", f"__L{instr.default_target}", "Out of bounds (< min)")
+            self.emitter.emit_instruction("BMI", self._block_label(instr.default_target), "Out of bounds (< min)")
 
         # Check if index >= table_size - out of bounds
         self.emitter.emit_instruction("CMP", f"#{table_size}", "Check upper bound")
-        self.emitter.emit_instruction("BCS", f"__L{instr.default_target}", "Out of bounds (>= size)")
+        self.emitter.emit_instruction("BCS", self._block_label(instr.default_target), "Out of bounds (>= size)")
 
         # Generate comparison chain with optimized jump targets
         for i, target_block in enumerate(instr.targets):
             if i == table_size - 1:
-                self.emitter.emit_instruction("JMP", f"__L{target_block}")
+                self.emitter.emit_instruction("JMP", self._block_label(target_block))
             else:
                 self.emitter.emit_instruction("CMP", f"#{i}")
-                self.emitter.emit_instruction("BEQ", f"__L{target_block}")
+                self.emitter.emit_instruction("BEQ", self._block_label(target_block))
 
         # Fallback
-        self.emitter.emit_instruction("JMP", f"__L{instr.default_target}")
+        self.emitter.emit_instruction("JMP", self._block_label(instr.default_target))
 
     # ========================================================================
     # Conditional Branch
@@ -132,8 +136,8 @@ class ControlFlowInstructionSelector:
     def _emit_flag_based_branch(self, instr: CondBranch, is_signed: bool):
         """Emit branch based on CPU flags from preceding Compare."""
         comparison = instr.comparison
-        true_target = f"__L{instr.true_target}"
-        false_target = f"__L{instr.false_target}"
+        true_target = self._block_label(instr.true_target)
+        false_target = self._block_label(instr.false_target)
 
         # Handle BIT-based comparisons
         if comparison == 'bit7_set':
@@ -236,8 +240,8 @@ class ControlFlowInstructionSelector:
         cond_loc = self.parent._get_operand_location(instr.condition)
         self.emitter.emit_instruction("LDA", self.parent._format_operand(cond_loc))
 
-        true_target = f"__L{instr.true_target}"
-        false_target = f"__L{instr.false_target}"
+        true_target = self._block_label(instr.true_target)
+        false_target = self._block_label(instr.false_target)
 
         if instr.comparison == '!=':
             self.emitter.emit_instruction("BEQ", false_target, "Branch if zero")
@@ -332,7 +336,19 @@ class ControlFlowInstructionSelector:
             self.emitter.emit_instruction("PLP", comment="Restore processor status")
 
     def _emit_return_instruction(self):
-        """Emit appropriate return instruction (RTL or RTS)."""
+        """Emit appropriate return instruction (RTL, RTS, or WAI for never type).
+
+        For functions returning ! (never type), we emit WAI instead of a return
+        instruction since the function is not expected to return. This handles
+        cases where the function body ends without an explicit infinite loop.
+        """
+        from r65.compiler.hir.types import NeverTypeInfo
+
+        # Check if function returns ! (never type)
+        if self.current_function and isinstance(self.current_function.return_type, NeverTypeInfo):
+            self.emitter.emit_instruction("WAI", comment="Never returns")
+            return
+
         if self.current_function and self.current_function.is_far:
             self.emitter.emit_instruction("RTL")
         else:

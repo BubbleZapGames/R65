@@ -12,6 +12,7 @@ from r65.compiler.mir.nodes import (
     Jump, CondBranch, JumpTable, Return, ReturnFromInterrupt,
     Call, Argument, ArgumentMechanism,
     SetMode, Push, Pull, SaveRegister, RestoreRegister,
+    InlineAsm,
     # Operands
     VirtualRegister, HardwareRegister, Immediate, MemoryLocation,
     # CFG
@@ -31,6 +32,7 @@ __all__ = [
     'Jump', 'CondBranch', 'JumpTable', 'Return', 'ReturnFromInterrupt',
     'Call', 'Argument', 'ArgumentMechanism',
     'SetMode', 'Push', 'Pull', 'SaveRegister', 'RestoreRegister',
+    'InlineAsm',
     # Operands
     'VirtualRegister', 'HardwareRegister', 'Immediate', 'MemoryLocation',
     # CFG

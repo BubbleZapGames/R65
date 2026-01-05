@@ -30,19 +30,36 @@ The 65816 has two types of control flow instructions:
 
 ### Compiler Strategy
 
-The compiler automatically handles branch distance:
-1. **Try short branch first**: Use conditional branch (BEQ, BNE, etc.)
-2. **If distance > 127 bytes**: Invert condition and jump around a JMP:
-   ```asm
-   // Original intent: if a == b goto far_label
-   // If far_label is > 127 bytes away:
+The compiler automatically handles branch distance through a post-optimization fixup pass:
 
-   LDA a
-   CMP b
-   BNE skip     // Inverted condition (was BEQ)
-   JMP far_label
-   skip:
-   ```
+1. **Generate code normally**: Emit conditional branches to target labels
+2. **Run peephole optimization**: Finalize instruction sequences
+3. **Branch fixup pass**: Calculate actual distances and fix long branches
+
+**Long branch fixup pattern:**
+```asm
+// Original (fails if target > 127 bytes):
+    BEQ far_target
+    JMP other_target
+
+// Fixed by compiler:
+    BNE __branch_skip_0      ; Inverted condition (nearby)
+    JMP far_target           ; JMP can reach anywhere
+__branch_skip_0:
+    JMP other_target
+```
+
+**Branch inversion table:**
+| Original | Inverted |
+|----------|----------|
+| BEQ | BNE |
+| BNE | BEQ |
+| BCC | BCS |
+| BCS | BCC |
+| BMI | BPL |
+| BPL | BMI |
+| BVC | BVS |
+| BVS | BVC |
 
 This is **transparent to the programmer** - write code naturally and the compiler handles it.
 
@@ -658,9 +675,13 @@ fn fatal_error() -> ! {
 
 **Semantics**:
 - Function **never** returns to caller
-- No RTS instruction generated
 - Common for entry points and error handlers
 - Compiler error if function can return
+
+**Code Generation**:
+- If control flow reaches a return point, `WAI` is emitted instead of `RTS`/`RTL`
+- This is a safety measure - properly written `-> !` functions should have infinite loops
+- The `WAI` instruction halts the CPU until an interrupt, providing a safe fallback
 
 **Assembly Mapping**:
 ```rust
@@ -671,7 +692,14 @@ fn infinite() -> ! {
 // infinite:
 // loop_start:
 // JMP loop_start
-// ; No RTS
+// ; No RTS - loop never exits
+
+fn broken_never() -> ! {
+    // Oops - forgot the infinite loop!
+}
+
+// broken_never:
+// WAI             ; Safety fallback - halts CPU
 ```
 
 ---

@@ -16,7 +16,7 @@ from r65.compiler.mir.nodes import (
     Move, Return, Jump, JumpTable, CondBranch, Call,
     BinaryOp, UnaryOp, Compare, BitTest, Rotate, SetMode, TypeConvert,
     Push, Pull, SaveRegister, RestoreRegister, ReturnFromInterrupt,
-    MemoryFill, BlockCopy, ROMDataRef,
+    MemoryFill, BlockCopy, ROMDataRef, InlineAsm,
     VirtualRegister, HardwareRegister, Immediate, MemoryLocation
 )
 from r65.compiler.codegen.emitter import AssemblyEmitter
@@ -82,6 +82,11 @@ class InstructionSelector:
 
         # Counter for generating unique labels
         self._label_counter = 0
+
+    def _block_label(self, block_id: int) -> str:
+        """Format a block label with function-scoped naming."""
+        func_name = self.current_function.name if self.current_function else ""
+        return f"{func_name}__L{block_id}"
 
     @property
     def xba_state(self) -> XBAState:
@@ -193,6 +198,8 @@ class InstructionSelector:
             self.select_memory_fill(instr)
         elif isinstance(instr, BlockCopy):
             self.select_block_copy(instr)
+        elif isinstance(instr, InlineAsm):
+            self.select_inline_asm(instr)
         else:
             raise InstructionSelectionError(f"Unsupported MIR instruction: {type(instr).__name__}")
 
@@ -991,3 +998,22 @@ class InstructionSelector:
 
         # Restore 8-bit mode if needed (depends on context)
         self.emitter.emit_instruction("SEP", "#$30", "Restore 8-bit mode")
+
+    # ========================================================================
+    # Inline Assembly
+    # ========================================================================
+
+    def select_inline_asm(self, instr: InlineAsm):
+        """
+        Generate code for InlineAsm instruction.
+
+        Emits raw assembly instructions verbatim. The compiler assumes all
+        registers may be clobbered after inline assembly.
+
+        Args:
+            instr: InlineAsm instruction containing list of assembly strings
+        """
+        for asm_instr in instr.instructions:
+            # Emit each assembly instruction as a raw line
+            # The instruction string may contain operands, e.g., "LDA #$42"
+            self.emitter.emit_instruction(asm_instr)

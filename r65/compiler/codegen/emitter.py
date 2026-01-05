@@ -515,30 +515,36 @@ class AssemblyEmitter:
 
     def emit_export(self, symbol: str):
         """
-        Emit symbol export directive.
+        Emit symbol export directive for .DEFINE symbols.
+
+        Note: In WLA-DX, .EXPORT is only for .DEFINE symbols.
+        Labels (function entry points) are automatically visible
+        within a single-file assembly and don't need explicit exports.
 
         Args:
             symbol: Symbol to export
 
         Generated:
-            .EXPORT main
+            .EXPORT BUFFER_SIZE
         """
         self.emit_line(f".EXPORT {symbol}")
 
     def emit_exports(self, symbols: List[str]):
         """
-        Emit multiple symbol exports.
+        Emit multiple symbol exports for .DEFINE symbols.
+
+        Note: In WLA-DX, .EXPORT is only for .DEFINE symbols.
+        Labels don't need exports - they're automatically visible.
 
         Args:
-            symbols: List of symbols to export
+            symbols: List of .DEFINE symbols to export
 
         Generated:
             ; ============================================================================
             ; Symbol Exports
             ; ============================================================================
-            .EXPORT main
-            .EXPORT function1
-            .EXPORT function2
+            .EXPORT BUFFER_SIZE
+            .EXPORT MAX_ENEMIES
         """
         if not symbols:
             return

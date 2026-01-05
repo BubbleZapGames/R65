@@ -83,7 +83,7 @@ class FunctionCodeGenerator:
 
             # Emit block label (except entry block which uses function label)
             if block_id != mir_func.entry_block_id:
-                self.emitter.emit_label(f"__L{block_id}")
+                self.emitter.emit_label(f"{mir_func.name}__L{block_id}")
 
             # Emit instructions in block
             for instr in block.instructions:
