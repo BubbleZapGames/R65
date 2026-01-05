@@ -231,7 +231,8 @@ def emit_node(node: AsmNode, indent: str = "    ") -> str:
             return ""
 
         case RawAsm(text):
-            return f"{indent}{text}"
+            # Raw assembly is emitted as-is without additional indent
+            return text
 
         case _:
             raise ValueError(f"Unknown node type: {type(node)}")

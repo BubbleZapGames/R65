@@ -326,15 +326,15 @@ class FunctionCodeGenerator:
 
             # Emit accumulator mode directive
             if mir_func.mode_attr.m_mode == MMode.M16:
-                self.emitter.emit_line("    .ACCU 16")
+                self.emitter.emit_directive("    .ACCU 16")
             elif mir_func.mode_attr.m_mode == MMode.M8:
-                self.emitter.emit_line("    .ACCU 8")
+                self.emitter.emit_directive("    .ACCU 8")
 
             # Emit index mode directive
             if mir_func.mode_attr.x_mode == XMode.X16:
-                self.emitter.emit_line("    .INDEX 16")
+                self.emitter.emit_directive("    .INDEX 16")
             elif mir_func.mode_attr.x_mode == XMode.X8:
-                self.emitter.emit_line("    .INDEX 8")
+                self.emitter.emit_directive("    .INDEX 8")
 
     def emit_prologue(self, mir_func: MIRFunction, reg_alloc: RegisterAllocator):
         """

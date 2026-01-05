@@ -11,8 +11,9 @@ from r65.compiler.codegen.emitter import AssemblyEmitter
 from r65.compiler.codegen.memory_alloc import MemoryAllocator
 from r65.compiler.codegen.symbol_gen import SymbolDefinitionGenerator
 from r65.compiler.codegen.function_gen import ProgramFunctionGenerator
-from r65.compiler.codegen.peephole import optimize_assembly
-from r65.compiler.codegen.branch_fixup import fixup_long_branches
+from r65.compiler.codegen.peephole import optimize_nodes
+from r65.compiler.codegen.branch_fixup import fixup_nodes
+from r65.compiler.codegen.asm_nodes import emit_nodes
 from r65.compiler.codegen.constants import DEFAULT_STACK_LOWER, DEFAULT_STACK_UPPER
 
 
@@ -105,23 +106,23 @@ class ProgramCodeGenerator:
         # Symbol exports (for debugging and linking)
         self._emit_symbol_exports(mir_program)
 
-        # Get assembly
-        assembly = self.emitter.to_string()
+        # Get structured nodes from emitter
+        nodes = self.emitter.get_nodes()
 
-        # Apply peephole optimizations
-        assembly_lines = assembly.split('\n')
-        optimized_lines, num_optimizations = optimize_assembly(assembly_lines)
+        # Apply node-based peephole optimizations
+        optimized_nodes, num_optimizations = optimize_nodes(nodes)
 
         if num_optimizations > 0:
             print(f"Peephole optimizer: {num_optimizations} optimization(s) applied")
 
-        # Apply long branch fixup (after peephole to work with final sizes)
-        fixed_lines, num_branch_fixups = fixup_long_branches(optimized_lines)
+        # Apply node-based long branch fixup
+        fixed_nodes, num_branch_fixups = fixup_nodes(optimized_nodes)
 
         if num_branch_fixups > 0:
             print(f"Branch fixup: {num_branch_fixups} long branch(es) fixed")
 
-        assembly = '\n'.join(fixed_lines)
+        # Convert nodes to assembly string
+        assembly = emit_nodes(fixed_nodes)
 
         # Write to file if specified
         if output_file:
@@ -233,7 +234,7 @@ class ProgramCodeGenerator:
             for i in range(0, len(data), 16):
                 chunk = data[i:i+16]
                 bytes_str = ', '.join(f'${b:02X}' for b in chunk)
-                self.emitter.emit_instruction(".db", bytes_str)
+                self.emitter.emit_directive(f".db {bytes_str}")
 
     def _emit_symbol_exports(self, mir_program: MIRProgram):
         """

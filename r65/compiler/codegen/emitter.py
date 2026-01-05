@@ -67,13 +67,30 @@ class AssemblyEmitter:
 
     def emit_line(self, text: str = ""):
         """
-        Emit a single line of text.
+        Emit a single line of text to string output only.
+
+        This method is for internal use by higher-level emit methods.
+        It does NOT add to the node emitter - the calling method should
+        handle node emission separately.
 
         Args:
             text: Line to emit (without newline)
         """
         self.output.append(text)
         self.current_column = 0
+
+    def emit_directive(self, text: str):
+        """
+        Emit a WLA-DX directive (e.g., .65816, .MEMORYMAP).
+
+        This method adds to both string output and node emitter.
+
+        Args:
+            text: Directive text
+        """
+        self.output.append(text)
+        self.current_column = 0
+        self._node_emitter.emit_raw(text)
 
     def emit_blank_line(self):
         """Emit a blank line for spacing."""
@@ -162,7 +179,7 @@ class AssemblyEmitter:
         Generated:
             .65816
         """
-        self.emit_line(".65816")
+        self.emit_directive(".65816")
         self.emit_blank_line()
 
     # ========================================================================
@@ -201,19 +218,19 @@ class AssemblyEmitter:
             slot_addr = hirom_addr
 
         # Memory map
-        self.emit_line(".MEMORYMAP")
-        self.emit_line("    DEFAULTSLOT 0")
-        self.emit_line(f"    SLOTSIZE ${slot_size:04X}")
-        self.emit_line(f"    SLOT 0 ${slot_addr:04X}")
-        self.emit_line(".ENDME")
+        self.emit_directive(".MEMORYMAP")
+        self.emit_directive("    DEFAULTSLOT 0")
+        self.emit_directive(f"    SLOTSIZE ${slot_size:04X}")
+        self.emit_directive(f"    SLOT 0 ${slot_addr:04X}")
+        self.emit_directive(".ENDME")
         self.emit_blank_line()
 
         # ROM bank map
-        self.emit_line(".ROMBANKMAP")
-        self.emit_line(f"    BANKSTOTAL {banks}")
-        self.emit_line(f"    BANKSIZE ${slot_size:04X}")
-        self.emit_line(f"    BANKS {banks}")
-        self.emit_line(".ENDRO")
+        self.emit_directive(".ROMBANKMAP")
+        self.emit_directive(f"    BANKSTOTAL {banks}")
+        self.emit_directive(f"    BANKSIZE ${slot_size:04X}")
+        self.emit_directive(f"    BANKS {banks}")
+        self.emit_directive(".ENDRO")
         self.emit_blank_line()
 
     # ========================================================================
@@ -232,8 +249,8 @@ class AssemblyEmitter:
             .BANK 0 SLOT 0
             .ORG 0
         """
-        self.emit_line(f".BANK {bank_num} SLOT {slot}")
-        self.emit_line(".ORG 0")
+        self.emit_directive(f".BANK {bank_num} SLOT {slot}")
+        self.emit_directive(".ORG 0")
         self.emit_blank_line()
 
     # ========================================================================
@@ -328,7 +345,7 @@ class AssemblyEmitter:
             padding = max(1, COMMENT_COLUMN - len(line))
             line += " " * padding + f"; {comment}"
 
-        self.emit_line(line)
+        self.emit_directive(line)
 
     def emit_equ(self, name: str, value: int, comment: Optional[str] = None):
         """
@@ -348,7 +365,7 @@ class AssemblyEmitter:
             padding = max(1, COMMENT_COLUMN - len(line))
             line += " " * padding + f"; {comment}"
 
-        self.emit_line(line)
+        self.emit_directive(line)
 
     # ========================================================================
     # Data Directives
@@ -370,7 +387,7 @@ class AssemblyEmitter:
         # Emit 8 values per line for readability
         for i in range(0, len(hex_values), 8):
             chunk = hex_values[i:i+8]
-            self.emit_line(f"    .DB {', '.join(chunk)}")
+            self.emit_directive(f"    .DB {', '.join(chunk)}")
 
     def emit_word(self, values: List[int]):
         """
@@ -387,7 +404,7 @@ class AssemblyEmitter:
         # Emit 8 values per line
         for i in range(0, len(hex_values), 8):
             chunk = hex_values[i:i+8]
-            self.emit_line(f"    .DW {', '.join(chunk)}")
+            self.emit_directive(f"    .DW {', '.join(chunk)}")
 
     def emit_space(self, size: int, fill_value: int = 0):
         """
@@ -400,7 +417,7 @@ class AssemblyEmitter:
         Generated:
             .DSB 256, 0
         """
-        self.emit_line(f"    .DSB {size}, {fill_value}")
+        self.emit_directive(f"    .DSB {size}, {fill_value}")
 
     def emit_incbin(self, filepath: str, label: Optional[str] = None):
         """
@@ -416,7 +433,7 @@ class AssemblyEmitter:
         """
         if label:
             self.emit_label(label)
-        self.emit_line(f'    .INCBIN "{filepath}"')
+        self.emit_directive(f'    .INCBIN "{filepath}"')
 
     # ========================================================================
     # Interrupt Vectors
@@ -450,17 +467,17 @@ class AssemblyEmitter:
         # Pad or truncate ROM name to exactly 21 characters
         padded_name = rom_name[:21].ljust(21)
 
-        self.emit_line(".SNESHEADER")
-        self.emit_line('ID "SNES"')
-        self.emit_line(f'NAME "{padded_name}"')
-        self.emit_line("LOROM")
-        self.emit_line("CARTRIDGETYPE $00")
-        self.emit_line("ROMSIZE $08")
-        self.emit_line("SRAMSIZE $00")
-        self.emit_line("COUNTRY $01")
-        self.emit_line("LICENSEECODE $00")
-        self.emit_line(f"VERSION ${version:02X}")
-        self.emit_line(".ENDSNES")
+        self.emit_directive(".SNESHEADER")
+        self.emit_directive('ID "SNES"')
+        self.emit_directive(f'NAME "{padded_name}"')
+        self.emit_directive("LOROM")
+        self.emit_directive("CARTRIDGETYPE $00")
+        self.emit_directive("ROMSIZE $08")
+        self.emit_directive("SRAMSIZE $00")
+        self.emit_directive("COUNTRY $01")
+        self.emit_directive("LICENSEECODE $00")
+        self.emit_directive(f"VERSION ${version:02X}")
+        self.emit_directive(".ENDSNES")
         self.emit_blank_line()
 
     def emit_empty_interrupt_handler(self):
@@ -508,24 +525,24 @@ class AssemblyEmitter:
 
         # Native mode vectors (5 vectors, no UNUSED)
         self.emit_section_header("Interrupt Vectors (Native Mode)")
-        self.emit_line(".SNESNATIVEVECTOR")
-        self.emit_line(f"COP {nmi}")
-        self.emit_line(f"BRK __empty_handler")
-        self.emit_line(f"ABORT __empty_handler")
-        self.emit_line(f"NMI {nmi}")
-        self.emit_line(f"IRQ {irq}")
-        self.emit_line(".ENDNATIVEVECTOR")
+        self.emit_directive(".SNESNATIVEVECTOR")
+        self.emit_directive(f"COP {nmi}")
+        self.emit_directive(f"BRK __empty_handler")
+        self.emit_directive(f"ABORT __empty_handler")
+        self.emit_directive(f"NMI {nmi}")
+        self.emit_directive(f"IRQ {irq}")
+        self.emit_directive(".ENDNATIVEVECTOR")
         self.emit_blank_line()
 
         # Emulation mode vectors (5 vectors, no UNUSED)
         self.emit_section_header("Interrupt Vectors (Emulation Mode)")
-        self.emit_line(".SNESEMUVECTOR")
-        self.emit_line(f"COP __empty_handler")
-        self.emit_line(f"ABORT __empty_handler")
-        self.emit_line(f"NMI __empty_handler")
-        self.emit_line(f"RESET {reset}")
-        self.emit_line(f"IRQBRK {irq}")
-        self.emit_line(".ENDEMUVECTOR")
+        self.emit_directive(".SNESEMUVECTOR")
+        self.emit_directive(f"COP __empty_handler")
+        self.emit_directive(f"ABORT __empty_handler")
+        self.emit_directive(f"NMI __empty_handler")
+        self.emit_directive(f"RESET {reset}")
+        self.emit_directive(f"IRQBRK {irq}")
+        self.emit_directive(".ENDEMUVECTOR")
         self.emit_blank_line()
 
     # ========================================================================
@@ -546,7 +563,7 @@ class AssemblyEmitter:
         Generated:
             .EXPORT BUFFER_SIZE
         """
-        self.emit_line(f".EXPORT {symbol}")
+        self.emit_directive(f".EXPORT {symbol}")
 
     def emit_exports(self, symbols: List[str]):
         """
