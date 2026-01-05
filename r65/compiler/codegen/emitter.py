@@ -3,6 +3,9 @@ Assembly emitter: generates WLA-DX assembly text.
 
 Provides methods for emitting instructions, labels, comments, and sections
 in WLA-DX assembly format for the 65816 processor.
+
+Also builds structured AsmNode objects alongside strings for use by
+optimization passes.
 """
 
 from typing import List, Optional
@@ -37,6 +40,9 @@ class AssemblyEmitter:
 
     Manages the assembly output buffer and provides high-level methods
     for generating properly formatted assembly sections and instructions.
+
+    Also builds structured AsmNode objects for use by optimization passes.
+    Call get_nodes() to retrieve the structured representation.
     """
 
     def __init__(self, source_file: Optional[str] = None):
@@ -50,6 +56,10 @@ class AssemblyEmitter:
         self.output: List[str] = []
         self.indent_level = 0
         self.current_column = 0
+
+        # Structured node output (built alongside strings)
+        from r65.compiler.codegen.node_emitter import NodeEmitter
+        self._node_emitter = NodeEmitter()
 
     # ========================================================================
     # Low-Level Emission
@@ -68,6 +78,7 @@ class AssemblyEmitter:
     def emit_blank_line(self):
         """Emit a blank line for spacing."""
         self.output.append("")
+        self._node_emitter.emit_blank_line()
 
     def emit_comment(self, text: str):
         """
@@ -77,6 +88,7 @@ class AssemblyEmitter:
             text: Comment text (without ; prefix)
         """
         self.emit_line(f"; {text}")
+        self._node_emitter.emit_comment(text)
 
     # ========================================================================
     # Section Headers
@@ -238,6 +250,10 @@ class AssemblyEmitter:
         Generated:
             label:
         """
+        # Strip trailing colon for node emitter (it adds it back)
+        label_name = label.rstrip(':')
+        self._node_emitter.emit_label(label_name)
+
         if not label.endswith(':'):
             label += ':'
         self.emit_line(label)
@@ -273,7 +289,10 @@ class AssemblyEmitter:
             STA $20                 ; Store to zero-page
             RTS
         """
-        # Build instruction
+        # Also emit to node emitter for structured representation
+        self._node_emitter.emit_instruction(mnemonic, operand, comment)
+
+        # Build instruction string
         if operand:
             instr = f"    {mnemonic} {operand}"
         else:
@@ -575,6 +594,24 @@ class AssemblyEmitter:
             List of assembly lines
         """
         return self.output.copy()
+
+    def get_nodes(self):
+        """
+        Get the structured AsmNode representation.
+
+        Returns:
+            List of AsmNode objects
+        """
+        return self._node_emitter.get_nodes()
+
+    def set_nodes(self, nodes):
+        """
+        Set the nodes (after optimization passes have modified them).
+
+        Args:
+            nodes: List of AsmNode objects
+        """
+        self._node_emitter.nodes = nodes
 
     def write_to_file(self, filepath: str):
         """

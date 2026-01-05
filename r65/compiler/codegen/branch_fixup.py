@@ -522,7 +522,7 @@ class BranchFixup:
 
 def fixup_long_branches(assembly_lines: List[str]) -> Tuple[List[str], int]:
     """
-    Apply long branch fixup to assembly source.
+    Apply long branch fixup to assembly source (string-based).
 
     This function should be called after peephole optimization and before
     final assembly output.
@@ -535,3 +535,185 @@ def fixup_long_branches(assembly_lines: List[str]) -> Tuple[List[str], int]:
     """
     fixup = BranchFixup()
     return fixup.fixup(assembly_lines)
+
+
+# =============================================================================
+# Node-Based Branch Fixup
+# =============================================================================
+
+class NodeBranchFixup:
+    """
+    Branch fixup that works directly on AsmNode objects.
+
+    This avoids the string parsing overhead and provides type-safe access.
+    """
+
+    def __init__(self):
+        self.skip_label_counter = 0
+        self.acc_16bit = False
+        self.idx_16bit = False
+
+    def fixup(self, nodes: List) -> Tuple[List, int]:
+        """
+        Apply branch fixup to AsmNode list.
+
+        Args:
+            nodes: List of AsmNode objects
+
+        Returns:
+            Tuple of (fixed nodes, number of branches fixed)
+        """
+        from r65.compiler.codegen.asm_nodes import (
+            Instruction, Label, Directive, Address,
+            invert_branch
+        )
+        from r65.compiler.codegen.opcodes import (
+            Opcode, mnemonic, is_branch, instruction_size,
+            BRANCH_OPCODES
+        )
+
+        # Calculate offsets and find labels
+        label_offsets = self._calculate_offsets(nodes)
+
+        # Find and fix long branches
+        fixed = []
+        num_fixups = 0
+        i = 0
+
+        while i < len(nodes):
+            node = nodes[i]
+
+            # Check if this is a conditional branch
+            if isinstance(node, Instruction) and node.opcode in BRANCH_OPCODES:
+                # Skip BRA and BRL (they don't need fixup in the same way)
+                if node.opcode not in (Opcode.BRA, Opcode.BRL):
+                    # Get target label
+                    if isinstance(node.operand, Address) and isinstance(node.operand.value, str):
+                        target_label = node.operand.value
+                        if target_label in label_offsets:
+                            # Calculate distance
+                            branch_offset = self._get_node_offset(nodes, i, fixed)
+                            branch_size = instruction_size(node.opcode, self.acc_16bit, self.idx_16bit)
+                            target_offset = label_offsets[target_label]
+                            distance = target_offset - (branch_offset + branch_size)
+
+                            if abs(distance) > MAX_BRANCH_DISTANCE:
+                                # Need to fix this branch
+                                fixed_nodes = self._rewrite_branch(node)
+                                fixed.extend(fixed_nodes)
+                                num_fixups += 1
+
+                                # Recalculate offsets
+                                label_offsets = self._calculate_offsets(fixed + nodes[i+1:])
+                                i += 1
+                                continue
+
+            # Track mode directives
+            if isinstance(node, Directive):
+                if node.name == '.ACCU':
+                    self.acc_16bit = '16' in node.args
+                elif node.name == '.INDEX':
+                    self.idx_16bit = '16' in node.args
+
+            fixed.append(node)
+            i += 1
+
+        return fixed, num_fixups
+
+    def _calculate_offsets(self, nodes: List) -> Dict[str, int]:
+        """Calculate byte offsets and build label map."""
+        from r65.compiler.codegen.asm_nodes import Instruction, Label, Directive
+        from r65.compiler.codegen.opcodes import instruction_size
+
+        label_offsets = {}
+        current_offset = 0
+        acc_16 = False
+        idx_16 = False
+
+        for node in nodes:
+            if isinstance(node, Label):
+                label_offsets[node.name] = current_offset
+            elif isinstance(node, Instruction):
+                current_offset += instruction_size(node.opcode, acc_16, idx_16)
+            elif isinstance(node, Directive):
+                if node.name == '.ACCU':
+                    acc_16 = '16' in node.args
+                elif node.name == '.INDEX':
+                    idx_16 = '16' in node.args
+
+        return label_offsets
+
+    def _get_node_offset(self, nodes: List, index: int, fixed_so_far: List) -> int:
+        """Get the byte offset of a node, accounting for already-fixed nodes."""
+        from r65.compiler.codegen.asm_nodes import Instruction, Directive
+        from r65.compiler.codegen.opcodes import instruction_size
+
+        offset = 0
+        acc_16 = False
+        idx_16 = False
+
+        # Sum up fixed nodes
+        for node in fixed_so_far:
+            if isinstance(node, Directive):
+                if node.name == '.ACCU':
+                    acc_16 = '16' in node.args
+                elif node.name == '.INDEX':
+                    idx_16 = '16' in node.args
+            elif isinstance(node, Instruction):
+                offset += instruction_size(node.opcode, acc_16, idx_16)
+
+        return offset
+
+    def _rewrite_branch(self, branch: 'Instruction') -> List:
+        """Rewrite a long branch using the inverted pattern."""
+        from r65.compiler.codegen.asm_nodes import Instruction, Label, Address, invert_branch
+        from r65.compiler.codegen.opcodes import Opcode
+
+        # Generate unique skip label
+        skip_label = f"__branch_skip_{self.skip_label_counter}"
+        self.skip_label_counter += 1
+
+        # Get inverted branch opcode
+        inverted_opcode = invert_branch(branch.opcode)
+        if inverted_opcode is None:
+            # Can't invert (shouldn't happen for conditional branches)
+            return [branch]
+
+        original_target = branch.operand
+
+        result = []
+
+        # 1. Inverted branch to skip label
+        inverted_branch = Instruction(
+            opcode=inverted_opcode,
+            operand=Address(skip_label),
+            comment=f"Long branch fixup (was {branch.opcode.name})"
+        )
+        result.append(inverted_branch)
+
+        # 2. JMP to original target
+        jmp_instr = Instruction(
+            opcode=Opcode.JMP_ABSOLUTE,
+            operand=original_target
+        )
+        result.append(jmp_instr)
+
+        # 3. Skip label
+        skip_label_node = Label(name=skip_label)
+        result.append(skip_label_node)
+
+        return result
+
+
+def fixup_nodes(nodes: List) -> Tuple[List, int]:
+    """
+    Apply long branch fixup to AsmNode list.
+
+    Args:
+        nodes: List of AsmNode objects
+
+    Returns:
+        Tuple of (fixed nodes, number of branches fixed)
+    """
+    fixup = NodeBranchFixup()
+    return fixup.fixup(nodes)
