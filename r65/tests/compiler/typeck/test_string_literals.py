@@ -2,8 +2,6 @@
 Tests for string literal initialization of byte arrays.
 """
 import pytest
-import sys
-sys.path.insert(0, '/home/nathan/R65')
 
 from r65.compiler.frontend import Parser
 from r65.compiler.hir import HIRBuilder

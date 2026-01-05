@@ -1,12 +1,9 @@
 """
 Additional edge case tests for the R65 lexer.
 """
-import sys
-import os
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from compiler.frontend import tokenize, TokenType, LexerError
+from r65.compiler.frontend import tokenize, TokenType, LexerError
 
 
 def test_nested_block_comments_not_supported():

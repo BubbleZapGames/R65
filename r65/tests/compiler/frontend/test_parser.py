@@ -1,12 +1,9 @@
 """
 Tests for the R65 parser.
 """
-import sys
-import os
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from compiler.frontend import parse, ParseError, ast
+from r65.compiler.frontend import parse, ParseError, ast
 
 
 def test_simple_function():

@@ -1,13 +1,9 @@
 """
 Tests for the R65 lexer.
 """
-import sys
-import os
 
-# Add the compiler directory to the path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from compiler.frontend import tokenize, TokenType, LexerError
+from r65.compiler.frontend import tokenize, TokenType, LexerError
 
 
 def test_simple_tokens():

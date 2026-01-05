@@ -1,12 +1,9 @@
 """
 Test that all Rust keywords are properly reserved.
 """
-import sys
-import os
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from compiler.frontend import tokenize, TokenType
+from r65.compiler.frontend import tokenize, TokenType
 
 
 def test_currently_used_keywords():

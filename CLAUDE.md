@@ -264,9 +264,15 @@ static mut ENEMIES: [Player; 8];
 PLAYER.x = 10;
 PLAYER.health = 100;
 ENEMIES[0].x = 5;  // Array access
+
+// Struct literal initialization (in let/static contexts)
+let p = Player { x: 10, y: 20, health: 100 };
+
+#[ram]
+static mut DEFAULT_PLAYER: Player = Player { x: 0, y: 0, health: 100 };
 ```
 
-**Rules**: All structs packed (no padding); fields in declaration order; size = sum of field sizes; use `.` for field access; nested/array access supported; no methods (use free functions).
+**Rules**: All structs packed (no padding); fields in declaration order; size = sum of field sizes; use `.` for field access; nested/array access supported; no methods (use free functions). Struct literals are allowed in `let` and `static` initializers.
 
 ### Volatile Semantics
 

@@ -37,7 +37,8 @@ binding: REGISTER | IDENT
 return_type: "->" (type_expr | "!")
 
 // Static variable declaration
-static_decl: attribute* STATIC MUT? IDENT ":" type_expr ("=" expr)? ";"
+// Uses initializer_expr to allow struct literals after =
+static_decl: attribute* STATIC MUT? IDENT ":" type_expr ("=" initializer_expr)? ";"
 
 // Const declaration
 const_decl: CONST IDENT ":" type_expr "=" expr ";"
@@ -80,7 +81,8 @@ block: "{" statement* "}"
           | increment_stmt
           | decrement_stmt
 
-let_stmt: LET MUT? IDENT ("@" binding)? (":" type_expr)? "=" expr ";"
+// Uses initializer_expr to allow struct literals after =
+let_stmt: LET MUT? IDENT ("@" binding)? (":" type_expr)? "=" initializer_expr ";"
 expr_stmt: expr ";"
 return_stmt: RETURN (expr ("," expr)*)? ";"
 break_stmt: BREAK ";"
@@ -187,12 +189,13 @@ lvalue: IDENT                                   -> lvalue_ident
 
 arg_list: expr ("," expr)* ","?
 
+// Note: struct_literal_expr is NOT in primary to avoid IDENT "{" ambiguity.
+// Struct literals are only allowed in specific initializer contexts (after =).
 ?primary: INTEGER                               -> integer
         | BOOLEAN                               -> boolean
         | STRING                                -> string_literal
         | INCLUDE_BYTES "!" "(" STRING ")"      -> include_bytes_expr
         | IDENT "::" IDENT                      -> enum_variant_expr
-        | struct_literal_expr
         | IDENT                                 -> identifier
         | REGISTER                              -> register_ref
         | "(" expr ")"                          -> paren
@@ -205,8 +208,16 @@ array_fill_expr: "[" expr ";" expr "]"          // [value; count] - e.g., [0; 25
 array_literal_expr: "[" (expr ("," expr)* ","?)? "]"  // [a, b, c] - explicit elements
 
 // Struct literal expression
+// Note: Not directly in primary to avoid IDENT "{" ambiguity with blocks.
+// Only used in initializer_expr (after = in let/static declarations).
 struct_literal_expr: IDENT "{" struct_field_init ("," struct_field_init)* ","? "}"
 struct_field_init: IDENT ":" expr
+
+// Initializer expression - used after = in let/static declarations
+// Allows struct literals which would be ambiguous in general expression context
+// Uses ? to inline - the parser will return the struct_literal_expr or expr directly
+?initializer_expr: struct_literal_expr
+                 | expr
 
 // Types
 ?type_expr: type_basic
