@@ -60,6 +60,28 @@ class TypeUtils:
                 t.name in ['u8', 'u16', 'i8', 'i16'])
 
     @staticmethod
+    def types_compatible(t1: TypeInfo, t2: TypeInfo) -> bool:
+        """
+        Check if two types are compatible for assignment.
+
+        This is more permissive than types_equal - it allows:
+        - Exact type matches
+        - Enum types with compatible integer types (u8)
+        """
+        # Exact match
+        if TypeUtils.types_equal(t1, t2):
+            return True
+
+        # Enum to/from integer compatibility
+        # Enums are compatible with u8 (their underlying type)
+        if isinstance(t1, EnumTypeInfo) and isinstance(t2, BasicTypeInfo) and t2.name == 'u8':
+            return True
+        if isinstance(t2, EnumTypeInfo) and isinstance(t1, BasicTypeInfo) and t1.name == 'u8':
+            return True
+
+        return False
+
+    @staticmethod
     def is_boolean_type(t: TypeInfo) -> bool:
         """Check if type is boolean."""
         return isinstance(t, BasicTypeInfo) and t.name == 'bool'

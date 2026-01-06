@@ -320,6 +320,14 @@ class HIRBooleanLiteral(HIRExpression):
 
 
 @dataclass
+class HIREnumVariantExpr(HIRExpression):
+    """Enum variant expression (e.g., Suit::Spades)."""
+    enum_name: str = ""
+    variant_name: str = ""
+    value: int = 0  # Resolved integer value
+
+
+@dataclass
 class HIRIdentifier(HIRExpression):
     """Identifier reference (resolved to symbol)."""
     name: str = ""

@@ -216,9 +216,17 @@ class CallInstructionSelector(BaseSelector):
 
     def _emit_memory_to_register(self, arg_loc, target_reg: str):
         """Load from memory into target register."""
-        mnemonic = {'A': 'LDA', 'X': 'LDX', 'Y': 'LDY'}.get(target_reg)
-        if mnemonic:
-            self.parent._emit_load(mnemonic, arg_loc)
+        # Handle stack-relative addressing: LDX/LDY don't support sr,S mode
+        if target_reg in ('X', 'Y') and arg_loc.kind == LocationKind.STACK:
+            self.parent._emit_load('LDA', arg_loc)
+            if target_reg == 'X':
+                self._emit_implied(Opcode.TAX, "Transfer to X (no LDX sr,S)")
+            else:
+                self._emit_implied(Opcode.TAY, "Transfer to Y (no LDY sr,S)")
+        else:
+            mnemonic = {'A': 'LDA', 'X': 'LDX', 'Y': 'LDY'}.get(target_reg)
+            if mnemonic:
+                self.parent._emit_load(mnemonic, arg_loc)
 
     def _emit_variable_argument(self, arg, arg_loc):
         """Emit variable-bound argument (store to memory location)."""

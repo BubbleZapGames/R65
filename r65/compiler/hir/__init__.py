@@ -45,6 +45,7 @@ from r65.compiler.hir.nodes import (
     # Expressions
     HIRIntegerLiteral,
     HIRBooleanLiteral,
+    HIREnumVariantExpr,
     HIRIdentifier,
     HIRRegister,
     HIRIncludeBytesExpr,
@@ -128,6 +129,7 @@ __all__ = [
     # Expressions
     'HIRIntegerLiteral',
     'HIRBooleanLiteral',
+    'HIREnumVariantExpr',
     'HIRIdentifier',
     'HIRRegister',
     'HIRIncludeBytesExpr',

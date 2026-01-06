@@ -201,8 +201,4 @@ fn main() -> ! {
     // Index 5: Queen of Clubs
     // Index 6: Ace of Spades
     // Index 7: 7 of Spades
-
-    loop {
-        wai();
-    }
 }

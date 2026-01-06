@@ -289,6 +289,13 @@ class ControlFlowInstructionSelector(BaseSelector):
                 pass  # Already in correct register
             elif value_loc.kind == LocationKind.HARDWARE:
                 self.parent._emit_register_transfer(value_loc.hw_register, target_reg)
+            elif target_reg in ('X', 'Y') and value_loc.kind == LocationKind.STACK:
+                # Handle stack-relative addressing: LDX/LDY don't support sr,S mode
+                self.parent._emit_load('LDA', value_loc)
+                if target_reg == 'X':
+                    self._emit_implied(Opcode.TAX, "Transfer to X (no LDX sr,S)")
+                else:
+                    self._emit_implied(Opcode.TAY, "Transfer to Y (no LDY sr,S)")
             else:
                 # Use parent's _emit_load method with appropriate mnemonic
                 load_mnem = {'A': 'LDA', 'X': 'LDX', 'Y': 'LDY'}[target_reg]

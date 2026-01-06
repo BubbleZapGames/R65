@@ -675,7 +675,7 @@ class HIRBuilder:
             return self._build_struct_literal(expr)
 
         elif isinstance(expr, ast.EnumVariantExpr):
-            # Resolve enum variant to integer literal
+            # Resolve enum variant to HIREnumVariantExpr (preserves type info)
             # Lookup enum type
             enum_symbol = self.symbol_table.lookup(expr.enum_name)
             if not enum_symbol:
@@ -693,7 +693,11 @@ class HIRBuilder:
 
             # Get variant value from symbol (stored in const_value field)
             variant_value = variant_symbol.const_value
-            return hir.HIRIntegerLiteral(value=variant_value)
+            return hir.HIREnumVariantExpr(
+                enum_name=expr.enum_name,
+                variant_name=expr.variant_name,
+                value=variant_value
+            )
 
         elif isinstance(expr, ast.BinaryOp):
             left = self._build_expression(expr.left)

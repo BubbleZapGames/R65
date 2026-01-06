@@ -110,7 +110,15 @@ class MoveOperationSelector(BaseSelector):
         """Load from memory into a hardware register."""
         load_mnemonics = {'A': 'LDA', 'X': 'LDX', 'Y': 'LDY'}
 
-        if hw_register in load_mnemonics:
+        # Handle stack-relative addressing: LDX/LDY don't support sr,S mode
+        # Must go through A with transfer
+        if hw_register in ('X', 'Y') and src_loc.kind == LocationKind.STACK:
+            self._emit_load_store('LDA', src_loc)
+            if hw_register == 'X':
+                self._emit_instr(Opcode.TAX, comment="Transfer to X (no LDX sr,S)")
+            else:
+                self._emit_instr(Opcode.TAY, comment="Transfer to Y (no LDY sr,S)")
+        elif hw_register in load_mnemonics:
             self._emit_load_store(load_mnemonics[hw_register], src_loc)
         elif hw_register == 'B':
             self._emit_load_store('LDA', src_loc)

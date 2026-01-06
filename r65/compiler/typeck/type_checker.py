@@ -7,7 +7,7 @@ Orchestrates type checking, mode tracking, and validation.
 from typing import Optional
 from r65.compiler.hir import (
     HIRProgram, HIRFunctionDecl, HIRExpression, HIRStatement,
-    HIRBinaryOp, HIRUnaryOp, HIRIntegerLiteral, HIRBooleanLiteral,
+    HIRBinaryOp, HIRUnaryOp, HIRIntegerLiteral, HIRBooleanLiteral, HIREnumVariantExpr,
     HIRIdentifier, HIRFunctionAddress, HIRRegister, HIRIncludeBytesExpr, HIRArrayFillExpr, HIRArrayLiteralExpr,
     HIRStringLiteral,
     HIRStructFieldInit, HIRStructLiteralExpr,
@@ -17,7 +17,7 @@ from r65.compiler.hir import (
     HIRStaticDecl, HIRConstDecl,
     HIRMatchExpression, HIRPattern, HIRLiteralPattern, HIREnumPattern, HIRWildcardPattern, HIRIdentifierPattern, HIROrPattern,
     BasicTypeInfo, TypeInfo, SymbolKind, NeverTypeInfo,
-    RegisterLetBinding, ArrayTypeInfo, StructTypeInfo,
+    RegisterLetBinding, ArrayTypeInfo, StructTypeInfo, EnumTypeInfo,
     ModeTransition
 )
 from r65.compiler.typeck.processor_mode import ProcessorMode
@@ -378,6 +378,11 @@ class TypeChecker:
             expr.expr_type = BasicTypeInfo('bool')
             return expr.expr_type
 
+        elif isinstance(expr, HIREnumVariantExpr):
+            # Enum variant has its enum type
+            expr.expr_type = EnumTypeInfo(name=expr.enum_name)
+            return expr.expr_type
+
         elif isinstance(expr, HIRIdentifier):
             # Look up symbol
             symbol = expr.symbol
@@ -559,8 +564,8 @@ class TypeChecker:
             return left_type
 
         elif expr.op in ['==', '!=', '<', '<=', '>', '>=']:
-            # Comparison: operands must match, result is bool
-            if not TypeUtils.types_equal(left_type, right_type):
+            # Comparison: operands must be compatible, result is bool
+            if not TypeUtils.types_compatible(left_type, right_type):
                 raise TypeCheckError(
                     f"Type mismatch in comparison '{expr.op}'\n"
                     f"  Left: {left_type}\n"
@@ -1244,8 +1249,8 @@ class TypeChecker:
         target_type = self.check_expression(expr.target)
         value_type = self.check_expression(expr.value, target_type)
 
-        # Types must match exactly
-        if not TypeUtils.types_equal(target_type, value_type):
+        # Types must be compatible (allows enum/integer interop)
+        if not TypeUtils.types_compatible(target_type, value_type):
             self._raise_type_mismatch_error(
                 expected_type=target_type,
                 actual_type=value_type,
@@ -1314,7 +1319,7 @@ class TypeChecker:
             expected_type = expected_fields[field_init.name]
             actual_type = self.check_expression(field_init.value, expected_type)
 
-            if not TypeUtils.types_equal(expected_type, actual_type):
+            if not TypeUtils.types_compatible(expected_type, actual_type):
                 self._raise_type_mismatch_error(
                     expected_type=expected_type,
                     actual_type=actual_type,
