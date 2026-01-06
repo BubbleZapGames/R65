@@ -279,7 +279,11 @@ struct_field_init: IDENT ":" expr
 // Allows struct literals which would be ambiguous in general expression context
 // Uses ? to inline - the parser will return the struct_literal_expr or expr directly
 ?initializer_expr: struct_literal_expr
+                 | initializer_array_literal
                  | expr
+
+// Array literal in initializer context - allows struct literals as elements
+initializer_array_literal: "[" initializer_expr ("," initializer_expr)* ","? "]"
 
 // Types
 ?type_expr: type_basic

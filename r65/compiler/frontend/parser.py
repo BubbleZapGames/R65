@@ -734,6 +734,12 @@ class ASTBuilder(Transformer):
         # All items are now the expressions
         return ast.ArrayLiteralExpr(elements=items)
 
+    def initializer_array_literal(self, items):
+        """Array literal in initializer context - allows struct literals as elements."""
+        # items: ["[", initializer_expr, ",", initializer_expr, ..., "]"]
+        items = self._filter_tokens(items)
+        return ast.ArrayLiteralExpr(elements=items)
+
     def struct_literal_expr(self, items):
         """Struct literal expression (e.g., Player { x: 10, y: 20 })."""
         # items: [struct_name, field_init, field_init, ...]

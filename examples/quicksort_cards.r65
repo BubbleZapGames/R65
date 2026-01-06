@@ -34,10 +34,9 @@ enum Rank {
 }
 
 // Card struct with suit and rank
-// Fields are u8 to allow arithmetic in sort key calculation
 struct Card {
-    suit: u8,
-    rank: u8
+    suit: Suit,
+    rank: Rank
 }
 
 // ============================================================================
@@ -46,9 +45,18 @@ struct Card {
 
 const HAND_SIZE: u8 = 8;
 
-// Array of cards
+// Array of cards - initialized with unsorted hand
 #[ram]
-static mut CARDS: [Card; 8];
+static mut CARDS: [Card; 8] = [
+    Card { suit: Suit::Spades, rank: Rank::Seven },    // 7 of Spades
+    Card { suit: Suit::Hearts, rank: Rank::King },     // King of Hearts
+    Card { suit: Suit::Clubs, rank: Rank::Ace },       // Ace of Clubs
+    Card { suit: Suit::Hearts, rank: Rank::Two },      // 2 of Hearts
+    Card { suit: Suit::Diamonds, rank: Rank::Jack },   // Jack of Diamonds
+    Card { suit: Suit::Spades, rank: Rank::Ace },      // Ace of Spades
+    Card { suit: Suit::Diamonds, rank: Rank::Five },   // 5 of Diamonds
+    Card { suit: Suit::Clubs, rank: Rank::Queen }      // Queen of Clubs
+];
 
 // Temp storage for swapping (cheaper than stack on 6502)
 #[zeropage(0x10)]
@@ -62,46 +70,6 @@ static mut SCRATCH0: u8;
 static mut SCRATCH1: u16;
 
 // ============================================================================
-// Initialization
-// ============================================================================
-
-// Initialize the hand with 8 unsorted cards
-#[mode(m8, x8)]
-fn init_hand() {
-    // Card 0: 7 of Spades
-    CARDS[0].suit = Suit::Spades as u8;
-    CARDS[0].rank = Rank::Seven as u8;
-
-    // Card 1: King of Hearts
-    CARDS[1].suit = Suit::Hearts as u8;
-    CARDS[1].rank = Rank::King as u8;
-
-    // Card 2: Ace of Clubs
-    CARDS[2].suit = Suit::Clubs as u8;
-    CARDS[2].rank = Rank::Ace as u8;
-
-    // Card 3: 2 of Hearts
-    CARDS[3].suit = Suit::Hearts as u8;
-    CARDS[3].rank = Rank::Two as u8;
-
-    // Card 4: Jack of Diamonds
-    CARDS[4].suit = Suit::Diamonds as u8;
-    CARDS[4].rank = Rank::Jack as u8;
-
-    // Card 5: Ace of Spades
-    CARDS[5].suit = Suit::Spades as u8;
-    CARDS[5].rank = Rank::Ace as u8;
-
-    // Card 6: 5 of Diamonds
-    CARDS[6].suit = Suit::Diamonds as u8;
-    CARDS[6].rank = Rank::Five as u8;
-
-    // Card 7: Queen of Clubs
-    CARDS[7].suit = Suit::Clubs as u8;
-    CARDS[7].rank = Rank::Queen as u8;
-}
-
-// ============================================================================
 // Comparison Function
 // ============================================================================
 
@@ -110,9 +78,9 @@ fn init_hand() {
 // Max value = 3*16 + 13 = 61, fits in u8
 #[mode(m8, x8)]
 fn card_sort_key(idx @ X: u8) -> u8 {
-    let suit @ A = CARDS[idx].suit;
+    let suit @ A = CARDS[idx].suit as u8;
     A = A << 4;  // suit * 16
-    A = A + CARDS[idx].rank;
+    A = A + CARDS[idx].rank as u8;
     return A;
 }
 
@@ -215,10 +183,7 @@ fn quicksort(low: u8, high: u8) {
 #[entry]
 #[mode(m8, x8)]
 fn main() -> ! {
-    // Initialize the unsorted hand
-    init_hand();
-
-    // Sort the hand of cards
+    // Sort the hand of cards (initialized in CARDS declaration)
     // Array indices are 0 to HAND_SIZE-1 (0 to 7)
     quicksort(0, 7);
 
