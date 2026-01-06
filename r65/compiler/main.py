@@ -68,7 +68,7 @@ def dump_ast(source: str, filename: str):
 def dump_hir(source: str, filename: str):
     """Dump HIR."""
     program = parse(source, filename)
-    builder = HIRBuilder()
+    builder = HIRBuilder(source_file=filename)
     hir_program = builder.build_program(program)
 
     print(f"HIR for {filename}:")
@@ -90,7 +90,7 @@ def dump_hir(source: str, filename: str):
 def dump_mir(source: str, filename: str):
     """Dump MIR."""
     program = parse(source, filename)
-    builder = HIRBuilder()
+    builder = HIRBuilder(source_file=filename)
     hir_program = builder.build_program(program)
     type_checker = TypeChecker(hir_program)
     type_checker.check()
@@ -133,7 +133,7 @@ def compile_source(source: str, filename: str, output_file: str = None,
         # Build HIR
         if verbose:
             log(f"  [2/5] Building HIR...")
-        builder = HIRBuilder()
+        builder = HIRBuilder(source_file=filename)
         hir_program = builder.build_program(program)
 
         # Type check
@@ -215,7 +215,7 @@ def compile_string(source: str, filename: str = "<string>") -> str:
     from r65.compiler.analysis import RecursionChecker
 
     program = parse(source, filename)
-    builder = HIRBuilder()
+    builder = HIRBuilder(source_file=filename)
     hir_program = builder.build_program(program)
     type_checker = TypeChecker(hir_program)
     type_checker.check()
@@ -324,7 +324,7 @@ examples:
         elif args.stop_after == 'typecheck':
             # Just run through typecheck and report success
             program = parse(source, filename)
-            builder = HIRBuilder()
+            builder = HIRBuilder(source_file=filename)
             hir_program = builder.build_program(program)
             type_checker = TypeChecker(hir_program)
             type_checker.check()

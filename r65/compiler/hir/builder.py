@@ -7,6 +7,7 @@ Uses a two-pass algorithm:
 """
 
 from typing import List, Union, Optional
+from pathlib import Path
 from r65.compiler.frontend import ast
 
 from r65.compiler.hir import nodes as hir
@@ -20,11 +21,20 @@ from r65.compiler.hir.errors import *
 class HIRBuilder:
     """Builds HIR from AST with name resolution and desugaring."""
 
-    def __init__(self):
+    def __init__(self, source_file: Optional[str] = None):
+        """
+        Initialize HIR builder.
+
+        Args:
+            source_file: Path to the source file being compiled.
+                        Used for resolving relative paths in include_bytes!.
+        """
         self.symbol_table = SymbolTable()
         self.const_evaluator = ConstEvaluator(self.symbol_table)
         self.type_resolver = TypeResolver(self.symbol_table, self.const_evaluator)
         self.attr_processor = AttributeProcessor()
+        self.source_file = source_file
+        self.source_dir = Path(source_file).parent if source_file else Path.cwd()
 
     def build_program(self, ast_program: ast.Program) -> hir.HIRProgram:
         """
@@ -644,6 +654,8 @@ class HIRBuilder:
 
         elif isinstance(expr, ast.IncludeBytesExpr):
             # Include binary data from file
+            # Validate that the file exists
+            self._validate_include_bytes_path(expr.path, expr.source_loc)
             return hir.HIRIncludeBytesExpr(path=expr.path)
 
         elif isinstance(expr, ast.ArrayFillExpr):
@@ -1039,3 +1051,30 @@ class HIRBuilder:
 
         else:
             raise HIRError(f"Cannot determine size of type: {type(type_info).__name__}")
+
+    def _validate_include_bytes_path(self, path: str, source_loc: Optional[SourceLocation]):
+        """
+        Validate that the file path for include_bytes! exists.
+
+        Args:
+            path: The file path from the include_bytes! expression
+            source_loc: Source location for error reporting
+
+        Raises:
+            HIRError: If the file does not exist
+        """
+        # Resolve path relative to source file directory
+        resolved_path = self.source_dir / path
+
+        if not resolved_path.exists():
+            raise HIRError(
+                f"include_bytes!: file not found: '{path}' "
+                f"(resolved to '{resolved_path}')",
+                source_loc=source_loc
+            )
+
+        if not resolved_path.is_file():
+            raise HIRError(
+                f"include_bytes!: path is not a file: '{path}'",
+                source_loc=source_loc
+            )

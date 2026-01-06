@@ -516,12 +516,14 @@ class ASTBuilder(Transformer):
         raw_value = token.value[1:-1]
         return ast.StringLiteral(value=raw_value)
 
-    def include_bytes_expr(self, items):
+    @v_args(tree=True)
+    def include_bytes_expr(self, tree):
         """Include bytes expression (e.g., include_bytes!("data.bin"))."""
         # items: [INCLUDE_BYTES, "!", "(", STRING, ")"]
         # STRING token is at index 3, value includes quotes
+        items = tree.children
         path = items[3].value.strip('"')
-        return ast.IncludeBytesExpr(path=path)
+        return ast.IncludeBytesExpr(path=path, source_loc=self._make_source_loc(tree.meta))
 
     def array_fill_expr(self, items):
         """Array fill expression (e.g., [0; 256])."""
