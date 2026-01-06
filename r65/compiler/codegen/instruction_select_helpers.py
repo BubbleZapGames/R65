@@ -5,7 +5,6 @@ Extracted from InstructionSelector to improve modularity and testability.
 """
 
 from enum import Enum
-from typing import Dict, Optional
 from r65.compiler.codegen.emitter import AssemblyEmitter
 from r65.compiler.codegen.opcodes import Opcode
 
@@ -18,23 +17,8 @@ class RegisterMappings:
     """
     Centralized mappings for register-related instructions.
 
-    Provides consistent instruction selection for hardware registers.
+    Provides Opcode lookup for push/pull operations by register name.
     """
-
-    # Load instructions by register
-    LOAD = {'A': 'LDA', 'X': 'LDX', 'Y': 'LDY'}
-
-    # Store instructions by register
-    STORE = {'A': 'STA', 'X': 'STX', 'Y': 'STY'}
-
-    # Compare instructions by register
-    COMPARE = {'A': 'CMP', 'X': 'CPX', 'Y': 'CPY'}
-
-    # Push instructions by register (string mnemonics - legacy)
-    PUSH = {'A': 'PHA', 'X': 'PHX', 'Y': 'PHY', 'STATUS': 'PHP', 'D': 'PHD', 'DBR': 'PHB'}
-
-    # Pull instructions by register (string mnemonics - legacy)
-    PULL = {'A': 'PLA', 'X': 'PLX', 'Y': 'PLY', 'STATUS': 'PLP', 'D': 'PLD', 'DBR': 'PLB'}
 
     # Push instructions by register (typed opcodes)
     PUSH_OPCODES = {
@@ -47,45 +31,6 @@ class RegisterMappings:
         'A': Opcode.PLA, 'X': Opcode.PLX, 'Y': Opcode.PLY,
         'STATUS': Opcode.PLP, 'D': Opcode.PLD, 'DBR': Opcode.PLB
     }
-
-    # Transfer instructions (from, to) → mnemonic
-    TRANSFER = {
-        ('A', 'X'): 'TAX', ('A', 'Y'): 'TAY',
-        ('X', 'A'): 'TXA', ('X', 'Y'): 'TXY',
-        ('Y', 'A'): 'TYA', ('Y', 'X'): 'TYX',
-        ('A', 'S'): 'TCS', ('S', 'A'): 'TSC',
-        ('A', 'D'): 'TCD', ('D', 'A'): 'TDC',
-    }
-
-    @classmethod
-    def get_load(cls, register: str) -> Optional[str]:
-        """Get load instruction for register."""
-        return cls.LOAD.get(register)
-
-    @classmethod
-    def get_store(cls, register: str) -> Optional[str]:
-        """Get store instruction for register."""
-        return cls.STORE.get(register)
-
-    @classmethod
-    def get_compare(cls, register: str) -> Optional[str]:
-        """Get compare instruction for register."""
-        return cls.COMPARE.get(register)
-
-    @classmethod
-    def get_push(cls, register: str) -> Optional[str]:
-        """Get push instruction for register."""
-        return cls.PUSH.get(register)
-
-    @classmethod
-    def get_pull(cls, register: str) -> Optional[str]:
-        """Get pull instruction for register."""
-        return cls.PULL.get(register)
-
-    @classmethod
-    def get_transfer(cls, from_reg: str, to_reg: str) -> Optional[str]:
-        """Get transfer instruction between registers."""
-        return cls.TRANSFER.get((from_reg, to_reg))
 
 
 class XBAState(Enum):
