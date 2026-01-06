@@ -212,6 +212,25 @@ fn multi_instruction() {
 
 **Rules**: `asm!("inst1","inst2" ...)` emits raw assembly verbatim; no variable interpolation; compiler assumes all registers clobbered; no optimization across boundaries; programmer handles register preservation.
 
+### Macros
+
+Simplified Rust-style declarative macros using `macro_rules!` syntax:
+
+```rust
+macro_rules! inc_twice($reg:reg) {
+    $reg++;
+    $reg++;
+}
+
+fn update() {
+    inc_twice!(X);  // Expands to: X++; X++;
+}
+```
+
+**Features**: 6 fragment types (`expr`, `ident`, `literal`, `ty`, `reg`, `tt`), repetition with `$(...),*`, nested expansion. Simplified vs Rust: single pattern per macro, no `=>` syntax, no hygiene.
+
+*(See [docs/macros.md](docs/macros.md) for complete syntax and examples)*
+
 ### Const Evaluation
 
 Compile-time evaluation of constant expressions:
@@ -678,6 +697,7 @@ R65 uses **hardware-aware operators**: syntax indicates performance cost.
 - ✅ Const evaluation: Compile-time evaluation of constant expressions (arithmetic, bitwise, logical operations); no const functions
 - ✅ Inline assembly: `asm!("instruction")` for embedding raw 65816 assembly; no variable interpolation
 - ✅ File inclusion: `include!("file")` for textual inclusion (C-style); no module system
+- ✅ Declarative macros: `macro_rules!` for code generation with 6 fragment types (`expr`, `ident`, `literal`, `ty`, `reg`, `tt`) and repetition support
 
 ## What's Omitted (Too Complex or Incompatible)
 
@@ -687,7 +707,7 @@ R65 uses **hardware-aware operators**: syntax indicates performance cost.
 - ❌ Advanced enums (data-carrying variants)
 - ❌ Closures
 - ❌ Async/await
-- ❌ Procedural macros (simplified declarative macros planned - see [docs/macros.md](docs/macros.md))
+- ❌ Procedural macros (declarative `macro_rules!` is supported, but not proc macros)
 - ❌ Pattern matching (initially - can add later)
 - ❌ String types (`String`, `&str`)
 - ❌ Dynamic collections (`Vec`, `HashMap`)
@@ -840,7 +860,6 @@ Performance characteristics of different storage:
 
 ## Future Enhancements
 
-- Declarative macros (simplified `macro_rules!`-style - see [docs/macros.md](docs/macros.md))
 - Basic module system
 - Methods and `impl` blocks
 - Limited generics (monomorphization)
@@ -859,7 +878,7 @@ Performance characteristics of different storage:
 - [Interrupt Handling](docs/interrupt-mode-transition.md) - Interrupt handler mode transitions
 - [Register Allocation](docs/register-allocation.md) - Register allocation strategy
 - [Reserved Keywords](docs/reserved-keywords.md) - Language keyword and register name reference
-- [Macros](docs/macros.md) - Simplified Rust-style macro system (planned)
+- [Macros](docs/macros.md) - Simplified Rust-style declarative macro system
 
 ### Code Generation
 - [Code Generation](docs/code-generation.md) - Complete code generation reference: memory allocation, register allocation, instruction selection, addressing modes, function generation, and WLA-DX assembly output
@@ -874,4 +893,4 @@ Performance characteristics of different storage:
 
 
 *Last Updated: 2026-01-06*
-*STATUS: Design Complete, Implementation Pending*
+*STATUS: Design Complete, Implementation In Progress*
