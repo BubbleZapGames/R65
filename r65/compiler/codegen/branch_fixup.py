@@ -27,7 +27,7 @@ from r65.compiler.codegen.opcodes import (
 )
 from r65.compiler.codegen.asm_nodes import (
     AsmNode, Instruction, Label, Directive, Comment, BlankLine,
-    Address, invert_branch,
+    Address, invert_branch, BRANCH_INVERSIONS,
 )
 
 
@@ -623,13 +623,11 @@ class AsmDirective(AsmElement):
         self.kind = AsmElementKind.DIRECTIVE
 
 
-# Backwards-compatible aliases for tests (using Opcode enum)
-CONDITIONAL_BRANCHES = {'BEQ', 'BNE', 'BCC', 'BCS', 'BMI', 'BPL', 'BVC', 'BVS'}
+# Backwards-compatible aliases for tests
+# Derived from the Opcode-based BRANCH_INVERSIONS in asm_nodes.py
+CONDITIONAL_BRANCHES = {mnemonic(op) for op in CONDITIONAL_BRANCH_OPCODES}
 BRANCH_INVERSION = {
-    'BEQ': 'BNE', 'BNE': 'BEQ',
-    'BCC': 'BCS', 'BCS': 'BCC',
-    'BMI': 'BPL', 'BPL': 'BMI',
-    'BVC': 'BVS', 'BVS': 'BVC',
+    mnemonic(k): mnemonic(v) for k, v in BRANCH_INVERSIONS.items()
 }
 
 
@@ -852,7 +850,8 @@ class StringBranchFixup:
         # Get inverted opcode using typed system
         original_opcode = parse_opcode(branch.mnemonic, branch.operand)
         inverted_opcode = invert_branch(original_opcode)
-        inverted_mnemonic = mnemonic(inverted_opcode) if inverted_opcode else BRANCH_INVERSION.get(branch.mnemonic, branch.mnemonic)
+        assert inverted_opcode is not None, f"Cannot invert {branch.mnemonic}"
+        inverted_mnemonic = mnemonic(inverted_opcode)
 
         original_target = branch.operand
 
