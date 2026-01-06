@@ -292,11 +292,12 @@ class ASTBuilder(Transformer):
         aliased_type = items[1]
         return ast.TypeAlias(name=name, aliased_type=aliased_type)
 
-    def include_stmt(self, items):
+    @v_args(tree=True)
+    def include_stmt(self, tree):
         """Include statement."""
-        items = self._filter_tokens(items, keep_types={'STRING'})
+        items = self._filter_tokens(tree.children, keep_types={'STRING'})
         path = items[0].value.strip('"')  # Remove quotes
-        return ast.IncludeStmt(path=path)
+        return ast.IncludeStmt(path=path, source_loc=self._make_source_loc(tree.meta))
 
     def stack_directive(self, items):
         """Stack directive: #[stack(lower, upper)]"""
@@ -918,15 +919,16 @@ class ParseError(Exception):
 _parser = Parser()
 
 
-def parse(source: str, filename: str = "<input>") -> ast.Program:
+def parse(source: str, filename: str = "<input>", included_from=None) -> ast.Program:
     """
     Convenience function to parse source code.
 
     Args:
         source: Source code to parse
         filename: Name of the source file
+        included_from: SourceLocation of include! statement if parsing included file
 
     Returns:
         Program AST node
     """
-    return _parser.parse(source, filename)
+    return _parser.parse(source, filename, included_from=included_from)
