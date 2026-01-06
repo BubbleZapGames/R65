@@ -346,6 +346,23 @@ class MIRBuilder:
         if hir_func.body:
             self.lower_block(hir_func.body)
 
+        # Add implicit Return for blocks that don't end with a terminator
+        # This handles functions without explicit return statements
+        if self.current_block and not self._block_has_terminator():
+            # For interrupt handlers, emit ReturnFromInterrupt
+            if hir_func.interrupt_attr:
+                # Pop all registers (reverse order of pushes in prologue)
+                self.emit(Pull(register=HardwareRegister('DBR')))     # PLB
+                self.emit(Pull(register=HardwareRegister('D')))       # PLD
+                self.emit(Pull(register=HardwareRegister('Y')))       # PLY
+                self.emit(Pull(register=HardwareRegister('X')))       # PLX
+                self.emit(Pull(register=HardwareRegister('A')))       # PLA
+                self.emit(Pull(register=HardwareRegister('STATUS')))  # PLP
+                self.emit(ReturnFromInterrupt())
+            else:
+                # Regular function: add implicit Return with no values
+                self.emit(Return(values=[]))
+
         # Find exit blocks
         mir_func.exit_block_ids = self.cfg_builder.find_exit_blocks()
 

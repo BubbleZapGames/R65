@@ -7,7 +7,9 @@ Extracted from InstructionSelector to improve modularity and testability.
 from enum import Enum
 from typing import Optional, Dict
 from r65.compiler.codegen.emitter import AssemblyEmitter
-from r65.compiler.mir.nodes import Immediate
+from r65.compiler.mir.nodes import Immediate as MIRImmediate
+from r65.compiler.codegen.opcodes import Opcode
+from r65.compiler.codegen.asm_nodes import Immediate, Address
 from r65.compiler.errors import InstructionSelectionError
 
 
@@ -31,11 +33,23 @@ class RegisterMappings:
     # Compare instructions by register
     COMPARE = {'A': 'CMP', 'X': 'CPX', 'Y': 'CPY'}
 
-    # Push instructions by register
+    # Push instructions by register (string mnemonics - legacy)
     PUSH = {'A': 'PHA', 'X': 'PHX', 'Y': 'PHY', 'STATUS': 'PHP', 'D': 'PHD', 'DBR': 'PHB'}
 
-    # Pull instructions by register
+    # Pull instructions by register (string mnemonics - legacy)
     PULL = {'A': 'PLA', 'X': 'PLX', 'Y': 'PLY', 'STATUS': 'PLP', 'D': 'PLD', 'DBR': 'PLB'}
+
+    # Push instructions by register (typed opcodes)
+    PUSH_OPCODES = {
+        'A': Opcode.PHA, 'X': Opcode.PHX, 'Y': Opcode.PHY,
+        'STATUS': Opcode.PHP, 'D': Opcode.PHD, 'DBR': Opcode.PHB
+    }
+
+    # Pull instructions by register (typed opcodes)
+    PULL_OPCODES = {
+        'A': Opcode.PLA, 'X': Opcode.PLX, 'Y': Opcode.PLY,
+        'STATUS': Opcode.PLP, 'D': Opcode.PLD, 'DBR': Opcode.PLB
+    }
 
     # Transfer instructions (from, to) → mnemonic
     TRANSFER = {
@@ -108,7 +122,7 @@ class XBAStateManager:
 
     def emit_xba(self, comment: str = None):
         """Emit XBA instruction and update state tracking."""
-        self.emitter.emit_instruction("XBA", comment=comment or "Exchange B and A")
+        self.emitter._node_emitter.emit_instr(Opcode.XBA, None, comment or "Exchange B and A")
 
         if self.state == XBAState.NORMAL:
             self.state = XBAState.SWAPPED
@@ -180,60 +194,80 @@ class BinaryOpEmitter:
     def __init__(self, emitter: AssemblyEmitter):
         self.emitter = emitter
 
+    def _emit_implied(self, opcode: Opcode, comment: str = None):
+        """Emit an implied addressing mode instruction."""
+        self.emitter._node_emitter.emit_instr(opcode, None, comment)
+
+    def _emit_immediate(self, opcode: Opcode, value: int, comment: str = None):
+        """Emit an immediate addressing mode instruction."""
+        self.emitter._node_emitter.emit_instr(opcode, Immediate(value), comment)
+
     def require_immediate(self, operand, operation: str) -> int:
         """Validate operand is immediate and return its value."""
-        if not isinstance(operand, Immediate):
+        if not isinstance(operand, MIRImmediate):
             raise InstructionSelectionError(f"{operation} requires constant operand")
         return operand.value
 
-    def emit_repeated(self, mnemonic: str, operand: str, count: int):
+    def emit_repeated(self, opcode: Opcode, count: int):
         """Emit an instruction repeated count times."""
         for _ in range(count):
-            self.emitter.emit_instruction(mnemonic, operand)
+            self._emit_implied(opcode)
 
     def emit_with_operand(self, mnemonic: str, right_operand, is_u16: bool,
-                          format_operand_fn):
+                          format_operand_fn, emit_op_fn):
         """
         Emit binary operation with formatted operand.
 
         Args:
-            mnemonic: Instruction mnemonic (ADC, SBC, AND, etc.)
-            right_operand: Right operand (Immediate or location)
+            mnemonic: Instruction mnemonic (ADC, SBC, AND, etc.) - for legacy code
+            right_operand: Right operand (MIRImmediate or location)
             is_u16: True if 16-bit operation
-            format_operand_fn: Function to format operand location
+            format_operand_fn: Function to format operand location (legacy)
+            emit_op_fn: Function to emit operation with location (new API)
         """
-        if isinstance(right_operand, Immediate):
+        if isinstance(right_operand, MIRImmediate):
+            # Immediate value - use new API
             value = right_operand.value
-            if is_u16:
-                self.emitter.emit_instruction(mnemonic, f"#${value:04X}")
+            opcode_map = {
+                'ADC': Opcode.ADC_IMMEDIATE, 'SBC': Opcode.SBC_IMMEDIATE,
+                'AND': Opcode.AND_IMMEDIATE, 'ORA': Opcode.ORA_IMMEDIATE,
+                'EOR': Opcode.EOR_IMMEDIATE,
+            }
+            opcode = opcode_map.get(mnemonic)
+            if opcode:
+                self._emit_immediate(opcode, value)
             else:
+                # Fallback to legacy format
                 self.emitter.emit_instruction(mnemonic, f"#${value:02X}")
         else:
-            # Assume it's a location that needs formatting
-            operand_str = format_operand_fn(right_operand)
-            self.emitter.emit_instruction(mnemonic, operand_str)
+            # Location - use emit_op_fn if provided
+            if emit_op_fn:
+                emit_op_fn(mnemonic, right_operand)
+            else:
+                operand_str = format_operand_fn(right_operand)
+                self.emitter.emit_instruction(mnemonic, operand_str)
 
-    def emit_add(self, right_operand, is_u16: bool, format_fn):
+    def emit_add(self, right_operand, is_u16: bool, format_fn, emit_op_fn=None):
         """Emit add operation (CLC + ADC)."""
-        self.emitter.emit_instruction("CLC")
-        self.emit_with_operand("ADC", right_operand, is_u16, format_fn)
+        self._emit_implied(Opcode.CLC)
+        self.emit_with_operand("ADC", right_operand, is_u16, format_fn, emit_op_fn)
 
-    def emit_sub(self, right_operand, is_u16: bool, format_fn):
+    def emit_sub(self, right_operand, is_u16: bool, format_fn, emit_op_fn=None):
         """Emit subtract operation (SEC + SBC)."""
-        self.emitter.emit_instruction("SEC")
-        self.emit_with_operand("SBC", right_operand, is_u16, format_fn)
+        self._emit_implied(Opcode.SEC)
+        self.emit_with_operand("SBC", right_operand, is_u16, format_fn, emit_op_fn)
 
-    def emit_and(self, right_operand, is_u16: bool, format_fn):
+    def emit_and(self, right_operand, is_u16: bool, format_fn, emit_op_fn=None):
         """Emit bitwise AND operation."""
-        self.emit_with_operand("AND", right_operand, is_u16, format_fn)
+        self.emit_with_operand("AND", right_operand, is_u16, format_fn, emit_op_fn)
 
-    def emit_or(self, right_operand, is_u16: bool, format_fn):
+    def emit_or(self, right_operand, is_u16: bool, format_fn, emit_op_fn=None):
         """Emit bitwise OR operation."""
-        self.emit_with_operand("ORA", right_operand, is_u16, format_fn)
+        self.emit_with_operand("ORA", right_operand, is_u16, format_fn, emit_op_fn)
 
-    def emit_xor(self, right_operand, is_u16: bool, format_fn):
+    def emit_xor(self, right_operand, is_u16: bool, format_fn, emit_op_fn=None):
         """Emit bitwise XOR operation."""
-        self.emit_with_operand("EOR", right_operand, is_u16, format_fn)
+        self.emit_with_operand("EOR", right_operand, is_u16, format_fn, emit_op_fn)
 
     def emit_shift_left(self, right_operand, is_u16: bool):
         """Emit left shift operation (A << count)."""
@@ -241,11 +275,11 @@ class BinaryOpEmitter:
         bit_width = 16 if is_u16 else 8
 
         if count >= bit_width:
-            self.emitter.emit_instruction("LDA", "#$00",
-                comment=f"Shift by {count} >= {bit_width} bits = 0")
+            self._emit_immediate(Opcode.LDA_IMMEDIATE, 0x00,
+                f"Shift by {count} >= {bit_width} bits = 0")
             return
 
-        self.emit_repeated("ASL", "A", count)
+        self.emit_repeated(Opcode.ASL, count)
 
     def emit_shift_right(self, right_operand, is_u16: bool):
         """Emit right shift operation (A >> count)."""
@@ -253,11 +287,11 @@ class BinaryOpEmitter:
         bit_width = 16 if is_u16 else 8
 
         if count >= bit_width:
-            self.emitter.emit_instruction("LDA", "#$00",
-                comment=f"Shift by {count} >= {bit_width} bits = 0")
+            self._emit_immediate(Opcode.LDA_IMMEDIATE, 0x00,
+                f"Shift by {count} >= {bit_width} bits = 0")
             return
 
-        self.emit_repeated("LSR", "A", count)
+        self.emit_repeated(Opcode.LSR, count)
 
     def emit_multiply(self, right_operand, is_u16: bool):
         """Emit multiply by power of 2 (A * 1/2/4/8) using ASL."""
@@ -269,7 +303,7 @@ class BinaryOpEmitter:
                 f"Multiply operator only supports 1, 2, 4, 8 (got {value}). "
                 f"Use mul() for general multiplication.")
 
-        self.emit_repeated("ASL", "A", shift_count)
+        self.emit_repeated(Opcode.ASL, shift_count)
 
     def emit_divide(self, right_operand, is_u16: bool):
         """Emit divide by power of 2 (A / 1/2/4/8) using LSR."""
@@ -281,7 +315,7 @@ class BinaryOpEmitter:
                 f"Divide operator only supports 1, 2, 4, 8 (got {value}). "
                 f"Use div() for general division.")
 
-        self.emit_repeated("LSR", "A", shift_count)
+        self.emit_repeated(Opcode.LSR, shift_count)
 
 
 # =============================================================================
@@ -295,18 +329,21 @@ class BranchEmitter:
     Handles the common pattern of:
     - Simple branch + fallthrough JMP
     - Complex signed comparison patterns
+
+    NOTE: This class is legacy code. The control_flow_select.py module
+    has been refactored to use the Opcode-based API directly.
     """
 
-    # Simple comparison → branch instruction mapping (unsigned)
-    UNSIGNED_BRANCHES = {
-        '==': 'BEQ',
-        '!=': 'BNE',
-        '<': 'BCC',
-        '>=': 'BCS',
-        'bit7_set': 'BMI',
-        'bit7_clear': 'BPL',
-        'bit6_set': 'BVS',
-        'bit6_clear': 'BVC',
+    # Simple comparison → branch opcode mapping (unsigned)
+    UNSIGNED_BRANCH_OPCODES = {
+        '==': Opcode.BEQ,
+        '!=': Opcode.BNE,
+        '<': Opcode.BCC,
+        '>=': Opcode.BCS,
+        'bit7_set': Opcode.BMI,
+        'bit7_clear': Opcode.BPL,
+        'bit6_set': Opcode.BVS,
+        'bit6_clear': Opcode.BVC,
     }
 
     # Comments for branch instructions
@@ -332,19 +369,31 @@ class BranchEmitter:
         self.emitter = emitter
         self.get_unique_label = label_counter_fn
 
-    def emit_simple_branch(self, branch_instr: str, true_target: int,
+    def _emit_branch(self, opcode: Opcode, label: str, comment: str = None):
+        """Emit a branch instruction to a label."""
+        self.emitter._node_emitter.emit_instr(opcode, Address(label), comment)
+
+    def _emit_jump(self, label: str, comment: str = None):
+        """Emit a jump instruction to a label."""
+        self.emitter._node_emitter.emit_instr(Opcode.JMP_ABSOLUTE, Address(label), comment)
+
+    def _emit_immediate(self, opcode: Opcode, value: int, comment: str = None):
+        """Emit an immediate addressing mode instruction."""
+        self.emitter._node_emitter.emit_instr(opcode, Immediate(value), comment)
+
+    def emit_simple_branch(self, opcode: Opcode, true_target: int,
                            false_target: int, comment: Optional[str] = None):
         """
         Emit simple branch + fallthrough JMP pattern.
 
         Args:
-            branch_instr: Branch instruction (BEQ, BNE, BCC, etc.)
+            opcode: Branch opcode (Opcode.BEQ, Opcode.BNE, etc.)
             true_target: Block ID for true branch
             false_target: Block ID for false branch
             comment: Optional comment
         """
-        self.emitter.emit_instruction(branch_instr, f"__L{true_target}", comment)
-        self.emitter.emit_instruction("JMP", f"__L{false_target}")
+        self._emit_branch(opcode, f"__L{true_target}", comment)
+        self._emit_jump(f"__L{false_target}")
 
     def emit_unsigned_comparison(self, comparison: str, true_target: int, false_target: int):
         """
@@ -359,18 +408,18 @@ class BranchEmitter:
             # Compound comparisons need special handling
             if comparison == '>':
                 # Unsigned >: (C set) AND (Z clear)
-                self.emitter.emit_instruction("BEQ", f"__L{false_target}", "Skip if equal")
-                self.emitter.emit_instruction("BCS", f"__L{true_target}", "Branch if > (unsigned)")
-                self.emitter.emit_instruction("JMP", f"__L{false_target}")
+                self._emit_branch(Opcode.BEQ, f"__L{false_target}", "Skip if equal")
+                self._emit_branch(Opcode.BCS, f"__L{true_target}", "Branch if > (unsigned)")
+                self._emit_jump(f"__L{false_target}")
             else:  # <=
                 # Unsigned <=: (C clear) OR (Z set)
-                self.emitter.emit_instruction("BEQ", f"__L{true_target}", "Branch if equal")
-                self.emitter.emit_instruction("BCC", f"__L{true_target}", "Branch if less than")
-                self.emitter.emit_instruction("JMP", f"__L{false_target}")
+                self._emit_branch(Opcode.BEQ, f"__L{true_target}", "Branch if equal")
+                self._emit_branch(Opcode.BCC, f"__L{true_target}", "Branch if less than")
+                self._emit_jump(f"__L{false_target}")
         else:
-            branch_instr = self.UNSIGNED_BRANCHES.get(comparison)
+            opcode = self.UNSIGNED_BRANCH_OPCODES.get(comparison)
             comment = self.BRANCH_COMMENTS.get(comparison)
-            self.emit_simple_branch(branch_instr, true_target, false_target, comment)
+            self.emit_simple_branch(opcode, true_target, false_target, comment)
 
     def _emit_signed_xor_setup(self) -> str:
         """
@@ -382,8 +431,8 @@ class BranchEmitter:
             Label used for skip
         """
         label = self.get_unique_label()
-        self.emitter.emit_instruction("BVC", label, "Skip if no overflow")
-        self.emitter.emit_instruction("EOR", "#$80", "Flip sign bit if overflow")
+        self._emit_branch(Opcode.BVC, label, "Skip if no overflow")
+        self._emit_immediate(Opcode.EOR_IMMEDIATE, 0x80, "Flip sign bit if overflow")
         self.emitter.emit_label(label)
         return label
 
@@ -399,25 +448,25 @@ class BranchEmitter:
         if comparison == '<':
             # Signed less than: N XOR V = 1
             self._emit_signed_xor_setup()
-            self.emitter.emit_instruction("BMI", f"__L{true_target}", "Branch if less than (signed)")
-            self.emitter.emit_instruction("JMP", f"__L{false_target}")
+            self._emit_branch(Opcode.BMI, f"__L{true_target}", "Branch if less than (signed)")
+            self._emit_jump(f"__L{false_target}")
         elif comparison == '>=':
             # Signed >= : N XOR V = 0
             self._emit_signed_xor_setup()
-            self.emitter.emit_instruction("BPL", f"__L{true_target}", "Branch if >= (signed)")
-            self.emitter.emit_instruction("JMP", f"__L{false_target}")
+            self._emit_branch(Opcode.BPL, f"__L{true_target}", "Branch if >= (signed)")
+            self._emit_jump(f"__L{false_target}")
         elif comparison == '>':
             # Signed >: (N XOR V = 0) AND Z = 0
-            self.emitter.emit_instruction("BEQ", f"__L{false_target}", "Skip if equal")
+            self._emit_branch(Opcode.BEQ, f"__L{false_target}", "Skip if equal")
             self._emit_signed_xor_setup()
-            self.emitter.emit_instruction("BPL", f"__L{true_target}", "Branch if > (signed)")
-            self.emitter.emit_instruction("JMP", f"__L{false_target}")
+            self._emit_branch(Opcode.BPL, f"__L{true_target}", "Branch if > (signed)")
+            self._emit_jump(f"__L{false_target}")
         elif comparison == '<=':
             # Signed <=: (N XOR V = 1) OR Z = 1
-            self.emitter.emit_instruction("BEQ", f"__L{true_target}", "Branch if equal")
+            self._emit_branch(Opcode.BEQ, f"__L{true_target}", "Branch if equal")
             self._emit_signed_xor_setup()
-            self.emitter.emit_instruction("BMI", f"__L{true_target}", "Branch if <= (signed)")
-            self.emitter.emit_instruction("JMP", f"__L{false_target}")
+            self._emit_branch(Opcode.BMI, f"__L{true_target}", "Branch if <= (signed)")
+            self._emit_jump(f"__L{false_target}")
 
     def emit_comparison_branch(self, comparison: str, is_signed: bool,
                                 true_target: int, false_target: int):

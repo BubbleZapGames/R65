@@ -277,6 +277,11 @@ def _emit_instruction(opcode: Opcode, operand: Operand | None) -> str:
             case _:
                 return f"{mnem} {operand}"
 
+    # Accumulator mode instructions (need explicit 'A' operand in WLA-DX)
+    ACCUMULATOR_OPCODES = {Opcode.ASL, Opcode.LSR, Opcode.ROL, Opcode.ROR, Opcode.INC, Opcode.DEC}
+    if opcode in ACCUMULATOR_OPCODES:
+        return f"{mnem} A"
+
     # Implied addressing (no operand)
     if mode is None:
         return mnem

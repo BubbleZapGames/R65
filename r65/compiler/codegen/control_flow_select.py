@@ -10,6 +10,8 @@ from r65.compiler.mir.nodes import Jump, JumpTable, CondBranch, Return
 from r65.compiler.codegen.register_alloc import LocationKind
 from r65.compiler.codegen.instruction_select_helpers import RegisterMappings
 from r65.compiler.errors import InstructionSelectionError
+from r65.compiler.codegen.opcodes import Opcode
+from r65.compiler.codegen.asm_nodes import Address, Immediate
 
 if TYPE_CHECKING:
     from r65.compiler.codegen.instruction_select import InstructionSelector
@@ -49,6 +51,26 @@ class ControlFlowInstructionSelector:
         return self.parent._block_label(block_id)
 
     # ========================================================================
+    # Emission Helpers
+    # ========================================================================
+
+    def _emit_implied(self, opcode: Opcode, comment: str = None):
+        """Emit an implied addressing mode instruction."""
+        self.emitter._node_emitter.emit_instr(opcode, None, comment)
+
+    def _emit_immediate(self, opcode: Opcode, value: int, comment: str = None):
+        """Emit an immediate addressing mode instruction."""
+        self.emitter._node_emitter.emit_instr(opcode, Immediate(value), comment)
+
+    def _emit_branch(self, opcode: Opcode, label: str, comment: str = None):
+        """Emit a branch instruction to a label."""
+        self.emitter._node_emitter.emit_instr(opcode, Address(label), comment)
+
+    def _emit_jump(self, opcode: Opcode, label: str, comment: str = None):
+        """Emit a jump instruction to a label."""
+        self.emitter._node_emitter.emit_instr(opcode, Address(label), comment)
+
+    # ========================================================================
     # Jump Instructions
     # ========================================================================
 
@@ -59,7 +81,7 @@ class ControlFlowInstructionSelector:
         Args:
             instr: Jump instruction
         """
-        self.emitter.emit_instruction("JMP", self._block_label(instr.target))
+        self._emit_jump(Opcode.JMP_ABSOLUTE, self._block_label(instr.target))
 
     def select_jump_table(self, instr: JumpTable):
         """
@@ -80,28 +102,28 @@ class ControlFlowInstructionSelector:
         if scrutinee_loc.kind == LocationKind.HARDWARE and scrutinee_loc.hw_register == 'A':
             pass  # Already in A
         else:
-            self.emitter.emit_instruction("LDA", self.parent._format_operand(scrutinee_loc))
+            self.parent._emit_load('LDA', scrutinee_loc)
 
         # Subtract base_value to compute index
         if instr.base_value != 0:
-            self.emitter.emit_instruction("SEC")
-            self.emitter.emit_instruction("SBC", f"#{instr.base_value}", "Compute index = scrutinee - base")
-            self.emitter.emit_instruction("BMI", self._block_label(instr.default_target), "Out of bounds (< min)")
+            self._emit_implied(Opcode.SEC)
+            self._emit_immediate(Opcode.SBC_IMMEDIATE, instr.base_value, "Compute index = scrutinee - base")
+            self._emit_branch(Opcode.BMI, self._block_label(instr.default_target), "Out of bounds (< min)")
 
         # Check if index >= table_size - out of bounds
-        self.emitter.emit_instruction("CMP", f"#{table_size}", "Check upper bound")
-        self.emitter.emit_instruction("BCS", self._block_label(instr.default_target), "Out of bounds (>= size)")
+        self._emit_immediate(Opcode.CMP_IMMEDIATE, table_size, "Check upper bound")
+        self._emit_branch(Opcode.BCS, self._block_label(instr.default_target), "Out of bounds (>= size)")
 
         # Generate comparison chain with optimized jump targets
         for i, target_block in enumerate(instr.targets):
             if i == table_size - 1:
-                self.emitter.emit_instruction("JMP", self._block_label(target_block))
+                self._emit_jump(Opcode.JMP_ABSOLUTE, self._block_label(target_block))
             else:
-                self.emitter.emit_instruction("CMP", f"#{i}")
-                self.emitter.emit_instruction("BEQ", self._block_label(target_block))
+                self._emit_immediate(Opcode.CMP_IMMEDIATE, i)
+                self._emit_branch(Opcode.BEQ, self._block_label(target_block))
 
         # Fallback
-        self.emitter.emit_instruction("JMP", self._block_label(instr.default_target))
+        self._emit_jump(Opcode.JMP_ABSOLUTE, self._block_label(instr.default_target))
 
     # ========================================================================
     # Conditional Branch
@@ -141,24 +163,24 @@ class ControlFlowInstructionSelector:
 
         # Handle BIT-based comparisons
         if comparison == 'bit7_set':
-            self.emitter.emit_instruction("BMI", true_target, "Branch if bit 7 set")
-            self.emitter.emit_instruction("JMP", false_target)
+            self._emit_branch(Opcode.BMI, true_target, "Branch if bit 7 set")
+            self._emit_jump(Opcode.JMP_ABSOLUTE, false_target)
         elif comparison == 'bit7_clear':
-            self.emitter.emit_instruction("BPL", true_target, "Branch if bit 7 clear")
-            self.emitter.emit_instruction("JMP", false_target)
+            self._emit_branch(Opcode.BPL, true_target, "Branch if bit 7 clear")
+            self._emit_jump(Opcode.JMP_ABSOLUTE, false_target)
         elif comparison == 'bit6_set':
-            self.emitter.emit_instruction("BVS", true_target, "Branch if bit 6 set")
-            self.emitter.emit_instruction("JMP", false_target)
+            self._emit_branch(Opcode.BVS, true_target, "Branch if bit 6 set")
+            self._emit_jump(Opcode.JMP_ABSOLUTE, false_target)
         elif comparison == 'bit6_clear':
-            self.emitter.emit_instruction("BVC", true_target, "Branch if bit 6 clear")
-            self.emitter.emit_instruction("JMP", false_target)
+            self._emit_branch(Opcode.BVC, true_target, "Branch if bit 6 clear")
+            self._emit_jump(Opcode.JMP_ABSOLUTE, false_target)
         # Handle comparison operators
         elif comparison == '==':
-            self.emitter.emit_instruction("BEQ", true_target, "Branch if equal")
-            self.emitter.emit_instruction("JMP", false_target)
+            self._emit_branch(Opcode.BEQ, true_target, "Branch if equal")
+            self._emit_jump(Opcode.JMP_ABSOLUTE, false_target)
         elif comparison == '!=':
-            self.emitter.emit_instruction("BNE", true_target, "Branch if not equal")
-            self.emitter.emit_instruction("JMP", false_target)
+            self._emit_branch(Opcode.BNE, true_target, "Branch if not equal")
+            self._emit_jump(Opcode.JMP_ABSOLUTE, false_target)
         elif comparison == '<':
             self._emit_less_than_branch(true_target, false_target, is_signed)
         elif comparison == '>=':
@@ -176,83 +198,83 @@ class ControlFlowInstructionSelector:
         if is_signed:
             # Signed less than: N XOR V = 1
             label = self.parent._get_unique_label()
-            self.emitter.emit_instruction("BVC", label, "Skip if no overflow")
-            self.emitter.emit_instruction("EOR", "#$80", "Flip sign bit if overflow")
+            self._emit_branch(Opcode.BVC, label, "Skip if no overflow")
+            self._emit_immediate(Opcode.EOR_IMMEDIATE, 0x80, "Flip sign bit if overflow")
             self.emitter.emit_label(label)
-            self.emitter.emit_instruction("BMI", true_target, "Branch if less than (signed)")
-            self.emitter.emit_instruction("JMP", false_target)
+            self._emit_branch(Opcode.BMI, true_target, "Branch if less than (signed)")
+            self._emit_jump(Opcode.JMP_ABSOLUTE, false_target)
         else:
             # Unsigned less than: C flag clear
-            self.emitter.emit_instruction("BCC", true_target, "Branch if less than (unsigned)")
-            self.emitter.emit_instruction("JMP", false_target)
+            self._emit_branch(Opcode.BCC, true_target, "Branch if less than (unsigned)")
+            self._emit_jump(Opcode.JMP_ABSOLUTE, false_target)
 
     def _emit_greater_equal_branch(self, true_target: str, false_target: str, is_signed: bool):
         """Emit branch for >= comparison."""
         if is_signed:
             # Signed >= : N XOR V = 0
             label = self.parent._get_unique_label()
-            self.emitter.emit_instruction("BVC", label, "Skip if no overflow")
-            self.emitter.emit_instruction("EOR", "#$80", "Flip sign bit if overflow")
+            self._emit_branch(Opcode.BVC, label, "Skip if no overflow")
+            self._emit_immediate(Opcode.EOR_IMMEDIATE, 0x80, "Flip sign bit if overflow")
             self.emitter.emit_label(label)
-            self.emitter.emit_instruction("BPL", true_target, "Branch if >= (signed)")
-            self.emitter.emit_instruction("JMP", false_target)
+            self._emit_branch(Opcode.BPL, true_target, "Branch if >= (signed)")
+            self._emit_jump(Opcode.JMP_ABSOLUTE, false_target)
         else:
             # Unsigned >=: C flag set
-            self.emitter.emit_instruction("BCS", true_target, "Branch if >= (unsigned)")
-            self.emitter.emit_instruction("JMP", false_target)
+            self._emit_branch(Opcode.BCS, true_target, "Branch if >= (unsigned)")
+            self._emit_jump(Opcode.JMP_ABSOLUTE, false_target)
 
     def _emit_greater_than_branch(self, true_target: str, false_target: str, is_signed: bool):
         """Emit branch for > comparison."""
         if is_signed:
             # Signed >: (N XOR V = 0) AND Z = 0
-            self.emitter.emit_instruction("BEQ", false_target, "Skip if equal")
+            self._emit_branch(Opcode.BEQ, false_target, "Skip if equal")
             label = self.parent._get_unique_label()
-            self.emitter.emit_instruction("BVC", label, "Skip if no overflow")
-            self.emitter.emit_instruction("EOR", "#$80", "Flip sign bit if overflow")
+            self._emit_branch(Opcode.BVC, label, "Skip if no overflow")
+            self._emit_immediate(Opcode.EOR_IMMEDIATE, 0x80, "Flip sign bit if overflow")
             self.emitter.emit_label(label)
-            self.emitter.emit_instruction("BPL", true_target, "Branch if > (signed)")
-            self.emitter.emit_instruction("JMP", false_target)
+            self._emit_branch(Opcode.BPL, true_target, "Branch if > (signed)")
+            self._emit_jump(Opcode.JMP_ABSOLUTE, false_target)
         else:
             # Unsigned >: (C set) AND (Z clear)
-            self.emitter.emit_instruction("BEQ", false_target, "Skip if equal")
-            self.emitter.emit_instruction("BCS", true_target, "Branch if > (unsigned)")
-            self.emitter.emit_instruction("JMP", false_target)
+            self._emit_branch(Opcode.BEQ, false_target, "Skip if equal")
+            self._emit_branch(Opcode.BCS, true_target, "Branch if > (unsigned)")
+            self._emit_jump(Opcode.JMP_ABSOLUTE, false_target)
 
     def _emit_less_equal_branch(self, true_target: str, false_target: str, is_signed: bool):
         """Emit branch for <= comparison."""
         if is_signed:
             # Signed <=: (N XOR V = 1) OR Z = 1
-            self.emitter.emit_instruction("BEQ", true_target, "Branch if equal")
+            self._emit_branch(Opcode.BEQ, true_target, "Branch if equal")
             label = self.parent._get_unique_label()
-            self.emitter.emit_instruction("BVC", label, "Skip if no overflow")
-            self.emitter.emit_instruction("EOR", "#$80", "Flip sign bit if overflow")
+            self._emit_branch(Opcode.BVC, label, "Skip if no overflow")
+            self._emit_immediate(Opcode.EOR_IMMEDIATE, 0x80, "Flip sign bit if overflow")
             self.emitter.emit_label(label)
-            self.emitter.emit_instruction("BMI", true_target, "Branch if <= (signed)")
-            self.emitter.emit_instruction("JMP", false_target)
+            self._emit_branch(Opcode.BMI, true_target, "Branch if <= (signed)")
+            self._emit_jump(Opcode.JMP_ABSOLUTE, false_target)
         else:
             # Unsigned <=: (C clear) OR (Z set)
-            self.emitter.emit_instruction("BEQ", true_target, "Branch if equal")
-            self.emitter.emit_instruction("BCC", true_target, "Branch if less than")
-            self.emitter.emit_instruction("JMP", false_target)
+            self._emit_branch(Opcode.BEQ, true_target, "Branch if equal")
+            self._emit_branch(Opcode.BCC, true_target, "Branch if less than")
+            self._emit_jump(Opcode.JMP_ABSOLUTE, false_target)
 
     def _emit_value_based_branch(self, instr: CondBranch):
         """Emit branch based on condition value (zero/non-zero)."""
         cond_loc = self.parent._get_operand_location(instr.condition)
-        self.emitter.emit_instruction("LDA", self.parent._format_operand(cond_loc))
+        self.parent._emit_load('LDA', cond_loc)
 
         true_target = self._block_label(instr.true_target)
         false_target = self._block_label(instr.false_target)
 
         if instr.comparison == '!=':
-            self.emitter.emit_instruction("BEQ", false_target, "Branch if zero")
-            self.emitter.emit_instruction("JMP", true_target)
+            self._emit_branch(Opcode.BEQ, false_target, "Branch if zero")
+            self._emit_jump(Opcode.JMP_ABSOLUTE, true_target)
         elif instr.comparison == '==':
-            self.emitter.emit_instruction("BNE", false_target, "Branch if non-zero")
-            self.emitter.emit_instruction("JMP", true_target)
+            self._emit_branch(Opcode.BNE, false_target, "Branch if non-zero")
+            self._emit_jump(Opcode.JMP_ABSOLUTE, true_target)
         else:
             # For other comparisons on boolean values, treat as != 0
-            self.emitter.emit_instruction("BEQ", false_target)
-            self.emitter.emit_instruction("JMP", true_target)
+            self._emit_branch(Opcode.BEQ, false_target)
+            self._emit_jump(Opcode.JMP_ABSOLUTE, true_target)
 
     # ========================================================================
     # Return Instruction
@@ -280,6 +302,13 @@ class ControlFlowInstructionSelector:
 
         self._emit_return_instruction()
 
+    # Mappings from register name to pull opcodes
+    _PULL_OPCODES = {
+        'A': Opcode.PLA, 'X': Opcode.PLX, 'Y': Opcode.PLY,
+        'STATUS': Opcode.PLP, 'P': Opcode.PLP,
+        'D': Opcode.PLD, 'DBR': Opcode.PLB, 'B': Opcode.PLB,
+    }
+
     def _emit_return_values(self, instr: Return):
         """Load return values into appropriate registers."""
         if not instr.values:
@@ -299,9 +328,9 @@ class ControlFlowInstructionSelector:
             elif value_loc.kind == LocationKind.HARDWARE:
                 self.parent._emit_register_transfer(value_loc.hw_register, target_reg)
             else:
-                load_instr = RegisterMappings.LOAD.get(target_reg)
-                if load_instr:
-                    self.emitter.emit_instruction(load_instr, self.parent._format_operand(value_loc))
+                # Use parent's _emit_load method with appropriate mnemonic
+                load_mnem = {'A': 'LDA', 'X': 'LDX', 'Y': 'LDY'}[target_reg]
+                self.parent._emit_load(load_mnem, value_loc)
 
     def _emit_preserved_register_restores(self):
         """Restore preserved registers in reverse order."""
@@ -313,9 +342,9 @@ class ControlFlowInstructionSelector:
 
         for reg in pop_order:
             if reg in preserved_regs:
-                pull_instr = RegisterMappings.PULL.get(reg)
-                if pull_instr:
-                    self.emitter.emit_instruction(pull_instr, comment=f"Restore {reg}")
+                pull_opcode = self._PULL_OPCODES.get(reg)
+                if pull_opcode:
+                    self._emit_implied(pull_opcode, f"Restore {reg}")
 
     def _emit_dbr_restore(self):
         """Restore DBR for data_bank=inline functions."""
@@ -324,7 +353,7 @@ class ControlFlowInstructionSelector:
 
         from r65.compiler.hir.attributes import DataBankMode
         if self.current_function.bank_attr.data_bank == DataBankMode.INLINE:
-            self.emitter.emit_instruction("PLB", comment="Restore data bank")
+            self._emit_implied(Opcode.PLB, "Restore data bank")
 
     def _emit_mode_restore(self):
         """Restore processor mode for transition=inline functions."""
@@ -333,7 +362,7 @@ class ControlFlowInstructionSelector:
 
         from r65.compiler.hir.attributes import ModeTransition
         if self.current_function.mode_attr.transition == ModeTransition.INLINE:
-            self.emitter.emit_instruction("PLP", comment="Restore processor status")
+            self._emit_implied(Opcode.PLP, "Restore processor status")
 
     def _emit_return_instruction(self):
         """Emit appropriate return instruction (RTL, RTS, or WAI for never type).
@@ -346,10 +375,10 @@ class ControlFlowInstructionSelector:
 
         # Check if function returns ! (never type)
         if self.current_function and isinstance(self.current_function.return_type, NeverTypeInfo):
-            self.emitter.emit_instruction("WAI", comment="Never returns")
+            self._emit_implied(Opcode.WAI, "Never returns")
             return
 
         if self.current_function and self.current_function.is_far:
-            self.emitter.emit_instruction("RTL")
+            self._emit_implied(Opcode.RTL)
         else:
-            self.emitter.emit_instruction("RTS")
+            self._emit_implied(Opcode.RTS)

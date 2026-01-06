@@ -6,9 +6,11 @@ for the 65816 processor.
 """
 
 from typing import TYPE_CHECKING
-from r65.compiler.mir.nodes import Compare, BitTest, Rotate, Immediate
+from r65.compiler.mir.nodes import Compare, BitTest, Rotate, Immediate as MIRImmediate
 from r65.compiler.codegen.register_alloc import LocationKind
 from r65.compiler.errors import InstructionSelectionError
+from r65.compiler.codegen.opcodes import Opcode
+from r65.compiler.codegen.asm_nodes import Immediate, Address
 
 if TYPE_CHECKING:
     from r65.compiler.codegen.instruction_select import InstructionSelector
@@ -36,6 +38,33 @@ class CompareSelector:
         return self.parent.emitter
 
     # ========================================================================
+    # Emission Helpers
+    # ========================================================================
+
+    def _emit_instr(self, opcode: Opcode, operand=None, comment: str = None):
+        """Emit an instruction using the node emitter."""
+        self.emitter._node_emitter.emit_instr(opcode, operand, comment)
+
+    def _emit_load_store(self, mnemonic: str, location, comment: str = None):
+        """Emit a load/store instruction using parent's opcode selection."""
+        opcode, operand = self.parent._get_opcode_for_location(mnemonic, location)
+        self._emit_instr(opcode, operand, comment)
+
+    def _emit_cmp(self, mnemonic: str, operand, is_immediate: bool):
+        """Emit a comparison instruction (CMP, CPX, CPY)."""
+        if is_immediate:
+            opcode = getattr(Opcode, f"{mnemonic}_IMMEDIATE")
+            self._emit_instr(opcode, operand)
+        elif isinstance(operand, Address):
+            # Direct page address (like $00 for temp)
+            opcode = getattr(Opcode, f"{mnemonic}_DP")
+            self._emit_instr(opcode, operand)
+        else:
+            # It's a location - use parent's opcode selection
+            opcode, op = self.parent._get_opcode_for_location(mnemonic, operand)
+            self._emit_instr(opcode, op)
+
+    # ========================================================================
     # Compare Instruction
     # ========================================================================
 
@@ -53,12 +82,12 @@ class CompareSelector:
         self.parent.last_comparison_type = instr.type_info
 
         left_loc = self.parent._get_operand_location(instr.left)
-        right_operand = self._prepare_right_operand(instr.right)
+        right_operand, is_immediate = self._prepare_right_operand(instr.right)
 
         # Emit appropriate comparison instruction based on left operand
-        self._emit_comparison(left_loc, right_operand)
+        self._emit_comparison(left_loc, right_operand, is_immediate)
 
-    def _prepare_right_operand(self, right) -> str:
+    def _prepare_right_operand(self, right):
         """
         Prepare right operand for comparison.
 
@@ -68,61 +97,64 @@ class CompareSelector:
             right: Right operand
 
         Returns:
-            Formatted operand string
+            Tuple of (operand, is_immediate) for comparison emission
         """
-        if isinstance(right, Immediate):
-            return f"#${right.value:02X}"
+        if isinstance(right, MIRImmediate):
+            return Immediate(right.value & 0xFF), True
 
         right_loc = self.parent._get_operand_location(right)
 
         if right_loc.kind == LocationKind.HARDWARE:
-            return self._store_hw_register_to_temp(right_loc)
+            self._store_hw_register_to_temp(right_loc)
+            return Address(0x00), False
 
-        return self.parent._format_operand(right_loc)
+        return right_loc, False
 
-    def _store_hw_register_to_temp(self, right_loc) -> str:
+    def _store_hw_register_to_temp(self, right_loc):
         """Store hardware register to temp location for comparison."""
         if right_loc.hw_register == 'B':
             self.parent._access_b_value_in_a()
-            self.emitter.emit_instruction("STA", "$00", "Store B to temp")
+            self._emit_instr(Opcode.STA_DP, Address(0x00), "Store B to temp")
             self.parent._ensure_xba_state_normal("Restore A")
-            return "$00"
-        elif right_loc.hw_register in ['A', 'X', 'Y']:
-            store_instr = {'A': 'STA', 'X': 'STX', 'Y': 'STY'}[right_loc.hw_register]
-            self.emitter.emit_instruction(store_instr, "$00", f"Store {right_loc.hw_register} to temp")
-            return "$00"
+        elif right_loc.hw_register == 'A':
+            self._emit_instr(Opcode.STA_DP, Address(0x00), "Store A to temp")
+        elif right_loc.hw_register == 'X':
+            self._emit_instr(Opcode.STX_DP, Address(0x00), "Store X to temp")
+        elif right_loc.hw_register == 'Y':
+            self._emit_instr(Opcode.STY_DP, Address(0x00), "Store Y to temp")
         else:
             raise InstructionSelectionError(f"Unsupported hardware register: {right_loc.hw_register}")
 
-    def _emit_comparison(self, left_loc, right_operand: str):
+    def _emit_comparison(self, left_loc, right_operand, is_immediate: bool):
         """
         Emit appropriate comparison instruction.
 
         Args:
             left_loc: Left operand location
-            right_operand: Formatted right operand string
+            right_operand: Right operand (Immediate, Address, or location)
+            is_immediate: True if right operand is immediate
         """
         if left_loc.kind == LocationKind.HARDWARE:
-            self._emit_hw_register_comparison(left_loc, right_operand)
+            self._emit_hw_register_comparison(left_loc, right_operand, is_immediate)
         else:
             # Memory or virtual register - load to A and compare
-            self.emitter.emit_instruction("LDA", self.parent._format_operand(left_loc))
-            self.emitter.emit_instruction("CMP", right_operand)
+            self._emit_load_store('LDA', left_loc)
+            self._emit_cmp('CMP', right_operand, is_immediate)
 
-    def _emit_hw_register_comparison(self, left_loc, right_operand: str):
+    def _emit_hw_register_comparison(self, left_loc, right_operand, is_immediate: bool):
         """Emit comparison for hardware register left operand."""
         reg = left_loc.hw_register
 
         if reg == 'X':
-            self.emitter.emit_instruction("CPX", right_operand)
+            self._emit_cmp('CPX', right_operand, is_immediate)
         elif reg == 'Y':
-            self.emitter.emit_instruction("CPY", right_operand)
+            self._emit_cmp('CPY', right_operand, is_immediate)
         elif reg == 'A':
-            self.emitter.emit_instruction("CMP", right_operand)
+            self._emit_cmp('CMP', right_operand, is_immediate)
         elif reg == 'B':
             # B register - transfer to A and compare
             self.parent._access_b_value_in_a()
-            self.emitter.emit_instruction("CMP", right_operand)
+            self._emit_cmp('CMP', right_operand, is_immediate)
             # Note: Don't restore A since this is just a comparison
             # State is now SWAPPED (A=B, B=A)
         else:
@@ -148,7 +180,8 @@ class CompareSelector:
         value_loc = self.parent._get_operand_location(instr.value)
 
         # BIT instruction requires a memory operand
-        self.emitter.emit_instruction("BIT", self.parent._format_operand(value_loc))
+        opcode, operand = self.parent._get_opcode_for_location('BIT', value_loc)
+        self._emit_instr(opcode, operand)
 
         # Flags are now set:
         # - For bit 7 test: N flag indicates bit 7 value
@@ -171,15 +204,15 @@ class CompareSelector:
         """
         # Load source into A
         source_loc = self.parent._get_operand_location(instr.source)
-        self.emitter.emit_instruction("LDA", self.parent._format_operand(source_loc))
+        self._emit_load_store('LDA', source_loc)
 
         # Determine instruction based on direction
-        rotate_instr = "ROL" if instr.direction == 'left' else "ROR"
+        rotate_opcode = Opcode.ROL_A if instr.direction == 'left' else Opcode.ROR_A
 
         # Emit rotate instruction 'count' times
         for _ in range(instr.count):
-            self.emitter.emit_instruction(rotate_instr)
+            self._emit_instr(rotate_opcode)
 
         # Store result to destination
         dest_loc = self.parent._get_operand_location(instr.dest)
-        self.emitter.emit_instruction("STA", self.parent._format_operand(dest_loc))
+        self._emit_load_store('STA', dest_loc)

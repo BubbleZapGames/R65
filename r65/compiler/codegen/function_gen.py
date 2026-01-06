@@ -13,6 +13,8 @@ from r65.compiler.codegen.memory_alloc import MemoryAllocator
 from r65.compiler.codegen.instruction_select_helpers import RegisterMappings
 from r65.compiler.codegen.type_utils import get_type_size
 from r65.compiler.codegen.constants import DEFAULT_STACK_UPPER
+from r65.compiler.codegen.opcodes import Opcode
+from r65.compiler.codegen.asm_nodes import Immediate, Address, StackOffset
 
 
 class FunctionCodeGenerator:
@@ -38,6 +40,14 @@ class FunctionCodeGenerator:
         """
         self.emitter = emitter
         self.mem_alloc = memory_allocator
+
+    # ========================================================================
+    # Emission Helpers
+    # ========================================================================
+
+    def _emit_instr(self, opcode: Opcode, operand=None, comment: str = None):
+        """Emit an instruction using the node emitter."""
+        self.emitter._node_emitter.emit_instr(opcode, operand, comment)
 
     # ========================================================================
     # Main Generation
@@ -355,10 +365,10 @@ class FunctionCodeGenerator:
         if mir_func.is_entry and self.mem_alloc.stack_upper is not None:
             if self.mem_alloc.stack_upper != DEFAULT_STACK_UPPER:
                 stack_addr = self.mem_alloc.stack_upper
-                self.emitter.emit_instruction("REP", "#$20", "16-bit A for stack setup")
-                self.emitter.emit_instruction("LDA", f"#${stack_addr:04X}", "Stack top")
-                self.emitter.emit_instruction("TCS", comment="Set stack pointer")
-                self.emitter.emit_instruction("SEP", "#$20", "Restore 8-bit A")
+                self._emit_instr(Opcode.REP, Immediate(0x20), "16-bit A for stack setup")
+                self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(stack_addr), "Stack top")
+                self._emit_instr(Opcode.TCS, comment="Set stack pointer")
+                self._emit_instr(Opcode.SEP, Immediate(0x20), "Restore 8-bit A")
 
         # Handle DBR management for far functions with data_bank=inline
         if mir_func.is_far and mir_func.bank_attr:
@@ -367,11 +377,11 @@ class FunctionCodeGenerator:
             if mir_func.bank_attr.data_bank == DataBankMode.INLINE:
                 # Save current DBR and set to function's bank
                 # Sequence: PHB, LDA #bank, PHA, PLB
-                self.emitter.emit_instruction("PHB", comment="Save current data bank")
-                self.emitter.emit_instruction("LDA", f"#${mir_func.bank_attr.bank_number:02X}",
-                                            "Load function's bank number")
-                self.emitter.emit_instruction("PHA", comment="Push bank number")
-                self.emitter.emit_instruction("PLB", comment="Set data bank register")
+                self._emit_instr(Opcode.PHB, comment="Save current data bank")
+                self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(mir_func.bank_attr.bank_number),
+                                "Load function's bank number")
+                self._emit_instr(Opcode.PHA, comment="Push bank number")
+                self._emit_instr(Opcode.PLB, comment="Set data bank register")
 
         # Handle processor mode transitions with transition=inline
         if mir_func.mode_attr:
@@ -380,7 +390,7 @@ class FunctionCodeGenerator:
             if mir_func.mode_attr.transition == ModeTransition.INLINE:
                 # Save current processor status and set required mode
                 # Sequence: PHP, REP/SEP #bits, body, PLP, RTS
-                self.emitter.emit_instruction("PHP", comment="Save processor status")
+                self._emit_instr(Opcode.PHP, comment="Save processor status")
 
                 # Determine which bits to set/clear based on mode
                 # STATUS register bits: NV-BDIZC (- is unused, M is bit 5, X is bit 4)
@@ -403,11 +413,11 @@ class FunctionCodeGenerator:
 
                 # Emit REP and/or SEP instructions
                 if bits_to_clear:
-                    self.emitter.emit_instruction("REP", f"#${bits_to_clear:02X}",
-                                                comment=f"Set mode: {'m16 ' if bits_to_clear & 0x20 else ''}{'x16' if bits_to_clear & 0x10 else ''}".strip())
+                    mode_comment = f"Set mode: {'m16 ' if bits_to_clear & 0x20 else ''}{'x16' if bits_to_clear & 0x10 else ''}".strip()
+                    self._emit_instr(Opcode.REP, Immediate(bits_to_clear), mode_comment)
                 if bits_to_set:
-                    self.emitter.emit_instruction("SEP", f"#${bits_to_set:02X}",
-                                                comment=f"Set mode: {'m8 ' if bits_to_set & 0x20 else ''}{'x8' if bits_to_set & 0x10 else ''}".strip())
+                    mode_comment = f"Set mode: {'m8 ' if bits_to_set & 0x20 else ''}{'x8' if bits_to_set & 0x10 else ''}".strip()
+                    self._emit_instr(Opcode.SEP, Immediate(bits_to_set), mode_comment)
 
         # Emit register saves for #[preserves(...)]
         # Registers are pushed in order: STATUS, A, X, Y, D, DBR
@@ -419,9 +429,9 @@ class FunctionCodeGenerator:
             push_order = ['STATUS', 'A', 'X', 'Y', 'D', 'DBR']
             for reg in push_order:
                 if reg in preserved_regs:
-                    push_instr = RegisterMappings.PUSH.get(reg)
-                    if push_instr:
-                        self.emitter.emit_instruction(push_instr, comment=f"Preserve {reg}")
+                    push_opcode = RegisterMappings.PUSH_OPCODES.get(reg)
+                    if push_opcode:
+                        self._emit_instr(push_opcode, comment=f"Preserve {reg}")
 
         # Emit stack parameter loads (must be after all prologue pushes)
         self._emit_stack_parameter_loads(mir_func, reg_alloc)
@@ -517,24 +527,17 @@ class FunctionCodeGenerator:
             # Emit load from stack to physical location
             if param_size == 1:
                 # 8-bit load: LDA offset,S ; STA dest
-                self.emitter.emit_instruction(
-                    "LDA", f"${adjusted_offset:02X},S",
-                    comment=f"Load param {param_idx}"
-                )
+                self._emit_instr(Opcode.LDA_STACK, StackOffset(adjusted_offset),
+                                f"Load param {param_idx}")
                 self._emit_store_to_location(phys_loc)
             else:
                 # 16-bit load: LDA offset,S ; STA dest ; LDA offset+1,S ; STA dest+1
-                # Or if in 16-bit mode, single LDA/STA
                 # For simplicity, use byte-by-byte approach
-                self.emitter.emit_instruction(
-                    "LDA", f"${adjusted_offset:02X},S",
-                    comment=f"Load param {param_idx} low"
-                )
+                self._emit_instr(Opcode.LDA_STACK, StackOffset(adjusted_offset),
+                                f"Load param {param_idx} low")
                 self._emit_store_to_location(phys_loc)
-                self.emitter.emit_instruction(
-                    "LDA", f"${adjusted_offset + 1:02X},S",
-                    comment=f"Load param {param_idx} high"
-                )
+                self._emit_instr(Opcode.LDA_STACK, StackOffset(adjusted_offset + 1),
+                                f"Load param {param_idx} high")
                 self._emit_store_to_location(self._offset_location(phys_loc, 1))
 
     def _emit_store_to_location(self, location):
@@ -542,14 +545,14 @@ class FunctionCodeGenerator:
         from r65.compiler.codegen.register_alloc import LocationKind
 
         if location.kind == LocationKind.SCRATCH:
-            self.emitter.emit_instruction("STA", f"${location.scratch_addr:02X}")
+            self._emit_instr(Opcode.STA_DP, Address(location.scratch_addr))
         elif location.kind == LocationKind.MEMORY:
             if location.memory_addr < 0x100:
-                self.emitter.emit_instruction("STA", f"${location.memory_addr:02X}")
+                self._emit_instr(Opcode.STA_DP, Address(location.memory_addr))
             else:
-                self.emitter.emit_instruction("STA", f"${location.memory_addr:04X}")
+                self._emit_instr(Opcode.STA_ABSOLUTE, Address(location.memory_addr))
         elif location.kind == LocationKind.STACK:
-            self.emitter.emit_instruction("STA", f"${location.stack_offset:02X},S")
+            self._emit_instr(Opcode.STA_STACK, StackOffset(location.stack_offset))
         else:
             raise ValueError(f"Cannot store to location kind: {location.kind}")
 
@@ -613,9 +616,9 @@ class FunctionCodeGenerator:
 
         for reg in pop_order:
             if reg in preserved_regs:
-                pull_instr = RegisterMappings.PULL.get(reg)
-                if pull_instr:
-                    self.emitter.emit_instruction(pull_instr, comment=f"Restore {reg}")
+                pull_opcode = RegisterMappings.PULL_OPCODES.get(reg)
+                if pull_opcode:
+                    self._emit_instr(pull_opcode, comment=f"Restore {reg}")
 
     def _emit_dbr_restore(self, mir_func: MIRFunction):
         """Restore DBR for data_bank=inline functions."""
@@ -624,7 +627,7 @@ class FunctionCodeGenerator:
 
         from r65.compiler.hir.attributes import DataBankMode
         if mir_func.bank_attr.data_bank == DataBankMode.INLINE:
-            self.emitter.emit_instruction("PLB", comment="Restore data bank")
+            self._emit_instr(Opcode.PLB, comment="Restore data bank")
 
     def _emit_mode_restore(self, mir_func: MIRFunction):
         """Restore processor mode for transition=inline functions."""
@@ -633,7 +636,7 @@ class FunctionCodeGenerator:
 
         from r65.compiler.hir.attributes import ModeTransition
         if mir_func.mode_attr.transition == ModeTransition.INLINE:
-            self.emitter.emit_instruction("PLP", comment="Restore processor status")
+            self._emit_instr(Opcode.PLP, comment="Restore processor status")
 
 
 class ProgramFunctionGenerator:

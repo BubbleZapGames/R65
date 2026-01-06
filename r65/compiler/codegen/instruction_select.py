@@ -17,7 +17,7 @@ from r65.compiler.mir.nodes import (
     BinaryOp, UnaryOp, Compare, BitTest, Rotate, SetMode, TypeConvert,
     Push, Pull, SaveRegister, RestoreRegister, ReturnFromInterrupt,
     MemoryFill, BlockCopy, ROMDataRef, InlineAsm,
-    VirtualRegister, HardwareRegister, Immediate, MemoryLocation
+    VirtualRegister, HardwareRegister, Immediate as MIRImmediate, MemoryLocation
 )
 from r65.compiler.codegen.emitter import AssemblyEmitter
 from r65.compiler.codegen.register_alloc import (
@@ -34,6 +34,8 @@ from r65.compiler.codegen.memory_select import MemoryOperationSelector
 from r65.compiler.codegen.move_select import MoveOperationSelector
 from r65.compiler.codegen.type_conversion_select import TypeConversionSelector
 from r65.compiler.codegen.compare_select import CompareSelector
+from r65.compiler.codegen.opcodes import Opcode
+from r65.compiler.codegen.asm_nodes import Immediate, Address, StackOffset
 
 
 class InstructionSelector:
@@ -82,6 +84,225 @@ class InstructionSelector:
 
         # Counter for generating unique labels
         self._label_counter = 0
+
+    # ========================================================================
+    # Opcode Selection Helpers
+    # ========================================================================
+
+    # Mapping from base mnemonic to opcode variants by addressing mode
+    _OPCODE_VARIANTS = {
+        'LDA': {
+            'DP': Opcode.LDA_DP, 'DP_X': Opcode.LDA_DP_X,
+            'ABSOLUTE': Opcode.LDA_ABSOLUTE, 'ABSOLUTE_X': Opcode.LDA_ABSOLUTE_X,
+            'ABSOLUTE_Y': Opcode.LDA_ABSOLUTE_Y,
+            'STACK': Opcode.LDA_STACK, 'IMMEDIATE': Opcode.LDA_IMMEDIATE,
+        },
+        'STA': {
+            'DP': Opcode.STA_DP, 'DP_X': Opcode.STA_DP_X,
+            'ABSOLUTE': Opcode.STA_ABSOLUTE, 'ABSOLUTE_X': Opcode.STA_ABSOLUTE_X,
+            'ABSOLUTE_Y': Opcode.STA_ABSOLUTE_Y,
+            'STACK': Opcode.STA_STACK,
+        },
+        'LDX': {
+            'DP': Opcode.LDX_DP, 'DP_Y': Opcode.LDX_DP_Y,
+            'ABSOLUTE': Opcode.LDX_ABSOLUTE, 'ABSOLUTE_Y': Opcode.LDX_ABSOLUTE_Y,
+            'IMMEDIATE': Opcode.LDX_IMMEDIATE,
+        },
+        'STX': {
+            'DP': Opcode.STX_DP, 'DP_Y': Opcode.STX_DP_Y,
+            'ABSOLUTE': Opcode.STX_ABSOLUTE,
+        },
+        'LDY': {
+            'DP': Opcode.LDY_DP, 'DP_X': Opcode.LDY_DP_X,
+            'ABSOLUTE': Opcode.LDY_ABSOLUTE, 'ABSOLUTE_X': Opcode.LDY_ABSOLUTE_X,
+            'IMMEDIATE': Opcode.LDY_IMMEDIATE,
+        },
+        'STY': {
+            'DP': Opcode.STY_DP, 'DP_X': Opcode.STY_DP_X,
+            'ABSOLUTE': Opcode.STY_ABSOLUTE,
+        },
+        'ADC': {
+            'DP': Opcode.ADC_DP, 'DP_X': Opcode.ADC_DP_X,
+            'ABSOLUTE': Opcode.ADC_ABSOLUTE, 'ABSOLUTE_X': Opcode.ADC_ABSOLUTE_X,
+            'ABSOLUTE_Y': Opcode.ADC_ABSOLUTE_Y,
+            'STACK': Opcode.ADC_STACK, 'IMMEDIATE': Opcode.ADC_IMMEDIATE,
+        },
+        'SBC': {
+            'DP': Opcode.SBC_DP, 'DP_X': Opcode.SBC_DP_X,
+            'ABSOLUTE': Opcode.SBC_ABSOLUTE, 'ABSOLUTE_X': Opcode.SBC_ABSOLUTE_X,
+            'ABSOLUTE_Y': Opcode.SBC_ABSOLUTE_Y,
+            'STACK': Opcode.SBC_STACK, 'IMMEDIATE': Opcode.SBC_IMMEDIATE,
+        },
+        'AND': {
+            'DP': Opcode.AND_DP, 'DP_X': Opcode.AND_DP_X,
+            'ABSOLUTE': Opcode.AND_ABSOLUTE, 'ABSOLUTE_X': Opcode.AND_ABSOLUTE_X,
+            'ABSOLUTE_Y': Opcode.AND_ABSOLUTE_Y,
+            'STACK': Opcode.AND_STACK, 'IMMEDIATE': Opcode.AND_IMMEDIATE,
+        },
+        'ORA': {
+            'DP': Opcode.ORA_DP, 'DP_X': Opcode.ORA_DP_X,
+            'ABSOLUTE': Opcode.ORA_ABSOLUTE, 'ABSOLUTE_X': Opcode.ORA_ABSOLUTE_X,
+            'ABSOLUTE_Y': Opcode.ORA_ABSOLUTE_Y,
+            'STACK': Opcode.ORA_STACK, 'IMMEDIATE': Opcode.ORA_IMMEDIATE,
+        },
+        'EOR': {
+            'DP': Opcode.EOR_DP, 'DP_X': Opcode.EOR_DP_X,
+            'ABSOLUTE': Opcode.EOR_ABSOLUTE, 'ABSOLUTE_X': Opcode.EOR_ABSOLUTE_X,
+            'ABSOLUTE_Y': Opcode.EOR_ABSOLUTE_Y,
+            'STACK': Opcode.EOR_STACK, 'IMMEDIATE': Opcode.EOR_IMMEDIATE,
+        },
+        'CMP': {
+            'DP': Opcode.CMP_DP, 'DP_X': Opcode.CMP_DP_X,
+            'ABSOLUTE': Opcode.CMP_ABSOLUTE, 'ABSOLUTE_X': Opcode.CMP_ABSOLUTE_X,
+            'ABSOLUTE_Y': Opcode.CMP_ABSOLUTE_Y,
+            'STACK': Opcode.CMP_STACK, 'IMMEDIATE': Opcode.CMP_IMMEDIATE,
+        },
+        'CPX': {
+            'DP': Opcode.CPX_DP, 'ABSOLUTE': Opcode.CPX_ABSOLUTE,
+            'IMMEDIATE': Opcode.CPX_IMMEDIATE,
+        },
+        'CPY': {
+            'DP': Opcode.CPY_DP, 'ABSOLUTE': Opcode.CPY_ABSOLUTE,
+            'IMMEDIATE': Opcode.CPY_IMMEDIATE,
+        },
+    }
+
+    # Mappings from register name to push/pull opcodes
+    _PUSH_OPCODES = {
+        'A': Opcode.PHA, 'X': Opcode.PHX, 'Y': Opcode.PHY,
+        'STATUS': Opcode.PHP, 'P': Opcode.PHP,
+        'D': Opcode.PHD, 'DBR': Opcode.PHB, 'B': Opcode.PHB,
+    }
+
+    _PULL_OPCODES = {
+        'A': Opcode.PLA, 'X': Opcode.PLX, 'Y': Opcode.PLY,
+        'STATUS': Opcode.PLP, 'P': Opcode.PLP,
+        'D': Opcode.PLD, 'DBR': Opcode.PLB, 'B': Opcode.PLB,
+    }
+
+    # Mappings for register transfers
+    _TRANSFER_OPCODES = {
+        ('A', 'X'): Opcode.TAX,
+        ('A', 'Y'): Opcode.TAY,
+        ('X', 'A'): Opcode.TXA,
+        ('Y', 'A'): Opcode.TYA,
+        ('X', 'Y'): Opcode.TXY,
+        ('Y', 'X'): Opcode.TYX,
+    }
+
+    # Mappings for load immediate by register
+    _LOAD_IMMEDIATE_OPCODES = {
+        'A': Opcode.LDA_IMMEDIATE,
+        'X': Opcode.LDX_IMMEDIATE,
+        'Y': Opcode.LDY_IMMEDIATE,
+    }
+
+    # Mappings for store to DP by register
+    _STORE_DP_OPCODES = {
+        'A': Opcode.STA_DP,
+        'X': Opcode.STX_DP,
+        'Y': Opcode.STY_DP,
+    }
+
+    def _get_opcode_for_location(self, mnemonic: str, location: PhysicalLocation) -> tuple[Opcode, Address | StackOffset]:
+        """
+        Get the appropriate Opcode variant and operand for a memory location.
+
+        Args:
+            mnemonic: Base instruction mnemonic (e.g., 'LDA', 'STA')
+            location: Physical memory location
+
+        Returns:
+            Tuple of (Opcode variant, Operand)
+        """
+        variants = self._OPCODE_VARIANTS.get(mnemonic)
+        if not variants:
+            raise InstructionSelectionError(f"No opcode variants for mnemonic: {mnemonic}")
+
+        if location.kind == LocationKind.STACK:
+            opcode = variants.get('STACK')
+            if not opcode:
+                raise InstructionSelectionError(f"{mnemonic} does not support stack-relative addressing")
+            return opcode, StackOffset(location.stack_offset)
+
+        elif location.kind == LocationKind.SCRATCH:
+            addr = location.scratch_addr
+            if location.index_register == 'X':
+                opcode = variants.get('DP_X')
+                if not opcode:
+                    raise InstructionSelectionError(f"{mnemonic} does not support DP,X addressing")
+            elif location.index_register == 'Y':
+                opcode = variants.get('DP_Y')
+                if not opcode:
+                    raise InstructionSelectionError(f"{mnemonic} does not support DP,Y addressing")
+            else:
+                opcode = variants.get('DP')
+                if not opcode:
+                    raise InstructionSelectionError(f"{mnemonic} does not support DP addressing")
+            return opcode, Address(addr)
+
+        elif location.kind == LocationKind.MEMORY:
+            addr = location.memory_addr
+            is_dp = addr < 0x100
+
+            if location.index_register == 'X':
+                if is_dp:
+                    opcode = variants.get('DP_X')
+                else:
+                    opcode = variants.get('ABSOLUTE_X')
+                if not opcode:
+                    raise InstructionSelectionError(f"{mnemonic} does not support indexed X addressing")
+            elif location.index_register == 'Y':
+                if is_dp:
+                    opcode = variants.get('DP_Y')
+                else:
+                    opcode = variants.get('ABSOLUTE_Y')
+                if not opcode:
+                    raise InstructionSelectionError(f"{mnemonic} does not support indexed Y addressing")
+            else:
+                if is_dp:
+                    opcode = variants.get('DP')
+                else:
+                    opcode = variants.get('ABSOLUTE')
+                if not opcode:
+                    raise InstructionSelectionError(f"{mnemonic} does not support {'DP' if is_dp else 'absolute'} addressing")
+            return opcode, Address(addr)
+
+        elif location.kind == LocationKind.IMMEDIATE:
+            opcode = variants.get('IMMEDIATE')
+            if not opcode:
+                raise InstructionSelectionError(f"{mnemonic} does not support immediate addressing")
+            return opcode, Immediate(location.immediate_value)
+
+        else:
+            raise InstructionSelectionError(f"Cannot use location kind {location.kind} as memory operand")
+
+    def _emit_load(self, mnemonic: str, location: PhysicalLocation, comment: str = None):
+        """Emit a load instruction with the appropriate addressing mode."""
+        opcode, operand = self._get_opcode_for_location(mnemonic, location)
+        self.emitter._node_emitter.emit_instr(opcode, operand, comment)
+
+    def _emit_store(self, mnemonic: str, location: PhysicalLocation, comment: str = None):
+        """Emit a store instruction with the appropriate addressing mode."""
+        opcode, operand = self._get_opcode_for_location(mnemonic, location)
+        self.emitter._node_emitter.emit_instr(opcode, operand, comment)
+
+    def _emit_op(self, mnemonic: str, location: PhysicalLocation, comment: str = None):
+        """Emit an ALU operation with the appropriate addressing mode."""
+        opcode, operand = self._get_opcode_for_location(mnemonic, location)
+        self.emitter._node_emitter.emit_instr(opcode, operand, comment)
+
+    def _emit_implied(self, opcode: Opcode, comment: str = None):
+        """Emit an implied addressing mode instruction."""
+        self.emitter._node_emitter.emit_instr(opcode, None, comment)
+
+    def _emit_immediate(self, opcode: Opcode, value: int, comment: str = None):
+        """Emit an immediate addressing mode instruction."""
+        self.emitter._node_emitter.emit_instr(opcode, Immediate(value), comment)
+
+    def _emit_branch(self, opcode: Opcode, label: str, comment: str = None):
+        """Emit a branch instruction to a label."""
+        self.emitter._node_emitter.emit_instr(opcode, Address(label), comment)
 
     def _block_label(self, block_id: int) -> str:
         """Format a block label with function-scoped naming."""
@@ -232,7 +453,7 @@ class InstructionSelector:
         # reg = reg - 1  →  DEX/DEY/DEC A
         # Check this BEFORE getting operand locations
         if (op in ('+', '-') and
-            isinstance(instr.right, Immediate) and
+            isinstance(instr.right, MIRImmediate) and
             instr.right.value == 1 and
             isinstance(instr.left, HardwareRegister) and
             isinstance(instr.dest, HardwareRegister) and
@@ -242,24 +463,24 @@ class InstructionSelector:
             if op == '+':
                 # Increment
                 if register == 'X':
-                    self.emitter.emit_instruction("INX", comment=f"{register}++")
+                    self._emit_implied(Opcode.INX, f"{register}++")
                     return
                 elif register == 'Y':
-                    self.emitter.emit_instruction("INY", comment=f"{register}++")
+                    self._emit_implied(Opcode.INY, f"{register}++")
                     return
                 elif register == 'A':
-                    self.emitter.emit_instruction("INC", "A", comment="A++")
+                    self._emit_implied(Opcode.INC, "A++")
                     return
             else:  # op == '-'
                 # Decrement
                 if register == 'X':
-                    self.emitter.emit_instruction("DEX", comment=f"{register}--")
+                    self._emit_implied(Opcode.DEX, f"{register}--")
                     return
                 elif register == 'Y':
-                    self.emitter.emit_instruction("DEY", comment=f"{register}--")
+                    self._emit_implied(Opcode.DEY, f"{register}--")
                     return
                 elif register == 'A':
-                    self.emitter.emit_instruction("DEC", "A", comment="A--")
+                    self._emit_implied(Opcode.DEC, "A--")
                     return
 
         # Get operand locations
@@ -275,7 +496,7 @@ class InstructionSelector:
             self._emit_register_transfer(left_loc.hw_register, 'A')
         else:
             # Load left operand from memory/stack into A
-            self.emitter.emit_instruction("LDA", self._format_operand(left_loc))
+            self._emit_load('LDA', left_loc)
 
         # Perform operation
         if op == '+':
@@ -308,7 +529,7 @@ class InstructionSelector:
             self._emit_register_transfer('A', dest_loc.hw_register)
         else:
             # Store result from A to memory/stack
-            self.emitter.emit_instruction("STA", self._format_operand(dest_loc))
+            self._emit_store('STA', dest_loc)
 
         # Handle high byte for 16-bit operations
         # NOTE: Only needed for memory-to-memory operations
@@ -326,24 +547,24 @@ class InstructionSelector:
                 left_high = self._offset_location(left_loc, 1)
                 dest_high = self._offset_location(dest_loc, 1)
 
-                self.emitter.emit_instruction("LDA", self._format_operand(left_high))
+                self._emit_load('LDA', left_high)
 
-                if isinstance(instr.right, Immediate):
+                if isinstance(instr.right, MIRImmediate):
                     high_value = (instr.right.value >> 8) & 0xFF
                     if op == '+':
-                        self.emitter.emit_instruction("ADC", f"#${high_value:02X}")
+                        self._emit_immediate(Opcode.ADC_IMMEDIATE, high_value)
                     else:  # '-'
-                        self.emitter.emit_instruction("SBC", f"#${high_value:02X}")
+                        self._emit_immediate(Opcode.SBC_IMMEDIATE, high_value)
                 else:
                     right_loc = self._get_operand_location(instr.right)
                     if right_loc.kind != LocationKind.HARDWARE:
                         right_high = self._offset_location(right_loc, 1)
                         if op == '+':
-                            self.emitter.emit_instruction("ADC", self._format_operand(right_high))
+                            self._emit_op('ADC', right_high)
                         else:  # '-'
-                            self.emitter.emit_instruction("SBC", self._format_operand(right_high))
+                            self._emit_op('SBC', right_high)
 
-                self.emitter.emit_instruction("STA", self._format_operand(dest_high))
+                self._emit_store('STA', dest_high)
 
     def select_unary_op(self, instr: UnaryOp):
         """
@@ -359,30 +580,30 @@ class InstructionSelector:
         dest_loc = self._get_operand_location(instr.dest)
 
         # Load operand
-        self.emitter.emit_instruction("LDA", self._format_operand(operand_loc))
+        self._emit_load('LDA', operand_loc)
 
         # Perform operation
         if op == '!':
             # Logical NOT: convert to 0 or 1, then XOR with 1
-            self.emitter.emit_instruction("CMP", "#0", "Check if zero")
-            self.emitter.emit_instruction("BEQ", "+", "Branch if zero")
-            self.emitter.emit_instruction("LDA", "#0", "Was non-zero, result = 0")
-            self.emitter.emit_instruction("BRA", "++")
+            self._emit_immediate(Opcode.CMP_IMMEDIATE, 0, "Check if zero")
+            self._emit_branch(Opcode.BEQ, "+", "Branch if zero")
+            self._emit_immediate(Opcode.LDA_IMMEDIATE, 0, "Was non-zero, result = 0")
+            self._emit_branch(Opcode.BRA, "++")
             self.emitter.emit_label("+")
-            self.emitter.emit_instruction("LDA", "#1", "Was zero, result = 1")
+            self._emit_immediate(Opcode.LDA_IMMEDIATE, 1, "Was zero, result = 1")
             self.emitter.emit_label("++")
         elif op == '~':
             # Bitwise NOT
-            self.emitter.emit_instruction("EOR", "#$FF", "Bitwise complement")
+            self._emit_immediate(Opcode.EOR_IMMEDIATE, 0xFF, "Bitwise complement")
         elif op == '-':
             # Negation
-            self.emitter.emit_instruction("EOR", "#$FF", "Complement")
-            self.emitter.emit_instruction("INC", "A", "Add 1 for two's complement")
+            self._emit_immediate(Opcode.EOR_IMMEDIATE, 0xFF, "Complement")
+            self._emit_implied(Opcode.INC, "Add 1 for two's complement")
         else:
             raise InstructionSelectionError(f"Unsupported unary operation: {op}")
 
         # Store result
-        self.emitter.emit_instruction("STA", self._format_operand(dest_loc))
+        self._emit_store('STA', dest_loc)
 
     # ========================================================================
     # Compare/BitTest/Rotate Operations (delegated)
@@ -395,12 +616,12 @@ class InstructionSelector:
 
     def _emit_add(self, right_operand, is_u16: bool):
         """Emit addition operation."""
-        self.emitter.emit_instruction("CLC")
+        self._emit_implied(Opcode.CLC)
         self._emit_binary_operation_with_operand("ADC", right_operand, is_u16)
 
     def _emit_sub(self, right_operand, is_u16: bool):
         """Emit subtraction operation."""
-        self.emitter.emit_instruction("SEC")
+        self._emit_implied(Opcode.SEC)
         self._emit_binary_operation_with_operand("SBC", right_operand, is_u16)
 
     def _emit_and(self, right_operand, is_u16: bool):
@@ -421,14 +642,14 @@ class InstructionSelector:
 
     def _require_immediate(self, operand, operation: str) -> int:
         """Validate operand is immediate and return its value."""
-        if not isinstance(operand, Immediate):
+        if not isinstance(operand, MIRImmediate):
             raise InstructionSelectionError(f"{operation} requires constant operand")
         return operand.value
 
-    def _emit_repeated(self, mnemonic: str, operand: str, count: int):
-        """Emit an instruction repeated count times."""
+    def _emit_repeated_opcode(self, opcode: Opcode, count: int):
+        """Emit an implied opcode repeated count times."""
         for _ in range(count):
-            self.emitter.emit_instruction(mnemonic, operand)
+            self._emit_implied(opcode)
 
     def _emit_shift_left(self, right_operand, is_u16: bool):
         """Emit left shift operation (A << count)."""
@@ -436,11 +657,11 @@ class InstructionSelector:
         bit_width = 16 if is_u16 else 8
 
         if count >= bit_width:
-            self.emitter.emit_instruction("LDA", "#$00",
-                comment=f"Shift by {count} >= {bit_width} bits = 0")
+            self._emit_immediate(Opcode.LDA_IMMEDIATE, 0x00,
+                f"Shift by {count} >= {bit_width} bits = 0")
             return
 
-        self._emit_repeated("ASL", "A", count)
+        self._emit_repeated_opcode(Opcode.ASL, count)
 
     def _emit_shift_right(self, right_operand, is_u16: bool):
         """Emit right shift operation (A >> count)."""
@@ -448,11 +669,11 @@ class InstructionSelector:
         bit_width = 16 if is_u16 else 8
 
         if count >= bit_width:
-            self.emitter.emit_instruction("LDA", "#$00",
-                comment=f"Shift by {count} >= {bit_width} bits = 0")
+            self._emit_immediate(Opcode.LDA_IMMEDIATE, 0x00,
+                f"Shift by {count} >= {bit_width} bits = 0")
             return
 
-        self._emit_repeated("LSR", "A", count)
+        self._emit_repeated_opcode(Opcode.LSR, count)
 
     # Power-of-2 to shift count mapping
     _POWER_OF_2_SHIFTS = {1: 0, 2: 1, 4: 2, 8: 3}
@@ -467,7 +688,7 @@ class InstructionSelector:
                 f"Multiply operator only supports 1, 2, 4, 8 (got {value}). "
                 f"Use mul() for general multiplication.")
 
-        self._emit_repeated("ASL", "A", shift_count)
+        self._emit_repeated_opcode(Opcode.ASL, shift_count)
 
     def _emit_divide(self, right_operand, is_u16: bool):
         """Emit divide by power of 2 (A / 1/2/4/8) using LSR instructions."""
@@ -479,7 +700,7 @@ class InstructionSelector:
                 f"Divide operator only supports 1, 2, 4, 8 (got {value}). "
                 f"Use div() for general division.")
 
-        self._emit_repeated("LSR", "A", shift_count)
+        self._emit_repeated_opcode(Opcode.LSR, shift_count)
 
     # ========================================================================
     # Control Flow (delegated to ControlFlowInstructionSelector)
@@ -504,9 +725,9 @@ class InstructionSelector:
             instr: SetMode instruction
         """
         if instr.is_set:
-            self.emitter.emit_instruction("SEP", f"#${instr.mask:02X}")
+            self._emit_immediate(Opcode.SEP, instr.mask)
         else:
-            self.emitter.emit_instruction("REP", f"#${instr.mask:02X}")
+            self._emit_immediate(Opcode.REP, instr.mask)
 
     # ========================================================================
     # Register Save/Restore
@@ -520,9 +741,9 @@ class InstructionSelector:
             instr: SaveRegister instruction
         """
         reg_name = instr.register.name
-        push_instr = RegisterMappings.PUSH.get(reg_name)
-        if push_instr:
-            self.emitter.emit_instruction(push_instr)
+        push_opcode = self._PUSH_OPCODES.get(reg_name)
+        if push_opcode:
+            self._emit_implied(push_opcode)
         else:
             raise InstructionSelectionError(f"Cannot push register: {reg_name}")
 
@@ -534,9 +755,9 @@ class InstructionSelector:
             instr: RestoreRegister instruction
         """
         reg_name = instr.register.name
-        pull_instr = RegisterMappings.PULL.get(reg_name)
-        if pull_instr:
-            self.emitter.emit_instruction(pull_instr)
+        pull_opcode = self._PULL_OPCODES.get(reg_name)
+        if pull_opcode:
+            self._emit_implied(pull_opcode)
         else:
             raise InstructionSelectionError(f"Cannot pull register: {reg_name}")
 
@@ -552,9 +773,9 @@ class InstructionSelector:
             instr: Push instruction
         """
         reg = instr.register.name
-        push_instr = RegisterMappings.PUSH.get(reg)
-        if push_instr:
-            self.emitter.emit_instruction(push_instr)
+        push_opcode = self._PUSH_OPCODES.get(reg)
+        if push_opcode:
+            self._emit_implied(push_opcode)
         else:
             raise InstructionSelectionError(f"Cannot push register: {reg}")
 
@@ -566,9 +787,9 @@ class InstructionSelector:
             instr: Pull instruction
         """
         reg = instr.register.name
-        pull_instr = RegisterMappings.PULL.get(reg)
-        if pull_instr:
-            self.emitter.emit_instruction(pull_instr)
+        pull_opcode = self._PULL_OPCODES.get(reg)
+        if pull_opcode:
+            self._emit_implied(pull_opcode)
         else:
             raise InstructionSelectionError(f"Cannot pull register: {reg}")
 
@@ -579,7 +800,7 @@ class InstructionSelector:
         Args:
             instr: ReturnFromInterrupt instruction
         """
-        self.emitter.emit_instruction("RTI")  # Return from interrupt
+        self._emit_implied(Opcode.RTI)
 
     # ========================================================================
     # Helper Methods
@@ -594,32 +815,37 @@ class InstructionSelector:
 
         Args:
             operation: Instruction mnemonic (ADC, SBC, AND, ORA, EOR)
-            right_operand: Right operand (Immediate, VirtualRegister, HardwareRegister)
+            right_operand: Right operand (MIRImmediate, VirtualRegister, HardwareRegister)
             is_u16: Whether this is a 16-bit operation
         """
-        if isinstance(right_operand, Immediate):
+        # Get the immediate opcode for this operation
+        immediate_opcode = self._OPCODE_VARIANTS[operation]['IMMEDIATE']
+
+        if isinstance(right_operand, MIRImmediate):
             value = right_operand.value & 0xFF if not is_u16 else right_operand.value
-            self.emitter.emit_instruction(operation, f"#${value:02X}")
+            self._emit_immediate(immediate_opcode, value)
         else:
             right_loc = self._get_operand_location(right_operand)
             if right_loc.kind == LocationKind.HARDWARE:
                 # Hardware register - must store to temp location first
                 # (65816 can't use hardware registers as operands for these ops)
+                temp_loc = PhysicalLocation(kind=LocationKind.SCRATCH, scratch_addr=0x00, size=1)
                 if right_loc.hw_register == 'B':
                     # B register requires XBA to access
                     self._access_b_value_in_a()
-                    self.emitter.emit_instruction("STA", "$00", "Store B to temp")
+                    self._emit_store('STA', temp_loc, "Store B to temp")
                     self._ensure_xba_state_normal("Restore A")
-                    self.emitter.emit_instruction(operation, "$00")
+                    self._emit_op(operation, temp_loc)
                 elif right_loc.hw_register in ['A', 'X', 'Y']:
-                    store_instr = {'A': 'STA', 'X': 'STX', 'Y': 'STY'}[right_loc.hw_register]
-                    self.emitter.emit_instruction(store_instr, "$00", f"Store {right_loc.hw_register} to temp")
-                    self.emitter.emit_instruction(operation, "$00")
+                    store_mnem = {'A': 'STA', 'X': 'STX', 'Y': 'STY'}[right_loc.hw_register]
+                    store_opcode = self._STORE_DP_OPCODES[right_loc.hw_register]
+                    self.emitter._node_emitter.emit_instr(store_opcode, Address(0x00), f"Store {right_loc.hw_register} to temp")
+                    self._emit_op(operation, temp_loc)
                 else:
                     raise InstructionSelectionError(f"Cannot use hardware register in operation: {right_loc.hw_register}")
             else:
                 # Memory location
-                self.emitter.emit_instruction(operation, self._format_operand(right_loc))
+                self._emit_op(operation, right_loc)
 
     def _emit_16bit_mem_to_mem(self, src_loc: PhysicalLocation, dest_loc: PhysicalLocation, comment: str = None):
         """
@@ -631,14 +857,14 @@ class InstructionSelector:
             comment: Optional comment for first instruction
         """
         # Low byte
-        self.emitter.emit_instruction("LDA", self._format_operand(src_loc), comment)
-        self.emitter.emit_instruction("STA", self._format_operand(dest_loc))
+        self._emit_load('LDA', src_loc, comment)
+        self._emit_store('STA', dest_loc)
 
         # High byte
         src_high = self._offset_location(src_loc, 1)
         dest_high = self._offset_location(dest_loc, 1)
-        self.emitter.emit_instruction("LDA", self._format_operand(src_high))
-        self.emitter.emit_instruction("STA", self._format_operand(dest_high))
+        self._emit_load('LDA', src_high)
+        self._emit_store('STA', dest_high)
 
     def _emit_16bit_immediate_store(self, value: int, dest_loc: PhysicalLocation):
         """
@@ -652,13 +878,13 @@ class InstructionSelector:
         high = (value >> 8) & 0xFF
 
         # Low byte
-        self.emitter.emit_instruction("LDA", f"#${low:02X}")
-        self.emitter.emit_instruction("STA", self._format_operand(dest_loc))
+        self._emit_immediate(Opcode.LDA_IMMEDIATE, low)
+        self._emit_store('STA', dest_loc)
 
         # High byte
         dest_high = self._offset_location(dest_loc, 1)
-        self.emitter.emit_instruction("LDA", f"#${high:02X}")
-        self.emitter.emit_instruction("STA", self._format_operand(dest_high))
+        self._emit_immediate(Opcode.LDA_IMMEDIATE, high)
+        self._emit_store('STA', dest_high)
 
     def _emit_register_transfer(self, src_reg: str, dest_reg: str):
         """
@@ -695,23 +921,18 @@ class InstructionSelector:
             elif dest_reg == 'B':
                 # X/Y to B: X/Y -> A -> B
                 # Save current A
-                self.emitter.emit_instruction("PHA", comment="Save A")
+                self._emit_implied(Opcode.PHA, "Save A")
                 self._emit_register_transfer(src_reg, 'A')
                 self._emit_xba("Move to B")
-                self.emitter.emit_instruction("PLA", comment="Restore A")
+                self._emit_implied(Opcode.PLA, "Restore A")
                 self._invalidate_xba_state()  # State unknown after PLA
                 return
 
         # Direct transfers
-        transfer_map = {
-            ('A', 'X'): 'TAX',
-            ('A', 'Y'): 'TAY',
-            ('X', 'A'): 'TXA',
-            ('Y', 'A'): 'TYA',
-        }
+        transfer_opcode = self._TRANSFER_OPCODES.get((src_reg, dest_reg))
 
-        if (src_reg, dest_reg) in transfer_map:
-            self.emitter.emit_instruction(transfer_map[(src_reg, dest_reg)])
+        if transfer_opcode:
+            self._emit_implied(transfer_opcode)
         else:
             # Indirect transfer through A (e.g., X to Y)
             if src_reg != 'A':
@@ -728,12 +949,8 @@ class InstructionSelector:
             value: Immediate value
             is_u16: Whether to use 16-bit format
         """
-        load_instr = {'A': 'LDA', 'X': 'LDX', 'Y': 'LDY'}[reg]
-
-        if is_u16:
-            self.emitter.emit_instruction(load_instr, f"#${value:04X}")
-        else:
-            self.emitter.emit_instruction(load_instr, f"#${value:02X}")
+        load_opcode = self._LOAD_IMMEDIATE_OPCODES[reg]
+        self._emit_immediate(load_opcode, value)
 
     def _get_operand_location(self, operand) -> PhysicalLocation:
         """
@@ -771,7 +988,7 @@ class InstructionSelector:
                     )
                 else:
                     raise InstructionSelectionError(f"No allocation for symbol: {operand.symbol.name}")
-        elif isinstance(operand, Immediate):
+        elif isinstance(operand, MIRImmediate):
             # Immediate value - return as immediate location
             return PhysicalLocation(
                 kind=LocationKind.IMMEDIATE,
@@ -871,6 +1088,15 @@ class InstructionSelector:
     # Array Initialization Operations
     # ========================================================================
 
+    def _emit_indexed_store(self, base_addr: int, index_reg: str, comment: str = None):
+        """Emit a store with indexed addressing: STA base,X or STA base,Y."""
+        is_dp = base_addr < 0x100
+        if index_reg == 'X':
+            opcode = Opcode.STA_DP_X if is_dp else Opcode.STA_ABSOLUTE_X
+        else:  # 'Y'
+            opcode = Opcode.STA_ABSOLUTE_Y  # No STA dp,Y on 65816
+        self.emitter._node_emitter.emit_instr(opcode, Address(base_addr), comment)
+
     def select_memory_fill(self, instr: MemoryFill):
         """
         Generate code for MemoryFill instruction.
@@ -902,27 +1128,29 @@ class InstructionSelector:
 
         self.emitter.emit_comment(f"Fill {count} x {element_size}B elements with #{fill_value}")
 
+        base_addr = dest_loc.memory_addr if dest_loc.kind == LocationKind.MEMORY else dest_loc.scratch_addr
+
         if element_size == 1:
             # 8-bit element fill
             if total_bytes <= 256:
                 # Can use X as counter (0-255)
-                self.emitter.emit_instruction("LDA", f"#${fill_value & 0xFF:02X}")
-                self.emitter.emit_instruction("LDX", f"#${total_bytes - 1:02X}")
+                self._emit_immediate(Opcode.LDA_IMMEDIATE, fill_value & 0xFF)
+                self._emit_immediate(Opcode.LDX_IMMEDIATE, total_bytes - 1)
                 self.emitter.emit_label(loop_label)
-                self.emitter.emit_instruction("STA", f"{self._format_operand(dest_loc)},X")
-                self.emitter.emit_instruction("DEX")
-                self.emitter.emit_instruction("BPL", loop_label)
+                self._emit_indexed_store(base_addr, 'X')
+                self._emit_implied(Opcode.DEX)
+                self._emit_branch(Opcode.BPL, loop_label)
             else:
                 # Large array - use 16-bit counter
                 # Use Y for counting, X for offset
-                self.emitter.emit_instruction("LDA", f"#${fill_value & 0xFF:02X}")
-                self.emitter.emit_instruction("LDX", "#$00")
-                self.emitter.emit_instruction("LDY", f"#${total_bytes & 0xFFFF:04X}")
+                self._emit_immediate(Opcode.LDA_IMMEDIATE, fill_value & 0xFF)
+                self._emit_immediate(Opcode.LDX_IMMEDIATE, 0x00)
+                self._emit_immediate(Opcode.LDY_IMMEDIATE, total_bytes & 0xFFFF)
                 self.emitter.emit_label(loop_label)
-                self.emitter.emit_instruction("STA", f"{self._format_operand(dest_loc)},X")
-                self.emitter.emit_instruction("INX")
-                self.emitter.emit_instruction("DEY")
-                self.emitter.emit_instruction("BNE", loop_label)
+                self._emit_indexed_store(base_addr, 'X')
+                self._emit_implied(Opcode.INX)
+                self._emit_implied(Opcode.DEY)
+                self._emit_branch(Opcode.BNE, loop_label)
 
         elif element_size == 2:
             # 16-bit element fill - need to fill low and high bytes
@@ -930,20 +1158,20 @@ class InstructionSelector:
             high_byte = (fill_value >> 8) & 0xFF
 
             # Use X as index (forward), Y as counter (decrement)
-            self.emitter.emit_instruction("LDX", "#$00")
-            self.emitter.emit_instruction("LDY", f"#${count:02X}")
+            self._emit_immediate(Opcode.LDX_IMMEDIATE, 0x00)
+            self._emit_immediate(Opcode.LDY_IMMEDIATE, count)
             self.emitter.emit_label(loop_label)
             # Store low byte at base+X
-            self.emitter.emit_instruction("LDA", f"#${low_byte:02X}")
-            self.emitter.emit_instruction("STA", f"{self._format_operand(dest_loc)},X")
-            self.emitter.emit_instruction("INX")
+            self._emit_immediate(Opcode.LDA_IMMEDIATE, low_byte)
+            self._emit_indexed_store(base_addr, 'X')
+            self._emit_implied(Opcode.INX)
             # Store high byte at base+X+1
-            self.emitter.emit_instruction("LDA", f"#${high_byte:02X}")
-            self.emitter.emit_instruction("STA", f"{self._format_operand(dest_loc)},X")
-            self.emitter.emit_instruction("INX")
+            self._emit_immediate(Opcode.LDA_IMMEDIATE, high_byte)
+            self._emit_indexed_store(base_addr, 'X')
+            self._emit_implied(Opcode.INX)
             # Decrement counter and loop
-            self.emitter.emit_instruction("DEY")
-            self.emitter.emit_instruction("BNE", loop_label)
+            self._emit_implied(Opcode.DEY)
+            self._emit_branch(Opcode.BNE, loop_label)
 
     def select_block_copy(self, instr: BlockCopy):
         """
@@ -963,6 +1191,8 @@ class InstructionSelector:
         Args:
             instr: BlockCopy instruction
         """
+        from r65.compiler.codegen.asm_nodes import BlockMove
+
         dest_loc = self._get_operand_location(instr.dest)
         rom_label = instr.rom_data.label
         count = instr.count
@@ -971,16 +1201,16 @@ class InstructionSelector:
 
         # Set up for MVN: A = count - 1, X = source, Y = dest
         # For 16-bit index mode, we need REP #$10 first
-        self.emitter.emit_instruction("REP", "#$30", "16-bit A and index")
+        self._emit_immediate(Opcode.REP, 0x30, "16-bit A and index")
 
         # Load count - 1 into A
-        self.emitter.emit_instruction("LDA", f"#${count - 1:04X}")
+        self._emit_immediate(Opcode.LDA_IMMEDIATE, count - 1)
 
-        # Load source address (ROM data label)
-        self.emitter.emit_instruction("LDX", f"#{rom_label}")
+        # Load source address (ROM data label) - use raw emission for label operand
+        self.emitter._node_emitter.emit_instr(Opcode.LDX_IMMEDIATE, Address(rom_label))
 
         # Load destination address
-        self.emitter.emit_instruction("LDY", f"#${dest_loc.memory_addr:04X}")
+        self._emit_immediate(Opcode.LDY_IMMEDIATE, dest_loc.memory_addr & 0xFFFF)
 
         # Perform block move
         # MVN src_bank, dst_bank
@@ -994,10 +1224,10 @@ class InstructionSelector:
         else:
             dest_bank = 0x00  # Low RAM or zeropage
 
-        self.emitter.emit_instruction("MVN", f"$00, ${dest_bank:02X}")
+        self.emitter._node_emitter.emit_instr(Opcode.MVN, BlockMove(0x00, dest_bank))
 
         # Restore 8-bit mode if needed (depends on context)
-        self.emitter.emit_instruction("SEP", "#$30", "Restore 8-bit mode")
+        self._emit_immediate(Opcode.SEP, 0x30, "Restore 8-bit mode")
 
     # ========================================================================
     # Inline Assembly
@@ -1016,4 +1246,5 @@ class InstructionSelector:
         for asm_instr in instr.instructions:
             # Emit each assembly instruction as a raw line
             # The instruction string may contain operands, e.g., "LDA #$42"
-            self.emitter.emit_instruction(asm_instr)
+            # Use raw emission since this is user-provided assembly
+            self.emitter._node_emitter.emit_raw(asm_instr)

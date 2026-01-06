@@ -6,8 +6,10 @@ return value collection, and built-in function expansion.
 """
 
 from typing import TYPE_CHECKING
-from r65.compiler.mir.nodes import Call, VirtualRegister, ArgumentMechanism, Immediate
-from r65.compiler.codegen.register_alloc import LocationKind
+from r65.compiler.mir.nodes import Call, VirtualRegister, ArgumentMechanism, Immediate as MIRImmediate
+from r65.compiler.codegen.register_alloc import LocationKind, PhysicalLocation
+from r65.compiler.codegen.opcodes import Opcode
+from r65.compiler.codegen.asm_nodes import Address, Immediate, BlockMove
 from r65.compiler.errors import InstructionSelectionError
 
 if TYPE_CHECKING:
@@ -34,6 +36,62 @@ class CallInstructionSelector:
     @property
     def emitter(self):
         return self.parent.emitter
+
+    # ========================================================================
+    # Emission Helpers
+    # ========================================================================
+
+    # Transfer opcode mapping
+    _TRANSFER_OPCODES = {
+        ('A', 'X'): Opcode.TAX, ('A', 'Y'): Opcode.TAY,
+        ('X', 'A'): Opcode.TXA, ('Y', 'A'): Opcode.TYA,
+        ('X', 'Y'): Opcode.TXY, ('Y', 'X'): Opcode.TYX,
+    }
+
+    # Push/Pull opcode mapping
+    _PUSH_OPCODES = {'A': Opcode.PHA, 'X': Opcode.PHX, 'Y': Opcode.PHY, 'B': Opcode.PHB}
+    _PULL_OPCODES = {'A': Opcode.PLA, 'X': Opcode.PLX, 'Y': Opcode.PLY, 'B': Opcode.PLB}
+
+    # Load immediate opcode mapping
+    _LOAD_IMMEDIATE_OPCODES = {
+        'A': Opcode.LDA_IMMEDIATE, 'X': Opcode.LDX_IMMEDIATE, 'Y': Opcode.LDY_IMMEDIATE
+    }
+
+    def _emit_implied(self, opcode: Opcode, comment: str = None):
+        """Emit an implied addressing mode instruction."""
+        self.emitter._node_emitter.emit_instr(opcode, None, comment)
+
+    def _emit_immediate(self, opcode: Opcode, value: int, comment: str = None):
+        """Emit an immediate addressing mode instruction."""
+        self.emitter._node_emitter.emit_instr(opcode, Immediate(value), comment)
+
+    def _emit_absolute(self, opcode: Opcode, label: str, comment: str = None):
+        """Emit an absolute addressing mode instruction (for calls/jumps)."""
+        self.emitter._node_emitter.emit_instr(opcode, Address(label), comment)
+
+    def _emit_transfer(self, source: str, dest: str):
+        """Emit a register transfer instruction."""
+        opcode = self._TRANSFER_OPCODES.get((source, dest))
+        if opcode:
+            self._emit_implied(opcode)
+
+    def _emit_push(self, reg: str, comment: str = None):
+        """Emit a push instruction."""
+        opcode = self._PUSH_OPCODES.get(reg)
+        if opcode:
+            self._emit_implied(opcode, comment)
+
+    def _emit_pull(self, reg: str, comment: str = None):
+        """Emit a pull instruction."""
+        opcode = self._PULL_OPCODES.get(reg)
+        if opcode:
+            self._emit_implied(opcode, comment)
+
+    def _emit_load_immediate(self, reg: str, value: int, comment: str = None):
+        """Emit a load immediate instruction."""
+        opcode = self._LOAD_IMMEDIATE_OPCODES.get(reg)
+        if opcode:
+            self._emit_immediate(opcode, value, comment)
 
     # ========================================================================
     # Main Call Selection
@@ -68,7 +126,7 @@ class CallInstructionSelector:
 
         # Step 4: Restore DBR if caller-managed
         if needs_dbr_restore:
-            self.emitter.emit_instruction("PLB", comment="Restore data bank (caller)")
+            self._emit_pull('B', "Restore data bank (caller)")
 
         # Step 5: Clean up stack arguments (callee cleanup for R65)
         self._emit_stack_cleanup(stack_arg_count)
@@ -139,15 +197,15 @@ class CallInstructionSelector:
             pass  # Already in A
         elif arg_loc.kind == LocationKind.HARDWARE:
             if arg_loc.hw_register == 'X':
-                self.emitter.emit_instruction("TXA")
+                self._emit_transfer('X', 'A')
             elif arg_loc.hw_register == 'Y':
-                self.emitter.emit_instruction("TYA")
-        elif isinstance(arg.value, Immediate):
-            self.emitter.emit_instruction("LDA", f"#${arg.value.value:02X}")
+                self._emit_transfer('Y', 'A')
+        elif isinstance(arg.value, MIRImmediate):
+            self._emit_load_immediate('A', arg.value.value)
         else:
-            self.emitter.emit_instruction("LDA", self.parent._format_operand(arg_loc))
+            self.parent._emit_load('LDA', arg_loc)
 
-        self.emitter.emit_instruction("PHA", comment="Push stack arg")
+        self._emit_push('A', "Push stack arg")
 
     def _emit_register_argument(self, arg, arg_loc):
         """Emit register argument (move to specified register)."""
@@ -158,41 +216,33 @@ class CallInstructionSelector:
 
         if target_reg == 'B':
             self._emit_b_register_argument(arg, arg_loc)
-        elif isinstance(arg.value, Immediate):
+        elif isinstance(arg.value, MIRImmediate):
             self._emit_immediate_to_register(arg.value.value, target_reg)
         else:
             self._emit_memory_to_register(arg_loc, target_reg)
 
     def _emit_b_register_argument(self, arg, arg_loc):
         """Emit B register argument (special handling)."""
-        if isinstance(arg.value, Immediate):
-            self.emitter.emit_instruction("LDA", f"#${arg.value.value:02X}")
+        if isinstance(arg.value, MIRImmediate):
+            self._emit_load_immediate('A', arg.value.value)
             self.parent._store_to_b_from_a()
         elif arg_loc.kind == LocationKind.HARDWARE:
             if arg_loc.hw_register != 'A':
                 self.parent._emit_register_transfer(arg_loc.hw_register, 'A')
             self.parent._store_to_b_from_a()
         else:
-            self.emitter.emit_instruction("LDA", self.parent._format_operand(arg_loc))
+            self.parent._emit_load('LDA', arg_loc)
             self.parent._store_to_b_from_a()
 
     def _emit_immediate_to_register(self, value: int, target_reg: str):
         """Load immediate value into target register."""
-        if target_reg == 'A':
-            self.emitter.emit_instruction("LDA", f"#${value:02X}")
-        elif target_reg == 'X':
-            self.emitter.emit_instruction("LDX", f"#${value:02X}")
-        elif target_reg == 'Y':
-            self.emitter.emit_instruction("LDY", f"#${value:02X}")
+        self._emit_load_immediate(target_reg, value)
 
     def _emit_memory_to_register(self, arg_loc, target_reg: str):
         """Load from memory into target register."""
-        if target_reg == 'A':
-            self.emitter.emit_instruction("LDA", self.parent._format_operand(arg_loc))
-        elif target_reg == 'X':
-            self.emitter.emit_instruction("LDX", self.parent._format_operand(arg_loc))
-        elif target_reg == 'Y':
-            self.emitter.emit_instruction("LDY", self.parent._format_operand(arg_loc))
+        mnemonic = {'A': 'LDA', 'X': 'LDX', 'Y': 'LDY'}.get(target_reg)
+        if mnemonic:
+            self.parent._emit_load(mnemonic, arg_loc)
 
     def _emit_variable_argument(self, arg, arg_loc):
         """Emit variable-bound argument (store to memory location)."""
@@ -201,17 +251,17 @@ class CallInstructionSelector:
             pass  # Already in A
         elif arg_loc.kind == LocationKind.HARDWARE:
             if arg_loc.hw_register == 'X':
-                self.emitter.emit_instruction("TXA")
+                self._emit_transfer('X', 'A')
             elif arg_loc.hw_register == 'Y':
-                self.emitter.emit_instruction("TYA")
-        elif isinstance(arg.value, Immediate):
-            self.emitter.emit_instruction("LDA", f"#${arg.value.value:02X}")
+                self._emit_transfer('Y', 'A')
+        elif isinstance(arg.value, MIRImmediate):
+            self._emit_load_immediate('A', arg.value.value)
         else:
-            self.emitter.emit_instruction("LDA", self.parent._format_operand(arg_loc))
+            self.parent._emit_load('LDA', arg_loc)
 
         # Store to variable location
         var_loc = self.parent._get_operand_location(arg.location)
-        self.emitter.emit_instruction("STA", self.parent._format_operand(var_loc))
+        self.parent._emit_store('STA', var_loc)
 
     # ========================================================================
     # DBR Management
@@ -236,11 +286,10 @@ class CallInstructionSelector:
             return False
 
         # Caller manages DBR: save, set, call, restore
-        self.emitter.emit_instruction("PHB", comment="Save current data bank (caller)")
-        self.emitter.emit_instruction("LDA", f"#${instr.bank_attr.bank_number:02X}",
-                                      "Load callee's bank number")
-        self.emitter.emit_instruction("PHA", comment="Push bank number")
-        self.emitter.emit_instruction("PLB", comment="Set data bank for callee")
+        self._emit_push('B', "Save current data bank (caller)")
+        self._emit_load_immediate('A', instr.bank_attr.bank_number, "Load callee's bank number")
+        self._emit_push('A', "Push bank number")
+        self._emit_pull('B', "Set data bank for callee")
         return True
 
     # ========================================================================
@@ -262,9 +311,9 @@ class CallInstructionSelector:
         elif isinstance(instr.function, str):
             # Direct call
             if instr.is_far:
-                self.emitter.emit_instruction("JSL", instr.function)
+                self._emit_absolute(Opcode.JSL, instr.function)
             else:
-                self.emitter.emit_instruction("JSR", instr.function)
+                self._emit_absolute(Opcode.JSR, instr.function)
         else:
             raise InstructionSelectionError(f"Unknown function type in Call: {type(instr.function)}")
 
@@ -297,27 +346,27 @@ class CallInstructionSelector:
         if is_far:
             # Far call trampoline (24-bit address)
             bank_loc = self.parent._offset_location(ptr_loc, 2)
-            self.emitter.emit_instruction("LDA", self.parent._format_operand(bank_loc), "Load bank byte")
-            self.emitter.emit_instruction("PHA", comment="Push bank")
+            self.parent._emit_load('LDA', bank_loc, "Load bank byte")
+            self._emit_push('A', "Push bank")
 
             high_loc = self.parent._offset_location(ptr_loc, 1)
-            self.emitter.emit_instruction("LDA", self.parent._format_operand(high_loc), "Load high byte")
-            self.emitter.emit_instruction("PHA", comment="Push high")
+            self.parent._emit_load('LDA', high_loc, "Load high byte")
+            self._emit_push('A', "Push high")
 
-            self.emitter.emit_instruction("LDA", self.parent._format_operand(ptr_loc), "Load low byte")
-            self.emitter.emit_instruction("PHA", comment="Push low")
+            self.parent._emit_load('LDA', ptr_loc, "Load low byte")
+            self._emit_push('A', "Push low")
 
-            self.emitter.emit_instruction("RTL", comment="Indirect far call via trampoline")
+            self._emit_implied(Opcode.RTL, "Indirect far call via trampoline")
         else:
             # Near call trampoline (16-bit address)
             high_loc = self.parent._offset_location(ptr_loc, 1)
-            self.emitter.emit_instruction("LDA", self.parent._format_operand(high_loc), "Load high byte")
-            self.emitter.emit_instruction("PHA", comment="Push high")
+            self.parent._emit_load('LDA', high_loc, "Load high byte")
+            self._emit_push('A', "Push high")
 
-            self.emitter.emit_instruction("LDA", self.parent._format_operand(ptr_loc), "Load low byte")
-            self.emitter.emit_instruction("PHA", comment="Push low")
+            self.parent._emit_load('LDA', ptr_loc, "Load low byte")
+            self._emit_push('A', "Push low")
 
-            self.emitter.emit_instruction("RTS", comment="Indirect near call via trampoline")
+            self._emit_implied(Opcode.RTS, "Indirect near call via trampoline")
 
     # ========================================================================
     # Stack Cleanup and Return Values
@@ -326,7 +375,7 @@ class CallInstructionSelector:
     def _emit_stack_cleanup(self, stack_arg_count: int):
         """Clean up stack arguments after call."""
         for _ in range(stack_arg_count):
-            self.emitter.emit_instruction("PLA", comment="Clean up stack arg")
+            self._emit_pull('A', "Clean up stack arg")
 
     def _emit_return_value_collection(self, instr: Call):
         """
@@ -355,23 +404,13 @@ class CallInstructionSelector:
 
     def _emit_return_register_transfer(self, source_reg: str, dest_reg: str):
         """Transfer return value between hardware registers."""
-        if source_reg == 'A' and dest_reg == 'X':
-            self.emitter.emit_instruction("TAX")
-        elif source_reg == 'A' and dest_reg == 'Y':
-            self.emitter.emit_instruction("TAY")
-        elif source_reg == 'X' and dest_reg == 'A':
-            self.emitter.emit_instruction("TXA")
-        elif source_reg == 'Y' and dest_reg == 'A':
-            self.emitter.emit_instruction("TYA")
+        self._emit_transfer(source_reg, dest_reg)
 
     def _emit_return_store(self, source_reg: str, dest_loc):
         """Store return value from register to memory."""
-        if source_reg == 'A':
-            self.emitter.emit_instruction("STA", self.parent._format_operand(dest_loc))
-        elif source_reg == 'X':
-            self.emitter.emit_instruction("STX", self.parent._format_operand(dest_loc))
-        elif source_reg == 'Y':
-            self.emitter.emit_instruction("STY", self.parent._format_operand(dest_loc))
+        mnemonic = {'A': 'STA', 'X': 'STX', 'Y': 'STY'}.get(source_reg)
+        if mnemonic:
+            self.parent._emit_store(mnemonic, dest_loc)
 
     # ========================================================================
     # Built-in Function Calls
@@ -408,21 +447,32 @@ class CallInstructionSelector:
         elif builtin.kind in (BuiltinKind.ARITHMETIC, BuiltinKind.SHIFT):
             self._emit_runtime_builtin(instr, builtin)
 
+    # Mapping from builtin instruction names to Opcode enum values
+    _BUILTIN_OPCODES = {
+        'NOP': Opcode.NOP, 'WAI': Opcode.WAI, 'STP': Opcode.STP, 'XBA': Opcode.XBA,
+        'SEP': Opcode.SEP, 'REP': Opcode.REP, 'COP': Opcode.COP,
+        'MVN': Opcode.MVN, 'MVP': Opcode.MVP,
+    }
+
     def _emit_processor_control_builtin(self, instr: Call, builtin):
         """Emit processor control built-in (wai, stp, xba, NOP)."""
+        opcode = self._BUILTIN_OPCODES.get(builtin.instruction)
+        if not opcode:
+            raise InstructionSelectionError(f"Unknown processor control builtin: {builtin.instruction}")
+
         if instr.builtin_name == 'NOP':
             count = 1  # Default
             if len(instr.args) == 1:
                 arg = instr.args[0]
-                if isinstance(arg.value, Immediate):
+                if isinstance(arg.value, MIRImmediate):
                     count = arg.value.value
                 else:
                     raise InstructionSelectionError("NOP() count must be a constant immediate value")
 
             for _ in range(count):
-                self.emitter.emit_instruction(builtin.instruction)
+                self._emit_implied(opcode)
         else:
-            self.emitter.emit_instruction(builtin.instruction)
+            self._emit_implied(opcode)
 
     def _emit_mode_control_builtin(self, instr: Call, builtin):
         """Emit mode control built-in (SEP, REP)."""
@@ -430,14 +480,21 @@ class CallInstructionSelector:
             raise InstructionSelectionError(
                 f"{instr.builtin_name}() expects 1 argument, got {len(instr.args)}")
 
+        opcode = self._BUILTIN_OPCODES.get(builtin.instruction)
+        if not opcode:
+            raise InstructionSelectionError(f"Unknown mode control builtin: {builtin.instruction}")
+
         arg = instr.args[0]
         arg_loc = self.parent._get_operand_location(arg.value)
 
-        if isinstance(arg.value, Immediate):
-            self.emitter.emit_instruction(builtin.instruction, f"#${arg.value.value:02X}")
+        if isinstance(arg.value, MIRImmediate):
+            self._emit_immediate(opcode, arg.value.value)
         else:
-            self.emitter.emit_instruction("LDA", self.parent._format_operand(arg_loc))
-            self.emitter.emit_instruction(builtin.instruction, "A")
+            # SEP/REP with dynamic value - load and use accumulator mode
+            self.parent._emit_load('LDA', arg_loc)
+            # Note: SEP A and REP A are not valid - dynamic mode control is not supported
+            raise InstructionSelectionError(
+                f"{instr.builtin_name}() requires an immediate constant value")
 
     def _emit_software_interrupt_builtin(self, instr: Call, builtin):
         """Emit software interrupt built-in (cop)."""
@@ -445,11 +502,15 @@ class CallInstructionSelector:
             raise InstructionSelectionError(
                 f"{instr.builtin_name}() expects 1 argument, got {len(instr.args)}")
 
+        opcode = self._BUILTIN_OPCODES.get(builtin.instruction)
+        if not opcode:
+            raise InstructionSelectionError(f"Unknown software interrupt builtin: {builtin.instruction}")
+
         arg = instr.args[0]
 
         # COP requires an immediate signature byte
-        if isinstance(arg.value, Immediate):
-            self.emitter.emit_instruction(builtin.instruction, f"#${arg.value.value:02X}")
+        if isinstance(arg.value, MIRImmediate):
+            self._emit_immediate(opcode, arg.value.value)
         else:
             raise InstructionSelectionError(
                 f"{instr.builtin_name}() requires a constant signature byte")
@@ -463,14 +524,18 @@ class CallInstructionSelector:
         src_bank_arg = instr.args[0]
         dst_bank_arg = instr.args[1]
 
-        if not isinstance(src_bank_arg.value, Immediate) or not isinstance(dst_bank_arg.value, Immediate):
+        if not isinstance(src_bank_arg.value, MIRImmediate) or not isinstance(dst_bank_arg.value, MIRImmediate):
             raise InstructionSelectionError(
                 f"{instr.builtin_name}() expects immediate bank numbers")
 
         src_bank = src_bank_arg.value.value
         dst_bank = dst_bank_arg.value.value
 
-        self.emitter.emit_instruction(builtin.instruction, f"${dst_bank:02X}", f"${src_bank:02X}")
+        opcode = self._BUILTIN_OPCODES.get(builtin.instruction)
+        if not opcode:
+            raise InstructionSelectionError(f"Unknown block move builtin: {builtin.instruction}")
+
+        self.emitter._node_emitter.emit_instr(opcode, BlockMove(src_bank, dst_bank))
 
     def _emit_runtime_builtin(self, instr: Call, builtin):
         """Emit runtime library built-in (mul, div, mod, shl, shr)."""
@@ -481,26 +546,26 @@ class CallInstructionSelector:
         # Load first argument into A
         arg0 = instr.args[0]
         arg0_loc = self.parent._get_operand_location(arg0.value)
-        if isinstance(arg0.value, Immediate):
-            self.emitter.emit_instruction("LDA", f"#${arg0.value.value:02X}")
+        if isinstance(arg0.value, MIRImmediate):
+            self._emit_load_immediate('A', arg0.value.value)
         elif arg0_loc.kind == LocationKind.HARDWARE and arg0_loc.hw_register == 'A':
             pass  # Already in A
         else:
-            self.emitter.emit_instruction("LDA", self.parent._format_operand(arg0_loc))
+            self.parent._emit_load('LDA', arg0_loc)
 
         # Load second argument into X
         arg1 = instr.args[1]
         arg1_loc = self.parent._get_operand_location(arg1.value)
-        if isinstance(arg1.value, Immediate):
-            self.emitter.emit_instruction("LDX", f"#${arg1.value.value:02X}")
+        if isinstance(arg1.value, MIRImmediate):
+            self._emit_load_immediate('X', arg1.value.value)
         elif arg1_loc.kind == LocationKind.HARDWARE and arg1_loc.hw_register == 'X':
             pass  # Already in X
         else:
-            self.emitter.emit_instruction("LDX", self.parent._format_operand(arg1_loc))
+            self.parent._emit_load('LDX', arg1_loc)
 
         # Call runtime library function
         runtime_func_name = f"__builtin_{instr.builtin_name}"
-        self.emitter.emit_instruction("JSR", runtime_func_name)
+        self._emit_absolute(Opcode.JSR, runtime_func_name)
 
         # Store result if needed
         if instr.returns:
@@ -510,4 +575,4 @@ class CallInstructionSelector:
             if dest_loc.kind == LocationKind.HARDWARE and dest_loc.hw_register == 'A':
                 pass  # Already in A
             else:
-                self.emitter.emit_instruction("STA", self.parent._format_operand(dest_loc))
+                self.parent._emit_store('STA', dest_loc)

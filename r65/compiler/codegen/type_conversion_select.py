@@ -6,8 +6,10 @@ narrowing, and reinterpret casts.
 """
 
 from typing import TYPE_CHECKING
-from r65.compiler.mir.nodes import TypeConvert, Immediate
+from r65.compiler.mir.nodes import TypeConvert, Immediate as MIRImmediate
 from r65.compiler.errors import InstructionSelectionError
+from r65.compiler.codegen.opcodes import Opcode
+from r65.compiler.codegen.asm_nodes import Immediate, Address
 
 if TYPE_CHECKING:
     from r65.compiler.codegen.instruction_select import InstructionSelector
@@ -33,6 +35,23 @@ class TypeConversionSelector:
     @property
     def emitter(self):
         return self.parent.emitter
+
+    # ========================================================================
+    # Emission Helpers
+    # ========================================================================
+
+    def _emit_instr(self, opcode: Opcode, operand=None, comment: str = None):
+        """Emit an instruction using the node emitter."""
+        self.emitter._node_emitter.emit_instr(opcode, operand, comment)
+
+    def _emit_load_store(self, mnemonic: str, location, comment: str = None):
+        """Emit a load/store instruction using parent's opcode selection."""
+        opcode, operand = self.parent._get_opcode_for_location(mnemonic, location)
+        self._emit_instr(opcode, operand, comment)
+
+    def _emit_label(self, name: str):
+        """Emit a label."""
+        self.emitter.emit_label(name)
 
     # ========================================================================
     # Type Conversion Selection
@@ -86,15 +105,15 @@ class TypeConversionSelector:
             source_signed: True if source is signed (requires sign extension)
         """
         # Load source into A
-        if isinstance(src_operand, Immediate):
+        if isinstance(src_operand, MIRImmediate):
             value = src_operand.value & 0xFF
-            self.emitter.emit_instruction("LDA", f"#${value:02X}")
+            self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(value))
         else:
             src_loc = self.parent._get_operand_location(src_operand)
-            self.emitter.emit_instruction("LDA", self.parent._format_operand(src_loc))
+            self._emit_load_store('LDA', src_loc)
 
         # Store low byte
-        self.emitter.emit_instruction("STA", self.parent._format_operand(dest_loc))
+        self._emit_load_store('STA', dest_loc)
 
         if source_signed:
             # Sign extension for i8 -> i16
@@ -109,25 +128,25 @@ class TypeConversionSelector:
 
         If high bit is set (negative), extend with 0xFF, else 0x00.
         """
-        self.emitter.emit_instruction("AND", "#$80", "Check sign bit")
-        self.emitter.emit_instruction("BEQ", "+", "Branch if positive")
-        self.emitter.emit_instruction("LDA", "#$FF", "Negative: extend with $FF")
-        self.emitter.emit_instruction("BRA", "++")
-        self.emitter.emit_label("+")
-        self.emitter.emit_instruction("LDA", "#$00", "Positive: extend with $00")
-        self.emitter.emit_label("++")
+        self._emit_instr(Opcode.AND_IMMEDIATE, Immediate(0x80), "Check sign bit")
+        self._emit_instr(Opcode.BEQ, Address("+"), "Branch if positive")
+        self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(0xFF), "Negative: extend with $FF")
+        self._emit_instr(Opcode.BRA, Address("++"))
+        self._emit_label("+")
+        self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(0x00), "Positive: extend with $00")
+        self._emit_label("++")
 
         # Store high byte
         dest_high = self.parent._offset_location(dest_loc, 1)
-        self.emitter.emit_instruction("STA", self.parent._format_operand(dest_high))
+        self._emit_load_store('STA', dest_high)
 
     def _emit_zero_extension(self, dest_loc):
         """Emit zero extension for u8 -> u16."""
-        self.emitter.emit_instruction("LDA", "#$00", "Zero-extend high byte")
+        self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(0x00), "Zero-extend high byte")
 
         # Store high byte
         dest_high = self.parent._offset_location(dest_loc, 1)
-        self.emitter.emit_instruction("STA", self.parent._format_operand(dest_high))
+        self._emit_load_store('STA', dest_high)
 
     # ========================================================================
     # Narrowing Conversion
@@ -143,11 +162,11 @@ class TypeConversionSelector:
             src_operand: Source operand
             dest_loc: Destination location
         """
-        if isinstance(src_operand, Immediate):
+        if isinstance(src_operand, MIRImmediate):
             value = src_operand.value & 0xFF
-            self.emitter.emit_instruction("LDA", f"#${value:02X}")
+            self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(value))
         else:
             src_loc = self.parent._get_operand_location(src_operand)
-            self.emitter.emit_instruction("LDA", self.parent._format_operand(src_loc), "Load low byte")
+            self._emit_load_store('LDA', src_loc, "Load low byte")
 
-        self.emitter.emit_instruction("STA", self.parent._format_operand(dest_loc))
+        self._emit_load_store('STA', dest_loc)

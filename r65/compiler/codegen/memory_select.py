@@ -6,9 +6,11 @@ addressing modes for the 65816 processor.
 """
 
 from typing import TYPE_CHECKING
-from r65.compiler.mir.nodes import Load, Store, LoadIndirect, StoreIndirect, Immediate, FunctionPointer
+from r65.compiler.mir.nodes import Load, Store, LoadIndirect, StoreIndirect, Immediate as MIRImmediate, FunctionPointer
 from r65.compiler.codegen.register_alloc import LocationKind
 from r65.compiler.errors import InstructionSelectionError
+from r65.compiler.codegen.opcodes import Opcode
+from r65.compiler.codegen.asm_nodes import Immediate, Address
 
 if TYPE_CHECKING:
     from r65.compiler.codegen.instruction_select import InstructionSelector
@@ -36,6 +38,19 @@ class MemoryOperationSelector:
         return self.parent.emitter
 
     # ========================================================================
+    # Emission Helpers
+    # ========================================================================
+
+    def _emit_instr(self, opcode: Opcode, operand=None, comment: str = None):
+        """Emit an instruction using the node emitter."""
+        self.emitter._node_emitter.emit_instr(opcode, operand, comment)
+
+    def _emit_load_store(self, mnemonic: str, location, comment: str = None):
+        """Emit a load/store instruction using parent's emit_load/emit_store."""
+        opcode, operand = self.parent._get_opcode_for_location(mnemonic, location)
+        self._emit_instr(opcode, operand, comment)
+
+    # ========================================================================
     # Direct Memory Operations
     # ========================================================================
 
@@ -56,8 +71,8 @@ class MemoryOperationSelector:
         if is_u16:
             self.parent._emit_16bit_mem_to_mem(src_loc, dest_loc)
         else:
-            self.emitter.emit_instruction("LDA", self.parent._format_operand(src_loc))
-            self.emitter.emit_instruction("STA", self.parent._format_operand(dest_loc))
+            self._emit_load_store('LDA', src_loc)
+            self._emit_load_store('STA', dest_loc)
 
     def select_store(self, instr: Store):
         """
@@ -77,7 +92,7 @@ class MemoryOperationSelector:
             return
 
         # SPECIAL CASE: Handle immediate values
-        if isinstance(instr.source, Immediate):
+        if isinstance(instr.source, MIRImmediate):
             self._store_immediate(instr.source.value, dest_loc, is_u16)
             return
 
@@ -91,9 +106,9 @@ class MemoryOperationSelector:
 
     def _store_to_b_register(self, instr: Store, dest_loc):
         """Handle storing to the B register (hidden accumulator high byte)."""
-        if isinstance(instr.source, Immediate):
+        if isinstance(instr.source, MIRImmediate):
             value = instr.source.value & 0xFF
-            self.emitter.emit_instruction("LDA", f"#${value:02X}")
+            self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(value))
             self.parent._mark_a_modified()
             self.parent._store_to_b_from_a()
         else:
@@ -101,7 +116,7 @@ class MemoryOperationSelector:
             if src_loc.kind == LocationKind.HARDWARE and src_loc.hw_register == 'A':
                 self.parent._store_to_b_from_a()
             else:
-                self.emitter.emit_instruction("LDA", self.parent._format_operand(src_loc))
+                self._emit_load_store('LDA', src_loc)
                 self.parent._mark_a_modified()
                 self.parent._store_to_b_from_a()
 
@@ -111,8 +126,8 @@ class MemoryOperationSelector:
             self.parent._emit_16bit_immediate_store(value, dest_loc)
         else:
             value_masked = value & 0xFF
-            self.emitter.emit_instruction("LDA", f"#${value_masked:02X}")
-            self.emitter.emit_instruction("STA", self.parent._format_operand(dest_loc))
+            self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(value_masked))
+            self._emit_load_store('STA', dest_loc)
 
     def _store_from_location(self, instr: Store, dest_loc, is_u16: bool):
         """Store from a source location to destination."""
@@ -123,23 +138,23 @@ class MemoryOperationSelector:
         elif is_u16:
             self.parent._emit_16bit_mem_to_mem(src_loc, dest_loc)
         else:
-            self.emitter.emit_instruction("LDA", self.parent._format_operand(src_loc))
-            self.emitter.emit_instruction("STA", self.parent._format_operand(dest_loc))
+            self._emit_load_store('LDA', src_loc)
+            self._emit_load_store('STA', dest_loc)
 
     def _store_from_hardware_register(self, src_loc, dest_loc, is_u16: bool):
         """Store from a hardware register to memory."""
-        store_instructions = {'A': 'STA', 'X': 'STX', 'Y': 'STY'}
+        store_mnemonics = {'A': 'STA', 'X': 'STX', 'Y': 'STY'}
         reg = src_loc.hw_register
 
         if reg == 'B':
             # B register: swap to A, store, swap back
             self.parent._access_b_value_in_a()
-            self.emitter.emit_instruction("STA", self.parent._format_operand(dest_loc))
+            self._emit_load_store('STA', dest_loc)
             self.parent._ensure_xba_state_normal("Restore A register")
-        elif reg not in store_instructions:
+        elif reg not in store_mnemonics:
             raise InstructionSelectionError(f"Cannot store from hardware register: {reg}")
         else:
-            self.emitter.emit_instruction(store_instructions[reg], self.parent._format_operand(dest_loc))
+            self._emit_load_store(store_mnemonics[reg], dest_loc)
 
     def _store_function_pointer(self, func_ptr: FunctionPointer, dest_loc, type_info):
         """Store a function pointer address directly to memory."""
@@ -152,24 +167,24 @@ class MemoryOperationSelector:
 
         if is_far:
             # Far pointer: 3 bytes (low, high, bank)
-            self.emitter.emit_instruction("LDA", f"#<{func_name}", "Load function address low byte")
-            self.emitter.emit_instruction("STA", self.parent._format_operand(dest_loc))
+            self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(f"<{func_name}"), "Load function address low byte")
+            self._emit_load_store('STA', dest_loc)
 
             dest_high = self.parent._offset_location(dest_loc, 1)
-            self.emitter.emit_instruction("LDA", f"#>{func_name}", "Load function address high byte")
-            self.emitter.emit_instruction("STA", self.parent._format_operand(dest_high))
+            self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(f">{func_name}"), "Load function address high byte")
+            self._emit_load_store('STA', dest_high)
 
             dest_bank = self.parent._offset_location(dest_loc, 2)
-            self.emitter.emit_instruction("LDA", f"#^{func_name}", "Load function bank byte")
-            self.emitter.emit_instruction("STA", self.parent._format_operand(dest_bank))
+            self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(f"^{func_name}"), "Load function bank byte")
+            self._emit_load_store('STA', dest_bank)
         else:
             # Near pointer: 2 bytes (low, high)
-            self.emitter.emit_instruction("LDA", f"#<{func_name}", "Load function address low byte")
-            self.emitter.emit_instruction("STA", self.parent._format_operand(dest_loc))
+            self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(f"<{func_name}"), "Load function address low byte")
+            self._emit_load_store('STA', dest_loc)
 
             dest_high = self.parent._offset_location(dest_loc, 1)
-            self.emitter.emit_instruction("LDA", f"#>{func_name}", "Load function address high byte")
-            self.emitter.emit_instruction("STA", self.parent._format_operand(dest_high))
+            self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(f">{func_name}"), "Load function address high byte")
+            self._emit_load_store('STA', dest_high)
 
     # ========================================================================
     # Indirect Memory Operations
@@ -193,14 +208,14 @@ class MemoryOperationSelector:
 
         self._validate_pointer_location(ptr_loc)
 
-        indirect_mode = self._format_indirect_mode(ptr_loc, instr.is_far, instr.index_register)
+        opcode, operand = self._get_indirect_opcode('LDA', ptr_loc, instr.is_far, instr.index_register)
         is_u16 = self.parent._is_16bit(instr.type_info)
 
         if is_u16:
             raise InstructionSelectionError("16-bit indirect loads not yet supported")
 
-        self.emitter.emit_instruction("LDA", indirect_mode, "Load through pointer")
-        self.emitter.emit_instruction("STA", self.parent._format_operand(dest_loc))
+        self._emit_instr(opcode, operand, "Load through pointer")
+        self._emit_load_store('STA', dest_loc)
 
     def select_store_indirect(self, instr: StoreIndirect):
         """
@@ -220,22 +235,22 @@ class MemoryOperationSelector:
 
         self._validate_pointer_location(ptr_loc)
 
-        indirect_mode = self._format_indirect_mode(ptr_loc, instr.is_far, instr.index_register)
+        opcode, operand = self._get_indirect_opcode('STA', ptr_loc, instr.is_far, instr.index_register)
         is_u16 = self.parent._is_16bit(instr.type_info)
 
         # Load source value into A
-        if isinstance(instr.source, Immediate):
+        if isinstance(instr.source, MIRImmediate):
             value = instr.source.value & 0xFF
-            self.emitter.emit_instruction("LDA", f"#${value:02X}")
+            self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(value))
         elif src_loc.kind == LocationKind.HARDWARE and src_loc.hw_register == 'A':
             pass  # Already in A
         else:
-            self.emitter.emit_instruction("LDA", self.parent._format_operand(src_loc))
+            self._emit_load_store('LDA', src_loc)
 
         if is_u16:
             raise InstructionSelectionError("16-bit indirect stores not yet supported")
 
-        self.emitter.emit_instruction("STA", indirect_mode, "Store through pointer")
+        self._emit_instr(opcode, operand, "Store through pointer")
 
     def _validate_pointer_location(self, ptr_loc):
         """Validate that pointer is in memory (not immediate or hardware register)."""
@@ -243,27 +258,47 @@ class MemoryOperationSelector:
             raise InstructionSelectionError(
                 f"Pointer for indirect addressing must be in memory, got: {ptr_loc}")
 
-    def _format_indirect_mode(self, ptr_loc, is_far: bool, index_register: str = None) -> str:
+    def _get_indirect_opcode(self, mnemonic: str, ptr_loc, is_far: bool, index_register: str = None):
         """
-        Format indirect addressing mode string.
+        Get opcode and operand for indirect addressing mode.
 
         Args:
+            mnemonic: Base mnemonic ('LDA' or 'STA')
             ptr_loc: Physical location of pointer
             is_far: True for far pointer (24-bit)
             index_register: Optional index register ('Y' for (zp),Y)
 
         Returns:
-            Formatted addressing mode string
+            Tuple of (Opcode, operand)
         """
-        ptr_addr = self.parent._format_operand(ptr_loc)
-
-        if is_far:
-            # Far pointer - long indirect [zp] or [zp],Y
-            if index_register:
-                return f"[{ptr_addr}],{index_register}"
-            return f"[{ptr_addr}]"
+        # Get the address value from the pointer location
+        if ptr_loc.kind == LocationKind.SCRATCH:
+            addr_value = ptr_loc.scratch_address
+        elif ptr_loc.kind == LocationKind.MEMORY:
+            addr_value = ptr_loc.memory_address
         else:
-            # Near pointer - indirect (zp) or (zp),Y
-            if index_register:
-                return f"({ptr_addr}),{index_register}"
-            return f"({ptr_addr})"
+            raise InstructionSelectionError(f"Invalid pointer location for indirect addressing: {ptr_loc}")
+
+        operand = Address(addr_value)
+
+        # Select the appropriate opcode based on indirect mode
+        if mnemonic == 'LDA':
+            if is_far:
+                if index_register == 'Y':
+                    return Opcode.LDA_DP_INDIRECT_LONG_Y, operand
+                return Opcode.LDA_DP_INDIRECT_LONG, operand
+            else:
+                if index_register == 'Y':
+                    return Opcode.LDA_DP_INDIRECT_Y, operand
+                return Opcode.LDA_DP_INDIRECT, operand
+        elif mnemonic == 'STA':
+            if is_far:
+                if index_register == 'Y':
+                    return Opcode.STA_DP_INDIRECT_LONG_Y, operand
+                return Opcode.STA_DP_INDIRECT_LONG, operand
+            else:
+                if index_register == 'Y':
+                    return Opcode.STA_DP_INDIRECT_Y, operand
+                return Opcode.STA_DP_INDIRECT, operand
+        else:
+            raise InstructionSelectionError(f"Indirect addressing not supported for: {mnemonic}")
