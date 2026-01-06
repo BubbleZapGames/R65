@@ -7,9 +7,9 @@ and comparison operations.
 
 from typing import TYPE_CHECKING, Optional, Tuple
 
-from r65.compiler.hir import HIRBinaryOp, HIRIntegerLiteral, HIRIdentifier, HIRExpression
+from r65.compiler.hir import HIRBinaryOp, HIRIntegerLiteral, HIRIdentifier, HIRExpression, HIRRegister
 from r65.compiler.mir.nodes import (
-    VirtualRegister, HardwareRegister,
+    VirtualRegister, HardwareRegister, Immediate, MemoryLocation,
     Compare, CondBranch, BitTest,
 )
 from r65.compiler.errors import MIRLoweringError
@@ -49,6 +49,45 @@ class ConditionLowerer:
     def emit(self, instr):
         """Emit an instruction to the current block."""
         self.builder.emit(instr)
+
+    # ========================================================================
+    # Comparison Operand Helpers
+    # ========================================================================
+
+    def _lower_compare_operand(self, expr: HIRExpression):
+        """
+        Lower a comparison operand, preferring direct memory/register access.
+
+        For comparisons like `X == TEMP`, we want to use MemoryLocation directly
+        for TEMP rather than loading it into a virtual register. This allows
+        CPX/CPY to use direct page addressing instead of stack-relative.
+
+        Returns:
+            HardwareRegister, MemoryLocation, Immediate, or VirtualRegister
+        """
+        # Hardware register → return directly
+        if isinstance(expr, HIRRegister):
+            return HardwareRegister(expr.name)
+
+        # Integer literal → Immediate
+        if isinstance(expr, HIRIntegerLiteral):
+            return Immediate(expr.value)
+
+        # Static variable → MemoryLocation (avoids loading into vreg)
+        if isinstance(expr, HIRIdentifier):
+            symbol = expr.symbol
+
+            # Check if aliased to hardware register
+            hw_reg = self.ctx.current_function.alias_tracker.get_alias(symbol)
+            if hw_reg:
+                return hw_reg
+
+            # Check if this is a static variable with explicit location
+            if self.builder.has_explicit_location(symbol):
+                return self.builder.get_memory_location(symbol)
+
+        # Fall back to general expression lowering
+        return self.builder.lower_expression(expr)
 
     # ========================================================================
     # Main Entry Point
@@ -165,8 +204,10 @@ class ConditionLowerer:
         # OPTIMIZATION 3: Direct comparison - emit Compare + CondBranch
         elif isinstance(condition, HIRBinaryOp) and condition.op in comparison_ops:
             # Direct comparison - emit Compare instruction
-            left = self.builder.lower_expression(condition.left)
-            right = self.builder.lower_expression(condition.right)
+            # Use _lower_compare_operand to get MemoryLocation directly for static
+            # variables, enabling CPX/CPY with DP/absolute addressing
+            left = self._lower_compare_operand(condition.left)
+            right = self._lower_compare_operand(condition.right)
 
             # Emit Compare instruction
             self.emit(Compare(
