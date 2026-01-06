@@ -11,7 +11,7 @@ from typing import List, Tuple, TYPE_CHECKING, Set
 from dataclasses import dataclass
 
 from r65.compiler.codegen.opcodes import (
-    Opcode, mnemonic, is_branch, is_return, is_load, is_store,
+    Opcode, is_branch, is_return, is_load, is_store,
     BRANCH_OPCODES, JUMP_OPCODES,
 )
 
@@ -108,6 +108,61 @@ PUSH_PULL_PAIRS = {
     Opcode.PHB: Opcode.PLB,
 }
 
+# Map store opcode sets to corresponding load opcode sets (for redundant load elimination)
+STORE_TO_LOAD_MAP = {
+    # Each store opcode maps to the set of corresponding load opcodes
+    **{op: LOAD_A_OPCODES for op in STORE_A_OPCODES},
+    **{op: LOAD_X_OPCODES for op in STORE_X_OPCODES},
+    **{op: LOAD_Y_OPCODES for op in STORE_Y_OPCODES},
+}
+
+# Instructions that read from a memory operand (for dead store analysis)
+READS_FROM_MEMORY_OPCODES: Set[Opcode] = (
+    LOAD_A_OPCODES | LOAD_X_OPCODES | LOAD_Y_OPCODES |
+    # ADC variants
+    {Opcode.ADC_DP, Opcode.ADC_DP_X, Opcode.ADC_ABSOLUTE,
+     Opcode.ADC_ABSOLUTE_X, Opcode.ADC_ABSOLUTE_Y,
+     Opcode.ADC_DP_INDIRECT, Opcode.ADC_DP_INDIRECT_X, Opcode.ADC_DP_INDIRECT_Y,
+     Opcode.ADC_DP_INDIRECT_LONG, Opcode.ADC_DP_INDIRECT_LONG_Y,
+     Opcode.ADC_LONG, Opcode.ADC_LONG_X, Opcode.ADC_STACK, Opcode.ADC_STACK_INDIRECT_Y} |
+    # SBC variants
+    {Opcode.SBC_DP, Opcode.SBC_DP_X, Opcode.SBC_ABSOLUTE,
+     Opcode.SBC_ABSOLUTE_X, Opcode.SBC_ABSOLUTE_Y,
+     Opcode.SBC_DP_INDIRECT, Opcode.SBC_DP_INDIRECT_X, Opcode.SBC_DP_INDIRECT_Y,
+     Opcode.SBC_DP_INDIRECT_LONG, Opcode.SBC_DP_INDIRECT_LONG_Y,
+     Opcode.SBC_LONG, Opcode.SBC_LONG_X, Opcode.SBC_STACK, Opcode.SBC_STACK_INDIRECT_Y} |
+    # AND variants
+    {Opcode.AND_DP, Opcode.AND_DP_X, Opcode.AND_ABSOLUTE,
+     Opcode.AND_ABSOLUTE_X, Opcode.AND_ABSOLUTE_Y,
+     Opcode.AND_DP_INDIRECT, Opcode.AND_DP_INDIRECT_X, Opcode.AND_DP_INDIRECT_Y,
+     Opcode.AND_DP_INDIRECT_LONG, Opcode.AND_DP_INDIRECT_LONG_Y,
+     Opcode.AND_LONG, Opcode.AND_LONG_X, Opcode.AND_STACK, Opcode.AND_STACK_INDIRECT_Y} |
+    # ORA variants
+    {Opcode.ORA_DP, Opcode.ORA_DP_X, Opcode.ORA_ABSOLUTE,
+     Opcode.ORA_ABSOLUTE_X, Opcode.ORA_ABSOLUTE_Y,
+     Opcode.ORA_DP_INDIRECT, Opcode.ORA_DP_INDIRECT_X, Opcode.ORA_DP_INDIRECT_Y,
+     Opcode.ORA_DP_INDIRECT_LONG, Opcode.ORA_DP_INDIRECT_LONG_Y,
+     Opcode.ORA_LONG, Opcode.ORA_LONG_X, Opcode.ORA_STACK, Opcode.ORA_STACK_INDIRECT_Y} |
+    # EOR variants
+    {Opcode.EOR_DP, Opcode.EOR_DP_X, Opcode.EOR_ABSOLUTE,
+     Opcode.EOR_ABSOLUTE_X, Opcode.EOR_ABSOLUTE_Y,
+     Opcode.EOR_DP_INDIRECT, Opcode.EOR_DP_INDIRECT_X, Opcode.EOR_DP_INDIRECT_Y,
+     Opcode.EOR_DP_INDIRECT_LONG, Opcode.EOR_DP_INDIRECT_LONG_Y,
+     Opcode.EOR_LONG, Opcode.EOR_LONG_X, Opcode.EOR_STACK, Opcode.EOR_STACK_INDIRECT_Y} |
+    # CMP variants
+    {Opcode.CMP_DP, Opcode.CMP_DP_X, Opcode.CMP_ABSOLUTE,
+     Opcode.CMP_ABSOLUTE_X, Opcode.CMP_ABSOLUTE_Y,
+     Opcode.CMP_DP_INDIRECT, Opcode.CMP_DP_INDIRECT_X, Opcode.CMP_DP_INDIRECT_Y,
+     Opcode.CMP_DP_INDIRECT_LONG, Opcode.CMP_DP_INDIRECT_LONG_Y,
+     Opcode.CMP_LONG, Opcode.CMP_LONG_X, Opcode.CMP_STACK, Opcode.CMP_STACK_INDIRECT_Y} |
+    # CPX variants
+    {Opcode.CPX_DP, Opcode.CPX_ABSOLUTE} |
+    # CPY variants
+    {Opcode.CPY_DP, Opcode.CPY_ABSOLUTE} |
+    # BIT variants
+    {Opcode.BIT_DP, Opcode.BIT_DP_X, Opcode.BIT_ABSOLUTE, Opcode.BIT_ABSOLUTE_X}
+)
+
 # Control flow instructions that end a basic block
 CONTROL_FLOW_OPCODES: Set[Opcode] = (
     BRANCH_OPCODES | JUMP_OPCODES | {Opcode.RTS, Opcode.RTL, Opcode.RTI}
@@ -192,13 +247,6 @@ class PeepholeOptimizer:
         """
         from r65.compiler.codegen.asm_nodes import Instruction
 
-        # Map store opcodes to their corresponding load opcodes
-        store_to_load = {
-            'STA': LOAD_A_OPCODES,
-            'STX': LOAD_X_OPCODES,
-            'STY': LOAD_Y_OPCODES,
-        }
-
         optimized = []
         i = 0
 
@@ -210,19 +258,15 @@ class PeepholeOptimizer:
                 i += 1
                 continue
 
-            store_mnemonic = mnemonic(node.opcode)
-
-            # Check for store followed by load to same address
-            if store_mnemonic in store_to_load and i + 1 < len(nodes):
+            # Check if this is a store opcode with a corresponding load set
+            if node.opcode in STORE_TO_LOAD_MAP and i + 1 < len(nodes):
                 next_node = nodes[i + 1]
 
                 if isinstance(next_node, Instruction):
-                    load_opcodes = store_to_load[store_mnemonic]
-                    load_mnemonic = mnemonic(next_node.opcode)
+                    load_opcodes = STORE_TO_LOAD_MAP[node.opcode]
 
                     # Check if next is corresponding load with same operand
                     if (next_node.opcode in load_opcodes and
-                        load_mnemonic == 'LD' + store_mnemonic[2] and  # STA->LDA, STX->LDX, STY->LDY
                         node.operand == next_node.operand and
                         self._same_addressing_mode(node.opcode, next_node.opcode)):
                         # Redundant load - skip it
@@ -330,16 +374,7 @@ class PeepholeOptimizer:
 
     def _reads_from_location(self, instr: 'Instruction', operand) -> bool:
         """Check if instruction reads from the given memory location."""
-        m = mnemonic(instr.opcode)
-
-        # Instructions that read from memory operand
-        read_mnemonics = {'LDA', 'LDX', 'LDY', 'ADC', 'SBC', 'AND', 'ORA',
-                         'EOR', 'CMP', 'CPX', 'CPY', 'BIT'}
-
-        if m in read_mnemonics and instr.operand == operand:
-            return True
-
-        return False
+        return instr.opcode in READS_FROM_MEMORY_OPCODES and instr.operand == operand
 
     def _eliminate_redundant_transfers(self, nodes: List['AsmNode']) -> List['AsmNode']:
         """
