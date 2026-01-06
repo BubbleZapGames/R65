@@ -75,9 +75,10 @@ KEYWORDS = {
     'include', 'asm', 'as',
 }
 
-# Built-in function names (treated as keywords)
+# Built-in function names (recognized by BuiltinRegistry, not grammar keywords)
 BUILTIN_FUNCTIONS = {
     'SEP', 'REP', 'mvn', 'mvp', 'wai', 'stp', 'mul', 'div', 'mod', 'shl', 'shr', 'xba',
+    'NOP', 'cop', 'brk',
 }
 
 # Hardware register names (special global variables)

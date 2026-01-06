@@ -1,0 +1,144 @@
+// Variable shift functions
+// Loop-based implementation for non-constant shift amounts
+
+// Variable left shift: value << amount
+// Cycles: ~10 + 4*amount
+#[mode(m8, x8)]
+fn shl_loop(value @ A: u8, amount @ X: u8) -> u8 {
+    // Handle zero shift
+    if X == 0 {
+        return A;
+    }
+
+    // Clamp to 8 (shifting by 8+ always gives 0)
+    if X >= 8 {
+        A = 0;
+        return A;
+    }
+
+    // Loop: shift left X times
+    loop {
+        asm!("ASL A");
+        X--;
+        if X == 0 {
+            break;
+        }
+    }
+
+    return A;
+}
+
+// Variable right shift (logical): value >> amount
+// Cycles: ~10 + 4*amount
+#[mode(m8, x8)]
+fn shr_loop(value @ A: u8, amount @ X: u8) -> u8 {
+    // Handle zero shift
+    if X == 0 {
+        return A;
+    }
+
+    // Clamp to 8
+    if X >= 8 {
+        A = 0;
+        return A;
+    }
+
+    // Loop: shift right X times
+    loop {
+        asm!("LSR A");
+        X--;
+        if X == 0 {
+            break;
+        }
+    }
+
+    return A;
+}
+
+// Variable arithmetic right shift (preserves sign): value >>> amount
+// For signed values - shifts in sign bit instead of zero
+// Cycles: ~10 + 6*amount
+#[mode(m8, x8)]
+fn shr_arith_loop(value @ A: u8, amount @ X: u8) -> u8 {
+    if X == 0 {
+        return A;
+    }
+
+    // For 8+ shifts, result is 0x00 (positive) or 0xFF (negative)
+    if X >= 8 {
+        // Check sign bit
+        if A & 0x80 != 0 {
+            A = 0xFF;
+        } else {
+            A = 0;
+        }
+        return A;
+    }
+
+    // Loop: arithmetic shift right X times
+    loop {
+        // Check sign bit before shift
+        if A & 0x80 != 0 {
+            // Negative: shift right, then set sign bit
+            asm!("LSR A");
+            A = A | 0x80;
+        } else {
+            // Positive: normal logical shift
+            asm!("LSR A");
+        }
+        X--;
+        if X == 0 {
+            break;
+        }
+    }
+
+    return A;
+}
+
+// 16-bit variable left shift
+// Cycles: ~15 + 6*amount
+#[mode(m16, x8)]
+fn shl16_loop(value @ A: u16, amount @ X: u8) -> u16 {
+    if X == 0 {
+        return A;
+    }
+
+    if X >= 16 {
+        A = 0;
+        return A;
+    }
+
+    loop {
+        asm!("ASL A");
+        X--;
+        if X == 0 {
+            break;
+        }
+    }
+
+    return A;
+}
+
+// 16-bit variable right shift (logical)
+// Cycles: ~15 + 6*amount
+#[mode(m16, x8)]
+fn shr16_loop(value @ A: u16, amount @ X: u8) -> u16 {
+    if X == 0 {
+        return A;
+    }
+
+    if X >= 16 {
+        A = 0;
+        return A;
+    }
+
+    loop {
+        asm!("LSR A");
+        X--;
+        if X == 0 {
+            break;
+        }
+    }
+
+    return A;
+}

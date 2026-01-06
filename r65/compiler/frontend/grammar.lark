@@ -341,9 +341,9 @@ MACRO_VAR.10: /\$[a-zA-Z_][a-zA-Z0-9_]*/
 FRAGMENT_TYPE.10: /expr\b/ | /ident\b/ | /literal\b/ | /ty\b/ | /reg\b/ | /tt\b/
 
 // Reserved keywords (not used in parser, but reserved for future use)
-// Includes built-in functions and Rust reserved words
+// Rust reserved words only - builtin functions (mul, div, etc.) are regular identifiers
 // Note: 'macro' removed - now a first-class keyword
-KEYWORD.10: /abstract\b/ | /override\b/ | /unsized\b/ | /virtual\b/ | /typeof\b/ | /unsafe\b/ | /extern\b/ | /become\b/ | /async\b/ | /await\b/ | /where\b/ | /super\b/ | /trait\b/ | /yield\b/ | /crate\b/ | /final\b/ | /impl\b/ | /move\b/ | /priv\b/ | /self\b/ | /Self\b/ | /SEP\b/ | /REP\b/ | /box\b/ | /dyn\b/ | /for\b/ | /mod\b/ | /mul\b/ | /div\b/ | /pub\b/ | /ref\b/ | /shl\b/ | /shr\b/ | /stp\b/ | /try\b/ | /use\b/ | /wai\b/ | /mvn\b/ | /mvp\b/ | /in\b/ | /do\b/
+KEYWORD.10: /abstract\b/ | /override\b/ | /unsized\b/ | /virtual\b/ | /typeof\b/ | /unsafe\b/ | /extern\b/ | /become\b/ | /async\b/ | /await\b/ | /where\b/ | /super\b/ | /trait\b/ | /yield\b/ | /crate\b/ | /final\b/ | /impl\b/ | /move\b/ | /priv\b/ | /self\b/ | /Self\b/ | /box\b/ | /dyn\b/ | /for\b/ | /mod\b/ | /pub\b/ | /ref\b/ | /try\b/ | /use\b/ | /in\b/ | /do\b/
 
 // Booleans
 BOOLEAN.10: /true\b/ | /false\b/
@@ -421,8 +421,8 @@ DOLLAR: "$"
 // Identifiers (lowest priority)
 // Use negative lookahead to exclude all keywords, registers, types, and booleans
 // Identifiers - lowest priority, with negative lookahead to exclude all keywords, registers, types, and booleans
-// Note: Added 'expr', 'ident', 'literal', 'ty', 'reg', 'tt' as fragment types
-IDENT.1: /(?!(include_bytes|macro_rules|continue|include|return|struct|static|break|const|while|enum|loop|type|else|near|let|mut|asm|far|fn|if|as|abstract|override|unsized|virtual|typeof|unsafe|extern|become|async|await|match|where|super|trait|yield|crate|final|impl|move|priv|self|Self|SEP|REP|box|dyn|for|mod|mul|div|pub|ref|shl|shr|stp|try|use|wai|mvn|mvp|in|do|expr|ident|literal|ty|reg|tt|STATUS|DBR|PBR|bool|u16|i16|u8|i8|true|false|[AXYDS])$)[a-zA-Z_][a-zA-Z0-9_]*/
+// Note: Builtin functions (mul, div, SEP, REP, etc.) are NOT excluded - they are valid identifiers
+IDENT.1: /(?!(include_bytes|macro_rules|continue|include|return|struct|static|break|const|while|enum|loop|type|else|near|let|mut|asm|far|fn|if|as|abstract|override|unsized|virtual|typeof|unsafe|extern|become|async|await|match|where|super|trait|yield|crate|final|impl|move|priv|self|Self|box|dyn|for|mod|pub|ref|try|use|in|do|expr|ident|literal|ty|reg|tt|STATUS|DBR|PBR|bool|u16|i16|u8|i8|true|false|[AXYDS])$)[a-zA-Z_][a-zA-Z0-9_]*/
 
 // Imports and ignores
 %import common.ESCAPED_STRING

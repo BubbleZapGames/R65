@@ -1,0 +1,32 @@
+// SNES Hardware Math Registers
+// Used for hardware-accelerated multiplication and division
+
+// Multiplication registers
+#[hw(0x4202)]
+static mut WRMPYA: u8;    // Multiplicand (write)
+
+#[hw(0x4203)]
+static mut WRMPYB: u8;    // Multiplier (write triggers 8-cycle multiply)
+
+// Division registers
+#[hw(0x4204)]
+static mut WRDIVL: u8;    // Dividend low byte (write)
+
+#[hw(0x4205)]
+static mut WRDIVH: u8;    // Dividend high byte (write)
+
+#[hw(0x4206)]
+static mut WRDIVB: u8;    // Divisor (write triggers 16-cycle divide)
+
+// Result registers (shared between multiply and divide)
+#[hw(0x4214)]
+static mut RDDIVL: u8;    // Quotient low byte (read)
+
+#[hw(0x4215)]
+static mut RDDIVH: u8;    // Quotient high byte (read)
+
+#[hw(0x4216)]
+static mut RDMPYL: u8;    // Product low / Remainder low (read)
+
+#[hw(0x4217)]
+static mut RDMPYH: u8;    // Product high / Remainder high (read)

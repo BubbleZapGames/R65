@@ -1,0 +1,177 @@
+// Division and modulo functions
+// Provides hardware and software implementations
+
+// Scratch registers for software division
+#[zeropage(0x03, register)]
+static mut _div_dividend: u8;
+
+#[zeropage(0x04, register)]
+static mut _div_divisor: u8;
+
+#[zeropage(0x05, register)]
+static mut _div_quotient: u8;
+
+#[zeropage(0x06, register)]
+static mut _div_remainder: u8;
+
+#[zeropage(0x07, register)]
+static mut _div_count: u8;
+
+// Hardware 16/8 -> 16 unsigned division
+// Uses SNES $4204-$4206 division unit
+// Returns: quotient (use mod_hw for remainder)
+// Cycles: ~30 (16 wait + overhead)
+#[mode(m8, x8)]
+fn div_hw(dividend_lo @ A: u8, dividend_hi: u8, divisor @ X: u8) -> u16 {
+    // Write 16-bit dividend
+    WRDIVL = A;
+    A = dividend_hi;
+    WRDIVH = A;
+
+    // Write divisor (starts division)
+    A = X;
+    WRDIVB = A;
+
+    // Wait 16 machine cycles for division to complete
+    // NOP is 2 cycles, so 8 NOPs = 16 cycles
+    asm!("NOP", "NOP", "NOP", "NOP", "NOP", "NOP", "NOP", "NOP");
+
+    // Read 16-bit quotient
+    A = RDDIVL;
+    _mul_result_lo = A;
+    A = RDDIVH;
+    _mul_result_hi = A;
+
+    REP(0x20);
+    asm!("LDA _mul_result_lo");
+    SEP(0x20);
+    return A;
+}
+
+// Hardware 8/8 -> 8 unsigned division (simplified)
+// Extends dividend to 16-bit with zero high byte
+// Returns: 8-bit quotient
+#[mode(m8, x8)]
+fn div_hw_8(dividend @ A: u8, divisor @ X: u8) -> u8 {
+    // Write dividend with zero high byte
+    WRDIVL = A;
+    A = 0;
+    WRDIVH = A;
+
+    // Write divisor
+    A = X;
+    WRDIVB = A;
+
+    // Wait 16 cycles
+    asm!("NOP", "NOP", "NOP", "NOP", "NOP", "NOP", "NOP", "NOP");
+
+    // Read low byte of quotient only
+    A = RDDIVL;
+    return A;
+}
+
+// Hardware modulo (remainder from division)
+// Must be called after div_hw or div_hw_8
+// Returns: remainder from last division
+#[mode(m8, x8)]
+fn mod_hw_result() -> u8 {
+    A = RDMPYL;
+    return A;
+}
+
+// Hardware 8/8 -> 8 modulo
+// Performs division and returns remainder
+#[mode(m8, x8)]
+fn mod_hw(dividend @ A: u8, divisor @ X: u8) -> u8 {
+    // Write dividend with zero high byte
+    WRDIVL = A;
+    A = 0;
+    WRDIVH = A;
+
+    // Write divisor
+    A = X;
+    WRDIVB = A;
+
+    // Wait 16 cycles
+    asm!("NOP", "NOP", "NOP", "NOP", "NOP", "NOP", "NOP", "NOP");
+
+    // Read remainder (low byte)
+    A = RDMPYL;
+    return A;
+}
+
+// Software 8/8 -> 8 unsigned division
+// Uses restoring division algorithm
+// Returns: quotient (remainder in _div_remainder)
+// Cycles: ~200-400
+#[mode(m8, x8)]
+fn div_shift(dividend @ A: u8, divisor @ X: u8) -> u8 {
+    // Handle division by zero - return 0xFF (max value)
+    if X == 0 {
+        A = 0xFF;
+        return A;
+    }
+
+    _div_dividend = A;
+    _div_divisor = X;
+    _div_quotient = 0;
+    _div_remainder = 0;
+    _div_count = 8;
+
+    loop {
+        // Shift remainder left, bringing in high bit of dividend
+        A = _div_remainder;
+        asm!("ASL A");
+        _div_remainder = A;
+
+        // Get high bit of dividend into remainder
+        A = _div_dividend;
+        A = A & 0x80;
+        if A != 0 {
+            A = _div_remainder;
+            A = A | 0x01;
+            _div_remainder = A;
+        }
+
+        // Shift dividend left
+        A = _div_dividend;
+        asm!("ASL A");
+        _div_dividend = A;
+
+        // Shift quotient left
+        A = _div_quotient;
+        asm!("ASL A");
+        _div_quotient = A;
+
+        // Try to subtract divisor from remainder
+        A = _div_remainder;
+        if A >= _div_divisor {
+            A = A - _div_divisor;
+            _div_remainder = A;
+            // Set low bit of quotient
+            A = _div_quotient;
+            A = A | 0x01;
+            _div_quotient = A;
+        }
+
+        _div_count--;
+        if _div_count == 0 {
+            break;
+        }
+    }
+
+    A = _div_quotient;
+    return A;
+}
+
+// Software 8/8 -> 8 modulo
+// Uses division algorithm, returns remainder
+#[mode(m8, x8)]
+fn mod_shift(dividend @ A: u8, divisor @ X: u8) -> u8 {
+    // Perform division (result in _div_quotient, remainder in _div_remainder)
+    A = div_shift(A, X);
+
+    // Return remainder instead of quotient
+    A = _div_remainder;
+    return A;
+}

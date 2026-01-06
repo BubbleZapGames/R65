@@ -1,0 +1,73 @@
+// R65 Standard Library - Math Functions
+//
+// Provides multiplication, division, modulo, and variable shift operations.
+//
+// Usage:
+//   include!("stdlib/math.r65")
+//
+// Functions available:
+//   Hardware (SNES-specific, fast):
+//     mul_hw(u8, u8) -> u16      8x8 unsigned multiply, 16-bit result
+//     div_hw_8(u8, u8) -> u8     8/8 unsigned divide
+//     mod_hw(u8, u8) -> u8       8/8 unsigned modulo
+//
+//   Software (portable, slower):
+//     mul_shift(u8, u8) -> u8    8x8 multiply, 8-bit truncated result
+//     mul_shift_wide(u8, u8) -> u16  8x8 multiply, 16-bit result
+//     div_shift(u8, u8) -> u8    8/8 unsigned divide
+//     mod_shift(u8, u8) -> u8    8/8 unsigned modulo
+//
+//   Shifts (loop-based for variable amounts):
+//     shl_loop(u8, u8) -> u8          Left shift
+//     shr_loop(u8, u8) -> u8          Logical right shift
+//     shr_arith_loop(u8, u8) -> u8    Arithmetic right shift (preserves sign)
+//     shl16_loop(u16, u8) -> u16      16-bit left shift
+//     shr16_loop(u16, u8) -> u16      16-bit right shift
+//
+// Configuration:
+//   Set USE_HARDWARE_MATH to 1 for SNES hardware acceleration,
+//   or 0 for portable software-only implementations.
+
+// Include component files
+include!("math/hw_regs.r65")
+include!("math/multiply.r65")
+include!("math/divide.r65")
+include!("math/shift.r65")
+
+// =============================================================================
+// Builtin dispatch functions
+// These are called by compiler-generated code when using mul(), div(), etc.
+//
+// To switch implementations, edit these functions to call _hw or _shift variants.
+// Default: software implementations (portable)
+// =============================================================================
+
+// __builtin_mul: Called by compiler for mul(a, b)
+#[mode(m8, x8)]
+fn __builtin_mul(a @ A: u8, b @ X: u8) -> u8 {
+    return mul_shift(A, X);
+}
+
+// __builtin_div: Called by compiler for div(a, b)
+#[mode(m8, x8)]
+fn __builtin_div(a @ A: u8, b @ X: u8) -> u8 {
+    return div_shift(A, X);
+}
+
+// __builtin_mod: Called by compiler for mod(a, b)
+#[mode(m8, x8)]
+fn __builtin_mod(a @ A: u8, b @ X: u8) -> u8 {
+    return mod_shift(A, X);
+}
+
+// __builtin_shl: Called by compiler for shl(a, b)
+#[mode(m8, x8)]
+fn __builtin_shl(value @ A: u8, amount @ X: u8) -> u8 {
+    return shl_loop(A, X);
+}
+
+// __builtin_shr: Called by compiler for shr(a, b)
+#[mode(m8, x8)]
+fn __builtin_shr(value @ A: u8, amount @ X: u8) -> u8 {
+    return shr_loop(A, X);
+}
