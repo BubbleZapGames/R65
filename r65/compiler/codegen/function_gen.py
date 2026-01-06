@@ -4,8 +4,8 @@ Function code generation: MIR functions → assembly.
 Generates complete function bodies with headers, labels, and instructions.
 """
 
-from typing import List, Set, Dict, Optional
-from r65.compiler.mir.nodes import MIRFunction, BasicBlock
+from typing import List, Set
+from r65.compiler.mir.nodes import MIRFunction
 from r65.compiler.codegen.emitter import AssemblyEmitter
 from r65.compiler.codegen.instruction_select import InstructionSelector
 from r65.compiler.codegen.register_alloc import ScratchRegisterPool, RegisterAllocator

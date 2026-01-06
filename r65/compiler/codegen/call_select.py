@@ -6,9 +6,9 @@ return value collection, and built-in function expansion.
 """
 
 from r65.compiler.mir.nodes import Call, VirtualRegister, ArgumentMechanism, Immediate as MIRImmediate
-from r65.compiler.codegen.register_alloc import LocationKind, PhysicalLocation
+from r65.compiler.codegen.register_alloc import LocationKind
 from r65.compiler.codegen.opcodes import Opcode
-from r65.compiler.codegen.asm_nodes import Address, Immediate, BlockMove
+from r65.compiler.codegen.asm_nodes import BlockMove
 from r65.compiler.errors import InstructionSelectionError
 from r65.compiler.codegen.base_selector import BaseSelector
 

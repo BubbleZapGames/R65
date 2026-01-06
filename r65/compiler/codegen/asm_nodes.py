@@ -12,10 +12,9 @@ The final emission step converts nodes to WLA-DX assembly text.
 
 from __future__ import annotations
 from dataclasses import dataclass, field
-from typing import Union
 
 from r65.compiler.codegen.opcodes import (
-    Opcode, instruction_size, is_branch,
+    Opcode, mnemonic, addressing_mode, instruction_size, is_branch,
 )
 
 

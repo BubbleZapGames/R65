@@ -7,10 +7,8 @@ with proper signed/unsigned comparison handling.
 
 from r65.compiler.mir.nodes import Jump, JumpTable, CondBranch, Return
 from r65.compiler.codegen.register_alloc import LocationKind
-from r65.compiler.codegen.instruction_select_helpers import RegisterMappings
 from r65.compiler.errors import InstructionSelectionError
 from r65.compiler.codegen.opcodes import Opcode
-from r65.compiler.codegen.asm_nodes import Address, Immediate
 from r65.compiler.codegen.base_selector import BaseSelector
 
 

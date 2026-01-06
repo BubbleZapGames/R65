@@ -22,12 +22,11 @@ from dataclasses import dataclass
 from typing import List, Dict, Tuple, Set
 
 from r65.compiler.codegen.opcodes import (
-    Opcode, mnemonic, instruction_size, is_branch,
-    BRANCH_OPCODES,
+    Opcode, mnemonic, instruction_size,
 )
 from r65.compiler.codegen.asm_nodes import (
-    AsmNode, Instruction, Label, Directive, Comment, BlankLine,
-    Address, invert_branch, BRANCH_INVERSIONS,
+    AsmNode, Instruction, Label, Directive,
+    Address, invert_branch,
 )
 
 

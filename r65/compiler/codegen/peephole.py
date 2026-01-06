@@ -11,14 +11,14 @@ from typing import List, Tuple, TYPE_CHECKING, Set
 from dataclasses import dataclass
 
 from r65.compiler.codegen.opcodes import (
-    Opcode, is_branch, is_return, is_load, is_store,
+    Opcode,
     BRANCH_OPCODES, JUMP_OPCODES,
     LOAD_A_OPCODES, LOAD_X_OPCODES, LOAD_Y_OPCODES,
     STORE_A_OPCODES, STORE_X_OPCODES, STORE_Y_OPCODES,
 )
 
 if TYPE_CHECKING:
-    from r65.compiler.codegen.asm_nodes import AsmNode, Instruction, Label
+    from r65.compiler.codegen.asm_nodes import AsmNode, Instruction
 
 
 # ============================================================================
@@ -255,7 +255,7 @@ class PeepholeOptimizer:
 
         Pattern: STA $XX; ... (no read of $XX); STA $XX -> ... ; STA $XX
         """
-        from r65.compiler.codegen.asm_nodes import Instruction, Label
+        from r65.compiler.codegen.asm_nodes import Instruction
 
         optimized = []
         i = 0

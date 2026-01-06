@@ -5,8 +5,7 @@ Converts MIR instructions to WLA-DX assembly mnemonics with proper
 addressing modes and register usage.
 """
 
-from typing import Union, Optional, TYPE_CHECKING
-from enum import Enum
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from r65.compiler.codegen.function_gen import FunctionCodeGenerator
@@ -16,7 +15,7 @@ from r65.compiler.mir.nodes import (
     Move, Return, Jump, JumpTable, CondBranch, Call,
     BinaryOp, UnaryOp, Compare, BitTest, Rotate, SetMode, TypeConvert,
     Push, Pull, SaveRegister, RestoreRegister, ReturnFromInterrupt,
-    MemoryFill, BlockCopy, ROMDataRef, InlineAsm,
+    MemoryFill, BlockCopy, InlineAsm,
     VirtualRegister, HardwareRegister, Immediate as MIRImmediate, MemoryLocation
 )
 from r65.compiler.codegen.emitter import AssemblyEmitter
@@ -24,9 +23,9 @@ from r65.compiler.codegen.register_alloc import (
     RegisterAllocator, PhysicalLocation, LocationKind
 )
 from r65.compiler.codegen.memory_alloc import MemoryAllocator
-from r65.compiler.errors import InstructionSelectionError, compiler_assert
+from r65.compiler.errors import InstructionSelectionError
 from r65.compiler.codegen.instruction_select_helpers import (
-    XBAState, XBAStateManager, RegisterMappings
+    XBAState, XBAStateManager
 )
 from r65.compiler.codegen.control_flow_select import ControlFlowInstructionSelector
 from r65.compiler.codegen.call_select import CallInstructionSelector
@@ -836,7 +835,6 @@ class InstructionSelector:
                     self._ensure_xba_state_normal("Restore A")
                     self._emit_op(operation, temp_loc)
                 elif right_loc.hw_register in ['A', 'X', 'Y']:
-                    store_mnem = {'A': 'STA', 'X': 'STX', 'Y': 'STY'}[right_loc.hw_register]
                     store_opcode = self._STORE_DP_OPCODES[right_loc.hw_register]
                     self.emitter.emit_instr(store_opcode, Address(0x00), f"Store {right_loc.hw_register} to temp")
                     self._emit_op(operation, temp_loc)

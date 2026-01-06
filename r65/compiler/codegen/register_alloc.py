@@ -6,7 +6,7 @@ Maps MIR virtual registers to:
 2. Stack slots (when scratch pool exhausted)
 """
 
-from typing import Dict, List, Optional, Set, Union
+from typing import Dict, List, Optional
 from dataclasses import dataclass
 from enum import Enum
 from r65.compiler.mir.nodes import VirtualRegister, HardwareRegister, MIRFunction

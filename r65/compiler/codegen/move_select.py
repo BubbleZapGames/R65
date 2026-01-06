@@ -9,7 +9,7 @@ from r65.compiler.mir.nodes import Move, Immediate as MIRImmediate, FunctionPoin
 from r65.compiler.codegen.register_alloc import LocationKind
 from r65.compiler.errors import InstructionSelectionError
 from r65.compiler.codegen.opcodes import Opcode
-from r65.compiler.codegen.asm_nodes import Immediate, Address
+from r65.compiler.codegen.asm_nodes import Immediate
 from r65.compiler.codegen.base_selector import BaseSelector
 
 
