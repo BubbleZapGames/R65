@@ -8,6 +8,7 @@ combination, not just in isolation.
 
 import pytest
 from r65.compiler.frontend.parser import parse
+from r65.compiler.frontend.macros import expand_macros
 from r65.compiler.frontend import ast
 from r65.compiler.hir.builder import HIRBuilder
 
@@ -426,6 +427,33 @@ fn swap_accum_bytes() {
 }
 
 // -----------------------------------------------------------------------------
+// Macros
+// -----------------------------------------------------------------------------
+macro_rules! inc_twice($reg:reg) {
+    $reg++;
+    $reg++;
+}
+
+macro_rules! set_value($dest:reg, $val:expr) {
+    $dest = $val;
+}
+
+macro_rules! repeat_inc($($reg:reg),*) {
+    $($reg++;)*
+}
+
+fn test_macros() {
+    // Simple macro invocation
+    inc_twice!(X);
+
+    // Macro with expression argument
+    set_value!(A, 42);
+
+    // Macro with repetition
+    repeat_inc!(X, Y);
+}
+
+// -----------------------------------------------------------------------------
 // Compound Assignment and Increment/Decrement
 // -----------------------------------------------------------------------------
 fn test_compound_ops() {
@@ -600,6 +628,7 @@ class TestAcidTest:
             'static': 0,
             'function': 0,
             'stack': 0,
+            'macro': 0,
         }
 
         for item in program.items:
@@ -617,6 +646,8 @@ class TestAcidTest:
                 counts['function'] += 1
             elif isinstance(item, ast.StackDirective):
                 counts['stack'] += 1
+            elif isinstance(item, ast.MacroDecl):
+                counts['macro'] += 1
 
         # Verify we have multiple of each type
         assert counts['const'] >= 5, f"Expected at least 5 constants, got {counts['const']}"
@@ -624,10 +655,12 @@ class TestAcidTest:
         assert counts['struct'] >= 5, f"Expected at least 5 structs, got {counts['struct']}"
         assert counts['static'] >= 15, f"Expected at least 15 statics, got {counts['static']}"
         assert counts['function'] >= 25, f"Expected at least 25 functions, got {counts['function']}"
+        assert counts['macro'] >= 3, f"Expected at least 3 macros, got {counts['macro']}"
 
     def test_acid_test_builds_hir(self):
         """Test that the acid test builds HIR successfully."""
         program = parse(ACID_TEST_SOURCE)
+        program = expand_macros(program)  # Expand macros before HIR
         builder = HIRBuilder()
         hir_program = builder.build_program(program)
 
@@ -661,6 +694,8 @@ class TestAcidTest:
             'address_of': False,
             'fn_ptr_array': False,
             'multiple_return': False,
+            'macro_decl': False,
+            'macro_invocation': False,
         }
 
         for item in program.items:
@@ -704,6 +739,9 @@ class TestAcidTest:
                     if isinstance(item.var_type.element_type, ast.FunctionType):
                         features_found['fn_ptr_array'] = True
 
+            elif isinstance(item, ast.MacroDecl):
+                features_found['macro_decl'] = True
+
         # Verify all features found
         for feature, found in features_found.items():
             assert found, f"Feature '{feature}' not found in acid test"
@@ -711,7 +749,9 @@ class TestAcidTest:
     def _check_statements(self, statements, features_found):
         """Recursively check statements for features."""
         for stmt in statements:
-            if isinstance(stmt, ast.LetStmt):
+            if isinstance(stmt, ast.MacroInvocationStmtInner):
+                features_found['macro_invocation'] = True
+            elif isinstance(stmt, ast.LetStmt):
                 if stmt.binding is not None:
                     features_found['register_alias'] = True
                 if isinstance(stmt.initializer, ast.MatchExpression):

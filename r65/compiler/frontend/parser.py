@@ -389,13 +389,30 @@ class ASTBuilder(Transformer):
 
     def macro_rep_comma(self, items):
         """Repetition with comma separator: $(...),*"""
-        tokens = self._collect_macro_tokens(items)
+        # Filter out structural tokens (DOLLAR, LPAR, RPAR, COMMA, STAR)
+        # that Lark passes as rule children
+        content = self._filter_rep_items(items)
+        tokens = self._collect_macro_tokens(content)
         return ('macro_rep', tokens, ',*')
 
     def macro_rep_no_sep(self, items):
         """Repetition without separator: $(...)*"""
-        tokens = self._collect_macro_tokens(items)
+        # Filter out structural tokens (DOLLAR, LPAR, RPAR, STAR)
+        # that Lark passes as rule children
+        content = self._filter_rep_items(items)
+        tokens = self._collect_macro_tokens(content)
         return ('macro_rep', tokens, '*')
+
+    def _filter_rep_items(self, items):
+        """Filter out structural tokens from macro repetition items."""
+        result = []
+        for item in items:
+            if isinstance(item, LarkToken):
+                # Skip structural tokens
+                if item.type in ('DOLLAR', 'LPAR', 'RPAR', 'STAR', 'COMMA'):
+                    continue
+            result.append(item)
+        return result
 
     def macro_token(self, items):
         """Single token in macro body."""
