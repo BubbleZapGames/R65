@@ -31,13 +31,9 @@ $(BUILD_DIR)/%.o: $(BUILD_DIR)/%.asm
 
 # Link object files to ROM
 $(ROM_FILE): $(patsubst src/%.r65,$(BUILD_DIR)/%.o,$(SOURCES))
-	@echo " objects: $(patsubst src/%.r65,$(BUILD_DIR)/%.o,$(SOURCES))"
 	@echo "[LINK] $@"
-	@echo "ROMSIZE 32K" > linkfile.txt
-	@echo "SLOTS 1" >> linkfile.txt
-	@echo "SLOT 0 0 8000" >> linkfile.txt
-	@echo "BANK 0 8000 FFFF" >> linkfile.txt
-	@for obj in $^; do echo "OBJECT $$obj" >> linkfile.txt; done
+	@echo "[objects]" > linkfile.txt
+	@for obj in $^; do echo "$$obj" >> linkfile.txt; done
 	$(WLA_LINK) -v -S linkfile.txt $@
 	@rm linkfile.txt
 
