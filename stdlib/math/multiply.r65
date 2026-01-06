@@ -43,17 +43,18 @@ fn mul_hw(a @ A: u8, b @ X: u8) -> u16 {
     return A;
 }
 
-// Software 8x8 -> 8 unsigned multiply (truncating)
+// Software 8x8 -> 16 unsigned multiply (widening, returns hi/lo separately)
 // Uses shift-and-add algorithm
-// Result: 8-bit truncated product (low byte only)
-// Cycles: ~100-200 depending on operands
+// Returns: A = low byte, X = high byte
+// Cycles: ~150-300 depending on operands
 #[mode(m8, x8)]
 fn mul_shift(a @ A: u8, b @ X: u8) -> u8 {
     // Store multiplicand for shifting
     _mul_temp = A;
 
-    // Clear result
+    // Clear 16-bit result
     _mul_result_lo = 0;
+    _mul_result_hi = 0;
 
     // Process each bit of multiplier (in X)
     loop {
@@ -66,10 +67,14 @@ fn mul_shift(a @ A: u8, b @ X: u8) -> u8 {
         A = X;
         A = A & 0x01;
         if A != 0 {
-            // Add multiplicand to result
+            // Add multiplicand to result (with carry to high byte)
+            asm!("CLC");
             A = _mul_result_lo;
             A = A + _mul_temp;
             _mul_result_lo = A;
+            A = _mul_result_hi;
+            asm!("ADC #$00");  // Add carry
+            _mul_result_hi = A;
         }
 
         // Shift multiplicand left (double it)
@@ -83,34 +88,37 @@ fn mul_shift(a @ A: u8, b @ X: u8) -> u8 {
         X = A;
     }
 
+    // Return low in A, high in X
     A = _mul_result_lo;
-    return A;
+    X = _mul_result_hi;
+    return A, X;
 }
 
-// Software 8x8 -> 16 unsigned multiply (widening)
-// Uses shift-and-add algorithm with 16-bit accumulator
-// Result: 16-bit full product
+// Software 8x8 -> 16 unsigned multiply (returns as u16)
+// Same algorithm as mul_shift but returns result in 16-bit A register
+// Uses mode switch to return 16-bit value
 // Cycles: ~150-300 depending on operands
 #[mode(m8, x8)]
-fn mul_shift_wide(a @ A: u8, b @ X: u8) -> u16 {
-    // Store multiplicand (will shift as 16-bit)
+fn mul_shift16(a @ A: u8, b @ X: u8) -> u16 {
+    // Store multiplicand for shifting
     _mul_temp = A;
 
     // Clear 16-bit result
     _mul_result_lo = 0;
     _mul_result_hi = 0;
 
-    // Process each bit of multiplier
+    // Process each bit of multiplier (in X)
     loop {
+        // If multiplier is zero, we're done
         if X == 0 {
             break;
         }
 
-        // Test lowest bit
+        // Test lowest bit of multiplier
         A = X;
         A = A & 0x01;
         if A != 0 {
-            // Add multiplicand to result (16-bit add)
+            // Add multiplicand to result (with carry to high byte)
             asm!("CLC");
             A = _mul_result_lo;
             A = A + _mul_temp;
@@ -120,18 +128,18 @@ fn mul_shift_wide(a @ A: u8, b @ X: u8) -> u16 {
             _mul_result_hi = A;
         }
 
-        // Shift multiplicand left (16-bit shift via temp expansion)
+        // Shift multiplicand left (double it)
         A = _mul_temp;
         A = A << 1;
         _mul_temp = A;
 
-        // Shift multiplier right
+        // Shift multiplier right (halve it)
         A = X;
         A = A >> 1;
         X = A;
     }
 
-    // Return 16-bit result
+    // Return as 16-bit value via mode switch
     REP(0x20);
     asm!("LDA _mul_result_lo");
     SEP(0x20);
