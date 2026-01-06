@@ -134,6 +134,10 @@ def _emit_instruction(opcode: Opcode, operand: Operand | None) -> str:
     if opcode in ACCUMULATOR_OPCODES:
         return f"{mnem} A"
 
+    # Block move instructions (MVN/MVP) - special operand format
+    if isinstance(operand, BlockMove):
+        return f"{mnem} ${operand.src_bank:02X}, ${operand.dst_bank:02X}"
+
     # Implied addressing (no operand)
     if mode is None:
         return mnem
@@ -146,6 +150,9 @@ def _emit_instruction(opcode: Opcode, operand: Operand | None) -> str:
     match (mode, operand):
         # Immediate
         case ("IMMEDIATE", Immediate(value)):
+            return f"{mnem} #{_format_value(value)}"
+        case ("IMMEDIATE", Address(value)):
+            # Immediate with address label (e.g., LDX #label)
             return f"{mnem} #{_format_value(value)}"
 
         # Direct Page

@@ -365,10 +365,10 @@ class FunctionCodeGenerator:
         if mir_func.is_entry and self.mem_alloc.stack_upper is not None:
             if self.mem_alloc.stack_upper != DEFAULT_STACK_UPPER:
                 stack_addr = self.mem_alloc.stack_upper
-                self._emit_instr(Opcode.REP, Immediate(0x20), "16-bit A for stack setup")
+                self._emit_instr(Opcode.REP_IMMEDIATE, Immediate(0x20), "16-bit A for stack setup")
                 self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(stack_addr), "Stack top")
                 self._emit_instr(Opcode.TCS, comment="Set stack pointer")
-                self._emit_instr(Opcode.SEP, Immediate(0x20), "Restore 8-bit A")
+                self._emit_instr(Opcode.SEP_IMMEDIATE, Immediate(0x20), "Restore 8-bit A")
 
         # Handle DBR management for far functions with data_bank=inline
         if mir_func.is_far and mir_func.bank_attr:
@@ -414,10 +414,10 @@ class FunctionCodeGenerator:
                 # Emit REP and/or SEP instructions
                 if bits_to_clear:
                     mode_comment = f"Set mode: {'m16 ' if bits_to_clear & 0x20 else ''}{'x16' if bits_to_clear & 0x10 else ''}".strip()
-                    self._emit_instr(Opcode.REP, Immediate(bits_to_clear), mode_comment)
+                    self._emit_instr(Opcode.REP_IMMEDIATE, Immediate(bits_to_clear), mode_comment)
                 if bits_to_set:
                     mode_comment = f"Set mode: {'m8 ' if bits_to_set & 0x20 else ''}{'x8' if bits_to_set & 0x10 else ''}".strip()
-                    self._emit_instr(Opcode.SEP, Immediate(bits_to_set), mode_comment)
+                    self._emit_instr(Opcode.SEP_IMMEDIATE, Immediate(bits_to_set), mode_comment)
 
         # Emit register saves for #[preserves(...)]
         # Registers are pushed in order: STATUS, A, X, Y, D, DBR

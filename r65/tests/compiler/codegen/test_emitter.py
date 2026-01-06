@@ -88,7 +88,7 @@ def test_instructions():
 
     # With comments
     emitter.emit_instr(Opcode.PHP, comment="Push processor status")
-    emitter.emit_instr(Opcode.REP, Immediate(0x30), "16-bit mode")
+    emitter.emit_instr(Opcode.REP_IMMEDIATE, Immediate(0x30), "16-bit mode")
 
     print(emitter.to_string())
     print()

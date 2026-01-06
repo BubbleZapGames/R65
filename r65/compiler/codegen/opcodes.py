@@ -329,7 +329,7 @@ class Opcode(IntEnum):
     # ========================================================================
     # REP - Reset Processor Status Bits (65816)
     # ========================================================================
-    REP = 0xC2
+    REP_IMMEDIATE = 0xC2
 
     # ========================================================================
     # ROL - Rotate Left
@@ -385,7 +385,7 @@ class Opcode(IntEnum):
     # ========================================================================
     # SEP - Set Processor Status Bits (65816)
     # ========================================================================
-    SEP = 0xE2
+    SEP_IMMEDIATE = 0xE2
 
     # ========================================================================
     # STA - Store Accumulator
@@ -849,7 +849,7 @@ OPCODE_SIZES: dict[Opcode, int] = {
     Opcode.PLY: 1,
 
     # REP
-    Opcode.REP: 2,
+    Opcode.REP_IMMEDIATE: 2,
 
     # ROL
     Opcode.ROL: 1,
@@ -893,7 +893,7 @@ OPCODE_SIZES: dict[Opcode, int] = {
     Opcode.SEI: 1,
 
     # SEP
-    Opcode.SEP: 2,
+    Opcode.SEP_IMMEDIATE: 2,
 
     # STA
     Opcode.STA_DP: 2,

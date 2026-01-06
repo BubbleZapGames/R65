@@ -434,7 +434,7 @@ class CallInstructionSelector(BaseSelector):
     # Mapping from builtin instruction names to Opcode enum values
     _BUILTIN_OPCODES = {
         'NOP': Opcode.NOP, 'WAI': Opcode.WAI, 'STP': Opcode.STP, 'XBA': Opcode.XBA,
-        'SEP': Opcode.SEP, 'REP': Opcode.REP, 'COP': Opcode.COP,
+        'SEP': Opcode.SEP_IMMEDIATE, 'REP': Opcode.REP_IMMEDIATE, 'COP': Opcode.COP,
         'MVN': Opcode.MVN, 'MVP': Opcode.MVP,
     }
 

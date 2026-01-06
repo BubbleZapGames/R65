@@ -723,9 +723,9 @@ class InstructionSelector:
             instr: SetMode instruction
         """
         if instr.is_set:
-            self._emit_immediate(Opcode.SEP, instr.mask)
+            self._emit_immediate(Opcode.SEP_IMMEDIATE, instr.mask)
         else:
-            self._emit_immediate(Opcode.REP, instr.mask)
+            self._emit_immediate(Opcode.REP_IMMEDIATE, instr.mask)
 
     # ========================================================================
     # Register Save/Restore
@@ -1198,7 +1198,7 @@ class InstructionSelector:
 
         # Set up for MVN: A = count - 1, X = source, Y = dest
         # For 16-bit index mode, we need REP #$10 first
-        self._emit_immediate(Opcode.REP, 0x30, "16-bit A and index")
+        self._emit_immediate(Opcode.REP_IMMEDIATE, 0x30, "16-bit A and index")
 
         # Load count - 1 into A
         self._emit_immediate(Opcode.LDA_IMMEDIATE, count - 1)
@@ -1224,7 +1224,7 @@ class InstructionSelector:
         self.emitter.emit_instr(Opcode.MVN, BlockMove(0x00, dest_bank))
 
         # Restore 8-bit mode if needed (depends on context)
-        self._emit_immediate(Opcode.SEP, 0x30, "Restore 8-bit mode")
+        self._emit_immediate(Opcode.SEP_IMMEDIATE, 0x30, "Restore 8-bit mode")
 
     # ========================================================================
     # Inline Assembly

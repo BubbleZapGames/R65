@@ -91,17 +91,17 @@ class MoveOperationSelector(BaseSelector):
             self.parent._store_to_b_from_a()
         elif hw_register == 'S':
             # Set stack pointer: TCS always transfers full 16-bit A
-            self._emit_instr(Opcode.REP, Immediate(0x20), "16-bit A for stack")
+            self._emit_instr(Opcode.REP_IMMEDIATE, Immediate(0x20), "16-bit A for stack")
             self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(value))
             self._emit_instr(Opcode.TCS, comment="Set stack pointer")
-            self._emit_instr(Opcode.SEP, Immediate(0x20), "Restore 8-bit A")
+            self._emit_instr(Opcode.SEP_IMMEDIATE, Immediate(0x20), "Restore 8-bit A")
             self.parent._mark_a_modified()
         elif hw_register == 'D':
             # Set direct page register
-            self._emit_instr(Opcode.REP, Immediate(0x20), "16-bit A for direct page")
+            self._emit_instr(Opcode.REP_IMMEDIATE, Immediate(0x20), "16-bit A for direct page")
             self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(value))
             self._emit_instr(Opcode.TCD, comment="Set direct page")
-            self._emit_instr(Opcode.SEP, Immediate(0x20), "Restore 8-bit A")
+            self._emit_instr(Opcode.SEP_IMMEDIATE, Immediate(0x20), "Restore 8-bit A")
             self.parent._mark_a_modified()
         else:
             raise InstructionSelectionError(f"Cannot load immediate into register {hw_register}")

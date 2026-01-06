@@ -450,7 +450,7 @@ class PeepholeOptimizer:
                 i += 1
                 continue
 
-            if node.opcode in (Opcode.SEP, Opcode.REP) and i + 1 < len(nodes):
+            if node.opcode in (Opcode.SEP_IMMEDIATE, Opcode.REP_IMMEDIATE) and i + 1 < len(nodes):
                 next_node = nodes[i + 1]
 
                 if isinstance(next_node, Instruction):
@@ -464,8 +464,8 @@ class PeepholeOptimizer:
                         continue
 
                     # SEP followed by REP (or vice versa) with same bits
-                    if ((node.opcode == Opcode.SEP and next_node.opcode == Opcode.REP) or
-                        (node.opcode == Opcode.REP and next_node.opcode == Opcode.SEP)):
+                    if ((node.opcode == Opcode.SEP_IMMEDIATE and next_node.opcode == Opcode.REP_IMMEDIATE) or
+                        (node.opcode == Opcode.REP_IMMEDIATE and next_node.opcode == Opcode.SEP_IMMEDIATE)):
                         if (isinstance(node.operand, Immediate) and
                             isinstance(next_node.operand, Immediate) and
                             node.operand.value == next_node.operand.value):
