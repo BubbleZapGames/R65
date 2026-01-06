@@ -17,6 +17,8 @@ start: item*
      | type_alias
      | include_stmt
      | stack_directive
+     | macro_decl
+     | macro_invocation_stmt
      | _reserved_keyword  // Dummy rule to make reserved keywords valid tokens
 
 // Stack directive - global attribute for stack region
@@ -57,6 +59,65 @@ type_alias: TYPE IDENT "=" type_expr ";"
 // Include statement
 include_stmt: INCLUDE "!" "(" STRING ")"
 
+// Macro definition
+// macro_rules! name($param:fragment, ...) { body }
+macro_decl: MACRO_RULES "!" IDENT "(" macro_params? ")" macro_body
+
+macro_params: macro_param ("," macro_param)* ","?
+
+// Simple parameter: $name:fragment
+// Repeated parameter: $($name:fragment),*
+macro_param: MACRO_VAR ":" FRAGMENT_TYPE                              -> macro_param_simple
+           | DOLLAR "(" MACRO_VAR ":" FRAGMENT_TYPE ")" "," "*"       -> macro_param_repeated
+
+// Macro body is captured as raw tokens between braces
+// We use a special rule to capture everything including nested braces
+macro_body: "{" macro_body_content* "}"
+
+// Content inside macro body - can be any token or nested braces
+?macro_body_content: macro_body              // Nested braces
+                   | MACRO_VAR               // $param references
+                   | macro_repetition        // $(...)*
+                   | macro_token             // Any other token
+
+// Repetition in macro body: $( content ),*
+macro_repetition: DOLLAR "(" macro_body_content+ ")" "," "*"    -> macro_rep_comma
+                | DOLLAR "(" macro_body_content+ ")" "*"         -> macro_rep_no_sep
+
+// Any token that can appear in a macro body (excluding special macro syntax)
+macro_token: IDENT | REGISTER | TYPE_NAME | INTEGER | STRING | BOOLEAN
+           | KEYWORD | INCLUDE | INCLUDE_BYTES | CONST | STATIC | LET | MUT
+           | FN | FAR | NEAR | IF | ELSE | LOOP | WHILE | MATCH | RETURN
+           | BREAK | CONTINUE | ASM | STRUCT | ENUM | TYPE | AS
+           | "(" | ")" | "[" | "]" | ";" | ":" | "," | "." | "#"
+           | "+" | "-" | "*" | "/" | "%" | "&" | "|" | "^" | "~" | "!"
+           | "=" | "<" | ">" | "@" | "->" | "==" | "!=" | "<=" | ">="
+           | "&&" | "||" | "<<" | ">>" | "++" | "--"
+           | "+=" | "-=" | "*=" | "/=" | "%=" | "&=" | "|=" | "^=" | "<<=" | ">>="
+           | "::"
+
+// Top-level macro invocation: name!(args);
+macro_invocation_stmt: IDENT "!" "(" macro_args? ")" ";"
+
+// Statement-level macro invocation (inside function bodies)
+macro_invocation_stmt_inner: IDENT "!" "(" macro_args? ")" ";"
+
+// Macro arguments - comma-separated token trees
+macro_args: macro_arg ("," macro_arg)*
+
+// A single macro argument - balanced tokens
+macro_arg: macro_arg_token+
+
+macro_arg_token: IDENT | REGISTER | TYPE_NAME | INTEGER | STRING | BOOLEAN
+               | KEYWORD | MACRO_VAR
+               | "(" macro_arg_token* ")"    // Nested parens
+               | "[" macro_arg_token* "]"    // Nested brackets
+               | "{" macro_arg_token* "}"    // Nested braces
+               | "+" | "-" | "*" | "/" | "%" | "&" | "|" | "^" | "~" | "!"
+               | "=" | "<" | ">" | "@" | "->" | "==" | "!=" | "<=" | ">="
+               | "&&" | "||" | "<<" | ">>" | "++" | "--" | ";" | ":" | "." | "#"
+               | "::"
+
 // Attributes
 attribute: "#" "[" attribute_inner "]"
 attribute_inner: IDENT ("(" attribute_args? ")")?
@@ -80,6 +141,7 @@ block: "{" statement* "}"
           | asm_stmt
           | increment_stmt
           | decrement_stmt
+          | macro_invocation_stmt_inner
 
 // Uses initializer_expr to allow struct literals after =
 let_stmt: LET MUT? IDENT ("@" binding)? (":" type_expr)? "=" initializer_expr ";"
@@ -265,9 +327,19 @@ FN.10: /fn\b/
 IF.10: /if\b/
 AS.10: /as\b/
 
+// Macro keyword
+MACRO_RULES.10: /macro_rules\b/
+
+// Macro variable reference ($name)
+MACRO_VAR.10: /\$[a-zA-Z_][a-zA-Z0-9_]*/
+
+// Fragment type specifiers for macro parameters
+FRAGMENT_TYPE.10: /expr\b/ | /ident\b/ | /literal\b/ | /ty\b/ | /reg\b/ | /tt\b/
+
 // Reserved keywords (not used in parser, but reserved for future use)
 // Includes built-in functions and Rust reserved words
-KEYWORD.10: /abstract\b/ | /override\b/ | /unsized\b/ | /virtual\b/ | /typeof\b/ | /unsafe\b/ | /extern\b/ | /become\b/ | /async\b/ | /await\b/ | /where\b/ | /super\b/ | /trait\b/ | /yield\b/ | /crate\b/ | /final\b/ | /macro\b/ | /impl\b/ | /move\b/ | /priv\b/ | /self\b/ | /Self\b/ | /SEP\b/ | /REP\b/ | /box\b/ | /dyn\b/ | /for\b/ | /mod\b/ | /mul\b/ | /div\b/ | /pub\b/ | /ref\b/ | /shl\b/ | /shr\b/ | /stp\b/ | /try\b/ | /use\b/ | /wai\b/ | /mvn\b/ | /mvp\b/ | /in\b/ | /do\b/
+// Note: 'macro' removed - now a first-class keyword
+KEYWORD.10: /abstract\b/ | /override\b/ | /unsized\b/ | /virtual\b/ | /typeof\b/ | /unsafe\b/ | /extern\b/ | /become\b/ | /async\b/ | /await\b/ | /where\b/ | /super\b/ | /trait\b/ | /yield\b/ | /crate\b/ | /final\b/ | /impl\b/ | /move\b/ | /priv\b/ | /self\b/ | /Self\b/ | /SEP\b/ | /REP\b/ | /box\b/ | /dyn\b/ | /for\b/ | /mod\b/ | /mul\b/ | /div\b/ | /pub\b/ | /ref\b/ | /shl\b/ | /shr\b/ | /stp\b/ | /try\b/ | /use\b/ | /wai\b/ | /mvn\b/ | /mvp\b/ | /in\b/ | /do\b/
 
 // Booleans
 BOOLEAN.10: /true\b/ | /false\b/
@@ -339,10 +411,14 @@ COMMA: ","
 DOT: "."
 HASH: "#"
 
+// Dollar sign for macro syntax
+DOLLAR: "$"
+
 // Identifiers (lowest priority)
 // Use negative lookahead to exclude all keywords, registers, types, and booleans
 // Identifiers - lowest priority, with negative lookahead to exclude all keywords, registers, types, and booleans
-IDENT.1: /(?!(include_bytes|continue|include|return|struct|static|break|const|while|enum|loop|type|else|near|let|mut|asm|far|fn|if|as|abstract|override|unsized|virtual|typeof|unsafe|extern|become|async|await|match|where|super|trait|yield|crate|final|macro|impl|move|priv|self|Self|SEP|REP|box|dyn|for|mod|mul|div|pub|ref|shl|shr|stp|try|use|wai|mvn|mvp|in|do|STATUS|DBR|PBR|bool|u16|i16|u8|i8|true|false|[AXYDS])$)[a-zA-Z_][a-zA-Z0-9_]*/
+// Note: Added 'expr', 'ident', 'literal', 'ty', 'reg', 'tt' as fragment types
+IDENT.1: /(?!(include_bytes|macro_rules|continue|include|return|struct|static|break|const|while|enum|loop|type|else|near|let|mut|asm|far|fn|if|as|abstract|override|unsized|virtual|typeof|unsafe|extern|become|async|await|match|where|super|trait|yield|crate|final|impl|move|priv|self|Self|SEP|REP|box|dyn|for|mod|mul|div|pub|ref|shl|shr|stp|try|use|wai|mvn|mvp|in|do|expr|ident|literal|ty|reg|tt|STATUS|DBR|PBR|bool|u16|i16|u8|i8|true|false|[AXYDS])$)[a-zA-Z_][a-zA-Z0-9_]*/
 
 // Imports and ignores
 %import common.ESCAPED_STRING

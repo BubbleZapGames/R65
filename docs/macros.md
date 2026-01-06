@@ -18,7 +18,7 @@ R65 provides a simplified macro system inspired by Rust's `macro_rules!` but des
 ### Macro Definition
 
 ```rust
-macro! name($param1:fragment, $param2:fragment) {
+macro_rules! name($param1:fragment, $param2:fragment) {
     // body with $param1 and $param2 substituted
 }
 ```
@@ -33,7 +33,7 @@ name!(arg1, arg2);
 
 ```rust
 // Define a macro to increment a register twice
-macro! inc_twice($reg:reg) {
+macro_rules! inc_twice($reg:reg) {
     $reg++;
     $reg++;
 }
@@ -66,7 +66,7 @@ Fragment specifiers determine what kind of syntax a parameter can match.
 Matches any valid R65 expression:
 
 ```rust
-macro! double($val:expr) {
+macro_rules! double($val:expr) {
     ($val) + ($val)
 }
 
@@ -84,7 +84,7 @@ double!(arr[i])      // Expands to: (arr[i]) + (arr[i])
 Matches a single identifier (variable name, function name, etc.):
 
 ```rust
-macro! declare_counter($name:ident) {
+macro_rules! declare_counter($name:ident) {
     #[zeropage]
     static mut $name: u8 = 0;
 }
@@ -100,7 +100,7 @@ declare_counter!(FRAME_COUNT);
 Matches numeric, boolean, or string literals:
 
 ```rust
-macro! repeat_byte($count:literal, $value:literal) {
+macro_rules! repeat_byte($count:literal, $value:literal) {
     [$value; $count]
 }
 
@@ -112,7 +112,7 @@ repeat_byte!(16, 0xFF)  // Expands to: [0xFF; 16]
 Matches type expressions:
 
 ```rust
-macro! declare_buffer($name:ident, $element:ty, $size:literal) {
+macro_rules! declare_buffer($name:ident, $element:ty, $size:literal) {
     #[ram]
     static mut $name: [$element; $size];
 }
@@ -128,7 +128,7 @@ declare_buffer!(SPRITE_DATA, u16, 128);
 Matches hardware register names (A, X, Y only):
 
 ```rust
-macro! save_and_clear($reg:reg) {
+macro_rules! save_and_clear($reg:reg) {
     let saved = $reg;
     $reg = 0;
 }
@@ -144,12 +144,12 @@ save_and_clear!(X);
 Matches any single token or balanced group `(...)`, `[...]`, or `{...}`. Use as catch-all or for code blocks:
 
 ```rust
-macro! forward($($tokens:tt),*) {
-    other_macro!($($tokens),*)
+macro_rules! forward($($tokens:tt),*) {
+    other_macro_rules!($($tokens),*)
 }
 
 // Use tt with braces for code blocks
-macro! time_it($body:tt) {
+macro_rules! time_it($body:tt) {
     let start = TIMER;
     $body
     let elapsed = TIMER - start;
@@ -171,7 +171,7 @@ R65 macros support a single repetition form: `$(...),*` (comma-separated, zero o
 ### Basic Repetition
 
 ```rust
-macro! sum($($val:expr),*) {
+macro_rules! sum($($val:expr),*) {
     A = 0;
     $(A = A + $val;)*
 }
@@ -194,7 +194,7 @@ sum!();
 Multiple parameters can be captured together:
 
 ```rust
-macro! init_vars($($name:ident = $value:expr),*) {
+macro_rules! init_vars($($name:ident = $value:expr),*) {
     $(let mut $name = $value;)*
 }
 
@@ -210,7 +210,7 @@ init_vars!(x = 10, y = 20, z = 30);
 Use a counter pattern for indexed access:
 
 ```rust
-macro! indexed_store($base:expr, $($val:expr),*) {
+macro_rules! indexed_store($base:expr, $($val:expr),*) {
     {
         let mut __idx: u8 = 0;
         $(
@@ -259,7 +259,7 @@ $($x:expr)*      // No separator
 Parameters are substituted as token sequences:
 
 ```rust
-macro! wrap($e:expr) {
+macro_rules! wrap($e:expr) {
     ($e)
 }
 
@@ -272,7 +272,7 @@ wrap!(a + b)
 Expression fragments are automatically parenthesized to preserve precedence:
 
 ```rust
-macro! double($e:expr) {
+macro_rules! double($e:expr) {
     $e * 2
 }
 
@@ -288,12 +288,12 @@ Identifiers cannot be concatenated (unlike C's `##`):
 
 ```rust
 // NOT SUPPORTED
-macro! make_name($prefix:ident) {
+macro_rules! make_name($prefix:ident) {
     let $prefix_counter = 0;  // Does NOT create "foo_counter"
 }
 
 // Workaround: Pass full name
-macro! make_counter($name:ident) {
+macro_rules! make_counter($name:ident) {
     let $name = 0;
 }
 make_counter!(foo_counter);
@@ -308,7 +308,7 @@ R65 macros have **no hygiene** - they operate like C preprocessor macros. Names 
 ### Name Collision Example
 
 ```rust
-macro! with_temp($body:tt) {
+macro_rules! with_temp($body:tt) {
     let temp = 0;
     $body
 }
@@ -323,7 +323,7 @@ fn example() {
 
 1. **Use unlikely names with prefixes**:
 ```rust
-macro! with_temp($body:tt) {
+macro_rules! with_temp($body:tt) {
     let __macro_temp = 0;  // Unlikely to collide
     $body
 }
@@ -331,7 +331,7 @@ macro! with_temp($body:tt) {
 
 2. **Use block scope**:
 ```rust
-macro! scoped_temp($body:tt) {
+macro_rules! scoped_temp($body:tt) {
     {
         let temp = 0;  // Scoped to this block
         $body
@@ -341,7 +341,7 @@ macro! scoped_temp($body:tt) {
 
 3. **Accept name as parameter**:
 ```rust
-macro! with_temp($temp_name:ident, $body:tt) {
+macro_rules! with_temp($temp_name:ident, $body:tt) {
     let $temp_name = 0;
     $body
 }
@@ -356,7 +356,7 @@ with_temp!(my_temp, { my_temp = my_temp + 1; });
 ### Hardware Register Setup
 
 ```rust
-macro! setup_dma($channel:literal, $src:expr, $dst:expr, $size:expr) {
+macro_rules! setup_dma($channel:literal, $src:expr, $dst:expr, $size:expr) {
     DMASRC[$channel] = $src;
     DMADST[$channel] = $dst;
     DMASIZE[$channel] = $size;
@@ -369,7 +369,7 @@ setup_dma!(0, SPRITE_DATA, 0x0000, 512);
 ### Loop Unrolling
 
 ```rust
-macro! unroll4($body:tt) {
+macro_rules! unroll4($body:tt) {
     $body
     $body
     $body
@@ -384,10 +384,10 @@ unroll4!({ A = *PTR; PTR++; *DST = A; DST++; });
 
 ```rust
 // Define feature flags as macros
-macro! DEBUG() { }  // Empty = disabled
-// macro! DEBUG() { log_state(); }  // Uncomment to enable
+macro_rules! DEBUG() { }  // Empty = disabled
+// macro_rules! DEBUG() { log_state(); }  // Uncomment to enable
 
-macro! debug_only($body:tt) {
+macro_rules! debug_only($body:tt) {
     DEBUG!()  // Expands to nothing or debug code
 }
 ```
@@ -395,7 +395,7 @@ macro! debug_only($body:tt) {
 ### Lookup Table Generation
 
 ```rust
-macro! sin_table($name:ident, $size:literal) {
+macro_rules! sin_table($name:ident, $size:literal) {
     #[rom]
     static $name: [u8; $size] = [
         // Pre-computed at compile time
@@ -407,11 +407,11 @@ macro! sin_table($name:ident, $size:literal) {
 ### Multi-Register Operations
 
 ```rust
-macro! push_all($($reg:reg),*) {
+macro_rules! push_all($($reg:reg),*) {
     $(asm!("PH" + stringify!($reg));)*
 }
 
-macro! pop_all($($reg:reg),*) {
+macro_rules! pop_all($($reg:reg),*) {
     $(asm!("PL" + stringify!($reg));)*
 }
 
@@ -424,7 +424,7 @@ pop_all!(Y, X, A);  // Reverse order!
 ### Struct-like Initialization
 
 ```rust
-macro! sprite($x:expr, $y:expr, $tile:expr, $attr:expr) {
+macro_rules! sprite($x:expr, $y:expr, $tile:expr, $attr:expr) {
     {
         SPRITE_X = $x;
         SPRITE_Y = $y;
@@ -439,7 +439,7 @@ sprite!(100, 50, 0x10, 0x00);
 ### Assert (Debug Only)
 
 ```rust
-macro! assert($cond:expr) {
+macro_rules! assert($cond:expr) {
     if !($cond) {
         asm!("BRK");  // Trigger debugger
     }
@@ -451,11 +451,11 @@ assert!(health <= 100);
 ### Bitfield Access
 
 ```rust
-macro! get_bits($value:expr, $mask:literal, $shift:literal) {
+macro_rules! get_bits($value:expr, $mask:literal, $shift:literal) {
     (($value) & $mask) >> $shift
 }
 
-macro! set_bits($target:expr, $mask:literal, $shift:literal, $value:expr) {
+macro_rules! set_bits($target:expr, $mask:literal, $shift:literal, $value:expr) {
     $target = ($target & ~$mask) | (($value << $shift) & $mask)
 }
 
@@ -470,18 +470,18 @@ set_bits!(attr, 0xC0, 6, 2);
 Macros can call themselves or other macros:
 
 ```rust
-macro! countdown($n:literal) {
+macro_rules! countdown($n:literal) {
     A = $n;
     // Note: Can't actually recurse with decremented value
     // without const evaluation. This is a limitation.
 }
 
 // Macros calling other macros works:
-macro! inner($x:expr) {
+macro_rules! inner($x:expr) {
     $x + 1
 }
 
-macro! outer($x:expr) {
+macro_rules! outer($x:expr) {
     inner!($x) * 2
 }
 
@@ -493,7 +493,7 @@ outer!(5)  // Expands to: ((5) + 1) * 2
 Maximum expansion depth is 64 levels. Exceeding this is a compile error:
 
 ```rust
-macro! infinite() {
+macro_rules! infinite() {
     infinite!()  // ERROR: macro expansion depth exceeded (64 levels)
 }
 ```
@@ -508,7 +508,7 @@ All macros are globally visible after definition. No visibility modifiers:
 
 ```rust
 // In header.r65
-macro! common_pattern($x:expr) {
+macro_rules! common_pattern($x:expr) {
     $x + 1
 }
 
@@ -524,7 +524,7 @@ Macros must be defined before use:
 ```rust
 foo!(5);  // ERROR: macro 'foo' not defined
 
-macro! foo($x:expr) { $x }
+macro_rules! foo($x:expr) { $x }
 
 foo!(5);  // OK
 ```
@@ -534,10 +534,10 @@ foo!(5);  // OK
 Later definitions shadow earlier ones:
 
 ```rust
-macro! greet() { "Hello" }
+macro_rules! greet() { "Hello" }
 let a = greet!();  // "Hello"
 
-macro! greet() { "Hi" }
+macro_rules! greet() { "Hi" }
 let b = greet!();  // "Hi"
 ```
 
@@ -569,7 +569,7 @@ error: macro 'foo' expects 2 arguments, found 1
 note: macro 'foo' defined here
   --> macros.r65:5:1
    |
-5  | macro! foo($a:expr, $b:expr) { ... }
+5  | macro_rules! foo($a:expr, $b:expr) { ... }
    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 ```
 
@@ -613,14 +613,14 @@ After:  X++; X++;
 **Multiple patterns** → Define separate macros:
 ```rust
 // Instead of multiple arms:
-macro! foo($x:expr) { ... }
-macro! foo_pair($x:expr, $y:expr) { ... }
+macro_rules! foo($x:expr) { ... }
+macro_rules! foo_pair($x:expr, $y:expr) { ... }
 ```
 
 **Statement fragment** → Use `tt` with braces:
 ```rust
 // Instead of $body:stmt, use $body:tt and pass blocks
-macro! wrapper($body:tt) {
+macro_rules! wrapper($body:tt) {
     setup();
     $body
     cleanup();
@@ -632,7 +632,7 @@ wrapper!({ do_thing(); });  // Pass code in braces
 **Identifier concatenation** → Pass full name:
 ```rust
 // Instead of: $prefix ## _counter
-macro! make_counter($full_name:ident) {
+macro_rules! make_counter($full_name:ident) {
     static mut $full_name: u8 = 0;
 }
 make_counter!(sprite_counter);
@@ -685,7 +685,7 @@ class MacroExpander:
 
 ### Expansion Algorithm
 
-1. **Collect**: First pass collects all `macro!` definitions
+1. **Collect**: First pass collects all `macro_rules!` definitions
 2. **Match**: For each invocation, match arguments against parameters
 3. **Capture**: Extract token sequences for each parameter
 4. **Substitute**: Replace `$param` with captured tokens
@@ -702,7 +702,7 @@ class MacroExpander:
 
 ## Comparison to Rust Macros
 
-| Aspect | Rust `macro_rules!` | R65 `macro!` |
+| Aspect | Rust `macro_rules!` | R65 `macro_rules!` |
 |--------|---------------------|--------------|
 | Patterns per macro | Multiple (with `=>`) | One |
 | Repetition forms | `*`, `+`, `?` | `*` only |
@@ -732,7 +732,7 @@ static mut DMABANK: [u8; 8];
 #[hw(0x4305)]
 static mut DMASIZE: [u16; 8];
 
-macro! dma_transfer($channel:literal, $src:expr, $bank:expr, $size:expr) {
+macro_rules! dma_transfer($channel:literal, $src:expr, $bank:expr, $size:expr) {
     DMASRC[$channel] = $src;
     DMABANK[$channel] = $bank;
     DMASIZE[$channel] = $size;
@@ -750,7 +750,7 @@ fn upload_tiles() {
 #[hw(0x21FC)]
 static mut DEBUG_PORT: u8;
 
-macro! debug_bytes($($val:expr),*) {
+macro_rules! debug_bytes($($val:expr),*) {
     $(DEBUG_PORT = $val;)*
 }
 
@@ -762,7 +762,7 @@ fn checkpoint() {
 ### State Machine Helper
 
 ```rust
-macro! state_handler($state:ident, $body:tt) {
+macro_rules! state_handler($state:ident, $body:tt) {
     if current_state == State::$state {
         $body
     }
@@ -787,7 +787,7 @@ fn update() {
 ### Memory Fill
 
 ```rust
-macro! memset($dst:expr, $val:expr, $count:expr) {
+macro_rules! memset($dst:expr, $val:expr, $count:expr) {
     {
         let mut __i: u16 = 0;
         while __i < $count {
@@ -805,7 +805,7 @@ fn clear_screen() {
 ### Register Preservation Wrapper
 
 ```rust
-macro! preserve_a($body:tt) {
+macro_rules! preserve_a($body:tt) {
     {
         let __saved_a = A;
         $body

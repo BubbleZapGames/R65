@@ -56,9 +56,10 @@ def test_reserved_rust_keywords():
 
 def test_strict_reserved_keywords():
     """Test strict reserved keywords (reserved by Rust for future use)."""
+    # Note: 'macro' removed - we use 'macro_rules' as a first-class keyword
     strict = [
         'abstract', 'become', 'box', 'do', 'final',
-        'macro', 'override', 'priv', 'typeof',
+        'override', 'priv', 'typeof',
         'unsized', 'virtual', 'yield', 'try',
     ]
 
@@ -145,12 +146,12 @@ def test_total_keyword_count():
     # This is a sanity check to ensure we didn't miss any
 
     # Count from the grammar:
-    # - Currently used: 18 (fn, let, mut, const, static, if, else, loop, while, break, continue, return, struct, enum, type, include, asm, as)
+    # - Currently used: 19 (fn, let, mut, const, static, if, else, loop, while, break, continue, return, struct, enum, type, include, asm, as, macro_rules)
     # - Built-ins: 11 (SEP, REP, mvn, mvp, wai, stp, mul, div, mod, shl, shr)
     # - Reserved: 18 (impl, trait, for, in, match, where, use, pub, mod, crate, self, Self, super, async, await, move, ref, dyn, extern, unsafe)
-    # - Strict: 13 (abstract, become, box, do, final, macro, override, priv, typeof, unsized, virtual, yield, try)
+    # - Strict: 12 (abstract, become, box, do, final, override, priv, typeof, unsized, virtual, yield, try)
     # - far: 1
-    # Total: 18 + 11 + 18 + 13 + 1 = 61
+    # Total: 19 + 11 + 18 + 12 + 1 = 61
 
     print("✓ Total keywords reserved: ~61 (Rust-compatible)")
 

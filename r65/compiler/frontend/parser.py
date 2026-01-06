@@ -307,6 +307,182 @@ class ASTBuilder(Transformer):
         return ast.StackDirective(lower=lower, upper=upper)
 
     # ========================================================================
+    # Macros
+    # ========================================================================
+
+    @v_args(tree=True)
+    def macro_decl(self, tree):
+        """Macro definition: macro! name($param:type, ...) { body }"""
+        items = tree.children
+        # Filter to get name and params
+        name = None
+        params = []
+        body_tokens = []
+
+        for item in items:
+            if isinstance(item, LarkToken) and item.type == 'IDENT':
+                name = item.value
+            elif isinstance(item, list):  # macro_params result
+                params = item
+            elif isinstance(item, ast.MacroParam):
+                params.append(item)
+            elif isinstance(item, tuple) and item[0] == 'macro_body':
+                body_tokens = item[1]
+
+        return ast.MacroDecl(
+            name=name,
+            params=params,
+            body_tokens=body_tokens,
+            source_loc=self._make_source_loc(tree.meta)
+        )
+
+    def macro_params(self, items):
+        """Macro parameter list."""
+        result = []
+        for item in items:
+            if isinstance(item, ast.MacroParam):
+                result.append(item)
+        return result
+
+    def macro_param_simple(self, items):
+        """Simple macro parameter: $name:fragment"""
+        items = self._filter_tokens(items, keep_types={'MACRO_VAR', 'FRAGMENT_TYPE'})
+        name = items[0].value[1:]  # Remove $ prefix
+        fragment_type = items[1].value
+        return ast.MacroParam(name=name, fragment_type=fragment_type, is_repeated=False)
+
+    def macro_param_repeated(self, items):
+        """Repeated macro parameter: $($name:fragment),*"""
+        items = self._filter_tokens(items, keep_types={'MACRO_VAR', 'FRAGMENT_TYPE'})
+        name = items[0].value[1:]  # Remove $ prefix
+        fragment_type = items[1].value
+        return ast.MacroParam(name=name, fragment_type=fragment_type, is_repeated=True)
+
+    def macro_body(self, items):
+        """Macro body - collect all tokens as strings."""
+        tokens = self._collect_macro_tokens(items)
+        return ('macro_body', tokens)
+
+    def _collect_macro_tokens(self, items) -> List[str]:
+        """Recursively collect all tokens from macro body content."""
+        result = []
+        for item in items:
+            if isinstance(item, LarkToken):
+                result.append(item.value)
+            elif isinstance(item, tuple):
+                if item[0] == 'macro_body':
+                    # Nested braces
+                    result.append('{')
+                    result.extend(item[1])
+                    result.append('}')
+                elif item[0] == 'macro_rep':
+                    # Repetition: $( ... ),* or $( ... )*
+                    result.append('$(')
+                    result.extend(item[1])
+                    result.append(')')
+                    result.append(item[2])  # ',*' or '*'
+            elif isinstance(item, list):
+                result.extend(self._collect_macro_tokens(item))
+            elif isinstance(item, str):
+                result.append(item)
+        return result
+
+    def macro_rep_comma(self, items):
+        """Repetition with comma separator: $(...),*"""
+        tokens = self._collect_macro_tokens(items)
+        return ('macro_rep', tokens, ',*')
+
+    def macro_rep_no_sep(self, items):
+        """Repetition without separator: $(...)*"""
+        tokens = self._collect_macro_tokens(items)
+        return ('macro_rep', tokens, '*')
+
+    def macro_token(self, items):
+        """Single token in macro body."""
+        if items:
+            item = items[0]
+            if isinstance(item, LarkToken):
+                return item.value
+            return str(item)
+        return ''
+
+    @v_args(tree=True)
+    def macro_invocation_stmt(self, tree):
+        """Top-level macro invocation: name!(args);"""
+        items = tree.children
+        name = None
+        args = []
+
+        for item in items:
+            if isinstance(item, LarkToken) and item.type == 'IDENT':
+                name = item.value
+            elif isinstance(item, list):  # macro_args result
+                args = item
+
+        return ast.MacroInvocationStmt(
+            name=name,
+            args=args,
+            source_loc=self._make_source_loc(tree.meta)
+        )
+
+    @v_args(tree=True)
+    def macro_invocation_stmt_inner(self, tree):
+        """Statement-level macro invocation: name!(args);"""
+        items = tree.children
+        name = None
+        args = []
+
+        for item in items:
+            if isinstance(item, LarkToken) and item.type == 'IDENT':
+                name = item.value
+            elif isinstance(item, list):  # macro_args result
+                args = item
+
+        return ast.MacroInvocationStmtInner(
+            name=name,
+            args=args,
+            source_loc=self._make_source_loc(tree.meta)
+        )
+
+    def macro_args(self, items):
+        """Macro arguments - list of token strings."""
+        result = []
+        for item in items:
+            # Skip comma tokens between arguments
+            if isinstance(item, LarkToken) and item.type == 'COMMA':
+                continue
+            elif isinstance(item, str):
+                result.append(item)
+            elif isinstance(item, list):
+                # Flatten nested lists
+                result.append(' '.join(item))
+        return result
+
+    def macro_arg(self, items):
+        """Single macro argument - collect tokens."""
+        tokens = []
+        for item in items:
+            if isinstance(item, LarkToken):
+                tokens.append(item.value)
+            elif isinstance(item, str):
+                tokens.append(item)
+            elif isinstance(item, list):
+                tokens.extend(item)
+        return ' '.join(tokens)
+
+    def macro_arg_token(self, items):
+        """Token in macro argument."""
+        if not items:
+            return ''
+        item = items[0]
+        if isinstance(item, LarkToken):
+            return item.value
+        elif isinstance(item, list):
+            # Nested group
+            return ' '.join(str(x) for x in items)
+        return str(item)
+
+    # ========================================================================
     # Attributes
     # ========================================================================
 
@@ -906,7 +1082,64 @@ class Parser:
             program = transformer.transform(tree)
             return program
         except Exception as e:
+            # Check for common Rust macro syntax mistakes and provide helpful errors
+            error_msg = self._check_macro_syntax_hints(source, str(e))
+            if error_msg:
+                raise ParseError(f"Parse error in {filename}: {error_msg}") from e
             raise ParseError(f"Parse error in {filename}: {e}") from e
+
+    def _check_macro_syntax_hints(self, source: str, error_str: str) -> str:
+        """Check for common Rust macro syntax mistakes and return helpful error message."""
+        import re
+
+        # Check for Rust's => syntax in macros
+        if '=>' in source and 'macro_rules!' in source:
+            if re.search(r'macro_rules!\s*\w+\s*\{', source) or re.search(r'\)\s*=>\s*\{', source):
+                return (
+                    "R65 uses simplified macro syntax without '=>' and without pattern matching.\n"
+                    "  Rust syntax:   macro_rules! name { ($x:expr) => { ... }; }\n"
+                    "  R65 syntax:    macro_rules! name($x:expr) { ... }\n"
+                    "See docs/macros.md for the complete macro syntax."
+                )
+
+        # Check for unsupported fragment types
+        unsupported_fragments = ['stmt', 'block', 'item', 'meta', 'pat', 'path', 'vis', 'lifetime']
+        for frag in unsupported_fragments:
+            if f':{frag}' in source or f': {frag}' in source:
+                return (
+                    f"Fragment type '${frag}' is not supported in R65.\n"
+                    "  Supported fragment types: expr, ident, literal, ty, reg, tt\n"
+                    "See docs/macros.md for details on each fragment type."
+                )
+
+        # Check for multiple macro arms (Rust uses { } with multiple arms)
+        if 'macro_rules!' in source and re.search(r'macro_rules!\s*\w+\s*\{[^}]*;\s*\(', source):
+            return (
+                "R65 macros support only a single pattern (no multiple arms).\n"
+                "  Rust syntax:   macro_rules! name { (pat1) => {...}; (pat2) => {...}; }\n"
+                "  R65 syntax:    macro_rules! name(params) { body }\n"
+                "See docs/macros.md for the complete macro syntax."
+            )
+
+        # Check for + repetition (we only support *)
+        if re.search(r'\$\([^)]+\)\s*[,;]?\s*\+', source):
+            return (
+                "R65 only supports '*' repetition (zero or more), not '+' (one or more).\n"
+                "  Unsupported:  $($x:expr),+\n"
+                "  Supported:    $($x:expr),*\n"
+                "See docs/macros.md for repetition syntax."
+            )
+
+        # Check for semicolon separator in repetition
+        if re.search(r'\$\([^)]+\)\s*;\s*\*', source):
+            return (
+                "R65 only supports comma separator in repetitions, not semicolon.\n"
+                "  Unsupported:  $($x:expr);*\n"
+                "  Supported:    $($x:expr),*\n"
+                "See docs/macros.md for repetition syntax."
+            )
+
+        return None
 
 
 class ParseError(Exception):

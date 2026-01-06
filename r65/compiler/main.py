@@ -16,7 +16,7 @@ Advanced usage (for compiler development):
 import sys
 import argparse
 from pathlib import Path
-from r65.compiler.frontend import tokenize, parse, preprocess, LexerError, ParseError, PreprocessorError, TokenType, ast
+from r65.compiler.frontend import tokenize, parse, preprocess, expand_macros, LexerError, ParseError, PreprocessorError, MacroError, TokenType, ast
 from r65.compiler.hir import HIRBuilder, HIRError
 from r65.compiler.typeck import TypeChecker, TypeCheckError
 from r65.compiler.mir import MIRBuilder
@@ -69,6 +69,7 @@ def dump_hir(source: str, filename: str):
     """Dump HIR."""
     program = parse(source, filename)
     program = preprocess(program, filename)
+    program = expand_macros(program)
     builder = HIRBuilder(source_file=filename)
     hir_program = builder.build_program(program)
 
@@ -92,6 +93,7 @@ def dump_mir(source: str, filename: str):
     """Dump MIR."""
     program = parse(source, filename)
     program = preprocess(program, filename)
+    program = expand_macros(program)
     builder = HIRBuilder(source_file=filename)
     hir_program = builder.build_program(program)
     type_checker = TypeChecker(hir_program)
@@ -129,23 +131,28 @@ def compile_source(source: str, filename: str, output_file: str = None,
         # Parse
         if verbose:
             log(f"Compiling {filename}...")
-            log(f"  [1/7] Parsing...")
+            log(f"  [1/8] Parsing...")
         program = parse(source, filename)
 
         # Preprocess (expand includes)
         if verbose:
-            log(f"  [2/7] Preprocessing...")
+            log(f"  [2/8] Preprocessing...")
         program = preprocess(program, filename)
+
+        # Expand macros
+        if verbose:
+            log(f"  [3/8] Expanding macros...")
+        program = expand_macros(program)
 
         # Build HIR
         if verbose:
-            log(f"  [3/7] Building HIR...")
+            log(f"  [4/8] Building HIR...")
         builder = HIRBuilder(source_file=filename)
         hir_program = builder.build_program(program)
 
         # Type check
         if verbose:
-            log(f"  [4/7] Type checking...")
+            log(f"  [5/8] Type checking...")
         type_checker = TypeChecker(hir_program)
         type_checker.check()
 
@@ -160,20 +167,20 @@ def compile_source(source: str, filename: str, output_file: str = None,
 
         # Build MIR
         if verbose:
-            log(f"  [5/7] Building MIR...")
+            log(f"  [6/8] Building MIR...")
         mir_builder = MIRBuilder()
         mir_program = mir_builder.build_program(hir_program)
 
         # Check for unsafe recursion
         if verbose:
-            log(f"  [6/7] Checking for unsafe recursion...")
+            log(f"  [7/8] Checking for unsafe recursion...")
         from r65.compiler.analysis import RecursionChecker
         recursion_checker = RecursionChecker(mir_program)
         recursion_checker.check()
 
         # Generate assembly
         if verbose:
-            log(f"  [7/7] Generating assembly...")
+            log(f"  [8/8] Generating assembly...")
         codegen = ProgramCodeGenerator()
         assembly = codegen.generate(mir_program, output_file=output_file)
 
@@ -193,6 +200,9 @@ def compile_source(source: str, filename: str, output_file: str = None,
         sys.exit(1)
     except PreprocessorError as e:
         print(f"\nPreprocessor error: {e}", file=sys.stderr)
+        sys.exit(1)
+    except MacroError as e:
+        print(f"\nMacro expansion error: {e}", file=sys.stderr)
         sys.exit(1)
     except HIRError as e:
         print(f"\nHIR error: {e}", file=sys.stderr)
@@ -226,6 +236,7 @@ def compile_string(source: str, filename: str = "<string>") -> str:
 
     program = parse(source, filename)
     program = preprocess(program, filename)
+    program = expand_macros(program)
     builder = HIRBuilder(source_file=filename)
     hir_program = builder.build_program(program)
     type_checker = TypeChecker(hir_program)
@@ -336,6 +347,7 @@ examples:
             # Just run through typecheck and report success
             program = parse(source, filename)
             program = preprocess(program, filename)
+            program = expand_macros(program)
             builder = HIRBuilder(source_file=filename)
             hir_program = builder.build_program(program)
             type_checker = TypeChecker(hir_program)
@@ -350,7 +362,7 @@ examples:
         # Normal compilation
         compile_source(source, filename, args.output, args.verbose, args.quiet)
 
-    except (LexerError, ParseError, PreprocessorError, HIRError, TypeCheckError) as e:
+    except (LexerError, ParseError, PreprocessorError, MacroError, HIRError, TypeCheckError) as e:
         # These are already handled in dump/compile functions
         raise
     except Exception as e:

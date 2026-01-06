@@ -203,6 +203,65 @@ class StackDirective(Declaration):
 
 
 # ============================================================================
+# Macros
+# ============================================================================
+
+@dataclass
+class MacroParam(ASTNode):
+    """Macro parameter definition (e.g., $name:expr)."""
+    name: str           # Parameter name (without $)
+    fragment_type: str  # Fragment type: 'expr', 'ident', 'literal', 'ty', 'reg', 'tt'
+    is_repeated: bool = False  # True if inside $()*
+
+
+@dataclass
+class MacroDecl(Declaration):
+    """Macro definition.
+
+    Example:
+        macro! inc_twice($reg:reg) {
+            $reg++;
+            $reg++;
+        }
+    """
+    name: str
+    params: List[MacroParam]
+    body_tokens: List[str]  # Raw token strings for the body
+
+
+@dataclass
+class MacroInvocation(Expression):
+    """Macro invocation (e.g., my_macro!(arg1, arg2)).
+
+    This is parsed as an expression but expanded during preprocessing.
+    The args are stored as raw token strings until expansion.
+    """
+    name: str
+    args: List[str]  # Raw argument token strings
+
+
+@dataclass
+class MacroInvocationStmt(Declaration):
+    """Top-level macro invocation statement.
+
+    Macro invocations at the top level (not in expressions) are
+    stored as declarations and expanded during preprocessing.
+    """
+    name: str
+    args: List[str]  # Raw argument token strings
+
+
+@dataclass
+class MacroInvocationStmtInner(Statement):
+    """Statement-level macro invocation (inside function bodies).
+
+    Example: inc_twice!(X);
+    """
+    name: str
+    args: List[str]  # Raw argument token strings
+
+
+# ============================================================================
 # Statements
 # ============================================================================
 
