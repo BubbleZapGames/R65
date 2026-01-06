@@ -1,0 +1,49 @@
+// {{PROJECT_NAME}} - Sample graphics data
+// Basic palette and tile data for testing
+
+// Color palette (16 colors x 2 bytes each)
+#[rom]
+static mut PALETTES: [u8; 32] = [
+    // Background colors
+    0x00, 0x00,  // Color 0: Black
+    0xFF, 0x00,  // Color 1: Blue
+    0x00, 0xFF,  // Color 2: Green
+    0xFF, 0xFF,  // Color 3: Cyan
+    0x00, 0x00,  // Color 4: Black
+    0xFF, 0x00,  // Color 5: Blue
+    0x00, 0xFF,  // Color 6: Green
+    0xFF, 0xFF,  // Color 7: Cyan
+    // Sprite colors
+    0x00, 0x00,  // Color 8: Black
+    0x1F, 0x00,  // Color 9: Red
+    0x1F, 0xFF,  // Color 10: Yellow
+    0x7F, 0xFF,  // Color 11: Light yellow
+    0x00, 0x00,  // Color 12: Black
+    0x1F, 0x00,  // Color 13: Red
+    0x1F, 0xFF,  // Color 14: Yellow
+    0x7F, 0xFF,  // Color 15: Light yellow
+];
+
+// Simple 8x8 tile (4-bit packed, 16 bytes per tile)
+#[rom]
+static mut TILE_DATA: [u8; 16] = [
+    // Row 0: 00001111
+    0x0F, 0x00,
+    // Row 1: 00001111  
+    0x0F, 0x00,
+    // Row 2: 00001111
+    0x0F, 0x00,
+    // Row 3: 00001111
+    0x0F, 0x00,
+    // Row 4: 11110000
+    0xF0, 0x00,
+    // Row 5: 11110000
+    0xF0, 0x00,
+    // Row 6: 11110000
+    0xF0, 0x00,
+    // Row 7: 11110000
+    0xF0, 0x00,
+];
+
+// Size of tile data
+const TILE_DATA_SIZE: u16 = 16;

@@ -1,0 +1,187 @@
+// {{PROJECT_NAME}} - SNES Hardware Register Definitions
+// Common SNES memory-mapped registers
+
+// PPU registers
+#[hw(0x2100)]
+static mut INIDISP: u8;      // Display control/increment
+
+#[hw(0x2101)]
+static mut OBSEL: u8;        // Object size and character data area designation
+
+#[hw(0x2102)]
+static mut OAMADDL: u8;      // OAM address low
+
+#[hw(0x2103)]
+static mut OAMADDH: u8;      // OAM address high and priority rotation
+
+#[hw(0x2104)]
+static mut OAMDATA: u8;      // OAM data write
+
+#[hw(0x2105)]
+static mut BGMODE: u8;       // BG mode and character size designation
+
+#[hw(0x2106)]
+static mut MOSAIC: u8;       // Mosaic size and enable designation
+
+#[hw(0x2107)]
+static mut BG1SC: u8;        // BG1 screen base and size designation
+
+#[hw(0x2108)]
+static mut BG2SC: u8;        // BG2 screen base and size designation
+
+#[hw(0x2109)]
+static mut BG3SC: u8;        // BG3 screen base and size designation
+
+#[hw(0x210A)]
+static mut BG4SC: u8;        // BG4 screen base and size designation
+
+#[hw(0x210B)]
+static mut BG12NBA: u8;      // BG1/2 character data area designation
+
+#[hw(0x210C)]
+static mut BG34NBA: u8;      // BG3/4 character data area designation
+
+#[hw(0x210D)]
+static mut BG1HOFS: u8;      // BG1 horizontal offset (low)
+
+#[hw(0x210E)]
+static mut BG1VOFS: u8;      // BG1 vertical offset (low)
+
+#[hw(0x210F)]
+static mut BG2HOFS: u8;      // BG2 horizontal offset (low)
+
+#[hw(0x2110)]
+static mut BG2VOFS: u8;      // BG2 vertical offset (low)
+
+#[hw(0x2111)]
+static mut BG3HOFS: u8;      // BG3 horizontal offset (low)
+
+#[hw(0x2112)]
+static mut BG3VOFS: u8;      // BG3 vertical offset (low)
+
+#[hw(0x2113)]
+static mut BG4HOFS: u8;      // BG4 horizontal offset (low)
+
+#[hw(0x2114)]
+static mut BG4VOFS: u8;      // BG4 vertical offset (low)
+
+#[hw(0x2115)]
+static mut VMAIN: u8;        // VRAM address increment mode designation
+
+#[hw(0x2116)]
+static mut VMADDL: u8;       // VRAM address low
+
+#[hw(0x2117)]
+static mut VMADDH: u8;       // VRAM address high
+
+#[hw(0x2118)]
+static mut VMDATAL: u8;      // VRAM data write low
+
+#[hw(0x2119)]
+static mut VMDATAH: u8;      // VRAM data write high
+
+#[hw(0x211A)]
+static mut M7SEL: u8;        // Mode-7 setting
+
+#[hw(0x211B)]
+static mut M7A: u8;          // Mode-7 rotate/scale parameter A (low)
+
+#[hw(0x211C)]
+static mut M7B: u8;          // Mode-7 rotate/scale parameter B (low)
+
+#[hw(0x211D)]
+static mut M7C: u8;          // Mode-7 rotate/scale parameter C (low)
+
+#[hw(0x211E)]
+static mut M7D: u8;          // Mode-7 rotate/scale parameter D (low)
+
+#[hw(0x211F)]
+static mut M7X: u8;          // Mode-7 rotate/scale parameter X (low)
+
+#[hw(0x2120)]
+static mut M7Y: u8;          // Mode-7 rotate/scale parameter Y (low)
+
+#[hw(0x2121)]
+static mut CGADD: u8;        // CGRAM address
+
+#[hw(0x2122)]
+static mut CGDATA: u8;       // CGRAM data write
+
+#[hw(0x2123)]
+static mut W12SEL: u8;       // Window 1/2 designation for BG1-4
+
+#[hw(0x2124)]
+static mut W34SEL: u8;       // Window 1/2 designation for BG1-4
+
+#[hw(0x2125)]
+static mut WOBJSEL: u8;      // Window 1/2 designation for objects
+
+#[hw(0x2126)]
+static mut WH0: u8;          // Window 1 left position
+
+#[hw(0x2127)]
+static mut WH1: u8;          // Window 1 right position
+
+#[hw(0x2128)]
+static mut WH2: u8;          // Window 2 left position
+
+#[hw(0x2129)]
+static mut WH3: u8;          // Window 2 right position
+
+#[hw(0x212A)]
+static mut WBGLOG: u8;       // Window mask logic for BG1-4
+
+#[hw(0x212B)]
+static mut WOBJLOG: u8;      // Window mask logic for objects
+
+#[hw(0x212C)]
+static mut TM: u8;           // Main screen designation
+
+#[hw(0x212D)]
+static mut TS: u8;           // Sub screen designation
+
+#[hw(0x212E)]
+static mut TMW: u8;          // Window area main screen designation
+
+#[hw(0x212F)]
+static mut TSW: u8;          // Window area sub screen designation
+
+#[hw(0x2130)]
+static mut CGWSEL: u8;       // Color addition/subtraction selection
+
+#[hw(0x2131)]
+static mut CGADSUB: u8;      // Color addition/subtraction designation
+
+#[hw(0x2132)]
+static mut COLDATA: u8;      // Fixed color data for addition/subtraction
+
+#[hw(0x2133)]
+static mut SETINI: u8;       // Screen setting
+
+// Joypad registers
+#[hw(0x4212)]
+static mut HVBJOY: u8;       // H/V/Joy flags
+
+#[hw(0x4218)]
+static mut JOY1L: u8;        // Joypad 1 low byte
+
+#[hw(0x4219)]
+static mut JOY1H: u8;        // Joypad 1 high byte
+
+#[hw(0x421A)]
+static mut JOY2L: u8;        // Joypad 2 low byte
+
+#[hw(0x421B)]
+static mut JOY2H: u8;        // Joypad 2 high byte
+
+#[hw(0x421C)]
+static mut JOY3L: u8;        // Joypad 3 low byte
+
+#[hw(0x421D)]
+static mut JOY3H: u8;        // Joypad 3 high byte
+
+#[hw(0x421E)]
+static mut JOY4L: u8;        // Joypad 4 low byte
+
+#[hw(0x421F)]
+static mut JOY4H: u8;        // Joypad 4 high byte

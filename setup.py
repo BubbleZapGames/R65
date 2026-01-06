@@ -50,6 +50,7 @@ setup(
     entry_points={
         "console_scripts": [
             "r65c=r65.compiler.main:main",
+            "r65x=r65.cli:main",
         ],
     },
 
@@ -57,6 +58,10 @@ setup(
     package_data={
         "r65.compiler": [
             "frontend/*.lark",  # Grammar files
+        ],
+        "r65": [
+            "templates/**/*.r65",  # Project templates
+            "templates/**/*.md",   # Template documentation
         ],
     },
 

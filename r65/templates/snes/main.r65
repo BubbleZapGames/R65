@@ -1,0 +1,24 @@
+// {{PROJECT_NAME}} - Main entry point
+// SNES LoROM template project
+
+// Define basic hardware register
+#[hw(0x2100)]
+static mut INIDISP: u8;      // Display control/increment
+
+// Program entry point
+#[entry]
+#[mode(m8, x16)]
+fn main() {
+    // Simple screen initialization
+    A = 0x8F;          // Screen off, full brightness
+    INIDISP = A;
+    
+    // Turn on screen
+    A = 0x0F;          // Screen on, full brightness
+    INIDISP = A;
+    
+    // Simple main loop
+    loop {
+        // TODO: Add game logic here
+    }
+}
