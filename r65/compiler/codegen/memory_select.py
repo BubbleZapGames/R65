@@ -106,8 +106,13 @@ class MemoryOperationSelector(BaseSelector):
             self.parent._emit_16bit_immediate_store(value, dest_loc)
         else:
             value_masked = value & 0xFF
-            self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(value_masked))
-            self._emit_load_store('STA', dest_loc)
+            # Use STZ for storing zero (more efficient than LDA #0; STA)
+            # But STZ doesn't support stack-relative addressing
+            if value_masked == 0 and dest_loc.kind != LocationKind.STACK:
+                self._emit_load_store('STZ', dest_loc)
+            else:
+                self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(value_masked))
+                self._emit_load_store('STA', dest_loc)
 
     def _store_from_location(self, instr: Store, dest_loc, is_u16: bool):
         """Store from a source location to destination."""

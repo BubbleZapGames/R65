@@ -119,6 +119,10 @@ class InstructionSelector:
             'DP': Opcode.STY_DP, 'DP_X': Opcode.STY_DP_X,
             'ABSOLUTE': Opcode.STY_ABSOLUTE,
         },
+        'STZ': {
+            'DP': Opcode.STZ_DP, 'DP_X': Opcode.STZ_DP_X,
+            'ABSOLUTE': Opcode.STZ_ABSOLUTE, 'ABSOLUTE_X': Opcode.STZ_ABSOLUTE_X,
+        },
         'ADC': {
             'DP': Opcode.ADC_DP, 'DP_X': Opcode.ADC_DP_X,
             'ABSOLUTE': Opcode.ADC_ABSOLUTE, 'ABSOLUTE_X': Opcode.ADC_ABSOLUTE_X,
@@ -873,15 +877,23 @@ class InstructionSelector:
         """
         low = value & 0xFF
         high = (value >> 8) & 0xFF
-
-        # Low byte
-        self._emit_immediate(Opcode.LDA_IMMEDIATE, low)
-        self._emit_store('STA', dest_loc)
-
-        # High byte
         dest_high = self._offset_location(dest_loc, 1)
-        self._emit_immediate(Opcode.LDA_IMMEDIATE, high)
-        self._emit_store('STA', dest_high)
+
+        # Use STZ for zero bytes (more efficient)
+        # But STZ doesn't support stack-relative addressing
+        can_use_stz = dest_loc.kind != LocationKind.STACK
+
+        if low == 0 and can_use_stz:
+            self._emit_store('STZ', dest_loc)
+        else:
+            self._emit_immediate(Opcode.LDA_IMMEDIATE, low)
+            self._emit_store('STA', dest_loc)
+
+        if high == 0 and can_use_stz:
+            self._emit_store('STZ', dest_high)
+        else:
+            self._emit_immediate(Opcode.LDA_IMMEDIATE, high)
+            self._emit_store('STA', dest_high)
 
     def _emit_register_transfer(self, src_reg: str, dest_reg: str):
         """
