@@ -5,18 +5,15 @@ Handles comparison and bit manipulation instruction generation
 for the 65816 processor.
 """
 
-from typing import TYPE_CHECKING
 from r65.compiler.mir.nodes import Compare, BitTest, Rotate, Immediate as MIRImmediate
 from r65.compiler.codegen.register_alloc import LocationKind
 from r65.compiler.errors import InstructionSelectionError
 from r65.compiler.codegen.opcodes import Opcode
 from r65.compiler.codegen.asm_nodes import Immediate, Address
-
-if TYPE_CHECKING:
-    from r65.compiler.codegen.instruction_select import InstructionSelector
+from r65.compiler.codegen.base_selector import BaseSelector
 
 
-class CompareSelector:
+class CompareSelector(BaseSelector):
     """
     Handles compare and bit operation instruction selection.
 
@@ -24,26 +21,9 @@ class CompareSelector:
     bit test instructions (BIT), and rotate instructions (ROL, ROR).
     """
 
-    def __init__(self, parent: 'InstructionSelector'):
-        """
-        Initialize compare selector.
-
-        Args:
-            parent: Parent instruction selector (for helper method access)
-        """
-        self.parent = parent
-
-    @property
-    def emitter(self):
-        return self.parent.emitter
-
     # ========================================================================
     # Emission Helpers
     # ========================================================================
-
-    def _emit_instr(self, opcode: Opcode, operand=None, comment: str = None):
-        """Emit an instruction using the node emitter."""
-        self.emitter.emit_instr(opcode, operand, comment)
 
     def _emit_load_store(self, mnemonic: str, location, comment: str = None):
         """Emit a load/store instruction using parent's opcode selection."""

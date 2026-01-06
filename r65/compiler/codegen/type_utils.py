@@ -1,11 +1,10 @@
 """
 Type utilities for code generation.
 
-Provides centralized type size calculations and type checking utilities
-used across the code generation pipeline.
+Provides centralized type size calculations used across the code generation pipeline.
 """
 
-from typing import Any, Dict, Optional
+from typing import Dict
 
 
 # =============================================================================
@@ -18,12 +17,6 @@ TYPE_SIZES: Dict[str, int] = {
     'u16': 2, 'i16': 2,
     'u24': 3,  # For far pointers
 }
-
-# Types that are 16-bit
-TYPES_16BIT = {'u16', 'i16'}
-
-# Types that are 8-bit
-TYPES_8BIT = {'u8', 'i8', 'bool'}
 
 
 # =============================================================================
@@ -88,86 +81,3 @@ def get_type_size(type_info) -> int:
 
     # Default to 1 byte
     return 1
-
-
-def is_16bit(type_info) -> bool:
-    """
-    Check if type is 16-bit.
-
-    Args:
-        type_info: Type information object
-
-    Returns:
-        True if type is 16-bit (u16, i16)
-    """
-    if type_info is None:
-        return False
-
-    # Handle BasicTypeInfo or similar with name attribute
-    if hasattr(type_info, 'name'):
-        return type_info.name in TYPES_16BIT
-
-    # Handle string type names directly
-    if isinstance(type_info, str):
-        return type_info in TYPES_16BIT
-
-    return False
-
-
-def is_8bit(type_info) -> bool:
-    """
-    Check if type is 8-bit.
-
-    Args:
-        type_info: Type information object
-
-    Returns:
-        True if type is 8-bit (u8, i8, bool)
-    """
-    if type_info is None:
-        return True  # Default to 8-bit
-
-    # Handle BasicTypeInfo or similar with name attribute
-    if hasattr(type_info, 'name'):
-        return type_info.name in TYPES_8BIT
-
-    # Handle string type names directly
-    if isinstance(type_info, str):
-        return type_info in TYPES_8BIT
-
-    return True  # Default to 8-bit
-
-
-def is_signed(type_info) -> bool:
-    """
-    Check if type is signed.
-
-    Args:
-        type_info: Type information object
-
-    Returns:
-        True if type is signed (i8, i16)
-    """
-    if type_info is None:
-        return False
-
-    # Handle BasicTypeInfo or similar with name attribute
-    if hasattr(type_info, 'name'):
-        return type_info.name in ('i8', 'i16')
-
-    # Handle string type names directly
-    if isinstance(type_info, str):
-        return type_info in ('i8', 'i16')
-
-    return False
-
-
-# =============================================================================
-# Bit Utilities
-# =============================================================================
-
-def is_power_of_2(n: int) -> bool:
-    """Check if n is a power of 2."""
-    return n > 0 and (n & (n - 1)) == 0
-
-

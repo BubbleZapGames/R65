@@ -5,38 +5,22 @@ Handles control flow instruction generation including conditional branches
 with proper signed/unsigned comparison handling.
 """
 
-from typing import TYPE_CHECKING
 from r65.compiler.mir.nodes import Jump, JumpTable, CondBranch, Return
 from r65.compiler.codegen.register_alloc import LocationKind
 from r65.compiler.codegen.instruction_select_helpers import RegisterMappings
 from r65.compiler.errors import InstructionSelectionError
 from r65.compiler.codegen.opcodes import Opcode
 from r65.compiler.codegen.asm_nodes import Address, Immediate
-
-if TYPE_CHECKING:
-    from r65.compiler.codegen.instruction_select import InstructionSelector
+from r65.compiler.codegen.base_selector import BaseSelector
 
 
-class ControlFlowInstructionSelector:
+class ControlFlowInstructionSelector(BaseSelector):
     """
     Handles control flow instruction selection.
 
     Manages generation of jump, branch, and return instructions
     with proper signed/unsigned comparison handling.
     """
-
-    def __init__(self, parent: 'InstructionSelector'):
-        """
-        Initialize control flow selector.
-
-        Args:
-            parent: Parent instruction selector (for helper method access)
-        """
-        self.parent = parent
-
-    @property
-    def emitter(self):
-        return self.parent.emitter
 
     @property
     def current_function(self):
@@ -49,26 +33,6 @@ class ControlFlowInstructionSelector:
     def _block_label(self, block_id: int) -> str:
         """Format a block label with function-scoped naming."""
         return self.parent._block_label(block_id)
-
-    # ========================================================================
-    # Emission Helpers
-    # ========================================================================
-
-    def _emit_implied(self, opcode: Opcode, comment: str = None):
-        """Emit an implied addressing mode instruction."""
-        self.emitter.emit_instr(opcode, None, comment)
-
-    def _emit_immediate(self, opcode: Opcode, value: int, comment: str = None):
-        """Emit an immediate addressing mode instruction."""
-        self.emitter.emit_instr(opcode, Immediate(value), comment)
-
-    def _emit_branch(self, opcode: Opcode, label: str, comment: str = None):
-        """Emit a branch instruction to a label."""
-        self.emitter.emit_instr(opcode, Address(label), comment)
-
-    def _emit_jump(self, opcode: Opcode, label: str, comment: str = None):
-        """Emit a jump instruction to a label."""
-        self.emitter.emit_instr(opcode, Address(label), comment)
 
     # ========================================================================
     # Jump Instructions

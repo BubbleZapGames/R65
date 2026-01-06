@@ -5,18 +5,15 @@ Handles memory access instruction generation including direct and indirect
 addressing modes for the 65816 processor.
 """
 
-from typing import TYPE_CHECKING
 from r65.compiler.mir.nodes import Load, Store, LoadIndirect, StoreIndirect, Immediate as MIRImmediate, FunctionPointer
 from r65.compiler.codegen.register_alloc import LocationKind
 from r65.compiler.errors import InstructionSelectionError
 from r65.compiler.codegen.opcodes import Opcode
 from r65.compiler.codegen.asm_nodes import Immediate, Address
-
-if TYPE_CHECKING:
-    from r65.compiler.codegen.instruction_select import InstructionSelector
+from r65.compiler.codegen.base_selector import BaseSelector
 
 
-class MemoryOperationSelector:
+class MemoryOperationSelector(BaseSelector):
     """
     Handles memory operation instruction selection.
 
@@ -24,26 +21,9 @@ class MemoryOperationSelector:
     addressing modes for direct and indirect memory access.
     """
 
-    def __init__(self, parent: 'InstructionSelector'):
-        """
-        Initialize memory operation selector.
-
-        Args:
-            parent: Parent instruction selector (for helper method access)
-        """
-        self.parent = parent
-
-    @property
-    def emitter(self):
-        return self.parent.emitter
-
     # ========================================================================
     # Emission Helpers
     # ========================================================================
-
-    def _emit_instr(self, opcode: Opcode, operand=None, comment: str = None):
-        """Emit an instruction using the node emitter."""
-        self.emitter.emit_instr(opcode, operand, comment)
 
     def _emit_load_store(self, mnemonic: str, location, comment: str = None):
         """Emit a load/store instruction using parent's emit_load/emit_store."""

@@ -5,18 +5,15 @@ Handles function call generation including argument setup, call emission,
 return value collection, and built-in function expansion.
 """
 
-from typing import TYPE_CHECKING
 from r65.compiler.mir.nodes import Call, VirtualRegister, ArgumentMechanism, Immediate as MIRImmediate
 from r65.compiler.codegen.register_alloc import LocationKind, PhysicalLocation
 from r65.compiler.codegen.opcodes import Opcode
 from r65.compiler.codegen.asm_nodes import Address, Immediate, BlockMove
 from r65.compiler.errors import InstructionSelectionError
-
-if TYPE_CHECKING:
-    from r65.compiler.codegen.instruction_select import InstructionSelector
+from r65.compiler.codegen.base_selector import BaseSelector
 
 
-class CallInstructionSelector:
+class CallInstructionSelector(BaseSelector):
     """
     Handles call instruction selection.
 
@@ -24,21 +21,8 @@ class CallInstructionSelector:
     and indirect call trampolines.
     """
 
-    def __init__(self, parent: 'InstructionSelector'):
-        """
-        Initialize call selector.
-
-        Args:
-            parent: Parent instruction selector (for helper method access)
-        """
-        self.parent = parent
-
-    @property
-    def emitter(self):
-        return self.parent.emitter
-
     # ========================================================================
-    # Emission Helpers
+    # Opcode Mappings
     # ========================================================================
 
     # Transfer opcode mapping
@@ -57,17 +41,9 @@ class CallInstructionSelector:
         'A': Opcode.LDA_IMMEDIATE, 'X': Opcode.LDX_IMMEDIATE, 'Y': Opcode.LDY_IMMEDIATE
     }
 
-    def _emit_implied(self, opcode: Opcode, comment: str = None):
-        """Emit an implied addressing mode instruction."""
-        self.emitter.emit_instr(opcode, None, comment)
-
-    def _emit_immediate(self, opcode: Opcode, value: int, comment: str = None):
-        """Emit an immediate addressing mode instruction."""
-        self.emitter.emit_instr(opcode, Immediate(value), comment)
-
-    def _emit_absolute(self, opcode: Opcode, label: str, comment: str = None):
-        """Emit an absolute addressing mode instruction (for calls/jumps)."""
-        self.emitter.emit_instr(opcode, Address(label), comment)
+    # ========================================================================
+    # Call-Specific Emission Helpers
+    # ========================================================================
 
     def _emit_transfer(self, source: str, dest: str):
         """Emit a register transfer instruction."""
@@ -311,9 +287,9 @@ class CallInstructionSelector:
         elif isinstance(instr.function, str):
             # Direct call
             if instr.is_far:
-                self._emit_absolute(Opcode.JSL, instr.function)
+                self._emit_address(Opcode.JSL, instr.function)
             else:
-                self._emit_absolute(Opcode.JSR, instr.function)
+                self._emit_address(Opcode.JSR, instr.function)
         else:
             raise InstructionSelectionError(f"Unknown function type in Call: {type(instr.function)}")
 
@@ -565,7 +541,7 @@ class CallInstructionSelector:
 
         # Call runtime library function
         runtime_func_name = f"__builtin_{instr.builtin_name}"
-        self._emit_absolute(Opcode.JSR, runtime_func_name)
+        self._emit_address(Opcode.JSR, runtime_func_name)
 
         # Store result if needed
         if instr.returns:
