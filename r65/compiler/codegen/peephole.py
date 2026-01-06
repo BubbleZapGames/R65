@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from r65.compiler.codegen.opcodes import (
     Opcode, is_branch, is_return, is_load, is_store,
     BRANCH_OPCODES, JUMP_OPCODES,
+    LOAD_A_OPCODES, LOAD_X_OPCODES, LOAD_Y_OPCODES,
+    STORE_A_OPCODES, STORE_X_OPCODES, STORE_Y_OPCODES,
 )
 
 if TYPE_CHECKING:
@@ -22,44 +24,6 @@ if TYPE_CHECKING:
 # ============================================================================
 # Opcode Categories for Pattern Matching
 # ============================================================================
-
-# Load instructions by register
-LOAD_A_OPCODES: Set[Opcode] = {
-    Opcode.LDA_IMMEDIATE, Opcode.LDA_DP, Opcode.LDA_DP_X,
-    Opcode.LDA_ABSOLUTE, Opcode.LDA_ABSOLUTE_X, Opcode.LDA_ABSOLUTE_Y,
-    Opcode.LDA_DP_INDIRECT, Opcode.LDA_DP_INDIRECT_X, Opcode.LDA_DP_INDIRECT_Y,
-    Opcode.LDA_DP_INDIRECT_LONG, Opcode.LDA_DP_INDIRECT_LONG_Y,
-    Opcode.LDA_LONG, Opcode.LDA_LONG_X,
-    Opcode.LDA_STACK, Opcode.LDA_STACK_INDIRECT_Y,
-}
-
-LOAD_X_OPCODES: Set[Opcode] = {
-    Opcode.LDX_IMMEDIATE, Opcode.LDX_DP, Opcode.LDX_DP_Y,
-    Opcode.LDX_ABSOLUTE, Opcode.LDX_ABSOLUTE_Y,
-}
-
-LOAD_Y_OPCODES: Set[Opcode] = {
-    Opcode.LDY_IMMEDIATE, Opcode.LDY_DP, Opcode.LDY_DP_X,
-    Opcode.LDY_ABSOLUTE, Opcode.LDY_ABSOLUTE_X,
-}
-
-# Store instructions by register
-STORE_A_OPCODES: Set[Opcode] = {
-    Opcode.STA_DP, Opcode.STA_DP_X,
-    Opcode.STA_ABSOLUTE, Opcode.STA_ABSOLUTE_X, Opcode.STA_ABSOLUTE_Y,
-    Opcode.STA_DP_INDIRECT, Opcode.STA_DP_INDIRECT_X, Opcode.STA_DP_INDIRECT_Y,
-    Opcode.STA_DP_INDIRECT_LONG, Opcode.STA_DP_INDIRECT_LONG_Y,
-    Opcode.STA_LONG, Opcode.STA_LONG_X,
-    Opcode.STA_STACK, Opcode.STA_STACK_INDIRECT_Y,
-}
-
-STORE_X_OPCODES: Set[Opcode] = {
-    Opcode.STX_DP, Opcode.STX_DP_Y, Opcode.STX_ABSOLUTE,
-}
-
-STORE_Y_OPCODES: Set[Opcode] = {
-    Opcode.STY_DP, Opcode.STY_DP_X, Opcode.STY_ABSOLUTE,
-}
 
 # Instructions that read A (for dead store analysis)
 READS_A_OPCODES: Set[Opcode] = STORE_A_OPCODES | {
