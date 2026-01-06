@@ -687,7 +687,7 @@ R65 uses **hardware-aware operators**: syntax indicates performance cost.
 - ❌ Advanced enums (data-carrying variants)
 - ❌ Closures
 - ❌ Async/await
-- ❌ Macros (maybe add `include_bytes!()` later)
+- ❌ Procedural macros (simplified declarative macros planned - see [docs/macros.md](docs/macros.md))
 - ❌ Pattern matching (initially - can add later)
 - ❌ String types (`String`, `&str`)
 - ❌ Dynamic collections (`Vec`, `HashMap`)
@@ -840,6 +840,7 @@ Performance characteristics of different storage:
 
 ## Future Enhancements
 
+- Declarative macros (simplified `macro_rules!`-style - see [docs/macros.md](docs/macros.md))
 - Basic module system
 - Methods and `impl` blocks
 - Limited generics (monomorphization)
@@ -858,6 +859,7 @@ Performance characteristics of different storage:
 - [Interrupt Handling](docs/interrupt-mode-transition.md) - Interrupt handler mode transitions
 - [Register Allocation](docs/register-allocation.md) - Register allocation strategy
 - [Reserved Keywords](docs/reserved-keywords.md) - Language keyword and register name reference
+- [Macros](docs/macros.md) - Simplified Rust-style macro system (planned)
 
 ### Code Generation
 - [Code Generation](docs/code-generation.md) - Complete code generation reference: memory allocation, register allocation, instruction selection, addressing modes, function generation, and WLA-DX assembly output
@@ -871,5 +873,5 @@ Performance characteristics of different storage:
 - [Rust Compiler Architecture](https://rustc-dev-guide.rust-lang.org/)
 
 
-*Last Updated: 2026-01-03*
+*Last Updated: 2026-01-06*
 *STATUS: Design Complete, Implementation Pending*
