@@ -12,8 +12,8 @@ from typing import Optional, List
 from r65.compiler.codegen.asm_nodes import (
     AsmNode, Instruction, Label, Comment, Directive, BlankLine, RawAsm,
     Immediate, Address, StackOffset, BlockMove,
-    emit_nodes,
 )
+from r65.compiler.codegen.emitter import emit_nodes
 from r65.compiler.codegen.opcodes import Opcode
 
 

@@ -13,7 +13,7 @@ from r65.compiler.codegen.symbol_gen import SymbolDefinitionGenerator
 from r65.compiler.codegen.function_gen import ProgramFunctionGenerator
 from r65.compiler.codegen.peephole import optimize_nodes
 from r65.compiler.codegen.branch_fixup import fixup_nodes
-from r65.compiler.codegen.asm_nodes import emit_nodes
+from r65.compiler.codegen.emitter import emit_nodes
 from r65.compiler.codegen.constants import DEFAULT_STACK_LOWER, DEFAULT_STACK_UPPER
 
 

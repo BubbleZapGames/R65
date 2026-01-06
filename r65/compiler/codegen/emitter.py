@@ -11,7 +11,13 @@ via emit_nodes().
 from typing import List, Optional
 from datetime import datetime
 
-from r65.compiler.codegen.opcodes import Opcode
+from r65.compiler.codegen.opcodes import (
+    Opcode, mnemonic, addressing_mode, BRANCH_OPCODES,
+)
+from r65.compiler.codegen.asm_nodes import (
+    AsmNode, Instruction, Label, Comment, Directive, BlankLine, RawAsm,
+    Immediate, Address, StackOffset, BlockMove, Operand,
+)
 
 
 # =============================================================================
@@ -35,6 +41,189 @@ def _get_rom_constants():
     )
     return LOROM_SLOT_SIZE, LOROM_SLOT_ADDR, HIROM_SLOT_SIZE, HIROM_SLOT_ADDR
 
+
+# =============================================================================
+# Node Emission to WLA-DX Assembly
+# =============================================================================
+
+def emit_node(node: AsmNode, indent: str = "    ") -> str:
+    """
+    Convert a single AsmNode to WLA-DX assembly text.
+
+    Args:
+        node: The node to emit
+        indent: Indentation for instructions (default 4 spaces)
+
+    Returns:
+        Assembly text for this node
+    """
+    match node:
+        case Instruction(opcode, operand, comment):
+            text = f"{indent}{_emit_instruction(opcode, operand)}"
+            if comment:
+                text += f"  ; {comment}"
+            return text
+
+        case Label(name):
+            return f"{name}:"
+
+        case Comment(text, section_header=True):
+            line = "=" * 76
+            return f"; {line}\n; {text}\n; {line}"
+
+        case Comment(text, section_header=False):
+            return f"; {text}"
+
+        case Directive(name, args):
+            if args:
+                return f"{name} {', '.join(args)}"
+            return name
+
+        case BlankLine():
+            return ""
+
+        case RawAsm(text):
+            # Raw assembly is emitted as-is without additional indent
+            return text
+
+        case _:
+            raise ValueError(f"Unknown node type: {type(node)}")
+
+
+def emit_nodes(nodes: list[AsmNode], indent: str = "    ") -> str:
+    """
+    Convert a list of AsmNodes to WLA-DX assembly text.
+
+    Args:
+        nodes: List of nodes to emit
+        indent: Indentation for instructions
+
+    Returns:
+        Complete assembly text with newlines
+    """
+    return '\n'.join(emit_node(n, indent) for n in nodes)
+
+
+def _emit_instruction(opcode: Opcode, operand: Operand | None) -> str:
+    """Format an instruction with its operand."""
+    mnem = mnemonic(opcode)
+    mode = addressing_mode(opcode)
+
+    # Branch instructions: no mode suffix but take an operand
+    if opcode in BRANCH_OPCODES:
+        if operand is None:
+            return mnem  # Shouldn't happen
+        match operand:
+            case Address(value):
+                return f"{mnem} {_format_value(value)}"
+            case _:
+                return f"{mnem} {operand}"
+
+    # Call instructions: JSR/JSL have no mode suffix but take an operand
+    if opcode in (Opcode.JSR, Opcode.JSL):
+        if operand is None:
+            return mnem
+        match operand:
+            case Address(value):
+                return f"{mnem} {_format_value(value)}"
+            case _:
+                return f"{mnem} {operand}"
+
+    # Accumulator mode instructions (need explicit 'A' operand in WLA-DX)
+    ACCUMULATOR_OPCODES = {Opcode.ASL, Opcode.LSR, Opcode.ROL, Opcode.ROR, Opcode.INC, Opcode.DEC}
+    if opcode in ACCUMULATOR_OPCODES:
+        return f"{mnem} A"
+
+    # Implied addressing (no operand)
+    if mode is None:
+        return mnem
+
+    # Format operand based on addressing mode
+    if operand is None:
+        # Shouldn't happen for non-implied, but handle gracefully
+        return mnem
+
+    match (mode, operand):
+        # Immediate
+        case ("IMMEDIATE", Immediate(value)):
+            return f"{mnem} #{_format_value(value)}"
+
+        # Direct Page
+        case ("DP", Address(value)):
+            return f"{mnem} {_format_value(value)}"
+        case ("DP_X", Address(value)):
+            return f"{mnem} {_format_value(value)},X"
+        case ("DP_Y", Address(value)):
+            return f"{mnem} {_format_value(value)},Y"
+
+        # Absolute
+        case ("ABSOLUTE", Address(value)):
+            return f"{mnem} {_format_value(value)}"
+        case ("ABSOLUTE_X", Address(value)):
+            return f"{mnem} {_format_value(value)},X"
+        case ("ABSOLUTE_Y", Address(value)):
+            return f"{mnem} {_format_value(value)},Y"
+
+        # Long (24-bit)
+        case ("LONG", Address(value)):
+            return f"{mnem} {_format_long_value(value)}"
+        case ("LONG_X", Address(value)):
+            return f"{mnem} {_format_long_value(value)},X"
+
+        # Indirect
+        case ("INDIRECT", Address(value)):
+            return f"{mnem} ({_format_value(value)})"
+        case ("INDIRECT_X", Address(value)):
+            return f"{mnem} ({_format_value(value)},X)"
+        case ("INDIRECT_LONG", Address(value)):
+            return f"{mnem} [{_format_value(value)}]"
+
+        # Direct Page Indirect
+        case ("DP_INDIRECT", Address(value)):
+            return f"{mnem} ({_format_value(value)})"
+        case ("DP_INDIRECT_X", Address(value)):
+            return f"{mnem} ({_format_value(value)},X)"
+        case ("DP_INDIRECT_Y", Address(value)):
+            return f"{mnem} ({_format_value(value)}),Y"
+        case ("DP_INDIRECT_LONG", Address(value)):
+            return f"{mnem} [{_format_value(value)}]"
+        case ("DP_INDIRECT_LONG_Y", Address(value)):
+            return f"{mnem} [{_format_value(value)}],Y"
+
+        # Stack Relative
+        case ("STACK", StackOffset(offset)):
+            return f"{mnem} {_format_value(offset)},S"
+        case ("STACK_INDIRECT_Y", StackOffset(offset)):
+            return f"{mnem} ({_format_value(offset)},S),Y"
+
+        # Block Move
+        case (_, BlockMove(src, dst)):
+            return f"{mnem} ${src:02X}, ${dst:02X}"
+
+        case _:
+            # Fallback for unhandled cases
+            return f"{mnem} {operand}"
+
+
+def _format_value(value: int | str) -> str:
+    """Format an immediate or address value."""
+    if isinstance(value, str):
+        return value
+    if value < 0x100:
+        return f"${value:02X}"
+    return f"${value:04X}"
+
+
+def _format_long_value(value: int | str) -> str:
+    """Format a 24-bit long address value."""
+    if isinstance(value, str):
+        return value
+    return f"${value:06X}"
+
+
+# =============================================================================
+# Assembly Emitter Class
+# =============================================================================
 
 class AssemblyEmitter:
     """
@@ -566,7 +755,6 @@ class AssemblyEmitter:
         Returns:
             Complete assembly text with newlines
         """
-        from r65.compiler.codegen.asm_nodes import emit_nodes
         return emit_nodes(self.get_nodes())
 
     def to_lines(self) -> List[str]:
