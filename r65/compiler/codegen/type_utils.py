@@ -171,22 +171,3 @@ def is_power_of_2(n: int) -> bool:
     return n > 0 and (n & (n - 1)) == 0
 
 
-def log2_of_power_of_2(n: int) -> Optional[int]:
-    """
-    Get log2 of a power of 2.
-
-    Args:
-        n: A power of 2
-
-    Returns:
-        The exponent, or None if n is not a power of 2
-    """
-    if not is_power_of_2(n):
-        return None
-
-    shift_amount = 0
-    temp = n
-    while temp > 1:
-        shift_amount += 1
-        temp >>= 1
-    return shift_amount
