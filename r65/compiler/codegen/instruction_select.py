@@ -26,7 +26,7 @@ from r65.compiler.codegen.register_alloc import (
 from r65.compiler.codegen.memory_alloc import MemoryAllocator
 from r65.compiler.errors import InstructionSelectionError, compiler_assert
 from r65.compiler.codegen.instruction_select_helpers import (
-    XBAState, XBAStateManager, BinaryOpEmitter, RegisterMappings
+    XBAState, XBAStateManager, RegisterMappings
 )
 from r65.compiler.codegen.control_flow_select import ControlFlowInstructionSelector
 from r65.compiler.codegen.call_select import CallInstructionSelector
@@ -71,7 +71,6 @@ class InstructionSelector:
 
         # Helper classes for modular instruction selection
         self.xba_manager = XBAStateManager(emitter)
-        self.binary_op_emitter = BinaryOpEmitter(emitter)
         self.control_flow_selector = ControlFlowInstructionSelector(self)
         self.call_selector = CallInstructionSelector(self)
         self.memory_selector = MemoryOperationSelector(self)

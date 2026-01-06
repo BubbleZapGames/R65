@@ -11,6 +11,8 @@ via emit_nodes().
 from typing import List, Optional
 from datetime import datetime
 
+from r65.compiler.codegen.opcodes import Opcode
+
 
 # =============================================================================
 # Assembly Formatting Constants
@@ -447,7 +449,7 @@ class AssemblyEmitter:
                 RTI
         """
         self.emit_label("__empty_handler")
-        self.emit_instruction("RTI")
+        self._node_emitter.emit_instr(Opcode.RTI)
         self.emit_blank_line()
 
     def emit_interrupt_vectors(self, nmi=None, irq=None, reset=None):
