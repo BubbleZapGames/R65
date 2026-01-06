@@ -244,14 +244,30 @@ class AssemblyEmitter:
             source_file: Original R65 source file path (for header)
         """
         self.source_file = source_file or "unknown.r65"
-
-        # Structured node output
-        from r65.compiler.codegen.node_emitter import NodeEmitter
-        self._node_emitter = NodeEmitter()
+        self.nodes: List[AsmNode] = []
 
     # ========================================================================
-    # Low-Level Emission
+    # Low-Level Node Emission
     # ========================================================================
+
+    def emit(self, node: AsmNode):
+        """Emit a single node."""
+        self.nodes.append(node)
+
+    def emit_instr(self, opcode: Opcode, operand: Operand | None = None, comment: str | None = None):
+        """
+        Emit an instruction using structured Opcode enum.
+
+        Args:
+            opcode: The Opcode enum value (e.g., Opcode.LDA_IMMEDIATE)
+            operand: The operand (Immediate, Address, StackOffset, etc.)
+            comment: Optional comment
+        """
+        self.nodes.append(Instruction(opcode, operand, comment))
+
+    def emit_raw(self, text: str):
+        """Emit raw assembly text."""
+        self.nodes.append(RawAsm(text))
 
     def emit_directive(self, text: str):
         """
@@ -260,11 +276,11 @@ class AssemblyEmitter:
         Args:
             text: Directive text
         """
-        self._node_emitter.emit_raw(text)
+        self.nodes.append(RawAsm(text))
 
     def emit_blank_line(self):
         """Emit a blank line for spacing."""
-        self._node_emitter.emit_blank_line()
+        self.nodes.append(BlankLine())
 
     def emit_comment(self, text: str):
         """
@@ -273,7 +289,15 @@ class AssemblyEmitter:
         Args:
             text: Comment text (without ; prefix)
         """
-        self._node_emitter.emit_comment(text)
+        self.nodes.append(Comment(text))
+
+    def emit_accu_mode(self, bits: int):
+        """Emit .ACCU directive."""
+        self.nodes.append(Directive(".ACCU", [str(bits)]))
+
+    def emit_index_mode(self, bits: int):
+        """Emit .INDEX directive."""
+        self.nodes.append(Directive(".INDEX", [str(bits)]))
 
     # ========================================================================
     # Section Headers
@@ -435,9 +459,9 @@ class AssemblyEmitter:
         Generated:
             label:
         """
-        # Strip trailing colon for node emitter (it adds it back)
+        # Strip trailing colon (emit_node adds it back)
         label_name = label.rstrip(':')
-        self._node_emitter.emit_label(label_name)
+        self.nodes.append(Label(label_name))
 
     def emit_local_label(self, label: str):
         """
@@ -617,7 +641,7 @@ class AssemblyEmitter:
                 RTI
         """
         self.emit_label("__empty_handler")
-        self._node_emitter.emit_instr(Opcode.RTI)
+        self.emit_instr(Opcode.RTI)
         self.emit_blank_line()
 
     def emit_interrupt_vectors(self, nmi=None, irq=None, reset=None):
@@ -728,25 +752,25 @@ class AssemblyEmitter:
 
         Resets the emitter to its initial empty state.
         """
-        self._node_emitter.nodes.clear()
+        self.nodes.clear()
 
-    def get_nodes(self):
+    def get_nodes(self) -> List[AsmNode]:
         """
         Get the structured AsmNode representation.
 
         Returns:
             List of AsmNode objects
         """
-        return self._node_emitter.get_nodes()
+        return self.nodes
 
-    def set_nodes(self, nodes):
+    def set_nodes(self, nodes: List[AsmNode]):
         """
         Set the nodes (after optimization passes have modified them).
 
         Args:
             nodes: List of AsmNode objects
         """
-        self._node_emitter.nodes = nodes
+        self.nodes = nodes
 
     def to_string(self) -> str:
         """
@@ -755,7 +779,7 @@ class AssemblyEmitter:
         Returns:
             Complete assembly text with newlines
         """
-        return emit_nodes(self.get_nodes())
+        return emit_nodes(self.nodes)
 
     def to_lines(self) -> List[str]:
         """

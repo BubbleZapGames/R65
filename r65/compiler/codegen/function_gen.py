@@ -47,7 +47,7 @@ class FunctionCodeGenerator:
 
     def _emit_instr(self, opcode: Opcode, operand=None, comment: str = None):
         """Emit an instruction using the node emitter."""
-        self.emitter._node_emitter.emit_instr(opcode, operand, comment)
+        self.emitter.emit_instr(opcode, operand, comment)
 
     # ========================================================================
     # Main Generation

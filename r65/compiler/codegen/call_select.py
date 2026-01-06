@@ -59,15 +59,15 @@ class CallInstructionSelector:
 
     def _emit_implied(self, opcode: Opcode, comment: str = None):
         """Emit an implied addressing mode instruction."""
-        self.emitter._node_emitter.emit_instr(opcode, None, comment)
+        self.emitter.emit_instr(opcode, None, comment)
 
     def _emit_immediate(self, opcode: Opcode, value: int, comment: str = None):
         """Emit an immediate addressing mode instruction."""
-        self.emitter._node_emitter.emit_instr(opcode, Immediate(value), comment)
+        self.emitter.emit_instr(opcode, Immediate(value), comment)
 
     def _emit_absolute(self, opcode: Opcode, label: str, comment: str = None):
         """Emit an absolute addressing mode instruction (for calls/jumps)."""
-        self.emitter._node_emitter.emit_instr(opcode, Address(label), comment)
+        self.emitter.emit_instr(opcode, Address(label), comment)
 
     def _emit_transfer(self, source: str, dest: str):
         """Emit a register transfer instruction."""
@@ -535,7 +535,7 @@ class CallInstructionSelector:
         if not opcode:
             raise InstructionSelectionError(f"Unknown block move builtin: {builtin.instruction}")
 
-        self.emitter._node_emitter.emit_instr(opcode, BlockMove(src_bank, dst_bank))
+        self.emitter.emit_instr(opcode, BlockMove(src_bank, dst_bank))
 
     def _emit_runtime_builtin(self, instr: Call, builtin):
         """Emit runtime library built-in (mul, div, mod, shl, shr)."""

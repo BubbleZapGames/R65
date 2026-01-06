@@ -43,7 +43,7 @@ class MoveOperationSelector:
 
     def _emit_instr(self, opcode: Opcode, operand=None, comment: str = None):
         """Emit an instruction using the node emitter."""
-        self.emitter._node_emitter.emit_instr(opcode, operand, comment)
+        self.emitter.emit_instr(opcode, operand, comment)
 
     def _emit_load_store(self, mnemonic: str, location, comment: str = None):
         """Emit a load/store instruction using parent's opcode selection."""

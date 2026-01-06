@@ -64,7 +64,7 @@ class XBAStateManager:
 
     def emit_xba(self, comment: str = None):
         """Emit XBA instruction and update state tracking."""
-        self.emitter._node_emitter.emit_instr(Opcode.XBA, None, comment or "Exchange B and A")
+        self.emitter.emit_instr(Opcode.XBA, None, comment or "Exchange B and A")
 
         if self.state == XBAState.NORMAL:
             self.state = XBAState.SWAPPED

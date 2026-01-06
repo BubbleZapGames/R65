@@ -279,29 +279,29 @@ class InstructionSelector:
     def _emit_load(self, mnemonic: str, location: PhysicalLocation, comment: str = None):
         """Emit a load instruction with the appropriate addressing mode."""
         opcode, operand = self._get_opcode_for_location(mnemonic, location)
-        self.emitter._node_emitter.emit_instr(opcode, operand, comment)
+        self.emitter.emit_instr(opcode, operand, comment)
 
     def _emit_store(self, mnemonic: str, location: PhysicalLocation, comment: str = None):
         """Emit a store instruction with the appropriate addressing mode."""
         opcode, operand = self._get_opcode_for_location(mnemonic, location)
-        self.emitter._node_emitter.emit_instr(opcode, operand, comment)
+        self.emitter.emit_instr(opcode, operand, comment)
 
     def _emit_op(self, mnemonic: str, location: PhysicalLocation, comment: str = None):
         """Emit an ALU operation with the appropriate addressing mode."""
         opcode, operand = self._get_opcode_for_location(mnemonic, location)
-        self.emitter._node_emitter.emit_instr(opcode, operand, comment)
+        self.emitter.emit_instr(opcode, operand, comment)
 
     def _emit_implied(self, opcode: Opcode, comment: str = None):
         """Emit an implied addressing mode instruction."""
-        self.emitter._node_emitter.emit_instr(opcode, None, comment)
+        self.emitter.emit_instr(opcode, None, comment)
 
     def _emit_immediate(self, opcode: Opcode, value: int, comment: str = None):
         """Emit an immediate addressing mode instruction."""
-        self.emitter._node_emitter.emit_instr(opcode, Immediate(value), comment)
+        self.emitter.emit_instr(opcode, Immediate(value), comment)
 
     def _emit_branch(self, opcode: Opcode, label: str, comment: str = None):
         """Emit a branch instruction to a label."""
-        self.emitter._node_emitter.emit_instr(opcode, Address(label), comment)
+        self.emitter.emit_instr(opcode, Address(label), comment)
 
     def _block_label(self, block_id: int) -> str:
         """Format a block label with function-scoped naming."""
@@ -838,7 +838,7 @@ class InstructionSelector:
                 elif right_loc.hw_register in ['A', 'X', 'Y']:
                     store_mnem = {'A': 'STA', 'X': 'STX', 'Y': 'STY'}[right_loc.hw_register]
                     store_opcode = self._STORE_DP_OPCODES[right_loc.hw_register]
-                    self.emitter._node_emitter.emit_instr(store_opcode, Address(0x00), f"Store {right_loc.hw_register} to temp")
+                    self.emitter.emit_instr(store_opcode, Address(0x00), f"Store {right_loc.hw_register} to temp")
                     self._emit_op(operation, temp_loc)
                 else:
                     raise InstructionSelectionError(f"Cannot use hardware register in operation: {right_loc.hw_register}")
@@ -1094,7 +1094,7 @@ class InstructionSelector:
             opcode = Opcode.STA_DP_X if is_dp else Opcode.STA_ABSOLUTE_X
         else:  # 'Y'
             opcode = Opcode.STA_ABSOLUTE_Y  # No STA dp,Y on 65816
-        self.emitter._node_emitter.emit_instr(opcode, Address(base_addr), comment)
+        self.emitter.emit_instr(opcode, Address(base_addr), comment)
 
     def select_memory_fill(self, instr: MemoryFill):
         """
@@ -1206,7 +1206,7 @@ class InstructionSelector:
         self._emit_immediate(Opcode.LDA_IMMEDIATE, count - 1)
 
         # Load source address (ROM data label) - use raw emission for label operand
-        self.emitter._node_emitter.emit_instr(Opcode.LDX_IMMEDIATE, Address(rom_label))
+        self.emitter.emit_instr(Opcode.LDX_IMMEDIATE, Address(rom_label))
 
         # Load destination address
         self._emit_immediate(Opcode.LDY_IMMEDIATE, dest_loc.memory_addr & 0xFFFF)
@@ -1223,7 +1223,7 @@ class InstructionSelector:
         else:
             dest_bank = 0x00  # Low RAM or zeropage
 
-        self.emitter._node_emitter.emit_instr(Opcode.MVN, BlockMove(0x00, dest_bank))
+        self.emitter.emit_instr(Opcode.MVN, BlockMove(0x00, dest_bank))
 
         # Restore 8-bit mode if needed (depends on context)
         self._emit_immediate(Opcode.SEP, 0x30, "Restore 8-bit mode")
@@ -1246,4 +1246,4 @@ class InstructionSelector:
             # Emit each assembly instruction as a raw line
             # The instruction string may contain operands, e.g., "LDA #$42"
             # Use raw emission since this is user-provided assembly
-            self.emitter._node_emitter.emit_raw(asm_instr)
+            self.emitter.emit_raw(asm_instr)

@@ -44,10 +44,10 @@ def test_basic_structure():
     emitter.emit_blank_line()
 
     emitter.emit_label("main")
-    emitter._node_emitter.emit_instr(Opcode.LDA_IMMEDIATE, Immediate(0x0F), "Load brightness")
-    emitter._node_emitter.emit_instr(Opcode.STA_ABSOLUTE, Address(0x2100), "INIDISP")
+    emitter.emit_instr(Opcode.LDA_IMMEDIATE, Immediate(0x0F), "Load brightness")
+    emitter.emit_instr(Opcode.STA_ABSOLUTE, Address(0x2100), "INIDISP")
     emitter.emit_label("__L1")
-    emitter._node_emitter.emit_instr(Opcode.JMP_ABSOLUTE, Address("__L1"), "Infinite loop")
+    emitter.emit_instr(Opcode.JMP_ABSOLUTE, Address("__L1"), "Infinite loop")
     emitter.emit_blank_line()
 
     # Interrupt vectors
@@ -72,23 +72,23 @@ def test_instructions():
     emitter.emit_blank_line()
 
     # Immediate mode
-    emitter._node_emitter.emit_instr(Opcode.LDA_IMMEDIATE, Immediate(0x42))
+    emitter.emit_instr(Opcode.LDA_IMMEDIATE, Immediate(0x42))
 
     # Direct page
-    emitter._node_emitter.emit_instr(Opcode.STA_DP, Address(0x20))
+    emitter.emit_instr(Opcode.STA_DP, Address(0x20))
 
     # Absolute
-    emitter._node_emitter.emit_instr(Opcode.STA_ABSOLUTE, Address(0x7E2000))
+    emitter.emit_instr(Opcode.STA_ABSOLUTE, Address(0x7E2000))
 
     # Indexed
-    emitter._node_emitter.emit_instr(Opcode.LDA_DP_X, Address(0x20))
+    emitter.emit_instr(Opcode.LDA_DP_X, Address(0x20))
 
     # No operand
-    emitter._node_emitter.emit_instr(Opcode.RTS)
+    emitter.emit_instr(Opcode.RTS)
 
     # With comments
-    emitter._node_emitter.emit_instr(Opcode.PHP, comment="Push processor status")
-    emitter._node_emitter.emit_instr(Opcode.REP, Immediate(0x30), "16-bit mode")
+    emitter.emit_instr(Opcode.PHP, comment="Push processor status")
+    emitter.emit_instr(Opcode.REP, Immediate(0x30), "16-bit mode")
 
     print(emitter.to_string())
     print()

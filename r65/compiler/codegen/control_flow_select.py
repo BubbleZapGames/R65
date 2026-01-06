@@ -56,19 +56,19 @@ class ControlFlowInstructionSelector:
 
     def _emit_implied(self, opcode: Opcode, comment: str = None):
         """Emit an implied addressing mode instruction."""
-        self.emitter._node_emitter.emit_instr(opcode, None, comment)
+        self.emitter.emit_instr(opcode, None, comment)
 
     def _emit_immediate(self, opcode: Opcode, value: int, comment: str = None):
         """Emit an immediate addressing mode instruction."""
-        self.emitter._node_emitter.emit_instr(opcode, Immediate(value), comment)
+        self.emitter.emit_instr(opcode, Immediate(value), comment)
 
     def _emit_branch(self, opcode: Opcode, label: str, comment: str = None):
         """Emit a branch instruction to a label."""
-        self.emitter._node_emitter.emit_instr(opcode, Address(label), comment)
+        self.emitter.emit_instr(opcode, Address(label), comment)
 
     def _emit_jump(self, opcode: Opcode, label: str, comment: str = None):
         """Emit a jump instruction to a label."""
-        self.emitter._node_emitter.emit_instr(opcode, Address(label), comment)
+        self.emitter.emit_instr(opcode, Address(label), comment)
 
     # ========================================================================
     # Jump Instructions
