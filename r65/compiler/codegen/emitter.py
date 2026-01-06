@@ -263,27 +263,6 @@ class AssemblyEmitter:
         self.emit_label(label)
 
     # ========================================================================
-    # Instructions
-    # ========================================================================
-
-    def emit_instruction(self, mnemonic: str, operand: Optional[str] = None,
-                        comment: Optional[str] = None):
-        """
-        Emit a single instruction.
-
-        Args:
-            mnemonic: Instruction mnemonic (e.g., "LDA", "STA")
-            operand: Operand (e.g., "#$42", "$20")
-            comment: Optional inline comment
-
-        Generated:
-            LDA #$42                ; Load immediate
-            STA $20                 ; Store to zero-page
-            RTS
-        """
-        self._node_emitter.emit_instruction(mnemonic, operand, comment)
-
-    # ========================================================================
     # Symbol Definitions
     # ========================================================================
 

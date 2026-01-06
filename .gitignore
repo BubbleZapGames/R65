@@ -31,3 +31,4 @@ tests/*.asm
 tests/*.o
 tests/*.sfc
 tests/linkfile
+.webui_secret_key

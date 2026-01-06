@@ -2,6 +2,8 @@
 """Test AssemblyEmitter basic functionality."""
 
 from r65.compiler.codegen.emitter import AssemblyEmitter
+from r65.compiler.codegen.opcodes import Opcode
+from r65.compiler.codegen.asm_nodes import Immediate, Address
 
 
 def test_basic_structure():
@@ -42,10 +44,10 @@ def test_basic_structure():
     emitter.emit_blank_line()
 
     emitter.emit_label("main")
-    emitter.emit_instruction("LDA", "#$0F", "Load brightness")
-    emitter.emit_instruction("STA", "$2100", "INIDISP")
+    emitter._node_emitter.emit_instr(Opcode.LDA_IMMEDIATE, Immediate(0x0F), "Load brightness")
+    emitter._node_emitter.emit_instr(Opcode.STA_ABSOLUTE, Address(0x2100), "INIDISP")
     emitter.emit_label("__L1")
-    emitter.emit_instruction("JMP", "__L1", "Infinite loop")
+    emitter._node_emitter.emit_instr(Opcode.JMP_ABSOLUTE, Address("__L1"), "Infinite loop")
     emitter.emit_blank_line()
 
     # Interrupt vectors
@@ -58,7 +60,7 @@ def test_basic_structure():
     print(emitter.to_string())
     print()
     print("=" * 80)
-    print("✅ AssemblyEmitter test completed successfully!")
+    print("AssemblyEmitter test completed successfully!")
     print(f"Generated {len(emitter.to_lines())} lines of assembly")
 
 
@@ -70,27 +72,27 @@ def test_instructions():
     emitter.emit_blank_line()
 
     # Immediate mode
-    emitter.emit_instruction("LDA", "#$42")
+    emitter._node_emitter.emit_instr(Opcode.LDA_IMMEDIATE, Immediate(0x42))
 
     # Direct page
-    emitter.emit_instruction("STA", "$20")
+    emitter._node_emitter.emit_instr(Opcode.STA_DP, Address(0x20))
 
     # Absolute
-    emitter.emit_instruction("STA", "$7E2000")
+    emitter._node_emitter.emit_instr(Opcode.STA_ABSOLUTE, Address(0x7E2000))
 
     # Indexed
-    emitter.emit_instruction("LDA", "$20,X")
+    emitter._node_emitter.emit_instr(Opcode.LDA_DP_X, Address(0x20))
 
     # No operand
-    emitter.emit_instruction("RTS")
+    emitter._node_emitter.emit_instr(Opcode.RTS)
 
     # With comments
-    emitter.emit_instruction("PHP", comment="Push processor status")
-    emitter.emit_instruction("REP", "#$30", "16-bit mode")
+    emitter._node_emitter.emit_instr(Opcode.PHP, comment="Push processor status")
+    emitter._node_emitter.emit_instr(Opcode.REP, Immediate(0x30), "16-bit mode")
 
     print(emitter.to_string())
     print()
-    print("✅ Instruction emission test passed!")
+    print("Instruction emission test passed!")
 
 
 def test_data_directives():
@@ -117,7 +119,7 @@ def test_data_directives():
 
     print(emitter.to_string())
     print()
-    print("✅ Data directive test passed!")
+    print("Data directive test passed!")
 
 
 if __name__ == "__main__":
