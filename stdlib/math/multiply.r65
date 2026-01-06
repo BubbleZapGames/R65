@@ -26,7 +26,7 @@ fn mul_hw(a @ A: u8, b @ X: u8) -> u16 {
 
     // Wait 8 machine cycles for multiplication to complete
     // NOP is 2 cycles, so 4 NOPs = 8 cycles
-    asm!("NOP", "NOP", "NOP", "NOP");
+    NOP(4);
 
     // Read 16-bit result
     // In m8 mode, read low byte first, then high
@@ -74,12 +74,12 @@ fn mul_shift(a @ A: u8, b @ X: u8) -> u8 {
 
         // Shift multiplicand left (double it)
         A = _mul_temp;
-        asm!("ASL A");
+        A = A << 1;
         _mul_temp = A;
 
         // Shift multiplier right (halve it)
         A = X;
-        asm!("LSR A");
+        A = A >> 1;
         X = A;
     }
 
@@ -122,12 +122,12 @@ fn mul_shift_wide(a @ A: u8, b @ X: u8) -> u16 {
 
         // Shift multiplicand left (16-bit shift via temp expansion)
         A = _mul_temp;
-        asm!("ASL A");
+        A = A << 1;
         _mul_temp = A;
 
         // Shift multiplier right
         A = X;
-        asm!("LSR A");
+        A = A >> 1;
         X = A;
     }
 

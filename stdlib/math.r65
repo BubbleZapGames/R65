@@ -28,6 +28,9 @@
 //   Set USE_HARDWARE_MATH to 1 for SNES hardware acceleration,
 //   or 0 for portable software-only implementations.
 
+// Configuration: Set to 1 for SNES hardware, 0 for portable software
+const USE_HARDWARE_MATH: u8 = 1;
+
 // Include component files
 include!("math/hw_regs.r65")
 include!("math/multiply.r65")
@@ -38,25 +41,37 @@ include!("math/shift.r65")
 // Builtin dispatch functions
 // These are called by compiler-generated code when using mul(), div(), etc.
 //
-// To switch implementations, edit these functions to call _hw or _shift variants.
-// Default: software implementations (portable)
+// The const USE_HARDWARE_MATH is evaluated at compile time, so only the
+// selected implementation path is included in the output.
 // =============================================================================
 
 // __builtin_mul: Called by compiler for mul(a, b)
 #[mode(m8, x8)]
 fn __builtin_mul(a @ A: u8, b @ X: u8) -> u8 {
+    if USE_HARDWARE_MATH != 0 {
+        // Hardware returns u16, truncate to u8
+        let wide: u16 = mul_hw(A, X);
+        A = wide as u8;
+        return A;
+    }
     return mul_shift(A, X);
 }
 
 // __builtin_div: Called by compiler for div(a, b)
 #[mode(m8, x8)]
 fn __builtin_div(a @ A: u8, b @ X: u8) -> u8 {
+    if USE_HARDWARE_MATH != 0 {
+        return div_hw_8(A, X);
+    }
     return div_shift(A, X);
 }
 
 // __builtin_mod: Called by compiler for mod(a, b)
 #[mode(m8, x8)]
 fn __builtin_mod(a @ A: u8, b @ X: u8) -> u8 {
+    if USE_HARDWARE_MATH != 0 {
+        return mod_hw(A, X);
+    }
     return mod_shift(A, X);
 }
 

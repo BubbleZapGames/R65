@@ -378,10 +378,17 @@ class MIRBuilder:
         """
         Lower a block of statements.
 
+        Stops processing if current block gets a terminator (e.g., return/break).
+        This handles dead code elimination when const-folded if statements
+        contain return statements.
+
         Args:
             block: HIR block
         """
         for stmt in block.statements:
+            # Stop if we already have a terminator (dead code elimination)
+            if self._block_has_terminator():
+                break
             self.lower_statement(stmt)
 
     def lower_statement(self, stmt: HIRStatement):
@@ -643,7 +650,25 @@ class MIRBuilder:
            \          /
             \        /
             merge_block
+
+        Optimization: If the condition is a compile-time constant,
+        only emit the taken branch (dead code elimination).
         """
+        # Try to evaluate condition at compile time
+        const_result = self._try_eval_const_condition(stmt.condition)
+
+        if const_result is True:
+            # Condition is always true - only emit then branch
+            self.lower_block(stmt.then_block)
+            return
+
+        if const_result is False:
+            # Condition is always false - only emit else branch (if any)
+            if stmt.else_block:
+                self.lower_block(stmt.else_block)
+            return
+
+        # Non-constant condition - generate full control flow
         # Create target blocks
         then_block = self.cfg_builder.new_block()
         merge_block = self.cfg_builder.new_block()
@@ -711,7 +736,23 @@ class MIRBuilder:
 
         # Header: condition check (or infinite loop)
         self.current_block = header_block
+
+        # Try to evaluate condition at compile time
+        const_cond = None
         if stmt.condition:
+            const_cond = self._try_eval_const_condition(stmt.condition)
+
+        if const_cond is True or stmt.is_infinite:
+            # Infinite loop: `loop { }` or `while true { }`
+            self.emit(Jump(target=body_block.block_id))
+            self.cfg_builder.add_edge(header_block, body_block)
+        elif const_cond is False:
+            # Dead loop: `while false { }` - skip entirely
+            self.emit(Jump(target=exit_block.block_id))
+            self.cfg_builder.add_edge(header_block, exit_block)
+            self.current_block = exit_block
+            return
+        elif stmt.condition:
             # while condition: conditional loop
             cond_value = self.lower_expression(stmt.condition)
             self.emit(CondBranch(
@@ -723,7 +764,7 @@ class MIRBuilder:
             self.cfg_builder.add_edge(header_block, body_block)
             self.cfg_builder.add_edge(header_block, exit_block)
         else:
-            # loop: infinite loop
+            # loop: infinite loop (fallback)
             self.emit(Jump(target=body_block.block_id))
             self.cfg_builder.add_edge(header_block, body_block)
 
@@ -1201,6 +1242,199 @@ class MIRBuilder:
         else:
             # Not a constant expression
             return None
+
+    def _try_eval_const_condition(self, expr: HIRExpression) -> Optional[bool]:
+        """
+        Try to evaluate a condition expression at compile time.
+
+        Used for dead code elimination in if/while statements when
+        conditions are compile-time constants.
+
+        Args:
+            expr: HIR condition expression to evaluate
+
+        Returns:
+            True/False if condition is compile-time constant, None otherwise
+        """
+        from r65.compiler.hir import (
+            HIRIntegerLiteral, HIRBooleanLiteral, HIREnumVariantExpr,
+            HIRTypeCast, HIRBinaryOp, HIRUnaryOp, HIRIdentifier
+        )
+
+        if isinstance(expr, HIRBooleanLiteral):
+            return expr.value
+
+        elif isinstance(expr, HIRIntegerLiteral):
+            # Non-zero is truthy
+            return expr.value != 0
+
+        elif isinstance(expr, HIREnumVariantExpr):
+            return expr.value != 0
+
+        elif isinstance(expr, HIRIdentifier):
+            # Look up const values from symbol table
+            if self._hir_program and self._hir_program.symbol_table:
+                symbol = self._hir_program.symbol_table.lookup(expr.name)
+                if symbol and symbol.kind == SymbolKind.CONST and symbol.const_value is not None:
+                    return symbol.const_value != 0
+            return None
+
+        elif isinstance(expr, HIRTypeCast):
+            inner = self._try_eval_const_condition(expr.expr)
+            return inner
+
+        elif isinstance(expr, HIRUnaryOp):
+            if expr.op == '!':
+                inner = self._try_eval_const_condition(expr.operand)
+                if inner is not None:
+                    return not inner
+            elif expr.op == '~':
+                inner = self._try_eval_const_int(expr.operand)
+                if inner is not None:
+                    return (~inner) != 0
+            return None
+
+        elif isinstance(expr, HIRBinaryOp):
+            return self._try_eval_const_binary(expr)
+
+        return None
+
+    def _try_eval_const_int(self, expr: HIRExpression) -> Optional[int]:
+        """
+        Try to evaluate an expression to a constant integer at compile time.
+        """
+        from r65.compiler.hir import (
+            HIRIntegerLiteral, HIRBooleanLiteral, HIREnumVariantExpr,
+            HIRTypeCast, HIRBinaryOp, HIRUnaryOp, HIRIdentifier
+        )
+
+        if isinstance(expr, HIRIntegerLiteral):
+            return expr.value
+
+        elif isinstance(expr, HIRBooleanLiteral):
+            return 1 if expr.value else 0
+
+        elif isinstance(expr, HIREnumVariantExpr):
+            return expr.value
+
+        elif isinstance(expr, HIRIdentifier):
+            if self._hir_program and self._hir_program.symbol_table:
+                symbol = self._hir_program.symbol_table.lookup(expr.name)
+                if symbol and symbol.kind == SymbolKind.CONST and symbol.const_value is not None:
+                    return symbol.const_value
+            return None
+
+        elif isinstance(expr, HIRTypeCast):
+            return self._try_eval_const_int(expr.expr)
+
+        elif isinstance(expr, HIRUnaryOp):
+            operand = self._try_eval_const_int(expr.operand)
+            if operand is None:
+                return None
+            if expr.op == '-':
+                return -operand
+            elif expr.op == '~':
+                return ~operand
+            elif expr.op == '!':
+                return 0 if operand else 1
+            return None
+
+        elif isinstance(expr, HIRBinaryOp):
+            left = self._try_eval_const_int(expr.left)
+            right = self._try_eval_const_int(expr.right)
+            if left is None or right is None:
+                return None
+
+            op = expr.op
+            if op == '+':
+                return left + right
+            elif op == '-':
+                return left - right
+            elif op == '*':
+                return left * right
+            elif op == '/':
+                return left // right if right != 0 else None
+            elif op == '%':
+                return left % right if right != 0 else None
+            elif op == '&':
+                return left & right
+            elif op == '|':
+                return left | right
+            elif op == '^':
+                return left ^ right
+            elif op == '<<':
+                return left << right
+            elif op == '>>':
+                return left >> right
+            # Comparison operators return 0 or 1
+            elif op == '==':
+                return 1 if left == right else 0
+            elif op == '!=':
+                return 1 if left != right else 0
+            elif op == '<':
+                return 1 if left < right else 0
+            elif op == '>':
+                return 1 if left > right else 0
+            elif op == '<=':
+                return 1 if left <= right else 0
+            elif op == '>=':
+                return 1 if left >= right else 0
+            return None
+
+        return None
+
+    def _try_eval_const_binary(self, expr: HIRBinaryOp) -> Optional[bool]:
+        """
+        Try to evaluate a binary operation to a constant boolean.
+        """
+        op = expr.op
+
+        # Logical operators with short-circuit potential
+        if op == '&&':
+            left = self._try_eval_const_condition(expr.left)
+            if left is False:
+                return False
+            right = self._try_eval_const_condition(expr.right)
+            if left is True and right is not None:
+                return right
+            return None
+
+        elif op == '||':
+            left = self._try_eval_const_condition(expr.left)
+            if left is True:
+                return True
+            right = self._try_eval_const_condition(expr.right)
+            if left is False and right is not None:
+                return right
+            return None
+
+        # Comparison operators
+        elif op in ('==', '!=', '<', '>', '<=', '>='):
+            left = self._try_eval_const_int(expr.left)
+            right = self._try_eval_const_int(expr.right)
+            if left is None or right is None:
+                return None
+
+            if op == '==':
+                return left == right
+            elif op == '!=':
+                return left != right
+            elif op == '<':
+                return left < right
+            elif op == '>':
+                return left > right
+            elif op == '<=':
+                return left <= right
+            elif op == '>=':
+                return left >= right
+
+        # Arithmetic/bitwise operators - evaluate as int, convert to bool
+        else:
+            result = self._try_eval_const_int(expr)
+            if result is not None:
+                return result != 0
+
+        return None
 
     def _emit_array_literal_init(
         self,

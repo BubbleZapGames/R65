@@ -24,13 +24,20 @@ def test_currently_used_keywords():
 
 
 def test_builtin_functions():
-    """Test built-in function keywords."""
-    builtins = ['SEP', 'REP', 'mvn', 'mvp', 'wai', 'stp', 'mul', 'div', 'mod', 'shl', 'shr']
+    """Test built-in function names are identifiers.
+
+    Built-in functions (SEP, REP, mul, div, mod, etc.) are now regular identifiers,
+    not keywords. This allows them to be called like normal functions and
+    recognized by the BuiltinRegistry during HIR building.
+    """
+    builtins = ['SEP', 'REP', 'mvn', 'mvp', 'wai', 'stp', 'mul', 'div', 'mod', 'shl', 'shr', 'xba']
 
     for builtin in builtins:
         source = f"{builtin} identifier"
         tokens = tokenize(source)
-        assert tokens[0].is_keyword(builtin), f"{builtin} should be a keyword"
+        # Builtins are identifiers, not keywords
+        assert tokens[0].type == TokenType.IDENTIFIER, f"{builtin} should be an identifier"
+        assert tokens[0].value == builtin
         assert tokens[1].type == TokenType.IDENTIFIER
 
     print(f"✓ Built-in functions test passed ({len(builtins)} functions)")
@@ -38,9 +45,10 @@ def test_builtin_functions():
 
 def test_reserved_rust_keywords():
     """Test that Rust keywords are reserved even if not implemented."""
+    # Note: 'mod' is not reserved - it's a builtin function identifier
     reserved = [
         'impl', 'trait', 'for', 'in', 'match', 'where',
-        'use', 'pub', 'mod', 'crate', 'self', 'Self', 'super',
+        'use', 'pub', 'crate', 'self', 'Self', 'super',
         'async', 'await', 'move', 'ref', 'dyn',
         'extern', 'unsafe',
     ]
@@ -85,9 +93,10 @@ def test_far_keyword():
 def test_keywords_are_not_identifiers():
     """Test that keywords cannot be used as identifiers."""
     # These should all be keywords, not identifiers
+    # Note: 'mod' removed - it's now a builtin function identifier
     test_cases = [
         'struct', 'impl', 'trait', 'unsafe', 'async', 'await',
-        'match', 'mod', 'pub', 'use', 'extern', 'yield'
+        'match', 'pub', 'use', 'extern', 'yield'
     ]
 
     for keyword in test_cases:
@@ -128,15 +137,15 @@ def test_keyword_boundaries():
     assert tokens[1].type == TokenType.IDENTIFIER
     assert tokens[1].value == 'implementation'
 
-    # 'mod' is a keyword, but 'mode' should be an identifier
-    source = "mod mode modify"
+    # 'pub' is a keyword, but 'publish' should be an identifier
+    source = "pub publish public"
     tokens = tokenize(source)
 
-    assert tokens[0].is_keyword('mod')
+    assert tokens[0].is_keyword('pub')
     assert tokens[1].type == TokenType.IDENTIFIER
-    assert tokens[1].value == 'mode'
+    assert tokens[1].value == 'publish'
     assert tokens[2].type == TokenType.IDENTIFIER
-    assert tokens[2].value == 'modify'
+    assert tokens[2].value == 'public'
 
     print("✓ Keyword boundaries test passed")
 
@@ -147,13 +156,13 @@ def test_total_keyword_count():
 
     # Count from the grammar:
     # - Currently used: 19 (fn, let, mut, const, static, if, else, loop, while, break, continue, return, struct, enum, type, include, asm, as, macro_rules)
-    # - Built-ins: 11 (SEP, REP, mvn, mvp, wai, stp, mul, div, mod, shl, shr)
-    # - Reserved: 18 (impl, trait, for, in, match, where, use, pub, mod, crate, self, Self, super, async, await, move, ref, dyn, extern, unsafe)
+    # - Built-ins: 12 (SEP, REP, mvn, mvp, wai, stp, mul, div, mod, shl, shr, xba) - identifiers, not keywords
+    # - Reserved: 17 (impl, trait, for, in, match, where, use, pub, crate, self, Self, super, async, await, move, ref, dyn, extern, unsafe)
     # - Strict: 12 (abstract, become, box, do, final, override, priv, typeof, unsized, virtual, yield, try)
     # - far: 1
-    # Total: 19 + 11 + 18 + 12 + 1 = 61
+    # Total keywords: 19 + 17 + 12 + 1 = 49 (builtins are identifiers)
 
-    print("✓ Total keywords reserved: ~61 (Rust-compatible)")
+    print("✓ Total keywords reserved: ~49 (Rust-compatible, builtins are identifiers)")
 
 
 if __name__ == '__main__':

@@ -18,7 +18,7 @@ fn shl_loop(value @ A: u8, amount @ X: u8) -> u8 {
 
     // Loop: shift left X times
     loop {
-        asm!("ASL A");
+        A = A << 1;
         X--;
         if X == 0 {
             break;
@@ -45,7 +45,7 @@ fn shr_loop(value @ A: u8, amount @ X: u8) -> u8 {
 
     // Loop: shift right X times
     loop {
-        asm!("LSR A");
+        A = A >> 1;
         X--;
         if X == 0 {
             break;
@@ -80,11 +80,11 @@ fn shr_arith_loop(value @ A: u8, amount @ X: u8) -> u8 {
         // Check sign bit before shift
         if A & 0x80 != 0 {
             // Negative: shift right, then set sign bit
-            asm!("LSR A");
+            A = A >> 1;
             A = A | 0x80;
         } else {
             // Positive: normal logical shift
-            asm!("LSR A");
+            A = A >> 1;
         }
         X--;
         if X == 0 {
@@ -109,7 +109,7 @@ fn shl16_loop(value @ A: u16, amount @ X: u8) -> u16 {
     }
 
     loop {
-        asm!("ASL A");
+        A = A << 1;
         X--;
         if X == 0 {
             break;
@@ -133,7 +133,7 @@ fn shr16_loop(value @ A: u16, amount @ X: u8) -> u16 {
     }
 
     loop {
-        asm!("LSR A");
+        A = A >> 1;
         X--;
         if X == 0 {
             break;

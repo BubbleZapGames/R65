@@ -549,7 +549,26 @@ class TypeChecker:
         right_type = self.check_expression(expr.right)
 
         # Type rules for binary operators
-        if expr.op in ['+', '-', '*', '/', '%', '&', '|', '^', '<<', '>>']:
+        if expr.op in ['<<', '>>']:
+            # Shift operators: left operand is value, right is shift amount
+            # Shift amount can be any integer type (typically u8)
+            # Result type is same as left operand
+            if not TypeUtils.is_integer_type(left_type):
+                raise TypeCheckError(
+                    f"Shift operator '{expr.op}' requires integer operand\n"
+                    f"  Got: {left_type}",
+                    source_loc=expr.source_loc
+                )
+            if not TypeUtils.is_integer_type(right_type):
+                raise TypeCheckError(
+                    f"Shift amount must be an integer\n"
+                    f"  Got: {right_type}",
+                    source_loc=expr.source_loc
+                )
+            expr.expr_type = left_type
+            return left_type
+
+        elif expr.op in ['+', '-', '*', '/', '%', '&', '|', '^']:
             # Arithmetic and bitwise: operands must match
             if not TypeUtils.types_equal(left_type, right_type):
                 raise TypeCheckError(

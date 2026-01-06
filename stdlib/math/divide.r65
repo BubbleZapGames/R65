@@ -34,7 +34,7 @@ fn div_hw(dividend_lo @ A: u8, dividend_hi: u8, divisor @ X: u8) -> u16 {
 
     // Wait 16 machine cycles for division to complete
     // NOP is 2 cycles, so 8 NOPs = 16 cycles
-    asm!("NOP", "NOP", "NOP", "NOP", "NOP", "NOP", "NOP", "NOP");
+    NOP(8);
 
     // Read 16-bit quotient
     A = RDDIVL;
@@ -63,7 +63,7 @@ fn div_hw_8(dividend @ A: u8, divisor @ X: u8) -> u8 {
     WRDIVB = A;
 
     // Wait 16 cycles
-    asm!("NOP", "NOP", "NOP", "NOP", "NOP", "NOP", "NOP", "NOP");
+    NOP(8);
 
     // Read low byte of quotient only
     A = RDDIVL;
@@ -93,7 +93,7 @@ fn mod_hw(dividend @ A: u8, divisor @ X: u8) -> u8 {
     WRDIVB = A;
 
     // Wait 16 cycles
-    asm!("NOP", "NOP", "NOP", "NOP", "NOP", "NOP", "NOP", "NOP");
+    NOP(8);
 
     // Read remainder (low byte)
     A = RDMPYL;
@@ -121,7 +121,7 @@ fn div_shift(dividend @ A: u8, divisor @ X: u8) -> u8 {
     loop {
         // Shift remainder left, bringing in high bit of dividend
         A = _div_remainder;
-        asm!("ASL A");
+        A = A << 1;
         _div_remainder = A;
 
         // Get high bit of dividend into remainder
@@ -135,12 +135,12 @@ fn div_shift(dividend @ A: u8, divisor @ X: u8) -> u8 {
 
         // Shift dividend left
         A = _div_dividend;
-        asm!("ASL A");
+        A = A << 1;
         _div_dividend = A;
 
         // Shift quotient left
         A = _div_quotient;
-        asm!("ASL A");
+        A = A << 1;
         _div_quotient = A;
 
         // Try to subtract divisor from remainder

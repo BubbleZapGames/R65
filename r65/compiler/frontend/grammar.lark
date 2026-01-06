@@ -343,7 +343,7 @@ FRAGMENT_TYPE.10: /expr\b/ | /ident\b/ | /literal\b/ | /ty\b/ | /reg\b/ | /tt\b/
 // Reserved keywords (not used in parser, but reserved for future use)
 // Rust reserved words only - builtin functions (mul, div, etc.) are regular identifiers
 // Note: 'macro' removed - now a first-class keyword
-KEYWORD.10: /abstract\b/ | /override\b/ | /unsized\b/ | /virtual\b/ | /typeof\b/ | /unsafe\b/ | /extern\b/ | /become\b/ | /async\b/ | /await\b/ | /where\b/ | /super\b/ | /trait\b/ | /yield\b/ | /crate\b/ | /final\b/ | /impl\b/ | /move\b/ | /priv\b/ | /self\b/ | /Self\b/ | /box\b/ | /dyn\b/ | /for\b/ | /mod\b/ | /pub\b/ | /ref\b/ | /try\b/ | /use\b/ | /in\b/ | /do\b/
+KEYWORD.10: /abstract\b/ | /override\b/ | /unsized\b/ | /virtual\b/ | /typeof\b/ | /unsafe\b/ | /extern\b/ | /become\b/ | /async\b/ | /await\b/ | /where\b/ | /super\b/ | /trait\b/ | /yield\b/ | /crate\b/ | /final\b/ | /impl\b/ | /move\b/ | /priv\b/ | /self\b/ | /Self\b/ | /box\b/ | /dyn\b/ | /for\b/ | /pub\b/ | /ref\b/ | /try\b/ | /use\b/ | /in\b/ | /do\b/
 
 // Booleans
 BOOLEAN.10: /true\b/ | /false\b/
