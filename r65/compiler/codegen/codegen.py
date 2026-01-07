@@ -15,7 +15,7 @@ from r65.compiler.codegen.peephole import optimize_nodes
 from r65.compiler.codegen.branch_fixup import fixup_nodes
 from r65.compiler.codegen.emitter import emit_nodes
 from r65.compiler.codegen.constants import DEFAULT_STACK_LOWER, DEFAULT_STACK_UPPER
-from r65.compiler.optimize import DeadFunctionEliminator
+from r65.compiler.optimize import DeadFunctionEliminator, DeadCodeEliminator
 
 
 class ProgramCodeGenerator:
@@ -51,10 +51,16 @@ class ProgramCodeGenerator:
         self.emitter = AssemblyEmitter(source_file="<unknown>")
 
         # Dead function elimination - remove functions that are never called
-        dead_elim = DeadFunctionEliminator(verbose=False)
-        eliminated_count = dead_elim.eliminate(mir_program)
-        if eliminated_count > 0:
-            print(f"Dead function elimination: {eliminated_count} function(s) removed")
+        dead_func_elim = DeadFunctionEliminator(verbose=False)
+        func_eliminated = dead_func_elim.eliminate(mir_program)
+        if func_eliminated > 0:
+            print(f"Dead function elimination: {func_eliminated} function(s) removed")
+
+        # Dead code elimination - remove unreachable blocks and dead stores
+        dead_code_elim = DeadCodeEliminator(verbose=False)
+        code_eliminated = dead_code_elim.eliminate(mir_program)
+        if code_eliminated > 0:
+            print(f"Dead code elimination: {code_eliminated} block(s)/instruction(s) removed")
 
         # Emit file header and processor directives
         self.emitter.emit_file_header()

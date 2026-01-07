@@ -64,7 +64,8 @@ def test_near_function_pointer_assignment():
             source=FunctionPointer(function_name="target_function"),
             type_info=func_ptr_type
         ),
-        Return(values=[])
+        # Use the function pointer so it's not dead code
+        Return(values=[ptr_vreg])
     ]
 
     main_func = MIRFunction(
@@ -137,7 +138,8 @@ def test_far_function_pointer_assignment():
             source=FunctionPointer(function_name="far_target"),
             type_info=func_ptr_type
         ),
-        Return(values=[])
+        # Use the function pointer so it's not dead code
+        Return(values=[ptr_vreg])
     ]
 
     main_func = MIRFunction(
