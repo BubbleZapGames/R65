@@ -531,8 +531,8 @@ loop {
 ```rust
 return;              // Return from void function (or implicit A)
 return value;        // Return single value
-return a, b;         // Return multiple values
-return a, b, c;      // Return three values
+return (a, b);       // Return multiple values
+return (a, b, c);    // Return three values
 ```
 
 **Semantics**:
@@ -556,7 +556,7 @@ fn get_status() -> u8 {
 fn get_xy() -> (u8, u8) {
     X = PLAYER_X;
     Y = PLAYER_Y;
-    return X, Y;
+    return (X, Y);
 }
 ```
 

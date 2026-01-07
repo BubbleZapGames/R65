@@ -151,8 +151,8 @@ No built-in error handling - programmer defines conventions:
 ```rust
 // Common patterns: return codes, error flags, multiple returns
 fn divide(a: u8, b: u8) -> (u8, u8) {
-    if b == 0 { return 0, 1; }  // result=0, error=1
-    return a / b, 0;             // result, error=0
+    if b == 0 { return (0, 1); }  // result=0, error=1
+    return (a / b, 0);             // result, error=0
 }
 ```
 
@@ -584,7 +584,7 @@ fn get_x_value() -> u8 {
 }
 
 fn divide(dividend: u8, divisor: u8) -> (u8, u8) {
-    return A, X;     // Return multiple registers
+    return (A, X);   // Return multiple registers
 }
 
 fn calculate() -> u8 {
@@ -593,7 +593,7 @@ fn calculate() -> u8 {
 }
 ```
 
-**Return conventions:** No `return` = A implicitly returned; `return X/Y` = specific register; `return A, X` = multiple registers; `return variable` = stack return
+**Return conventions:** No `return` = A implicitly returned; `return X/Y` = specific register; `return (A, X)` = multiple registers; `return variable` = stack return
 
 ### Built-in Functions for Special Instructions
 
@@ -845,7 +845,7 @@ Performance characteristics of different storage:
 17. **Automatic preservation**: `#[preserves(...)]` declares register preservation; compiler auto-generates PHA/PLA, PHX/PLX, PHY/PLY at entry/exit
 18. **Interrupt preservation**: `#[interrupt(vector)]` defaults to automatic register preservation (`preserve=true`); can be disabled with `preserve=false` or `#[preserves(...)]` for manual control
 19. **Implicit A return**: Functions without explicit `return` statements return A register value
-20. **Explicit register returns**: `return X`, `return Y`, `return A, X` return via hardware registers; local variables returned via stack
+20. **Explicit register returns**: `return X`, `return Y`, `return (A, X)` return via hardware registers; local variables returned via stack
 21. **Storage attributes**: Memory location separate from type (`near<T>` can be in zero-page or RAM)
 22. **Flexible mode handling**: `#[mode(...)]` with three transition strategies: `none` (convention-based, default), `auto` (callee wrapper), `caller` (caller-side wrapper with batching)
 23. **Automatic initialization**: `__init_start()` generated for all static variables with explicit initializers (RAM is not zeroed on SNES power-on)

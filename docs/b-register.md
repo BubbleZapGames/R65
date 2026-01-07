@@ -158,13 +158,13 @@ fn get_high_byte(value: u16) -> u8 {
 fn unpack_word(value: u16) -> (u8, u8) {
     A = value as u8;           // Low byte
     B = (value >> 8) as u8;    // High byte
-    return A, B;
+    return (A, B);
 }
 
 // Return B first, A second
 #[mode(m8, x8)]
 fn swap_bytes(low @ A: u8, high @ B: u8) -> (u8, u8) {
-    return B, A;  // Swap order
+    return (B, A);  // Swap order
 }
 
 // Return B and X
@@ -172,7 +172,7 @@ fn swap_bytes(low @ A: u8, high @ B: u8) -> (u8, u8) {
 fn get_high_and_index(value: u16, index: u8) -> (u8, u8) {
     B = (value >> 8) as u8;
     X = index;
-    return B, X;  // A not returned - caller must preserve!
+    return (B, X);  // A not returned - caller must preserve!
 }
 ```
 
@@ -182,10 +182,10 @@ fn get_high_and_index(value: u16, index: u8) -> (u8, u8) {
 |-----------------|--------------|---------------|--------------|--------------|
 | `return B;` | B | - | - | **NO** |
 | `return A;` | A | - | - | Yes |
-| `return A, B;` | A | B | - | Yes |
-| `return B, A;` | B | A | - | Yes (but as 2nd) |
-| `return B, X;` | B | X | - | **NO** |
-| `return A, B, X;` | A | B | X | Yes |
+| `return (A, B);` | A | B | - | Yes |
+| `return (B, A);` | B | A | - | Yes (but as 2nd) |
+| `return (B, X);` | B | X | - | **NO** |
+| `return (A, B, X);` | A | B | X | Yes |
 
 ### Critical Rule: Caller Must Preserve A
 
@@ -394,7 +394,7 @@ fn pack_word(low @ A: u8, high @ B: u8) -> u16 {
 // Alternative: Return both bytes and let caller combine
 #[mode(m8, x8)]
 fn pack_word_v2(low @ A: u8, high @ B: u8) -> (u8, u8) {
-    return A, B;  // Caller assembles into u16
+    return (A, B);  // Caller assembles into u16
 }
 ```
 
@@ -405,7 +405,7 @@ fn pack_word_v2(low @ A: u8, high @ B: u8) -> (u8, u8) {
 fn unpack_word(value: u16) -> (u8, u8) {
     A = value as u8;           // Low byte (truncate)
     B = (value >> 8) as u8;    // High byte (shift and truncate)
-    return A, B;
+    return (A, B);
 }
 
 // Caller:
