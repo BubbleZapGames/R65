@@ -929,6 +929,12 @@ class ASTBuilder(Transformer):
         items = self._filter_tokens(items)
         func = items[0]
         args = items[1] if len(items) > 1 and isinstance(items[1], list) else []
+        
+        # Check for built-in stringify function
+        if (isinstance(func, LarkToken) and func.type == 'IDENT' and func.value == 'stringify'):
+            # Handle stringify! as special built-in function
+            return ast.StringifyCall(func=func, args=args)
+        
         return ast.FunctionCall(func=func, args=args)
 
     def arg_list(self, items):

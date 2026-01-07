@@ -106,6 +106,7 @@ class Lexer:
 
         # Identifiers
         'IDENT': TokenType.IDENTIFIER,
+        'STRINGIFY': TokenType.IDENTIFIER,  # Built-in stringify function
 
         # Registers
         'REGISTER': TokenType.REGISTER,

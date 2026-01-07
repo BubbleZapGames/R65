@@ -500,6 +500,57 @@ macro_rules! infinite() {
 
 ---
 
+## Built-in Macros
+
+### `stringify!` - Convert Arguments to String Literal
+
+The `stringify!` macro is a built-in macro that converts its arguments into a string literal. This is useful for debugging, logging, or metaprogramming.
+
+#### Syntax
+
+```rust
+stringify!(arg1, arg2, ...)
+```
+
+#### Behavior
+
+- Joins all arguments with spaces
+- Escapes special characters (quotes, backslashes, newlines, tabs)
+- Returns a string literal
+
+#### Examples
+
+```rust
+fn debug_print() {
+    // Single argument
+    stringify!(Hello);           // Expands to: "Hello"
+
+    // Multiple arguments - joined with spaces
+    stringify!(Hello World 123); // Expands to: "Hello World 123"
+
+    // Empty arguments
+    stringify!();                // Expands to: ""
+
+    // Special characters are escaped
+    stringify!(Say "Hi" \n);    // Expands to: "Say \"Hi\" \\n"
+}
+
+// Useful for debugging
+fn log_debug(message: u8) {
+    stringify!(Debug: message = message);
+    // Expands to: "Debug: message = message"
+}
+```
+
+#### Usage Notes
+
+- **Statement context only**: Currently supported only as a statement (`stringify!(...);`)
+- **No evaluation**: Arguments are treated as literal tokens, not evaluated
+- **Token-based**: Operates on the token level, like all R65 macros
+- **Escaping**: Automatically handles special characters for safe string literals
+
+---
+
 ## Scope and Visibility
 
 ### Global Scope

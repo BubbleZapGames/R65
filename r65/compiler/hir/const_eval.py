@@ -27,17 +27,20 @@ class ConstEvaluator:
         except HIRError:
             return False
 
-    def eval(self, expr: ast.Expression) -> Union[int, bool]:
+    def eval(self, expr: ast.Expression) -> Union[int, bool, str]:
         """
         Evaluate a constant expression.
 
-        Returns: int or bool value
+        Returns: int, bool, or str value
         Raises: HIRError if expression is not constant or evaluation fails
         """
         if isinstance(expr, ast.IntegerLiteral):
             return expr.value
 
         elif isinstance(expr, ast.BooleanLiteral):
+            return expr.value
+
+        elif isinstance(expr, ast.StringLiteral):
             return expr.value
 
         elif isinstance(expr, ast.Identifier):
@@ -66,15 +69,19 @@ class ConstEvaluator:
         else:
             raise HIRError(f"Non-constant expression: {type(expr).__name__}")
 
-    def _eval_binary_op(self, expr: ast.BinaryOp) -> Union[int, bool]:
+    def _eval_binary_op(self, expr: ast.BinaryOp) -> Union[int, bool, str]:
         """Evaluate binary operation."""
         left = self.eval(expr.left)
         right = self.eval(expr.right)
 
         op = expr.op
 
-        # Arithmetic operators
+        # String concatenation
         if op == '+':
+            # If either operand is a string, perform string concatenation
+            if isinstance(left, str) or isinstance(right, str):
+                return str(left) + str(right)
+            # Otherwise, perform arithmetic addition
             return self._ensure_int(left) + self._ensure_int(right)
         elif op == '-':
             return self._ensure_int(left) - self._ensure_int(right)
@@ -109,12 +116,21 @@ class ConstEvaluator:
         elif op == '!=':
             return left != right
         elif op == '<':
+            # String comparisons use lexicographic ordering
+            if isinstance(left, str) or isinstance(right, str):
+                return str(left) < str(right)
             return self._ensure_int(left) < self._ensure_int(right)
         elif op == '<=':
+            if isinstance(left, str) or isinstance(right, str):
+                return str(left) <= str(right)
             return self._ensure_int(left) <= self._ensure_int(right)
         elif op == '>':
+            if isinstance(left, str) or isinstance(right, str):
+                return str(left) > str(right)
             return self._ensure_int(left) > self._ensure_int(right)
         elif op == '>=':
+            if isinstance(left, str) or isinstance(right, str):
+                return str(left) >= str(right)
             return self._ensure_int(left) >= self._ensure_int(right)
 
         # Logical operators

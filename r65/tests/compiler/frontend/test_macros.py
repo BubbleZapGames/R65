@@ -457,6 +457,101 @@ class TestMacroErrors:
 
 
 # ============================================================================
+# Built-in stringify! Macro Tests  
+# ============================================================================
+
+class TestStringifyMacro:
+    """Tests for built-in stringify! macro."""
+
+    def test_stringify_single_arg(self):
+        """Test stringify! with a single argument."""
+        source = """
+        fn test() {
+            stringify!(Hello);
+        }
+        """
+        
+        program = parse(source, "<test>")
+        expanded = expand_macros(program)
+        
+        # Should have one function with one statement
+        assert len(expanded.items) == 1
+        func = expanded.items[0]
+        assert len(func.body.statements) == 1
+        
+        stmt = func.body.statements[0]
+        assert isinstance(stmt, ast.ExprStmt)
+        assert isinstance(stmt.expr, ast.StringLiteral)
+        assert stmt.expr.value == "Hello"
+
+    def test_stringify_multiple_args(self):
+        """Test stringify! with multiple arguments."""
+        source = """
+        fn test() {
+            stringify!(Hello World 123);
+        }
+        """
+        
+        program = parse(source, "<test>")
+        expanded = expand_macros(program)
+        
+        func = expanded.items[0]
+        stmt = func.body.statements[0]
+        assert isinstance(stmt.expr, ast.StringLiteral)
+        assert stmt.expr.value == "Hello World 123"
+
+    def test_stringify_empty_args(self):
+        """Test stringify! with no arguments."""
+        source = """
+        fn test() {
+            stringify!();
+        }
+        """
+        
+        program = parse(source, "<test>")
+        expanded = expand_macros(program)
+        
+        func = expanded.items[0]
+        stmt = func.body.statements[0]
+        assert isinstance(stmt.expr, ast.StringLiteral)
+        assert stmt.expr.value == ""
+
+    def test_stringify_special_chars(self):
+        """Test stringify! with special characters that need escaping."""
+        source = """
+        fn test() {
+            stringify!(Hello "World");
+        }
+        """
+        
+        program = parse(source, "<test>")
+        expanded = expand_macros(program)
+        
+        func = expanded.items[0]
+        stmt = func.body.statements[0]
+        assert isinstance(stmt.expr, ast.StringLiteral)
+        # Should properly escape quotes
+        assert stmt.expr.value == 'Hello \\"World\\"'
+
+    def test_stringify_error_undefined_macro(self):
+        """Test that non-stringify macros in statement context give proper error."""
+        from r65.compiler.frontend.macros import MacroError
+        
+        source = """
+        fn test() {
+            unknown_macro!(arg);
+        }
+        """
+        
+        program = parse(source, "<test>")
+        
+        with pytest.raises(MacroError) as exc_info:
+            expand_macros(program)
+        
+        assert "undefined macro: 'unknown_macro'" in str(exc_info.value)
+
+
+# ============================================================================
 # End-to-End Compilation Tests
 # ============================================================================
 
@@ -530,3 +625,98 @@ class TestMacroCompilation:
 
         # Should have INX three times from nested expansion
         assert assembly.count("INX") == 3
+
+
+# ============================================================================
+# Built-in stringify! Macro Tests  
+# ============================================================================
+
+class TestStringifyMacro:
+    """Tests for built-in stringify! macro."""
+
+    def test_stringify_single_arg(self):
+        """Test stringify! with a single argument."""
+        source = """
+        fn test() {
+            stringify!(Hello);
+        }
+        """
+        
+        program = parse(source, "<test>")
+        expanded = expand_macros(program)
+        
+        # Should have one function with one statement
+        assert len(expanded.items) == 1
+        func = expanded.items[0]
+        assert len(func.body.statements) == 1
+        
+        stmt = func.body.statements[0]
+        assert isinstance(stmt, ast.ExprStmt)
+        assert isinstance(stmt.expr, ast.StringLiteral)
+        assert stmt.expr.value == "Hello"
+
+    def test_stringify_multiple_args(self):
+        """Test stringify! with multiple arguments."""
+        source = """
+        fn test() {
+            stringify!(Hello World 123);
+        }
+        """
+        
+        program = parse(source, "<test>")
+        expanded = expand_macros(program)
+        
+        func = expanded.items[0]
+        stmt = func.body.statements[0]
+        assert isinstance(stmt.expr, ast.StringLiteral)
+        assert stmt.expr.value == "Hello World 123"
+
+    def test_stringify_empty_args(self):
+        """Test stringify! with no arguments."""
+        source = """
+        fn test() {
+            stringify!();
+        }
+        """
+        
+        program = parse(source, "<test>")
+        expanded = expand_macros(program)
+        
+        func = expanded.items[0]
+        stmt = func.body.statements[0]
+        assert isinstance(stmt.expr, ast.StringLiteral)
+        assert stmt.expr.value == ""
+
+    def test_stringify_special_chars(self):
+        """Test stringify! with special characters that need escaping."""
+        source = """
+        fn test() {
+            stringify!(Hello "World");
+        }
+        """
+        
+        program = parse(source, "<test>")
+        expanded = expand_macros(program)
+        
+        func = expanded.items[0]
+        stmt = func.body.statements[0]
+        assert isinstance(stmt.expr, ast.StringLiteral)
+        # Should properly escape quotes
+        assert stmt.expr.value == 'Hello \\"World\\"'
+
+    def test_stringify_error_undefined_macro(self):
+        """Test that non-stringify macros in statement context give proper error."""
+        from r65.compiler.frontend.macros import MacroError
+        
+        source = """
+        fn test() {
+            unknown_macro!(arg);
+        }
+        """
+        
+        program = parse(source, "<test>")
+        
+        with pytest.raises(MacroError) as exc_info:
+            expand_macros(program)
+        
+        assert "undefined macro: 'unknown_macro'" in str(exc_info.value)

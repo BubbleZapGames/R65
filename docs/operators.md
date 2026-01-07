@@ -1,14 +1,57 @@
-# Integer Operators Design
+# Operators Design
 
 ## Overview
 
-R65 provides integer operators and functions that clearly distinguish between hardware-supported operations (fast) and software-implemented operations (slow).
+R65 provides operators and functions that clearly distinguish between hardware-supported operations (fast) and software-implemented operations (slow).
 
 **Design Philosophy**:
 - **Operators (`+`, `-`, `*`, `/`, etc.)** = Hardware instructions or simple instruction sequences (2-10 cycles)
 - **Functions (`mul()`, `div()`, `shl()`, etc.)** = Software subroutines (20-200+ cycles)
 
-All operations are **unchecked** - overflow, underflow, and division by zero are undefined behavior (matching the hardware philosophy of no runtime checks).
+All operations are **unchecked** - overflow, underflow, and division by zero are undefined behavior (matching hardware philosophy of no runtime checks).
+
+---
+
+## String Concatenation
+
+### Addition with Strings: `+`
+
+When the `+` operator is used with string operands, it performs compile-time string concatenation instead of arithmetic addition.
+
+**Syntax**: `"string1" + "string2"`
+
+**Type Rules**:
+- If either operand is a string literal, performs string concatenation
+- If both operands are non-strings, performs arithmetic addition  
+- Non-string operands are converted to strings and concatenated
+
+**Behavior**:
+- Concatenates strings at compile time
+- Supports mixing strings with integers (integer converted to string)
+- Supports nested concatenation
+
+**Examples**:
+```rust
+// Basic concatenation
+static mut HELLO: [u8; 16] = "Hello, " + "World";
+// Becomes: "Hello, World"
+
+// Mixed concatenation
+static mut COUNT: [u8; 16] = "Count: " + 42;
+// Becomes: "Count: 42"
+
+// Nested concatenation
+static mut COMPLEX: [u8; 16] = "A" + "B" + "C";
+// Becomes: "ABC"
+```
+
+**Performance**:
+- Zero runtime cost - concatenation happens at compile time
+- Same as using a single string literal
+
+**Restrictions**:
+- Only works in static initializers (constant expressions)
+- Operands must be compile-time constants (string literals, integers, etc.)
 
 ---
 

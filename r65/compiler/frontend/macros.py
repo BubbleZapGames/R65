@@ -158,6 +158,20 @@ class MacroExpander:
             elif isinstance(stmt, ast.Block):
                 new_stmt = self._expand_block(stmt)
                 result.append(new_stmt)
+            elif isinstance(stmt, ast.ExprStmt):
+                # Check if the expression is a macro invocation
+                if isinstance(stmt.expr, ast.MacroInvocation):
+                    if stmt.expr.name == "stringify":
+                        # Handle stringify! as expression statement
+                        expanded = self._expand_stringify_expr(stmt.expr.args, stmt.expr.source_loc)
+                        result.append(ast.ExprStmt(expr=expanded, source_loc=stmt.source_loc))
+                    else:
+                        raise MacroError(
+                            f"macro '{stmt.expr.name}' cannot be used in expression context",
+                            stmt.expr.source_loc
+                        )
+                else:
+                    result.append(stmt)
             else:
                 # Keep other statements as-is
                 result.append(stmt)
@@ -212,6 +226,10 @@ class MacroExpander:
         Returns:
             List of expanded statements
         """
+        # Handle built-in stringify! macro
+        if name == "stringify":
+            return self._expand_stringify(args, source_loc)
+
         # Check if macro exists
         if name not in self.macros:
             raise MacroError(f"undefined macro: '{name}'", source_loc)
@@ -382,6 +400,85 @@ class MacroExpander:
                 i += 1
 
         return result
+
+    def _expand_stringify(
+        self,
+        args: List[str],
+        source_loc: Optional[SourceLocation]
+    ) -> List[ast.Statement]:
+        """
+        Expand the built-in stringify! macro.
+        
+        stringify!(arg1, arg2, ...) converts its arguments to a string literal.
+        The arguments are concatenated with spaces between them.
+        
+        Args:
+            args: List of argument token strings
+            source_loc: Source location of invocation
+            
+        Returns:
+            List containing a single statement with the string literal
+        """
+        # Join arguments with spaces
+        joined_args = ' '.join(args)
+        
+        # Create a string literal by wrapping in quotes and escaping
+        escaped_args = self._escape_string_literal(joined_args)
+        string_literal = f'"{escaped_args}"'
+        
+        # Parse as a simple expression statement
+        try:
+            wrapped = f"fn __stringify_expand__() {{ {string_literal}; }}"
+            program = parse(wrapped, "<stringify>")
+            
+            if program.items and isinstance(program.items[0], ast.FunctionDecl):
+                func = program.items[0]
+                if func.body.statements:
+                    return func.body.statements
+            return []
+        except Exception as e:
+            raise MacroError(
+                f"error expanding stringify!: {e}",
+                source_loc
+            )
+
+    def _escape_string_literal(self, text: str) -> str:
+        """
+        Escape text for use in a string literal.
+        
+        Args:
+            text: Text to escape
+            
+        Returns:
+            Escaped text safe for string literal
+        """
+        # Basic escaping - handle quotes, backslashes, newlines, tabs
+        text = text.replace('\\', '\\\\')  # Backslash first
+        text = text.replace('"', '\\"')    # Double quotes
+        text = text.replace('\n', '\\n')   # Newline
+        text = text.replace('\t', '\\t')   # Tab
+        text = text.replace('\r', '\\r')   # Carriage return
+        return text
+
+    def _expand_stringify_expr(self, args: List[str], source_loc: Optional[SourceLocation]) -> ast.StringLiteral:
+        """
+        Expand stringify! macro in expression context.
+        
+        Args:
+            args: List of argument token strings
+            source_loc: Source location of invocation
+            
+        Returns:
+            String literal expression
+        """
+        # Join arguments with spaces
+        joined_args = ' '.join(args)
+        
+        # Escape the text for string literal
+        escaped_args = self._escape_string_literal(joined_args)
+        
+        # Return a string literal expression
+        return ast.StringLiteral(value=escaped_args, source_loc=source_loc)
 
     def _expand_repetition(
         self,

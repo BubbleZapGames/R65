@@ -1549,28 +1549,6 @@ macro_rules! set_window2($left:expr, $right:expr) {
 
 
 // ============================================================================
-// MACROS - Hardware Math
-// ============================================================================
-
-// Start unsigned multiplication (8x8)
-// Result available after 8 cycles in RDMPYL/RDMPYH
-// Usage: hw_multiply!(10, 20);
-macro_rules! hw_multiply($a:expr, $b:expr) {
-    WRMPYA = $a;
-    WRMPYB = $b;
-}
-
-// Start unsigned division (16/8)
-// Result available after 16 cycles in RDDIVL/RDDIVH (quotient) and RDMPYL/RDMPYH (remainder)
-// Usage: hw_divide!(1000, 7);
-macro_rules! hw_divide($dividend:expr, $divisor:expr) {
-    WRDIVL = $dividend as u8;
-    WRDIVH = ($dividend >> 8) as u8;
-    WRDIVB = $divisor;
-}
-
-
-// ============================================================================
 // MACROS - Mosaic
 // ============================================================================
 
@@ -1808,6 +1786,7 @@ fn delay(frames @ X: u8) {
     }
 }
 
+macro_rules! screen_on($brightness:expr) {
 // Check if console is NTSC (returns 1) or PAL (returns 0)
 // Usage: if is_ntsc() { ... }
 #[mode(m8, x8)]
@@ -1972,29 +1951,6 @@ macro_rules! bg_attr($pal:expr, $pri:expr) {
 macro_rules! rgb($r:expr, $g:expr, $b:expr) {
     ($r & 0x1F) | (($g & 0x1F) << 5) | (($b & 0x1F) << 10)
 }
-
-
-// ============================================================================
-// UTILITY FUNCTIONS - Random Number Generation
-// ============================================================================
-
-// Simple 8-bit pseudo-random number generator
-// Uses XOR-shift algorithm, call repeatedly for sequence
-// seed_addr: pointer to seed byte in RAM (must be initialized to non-zero)
-// Returns: pseudo-random value in A, updates seed
-// Note: User must provide their own seed variable
-// Usage:
-//   #[lowram] static mut RNG_SEED: u8 = 1;
-//   A = rand8(&RNG_SEED);
-#[mode(m8, x8)]
-fn rand8(seed @ A: u8) -> u8 {
-    // XOR-shift algorithm for 8-bit
-    A = A ^ (A << 7);
-    A = A ^ (A >> 5);
-    A = A ^ (A << 3);
-    return A;
-}
-
 
 // ============================================================================
 // FAST DMA CLEAR FUNCTIONS

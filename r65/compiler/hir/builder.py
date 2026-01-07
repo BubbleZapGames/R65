@@ -731,6 +731,21 @@ class HIRBuilder:
             )
 
         elif isinstance(expr, ast.BinaryOp):
+            # Check for string concatenation
+            if expr.op == '+':
+                left_is_string = isinstance(expr.left, ast.StringLiteral)
+                right_is_string = isinstance(expr.right, ast.StringLiteral)
+                
+                if left_is_string or right_is_string:
+                    try:
+                        # Use const evaluator on the AST directly
+                        const_value = self.const_evaluator.eval(expr)
+                        if isinstance(const_value, str):
+                            return hir.HIRStringLiteral(value=const_value)
+                    except Exception:
+                        # If constant evaluation fails, fall back to normal processing
+                        pass
+            
             left = self._build_expression(expr.left)
             right = self._build_expression(expr.right)
             return hir.HIRBinaryOp(op=expr.op, left=left, right=right)

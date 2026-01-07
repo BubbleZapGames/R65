@@ -452,6 +452,12 @@ class FunctionCall(Expression):
     func: Expression
     args: List[Expression]
 
+@dataclass
+class StringifyCall(Expression):
+    """Stringify built-in function call."""
+    func: Expression  # Should be 'stringify' identifier
+    args: List[Expression]
+
 
 @dataclass
 class ArrayIndex(Expression):

@@ -69,11 +69,11 @@ class TokenType(Enum):
 
 
 # Keywords in R65
-KEYWORDS = {
-    'fn', 'far', 'let', 'mut', 'const', 'static', 'if', 'else', 'loop',
-    'while', 'break', 'continue', 'return', 'struct', 'enum', 'type',
-    'include', 'asm', 'as',
-}
+    KEYWORDS = {
+        'fn', 'far', 'let', 'mut', 'const', 'static', 'if', 'else', 'loop',
+        'while', 'break', 'continue', 'return', 'struct', 'enum', 'type',
+        'include', 'asm', 'as', 'stringify',  # Built-in stringification function
+    }
 
 # Built-in function names (recognized by BuiltinRegistry, not grammar keywords)
 BUILTIN_FUNCTIONS = {

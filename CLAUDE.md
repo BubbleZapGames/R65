@@ -680,6 +680,7 @@ R65 uses **hardware-aware operators**: syntax indicates performance cost.
 - ✅ Control flow: `if/else, loop, while, loop-while, break, continue, return, never type (!)` - See [docs/control-flow.md](docs/control-flow.md)
 - ✅ Operators with hardware cost model:
   - Arithmetic: `+`, `-`, `*` (constants 1/2/4/8 only), `/` (constants 1/2/4/8 only)
+  - Static string concatenation: `"Hello, " + "World"` becomes `"Hello, World"` at compile time
   - Functions for expensive ops: `mul()`, `div()`, `mod()`, `shl()`, `shr()`
   - Bitwise: `&`, `|`, `^`, `~`, `<<` (constant), `>>` (constant)
   - Comparison: `==`, `!=`, `<`, `<=`, `>`, `>=`
