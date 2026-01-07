@@ -36,7 +36,7 @@ param: IDENT ("@" binding)? ":" type_expr
 
 binding: REGISTER | IDENT
 
-return_type: "->" (type_expr | "!")
+return_type: "->" (type_tuple | type_expr | "!")
 
 // Static variable declaration
 // Uses initializer_expr to allow struct literals after =
@@ -146,7 +146,9 @@ block: "{" statement* "}"
 // Uses initializer_expr to allow struct literals after =
 let_stmt: LET MUT? IDENT ("@" binding)? (":" type_expr)? "=" initializer_expr ";"
 expr_stmt: expr ";"
-return_stmt: RETURN (expr ("," expr)*)? ";"
+// Return statement - single value or parenthesized tuple: return; | return x; | return (a, b);
+return_stmt: RETURN (return_tuple | expr)?  ";"
+return_tuple: "(" expr ("," expr)+ ")"
 break_stmt: BREAK ";"
 continue_stmt: CONTINUE ";"
 increment_stmt: lvalue PLUSPLUS ";"
@@ -295,6 +297,9 @@ type_basic: TYPE_NAME | IDENT
 type_array: "[" type_expr ";" expr "]"
 type_pointer: (NEAR | FAR) "<" type_expr ">"
 type_fn: FAR? FN "(" type_list? ")" ("->" type_expr)?
+
+// Tuple type for multiple return values: (u8, u8)
+type_tuple: "(" type_expr ("," type_expr)+ ")"
 
 type_list: type_expr ("," type_expr)* ","?
 

@@ -272,16 +272,23 @@ class ControlFlowInstructionSelector(BaseSelector):
     }
 
     def _emit_return_values(self, instr: Return):
-        """Load return values into appropriate registers."""
+        """Load return values into appropriate registers.
+
+        Values are loaded in reverse order (Y, X, A) so that transfers
+        through A (needed for stack-relative X/Y loads) don't clobber
+        the final A value.
+        """
         if not instr.values:
             return
 
         return_registers = ['A', 'X', 'Y']
-        for i, value in enumerate(instr.values):
-            if i >= len(return_registers):
-                raise InstructionSelectionError(
-                    f"Too many return values (max {len(return_registers)})")
+        if len(instr.values) > len(return_registers):
+            raise InstructionSelectionError(
+                f"Too many return values (max {len(return_registers)})")
 
+        # Process in reverse order to avoid clobbering A
+        for i in range(len(instr.values) - 1, -1, -1):
+            value = instr.values[i]
             target_reg = return_registers[i]
             value_loc = self.parent._get_operand_location(value)
 

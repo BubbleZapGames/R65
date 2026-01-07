@@ -543,16 +543,16 @@ fn dispatch_handler(state @ X: u8, input @ A: u8) -> u8 {
 }
 
 // -----------------------------------------------------------------------------
-// Multiple Return Values (via return statement, not tuple types)
+// Multiple Return Values (via parenthesized tuple syntax)
 // -----------------------------------------------------------------------------
 fn get_position() {
-    // Multiple values returned via registers
-    return PLAYER.pos.x, PLAYER.pos.y;
+    // Multiple values returned via registers (tuple syntax)
+    return (PLAYER.pos.x, PLAYER.pos.y);
 }
 
 fn get_registers() {
-    // Return all three registers
-    return A, X, Y;
+    // Return all three registers (tuple syntax)
+    return (A, X, Y);
 }
 
 // -----------------------------------------------------------------------------

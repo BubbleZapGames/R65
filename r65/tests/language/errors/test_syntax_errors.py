@@ -99,7 +99,7 @@ class TestValidEdgeCases:
             "fn empty() { }",
             "struct Empty { }",
             "fn test() { { { { A = 1; } } } }",  # Nested blocks
-            "fn test() { return A, X, Y; }",  # Multiple returns
+            "fn test() { return (A, X, Y); }",  # Multiple returns (tuple syntax)
         ]
         for source in cases:
             prog = parse_succeeds(source)

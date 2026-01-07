@@ -604,7 +604,15 @@ class ASTBuilder(Transformer):
         """Return statement."""
         # Filter out 'return' keyword and semicolon, keep only expressions
         values = [item for item in items if not isinstance(item, LarkToken)]
+        # Flatten if we have a return_tuple (list of expressions)
+        if values and isinstance(values[0], list):
+            values = values[0]
         return ast.ReturnStmt(values=values)
+
+    def return_tuple(self, items):
+        """Return tuple: (expr, expr, ...)."""
+        # Filter out punctuation tokens
+        return [item for item in items if not isinstance(item, LarkToken)]
 
     def break_stmt(self, items):
         """Break statement."""
@@ -974,6 +982,15 @@ class ASTBuilder(Transformer):
 
         return ast.CompoundAssignment(target=lvalue, operator=operator, value=value)
 
+    def multi_assign(self, items):
+        """Multiple assignment for multiple return values (e.g., lo, hi = func())."""
+        items = self._filter_tokens(items)
+        # All items except the last are lvalues, the last is the value
+        targets = list(items[:-1])
+        value = items[-1]
+
+        return ast.MultiAssignment(targets=targets, value=value)
+
     def compound_op(self, items):
         """Compound operator."""
         # Return the first token which is the compound operator
@@ -1063,6 +1080,12 @@ class ASTBuilder(Transformer):
             param_types=param_types,
             return_type=return_type
         )
+
+    def type_tuple(self, items):
+        """Tuple type for multiple return values: (u8, u8)."""
+        # Filter out punctuation tokens (parentheses, commas)
+        element_types = [item for item in items if not isinstance(item, LarkToken)]
+        return ast.TupleType(element_types=element_types)
 
     def type_list(self, items):
         """Type list."""

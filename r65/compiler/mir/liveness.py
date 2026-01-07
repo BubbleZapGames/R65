@@ -301,8 +301,43 @@ class LivenessAnalyzer:
         """
         ranges = self.get_live_ranges()
 
-        if var1 not in ranges or var2 not in ranges:
-            return False
+        # Check block-level interference
+        if var1 in ranges and var2 in ranges:
+            if ranges[var1] & ranges[var2]:
+                return True
 
-        # Check if live ranges overlap
-        return bool(ranges[var1] & ranges[var2])
+        # Check intra-block interference: if both are defined in same block
+        # and both are used (possibly in return), they may interfere
+        for block_id, info in self.liveness.items():
+            if var1 in info.define and var2 in info.define:
+                # Both defined in same block - check if they're both used
+                # after both definitions (conservative: assume they interfere)
+                block = self.func.blocks[block_id]
+                var1_used_after_def = False
+                var2_used_after_def = False
+                var1_defined = False
+                var2_defined = False
+
+                for instr in block.instructions:
+                    defs = self._get_defs(instr)
+                    uses = self._get_uses(instr)
+
+                    # Check uses before updating defines
+                    if var1_defined and var1 in uses:
+                        var1_used_after_def = True
+                    if var2_defined and var2 in uses:
+                        var2_used_after_def = True
+
+                    # Check if both are live at this instruction
+                    if var1_used_after_def and var2 in uses:
+                        return True
+                    if var2_used_after_def and var1 in uses:
+                        return True
+
+                    # Update defines
+                    if var1 in defs:
+                        var1_defined = True
+                    if var2 in defs:
+                        var2_defined = True
+
+        return False

@@ -76,24 +76,35 @@ class TestReturnStatements:
         assert len(ret.values) == 1
         assert isinstance(ret.values[0], ast.BinaryOp)
 
-        # Return multiple values
-        func = parse_function("fn test() { return A, X; }")
+        # Return multiple values (parenthesized tuple syntax)
+        func = parse_function("fn test() { return (A, X); }")
         ret = func.body.statements[0]
         assert len(ret.values) == 2
 
-        # Return three values
-        func = parse_function("fn test() { return A, X, Y; }")
+        # Return three values (parenthesized tuple syntax)
+        func = parse_function("fn test() { return (A, X, Y); }")
         ret = func.body.statements[0]
         assert len(ret.values) == 3
 
     def test_return_register_combinations(self):
         """Test returning different register combinations."""
-        combos = ["A", "X", "Y", "A, X", "A, Y", "X, Y", "A, X, Y"]
-        for combo in combos:
+        # Single values don't need parentheses
+        single = ["A", "X", "Y"]
+        for reg in single:
+            func = parse_function(f"fn test() {{ return {reg}; }}")
+            ret = func.body.statements[0]
+            assert isinstance(ret, ast.ReturnStmt)
+            assert len(ret.values) == 1
+
+        # Multiple values require parenthesized tuple syntax
+        multi = ["(A, X)", "(A, Y)", "(X, Y)", "(A, X, Y)"]
+        for combo in multi:
             func = parse_function(f"fn test() {{ return {combo}; }}")
             ret = func.body.statements[0]
             assert isinstance(ret, ast.ReturnStmt)
-            assert len(ret.values) == len(combo.split(","))
+            # Count values by counting commas + 1
+            expected_count = combo.count(",") + 1
+            assert len(ret.values) == expected_count
 
     def test_return_in_conditionals(self):
         """Test return statements in conditional branches."""

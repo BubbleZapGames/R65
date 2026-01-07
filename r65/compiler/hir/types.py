@@ -93,6 +93,16 @@ class NeverTypeInfo(TypeInfo):
 
 
 @dataclass
+class TupleTypeInfo(TypeInfo):
+    """Tuple type: (T1, T2, ...) for multiple return values."""
+    element_types: List[TypeInfo]
+
+    def __str__(self):
+        types_str = ", ".join(str(t) for t in self.element_types)
+        return f"({types_str})"
+
+
+@dataclass
 class RegisterTypeInfo(TypeInfo):
     """Type of a hardware register (mode-dependent)."""
     register_name: str
@@ -152,6 +162,10 @@ class TypeResolver:
 
         elif isinstance(ast_type, ast.NeverType):
             return NeverTypeInfo()
+
+        elif isinstance(ast_type, ast.TupleType):
+            element_types = [self.resolve_type(t) for t in ast_type.element_types]
+            return TupleTypeInfo(element_types=element_types)
 
         else:
             raise HIRError(f"Unknown type node: {type(ast_type).__name__}")

@@ -95,6 +95,12 @@ class NeverType(Type):
     pass
 
 
+@dataclass
+class TupleType(Type):
+    """Tuple type: (T1, T2, ...) for multiple return values."""
+    element_types: List[Type]
+
+
 # ============================================================================
 # Attributes
 # ============================================================================
@@ -473,6 +479,13 @@ class CompoundAssignment(Expression):
     """Compound assignment expression (e.g., +=, -=, &=)."""
     target: Union[Identifier, Register, ArrayIndex, FieldAccess]
     operator: str  # "+", "-", "*", "/", "%", "&", "|", "^", "<<", ">>"
+    value: Expression
+
+
+@dataclass
+class MultiAssignment(Expression):
+    """Multiple assignment expression for multiple return values (e.g., lo, hi = func())."""
+    targets: List[Union[Identifier, Register, ArrayIndex, FieldAccess]]
     value: Expression
 
 
