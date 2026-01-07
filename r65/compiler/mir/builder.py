@@ -567,9 +567,13 @@ class MIRBuilder:
         elif isinstance(expr, HIRIdentifier):
             symbol = expr.symbol
 
-            # Check if this is a function identifier (function pointer)
+            # Check if this is a constant - return immediate value
             from r65.compiler.hir.symbol_table import SymbolKind
             from r65.compiler.hir.types import FunctionTypeInfo
+            if symbol.kind == SymbolKind.CONST and symbol.const_value is not None:
+                return Immediate(symbol.const_value)
+
+            # Check if this is a function identifier (function pointer)
             if symbol.kind == SymbolKind.FUNCTION:
                 # Function identifier used as a value - load function address
                 vreg = self.current_function.vreg_allocator.alloc(expr.expr_type, f"fn_ptr_{symbol.name}")
@@ -705,7 +709,11 @@ class MIRBuilder:
         if const_result is False:
             # Condition is always false - only emit else branch (if any)
             if stmt.else_block:
-                self.lower_block(stmt.else_block)
+                # Handle else-if chains (else_block can be HIRIfStmt)
+                if isinstance(stmt.else_block, HIRIfStmt):
+                    self.lower_if_statement(stmt.else_block)
+                else:
+                    self.lower_block(stmt.else_block)
             return
 
         # Non-constant condition - generate full control flow
@@ -728,7 +736,11 @@ class MIRBuilder:
         # Lower else branch if present
         if stmt.else_block:
             self.current_block = else_block
-            self.lower_block(stmt.else_block)
+            # Handle else-if chains (else_block can be HIRIfStmt)
+            if isinstance(stmt.else_block, HIRIfStmt):
+                self.lower_if_statement(stmt.else_block)
+            else:
+                self.lower_block(stmt.else_block)
             # Jump to merge
             if not self._block_has_terminator():
                 self.emit(Jump(target=merge_block.block_id))
