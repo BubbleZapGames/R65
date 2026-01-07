@@ -144,7 +144,12 @@ block: "{" statement* "}"
           | macro_invocation_stmt_inner
 
 // Uses initializer_expr to allow struct literals after =
-let_stmt: LET MUT? IDENT ("@" binding)? (":" type_expr)? "=" initializer_expr ";"
+// Supports both single binding and tuple destructuring:
+//   let x = expr;
+//   let (a, b) = tuple_expr;
+let_stmt: LET MUT? (tuple_pattern | single_pattern) (":" type_expr)? "=" initializer_expr ";"
+single_pattern: IDENT ("@" binding)?
+tuple_pattern: "(" IDENT ("," IDENT)* ")"
 expr_stmt: expr ";"
 // Return statement - single value or parenthesized tuple: return; | return x; | return (a, b);
 return_stmt: RETURN (return_tuple | expr)?  ";"

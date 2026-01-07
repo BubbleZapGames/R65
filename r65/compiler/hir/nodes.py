@@ -258,6 +258,24 @@ class HIRLetStmt(HIRStatement):
 
 
 @dataclass
+class HIRTupleLetStmt(HIRStatement):
+    """Tuple destructuring let binding.
+
+    Used for: let (a, b) = func_returning_tuple();
+
+    Supports partial capture - binding fewer names than the tuple size.
+    Extra return values are discarded.
+    """
+    names: List[str] = field(default_factory=list)  # Variable names to bind
+    is_mutable: bool = False
+    var_types: List[Any] = field(default_factory=list)  # Type for each binding
+    initializer: Optional[HIRExpression] = None
+
+    # Symbol references for each binding
+    symbols: List[Any] = field(default_factory=list)  # Will be List[Symbol]
+
+
+@dataclass
 class HIRExprStmt(HIRStatement):
     """Expression statement."""
     expr: Optional[HIRExpression] = None
@@ -495,6 +513,13 @@ class HIRAddressOf(HIRExpression):
 class HIRAssignment(HIRExpression):
     """Assignment expression."""
     target: Optional[HIRExpression] = None  # Must be lvalue
+    value: Optional[HIRExpression] = None
+
+
+@dataclass
+class HIRMultiAssignment(HIRExpression):
+    """Multiple assignment expression for multiple return values."""
+    targets: List[HIRExpression] = field(default_factory=list)  # Must be lvalues
     value: Optional[HIRExpression] = None
 
 

@@ -541,10 +541,14 @@ class HIRBuilder:
         else:
             raise HIRError(f"Unknown statement type: {type(stmt).__name__}")
 
-    def _build_let(self, let: ast.LetStmt) -> hir.HIRLetStmt:
+    def _build_let(self, let: ast.LetStmt) -> Union[hir.HIRLetStmt, hir.HIRTupleLetStmt]:
         """Build HIR let statement from AST."""
         # Build initializer
         initializer = self._build_expression(let.initializer)
+
+        # Handle tuple destructuring pattern
+        if let.pattern:
+            return self._build_tuple_let(let, initializer)
 
         # Resolve type (may be inferred)
         var_type = None
@@ -584,6 +588,33 @@ class HIRBuilder:
             initializer=initializer,
             binding=binding,
             symbol=local_symbol
+        )
+
+    def _build_tuple_let(self, let: ast.LetStmt, initializer: hir.HIRExpression) -> hir.HIRTupleLetStmt:
+        """Build HIR tuple let statement for destructuring patterns."""
+        names = let.pattern.names
+        symbols = []
+
+        # Create a symbol for each binding
+        # Types will be inferred during type checking from the initializer's tuple type
+        for name in names:
+            local_symbol = Symbol(
+                name=name,
+                kind=SymbolKind.LOCAL_VAR,
+                definition=let,
+                scope_id=self.symbol_table.current_scope_id,
+                var_type=None,  # Will be inferred
+                is_mutable=let.is_mut
+            )
+            self.symbol_table.declare(name, local_symbol)
+            symbols.append(local_symbol)
+
+        return hir.HIRTupleLetStmt(
+            names=names,
+            is_mutable=let.is_mut,
+            var_types=[],  # Will be filled during type checking
+            initializer=initializer,
+            symbols=symbols
         )
 
     def _build_if(self, if_stmt: ast.IfStmt) -> hir.HIRIfStmt:
@@ -807,6 +838,12 @@ class HIRBuilder:
 
             # Create assignment: target = (target op value)
             return hir.HIRAssignment(target=target, value=binary_op)
+
+        elif isinstance(expr, ast.MultiAssignment):
+            # Multiple assignment: lo, hi = func()
+            targets = [self._build_expression(t) for t in expr.targets]
+            value = self._build_expression(expr.value)
+            return hir.HIRMultiAssignment(targets=targets, value=value)
 
         elif isinstance(expr, ast.MatchExpression):
             # Build match expression

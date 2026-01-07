@@ -557,6 +557,19 @@ class ASTBuilder(Transformer):
         statements = [item for item in items if not isinstance(item, LarkToken)]
         return ast.Block(statements=statements)
 
+    def single_pattern(self, items):
+        """Single binding pattern: IDENT or IDENT @ binding"""
+        items = self._filter_tokens(items)
+        name = items[0].value
+        binding = items[1] if len(items) > 1 else None
+        return ('single', name, binding)
+
+    def tuple_pattern(self, items):
+        """Tuple pattern: (a, b, c)"""
+        items = self._filter_tokens(items)
+        names = [item.value for item in items if isinstance(item, LarkToken) and item.type == 'IDENT']
+        return ('tuple', names)
+
     def let_stmt(self, items):
         """Let statement."""
         items = self._filter_tokens(items)
@@ -569,16 +582,25 @@ class ASTBuilder(Transformer):
             is_mut = True
             idx += 1
 
-        name = items[idx].value
+        # Get pattern (single or tuple)
+        pattern_item = items[idx]
         idx += 1
 
-        # Check for binding (register or identifier)
+        name = None
         binding = None
-        if idx < len(items) and isinstance(items[idx], (ast.Register, ast.Identifier)):
-            binding = items[idx]
-            idx += 1
+        tuple_pattern = None
 
-        # Type annotation (optional) - comes after binding
+        if isinstance(pattern_item, tuple):
+            if pattern_item[0] == 'single':
+                name = pattern_item[1]
+                binding = pattern_item[2]
+            elif pattern_item[0] == 'tuple':
+                tuple_pattern = ast.TuplePattern(names=pattern_item[1])
+        else:
+            # Fallback for direct token (shouldn't happen with new grammar)
+            name = pattern_item.value
+
+        # Type annotation (optional) - comes after pattern
         var_type = None
         if idx < len(items) and isinstance(items[idx], ast.Type):
             var_type = items[idx]
@@ -592,7 +614,8 @@ class ASTBuilder(Transformer):
             name=name,
             binding=binding,
             var_type=var_type,
-            initializer=initializer
+            initializer=initializer,
+            pattern=tuple_pattern
         )
 
     def expr_stmt(self, items):

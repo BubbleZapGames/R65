@@ -8,7 +8,7 @@ from typing import Optional, Dict, Any, List, Union
 from r65.compiler.hir import (
     HIRProgram, HIRDeclaration, HIRFunctionDecl, HIRStaticDecl, HIRConstDecl,
     HIRStructDecl, HIREnumDecl,
-    HIRStatement, HIRBlock, HIRLetStmt, HIRExprStmt, HIRReturnStmt,
+    HIRStatement, HIRBlock, HIRLetStmt, HIRTupleLetStmt, HIRExprStmt, HIRReturnStmt,
     HIRIfStmt, HIRWhileStmt, HIRBreakStmt, HIRContinueStmt, HIRAsmStmt,
     HIRExpression, HIRIntegerLiteral, HIRBooleanLiteral, HIREnumVariantExpr, HIRIdentifier,
     HIRFunctionAddress, HIRRegister, HIRBinaryOp, HIRUnaryOp, HIRTypeCast, HIRAssignment,
@@ -400,6 +400,8 @@ class MIRBuilder:
         """
         if isinstance(stmt, HIRLetStmt):
             self.lower_let_statement(stmt)
+        elif isinstance(stmt, HIRTupleLetStmt):
+            self.lower_tuple_let_statement(stmt)
         elif isinstance(stmt, HIRExprStmt):
             self.lower_expression(stmt.expr)
         elif isinstance(stmt, HIRReturnStmt):
@@ -468,6 +470,44 @@ class MIRBuilder:
                         vreg = self.current_function.vreg_allocator.alloc(stmt.var_type, stmt.name)
                         self.symbol_to_vreg[id(stmt.symbol)] = vreg
                         self.emit(Move(dest=vreg, source=init_value, type_info=stmt.var_type))
+
+    def lower_tuple_let_statement(self, stmt: HIRTupleLetStmt):
+        """
+        Lower tuple destructuring let binding.
+
+        Example: let (a, b) = func_returning_tuple();
+
+        Return values are in A, X, Y registers (in order).
+        We capture the values we need and ignore the rest.
+        """
+        # Evaluate the initializer (typically a function call)
+        # This returns the first value; other values are in registers
+        init_value = self.lower_expression(stmt.initializer)
+
+        # Return registers in order: A, X, Y
+        return_registers = ['A', 'X', 'Y']
+
+        # Capture each binding from the corresponding return register
+        for i, (name, symbol, var_type) in enumerate(zip(stmt.names, stmt.symbols, stmt.var_types)):
+            if i >= len(return_registers):
+                # Can't capture more than 3 return values
+                break
+
+            reg_name = return_registers[i]
+            hw_reg = HardwareRegister(reg_name)
+
+            # Allocate virtual register for this binding
+            vreg = self.current_function.vreg_allocator.alloc(var_type, name)
+            self.symbol_to_vreg[id(symbol)] = vreg
+
+            # Move from hardware register to virtual register
+            # For the first value (A), we can use the init_value directly if it's already A
+            if i == 0 and isinstance(init_value, HardwareRegister) and init_value.name == 'A':
+                # Already have it in the right place
+                self.emit(Move(dest=vreg, source=init_value, type_info=var_type))
+            else:
+                # Read from the return register
+                self.emit(Move(dest=vreg, source=hw_reg, type_info=var_type))
 
     def lower_return_statement(self, stmt: HIRReturnStmt):
         """

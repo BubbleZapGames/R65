@@ -253,7 +253,15 @@ class MoveOperationSelector(BaseSelector):
         store_mnemonics = {'A': 'STA', 'X': 'STX', 'Y': 'STY'}
 
         if src_reg in store_mnemonics:
-            self._emit_load_store(store_mnemonics[src_reg], dest_loc)
+            # STX and STY don't support stack-relative addressing
+            # Transfer to A first, then store
+            if src_reg in ('X', 'Y') and dest_loc.kind == LocationKind.STACK:
+                transfer_op = Opcode.TXA if src_reg == 'X' else Opcode.TYA
+                self._emit_instr(transfer_op, comment=f"Transfer to A (no {store_mnemonics[src_reg]} sr,S)")
+                self._emit_load_store('STA', dest_loc)
+                self.parent._mark_a_modified()
+            else:
+                self._emit_load_store(store_mnemonics[src_reg], dest_loc)
         else:
             raise InstructionSelectionError(
                 f"Cannot move {'16-bit ' if is_u16 else ''}value from register {src_reg} to memory")

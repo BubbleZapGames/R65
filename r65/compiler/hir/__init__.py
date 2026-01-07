@@ -34,6 +34,7 @@ from r65.compiler.hir.nodes import (
     # Statements
     HIRBlock,
     HIRLetStmt,
+    HIRTupleLetStmt,
     HIRExprStmt,
     HIRReturnStmt,
     HIRBreakStmt,
@@ -118,6 +119,7 @@ __all__ = [
     # Statements
     'HIRBlock',
     'HIRLetStmt',
+    'HIRTupleLetStmt',
     'HIRExprStmt',
     'HIRReturnStmt',
     'HIRBreakStmt',

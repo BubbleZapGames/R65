@@ -278,13 +278,25 @@ class Block(Statement):
 
 
 @dataclass
+class TuplePattern:
+    """Tuple pattern for destructuring: (a, b, c)"""
+    names: List[str]
+
+
+@dataclass
 class LetStmt(Statement):
-    """Let binding statement."""
+    """Let binding statement.
+
+    Supports both single binding and tuple destructuring:
+      let x = expr;           # name="x", pattern=None
+      let (a, b) = expr;      # name=None, pattern=TuplePattern(["a", "b"])
+    """
     is_mut: bool
-    name: str
+    name: Optional[str]  # Single binding name (None for tuple patterns)
     binding: Optional[Union[str, 'Register']]  # Register or variable for aliasing
     var_type: Optional[Type]
     initializer: Expression
+    pattern: Optional[TuplePattern] = None  # Tuple pattern for destructuring
 
 
 @dataclass

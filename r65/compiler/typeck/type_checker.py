@@ -13,10 +13,10 @@ from r65.compiler.hir import (
     HIRStructFieldInit, HIRStructLiteralExpr,
     HIRTypeCast, HIRFunctionCall,
     HIRMethodCall, HIRArrayIndex, HIRFieldAccess, HIRDereference, HIRAddressOf, HIRAssignment,
-    HIRLetStmt, HIRExprStmt, HIRReturnStmt, HIRIfStmt, HIRWhileStmt,
+    HIRLetStmt, HIRTupleLetStmt, HIRExprStmt, HIRReturnStmt, HIRIfStmt, HIRWhileStmt,
     HIRStaticDecl, HIRConstDecl,
     HIRMatchExpression, HIRPattern, HIRLiteralPattern, HIREnumPattern, HIRWildcardPattern, HIRIdentifierPattern, HIROrPattern,
-    BasicTypeInfo, TypeInfo, SymbolKind, NeverTypeInfo,
+    BasicTypeInfo, TypeInfo, SymbolKind, NeverTypeInfo, TupleTypeInfo,
     RegisterLetBinding, ArrayTypeInfo, StructTypeInfo, EnumTypeInfo,
     ModeTransition
 )
@@ -311,6 +311,9 @@ class TypeChecker:
         if isinstance(stmt, HIRLetStmt):
             self.check_let_statement(stmt)
 
+        elif isinstance(stmt, HIRTupleLetStmt):
+            self.check_tuple_let_statement(stmt)
+
         elif isinstance(stmt, HIRExprStmt):
             self.check_expression(stmt.expr)
 
@@ -381,6 +384,44 @@ class TypeChecker:
                     context="let binding",
                     source_loc=stmt.source_loc
                 )
+
+    def check_tuple_let_statement(self, stmt: HIRTupleLetStmt):
+        """Type check tuple destructuring let binding.
+
+        Example: let (a, b) = func_returning_tuple();
+
+        Supports partial capture - binding fewer names than the tuple size.
+        Extra return values are discarded.
+        """
+        # Check initializer type - must be a tuple
+        init_type = self.check_expression(stmt.initializer)
+
+        if not isinstance(init_type, TupleTypeInfo):
+            raise TypeCheckError(
+                f"Tuple destructuring requires a tuple type, got {init_type}",
+                source_loc=stmt.source_loc
+            )
+
+        # Check we're not capturing more values than available
+        if len(stmt.names) > len(init_type.element_types):
+            raise TypeCheckError(
+                f"Cannot destructure {len(init_type.element_types)}-element tuple "
+                f"into {len(stmt.names)} bindings",
+                source_loc=stmt.source_loc
+            )
+
+        # Infer types for each binding from tuple element types
+        var_types = []
+        for i, name in enumerate(stmt.names):
+            elem_type = init_type.element_types[i]
+            var_types.append(elem_type)
+
+            # Update symbol with inferred type
+            if i < len(stmt.symbols):
+                stmt.symbols[i].var_type = elem_type
+
+        # Store inferred types in statement
+        stmt.var_types = var_types
 
     def check_expression(self, expr: HIRExpression, context_type: Optional[TypeInfo] = None) -> TypeInfo:
         """
