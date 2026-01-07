@@ -14,12 +14,13 @@ from r65.compiler.hir import (
     HIRTypeCast, HIRFunctionCall,
     HIRMethodCall, HIRArrayIndex, HIRFieldAccess, HIRDereference, HIRAddressOf, HIRAssignment,
     HIRLetStmt, HIRTupleLetStmt, HIRExprStmt, HIRReturnStmt, HIRIfStmt, HIRWhileStmt,
-    HIRStaticDecl, HIRConstDecl,
+    HIRStaticDecl, HIRConstDecl, HIRTypeAlias,
     HIRMatchExpression, HIRPattern, HIRLiteralPattern, HIREnumPattern, HIRWildcardPattern, HIRIdentifierPattern, HIROrPattern,
     BasicTypeInfo, TypeInfo, SymbolKind, NeverTypeInfo, TupleTypeInfo,
     RegisterLetBinding, ArrayTypeInfo, StructTypeInfo, EnumTypeInfo,
     ModeTransition
 )
+from r65.compiler.hir.types import FunctionTypeInfo
 from r65.compiler.typeck.processor_mode import ProcessorMode
 from r65.compiler.typeck.mode_tracker import ModeTracker
 from r65.compiler.typeck.cfg_builder import CFGBuilder
@@ -217,11 +218,60 @@ class TypeChecker:
     # Main Type Checking
     # ========================================================================
 
+    def _validate_function_type_no_aggregates(self, func_type: FunctionTypeInfo, context: str, source_loc=None):
+        """
+        Validate that a function type doesn't use aggregate types (arrays/structs) for parameters or return.
+
+        Function pointer types cannot have aggregate parameters or return types since the underlying
+        functions cannot pass/return aggregates by value.
+
+        Args:
+            func_type: FunctionTypeInfo to validate
+            context: Context string for error message (e.g., "type alias 'Callback'")
+            source_loc: Source location for error reporting
+        """
+        for i, param_type in enumerate(func_type.param_types):
+            if TypeUtils.is_aggregate_type(param_type):
+                type_name = str(param_type)
+                raise TypeCheckError(
+                    f"Function type in {context} has parameter {i + 1} with type '{type_name}'\n"
+                    f"  Arrays and structs cannot be passed by value in function types\n"
+                    f"  Suggestion: Use a pointer type instead: near<{type_name}>",
+                    source_loc=source_loc
+                )
+
+        if func_type.return_type and TypeUtils.is_aggregate_type(func_type.return_type):
+            type_name = str(func_type.return_type)
+            raise TypeCheckError(
+                f"Function type in {context} returns '{type_name}'\n"
+                f"  Arrays and structs cannot be returned by value in function types\n"
+                f"  Suggestion: Use a pointer type instead: near<{type_name}>",
+                source_loc=source_loc
+            )
+
     def check(self):
         """Perform type checking on entire program."""
-        # Type check static initializers
+        # Validate type aliases with function types
+        for decl in self.program.declarations:
+            if isinstance(decl, HIRTypeAlias):
+                if isinstance(decl.aliased_type, FunctionTypeInfo):
+                    self._validate_function_type_no_aggregates(
+                        decl.aliased_type,
+                        f"type alias '{decl.name}'",
+                        decl.source_loc
+                    )
+
+        # Type check static initializers and validate function pointer types
         for decl in self.program.declarations:
             if isinstance(decl, HIRStaticDecl):
+                # Validate function pointer type variables don't have aggregate params/returns
+                if isinstance(decl.var_type, FunctionTypeInfo):
+                    self._validate_function_type_no_aggregates(
+                        decl.var_type,
+                        f"static variable '{decl.name}'",
+                        decl.source_loc
+                    )
+
                 if decl.initializer:
                     init_type = self.check_expression(decl.initializer, decl.var_type)
                     if not TypeUtils.types_equal(decl.var_type, init_type):
@@ -253,6 +303,36 @@ class TypeChecker:
     def check_function(self, func: HIRFunctionDecl):
         """Type check a single function."""
         self.current_function = func
+
+        # Validate that parameters are not aggregate types (arrays/structs cannot be passed by value)
+        for param in func.parameters:
+            if TypeUtils.is_aggregate_type(param.param_type):
+                type_name = str(param.param_type)
+                if isinstance(param.param_type, ArrayTypeInfo):
+                    suggestion = f"near<{type_name}>"
+                else:
+                    suggestion = f"near<{type_name}>"
+                raise TypeCheckError(
+                    f"Parameter '{param.name}' has type '{type_name}' which cannot be passed by value\n"
+                    f"  Arrays and structs must be passed by reference\n"
+                    f"  Suggestion: Use a pointer type instead: {suggestion}",
+                    source_loc=func.source_loc
+                )
+
+        # Validate that return type is not an aggregate type (arrays/structs cannot be returned by value)
+        if func.return_type and TypeUtils.is_aggregate_type(func.return_type):
+            type_name = str(func.return_type)
+            if isinstance(func.return_type, ArrayTypeInfo):
+                suggestion = f"near<{type_name}>"
+            else:
+                suggestion = f"near<{type_name}>"
+            raise TypeCheckError(
+                f"Function '{func.name}' returns '{type_name}' which cannot be returned by value\n"
+                f"  Arrays and structs must be returned by reference\n"
+                f"  Suggestion: Return a pointer type instead: {suggestion}\n"
+                f"  Or write to a pre-allocated output parameter",
+                source_loc=func.source_loc
+            )
 
         # Validate interrupt handler mode transition
         if func.interrupt_attr and func.mode_attr:
@@ -1339,6 +1419,16 @@ class TypeChecker:
         """Type check assignment."""
         target_type = self.check_expression(expr.target)
         value_type = self.check_expression(expr.value, target_type)
+
+        # Arrays and structs cannot be assigned by value
+        if TypeUtils.is_aggregate_type(target_type):
+            type_name = str(target_type)
+            raise TypeCheckError(
+                f"Cannot assign '{type_name}' by value\n"
+                f"  Arrays and structs cannot be copied by value\n"
+                f"  Suggestion: Copy fields individually or use a pointer",
+                source_loc=expr.source_loc
+            )
 
         # Types must be compatible (allows enum/integer interop)
         if not TypeUtils.types_compatible(target_type, value_type):

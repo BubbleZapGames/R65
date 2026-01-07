@@ -674,18 +674,57 @@ help: all return paths must return the same registers/variables in the same orde
 
 ---
 
-## Stack Return (Large Values)
+## Structs and Arrays (Pass by Reference Only)
 
-For values that don't fit in registers or zero-page:
+**Compile Error**: Structs and arrays cannot be passed to functions, returned by value, or directly assigned. This is a deliberate restriction - copying large data structures is expensive on 6502/65816 and the cost should be explicit.
 
 ```rust
-fn get_struct() -> Player {
-    let result: Player = ...;
-    return result;  // Returned via stack or pointer
-}
+// ERROR: Cannot pass struct by value
+fn bad_param(player: Player) { }
+
+// ERROR: Cannot return struct by value
+fn bad_return() -> Player { }
+
+// ERROR: Cannot pass array by value
+fn bad_array(data: [u8; 256]) { }
+
+// ERROR: Cannot assign struct by value
+PLAYER1 = PLAYER2;
+
+// ERROR: Cannot assign array by value
+BUFFER1 = BUFFER2;
 ```
 
-**Mechanism**: Caller allocates space, passes pointer to callee
+**Correct patterns** - use pointers or pre-allocated memory:
+
+```rust
+// Pass struct by pointer
+fn process_player(player: near<Player>) {
+    (*player).health = (*player).health - 1;
+}
+
+// Write result to pre-allocated memory
+fn init_player(dest: near<Player>) {
+    (*dest).x = 0;
+    (*dest).y = 0;
+    (*dest).health = 100;
+}
+
+// Return pointer to static/global data
+fn get_player() -> near<Player> {
+    return &PLAYER;
+}
+
+// Copy struct fields individually
+PLAYER1.x = PLAYER2.x;
+PLAYER1.y = PLAYER2.y;
+PLAYER1.health = PLAYER2.health;
+
+// Copy array elements individually (or use mvn/mvp for bulk copy)
+BUFFER1[0] = BUFFER2[0];
+```
+
+**Rationale**: Explicit pointer usage makes memory operations visible. The programmer can choose between zero-page pointers (fast) or RAM pointers (more available), and the cost of indirection is clear in the code.
 
 ---
 

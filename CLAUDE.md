@@ -103,6 +103,8 @@ fn process() {
 - Out-of-bounds access is undefined behavior
 - Matches hardware-level programming expectations
 
+**Pass-by-reference only**: Arrays cannot be passed to functions or returned by value. Use `near<[T; N]>` or `far<[T; N]>` pointers to pass arrays. Attempting to pass or return an array by value is a compile error.
+
 *(See [docs/array-bounds-checking.md](docs/array-bounds-checking.md) for design rationale)*
 
 ### String Literals for Byte Arrays
@@ -292,6 +294,8 @@ static mut DEFAULT_PLAYER: Player = Player { x: 0, y: 0, health: 100 };
 ```
 
 **Rules**: All structs packed (no padding); fields in declaration order; size = sum of field sizes; use `.` for field access; nested/array access supported; no methods (use free functions). Struct literals are allowed in `let` and `static` initializers.
+
+**Pass-by-reference only**: Structs cannot be passed to functions or returned by value. Use `near<T>` or `far<T>` pointers to pass structs. Attempting to pass or return a struct by value is a compile error. Direct assignment between structs (`s1 = s2`) is also prohibited; copy fields individually instead.
 
 ### Volatile Semantics
 
@@ -498,7 +502,7 @@ fn process(temp @ TEMP: u8) -> u8 { }              // Zero-page parameter
 fn calculate(a: u8, b: u8) -> u8 { }               // Stack parameters
 ```
 
-**Key Rules**: Stack parameters must come first; zero-cost calls when arguments match parameter aliases.
+**Key Rules**: Stack parameters must come first; zero-cost calls when arguments match parameter aliases; **arrays and structs cannot be passed by value** (use pointers instead, compile error otherwise).
 
 *(See [docs/calling-convention.md](docs/calling-convention.md) for ABI details, stack layout, and calling conventions)*
 
@@ -593,7 +597,7 @@ fn calculate() -> u8 {
 }
 ```
 
-**Return conventions:** No `return` = A implicitly returned; `return X/Y` = specific register; `return (A, X)` = multiple registers; `return variable` = stack return
+**Return conventions:** No `return` = A implicitly returned; `return X/Y` = specific register; `return (A, X)` = multiple registers; `return variable` = stack return; **arrays and structs cannot be returned by value** (use pointers or write to pre-allocated memory)
 
 ### Built-in Functions for Special Instructions
 
@@ -668,8 +672,8 @@ R65 uses **hardware-aware operators**: syntax indicates performance cost.
 ## What's Included (Minimal Feature Set)
 
 - ✅ Basic types: `u8, i8, u16, i16, bool`
-- ✅ Fixed-size arrays: `[T; N]`
-- ✅ Structs (no methods initially)
+- ✅ Fixed-size arrays: `[T; N]` (pass by reference only)
+- ✅ Structs (no methods; pass by reference only)
 - ✅ C-style enums: Explicit or auto-increment values; no data-carrying variants
 - ✅ Functions with parameters and return types
 - ✅ Register aliasing: `let name @ A = expr` for named register access

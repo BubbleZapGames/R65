@@ -102,6 +102,11 @@ class TypeUtils:
         return isinstance(t, BasicTypeInfo) and t.name in ['i8', 'i16']
 
     @staticmethod
+    def is_aggregate_type(t: TypeInfo) -> bool:
+        """Check if type is an aggregate (array or struct) that cannot be passed by value."""
+        return isinstance(t, (ArrayTypeInfo, StructTypeInfo))
+
+    @staticmethod
     def can_cast(from_type: TypeInfo, to_type: TypeInfo) -> bool:
         """
         Check if explicit cast is valid.
