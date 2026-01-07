@@ -46,19 +46,21 @@ include!("math/shift.r65")
 // =============================================================================
 
 // __builtin_mul: Called by compiler for mul(a, b)
-#[mode(m8, x8)]
+#[mode(m8)]
 fn __builtin_mul(a @ A: u8, b @ X: u8) -> u8 {
     if USE_HARDWARE_MATH != 0 {
         // Hardware returns u16, truncate to u8
-        let wide: u16 = mul_hw(A, X);
+        let wide: u16 = mul_hw_u16(A, X);
         A = wide as u8;
         return A;
     }
-    return mul_shift(A, X);
+    // Software returns (lo, hi) in (A, X), just use lo (A)
+    mul_shift_u8(A, X);
+    return A;
 }
 
 // __builtin_div: Called by compiler for div(a, b)
-#[mode(m8, x8)]
+#[mode(m8)]
 fn __builtin_div(a @ A: u8, b @ X: u8) -> u8 {
     if USE_HARDWARE_MATH != 0 {
         return div_hw_8(A, X);
@@ -67,7 +69,7 @@ fn __builtin_div(a @ A: u8, b @ X: u8) -> u8 {
 }
 
 // __builtin_mod: Called by compiler for mod(a, b)
-#[mode(m8, x8)]
+#[mode(m8)]
 fn __builtin_mod(a @ A: u8, b @ X: u8) -> u8 {
     if USE_HARDWARE_MATH != 0 {
         return mod_hw(A, X);
@@ -76,13 +78,13 @@ fn __builtin_mod(a @ A: u8, b @ X: u8) -> u8 {
 }
 
 // __builtin_shl: Called by compiler for shl(a, b)
-#[mode(m8, x8)]
+#[mode(m8)]
 fn __builtin_shl(value @ A: u8, amount @ X: u8) -> u8 {
     return shl_loop(A, X);
 }
 
 // __builtin_shr: Called by compiler for shr(a, b)
-#[mode(m8, x8)]
+#[mode(m8)]
 fn __builtin_shr(value @ A: u8, amount @ X: u8) -> u8 {
     return shr_loop(A, X);
 }

@@ -104,6 +104,31 @@ class TypeChecker:
             return self.mode_tracker.get_mode_at_statement(stmt_or_expr)
         return self.current_mode
 
+    def _get_register_type_from_parameter(self, register_name: str) -> Optional[TypeInfo]:
+        """
+        Check if a register is bound to a parameter with an explicit type.
+
+        This allows functions to use registers like X/Y without requiring
+        mode annotations when the parameter explicitly declares the type.
+
+        Args:
+            register_name: Name of the register ("A", "X", "Y", etc.)
+
+        Returns:
+            TypeInfo if register is bound to a parameter, None otherwise
+        """
+        if not self.current_function:
+            return None
+
+        from r65.compiler.hir.nodes import RegisterBinding
+
+        for param in self.current_function.parameters:
+            if isinstance(param.binding, RegisterBinding):
+                if param.binding.register_name == register_name:
+                    return param.param_type
+
+        return None
+
     def _require_boolean_type(self, expr_type: TypeInfo, context: str, source_loc=None):
         """
         Validate that a type is boolean, raise error if not.
@@ -418,13 +443,19 @@ class TypeChecker:
             return expr.expr_type
 
         elif isinstance(expr, HIRRegister):
-            # Get register type from current mode
-            mode = self._get_mode_at(expr)
-            reg_type = mode.get_register_type(expr.name)
+            # First check if this register is bound to a parameter with explicit type
+            reg_type = self._get_register_type_from_parameter(expr.name)
+
+            if reg_type is None:
+                # Fall back to inferring from mode
+                mode = self._get_mode_at(expr)
+                reg_type = mode.get_register_type(expr.name)
+
             if reg_type is None:
                 # Special error message for B register in wrong mode
                 if expr.name == 'B':
                     from r65.compiler.typeck.processor_mode import ModeState
+                    mode = self._get_mode_at(expr)
                     if mode.m_mode == ModeState.M16:
                         raise TypeCheckError(
                             f"B register only available in m8 mode\n"

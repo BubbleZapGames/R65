@@ -3,7 +3,7 @@
 
 // Variable left shift: value << amount
 // Cycles: ~10 + 4*amount
-#[mode(m8, x8)]
+#[mode(m8)]
 fn shl_loop(value @ A: u8, amount @ X: u8) -> u8 {
     // Handle zero shift
     if X == 0 {
@@ -30,7 +30,7 @@ fn shl_loop(value @ A: u8, amount @ X: u8) -> u8 {
 
 // Variable right shift (logical): value >> amount
 // Cycles: ~10 + 4*amount
-#[mode(m8, x8)]
+#[mode(m8)]
 fn shr_loop(value @ A: u8, amount @ X: u8) -> u8 {
     // Handle zero shift
     if X == 0 {
@@ -58,7 +58,7 @@ fn shr_loop(value @ A: u8, amount @ X: u8) -> u8 {
 // Variable arithmetic right shift (preserves sign): value >>> amount
 // For signed values - shifts in sign bit instead of zero
 // Cycles: ~10 + 6*amount
-#[mode(m8, x8)]
+#[mode(m8)]
 fn shr_arith_loop(value @ A: u8, amount @ X: u8) -> u8 {
     if X == 0 {
         return A;
@@ -97,7 +97,7 @@ fn shr_arith_loop(value @ A: u8, amount @ X: u8) -> u8 {
 
 // 16-bit variable left shift
 // Cycles: ~15 + 6*amount
-#[mode(m16, x8)]
+#[mode(m16)]
 fn shl16_loop(value @ A: u16, amount @ X: u8) -> u16 {
     if X == 0 {
         return A;
@@ -121,7 +121,7 @@ fn shl16_loop(value @ A: u16, amount @ X: u8) -> u16 {
 
 // 16-bit variable right shift (logical)
 // Cycles: ~15 + 6*amount
-#[mode(m16, x8)]
+#[mode(m16)]
 fn shr16_loop(value @ A: u16, amount @ X: u8) -> u16 {
     if X == 0 {
         return A;
