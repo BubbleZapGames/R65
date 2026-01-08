@@ -166,6 +166,67 @@ class TypeChecker:
                 source_loc=source_loc
             )
 
+    def _check_no_aggregate_type(self, type_info: TypeInfo, context: str, source_loc=None,
+                                   suggestion_suffix: str = "", verb: str = "used"):
+        """
+        Validate that a type is not an aggregate type (array or struct).
+
+        Arrays and structs cannot be passed by value, returned by value, or assigned by value.
+        This helper provides consistent error messages with appropriate suggestions.
+
+        Args:
+            type_info: Type to check
+            context: Description of where the type appears (e.g., "Parameter 'x'", "Return type")
+            source_loc: Source location for error reporting
+            suggestion_suffix: Additional text to append to suggestion (e.g., "\\n  Or write to a pre-allocated output parameter")
+            verb: The verb to use in the error message ("passed", "returned", or "used")
+
+        Raises:
+            TypeCheckError: If type is an aggregate type
+        """
+        if TypeUtils.is_aggregate_type(type_info):
+            type_name = str(type_info)
+            suggestion = f"near<{type_name}>"
+            raise TypeCheckError(
+                f"{context} has type '{type_name}' which cannot be {verb} by value\n"
+                f"  Arrays and structs must be passed by reference\n"
+                f"  Suggestion: Use a pointer type instead: {suggestion}{suggestion_suffix}",
+                source_loc=source_loc
+            )
+
+    def _check_type_match(self, expected_type: TypeInfo, actual_type: TypeInfo,
+                          expr: HIRExpression, context: str, source_loc=None,
+                          use_compatible: bool = False):
+        """
+        Check that actual_type matches expected_type, raising an error if not.
+
+        This helper consolidates type mismatch checking with consistent error messages.
+
+        Args:
+            expected_type: The expected type
+            actual_type: The actual type found
+            expr: The expression being checked (for enhanced error messages)
+            context: Description of the context (e.g., "let binding", "assignment")
+            source_loc: Source location for error reporting
+            use_compatible: If True, use types_compatible() instead of types_equal()
+
+        Raises:
+            TypeCheckError: If types don't match
+        """
+        if use_compatible:
+            types_match = TypeUtils.types_compatible(expected_type, actual_type)
+        else:
+            types_match = TypeUtils.types_equal(expected_type, actual_type)
+
+        if not types_match:
+            self._raise_type_mismatch_error(
+                expected_type=expected_type,
+                actual_type=actual_type,
+                expr=expr,
+                context=context,
+                source_loc=source_loc
+            )
+
     def _raise_type_mismatch_error(self, expected_type: TypeInfo, actual_type: TypeInfo,
                                     expr: HIRExpression, context: str, source_loc=None):
         """
@@ -231,22 +292,19 @@ class TypeChecker:
             source_loc: Source location for error reporting
         """
         for i, param_type in enumerate(func_type.param_types):
-            if TypeUtils.is_aggregate_type(param_type):
-                type_name = str(param_type)
-                raise TypeCheckError(
-                    f"Function type in {context} has parameter {i + 1} with type '{type_name}'\n"
-                    f"  Arrays and structs cannot be passed by value in function types\n"
-                    f"  Suggestion: Use a pointer type instead: near<{type_name}>",
-                    source_loc=source_loc
-                )
+            self._check_no_aggregate_type(
+                param_type,
+                f"Function type in {context}, parameter {i + 1}",
+                source_loc,
+                verb="passed"
+            )
 
-        if func_type.return_type and TypeUtils.is_aggregate_type(func_type.return_type):
-            type_name = str(func_type.return_type)
-            raise TypeCheckError(
-                f"Function type in {context} returns '{type_name}'\n"
-                f"  Arrays and structs cannot be returned by value in function types\n"
-                f"  Suggestion: Use a pointer type instead: near<{type_name}>",
-                source_loc=source_loc
+        if func_type.return_type:
+            self._check_no_aggregate_type(
+                func_type.return_type,
+                f"Function type in {context}, return type",
+                source_loc,
+                verb="returned"
             )
 
     def check(self):
@@ -274,26 +332,18 @@ class TypeChecker:
 
                 if decl.initializer:
                     init_type = self.check_expression(decl.initializer, decl.var_type)
-                    if not TypeUtils.types_equal(decl.var_type, init_type):
-                        self._raise_type_mismatch_error(
-                            expected_type=decl.var_type,
-                            actual_type=init_type,
-                            expr=decl.initializer,
-                            context="static variable initializer",
-                            source_loc=decl.source_loc
-                        )
+                    self._check_type_match(
+                        decl.var_type, init_type, decl.initializer,
+                        "static variable initializer", decl.source_loc
+                    )
 
             elif isinstance(decl, HIRConstDecl):
                 if decl.value:
                     value_type = self.check_expression(decl.value, decl.const_type)
-                    if not TypeUtils.types_equal(decl.const_type, value_type):
-                        self._raise_type_mismatch_error(
-                            expected_type=decl.const_type,
-                            actual_type=value_type,
-                            expr=decl.value,
-                            context="const declaration",
-                            source_loc=decl.source_loc
-                        )
+                    self._check_type_match(
+                        decl.const_type, value_type, decl.value,
+                        "const declaration", decl.source_loc
+                    )
 
         # Type check all functions
         for decl in self.program.declarations:
@@ -306,32 +356,21 @@ class TypeChecker:
 
         # Validate that parameters are not aggregate types (arrays/structs cannot be passed by value)
         for param in func.parameters:
-            if TypeUtils.is_aggregate_type(param.param_type):
-                type_name = str(param.param_type)
-                if isinstance(param.param_type, ArrayTypeInfo):
-                    suggestion = f"near<{type_name}>"
-                else:
-                    suggestion = f"near<{type_name}>"
-                raise TypeCheckError(
-                    f"Parameter '{param.name}' has type '{type_name}' which cannot be passed by value\n"
-                    f"  Arrays and structs must be passed by reference\n"
-                    f"  Suggestion: Use a pointer type instead: {suggestion}",
-                    source_loc=func.source_loc
-                )
+            self._check_no_aggregate_type(
+                param.param_type,
+                f"Parameter '{param.name}'",
+                func.source_loc,
+                verb="passed"
+            )
 
         # Validate that return type is not an aggregate type (arrays/structs cannot be returned by value)
-        if func.return_type and TypeUtils.is_aggregate_type(func.return_type):
-            type_name = str(func.return_type)
-            if isinstance(func.return_type, ArrayTypeInfo):
-                suggestion = f"near<{type_name}>"
-            else:
-                suggestion = f"near<{type_name}>"
-            raise TypeCheckError(
-                f"Function '{func.name}' returns '{type_name}' which cannot be returned by value\n"
-                f"  Arrays and structs must be returned by reference\n"
-                f"  Suggestion: Return a pointer type instead: {suggestion}\n"
-                f"  Or write to a pre-allocated output parameter",
-                source_loc=func.source_loc
+        if func.return_type:
+            self._check_no_aggregate_type(
+                func.return_type,
+                f"Function '{func.name}' return type",
+                func.source_loc,
+                suggestion_suffix="\n  Or write to a pre-allocated output parameter",
+                verb="returned"
             )
 
         # Validate interrupt handler mode transition
@@ -375,7 +414,7 @@ class TypeChecker:
 
         # Phase 4: Check register preservation
         if func.preserves_attr:
-            preservation_checker = PreservationChecker(func, cfg)
+            preservation_checker = PreservationChecker(func)
             preservation_checker.check()
 
         self.current_function = None
@@ -455,15 +494,10 @@ class TypeChecker:
         # Check initializer type matches
         if stmt.initializer:
             init_type = self.check_expression(stmt.initializer, var_type)
-
-            if not TypeUtils.types_equal(var_type, init_type):
-                self._raise_type_mismatch_error(
-                    expected_type=var_type,
-                    actual_type=init_type,
-                    expr=stmt.initializer,
-                    context="let binding",
-                    source_loc=stmt.source_loc
-                )
+            self._check_type_match(
+                var_type, init_type, stmt.initializer,
+                "let binding", stmt.source_loc
+            )
 
     def check_tuple_let_statement(self, stmt: HIRTupleLetStmt):
         """Type check tuple destructuring let binding.
@@ -816,8 +850,6 @@ class TypeChecker:
         - Return type
         - Mode compatibility between caller and callee (for direct calls)
         """
-        from r65.compiler.builtins import BuiltinRegistry
-
         # Check if this is a built-in function call
         if expr.builtin_name:
             return self._check_builtin_call(expr)
@@ -1003,7 +1035,7 @@ class TypeChecker:
             )
 
         count_arg = expr.args[0]
-        count_type = self.check_expression(count_arg)
+        self.check_expression(count_arg)  # Type check the argument
 
         # Validate count is an integer literal (compile-time constant)
         if not isinstance(count_arg, HIRIntegerLiteral):
@@ -1439,6 +1471,7 @@ class TypeChecker:
         value_type = self.check_expression(expr.value, target_type)
 
         # Arrays and structs cannot be assigned by value
+        # Note: Using specific message here since assignment has unique suggestion
         if TypeUtils.is_aggregate_type(target_type):
             type_name = str(target_type)
             raise TypeCheckError(
@@ -1449,14 +1482,10 @@ class TypeChecker:
             )
 
         # Types must be compatible (allows enum/integer interop)
-        if not TypeUtils.types_compatible(target_type, value_type):
-            self._raise_type_mismatch_error(
-                expected_type=target_type,
-                actual_type=value_type,
-                expr=expr.value,
-                context="assignment",
-                source_loc=expr.source_loc
-            )
+        self._check_type_match(
+            target_type, value_type, expr.value,
+            "assignment", expr.source_loc, use_compatible=True
+        )
 
         expr.expr_type = target_type
         return target_type
@@ -1517,15 +1546,10 @@ class TypeChecker:
 
             expected_type = expected_fields[field_init.name]
             actual_type = self.check_expression(field_init.value, expected_type)
-
-            if not TypeUtils.types_compatible(expected_type, actual_type):
-                self._raise_type_mismatch_error(
-                    expected_type=expected_type,
-                    actual_type=actual_type,
-                    expr=field_init.value,
-                    context=f"field '{field_init.name}'",
-                    source_loc=expr.source_loc
-                )
+            self._check_type_match(
+                expected_type, actual_type, field_init.value,
+                f"field '{field_init.name}'", expr.source_loc, use_compatible=True
+            )
 
         # Check for missing fields
         missing_fields = set(expected_fields.keys()) - provided_fields
@@ -1727,7 +1751,7 @@ class TypeChecker:
                     expr.evaluated_size = size
                     expr.expr_type = BasicTypeInfo('u8') if size <= 255 else BasicTypeInfo('u16')
                     return expr.expr_type
-                except:
+                except Exception:
                     raise TypeCheckError(
                         f"Cannot determine size of struct '{type_name}'",
                         source_loc=expr.source_loc
@@ -1754,15 +1778,15 @@ class TypeChecker:
                     source_loc=arg.source_loc
                 )
             
-            # Calculate array size = element_size * length
+            # Calculate array size = element_size * size
             try:
                 from r65.compiler.hir.unified_type_utils import get_unified_type_size
                 element_size = get_unified_type_size(element_type.element_type, self.symbol_table)
-                array_size = element_size * element_type.length
+                array_size = element_size * element_type.size
                 expr.evaluated_size = array_size
                 expr.expr_type = BasicTypeInfo('u8') if array_size <= 255 else BasicTypeInfo('u16')
                 return expr.expr_type
-            except:
+            except Exception:
                 raise TypeCheckError(
                     f"Cannot determine size of array type",
                     source_loc=arg.source_loc

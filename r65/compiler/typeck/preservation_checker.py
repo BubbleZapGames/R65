@@ -7,7 +7,6 @@ The actual register modifications are allowed since the compiler
 generates PHA/PLA, PHX/PLX, PHY/PLY, PHD/PLD, PHB/PLB automatically.
 """
 
-from typing import Set
 from r65.compiler.typeck.errors import *
 from r65.compiler.hir import *
 
@@ -21,9 +20,8 @@ class PreservationChecker:
     # Valid registers for preservation
     VALID_PRESERVES = {'A', 'X', 'Y', 'D', 'DBR', 'STATUS'}
 
-    def __init__(self, func_decl, cfg):
+    def __init__(self, func_decl):
         self.func_decl = func_decl
-        self.cfg = cfg
         self.preserves_attr = func_decl.preserves_attr
 
     def check(self):

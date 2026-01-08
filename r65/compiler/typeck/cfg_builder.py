@@ -1,11 +1,13 @@
 """
 Simplified Control Flow Graph builder for mode tracking.
 
-This is a lightweight CFG focused on tracking modes, not full optimization.
+This is a minimal CFG that creates a single basic block containing all statements.
+A full CFG implementation with proper control flow handling would be needed for
+sophisticated mode tracking through branches and loops.
 """
 
 from dataclasses import dataclass, field
-from typing import List, Dict, Optional
+from typing import List, Dict
 
 
 @dataclass
@@ -13,16 +15,6 @@ class BasicBlock:
     """A basic block in the CFG."""
     block_id: int
     statements: List = field(default_factory=list)
-    successors: List[int] = field(default_factory=list)  # Block IDs
-    predecessors: List[int] = field(default_factory=list)
-
-    # For mode tracking
-    entry_mode: Optional['ProcessorMode'] = None
-    exit_mode: Optional['ProcessorMode'] = None
-
-    # For loop tracking
-    is_loop_header: bool = False
-    is_loop_exit: bool = False
 
 
 @dataclass
@@ -32,10 +24,6 @@ class CFG:
     entry_block_id: int = 0
     exit_block_ids: List[int] = field(default_factory=list)
 
-    # Loop tracking
-    break_targets: Dict[int, int] = field(default_factory=dict)
-    continue_targets: Dict[int, int] = field(default_factory=dict)
-
 
 class CFGBuilder:
     """Builds a CFG from HIR statements."""
@@ -43,16 +31,18 @@ class CFGBuilder:
     def __init__(self):
         self.cfg = CFG()
         self.next_block_id = 0
-        self.loop_stack: List[tuple] = []  # (continue_target, break_target)
 
     def build(self, body) -> CFG:
-        """Build CFG from function body."""
-        # Stub implementation - creates single block for now
+        """
+        Build CFG from function body.
+
+        Current implementation creates a single basic block with all statements.
+        This is sufficient for basic type checking but does not track control flow.
+        """
         entry_id = self._new_block()
         self.cfg.entry_block_id = entry_id
         self.cfg.exit_block_ids = [entry_id]
 
-        # Add all statements to single block
         for stmt in body.statements:
             self.cfg.blocks[entry_id].statements.append(stmt)
 
