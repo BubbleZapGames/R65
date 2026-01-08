@@ -4,87 +4,533 @@
 //
 // Usage:
 //   include!("stdlib/math.r65")
-//
-// Functions available:
-//   Hardware (SNES-specific, fast):
-//     mul_hw(u8, u8) -> u16      8x8 unsigned multiply, 16-bit result
-//     div_hw_8(u8, u8) -> u8     8/8 unsigned divide
-//     mod_hw(u8, u8) -> u8       8/8 unsigned modulo
-//
-//   Software (portable, slower):
-//     mul_shift(u8, u8) -> u8    8x8 multiply, 8-bit truncated result
-//     mul_shift_wide(u8, u8) -> u16  8x8 multiply, 16-bit result
-//     div_shift(u8, u8) -> u8    8/8 unsigned divide
-//     mod_shift(u8, u8) -> u8    8/8 unsigned modulo
-//
-//   Shifts (loop-based for variable amounts):
-//     shl_loop(u8, u8) -> u8          Left shift
-//     shr_loop(u8, u8) -> u8          Logical right shift
-//     shr_arith_loop(u8, u8) -> u8    Arithmetic right shift (preserves sign)
-//     shl16_loop(u16, u8) -> u16      16-bit left shift
-//     shr16_loop(u16, u8) -> u16      16-bit right shift
-//
-// Configuration:
-//   Set USE_HARDWARE_MATH to 1 for SNES hardware acceleration,
-//   or 0 for portable software-only implementations.
 
-// Configuration: Set to 1 for SNES hardware, 0 for portable software
-const USE_HARDWARE_MATH: u8 = 1;
+// Multiplication functions
+// Provides hardware and software implementations
 
-// Include component files
-include!("math/hw_regs.r65")
-include!("math/multiply.r65")
-include!("math/divide.r65")
-include!("math/shift.r65")
-
-// =============================================================================
-// Builtin dispatch functions
-// These are called by compiler-generated code when using mul(), div(), etc.
-//
-// The const USE_HARDWARE_MATH is evaluated at compile time, so only the
-// selected implementation path is included in the output.
-// =============================================================================
-
-// __builtin_mul: Called by compiler for mul(a, b)
+// Hardware 8x8 -> 8 unsigned multiply (widening)
+#[cfg(snes)]
 #[mode(m8)]
-fn __builtin_mul(a @ A: u8, b @ X: u8) -> u8 {
-    if USE_HARDWARE_MATH != 0 {
-        // Hardware returns u16, truncate to u8
-        let wide: u16 = mul_hw_u16(A, X);
-        A = wide as u8;
-        return A;
+far fn mul_hw_u8(multA @ A: u8, multB @ X: u8) -> (u8, u8) {
+    // Write multiplicand
+    WRMPYA = multA;
+
+    // Write multiplier (starts multiplication)
+    WRMPYB = multB;
+
+    // Wait 8 machine cycles for multiplication to complete
+    // NOP is 2 cycles, so 4 NOPs = 8 cycles
+    NOP(4);
+
+    // Return low byte (caller can read RDMPYH for high byte)
+    return (RDMPYL, RDMPYH);
+}
+
+// Hardware 8x8 -> 16 unsigned multiply
+// Uses SNES $4202-$4203 multiplication unit
+// Result: 16-bit widening product
+#[cfg(snes)]
+#[mode(m16)]
+far fn mul_hw_u16(multA @ A: u8, multB @ X: u8) -> u16 {
+    // Write multiplicand in 8-bit
+	SEP(0x20);
+    WRMPYA = multA;
+
+    // Write multiplier (starts multiplication)
+    WRMPYB = multB;
+
+    // Wait 8 machine cycles for multiplication to complete
+    // REP is 3 cycles, NOP is 2 cycles, so 6 + 2 = 8 cycles
+    REP(0x20);
+    REP(0x20);
+    NOP();
+
+    // Return 16-bit result
+	return RDMPYL;
+}
+
+// Software 8x8 -> 8 unsigned multiply
+// Uses shift-and-add algorithm
+// Returns: low byte and high byte
+// Cycles: ~150-300 depending on operands
+#[mode(m8)]
+far fn mul_shift_u8(multA @ A: u8, multB @ X: u8) -> (u8, u8) {
+    // Store multiplicand for shifting
+    let mut _mul_temp : u8 = multA;
+
+    // Clear 16-bit result
+    let mut _mul_result_lo : u8 = 0;
+    let mut _mul_result_hi : u8 = 0;
+
+    // Process each bit of multiplier
+    loop {
+        // If multiplier is zero, we're done
+        if multB == 0 {
+            break;
+        }
+
+        // Test lowest bit of multiplier
+        multA = multB;
+        multA = multA & 0x01;
+        if A != 0 {
+            // Add multiplicand to result (with carry to high byte)
+            asm!("CLC");
+            multA = _mul_result_lo;
+            multA = multA + _mul_temp;
+            _mul_result_lo = multA;
+            multA = _mul_result_hi;
+            asm!("ADC #$00");  // Add carry
+            _mul_result_hi = multA;
+        }
+
+        // Shift multiplicand left (double it)
+        multA = _mul_temp;
+        multA = A << 1;
+        _mul_temp = multA;
+
+        // Shift multiplier right (halve it)
+        multA = multB;
+        multA = A >> 1;
+        multB = multA;
     }
-    // Software returns (lo, hi) in (A, X), just use lo (A)
-    mul_shift_u8(A, X);
+
+    // Return low byte
+    return (_mul_result_lo, _mul_result_hi);
+}
+
+// Software 8x8 -> 16 unsigned multiply (returns as u16)
+// Same algorithm as mul_shift but returns result in 16-bit A register
+// Uses mode switch to return 16-bit value
+// Cycles: ~150-300 depending on operands
+#[mode(m16)]
+far fn mul_shift_u16(multA @ A: u8, multB @ X: u8) -> u16 {
+    // Store multiplicand for shifting
+    let mut _mul_temp : u8 = multA;
+
+    // Clear 16-bit result
+    let mut _mul_result_lo : u8 = 0;
+    let mut _mul_result_hi : u8 = 0;
+
+    // Process each bit of multiplier
+    loop {
+        // If multiplier is zero, we're done
+        if multB == 0 {
+            break;
+        }
+
+        // Test lowest bit of multiplier
+        multA = multB;
+        multA = multA & 0x01;
+        if multA != 0 {
+            // Add multiplicand to result (with carry to high byte)
+            asm!("CLC");
+            multA = _mul_result_lo;
+            multA = multA + _mul_temp;
+            _mul_result_lo = multA;
+            multA = _mul_result_hi;
+            asm!("ADC #$00");  // Add carry
+            _mul_result_hi = A;
+        }
+
+        // Shift multiplicand left (double it)
+        multA = _mul_temp;
+        multA = multA << 1;
+        _mul_temp = multA;
+
+        // Shift multiplier right (halve it)
+        multA = multB;
+        multA = multA >> 1;
+        multB = multA;
+    }
+
+    // Return 16-bit result
     return A;
 }
 
-// __builtin_div: Called by compiler for div(a, b)
-#[mode(m8)]
-fn __builtin_div(a @ A: u8, b @ X: u8) -> u8 {
-    if USE_HARDWARE_MATH != 0 {
-        return div_hw_8(A, X);
+
+// Division and modulo functions
+// Provides hardware and software implementations
+
+// Hardware 16/8 -> 16 unsigned division
+// Uses SNES $4204-$4206 division unit
+// Returns: 16-bit quotient
+// Cycles: ~30 (16 wait + overhead)
+#[cfg(snes)]
+#[mode(m16)]
+far fn div_hw(dividend_lo @ A: u8, dividend_hi: u8, divisor @ X: u8) -> u16 {
+    // Switch to 8-bit for hardware register writes
+    SEP(0x20);
+
+    // Write 16-bit dividend
+    WRDIVL = A;
+    A = dividend_hi;
+    WRDIVH = A;
+
+    // Write divisor (starts division)
+    A = X;
+    WRDIVB = A;
+
+    // Wait 16 machine cycles for division to complete
+    // REP is 3 cycles, so we need 16 - 3 = 13 more cycles
+    // 6 NOPs = 12 cycles, plus the LDA below starts immediately
+    REP(0x20);
+    NOP(6);
+
+    // Read 16-bit quotient directly in m16 mode
+    asm!("LDA RDDIVL");
+    return A;
+}
+
+// Hardware 8/8 -> 8 unsigned division (simplified)
+// Extends dividend to 16-bit with zero high byte
+// Returns: 8-bit quotient
+#[cfg(snes)]
+#[mode(m8,transition=caller)]
+far fn div_hw_8(dividend @ A: u8, divisor @ X: u8) -> u8 {
+    // Write dividend with zero high byte
+    WRDIVL = A;
+    A = 0;
+    WRDIVH = A;
+
+    // Write divisor
+    A = X;
+    WRDIVB = A;
+
+    // Wait 16 cycles
+    NOP(8);
+
+    // Read low byte of quotient only
+    A = RDDIVL;
+    return A;
+}
+
+// Hardware modulo (remainder from division)
+// Must be called after div_hw or div_hw_8
+// Returns: remainder from last division
+#[cfg(snes)]
+#[mode(m8,transition=caller)]
+far fn mod_hw_result() -> u8 {
+    A = RDMPYL;
+    return A;
+}
+
+// Hardware 8/8 -> 8 modulo
+// Performs division and returns remainder
+#[cfg(snes)]
+#[mode(m8,transition=caller)]
+far fn mod_hw(dividend @ A: u8, divisor @ X: u8) -> u8 {
+    // Write dividend with zero high byte
+    WRDIVL = A;
+    A = 0;
+    WRDIVH = A;
+
+    // Write divisor
+    A = X;
+    WRDIVB = A;
+
+    // Wait 16 cycles
+    NOP(8);
+
+    // Read remainder (low byte)
+    A = RDMPYL;
+    return A;
+}
+
+// Software 8/8 -> 8 unsigned division
+// Uses restoring division algorithm
+// Returns: quotient
+// Cycles: ~200-400
+#[mode(m8,transition=caller)]
+far fn div_shift(dividend @ A: u8, divisor @ X: u8) -> u8 {
+    // Handle division by zero - return 0xFF (max value)
+    if X == 0 {
+        A = 0xFF;
+        return A;
     }
-    return div_shift(A, X);
-}
 
-// __builtin_mod: Called by compiler for mod(a, b)
-#[mode(m8)]
-fn __builtin_mod(a @ A: u8, b @ X: u8) -> u8 {
-    if USE_HARDWARE_MATH != 0 {
-        return mod_hw(A, X);
+    let mut _dividend: u8 = A;
+    let mut _divisor: u8 = X;
+    let mut _quotient: u8 = 0;
+    let mut _remainder: u8 = 0;
+    let mut _count: u8 = 8;
+
+    loop {
+        // Shift remainder left, bringing in high bit of dividend
+        A = _remainder;
+        A = A << 1;
+        _remainder = A;
+
+        // Get high bit of dividend into remainder
+        A = _dividend;
+        A = A & 0x80;
+        if A != 0 {
+            A = _remainder;
+            A = A | 0x01;
+            _remainder = A;
+        }
+
+        // Shift dividend left
+        A = _dividend;
+        A = A << 1;
+        _dividend = A;
+
+        // Shift quotient left
+        A = _quotient;
+        A = A << 1;
+        _quotient = A;
+
+        // Try to subtract divisor from remainder
+        A = _remainder;
+        if A >= _divisor {
+            A = A - _divisor;
+            _remainder = A;
+            // Set low bit of quotient
+            A = _quotient;
+            A = A | 0x01;
+            _quotient = A;
+        }
+
+        _count--;
+        if _count == 0 {
+            break;
+        }
     }
-    return mod_shift(A, X);
+
+    A = _quotient;
+    return A;
 }
 
-// __builtin_shl: Called by compiler for shl(a, b)
-#[mode(m8)]
-fn __builtin_shl(value @ A: u8, amount @ X: u8) -> u8 {
-    return shl_loop(A, X);
+// Software 8/8 -> 8 modulo
+// Uses division algorithm, returns remainder
+#[mode(m8,transition=caller)]
+far fn mod_shift(dividend @ A: u8, divisor @ X: u8) -> u8 {
+    // Handle division by zero - return original dividend
+    if X == 0 {
+        return A;
+    }
+
+    let mut _dividend: u8 = A;
+    let mut _divisor: u8 = X;
+    let mut _remainder: u8 = 0;
+    let mut _count: u8 = 8;
+
+    loop {
+        // Shift remainder left, bringing in high bit of dividend
+        A = _remainder;
+        A = A << 1;
+        _remainder = A;
+
+        // Get high bit of dividend into remainder
+        A = _dividend;
+        A = A & 0x80;
+        if A != 0 {
+            A = _remainder;
+            A = A | 0x01;
+            _remainder = A;
+        }
+
+        // Shift dividend left
+        A = _dividend;
+        A = A << 1;
+        _dividend = A;
+
+        // Try to subtract divisor from remainder
+        A = _remainder;
+        if A >= _divisor {
+            A = A - _divisor;
+            _remainder = A;
+        }
+
+        _count--;
+        if _count == 0 {
+            break;
+        }
+    }
+
+    A = _remainder;
+    return A;
 }
 
-// __builtin_shr: Called by compiler for shr(a, b)
-#[mode(m8)]
-fn __builtin_shr(value @ A: u8, amount @ X: u8) -> u8 {
-    return shr_loop(A, X);
+
+// Main entry point macros for math routines
+macro_rules! mul8($m1:expr, $m2:expr) {
+    // Software returns (lo, hi) in (A, X), just use lo (A)
+    if cfg!(snes) {
+        mul_hw_u16($m1, $m2);
+    } else {
+        mul_shift_u8($m1, $m2);
+    }
 }
+
+macro_rules! mul16($m1:expr, $m2:expr) {
+    // Software returns (lo, hi) in (A, X), just use lo (A)
+    if cfg!(snes) {
+        mul_hw_u16($m1, $m2);
+    } else {
+        mul_shift_u16($m1, $m2);
+    }
+}
+
+macro_rules! div8($m1:expr, $m2:expr) {
+    // Software returns (lo, hi) in (A, X), just use lo (A)
+    if cfg!(snes) {
+        div_hw_u16($m1, $m2);
+    } else {
+        div_shift_u8($m1, $m2);
+    }
+}
+
+macro_rules! div16($m1:expr, $m2:expr) {
+    // Software returns (lo, hi) in (A, X), just use lo (A)
+    if cfg!(snes) {
+        div_hw_u16($m1, $m2);
+    } else {
+        div_shift_u16($m1, $m2);
+    }
+}
+
+// Variable shift functions
+// Loop-based implementation for non-constant shift amounts
+
+// Variable left shift: value << amount
+// Cycles: ~10 + 4*amount
+#[mode(m8,transition=caller)]
+far fn shl8(value @ A: u8, amount @ X: u8) -> u8 {
+    // Handle zero shift
+    if X == 0 {
+        return A;
+    }
+
+    // Clamp to 8 (shifting by 8+ always gives 0)
+    if X >= 8 {
+        A = 0;
+        return A;
+    }
+
+    // Loop: shift left X times
+    loop {
+        A = A << 1;
+        X--;
+        if X == 0 {
+            break;
+        }
+    }
+
+    return A;
+}
+
+// Variable right shift (logical): value >> amount
+// Cycles: ~10 + 4*amount
+#[mode(m8,transition=caller)]
+far fn shr8(value @ A: u8, amount @ X: u8) -> u8 {
+    // Handle zero shift
+    if X == 0 {
+        return A;
+    }
+
+    // Clamp to 8
+    if X >= 8 {
+        A = 0;
+        return A;
+    }
+
+    // Loop: shift right X times
+    loop {
+        A = A >> 1;
+        X--;
+        if X == 0 {
+            break;
+        }
+    }
+
+    return A;
+}
+
+// Variable arithmetic right shift (preserves sign): value >>> amount
+// For signed values - shifts in sign bit instead of zero
+// Cycles: ~10 + 6*amount
+#[mode(m8,transition=caller)]
+far fn shri8(value @ A: u8, amount @ X: u8) -> u8 {
+    if X == 0 {
+        return A;
+    }
+
+    // For 8+ shifts, result is 0x00 (positive) or 0xFF (negative)
+    if X >= 8 {
+        // Check sign bit
+        if A & 0x80 != 0 {
+            A = 0xFF;
+        } else {
+            A = 0;
+        }
+        return A;
+    }
+
+    // Loop: arithmetic shift right X times
+    loop {
+        // Check sign bit before shift
+        if A & 0x80 != 0 {
+            // Negative: shift right, then set sign bit
+            A = A >> 1;
+            A = A | 0x80;
+        } else {
+            // Positive: normal logical shift
+            A = A >> 1;
+        }
+        X--;
+        if X == 0 {
+            break;
+        }
+    }
+
+    return A;
+}
+
+// 16-bit variable right shift (logical)
+// Cycles: ~15 + 6*amount
+#[mode(m16,transition=caller)]
+far fn shr16(value @ A: u16, amount @ X: u8) -> u16 {
+    if X == 0 {
+        return A;
+    }
+
+    if X >= 16 {
+        A = 0;
+        return A;
+    }
+
+    loop {
+        A = A >> 1;
+        X--;
+        if X == 0 {
+            break;
+        }
+    }
+
+    return A;
+}
+// 16-bit variable left shift
+// Cycles: ~15 + 6*amount
+#[mode(m16)]
+far fn shl16(value @ A: u16, amount @ X: u8) -> u16 {
+    if X == 0 {
+        return A;
+    }
+
+    if X >= 16 {
+        A = 0;
+        return A;
+    }
+
+    loop {
+        A = A << 1;
+        X--;
+        if X == 0 {
+            break;
+        }
+    }
+
+    return A;
+}
+
+
