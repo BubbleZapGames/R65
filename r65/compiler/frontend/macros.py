@@ -10,20 +10,7 @@ from copy import deepcopy
 
 from r65.compiler.frontend import ast
 from r65.compiler.frontend.parser import parse
-from r65.compiler.hir.errors import SourceLocation
-
-
-class MacroError(Exception):
-    """Error during macro expansion."""
-    def __init__(self, message: str, source_loc: Optional[SourceLocation] = None):
-        self.message = message
-        self.source_loc = source_loc
-        super().__init__(self._format_message())
-
-    def _format_message(self) -> str:
-        if self.source_loc:
-            return f"{self.source_loc}: {self.message}"
-        return self.message
+from r65.compiler.errors import MacroError, SourceLocation
 
 
 @dataclass

@@ -19,15 +19,43 @@ class DiagnosticSeverity(Enum):
 
 @dataclass
 class SourceLocation:
-    """Source code location for error reporting."""
-    file: str = "<unknown>"
+    """
+    Source code location for error reporting.
+
+    Tracks both the immediate location and the include chain for code
+    that comes from included files.
+    """
+    file_path: str = "<unknown>"
     line: int = 0
     column: int = 0
+    # If this code was included via include!(), this points to the location
+    # of the include! statement in the parent file
+    included_from: Optional['SourceLocation'] = None
 
     def __str__(self) -> str:
         if self.line > 0:
-            return f"{self.file}:{self.line}:{self.column}"
-        return self.file
+            return f"{self.file_path}:{self.line}:{self.column}"
+        return self.file_path
+
+    def format_with_includes(self) -> str:
+        """Format location with full include chain."""
+        result = str(self)
+        loc = self.included_from
+        while loc is not None:
+            result += f"\n  included from {loc}"
+            loc = loc.included_from
+        return result
+
+    @property
+    def is_from_include(self) -> bool:
+        """Check if this location is from an included file."""
+        return self.included_from is not None
+
+    # Backwards compatibility alias
+    @property
+    def file(self) -> str:
+        """Alias for file_path for backwards compatibility."""
+        return self.file_path
 
 
 @dataclass
@@ -165,11 +193,29 @@ class ParseError(CompilerError):
 
 class LexerError(ParseError):
     """Error during lexical analysis."""
-    pass
+
+    def __init__(self, message: str, line: int = 0, column: int = 0,
+                 source_loc: Optional[SourceLocation] = None):
+        self.line = line
+        self.column = column
+        # If source_loc provided, use it; otherwise create from line/column
+        if source_loc is None and (line > 0 or column > 0):
+            source_loc = SourceLocation(file_path="<unknown>", line=line, column=column)
+        super().__init__(message, source_loc)
 
 
 class SyntaxError(ParseError):
     """Syntax error in source code."""
+    pass
+
+
+class MacroError(CompilerError):
+    """Error during macro expansion."""
+    pass
+
+
+class PreprocessorError(CompilerError):
+    """Error during preprocessing (include resolution, etc.)."""
     pass
 
 
@@ -187,7 +233,7 @@ class SymbolError(HIRError):
     pass
 
 
-class AttributeError(HIRError):
+class AttributeValidationError(HIRError):
     """Invalid or conflicting attribute."""
     pass
 
@@ -217,6 +263,19 @@ class TypeMismatchError(TypeCheckError):
 class ModeError(TypeCheckError):
     """Processor mode error (wrong mode for operation)."""
     pass
+
+
+class TypeCheckWarning:
+    """Type checking warning (non-fatal)."""
+
+    def __init__(self, message: str, source_loc: Optional[SourceLocation] = None):
+        self.message = message
+        self.source_loc = source_loc
+
+    def __str__(self):
+        if self.source_loc:
+            return f"Warning at {self.source_loc}: {self.message}"
+        return f"Warning: {self.message}"
 
 
 # =============================================================================

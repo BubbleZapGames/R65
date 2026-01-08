@@ -6,6 +6,7 @@ Transforms Lark parse trees into our custom AST.
 from pathlib import Path
 from lark import Lark, Transformer, Token as LarkToken, Tree, v_args
 from r65.compiler.frontend import ast
+from r65.compiler.errors import ParseError
 from typing import List, Union, Optional
 
 
@@ -1217,10 +1218,7 @@ class Parser:
         return None
 
 
-class ParseError(Exception):
-    """Exception raised when parsing fails."""
-    pass
-
+# ParseError is now imported from r65.compiler.errors
 
 # Module-level parser instance - Lark LALR table construction is expensive,
 # so we reuse the same parser for all parse calls

@@ -11,20 +11,7 @@ from dataclasses import dataclass
 
 from r65.compiler.frontend import ast
 from r65.compiler.frontend.parser import parse as parse_source
-from r65.compiler.hir.errors import SourceLocation
-
-
-class PreprocessorError(Exception):
-    """Error during preprocessing (include handling)."""
-
-    def __init__(self, message: str, source_loc: Optional[SourceLocation] = None):
-        self.message = message
-        self.source_loc = source_loc
-
-        if source_loc:
-            super().__init__(f"{source_loc}: {message}")
-        else:
-            super().__init__(message)
+from r65.compiler.errors import PreprocessorError, SourceLocation
 
 
 @dataclass

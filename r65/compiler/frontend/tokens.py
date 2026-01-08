@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from enum import Enum, auto
 from typing import Optional
 
+from r65.compiler.errors import LexerError
+
 
 class TokenType(Enum):
     """Token types for R65."""
@@ -127,10 +129,4 @@ class Token:
         }
 
 
-class LexerError(Exception):
-    """Exception raised for lexer errors."""
-    def __init__(self, message: str, line: int, column: int):
-        self.message = message
-        self.line = line
-        self.column = column
-        super().__init__(f"{message} at line {line}, column {column}")
+# LexerError is now imported from r65.compiler.errors
