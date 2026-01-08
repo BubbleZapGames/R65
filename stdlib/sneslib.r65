@@ -1786,7 +1786,6 @@ fn delay(frames @ X: u8) {
     }
 }
 
-macro_rules! screen_on($brightness:expr) {
 // Check if console is NTSC (returns 1) or PAL (returns 0)
 // Usage: if is_ntsc() { ... }
 #[mode(m8, x8)]

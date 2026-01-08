@@ -4,7 +4,6 @@
 # Project configuration
 PROJECT = {{PROJECT_NAME_UPPER}}
 MAIN_SRC = src/main.r65
-SOURCES = $(shell find src -name "*.r65")
 BUILD_DIR = build
 ROM_FILE = $(BUILD_DIR)/$(PROJECT).smc
 
@@ -15,25 +14,25 @@ WLA_LINK = wlalink
 
 # Flags
 WLA_FLAGS = -o
-R65C_FLAGS = -v
+R65C_FLAGS = -v --cfg snes
 
 # Default target
 all: $(ROM_FILE)
 
 # Compile R65 source to WLA-DX assembly
-$(BUILD_DIR)/%.asm: src/%.r65
+$(BUILD_DIR)/main.asm: $(MAIN_SRC) $(wildcard src/lib/*.r65)
 	@mkdir -p $(BUILD_DIR)
-	$(R65C) $< -o $@ $(R65C_FLAGS)
+	$(R65C) $(MAIN_SRC) -o $@ $(R65C_FLAGS)
 
-# Assemble WLA-DX object files
-$(BUILD_DIR)/%.o: $(BUILD_DIR)/%.asm
+# Assemble WLA-DX object file
+$(BUILD_DIR)/main.o: $(BUILD_DIR)/main.asm
 	$(WLA) $(WLA_FLAGS) $@ $<
 
-# Link object files to ROM
-$(ROM_FILE): $(patsubst src/%.r65,$(BUILD_DIR)/%.o,$(SOURCES))
+# Link object file to ROM
+$(ROM_FILE): $(BUILD_DIR)/main.o
 	@echo "[LINK] $@"
 	@echo "[objects]" > linkfile.txt
-	@for obj in $^; do echo "$$obj" >> linkfile.txt; done
+	@echo "$<" >> linkfile.txt
 	$(WLA_LINK) -v -S linkfile.txt $@
 	@rm linkfile.txt
 
@@ -68,7 +67,7 @@ debug: clean
 	$(MAKE) all R65C_FLAGS="-v"
 
 # Check syntax only (no ROM generation)
-syntax: $(patsubst src/%.r65,$(BUILD_DIR)/%.asm,$(SOURCES))
+syntax: $(BUILD_DIR)/main.asm
 
 # Show help
 help:
@@ -85,8 +84,7 @@ help:
 # Debug print variables
 debug-vars:
 	@echo "PROJECT: $(PROJECT)"
-	@echo "SOURCES: $(SOURCES)"
-	@echo "OBJECTS: $(patsubst src/%.r65,$(BUILD_DIR)/%.o,$(SOURCES))"
+	@echo "MAIN_SRC: $(MAIN_SRC)"
 	@echo "ROM_FILE: $(ROM_FILE)"
 
 .PHONY: all clean install-deps run debug syntax r65x-build help debug-vars

@@ -26,9 +26,10 @@ class ProjectInitError(R65XError):
 
 class TemplateManager:
     """Manages project templates."""
-    
+
     def __init__(self):
         self.templates_dir = Path(__file__).parent / "templates"
+        self.stdlib_dir = Path(__file__).parent.parent / "stdlib"
     
     def get_available_platforms(self) -> List[str]:
         """Get list of available platform templates."""
@@ -48,7 +49,12 @@ class TemplateManager:
         # Create src directory for R65 source files
         src_dir = target_dir / "src"
         src_dir.mkdir(exist_ok=True)
-        
+
+        # Create lib directory and copy stdlib files
+        lib_dir = src_dir / "lib"
+        lib_dir.mkdir(exist_ok=True)
+        self._copy_stdlib(lib_dir)
+
         # Copy template files to src directory
         self._copy_directory(template_dir, src_dir, project_name)
     
@@ -78,6 +84,18 @@ class TemplateManager:
                 dst_subdir = dst / item.name
                 dst_subdir.mkdir(exist_ok=True)
                 self._copy_directory(item, dst_subdir, project_name)
+
+    def _copy_stdlib(self, lib_dir: Path):
+        """Copy standard library files to lib directory."""
+        if not self.stdlib_dir.exists():
+            return
+
+        stdlib_files = ['sneslib.r65', 'math.r65']
+        for filename in stdlib_files:
+            src_file = self.stdlib_dir / filename
+            if src_file.exists():
+                content = src_file.read_text(encoding='utf-8')
+                (lib_dir / filename).write_text(content, encoding='utf-8')
 
 
 def init_command(args):
