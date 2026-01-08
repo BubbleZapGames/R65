@@ -120,6 +120,48 @@ class Attribute(ASTNode):
 
 
 # ============================================================================
+# Conditional Compilation
+# ============================================================================
+
+@dataclass
+class CfgCondition(ASTNode):
+    """Base class for cfg condition expressions."""
+    pass
+
+
+@dataclass
+class CfgIdentifier(CfgCondition):
+    """Simple cfg identifier (e.g., snes, debug)."""
+    name: str
+
+
+@dataclass
+class CfgNot(CfgCondition):
+    """Negated cfg condition (e.g., not(target = "nes"))."""
+    condition: CfgCondition
+
+
+@dataclass  
+class CfgAny(CfgCondition):
+    """Any of several conditions (e.g., any(snes, genesis))."""
+    conditions: List[CfgCondition]
+
+
+@dataclass
+class CfgAll(CfgCondition):
+    """All of several conditions (e.g., all(snes, debug))."""
+    conditions: List[CfgCondition]
+
+
+@dataclass
+class CfgComparison(CfgCondition):
+    """Key-value comparison (e.g., target = "snes")."""
+    key: str
+    operator: str  # "=", "!="
+    value: str  # String literal value
+
+
+# ============================================================================
 # Declarations
 # ============================================================================
 

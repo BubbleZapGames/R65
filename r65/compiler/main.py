@@ -18,6 +18,7 @@ import argparse
 from pathlib import Path
 from r65.compiler.frontend import tokenize, parse, preprocess, expand_macros, LexerError, ParseError, PreprocessorError, MacroError, TokenType, ast
 from r65.compiler.hir import HIRBuilder, HIRError
+from r65.compiler.hir.cfg import CfgEvaluator
 from r65.compiler.typeck import TypeChecker, TypeCheckError
 from r65.compiler.mir import MIRBuilder
 from r65.compiler.codegen import ProgramCodeGenerator
@@ -120,12 +121,19 @@ def dump_mir(source: str, filename: str):
 
 
 def compile_source(source: str, filename: str, output_file: str = None,
-                   verbose: bool = False, quiet: bool = False):
+                   verbose: bool = False, quiet: bool = False, cfg_options: list[str] = None):
     """Compile R65 source to WLA-DX assembly."""
 
     def log(msg: str):
         if not quiet:
             print(msg, file=sys.stderr)
+
+    # Create cfg evaluator if options provided
+    cfg_evaluator = None
+    if cfg_options:
+        cfg_evaluator = CfgEvaluator.from_string_list(cfg_options or [])
+        if verbose:
+            log(f"  Config with cfg options: {cfg_options}")
 
     try:
         # Parse
@@ -147,7 +155,7 @@ def compile_source(source: str, filename: str, output_file: str = None,
         # Build HIR
         if verbose:
             log(f"  [4/8] Building HIR...")
-        builder = HIRBuilder(source_file=filename)
+        builder = HIRBuilder(source_file=filename, cfg_evaluator=cfg_evaluator)
         hir_program = builder.build_program(program)
 
         # Type check
@@ -286,6 +294,15 @@ examples:
                        action='store_true',
                        help='Suppress all output except errors')
 
+    # Conditional compilation options
+    cfg_group = parser.add_argument_group('conditional compilation options')
+    
+    cfg_group.add_argument('--cfg',
+                         action='append',
+                         dest='cfg_options',
+                         metavar='CONDITION',
+                         help='Set cfg condition (can be used multiple times). Examples: --cfg snes, --cfg target=snes')
+
     # Debug options (for compiler developers)
     debug_group = parser.add_argument_group('debug options (for compiler development)')
 
@@ -360,7 +377,7 @@ examples:
             return
 
         # Normal compilation
-        compile_source(source, filename, args.output, args.verbose, args.quiet)
+        compile_source(source, filename, args.output, args.verbose, args.quiet, args.cfg_options)
 
     except (LexerError, ParseError, PreprocessorError, MacroError, HIRError, TypeCheckError) as e:
         # These are already handled in dump/compile functions

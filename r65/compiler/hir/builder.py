@@ -15,24 +15,27 @@ from r65.compiler.hir.symbol_table import *
 from r65.compiler.hir.types import *
 from r65.compiler.hir.attributes import *
 from r65.compiler.hir.const_eval import *
+from r65.compiler.hir.cfg import CfgEvaluator
 from r65.compiler.hir.errors import *
 
 
 class HIRBuilder:
     """Builds HIR from AST with name resolution and desugaring."""
 
-    def __init__(self, source_file: Optional[str] = None):
+    def __init__(self, source_file: Optional[str] = None, cfg_evaluator: Optional[CfgEvaluator] = None):
         """
         Initialize HIR builder.
 
         Args:
-            source_file: Path to the source file being compiled.
+            source_file: Path to source file being compiled.
                         Used for resolving relative paths in include_bytes!.
+            cfg_evaluator: Optional cfg evaluator for conditional compilation.
         """
         self.symbol_table = SymbolTable()
-        self.const_evaluator = ConstEvaluator(self.symbol_table)
+        self.const_evaluator = ConstEvaluator(self.symbol_table, self.cfg_evaluator)
         self.type_resolver = TypeResolver(self.symbol_table, self.const_evaluator)
         self.attr_processor = AttributeProcessor()
+        self.cfg_evaluator = cfg_evaluator
         self.source_file = source_file
         self.source_dir = Path(source_file).parent if source_file else Path.cwd()
 
@@ -49,7 +52,7 @@ class HIRBuilder:
         # Track global attributes
         stack_attr = None
 
-        # Pass 1: Declare all top-level symbols
+        # Pass 1: Declare all top-level symbols (filtered by cfg)
         for decl in ast_program.items:
             if isinstance(decl, ast.StackDirective):
                 # Create stack attribute from directive
@@ -59,21 +62,73 @@ class HIRBuilder:
                     upper=decl.upper
                 )
             else:
-                self._declare_toplevel(decl)
+                if self._should_include_declaration(decl):
+                    self._declare_toplevel(decl)
 
-        # Pass 2: Build HIR nodes with resolved references
+        # Pass 2: Build HIR nodes with resolved references (filtered by cfg)
         hir_decls = []
         for decl in ast_program.items:
             if isinstance(decl, ast.StackDirective):
                 continue  # Skip stack directives, already processed
-            hir_decl = self._build_declaration(decl)
-            hir_decls.append(hir_decl)
+            if self._should_include_declaration(decl):
+                hir_decl = self._build_declaration(decl)
+                hir_decls.append(hir_decl)
 
         return hir.HIRProgram(
             declarations=hir_decls,
             symbol_table=self.symbol_table,
             stack_attr=stack_attr
         )
+
+    def _should_include_declaration(self, decl: ast.Declaration) -> bool:
+        """
+        Check if a declaration should be included based on cfg attributes.
+        
+        Args:
+            decl: AST declaration to check
+            
+        Returns:
+            True if declaration should be included, False otherwise
+        """
+        if not self.cfg_evaluator:
+            return True  # No cfg evaluator means include everything
+        
+        # Get attributes from declaration (only FunctionDecl and StaticDecl have attributes)
+        attributes = []
+        if isinstance(decl, (ast.FunctionDecl, ast.StaticDecl)):
+            attributes = decl.attributes
+        
+        # Check for cfg attributes
+        cfg_attrs = [attr for attr in attributes if attr.name == 'cfg']
+        
+        if not cfg_attrs:
+            return True  # No cfg attributes means include
+        
+        # If any cfg attribute evaluates to true, include the declaration
+        for attr in cfg_attrs:
+            processed_attr = self.attr_processor.process_attributes([attr], 'declaration')[0]
+            if isinstance(processed_attr, CfgAttribute):
+                if self.cfg_evaluator.evaluate(processed_attr.condition):
+                    return True
+        
+        return False  # All cfg attributes evaluated to false
+
+    def _evaluate_cfg_condition(self, condition: ast.CfgCondition) -> hir.BoolLiteral:
+        """
+        Evaluate a cfg condition and convert to boolean literal.
+        
+        Args:
+            condition: AST cfg condition
+            
+        Returns:
+            BoolLiteral with true/false value
+        """
+        if not self.cfg_evaluator:
+            # No cfg evaluator means always true (include everything)
+            return hir.BoolLiteral(value=True)
+        
+        result = self.cfg_evaluator.evaluate(condition)
+        return hir.BoolLiteral(value=result)
 
     # =========================================================================
     # Pass 1: Declare Top-Level Symbols

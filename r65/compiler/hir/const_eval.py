@@ -9,13 +9,15 @@ from r65.compiler.frontend import ast
 from r65.compiler.hir.errors import *
 from r65.compiler.hir.unified_type_utils import get_unified_type_size
 from r65.compiler.builtins.registry import BuiltinRegistry
+from r65.compiler.frontend.ast import CfgIdentifier
 
 
 class ConstEvaluator:
     """Evaluates constant expressions at compile time."""
 
-    def __init__(self, symbol_table: Any):
+    def __init__(self, symbol_table: Any, cfg_evaluator: Any = None):
         self.symbol_table = symbol_table
+        self.cfg_evaluator = cfg_evaluator
 
     def is_constant(self, expr: ast.Expression) -> bool:
         """
@@ -226,6 +228,12 @@ class ConstEvaluator:
         # Handle size_of specifically
         if func_name == "size_of":
             return self._eval_size_of(expr)
+        
+        # Handle cfg! specifically - requires cfg evaluator to be passed
+        if func_name == "cfg":
+            if not hasattr(self, 'cfg_evaluator') or self.cfg_evaluator is None:
+                raise HIRError("cfg! function requires cfg configuration to be provided")
+            return self._eval_cfg(expr)
         
         raise HIRError(f"Unsupported const built-in function: {func_name}")
 

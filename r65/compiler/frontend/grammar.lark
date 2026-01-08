@@ -120,10 +120,30 @@ macro_arg_token: IDENT | REGISTER | TYPE_NAME | INTEGER | STRING | BOOLEAN
 
 // Attributes
 attribute: "#" "[" attribute_inner "]"
-attribute_inner: IDENT ("(" attribute_args? ")")?
+attribute_inner: CFG "(" cfg_condition ")"            -> cfg_attribute
+             | IDENT ("(" attribute_args? ")")?
+
 attribute_args: attribute_arg ("," attribute_arg)* ","?
 attribute_arg: IDENT "=" expr      -> named_arg
              | expr                -> positional_arg
+
+// cfg condition grammar
+cfg_condition: cfg_any
+
+cfg_any: cfg_all ("||" cfg_all)*
+
+cfg_all: cfg_primary ("&&" cfg_primary)*
+
+?cfg_primary: cfg_identifier
+            | "!" cfg_primary                    -> cfg_not
+            | CFG_NOT cfg_primary                -> cfg_not
+            | cfg_comparison
+            | "(" cfg_condition ")"
+
+cfg_identifier: IDENT
+
+cfg_comparison: IDENT "=" STRING                 -> cfg_eq
+               | IDENT "!=" STRING               -> cfg_ne
 
 // Block
 block: "{" statement* "}"
@@ -261,8 +281,9 @@ arg_list: expr ("," expr)* ","?
 // Note: struct_literal_expr is NOT in primary to avoid IDENT "{" ambiguity.
 // Struct literals are only allowed in specific initializer contexts (after =).
 ?primary: INTEGER                               -> integer
-        | BOOLEAN                               -> boolean
-        | STRING                                -> string_literal
+         | BOOLEAN                               -> boolean
+         | STRING                                -> string_literal
+         | CFG_FUNCTION "(" expr ")"               -> cfg_function_call
         | INCLUDE_BYTES "!" "(" STRING ")"      -> include_bytes_expr
         | IDENT "::" IDENT                      -> enum_variant_expr
         | IDENT                                 -> identifier
@@ -340,6 +361,11 @@ FAR.10: /far\b/
 FN.10: /fn\b/
 IF.10: /if\b/
 AS.10: /as\b/
+
+// Conditional compilation  
+CFG_FUNCTION.10: /cfg!\b/
+CFG.10: /cfg\b/
+CFG_NOT.10: /not\b/
 
 // Macro keyword
 MACRO_RULES.10: /macro_rules\b/

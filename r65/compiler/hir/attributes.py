@@ -9,6 +9,7 @@ from typing import List, Optional
 from enum import Enum
 
 from r65.compiler.frontend import ast
+from r65.compiler.frontend.ast import CfgCondition
 from r65.compiler.hir.errors import *
 
 
@@ -115,6 +116,13 @@ class EntryAttribute(ProcessedAttribute):
     pass
 
 
+# CFG attribute
+@dataclass
+class CfgAttribute(ProcessedAttribute):
+    """#[cfg(condition)] - conditional compilation attribute"""
+    condition: CfgCondition = field(kw_only=True)  # CFG condition AST node
+
+
 # Stack attribute
 @dataclass
 class StackAttribute(ProcessedAttribute):
@@ -147,6 +155,8 @@ class AttributeProcessor:
                 processed.append(self._process_storage(attr, context))
             elif attr.name == 'stack':
                 processed.append(self._process_stack(attr, context))
+            elif attr.name == 'cfg':
+                processed.append(self._process_cfg(attr, context))
             elif attr.name == 'bank':
                 processed.append(self._process_bank(attr, context))
             elif attr.name == 'interrupt':
@@ -439,6 +449,20 @@ class AttributeProcessor:
             name='stack',
             lower=lower,
             upper=upper
+        )
+
+    def _process_cfg(self, attr: ast.Attribute, context: str) -> CfgAttribute:
+        """Process #[cfg(condition)] attribute."""
+        if len(attr.args) != 1:
+            raise HIRError(f"#[cfg] requires exactly one argument (the condition)")
+        
+        condition_arg = attr.args[0]
+        if not isinstance(condition_arg.value, CfgCondition):
+            raise HIRError(f"#[cfg] argument must be a condition expression")
+        
+        return CfgAttribute(
+            name='cfg',
+            condition=condition_arg.value
         )
 
     def _get_arg_identifier(self, value) -> str:

@@ -517,6 +517,99 @@ class ASTBuilder(Transformer):
         args = items[1] if len(items) > 1 and isinstance(items[1], list) else []
         return ast.Attribute(name=name, args=args)
 
+    @v_args(tree=True)
+    def cfg_attribute(self, tree):
+        """cfg attribute: #[cfg(condition)]."""
+        items = self._filter_tokens(tree.children)
+        # items[0] should be the cfg_condition
+        condition = items[0]
+        return ast.Attribute(name='cfg', args=[ast.AttributeArg(name=None, value=condition)])
+
+    def cfg_condition(self, items):
+        """Top-level cfg condition (cfg_any rule)."""
+        return items[0]
+
+    def cfg_any(self, items):
+        """Any condition: condition1 || condition2 || ..."""
+        items = self._filter_tokens(items)
+        if len(items) == 1:
+            return items[0]  # Single condition, no need for CfgAny wrapper
+        
+        # Extract actual conditions from any cfg_primary Trees
+        actual_conditions = []
+        for item in items:
+            if hasattr(item, 'children') and len(item.children) >= 1:
+                # Extract actual condition from Tree (skip tokens like parentheses)
+                for child in item.children:
+                    if not isinstance(child, LarkToken):  # Find AST node, not tokens
+                        actual_conditions.append(child)
+                        break
+            else:
+                actual_conditions.append(item)
+        
+        if len(actual_conditions) == 1:
+            return actual_conditions[0]  # Single condition, no need for CfgAny wrapper
+        return ast.CfgAny(conditions=actual_conditions)
+
+    def cfg_all(self, items):
+        """All condition: condition1 && condition2 && ..."""
+        items = self._filter_tokens(items)
+        if len(items) == 1:
+            return items[0]  # Single condition, no need for CfgAll wrapper
+        
+        # Extract actual conditions from any cfg_primary Trees
+        actual_conditions = []
+        for item in items:
+            if hasattr(item, 'children') and len(item.children) >= 1:
+                # Extract actual condition from Tree (skip tokens like parentheses)
+                for child in item.children:
+                    if not isinstance(child, LarkToken):  # Find AST node, not tokens
+                        actual_conditions.append(child)
+                        break
+            else:
+                actual_conditions.append(item)
+        
+        if len(actual_conditions) == 1:
+            return actual_conditions[0]  # Single condition, no need for CfgAll wrapper
+        return ast.CfgAll(conditions=actual_conditions)
+
+    def cfg_not(self, items):
+        """Not condition: !condition."""
+        items = self._filter_tokens(items)
+        condition = items[0]
+        
+        # Handle case where condition is a Tree from cfg_primary
+        if hasattr(condition, 'children') and len(condition.children) >= 1:
+            # Extract the actual condition from Tree (skip tokens like parentheses)
+            for child in condition.children:
+                if not isinstance(child, LarkToken):  # Find the AST node, not tokens
+                    condition = child
+                    break
+        
+        return ast.CfgNot(condition=condition)
+
+    def cfg_identifier(self, items):
+        """Simple identifier condition."""
+        items = self._filter_tokens(items, keep_types={'IDENT'})
+        name = items[0].value if isinstance(items[0], LarkToken) else str(items[0])
+        return ast.CfgIdentifier(name=name)
+
+    def cfg_eq(self, items):
+        """Equal comparison: key = "value"."""
+        items = self._filter_tokens(items, keep_types={'IDENT', 'STRING'})
+        key = items[0].value if isinstance(items[0], LarkToken) else str(items[0])
+        value = items[1].value if isinstance(items[1], LarkToken) else str(items[1])
+        value = value.strip('"')  # Remove quotes from string
+        return ast.CfgComparison(key=key, operator='=', value=value)
+
+    def cfg_ne(self, items):
+        """Not equal comparison: key != "value"."""
+        items = self._filter_tokens(items, keep_types={'IDENT', 'STRING'})
+        key = items[0].value if isinstance(items[0], LarkToken) else str(items[0])
+        value = items[1].value if isinstance(items[1], LarkToken) else str(items[1])
+        value = value.strip('"')  # Remove quotes from string
+        return ast.CfgComparison(key=key, operator='!=', value=value)
+
     def attribute_args(self, items):
         """Attribute arguments."""
         # Filter out comma tokens, keep only AttributeArg objects
@@ -935,6 +1028,11 @@ class ASTBuilder(Transformer):
         if (isinstance(func, LarkToken) and func.type == 'IDENT' and func.value == 'stringify'):
             # Handle stringify! as special built-in function
             return ast.StringifyCall(func=func, args=args)
+        
+        # Check for built-in cfg function
+        if (isinstance(func, LarkToken) and func.type == 'CFG_FUNCTION'):
+            # Handle cfg! as special built-in function
+            return ast.FunctionCall(func=ast.Identifier(name='cfg'), args=args)
         
         return ast.FunctionCall(func=func, args=args)
 

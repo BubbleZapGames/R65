@@ -188,6 +188,15 @@ class BuiltinRegistry:
             returns_value=True,
             description='Get size of type in bytes (const evaluation only)'
         ),
+        
+        # Conditional compilation (1 parameter: cfg identifier/key-value, const evaluation only, returns boolean)
+        'cfg': BuiltinSignature(
+            name='cfg',
+            kind=BuiltinKind.TYPE_INFO,  # Reuse TYPE_INFO kind since it's const evaluation
+            param_count=1,
+            returns_value=True,
+            description='Check if cfg condition is enabled (const evaluation only)'
+        ),
     }
 
     @classmethod
