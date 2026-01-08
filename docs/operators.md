@@ -6,7 +6,7 @@ R65 provides operators and functions that clearly distinguish between hardware-s
 
 **Design Philosophy**:
 - **Operators (`+`, `-`, `*`, `/`, etc.)** = Hardware instructions or simple instruction sequences (2-10 cycles)
-- **Functions (`mul()`, `div()`, `shl()`, etc.)** = Software subroutines (20-200+ cycles)
+- **Functions (`mul8()`/`mul16()`, `div8()`/`div16()`, `shl()`, etc.)** = Software subroutines (20-200+ cycles)
 
 All operations are **unchecked** - overflow, underflow, and division by zero are undefined behavior (matching hardware philosophy of no runtime checks).
 
@@ -222,31 +222,31 @@ let x = a / b;   // ERROR: Use div(a, b) for variable division
 
 ---
 
-## Multiplication Function: `mul()`
+## Multiplication Functions: `mul8()` / `mul16()`
 
-**Syntax**: `mul(a, b)`
+**Syntax**: `mul8(a, b)` or `mul16(a, b)`
 
 **Type Rules**:
-- Both operands must be the same type
+- `mul8()`: Both operands must be 8-bit (`u8` or `i8`)
+- `mul16()`: Both operands must be 16-bit (`u16` or `i16`)
 - Result type matches operand type (truncated)
-- Available for: `u8`, `i8`, `u16`, `i16`
 
 **Behavior**:
 - Full multiplication with subroutine call
 - Result truncated to operand size:
-  - `mul(a: u8, b: u8)` → `u8` (high byte discarded)
-  - `mul(a: u16, b: u16)` → `u16` (high word discarded)
+  - `mul8(a: u8, b: u8)` → `u8` (high byte discarded)
+  - `mul16(a: u16, b: u16)` → `u16` (high word discarded)
 - Wrapping on overflow (no checks)
 
 **Assembly Mapping**:
 ```rust
-let x: u8 = mul(a, b);
+let x: u8 = mul8(a, b);
 // LDA a
 // LDX b
 // JSR __mul_u8
 // (result in A)
 
-let x: u16 = mul(a, b);
+let x: u16 = mul16(a, b);
 // [Load a, b into appropriate registers/memory]
 // JSR __mul_u16
 // (result in A or memory)
@@ -254,29 +254,29 @@ let x: u16 = mul(a, b);
 
 **Optimizations**:
 - Compiler may detect constant powers of 2 and use shifts
-- `mul(a, 8)` → `a << 3` (but explicit `a * 8` is preferred)
+- `mul8(a, 8)` → `a << 3` (but explicit `a * 8` is preferred)
 - Small constants may use repeated addition or lookup tables
 
 **Performance**: 20-100+ cycles (varies by implementation)
 
 **Examples**:
 ```rust
-let area = mul(width, height);
-let scaled = mul(value, 3);      // Not a power of 2
-let offset = mul(y, 256);        // Could optimize to shift
+let area: u8 = mul8(width, height);
+let scaled: u8 = mul8(value, 3);      // Not a power of 2
+let offset: u16 = mul16(y, 256);      // Could optimize to shift
 ```
 
 ---
 
-## Division Function: `div()`
+## Division Functions: `div8()` / `div16()`
 
-**Syntax**: `div(a, b)`
+**Syntax**: `div8(a, b)` or `div16(a, b)`
 
 **Type Rules**:
-- Both operands must be the same type
+- `div8()`: Both operands must be 8-bit (`u8` or `i8`)
+- `div16()`: Both operands must be 16-bit (`u16` or `i16`)
 - Result type matches operand type
-- Signed vs unsigned matters: `div(i8, i8)` vs `div(u8, u8)`
-- Available for: `u8`, `i8`, `u16`, `i16`
+- Signed vs unsigned matters: `div8(i8, i8)` vs `div8(u8, u8)`
 
 **Behavior**:
 - Full division with subroutine call
@@ -285,40 +285,40 @@ let offset = mul(y, 256);        // Could optimize to shift
 
 **Assembly Mapping**:
 ```rust
-let x: u8 = div(a, b);
+let x: u8 = div8(a, b);
 // LDA a
 // LDX b
 // JSR __div_u8
 // (result in A)
 
-let x: i8 = div(a, b);
+let x: i8 = div8(a, b);
 // [Handle sign complexities]
 // JSR __div_i8
 ```
 
 **Optimizations**:
 - Compiler may detect constant powers of 2 and suggest `a / n` instead
-- Warning: `div(a, 8)` → "Use a / 8 for better performance"
+- Warning: `div8(a, 8)` → "Use a / 8 for better performance"
 
 **Performance**: 50-200+ cycles
 
 **Examples**:
 ```rust
-let avg = div(sum, count);
-let tiles = div(pixels, 7);      // Not a power of 2
+let avg: u8 = div8(sum, count);
+let tiles: u8 = div8(pixels, 7);      // Not a power of 2
 ```
 
 ---
 
-## Modulo Function: `mod()`
+## Modulo Functions: `mod8()` / `mod16()`
 
-**Syntax**: `mod(a, b)`
+**Syntax**: `mod8(a, b)` or `mod16(a, b)`
 
 **Type Rules**:
-- Both operands must be the same type
+- `mod8()`: Both operands must be 8-bit (`u8` or `i8`)
+- `mod16()`: Both operands must be 16-bit (`u16` or `i16`)
 - Result type matches operand type
 - Signed vs unsigned matters
-- Available for: `u8`, `i8`, `u16`, `i16`
 
 **Behavior**:
 - Returns remainder after division
@@ -327,7 +327,7 @@ let tiles = div(pixels, 7);      // Not a power of 2
 
 **Assembly Mapping**:
 ```rust
-let x: u8 = mod(a, b);
+let x: u8 = mod8(a, b);
 // LDA a
 // LDX b
 // JSR __mod_u8
@@ -335,18 +335,18 @@ let x: u8 = mod(a, b);
 ```
 
 **Optimizations**:
-- Powers of 2: `mod(a, 256)` → `a & 0xFF`
-- Compiler suggests: "Use a & 0x07 instead of mod(a, 8)"
+- Powers of 2: `mod8(a, 256)` → `a & 0xFF`
+- Compiler suggests: "Use a & 0x07 instead of mod8(a, 8)"
 
 **Performance**: 50-200+ cycles (often implemented with division)
 
 **Examples**:
 ```rust
-let remainder = mod(distance, tile_size);
-let wrapped = mod(index, buffer_size);
+let remainder: u8 = mod8(distance, tile_size);
+let wrapped: u16 = mod16(index, buffer_size);
 
 // Prefer this for power of 2:
-let wrapped = index & 0xFF;  // Same as mod(index, 256)
+let wrapped = index & 0xFF;  // Same as mod8(index, 256)
 ```
 
 ---
@@ -920,7 +920,7 @@ let x = 10 / 0;        // ERROR: constant division by zero (compile-time)
 Standard C/Rust precedence (highest to lowest):
 
 1. **Unary**: `!`, `~`, `-` (unary)
-2. **Multiplicative**: `*` (restricted), function calls: `mul()`, `div()`, `mod()`
+2. **Multiplicative**: `*` (restricted), function calls: `mul8()`/`mul16()`, `div8()`/`div16()`, `mod8()`/`mod16()`
 3. **Additive**: `+`, `-`
 4. **Shift**: `<<`, `>>` (constant only), `shl()`, `shr()`
 5. **Comparison**: `<`, `<=`, `>`, `>=`
@@ -934,7 +934,7 @@ Standard C/Rust precedence (highest to lowest):
 
 **Parentheses** override precedence: `(a + b) * c`
 
-**Note**: Function calls (`mul()`, `div()`, etc.) have high precedence like all function calls.
+**Note**: Function calls (`mul8()`, `div8()`, etc.) have high precedence like all function calls.
 
 ---
 
@@ -1002,7 +1002,7 @@ fn update_sprite(velocity: u8) {
 ```rust
 fn get_tile_offset(x: u8, y: u8) -> u16 {
     // Multiply y by 32 (tiles per row)
-    // 32 = power of 2, but not 1/2/4/8, so use mul() or shift
+    // 32 = power of 2, but not 1/2/4/8, so use mul8()/mul16() or shift
     let row_offset: u16 = (y as u16) << 5;  // Shift by 5 = multiply by 32
 
     // Add x coordinate
@@ -1023,8 +1023,8 @@ fn process_flags(flags @ A: u8) -> u8 {
 ### Division with Non-Power-of-2
 ```rust
 fn calculate_average(sum: u16, count: u8) -> u8 {
-    // count might not be power of 2, must use div()
-    let avg = div(sum as u8, count);  // Expensive!
+    // count might not be power of 2, must use div8()
+    let avg = div8(sum as u8, count);  // Expensive!
     return avg;
 }
 ```
@@ -1090,9 +1090,9 @@ let x = (a: u8) + (b: u16);
 // ERROR: Cannot add u8 and u16
 // HELP: Cast to same type: (a as u16) + b
 
-let x = mul(a: u8, b: u16);
-// ERROR: mul() requires both operands to be the same type
-// HELP: Cast to same type: mul(a as u16, b)
+let x = mul8(a: u8, b: u16);
+// ERROR: mul8() requires both operands to be 8-bit
+// HELP: Use mul16() with casts: mul16(a as u16, b)
 ```
 
 ---
@@ -1138,7 +1138,7 @@ array[temp_idx] = array[temp_idx] + 5;
 **Type checking:** Same rules as the underlying binary operation
 - Left and right types must be compatible
 - Result type must match left-hand side type
-- Same restrictions (e.g., `*=` requires constant power-of-2 or uses `mul()`)
+- Same restrictions (e.g., `*=` requires constant power-of-2 or uses `mul8()`/`mul16()`)
 
 ### Examples
 
@@ -1219,7 +1219,7 @@ Compound assignments inherit restrictions from their underlying operators:
 // OK: Constant power-of-2 multiplication
 x *= 8;  // Uses shifts
 
-// ERROR: Variable multiplication requires mul()
+// ERROR: Variable multiplication requires mul8()/mul16()
 x *= y;  // Compiler error
 
 // OK: Constant shift

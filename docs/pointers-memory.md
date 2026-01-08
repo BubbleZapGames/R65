@@ -373,7 +373,8 @@ far fn graphics_routine() {
 
 ```rust
 let buffer: [u8; 256];
-let value = buffer[300];  // UB: no check!
+let index: u16 = 300;
+let value = buffer[index];  // UB: no check!
 ```
 
 ### Null Dereference

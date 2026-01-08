@@ -35,7 +35,7 @@ For struct sizes like 3, 5, 6, 7, 9, 10, etc., we need a different approach.
 
 ### Strategy 1: Software Multiplication (Current)
 
-Call the `mul()` built-in function for general multiplication.
+Call the `mul8()` or `mul16()` built-in function for general multiplication.
 
 ```asm
 ; index * 5 (struct size = 5)
@@ -87,7 +87,7 @@ SBC ...      ; A = index * 7 (need original value)
 ```
 
 **Pros:**
-- Much faster than mul() for small multipliers
+- Much faster than mul8()/mul16() for small multipliers
 - No function call overhead
 - No memory for tables
 
@@ -110,100 +110,75 @@ SBC ...      ; A = index * 7 (need original value)
 
 **When to use:** Struct sizes with low popcount or near powers of 2.
 
-### Strategy 3: Offset Lookup Table (LUT)
+## Strategy Selection Algorithm
 
-Precompute offsets for each possible index value.
+The compiler uses a simple threshold-based approach:
 
-```asm
-; For struct size = 3, array of 8 elements
-offsets_lut:
-    .db 0, 3, 6, 9, 12, 15, 18, 21
+```
+1. Constant index?
+   → Compute at compile time (0 cycles)
 
-; Access array[X].field:
-    LDA offsets_lut,X    ; A = base offset for element
-    CLC
-    ADC #field_offset    ; Add field offset (if non-zero)
-    TAX
-    LDA array_base,X     ; Load the field value
+2. Struct size <= 16 bytes?
+   a. Power-of-2 (1, 2, 4, 8, 16)
+      → Use shifts
+   b. Non-power-of-2 (3, 5, 6, 7, 9, 10, 11, 12, 13, 14, 15)
+      → Use shift-and-add decomposition
+
+3. Struct size > 16 bytes?
+   → Use mul8() or mul16()
 ```
 
-**Pros:**
-- Very fast (~10-12 cycles)
-- Constant time regardless of struct size
-- Simple code generation
+### Rationale
 
-**Cons:**
-- Uses ROM/RAM for table
-- Table size = array_size × entry_size
-- Requires 16-bit entries if struct_size × max_index > 255
+- **Threshold of 16 bytes**: Struct sizes 1-16 cover the vast majority of real-world structs. Shift-and-add is efficient for all these sizes (typically 6-34 cycles vs 100-150 for mul8()/mul16()).
+- **Simple implementation**: Easy to understand, maintain, and verify.
 
-**Memory cost:**
+### Complete Decomposition Table (sizes 1-16)
 
-| Array Size | Entry Size | Table Size |
-|------------|------------|------------|
-| 8 | u8 | 8 bytes |
-| 16 | u8 | 16 bytes |
-| 64 | u8 | 64 bytes |
-| 64 | u16 | 128 bytes |
-
-**When to use:**
-- Small to medium arrays with known size
-- Performance-critical code
-- When ROM space is available
-
-### Strategy 4: Hybrid Approach
-
-Combine strategies based on context:
-
-1. **Constant index:** Compute at compile time (always)
-2. **Power-of-2 struct:** Use shifts (always)
-3. **Small array + non-power-of-2:** Generate LUT
-4. **Large array + simple multiplier:** Use shift-and-add
-5. **Large array + complex multiplier:** Use mul()
+| Size | Binary | Method | ~Cycles |
+|------|--------|--------|---------|
+| 1 | 00001 | (identity) | 2 |
+| 2 | 00010 | x<<1 | 6 |
+| 3 | 00011 | (x<<1)+x | 18 |
+| 4 | 00100 | x<<2 | 8 |
+| 5 | 00101 | (x<<2)+x | 20 |
+| 6 | 00110 | (x<<2)+(x<<1) | 26 |
+| 7 | 00111 | (x<<3)-x | 20 |
+| 8 | 01000 | x<<3 | 10 |
+| 9 | 01001 | (x<<3)+x | 22 |
+| 10 | 01010 | (x<<3)+(x<<1) | 28 |
+| 11 | 01011 | (x<<3)+(x<<1)+x | 34 |
+| 12 | 01100 | (x<<3)+(x<<2) | 28 |
+| 13 | 01101 | (x<<4)-(x<<1)-x | 30 |
+| 14 | 01110 | (x<<4)-(x<<1) | 26 |
+| 15 | 01111 | (x<<4)-x | 22 |
+| 16 | 10000 | x<<4 | 12 |
 
 ## Current Implementation
 
-The current implementation uses:
+The current implementation uses the Strategy Selection Algorithm above:
 
-- **Constant indices:** Compile-time offset calculation
-- **Power-of-2 structs:** Shift instructions
-- **Non-power-of-2 structs:** `mul()` call (Strategy 1)
+- **Constant indices:** Compile-time offset calculation (0 cycles)
+- **Struct size 1:** Identity (no multiplication needed)
+- **Struct sizes 2-16:** Shift-and-add decomposition (inline, no function call)
+- **Struct sizes > 16:** `mul8()`/`mul16()` runtime function call
 
-## Future Improvements
-
-### Phase 1: Shift-and-Add (Low-hanging fruit)
-Implement decomposition for common struct sizes (3, 5, 6, 7, 9, 10, 12).
-Most structs fall in the 2-16 byte range where this is optimal.
-
-### Phase 2: LUT Generation
-For arrays with:
-- Known size at compile time
-- Non-power-of-2 element size
-- Size × max_index ≤ 255 (or 65535 for u16)
-
-Generate offset tables automatically.
-
-### Phase 3: Profile-Guided Selection
-Allow programmer hints or profile data to select strategy:
-
-```rust
-#[optimize(lut)]       // Force LUT generation
-#[optimize(inline)]    // Force shift-and-add
-#[optimize(size)]      // Prefer mul() to save ROM
-```
+The shift-and-add implementation is in `r65/compiler/mir/lowerers/multiply.py`, which is shared between expression and assignment lowerers.
 
 ## Code Locations
 
+- **Shared multiplication helpers:** `r65/compiler/mir/lowerers/multiply.py`
+  - `emit_shift_and_add_multiply()` - shift-and-add for multipliers 1-16
+  - `compute_array_field_offset()` - computes `(index * struct_size) + field_offset`
+
 - **MIR lowering (expression):** `r65/compiler/mir/lowerers/expression.py`
-  - `_lower_array_field_access()`
-  - `_compute_array_field_offset()`
+  - `_lower_array_field_access()` - handles `array[index].field` reads
 
 - **MIR lowering (assignment):** `r65/compiler/mir/lowerers/assignment.py`
-  - `_lower_array_field_assignment()`
-  - `_compute_array_field_offset()`
+  - `_lower_array_field_assignment()` - handles `array[index].field = value` writes
 
-- **Instruction selection:** `r65/compiler/codegen/instruction_select.py`
-  - `_emit_multiply()` - currently only handles power-of-2
+- **Liveness analysis:** `r65/compiler/mir/liveness.py`
+  - `interferes()` - precise per-instruction liveness for stack slot reuse
 
 ## References
 

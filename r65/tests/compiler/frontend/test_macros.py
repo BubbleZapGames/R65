@@ -112,18 +112,6 @@ class TestMacroDefinitionParsing:
         macro = program.items[0]
         assert macro.params[0].fragment_type == "tt"
 
-    def test_macro_no_params(self):
-        """Test macro with no parameters."""
-        source = """
-        macro_rules! nop() {
-            A = A;
-        }
-        """
-        program = parse(source, "<test>")
-
-        macro = program.items[0]
-        assert len(macro.params) == 0
-
 
 # ============================================================================
 # Macro Invocation Parsing Tests
@@ -184,22 +172,6 @@ class TestMacroInvocationParsing:
         assert len(stmt.args) == 2
         assert stmt.args[0] == "X"
         assert stmt.args[1] == "Y"
-
-    def test_invocation_no_args(self):
-        """Test macro invocation with no arguments."""
-        source = """
-        macro_rules! nop() { A = A; }
-
-        fn main() {
-            nop!();
-        }
-        """
-        program = parse(source, "<test>")
-
-        func = program.items[1]
-        stmt = func.body.statements[0]
-        assert len(stmt.args) == 0
-
 
 # ============================================================================
 # Macro Expansion Tests

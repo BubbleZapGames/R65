@@ -685,7 +685,7 @@ R65 uses **hardware-aware operators**: syntax indicates performance cost.
 - ✅ Operators with hardware cost model:
   - Arithmetic: `+`, `-`, `*` (constants 1/2/4/8 only), `/` (constants 1/2/4/8 only)
   - Static string concatenation: `"Hello, " + "World"` becomes `"Hello, World"` at compile time
-  - Functions for expensive ops: `mul()`, `div()`, `mod()`, `shl()`, `shr()`
+  - Functions for expensive ops: `mul8()`/`mul16()`, `div8()`/`div16()`, `mod8()`/`mod16()`, `shl()`, `shr()`
   - Bitwise: `&`, `|`, `^`, `~`, `<<` (constant), `>>` (constant)
   - Comparison: `==`, `!=`, `<`, `<=`, `>`, `>=`
   - Logical: `&&`, `||`, `!` (with short-circuit evaluation)
@@ -836,7 +836,7 @@ Performance characteristics of different storage:
 3. **Automatic volatile**: All `#[hw]` variables are automatically volatile; every access goes to hardware, no caching or reordering
 4. **Limited bounds checking**: Compile-time bounds checking for constant array indices; no runtime bounds checking; programmer responsible for dynamic index safety
 5. **No error handling**: No built-in Result, Option, or panic; programmer defines own error conventions
-6. **Hardware-aware operators**: Operators (`*`, `/`, `<<`, `>>`) restricted to cheap operations (constants 1/2/4/8 for multiply/divide, constant shifts); expensive operations use explicit functions (`mul()`, `div()`, `mod()`, `shl()`, `shr()`); syntax immediately reveals performance cost
+6. **Hardware-aware operators**: Operators (`*`, `/`, `<<`, `>>`) restricted to cheap operations (constants 1/2/4/8 for multiply/divide, constant shifts); expensive operations use explicit functions (`mul8()`/`mul16()`, `div8()`/`div16()`, `mod8()`/`mod16()`, `shl()`, `shr()`); syntax immediately reveals performance cost
 7. **Context-aware type conversions**: Compiler chooses between memory-based and REP/SEP-based conversions for optimal performance; batches mode changes when beneficial
 8. **Const expressions only**: Compile-time evaluation of constant expressions supported; const functions not supported
 9. **Inline assembly**: `asm!()` for raw assembly with simple string syntax; compiler treats as black box, assumes all registers clobbered

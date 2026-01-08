@@ -58,10 +58,17 @@ def get_type_size(type_info) -> int:
         elem_size = get_type_size(type_info.element_type)
         return elem_size * type_info.size
 
-    # Handle StructTypeInfo
+    # Handle StructTypeInfo (fields on type directly or via definition)
     if hasattr(type_info, 'fields'):
         total = 0
         for field in type_info.fields:
+            total += get_type_size(field.field_type)
+        return total
+
+    # Handle StructTypeInfo with definition attribute (HIR StructTypeInfo)
+    if hasattr(type_info, 'definition') and hasattr(type_info.definition, 'fields'):
+        total = 0
+        for field in type_info.definition.fields:
             total += get_type_size(field.field_type)
         return total
 
