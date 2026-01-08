@@ -32,10 +32,10 @@ class HIRBuilder:
             cfg_evaluator: Optional cfg evaluator for conditional compilation.
         """
         self.symbol_table = SymbolTable()
+        self.cfg_evaluator = cfg_evaluator
         self.const_evaluator = ConstEvaluator(self.symbol_table, self.cfg_evaluator)
         self.type_resolver = TypeResolver(self.symbol_table, self.const_evaluator)
         self.attr_processor = AttributeProcessor()
-        self.cfg_evaluator = cfg_evaluator
         self.source_file = source_file
         self.source_dir = Path(source_file).parent if source_file else Path.cwd()
 
@@ -83,52 +83,50 @@ class HIRBuilder:
     def _should_include_declaration(self, decl: ast.Declaration) -> bool:
         """
         Check if a declaration should be included based on cfg attributes.
-        
+
         Args:
             decl: AST declaration to check
-            
+
         Returns:
             True if declaration should be included, False otherwise
         """
-        if not self.cfg_evaluator:
-            return True  # No cfg evaluator means include everything
-        
         # Get attributes from declaration (only FunctionDecl and StaticDecl have attributes)
         attributes = []
         if isinstance(decl, (ast.FunctionDecl, ast.StaticDecl)):
             attributes = decl.attributes
-        
+
         # Check for cfg attributes
         cfg_attrs = [attr for attr in attributes if attr.name == 'cfg']
-        
+
         if not cfg_attrs:
             return True  # No cfg attributes means include
-        
+
+        # Use provided evaluator or empty one (cfg conditions false by default)
+        evaluator = self.cfg_evaluator or CfgEvaluator(set(), {})
+
         # If any cfg attribute evaluates to true, include the declaration
         for attr in cfg_attrs:
             processed_attr = self.attr_processor.process_attributes([attr], 'declaration')[0]
             if isinstance(processed_attr, CfgAttribute):
-                if self.cfg_evaluator.evaluate(processed_attr.condition):
+                if evaluator.evaluate(processed_attr.condition):
                     return True
-        
+
         return False  # All cfg attributes evaluated to false
 
-    def _evaluate_cfg_condition(self, condition: ast.CfgCondition) -> hir.BoolLiteral:
+    def _evaluate_cfg_condition(self, condition: ast.CfgCondition) -> hir.HIRBooleanLiteral:
         """
         Evaluate a cfg condition and convert to boolean literal.
-        
+
         Args:
             condition: AST cfg condition
-            
+
         Returns:
-            BoolLiteral with true/false value
+            HIRBooleanLiteral with true/false value
         """
-        if not self.cfg_evaluator:
-            # No cfg evaluator means always true (include everything)
-            return hir.BoolLiteral(value=True)
-        
-        result = self.cfg_evaluator.evaluate(condition)
-        return hir.BoolLiteral(value=result)
+        # Use provided evaluator or empty one (cfg conditions false by default)
+        evaluator = self.cfg_evaluator or CfgEvaluator(set(), {})
+        result = evaluator.evaluate(condition)
+        return hir.HIRBooleanLiteral(value=result)
 
     # =========================================================================
     # Pass 1: Declare Top-Level Symbols
