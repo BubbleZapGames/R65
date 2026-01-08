@@ -17,11 +17,10 @@ from r65.compiler.hir import (
     HIRStaticDecl, HIRConstDecl, HIRTypeAlias,
     HIRMatchExpression, HIRPattern, HIRLiteralPattern, HIREnumPattern, HIRWildcardPattern, HIRIdentifierPattern, HIROrPattern,
     BasicTypeInfo, TypeInfo, SymbolKind, NeverTypeInfo, TupleTypeInfo,
-    RegisterLetBinding, ArrayTypeInfo, StructTypeInfo, EnumTypeInfo,
-    ModeTransition
+    RegisterLetBinding, ArrayTypeInfo, StructTypeInfo, EnumTypeInfo
 )
 from r65.compiler.hir.types import FunctionTypeInfo
-from r65.compiler.typeck.processor_mode import ProcessorMode
+from r65.compiler.typeck.processor_mode import ProcessorMode, ModeTransition
 from r65.compiler.typeck.mode_tracker import ModeTracker
 from r65.compiler.typeck.cfg_builder import CFGBuilder
 from r65.compiler.typeck.type_utils import TypeUtils
@@ -29,6 +28,11 @@ from r65.compiler.typeck.operator_validator import OperatorValidator
 from r65.compiler.typeck.preservation_checker import PreservationChecker
 from r65.compiler.typeck.type_inference import TypeInference
 from r65.compiler.typeck.errors import TypeCheckError, TypeCheckWarning
+from r65.compiler.typeck.string_validator import StringValidator
+from r65.compiler.typeck.match_validator import MatchValidator
+from r65.compiler.typeck.struct_validator import StructValidator
+from r65.compiler.typeck.call_validator import CallValidator
+from r65.compiler.typeck.pointer_validator import PointerValidator
 from r65.compiler.hir.const_eval import ConstEvaluator
 
 
@@ -55,9 +59,49 @@ class TypeChecker:
 
         # Collect warnings during type checking
         self.warnings: list[TypeCheckWarning] = []
-        
+
         # Const evaluator for bounds checking
         self.const_evaluator = ConstEvaluator(self.symbol_table)
+
+        # Initialize validators (lazily created to avoid circular init)
+        self._match_validator: Optional[MatchValidator] = None
+        self._struct_validator: Optional[StructValidator] = None
+        self._call_validator: Optional[CallValidator] = None
+        self._pointer_validator: Optional[PointerValidator] = None
+
+    @property
+    def match_validator(self) -> MatchValidator:
+        """Lazy initialization of match validator."""
+        if self._match_validator is None:
+            self._match_validator = MatchValidator(self.check_expression)
+        return self._match_validator
+
+    @property
+    def struct_validator(self) -> StructValidator:
+        """Lazy initialization of struct validator."""
+        if self._struct_validator is None:
+            self._struct_validator = StructValidator(
+                self.symbol_table, self.const_evaluator,
+                self.check_expression, self._check_type_match
+            )
+        return self._struct_validator
+
+    @property
+    def call_validator(self) -> CallValidator:
+        """Lazy initialization of call validator."""
+        if self._call_validator is None:
+            self._call_validator = CallValidator(
+                self.symbol_table, self._lookup_function_decl,
+                self.check_expression, lambda: self.current_mode
+            )
+        return self._call_validator
+
+    @property
+    def pointer_validator(self) -> PointerValidator:
+        """Lazy initialization of pointer validator."""
+        if self._pointer_validator is None:
+            self._pointer_validator = PointerValidator(self.check_expression)
+        return self._pointer_validator
 
     def warn(self, message: str, source_loc=None):
         """Emit a type checking warning."""
@@ -633,7 +677,7 @@ class TypeChecker:
             return reg_type
 
         elif isinstance(expr, HIRFunctionAddress):
-            return self.check_function_address(expr)
+            return self.call_validator.check_function_address(expr)
 
         elif isinstance(expr, HIRBinaryOp):
             return self.check_binary_op(expr)
@@ -645,10 +689,10 @@ class TypeChecker:
             return self.check_type_cast(expr)
 
         elif isinstance(expr, HIRFunctionCall):
-            return self.check_function_call(expr)
+            return self.call_validator.check_function_call(expr)
 
         elif isinstance(expr, HIRMethodCall):
-            return self.check_method_call(expr)
+            return self.call_validator.check_method_call(expr)
 
         elif isinstance(expr, HIRArrayIndex):
             return self.check_array_index(expr)
@@ -660,10 +704,10 @@ class TypeChecker:
             return self.check_assignment(expr)
 
         elif isinstance(expr, HIRDereference):
-            return self.check_dereference(expr)
+            return self.pointer_validator.check_dereference(expr)
 
         elif isinstance(expr, HIRAddressOf):
-            return self.check_addressof(expr)
+            return self.pointer_validator.check_addressof(expr)
 
         elif isinstance(expr, HIRIncludeBytesExpr):
             # include_bytes! returns an array of bytes
@@ -710,14 +754,14 @@ class TypeChecker:
 
         elif isinstance(expr, HIRStringLiteral):
             # String literal for byte array initialization
-            return self.check_string_literal(expr, context_type)
+            return StringValidator.check_string_literal(expr, context_type)
 
         elif isinstance(expr, HIRStructLiteralExpr):
             # Struct literal: Player { x: 10, y: 20, health: 100 }
-            return self.check_struct_literal(expr)
+            return self.struct_validator.check_struct_literal(expr)
 
         elif isinstance(expr, HIRMatchExpression):
-            return self.check_match_expression(expr)
+            return self.match_validator.check_match_expression(expr)
 
         else:
             raise TypeCheckError(
@@ -836,313 +880,6 @@ class TypeChecker:
         expr.expr_type = target_type
         return target_type
 
-    def check_function_call(self, expr: HIRFunctionCall) -> TypeInfo:
-        """
-        Type check function call.
-
-        Supports both:
-        - Direct calls: expr.func is HIRIdentifier pointing to function
-        - Indirect calls: expr.func is expression with function pointer type
-        - Built-in calls: expr.builtin_name is set
-
-        Checks:
-        - Argument types match parameters
-        - Return type
-        - Mode compatibility between caller and callee (for direct calls)
-        """
-        # Check if this is a built-in function call
-        if expr.builtin_name:
-            return self._check_builtin_call(expr)
-
-        # Handle direct call vs indirect call
-        if isinstance(expr.func, HIRIdentifier) and expr.func.symbol.kind == SymbolKind.FUNCTION:
-            # Direct call to a function
-            func_symbol = expr.func.symbol
-
-            # Look up HIR function declaration from program
-            func_decl = self._lookup_function_decl(func_symbol.name, expr.source_loc)
-
-            # Check argument count
-            if len(expr.args) != len(func_decl.parameters):
-                raise TypeCheckError(
-                    f"Function '{func_symbol.name}' expects {len(func_decl.parameters)} arguments, got {len(expr.args)}",
-                    source_loc=expr.source_loc
-                )
-
-            # Type check each argument
-            for i, (arg, param) in enumerate(zip(expr.args, func_decl.parameters)):
-                arg_type = self.check_expression(arg)
-                # Check arg_type matches param.param_type
-                # NeverTypeInfo is compatible with any type (represents non-returning code)
-                if not isinstance(arg_type, NeverTypeInfo):
-                    if not TypeUtils.types_equal(arg_type, param.param_type):
-                        raise TypeCheckError(
-                            f"Argument {i + 1} to '{func_symbol.name}' has type {arg_type}, "
-                            f"expected {param.param_type} for parameter '{param.name}'",
-                            source_loc=arg.source_loc if hasattr(arg, 'source_loc') else expr.source_loc
-                        )
-
-            # Check mode compatibility (only for direct calls)
-            self._check_call_mode_compatibility(func_symbol.name, func_decl, expr.source_loc)
-
-            # Set return type
-            if func_decl.return_type:
-                expr.expr_type = func_decl.return_type
-            else:
-                # Void function
-                expr.expr_type = BasicTypeInfo('void')
-
-        else:
-            # Handle indirect call (function pointer) - type check the expression
-            from r65.compiler.hir.types import FunctionTypeInfo
-            func_type = self.check_expression(expr.func)
-
-            if not isinstance(func_type, FunctionTypeInfo):
-                raise TypeCheckError(
-                    f"Cannot call expression of type {func_type}, expected function or function pointer",
-                    source_loc=expr.source_loc
-                )
-
-            # Check argument count matches function type
-            if len(expr.args) != len(func_type.param_types):
-                raise TypeCheckError(
-                    f"Function pointer expects {len(func_type.param_types)} arguments, got {len(expr.args)}",
-                    source_loc=expr.source_loc
-                )
-
-            # Type check each argument against function type
-            for i, (arg, param_type) in enumerate(zip(expr.args, func_type.param_types)):
-                arg_type = self.check_expression(arg)
-                # Check arg_type matches param_type
-                # NeverTypeInfo is compatible with any type (represents non-returning code)
-                if not isinstance(arg_type, NeverTypeInfo):
-                    if not TypeUtils.types_equal(arg_type, param_type):
-                        raise TypeCheckError(
-                            f"Argument {i + 1} to function pointer has type {arg_type}, "
-                            f"expected {param_type}",
-                            source_loc=arg.source_loc if hasattr(arg, 'source_loc') else expr.source_loc
-                        )
-
-            # Set return type from function type
-            if func_type.return_type:
-                expr.expr_type = func_type.return_type
-            else:
-                expr.expr_type = BasicTypeInfo('void')
-
-        return expr.expr_type
-
-    def _check_builtin_call(self, expr: HIRFunctionCall) -> TypeInfo:
-        """
-        Type check built-in function call.
-
-        Built-ins are validated at HIR construction, so we just need to:
-        1. Type check arguments
-        2. Set the return type
-
-        Args:
-            expr: HIRFunctionCall with builtin_name set
-
-        Returns:
-            Return type of the built-in
-        """
-        from r65.compiler.builtins import BuiltinRegistry
-
-        builtin = BuiltinRegistry.get_builtin(expr.builtin_name)
-        if not builtin:
-            raise TypeCheckError(
-                f"Unknown built-in function: {expr.builtin_name}",
-                source_loc=expr.source_loc
-            )
-
-        # Type check arguments
-        for arg in expr.args:
-            # For size_of, don't try to type-check type identifiers like "Point" or "u8"
-            if builtin.kind.value == "type_info" and expr.builtin_name == "size_of":
-                if isinstance(arg, HIRIdentifier):
-                    # This is a type identifier for size_of - skip type checking
-                    continue
-                elif isinstance(arg, HIRArrayIndex):
-                    # This is an array type like [u8; 10] - skip type checking
-                    continue
-            self.check_expression(arg)
-
-        # Handle const built-ins specially (like size_of)
-        if builtin.kind.value == "type_info":
-            if expr.builtin_name == "size_of":
-                return self._check_size_of_builtin(expr)
-            else:
-                raise TypeCheckError(
-                    f"Unknown type info built-in: {expr.builtin_name}",
-                    source_loc=expr.source_loc
-                )
-
-        # Set return type
-        if builtin.returns_value:
-            # Built-ins that return values (mul, div, mod, shl, shr, rotate_*)
-            # return the same type as their first argument
-            if expr.args:
-                first_arg_type = expr.args[0].expr_type
-                if isinstance(first_arg_type, BasicTypeInfo) and first_arg_type.name in ('u8', 'i8', 'u16', 'i16'):
-                    expr.expr_type = first_arg_type
-                else:
-                    # Fallback for non-integer types (shouldn't happen with valid code)
-                    expr.expr_type = BasicTypeInfo('u8')
-            else:
-                # No arguments - shouldn't happen for value-returning builtins
-                expr.expr_type = BasicTypeInfo('u8')
-        else:
-            # Void return
-            expr.expr_type = BasicTypeInfo('void')
-
-        return expr.expr_type
-
-    def check_method_call(self, expr: HIRMethodCall) -> TypeInfo:
-        """
-        Type check method call (e.g., value.rotate_left(3)).
-
-        Currently only supports rotate_left and rotate_right methods on integer types.
-
-        Args:
-            expr: HIRMethodCall to type check
-
-        Returns:
-            Return type of the method
-        """
-        from r65.compiler.hir import HIRIntegerLiteral
-
-        # Type check receiver
-        receiver_type = self.check_expression(expr.receiver)
-
-        # Validate receiver is an integer type
-        if not isinstance(receiver_type, BasicTypeInfo) or receiver_type.name not in ['u8', 'i8', 'u16', 'i16']:
-            raise TypeCheckError(
-                f"Method '{expr.method_name}' can only be called on integer types, not {receiver_type}",
-                source_loc=expr.source_loc
-            )
-
-        # Validate method name
-        if expr.method_name not in ['rotate_left', 'rotate_right']:
-            raise TypeCheckError(
-                f"Unknown method '{expr.method_name}' for type {receiver_type}",
-                source_loc=expr.source_loc
-            )
-
-        # Type check argument (rotation count)
-        if len(expr.args) != 1:
-            raise TypeCheckError(
-                f"{expr.method_name}() takes exactly 1 argument, got {len(expr.args)}",
-                source_loc=expr.source_loc
-            )
-
-        count_arg = expr.args[0]
-        self.check_expression(count_arg)  # Type check the argument
-
-        # Validate count is an integer literal (compile-time constant)
-        if not isinstance(count_arg, HIRIntegerLiteral):
-            raise TypeCheckError(
-                f"{expr.method_name}() count must be a constant integer literal",
-                source_loc=count_arg.source_loc
-            )
-
-        # Validate count is in range 1-8
-        count_value = count_arg.value
-        if not (1 <= count_value <= 8):
-            raise TypeCheckError(
-                f"{expr.method_name}() count must be between 1 and 8, got {count_value}",
-                source_loc=count_arg.source_loc
-            )
-
-        # Return type is same as receiver type
-        expr.expr_type = receiver_type
-        return expr.expr_type
-
-    def check_function_address(self, expr: HIRFunctionAddress) -> TypeInfo:
-        """
-        Type check function address expression.
-
-        Returns a FunctionTypeInfo representing the function pointer type.
-        """
-        from r65.compiler.hir.types import FunctionTypeInfo
-
-        # Look up function symbol
-        func_symbol = expr.symbol
-        if not func_symbol:
-            raise TypeCheckError(
-                f"Function '{expr.function_name}' not resolved",
-                source_loc=expr.source_loc
-            )
-
-        # Find function declaration
-        func_decl = self._lookup_function_decl(func_symbol.name, expr.source_loc)
-
-        # Build function type from declaration
-        param_types = [param.param_type for param in func_decl.parameters]
-
-        func_type = FunctionTypeInfo(
-            is_far=func_decl.is_far,
-            param_types=param_types,
-            return_type=func_decl.return_type
-        )
-
-        expr.expr_type = func_type
-        return func_type
-
-    def _check_call_mode_compatibility(self, func_name: str, func_decl: HIRFunctionDecl, source_loc):
-        """
-        Check mode compatibility between caller and callee.
-
-        Rules:
-        - Mixed-mode calls are allowed
-        - transition=none: No automatic mode switching (programmer handles)
-        - transition=auto: Callee generates wrapper (PHP/SEP-REP/body/PLP/RTS)
-        - transition=caller: Caller generates wrapper
-        - transition=auto + preserves(STATUS) is an error (conflicting)
-        """
-        # Get callee mode
-        if func_decl.mode_attr:
-            callee_mode = ProcessorMode.from_attribute(func_decl.mode_attr)
-        else:
-            callee_mode = ProcessorMode.unknown()
-
-        # Get caller mode (current mode in context)
-        caller_mode = self.current_mode
-
-        # Check if modes are compatible
-        if caller_mode == callee_mode:
-            # Same mode - no issue
-            return
-
-        # Check if both modes are fully known
-        if not caller_mode.is_fully_known() or not callee_mode.is_fully_known():
-            # Unknown mode - can't check compatibility
-            return
-
-        # Modes differ - check transition attribute
-        mode_attr = func_decl.mode_attr
-        if mode_attr and hasattr(mode_attr, 'transition'):
-            transition = mode_attr.transition
-        else:
-            transition = ModeTransition.NONE  # Default
-
-        # Validate transition=inline doesn't conflict with preserves(STATUS)
-        if transition == ModeTransition.INLINE:
-            if func_decl.preserves_attr and 'STATUS' in func_decl.preserves_attr.registers:
-                raise TypeCheckError(
-                    f"Function '{func_name}' cannot use transition=inline with #[preserves(STATUS)]\n"
-                    f"  transition=inline requires modifying STATUS to switch modes, which conflicts with preservation",
-                    source_loc=source_loc
-                )
-
-        # If modes don't match and transition=none, this is an error
-        if transition == ModeTransition.NONE:
-            raise TypeCheckError(
-                f"Cannot call function '{func_name}' with mismatched processor modes\n"
-                f"  Caller mode: {caller_mode}\n"
-                f"  Callee mode: {callee_mode}\n"
-                f"  Fix: Add transition attribute to callee: #[mode(..., transition=inline)] or #[mode(..., transition=caller)]",
-                source_loc=source_loc
-            )
-
     def check_array_index(self, expr: HIRArrayIndex) -> TypeInfo:
         """Type check array indexing."""
         array_type = self.check_expression(expr.array)
@@ -1229,242 +966,6 @@ class TypeChecker:
         expr.field_offset = field.offset
         return expr.expr_type
 
-    def check_dereference(self, expr: HIRDereference) -> TypeInfo:
-        """Type check pointer dereference (*ptr)."""
-        from r65.compiler.hir.types import PointerTypeInfo
-
-        pointer_type = self.check_expression(expr.pointer)
-
-        # Pointer must be a pointer type
-        if not isinstance(pointer_type, PointerTypeInfo):
-            raise TypeCheckError(
-                f"Cannot dereference non-pointer type {pointer_type}",
-                source_loc=expr.pointer.source_loc
-            )
-
-        # Dereference yields the pointee type
-        expr.expr_type = pointer_type.pointee_type
-        return expr.expr_type
-
-    def check_addressof(self, expr: HIRAddressOf) -> TypeInfo:
-        """Type check address-of operator (&variable)."""
-        from r65.compiler.hir.types import PointerTypeInfo
-        from r65.compiler.hir import HIRIdentifier, HIRArrayIndex, HIRFieldAccess
-
-        operand_type = self.check_expression(expr.operand)
-
-        # Operand must be an lvalue (identifier, array index, or field access)
-        if not isinstance(expr.operand, (HIRIdentifier, HIRArrayIndex, HIRFieldAccess)):
-            raise TypeCheckError(
-                f"Cannot take address of non-lvalue expression",
-                source_loc=expr.operand.source_loc
-            )
-
-        # Determine if far pointer is needed based on storage attribute
-        # RAM ($7E2000+) and ROM are in different banks, requiring far pointers
-        is_far = self._needs_far_pointer(expr.operand)
-
-        pointer_type = PointerTypeInfo(is_far=is_far, pointee_type=operand_type)
-        expr.expr_type = pointer_type
-        return expr.expr_type
-
-    def _needs_far_pointer(self, operand: HIRExpression) -> bool:
-        """
-        Determine if taking address of operand requires a far pointer.
-
-        Far pointers (24-bit) are needed for:
-        - #[ram] variables: stored in bank $7E ($7E2000-$7FFFFF)
-        - #[rom] variables: stored in ROM banks
-
-        Near pointers (16-bit) are sufficient for:
-        - #[zeropage] variables: bank 0 ($0000-$00FF)
-        - #[lowram] variables: bank 0 ($0000-$1FFF)
-        - #[hw] variables: typically bank 0
-        - Local variables: on stack in current bank
-
-        Args:
-            operand: The expression being addressed
-
-        Returns:
-            True if far pointer needed, False for near pointer
-        """
-        from r65.compiler.hir import HIRStaticDecl
-        from r65.compiler.hir.attributes import StorageAttribute, StorageKind
-
-        # Only identifiers can have storage attributes
-        if not isinstance(operand, HIRIdentifier):
-            return False
-
-        symbol = operand.symbol
-        if not symbol or not symbol.definition:
-            return False
-
-        # Check if it's a static variable with storage attribute
-        if not isinstance(symbol.definition, HIRStaticDecl):
-            return False
-
-        static_decl = symbol.definition
-        if not static_decl.storage_attr:
-            return False
-
-        if not isinstance(static_decl.storage_attr, StorageAttribute):
-            return False
-
-        # RAM and ROM require far pointers (different banks)
-        storage_kind = static_decl.storage_attr.storage_kind
-        return storage_kind in (StorageKind.RAM, StorageKind.ROM)
-
-    def check_match_expression(self, expr: HIRMatchExpression) -> TypeInfo:
-        """Type check match expression."""
-        from r65.compiler.hir import (HIRLiteralPattern, HIREnumPattern, HIRWildcardPattern,
-                                       HIRIdentifierPattern, HIROrPattern)
-
-        # Check scrutinee type
-        scrutinee_type = self.check_expression(expr.scrutinee)
-
-        # Check each arm
-        arm_types = []
-        has_wildcard = False
-
-        for arm in expr.arms:
-            # Check pattern matches scrutinee type and check for wildcard/identifier
-            if self._check_pattern(arm.pattern, scrutinee_type):
-                has_wildcard = True
-
-            # Check arm body
-            body_type = self.check_expression(arm.body)
-            arm_types.append(body_type)
-
-        # All arms must return compatible types
-        if not arm_types:
-            raise TypeCheckError(
-                "Match expression must have at least one arm",
-                source_loc=expr.source_loc
-            )
-
-        # Use first arm's type as the expected type
-        result_type = arm_types[0]
-        for i, arm_type in enumerate(arm_types[1:], 1):
-            if not TypeUtils.types_equal(result_type, arm_type):
-                raise TypeCheckError(
-                    f"Match arm {i} returns type {arm_type}, expected {result_type}",
-                    source_loc=expr.arms[i].body.source_loc
-                )
-
-        # Exhaustiveness check: must have wildcard/identifier pattern or cover all cases
-        if not has_wildcard:
-            self._check_match_exhaustiveness(expr, scrutinee_type)
-
-        expr.expr_type = result_type
-        return result_type
-
-    def _check_match_exhaustiveness(self, expr: HIRMatchExpression, scrutinee_type: TypeInfo):
-        """
-        Check that match expression covers all possible values.
-
-        For bool: must cover both true and false
-        For enum: must cover all variants
-        For integers: must have wildcard (too many values to enumerate)
-        """
-        from r65.compiler.hir import HIRLiteralPattern, HIREnumPattern, HIROrPattern
-        from r65.compiler.hir.types import EnumTypeInfo
-
-        # Collect all covered values/variants
-        covered_values = set()
-        covered_variants = set()
-
-        def collect_patterns(pattern):
-            """Recursively collect covered values from pattern."""
-            if isinstance(pattern, HIRLiteralPattern):
-                covered_values.add(pattern.value)
-            elif isinstance(pattern, HIREnumPattern):
-                covered_variants.add(pattern.variant_name)
-            elif isinstance(pattern, HIROrPattern):
-                for subpat in pattern.patterns:
-                    collect_patterns(subpat)
-
-        for arm in expr.arms:
-            collect_patterns(arm.pattern)
-
-        # Check exhaustiveness based on scrutinee type
-        if isinstance(scrutinee_type, BasicTypeInfo):
-            if scrutinee_type.name == 'bool':
-                # Bool must cover both true and false
-                missing = []
-                if True not in covered_values:
-                    missing.append('true')
-                if False not in covered_values:
-                    missing.append('false')
-                if missing:
-                    raise TypeCheckError(
-                        f"Non-exhaustive match: missing patterns for {', '.join(missing)}",
-                        source_loc=expr.source_loc
-                    )
-            elif scrutinee_type.name in ('u8', 'i8', 'u16', 'i16'):
-                # Integer types need wildcard - too many values to enumerate
-                raise TypeCheckError(
-                    f"Non-exhaustive match on {scrutinee_type}: "
-                    f"add a wildcard pattern '_' to cover remaining values",
-                    source_loc=expr.source_loc
-                )
-
-        elif isinstance(scrutinee_type, EnumTypeInfo):
-            # Enum must cover all variants
-            if scrutinee_type.definition:
-                all_variants = {v.name for v in scrutinee_type.definition.variants}
-                missing = all_variants - covered_variants
-                if missing:
-                    missing_list = ', '.join(sorted(missing))
-                    raise TypeCheckError(
-                        f"Non-exhaustive match on {scrutinee_type.name}: "
-                        f"missing patterns for {missing_list}",
-                        source_loc=expr.source_loc
-                    )
-
-    def _check_pattern(self, pattern, scrutinee_type: TypeInfo) -> bool:
-        """
-        Check if pattern is valid for scrutinee type.
-        Returns True if pattern is a catch-all (wildcard or identifier).
-        """
-        from r65.compiler.hir import (HIRLiteralPattern, HIREnumPattern, HIRWildcardPattern,
-                                       HIRIdentifierPattern, HIROrPattern)
-
-        if isinstance(pattern, HIRLiteralPattern):
-            # Literal must match scrutinee type
-            if isinstance(pattern.value, bool):
-                if scrutinee_type.name != 'bool':
-                    raise TypeCheckError(f"Cannot match bool literal against {scrutinee_type}")
-            elif isinstance(pattern.value, int):
-                if scrutinee_type.name not in ('u8', 'i8', 'u16', 'i16'):
-                    raise TypeCheckError(f"Cannot match integer literal against {scrutinee_type}")
-            return False
-
-        elif isinstance(pattern, HIREnumPattern):
-            # Enum pattern must match enum type
-            # scrutinee should be the enum's underlying integer type
-            return False
-
-        elif isinstance(pattern, HIRWildcardPattern):
-            # Wildcard always matches
-            return True
-
-        elif isinstance(pattern, HIRIdentifierPattern):
-            # Identifier pattern always matches and binds the value
-            # Set the symbol's type to the scrutinee type
-            pattern.symbol.var_type = scrutinee_type
-            return True
-
-        elif isinstance(pattern, HIROrPattern):
-            # Or pattern: check all sub-patterns
-            is_catchall = False
-            for subpat in pattern.patterns:
-                if self._check_pattern(subpat, scrutinee_type):
-                    is_catchall = True
-            return is_catchall
-
-        else:
-            raise TypeCheckError(f"Unknown pattern type: {type(pattern).__name__}")
-
     def check_assignment(self, expr: HIRAssignment) -> TypeInfo:
         """Type check assignment."""
         target_type = self.check_expression(expr.target)
@@ -1489,311 +990,3 @@ class TypeChecker:
 
         expr.expr_type = target_type
         return target_type
-
-    def check_struct_literal(self, expr: HIRStructLiteralExpr) -> TypeInfo:
-        """Type check struct literal expression."""
-        from r65.compiler.hir import HIRStructDecl
-
-        # Look up struct declaration
-        struct_symbol = self.symbol_table.lookup(expr.struct_name)
-        if not struct_symbol:
-            raise TypeCheckError(
-                f"Undefined struct: {expr.struct_name}",
-                source_loc=expr.source_loc
-            )
-
-        if struct_symbol.kind != SymbolKind.STRUCT:
-            raise TypeCheckError(
-                f"'{expr.struct_name}' is not a struct type",
-                source_loc=expr.source_loc
-            )
-
-        # Get struct definition
-        struct_def = struct_symbol.definition
-        if not struct_def:
-            raise TypeCheckError(
-                f"Struct '{expr.struct_name}' has no definition",
-                source_loc=expr.source_loc
-            )
-
-        # Build expected fields map from struct definition
-        expected_fields = {}
-        if isinstance(struct_def, HIRStructDecl):
-            for field in struct_def.fields:
-                expected_fields[field.name] = field.field_type
-        else:
-            # AST struct definition - resolve types
-            from r65.compiler.hir.types import TypeResolver
-            type_resolver = TypeResolver(self.symbol_table, self.const_evaluator)
-            for field in struct_def.fields:
-                expected_fields[field.name] = type_resolver.resolve_type(field.field_type)
-
-        # Check each field initializer
-        provided_fields = set()
-        for field_init in expr.fields:
-            if field_init.name in provided_fields:
-                raise TypeCheckError(
-                    f"Field '{field_init.name}' initialized multiple times",
-                    source_loc=expr.source_loc
-                )
-            provided_fields.add(field_init.name)
-
-            if field_init.name not in expected_fields:
-                raise TypeCheckError(
-                    f"Struct '{expr.struct_name}' has no field '{field_init.name}'",
-                    source_loc=expr.source_loc
-                )
-
-            expected_type = expected_fields[field_init.name]
-            actual_type = self.check_expression(field_init.value, expected_type)
-            self._check_type_match(
-                expected_type, actual_type, field_init.value,
-                f"field '{field_init.name}'", expr.source_loc, use_compatible=True
-            )
-
-        # Check for missing fields
-        missing_fields = set(expected_fields.keys()) - provided_fields
-        if missing_fields:
-            missing_list = ', '.join(sorted(missing_fields))
-            raise TypeCheckError(
-                f"Missing fields in struct literal: {missing_list}",
-                source_loc=expr.source_loc
-            )
-
-        # Create struct type
-        struct_type = StructTypeInfo(
-            name=expr.struct_name,
-            definition=struct_def if isinstance(struct_def, HIRStructDecl) else None
-        )
-        expr.expr_type = struct_type
-        return struct_type
-
-    def check_string_literal(self, expr: HIRStringLiteral, context_type: Optional[TypeInfo]) -> TypeInfo:
-        """
-        Type check string literal for byte array initialization.
-
-        String literals are only valid as initializers for u8 arrays.
-        Extended ASCII (0x00-0xFF) is allowed; UTF-8 multi-byte characters are rejected.
-        Escape sequences: \\n, \\t, \\r, \\0, \\\\, \\", \\x##
-
-        Args:
-            expr: String literal expression
-            context_type: Expected type (must be [u8; N])
-
-        Returns:
-            ArrayTypeInfo with u8 element type
-        """
-        from r65.compiler.hir.types import ArrayTypeInfo
-
-        # Validate context: string literals only allowed in u8 array context
-        if context_type is None:
-            raise TypeCheckError(
-                "String literals are only allowed as static array initializers",
-                source_loc=expr.source_loc
-            )
-
-        if not isinstance(context_type, ArrayTypeInfo):
-            raise TypeCheckError(
-                f"String literal cannot be assigned to non-array type '{context_type}'",
-                source_loc=expr.source_loc
-            )
-
-        elem_type = context_type.element_type
-        if not isinstance(elem_type, BasicTypeInfo) or elem_type.name != 'u8':
-            raise TypeCheckError(
-                f"String literal can only initialize [u8; N] arrays, not [{elem_type}; N]",
-                source_loc=expr.source_loc
-            )
-
-        # Process escape sequences and validate characters
-        try:
-            byte_values = self._process_string_to_bytes(expr.value, expr.source_loc)
-        except TypeCheckError:
-            raise
-
-        string_len = len(byte_values)
-        array_size = context_type.size
-
-        # Validate size constraints
-        if string_len > array_size:
-            raise TypeCheckError(
-                f"String literal ({string_len} bytes) is larger than array size ({array_size})",
-                source_loc=expr.source_loc
-            )
-
-        # Store processed bytes for code generation (zero-padded if shorter)
-        expr.processed_bytes = byte_values
-
-        # Return array type matching context
-        array_type = ArrayTypeInfo(element_type=BasicTypeInfo('u8'), size=array_size)
-        expr.expr_type = array_type
-        return array_type
-
-    def _process_string_to_bytes(self, raw_string: str, source_loc) -> list:
-        """
-        Process a raw string into a list of byte values.
-
-        Handles escape sequences and validates Extended ASCII.
-
-        Args:
-            raw_string: Raw string value (escape sequences not yet processed)
-            source_loc: Source location for error reporting
-
-        Returns:
-            List of integer byte values (0x00-0xFF)
-        """
-        result = []
-        i = 0
-        while i < len(raw_string):
-            char = raw_string[i]
-
-            if char == '\\' and i + 1 < len(raw_string):
-                # Escape sequence
-                next_char = raw_string[i + 1]
-                if next_char == 'n':
-                    result.append(0x0A)  # newline
-                    i += 2
-                elif next_char == 't':
-                    result.append(0x09)  # tab
-                    i += 2
-                elif next_char == 'r':
-                    result.append(0x0D)  # carriage return
-                    i += 2
-                elif next_char == '0':
-                    result.append(0x00)  # null
-                    i += 2
-                elif next_char == '\\':
-                    result.append(0x5C)  # backslash
-                    i += 2
-                elif next_char == '"':
-                    result.append(0x22)  # double quote
-                    i += 2
-                elif next_char == 'x':
-                    # Hex escape: \x##
-                    if i + 3 >= len(raw_string):
-                        raise TypeCheckError(
-                            f"Invalid hex escape sequence at end of string",
-                            source_loc=source_loc
-                        )
-                    hex_digits = raw_string[i + 2:i + 4]
-                    try:
-                        byte_val = int(hex_digits, 16)
-                        result.append(byte_val)
-                        i += 4
-                    except ValueError:
-                        raise TypeCheckError(
-                            f"Invalid hex escape sequence '\\x{hex_digits}'",
-                            source_loc=source_loc
-                        )
-                else:
-                    raise TypeCheckError(
-                        f"Unknown escape sequence '\\{next_char}'",
-                        source_loc=source_loc
-                    )
-            else:
-                # Regular character - validate Extended ASCII
-                code_point = ord(char)
-                if code_point > 255:
-                    raise TypeCheckError(
-                        f"Character '{char}' (U+{code_point:04X}) is not valid Extended ASCII. "
-                        f"Only characters 0x00-0xFF are allowed.",
-                        source_loc=source_loc
-                    )
-                result.append(code_point)
-                i += 1
-
-        return result
-
-    def _check_size_of_builtin(self, expr: HIRFunctionCall) -> TypeInfo:
-        """
-        Type check size_of built-in function call.
-        
-        size_of expects a single type argument and returns u8 (or u16 for large types).
-        The argument must be a type identifier, not a value expression.
-        """
-        if len(expr.args) != 1:
-            raise TypeCheckError(
-                "size_of expects exactly 1 argument",
-                source_loc=expr.source_loc
-            )
-        
-        arg = expr.args[0]
-        
-        # For size_of, the argument should be a type identifier
-        if isinstance(arg, HIRIdentifier):
-            type_name = arg.name
-            
-            # Basic types
-            if type_name in ['u8', 'i8', 'bool']:
-                expr.evaluated_size = 1
-                expr.expr_type = BasicTypeInfo('u8')
-                return expr.expr_type
-            elif type_name in ['u16', 'i16']:
-                expr.evaluated_size = 2
-                expr.expr_type = BasicTypeInfo('u8')
-                return expr.expr_type
-            
-            # Look up struct or enum
-            symbol = self.symbol_table.lookup(type_name)
-            if symbol is None:
-                raise TypeCheckError(
-                    f"Unknown type: {type_name}",
-                    source_loc=expr.source_loc
-                )
-            
-            if symbol.kind.value == "struct":
-                # Calculate struct size using existing type utilities
-                from r65.compiler.hir import StructTypeInfo
-                struct_type = StructTypeInfo(name=type_name, definition=symbol.definition)
-                try:
-                    from r65.compiler.hir.unified_type_utils import get_unified_type_size
-                    size = get_unified_type_size(struct_type, self.symbol_table)
-                    expr.evaluated_size = size
-                    expr.expr_type = BasicTypeInfo('u8') if size <= 255 else BasicTypeInfo('u16')
-                    return expr.expr_type
-                except Exception:
-                    raise TypeCheckError(
-                        f"Cannot determine size of struct '{type_name}'",
-                        source_loc=expr.source_loc
-                    )
-            
-            elif symbol.kind.value == "enum":
-                # Enums are u8 by default
-                expr.evaluated_size = 1
-                expr.expr_type = BasicTypeInfo('u8')
-                return expr.expr_type
-            
-            else:
-                raise TypeCheckError(
-                    f"'{type_name}' is not a valid type for size_of",
-                    source_loc=arg.source_loc
-                )
-        
-        elif isinstance(arg, HIRArrayIndex):
-            # Array type - get element type and multiply by length
-            element_type = arg.expr_type
-            if not isinstance(element_type, ArrayTypeInfo):
-                raise TypeCheckError(
-                    "size_of expects a type identifier or array type",
-                    source_loc=arg.source_loc
-                )
-            
-            # Calculate array size = element_size * size
-            try:
-                from r65.compiler.hir.unified_type_utils import get_unified_type_size
-                element_size = get_unified_type_size(element_type.element_type, self.symbol_table)
-                array_size = element_size * element_type.size
-                expr.evaluated_size = array_size
-                expr.expr_type = BasicTypeInfo('u8') if array_size <= 255 else BasicTypeInfo('u16')
-                return expr.expr_type
-            except Exception:
-                raise TypeCheckError(
-                    f"Cannot determine size of array type",
-                    source_loc=arg.source_loc
-                )
-        
-        else:
-            raise TypeCheckError(
-                "size_of expects a type identifier (like u8, Player, etc.), not a value expression",
-                source_loc=arg.source_loc
-            )
