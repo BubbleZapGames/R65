@@ -62,10 +62,17 @@ class CompareSelector(BaseSelector):
         self.parent.last_comparison_type = instr.type_info
 
         left_loc = self.parent._get_operand_location(instr.left)
-        right_operand, is_immediate = self._prepare_right_operand(instr.right)
+        right_operand, is_immediate, pushed_reg = self._prepare_right_operand(instr.right)
 
         # Emit appropriate comparison instruction based on left operand
         self._emit_comparison(left_loc, right_operand, is_immediate)
+
+        # Pop register if we pushed it for temp storage
+        if pushed_reg:
+            if pushed_reg == 'X':
+                self._emit_instr(Opcode.PLX, comment="Restore X")
+            elif pushed_reg == 'Y':
+                self._emit_instr(Opcode.PLY, comment="Restore Y")
 
     def _prepare_right_operand(self, right):
         """
@@ -77,33 +84,58 @@ class CompareSelector(BaseSelector):
             right: Right operand
 
         Returns:
-            Tuple of (operand, is_immediate) for comparison emission
+            Tuple of (operand, is_immediate, needs_pop) for comparison emission
+            needs_pop is True if we pushed X/Y and need to pop after comparison
         """
         if isinstance(right, MIRImmediate):
-            return Immediate(right.value & 0xFF), True
+            return Immediate(right.value & 0xFF), True, False
 
         right_loc = self.parent._get_operand_location(right)
 
         if right_loc.kind == LocationKind.HARDWARE:
-            self._store_hw_register_to_temp(right_loc)
-            return Address(0x00), False
+            operand, needs_pop = self._store_hw_register_to_temp(right_loc)
+            return operand, False, needs_pop
 
-        return right_loc, False
+        return right_loc, False, False
 
     def _store_hw_register_to_temp(self, right_loc):
-        """Store hardware register to temp location for comparison."""
-        if right_loc.hw_register == 'B':
-            self.parent._access_b_value_in_a()
-            self._emit_instr(Opcode.STA_DP, Address(0x00), "Store B to temp")
-            self.parent._ensure_xba_state_normal("Restore A")
-        elif right_loc.hw_register == 'A':
-            self._emit_instr(Opcode.STA_DP, Address(0x00), "Store A to temp")
-        elif right_loc.hw_register == 'X':
-            self._emit_instr(Opcode.STX_DP, Address(0x00), "Store X to temp")
-        elif right_loc.hw_register == 'Y':
-            self._emit_instr(Opcode.STY_DP, Address(0x00), "Store Y to temp")
+        """
+        Store hardware register to temp location for comparison.
+
+        Returns:
+            Tuple of (operand, needs_pop) where operand is Address or PhysicalLocation
+            and needs_pop indicates if PLX/PLY is needed after comparison
+        """
+        if right_loc.hw_register in ['A', 'B']:
+            # A and B can use stack-relative via STA
+            temp_loc = self.parent._get_temp_location()
+            if right_loc.hw_register == 'B':
+                self.parent._access_b_value_in_a()
+                self.parent._emit_store('STA', temp_loc, "Store B to temp")
+                self.parent._ensure_xba_state_normal("Restore A")
+            else:
+                self.parent._emit_store('STA', temp_loc, "Store A to temp")
+            return temp_loc, False
+
+        # X and Y need special handling - try scratch, fall back to push
+        temp_addr = self.parent._get_temp_address()
+        if temp_addr:
+            # Use scratch register
+            if right_loc.hw_register == 'X':
+                self._emit_instr(Opcode.STX_DP, temp_addr, "Store X to temp")
+            else:  # Y
+                self._emit_instr(Opcode.STY_DP, temp_addr, "Store Y to temp")
+            return temp_addr, False
         else:
-            raise InstructionSelectionError(f"Unsupported hardware register: {right_loc.hw_register}")
+            # No scratch available - use push/pop pattern
+            from r65.compiler.codegen.register_alloc import PhysicalLocation
+            if right_loc.hw_register == 'X':
+                self._emit_instr(Opcode.PHX, comment="Push X for temp")
+            else:  # Y
+                self._emit_instr(Opcode.PHY, comment="Push Y for temp")
+            # Stack-relative location at offset 1
+            temp_loc = PhysicalLocation(kind=LocationKind.STACK, stack_offset=1, size=1)
+            return temp_loc, right_loc.hw_register  # Return register name for pop
 
     def _emit_comparison(self, left_loc, right_operand, is_immediate: bool):
         """

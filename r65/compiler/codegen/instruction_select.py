@@ -27,6 +27,9 @@ from r65.compiler.errors import InstructionSelectionError
 from r65.compiler.codegen.instruction_select_helpers import (
     XBAState, XBAStateManager
 )
+from r65.compiler.codegen.hw_register_tracker import (
+    HardwareRegisterTracker, compute_vreg_last_uses
+)
 from r65.compiler.codegen.control_flow_select import ControlFlowInstructionSelector
 from r65.compiler.codegen.call_select import CallInstructionSelector
 from r65.compiler.codegen.memory_select import MemoryOperationSelector
@@ -82,6 +85,14 @@ class InstructionSelector:
 
         # Counter for generating unique labels
         self._label_counter = 0
+
+        # Hardware register state tracker for optimization
+        self.hw_tracker = HardwareRegisterTracker()
+        self._instruction_index = 0
+
+        # Initialize tracker from function parameters if available
+        if current_function:
+            self._init_hw_tracker(current_function)
 
     # ========================================================================
     # Opcode Selection Helpers
@@ -363,6 +374,158 @@ class InstructionSelector:
         self.xba_manager.store_to_b_from_a()
 
     # ========================================================================
+    # Hardware Register Tracking
+    # ========================================================================
+
+    def _init_hw_tracker(self, mir_func: 'MIRFunction'):
+        """
+        Initialize hardware register tracker from function parameters.
+
+        For parameters with register aliases (e.g., `idx @ X`), marks
+        the register as containing that parameter value and computes
+        when that value is last used.
+
+        Args:
+            mir_func: MIR function being generated
+        """
+        # Compute last use for each virtual register
+        vreg_last_uses = compute_vreg_last_uses(mir_func)
+
+        # Also track parameter symbols' last use
+        # This requires scanning the alias tracker
+        if hasattr(mir_func, 'alias_tracker') and mir_func.alias_tracker:
+            # For now, we'll compute liveness for aliased parameters
+            # by treating them similarly to vregs
+            pass
+
+        # Initialize tracker
+        self.hw_tracker.initialize_from_parameters(mir_func, vreg_last_uses)
+
+    def _advance_instruction(self):
+        """
+        Advance to the next instruction.
+
+        Updates the hardware register tracker's liveness information.
+        """
+        self._instruction_index += 1
+        self.hw_tracker.advance_to(self._instruction_index)
+
+    def _hw_reg_contains_vreg(self, reg_name: str, vreg) -> bool:
+        """
+        Check if a hardware register contains a specific virtual register value.
+
+        Args:
+            reg_name: Hardware register name ('A', 'X', 'Y')
+            vreg: VirtualRegister to check for
+
+        Returns:
+            True if the register contains that vreg's value
+        """
+        return self.hw_tracker.contains_vreg(reg_name, vreg)
+
+    def _hw_reg_is_free(self, reg_name: str) -> bool:
+        """
+        Check if a hardware register is free for scratch use.
+
+        A register is free if its value is no longer needed (dead).
+
+        Args:
+            reg_name: Hardware register name
+
+        Returns:
+            True if register can be used as scratch
+        """
+        return self.hw_tracker.is_free(reg_name)
+
+    def _find_vreg_in_hw_reg(self, vreg) -> str:
+        """
+        Find which hardware register (if any) contains a virtual register.
+
+        Args:
+            vreg: VirtualRegister to look for
+
+        Returns:
+            Register name ('A', 'X', 'Y') or None if not in any register
+        """
+        return self.hw_tracker.find_register_containing(vreg)
+
+    def _mark_hw_reg_clobbered(self, reg_name: str):
+        """
+        Mark a hardware register as clobbered (contents unknown).
+
+        Called when an instruction modifies a register.
+
+        Args:
+            reg_name: Register name ('A', 'X', 'Y')
+        """
+        self.hw_tracker.mark_clobbered(reg_name)
+
+    def _mark_hw_reg_contains_vreg(self, reg_name: str, vreg, last_use: int = -1):
+        """
+        Mark that a hardware register now contains a virtual register value.
+
+        Args:
+            reg_name: Register name
+            vreg: VirtualRegister that was loaded
+            last_use: Last instruction index where vreg is used
+        """
+        self.hw_tracker.mark_contains_vreg(reg_name, vreg, last_use)
+
+    # ========================================================================
+    # Temporary Storage Management
+    # ========================================================================
+
+    def _get_temp_location(self) -> PhysicalLocation:
+        """
+        Get a safe temporary location for instruction selection.
+
+        Returns a scratch register location if available, otherwise a stack slot.
+        This is used when we need to temporarily store a hardware register value
+        for operations that can't use hardware registers directly.
+
+        Returns:
+            PhysicalLocation for temporary storage
+        """
+        # First, try to find a free scratch register
+        if hasattr(self.reg_alloc, 'scratch_pool'):
+            for scratch in self.reg_alloc.scratch_pool.scratches:
+                if scratch.is_free:
+                    # Use this scratch register (mark temporarily busy)
+                    return PhysicalLocation(
+                        kind=LocationKind.SCRATCH,
+                        scratch_addr=scratch.address,
+                        size=scratch.size
+                    )
+
+        # No scratch available - use a dedicated stack slot
+        # We use a high stack offset that won't conflict with vreg allocation
+        # The register allocator uses stack_base_offset (0x16), so we use an offset above that
+        temp_stack_offset = 0x15  # Just below the vreg stack area
+        return PhysicalLocation(
+            kind=LocationKind.STACK,
+            stack_offset=temp_stack_offset,
+            size=1
+        )
+
+    def _get_temp_address(self) -> Address:
+        """
+        Get an Address object for the temp location.
+
+        This is a convenience method for cases where we need an Address
+        rather than a PhysicalLocation.
+
+        Returns:
+            Address for the temp location
+        """
+        temp_loc = self._get_temp_location()
+        if temp_loc.kind == LocationKind.SCRATCH:
+            return Address(temp_loc.scratch_addr)
+        else:
+            # Stack-relative - return as stack offset address
+            # Note: This requires stack-relative addressing mode
+            return StackOffset(temp_loc.stack_offset)
+
+    # ========================================================================
     # Main Dispatch
     # ========================================================================
 
@@ -425,6 +588,9 @@ class InstructionSelector:
             self.select_inline_asm(instr)
         else:
             raise InstructionSelectionError(f"Unsupported MIR instruction: {type(instr).__name__}")
+
+        # Advance instruction index for liveness tracking
+        self._advance_instruction()
 
     # ========================================================================
     # Memory/Move/TypeConvert Operations (delegated)
@@ -497,8 +663,17 @@ class InstructionSelector:
             # Transfer from other hardware register to A
             self._emit_register_transfer(left_loc.hw_register, 'A')
         else:
-            # Load left operand from memory/stack into A
-            self._emit_load('LDA', left_loc)
+            # OPTIMIZATION: Check if vreg value is already in X or Y
+            # If so, use TXA/TYA instead of loading from memory
+            hw_reg = None
+            if isinstance(instr.left, VirtualRegister):
+                hw_reg = self._find_vreg_in_hw_reg(instr.left)
+
+            if hw_reg and hw_reg in ('X', 'Y'):
+                self._emit_register_transfer(hw_reg, 'A')
+            else:
+                # Load left operand from memory/stack into A
+                self._emit_load('LDA', left_loc)
 
         # Perform operation
         if op == '+':
@@ -808,12 +983,61 @@ class InstructionSelector:
     # Helper Methods
     # ========================================================================
 
+    def _get_temp_location(self, size: int = 1) -> PhysicalLocation:
+        """
+        Get a safe temporary location for instruction selection.
+
+        Tries to use a scratch register from the pool first, falls back to
+        a dedicated stack slot if no scratch is available.
+
+        Args:
+            size: Size in bytes (1 or 2)
+
+        Returns:
+            PhysicalLocation for temporary storage
+        """
+        # Try to find a free scratch register from the pool
+        if self.reg_alloc.scratch_pool:
+            for scratch in self.reg_alloc.scratch_pool.scratches:
+                if scratch.is_free and scratch.size >= size:
+                    return PhysicalLocation(
+                        kind=LocationKind.SCRATCH,
+                        scratch_addr=scratch.address,
+                        size=size
+                    )
+
+        # No scratch available - use a dedicated stack slot
+        # Use a high offset that won't conflict with vreg allocations
+        # Stack grows down, so use offset past normal vreg slots
+        temp_stack_offset = 0x15  # Reserved temp slot
+        return PhysicalLocation(
+            kind=LocationKind.STACK,
+            stack_offset=temp_stack_offset,
+            size=size
+        )
+
+    def _get_temp_address(self) -> Address | None:
+        """
+        Get a safe temporary direct page address for storing hardware registers.
+
+        This is used when we need to store X/Y registers which don't support
+        stack-relative addressing.
+
+        Returns:
+            Address for temporary storage, or None if no scratch available
+        """
+        if self.reg_alloc.scratch_pool:
+            for scratch in self.reg_alloc.scratch_pool.scratches:
+                if scratch.is_free:
+                    return Address(scratch.address)
+        return None
+
     def _emit_binary_operation_with_operand(self, operation: str, right_operand, is_u16: bool):
         """
         Emit a binary operation with right operand.
 
         Handles immediate, memory, and hardware register operands.
-        For hardware registers, stores to temp location $00 first.
+        For hardware registers, stores to temp location first.
 
         Args:
             operation: Instruction mnemonic (ADC, SBC, AND, ORA, EOR)
@@ -831,17 +1055,38 @@ class InstructionSelector:
             if right_loc.kind == LocationKind.HARDWARE:
                 # Hardware register - must store to temp location first
                 # (65816 can't use hardware registers as operands for these ops)
-                temp_loc = PhysicalLocation(kind=LocationKind.SCRATCH, scratch_addr=0x00, size=1)
                 if right_loc.hw_register == 'B':
-                    # B register requires XBA to access
+                    # B register requires XBA to access - can use stack or scratch
+                    temp_loc = self._get_temp_location()
                     self._access_b_value_in_a()
                     self._emit_store('STA', temp_loc, "Store B to temp")
                     self._ensure_xba_state_normal("Restore A")
                     self._emit_op(operation, temp_loc)
-                elif right_loc.hw_register in ['A', 'X', 'Y']:
-                    store_opcode = self._STORE_DP_OPCODES[right_loc.hw_register]
-                    self.emitter.emit_instr(store_opcode, Address(0x00), f"Store {right_loc.hw_register} to temp")
+                elif right_loc.hw_register == 'A':
+                    # A can use stack-relative addressing
+                    temp_loc = self._get_temp_location()
+                    self._emit_store('STA', temp_loc, "Store A to temp")
                     self._emit_op(operation, temp_loc)
+                elif right_loc.hw_register in ['X', 'Y']:
+                    # X/Y don't support stack-relative for STX/STY
+                    # Try scratch first, fall back to push/pop
+                    temp_addr = self._get_temp_address()
+                    if temp_addr:
+                        # Use scratch register
+                        temp_loc = PhysicalLocation(kind=LocationKind.SCRATCH, scratch_addr=temp_addr.value, size=1)
+                        store_opcode = self._STORE_DP_OPCODES[right_loc.hw_register]
+                        self.emitter.emit_instr(store_opcode, temp_addr, f"Store {right_loc.hw_register} to temp")
+                        self._emit_op(operation, temp_loc)
+                    else:
+                        # No scratch available - use push/pop pattern
+                        # PHX/PHY pushes value to stack, then we can use stack-relative
+                        push_opcode = Opcode.PHX if right_loc.hw_register == 'X' else Opcode.PHY
+                        pull_opcode = Opcode.PLX if right_loc.hw_register == 'X' else Opcode.PLY
+                        self._emit_implied(push_opcode, f"Push {right_loc.hw_register} for temp")
+                        # Stack-relative location at offset 1 (just pushed)
+                        temp_loc = PhysicalLocation(kind=LocationKind.STACK, stack_offset=1, size=1)
+                        self._emit_op(operation, temp_loc)
+                        self._emit_implied(pull_opcode, f"Restore {right_loc.hw_register}")
                 else:
                     raise InstructionSelectionError(f"Cannot use hardware register in operation: {right_loc.hw_register}")
             else:

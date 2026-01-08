@@ -15,8 +15,8 @@ from r65.compiler.hir import (
 from r65.compiler.mir.nodes import (
     VirtualRegister, HardwareRegister, Immediate, MemoryLocation,
     Move, Load, LoadIndirect, BinaryOp, UnaryOp, TypeConvert,
-    Call, Argument,
 )
+from r65.compiler.mir.lowerers.multiply import compute_array_field_offset
 from r65.compiler.errors import MIRLoweringError
 
 if TYPE_CHECKING:
@@ -512,64 +512,12 @@ class ExpressionLowerer:
         """
         Compute byte offset for array[index].field access.
 
-        Result = (index * struct_size) + field_offset
-
-        Optimization strategies (see docs/struct-array-indexing.md):
-        - struct_size == 1: no multiplication needed
-        - Power of 2: use left shift
-        - Non-power-of-2: call mul() runtime function
-
-        Future optimizations could include:
-        - Shift-and-add decomposition for small multipliers
-        - Offset lookup tables for small arrays
+        Delegates to shared multiply module. See docs/struct-array-indexing.md.
         """
-        # First compute index * struct_size
-        if struct_size == 1:
-            scaled_index = index_operand
-        elif struct_size & (struct_size - 1) == 0:
-            # Power of 2: use shift
-            shift_amount = 0
-            temp = struct_size
-            while temp > 1:
-                shift_amount += 1
-                temp >>= 1
-
-            scaled_index = self.ctx.alloc_vreg(type_info, "scaled_index")
-            self.emit(BinaryOp(
-                dest=scaled_index,
-                left=index_operand,
-                right=Immediate(shift_amount),
-                op='<<',
-                type_info=type_info
-            ))
-        else:
-            # Non-power-of-2: use mul() runtime function
-            # TODO: Future optimization - shift-and-add for small multipliers
-            # TODO: Future optimization - LUT for small arrays
-            scaled_index = self.ctx.alloc_vreg(type_info, "scaled_index")
-            self.emit(Call(
-                function='mul',
-                args=[
-                    Argument(value=index_operand, type_info=type_info),
-                    Argument(value=Immediate(struct_size), type_info=type_info),
-                ],
-                returns=[scaled_index],
-                builtin_name='mul'
-            ))
-
-        # Add field offset if non-zero
-        if field_offset == 0:
-            return scaled_index
-        else:
-            final_offset = self.ctx.alloc_vreg(type_info, "field_offset")
-            self.emit(BinaryOp(
-                dest=final_offset,
-                left=scaled_index,
-                right=Immediate(field_offset),
-                op='+',
-                type_info=type_info
-            ))
-            return final_offset
+        return compute_array_field_offset(
+            index_operand, struct_size, field_offset, type_info,
+            self.ctx, self.emit
+        )
 
     # ========================================================================
     # Dereference

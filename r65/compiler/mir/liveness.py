@@ -306,38 +306,60 @@ class LivenessAnalyzer:
             if ranges[var1] & ranges[var2]:
                 return True
 
-        # Check intra-block interference: if both are defined in same block
-        # and both are used (possibly in return), they may interfere
+        # Check intra-block interference using precise per-instruction liveness
         for block_id, info in self.liveness.items():
-            if var1 in info.define and var2 in info.define:
-                # Both defined in same block - check if they're both used
-                # after both definitions (conservative: assume they interfere)
-                block = self.func.blocks[block_id]
-                var1_used_after_def = False
-                var2_used_after_def = False
-                var1_defined = False
-                var2_defined = False
+            block = self.func.blocks[block_id]
 
-                for instr in block.instructions:
-                    defs = self._get_defs(instr)
-                    uses = self._get_uses(instr)
+            # Determine if each variable is relevant to this block
+            var1_live_on_entry = var1 in info.use or var1 in info.live_in
+            var2_live_on_entry = var2 in info.use or var2 in info.live_in
+            var1_defined_in_block = var1 in info.define
+            var2_defined_in_block = var2 in info.define
 
-                    # Check uses before updating defines
-                    if var1_defined and var1 in uses:
-                        var1_used_after_def = True
-                    if var2_defined and var2 in uses:
-                        var2_used_after_def = True
+            # Skip if neither variable is relevant to this block
+            if not (var1_live_on_entry or var1_defined_in_block):
+                continue
+            if not (var2_live_on_entry or var2_defined_in_block):
+                continue
 
-                    # Check if both are live at this instruction
-                    if var1_used_after_def and var2 in uses:
-                        return True
-                    if var2_used_after_def and var1 in uses:
-                        return True
+            # First pass: find last use of each variable
+            var1_last_use = -1
+            var2_last_use = -1
+            for i, instr in enumerate(block.instructions):
+                uses = self._get_uses(instr)
+                if var1 in uses:
+                    var1_last_use = i
+                if var2 in uses:
+                    var2_last_use = i
 
-                    # Update defines
-                    if var1 in defs:
-                        var1_defined = True
-                    if var2 in defs:
-                        var2_defined = True
+            # Also consider live_out - if a var is live out, its "last use" is the end
+            if var1 in info.live_out:
+                var1_last_use = len(block.instructions)
+            if var2 in info.live_out:
+                var2_last_use = len(block.instructions)
+
+            # Second pass: check for interference at each instruction
+            var1_live = var1_live_on_entry
+            var2_live = var2_live_on_entry
+
+            for i, instr in enumerate(block.instructions):
+                defs = self._get_defs(instr)
+                uses = self._get_uses(instr)
+
+                # A variable becomes live when defined
+                if var1 in defs:
+                    var1_live = True
+                if var2 in defs:
+                    var2_live = True
+
+                # Check if both variables are live at this instruction
+                # A variable is live at instruction i if:
+                # - It was live on entry and i <= last_use, OR
+                # - It was defined at some j <= i and i <= last_use
+                var1_live_here = var1_live and i <= var1_last_use
+                var2_live_here = var2_live and i <= var2_last_use
+
+                if var1_live_here and var2_live_here:
+                    return True
 
         return False

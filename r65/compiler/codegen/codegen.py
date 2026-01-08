@@ -97,6 +97,9 @@ class ProgramCodeGenerator:
         # (Phases 3-6 are integrated within function generation)
         self.func_gen = ProgramFunctionGenerator(self.emitter, self.allocator)
 
+        # Create scratch pool once for all functions
+        scratch_pool = self.func_gen.func_gen._create_scratch_pool(mir_program)
+
         # Generate code for each bank
         for bank_num in sorted(functions_by_bank.keys()):
             bank_functions = functions_by_bank[bank_num]
@@ -108,7 +111,7 @@ class ProgramCodeGenerator:
 
             # Generate functions in this bank
             for mir_func in bank_functions:
-                self.func_gen.func_gen.generate_function(mir_func)
+                self.func_gen.func_gen.generate_function(mir_func, scratch_pool=scratch_pool)
 
         # Phase 7: ROM data sections (for array literal initialization)
         self._emit_rom_data_sections(mir_program)
