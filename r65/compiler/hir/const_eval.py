@@ -7,6 +7,8 @@ Evaluates constant expressions at compile time (array sizes, enum values, etc.).
 from typing import Any, Union
 from r65.compiler.frontend import ast
 from r65.compiler.hir.errors import *
+from r65.compiler.hir.unified_type_utils import get_unified_type_size
+from r65.compiler.builtins.registry import BuiltinRegistry
 
 
 class ConstEvaluator:
@@ -44,6 +46,10 @@ class ConstEvaluator:
             return expr.value
 
         elif isinstance(expr, ast.Identifier):
+            # Check for built-in type names (used in size_of contexts)
+            if expr.name in ['u8', 'u16', 'i8', 'i16', 'bool']:
+                raise HIRError(f"Type name '{expr.name}' cannot be used as a value in const expression")
+            
             # Look up const variable
             symbol = self.symbol_table.lookup(expr.name)
             if symbol is None:
@@ -65,6 +71,9 @@ class ConstEvaluator:
 
         elif isinstance(expr, ast.TypeCast):
             return self._eval_cast(expr)
+
+        elif isinstance(expr, ast.FunctionCall):
+            return self._eval_function_call(expr)
 
         else:
             raise HIRError(f"Non-constant expression: {type(expr).__name__}")
@@ -196,6 +205,42 @@ class ConstEvaluator:
         
         # This should never be reached due to the raises above
         raise HIRError("Unexpected path in _eval_cast")
+
+    def _eval_function_call(self, expr: ast.FunctionCall) -> Union[int, bool, str]:
+        """Evaluate function call in const expression."""
+        func_name = expr.func.name if isinstance(expr.func, ast.Identifier) else None
+        
+        if not func_name:
+            raise HIRError("Only direct function calls allowed in const expressions")
+        
+        # Check if this is a built-in function
+        if not BuiltinRegistry.is_builtin(func_name):
+            raise HIRError(f"Function '{func_name}' is not a built-in const function")
+        
+        builtin = BuiltinRegistry.get_builtin(func_name)
+        
+        # Only allow type info built-ins in const expressions
+        if builtin.kind.value != "type_info":
+            raise HIRError(f"Built-in '{func_name}' is not allowed in const expressions")
+        
+        # Handle size_of specifically
+        if func_name == "size_of":
+            return self._eval_size_of(expr)
+        
+        raise HIRError(f"Unsupported const built-in function: {func_name}")
+
+    def _eval_size_of(self, expr: ast.FunctionCall) -> int:
+        """Evaluate size_of builtin function using unified type utilities."""
+        if len(expr.args) != 1:
+            raise HIRError("size_of expects exactly 1 argument")
+        
+        arg = expr.args[0]
+        
+        try:
+            return get_unified_type_size(arg, self.symbol_table)
+        except Exception as e:
+            # If type not yet available (e.g., struct declared later), defer evaluation
+            raise HIRError(f"Cannot evaluate size_of at this time: {e}")
 
     def _ensure_int(self, value: Any) -> int:
         """Ensure value is an integer."""

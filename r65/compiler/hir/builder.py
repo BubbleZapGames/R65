@@ -790,17 +790,26 @@ class HIRBuilder:
             if isinstance(expr.func, ast.Identifier):
                 func_name = expr.func.name
                 if BuiltinRegistry.is_builtin(func_name):
-                    # Validate built-in call (use expr.args length, not built args yet)
-                    is_valid, error_msg = BuiltinRegistry.validate_call(func_name, len(expr.args))
-                    if not is_valid:
-                        raise HIRError(error_msg)
+                    builtin = BuiltinRegistry.get_builtin(func_name)
+                    
+                    # Special handling for size_of - try const evaluation first
+                    if builtin and builtin.kind.value == "type_info" and func_name == "size_of":
+                        try:
+                            # Try to evaluate at compile time using const evaluator
+                            const_value = self.const_evaluator.eval(expr)
+                            if isinstance(const_value, int):
+                                return hir.HIRIntegerLiteral(value=const_value)
+                        except Exception:
+                            # If const evaluation fails, fall back to runtime call
+                            pass
+                    
+                    # Mark this as a built-in function call
                     builtin_name = func_name
 
             # Build func expression
             # For built-ins, create a dummy symbol to avoid "undefined identifier" errors
             if builtin_name:
-                # Create a dummy symbol for the built-in function
-                # Note: Symbol and SymbolKind imported at module level via "from ... import *"
+                # Create a dummy symbol for built-in function
                 builtin_symbol = Symbol(
                     name=expr.func.name,
                     kind=SymbolKind.FUNCTION,

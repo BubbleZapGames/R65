@@ -924,7 +924,25 @@ class TypeChecker:
 
         # Type check arguments
         for arg in expr.args:
+            # For size_of, don't try to type-check type identifiers like "Point" or "u8"
+            if builtin.kind.value == "type_info" and expr.builtin_name == "size_of":
+                if isinstance(arg, HIRIdentifier):
+                    # This is a type identifier for size_of - skip type checking
+                    continue
+                elif isinstance(arg, HIRArrayIndex):
+                    # This is an array type like [u8; 10] - skip type checking
+                    continue
             self.check_expression(arg)
+
+        # Handle const built-ins specially (like size_of)
+        if builtin.kind.value == "type_info":
+            if expr.builtin_name == "size_of":
+                return self._check_size_of_builtin(expr)
+            else:
+                raise TypeCheckError(
+                    f"Unknown type info built-in: {expr.builtin_name}",
+                    source_loc=expr.source_loc
+                )
 
         # Set return type
         if builtin.returns_value:
@@ -1661,3 +1679,97 @@ class TypeChecker:
                 i += 1
 
         return result
+
+    def _check_size_of_builtin(self, expr: HIRFunctionCall) -> TypeInfo:
+        """
+        Type check size_of built-in function call.
+        
+        size_of expects a single type argument and returns u8 (or u16 for large types).
+        The argument must be a type identifier, not a value expression.
+        """
+        if len(expr.args) != 1:
+            raise TypeCheckError(
+                "size_of expects exactly 1 argument",
+                source_loc=expr.source_loc
+            )
+        
+        arg = expr.args[0]
+        
+        # For size_of, the argument should be a type identifier
+        if isinstance(arg, HIRIdentifier):
+            type_name = arg.name
+            
+            # Basic types
+            if type_name in ['u8', 'i8', 'bool']:
+                expr.evaluated_size = 1
+                expr.expr_type = BasicTypeInfo('u8')
+                return expr.expr_type
+            elif type_name in ['u16', 'i16']:
+                expr.evaluated_size = 2
+                expr.expr_type = BasicTypeInfo('u8')
+                return expr.expr_type
+            
+            # Look up struct or enum
+            symbol = self.symbol_table.lookup(type_name)
+            if symbol is None:
+                raise TypeCheckError(
+                    f"Unknown type: {type_name}",
+                    source_loc=expr.source_loc
+                )
+            
+            if symbol.kind.value == "struct":
+                # Calculate struct size using existing type utilities
+                from r65.compiler.hir import StructTypeInfo
+                struct_type = StructTypeInfo(name=type_name, definition=symbol.definition)
+                try:
+                    from r65.compiler.hir.unified_type_utils import get_unified_type_size
+                    size = get_unified_type_size(struct_type, self.symbol_table)
+                    expr.evaluated_size = size
+                    expr.expr_type = BasicTypeInfo('u8') if size <= 255 else BasicTypeInfo('u16')
+                    return expr.expr_type
+                except:
+                    raise TypeCheckError(
+                        f"Cannot determine size of struct '{type_name}'",
+                        source_loc=expr.source_loc
+                    )
+            
+            elif symbol.kind.value == "enum":
+                # Enums are u8 by default
+                expr.evaluated_size = 1
+                expr.expr_type = BasicTypeInfo('u8')
+                return expr.expr_type
+            
+            else:
+                raise TypeCheckError(
+                    f"'{type_name}' is not a valid type for size_of",
+                    source_loc=arg.source_loc
+                )
+        
+        elif isinstance(arg, HIRArrayIndex):
+            # Array type - get element type and multiply by length
+            element_type = arg.expr_type
+            if not isinstance(element_type, ArrayTypeInfo):
+                raise TypeCheckError(
+                    "size_of expects a type identifier or array type",
+                    source_loc=arg.source_loc
+                )
+            
+            # Calculate array size = element_size * length
+            try:
+                from r65.compiler.hir.unified_type_utils import get_unified_type_size
+                element_size = get_unified_type_size(element_type.element_type, self.symbol_table)
+                array_size = element_size * element_type.length
+                expr.evaluated_size = array_size
+                expr.expr_type = BasicTypeInfo('u8') if array_size <= 255 else BasicTypeInfo('u16')
+                return expr.expr_type
+            except:
+                raise TypeCheckError(
+                    f"Cannot determine size of array type",
+                    source_loc=arg.source_loc
+                )
+        
+        else:
+            raise TypeCheckError(
+                "size_of expects a type identifier (like u8, Player, etc.), not a value expression",
+                source_loc=arg.source_loc
+            )

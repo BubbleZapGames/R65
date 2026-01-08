@@ -18,6 +18,7 @@ class BuiltinKind(Enum):
     ARITHMETIC = "arithmetic"                 # mul, div, mod
     SHIFT = "shift"                           # shl, shr
     ROTATE = "rotate"                         # rotate_left, rotate_right
+    TYPE_INFO = "type_info"                   # size_of
 
 
 @dataclass
@@ -177,6 +178,15 @@ class BuiltinRegistry:
             returns_value=True,
             description='Rotate right (constant count 1-8)',
             instruction='ROR'
+        ),
+
+        # Type information (1 parameter: type name, const evaluation only, returns value)
+        'size_of': BuiltinSignature(
+            name='size_of',
+            kind=BuiltinKind.TYPE_INFO,
+            param_count=1,
+            returns_value=True,
+            description='Get size of type in bytes (const evaluation only)'
         ),
     }
 
