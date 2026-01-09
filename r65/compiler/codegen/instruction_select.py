@@ -255,6 +255,23 @@ class InstructionSelector:
             return opcode, Address(addr)
 
         elif location.kind == LocationKind.MEMORY:
+            # Check for ROM label (for #[rom] data accessed directly)
+            if location.memory_label:
+                # ROM labels always use absolute addressing
+                if location.index_register == 'X':
+                    opcode = variants.get('ABSOLUTE_X')
+                    if not opcode:
+                        raise InstructionSelectionError(f"{mnemonic} does not support absolute X addressing")
+                elif location.index_register == 'Y':
+                    opcode = variants.get('ABSOLUTE_Y')
+                    if not opcode:
+                        raise InstructionSelectionError(f"{mnemonic} does not support absolute Y addressing")
+                else:
+                    opcode = variants.get('ABSOLUTE')
+                    if not opcode:
+                        raise InstructionSelectionError(f"{mnemonic} does not support absolute addressing")
+                return opcode, Address(location.memory_label)
+
             addr = location.memory_addr
             is_dp = addr < 0x100
 
@@ -1221,8 +1238,19 @@ class InstructionSelector:
         elif isinstance(operand, HardwareRegister):
             return self.reg_alloc.get_hw_location(operand)
         elif isinstance(operand, MemoryLocation):
+            # Check if this is a #[rom] static with a ROM label - access directly from ROM
+            if (operand.symbol and
+                hasattr(operand.symbol, 'rom_label') and
+                operand.symbol.rom_label and
+                operand.storage_type == 'rom'):
+                return PhysicalLocation(
+                    kind=LocationKind.MEMORY,
+                    memory_label=operand.symbol.rom_label,
+                    size=1,  # Size determined by context
+                    index_register=operand.index_register  # Pass indexed addressing info
+                )
             # Check if MemoryLocation has explicit address (for offsets)
-            if operand.address is not None:
+            elif operand.address is not None:
                 # Use explicit address (already includes offset for arrays/structs)
                 return PhysicalLocation(
                     kind=LocationKind.MEMORY,
@@ -1272,13 +1300,19 @@ class InstructionSelector:
                 return f"{base},{location.index_register}"
             return base
         elif location.kind == LocationKind.MEMORY:
-            if location.memory_addr < 0x100:
-                # Zero-page
-                base = f"${location.memory_addr:02X}"
+            # Check if using a ROM label (for #[rom] data accessed directly)
+            if location.memory_label:
+                base = location.memory_label
+            elif location.memory_addr is not None:
+                if location.memory_addr < 0x100:
+                    # Zero-page
+                    base = f"${location.memory_addr:02X}"
+                else:
+                    # Absolute
+                    base = f"${location.memory_addr:04X}"
             else:
-                # Absolute
-                base = f"${location.memory_addr:04X}"
-            # Add index register if present (e.g., "$20,X")
+                raise InstructionSelectionError("Memory location has neither address nor label")
+            # Add index register if present (e.g., "$20,X" or "LABEL,X")
             if location.index_register:
                 return f"{base},{location.index_register}"
             return base

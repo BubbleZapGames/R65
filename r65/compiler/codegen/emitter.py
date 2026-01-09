@@ -164,12 +164,16 @@ def _emit_instruction(opcode: Opcode, operand: Operand | None) -> str:
             return f"{mnem} {_format_value(value)},Y"
 
         # Absolute
+        # For labels, use .w suffix to force 16-bit addressing in WLA-DX
         case ("ABSOLUTE", Address(value)):
-            return f"{mnem} {_format_value(value)}"
+            suffix = ".w" if isinstance(value, str) else ""
+            return f"{mnem}{suffix} {_format_absolute(value)}"
         case ("ABSOLUTE_X", Address(value)):
-            return f"{mnem} {_format_value(value)},X"
+            suffix = ".w" if isinstance(value, str) else ""
+            return f"{mnem}{suffix} {_format_absolute(value)},X"
         case ("ABSOLUTE_Y", Address(value)):
-            return f"{mnem} {_format_value(value)},Y"
+            suffix = ".w" if isinstance(value, str) else ""
+            return f"{mnem}{suffix} {_format_absolute(value)},Y"
 
         # Long (24-bit)
         case ("LONG", Address(value)):
@@ -218,6 +222,16 @@ def _format_value(value: int | str) -> str:
         return value
     if value < 0x100:
         return f"${value:02X}"
+    return f"${value:04X}"
+
+
+def _format_absolute(value: int | str) -> str:
+    """Format an absolute address value, forcing 16-bit addressing for labels."""
+    if isinstance(value, str):
+        # For WLA-DX, labels need absolute addressing but the .w suffix approach
+        # requires modifying the mnemonic, so we just return the label and ensure
+        # the opcode used is correct (ABSOLUTE mode, not DP mode)
+        return value
     return f"${value:04X}"
 
 

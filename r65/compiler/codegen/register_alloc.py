@@ -44,6 +44,9 @@ class PhysicalLocation:
     # For MEMORY: absolute address
     memory_addr: Optional[int] = None
 
+    # For MEMORY: ROM label (used for #[rom] data accessed directly from ROM)
+    memory_label: Optional[str] = None
+
     # For IMMEDIATE: constant value
     immediate_value: Optional[int] = None
 
