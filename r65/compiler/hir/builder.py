@@ -878,6 +878,23 @@ class HIRBuilder:
 
             return hir.HIRFunctionCall(func=func, args=args, builtin_name=builtin_name)
 
+        elif isinstance(expr, ast.CfgFunctionCall):
+            # cfg!(flag) evaluates to true/false based on compiler cfg options
+            condition_name = None
+            if isinstance(expr.condition, ast.Identifier):
+                condition_name = expr.condition.name
+            elif hasattr(expr.condition, 'value'):
+                condition_name = str(expr.condition.value)
+
+            # Check if this cfg flag is set
+            if self.cfg_evaluator and condition_name:
+                cond = ast.CfgIdentifier(name=condition_name)
+                result = self.cfg_evaluator.evaluate(cond)
+            else:
+                result = False
+
+            return hir.HIRBooleanLiteral(value=result)
+
         elif isinstance(expr, ast.ArrayIndex):
             array = self._build_expression(expr.array)
             index = self._build_expression(expr.index)

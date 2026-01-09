@@ -1017,6 +1017,13 @@ class ASTBuilder(Transformer):
         items = self._filter_tokens(items)
         return ast.AddressOf(operand=items[0])
 
+    def cfg_function_call(self, items):
+        """cfg!(condition) compile-time check."""
+        items = self._filter_tokens(items)
+        # The argument is a cfg condition (identifier)
+        condition = items[0] if items else None
+        return ast.CfgFunctionCall(condition=condition)
+
     # Postfix operations
     def call(self, items):
         """Function call."""

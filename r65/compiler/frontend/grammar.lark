@@ -362,8 +362,8 @@ FN.10: /fn\b/
 IF.10: /if\b/
 AS.10: /as\b/
 
-// Conditional compilation  
-CFG_FUNCTION.10: /cfg!\b/
+// Conditional compilation
+CFG_FUNCTION.10: /cfg!(?=\()/
 CFG.10: /cfg\b/
 CFG_NOT.10: /not\b/
 

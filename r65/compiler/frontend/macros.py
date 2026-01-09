@@ -245,7 +245,7 @@ class MacroExpander:
             expanded_tokens = self._substitute(macro.body_tokens, bindings)
 
             # Parse the expanded tokens as statements
-            expanded_source = ' '.join(expanded_tokens)
+            expanded_source = self._join_tokens(expanded_tokens)
 
             try:
                 # Wrap in a dummy function to parse as statements
@@ -514,6 +514,54 @@ class MacroExpander:
             result.extend(expanded)
 
         return result
+
+    def _join_tokens(self, tokens: List[str]) -> str:
+        """
+        Join tokens into source code string with smart spacing.
+
+        Avoids inserting spaces where they would break token sequences like:
+        - cfg!( -> should not become 'cfg ! ('
+        - name!( -> macro invocations
+        - a.b -> member access
+        - fn() -> function calls
+        """
+        if not tokens:
+            return ""
+
+        # Tokens that should not have space before them
+        no_space_before = {'!', '(', ')', '[', ']', '{', '}', ',', ';', '.', '::', ':', '++', '--'}
+        # Tokens that should not have space after them
+        no_space_after = {'!', '(', '[', '{', '.', '::', '@', '#'}
+        # Identifiers and keywords that may precede ! for macros/builtins
+        macro_like = {'cfg', 'stringify', 'include', 'include_bytes', 'asm', 'NOP'}
+
+        result = [tokens[0]]
+
+        for i in range(1, len(tokens)):
+            prev = tokens[i - 1]
+            curr = tokens[i]
+
+            # Determine if we need a space
+            need_space = True
+
+            # No space before certain tokens
+            if curr in no_space_before:
+                need_space = False
+            # No space after certain tokens
+            elif prev in no_space_after:
+                need_space = False
+            # Special case: identifier followed by ! (macro invocation)
+            elif curr == '!' and (prev.isidentifier() or prev in macro_like):
+                need_space = False
+            # Special case: ! followed by ( for macro/builtin calls
+            elif prev == '!' and curr == '(':
+                need_space = False
+
+            if need_space:
+                result.append(' ')
+            result.append(curr)
+
+        return ''.join(result)
 
 
 def expand_macros(program: ast.Program) -> ast.Program:

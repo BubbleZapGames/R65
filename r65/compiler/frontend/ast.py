@@ -502,6 +502,16 @@ class StringifyCall(Expression):
 
 
 @dataclass
+class CfgFunctionCall(Expression):
+    """cfg!(condition) compile-time conditional check.
+
+    Evaluates to true/false based on cfg flags passed to compiler.
+    Used in if conditions: if cfg!(snes) { ... }
+    """
+    condition: Expression  # The condition identifier (e.g., 'snes')
+
+
+@dataclass
 class ArrayIndex(Expression):
     """Array indexing."""
     array: Expression

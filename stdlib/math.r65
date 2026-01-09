@@ -159,7 +159,7 @@ far fn mul16(multA @ A: u8, multB @ X: u8) -> u16 {
 // Cycles: ~30 (16 wait + overhead)
 #[cfg(snes)]
 #[mode(m16, transition=caller)]
-far fn div16(dividend @ A: divisor @ X: u8) -> u16 {
+far fn div16(dividend @ A: u8, divisor @ X: u8) -> u16 {
     // Switch to 8-bit for hardware register writes
 
     // Write 16-bit dividend
