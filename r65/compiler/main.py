@@ -192,6 +192,15 @@ def compile_source(source: str, filename: str, output_file: str = None,
         codegen = ProgramCodeGenerator()
         assembly = codegen.generate(mir_program, output_file=output_file)
 
+        # Print codegen warnings (always printed, not gated by quiet mode)
+        if codegen.warnings:
+            print(f"\n{'=' * 80}", file=sys.stderr)
+            print(f"Warnings ({len(codegen.warnings)}):", file=sys.stderr)
+            print(f"{'=' * 80}", file=sys.stderr)
+            for warning in codegen.warnings:
+                print(f"warning: {warning}", file=sys.stderr)
+            print(f"{'=' * 80}\n", file=sys.stderr)
+
         # Output
         if output_file:
             if not quiet:

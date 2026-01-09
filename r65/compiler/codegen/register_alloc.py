@@ -225,22 +225,59 @@ class RegisterAllocator:
 
     def __init__(self,
                  scratch_pool: Optional[ScratchRegisterPool] = None,
-                 mir_func: Optional[MIRFunction] = None):
+                 mir_func: Optional[MIRFunction] = None,
+                 prologue_stack_bytes: int = 0):
         """
         Initialize register allocator.
 
         Args:
             scratch_pool: Pool of scratch registers (or None for empty pool)
             mir_func: MIR function for liveness analysis (enables slot reuse)
+            prologue_stack_bytes: Bytes pushed by prologue (affects stack param offsets)
         """
         self.scratch_pool = scratch_pool or ScratchRegisterPool()
         self.mir_func = mir_func
+        self.prologue_stack_bytes = prologue_stack_bytes
         self.slot_allocator: Optional[StackSlotAllocator] = None
         self.slot_allocation: Optional[SlotAllocation] = None
         self.allocations: Dict[int, PhysicalLocation] = {}  # vreg.id → PhysicalLocation
 
         # Base offset for stack slots (starts after scratch registers)
         self.stack_base_offset = 0x16  # Start after common scratch locations
+
+        # Pre-allocate stack parameter vregs at their passed locations
+        # This avoids redundant copying in the prologue
+        self._preallocate_stack_params()
+
+    def _preallocate_stack_params(self):
+        """
+        Pre-allocate physical locations for stack parameters.
+
+        Stack parameters are passed by the caller at known offsets. Rather than
+        copying them to local stack slots, we use the passed locations directly.
+        The offset is adjusted for bytes pushed by the prologue.
+        """
+        if not self.mir_func:
+            return
+
+        if not self.mir_func.stack_param_offsets:
+            return
+
+        for param_idx, base_offset in self.mir_func.stack_param_offsets.items():
+            vreg = self.mir_func.param_to_vreg.get(param_idx)
+            if not vreg:
+                continue
+
+            # Adjust offset for prologue pushes
+            adjusted_offset = base_offset + self.prologue_stack_bytes
+
+            # Create physical location at the passed stack offset
+            location = PhysicalLocation(
+                kind=LocationKind.STACK,
+                stack_offset=adjusted_offset,
+                size=self._get_vreg_size(vreg)
+            )
+            self.allocations[vreg.id] = location
 
     def allocate_vreg(self, vreg: VirtualRegister) -> PhysicalLocation:
         """

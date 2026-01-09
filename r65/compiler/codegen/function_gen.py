@@ -65,7 +65,19 @@ class FunctionCodeGenerator:
         if scratch_pool is None:
             scratch_pool = ScratchRegisterPool()  # Empty pool if not provided
 
-        reg_alloc = RegisterAllocator(scratch_pool=scratch_pool, mir_func=mir_func)
+        # Calculate prologue bytes BEFORE creating register allocator
+        # This allows stack params to be allocated at their passed locations
+        prologue_bytes = self._get_prologue_stack_bytes(mir_func)
+
+        # NOTE: We no longer need to add A register parameter save bytes.
+        # Stack params are accessed directly at their passed locations without
+        # copying, so there's no need to save/restore A during the prologue.
+
+        reg_alloc = RegisterAllocator(
+            scratch_pool=scratch_pool,
+            mir_func=mir_func,
+            prologue_stack_bytes=prologue_bytes
+        )
 
         # Allocate all virtual registers in function
         self._allocate_function_registers(mir_func, reg_alloc)
@@ -433,64 +445,9 @@ class FunctionCodeGenerator:
                     if push_opcode:
                         self._emit_instr(push_opcode, comment=f"Preserve {reg}")
 
-        # Save register-bound parameters that would be clobbered by stack loads
-        # (Stack parameter loads use LDA, which clobbers A register)
-        saved_a = self._emit_register_parameter_saves(mir_func, reg_alloc)
-
-        # Emit stack parameter loads (must be after all prologue pushes)
-        # Pass saved_a so stack offsets can be adjusted for the extra PHA
-        self._emit_stack_parameter_loads(mir_func, reg_alloc, extra_stack_bytes=1 if saved_a else 0)
-
-        # Restore A register parameter after stack loads
-        self._emit_register_parameter_restores(saved_a)
-
-    def _has_a_register_parameter(self, mir_func: MIRFunction) -> bool:
-        """Check if function has a parameter bound to the A register."""
-        from r65.compiler.hir.nodes import RegisterBinding
-
-        for param in mir_func.parameters:
-            if param.binding and isinstance(param.binding, RegisterBinding):
-                if param.binding.register_name == 'A':
-                    return True
-        return False
-
-    def _emit_register_parameter_saves(self, mir_func: MIRFunction, reg_alloc: RegisterAllocator):
-        """
-        Save A register if it's a parameter and will be clobbered by stack loads.
-
-        This pushes A before stack parameter loads. The corresponding PLA
-        is emitted by _emit_register_parameter_restores after stack loads.
-
-        Args:
-            mir_func: MIR function
-            reg_alloc: Register allocator
-
-        Returns:
-            True if A was pushed and needs to be restored
-        """
-        # Only needed if there are stack parameters (which use LDA to load)
-        # AND there's a register parameter using A
-        if not mir_func.stack_param_offsets:
-            return False
-
-        if not self._has_a_register_parameter(mir_func):
-            return False
-
-        # A register parameter will be clobbered by stack loads - save it
-        self.emitter.emit_blank_line()
-        self.emitter.emit_comment("Save A register parameter before stack loads")
-        self._emit_instr(Opcode.PHA, comment="Save A (register parameter)")
-        return True
-
-    def _emit_register_parameter_restores(self, saved_a: bool):
-        """
-        Restore A register after stack parameter loads.
-
-        Args:
-            saved_a: True if A was saved and needs to be restored
-        """
-        if saved_a:
-            self._emit_instr(Opcode.PLA, comment="Restore A (register parameter)")
+        # NOTE: Stack parameters are now accessed directly at their passed locations.
+        # No copying is needed, which means we also don't need to save/restore the
+        # A register parameter (the save was only needed because the copy used LDA).
 
     def _get_prologue_stack_bytes(self, mir_func: MIRFunction) -> int:
         """
@@ -544,86 +501,6 @@ class FunctionCodeGenerator:
                     bytes_pushed += 1  # Data bank is always 8-bit
 
         return bytes_pushed
-
-    def _emit_stack_parameter_loads(self, mir_func: MIRFunction, reg_alloc: RegisterAllocator,
-                                     extra_stack_bytes: int = 0):
-        """
-        Emit code to load stack parameters into their allocated locations.
-
-        Uses stack-relative addressing (LDA offset,S) to load parameters
-        from the caller's stack frame into virtual register locations.
-
-        Args:
-            mir_func: MIR function
-            reg_alloc: Register allocator
-            extra_stack_bytes: Additional bytes on stack (e.g., from PHA to save A register param)
-        """
-        if not mir_func.stack_param_offsets:
-            return
-
-        # Calculate adjustment for bytes pushed by prologue
-        prologue_bytes = self._get_prologue_stack_bytes(mir_func) + extra_stack_bytes
-
-        self.emitter.emit_blank_line()
-        self.emitter.emit_comment("Load stack parameters")
-
-        for param_idx in sorted(mir_func.stack_param_offsets.keys()):
-            base_offset = mir_func.stack_param_offsets[param_idx]
-            vreg = mir_func.param_to_vreg.get(param_idx)
-            if not vreg:
-                continue
-
-            # Adjust offset for prologue pushes
-            adjusted_offset = base_offset + prologue_bytes
-
-            # Get physical location for this vreg
-            phys_loc = reg_alloc.get_location(vreg)
-
-            # Get parameter size
-            param_size = get_type_size(vreg.type_info)
-
-            # Emit load from stack to physical location
-            if param_size == 1:
-                # 8-bit load: LDA offset,S ; STA dest
-                self._emit_instr(Opcode.LDA_STACK, StackOffset(adjusted_offset),
-                                f"Load param {param_idx}")
-                self._emit_store_to_location(phys_loc)
-            elif param_size == 3:
-                # 24-bit load (far pointer): copy all 3 bytes
-                self._emit_instr(Opcode.LDA_STACK, StackOffset(adjusted_offset),
-                                f"Load param {param_idx} low")
-                self._emit_store_to_location(phys_loc)
-                self._emit_instr(Opcode.LDA_STACK, StackOffset(adjusted_offset + 1),
-                                f"Load param {param_idx} high")
-                self._emit_store_to_location(self._offset_location(phys_loc, 1))
-                self._emit_instr(Opcode.LDA_STACK, StackOffset(adjusted_offset + 2),
-                                f"Load param {param_idx} bank")
-                self._emit_store_to_location(self._offset_location(phys_loc, 2))
-            else:
-                # 16-bit load: LDA offset,S ; STA dest ; LDA offset+1,S ; STA dest+1
-                # For simplicity, use byte-by-byte approach
-                self._emit_instr(Opcode.LDA_STACK, StackOffset(adjusted_offset),
-                                f"Load param {param_idx} low")
-                self._emit_store_to_location(phys_loc)
-                self._emit_instr(Opcode.LDA_STACK, StackOffset(adjusted_offset + 1),
-                                f"Load param {param_idx} high")
-                self._emit_store_to_location(self._offset_location(phys_loc, 1))
-
-    def _emit_store_to_location(self, location):
-        """Emit STA instruction to physical location."""
-        from r65.compiler.codegen.register_alloc import LocationKind
-
-        if location.kind == LocationKind.SCRATCH:
-            self._emit_instr(Opcode.STA_DP, Address(location.scratch_addr))
-        elif location.kind == LocationKind.MEMORY:
-            if location.memory_addr < 0x100:
-                self._emit_instr(Opcode.STA_DP, Address(location.memory_addr))
-            else:
-                self._emit_instr(Opcode.STA_ABSOLUTE, Address(location.memory_addr))
-        elif location.kind == LocationKind.STACK:
-            self._emit_instr(Opcode.STA_STACK, StackOffset(location.stack_offset))
-        else:
-            raise ValueError(f"Cannot store to location kind: {location.kind}")
 
     def _offset_location(self, location, offset: int):
         """Create new location offset from given location."""

@@ -35,6 +35,7 @@ class ProgramCodeGenerator:
         self.allocator: Optional[MemoryAllocator] = None
         self.emitter: Optional[AssemblyEmitter] = None
         self.func_gen: Optional[ProgramFunctionGenerator] = None
+        self.warnings: List[str] = []
 
     def generate(self, mir_program: MIRProgram, output_file: Optional[str] = None) -> str:
         """
@@ -209,6 +210,15 @@ class ProgramCodeGenerator:
             # Check for entry point (becomes reset vector)
             if func.is_entry:
                 reset_handler = func.name
+
+        # Check for missing NMI handler - this is a common oversight
+        # Only warn if there's an entry point (i.e., this is a standalone program)
+        if reset_handler and not nmi_handler:
+            self.warnings.append(
+                "No NMI interrupt handler defined. "
+                "The NMI fires every VBlank (~60Hz) and is typically used for game logic updates. "
+                "Add an NMI handler with: #[interrupt(nmi)] fn nmi_handler() { ... }"
+            )
 
         # Emit SNES header and vectors if any handlers found
         if nmi_handler or irq_handler or reset_handler:
