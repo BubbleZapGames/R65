@@ -12,6 +12,7 @@ from r65.compiler.hir import (
     HIRArrayIndex, HIRFieldAccess, HIRDereference, HIRAddressOf,
     HIRIdentifier,
 )
+from r65.compiler.hir.types import PointerTypeInfo
 from r65.compiler.mir.nodes import (
     VirtualRegister, HardwareRegister, Immediate, MemoryLocation,
     Move, Load, LoadIndirect, BinaryOp, UnaryOp, TypeConvert,
@@ -325,6 +326,10 @@ class ExpressionLowerer:
 
         Computes: array[index] → Load from (base_address + index * element_size)
 
+        Handles two cases:
+        1. Direct array indexing: array[index] where array is a static array
+        2. Pointer indexing: ptr[index] where ptr is near<T> or far<T>
+
         Args:
             expr: HIR array index expression
 
@@ -338,9 +343,16 @@ class ExpressionLowerer:
 
         if not isinstance(expr.array, HIRIdentifier):
             raise MIRLoweringError(
-                f"Array indexing only supports static arrays currently, got: {type(expr.array)}"
+                f"Array indexing only supports identifiers, got: {type(expr.array)}"
             )
 
+        # Check if this is pointer indexing (ptr[index]) vs array indexing (array[index])
+        array_type = expr.array.expr_type
+        if isinstance(array_type, PointerTypeInfo):
+            # Pointer indexing: load through pointer with indirect addressing
+            return self._lower_pointer_index(expr, index_operand, element_size, element_type, array_type)
+
+        # Regular array indexing
         array_symbol = expr.array.symbol
         result = self.ctx.alloc_vreg(element_type, "array_elem")
 
@@ -352,6 +364,60 @@ class ExpressionLowerer:
             return self._lower_variable_index(
                 result, array_symbol, index_operand, element_size, element_type
             )
+
+    def _lower_pointer_index(self, expr: HIRArrayIndex, index_operand, element_size, element_type, ptr_type: PointerTypeInfo) -> VirtualRegister:
+        """
+        Lower pointer indexing: ptr[index]
+
+        Uses indirect indexed addressing:
+        - near<T>: LDA (ptr),Y
+        - far<T>: LDA [ptr],Y
+
+        Args:
+            expr: HIR array index expression
+            index_operand: The index value (Immediate or VirtualRegister)
+            element_size: Size of each element in bytes
+            element_type: Type of the element
+            ptr_type: The pointer type info
+
+        Returns:
+            VirtualRegister holding the loaded value
+        """
+        result = self.ctx.alloc_vreg(element_type, "ptr_elem")
+
+        # Get the pointer value (should be in a vreg for parameters)
+        ptr_operand = self.builder.lower_expression(expr.array)
+
+        # For indexed addressing, we need the index in Y register
+        # If element_size > 1, multiply first
+        if element_size > 1:
+            index_operand = self._compute_index_offset(index_operand, element_size, element_type)
+
+        # Move index to Y register for indirect indexed addressing
+        y_reg = HardwareRegister('Y')
+        self.emit(Move(dest=y_reg, source=index_operand, type_info=element_type))
+
+        # If pointer is in a hardware register or immediate, move to a vreg first
+        if isinstance(ptr_operand, HardwareRegister):
+            ptr_vreg = self.ctx.alloc_vreg(ptr_type, "ptr_temp")
+            self.emit(Move(dest=ptr_vreg, source=ptr_operand, type_info=ptr_type))
+            ptr_operand = ptr_vreg
+        elif isinstance(ptr_operand, Immediate):
+            # Immediate pointer (rare, but handle it)
+            ptr_vreg = self.ctx.alloc_vreg(ptr_type, "ptr_temp")
+            self.emit(Move(dest=ptr_vreg, source=ptr_operand, type_info=ptr_type))
+            ptr_operand = ptr_vreg
+
+        # Emit LoadIndirect with Y indexing
+        self.emit(LoadIndirect(
+            dest=result,
+            pointer=ptr_operand,
+            is_far=ptr_type.is_far,
+            index_register='Y',
+            type_info=element_type
+        ))
+
+        return result
 
     def _lower_constant_index(self, result, array_symbol, index_value, element_size, element_type):
         """Lower constant array index with compile-time offset."""

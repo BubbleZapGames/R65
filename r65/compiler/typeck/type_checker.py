@@ -19,7 +19,7 @@ from r65.compiler.hir import (
     BasicTypeInfo, TypeInfo, SymbolKind, NeverTypeInfo, TupleTypeInfo,
     RegisterLetBinding, ArrayTypeInfo, StructTypeInfo, EnumTypeInfo
 )
-from r65.compiler.hir.types import FunctionTypeInfo
+from r65.compiler.hir.types import FunctionTypeInfo, PointerTypeInfo
 from r65.compiler.typeck.processor_mode import ProcessorMode, ModeTransition
 from r65.compiler.typeck.mode_tracker import ModeTracker
 from r65.compiler.typeck.cfg_builder import CFGBuilder
@@ -890,42 +890,73 @@ class TypeChecker:
 
     def check_array_index(self, expr: HIRArrayIndex) -> TypeInfo:
         """Type check array indexing."""
-        array_type = self.check_expression(expr.array)
+        base_type = self.check_expression(expr.array)
         index_type = self.check_expression(expr.index)
-
-        # Array must be array type
-        if not isinstance(array_type, ArrayTypeInfo):
-            raise TypeCheckError(
-                f"Cannot index non-array type {array_type}",
-                source_loc=expr.array.source_loc
-            )
 
         # Index must be integer
         self._require_integer_type(index_type, "Array index", expr.index.source_loc)
 
-        # Constant index bounds checking
-        if expr.original_ast and self.const_evaluator.is_constant(expr.original_ast.index):
-            try:
-                index_value = self.const_evaluator.eval(expr.original_ast.index)
-                array_size = array_type.size
-                
-                if index_value < 0:
-                    raise TypeCheckError(
-                        f"Array index {index_value} is out of bounds for array of size {array_size} (negative index)",
-                        source_loc=expr.index.source_loc
-                    )
-                elif index_value >= array_size:
-                    raise TypeCheckError(
-                        f"Array index {index_value} is out of bounds for array of size {array_size}",
-                        source_loc=expr.index.source_loc
-                    )
-            except Exception:
-                # If const evaluation fails, skip bounds checking
-                pass
+        # Handle pointer types: near<T>[idx] or far<T>[idx]
+        if isinstance(base_type, PointerTypeInfo):
+            pointee = base_type.pointee_type
+            # If pointer to array, result is element type
+            if isinstance(pointee, ArrayTypeInfo):
+                # Constant index bounds checking for pointer-to-array
+                if expr.original_ast and self.const_evaluator.is_constant(expr.original_ast.index):
+                    try:
+                        index_value = self.const_evaluator.eval(expr.original_ast.index)
+                        array_size = pointee.size
 
-        # Result is element type
-        expr.expr_type = array_type.element_type
-        return expr.expr_type
+                        if index_value < 0:
+                            raise TypeCheckError(
+                                f"Array index {index_value} is out of bounds for array of size {array_size} (negative index)",
+                                source_loc=expr.index.source_loc
+                            )
+                        elif index_value >= array_size:
+                            raise TypeCheckError(
+                                f"Array index {index_value} is out of bounds for array of size {array_size}",
+                                source_loc=expr.index.source_loc
+                            )
+                    except Exception:
+                        # If const evaluation fails, skip bounds checking
+                        pass
+                expr.expr_type = pointee.element_type
+                return expr.expr_type
+            else:
+                # Pointer to non-array: ptr[idx] is pointer arithmetic
+                expr.expr_type = pointee
+                return expr.expr_type
+
+        # Array indexing: array[idx]
+        if isinstance(base_type, ArrayTypeInfo):
+            # Constant index bounds checking
+            if expr.original_ast and self.const_evaluator.is_constant(expr.original_ast.index):
+                try:
+                    index_value = self.const_evaluator.eval(expr.original_ast.index)
+                    array_size = base_type.size
+
+                    if index_value < 0:
+                        raise TypeCheckError(
+                            f"Array index {index_value} is out of bounds for array of size {array_size} (negative index)",
+                            source_loc=expr.index.source_loc
+                        )
+                    elif index_value >= array_size:
+                        raise TypeCheckError(
+                            f"Array index {index_value} is out of bounds for array of size {array_size}",
+                            source_loc=expr.index.source_loc
+                        )
+                except Exception:
+                    # If const evaluation fails, skip bounds checking
+                    pass
+
+            # Result is element type
+            expr.expr_type = base_type.element_type
+            return expr.expr_type
+
+        raise TypeCheckError(
+            f"Cannot index non-array type {base_type}",
+            source_loc=expr.array.source_loc
+        )
 
     def check_field_access(self, expr: HIRFieldAccess) -> TypeInfo:
         """Type check field access."""

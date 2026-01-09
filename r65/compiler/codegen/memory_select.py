@@ -9,7 +9,7 @@ from r65.compiler.mir.nodes import Load, Store, LoadIndirect, StoreIndirect, Imm
 from r65.compiler.codegen.register_alloc import LocationKind
 from r65.compiler.errors import InstructionSelectionError
 from r65.compiler.codegen.opcodes import Opcode
-from r65.compiler.codegen.asm_nodes import Immediate, Address
+from r65.compiler.codegen.asm_nodes import Immediate, Address, StackOffset
 from r65.compiler.codegen.base_selector import BaseSelector
 
 
@@ -184,6 +184,8 @@ class MemoryOperationSelector(BaseSelector):
         For 65816:
         - near pointers use (zp) or (zp),Y addressing modes
         - far pointers use [zp] or [zp],Y addressing modes
+        - Stack-located near pointers use (d,S),Y addressing mode
+        - Stack-located far pointers are copied to temp DP location first
 
         Args:
             instr: LoadIndirect instruction
@@ -193,11 +195,25 @@ class MemoryOperationSelector(BaseSelector):
 
         self._validate_pointer_location(ptr_loc)
 
-        opcode, operand = self._get_indirect_opcode('LDA', ptr_loc, instr.is_far, instr.index_register)
         is_u16 = self.parent._is_16bit(instr.type_info)
-
         if is_u16:
             raise InstructionSelectionError("16-bit indirect loads not yet supported")
+
+        # Handle stack-located pointers
+        if ptr_loc.kind == LocationKind.STACK:
+            if instr.is_far:
+                # Far pointer on stack: copy to temp DP location first
+                opcode, operand = self._copy_far_ptr_to_dp_and_get_opcode(
+                    'LDA', ptr_loc, instr.index_register
+                )
+            else:
+                opcode, operand = self._get_stack_indirect_opcode(
+                    'LDA', ptr_loc, instr.is_far, instr.index_register
+                )
+        else:
+            opcode, operand = self._get_indirect_opcode(
+                'LDA', ptr_loc, instr.is_far, instr.index_register
+            )
 
         self._emit_instr(opcode, operand, "Load through pointer")
         self._emit_load_store('STA', dest_loc)
@@ -287,3 +303,109 @@ class MemoryOperationSelector(BaseSelector):
                 return Opcode.STA_DP_INDIRECT, operand
         else:
             raise InstructionSelectionError(f"Indirect addressing not supported for: {mnemonic}")
+
+    # Reserved direct page location for temporary far pointer storage
+    # Uses $00-$02 (3 bytes for 24-bit far pointer)
+    FAR_PTR_TEMP_DP = 0x00
+
+    def _copy_far_ptr_to_dp_and_get_opcode(self, mnemonic: str, ptr_loc, index_register: str = None):
+        """
+        Copy a far pointer from stack to DP and return indirect long opcode.
+
+        The 65816 doesn't have [d,S],Y for far pointers, so we must:
+        1. Copy the 3-byte pointer from stack to DP
+        2. Use [dp],Y indirect long addressing
+
+        Args:
+            mnemonic: Base mnemonic ('LDA' or 'STA')
+            ptr_loc: Physical location of pointer (on stack)
+            index_register: Optional index register ('Y' for [dp],Y)
+
+        Returns:
+            Tuple of (Opcode, operand)
+        """
+        # Need to preserve Y if we're using it for indexing
+        # The copying code will use A and X/Y for 16-bit mode
+        if index_register == 'Y':
+            self._emit_instr(Opcode.PHY, None, "Save Y for indexed access")
+
+        # Stack offset for the pointer (+1 for stack convention)
+        stack_offset = ptr_loc.stack_offset + 1
+
+        # Copy 3 bytes from stack to DP (for 24-bit far pointer)
+        # Use 16-bit mode for efficiency
+        self._emit_instr(Opcode.REP_IMMEDIATE, Immediate(0x20), "16-bit A for pointer copy")
+
+        # Load low 16 bits of pointer from stack
+        self._emit_instr(Opcode.LDA_STACK, StackOffset(stack_offset), "Load ptr low word")
+        self._emit_instr(Opcode.STA_DP, Address(self.FAR_PTR_TEMP_DP), "Store to temp DP")
+
+        self._emit_instr(Opcode.SEP_IMMEDIATE, Immediate(0x20), "8-bit A")
+
+        # Load bank byte (3rd byte of far pointer)
+        self._emit_instr(Opcode.LDA_STACK, StackOffset(stack_offset + 2), "Load ptr bank")
+        self._emit_instr(Opcode.STA_DP, Address(self.FAR_PTR_TEMP_DP + 2), "Store bank to temp DP")
+
+        # Restore Y if we saved it
+        if index_register == 'Y':
+            self._emit_instr(Opcode.PLY, None, "Restore Y for indexed access")
+
+        # Now use indirect long addressing from DP temp location
+        operand = Address(self.FAR_PTR_TEMP_DP)
+
+        if mnemonic == 'LDA':
+            if index_register == 'Y':
+                return Opcode.LDA_DP_INDIRECT_LONG_Y, operand
+            return Opcode.LDA_DP_INDIRECT_LONG, operand
+        elif mnemonic == 'STA':
+            if index_register == 'Y':
+                return Opcode.STA_DP_INDIRECT_LONG_Y, operand
+            return Opcode.STA_DP_INDIRECT_LONG, operand
+        else:
+            raise InstructionSelectionError(f"Indirect addressing not supported for: {mnemonic}")
+
+    def _get_stack_indirect_opcode(self, mnemonic: str, ptr_loc, is_far: bool, index_register: str = None):
+        """
+        Get opcode and operand for stack-relative indirect addressing.
+
+        The 65816 has (d,S),Y addressing mode for near pointers on the stack.
+        For far pointers, use _copy_far_ptr_to_dp_and_get_opcode instead.
+
+        Args:
+            mnemonic: Base mnemonic ('LDA' or 'STA')
+            ptr_loc: Physical location of pointer (on stack)
+            is_far: True for far pointer (24-bit)
+            index_register: Optional index register ('Y' for (d,S),Y)
+
+        Returns:
+            Tuple of (Opcode, operand)
+        """
+        if is_far:
+            # This should be handled by _copy_far_ptr_to_dp_and_get_opcode
+            raise InstructionSelectionError(
+                "Far pointer stack indirect should use _copy_far_ptr_to_dp_and_get_opcode"
+            )
+
+        if index_register and index_register != 'Y':
+            raise InstructionSelectionError(
+                f"Stack indirect addressing only supports Y index register, got: {index_register}"
+            )
+
+        if ptr_loc.kind != LocationKind.STACK:
+            raise InstructionSelectionError(f"Expected STACK location, got: {ptr_loc.kind}")
+
+        # Stack offset for (d,S),Y addressing
+        # Add 1 because the stack points to the next free byte, not the data
+        stack_offset = ptr_loc.stack_offset + 1
+        operand = Immediate(stack_offset)
+
+        if mnemonic == 'LDA':
+            if index_register == 'Y':
+                return Opcode.LDA_STACK_INDIRECT_Y, operand
+            raise InstructionSelectionError("Stack indirect without Y index not supported")
+        elif mnemonic == 'STA':
+            if index_register == 'Y':
+                return Opcode.STA_STACK_INDIRECT_Y, operand
+            raise InstructionSelectionError("Stack indirect without Y index not supported")
+        else:
+            raise InstructionSelectionError(f"Stack indirect addressing not supported for: {mnemonic}")
