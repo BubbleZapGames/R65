@@ -538,10 +538,18 @@ class TypeChecker:
         # Check initializer type matches
         if stmt.initializer:
             init_type = self.check_expression(stmt.initializer, var_type)
-            self._check_type_match(
-                var_type, init_type, stmt.initializer,
-                "let binding", stmt.source_loc
-            )
+            # Handle tuple-to-scalar: let x: u8 = tuple_func() drops extra return values
+            if isinstance(init_type, TupleTypeInfo) and not isinstance(var_type, TupleTypeInfo):
+                first_elem_type = init_type.element_types[0]
+                self._check_type_match(
+                    var_type, first_elem_type, stmt.initializer,
+                    "let binding (first element of tuple)", stmt.source_loc
+                )
+            else:
+                self._check_type_match(
+                    var_type, init_type, stmt.initializer,
+                    "let binding", stmt.source_loc
+                )
 
     def check_tuple_let_statement(self, stmt: HIRTupleLetStmt):
         """Type check tuple destructuring let binding.
@@ -981,6 +989,16 @@ class TypeChecker:
                 f"  Suggestion: Copy fields individually or use a pointer",
                 source_loc=expr.source_loc
             )
+
+        # Handle tuple-to-scalar: A = tuple_func() drops extra return values
+        if isinstance(value_type, TupleTypeInfo) and not isinstance(target_type, TupleTypeInfo):
+            first_elem_type = value_type.element_types[0]
+            self._check_type_match(
+                target_type, first_elem_type, expr.value,
+                "assignment (first element of tuple)", expr.source_loc, use_compatible=True
+            )
+            expr.expr_type = target_type
+            return target_type
 
         # Types must be compatible (allows enum/integer interop)
         self._check_type_match(
