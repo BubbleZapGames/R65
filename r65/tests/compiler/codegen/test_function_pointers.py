@@ -161,7 +161,7 @@ def test_far_function_pointer_assignment():
     # Verify function address loading (far = 3 bytes)
     assert '#<far_target' in asm_output, "Should load low byte"
     assert '#>far_target' in asm_output, "Should load high byte"
-    assert '#^far_target' in asm_output, "Should load bank byte for far pointer"
+    assert '#:far_target' in asm_output, "Should load bank byte for far pointer"
 
     print("✓ Far function pointer assignment test passed")
 

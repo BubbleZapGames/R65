@@ -25,6 +25,31 @@ if TYPE_CHECKING:
 # Opcode Categories for Pattern Matching
 # ============================================================================
 
+# Indirect addressing opcodes - these can read/write to any address
+# Dead store analysis must be conservative when these are present
+INDIRECT_ADDRESSING_OPCODES: Set[Opcode] = {
+    # DP indirect
+    Opcode.LDA_DP_INDIRECT, Opcode.LDA_DP_INDIRECT_X, Opcode.LDA_DP_INDIRECT_Y,
+    Opcode.LDA_DP_INDIRECT_LONG, Opcode.LDA_DP_INDIRECT_LONG_Y,
+    Opcode.STA_DP_INDIRECT, Opcode.STA_DP_INDIRECT_X, Opcode.STA_DP_INDIRECT_Y,
+    Opcode.STA_DP_INDIRECT_LONG, Opcode.STA_DP_INDIRECT_LONG_Y,
+    # Stack indirect
+    Opcode.LDA_STACK_INDIRECT_Y, Opcode.STA_STACK_INDIRECT_Y,
+    # ADC/AND/CMP/EOR/ORA/SBC indirect variants
+    Opcode.ADC_DP_INDIRECT, Opcode.ADC_DP_INDIRECT_X, Opcode.ADC_DP_INDIRECT_Y,
+    Opcode.ADC_DP_INDIRECT_LONG, Opcode.ADC_DP_INDIRECT_LONG_Y, Opcode.ADC_STACK_INDIRECT_Y,
+    Opcode.AND_DP_INDIRECT, Opcode.AND_DP_INDIRECT_X, Opcode.AND_DP_INDIRECT_Y,
+    Opcode.AND_DP_INDIRECT_LONG, Opcode.AND_DP_INDIRECT_LONG_Y, Opcode.AND_STACK_INDIRECT_Y,
+    Opcode.CMP_DP_INDIRECT, Opcode.CMP_DP_INDIRECT_X, Opcode.CMP_DP_INDIRECT_Y,
+    Opcode.CMP_DP_INDIRECT_LONG, Opcode.CMP_DP_INDIRECT_LONG_Y, Opcode.CMP_STACK_INDIRECT_Y,
+    Opcode.EOR_DP_INDIRECT, Opcode.EOR_DP_INDIRECT_X, Opcode.EOR_DP_INDIRECT_Y,
+    Opcode.EOR_DP_INDIRECT_LONG, Opcode.EOR_DP_INDIRECT_LONG_Y, Opcode.EOR_STACK_INDIRECT_Y,
+    Opcode.ORA_DP_INDIRECT, Opcode.ORA_DP_INDIRECT_X, Opcode.ORA_DP_INDIRECT_Y,
+    Opcode.ORA_DP_INDIRECT_LONG, Opcode.ORA_DP_INDIRECT_LONG_Y, Opcode.ORA_STACK_INDIRECT_Y,
+    Opcode.SBC_DP_INDIRECT, Opcode.SBC_DP_INDIRECT_X, Opcode.SBC_DP_INDIRECT_Y,
+    Opcode.SBC_DP_INDIRECT_LONG, Opcode.SBC_DP_INDIRECT_LONG_Y, Opcode.SBC_STACK_INDIRECT_Y,
+}
+
 # Instructions that read A (for dead store analysis)
 READS_A_OPCODES: Set[Opcode] = STORE_A_OPCODES | {
     Opcode.ADC_IMMEDIATE, Opcode.ADC_DP, Opcode.ADC_ABSOLUTE,
@@ -304,6 +329,7 @@ class PeepholeOptimizer:
     def _is_dead_store(self, nodes: List['AsmNode'], store_idx: int, store_operand) -> bool:
         """Check if a store is dead (overwritten before read)."""
         from r65.compiler.codegen.asm_nodes import Instruction, Label
+        import sys
 
         j = store_idx + 1
 
@@ -320,6 +346,11 @@ class PeepholeOptimizer:
 
             # Control flow = stop analysis
             if next_node.opcode in CONTROL_FLOW_OPCODES:
+                return False
+
+            # Indirect addressing = conservative, might read from any address
+            # We can't track what address is being accessed through the pointer
+            if next_node.opcode in INDIRECT_ADDRESSING_OPCODES:
                 return False
 
             # Another store to same location = first store is dead

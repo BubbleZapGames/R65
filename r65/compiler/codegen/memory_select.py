@@ -160,7 +160,7 @@ class MemoryOperationSelector(BaseSelector):
             self._emit_load_store('STA', dest_high)
 
             dest_bank = self.parent._offset_location(dest_loc, 2)
-            self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(f"^{func_name}"), "Load function bank byte")
+            self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(f":{func_name}"), "Load function bank byte")
             self._emit_load_store('STA', dest_bank)
         else:
             # Near pointer: 2 bytes (low, high)
@@ -202,10 +202,11 @@ class MemoryOperationSelector(BaseSelector):
         # Handle stack-located pointers
         if ptr_loc.kind == LocationKind.STACK:
             if instr.is_far:
-                # Far pointer on stack: copy to temp DP location first
-                opcode, operand = self._copy_far_ptr_to_dp_and_get_opcode(
-                    'LDA', ptr_loc, instr.index_register
-                )
+                # Far pointer on stack: use DBR manipulation (primary approach)
+                # This emits the instruction directly and restores DBR immediately
+                self._emit_far_ptr_access_via_dbr('LDA', ptr_loc, instr.index_register)
+                self._emit_load_store('STA', dest_loc)
+                return
             else:
                 opcode, operand = self._get_stack_indirect_opcode(
                     'LDA', ptr_loc, instr.is_far, instr.index_register
@@ -304,17 +305,98 @@ class MemoryOperationSelector(BaseSelector):
         else:
             raise InstructionSelectionError(f"Indirect addressing not supported for: {mnemonic}")
 
-    # Reserved direct page location for temporary far pointer storage
-    # Uses $00-$02 (3 bytes for 24-bit far pointer)
-    FAR_PTR_TEMP_DP = 0x00
-
-    def _copy_far_ptr_to_dp_and_get_opcode(self, mnemonic: str, ptr_loc, index_register: str = None):
+    def _emit_far_ptr_access_via_dbr(self, mnemonic: str, ptr_loc, index_register: str = None):
         """
-        Copy a far pointer from stack to DP and return indirect long opcode.
+        Access memory through a far pointer using DBR manipulation.
 
-        The 65816 doesn't have [d,S],Y for far pointers, so we must:
-        1. Copy the 3-byte pointer from stack to DP
+        Primary approach for far pointers on the stack:
+        1. PHB - save current DBR
+        2. Load bank byte from pointer, PHA, PLB - set DBR to pointer's bank
+        3. Use (d,S),Y stack-relative indirect (DBR provides the bank)
+        4. PLB - restore original DBR
+
+        This is aggressive about saving/restoring DBR to avoid affecting
+        other code that depends on the current data bank setting.
+
+        Args:
+            mnemonic: Base mnemonic ('LDA' or 'STA')
+            ptr_loc: Physical location of pointer (on stack)
+            index_register: Optional index register ('Y' for (d,S),Y)
+
+        Returns:
+            Tuple of (Opcode, operand)
+        """
+        if index_register and index_register != 'Y':
+            raise InstructionSelectionError(
+                f"Far pointer indirect only supports Y index register, got: {index_register}"
+            )
+
+        # Stack offset for the pointer (low byte location)
+        stack_offset = ptr_loc.stack_offset
+
+        # Save current DBR
+        self._emit_instr(Opcode.PHB, None, "Save DBR")
+
+        # Load bank byte from far pointer (3rd byte, at base offset+2)
+        # Account for PHB pushing 1 byte onto stack (+1 to all stack offsets)
+        self._emit_instr(Opcode.LDA_STACK, StackOffset(stack_offset + 2 + 1), "Load ptr bank")
+        self._emit_instr(Opcode.PHA, None, "Push bank")
+        self._emit_instr(Opcode.PLB, None, "Set DBR to ptr bank")
+
+        # Now (d,S),Y will use DBR for the bank byte
+        # Stack offset is +1 from original due to PHB (PHA/PLB cancel out)
+        adjusted_offset = stack_offset + 1
+        operand = StackOffset(adjusted_offset)
+
+        # Select the appropriate opcode
+        if mnemonic == 'LDA':
+            if index_register == 'Y':
+                opcode = Opcode.LDA_STACK_INDIRECT_Y
+            else:
+                raise InstructionSelectionError("Far pointer indirect without index not yet supported")
+        elif mnemonic == 'STA':
+            if index_register == 'Y':
+                opcode = Opcode.STA_STACK_INDIRECT_Y
+            else:
+                raise InstructionSelectionError("Far pointer indirect without index not yet supported")
+        else:
+            raise InstructionSelectionError(f"Indirect addressing not supported for: {mnemonic}")
+
+        # Emit the actual memory access
+        self._emit_instr(opcode, operand, f"{mnemonic} through far pointer")
+
+        # Restore original DBR immediately after the access
+        self._emit_instr(Opcode.PLB, None, "Restore DBR")
+
+        # Return None to indicate we've already emitted the instruction
+        return None, None
+
+    def _get_scratch_for_far_ptr(self):
+        """
+        Find a scratch register large enough for a far pointer (3 bytes).
+
+        Only returns a scratch address if we're certain one exists and is free.
+
+        Returns:
+            Address of scratch register, or None if no suitable scratch available
+        """
+        if self.parent.reg_alloc.scratch_pool:
+            # Only use scratch if we have a definite 3-byte scratch register
+            for scratch in self.parent.reg_alloc.scratch_pool.scratches:
+                if scratch.is_free and scratch.size >= 3:
+                    return scratch.address
+
+        return None
+
+    def _emit_far_ptr_access_via_dp(self, mnemonic: str, ptr_loc, index_register: str = None):
+        """
+        Access memory through a far pointer using Direct Page Indirect Long.
+
+        Fallback approach when we have a suitable scratch register:
+        1. Copy the 3-byte pointer from stack to scratch DP location
         2. Use [dp],Y indirect long addressing
+
+        Only use this when _get_scratch_for_far_ptr returns a valid address.
 
         Args:
             mnemonic: Base mnemonic ('LDA' or 'STA')
@@ -322,36 +404,41 @@ class MemoryOperationSelector(BaseSelector):
             index_register: Optional index register ('Y' for [dp],Y)
 
         Returns:
-            Tuple of (Opcode, operand)
+            Tuple of (Opcode, operand) or (None, None) if already emitted
         """
+        scratch_addr = self._get_scratch_for_far_ptr()
+        if scratch_addr is None:
+            raise InstructionSelectionError(
+                "No 3-byte scratch register available for [dp],Y fallback"
+            )
+
         # Need to preserve Y if we're using it for indexing
-        # The copying code will use A and X/Y for 16-bit mode
         if index_register == 'Y':
             self._emit_instr(Opcode.PHY, None, "Save Y for indexed access")
 
         # Stack offset for the pointer (+1 for stack convention)
         stack_offset = ptr_loc.stack_offset + 1
 
-        # Copy 3 bytes from stack to DP (for 24-bit far pointer)
+        # Copy 3 bytes from stack to scratch DP location
         # Use 16-bit mode for efficiency
         self._emit_instr(Opcode.REP_IMMEDIATE, Immediate(0x20), "16-bit A for pointer copy")
 
         # Load low 16 bits of pointer from stack
         self._emit_instr(Opcode.LDA_STACK, StackOffset(stack_offset), "Load ptr low word")
-        self._emit_instr(Opcode.STA_DP, Address(self.FAR_PTR_TEMP_DP), "Store to temp DP")
+        self._emit_instr(Opcode.STA_DP, Address(scratch_addr), "Store to scratch DP")
 
         self._emit_instr(Opcode.SEP_IMMEDIATE, Immediate(0x20), "8-bit A")
 
         # Load bank byte (3rd byte of far pointer)
         self._emit_instr(Opcode.LDA_STACK, StackOffset(stack_offset + 2), "Load ptr bank")
-        self._emit_instr(Opcode.STA_DP, Address(self.FAR_PTR_TEMP_DP + 2), "Store bank to temp DP")
+        self._emit_instr(Opcode.STA_DP, Address(scratch_addr + 2), "Store bank to scratch DP")
 
         # Restore Y if we saved it
         if index_register == 'Y':
             self._emit_instr(Opcode.PLY, None, "Restore Y for indexed access")
 
-        # Now use indirect long addressing from DP temp location
-        operand = Address(self.FAR_PTR_TEMP_DP)
+        # Return opcode and operand for indirect long addressing
+        operand = Address(scratch_addr)
 
         if mnemonic == 'LDA':
             if index_register == 'Y':
@@ -369,7 +456,7 @@ class MemoryOperationSelector(BaseSelector):
         Get opcode and operand for stack-relative indirect addressing.
 
         The 65816 has (d,S),Y addressing mode for near pointers on the stack.
-        For far pointers, use _copy_far_ptr_to_dp_and_get_opcode instead.
+        For far pointers, use _emit_far_ptr_access_via_dbr instead.
 
         Args:
             mnemonic: Base mnemonic ('LDA' or 'STA')
@@ -381,9 +468,9 @@ class MemoryOperationSelector(BaseSelector):
             Tuple of (Opcode, operand)
         """
         if is_far:
-            # This should be handled by _copy_far_ptr_to_dp_and_get_opcode
+            # This should be handled by _emit_far_ptr_access_via_dbr
             raise InstructionSelectionError(
-                "Far pointer stack indirect should use _copy_far_ptr_to_dp_and_get_opcode"
+                "Far pointer stack indirect should use _emit_far_ptr_access_via_dbr"
             )
 
         if index_register and index_register != 'Y':

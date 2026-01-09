@@ -89,7 +89,7 @@ class CallInstructionSelector(BaseSelector):
             return
 
         # Step 1: Set up arguments
-        stack_arg_count = self._emit_argument_setup(instr)
+        stack_bytes_pushed = self._emit_argument_setup(instr)
 
         # Step 2: Handle caller-managed DBR (data_bank=caller)
         needs_dbr_restore = self._emit_caller_dbr_setup(instr)
@@ -105,7 +105,7 @@ class CallInstructionSelector(BaseSelector):
             self._emit_pull('B', "Restore data bank (caller)")
 
         # Step 5: Clean up stack arguments (callee cleanup for R65)
-        self._emit_stack_cleanup(stack_arg_count)
+        self._emit_stack_cleanup(stack_bytes_pushed)
 
         # Step 6: Collect return values
         self._emit_return_value_collection(instr)
@@ -129,9 +129,11 @@ class CallInstructionSelector(BaseSelector):
             instr: Call instruction
 
         Returns:
-            Number of stack arguments pushed
+            Number of bytes pushed on stack (for cleanup)
         """
-        stack_arg_count = 0
+        from r65.compiler.codegen.type_utils import get_type_size
+
+        stack_bytes_pushed = 0
 
         sorted_args = sorted(instr.args, key=self._arg_sort_key)
 
@@ -140,7 +142,11 @@ class CallInstructionSelector(BaseSelector):
 
             if arg.mechanism == ArgumentMechanism.STACK:
                 self._emit_stack_argument(arg, arg_loc)
-                stack_arg_count += 1
+                # Track bytes pushed based on argument size
+                arg_size = 1
+                if hasattr(arg.value, 'type_info') and arg.value.type_info:
+                    arg_size = get_type_size(arg.value.type_info)
+                stack_bytes_pushed += arg_size
 
             elif arg.mechanism == ArgumentMechanism.REGISTER:
                 self._emit_register_argument(arg, arg_loc)
@@ -148,7 +154,7 @@ class CallInstructionSelector(BaseSelector):
             elif arg.mechanism == ArgumentMechanism.VARIABLE:
                 self._emit_variable_argument(arg, arg_loc)
 
-        return stack_arg_count
+        return stack_bytes_pushed
 
     def _arg_sort_key(self, arg):
         """Sort key for argument processing order."""
@@ -168,20 +174,83 @@ class CallInstructionSelector(BaseSelector):
 
     def _emit_stack_argument(self, arg, arg_loc):
         """Emit stack argument (push onto stack)."""
-        # Load value into A and push
-        if arg_loc.kind == LocationKind.HARDWARE and arg_loc.hw_register == 'A':
-            pass  # Already in A
-        elif arg_loc.kind == LocationKind.HARDWARE:
-            if arg_loc.hw_register == 'X':
-                self._emit_transfer('X', 'A')
-            elif arg_loc.hw_register == 'Y':
-                self._emit_transfer('Y', 'A')
-        elif isinstance(arg.value, MIRImmediate):
-            self._emit_load_immediate('A', arg.value.value)
-        else:
-            self.parent._emit_load('LDA', arg_loc)
+        from r65.compiler.codegen.type_utils import get_type_size
 
-        self._emit_push('A', "Push stack arg")
+        # Determine argument size
+        arg_size = 1
+        if hasattr(arg.value, 'type_info') and arg.value.type_info:
+            arg_size = get_type_size(arg.value.type_info)
+
+        if arg_size == 3:
+            # 24-bit value (far pointer): push all 3 bytes (bank, high, low order for stack)
+            # Push in reverse order: bank first (ends up at highest address)
+            if arg_loc.kind == LocationKind.HARDWARE and arg_loc.hw_register == 'A':
+                # This shouldn't happen for 24-bit values
+                raise InstructionSelectionError("Cannot push 24-bit value from A register")
+            elif arg_loc.kind == LocationKind.STACK:
+                # Stack locations: offsets drift after each push, so compensate
+                # After each PHA, stack offsets increase by 1
+                bank_loc = self.parent._offset_location(arg_loc, 2)
+                self.parent._emit_load('LDA', bank_loc, "Load bank byte")
+                self._emit_push('A', "Push bank byte")
+
+                # After 1 push, offsets are +1
+                high_loc = self.parent._offset_location(arg_loc, 1 + 1)
+                self.parent._emit_load('LDA', high_loc, "Load high byte")
+                self._emit_push('A', "Push high byte")
+
+                # After 2 pushes, offsets are +2
+                low_loc = self.parent._offset_location(arg_loc, 0 + 2)
+                self.parent._emit_load('LDA', low_loc, "Load low byte")
+                self._emit_push('A', "Push low byte")
+            else:
+                # Non-stack locations: no drift compensation needed
+                bank_loc = self.parent._offset_location(arg_loc, 2)
+                self.parent._emit_load('LDA', bank_loc, "Load bank byte")
+                self._emit_push('A', "Push bank byte")
+                high_loc = self.parent._offset_location(arg_loc, 1)
+                self.parent._emit_load('LDA', high_loc, "Load high byte")
+                self._emit_push('A', "Push high byte")
+                self.parent._emit_load('LDA', arg_loc, "Load low byte")
+                self._emit_push('A', "Push low byte")
+
+        elif arg_size == 2:
+            # 16-bit value: push both bytes (high first, then low)
+            if arg_loc.kind == LocationKind.HARDWARE and arg_loc.hw_register == 'A':
+                # In 16-bit mode, A holds 16 bits - just push
+                self._emit_push('A', "Push 16-bit stack arg")
+            elif arg_loc.kind == LocationKind.STACK:
+                # Stack locations: offset drifts after push
+                high_loc = self.parent._offset_location(arg_loc, 1)
+                self.parent._emit_load('LDA', high_loc, "Load high byte")
+                self._emit_push('A', "Push high byte")
+                # After 1 push, offset is +1
+                low_loc = self.parent._offset_location(arg_loc, 0 + 1)
+                self.parent._emit_load('LDA', low_loc, "Load low byte")
+                self._emit_push('A', "Push low byte")
+            else:
+                # Non-stack locations: no drift
+                high_loc = self.parent._offset_location(arg_loc, 1)
+                self.parent._emit_load('LDA', high_loc, "Load high byte")
+                self._emit_push('A', "Push high byte")
+                self.parent._emit_load('LDA', arg_loc, "Load low byte")
+                self._emit_push('A', "Push low byte")
+
+        else:
+            # 8-bit value: single push
+            if arg_loc.kind == LocationKind.HARDWARE and arg_loc.hw_register == 'A':
+                pass  # Already in A
+            elif arg_loc.kind == LocationKind.HARDWARE:
+                if arg_loc.hw_register == 'X':
+                    self._emit_transfer('X', 'A')
+                elif arg_loc.hw_register == 'Y':
+                    self._emit_transfer('Y', 'A')
+            elif isinstance(arg.value, MIRImmediate):
+                self._emit_load_immediate('A', arg.value.value)
+            else:
+                self.parent._emit_load('LDA', arg_loc)
+
+            self._emit_push('A', "Push stack arg")
 
     def _emit_register_argument(self, arg, arg_loc):
         """Emit register argument (move to specified register)."""
@@ -356,10 +425,10 @@ class CallInstructionSelector(BaseSelector):
     # Stack Cleanup and Return Values
     # ========================================================================
 
-    def _emit_stack_cleanup(self, stack_arg_count: int):
-        """Clean up stack arguments after call."""
-        for _ in range(stack_arg_count):
-            self._emit_pull('A', "Clean up stack arg")
+    def _emit_stack_cleanup(self, stack_bytes: int):
+        """Clean up stack arguments after call (pop N bytes)."""
+        for _ in range(stack_bytes):
+            self._emit_pull('A', "Clean up stack byte")
 
     def _emit_return_value_collection(self, instr: Call):
         """

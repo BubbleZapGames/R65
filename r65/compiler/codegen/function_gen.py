@@ -433,8 +433,64 @@ class FunctionCodeGenerator:
                     if push_opcode:
                         self._emit_instr(push_opcode, comment=f"Preserve {reg}")
 
+        # Save register-bound parameters that would be clobbered by stack loads
+        # (Stack parameter loads use LDA, which clobbers A register)
+        saved_a = self._emit_register_parameter_saves(mir_func, reg_alloc)
+
         # Emit stack parameter loads (must be after all prologue pushes)
-        self._emit_stack_parameter_loads(mir_func, reg_alloc)
+        # Pass saved_a so stack offsets can be adjusted for the extra PHA
+        self._emit_stack_parameter_loads(mir_func, reg_alloc, extra_stack_bytes=1 if saved_a else 0)
+
+        # Restore A register parameter after stack loads
+        self._emit_register_parameter_restores(saved_a)
+
+    def _has_a_register_parameter(self, mir_func: MIRFunction) -> bool:
+        """Check if function has a parameter bound to the A register."""
+        from r65.compiler.hir.nodes import RegisterBinding
+
+        for param in mir_func.parameters:
+            if param.binding and isinstance(param.binding, RegisterBinding):
+                if param.binding.register_name == 'A':
+                    return True
+        return False
+
+    def _emit_register_parameter_saves(self, mir_func: MIRFunction, reg_alloc: RegisterAllocator):
+        """
+        Save A register if it's a parameter and will be clobbered by stack loads.
+
+        This pushes A before stack parameter loads. The corresponding PLA
+        is emitted by _emit_register_parameter_restores after stack loads.
+
+        Args:
+            mir_func: MIR function
+            reg_alloc: Register allocator
+
+        Returns:
+            True if A was pushed and needs to be restored
+        """
+        # Only needed if there are stack parameters (which use LDA to load)
+        # AND there's a register parameter using A
+        if not mir_func.stack_param_offsets:
+            return False
+
+        if not self._has_a_register_parameter(mir_func):
+            return False
+
+        # A register parameter will be clobbered by stack loads - save it
+        self.emitter.emit_blank_line()
+        self.emitter.emit_comment("Save A register parameter before stack loads")
+        self._emit_instr(Opcode.PHA, comment="Save A (register parameter)")
+        return True
+
+    def _emit_register_parameter_restores(self, saved_a: bool):
+        """
+        Restore A register after stack parameter loads.
+
+        Args:
+            saved_a: True if A was saved and needs to be restored
+        """
+        if saved_a:
+            self._emit_instr(Opcode.PLA, comment="Restore A (register parameter)")
 
     def _get_prologue_stack_bytes(self, mir_func: MIRFunction) -> int:
         """
@@ -489,7 +545,8 @@ class FunctionCodeGenerator:
 
         return bytes_pushed
 
-    def _emit_stack_parameter_loads(self, mir_func: MIRFunction, reg_alloc: RegisterAllocator):
+    def _emit_stack_parameter_loads(self, mir_func: MIRFunction, reg_alloc: RegisterAllocator,
+                                     extra_stack_bytes: int = 0):
         """
         Emit code to load stack parameters into their allocated locations.
 
@@ -499,12 +556,13 @@ class FunctionCodeGenerator:
         Args:
             mir_func: MIR function
             reg_alloc: Register allocator
+            extra_stack_bytes: Additional bytes on stack (e.g., from PHA to save A register param)
         """
         if not mir_func.stack_param_offsets:
             return
 
         # Calculate adjustment for bytes pushed by prologue
-        prologue_bytes = self._get_prologue_stack_bytes(mir_func)
+        prologue_bytes = self._get_prologue_stack_bytes(mir_func) + extra_stack_bytes
 
         self.emitter.emit_blank_line()
         self.emitter.emit_comment("Load stack parameters")
@@ -530,6 +588,17 @@ class FunctionCodeGenerator:
                 self._emit_instr(Opcode.LDA_STACK, StackOffset(adjusted_offset),
                                 f"Load param {param_idx}")
                 self._emit_store_to_location(phys_loc)
+            elif param_size == 3:
+                # 24-bit load (far pointer): copy all 3 bytes
+                self._emit_instr(Opcode.LDA_STACK, StackOffset(adjusted_offset),
+                                f"Load param {param_idx} low")
+                self._emit_store_to_location(phys_loc)
+                self._emit_instr(Opcode.LDA_STACK, StackOffset(adjusted_offset + 1),
+                                f"Load param {param_idx} high")
+                self._emit_store_to_location(self._offset_location(phys_loc, 1))
+                self._emit_instr(Opcode.LDA_STACK, StackOffset(adjusted_offset + 2),
+                                f"Load param {param_idx} bank")
+                self._emit_store_to_location(self._offset_location(phys_loc, 2))
             else:
                 # 16-bit load: LDA offset,S ; STA dest ; LDA offset+1,S ; STA dest+1
                 # For simplicity, use byte-by-byte approach

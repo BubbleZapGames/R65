@@ -157,7 +157,7 @@ class MoveOperationSelector(BaseSelector):
 
         # Bank byte
         dest_bank = self.parent._offset_location(dest_loc, 2)
-        self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(f"^{func_name}"), "Load function bank byte")
+        self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(f":{func_name}"), "Load function bank byte")
         self._emit_load_store('STA', dest_bank)
 
     def _emit_near_function_pointer(self, func_name: str, dest_loc):
@@ -192,7 +192,7 @@ class MoveOperationSelector(BaseSelector):
     def _move_symbolic_address(self, instr: Move, dest_loc, src_operand: MIRImmediate, is_u16: bool):
         """Handle moving a symbolic address (variable or function address)."""
         from r65.compiler.hir.symbol_table import SymbolKind
-        from r65.compiler.hir.types import FunctionTypeInfo
+        from r65.compiler.hir.types import FunctionTypeInfo, PointerTypeInfo
 
         symbol = src_operand.symbol
 
@@ -208,27 +208,50 @@ class MoveOperationSelector(BaseSelector):
             else:
                 self._emit_near_function_pointer(func_name, dest_loc)
         else:
-            # Variable address
-            self._emit_variable_address(symbol, dest_loc, is_u16)
+            # Variable address - check if it's a far pointer
+            is_far_ptr = False
+            if instr.type_info and isinstance(instr.type_info, PointerTypeInfo):
+                is_far_ptr = instr.type_info.is_far
+            self._emit_variable_address(symbol, dest_loc, is_u16, is_far_ptr)
 
-    def _emit_variable_address(self, symbol, dest_loc, is_u16: bool):
+    def _emit_variable_address(self, symbol, dest_loc, is_u16: bool, is_far_ptr: bool = False):
         """Emit code to store a variable's address."""
         alloc = self.parent.mem_alloc.get_allocation(symbol)
         if not alloc:
             raise InstructionSelectionError(f"No allocation for symbol: {symbol.name}")
 
-        if is_u16:
-            # Low byte
-            self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(f"<${alloc.address:04X}"),
+        # For ROM data, use the label name instead of numeric address
+        # ROM data has a rom_label attribute set during MIR building
+        if hasattr(symbol, 'rom_label') and symbol.rom_label:
+            addr_ref = symbol.rom_label
+        else:
+            addr_ref = f"${alloc.address:04X}"
+
+        if is_far_ptr:
+            # 24-bit far pointer: low, high, bank
+            self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(f"<{addr_ref}"),
                             f"Load address of {symbol.name}")
             self._emit_load_store('STA', dest_loc)
             # High byte
             dest_high = self.parent._offset_location(dest_loc, 1)
-            self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(f">${alloc.address:04X}"))
+            self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(f">{addr_ref}"))
+            self._emit_load_store('STA', dest_high)
+            # Bank byte
+            dest_bank = self.parent._offset_location(dest_loc, 2)
+            self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(f":{addr_ref}"))
+            self._emit_load_store('STA', dest_bank)
+        elif is_u16:
+            # 16-bit near pointer: low, high
+            self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(f"<{addr_ref}"),
+                            f"Load address of {symbol.name}")
+            self._emit_load_store('STA', dest_loc)
+            # High byte
+            dest_high = self.parent._offset_location(dest_loc, 1)
+            self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(f">{addr_ref}"))
             self._emit_load_store('STA', dest_high)
         else:
             # 8-bit address (low byte only)
-            self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(f"<${alloc.address:04X}"),
+            self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(f"<{addr_ref}"),
                             f"Load address of {symbol.name}")
             self._emit_load_store('STA', dest_loc)
 
