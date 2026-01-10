@@ -312,7 +312,8 @@ class MIRBuilder:
                     args=[],
                     returns=[],
                     is_far=False,
-                    bank_attr=None  # __init_start is always near, no DBR management
+                    mode_attr=None,  # __init_start has no mode requirements
+                    bank_attr=None   # __init_start is always near, no DBR management
                 ))
 
         # Generate interrupt handler entry wrapper if needed

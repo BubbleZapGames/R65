@@ -367,7 +367,7 @@ class FunctionCodeGenerator:
         - Stack frame setup
         - Register preservation
         - Mode transitions
-        - DBR management (data_bank=inline)
+        - DBR management (databank=inline)
 
         Args:
             mir_func: MIR function
@@ -382,11 +382,11 @@ class FunctionCodeGenerator:
                 self._emit_instr(Opcode.TCS, comment="Set stack pointer")
                 self._emit_instr(Opcode.SEP_IMMEDIATE, Immediate(0x20), "Restore 8-bit A")
 
-        # Handle DBR management for far functions with data_bank=inline
-        if mir_func.is_far and mir_func.bank_attr:
+        # Handle DBR management for far functions with databank=inline
+        if mir_func.is_far and mir_func.mode_attr and mir_func.bank_attr:
             from r65.compiler.hir.attributes import DataBankMode
 
-            if mir_func.bank_attr.data_bank == DataBankMode.INLINE:
+            if mir_func.mode_attr.databank == DataBankMode.INLINE:
                 # Save current DBR and set to function's bank
                 # Sequence: PHB, LDA #bank, PHA, PLB
                 self._emit_instr(Opcode.PHB, comment="Save current data bank")
@@ -466,9 +466,9 @@ class FunctionCodeGenerator:
         bytes_pushed = 0
 
         # DBR management: PHB pushes 1 byte
-        if mir_func.is_far and mir_func.bank_attr:
+        if mir_func.is_far and mir_func.mode_attr:
             from r65.compiler.hir.attributes import DataBankMode
-            if mir_func.bank_attr.data_bank == DataBankMode.INLINE:
+            if mir_func.mode_attr.databank == DataBankMode.INLINE:
                 bytes_pushed += 1
 
         # Mode transition: PHP pushes 1 byte
@@ -533,7 +533,7 @@ class FunctionCodeGenerator:
 
         Epilogue includes (in order):
         1. Preserved register restoration (reverse of prologue push order)
-        2. DBR restoration (for data_bank=inline)
+        2. DBR restoration (for databank=inline)
         3. Mode restoration (for transition=inline)
 
         Note: Return value loading and RTS/RTL are handled separately
@@ -567,12 +567,12 @@ class FunctionCodeGenerator:
                     self._emit_instr(pull_opcode, comment=f"Restore {reg}")
 
     def _emit_dbr_restore(self, mir_func: MIRFunction):
-        """Restore DBR for data_bank=inline functions."""
-        if not (mir_func.is_far and mir_func.bank_attr):
+        """Restore DBR for databank=inline functions."""
+        if not (mir_func.is_far and mir_func.mode_attr):
             return
 
         from r65.compiler.hir.attributes import DataBankMode
-        if mir_func.bank_attr.data_bank == DataBankMode.INLINE:
+        if mir_func.mode_attr.databank == DataBankMode.INLINE:
             self._emit_instr(Opcode.PLB, comment="Restore data bank")
 
     def _emit_mode_restore(self, mir_func: MIRFunction):

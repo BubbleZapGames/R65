@@ -361,7 +361,8 @@ DBR = 0x7E;  // LDA #$7E, PHA, PLB
 ### DBR in Function Calls
 
 ```rust
-#[bank(1, data_bank=inline)]
+#[bank(1)]
+#[mode(databank=inline)]
 far fn graphics_routine() {
     // Compiler auto-generates DBR save/restore
 }

@@ -943,9 +943,9 @@ remote_function:
 
 ### Data Bank Register (DBR) Management
 
-Far functions can specify DBR handling:
+Far functions can specify DBR handling via `#[mode(databank=...)]`:
 
-**Option 1: data_bank=none (default)**
+**Option 1: databank=none (default)**
 ```rust
 #[bank(1)]
 far fn no_dbr_change() {
@@ -953,9 +953,10 @@ far fn no_dbr_change() {
 }
 ```
 
-**Option 2: data_bank=inline**
+**Option 2: databank=inline**
 ```rust
-#[bank(1, data_bank=inline)]
+#[bank(1)]
+#[mode(databank=inline)]
 far fn auto_dbr() {
     // Compiler generates DBR save/restore
 }
@@ -973,9 +974,10 @@ auto_dbr:
     RTL
 ```
 
-**Option 3: data_bank=caller**
+**Option 3: databank=caller**
 ```rust
-#[bank(1, data_bank=caller)]
+#[bank(1)]
+#[mode(databank=caller)]
 far fn caller_dbr() {
     // Caller handles DBR
 }

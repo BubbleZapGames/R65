@@ -371,7 +371,8 @@ far fn load_level_data() {
     A = 0;
 }
 
-#[bank(2, data_bank=inline)]
+#[bank(2)]
+#[mode(databank=inline)]
 far fn play_sound(sound_id @ A: u8) {
     // Play sound from audio bank
     X = sound_id;

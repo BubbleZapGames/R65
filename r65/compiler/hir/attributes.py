@@ -44,12 +44,20 @@ class ModeTransition(Enum):
     CALLER = "caller"    # Caller manages transition (batching)
 
 
+class DataBankMode(Enum):
+    """Data bank register management mode."""
+    NONE = "none"        # No DBR management (default)
+    INLINE = "inline"    # Callee manages DBR (inlined in function)
+    CALLER = "caller"    # Caller manages DBR
+
+
 @dataclass
 class ModeAttribute(ProcessedAttribute):
-    """#[mode(m8/m16, x8/x16, transition=...)]"""
+    """#[mode(m8/m16, x8/x16, transition=..., databank=...)]"""
     m_mode: Optional[MMode] = None  # None if not specified
     x_mode: Optional[XMode] = None  # None if not specified
     transition: ModeTransition = field(default=ModeTransition.NONE)
+    databank: DataBankMode = field(default=DataBankMode.NONE)
 
 
 # Preserves attribute
@@ -78,18 +86,10 @@ class StorageAttribute(ProcessedAttribute):
 
 
 # Bank attribute
-class DataBankMode(Enum):
-    """Data bank register management mode."""
-    NONE = "none"        # No DBR management (default)
-    INLINE = "inline"    # Callee manages DBR (inlined in function)
-    CALLER = "caller"    # Caller manages DBR
-
-
 @dataclass
 class BankAttribute(ProcessedAttribute):
-    """#[bank(n, data_bank=...)]"""
+    """#[bank(n)] - specifies which ROM bank the function is placed in"""
     bank_number: int = 0
-    data_bank: DataBankMode = field(default=DataBankMode.NONE)
 
 
 # Interrupt attribute
@@ -176,6 +176,7 @@ class AttributeProcessor:
         m_mode = None
         x_mode = None
         transition = ModeTransition.NONE
+        databank = DataBankMode.NONE
 
         for arg in attr.args:
             if arg.name is None:  # Positional argument
@@ -202,12 +203,26 @@ class AttributeProcessor:
                     transition = ModeTransition.CALLER
                 else:
                     raise HIRError(f"Invalid transition value: {value_str}")
+            elif arg.name == 'databank':
+                value_str = self._get_arg_identifier(arg.value)
+
+                if value_str == 'none':
+                    databank = DataBankMode.NONE
+                elif value_str == 'inline':
+                    databank = DataBankMode.INLINE
+                elif value_str == 'caller':
+                    databank = DataBankMode.CALLER
+                else:
+                    raise HIRError(f"Invalid databank value: {value_str}")
+            else:
+                raise HIRError(f"Unknown argument to #[mode]: {arg.name}")
 
         return ModeAttribute(
             name='mode',
             m_mode=m_mode,
             x_mode=x_mode,
-            transition=transition
+            transition=transition,
+            databank=databank
         )
 
     def _process_preserves(self, attr: ast.Attribute, context: str) -> PreservesAttribute:
@@ -308,12 +323,11 @@ class AttributeProcessor:
         )
 
     def _process_bank(self, attr: ast.Attribute, context: str) -> BankAttribute:
-        """Process #[bank(n, data_bank=...)] attribute."""
+        """Process #[bank(n)] attribute."""
         if context not in ['function']:
             raise HIRError(f"#[bank] attribute only valid on functions")
 
         bank_number = None
-        data_bank = DataBankMode.NONE
 
         for arg in attr.args:
             if arg.name is None:  # Positional argument (bank number)
@@ -324,18 +338,6 @@ class AttributeProcessor:
                     bank_number = arg.value.value
                 else:
                     raise HIRError(f"#[bank] number must be an integer literal")
-
-            elif arg.name == 'data_bank':
-                value_str = self._get_arg_identifier(arg.value)
-
-                if value_str == 'none':
-                    data_bank = DataBankMode.NONE
-                elif value_str == 'inline':
-                    data_bank = DataBankMode.INLINE
-                elif value_str == 'caller':
-                    data_bank = DataBankMode.CALLER
-                else:
-                    raise HIRError(f"Invalid data_bank value: {value_str}")
             else:
                 raise HIRError(f"Unknown argument to #[bank]: {arg.name}")
 
@@ -344,8 +346,7 @@ class AttributeProcessor:
 
         return BankAttribute(
             name='bank',
-            bank_number=bank_number,
-            data_bank=data_bank
+            bank_number=bank_number
         )
 
     def _process_interrupt(self, attr: ast.Attribute, context: str) -> InterruptAttribute:

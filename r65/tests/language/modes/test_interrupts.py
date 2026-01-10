@@ -58,11 +58,13 @@ class TestBankAttribute:
         attr = get_attr(func, "bank")
         assert attr is not None
 
-    def test_bank_with_data_bank(self):
-        """Test bank with data_bank option."""
-        func = parse_function("#[bank(2, data_bank=inline)] far fn bank2_code() { }")
-        attr = get_attr(func, "bank")
-        assert len(attr.args) >= 2
+    def test_bank_with_databank_mode(self):
+        """Test bank with databank in mode attribute."""
+        func = parse_function("#[bank(2)] #[mode(databank=inline)] far fn bank2_code() { }")
+        mode_attr = get_attr(func, "mode")
+        bank_attr = get_attr(func, "bank")
+        assert mode_attr is not None
+        assert bank_attr is not None
 
 
 class TestInterruptHIR:

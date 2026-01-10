@@ -532,12 +532,14 @@ The `far` keyword indicates JSL/RTL calling convention, while `#[bank]` controls
 fn local_function() { }                 // JSR/RTS (near call, default)
 
 #[bank(1)]
-far fn sound_engine() { }               // JSL/RTL, data_bank=none (default)
+far fn sound_engine() { }               // JSL/RTL, databank=none (default)
 
-#[bank(1, data_bank=inline)]
+#[bank(1)]
+#[mode(databank=inline)]
 far fn graphics_code() { }              // JSL/RTL, callee manages DBR
 
-#[bank(2, data_bank=caller)]
+#[bank(2)]
+#[mode(databank=caller)]
 far fn decompression_routine() { }     // JSL/RTL, caller manages DBR
 ```
 
@@ -545,10 +547,10 @@ far fn decompression_routine() { }     // JSL/RTL, caller manages DBR
 - `fn()`: Near call using JSR/RTS (16-bit address, same bank)
 - `far fn()`: Far call using JSL/RTL (24-bit address, cross-bank)
 
-**Data Bank Register (DBR) options:**
-- `data_bank=none` (default): No DBR management - programmer handles manually
-- `data_bank=inline`: Callee sets/restores DBR to its program bank
-- `data_bank=caller`: Caller sets/restores DBR (enables batching multiple calls)
+**Data Bank Register (DBR) options (via `#[mode()]`):**
+- `databank=none` (default): No DBR management - programmer handles manually
+- `databank=inline`: Callee sets/restores DBR to its program bank
+- `databank=caller`: Caller sets/restores DBR (enables batching multiple calls)
 
 *(Function parameters, pointers, and cross-bank calls detailed in [docs/calling-convention.md](docs/calling-convention.md))*
 
@@ -726,7 +728,7 @@ R65 uses **hardware-aware operators**: syntax indicates performance cost.
 - ✅ Mode annotations: `#[mode(m8/m16, x8/x16)]` with optional `transition=none/auto/caller`
 - ✅ Built-in mode control: `SEP()`, `REP()`, and `xba()` functions for manual mode and register control
 - ✅ Far/near calling conventions: `far fn()` for JSL/RTL cross-bank calls; `fn()` for JSR/RTS near calls
-- ✅ Bank management: `#[bank(n)]` for function placement with optional `data_bank=none/auto/caller` for DBR management
+- ✅ Bank management: `#[bank(n)]` for function placement; DBR management via `#[mode(databank=none/inline/caller)]`
 - ✅ Const evaluation: Compile-time evaluation of constant expressions (arithmetic, bitwise, logical operations); no const functions
 - ✅ Inline assembly: `asm!("instruction")` for embedding raw 65816 assembly; no variable interpolation
 - ✅ File inclusion: `include!("file")` for textual inclusion (C-style); no module system
@@ -882,7 +884,7 @@ Performance characteristics of different storage:
 21. **Storage attributes**: Memory location separate from type (near pointers can be in zero-page or RAM)
 22. **Flexible mode handling**: `#[mode(...)]` with three transition strategies: `none` (convention-based, default), `auto` (callee wrapper), `caller` (caller-side wrapper with batching)
 23. **Automatic initialization**: `__init_start()` generated for all static variables with explicit initializers (RAM is not zeroed on SNES power-on)
-24. **Consistent far/near**: `far fn()` for both function definitions and pointers indicates JSL/RTL calling convention; `fn()` indicates JSR/RTS; `#[bank(n)]` controls placement with optional `data_bank` parameter
+24. **Consistent far/near**: `far fn()` for both function definitions and pointers indicates JSL/RTL calling convention; `fn()` indicates JSR/RTS; `#[bank(n)]` controls placement; `#[mode(databank=...)]` controls DBR management
 
 ## Use Cases
 

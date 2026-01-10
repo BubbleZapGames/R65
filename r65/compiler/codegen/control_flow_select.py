@@ -323,12 +323,12 @@ class ControlFlowInstructionSelector(BaseSelector):
                     self._emit_implied(pull_opcode, f"Restore {reg}")
 
     def _emit_dbr_restore(self):
-        """Restore DBR for data_bank=inline functions."""
-        if not (self.current_function and self.current_function.is_far and self.current_function.bank_attr):
+        """Restore DBR for databank=inline functions."""
+        if not (self.current_function and self.current_function.is_far and self.current_function.mode_attr):
             return
 
         from r65.compiler.hir.attributes import DataBankMode
-        if self.current_function.bank_attr.data_bank == DataBankMode.INLINE:
+        if self.current_function.mode_attr.databank == DataBankMode.INLINE:
             self._emit_implied(Opcode.PLB, "Restore data bank")
 
     def _emit_mode_restore(self):

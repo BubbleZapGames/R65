@@ -91,7 +91,7 @@ class CallInstructionSelector(BaseSelector):
         # Step 1: Set up arguments
         stack_bytes_pushed = self._emit_argument_setup(instr)
 
-        # Step 2: Handle caller-managed DBR (data_bank=caller)
+        # Step 2: Handle caller-managed DBR (databank=caller)
         needs_dbr_restore = self._emit_caller_dbr_setup(instr)
 
         # Step 3: Make the call
@@ -330,12 +330,12 @@ class CallInstructionSelector(BaseSelector):
         Returns:
             True if DBR restore needed after call
         """
-        if not (instr.is_far and instr.bank_attr):
+        if not (instr.is_far and instr.mode_attr and instr.bank_attr):
             return False
 
         from r65.compiler.hir.attributes import DataBankMode
 
-        if instr.bank_attr.data_bank != DataBankMode.CALLER:
+        if instr.mode_attr.databank != DataBankMode.CALLER:
             return False
 
         # Caller manages DBR: save, set, call, restore

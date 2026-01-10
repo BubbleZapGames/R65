@@ -141,6 +141,7 @@ class CallLowerer:
                 args=args,
                 returns=returns,
                 is_far=False,
+                mode_attr=None,
                 bank_attr=None,
                 builtin_name=call_expr.builtin_name
             ))
@@ -158,6 +159,7 @@ class CallLowerer:
                 args=args,
                 returns=returns,
                 is_far=is_far,
+                mode_attr=None,  # No mode attribute for indirect calls
                 bank_attr=None,  # No bank attribute for indirect calls
                 builtin_name=call_expr.builtin_name
             ))
@@ -295,6 +297,7 @@ class CallLowerer:
                 args=args,
                 returns=returns,
                 is_far=func_decl.is_far,
+                mode_attr=func_decl.mode_attr,
                 bank_attr=func_decl.bank_attr,
                 builtin_name=builtin_name
             ))
@@ -314,6 +317,7 @@ class CallLowerer:
                 args=args,
                 returns=returns,
                 is_far=func_decl.is_far,
+                mode_attr=func_decl.mode_attr,
                 bank_attr=func_decl.bank_attr,
                 builtin_name=builtin_name
             ))
@@ -327,6 +331,7 @@ class CallLowerer:
                 args=args,
                 returns=returns,
                 is_far=func_decl.is_far,
+                mode_attr=func_decl.mode_attr,
                 bank_attr=func_decl.bank_attr,
                 builtin_name=builtin_name
             ))

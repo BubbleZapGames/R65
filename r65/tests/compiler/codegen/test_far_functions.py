@@ -46,10 +46,10 @@ def test_basic_far_function():
         blocks={0: entry_block},
         entry_block_id=0,
         is_far=True,  # Far function
+        mode_attr=None,  # No mode requirements, databank=none by default
         bank_attr=BankAttribute(
             name='bank',
-            bank_number=1,
-            data_bank=DataBankMode.NONE  # No DBR management
+            bank_number=1
         ),
         vreg_allocator=vreg_alloc
     )
@@ -67,8 +67,8 @@ def test_basic_far_function():
     print("✓ Basic far function test passed")
 
 
-def test_far_function_with_data_bank_inline():
-    """Test far function with data_bank=inline (callee manages DBR)."""
+def test_far_function_with_databank_inline():
+    """Test far function with databank=inline (callee manages DBR)."""
 
     vreg_alloc = VirtualRegisterAllocator()
 
@@ -89,10 +89,13 @@ def test_far_function_with_data_bank_inline():
         blocks={0: entry_block},
         entry_block_id=0,
         is_far=True,
+        mode_attr=ModeAttribute(
+            name='mode',
+            databank=DataBankMode.INLINE  # Callee manages DBR
+        ),
         bank_attr=BankAttribute(
             name='bank',
-            bank_number=2,
-            data_bank=DataBankMode.INLINE  # Callee manages DBR
+            bank_number=2
         ),
         vreg_allocator=vreg_alloc
     )
@@ -104,9 +107,9 @@ def test_far_function_with_data_bank_inline():
     asm_output = codegen.generate(program)
 
     # Verify DBR management prologue/epilogue
-    assert 'PHB' in asm_output, "data_bank=inline should save DBR (PHB)"
-    assert 'PLB' in asm_output, "data_bank=inline should restore DBR (PLB)"
-    assert '#$02' in asm_output, "data_bank=inline should load bank number"
+    assert 'PHB' in asm_output, "databank=inline should save DBR (PHB)"
+    assert 'PLB' in asm_output, "databank=inline should restore DBR (PLB)"
+    assert '#$02' in asm_output, "databank=inline should load bank number"
     assert 'RTL' in asm_output, "Far function should emit RTL"
 
     # Verify correct sequence
@@ -136,15 +139,15 @@ def test_far_function_with_data_bank_inline():
     assert phb_idx < plb_set < plb_restore < rtl_idx, \
         "DBR sequence should be: PHB ... PLB (set) ... PLB (restore) ... RTL"
 
-    print("✓ data_bank=inline test passed")
+    print("✓ databank=inline test passed")
 
 
-def test_far_function_with_data_bank_caller():
-    """Test far function call with data_bank=caller (caller manages DBR)."""
+def test_far_function_with_databank_caller():
+    """Test far function call with databank=caller (caller manages DBR)."""
 
     vreg_alloc = VirtualRegisterAllocator()
 
-    # Create callee (far function with data_bank=caller)
+    # Create callee (far function with databank=caller)
     callee_block = BasicBlock(block_id=0)
     callee_block.instructions = [
         Move(
@@ -162,10 +165,13 @@ def test_far_function_with_data_bank_caller():
         blocks={0: callee_block},
         entry_block_id=0,
         is_far=True,
+        mode_attr=ModeAttribute(
+            name='mode',
+            databank=DataBankMode.CALLER  # Caller manages DBR
+        ),
         bank_attr=BankAttribute(
             name='bank',
-            bank_number=3,
-            data_bank=DataBankMode.CALLER  # Caller manages DBR
+            bank_number=3
         ),
         vreg_allocator=vreg_alloc
     )
@@ -178,10 +184,13 @@ def test_far_function_with_data_bank_caller():
             args=[],
             returns=[],
             is_far=True,
-            bank_attr=BankAttribute(  # Pass callee's bank_attr to Call
+            mode_attr=ModeAttribute(  # Pass callee's mode_attr to Call
+                name='mode',
+                databank=DataBankMode.CALLER
+            ),
+            bank_attr=BankAttribute(
                 name='bank',
-                bank_number=3,
-                data_bank=DataBankMode.CALLER
+                bank_number=3
             )
         ),
         Return(values=[])
@@ -205,7 +214,7 @@ def test_far_function_with_data_bank_caller():
 
     # Verify caller-side DBR management
     # Should have: PHB, LDA #bank, PHA, PLB, JSL, PLB
-    assert 'PHB' in asm_output, "data_bank=caller should save DBR (PHB) at caller"
+    assert 'PHB' in asm_output, "databank=caller should save DBR (PHB) at caller"
     assert 'JSL' in asm_output, "Far call should use JSL"
     assert '#$03' in asm_output, "Caller should load callee's bank number"
 
@@ -224,7 +233,7 @@ def test_far_function_with_data_bank_caller():
     assert phb_count >= 1, "Caller should have PHB to save DBR"
     assert plb_count >= 2, "Caller should have 2 PLBs (set and restore DBR)"
 
-    print("✓ data_bank=caller test passed")
+    print("✓ databank=caller test passed")
 
 
 def test_near_function_uses_rts():
@@ -283,10 +292,10 @@ def test_far_call_jsl():
         blocks={0: callee_block},
         entry_block_id=0,
         is_far=True,
+        mode_attr=None,  # databank=none (default)
         bank_attr=BankAttribute(
             name='bank',
-            bank_number=1,
-            data_bank=DataBankMode.NONE
+            bank_number=1
         ),
         vreg_allocator=vreg_alloc
     )
@@ -389,8 +398,8 @@ def run_all_tests():
     print("\n=== Running Far Function Tests ===\n")
 
     test_basic_far_function()
-    test_far_function_with_data_bank_inline()
-    test_far_function_with_data_bank_caller()
+    test_far_function_with_databank_inline()
+    test_far_function_with_databank_caller()
     test_near_function_uses_rts()
     test_far_call_jsl()
     test_near_call_jsr()

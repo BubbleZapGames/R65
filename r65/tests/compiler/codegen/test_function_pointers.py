@@ -103,7 +103,7 @@ def test_far_function_pointer_assignment():
         Return(values=[])
     ]
 
-    from r65.compiler.hir.attributes import BankAttribute, DataBankMode
+    from r65.compiler.hir.attributes import BankAttribute
     target_func = MIRFunction(
         name="far_target",
         parameters=[],
@@ -111,10 +111,10 @@ def test_far_function_pointer_assignment():
         blocks={0: target_block},
         entry_block_id=0,
         is_far=True,  # Far function
+        mode_attr=None,  # databank=none (default)
         bank_attr=BankAttribute(
             name='bank',
-            bank_number=2,
-            data_bank=DataBankMode.NONE
+            bank_number=2
         ),
         vreg_allocator=vreg_alloc
     )
@@ -266,7 +266,7 @@ def test_far_indirect_call():
         Return(values=[])
     ]
 
-    from r65.compiler.hir.attributes import BankAttribute, DataBankMode
+    from r65.compiler.hir.attributes import BankAttribute
     callee_func = MIRFunction(
         name="far_callee",
         parameters=[],
@@ -274,10 +274,10 @@ def test_far_indirect_call():
         blocks={0: callee_block},
         entry_block_id=0,
         is_far=True,
+        mode_attr=None,  # databank=none (default)
         bank_attr=BankAttribute(
             name='bank',
-            bank_number=3,
-            data_bank=DataBankMode.NONE
+            bank_number=3
         ),
         vreg_allocator=vreg_alloc
     )

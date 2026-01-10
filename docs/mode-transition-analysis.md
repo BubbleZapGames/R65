@@ -286,7 +286,7 @@ fn indirect_call() {
 - Generates same wrappers for JSR and JSL ✅
 
 **DBR + Mode interaction:**
-- `data_bank=inline`: Callee sets DBR to its program bank
+- `databank=inline`: Callee sets DBR to its program bank
 - Could combine with mode transition for single wrapper
 - **Optimization opportunity:** Combine PHB+PHP → PHB+PHP+SEP/REP+... ⚡
 

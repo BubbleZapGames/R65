@@ -293,10 +293,10 @@ class HIRBuilder:
         func_symbol = self.symbol_table.lookup(func.name)
 
         # Validate: DBR management modes require far functions
-        if bank_attr and bank_attr.data_bank != DataBankMode.NONE:
+        if mode_attr and mode_attr.databank != DataBankMode.NONE:
             if not func.is_far:
                 raise HIRError(
-                    f"Function '{func.name}' uses data_bank={bank_attr.data_bank.value} "
+                    f"Function '{func.name}' uses databank={mode_attr.databank.value} "
                     f"but is not a far function. DBR management requires 'far fn'."
                 )
 

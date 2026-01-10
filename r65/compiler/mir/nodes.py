@@ -517,7 +517,8 @@ class Call(MIRInstruction):
     args: List[Argument] = field(default_factory=list)
     returns: List[VirtualRegister] = field(default_factory=list)
     is_far: bool = False  # True for JSL/RTL, False for JSR/RTS
-    bank_attr: Optional[Any] = None  # BankAttribute from callee (for caller-managed DBR)
+    mode_attr: Optional[Any] = None  # ModeAttribute from callee (for caller-managed DBR)
+    bank_attr: Optional[Any] = None  # BankAttribute from callee (for bank number)
     builtin_name: Optional[str] = None  # Set if this is a built-in function call
 
     def __repr__(self):
