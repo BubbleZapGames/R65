@@ -851,6 +851,28 @@ r65c game.r65 --stop-after mir        # Stop after MIR building
 
 After installing via `pip install -e .`, the `r65c` command becomes available system-wide.
 
+### Creating Test Projects
+
+Use `r65x init` to quickly create a project for testing R65 code:
+
+```bash
+# Create a new SNES project
+r65x init --platform snes my_project
+
+# Build and test
+cd my_project
+mkdir -p build
+r65c src/main.r65 -o build/main.asm
+
+# Or use make (requires WLA-DX installed)
+make
+```
+
+The generated project includes:
+- `src/main.r65` - Main source file with `#[snesrom]`, `#[bank]`, and `#[entry]`
+- `src/lib/` - Standard library files (sneslib.r65, math.r65, 65816.r65)
+- `Makefile` - Build configuration for WLA-DX
+
 ## Directory Structure (Planned)
 
 ```
