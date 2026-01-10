@@ -53,10 +53,12 @@ install-deps:
 
 # Run with emulator (requires BSNES or higan)
 run: $(ROM_FILE)
-	@if command -v bsnes >/dev/null 2>&1; then \
-		bsnes $(ROM_FILE); \
+	@if command -v Mesen >/dev/null 2>&1; then \
+		Mesen $(ROM_FILE); \
 	elif command -v higan >/dev/null 2>&1; then \
 		higan $(ROM_FILE); \
+	elif command -v bsnes >/dev/null 2>&1; then \
+		bsnes $(ROM_FILE); \
 	else \
 		echo "No compatible emulator found. Install bsnes or higan."; \
 		echo "Then run: make run"; \
