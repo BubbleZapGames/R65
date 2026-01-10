@@ -454,6 +454,86 @@ class ASTBuilder(Transformer):
         bank_number = int(items[0].value, 0)  # Parse with base detection (0x prefix)
         return ast.BankDirective(bank_number=bank_number)
 
+    def snesrom_directive(self, items):
+        """
+        SNES ROM header directive: #[snesrom(name="...", ...)]
+
+        Parses named arguments and flags for configuring the .SNESHEADER output.
+        """
+        # Collect all arguments (named args and flags)
+        named_args = {}
+        flags = set()
+
+        for item in items:
+            if isinstance(item, tuple):
+                # Named argument: (name, value)
+                name, value = item
+                named_args[name] = value
+            elif isinstance(item, str):
+                # Flag argument
+                flags.add(item)
+
+        # Validate required argument
+        if 'name' not in named_args:
+            raise ValueError("#[snesrom] requires 'name' parameter")
+
+        # Build directive with defaults
+        name = named_args['name']
+        rom_id = named_args.get('id', 'SNES')
+        cartridge_type = named_args.get('cartridge_type', 0x00)
+        sram_size = named_args.get('sram_size', 0x00)
+        country = named_args.get('country', 0x01)
+        version = named_args.get('version', 0x00)
+
+        # ROM type flags (with mutual exclusivity for memory mapping)
+        lorom = 'lorom' in flags
+        hirom = 'hirom' in flags
+        exhirom = 'exhirom' in flags
+        slowrom = 'slowrom' in flags
+        fastrom = 'fastrom' in flags
+
+        # Default to lorom if no memory mapping specified
+        if not lorom and not hirom and not exhirom:
+            lorom = True
+
+        # Default to slowrom if no speed specified
+        if not slowrom and not fastrom:
+            slowrom = True
+
+        return ast.SnesRomDirective(
+            name=name,
+            id=rom_id,
+            cartridge_type=cartridge_type,
+            sram_size=sram_size,
+            country=country,
+            version=version,
+            lorom=lorom,
+            hirom=hirom,
+            exhirom=exhirom,
+            slowrom=slowrom,
+            fastrom=fastrom
+        )
+
+    def snesrom_named_arg(self, items):
+        """Named argument in snesrom directive: name=value"""
+        items = self._filter_tokens(items, keep_types={'IDENT', 'STRING', 'INTEGER'})
+        name = items[0].value
+        value_token = items[1]
+
+        if value_token.type == 'STRING':
+            # Remove quotes from string
+            value = value_token.value[1:-1]
+        else:
+            # Parse integer with base detection
+            value = int(value_token.value, 0)
+
+        return (name, value)
+
+    def snesrom_flag_arg(self, items):
+        """Flag argument in snesrom directive: flagname"""
+        items = self._filter_tokens(items, keep_types={'IDENT'})
+        return items[0].value
+
     # ========================================================================
     # Macros
     # ========================================================================

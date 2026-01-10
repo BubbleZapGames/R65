@@ -18,6 +18,7 @@ start: item*
      | include_stmt
      | stack_directive
      | bank_directive
+     | snesrom_directive
      | macro_decl
      | macro_invocation_stmt
      | _reserved_keyword  // Dummy rule to make reserved keywords valid tokens
@@ -28,6 +29,12 @@ stack_directive: "#" "[" "stack" "(" INTEGER "," INTEGER ")" "]"
 
 // Bank directive - sets current ROM bank for following declarations
 bank_directive: "#" "[" "bank" "(" INTEGER ")" "]"
+
+// SNES ROM header directive - configures .SNESHEADER output
+// #[snesrom(name="ROM NAME", id="SNES", lorom, fastrom, ...)]
+snesrom_directive: "#" "[" "snesrom" "(" snesrom_arg ("," snesrom_arg)* ","? ")" "]"
+snesrom_arg: IDENT "=" (STRING | INTEGER)  -> snesrom_named_arg
+           | IDENT                          -> snesrom_flag_arg
 
 // Dummy rule to tell Lark that these terminals are valid (never actually matched in valid code)
 _reserved_keyword: KEYWORD

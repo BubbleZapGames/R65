@@ -189,6 +189,7 @@ class MIRBuilder:
             enums=hir_program.enums,
             symbol_table=hir_program.symbol_table,
             stack_attr=hir_program.stack_attr,
+            snesrom_config=hir_program.snesrom_config,
             rom_data_sections=self._rom_data_sections
         )
 

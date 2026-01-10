@@ -384,6 +384,8 @@ static mut VAR: u8;  // Gets $0100, not $1F00
 - Explicit addresses are used as-is without collision checking
 - Zeropage and lowram share the same physical memory ($0000-$1FFF)
 
+*(See [docs/snes-rom-header.md](docs/snes-rom-header.md) for SNES ROM header configuration with `#[snesrom(...)]`)*
+
 ### Scratch Registers (Compiler-Managed Memory)
 
 The compiler uses **scratch registers** for temporary values. Memory management is the programmer's responsibility - define scratch registers with the `register` flag:
@@ -758,6 +760,7 @@ R65 uses **hardware-aware operators**: syntax indicates performance cost.
 - ✅ Built-in mode control: `SEP()`, `REP()`, and `xba()` functions for manual mode and register control
 - ✅ Far/near calling conventions: `far fn()` for JSL/RTL cross-bank calls; `fn()` for JSR/RTS near calls
 - ✅ Bank management: `#[bank(n)]` global directive sets bank context for following functions and `#[rom]` statics; DBR management via `#[mode(databank=none/inline/caller)]`
+- ✅ SNES ROM header: `#[snesrom(name="...", ...)]` configures WLA-DX .SNESHEADER with optional `lorom`/`hirom`/`exhirom` and `slowrom`/`fastrom` flags
 - ✅ Const evaluation: Compile-time evaluation of constant expressions (arithmetic, bitwise, logical operations); no const functions
 - ✅ Inline assembly: `asm!("instruction")` for embedding raw 65816 assembly; no variable interpolation
 - ✅ File inclusion: `include!("file")` for textual inclusion (C-style); no module system
@@ -943,6 +946,7 @@ Performance characteristics of different storage:
 - [Register Allocation](docs/register-allocation.md) - Register allocation strategy
 - [Reserved Keywords](docs/reserved-keywords.md) - Language keyword and register name reference
 - [Macros](docs/macros.md) - Simplified Rust-style declarative macro system
+- [SNES ROM Header](docs/snes-rom-header.md) - ROM header configuration with `#[snesrom(...)]`
 
 ### Code Generation
 - [Code Generation](docs/code-generation.md) - Complete code generation reference: memory allocation, register allocation, instruction selection, addressing modes, function generation, and WLA-DX assembly output

@@ -745,6 +745,7 @@ class MIRProgram:
     enums: List[Any] = field(default_factory=list)      # HIREnumDecl list
     symbol_table: Optional[Any] = None  # SymbolTable from HIR
     stack_attr: Optional[Any] = None    # StackAttribute from #[stack(...)]
+    snesrom_config: Optional[Any] = None  # SnesRomConfig from #[snesrom(...)]
     rom_data_sections: List['ROMDataRef'] = field(default_factory=list)  # Array literal data
 
     def __repr__(self):

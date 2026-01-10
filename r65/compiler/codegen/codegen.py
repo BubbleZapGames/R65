@@ -225,8 +225,8 @@ class ProgramCodeGenerator:
             # Emit empty interrupt handler for unused vectors
             self.emitter.emit_empty_interrupt_handler()
 
-            # Emit SNES ROM header
-            self.emitter.emit_snes_header(rom_name="R65 Compiled ROM", version=0)
+            # Emit SNES ROM header (use config from #[snesrom(...)] if present)
+            self.emitter.emit_snes_header(snesrom_config=mir_program.snesrom_config)
 
             # Emit interrupt vectors
             self.emitter.emit_interrupt_vectors(

@@ -19,6 +19,8 @@ ACID_TEST_SOURCE = """
 // R65 Acid Test - Comprehensive Language Feature Test
 // =============================================================================
 
+#[snesrom(name="R65 ACID TEST", version=0x01)]
+
 // -----------------------------------------------------------------------------
 // Constants
 // -----------------------------------------------------------------------------
@@ -681,6 +683,7 @@ class TestAcidTest:
             'mode_attr': False,
             'preserves_attr': False,
             'bank_directive': False,
+            'snesrom_directive': False,
             'hw_attr': False,
             'zeropage_attr': False,
             'ram_attr': False,
@@ -702,6 +705,8 @@ class TestAcidTest:
         for item in program.items:
             if isinstance(item, ast.BankDirective):
                 features_found['bank_directive'] = True
+            elif isinstance(item, ast.SnesRomDirective):
+                features_found['snesrom_directive'] = True
             elif isinstance(item, ast.FunctionDecl):
                 for attr in item.attributes:
                     if attr.name == 'entry':

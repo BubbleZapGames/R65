@@ -612,13 +612,12 @@ class AssemblyEmitter:
     # Interrupt Vectors
     # ========================================================================
 
-    def emit_snes_header(self, rom_name="R65 ROM", version=0):
+    def emit_snes_header(self, snesrom_config=None):
         """
         Emit SNES ROM header using .SNESHEADER directive.
 
         Args:
-            rom_name: ROM name (max 21 characters)
-            version: ROM version number
+            snesrom_config: SnesRomConfig from #[snesrom(...)] directive, or None for defaults
 
         Generated:
             .SNESHEADER
@@ -637,17 +636,57 @@ class AssemblyEmitter:
         """
         self.emit_section_header("SNES ROM Header")
 
+        # Use defaults if no config provided
+        if snesrom_config is None:
+            rom_name = "R65 ROM"
+            rom_id = "SNES"
+            cartridge_type = 0x00
+            sram_size = 0x00
+            country = 0x01
+            version = 0x00
+            lorom = True
+            hirom = False
+            exhirom = False
+            slowrom = True
+            fastrom = False
+        else:
+            rom_name = snesrom_config.name
+            rom_id = snesrom_config.id
+            cartridge_type = snesrom_config.cartridge_type
+            sram_size = snesrom_config.sram_size
+            country = snesrom_config.country
+            version = snesrom_config.version
+            lorom = snesrom_config.lorom
+            hirom = snesrom_config.hirom
+            exhirom = snesrom_config.exhirom
+            slowrom = snesrom_config.slowrom
+            fastrom = snesrom_config.fastrom
+
         # Pad or truncate ROM name to exactly 21 characters
         padded_name = rom_name[:21].ljust(21)
 
         self.emit_directive(".SNESHEADER")
-        self.emit_directive('ID "SNES"')
+        self.emit_directive(f'ID "{rom_id}"')
         self.emit_directive(f'NAME "{padded_name}"')
-        self.emit_directive("LOROM")
-        self.emit_directive("CARTRIDGETYPE $00")
+
+        # Memory mapping type (mutually exclusive)
+        if hirom:
+            self.emit_directive("HIROM")
+        elif exhirom:
+            self.emit_directive("EXHIROM")
+        else:
+            self.emit_directive("LOROM")
+
+        # ROM speed
+        if fastrom:
+            self.emit_directive("FASTROM")
+        else:
+            self.emit_directive("SLOWROM")
+
+        self.emit_directive(f"CARTRIDGETYPE ${cartridge_type:02X}")
         self.emit_directive("ROMSIZE $08")
-        self.emit_directive("SRAMSIZE $00")
-        self.emit_directive("COUNTRY $01")
+        self.emit_directive(f"SRAMSIZE ${sram_size:02X}")
+        self.emit_directive(f"COUNTRY ${country:02X}")
         self.emit_directive("LICENSEECODE $00")
         self.emit_directive(f"VERSION ${version:02X}")
         self.emit_directive(".ENDSNES")

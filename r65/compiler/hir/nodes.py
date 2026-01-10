@@ -40,6 +40,31 @@ class HIRDeclaration(HIRNode):
 
 
 # =============================================================================
+# Program Configuration
+# =============================================================================
+
+@dataclass
+class SnesRomConfig:
+    """
+    SNES ROM header configuration from #[snesrom(...)] directive.
+
+    Configures the WLA-DX .SNESHEADER directive output.
+    """
+    name: str  # ROM name (max 21 characters)
+    id: str = "SNES"  # Cartridge ID
+    cartridge_type: int = 0x00  # Cartridge type
+    sram_size: int = 0x00  # SRAM size
+    country: int = 0x01  # Country code (USA)
+    version: int = 0x00  # ROM version
+    # ROM type flags
+    lorom: bool = True
+    hirom: bool = False
+    exhirom: bool = False
+    slowrom: bool = True
+    fastrom: bool = False
+
+
+# =============================================================================
 # Program
 # =============================================================================
 
@@ -49,6 +74,7 @@ class HIRProgram(HIRNode):
     declarations: List[HIRDeclaration] = field(default_factory=list)
     symbol_table: Any = None  # Will be SymbolTable
     stack_attr: Any = None  # StackAttribute from #[stack(...)]
+    snesrom_config: Optional[SnesRomConfig] = None  # SNES ROM header config from #[snesrom(...)]
 
     def get_declarations_by_type(self, decl_type: type) -> List[HIRDeclaration]:
         """Filter declarations by type."""

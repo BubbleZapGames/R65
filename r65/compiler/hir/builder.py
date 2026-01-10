@@ -52,6 +52,7 @@ class HIRBuilder:
         """
         # Track global attributes
         stack_attr = None
+        snesrom_config = None
 
         # Pass 1: Declare all top-level symbols (filtered by cfg)
         # Also track bank directives to maintain ordering
@@ -67,6 +68,21 @@ class HIRBuilder:
             elif isinstance(decl, ast.BankDirective):
                 # Update current bank context
                 self.current_bank = decl.bank_number
+            elif isinstance(decl, ast.SnesRomDirective):
+                # Create SNES ROM config from directive
+                snesrom_config = hir.SnesRomConfig(
+                    name=decl.name,
+                    id=decl.id,
+                    cartridge_type=decl.cartridge_type,
+                    sram_size=decl.sram_size,
+                    country=decl.country,
+                    version=decl.version,
+                    lorom=decl.lorom,
+                    hirom=decl.hirom,
+                    exhirom=decl.exhirom,
+                    slowrom=decl.slowrom,
+                    fastrom=decl.fastrom
+                )
             else:
                 if self._should_include_declaration(decl):
                     self._declare_toplevel(decl)
@@ -81,6 +97,8 @@ class HIRBuilder:
                 # Update current bank context for following declarations
                 self.current_bank = decl.bank_number
                 continue
+            if isinstance(decl, ast.SnesRomDirective):
+                continue  # Skip snesrom directives, already processed
             if self._should_include_declaration(decl):
                 hir_decl = self._build_declaration(decl)
                 hir_decls.append(hir_decl)
@@ -88,7 +106,8 @@ class HIRBuilder:
         return hir.HIRProgram(
             declarations=hir_decls,
             symbol_table=self.symbol_table,
-            stack_attr=stack_attr
+            stack_attr=stack_attr,
+            snesrom_config=snesrom_config
         )
 
     def _should_include_declaration(self, decl: ast.Declaration) -> bool:

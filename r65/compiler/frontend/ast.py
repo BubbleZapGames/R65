@@ -262,6 +262,44 @@ class BankDirective(Declaration):
     bank_number: int
 
 
+@dataclass
+class SnesRomDirective(Declaration):
+    """
+    SNES ROM header directive: #[snesrom(name="...", ...)]
+
+    Configures the WLA-DX .SNESHEADER directive parameters.
+
+    Required:
+        name: ROM name (max 21 characters)
+
+    Optional with defaults:
+        id: Cartridge ID (default: "SNES")
+        cartridge_type: Cartridge type (default: 0x00)
+        sram_size: SRAM size (default: 0x00)
+        country: Country code (default: 0x01 for USA)
+        version: ROM version (default: 0x00)
+
+    ROM type flags (mutually exclusive where applicable):
+        lorom: Use LoROM mapping (default: true)
+        hirom: Use HiROM mapping
+        exhirom: Use ExHiROM mapping
+        slowrom: Use SlowROM timing (default: true)
+        fastrom: Use FastROM timing
+    """
+    name: str  # Required: ROM name
+    id: str = "SNES"  # Cartridge ID
+    cartridge_type: int = 0x00  # Cartridge type
+    sram_size: int = 0x00  # SRAM size
+    country: int = 0x01  # Country code (USA)
+    version: int = 0x00  # ROM version
+    # ROM type flags
+    lorom: bool = True
+    hirom: bool = False
+    exhirom: bool = False
+    slowrom: bool = True
+    fastrom: bool = False
+
+
 # ============================================================================
 # Macros
 # ============================================================================

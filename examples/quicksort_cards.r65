@@ -4,6 +4,8 @@
 // This example sorts a hand of playing cards first by suit, then by rank.
 // It showcases R65's support for recursive algorithms on the 65816 processor.
 
+#[snesrom(name="QUICKSORT DEMO")]
+
 // ============================================================================
 // Card Definitions
 // ============================================================================
