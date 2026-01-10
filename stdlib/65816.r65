@@ -1,0 +1,52 @@
+// 65816 Standard Library - Processor Mode Macros
+//
+// These macros temporarily switch processor modes for a block of code,
+// then restore the previous mode. Uses SEP/REP instructions.
+//
+// Usage:
+//   modeM16!({ A = 0x0FFF; });
+//   modeM8!({ A = 0xFF; B = 0x0F; });
+//   modeX16!({ X = 0xFFFF; Y = 0x1234; });
+//   modeX8!({ X = 0; Y = 0xFF; });
+
+// Switch to 16-bit accumulator mode (M=0), execute block, restore 8-bit
+macro_rules! modeM16($body:tt) {
+    REP(0x20);
+    $body
+    SEP(0x20);
+}
+
+// Switch to 8-bit accumulator mode (M=1), execute block, restore 16-bit
+macro_rules! modeM8($body:tt) {
+    SEP(0x20);
+    $body
+    REP(0x20);
+}
+
+// Switch to 16-bit index mode (X=0), execute block, restore 8-bit
+macro_rules! modeX16($body:tt) {
+    REP(0x10);
+    $body
+    SEP(0x10);
+}
+
+// Switch to 8-bit index mode (X=1), execute block, restore 16-bit
+macro_rules! modeX8($body:tt) {
+    SEP(0x10);
+    $body
+    REP(0x10);
+}
+
+// Switch to 16-bit accumulator and index mode, execute block, restore 8-bit
+macro_rules! modeM16X16($body:tt) {
+    REP(0x30);
+    $body
+    SEP(0x30);
+}
+
+// Switch to 8-bit accumulator and index mode, execute block, restore 16-bit
+macro_rules! modeM8X8($body:tt) {
+    SEP(0x30);
+    $body
+    REP(0x30);
+}

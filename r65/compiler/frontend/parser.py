@@ -730,15 +730,29 @@ class ASTBuilder(Transformer):
         return ' '.join(tokens)
 
     def macro_arg_token(self, items):
-        """Token in macro argument."""
+        """Token in macro argument.
+
+        Handles both single tokens and nested groups (parens, brackets, braces).
+        For nested groups like { A = 0x0FFF; }, items will be:
+        ['{', 'A', '=', '0x0FFF', ';', '}']
+        """
         if not items:
             return ''
+        # If multiple items, this is a nested group - join all tokens
+        if len(items) > 1:
+            tokens = []
+            for item in items:
+                if isinstance(item, LarkToken):
+                    tokens.append(item.value)
+                else:
+                    tokens.append(str(item))
+            return ' '.join(tokens)
+        # Single item
         item = items[0]
         if isinstance(item, LarkToken):
             return item.value
         elif isinstance(item, list):
-            # Nested group
-            return ' '.join(str(x) for x in items)
+            return ' '.join(str(x) for x in item)
         return str(item)
 
     # ========================================================================

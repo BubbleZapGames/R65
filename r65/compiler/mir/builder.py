@@ -425,6 +425,9 @@ class MIRBuilder:
             self.lower_continue_statement(stmt)
         elif isinstance(stmt, HIRAsmStmt):
             self.lower_asm_statement(stmt)
+        elif isinstance(stmt, HIRBlock):
+            # Nested block - flatten by recursively lowering its statements
+            self.lower_block(stmt)
         else:
             # Unsupported statement type (placeholder for future expansion)
             pass
