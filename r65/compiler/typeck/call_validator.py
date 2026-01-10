@@ -71,7 +71,7 @@ class CallValidator:
             for i, (arg, param) in enumerate(zip(expr.args, func_decl.parameters)):
                 arg_type = self.check_expression(arg)
                 if not isinstance(arg_type, NeverTypeInfo):
-                    if not TypeUtils.types_equal(arg_type, param.param_type):
+                    if not TypeUtils.types_compatible(arg_type, param.param_type):
                         raise TypeCheckError(
                             f"argument {i + 1} to '{func_symbol.name}' has wrong type: expected {param.param_type}, found {arg_type}",
                             source_loc=arg.source_loc if hasattr(arg, 'source_loc') else expr.source_loc,
@@ -112,7 +112,7 @@ class CallValidator:
             for i, (arg, param_type) in enumerate(zip(expr.args, func_type.param_types)):
                 arg_type = self.check_expression(arg)
                 if not isinstance(arg_type, NeverTypeInfo):
-                    if not TypeUtils.types_equal(arg_type, param_type):
+                    if not TypeUtils.types_compatible(arg_type, param_type):
                         raise TypeCheckError(
                             f"argument {i + 1} has wrong type: expected {param_type}, found {arg_type}",
                             source_loc=arg.source_loc if hasattr(arg, 'source_loc') else expr.source_loc,

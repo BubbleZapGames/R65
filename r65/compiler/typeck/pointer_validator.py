@@ -65,12 +65,13 @@ class PointerValidator:
 
         Far pointers (24-bit) are needed for:
         - #[ram] variables: stored in bank $7E ($7E2000-$7FFFFF)
-        - #[rom] variables: stored in ROM banks
+        - #[rom] variables in banks other than 0
 
         Near pointers (16-bit) are sufficient for:
         - #[zeropage] variables: bank 0 ($0000-$00FF)
         - #[lowram] variables: bank 0 ($0000-$1FFF)
         - #[hw] variables: typically bank 0
+        - #[rom] variables in bank 0: same bank as code
         - Local variables: on stack in current bank
 
         Args:
@@ -98,6 +99,24 @@ class PointerValidator:
         if not isinstance(static_decl.storage_attr, StorageAttribute):
             return False
 
-        # RAM and ROM require far pointers (different banks)
         storage_kind = static_decl.storage_attr.storage_kind
-        return storage_kind in (StorageKind.RAM, StorageKind.ROM)
+
+        # RAM always requires far pointers (bank $7E)
+        if storage_kind == StorageKind.RAM:
+            return True
+
+        # ROM with explicit bank number can use near pointers (bank is known)
+        # ROM with auto-bank or no bank needs far pointers (bank is unknown)
+        if storage_kind == StorageKind.ROM:
+            if static_decl.bank_attr and hasattr(static_decl.bank_attr, 'bank_number'):
+                bank_number = static_decl.bank_attr.bank_number
+                # bank_number=None means #[bank(auto)] - needs far pointer
+                # bank_number>=0 means explicit bank - can use near pointer
+                if bank_number is None:
+                    return True  # Auto-bank: far pointer required
+                return False  # Explicit bank: near pointer OK
+            else:
+                # No bank attribute - implicitly auto-bank, needs far pointer
+                return True
+
+        return False
