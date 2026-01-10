@@ -298,26 +298,51 @@ class TypeChecker:
                     # This is a literal overflow!
                     if value > max_val:
                         raise TypeCheckError(
-                            f"Literal value {value} exceeds maximum for type {type_name} ({max_val})\n"
-                            f"  Valid range for {type_name}: {min_val} to {max_val}\n"
-                            f"  Suggestion: Use a larger type (e.g., u16) or reduce the value",
-                            source_loc=source_loc
+                            f"literal value {value} exceeds maximum for type {type_name} ({max_val})",
+                            source_loc=source_loc,
+                            hint=f"use a larger type like u16, or reduce the value (valid range: {min_val} to {max_val})"
                         )
                     else:  # value < min_val
                         raise TypeCheckError(
-                            f"Literal value {value} is below minimum for type {type_name} ({min_val})\n"
-                            f"  Valid range for {type_name}: {min_val} to {max_val}\n"
-                            f"  Suggestion: Use a signed type (e.g., i8, i16) for negative values",
-                            source_loc=source_loc
+                            f"literal value {value} is below minimum for type {type_name} ({min_val})",
+                            source_loc=source_loc,
+                            hint=f"use a signed type like i8 or i16 for negative values (valid range: {min_val} to {max_val})"
                         )
+
+        # Generate helpful hint based on context
+        hint = self._generate_type_mismatch_hint(expected_type, actual_type, context)
 
         # Default type mismatch error
         raise TypeCheckError(
-            f"Type mismatch in {context}\n"
-            f"  Expected: {expected_type}\n"
-            f"  Found: {actual_type}",
-            source_loc=source_loc
+            f"type mismatch in {context}: expected {expected_type}, found {actual_type}",
+            source_loc=source_loc,
+            hint=hint
         )
+
+    def _generate_type_mismatch_hint(self, expected_type: TypeInfo, actual_type: TypeInfo,
+                                      context: str) -> Optional[str]:
+        """Generate a helpful hint for type mismatch errors."""
+        # Suggest cast for integer size mismatches
+        if isinstance(expected_type, BasicTypeInfo) and isinstance(actual_type, BasicTypeInfo):
+            expected_name = expected_type.name
+            actual_name = actual_type.name
+
+            # Integer type mismatches
+            int_types = {'u8', 'i8', 'u16', 'i16'}
+            if expected_name in int_types and actual_name in int_types:
+                return f"use explicit cast: (value as {expected_name})"
+
+            # Bool to integer or vice versa
+            if expected_name == 'bool' and actual_name in int_types:
+                return "use comparison to convert integer to bool: (value != 0)"
+            if expected_name in int_types and actual_name == 'bool':
+                return f"use cast to convert bool to integer: (value as {expected_name})"
+
+        # Pointer type hints
+        if isinstance(expected_type, PointerTypeInfo) and not isinstance(actual_type, PointerTypeInfo):
+            return f"expected a pointer; use &value to get address"
+
+        return None
 
     # ========================================================================
     # Main Type Checking
@@ -620,8 +645,9 @@ class TypeChecker:
             symbol = expr.symbol
             if symbol is None:
                 raise TypeCheckError(
-                    f"Undefined identifier '{expr.name}'",
-                    source_loc=expr.source_loc
+                    f"undefined identifier '{expr.name}'",
+                    source_loc=expr.source_loc,
+                    hint="check spelling, or add a declaration for this variable"
                 )
 
             # Get type from symbol
@@ -665,20 +691,21 @@ class TypeChecker:
                     mode = self._get_mode_at(expr)
                     if mode.m_mode == ModeState.M16:
                         raise TypeCheckError(
-                            f"B register only available in m8 mode\n"
-                            f"  Function has mode m16 where accumulator is 16-bit",
-                            source_loc=expr.source_loc
+                            f"B register only available in m8 mode (function has m16)",
+                            source_loc=expr.source_loc,
+                            hint="B is the high byte of 16-bit accumulator, only accessible in 8-bit mode"
                         )
                     else:
                         raise TypeCheckError(
-                            f"B register only available in m8 mode\n"
-                            f"  B requires #[mode(m8, ...)]",
-                            source_loc=expr.source_loc
+                            f"B register only available in m8 mode",
+                            source_loc=expr.source_loc,
+                            hint="add #[mode(m8, ...)] attribute to the function"
                         )
                 else:
                     raise TypeCheckError(
-                        f"Cannot determine type of register {expr.name} in unknown mode",
-                        source_loc=expr.source_loc
+                        f"cannot determine type of register {expr.name} in unknown mode",
+                        source_loc=expr.source_loc,
+                        hint="add #[mode(m8/m16, x8/x16)] attribute to specify register sizes"
                     )
 
             expr.expr_type = reg_type
@@ -793,15 +820,15 @@ class TypeChecker:
             # Result type is same as left operand
             if not TypeUtils.is_integer_type(left_type):
                 raise TypeCheckError(
-                    f"Shift operator '{expr.op}' requires integer operand\n"
-                    f"  Got: {left_type}",
-                    source_loc=expr.source_loc
+                    f"shift operator '{expr.op}' requires integer operand, found {left_type}",
+                    source_loc=expr.source_loc,
+                    hint="only integer types (u8, i8, u16, i16) can be shifted"
                 )
             if not TypeUtils.is_integer_type(right_type):
                 raise TypeCheckError(
-                    f"Shift amount must be an integer\n"
-                    f"  Got: {right_type}",
-                    source_loc=expr.source_loc
+                    f"shift amount must be an integer, found {right_type}",
+                    source_loc=expr.source_loc,
+                    hint="shift amount should be a constant like 1, 2, 4, etc."
                 )
             expr.expr_type = left_type
             return left_type
@@ -810,10 +837,9 @@ class TypeChecker:
             # Arithmetic and bitwise: operands must match
             if not TypeUtils.types_equal(left_type, right_type):
                 raise TypeCheckError(
-                    f"Type mismatch in binary operation '{expr.op}'\n"
-                    f"  Left: {left_type}\n"
-                    f"  Right: {right_type}",
-                    source_loc=expr.source_loc
+                    f"type mismatch in '{expr.op}' operation: {left_type} vs {right_type}",
+                    source_loc=expr.source_loc,
+                    hint=f"cast one operand to match: (value as {left_type})"
                 )
 
             # Result is same type
@@ -824,10 +850,9 @@ class TypeChecker:
             # Comparison: operands must be compatible, result is bool
             if not TypeUtils.types_compatible(left_type, right_type):
                 raise TypeCheckError(
-                    f"Type mismatch in comparison '{expr.op}'\n"
-                    f"  Left: {left_type}\n"
-                    f"  Right: {right_type}",
-                    source_loc=expr.source_loc
+                    f"cannot compare {left_type} with {right_type}",
+                    source_loc=expr.source_loc,
+                    hint="comparison requires compatible types"
                 )
 
             expr.expr_type = BasicTypeInfo('bool')
@@ -853,22 +878,37 @@ class TypeChecker:
 
         if expr.op == '!':
             # Logical NOT: operand must be bool
-            self._require_boolean_type(operand_type, "Operand of '!'", expr.operand.source_loc)
+            if not TypeUtils.is_boolean_type(operand_type):
+                raise TypeCheckError(
+                    f"logical NOT '!' requires boolean operand, found {operand_type}",
+                    source_loc=expr.operand.source_loc,
+                    hint="use comparison like (value != 0) to convert to bool"
+                )
             expr.expr_type = BasicTypeInfo('bool')
 
         elif expr.op == '~':
             # Bitwise NOT: operand must be integer
-            self._require_integer_type(operand_type, "Operand of '~'", expr.operand.source_loc)
+            if not TypeUtils.is_integer_type(operand_type):
+                raise TypeCheckError(
+                    f"bitwise NOT '~' requires integer operand, found {operand_type}",
+                    source_loc=expr.operand.source_loc,
+                    hint="only integer types (u8, i8, u16, i16) support bitwise operations"
+                )
             expr.expr_type = operand_type
 
         elif expr.op == '-':
             # Negation: operand must be integer
-            self._require_integer_type(operand_type, "Operand of '-'", expr.operand.source_loc)
+            if not TypeUtils.is_integer_type(operand_type):
+                raise TypeCheckError(
+                    f"negation '-' requires integer operand, found {operand_type}",
+                    source_loc=expr.operand.source_loc,
+                    hint="only integer types can be negated"
+                )
             expr.expr_type = operand_type
 
         else:
             raise TypeCheckError(
-                f"Unknown unary operator: {expr.op}",
+                f"unknown unary operator: {expr.op}",
                 source_loc=expr.source_loc
             )
 
@@ -881,8 +921,9 @@ class TypeChecker:
 
         if not TypeUtils.can_cast(source_type, target_type):
             raise TypeCheckError(
-                f"Invalid cast from {source_type} to {target_type}",
-                source_loc=expr.source_loc
+                f"cannot cast {source_type} to {target_type}",
+                source_loc=expr.source_loc,
+                hint="casts are only allowed between compatible types (integers, bools)"
             )
 
         expr.expr_type = target_type
@@ -909,13 +950,15 @@ class TypeChecker:
 
                         if index_value < 0:
                             raise TypeCheckError(
-                                f"Array index {index_value} is out of bounds for array of size {array_size} (negative index)",
-                                source_loc=expr.index.source_loc
+                                f"array index {index_value} is out of bounds (negative index)",
+                                source_loc=expr.index.source_loc,
+                                hint=f"valid indices are 0 to {array_size - 1}"
                             )
                         elif index_value >= array_size:
                             raise TypeCheckError(
-                                f"Array index {index_value} is out of bounds for array of size {array_size}",
-                                source_loc=expr.index.source_loc
+                                f"array index {index_value} is out of bounds for array of size {array_size}",
+                                source_loc=expr.index.source_loc,
+                                hint=f"valid indices are 0 to {array_size - 1}"
                             )
                     except Exception:
                         # If const evaluation fails, skip bounds checking
@@ -937,13 +980,15 @@ class TypeChecker:
 
                     if index_value < 0:
                         raise TypeCheckError(
-                            f"Array index {index_value} is out of bounds for array of size {array_size} (negative index)",
-                            source_loc=expr.index.source_loc
+                            f"array index {index_value} is out of bounds (negative index)",
+                            source_loc=expr.index.source_loc,
+                            hint=f"valid indices are 0 to {array_size - 1}"
                         )
                     elif index_value >= array_size:
                         raise TypeCheckError(
-                            f"Array index {index_value} is out of bounds for array of size {array_size}",
-                            source_loc=expr.index.source_loc
+                            f"array index {index_value} is out of bounds for array of size {array_size}",
+                            source_loc=expr.index.source_loc,
+                            hint=f"valid indices are 0 to {array_size - 1}"
                         )
                 except Exception:
                     # If const evaluation fails, skip bounds checking
@@ -954,8 +999,9 @@ class TypeChecker:
             return expr.expr_type
 
         raise TypeCheckError(
-            f"Cannot index non-array type {base_type}",
-            source_loc=expr.array.source_loc
+            f"cannot index type {base_type}",
+            source_loc=expr.array.source_loc,
+            hint="indexing requires an array type or pointer"
         )
 
     def check_field_access(self, expr: HIRFieldAccess) -> TypeInfo:
@@ -966,8 +1012,9 @@ class TypeChecker:
         from r65.compiler.hir import StructTypeInfo
         if not isinstance(base_type, StructTypeInfo):
             raise TypeCheckError(
-                f"Cannot access field of non-struct type {base_type}",
-                source_loc=expr.base.source_loc
+                f"cannot access field '{expr.field_name}' on type {base_type}",
+                source_loc=expr.base.source_loc,
+                hint="field access requires a struct type"
             )
 
         # Look up struct definition from symbol table (not cached in StructTypeInfo)
@@ -976,14 +1023,16 @@ class TypeChecker:
         struct_symbol = self.program.symbol_table.lookup(base_type.name)
         if struct_symbol is None:
             raise TypeCheckError(
-                f"Struct {base_type.name} definition not found",
-                source_loc=expr.source_loc
+                f"struct '{base_type.name}' definition not found",
+                source_loc=expr.source_loc,
+                hint="ensure the struct is defined before use"
             )
         struct_def = struct_symbol.definition
         if struct_def is None:
             raise TypeCheckError(
-                f"Struct {base_type.name} definition not found",
-                source_loc=expr.source_loc
+                f"struct '{base_type.name}' definition not found",
+                source_loc=expr.source_loc,
+                hint="ensure the struct is defined before use"
             )
 
         field = None
@@ -995,9 +1044,13 @@ class TypeChecker:
                 break
 
         if field is None:
+            # Get available field names for hint
+            available_fields = [f.name for f in struct_def.fields]
+            hint = f"available fields: {', '.join(available_fields)}" if available_fields else None
             raise TypeCheckError(
-                f"Struct {base_type.name} has no field '{expr.field_name}'",
-                source_loc=expr.source_loc
+                f"struct '{base_type.name}' has no field '{expr.field_name}'",
+                source_loc=expr.source_loc,
+                hint=hint
             )
 
         expr.expr_type = field.field_type

@@ -22,6 +22,7 @@ from r65.compiler.hir.cfg import CfgEvaluator
 from r65.compiler.typeck import TypeChecker, TypeCheckError
 from r65.compiler.mir import MIRBuilder
 from r65.compiler.codegen import ProgramCodeGenerator
+from r65.compiler.errors import format_error
 
 
 def read_source(filepath: str) -> tuple[str, str]:
@@ -213,22 +214,54 @@ def compile_source(source: str, filename: str, output_file: str = None,
             print(assembly)
 
     except (LexerError, ParseError) as e:
-        print(f"\nParse error in {filename}: {e}", file=sys.stderr)
+        # Use format_error for nice display with source context
+        hint = getattr(e, 'hint', None)
+        formatted = format_error(
+            e.message,
+            source_loc=e.source_loc,
+            source_text=source,
+            hint=hint
+        )
+        print(f"\n{formatted}", file=sys.stderr)
         sys.exit(1)
     except PreprocessorError as e:
         print(f"\nPreprocessor error: {e}", file=sys.stderr)
         sys.exit(1)
     except MacroError as e:
-        print(f"\nMacro expansion error: {e}", file=sys.stderr)
+        # Use format_error for macro errors with source context
+        hint = getattr(e, 'hint', None)
+        formatted = format_error(
+            e.message,
+            source_loc=e.source_loc,
+            source_text=source,
+            hint=hint,
+            error_type="macro error"
+        )
+        print(f"\n{formatted}", file=sys.stderr)
         sys.exit(1)
     except HIRError as e:
-        print(f"\nHIR error: {e}", file=sys.stderr)
+        # Use format_error for HIR errors with source context
+        hint = getattr(e, 'hint', None)
+        formatted = format_error(
+            e.message,
+            source_loc=e.source_loc,
+            source_text=source,
+            hint=hint,
+            error_type="error"
+        )
+        print(f"\n{formatted}", file=sys.stderr)
         sys.exit(1)
     except TypeCheckError as e:
-        print(f"\nType error: {e.message}", file=sys.stderr)
-        if e.source_loc:
-            print(f"  at {e.source_loc.filename}:{e.source_loc.line}:{e.source_loc.column}",
-                  file=sys.stderr)
+        # Use format_error for type errors with source context
+        hint = getattr(e, 'hint', None)
+        formatted = format_error(
+            e.message,
+            source_loc=e.source_loc,
+            source_text=source,
+            hint=hint,
+            error_type="type error"
+        )
+        print(f"\n{formatted}", file=sys.stderr)
         sys.exit(1)
     except Exception as e:
         print(f"\nCompilation error: {e}", file=sys.stderr)

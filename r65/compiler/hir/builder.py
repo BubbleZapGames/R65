@@ -555,7 +555,8 @@ class HIRBuilder:
 
         return hir.HIRBlock(
             statements=hir_stmts,
-            scope_id=block_scope_id
+            scope_id=block_scope_id,
+            source_loc=block.source_loc
         )
 
     def _build_statement(self, stmt: ast.Statement) -> hir.HIRStatement:
@@ -567,17 +568,17 @@ class HIRBuilder:
             return self._build_let(stmt)
 
         elif isinstance(stmt, ast.ExprStmt):
-            return hir.HIRExprStmt(expr=self._build_expression(stmt.expr))
+            return hir.HIRExprStmt(expr=self._build_expression(stmt.expr), source_loc=stmt.source_loc)
 
         elif isinstance(stmt, ast.ReturnStmt):
             values = [self._build_expression(v) for v in stmt.values]
-            return hir.HIRReturnStmt(values=values)
+            return hir.HIRReturnStmt(values=values, source_loc=stmt.source_loc)
 
         elif isinstance(stmt, ast.BreakStmt):
-            return hir.HIRBreakStmt()
+            return hir.HIRBreakStmt(source_loc=stmt.source_loc)
 
         elif isinstance(stmt, ast.ContinueStmt):
-            return hir.HIRContinueStmt()
+            return hir.HIRContinueStmt(source_loc=stmt.source_loc)
 
         elif isinstance(stmt, ast.IfStmt):
             return self._build_if(stmt)
@@ -589,7 +590,7 @@ class HIRBuilder:
             return self._build_loop(stmt)
 
         elif isinstance(stmt, ast.AsmStmt):
-            return hir.HIRAsmStmt(instructions=stmt.instructions)
+            return hir.HIRAsmStmt(instructions=stmt.instructions, source_loc=stmt.source_loc)
 
         else:
             raise HIRError(f"Unknown statement type: {type(stmt).__name__}")
@@ -640,7 +641,8 @@ class HIRBuilder:
             var_type=var_type,
             initializer=initializer,
             binding=binding,
-            symbol=local_symbol
+            symbol=local_symbol,
+            source_loc=let.source_loc
         )
 
     def _build_tuple_let(self, let: ast.LetStmt, initializer: hir.HIRExpression) -> hir.HIRTupleLetStmt:
@@ -667,7 +669,8 @@ class HIRBuilder:
             is_mutable=let.is_mut,
             var_types=[],  # Will be filled during type checking
             initializer=initializer,
-            symbols=symbols
+            symbols=symbols,
+            source_loc=let.source_loc
         )
 
     def _build_if(self, if_stmt: ast.IfStmt) -> hir.HIRIfStmt:
@@ -685,7 +688,8 @@ class HIRBuilder:
         return hir.HIRIfStmt(
             condition=condition,
             then_block=then_block,
-            else_block=else_block
+            else_block=else_block,
+            source_loc=if_stmt.source_loc
         )
 
     def _build_while(self, while_stmt: ast.WhileStmt) -> hir.HIRWhileStmt:
@@ -696,7 +700,8 @@ class HIRBuilder:
         return hir.HIRWhileStmt(
             condition=condition,
             body=body,
-            is_infinite=False
+            is_infinite=False,
+            source_loc=while_stmt.source_loc
         )
 
     def _build_loop(self, loop: ast.LoopStmt) -> hir.HIRWhileStmt:
@@ -706,7 +711,8 @@ class HIRBuilder:
         return hir.HIRWhileStmt(
             condition=hir.HIRBooleanLiteral(value=True),
             body=body,
-            is_infinite=True
+            is_infinite=True,
+            source_loc=loop.source_loc
         )
 
     # =========================================================================
@@ -715,44 +721,47 @@ class HIRBuilder:
 
     def _build_expression(self, expr: ast.Expression) -> hir.HIRExpression:
         """Build HIR expression from AST."""
+        # Get source location from AST node
+        src_loc = expr.source_loc
+
         if isinstance(expr, ast.IntegerLiteral):
-            return hir.HIRIntegerLiteral(value=expr.value)
+            return hir.HIRIntegerLiteral(value=expr.value, source_loc=src_loc)
 
         elif isinstance(expr, ast.BooleanLiteral):
-            return hir.HIRBooleanLiteral(value=expr.value)
+            return hir.HIRBooleanLiteral(value=expr.value, source_loc=src_loc)
 
         elif isinstance(expr, ast.StringLiteral):
-            return hir.HIRStringLiteral(value=expr.value)
+            return hir.HIRStringLiteral(value=expr.value, source_loc=src_loc)
 
         elif isinstance(expr, ast.Identifier):
             # Resolve identifier
             symbol = self.symbol_table.lookup(expr.name)
             if not symbol:
-                raise HIRError(f"Undefined identifier: {expr.name}")
-            return hir.HIRIdentifier(name=expr.name, symbol=symbol)
+                raise HIRError(f"Undefined identifier: {expr.name}", source_loc=src_loc)
+            return hir.HIRIdentifier(name=expr.name, symbol=symbol, source_loc=src_loc)
 
         elif isinstance(expr, ast.Register):
             # Resolve register
             symbol = self.symbol_table.lookup(expr.name)
-            return hir.HIRRegister(name=expr.name, symbol=symbol)
+            return hir.HIRRegister(name=expr.name, symbol=symbol, source_loc=src_loc)
 
         elif isinstance(expr, ast.IncludeBytesExpr):
             # Include binary data from file
             # Validate that the file exists
             self._validate_include_bytes_path(expr.path, expr.source_loc)
-            return hir.HIRIncludeBytesExpr(path=expr.path)
+            return hir.HIRIncludeBytesExpr(path=expr.path, source_loc=src_loc)
 
         elif isinstance(expr, ast.ArrayFillExpr):
             # Array fill expression: [value; count]
             fill_value = self._build_expression(expr.value)
             # Count must be a constant - evaluate at compile time
             count = self.const_evaluator.eval(expr.count)
-            return hir.HIRArrayFillExpr(fill_value=fill_value, count=count)
+            return hir.HIRArrayFillExpr(fill_value=fill_value, count=count, source_loc=src_loc)
 
         elif isinstance(expr, ast.ArrayLiteralExpr):
             # Array literal expression: [a, b, c, ...]
             elements = [self._build_expression(e) for e in expr.elements]
-            return hir.HIRArrayLiteralExpr(elements=elements)
+            return hir.HIRArrayLiteralExpr(elements=elements, source_loc=src_loc)
 
         elif isinstance(expr, ast.StructLiteralExpr):
             # Struct literal expression: Player { x: 10, y: 20, health: 100 }
@@ -763,24 +772,25 @@ class HIRBuilder:
             # Lookup enum type
             enum_symbol = self.symbol_table.lookup(expr.enum_name)
             if not enum_symbol:
-                raise HIRError(f"Undefined enum: {expr.enum_name}")
+                raise HIRError(f"Undefined enum: {expr.enum_name}", source_loc=src_loc)
             if enum_symbol.kind != SymbolKind.ENUM:
-                raise HIRError(f"{expr.enum_name} is not an enum")
+                raise HIRError(f"{expr.enum_name} is not an enum", source_loc=src_loc)
 
             # Lookup variant with qualified name
             qualified_name = f"{expr.enum_name}::{expr.variant_name}"
             variant_symbol = self.symbol_table.lookup(qualified_name)
             if not variant_symbol:
-                raise HIRError(f"Undefined enum variant: {qualified_name}")
+                raise HIRError(f"Undefined enum variant: {qualified_name}", source_loc=src_loc)
             if variant_symbol.kind != SymbolKind.ENUM_VARIANT:
-                raise HIRError(f"{qualified_name} is not an enum variant")
+                raise HIRError(f"{qualified_name} is not an enum variant", source_loc=src_loc)
 
             # Get variant value from symbol (stored in const_value field)
             variant_value = variant_symbol.const_value
             return hir.HIREnumVariantExpr(
                 enum_name=expr.enum_name,
                 variant_name=expr.variant_name,
-                value=variant_value
+                value=variant_value,
+                source_loc=src_loc
             )
 
         elif isinstance(expr, ast.BinaryOp):
@@ -788,29 +798,29 @@ class HIRBuilder:
             if expr.op == '+':
                 left_is_string = isinstance(expr.left, ast.StringLiteral)
                 right_is_string = isinstance(expr.right, ast.StringLiteral)
-                
+
                 if left_is_string or right_is_string:
                     try:
                         # Use const evaluator on the AST directly
                         const_value = self.const_evaluator.eval(expr)
                         if isinstance(const_value, str):
-                            return hir.HIRStringLiteral(value=const_value)
+                            return hir.HIRStringLiteral(value=const_value, source_loc=src_loc)
                     except Exception:
                         # If constant evaluation fails, fall back to normal processing
                         pass
-            
+
             left = self._build_expression(expr.left)
             right = self._build_expression(expr.right)
-            return hir.HIRBinaryOp(op=expr.op, left=left, right=right)
+            return hir.HIRBinaryOp(op=expr.op, left=left, right=right, source_loc=src_loc)
 
         elif isinstance(expr, ast.UnaryOp):
             operand = self._build_expression(expr.operand)
-            return hir.HIRUnaryOp(op=expr.op, operand=operand)
+            return hir.HIRUnaryOp(op=expr.op, operand=operand, source_loc=src_loc)
 
         elif isinstance(expr, ast.TypeCast):
             inner = self._build_expression(expr.expr)
             target = self.type_resolver.resolve_type(expr.target_type)
-            return hir.HIRTypeCast(expr=inner, target_type=target)
+            return hir.HIRTypeCast(expr=inner, target_type=target, source_loc=src_loc)
 
         elif isinstance(expr, ast.FunctionCall):
             from r65.compiler.builtins import BuiltinRegistry
@@ -822,7 +832,7 @@ class HIRBuilder:
                     # This is a rotate method call
                     # Validate: must have exactly 1 argument
                     if len(expr.args) != 1:
-                        raise HIRError(f"{method_name}() takes exactly 1 argument, got {len(expr.args)}")
+                        raise HIRError(f"{method_name}() takes exactly 1 argument, got {len(expr.args)}", source_loc=src_loc)
 
                     # Build the base expression (the value being rotated)
                     base = self._build_expression(expr.func.base)
@@ -834,7 +844,8 @@ class HIRBuilder:
                     return hir.HIRMethodCall(
                         receiver=base,
                         method_name=method_name,
-                        args=[count_arg]
+                        args=[count_arg],
+                        source_loc=src_loc
                     )
 
             # Check if this is a built-in function call BEFORE trying to build func expression
@@ -844,18 +855,18 @@ class HIRBuilder:
                 func_name = expr.func.name
                 if BuiltinRegistry.is_builtin(func_name):
                     builtin = BuiltinRegistry.get_builtin(func_name)
-                    
+
                     # Special handling for size_of - try const evaluation first
                     if builtin and builtin.kind.value == "type_info" and func_name == "size_of":
                         try:
                             # Try to evaluate at compile time using const evaluator
                             const_value = self.const_evaluator.eval(expr)
                             if isinstance(const_value, int):
-                                return hir.HIRIntegerLiteral(value=const_value)
+                                return hir.HIRIntegerLiteral(value=const_value, source_loc=src_loc)
                         except Exception:
                             # If const evaluation fails, fall back to runtime call
                             pass
-                    
+
                     # Mark this as a built-in function call
                     builtin_name = func_name
 
@@ -870,13 +881,13 @@ class HIRBuilder:
                     scope_id=0,  # Global scope
                     var_type=None
                 )
-                func = hir.HIRIdentifier(name=expr.func.name, symbol=builtin_symbol)
+                func = hir.HIRIdentifier(name=expr.func.name, symbol=builtin_symbol, source_loc=src_loc)
             else:
                 func = self._build_expression(expr.func)
 
             args = [self._build_expression(a) for a in expr.args]
 
-            return hir.HIRFunctionCall(func=func, args=args, builtin_name=builtin_name)
+            return hir.HIRFunctionCall(func=func, args=args, builtin_name=builtin_name, source_loc=src_loc)
 
         elif isinstance(expr, ast.CfgFunctionCall):
             # cfg!(flag) evaluates to true/false based on compiler cfg options
@@ -893,30 +904,30 @@ class HIRBuilder:
             else:
                 result = False
 
-            return hir.HIRBooleanLiteral(value=result)
+            return hir.HIRBooleanLiteral(value=result, source_loc=src_loc)
 
         elif isinstance(expr, ast.ArrayIndex):
             array = self._build_expression(expr.array)
             index = self._build_expression(expr.index)
-            return hir.HIRArrayIndex(array=array, index=index, original_ast=expr)
+            return hir.HIRArrayIndex(array=array, index=index, original_ast=expr, source_loc=src_loc)
 
         elif isinstance(expr, ast.FieldAccess):
             base = self._build_expression(expr.base)
             # Field resolution happens in type checker
-            return hir.HIRFieldAccess(base=base, field_name=expr.field)
+            return hir.HIRFieldAccess(base=base, field_name=expr.field, source_loc=src_loc)
 
         elif isinstance(expr, ast.Dereference):
             pointer = self._build_expression(expr.pointer)
-            return hir.HIRDereference(pointer=pointer)
+            return hir.HIRDereference(pointer=pointer, source_loc=src_loc)
 
         elif isinstance(expr, ast.AddressOf):
             operand = self._build_expression(expr.operand)
-            return hir.HIRAddressOf(operand=operand)
+            return hir.HIRAddressOf(operand=operand, source_loc=src_loc)
 
         elif isinstance(expr, ast.Assignment):
             target = self._build_expression(expr.target)
             value = self._build_expression(expr.value)
-            return hir.HIRAssignment(target=target, value=value)
+            return hir.HIRAssignment(target=target, value=value, source_loc=src_loc)
 
         elif isinstance(expr, ast.CompoundAssignment):
             # Desugar compound assignment: x += 5 becomes x = x + 5
@@ -927,17 +938,18 @@ class HIRBuilder:
             binary_op = hir.HIRBinaryOp(
                 op=expr.operator,
                 left=target,  # Read from target
-                right=value
+                right=value,
+                source_loc=src_loc
             )
 
             # Create assignment: target = (target op value)
-            return hir.HIRAssignment(target=target, value=binary_op)
+            return hir.HIRAssignment(target=target, value=binary_op, source_loc=src_loc)
 
         elif isinstance(expr, ast.MultiAssignment):
             # Multiple assignment: lo, hi = func()
             targets = [self._build_expression(t) for t in expr.targets]
             value = self._build_expression(expr.value)
-            return hir.HIRMultiAssignment(targets=targets, value=value)
+            return hir.HIRMultiAssignment(targets=targets, value=value, source_loc=src_loc)
 
         elif isinstance(expr, ast.MatchExpression):
             # Build match expression
@@ -972,7 +984,7 @@ class HIRBuilder:
 
             arms.append(hir.HIRMatchArm(pattern=pattern, body=body, scope_id=scope_id))
 
-        return hir.HIRMatchExpression(scrutinee=scrutinee, arms=arms)
+        return hir.HIRMatchExpression(scrutinee=scrutinee, arms=arms, source_loc=expr.source_loc)
 
     def _build_pattern(self, pattern: ast.Pattern) -> hir.HIRPattern:
         """Build HIR pattern from AST pattern."""

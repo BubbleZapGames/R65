@@ -37,22 +37,25 @@ class StructValidator:
         struct_symbol = self.symbol_table.lookup(expr.struct_name)
         if not struct_symbol:
             raise TypeCheckError(
-                f"Undefined struct: {expr.struct_name}",
-                source_loc=expr.source_loc
+                f"undefined struct '{expr.struct_name}'",
+                source_loc=expr.source_loc,
+                hint="check spelling or add a struct declaration"
             )
 
         if struct_symbol.kind != SymbolKind.STRUCT:
             raise TypeCheckError(
                 f"'{expr.struct_name}' is not a struct type",
-                source_loc=expr.source_loc
+                source_loc=expr.source_loc,
+                hint=f"'{expr.struct_name}' is a {struct_symbol.kind.value}"
             )
 
         # Get struct definition
         struct_def = struct_symbol.definition
         if not struct_def:
             raise TypeCheckError(
-                f"Struct '{expr.struct_name}' has no definition",
-                source_loc=expr.source_loc
+                f"struct '{expr.struct_name}' has no definition",
+                source_loc=expr.source_loc,
+                hint="ensure the struct is defined before use"
             )
 
         # Build expected fields map from struct definition
@@ -72,15 +75,18 @@ class StructValidator:
         for field_init in expr.fields:
             if field_init.name in provided_fields:
                 raise TypeCheckError(
-                    f"Field '{field_init.name}' initialized multiple times",
-                    source_loc=expr.source_loc
+                    f"field '{field_init.name}' initialized multiple times",
+                    source_loc=expr.source_loc,
+                    hint="remove duplicate field initialization"
                 )
             provided_fields.add(field_init.name)
 
             if field_init.name not in expected_fields:
+                available = ', '.join(sorted(expected_fields.keys()))
                 raise TypeCheckError(
-                    f"Struct '{expr.struct_name}' has no field '{field_init.name}'",
-                    source_loc=expr.source_loc
+                    f"struct '{expr.struct_name}' has no field '{field_init.name}'",
+                    source_loc=expr.source_loc,
+                    hint=f"available fields: {available}"
                 )
 
             expected_type = expected_fields[field_init.name]
@@ -95,8 +101,9 @@ class StructValidator:
         if missing_fields:
             missing_list = ', '.join(sorted(missing_fields))
             raise TypeCheckError(
-                f"Missing fields in struct literal: {missing_list}",
-                source_loc=expr.source_loc
+                f"missing field(s) in struct literal: {missing_list}",
+                source_loc=expr.source_loc,
+                hint=f"add: {missing_list}"
             )
 
         # Create struct type

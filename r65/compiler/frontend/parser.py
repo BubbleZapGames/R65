@@ -5,8 +5,9 @@ Transforms Lark parse trees into our custom AST.
 """
 from pathlib import Path
 from lark import Lark, Transformer, Token as LarkToken, Tree, v_args
+from lark.exceptions import UnexpectedToken, UnexpectedCharacters, UnexpectedEOF, VisitError
 from r65.compiler.frontend import ast
-from r65.compiler.errors import ParseError
+from r65.compiler.errors import ParseError, SourceLocation, get_source_line
 from typing import List, Union, Optional
 
 
@@ -50,13 +51,21 @@ class ASTBuilder(Transformer):
 
     def _parse_integer(self, value: str) -> int:
         """Parse an integer literal."""
-        value = value.replace('_', '')
-        if value.startswith('0x') or value.startswith('0X'):
-            return int(value, 16)
-        elif value.startswith('0b') or value.startswith('0B'):
-            return int(value, 2)
-        else:
-            return int(value, 10)
+        clean_value = value.replace('_', '')
+        try:
+            if clean_value.startswith('0x') or clean_value.startswith('0X'):
+                if len(clean_value) <= 2:
+                    raise ValueError(f"missing digits after {clean_value[:2]}")
+                return int(clean_value, 16)
+            elif clean_value.startswith('0b') or clean_value.startswith('0B'):
+                if len(clean_value) <= 2:
+                    raise ValueError(f"missing digits after {clean_value[:2]}")
+                return int(clean_value, 2)
+            else:
+                return int(clean_value, 10)
+        except ValueError as e:
+            # Raise ValueError, not ParseError - let the VisitError handler add source location
+            raise ValueError(f"invalid integer literal '{value}': {e}")
 
     def _filter_tokens(self, items, keep_types=None):
         """
@@ -799,41 +808,53 @@ class ASTBuilder(Transformer):
     # Expressions
     # ========================================================================
 
-    def integer(self, items):
+    @v_args(tree=True)
+    def integer(self, tree):
         """Integer literal."""
+        items = tree.children
         value = self._parse_integer(items[0].value)
-        return ast.IntegerLiteral(value=value)
+        return ast.IntegerLiteral(value=value, source_loc=self._make_source_loc(tree.meta))
 
-    def boolean(self, items):
+    @v_args(tree=True)
+    def boolean(self, tree):
         """Boolean literal."""
+        items = tree.children
         value = items[0].value == 'true'
-        return ast.BooleanLiteral(value=value)
+        return ast.BooleanLiteral(value=value, source_loc=self._make_source_loc(tree.meta))
 
-    def identifier(self, items):
+    @v_args(tree=True)
+    def identifier(self, tree):
         """Identifier."""
+        items = tree.children
         token = items[0]
         identifier = token.value
         # Validate that this isn't a wrong-case register name
         self._validate_identifier_not_register(identifier, token)
-        return ast.Identifier(name=identifier)
+        return ast.Identifier(name=identifier, source_loc=self._make_source_loc(tree.meta))
 
-    def enum_variant_expr(self, items):
+    @v_args(tree=True)
+    def enum_variant_expr(self, tree):
         """Enum variant expression (e.g., Direction::North)."""
         # items: [IDENT, "::", IDENT]
+        items = tree.children
         enum_name = items[0].value
         variant_name = items[2].value
-        return ast.EnumVariantExpr(enum_name=enum_name, variant_name=variant_name)
+        return ast.EnumVariantExpr(enum_name=enum_name, variant_name=variant_name, source_loc=self._make_source_loc(tree.meta))
 
-    def register_ref(self, items):
+    @v_args(tree=True)
+    def register_ref(self, tree):
         """Register reference."""
-        return ast.Register(name=items[0].value)
+        items = tree.children
+        return ast.Register(name=items[0].value, source_loc=self._make_source_loc(tree.meta))
 
-    def string_literal(self, items):
+    @v_args(tree=True)
+    def string_literal(self, tree):
         """String literal for byte array initialization."""
+        items = tree.children
         token = items[0]
         # Remove surrounding quotes
         raw_value = token.value[1:-1]
-        return ast.StringLiteral(value=raw_value)
+        return ast.StringLiteral(value=raw_value, source_loc=self._make_source_loc(tree.meta))
 
     @v_args(tree=True)
     def include_bytes_expr(self, tree):
@@ -1262,12 +1283,271 @@ class Parser:
             transformer = ASTBuilder(filename=filename, included_from=included_from)
             program = transformer.transform(tree)
             return program
+
+        except UnexpectedToken as e:
+            # Handle unexpected token errors with detailed context
+            token = e.token
+            # Note: Token with empty value (like $END) is falsy, so use 'is not None'
+            line = token.line if token is not None else 0
+            column = token.column if token is not None else 0
+
+            # Build descriptive message
+            if token is not None and token.type == '$END':
+                message = "unexpected end of file"
+            elif token is not None:
+                message = f"unexpected token '{token.value}'"
+            else:
+                message = "unexpected token"
+
+            # Check for macro syntax hints first - these are important enough to be in the message
+            macro_hint = self._check_macro_syntax_hints(source, str(e))
+            if macro_hint:
+                # For macro errors, include the full hint in the message
+                message = f"{message}\n\n{macro_hint}"
+                hint = None
+            else:
+                # Add what was expected (limit to reasonable number)
+                expected = getattr(e, 'expected', None)
+                hint = None
+                if expected:
+                    # Translate internal token names to friendly names
+                    friendly = self._translate_expected_tokens(expected)
+                    if len(friendly) <= 5:
+                        hint = f"expected: {', '.join(friendly)}"
+                    else:
+                        hint = f"expected one of: {', '.join(friendly[:5])}..."
+
+            # Create source location with context
+            source_line = get_source_line(source, line)
+            source_loc = SourceLocation(
+                file_path=filename,
+                line=line,
+                column=column,
+                source_line=source_line,
+                included_from=included_from
+            )
+
+            error = ParseError(message, source_loc)
+            error.hint = hint
+            raise error from e
+
+        except UnexpectedCharacters as e:
+            # Handle unexpected characters (lexer-level errors during parsing)
+            line = getattr(e, 'line', 0)
+            column = getattr(e, 'column', 0)
+            char = getattr(e, 'char', None)
+
+            if char:
+                message = f"unexpected character '{char}'"
+            else:
+                message = "unexpected character"
+
+            source_line = get_source_line(source, line)
+            source_loc = SourceLocation(
+                file_path=filename,
+                line=line,
+                column=column,
+                source_line=source_line,
+                included_from=included_from
+            )
+
+            raise ParseError(message, source_loc) from e
+
+        except UnexpectedEOF as e:
+            # Handle unexpected end of file
+            # Find the last line of the source
+            lines = source.splitlines()
+            line = len(lines) if lines else 1
+            column = len(lines[-1]) + 1 if lines else 1
+
+            message = "unexpected end of file"
+
+            expected = getattr(e, 'expected', None)
+            hint = None
+            if expected:
+                friendly = self._translate_expected_tokens(expected)
+                if len(friendly) <= 5:
+                    hint = f"expected: {', '.join(friendly)}"
+                else:
+                    hint = f"expected one of: {', '.join(friendly[:5])}..."
+
+            source_line = get_source_line(source, line)
+            source_loc = SourceLocation(
+                file_path=filename,
+                line=line,
+                column=column,
+                source_line=source_line,
+                included_from=included_from
+            )
+
+            error = ParseError(message, source_loc)
+            error.hint = hint
+            raise error from e
+
+        except VisitError as e:
+            # Handle errors during AST transformation
+            # Extract the original exception if it's a ParseError with source_loc
+            orig = e.orig_exc
+            if isinstance(orig, ParseError) and orig.source_loc is not None:
+                raise orig from e
+
+            # Otherwise wrap it with context
+            # VisitError has 'rule' and 'obj' attributes
+            obj = getattr(e, 'obj', None)
+
+            # Try to get position from the object (token or tree)
+            line = 0
+            column = 0
+            if obj is not None and hasattr(obj, 'line'):
+                line = obj.line
+                column = getattr(obj, 'column', 0)
+            elif obj is not None and hasattr(obj, 'meta') and obj.meta is not None:
+                line = getattr(obj.meta, 'line', 0)
+                column = getattr(obj.meta, 'column', 0)
+
+            source_line = get_source_line(source, line) if line > 0 else None
+            source_loc = SourceLocation(
+                file_path=filename,
+                line=line,
+                column=column,
+                source_line=source_line,
+                included_from=included_from
+            ) if line > 0 else None
+
+            raise ParseError(str(orig), source_loc) from e
+
         except Exception as e:
-            # Check for common Rust macro syntax mistakes and provide helpful errors
+            # Fallback for any other exceptions
+            # Check for common Rust macro syntax mistakes
             error_msg = self._check_macro_syntax_hints(source, str(e))
             if error_msg:
-                raise ParseError(f"Parse error in {filename}: {error_msg}") from e
-            raise ParseError(f"Parse error in {filename}: {e}") from e
+                raise ParseError(f"{error_msg}") from e
+            raise ParseError(f"{e}") from e
+
+    def _translate_expected_tokens(self, expected: set) -> list:
+        """Translate internal Lark token names to user-friendly names."""
+        translations = {
+            # Delimiters
+            'SEMI': ';',
+            'COLON': ':',
+            'COMMA': ',',
+            'LPAR': '(',
+            'RPAR': ')',
+            'LBRACE': '{',
+            'RBRACE': '}',
+            'LSQB': '[',
+            'RSQB': ']',
+            'RARROW': '->',
+            'AT': '@',
+            'HASH': '#',
+            'DOT': '.',
+            # Assignment and comparison
+            'EQUAL': '=',
+            'EQEQUAL': '==',
+            'NOTEQUAL': '!=',
+            'LESS': '<',
+            'GREATER': '>',
+            'LESSEQUAL': '<=',
+            'GREATEREQUAL': '>=',
+            # Arithmetic operators
+            'PLUS': '+',
+            'MINUS': '-',
+            'STAR': '*',
+            'SLASH': '/',
+            'PERCENT': '%',
+            # Bitwise operators
+            'AMPER': '&',
+            'VBAR': '|',
+            'CIRCUMFLEX': '^',
+            'TILDE': '~',
+            'LSHIFT': '<<',
+            'RSHIFT': '>>',
+            # Logical operators
+            'AND': '&&',
+            'OR': '||',
+            'EXCLAMATION': '!',
+            # Compound assignment operators
+            'PLUSEQUAL': '+=',
+            'MINUSEQUAL': '-=',
+            'STAREQUAL': '*=',
+            'SLASHEQUAL': '/=',
+            'PERCENTEQUAL': '%=',
+            'AMPEREQUAL': '&=',
+            'VBAREQUAL': '|=',
+            'CIRCUMFLEXEQUAL': '^=',
+            'LSHIFTEQUAL': '<<=',
+            'RSHIFTEQUAL': '>>=',
+            # Increment/decrement
+            'PLUSPLUS': '++',
+            'MINUSMINUS': '--',
+            # Literals and identifiers
+            'IDENT': 'identifier',
+            'INTEGER': 'number',
+            'DEC_INTEGER': 'number',
+            'HEX_INTEGER': 'hex number',
+            'BIN_INTEGER': 'binary number',
+            'BOOLEAN': 'true/false',
+            'STRING': 'string',
+            'TYPE_NAME': 'type',
+            'REGISTER': 'register',
+            # Keywords
+            'FN': 'fn',
+            'LET': 'let',
+            'MUT': 'mut',
+            'IF': 'if',
+            'ELSE': 'else',
+            'LOOP': 'loop',
+            'WHILE': 'while',
+            'BREAK': 'break',
+            'CONTINUE': 'continue',
+            'RETURN': 'return',
+            'STRUCT': 'struct',
+            'ENUM': 'enum',
+            'STATIC': 'static',
+            'CONST': 'const',
+            'AS': 'as',
+            'FAR': 'far',
+            'NEAR': 'near',
+            'TYPE': 'type',
+            'ASM': 'asm',
+            'INCLUDE': 'include',
+            # Special
+            '$END': 'end of file',
+        }
+
+        # Reserved Rust keywords that shouldn't appear in suggestions
+        # (they're in the grammar as reserved but aren't valid R65 syntax)
+        reserved_rust_keywords = {
+            'MATCH', 'FOR', 'IN', 'IMPL', 'TRAIT', 'WHERE', 'USE', 'PUB',
+            'CRATE', 'SELF', 'SELF_TYPE', 'SUPER', 'ASYNC', 'AWAIT', 'MOVE',
+            'REF', 'DYN', 'EXTERN', 'UNSAFE', 'ABSTRACT', 'BECOME', 'BOX',
+            'DO', 'FINAL', 'MACRO', 'OVERRIDE', 'PRIV', 'TYPEOF', 'UNSIZED',
+            'VIRTUAL', 'YIELD', 'TRY',
+        }
+
+        result = []
+        for token in expected:
+            if token in translations:
+                result.append(translations[token])
+            elif token in reserved_rust_keywords:
+                # Skip reserved Rust keywords
+                continue
+            elif token.startswith('__'):
+                # Skip internal rule names
+                continue
+            else:
+                # Use token as-is but lowercase
+                result.append(token.lower().replace('_', ' '))
+
+        # Remove duplicates while preserving order
+        seen = set()
+        unique = []
+        for item in result:
+            if item not in seen:
+                seen.add(item)
+                unique.append(item)
+
+        return unique
 
     def _check_macro_syntax_hints(self, source: str, error_str: str) -> str:
         """Check for common Rust macro syntax mistakes and return helpful error message."""

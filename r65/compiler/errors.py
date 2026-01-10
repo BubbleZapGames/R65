@@ -31,6 +31,10 @@ class SourceLocation:
     # If this code was included via include!(), this points to the location
     # of the include! statement in the parent file
     included_from: Optional['SourceLocation'] = None
+    # Optional: the source line text for display
+    source_line: Optional[str] = None
+    # Optional: end column for multi-character underlines
+    end_column: Optional[int] = None
 
     def __str__(self) -> str:
         if self.line > 0:
@@ -171,9 +175,11 @@ def reset_diagnostics():
 class CompilerError(Exception):
     """Base class for all compiler errors."""
 
-    def __init__(self, message: str, source_loc: Optional[SourceLocation] = None):
+    def __init__(self, message: str, source_loc: Optional[SourceLocation] = None,
+                 hint: Optional[str] = None):
         self.message = message
         self.source_loc = source_loc
+        self.hint = hint
         super().__init__(self._format_message())
 
     def _format_message(self) -> str:
@@ -346,3 +352,104 @@ def compiler_assert(condition: bool, message: str,
     """Assert a condition, raising InternalCompilerError if false."""
     if not condition:
         raise InternalCompilerError(message, source_loc)
+
+
+def format_error(message: str, source_loc: Optional[SourceLocation] = None,
+                 source_text: Optional[str] = None, hint: Optional[str] = None,
+                 error_type: str = "error") -> str:
+    """
+    Format an error message with source context, similar to Rust compiler output.
+
+    Example output:
+        error: unexpected token '('
+          --> game.r65:10:5
+           |
+        10 |     fn bad(x:
+           |           ^ expected identifier or type
+           |
+        hint: check for missing closing parenthesis
+
+    Args:
+        message: The error message
+        source_loc: Source location (with optional source_line)
+        source_text: Full source text (used if source_loc.source_line not set)
+        hint: Optional hint for fixing the error
+        error_type: Type of error ("error", "warning", etc.)
+
+    Returns:
+        Formatted error string
+    """
+    lines = []
+
+    # Error header
+    lines.append(f"{error_type}: {message}")
+
+    # Location and source context
+    if source_loc and source_loc.line > 0:
+        # Location pointer
+        lines.append(f"  --> {source_loc}")
+
+        # Get the source line
+        source_line = source_loc.source_line
+        if source_line is None and source_text is not None:
+            # Extract line from full source
+            source_lines = source_text.splitlines()
+            if 0 < source_loc.line <= len(source_lines):
+                source_line = source_lines[source_loc.line - 1]
+
+        if source_line is not None:
+            # Calculate the width needed for line numbers
+            line_num_width = len(str(source_loc.line))
+            padding = " " * line_num_width
+
+            # Empty line with gutter
+            lines.append(f"{padding} |")
+
+            # Source line with line number
+            # Replace tabs with spaces for consistent column alignment
+            display_line = source_line.replace('\t', '    ')
+            lines.append(f"{source_loc.line:>{line_num_width}} | {display_line}")
+
+            # Caret line
+            # Adjust column for any tabs before the error position
+            adjusted_col = source_loc.column
+            for i, char in enumerate(source_line[:source_loc.column - 1] if source_loc.column > 0 else ""):
+                if char == '\t':
+                    adjusted_col += 3  # Tab becomes 4 spaces, so add 3 more
+
+            # Calculate underline length
+            if source_loc.end_column and source_loc.end_column > source_loc.column:
+                underline_len = source_loc.end_column - source_loc.column
+                underline = "^" * underline_len
+            else:
+                underline = "^"
+
+            # Position the caret
+            caret_padding = " " * (adjusted_col - 1) if adjusted_col > 0 else ""
+            lines.append(f"{padding} | {caret_padding}{underline}")
+
+            # Empty line after
+            lines.append(f"{padding} |")
+
+        # Include chain
+        if source_loc.included_from:
+            loc = source_loc.included_from
+            while loc is not None:
+                lines.append(f"  included from {loc}")
+                loc = loc.included_from
+
+    # Hint
+    if hint:
+        lines.append(f"hint: {hint}")
+
+    return "\n".join(lines)
+
+
+def get_source_line(source_text: str, line_number: int) -> Optional[str]:
+    """Extract a specific line from source text (1-indexed)."""
+    if not source_text or line_number < 1:
+        return None
+    source_lines = source_text.splitlines()
+    if line_number <= len(source_lines):
+        return source_lines[line_number - 1]
+    return None

@@ -57,9 +57,11 @@ class CallValidator:
 
             # Check argument count
             if len(expr.args) != len(func_decl.parameters):
+                param_names = [p.name for p in func_decl.parameters]
                 raise TypeCheckError(
-                    f"Function '{func_symbol.name}' expects {len(func_decl.parameters)} arguments, got {len(expr.args)}",
-                    source_loc=expr.source_loc
+                    f"function '{func_symbol.name}' expects {len(func_decl.parameters)} argument(s), got {len(expr.args)}",
+                    source_loc=expr.source_loc,
+                    hint=f"parameters: {', '.join(param_names)}" if param_names else None
                 )
 
             # Type check each argument
@@ -68,9 +70,9 @@ class CallValidator:
                 if not isinstance(arg_type, NeverTypeInfo):
                     if not TypeUtils.types_equal(arg_type, param.param_type):
                         raise TypeCheckError(
-                            f"Argument {i + 1} to '{func_symbol.name}' has type {arg_type}, "
-                            f"expected {param.param_type} for parameter '{param.name}'",
-                            source_loc=arg.source_loc if hasattr(arg, 'source_loc') else expr.source_loc
+                            f"argument {i + 1} to '{func_symbol.name}' has wrong type: expected {param.param_type}, found {arg_type}",
+                            source_loc=arg.source_loc if hasattr(arg, 'source_loc') else expr.source_loc,
+                            hint=f"parameter '{param.name}' expects type {param.param_type}"
                         )
 
             # Check mode compatibility
@@ -88,14 +90,15 @@ class CallValidator:
 
             if not isinstance(func_type, FunctionTypeInfo):
                 raise TypeCheckError(
-                    f"Cannot call expression of type {func_type}, expected function or function pointer",
-                    source_loc=expr.source_loc
+                    f"cannot call expression of type {func_type}",
+                    source_loc=expr.source_loc,
+                    hint="only functions and function pointers can be called"
                 )
 
             # Check argument count
             if len(expr.args) != len(func_type.param_types):
                 raise TypeCheckError(
-                    f"Function pointer expects {len(func_type.param_types)} arguments, got {len(expr.args)}",
+                    f"function pointer expects {len(func_type.param_types)} argument(s), got {len(expr.args)}",
                     source_loc=expr.source_loc
                 )
 
@@ -105,9 +108,9 @@ class CallValidator:
                 if not isinstance(arg_type, NeverTypeInfo):
                     if not TypeUtils.types_equal(arg_type, param_type):
                         raise TypeCheckError(
-                            f"Argument {i + 1} to function pointer has type {arg_type}, "
-                            f"expected {param_type}",
-                            source_loc=arg.source_loc if hasattr(arg, 'source_loc') else expr.source_loc
+                            f"argument {i + 1} has wrong type: expected {param_type}, found {arg_type}",
+                            source_loc=arg.source_loc if hasattr(arg, 'source_loc') else expr.source_loc,
+                            hint=f"use cast if needed: (value as {param_type})"
                         )
 
             # Set return type
@@ -170,22 +173,25 @@ class CallValidator:
         # Validate receiver is an integer type
         if not isinstance(receiver_type, BasicTypeInfo) or receiver_type.name not in ['u8', 'i8', 'u16', 'i16']:
             raise TypeCheckError(
-                f"Method '{expr.method_name}' can only be called on integer types, not {receiver_type}",
-                source_loc=expr.source_loc
+                f"method '{expr.method_name}' requires integer type, found {receiver_type}",
+                source_loc=expr.source_loc,
+                hint="rotate methods only work on u8, i8, u16, or i16"
             )
 
         # Validate method name
         if expr.method_name not in ['rotate_left', 'rotate_right']:
             raise TypeCheckError(
-                f"Unknown method '{expr.method_name}' for type {receiver_type}",
-                source_loc=expr.source_loc
+                f"unknown method '{expr.method_name}' for type {receiver_type}",
+                source_loc=expr.source_loc,
+                hint="available methods: rotate_left, rotate_right"
             )
 
         # Type check argument (rotation count)
         if len(expr.args) != 1:
             raise TypeCheckError(
                 f"{expr.method_name}() takes exactly 1 argument, got {len(expr.args)}",
-                source_loc=expr.source_loc
+                source_loc=expr.source_loc,
+                hint="example: value.rotate_left(1)"
             )
 
         count_arg = expr.args[0]
@@ -194,8 +200,9 @@ class CallValidator:
         # Validate count is an integer literal
         if not isinstance(count_arg, HIRIntegerLiteral):
             raise TypeCheckError(
-                f"{expr.method_name}() count must be a constant integer literal",
-                source_loc=count_arg.source_loc
+                f"{expr.method_name}() count must be a constant",
+                source_loc=count_arg.source_loc,
+                hint="rotation count must be a compile-time constant (1-8)"
             )
 
         # Validate count is in range 1-8
@@ -203,7 +210,8 @@ class CallValidator:
         if not (1 <= count_value <= 8):
             raise TypeCheckError(
                 f"{expr.method_name}() count must be between 1 and 8, got {count_value}",
-                source_loc=count_arg.source_loc
+                source_loc=count_arg.source_loc,
+                hint="valid rotation counts: 1, 2, 3, 4, 5, 6, 7, 8"
             )
 
         expr.expr_type = receiver_type
@@ -255,18 +263,16 @@ class CallValidator:
         if transition == ModeTransition.INLINE:
             if func_decl.preserves_attr and 'STATUS' in func_decl.preserves_attr.registers:
                 raise TypeCheckError(
-                    f"Function '{func_name}' cannot use transition=inline with #[preserves(STATUS)]\n"
-                    f"  transition=inline requires modifying STATUS to switch modes, which conflicts with preservation",
-                    source_loc=source_loc
+                    f"function '{func_name}' cannot use transition=inline with #[preserves(STATUS)]",
+                    source_loc=source_loc,
+                    hint="transition=inline modifies STATUS to switch modes, which conflicts with preservation"
                 )
 
         if transition == ModeTransition.NONE:
             raise TypeCheckError(
-                f"Cannot call function '{func_name}' with mismatched processor modes\n"
-                f"  Caller mode: {caller_mode}\n"
-                f"  Callee mode: {callee_mode}\n"
-                f"  Fix: Add transition attribute to callee: #[mode(..., transition=inline)] or #[mode(..., transition=caller)]",
-                source_loc=source_loc
+                f"cannot call '{func_name}': mode mismatch (caller: {caller_mode}, callee: {callee_mode})",
+                source_loc=source_loc,
+                hint="add transition=inline or transition=caller to the callee's #[mode(...)] attribute"
             )
 
     def _check_size_of_builtin(self, expr: HIRFunctionCall) -> TypeInfo:

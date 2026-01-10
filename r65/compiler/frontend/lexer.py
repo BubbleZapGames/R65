@@ -6,7 +6,9 @@ Scans source code and produces a stream of tokens.
 from typing import List, Optional
 from pathlib import Path
 from lark import Lark, Token as LarkToken
+from lark.exceptions import UnexpectedCharacters, UnexpectedToken
 from r65.compiler.frontend.tokens import *
+from r65.compiler.errors import SourceLocation, get_source_line
 
 
 # Load the grammar
@@ -305,9 +307,64 @@ class Lexer:
 
             return self.tokens
 
+        except UnexpectedCharacters as e:
+            # Extract position and create helpful error message
+            line = getattr(e, 'line', 0)
+            column = getattr(e, 'column', 0)
+            char = getattr(e, 'char', None)
+
+            # Create descriptive message
+            if char:
+                message = f"unexpected character '{char}'"
+            else:
+                message = "unexpected character"
+
+            # Get the source line for context
+            source_line = get_source_line(self.source, line)
+
+            # Create source location with context
+            source_loc = SourceLocation(
+                file_path=self.filename,
+                line=line,
+                column=column,
+                source_line=source_line
+            )
+
+            raise LexerError(message, line, column, source_loc)
+
+        except UnexpectedToken as e:
+            # This can happen during lexer's contextual mode
+            token = getattr(e, 'token', None)
+            line = token.line if token else 0
+            column = token.column if token else 0
+
+            message = f"unexpected token '{token.value}'" if token else "unexpected token"
+
+            source_line = get_source_line(self.source, line)
+            source_loc = SourceLocation(
+                file_path=self.filename,
+                line=line,
+                column=column,
+                source_line=source_line
+            )
+
+            raise LexerError(message, line, column, source_loc)
+
         except Exception as e:
-            # Convert Lark exceptions to our LexerError
-            raise LexerError(str(e), 0, 0)
+            # Fallback for any other Lark exceptions
+            # Try to extract position if available
+            line = getattr(e, 'line', 0)
+            column = getattr(e, 'column', 0)
+            source_line = get_source_line(self.source, line) if line > 0 else None
+
+            source_loc = SourceLocation(
+                file_path=self.filename,
+                line=line,
+                column=column,
+                source_line=source_line
+            ) if line > 0 else None
+
+            raise LexerError(str(e), line, column, source_loc)
 
 
 def tokenize(source: str, filename: str = "<input>") -> List[Token]:

@@ -42,10 +42,9 @@ class OperatorValidator:
 
         if not left_const and not right_const:
             raise TypeCheckError(
-                f"Multiply operator (*) requires at least one constant operand\n"
-                f"  Use mul(a, b) for general multiplication\n"
-                f"  Operator * is restricted to power-of-2 constants (1, 2, 4, 8)",
-                source_loc=op_node.source_loc
+                f"multiply operator (*) requires a constant operand (1, 2, 4, or 8)",
+                source_loc=op_node.source_loc,
+                hint="use mul8() or mul16() for general multiplication"
             )
 
         # Extract constant value
@@ -54,11 +53,9 @@ class OperatorValidator:
         # Validate power-of-two
         if const_value not in OperatorValidator.POWER_OF_TWO_CONSTANTS:
             raise TypeCheckError(
-                f"Multiply operator (*) only allows constants 1, 2, 4, or 8\n"
-                f"  Found: {const_value}\n"
-                f"  Use mul(a, {const_value}) for general multiplication\n"
-                f"  Operator * is optimized to shift instructions (ASL)",
-                source_loc=op_node.source_loc
+                f"multiply by {const_value} not supported (only 1, 2, 4, 8 allowed)",
+                source_loc=op_node.source_loc,
+                hint=f"use mul8(value, {const_value}) or mul16(value, {const_value}) instead"
             )
 
     @staticmethod
@@ -68,21 +65,18 @@ class OperatorValidator:
 
         if not isinstance(right, HIRIntegerLiteral):
             raise TypeCheckError(
-                f"Divide operator (/) requires constant divisor\n"
-                f"  Use div(a, b) for general division\n"
-                f"  Operator / is restricted to power-of-2 constants (1, 2, 4, 8)",
-                source_loc=op_node.source_loc
+                f"divide operator (/) requires a constant divisor (1, 2, 4, or 8)",
+                source_loc=op_node.source_loc,
+                hint="use div8() or div16() for general division"
             )
 
         divisor = right.value
 
         if divisor not in OperatorValidator.POWER_OF_TWO_CONSTANTS:
             raise TypeCheckError(
-                f"Divide operator (/) only allows constants 1, 2, 4, or 8\n"
-                f"  Found: {divisor}\n"
-                f"  Use div(a, {divisor}) for general division\n"
-                f"  Operator / is optimized to shift instructions (LSR)",
-                source_loc=op_node.source_loc
+                f"divide by {divisor} not supported (only 1, 2, 4, 8 allowed)",
+                source_loc=op_node.source_loc,
+                hint=f"use div8(value, {divisor}) or div16(value, {divisor}) instead"
             )
 
     @staticmethod
@@ -92,8 +86,7 @@ class OperatorValidator:
 
         if not isinstance(right, HIRIntegerLiteral):
             raise TypeCheckError(
-                f"Shift operator ({op_node.op}) requires constant shift amount\n"
-                f"  Use shl(a, n) or shr(a, n) for variable shifts\n"
-                f"  Constant shifts are optimized to repeated ASL/LSR instructions",
-                source_loc=op_node.source_loc
+                f"shift operator ({op_node.op}) requires a constant shift amount",
+                source_loc=op_node.source_loc,
+                hint="use shl() or shr() for variable shift amounts"
             )
