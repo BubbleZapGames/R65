@@ -15,6 +15,7 @@ from r65.compiler.optimize.peephole import optimize_nodes
 from r65.compiler.codegen.branch_fixup import fixup_nodes
 from r65.compiler.codegen.emitter import emit_nodes
 from r65.compiler.codegen.constants import DEFAULT_STACK_LOWER, DEFAULT_STACK_UPPER
+from r65.compiler.codegen.bank_size import validate_bank_sizes
 from r65.compiler.optimize import DeadFunctionEliminator, DeadCodeEliminator
 
 
@@ -137,6 +138,9 @@ class ProgramCodeGenerator:
 
         if num_branch_fixups > 0:
             print(f"Branch fixup: {num_branch_fixups} long branch(es) fixed")
+
+        # Validate bank sizes
+        self._validate_bank_sizes(fixed_nodes, mir_program)
 
         # Convert nodes to assembly string
         assembly = emit_nodes(fixed_nodes)
@@ -278,3 +282,34 @@ class ProgramCodeGenerator:
         # They are automatically visible within the assembly file.
         # .EXPORT is only for .DEFINE symbols used in multi-file linking.
         pass
+
+    def _validate_bank_sizes(self, nodes: list, mir_program: MIRProgram):
+        """
+        Validate that code/data fits within bank size limits.
+
+        Checks each bank against the appropriate size limit:
+        - LoROM: 32KB per bank
+        - HiROM: 64KB per bank
+
+        The header bank (bank 0) has reduced capacity due to the SNES header.
+
+        Args:
+            nodes: Optimized assembly nodes
+            mir_program: MIR program (for snesrom config)
+
+        Raises:
+            BankSizeError: If any bank exceeds its limit
+        """
+        # Determine ROM type from snesrom config
+        is_hirom = False
+        if mir_program.snesrom_config:
+            is_hirom = mir_program.snesrom_config.hirom or mir_program.snesrom_config.exhirom
+
+        # Check if we have a header (any entry point or interrupt handler)
+        has_header = any(
+            func.is_entry or func.interrupt_attr
+            for func in mir_program.functions
+        )
+
+        # Validate bank sizes
+        validate_bank_sizes(nodes, is_hirom=is_hirom, has_header=has_header)
