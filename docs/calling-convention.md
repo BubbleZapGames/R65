@@ -1002,6 +1002,44 @@ caller:
 
 ---
 
+### Cross-Bank Call Validation
+
+The compiler enforces that near functions can only call near functions in the **same bank**:
+
+**Rule**: JSR uses a 16-bit address and cannot cross bank boundaries. To call a function in a different bank, the callee must be declared as `far fn`.
+
+```rust
+#[bank(0)]
+fn bank0_caller() {
+    same_bank_helper();  // OK: same bank
+    far_other_bank();    // OK: far function
+    // near_other_bank(); // ERROR: near function in different bank
+}
+
+fn same_bank_helper() { }  // Bank 0 (inherits)
+
+#[bank(1)]
+fn near_other_bank() { }   // Bank 1 - CANNOT be called from bank 0
+far fn far_other_bank() { } // Bank 1 - CAN be called from anywhere
+```
+
+**Compile Error**:
+```
+cannot call near function 'near_other_bank' from bank 0: 'near_other_bank' is in bank 1
+hint: near functions use JSR which cannot cross bank boundaries; declare 'near_other_bank' as 'far fn' to allow cross-bank calls
+```
+
+**Summary**:
+| Caller Bank | Callee Bank | Callee Type | Allowed? |
+|-------------|-------------|-------------|----------|
+| 0 | 0 | `fn` | Yes |
+| 0 | 1 | `fn` | **No** (compile error) |
+| 0 | 1 | `far fn` | Yes |
+| 1 | 0 | `fn` | **No** (compile error) |
+| Any | Any | `far fn` | Yes |
+
+---
+
 ## Function Pointers
 
 ### Function Pointer Types

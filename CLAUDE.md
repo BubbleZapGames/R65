@@ -556,6 +556,26 @@ far fn decompression_routine() { }      // JSL/RTL, bank 2 (inherits), caller ma
 - `fn()`: Near call using JSR/RTS (16-bit address, same bank)
 - `far fn()`: Far call using JSL/RTL (24-bit address, cross-bank)
 
+**Cross-bank call rules:**
+- Near functions can only call near functions in the **same bank** (compile-time error otherwise)
+- Far functions can be called from any bank (JSL handles cross-bank addressing)
+- To call a function in a different bank, declare it as `far fn`
+
+```rust
+#[bank(0)]
+fn bank0_caller() {
+    helper();        // OK: helper is in same bank (0)
+    far_func();      // OK: far functions can be called from any bank
+    // other_bank(); // ERROR: cannot call near function in different bank
+}
+
+fn helper() { }      // Bank 0 (inherits)
+
+#[bank(1)]
+fn other_bank() { }  // Bank 1 - cannot be called by near functions in bank 0
+far fn far_func() { } // Bank 1, but callable from anywhere
+```
+
 **Data Bank Register (DBR) options (via `#[mode()]`):**
 - `databank=none` (default): No DBR management - programmer handles manually
 - `databank=inline`: Callee sets/restores DBR to its program bank
