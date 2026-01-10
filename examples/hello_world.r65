@@ -6,6 +6,7 @@
 // ============================================================================
 
 #[snesrom(name="HELLO WORLD")]
+#[bank(0)]
 
 include!("../stdlib/sneslib.r65")
 
@@ -191,7 +192,7 @@ fn upload_font() {
 // ----------------------------------------------------------------------------
 
 #[mode(m8, x8)]
-fn write_message(row @ A: u8, column @ X: u8, message: far *[u8]) {
+fn write_message(row @ A: u8, column @ X: u8, message: *[u8]) {
     // Set VRAM address to tilemap position
     // Row 14, Column 10 (centered on 32x32 tilemap)
     // Offset = (14 * 32 + 10) = 458 = $01CA
