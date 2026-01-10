@@ -32,3 +32,10 @@ tests/*.o
 tests/*.sfc
 tests/linkfile
 .webui_secret_key
+
+# Generated example outputs
+examples/*.asm
+examples/*.o
+examples/*.sfc
+examples/linkfile
+hello/
