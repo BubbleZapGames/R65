@@ -191,17 +191,17 @@ fn upload_font() {
 // ----------------------------------------------------------------------------
 
 #[mode(m8, x8)]
-fn write_message(row @ A: u8, column @ X: u8, message: &mut [u8]) {
+fn write_message(row @ A: u8, column @ X: u8, message: far *[u8; 12]) {
     // Set VRAM address to tilemap position
     // Row 14, Column 10 (centered on 32x32 tilemap)
     // Offset = (14 * 32 + 10) = 458 = $01CA
-    A = A * 32;
+    A = A << 5;  // row * 32 (tiles per row)
     set_vram_addr!(A + X);
 
     // Write each character as a tile
     X = 0;
     loop {
-        A = *message[X];
+        A = message[X];
 
         // Check for null terminator
         if A == 0 {
