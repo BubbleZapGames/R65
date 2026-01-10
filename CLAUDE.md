@@ -760,6 +760,7 @@ R65 uses **hardware-aware operators**: syntax indicates performance cost.
 - ✅ Built-in mode control: `SEP()`, `REP()`, and `xba()` functions for manual mode and register control
 - ✅ Far/near calling conventions: `far fn()` for JSL/RTL cross-bank calls; `fn()` for JSR/RTS near calls
 - ✅ Bank management: `#[bank(n)]` global directive sets bank context for following functions and `#[rom]` statics; DBR management via `#[mode(databank=none/inline/caller)]`
+- ✅ Bank size validation: Compile-time check that each bank fits within limits (32KB LoROM, 64KB HiROM)
 - ✅ SNES ROM header: `#[snesrom(name="...", ...)]` configures WLA-DX .SNESHEADER with optional `lorom`/`hirom`/`exhirom` and `slowrom`/`fastrom` flags
 - ✅ Const evaluation: Compile-time evaluation of constant expressions (arithmetic, bitwise, logical operations); no const functions
 - ✅ Inline assembly: `asm!("instruction")` for embedding raw 65816 assembly; no variable interpolation
