@@ -69,10 +69,10 @@ class TestAggregateParameterRestriction:
         """Passing an array by pointer should be allowed (type check passes)."""
         source = """
         #[zeropage(0x10)]
-        static mut *PTR: [u8; 256];
+        static mut *PTR: [u8];
 
         #[mode(m8, x8)]
-        fn good_func(*data @ PTR: [u8; 256]) {
+        fn good_func(*data @ PTR: [u8]) {
             // Just verify the function signature is accepted
             A = 0;
         }

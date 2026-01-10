@@ -163,6 +163,14 @@ class TypeResolver:
 
         elif isinstance(ast_type, ast.PointerType):
             pointee = self.resolve_type(ast_type.pointee_type)
+
+            # Pointers cannot point to sized arrays - must use unsized array [T]
+            if isinstance(pointee, ArrayTypeInfo):
+                raise HIRError(
+                    f"pointer cannot point to sized array type [{pointee.element_type}; {pointee.size}]",
+                    hint=f"use unsized array type [{pointee.element_type}] instead"
+                )
+
             return PointerTypeInfo(is_far=ast_type.is_far, pointee_type=pointee)
 
         elif isinstance(ast_type, ast.FunctionType):

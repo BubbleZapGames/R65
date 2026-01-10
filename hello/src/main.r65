@@ -5,9 +5,23 @@
 // Uses the standard sneslib.r65 library
 // ============================================================================
 
-#[snesrom(name="HELLO WORLD")]
+include!("lib/sneslib.r65")
 
-include!("../stdlib/sneslib.r65")
+#[interrupt(nmi)]
+#[mode(m8, x8, transition=inline)]
+fn nmi_handler() {
+    // handler code
+}
+
+// ----------------------------------------------------------------------------
+// Scratch registers for compiler temporaries
+// ----------------------------------------------------------------------------
+
+#[zeropage(0x00, register)]
+static mut SCRATCH0: u16;
+
+#[zeropage(0x02, register)]
+static mut SCRATCH1: u8;
 
 // ----------------------------------------------------------------------------
 // Message to display
@@ -139,7 +153,8 @@ fn main() -> ! {
     upload_font();
 
     // Write message to tilemap
-    write_message(14, 0, &MESSAGE);
+    write_message(14, 10, &MESSAGE);
+    //write_message(1, 0, &MESSAGE);
 
     // Upload palette
     upload_palette();
@@ -149,11 +164,6 @@ fn main() -> ! {
 
     // Turn on screen
     screen_on!(BRIGHTNESS_FULL);
-
-    // Main loop
-    loop {
-        wait_nmi();
-    }
 }
 
 // ----------------------------------------------------------------------------
@@ -191,12 +201,15 @@ fn upload_font() {
 // ----------------------------------------------------------------------------
 
 #[mode(m8, x8)]
-fn write_message(row @ A: u8, column @ X: u8, message: far *[u8]) {
+fn write_message(row @ A: u8, column @ X: u8, far *message: [u8]) {
     // Set VRAM address to tilemap position
     // Row 14, Column 10 (centered on 32x32 tilemap)
     // Offset = (14 * 32 + 10) = 458 = $01CA
-    A = A << 5;  // row * 32 (tiles per row)
-    set_vram_addr!(A + X);
+    A = A << 4;
+	A = A + X;
+    set_vram_addr!(A);
+    //set_vram_addr!(0x01CA);
+    //set_vram_addr!(0);
 
     // Write each character as a tile
     X = 0;
