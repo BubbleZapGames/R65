@@ -328,7 +328,7 @@ class ExpressionLowerer:
 
         Handles two cases:
         1. Direct array indexing: array[index] where array is a static array
-        2. Pointer indexing: ptr[index] where ptr is near<T> or far<T>
+        2. Pointer indexing: ptr[index] where ptr is *T or far *T
 
         Args:
             expr: HIR array index expression
@@ -370,8 +370,8 @@ class ExpressionLowerer:
         Lower pointer indexing: ptr[index]
 
         Uses indirect indexed addressing:
-        - near<T>: LDA (ptr),Y
-        - far<T>: LDA [ptr],Y
+        - *T (near): LDA (ptr),Y
+        - far *T: LDA [ptr],Y
 
         Args:
             expr: HIR array index expression

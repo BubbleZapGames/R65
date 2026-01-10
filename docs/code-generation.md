@@ -140,8 +140,8 @@ The MemoryAllocator tracks and allocates memory locations for static variables, 
 
 - `u8, i8, bool` → 1 byte
 - `u16, i16` → 2 bytes
-- `near<T>` → 2 bytes
-- `far<T>` → 3 bytes
+- Near pointers (`*ptr: T`) → 2 bytes
+- Far pointers (`far *ptr: T`) → 3 bytes
 - Arrays → `element_size * length`
 - Structs → sum of field sizes (packed)
 

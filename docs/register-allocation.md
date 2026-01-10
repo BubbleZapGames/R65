@@ -195,7 +195,7 @@ static mut SCRATCH2: u16;
 static mut SCRATCH3: u16;
 
 #[zeropage(0x16, register)]
-static mut SCRATCH_PTR: near<u8>;
+static mut *SCRATCH_PTR: u8;
 
 // Compiler has pool: $10, $11, $12-$13, $14-$15, $16-$17
 ```
@@ -788,7 +788,7 @@ static mut SCRATCH2: u16;
 static mut SCRATCH3: u16;
 
 #[zeropage(0x16, register)]
-static mut SCRATCH_PTR: near<u8>;
+static mut *SCRATCH_PTR: u8;
 // Total: 8 bytes
 ```
 

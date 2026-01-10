@@ -699,19 +699,19 @@ BUFFER1 = BUFFER2;
 
 ```rust
 // Pass struct by pointer
-fn process_player(player: near<Player>) {
+fn process_player(*player: Player) {
     (*player).health = (*player).health - 1;
 }
 
 // Write result to pre-allocated memory
-fn init_player(dest: near<Player>) {
+fn init_player(*dest: Player) {
     (*dest).x = 0;
     (*dest).y = 0;
     (*dest).health = 100;
 }
 
 // Return pointer to static/global data
-fn get_player() -> near<Player> {
+fn get_player() -> *Player {
     return &PLAYER;
 }
 

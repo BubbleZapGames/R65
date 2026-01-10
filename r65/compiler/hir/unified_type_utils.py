@@ -131,12 +131,12 @@ def get_unified_type_size(type_obj: Any, symbol_table=None) -> int:
             return 3
         return 2
     
-    # Check for pointer type names
+    # Check for pointer type names (fallback for string representations)
     type_name_str = str(type_obj)
-    if type_name_str.startswith('near<'):
-        return 2  # 16-bit pointer
-    elif type_name_str.startswith('far<'):
-        return 3  # 24-bit pointer
+    if type_name_str.startswith('far *'):
+        return 3  # 24-bit far pointer
+    elif type_name_str.startswith('*'):
+        return 2  # 16-bit near pointer
     
     # Handle other types (delegate to codegen if available, otherwise use defaults)
     try:

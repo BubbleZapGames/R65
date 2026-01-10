@@ -79,12 +79,12 @@ def get_type_size(type_info) -> int:
             return 3
         return 2
 
-    # Check for pointer type names
+    # Check for pointer type names (fallback for string representations)
     type_name_str = str(type_info)
-    if type_name_str.startswith('near<'):
-        return 2  # 16-bit pointer
-    elif type_name_str.startswith('far<'):
-        return 3  # 24-bit pointer
+    if type_name_str.startswith('far *'):
+        return 3  # 24-bit far pointer
+    elif type_name_str.startswith('*'):
+        return 2  # 16-bit near pointer
 
     # Default to 1 byte
     return 1

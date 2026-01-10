@@ -116,13 +116,13 @@ enum Name {
 #### Pointers
 
 ```rust
-near<T>  // 16-bit pointer (current bank)
-far<T>   // 24-bit pointer (includes bank)
+*ptr: T      // 16-bit near pointer (current bank)
+far *ptr: T  // 24-bit far pointer (includes bank)
 ```
 
 **Size**:
-- `near<T>`: 2 bytes
-- `far<T>`: 3 bytes
+- Near pointers (`*ptr: T`): 2 bytes
+- Far pointers (`far *ptr: T`): 3 bytes
 
 **Metadata**: None (raw addresses)
 
@@ -452,15 +452,15 @@ add(x, y as u8);  // OK: explicit cast
 **Rule**: Pointer types must match exactly
 
 ```rust
-let p1: near<u8> = 0x2000;
-let p2: near<u16> = 0x3000;
-let p3: far<u8> = 0x01_2000;
+let *p1: u8 = 0x2000;
+let *p2: u16 = 0x3000;
+let far *p3: u8 = 0x01_2000;
 
-p1 = p2;  // ERROR: near<u8> vs near<u16>
-p1 = p3;  // ERROR: near<u8> vs far<u8>
+p1 = p2;  // ERROR: *u8 vs *u16
+p1 = p3;  // ERROR: *u8 vs far *u8
 
-p1 = p2 as near<u8>;  // OK: explicit cast
-p1 = p3 as near<u8>;  // OK: explicit cast (drops bank)
+p1 = p2 as *u8;      // OK: explicit cast
+p1 = p3 as *u8;      // OK: explicit cast (drops bank)
 ```
 
 ---

@@ -55,8 +55,9 @@ class PointerTypeInfo(TypeInfo):
     pointee_type: TypeInfo
 
     def __str__(self):
-        kind = "far" if self.is_far else "near"
-        return f"{kind}<{self.pointee_type}>"
+        if self.is_far:
+            return f"far *{self.pointee_type}"
+        return f"*{self.pointee_type}"
 
 
 @dataclass

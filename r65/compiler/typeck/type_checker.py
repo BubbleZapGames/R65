@@ -230,7 +230,7 @@ class TypeChecker:
         """
         if TypeUtils.is_aggregate_type(type_info):
             type_name = str(type_info)
-            suggestion = f"near<{type_name}>"
+            suggestion = f"*name: {type_name}"
             raise TypeCheckError(
                 f"{context} has type '{type_name}' which cannot be {verb} by value\n"
                 f"  Arrays and structs must be passed by reference\n"
@@ -937,7 +937,7 @@ class TypeChecker:
         # Index must be integer
         self._require_integer_type(index_type, "Array index", expr.index.source_loc)
 
-        # Handle pointer types: near<T>[idx] or far<T>[idx]
+        # Handle pointer types: (*ptr: T)[idx] or (far *ptr: T)[idx]
         if isinstance(base_type, PointerTypeInfo):
             pointee = base_type.pointee_type
             # If pointer to array, result is element type
