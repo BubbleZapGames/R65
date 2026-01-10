@@ -612,12 +612,13 @@ class AssemblyEmitter:
     # Interrupt Vectors
     # ========================================================================
 
-    def emit_snes_header(self, snesrom_config=None):
+    def emit_snes_header(self, snesrom_config=None, romsize_value: int = 0x08):
         """
         Emit SNES ROM header using .SNESHEADER directive.
 
         Args:
             snesrom_config: SnesRomConfig from #[snesrom(...)] directive, or None for defaults
+            romsize_value: SNES header ROMSIZE value ($08=256KB, $09=512KB, etc.)
 
         Generated:
             .SNESHEADER
@@ -684,7 +685,7 @@ class AssemblyEmitter:
             self.emit_directive("SLOWROM")
 
         self.emit_directive(f"CARTRIDGETYPE ${cartridge_type:02X}")
-        self.emit_directive("ROMSIZE $08")
+        self.emit_directive(f"ROMSIZE ${romsize_value:02X}")
         self.emit_directive(f"SRAMSIZE ${sram_size:02X}")
         self.emit_directive(f"COUNTRY ${country:02X}")
         self.emit_directive("LICENSEECODE $00")

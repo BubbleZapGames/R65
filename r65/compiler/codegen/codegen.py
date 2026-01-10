@@ -14,7 +14,7 @@ from r65.compiler.codegen.function_gen import ProgramFunctionGenerator
 from r65.compiler.optimize.peephole import optimize_nodes
 from r65.compiler.codegen.branch_fixup import fixup_nodes
 from r65.compiler.codegen.emitter import emit_nodes
-from r65.compiler.codegen.constants import DEFAULT_STACK_LOWER, DEFAULT_STACK_UPPER
+from r65.compiler.codegen.constants import DEFAULT_STACK_LOWER, DEFAULT_STACK_UPPER, calculate_rom_size
 from r65.compiler.codegen.bank_size import validate_bank_sizes
 from r65.compiler.optimize import DeadFunctionEliminator, DeadCodeEliminator
 
@@ -73,8 +73,16 @@ class ProgramCodeGenerator:
         max_bank = max(functions_by_bank.keys()) if functions_by_bank else 0
         bank_count = max_bank + 1  # Banks are 0-indexed
 
-        # Emit memory map with correct bank count
-        self.emitter.emit_memory_map(banks=bank_count)
+        # Determine ROM type from snesrom_config
+        is_hirom = False
+        if mir_program.snesrom_config:
+            is_hirom = mir_program.snesrom_config.hirom or mir_program.snesrom_config.exhirom
+
+        # Calculate minimum ROM size (power-of-2 banks and ROMSIZE value)
+        rom_banks, self.romsize_value = calculate_rom_size(bank_count, is_hirom)
+
+        # Emit memory map with calculated bank count
+        self.emitter.emit_memory_map(banks=rom_banks)
 
         # Phase 1: Memory allocation
         self.allocator = MemoryAllocator()
@@ -233,7 +241,10 @@ class ProgramCodeGenerator:
             self.emitter.emit_empty_interrupt_handler()
 
             # Emit SNES ROM header (use config from #[snesrom(...)] if present)
-            self.emitter.emit_snes_header(snesrom_config=mir_program.snesrom_config)
+            self.emitter.emit_snes_header(
+                snesrom_config=mir_program.snesrom_config,
+                romsize_value=self.romsize_value
+            )
 
             # Emit interrupt vectors
             self.emitter.emit_interrupt_vectors(
