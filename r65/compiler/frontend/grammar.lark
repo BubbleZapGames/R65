@@ -17,6 +17,7 @@ start: item*
      | type_alias
      | include_stmt
      | stack_directive
+     | bank_directive
      | macro_decl
      | macro_invocation_stmt
      | _reserved_keyword  // Dummy rule to make reserved keywords valid tokens
@@ -24,6 +25,9 @@ start: item*
 // Stack directive - global attribute for stack region
 // Uses explicit syntax to avoid grammar ambiguity
 stack_directive: "#" "[" "stack" "(" INTEGER "," INTEGER ")" "]"
+
+// Bank directive - sets current ROM bank for following declarations
+bank_directive: "#" "[" "bank" "(" INTEGER ")" "]"
 
 // Dummy rule to tell Lark that these terminals are valid (never actually matched in valid code)
 _reserved_keyword: KEYWORD

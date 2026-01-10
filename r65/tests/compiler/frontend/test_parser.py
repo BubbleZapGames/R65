@@ -483,7 +483,7 @@ def test_increment_decrement():
 
 
 def test_far_function():
-    """Test parsing far functions."""
+    """Test parsing far functions with bank directive."""
     source = """
     #[bank(1)]
     far fn cross_bank() -> u8 {
@@ -492,11 +492,22 @@ def test_far_function():
     """
 
     program = parse(source)
-    func = program.items[0]
 
+    # #[bank(1)] is now a directive, not a function attribute
+    assert len(program.items) == 2
+
+    # First item is the BankDirective
+    bank_dir = program.items[0]
+    assert isinstance(bank_dir, ast.BankDirective)
+    assert bank_dir.bank_number == 1
+
+    # Second item is the far function
+    func = program.items[1]
+    assert isinstance(func, ast.FunctionDecl)
     assert func.is_far == True
-    assert len(func.attributes) == 1
-    assert func.attributes[0].name == 'bank'
+    assert func.name == 'cross_bank'
+    # Function no longer has bank attribute (bank comes from directive context)
+    assert len(func.attributes) == 0
 
     print("✓ Far function test passed")
 

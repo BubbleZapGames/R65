@@ -256,6 +256,12 @@ class StackDirective(Declaration):
     upper: int
 
 
+@dataclass
+class BankDirective(Declaration):
+    """Bank directive: #[bank(n)] - sets current ROM bank for following declarations."""
+    bank_number: int
+
+
 # ============================================================================
 # Macros
 # ============================================================================

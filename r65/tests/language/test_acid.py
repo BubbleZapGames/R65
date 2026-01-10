@@ -680,7 +680,7 @@ class TestAcidTest:
             'interrupt_attr': False,
             'mode_attr': False,
             'preserves_attr': False,
-            'bank_attr': False,
+            'bank_directive': False,
             'hw_attr': False,
             'zeropage_attr': False,
             'ram_attr': False,
@@ -700,7 +700,9 @@ class TestAcidTest:
         }
 
         for item in program.items:
-            if isinstance(item, ast.FunctionDecl):
+            if isinstance(item, ast.BankDirective):
+                features_found['bank_directive'] = True
+            elif isinstance(item, ast.FunctionDecl):
                 for attr in item.attributes:
                     if attr.name == 'entry':
                         features_found['entry_attr'] = True
@@ -710,8 +712,6 @@ class TestAcidTest:
                         features_found['mode_attr'] = True
                     elif attr.name == 'preserves':
                         features_found['preserves_attr'] = True
-                    elif attr.name == 'bank':
-                        features_found['bank_attr'] = True
 
                 if item.is_far:
                     features_found['far_function'] = True

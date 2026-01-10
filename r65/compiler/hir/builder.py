@@ -38,6 +38,7 @@ class HIRBuilder:
         self.attr_processor = AttributeProcessor()
         self.source_file = source_file
         self.source_dir = Path(source_file).parent if source_file else Path.cwd()
+        self.current_bank = 0  # Current ROM bank for declarations (set by #[bank(n)])
 
     def build_program(self, ast_program: ast.Program) -> hir.HIRProgram:
         """
@@ -53,6 +54,8 @@ class HIRBuilder:
         stack_attr = None
 
         # Pass 1: Declare all top-level symbols (filtered by cfg)
+        # Also track bank directives to maintain ordering
+        self.current_bank = 0  # Reset to default bank
         for decl in ast_program.items:
             if isinstance(decl, ast.StackDirective):
                 # Create stack attribute from directive
@@ -61,15 +64,23 @@ class HIRBuilder:
                     lower=decl.lower,
                     upper=decl.upper
                 )
+            elif isinstance(decl, ast.BankDirective):
+                # Update current bank context
+                self.current_bank = decl.bank_number
             else:
                 if self._should_include_declaration(decl):
                     self._declare_toplevel(decl)
 
         # Pass 2: Build HIR nodes with resolved references (filtered by cfg)
         hir_decls = []
+        self.current_bank = 0  # Reset for second pass
         for decl in ast_program.items:
             if isinstance(decl, ast.StackDirective):
                 continue  # Skip stack directives, already processed
+            if isinstance(decl, ast.BankDirective):
+                # Update current bank context for following declarations
+                self.current_bank = decl.bank_number
+                continue
             if self._should_include_declaration(decl):
                 hir_decl = self._build_declaration(decl)
                 hir_decls.append(hir_decl)
@@ -262,9 +273,11 @@ class HIRBuilder:
         attrs = self._extract_attributes(processed_attrs)
         mode_attr = attrs['mode']
         preserves_attr = attrs['preserves']
-        bank_attr = attrs['bank']
         interrupt_attr = attrs['interrupt']
         is_entry = attrs['is_entry']
+
+        # Bank comes from current bank context (set by #[bank(n)] directive)
+        bank_attr = BankAttribute(name='bank', bank_number=self.current_bank)
 
         # Enter function scope
         func_scope_id = self.symbol_table.enter_scope(ScopeKind.FUNCTION)
@@ -401,6 +414,11 @@ class HIRBuilder:
         # Get static symbol
         static_symbol = self.symbol_table.lookup(static.name)
 
+        # Bank applies only to ROM statics (code and ROM data share banks)
+        bank_attr = None
+        if storage_attr and storage_attr.storage_kind == StorageKind.ROM:
+            bank_attr = BankAttribute(name='bank', bank_number=self.current_bank)
+
         # Create HIR node
         hir_static = hir.HIRStaticDecl(
             name=static.name,
@@ -408,6 +426,7 @@ class HIRBuilder:
             var_type=var_type,
             initializer=initializer,
             storage_attr=storage_attr,
+            bank_attr=bank_attr,
             symbol=static_symbol
         )
 
@@ -1088,12 +1107,11 @@ class HIRBuilder:
             processed_attrs: List of processed attributes
 
         Returns:
-            Dictionary with keys: mode, preserves, bank, interrupt, is_entry
+            Dictionary with keys: mode, preserves, interrupt, is_entry
         """
         result = {
             'mode': None,
             'preserves': None,
-            'bank': None,
             'interrupt': None,
             'is_entry': False
         }
@@ -1103,8 +1121,6 @@ class HIRBuilder:
                 result['mode'] = attr
             elif isinstance(attr, PreservesAttribute):
                 result['preserves'] = attr
-            elif isinstance(attr, BankAttribute):
-                result['bank'] = attr
             elif isinstance(attr, InterruptAttribute):
                 result['interrupt'] = attr
             elif isinstance(attr, EntryAttribute):

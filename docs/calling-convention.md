@@ -911,10 +911,16 @@ local_function:
 
 **Mechanism**: 24-bit address, cross-bank
 
+**Bank Placement**: `#[bank(n)]` is a global directive that sets the bank context for all following functions and `#[rom]` statics:
+
 ```rust
 #[bank(1)]
 far fn remote_function() {
-    // ...
+    // In bank 1
+}
+
+far fn another_remote() {
+    // Also in bank 1 (inherits from directive)
 }
 
 fn caller() {
@@ -947,7 +953,7 @@ Far functions can specify DBR handling via `#[mode(databank=...)]`:
 
 **Option 1: databank=none (default)**
 ```rust
-#[bank(1)]
+#[bank(1)]  // Sets bank context for following declarations
 far fn no_dbr_change() {
     // Programmer handles DBR manually
 }

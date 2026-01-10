@@ -323,30 +323,14 @@ class AttributeProcessor:
         )
 
     def _process_bank(self, attr: ast.Attribute, context: str) -> BankAttribute:
-        """Process #[bank(n)] attribute."""
-        if context not in ['function']:
-            raise HIRError(f"#[bank] attribute only valid on functions")
-
-        bank_number = None
-
-        for arg in attr.args:
-            if arg.name is None:  # Positional argument (bank number)
-                if bank_number is not None:
-                    raise HIRError(f"#[bank] can only have one positional argument (bank number)")
-
-                if isinstance(arg.value, ast.IntegerLiteral):
-                    bank_number = arg.value.value
-                else:
-                    raise HIRError(f"#[bank] number must be an integer literal")
-            else:
-                raise HIRError(f"Unknown argument to #[bank]: {arg.name}")
-
-        if bank_number is None:
-            raise HIRError(f"#[bank] requires a bank number")
-
-        return BankAttribute(
-            name='bank',
-            bank_number=bank_number
+        """Process #[bank(n)] attribute - now a directive, not a function attribute."""
+        # #[bank(n)] is now a global directive, not a function attribute
+        raise HIRError(
+            f"#[bank(n)] is a global directive, not a function attribute. "
+            f"Place #[bank(n)] before function declarations to set the bank for "
+            f"all following functions and #[rom] statics. Example:\n"
+            f"  #[bank(1)]\n"
+            f"  far fn my_function() {{ }}"
         )
 
     def _process_interrupt(self, attr: ast.Attribute, context: str) -> InterruptAttribute:

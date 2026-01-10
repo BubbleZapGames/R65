@@ -448,6 +448,12 @@ class ASTBuilder(Transformer):
         upper = int(items[1].value, 0)
         return ast.StackDirective(lower=lower, upper=upper)
 
+    def bank_directive(self, items):
+        """Bank directive: #[bank(n)] - sets current ROM bank for following declarations."""
+        items = self._filter_tokens(items, keep_types={'INTEGER'})
+        bank_number = int(items[0].value, 0)  # Parse with base detection (0x prefix)
+        return ast.BankDirective(bank_number=bank_number)
+
     # ========================================================================
     # Macros
     # ========================================================================

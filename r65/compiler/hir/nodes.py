@@ -167,6 +167,7 @@ class HIRStaticDecl(HIRDeclaration):
 
     # Processed attributes
     storage_attr: Optional[Any] = None  # Will be StorageAttribute
+    bank_attr: Optional[Any] = None  # Will be BankAttribute (for #[rom] statics only)
 
     # Symbol reference
     symbol: Optional[Any] = None  # Will be Symbol

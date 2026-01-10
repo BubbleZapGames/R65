@@ -49,22 +49,36 @@ class TestInterruptPreservation:
         assert len(attr.args) >= 2
 
 
-class TestBankAttribute:
-    """Tests for #[bank(...)] attribute on functions."""
+class TestBankDirective:
+    """Tests for #[bank(...)] directive."""
 
     def test_bank_placement(self):
-        """Test bank placement for far functions."""
-        func = parse_function("#[bank(1)] far fn bank1_code() { }")
-        attr = get_attr(func, "bank")
-        assert attr is not None
+        """Test bank directive for far functions."""
+        from r65.compiler.frontend.parser import parse
+        prog = parse("#[bank(1)] far fn bank1_code() { }")
+
+        # First item is BankDirective, second is function
+        assert len(prog.items) == 2
+        assert isinstance(prog.items[0], ast.BankDirective)
+        assert prog.items[0].bank_number == 1
+        assert isinstance(prog.items[1], ast.FunctionDecl)
+        assert prog.items[1].is_far == True
 
     def test_bank_with_databank_mode(self):
-        """Test bank with databank in mode attribute."""
-        func = parse_function("#[bank(2)] #[mode(databank=inline)] far fn bank2_code() { }")
+        """Test bank directive with databank in mode attribute."""
+        from r65.compiler.frontend.parser import parse
+        prog = parse("#[bank(2)] #[mode(databank=inline)] far fn bank2_code() { }")
+
+        # First item is BankDirective
+        assert len(prog.items) == 2
+        assert isinstance(prog.items[0], ast.BankDirective)
+        assert prog.items[0].bank_number == 2
+
+        # Second item is function with mode attribute
+        func = prog.items[1]
+        assert isinstance(func, ast.FunctionDecl)
         mode_attr = get_attr(func, "mode")
-        bank_attr = get_attr(func, "bank")
         assert mode_attr is not None
-        assert bank_attr is not None
 
 
 class TestInterruptHIR:

@@ -526,22 +526,31 @@ fn update(input @ A: u8) {
 
 ### Cross-Bank Function Calls
 
-The `far` keyword indicates JSL/RTL calling convention, while `#[bank]` controls placement:
+The `far` keyword indicates JSL/RTL calling convention, while `#[bank(n)]` is a global directive that sets the current bank context:
 
 ```rust
-fn local_function() { }                 // JSR/RTS (near call, default)
+fn local_function() { }                 // JSR/RTS (near call, default), bank 0
 
 #[bank(1)]
-far fn sound_engine() { }               // JSL/RTL, databank=none (default)
+far fn sound_engine() { }               // JSL/RTL, bank 1, databank=none (default)
+far fn audio_mixer() { }                // JSL/RTL, bank 1 (inherits from directive)
 
-#[bank(1)]
-#[mode(databank=inline)]
-far fn graphics_code() { }              // JSL/RTL, callee manages DBR
+#[rom]
+static SOUND_DATA: [u8; 256] = [0; 256];  // Bank 1 (only #[rom] statics inherit bank)
 
 #[bank(2)]
+#[mode(databank=inline)]
+far fn graphics_code() { }              // JSL/RTL, bank 2, callee manages DBR
+
 #[mode(databank=caller)]
-far fn decompression_routine() { }     // JSL/RTL, caller manages DBR
+far fn decompression_routine() { }      // JSL/RTL, bank 2 (inherits), caller manages DBR
 ```
+
+**Bank directive behavior:**
+- `#[bank(n)]` sets the current bank context (default is 0)
+- All functions declared after the directive belong to that bank
+- Only `#[rom]` statics inherit the bank (RAM statics are unaffected)
+- Bank context persists until the next `#[bank]` directive
 
 **Calling conventions:**
 - `fn()`: Near call using JSR/RTS (16-bit address, same bank)
@@ -728,7 +737,7 @@ R65 uses **hardware-aware operators**: syntax indicates performance cost.
 - ✅ Mode annotations: `#[mode(m8/m16, x8/x16)]` with optional `transition=none/auto/caller`
 - ✅ Built-in mode control: `SEP()`, `REP()`, and `xba()` functions for manual mode and register control
 - ✅ Far/near calling conventions: `far fn()` for JSL/RTL cross-bank calls; `fn()` for JSR/RTS near calls
-- ✅ Bank management: `#[bank(n)]` for function placement; DBR management via `#[mode(databank=none/inline/caller)]`
+- ✅ Bank management: `#[bank(n)]` global directive sets bank context for following functions and `#[rom]` statics; DBR management via `#[mode(databank=none/inline/caller)]`
 - ✅ Const evaluation: Compile-time evaluation of constant expressions (arithmetic, bitwise, logical operations); no const functions
 - ✅ Inline assembly: `asm!("instruction")` for embedding raw 65816 assembly; no variable interpolation
 - ✅ File inclusion: `include!("file")` for textual inclusion (C-style); no module system
@@ -884,7 +893,7 @@ Performance characteristics of different storage:
 21. **Storage attributes**: Memory location separate from type (near pointers can be in zero-page or RAM)
 22. **Flexible mode handling**: `#[mode(...)]` with three transition strategies: `none` (convention-based, default), `auto` (callee wrapper), `caller` (caller-side wrapper with batching)
 23. **Automatic initialization**: `__init_start()` generated for all static variables with explicit initializers (RAM is not zeroed on SNES power-on)
-24. **Consistent far/near**: `far fn()` for both function definitions and pointers indicates JSL/RTL calling convention; `fn()` indicates JSR/RTS; `#[bank(n)]` controls placement; `#[mode(databank=...)]` controls DBR management
+24. **Consistent far/near**: `far fn()` for both function definitions and pointers indicates JSL/RTL calling convention; `fn()` indicates JSR/RTS; `#[bank(n)]` global directive sets bank context for following declarations; `#[mode(databank=...)]` controls DBR management
 
 ## Use Cases
 
