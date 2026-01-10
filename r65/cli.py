@@ -90,7 +90,7 @@ class TemplateManager:
         if not self.stdlib_dir.exists():
             return
 
-        stdlib_files = ['sneslib.r65', 'math.r65']
+        stdlib_files = ['sneslib.r65', 'math.r65', '65816.r65']
         for filename in stdlib_files:
             src_file = self.stdlib_dir / filename
             if src_file.exists():

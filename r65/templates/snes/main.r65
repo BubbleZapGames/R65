@@ -1,9 +1,15 @@
 // {{PROJECT_NAME}} - Main entry point
 // SNES LoROM template project
 
+#[snesrom(name="{{PROJECT_NAME_UPPER}}")]
+
 // Include standard libraries
 include!("lib/sneslib.r65")
 include!("lib/math.r65")
+include!("lib/65816.r65")
+
+// Bank 0 - Main code
+#[bank(0)]
 
 // Program entry point
 #[entry]
