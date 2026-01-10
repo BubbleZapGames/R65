@@ -28,7 +28,8 @@ start: item*
 stack_directive: "#" "[" "stack" "(" INTEGER "," INTEGER ")" "]"
 
 // Bank directive - sets current ROM bank for following declarations
-bank_directive: "#" "[" "bank" "(" INTEGER ")" "]"
+// #[bank(0)] for explicit bank, #[bank(auto)] for automatic placement
+bank_directive: "#" "[" "bank" "(" (INTEGER | "auto") ")" "]"
 
 // SNES ROM header directive - configures .SNESHEADER output
 // #[snesrom(name="ROM NAME", id="SNES", lorom, fastrom, ...)]
@@ -53,9 +54,9 @@ return_type: "->" (type_tuple | type_expr | "!")
 
 // Static variable declaration
 // Uses initializer_expr to allow struct literals after =
-// Supports pointer declarations: static [far|near] mut *name: type
-static_decl: attribute* STATIC (FAR | NEAR)? MUT? STAR? IDENT ":" type_expr ("=" initializer_expr)? ";"
-           | attribute* STATIC (FAR | NEAR)? MUT? AMPER IDENT ":" type_expr ("=" initializer_expr)? ";"  -> static_decl_safe_ptr_error
+// Supports pointer declarations and far modifier: [far|near] static mut *name: type
+static_decl: attribute* (FAR | NEAR)? STATIC MUT? STAR? IDENT ":" type_expr ("=" initializer_expr)? ";"
+           | attribute* (FAR | NEAR)? STATIC MUT? AMPER IDENT ":" type_expr ("=" initializer_expr)? ";"  -> static_decl_safe_ptr_error
 
 // Const declaration
 const_decl: CONST IDENT ":" type_expr "=" expr ";"

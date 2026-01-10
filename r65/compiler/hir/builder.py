@@ -39,6 +39,7 @@ class HIRBuilder:
         self.source_file = source_file
         self.source_dir = Path(source_file).parent if source_file else Path.cwd()
         self.current_bank = 0  # Current ROM bank for declarations (set by #[bank(n)])
+        self.auto_bank_mode = False  # True when in #[bank(auto)] mode (NOT default for backward compatibility)
 
     def build_program(self, ast_program: ast.Program) -> hir.HIRProgram:
         """
@@ -57,6 +58,7 @@ class HIRBuilder:
         # Pass 1: Declare all top-level symbols (filtered by cfg)
         # Also track bank directives to maintain ordering
         self.current_bank = 0  # Reset to default bank
+        self.auto_bank_mode = False  # Default is explicit bank 0 for backward compatibility
         for decl in ast_program.items:
             if isinstance(decl, ast.StackDirective):
                 # Create stack attribute from directive
@@ -67,7 +69,14 @@ class HIRBuilder:
                 )
             elif isinstance(decl, ast.BankDirective):
                 # Update current bank context
-                self.current_bank = decl.bank_number
+                if decl.is_auto:
+                    # #[bank(auto)] - automatic placement mode
+                    self.auto_bank_mode = True
+                    self.current_bank = 0  # Will be determined at link time
+                else:
+                    # #[bank(n)] - explicit bank number
+                    self.auto_bank_mode = False
+                    self.current_bank = decl.bank_number
             elif isinstance(decl, ast.SnesRomDirective):
                 # Create SNES ROM config from directive
                 snesrom_config = hir.SnesRomConfig(
@@ -90,12 +99,18 @@ class HIRBuilder:
         # Pass 2: Build HIR nodes with resolved references (filtered by cfg)
         hir_decls = []
         self.current_bank = 0  # Reset for second pass
+        self.auto_bank_mode = False  # Default is explicit bank 0 for backward compatibility
         for decl in ast_program.items:
             if isinstance(decl, ast.StackDirective):
                 continue  # Skip stack directives, already processed
             if isinstance(decl, ast.BankDirective):
                 # Update current bank context for following declarations
-                self.current_bank = decl.bank_number
+                if decl.is_auto:
+                    self.auto_bank_mode = True
+                    self.current_bank = 0
+                else:
+                    self.auto_bank_mode = False
+                    self.current_bank = decl.bank_number
                 continue
             if isinstance(decl, ast.SnesRomDirective):
                 continue  # Skip snesrom directives, already processed
@@ -296,7 +311,18 @@ class HIRBuilder:
         is_entry = attrs['is_entry']
 
         # Bank comes from current bank context (set by #[bank(n)] directive)
-        bank_attr = BankAttribute(name='bank', bank_number=self.current_bank)
+        # In auto-bank mode, use None to indicate automatic placement
+        if self.auto_bank_mode:
+            bank_attr = BankAttribute(name='bank', bank_number=None)
+            # Validate: functions in auto-bank mode must be far
+            if not func.is_far:
+                raise HIRError(
+                    f"function '{func.name}' in auto-bank mode must be declared as 'far fn'",
+                    source_loc=func.source_loc,
+                    hint="use 'far fn " + func.name + "(...)' or place in explicit bank with #[bank(n)]"
+                )
+        else:
+            bank_attr = BankAttribute(name='bank', bank_number=self.current_bank)
 
         # Enter function scope
         func_scope_id = self.symbol_table.enter_scope(ScopeKind.FUNCTION)
@@ -436,7 +462,16 @@ class HIRBuilder:
         # Bank applies only to ROM statics (code and ROM data share banks)
         bank_attr = None
         if storage_attr and storage_attr.storage_kind == StorageKind.ROM:
-            bank_attr = BankAttribute(name='bank', bank_number=self.current_bank)
+            if self.auto_bank_mode:
+                bank_attr = BankAttribute(name='bank', bank_number=None)
+                # Validate: #[rom] statics in auto-bank mode must be far
+                if not static.is_far:
+                    raise HIRError(
+                        f"#[rom] static '{static.name}' in auto-bank mode must be declared as 'far static'",
+                        hint="use '#[rom] far static " + static.name + ": ...' or place in explicit bank with #[bank(n)]"
+                    )
+            else:
+                bank_attr = BankAttribute(name='bank', bank_number=self.current_bank)
 
         # Create HIR node
         hir_static = hir.HIRStaticDecl(

@@ -911,7 +911,7 @@ local_function:
 
 **Mechanism**: 24-bit address, cross-bank
 
-**Bank Placement**: `#[bank(n)]` is a global directive that sets the bank context for all following functions and `#[rom]` statics:
+**Bank Placement**: `#[bank(n)]` is a global directive that sets the bank context for all following functions and `#[rom]` statics. Use `#[bank(auto)]` for automatic placement (requires `far fn` and `far static` for `#[rom]`):
 
 ```rust
 #[bank(1)]
@@ -944,6 +944,20 @@ remote_function:
 - 8 cycles (JSL) + 6 cycles (RTL) = 14 cycles overhead
 - Cross-bank capable
 - Return address: 3 bytes on stack
+
+**Auto-Bank Mode**: Use `#[bank(auto)]` for automatic bank placement:
+```rust
+#[bank(auto)]
+far fn auto_placed() { }      // Automatically placed in available bank space
+
+#[rom]
+far static DATA: [u8; 256] = [0; 256];  // Must use 'far static' in auto mode
+```
+
+In auto-bank mode:
+- Functions must be declared as `far fn` (compile error otherwise)
+- `#[rom]` statics must use `far static` syntax
+- RAM statics (`#[ram]`, `#[zeropage]`, `#[lowram]`) are unaffected
 
 ---
 

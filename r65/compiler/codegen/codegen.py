@@ -161,7 +161,8 @@ class ProgramCodeGenerator:
         Organize functions by bank number.
 
         Functions with #[bank(n)] attribute go to bank n.
-        Functions without bank attribute go to bank 0.
+        Functions in auto-bank mode (bank_number=None) are placed in bank 0 initially.
+        Future enhancement: auto-bank functions will be placed in remaining space.
 
         Args:
             functions: List of MIR functions
@@ -173,10 +174,12 @@ class ProgramCodeGenerator:
 
         for func in functions:
             # Determine bank number
-            if func.bank_attr:
+            if func.bank_attr and func.bank_attr.bank_number is not None:
                 bank_num = func.bank_attr.bank_number
             else:
-                bank_num = 0  # Default to bank 0
+                # Auto-bank mode or no bank attribute: default to bank 0
+                # These are always far functions, so cross-bank calls work
+                bank_num = 0
 
             # Add to bank
             if bank_num not in by_bank:

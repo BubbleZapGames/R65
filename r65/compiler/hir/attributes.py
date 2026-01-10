@@ -88,8 +88,16 @@ class StorageAttribute(ProcessedAttribute):
 # Bank attribute
 @dataclass
 class BankAttribute(ProcessedAttribute):
-    """#[bank(n)] - specifies which ROM bank the function is placed in"""
-    bank_number: int = 0
+    """#[bank(n)] or #[bank(auto)] - specifies ROM bank placement.
+
+    bank_number: Explicit bank number, or None for auto-placement mode.
+    """
+    bank_number: Optional[int] = 0
+
+    @property
+    def is_auto(self) -> bool:
+        """Return True if this is an auto-bank attribute."""
+        return self.bank_number is None
 
 
 # Interrupt attribute

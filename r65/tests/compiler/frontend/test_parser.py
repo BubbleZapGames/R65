@@ -548,23 +548,40 @@ def test_array_type():
 
 
 def test_pointer_types():
-    """Test parsing pointer types with new syntax."""
+    """Test parsing pointer types with new syntax.
+
+    Two uses of 'far' in static declarations:
+    1. 'far static' - static itself is far (for auto-bank mode)
+    2. 'far *T' - the pointer type is far (24-bit address)
+    """
     source = """
     static *PTR: u8;
-    static far *FAR_PTR: u16;
+    static FAR_PTR: far *u16;
+    far static *FAR_STATIC: u8;
     """
 
     program = parse(source)
 
+    # static *PTR: u8 - near static, near pointer
     static1 = program.items[0]
     assert isinstance(static1.var_type, ast.PointerType)
-    assert static1.var_type.is_far == False
+    assert static1.var_type.is_far == False  # Pointer type is near
     assert static1.name == "PTR"
+    assert static1.is_far == False  # Static itself is near
 
+    # static FAR_PTR: far *u16 - near static, far pointer type
     static2 = program.items[1]
     assert isinstance(static2.var_type, ast.PointerType)
-    assert static2.var_type.is_far == True
+    assert static2.var_type.is_far == True  # Pointer type is far
     assert static2.name == "FAR_PTR"
+    assert static2.is_far == False  # Static itself is near
+
+    # far static *FAR_STATIC: u8 - far static (for auto-bank)
+    static3 = program.items[2]
+    assert isinstance(static3.var_type, ast.PointerType)
+    assert static3.var_type.is_far == False  # Pointer type is near
+    assert static3.name == "FAR_STATIC"
+    assert static3.is_far == True  # Static itself is far (for auto-bank)
 
     print("✓ Pointer types test passed")
 

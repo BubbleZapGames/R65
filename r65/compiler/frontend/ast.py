@@ -194,6 +194,7 @@ class FunctionDecl(Declaration):
 class StaticDecl(Declaration):
     """Static variable declaration."""
     attributes: List[Attribute]
+    is_far: bool  # True if declared with 'far' keyword (required for #[rom] in auto-bank mode)
     is_mut: bool
     name: str
     var_type: Type
@@ -258,8 +259,21 @@ class StackDirective(Declaration):
 
 @dataclass
 class BankDirective(Declaration):
-    """Bank directive: #[bank(n)] - sets current ROM bank for following declarations."""
-    bank_number: int
+    """
+    Bank directive: #[bank(n)] or #[bank(auto)]
+
+    Sets current ROM bank context for following declarations.
+    - #[bank(n)]: Explicit bank number, near functions allowed
+    - #[bank(auto)]: Automatic placement, requires far functions and far #[rom] statics
+
+    bank_number is None for auto mode, otherwise the explicit bank number.
+    """
+    bank_number: Optional[int]  # None = auto mode
+
+    @property
+    def is_auto(self) -> bool:
+        """Return True if this is an auto-bank directive."""
+        return self.bank_number is None
 
 
 @dataclass

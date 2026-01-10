@@ -306,14 +306,17 @@ class ASTBuilder(Transformer):
         idx += 1
 
         # If this is a pointer declaration, wrap the type in PointerType
+        # Note: The is_far on StaticDecl is for auto-bank (far static),
+        # not for the pointer type. Pointer type far-ness comes from the type expression.
         if is_pointer:
-            var_type = ast.PointerType(is_far=is_far, pointee_type=var_type)
+            var_type = ast.PointerType(is_far=False, pointee_type=var_type)
 
         # Initializer (optional)
         initializer = items[idx] if idx < len(items) else None
 
         return ast.StaticDecl(
             attributes=attrs,
+            is_far=is_far,
             is_mut=is_mut,
             name=name,
             var_type=var_type,
@@ -449,10 +452,21 @@ class ASTBuilder(Transformer):
         return ast.StackDirective(lower=lower, upper=upper)
 
     def bank_directive(self, items):
-        """Bank directive: #[bank(n)] - sets current ROM bank for following declarations."""
-        items = self._filter_tokens(items, keep_types={'INTEGER'})
-        bank_number = int(items[0].value, 0)  # Parse with base detection (0x prefix)
-        return ast.BankDirective(bank_number=bank_number)
+        """Bank directive: #[bank(n)] or #[bank(auto)] - sets current ROM bank for following declarations."""
+        # Lark creates an anonymous 'AUTO' terminal for the literal "auto" in the grammar
+        items = self._filter_tokens(items, keep_types={'INTEGER', 'AUTO'})
+        if items:
+            token = items[0]
+            if isinstance(token, LarkToken):
+                if token.type == 'AUTO':
+                    # #[bank(auto)] - automatic placement
+                    return ast.BankDirective(bank_number=None)
+                elif token.type == 'INTEGER':
+                    # #[bank(n)] - explicit bank number
+                    bank_number = int(token.value, 0)  # Parse with base detection (0x prefix)
+                    return ast.BankDirective(bank_number=bank_number)
+        # Default to bank 0 if something is wrong
+        return ast.BankDirective(bank_number=0)
 
     def snesrom_directive(self, items):
         """

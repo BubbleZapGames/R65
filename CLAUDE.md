@@ -549,7 +549,9 @@ far fn decompression_routine() { }      // JSL/RTL, bank 2 (inherits), caller ma
 ```
 
 **Bank directive behavior:**
-- `#[bank(n)]` sets the current bank context (default is 0)
+- `#[bank(n)]` sets the current bank context (explicit bank number)
+- `#[bank(auto)]` enables automatic bank placement (requires `far fn` and `far static` for `#[rom]`)
+- Default (no directive) is explicit bank 0
 - All functions declared after the directive belong to that bank
 - Only `#[rom]` statics inherit the bank (RAM statics are unaffected)
 - Bank context persists until the next `#[bank]` directive
@@ -759,7 +761,7 @@ R65 uses **hardware-aware operators**: syntax indicates performance cost.
 - ✅ Mode annotations: `#[mode(m8/m16, x8/x16)]` with optional `transition=none/auto/caller`
 - ✅ Built-in mode control: `SEP()`, `REP()`, and `xba()` functions for manual mode and register control
 - ✅ Far/near calling conventions: `far fn()` for JSL/RTL cross-bank calls; `fn()` for JSR/RTS near calls
-- ✅ Bank management: `#[bank(n)]` global directive sets bank context for following functions and `#[rom]` statics; DBR management via `#[mode(databank=none/inline/caller)]`
+- ✅ Bank management: `#[bank(n)]` for explicit bank, `#[bank(auto)]` for automatic placement (requires `far`); DBR management via `#[mode(databank=none/inline/caller)]`
 - ✅ Bank size validation: Compile-time check that each bank fits within limits (32KB LoROM, 64KB HiROM)
 - ✅ SNES ROM header: `#[snesrom(name="...", ...)]` configures WLA-DX .SNESHEADER with optional `lorom`/`hirom`/`exhirom` and `slowrom`/`fastrom` flags
 - ✅ Const evaluation: Compile-time evaluation of constant expressions (arithmetic, bitwise, logical operations); no const functions
@@ -917,7 +919,7 @@ Performance characteristics of different storage:
 21. **Storage attributes**: Memory location separate from type (near pointers can be in zero-page or RAM)
 22. **Flexible mode handling**: `#[mode(...)]` with three transition strategies: `none` (convention-based, default), `auto` (callee wrapper), `caller` (caller-side wrapper with batching)
 23. **Automatic initialization**: `__init_start()` generated for all static variables with explicit initializers (RAM is not zeroed on SNES power-on)
-24. **Consistent far/near**: `far fn()` for both function definitions and pointers indicates JSL/RTL calling convention; `fn()` indicates JSR/RTS; `#[bank(n)]` global directive sets bank context for following declarations; `#[mode(databank=...)]` controls DBR management
+24. **Consistent far/near**: `far fn()` for both function definitions and pointers indicates JSL/RTL calling convention; `fn()` indicates JSR/RTS; `#[bank(n)]` sets explicit bank, `#[bank(auto)]` enables automatic placement (requires `far`); `#[mode(databank=...)]` controls DBR management
 
 ## Use Cases
 

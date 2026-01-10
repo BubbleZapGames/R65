@@ -119,7 +119,7 @@ struct Handler {
 
 // Pointer types
 #[zeropage(0x10)] static mut *DATA_PTR: u8;
-#[zeropage(0x12)] static far mut *FAR_PTR: u8;
+#[zeropage(0x12)] static mut FAR_PTR: far *u8;  // Far pointer type
 #[zeropage(0x15)] static mut *STRUCT_PTR: Entity;
 
 // -----------------------------------------------------------------------------

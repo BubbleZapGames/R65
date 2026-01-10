@@ -98,15 +98,21 @@ class TestPointerStatics:
         assert static.name == "PTR"
 
     def test_far_pointer_static(self):
-        """Test far pointer in static declaration."""
-        static = parse_static("#[ram] static far mut *FAR_PTR: u16;")
+        """Test far pointer in static declaration.
+
+        The far modifier on the TYPE (far *u16) makes the pointer type far.
+        """
+        static = parse_static("#[ram] static mut FAR_PTR: far *u16;")
         assert isinstance(static.var_type, ast.PointerType)
         assert static.var_type.is_far is True
         assert static.name == "FAR_PTR"
 
     def test_near_pointer_static(self):
-        """Test explicit near pointer in static declaration."""
-        static = parse_static("#[lowram] static near mut *NEAR_PTR: u8;")
+        """Test explicit near pointer in static declaration.
+
+        The near modifier on the TYPE (near *u8) makes the pointer type near.
+        """
+        static = parse_static("#[lowram] static mut NEAR_PTR: near *u8;")
         assert isinstance(static.var_type, ast.PointerType)
         assert static.var_type.is_far is False
         assert static.name == "NEAR_PTR"
