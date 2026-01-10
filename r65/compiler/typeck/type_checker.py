@@ -92,7 +92,8 @@ class TypeChecker:
         if self._call_validator is None:
             self._call_validator = CallValidator(
                 self.symbol_table, self._lookup_function_decl,
-                self.check_expression, lambda: self.current_mode
+                self.check_expression, lambda: self.current_mode,
+                lambda: self.current_function
             )
         return self._call_validator
 

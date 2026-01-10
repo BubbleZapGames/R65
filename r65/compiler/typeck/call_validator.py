@@ -21,7 +21,8 @@ class CallValidator:
     """Validates function and method calls."""
 
     def __init__(self, symbol_table, lookup_function_decl_fn: Callable,
-                 check_expression_fn: Callable, get_current_mode_fn: Callable):
+                 check_expression_fn: Callable, get_current_mode_fn: Callable,
+                 get_current_function_fn: Callable):
         """
         Initialize with dependencies.
 
@@ -30,11 +31,13 @@ class CallValidator:
             lookup_function_decl_fn: Function to look up function declarations
             check_expression_fn: Function to type check expressions
             get_current_mode_fn: Function to get current processor mode
+            get_current_function_fn: Function to get current function being checked
         """
         self.symbol_table = symbol_table
         self.lookup_function_decl = lookup_function_decl_fn
         self.check_expression = check_expression_fn
         self.get_current_mode = get_current_mode_fn
+        self.get_current_function = get_current_function_fn
 
     def check_function_call(self, expr: HIRFunctionCall) -> TypeInfo:
         """
@@ -77,6 +80,9 @@ class CallValidator:
 
             # Check mode compatibility
             self._check_call_mode_compatibility(func_symbol.name, func_decl, expr.source_loc)
+
+            # Check bank compatibility (near functions can't call near functions in different banks)
+            self._check_call_bank_compatibility(func_symbol.name, func_decl, expr.source_loc)
 
             # Set return type
             if func_decl.return_type:
@@ -273,6 +279,41 @@ class CallValidator:
                 f"cannot call '{func_name}': mode mismatch (caller: {caller_mode}, callee: {callee_mode})",
                 source_loc=source_loc,
                 hint="add transition=inline or transition=caller to the callee's #[mode(...)] attribute"
+            )
+
+    def _check_call_bank_compatibility(self, func_name: str, func_decl: HIRFunctionDecl, source_loc):
+        """
+        Check bank compatibility between caller and callee.
+
+        A non-far function cannot call another non-far function in a different bank,
+        because JSR only uses a 16-bit address and cannot cross bank boundaries.
+        """
+        # If callee is a far function, any caller can call it (JSL handles cross-bank)
+        if func_decl.is_far:
+            return
+
+        # Get caller function
+        caller_func = self.get_current_function()
+        if caller_func is None:
+            return  # No caller context (shouldn't happen in normal flow)
+
+        # Get bank numbers (default to 0 if not specified)
+        caller_bank = 0
+        if caller_func.bank_attr:
+            caller_bank = caller_func.bank_attr.bank_number
+
+        callee_bank = 0
+        if func_decl.bank_attr:
+            callee_bank = func_decl.bank_attr.bank_number
+
+        # If banks differ and callee is not far, this is an error
+        if caller_bank != callee_bank:
+            raise TypeCheckError(
+                f"cannot call near function '{func_name}' from bank {caller_bank}: "
+                f"'function {func_name}' is in bank {callee_bank}",
+                source_loc=source_loc,
+                hint=f"near functions use JSR which cannot cross bank boundaries; "
+                     f"declare '{func_name}' as 'far fn' to allow cross-bank calls"
             )
 
     def _check_size_of_builtin(self, expr: HIRFunctionCall) -> TypeInfo:
