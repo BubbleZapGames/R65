@@ -53,10 +53,10 @@ class TestAggregateParameterRestriction:
         }
 
         #[zeropage(0x10)]
-        static mut PTR: near<Player>;
+        static mut *PTR: Player;
 
         #[mode(m8, x8)]
-        fn good_func(player @ PTR: near<Player>) {
+        fn good_func(*player @ PTR: Player) {
             // Just verify the function signature is accepted
             A = 0;
         }
@@ -69,10 +69,10 @@ class TestAggregateParameterRestriction:
         """Passing an array by pointer should be allowed (type check passes)."""
         source = """
         #[zeropage(0x10)]
-        static mut PTR: near<[u8; 256]>;
+        static mut *PTR: [u8; 256];
 
         #[mode(m8, x8)]
-        fn good_func(data @ PTR: near<[u8; 256]>) {
+        fn good_func(*data @ PTR: [u8; 256]) {
             // Just verify the function signature is accepted
             A = 0;
         }
@@ -132,7 +132,7 @@ class TestAggregateReturnRestriction:
         static mut PLAYER: Player = Player { x: 0, y: 0 };
 
         #[mode(m8, x8)]
-        fn good_func() -> near<Player> {
+        fn good_func() -> *Player {
             return &PLAYER;
         }
         """
@@ -187,7 +187,7 @@ class TestFunctionPointerTypeRestriction:
             y: u8,
         }
 
-        type GoodCallback = fn(near<Player>) -> u8;
+        type GoodCallback = fn(*Player) -> u8;
 
         #[ram]
         static mut HANDLER: GoodCallback;

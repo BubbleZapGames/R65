@@ -42,14 +42,16 @@ $80:0000 - $FF:FFFF  ROM (upper/mirrored)
 
 ## Pointer Types
 
-### Near Pointer: `near<T>`
+Pointers use `*` prefix on the variable/parameter name, with optional `far`/`near` modifiers.
+
+### Near Pointer: `*name: T`
 
 **Size**: 2 bytes (16-bit)
 **Range**: 64KB within current DBR
 **Speed**: Fast (5-6 cycles for indirect)
 
 ```rust
-let ptr: near<u8> = 0x2000;
+let *ptr: u8 = 0x2000;
 let value = *ptr;  // Uses DBR for bank
 ```
 
@@ -59,14 +61,14 @@ let value = *ptr;  // Uses DBR for bank
 
 ---
 
-### Far Pointer: `far<T>`
+### Far Pointer: `far *name: T`
 
 **Size**: 3 bytes (24-bit)
 **Range**: Full 16MB
 **Speed**: Slow (requires DBR manipulation)
 
 ```rust
-let ptr: far<u8> = 0x01_2000;  // Bank 1, offset 0x2000
+let far *ptr: u8 = 0x01_2000;  // Bank 1, offset 0x2000
 let value = *ptr;  // Must manage DBR
 ```
 
@@ -82,7 +84,7 @@ let value = *ptr;  // Must manage DBR
 **Semantics**: No automatic null checks - dereferencing is **undefined behavior**
 
 ```rust
-let ptr: near<u8> = 0x0000;
+let *ptr: u8 = 0x0000;
 if ptr as u16 != 0 {  // Manual check required
     let value = *ptr;
 }
@@ -101,13 +103,13 @@ static mut TEMP: u8;
 #[ram]
 static mut BUFFER: [u8; 256];
 
-let zp_ptr = &TEMP;      // near<u8> - zeropage is bank 0
-let ram_ptr = &BUFFER;   // far<[u8; 256]> - ram is bank $7E
+let *zp_ptr: u8 = &TEMP;        // Near pointer - zeropage is bank 0
+let far *ram_ptr: [u8; 256] = &BUFFER;  // Far pointer - ram is bank $7E
 ```
 
-**Automatic type inference**: The compiler infers `near<T>` or `far<T>` based on storage:
-- `#[zeropage]`, `#[lowram]`, `#[hw]` → `near<T>` (16-bit, bank 0)
-- `#[ram]`, `#[rom]` → `far<T>` (24-bit, includes bank)
+**Automatic type inference**: The compiler infers near or far based on storage:
+- `#[zeropage]`, `#[lowram]`, `#[hw]` → near pointer (16-bit, bank 0)
+- `#[ram]`, `#[rom]` → far pointer (24-bit, includes bank)
 
 **Restrictions**:
 - Cannot take address of register aliases (`&A` is error)
@@ -118,7 +120,7 @@ let ram_ptr = &BUFFER;   // far<[u8; 256]> - ram is bank $7E
 ### Dereference: `*`
 
 ```rust
-let ptr: near<u8> = 0x2000;
+let *ptr: u8 = 0x2000;
 let value = *ptr;        // Read
 *ptr = 42;               // Write
 ```
@@ -126,7 +128,7 @@ let value = *ptr;        // Read
 **Zero-page optimization**:
 ```rust
 #[zeropage(0x42)]
-static mut PTR: near<u8>;
+static mut *PTR: u8;
 
 *PTR = 5;  // LDA #$05, STA ($42) - very fast!
 ```
@@ -138,7 +140,7 @@ static mut PTR: near<u8>;
 Equivalent to `*(ptr + index)`
 
 ```rust
-let ptr: near<u8> = 0x2000;
+let *ptr: u8 = 0x2000;
 let value = ptr[10];      // Constant offset
 let value = ptr[index];   // Variable offset
 let value @ A = ptr[Y];   // Register Y indexing
@@ -147,7 +149,7 @@ let value @ A = ptr[Y];   // Register Y indexing
 **Best performance with zero-page + Y**:
 ```rust
 #[zeropage(0x42)]
-static mut PTR: near<u8>;
+static mut *PTR: u8;
 
 PTR[Y] = value;  // STA ($42),Y - indirect indexed
 ```
@@ -157,18 +159,18 @@ PTR[Y] = value;  // STA ($42),Y - indirect indexed
 ### Pointer Arithmetic
 
 ```rust
-let ptr: near<u8> = 0x2000;
-let ptr2 = ptr + 10;      // Add offset
-let ptr3 = ptr - 5;       // Subtract offset
-ptr += 100;               // Compound assignment
+let *ptr: u8 = 0x2000;
+let *ptr2: u8 = ptr + 10;      // Add offset
+let *ptr3: u8 = ptr - 5;       // Subtract offset
+ptr += 100;                    // Compound assignment
 
-let diff: u16 = ptr2 - ptr;  // Pointer difference
+let diff: u16 = ptr2 - ptr;    // Pointer difference
 ```
 
 **Type scaling**: Automatically scales by `sizeof(T)`
 ```rust
-let ptr: near<u16> = 0x2000;
-let ptr2 = ptr + 1;  // Advances by 2 bytes (sizeof(u16))
+let *ptr: u16 = 0x2000;
+let *ptr2: u16 = ptr + 1;  // Advances by 2 bytes (sizeof(u16))
 ```
 
 **Wrapping**:
@@ -181,16 +183,16 @@ let ptr2 = ptr + 1;  // Advances by 2 bytes (sizeof(u16))
 
 ```rust
 // Between near and far
-let near_ptr: near<u8> = 0x2000;
-let far_ptr: far<u8> = near_ptr as far<u8>;  // Adds DBR
+let *near_ptr: u8 = 0x2000;
+let far_ptr = near_ptr as far *u8;  // Adds DBR
 
 // To/from integers
 let addr: u16 = 0x2000;
-let ptr: near<u8> = addr as near<u8>;
+let *ptr: u8 = addr as *u8;
 
 // Between pointer types
-let u8_ptr: near<u8> = 0x2000;
-let u16_ptr: near<u16> = u8_ptr as near<u16>;  // Reinterpret
+let *u8_ptr: u8 = 0x2000;
+let u16_ptr = u8_ptr as *u16;  // Reinterpret
 ```
 
 ---
@@ -242,7 +244,7 @@ let value = ARRAY[index];  // LDA ARRAY,X
 
 ```rust
 #[zeropage(0x42)]
-static mut PTR: near<u8>;
+static mut *PTR: u8;
 
 let value = *PTR;  // LDA ($42)
 ```
@@ -255,7 +257,7 @@ let value = *PTR;  // LDA ($42)
 
 ```rust
 #[zeropage(0x42)]
-static mut PTR: near<u8>;
+static mut *PTR: u8;
 
 let value = PTR[Y];  // LDA ($42),Y
 ```
@@ -380,22 +382,22 @@ let value = buffer[index];  // UB: no check!
 ### Null Dereference
 
 ```rust
-let ptr: near<u8> = 0x0000;
+let *ptr: u8 = 0x0000;
 let value = *ptr;  // UB: no check!
 ```
 
 ### Wild Pointers
 
 ```rust
-let ptr: near<u8>;  // Uninitialized
+let *ptr: u8;       // Uninitialized
 let value = *ptr;   // UB: garbage address
 ```
 
 ### Type Punning
 
 ```rust
-let u8_ptr: near<u8> = 0x2000;
-let u16_ptr: near<u16> = u8_ptr as near<u16>;
+let *u8_ptr: u8 = 0x2000;
+let u16_ptr = u8_ptr as *u16;
 *u16_ptr = 0x1234;  // Allowed but potentially UB
 ```
 
@@ -420,7 +422,7 @@ struct Player {
 ### Memory Copy
 
 ```rust
-fn memcpy(dst: near<u8>, src: near<u8>, count @ X: u8) {
+fn memcpy(*dst: u8, *src: u8, count @ X: u8) {
     if count == 0 { return; }
     let index @ Y = 0;
     loop {
@@ -435,7 +437,7 @@ fn memcpy(dst: near<u8>, src: near<u8>, count @ X: u8) {
 ### Memory Fill
 
 ```rust
-fn memset(dst: near<u8>, value @ A: u8, count @ X: u8) {
+fn memset(*dst: u8, value @ A: u8, count @ X: u8) {
     if count == 0 { return; }
     let index @ Y = 0;
     loop {
@@ -452,11 +454,11 @@ fn memset(dst: near<u8>, value @ A: u8, count @ X: u8) {
 ```rust
 struct Node {
     data: u8,
-    next: near<Node>,
+    *next: Node,
 }
 
-fn traverse(head: near<Node>) {
-    let mut current = head;
+fn traverse(*head: Node) {
+    let mut *current: Node = head;
     loop {
         if current as u16 == 0 { break; }
         process(current.data);
@@ -481,8 +483,8 @@ fn get_sin(angle @ A: u8) -> u8 {
 ## Pointer Comparison
 
 ```rust
-let ptr1: near<u8> = 0x2000;
-let ptr2: near<u8> = 0x2100;
+let *ptr1: u8 = 0x2000;
+let *ptr2: u8 = 0x2100;
 
 if ptr1 < ptr2 { }        // Address comparison
 if ptr1 == ptr2 { }       // Equality
@@ -494,18 +496,34 @@ if ptr as u16 != 0 { }    // Null check
 ## Type Sizes
 
 ```
-near<T>:  2 bytes
-far<T>:   3 bytes
+Near pointers (*name: T):      2 bytes
+Far pointers (far *name: T):   3 bytes
 ```
 
 Pointers are just addresses - no metadata, no bounds, no ownership.
 
 ---
 
+## Safe pointers not supported
+
+The following pointer declarations are compile errors:
+
+```rust
+// Size declaration in pointer type - NOT allowed
+static mut *ptr: [u8:30];      // ERROR
+
+// Safe/reference pointers - NOT allowed
+static mut &ptr: u8;           // ERROR
+static far mut &ptr: [u8];     // ERROR
+static far mut &ptr: [u8: 10]; // ERROR
+```
+
+---
+
 ## Future Enhancements
 
-- **Const pointers**: `near<const u8>` vs `near<mut u8>`
-- **Slice types**: Fat pointers with length `{ ptr: near<T>, len: u16 }`
+- **Const pointers**: `const *name: T` vs `mut *name: T`
+- **Slice types**: Fat pointers with length `{ *ptr: T, len: u16 }`
 - **Smart pointers**: RAII wrappers for hardware resources
 
 ---

@@ -537,10 +537,10 @@ def test_array_type():
 
 
 def test_pointer_types():
-    """Test parsing pointer types."""
+    """Test parsing pointer types with new syntax."""
     source = """
-    static PTR: near<u8>;
-    static FAR_PTR: far<u16>;
+    static *PTR: u8;
+    static far *FAR_PTR: u16;
     """
 
     program = parse(source)
@@ -548,10 +548,12 @@ def test_pointer_types():
     static1 = program.items[0]
     assert isinstance(static1.var_type, ast.PointerType)
     assert static1.var_type.is_far == False
+    assert static1.name == "PTR"
 
     static2 = program.items[1]
     assert isinstance(static2.var_type, ast.PointerType)
     assert static2.var_type.is_far == True
+    assert static2.name == "FAR_PTR"
 
     print("✓ Pointer types test passed")
 

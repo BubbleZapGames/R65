@@ -179,19 +179,16 @@ def test_builtin_functions():
 
 def test_pointer_syntax():
     """Test pointer type syntax."""
-    source = "near<u8> far<u16>"
+    source = "*u8 far *u16"
     tokens = tokenize(source)
 
-    # near and far are both keywords (used in pointer type syntax)
-    assert tokens[0].is_keyword('near')
-    assert tokens[1].type == TokenType.LT
-    assert tokens[2].type == TokenType.TYPE  # u8
-    assert tokens[3].type == TokenType.GT
+    # New pointer syntax: *T (implied near) or far *T
+    assert tokens[0].type == TokenType.STAR  # *
+    assert tokens[1].type == TokenType.TYPE  # u8
 
-    assert tokens[4].is_keyword('far')
-    assert tokens[5].type == TokenType.LT
-    assert tokens[6].type == TokenType.TYPE  # u16
-    assert tokens[7].type == TokenType.GT
+    assert tokens[2].is_keyword('far')
+    assert tokens[3].type == TokenType.STAR  # *
+    assert tokens[4].type == TokenType.TYPE  # u16
 
     print("✓ Pointer syntax test passed")
 

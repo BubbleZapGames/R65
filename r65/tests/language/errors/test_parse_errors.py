@@ -63,7 +63,7 @@ class TestMissingBrackets:
         """Test missing brackets fail."""
         cases = [
             "#[ram] static mut X: [u8; 10;",  # Missing close bracket
-            "#[ram] static mut X: [u8];",  # Array without size
+            # NOTE: "#[ram] static mut X: [u8];" is now valid as a slice type
             "fn test() { let x: u8 = ARR[0; }",  # Index without close bracket
             "#[ram] static mut X: [u8; 3] = [1, 2, 3;",  # Literal without close
         ]

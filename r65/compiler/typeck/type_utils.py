@@ -2,7 +2,7 @@
 
 from typing import Optional
 from r65.compiler.hir import (
-    TypeInfo, BasicTypeInfo, ArrayTypeInfo, PointerTypeInfo,
+    TypeInfo, BasicTypeInfo, ArrayTypeInfo, SliceTypeInfo, PointerTypeInfo,
     FunctionTypeInfo, StructTypeInfo, EnumTypeInfo,
     NeverTypeInfo, RegisterTypeInfo
 )
@@ -12,8 +12,35 @@ class TypeUtils:
     """Utilities for type comparison and compatibility."""
 
     @staticmethod
+    def _pointee_types_compatible(t1: TypeInfo, t2: TypeInfo) -> bool:
+        """
+        Check if pointee types are compatible for pointer assignment.
+
+        This allows a pointer to a sized array [T; N] to be compatible with
+        a pointer to an unsized slice [T].
+        """
+        # Exact match
+        if TypeUtils.types_equal(t1, t2):
+            return True
+
+        # Array [T; N] can match slice [T]
+        if isinstance(t1, ArrayTypeInfo) and isinstance(t2, SliceTypeInfo):
+            return TypeUtils.types_equal(t1.element_type, t2.element_type)
+        if isinstance(t1, SliceTypeInfo) and isinstance(t2, ArrayTypeInfo):
+            return TypeUtils.types_equal(t1.element_type, t2.element_type)
+
+        return False
+
+    @staticmethod
     def types_equal(t1: TypeInfo, t2: TypeInfo) -> bool:
         """Check if two types are exactly equal."""
+        # Handle pointer type special case: array is compatible with slice
+        if isinstance(t1, PointerTypeInfo) and isinstance(t2, PointerTypeInfo):
+            if t1.is_far != t2.is_far:
+                return False
+            # Allow sized array pointer to match slice pointer
+            return TypeUtils._pointee_types_compatible(t1.pointee_type, t2.pointee_type)
+
         if type(t1) != type(t2):
             return False
 
@@ -24,9 +51,8 @@ class TypeUtils:
             return (t1.size == t2.size and
                     TypeUtils.types_equal(t1.element_type, t2.element_type))
 
-        elif isinstance(t1, PointerTypeInfo):
-            return (t1.is_far == t2.is_far and
-                    TypeUtils.types_equal(t1.pointee_type, t2.pointee_type))
+        elif isinstance(t1, SliceTypeInfo):
+            return TypeUtils.types_equal(t1.element_type, t2.element_type)
 
         elif isinstance(t1, FunctionTypeInfo):
             if t1.is_far != t2.is_far:

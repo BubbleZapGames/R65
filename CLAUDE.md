@@ -103,7 +103,7 @@ fn process() {
 - Out-of-bounds access is undefined behavior
 - Matches hardware-level programming expectations
 
-**Pass-by-reference only**: Arrays cannot be passed to functions or returned by value. Use `near<[T; N]>` or `far<[T; N]>` pointers to pass arrays. Attempting to pass or return an array by value is a compile error.
+**Pass-by-reference only**: Arrays cannot be passed to functions or returned by value. Use pointer parameters (`*arr: [T]` or `far *arr: [T]`) to pass arrays. Attempting to pass or return an array by value is a compile error.
 
 *(See [docs/array-bounds-checking.md](docs/array-bounds-checking.md) for design rationale)*
 
@@ -295,7 +295,7 @@ static mut DEFAULT_PLAYER: Player = Player { x: 0, y: 0, health: 100 };
 
 **Rules**: All structs packed (no padding); fields in declaration order; size = sum of field sizes; use `.` for field access; nested/array access supported; no methods (use free functions). Struct literals are allowed in `let` and `static` initializers.
 
-**Pass-by-reference only**: Structs cannot be passed to functions or returned by value. Use `near<T>` or `far<T>` pointers to pass structs. Attempting to pass or return a struct by value is a compile error. Direct assignment between structs (`s1 = s2`) is also prohibited; copy fields individually instead.
+**Pass-by-reference only**: Structs cannot be passed to functions or returned by value. Use pointer parameters (`*param: T` or `far *param: T`) to pass structs. Attempting to pass or return a struct by value is a compile error. Direct assignment between structs (`s1 = s2`) is also prohibited; copy fields individually instead.
 
 ### Volatile Semantics
 
@@ -623,16 +623,44 @@ stp();  // Stop processor
 
 ### Pointer Types
 
+Pointers use `*` prefix on the variable/parameter name, with optional `far`/`near` modifiers:
+
 ```rust
-near<T>  // 16-bit pointer (current bank)
-far<T>   // 24-bit pointer (includes bank byte)
+// Static pointer declarations
+static mut *PTR: u8;           // Implied near pointer (16-bit, current bank)
+static far mut *FAR_PTR: u8;   // Explicit far pointer (24-bit, includes bank)
+static near mut *NEAR_PTR: u8; // Explicit near pointer
 
 // Example: Fast indirect addressing through zero-page
 #[zeropage(0x42)]
-static mut PTR: near<u8>;
+static mut *PTR: u8;
 
 *PTR = 5;      // Generates: LDA #$05, STA ($42)
 PTR[Y] = 5;    // Generates: LDA #$05, STA ($42),Y
+
+// Local pointer variables
+let *ptr: u8 = 0x2000;         // Implied near pointer
+let far *far_ptr: u8 = addr;   // Explicit far pointer
+
+// Function parameters with pointers
+fn process(*data: u8) { }             // Near pointer parameter
+fn copy(far *src: [u8], *dst: [u8]) { } // Pointers to unsized arrays
+
+// Struct fields that are pointers
+struct Node {
+    data: u8,
+    *next: Node,       // Near pointer field
+}
+
+// Pointer casting
+let *ptr: u8 = 0x2000;
+let far_ptr = ptr as far *u8;  // Cast to far pointer
+```
+
+**Disallowed syntax** (compile errors):
+```rust
+static mut *ptr: [u8:30];      // ERROR: Size in pointer type not allowed
+static mut &ptr: u8;           // ERROR: Safe/reference pointers not supported
 ```
 
 *(See [docs/pointers-memory.md](docs/pointers-memory.md) for pointer types and memory model)*
@@ -656,10 +684,10 @@ R65 uses **hardware-aware operators**: syntax indicates performance cost.
 | Category | Operator | Restriction | Function Alternative |
 |----------|----------|-------------|---------------------|
 | Arithmetic | `+`, `-` | None | - |
-| Multiply | `*` | Constants 1,2,4,8 only | `mul(a,b)` |
-| Divide | `/` | Constants 1,2,4,8 only | `div(a,b)` |
+| Multiply | `*` | Constants 1,2,4,8 only | `mul8(a,b)` |
+| Divide | `/` | Constants 1,2,4,8 only | `div16(a,b)` |
 | Bitwise | `&`, `\|`, `^`, `~` | None | - |
-| Shift | `<<`, `>>` | Constant amounts only | `shl(a,n)`, `shr(a,n)` |
+| Shift | `<<`, `>>` | Constant amounts only | `shl8(a,n)`, `shr16(a,n)` |
 | Compare | `==`, `!=`, `<`, `>`, `<=`, `>=` | None | - |
 | Logical | `&&`, `\|\|`, `!` | Short-circuit | - |
 
@@ -851,7 +879,7 @@ Performance characteristics of different storage:
 18. **Interrupt preservation**: `#[interrupt(vector)]` defaults to automatic register preservation (`preserve=true`); can be disabled with `preserve=false` or `#[preserves(...)]` for manual control
 19. **Implicit A return**: Functions without explicit `return` statements return A register value
 20. **Explicit register returns**: `return X`, `return Y`, `return (A, X)` return via hardware registers; local variables returned via stack
-21. **Storage attributes**: Memory location separate from type (`near<T>` can be in zero-page or RAM)
+21. **Storage attributes**: Memory location separate from type (near pointers can be in zero-page or RAM)
 22. **Flexible mode handling**: `#[mode(...)]` with three transition strategies: `none` (convention-based, default), `auto` (callee wrapper), `caller` (caller-side wrapper with batching)
 23. **Automatic initialization**: `__init_start()` generated for all static variables with explicit initializers (RAM is not zeroed on SNES power-on)
 24. **Consistent far/near**: `far fn()` for both function definitions and pointers indicates JSL/RTL calling convention; `fn()` indicates JSR/RTS; `#[bank(n)]` controls placement with optional `data_bank` parameter

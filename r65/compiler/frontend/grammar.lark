@@ -32,7 +32,9 @@ _reserved_keyword: KEYWORD
 function_decl: attribute* FAR? FN IDENT "(" param_list? ")" return_type? block
 
 param_list: param ("," param)* ","?
-param: IDENT ("@" binding)? ":" type_expr
+// Supports pointer parameters: [far|near] *name: type
+param: (FAR | NEAR)? STAR? IDENT ("@" binding)? ":" type_expr
+     | (FAR | NEAR)? AMPER IDENT ("@" binding)? ":" type_expr  -> param_safe_ptr_error
 
 binding: REGISTER | IDENT
 
@@ -40,14 +42,18 @@ return_type: "->" (type_tuple | type_expr | "!")
 
 // Static variable declaration
 // Uses initializer_expr to allow struct literals after =
-static_decl: attribute* STATIC MUT? IDENT ":" type_expr ("=" initializer_expr)? ";"
+// Supports pointer declarations: static [far|near] mut *name: type
+static_decl: attribute* STATIC (FAR | NEAR)? MUT? STAR? IDENT ":" type_expr ("=" initializer_expr)? ";"
+           | attribute* STATIC (FAR | NEAR)? MUT? AMPER IDENT ":" type_expr ("=" initializer_expr)? ";"  -> static_decl_safe_ptr_error
 
 // Const declaration
 const_decl: CONST IDENT ":" type_expr "=" expr ";"
 
 // Struct declaration
 struct_decl: STRUCT IDENT "{" struct_field* "}"
-struct_field: IDENT ":" type_expr ","?
+// Supports pointer fields: [far|near] *name: type
+struct_field: (FAR | NEAR)? STAR? IDENT ":" type_expr ","?
+            | (FAR | NEAR)? AMPER IDENT ":" type_expr ","?  -> struct_field_safe_ptr_error
 
 // Enum declaration
 enum_decl: ENUM IDENT "{" enum_variant ("," enum_variant)* ","? "}"
@@ -167,8 +173,12 @@ block: "{" statement* "}"
 // Supports both single binding and tuple destructuring:
 //   let x = expr;
 //   let (a, b) = tuple_expr;
-let_stmt: LET MUT? (tuple_pattern | single_pattern) (":" type_expr)? "=" initializer_expr ";"
+// Supports pointer declarations: let [far|near] [mut] *name: type = expr
+let_stmt: LET (FAR | NEAR)? MUT? (tuple_pattern | pointer_pattern | single_pattern) (":" type_expr)? "=" initializer_expr ";"
+        | LET (FAR | NEAR)? MUT? safe_ptr_pattern (":" type_expr)? "=" initializer_expr ";"  -> let_stmt_safe_ptr_error
 single_pattern: IDENT ("@" binding)?
+pointer_pattern: STAR IDENT ("@" binding)?
+safe_ptr_pattern: AMPER IDENT ("@" binding)?
 tuple_pattern: "(" IDENT ("," IDENT)* ")"
 expr_stmt: expr ";"
 // Return statement - single value or parenthesized tuple: return; | return x; | return (a, b);
@@ -316,12 +326,16 @@ initializer_array_literal: "[" initializer_expr ("," initializer_expr)* ","? "]"
 // Types
 ?type_expr: type_basic
           | type_array
+          | type_slice
           | type_pointer
           | type_fn
 
 type_basic: TYPE_NAME | IDENT
 type_array: "[" type_expr ";" expr "]"
-type_pointer: (NEAR | FAR) "<" type_expr ">"
+// Unsized array type for pointers: [T] (no size specified)
+type_slice: "[" type_expr "]"
+// Pointer type for casting: *type (implied near) or far *type or near *type
+type_pointer: (FAR | NEAR)? STAR type_expr
 type_fn: FAR? FN "(" type_list? ")" ("->" type_expr)?
 
 // Tuple type for multiple return values: (u8, u8)

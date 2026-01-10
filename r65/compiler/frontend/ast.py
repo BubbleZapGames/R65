@@ -75,8 +75,14 @@ class ArrayType(Type):
 
 
 @dataclass
+class SliceType(Type):
+    """Unsized array type for pointers: [T]"""
+    element_type: Type
+
+
+@dataclass
 class PointerType(Type):
-    """Pointer type: near<T> or far<T>"""
+    """Pointer type: *T (near) or far *T"""
     is_far: bool
     pointee_type: Type
 

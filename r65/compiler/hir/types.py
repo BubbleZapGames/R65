@@ -40,8 +40,17 @@ class ArrayTypeInfo(TypeInfo):
 
 
 @dataclass
+class SliceTypeInfo(TypeInfo):
+    """Unsized array type for pointers: [T]."""
+    element_type: TypeInfo
+
+    def __str__(self):
+        return f"[{self.element_type}]"
+
+
+@dataclass
 class PointerTypeInfo(TypeInfo):
-    """Pointer type: near<T> or far<T>."""
+    """Pointer type: *T (near) or far *T."""
     is_far: bool
     pointee_type: TypeInfo
 
@@ -146,6 +155,10 @@ class TypeResolver:
                 raise HIRError(f"Array size must be a positive integer, got {size}")
 
             return ArrayTypeInfo(element_type=elem_type, size=size)
+
+        elif isinstance(ast_type, ast.SliceType):
+            elem_type = self.resolve_type(ast_type.element_type)
+            return SliceTypeInfo(element_type=elem_type)
 
         elif isinstance(ast_type, ast.PointerType):
             pointee = self.resolve_type(ast_type.pointee_type)

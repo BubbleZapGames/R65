@@ -187,25 +187,68 @@ class ASTBuilder(Transformer):
 
     def param(self, items):
         """Function parameter."""
-        items = self._filter_tokens(items)
+        items = self._filter_tokens(items, keep_types={'IDENT', 'FAR', 'NEAR', 'STAR', 'REGISTER'})
 
-        name = items[0].value if isinstance(items[0], LarkToken) else items[0]
-        binding = None
-        param_type = items[-1]  # Type is always last
+        idx = 0
+
+        # Check for far/near modifier (for pointer parameters)
+        is_far = False
+        is_near = False
+        if idx < len(items) and isinstance(items[idx], LarkToken) and items[idx].type == 'FAR':
+            is_far = True
+            idx += 1
+        elif idx < len(items) and isinstance(items[idx], LarkToken) and items[idx].type == 'NEAR':
+            is_near = True
+            idx += 1
+
+        # Check for pointer (*) prefix
+        is_pointer = False
+        if idx < len(items) and isinstance(items[idx], LarkToken) and items[idx].type == 'STAR':
+            is_pointer = True
+            idx += 1
+
+        # Name
+        name = items[idx].value if isinstance(items[idx], LarkToken) else items[idx]
+        idx += 1
 
         # Check for binding (@ register or variable)
-        # If binding exists, items = [IDENT, binding_node, type]
-        # If no binding, items = [IDENT, type]
-        if len(items) > 2:
-            binding_node = items[1]
+        binding = None
+        if idx < len(items) - 1:  # There's something between name and type
+            binding_node = items[idx]
             if isinstance(binding_node, ast.Register):
                 binding = binding_node
             elif isinstance(binding_node, ast.Identifier):
                 binding = binding_node
             else:
                 binding = binding_node.value if isinstance(binding_node, LarkToken) else binding_node
+            idx += 1
+
+        # Type is always last (this is the pointee type if is_pointer is True)
+        param_type = items[-1]
+
+        # If this is a pointer parameter, wrap the type in PointerType
+        if is_pointer:
+            param_type = ast.PointerType(is_far=is_far, pointee_type=param_type)
 
         return ast.Parameter(name=name, binding=binding, param_type=param_type)
+
+    @v_args(tree=True)
+    def param_safe_ptr_error(self, tree):
+        """Error handler for safe pointer syntax in parameters."""
+        # Extract the name for a helpful error message
+        items = self._filter_tokens(tree.children, keep_types={'IDENT', 'AMPER'})
+        name = None
+        for item in items:
+            if isinstance(item, LarkToken) and item.type == 'IDENT':
+                name = item.value
+                break
+        name_str = name if name else "name"
+        source_loc = self._make_source_loc(tree.meta) if hasattr(tree, 'meta') else None
+        raise ParseError(
+            f"safe pointers are not supported in R65",
+            source_loc=source_loc,
+            hint=f"use '*{name_str}: type' instead of '&{name_str}: type' for pointer parameters"
+        )
 
     def binding(self, items):
         """Binding for @ operator."""
@@ -227,10 +270,20 @@ class ASTBuilder(Transformer):
 
     def static_decl(self, items):
         """Static variable declaration."""
-        items = self._filter_tokens(items)
+        items = self._filter_tokens(items, keep_types={'IDENT', 'MUT', 'FAR', 'NEAR', 'STAR', 'INTEGER', 'STRING', 'BOOLEAN', 'REGISTER'})
 
         # Collect attributes
         attrs, idx = self._collect_attributes(items, 0)
+
+        # Check for far/near modifier (for pointer declarations)
+        is_far = False
+        is_near = False
+        if idx < len(items) and isinstance(items[idx], LarkToken) and items[idx].type == 'FAR':
+            is_far = True
+            idx += 1
+        elif idx < len(items) and isinstance(items[idx], LarkToken) and items[idx].type == 'NEAR':
+            is_near = True
+            idx += 1
 
         # Check for mut token
         is_mut = False
@@ -238,13 +291,23 @@ class ASTBuilder(Transformer):
             is_mut = True
             idx += 1
 
+        # Check for pointer (*) prefix
+        is_pointer = False
+        if idx < len(items) and isinstance(items[idx], LarkToken) and items[idx].type == 'STAR':
+            is_pointer = True
+            idx += 1
+
         # Name
         name = items[idx].value if isinstance(items[idx], LarkToken) else items[idx]
         idx += 1
 
-        # Type
+        # Type (this is the pointee type if is_pointer is True)
         var_type = items[idx]
         idx += 1
+
+        # If this is a pointer declaration, wrap the type in PointerType
+        if is_pointer:
+            var_type = ast.PointerType(is_far=is_far, pointee_type=var_type)
 
         # Initializer (optional)
         initializer = items[idx] if idx < len(items) else None
@@ -255,6 +318,29 @@ class ASTBuilder(Transformer):
             name=name,
             var_type=var_type,
             initializer=initializer
+        )
+
+    @v_args(tree=True)
+    def static_decl_safe_ptr_error(self, tree):
+        """Error handler for safe pointer syntax in static declarations."""
+        # Extract the name for a helpful error message
+        items = self._filter_tokens(tree.children, keep_types={'IDENT', 'AMPER', 'MUT'})
+        name = None
+        is_mut = False
+        for item in items:
+            if isinstance(item, LarkToken):
+                if item.type == 'MUT':
+                    is_mut = True
+                elif item.type == 'IDENT':
+                    name = item.value
+                    break
+        name_str = name if name else "name"
+        mut_str = "mut " if is_mut else ""
+        source_loc = self._make_source_loc(tree.meta) if hasattr(tree, 'meta') else None
+        raise ParseError(
+            f"safe pointers are not supported in R65",
+            source_loc=source_loc,
+            hint=f"use 'static {mut_str}*{name_str}: type' instead of 'static {mut_str}&{name_str}: type'"
         )
 
     def const_decl(self, items):
@@ -275,10 +361,56 @@ class ASTBuilder(Transformer):
 
     def struct_field(self, items):
         """Struct field."""
-        items = self._filter_tokens(items)
-        name = items[0].value if isinstance(items[0], LarkToken) else items[0]
-        field_type = items[1]
+        items = self._filter_tokens(items, keep_types={'IDENT', 'FAR', 'NEAR', 'STAR'})
+
+        idx = 0
+
+        # Check for far/near modifier (for pointer fields)
+        is_far = False
+        is_near = False
+        if idx < len(items) and isinstance(items[idx], LarkToken) and items[idx].type == 'FAR':
+            is_far = True
+            idx += 1
+        elif idx < len(items) and isinstance(items[idx], LarkToken) and items[idx].type == 'NEAR':
+            is_near = True
+            idx += 1
+
+        # Check for pointer (*) prefix
+        is_pointer = False
+        if idx < len(items) and isinstance(items[idx], LarkToken) and items[idx].type == 'STAR':
+            is_pointer = True
+            idx += 1
+
+        # Name
+        name = items[idx].value if isinstance(items[idx], LarkToken) else items[idx]
+        idx += 1
+
+        # Type (this is the pointee type if is_pointer is True)
+        field_type = items[idx]
+
+        # If this is a pointer field, wrap the type in PointerType
+        if is_pointer:
+            field_type = ast.PointerType(is_far=is_far, pointee_type=field_type)
+
         return ast.StructField(name=name, field_type=field_type)
+
+    @v_args(tree=True)
+    def struct_field_safe_ptr_error(self, tree):
+        """Error handler for safe pointer syntax in struct fields."""
+        # Extract the name for a helpful error message
+        items = self._filter_tokens(tree.children, keep_types={'IDENT', 'AMPER'})
+        name = None
+        for item in items:
+            if isinstance(item, LarkToken) and item.type == 'IDENT':
+                name = item.value
+                break
+        name_str = name if name else "name"
+        source_loc = self._make_source_loc(tree.meta) if hasattr(tree, 'meta') else None
+        raise ParseError(
+            f"safe pointers are not supported in R65",
+            source_loc=source_loc,
+            hint=f"use '*{name_str}: type' instead of '&{name_str}: type' for struct fields"
+        )
 
     def enum_decl(self, items):
         """Enum declaration."""
@@ -667,6 +799,13 @@ class ASTBuilder(Transformer):
         binding = items[1] if len(items) > 1 else None
         return ('single', name, binding)
 
+    def pointer_pattern(self, items):
+        """Pointer pattern: *IDENT or *IDENT @ binding"""
+        items = self._filter_tokens(items)
+        name = items[0].value if isinstance(items[0], LarkToken) else items[0]
+        binding = items[1] if len(items) > 1 else None
+        return ('pointer', name, binding)
+
     def tuple_pattern(self, items):
         """Tuple pattern: (a, b, c)"""
         items = self._filter_tokens(items)
@@ -675,28 +814,43 @@ class ASTBuilder(Transformer):
 
     def let_stmt(self, items):
         """Let statement."""
-        items = self._filter_tokens(items)
+        items = self._filter_tokens(items, keep_types={'IDENT', 'MUT', 'FAR', 'NEAR', 'INTEGER', 'STRING', 'BOOLEAN', 'REGISTER'})
 
-        is_mut = False
         idx = 0
 
+        # Check for far/near modifier (for pointer declarations)
+        is_far = False
+        is_near = False
+        if idx < len(items) and isinstance(items[idx], LarkToken) and items[idx].type == 'FAR':
+            is_far = True
+            idx += 1
+        elif idx < len(items) and isinstance(items[idx], LarkToken) and items[idx].type == 'NEAR':
+            is_near = True
+            idx += 1
+
         # Check for mut
+        is_mut = False
         if idx < len(items) and isinstance(items[idx], LarkToken) and items[idx].type == 'MUT':
             is_mut = True
             idx += 1
 
-        # Get pattern (single or tuple)
+        # Get pattern (single, pointer, or tuple)
         pattern_item = items[idx]
         idx += 1
 
         name = None
         binding = None
         tuple_pattern = None
+        is_pointer = False
 
         if isinstance(pattern_item, tuple):
             if pattern_item[0] == 'single':
                 name = pattern_item[1]
                 binding = pattern_item[2]
+            elif pattern_item[0] == 'pointer':
+                name = pattern_item[1]
+                binding = pattern_item[2]
+                is_pointer = True
             elif pattern_item[0] == 'tuple':
                 tuple_pattern = ast.TuplePattern(names=pattern_item[1])
         else:
@@ -709,6 +863,10 @@ class ASTBuilder(Transformer):
             var_type = items[idx]
             idx += 1
 
+        # If this is a pointer declaration, wrap the type in PointerType
+        if is_pointer and var_type is not None:
+            var_type = ast.PointerType(is_far=is_far, pointee_type=var_type)
+
         # Initializer (always last)
         initializer = items[idx] if idx < len(items) else None
 
@@ -720,6 +878,40 @@ class ASTBuilder(Transformer):
             initializer=initializer,
             pattern=tuple_pattern
         )
+
+    @v_args(tree=True)
+    def let_stmt_safe_ptr_error(self, tree):
+        """Error handler for safe pointer syntax in let statements."""
+        items = self._filter_tokens(tree.children, keep_types={'IDENT', 'AMPER'})
+        name = None
+        for item in items:
+            if isinstance(item, LarkToken) and item.type == 'IDENT':
+                name = item.value
+                break
+            elif isinstance(item, tuple) and len(item) >= 2:
+                # safe_ptr_pattern returns a tuple
+                name = item[1]
+                break
+        name_str = name if name else "name"
+        source_loc = self._make_source_loc(tree.meta) if hasattr(tree, 'meta') else None
+        raise ParseError(
+            f"safe pointers are not supported in R65",
+            source_loc=source_loc,
+            hint=f"use 'let *{name_str}: type' instead of 'let &{name_str}: type' for pointer variables"
+        )
+
+    def safe_ptr_pattern(self, items):
+        """Safe pointer pattern: &name or &name @ binding (for error handling)."""
+        items = self._filter_tokens(items, keep_types={'IDENT', 'AMPER', 'REGISTER'})
+        name = None
+        binding = None
+        for item in items:
+            if isinstance(item, LarkToken) and item.type == 'IDENT':
+                if name is None:
+                    name = item.value
+            elif isinstance(item, LarkToken) and item.type == 'REGISTER':
+                binding = item.value
+        return ('safe_ptr', name, binding)
 
     def expr_stmt(self, items):
         """Expression statement."""
@@ -1203,11 +1395,30 @@ class ASTBuilder(Transformer):
         size = items[1]
         return ast.ArrayType(element_type=element_type, size=size)
 
+    def type_slice(self, items):
+        """Unsized array type for pointers: [T]."""
+        items = self._filter_tokens(items)
+        element_type = items[0]
+        return ast.SliceType(element_type=element_type)
+
     def type_pointer(self, items):
-        """Pointer type."""
-        items = self._filter_tokens(items, keep_types={'FAR', 'TYPE_NAME'})
-        is_far = items[0].value == 'far' if isinstance(items[0], LarkToken) and items[0].type == 'FAR' else False
-        pointee_type = items[1] if len(items) > 1 else items[0]
+        """Pointer type: *type (implied near) or far *type or near *type."""
+        items = self._filter_tokens(items, keep_types={'FAR', 'NEAR', 'TYPE_NAME'})
+
+        idx = 0
+        is_far = False
+
+        # Check for far/near modifier
+        if idx < len(items) and isinstance(items[idx], LarkToken):
+            if items[idx].type == 'FAR':
+                is_far = True
+                idx += 1
+            elif items[idx].type == 'NEAR':
+                is_far = False  # Explicit near
+                idx += 1
+
+        # The pointee type is the remaining item
+        pointee_type = items[idx] if idx < len(items) else items[-1]
         return ast.PointerType(is_far=is_far, pointee_type=pointee_type)
 
     def type_fn(self, items):

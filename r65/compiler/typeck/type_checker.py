@@ -19,7 +19,7 @@ from r65.compiler.hir import (
     BasicTypeInfo, TypeInfo, SymbolKind, NeverTypeInfo, TupleTypeInfo,
     RegisterLetBinding, ArrayTypeInfo, StructTypeInfo, EnumTypeInfo
 )
-from r65.compiler.hir.types import FunctionTypeInfo, PointerTypeInfo
+from r65.compiler.hir.types import FunctionTypeInfo, PointerTypeInfo, SliceTypeInfo
 from r65.compiler.typeck.processor_mode import ProcessorMode, ModeTransition
 from r65.compiler.typeck.mode_tracker import ModeTracker
 from r65.compiler.typeck.cfg_builder import CFGBuilder
@@ -963,6 +963,11 @@ class TypeChecker:
                     except Exception:
                         # If const evaluation fails, skip bounds checking
                         pass
+                expr.expr_type = pointee.element_type
+                return expr.expr_type
+            # If pointer to slice (unsized array), result is element type
+            elif isinstance(pointee, SliceTypeInfo):
+                # No bounds checking for slices (size unknown at compile time)
                 expr.expr_type = pointee.element_type
                 return expr.expr_type
             else:
