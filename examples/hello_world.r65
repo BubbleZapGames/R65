@@ -191,7 +191,7 @@ fn upload_font() {
 // Write "HELLO WORLD" to the tilemap
 // ----------------------------------------------------------------------------
 
-#[mode(m8, x8)]
+#[mode(m16, x8, transition=inline)]
 fn write_message(row @ A: u8, column @ X: u8, message: *[u8]) {
     // Set VRAM address to tilemap position
     // Row 14, Column 10 (centered on 32x32 tilemap)
@@ -210,29 +210,19 @@ fn write_message(row @ A: u8, column @ X: u8, message: *[u8]) {
         }
 
         // Convert ASCII to tile index
-        A = ascii_to_tile(A);
+        if A == 0x20 {
+            // Space -> tile 0
+            A = 0;
+        } else {
+            // A-Z: 0x41-0x5A -> tiles 1-26
+            A = A - 0x40;
+        }
 
         VMDATAL = A;   // Tile number
         VMDATAH = 0;   // Attributes (palette 0, no flip)
 
         X++;
     }
-}
-
-// ----------------------------------------------------------------------------
-// Convert ASCII character to tile index
-// ----------------------------------------------------------------------------
-
-#[mode(m8, x8)]
-fn ascii_to_tile(char @ A: u8) -> u8 {
-    if A == 0x20 {
-        // Space -> tile 0
-        A = 0;
-    } else {
-        // A-Z: 0x41-0x5A -> tiles 1-26
-        A = A - 0x40;
-    }
-    return A;
 }
 
 // ----------------------------------------------------------------------------
