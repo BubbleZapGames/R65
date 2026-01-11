@@ -1366,10 +1366,13 @@ class InstructionSelector:
             type_info: Type information
 
         Returns:
-            True if 16-bit type
+            True if 16-bit type (u16, i16, or near pointer)
         """
         if hasattr(type_info, 'name'):
             return type_info.name in ('u16', 'i16')
+        # Near pointers are 16-bit (far pointers are 24-bit)
+        if hasattr(type_info, 'pointee_type'):
+            return not getattr(type_info, 'is_far', False)
         return False
 
     # ========================================================================

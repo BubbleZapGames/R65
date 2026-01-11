@@ -482,8 +482,8 @@ class MemoryOperationSelector(BaseSelector):
             raise InstructionSelectionError(f"Expected STACK location, got: {ptr_loc.kind}")
 
         # Stack offset for (d,S),Y addressing
-        # Add 1 because the stack points to the next free byte, not the data
-        stack_offset = ptr_loc.stack_offset + 1
+        # ptr_loc.stack_offset is already the correct offset from S
+        stack_offset = ptr_loc.stack_offset
         operand = StackOffset(stack_offset)
 
         if mnemonic == 'LDA':
