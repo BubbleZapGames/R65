@@ -484,7 +484,7 @@ class MemoryOperationSelector(BaseSelector):
         # Stack offset for (d,S),Y addressing
         # Add 1 because the stack points to the next free byte, not the data
         stack_offset = ptr_loc.stack_offset + 1
-        operand = Immediate(stack_offset)
+        operand = StackOffset(stack_offset)
 
         if mnemonic == 'LDA':
             if index_register == 'Y':

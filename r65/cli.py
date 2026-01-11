@@ -45,10 +45,14 @@ class TemplateManager:
         
         # Create target directory if it doesn't exist
         target_dir.mkdir(parents=True, exist_ok=True)
-        
+
         # Create src directory for R65 source files
         src_dir = target_dir / "src"
         src_dir.mkdir(exist_ok=True)
+
+        # Create build directory for compiled output
+        build_dir = target_dir / "build"
+        build_dir.mkdir(exist_ok=True)
 
         # Create lib directory and copy stdlib files
         lib_dir = src_dir / "lib"
