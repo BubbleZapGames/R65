@@ -180,6 +180,14 @@ class CallInstructionSelector(BaseSelector):
         arg_size = 1
         if hasattr(arg.value, 'type_info') and arg.value.type_info:
             arg_size = get_type_size(arg.value.type_info)
+        elif isinstance(arg.value, MIRImmediate):
+            # Infer size from immediate value range
+            value = arg.value.value
+            if value > 0xFFFF or value < -32768:
+                arg_size = 3  # 24-bit
+            elif value > 0xFF or value < -128:
+                arg_size = 2  # 16-bit
+            # else: 8-bit (default)
 
         if arg_size == 3:
             # 24-bit value (far pointer): push all 3 bytes (bank, high, low order for stack)
@@ -219,6 +227,15 @@ class CallInstructionSelector(BaseSelector):
             if arg_loc.kind == LocationKind.HARDWARE and arg_loc.hw_register == 'A':
                 # In 16-bit mode, A holds 16 bits - just push
                 self._emit_push('A', "Push 16-bit stack arg")
+            elif isinstance(arg.value, MIRImmediate):
+                # Immediate 16-bit value: push high byte first, then low byte
+                value = arg.value.value
+                high_byte = (value >> 8) & 0xFF
+                low_byte = value & 0xFF
+                self._emit_load_immediate('A', high_byte)
+                self._emit_push('A', "Push high byte")
+                self._emit_load_immediate('A', low_byte)
+                self._emit_push('A', "Push low byte")
             elif arg_loc.kind == LocationKind.STACK:
                 # Stack locations: offset drifts after push
                 high_loc = self.parent._offset_location(arg_loc, 1)
