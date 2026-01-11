@@ -57,36 +57,6 @@ class CPU65816(CPU65816Base):
         super().__init__(memory)
         self._instructions = self._build_instruction_table()
 
-    # ============== HELPER METHODS ==============
-
-    def _read_acc(self, bank: int, address: int) -> int:
-        """Read value based on accumulator size."""
-        if self.flag_m:
-            return self.memory.read(bank, address)
-        else:
-            return self.memory.read16(bank, address)
-
-    def _write_acc(self, bank: int, address: int, value: int):
-        """Write value based on accumulator size."""
-        if self.flag_m:
-            self.memory.write(bank, address, value & 0xFF)
-        else:
-            self.memory.write16(bank, address, value & 0xFFFF)
-
-    def _read_idx(self, bank: int, address: int) -> int:
-        """Read value based on index size."""
-        if self.flag_x:
-            return self.memory.read(bank, address)
-        else:
-            return self.memory.read16(bank, address)
-
-    def _write_idx(self, bank: int, address: int, value: int):
-        """Write value based on index register size."""
-        if self.flag_x:
-            self.memory.write(bank, address, value & 0xFF)
-        else:
-            self.memory.write16(bank, address, value & 0xFFFF)
-
     def _branch(self, condition: bool) -> int:
         """Execute conditional branch."""
         target, extra = addr.relative_8(self)
@@ -189,12 +159,6 @@ class CPU65816(CPU65816Base):
         self.DBR = self.pull_byte()
         self.set_nz_flags(self.DBR, False)
         return 4
-
-
-    def _pld(self) -> int:
-        self.D = self.pull_word()
-        self.set_nz_flags(self.D, True)
-        return 5
 
 
     def _pea(self) -> int:
@@ -320,16 +284,6 @@ class CPU65816(CPU65816Base):
         return 8
 
 
-    def _jsr_indexed_ind(self) -> int:
-        base = self.fetch_word()
-        self.push_word(self.PC - 1)
-        x = self.X & self.idx_mask
-        ptr = (base + x) & 0xFFFF
-        address = self.memory.read16(self.PBR, ptr)
-        self.PC = address
-        return 8
-
-
     def _rts(self) -> int:
         self.PC = (self.pull_word() + 1) & 0xFFFF
         return 6
@@ -366,17 +320,8 @@ class CPU65816(CPU65816Base):
         return 2
 
 
-    def _cld(self) -> int:
-        self.flag_d = False
-        return 2
-
-
     def _clv(self) -> int:
         self.flag_v = False
-        return 2
-
-
-    def _nop(self) -> int:
         return 2
 
 
@@ -478,6 +423,12 @@ class CPU65816(CPU65816Base):
     def op22(self) -> int:
         return self._jsr_long()
 
+    def op2b(self) -> int:
+        # PLD - Pull direct page register
+        self.D = self.pull_word()
+        self.set_nz_flags(self.D, True)
+        return 5
+
     def op30(self) -> int:
         return self._bmi()
 
@@ -565,11 +516,20 @@ class CPU65816(CPU65816Base):
     def opd4(self) -> int:
         return self._pei()
 
+    def opd8(self) -> int:
+        # CLD - Clear decimal flag
+        self.flag_d = False
+        return 2
+
     def opdb(self) -> int:
         return self._stp()
 
     def opdc(self) -> int:
         return self._jmp_ind_long()
+
+    def opea(self) -> int:
+        # NOP - No operation
+        return 2
 
     def opeb(self) -> int:
         return self._xba()
