@@ -9,6 +9,31 @@ from pathlib import Path
 from .cpu import CPU65816, StopExecution, WaitForInterrupt
 from .memory import Memory, detect_mapping
 from .trace import TraceLogger, CompactTraceLogger, NullTraceLogger
+from .disasm import disassemble
+
+
+def parse_address(addr_str: str) -> tuple:
+    """
+    Parse an address string like '8000' or '00:8000' or '0x8000'.
+
+    Returns:
+        (bank, address) tuple
+    """
+    addr_str = addr_str.strip().lower()
+
+    # Handle bank:addr format
+    if ":" in addr_str:
+        parts = addr_str.split(":")
+        bank = int(parts[0], 16)
+        addr = int(parts[1], 16)
+        return (bank, addr)
+
+    # Handle hex prefix
+    if addr_str.startswith("0x"):
+        addr_str = addr_str[2:]
+
+    # Assume bank 0 for simple addresses
+    return (0, int(addr_str, 16))
 
 
 def main():
@@ -100,6 +125,29 @@ Examples:
         help="Suppress non-trace output"
     )
 
+    parser.add_argument(
+        "--breakpoint", "-b",
+        action="append",
+        dest="breakpoints",
+        metavar="ADDR",
+        help="Set breakpoint at address (hex, can use multiple times)"
+    )
+
+    parser.add_argument(
+        "--disasm", "-d",
+        type=str,
+        metavar="ADDR",
+        help="Disassemble starting at address instead of running"
+    )
+
+    parser.add_argument(
+        "--disasm-count",
+        type=int,
+        default=20,
+        metavar="N",
+        help="Number of instructions to disassemble (default: 20)"
+    )
+
     args = parser.parse_args()
 
     # Load ROM
@@ -139,6 +187,25 @@ Examples:
     memory = Memory(rom_data, mapping)
     cpu = CPU65816(memory)
 
+    # Disassembly mode
+    if args.disasm:
+        bank, addr = parse_address(args.disasm)
+        print(f"Disassembly at ${bank:02X}:{addr:04X}:", file=sys.stderr)
+        print()
+
+        # Assume 8-bit mode for disassembly unless --native specified
+        m_flag = not args.native
+        x_flag = not args.native
+
+        for _ in range(args.disasm_count):
+            text, size = disassemble(memory, bank, addr, m_flag, x_flag)
+            # Show hex bytes
+            hex_bytes = " ".join(f"{memory.read(bank, (addr + i) & 0xFFFF):02X}"
+                                for i in range(size))
+            print(f"${bank:02X}:{addr:04X}  {hex_bytes:<12s}  {text}")
+            addr = (addr + size) & 0xFFFF
+        sys.exit(0)
+
     # Reset CPU
     cpu.reset()
 
@@ -167,13 +234,29 @@ Examples:
     else:
         logger = NullTraceLogger()
 
+    # Create a separate logger for state output (always goes to stderr)
+    state_logger = TraceLogger(output=sys.stderr)
+
     # Show initial state
     if args.show_state and not args.quiet:
-        logger.log_state(cpu, "Initial State")
-        logger.log_separator()
+        state_logger.log_state(cpu, "Initial State")
+        state_logger.log_separator()
 
     if args.trace and not args.compact:
         logger.log_header()
+
+    # Parse breakpoints
+    breakpoints = set()
+    if args.breakpoints:
+        for bp in args.breakpoints:
+            try:
+                bank, addr = parse_address(bp)
+                breakpoints.add((bank, addr))
+                if not args.quiet:
+                    print(f"Breakpoint set at ${bank:02X}:{addr:04X}", file=sys.stderr)
+            except ValueError:
+                print(f"Error: Invalid breakpoint address: {bp}", file=sys.stderr)
+                sys.exit(1)
 
     # Run
     instruction_count = 0
@@ -189,6 +272,12 @@ Examples:
 
             # Check if CPU is stopped or waiting
             if cpu.stopped or cpu.waiting:
+                break
+
+            # Check breakpoints
+            if (cpu.PBR, cpu.PC) in breakpoints:
+                if not args.quiet:
+                    print(f"\nBreakpoint hit at ${cpu.PBR:02X}:{cpu.PC:04X}", file=sys.stderr)
                 break
 
             # Log and execute
@@ -208,8 +297,8 @@ Examples:
 
     # Show final state
     if args.show_state and not args.quiet:
-        logger.log_separator()
-        logger.log_state(cpu, "Final State")
+        state_logger.log_separator()
+        state_logger.log_state(cpu, "Final State")
 
     # Summary
     if not args.quiet:
