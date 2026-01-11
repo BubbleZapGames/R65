@@ -266,3 +266,165 @@ class TestStepExceptions:
 
         with pytest.raises(WaitForInterrupt):
             cpu.step()
+
+
+class TestNMITiming:
+    """Test vblank NMI timing functionality."""
+
+    def test_auto_nmi_disabled_by_default(self, cpu):
+        """Auto NMI should be disabled by default."""
+        assert cpu.auto_nmi is False
+        assert cpu.nmi_enabled is False
+
+    def test_enable_auto_nmi(self, cpu):
+        """Should be able to enable auto NMI timing."""
+        cpu.enable_auto_nmi(True)
+        assert cpu.auto_nmi is True
+
+        cpu.enable_auto_nmi(False)
+        assert cpu.auto_nmi is False
+
+    def test_set_nmi_enabled(self, cpu):
+        """Should be able to enable/disable NMI generation."""
+        cpu.set_nmi_enabled(True)
+        assert cpu.nmi_enabled is True
+
+        cpu.set_nmi_enabled(False)
+        assert cpu.nmi_enabled is False
+
+    def test_set_region_ntsc(self, cpu):
+        """NTSC region should have 262 scanlines."""
+        cpu.set_region(pal=False)
+        assert cpu.scanlines_per_frame == 262
+
+    def test_set_region_pal(self, cpu):
+        """PAL region should have 312 scanlines."""
+        cpu.set_region(pal=True)
+        assert cpu.scanlines_per_frame == 312
+
+    def test_scanline_advances_with_cycles(self, cpu):
+        """Scanlines should advance as cycles accumulate."""
+        cpu.enable_auto_nmi(True)
+        cpu.scanline = 0
+        cpu.scanline_cycles = 0
+
+        # Execute enough NOPs to advance one scanline (~186 cycles)
+        # NOP = 2 cycles, so 93 NOPs = 186 cycles
+        cpu.memory.rom[0] = 0xEA  # NOP
+        for _ in range(93):
+            cpu.PC = 0x8000
+            cpu.step()
+
+        assert cpu.scanline == 1
+
+    def test_vblank_flag_set_at_scanline_225(self, cpu):
+        """Vblank flag should be set when reaching scanline 225."""
+        cpu.enable_auto_nmi(True)
+        cpu.scanline = 224
+        cpu.scanline_cycles = 185  # Almost at next scanline
+
+        # Execute one NOP to cross into scanline 225
+        cpu.memory.rom[0] = 0xEA  # NOP
+        cpu.PC = 0x8000
+        cpu.step()
+
+        assert cpu.scanline == 225
+        assert cpu.vblank_flag is True
+
+    def test_nmi_triggers_at_vblank_when_enabled(self, cpu):
+        """NMI should trigger at vblank when nmi_enabled is True."""
+        cpu.enable_auto_nmi(True)
+        cpu.set_nmi_enabled(True)
+        cpu.scanline = 224
+        cpu.scanline_cycles = 185
+        cpu.emulation_mode = False  # Native mode for cleaner test
+        cpu.SP = 0x1FFF
+
+        # Set up NMI vector
+        cpu.memory.rom[0x7FEA] = 0x00  # NMI vector low
+        cpu.memory.rom[0x7FEB] = 0x90  # NMI vector high ($9000)
+
+        original_pc = cpu.PC = 0x8000
+        cpu.memory.rom[0] = 0xEA  # NOP
+        cpu.step()
+
+        # PC should now be at NMI handler
+        assert cpu.PC == 0x9000
+        # Original PC should be on stack
+        assert cpu.SP < 0x1FFF  # Stack was used
+
+    def test_nmi_does_not_trigger_when_disabled(self, cpu):
+        """NMI should not trigger at vblank when nmi_enabled is False."""
+        cpu.enable_auto_nmi(True)
+        cpu.set_nmi_enabled(False)  # NMI disabled
+        cpu.scanline = 224
+        cpu.scanline_cycles = 185
+        cpu.SP = 0x1FFF
+
+        cpu.memory.rom[0] = 0xEA  # NOP
+        cpu.PC = 0x8000
+        cpu.step()
+
+        # Vblank flag should still be set
+        assert cpu.vblank_flag is True
+        # But NMI should not have triggered - PC continues normally
+        assert cpu.PC == 0x8001
+        assert cpu.SP == 0x1FFF  # Stack unchanged
+
+    def test_read_nmi_flag_clears_flag(self, cpu):
+        """Reading NMI flag should return and clear it."""
+        cpu.vblank_flag = True
+
+        result = cpu.read_nmi_flag()
+
+        assert result is True
+        assert cpu.vblank_flag is False
+
+        # Second read should return False
+        result = cpu.read_nmi_flag()
+        assert result is False
+
+    def test_in_vblank_property(self, cpu):
+        """in_vblank property should reflect scanline position."""
+        cpu.scanline = 100
+        assert cpu.in_vblank is False
+
+        cpu.scanline = 224
+        assert cpu.in_vblank is False
+
+        cpu.scanline = 225
+        assert cpu.in_vblank is True
+
+        cpu.scanline = 261
+        assert cpu.in_vblank is True
+
+    def test_frame_counter_increments(self, cpu):
+        """Frame counter should increment when scanline wraps."""
+        cpu.enable_auto_nmi(True)
+        cpu.scanline = 261
+        cpu.scanline_cycles = 185
+        cpu.frame = 0
+
+        cpu.memory.rom[0] = 0xEA  # NOP
+        cpu.PC = 0x8000
+        cpu.step()
+
+        assert cpu.scanline == 0
+        assert cpu.frame == 1
+        assert cpu.vblank_flag is False  # Cleared at frame start
+
+    def test_reset_clears_timing_state(self, cpu):
+        """Reset should clear all timing state."""
+        cpu.scanline = 100
+        cpu.scanline_cycles = 50
+        cpu.frame = 10
+        cpu.vblank_flag = True
+        cpu.nmi_pending = True
+
+        cpu.reset()
+
+        assert cpu.scanline == 0
+        assert cpu.scanline_cycles == 0
+        assert cpu.frame == 0
+        assert cpu.vblank_flag is False
+        assert cpu.nmi_pending is False
