@@ -30,9 +30,6 @@ Standard Rust/C-style comments:
 
 fn example() {
     let x = 10;  // Inline comment
-
-    /* Block comment
-       can span multiple lines */
     let y = 20;
 }
 ```
@@ -931,13 +928,6 @@ Performance characteristics of different storage:
 22. **Flexible mode handling**: `#[mode(...)]` with three transition strategies: `none` (convention-based, default), `auto` (callee wrapper), `caller` (caller-side wrapper with batching)
 23. **Automatic initialization**: `__init_start()` generated for all static variables with explicit initializers (RAM is not zeroed on SNES power-on)
 24. **Consistent far/near**: `far fn()` for both function definitions and pointers indicates JSL/RTL calling convention; `fn()` indicates JSR/RTS; `#[bank(n)]` sets explicit bank, `#[bank(auto)]` enables automatic placement (requires `far`); `#[mode(databank=...)]` controls DBR management
-
-## Use Cases
-
-1. **SNES Game Development**: Write new games with modern syntax and type safety
-2. **ROM Reverse Engineering**: Disassemble ROMs into readable source
-3. **ROM Hacking**: Modify existing games with better tooling
-4. **Education**: Learn 6502/65816 architecture with safer, clearer code
 
 ## Future Enhancements
 
