@@ -613,10 +613,8 @@ class ASTBuilder(Transformer):
                 result.append(item.value)
             elif isinstance(item, tuple):
                 if item[0] == 'macro_body':
-                    # Nested braces
-                    result.append('{')
+                    # Nested braces - content already includes braces due to keep_all_tokens=True
                     result.extend(item[1])
-                    result.append('}')
                 elif item[0] == 'macro_rep':
                     # Repetition: $( ... ),* or $( ... )*
                     result.append('$(')

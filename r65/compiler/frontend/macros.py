@@ -188,13 +188,92 @@ class MacroExpander:
         args: List[str],
         source_loc: Optional[SourceLocation]
     ) -> List[ast.Declaration]:
-        """Expand a top-level macro invocation into declarations."""
-        # For now, we don't support top-level macros that expand to statements
-        # This would require different handling
-        raise MacroError(
-            f"top-level macro invocations not yet supported: '{name}'",
-            source_loc
-        )
+        """
+        Expand a top-level macro invocation into declarations.
+
+        Unlike statement-level expansion which wraps in a dummy function,
+        top-level expansion parses the result as a complete program to
+        extract declarations (functions, statics, structs, etc.).
+
+        Args:
+            name: Macro name
+            args: List of argument token strings
+            source_loc: Source location of invocation
+
+        Returns:
+            List of expanded declarations
+        """
+        # Check if macro exists
+        if name not in self.macros:
+            raise MacroError(f"undefined macro: '{name}'", source_loc)
+
+        macro = self.macros[name]
+
+        # Check for recursive expansion
+        if name in self._expanding:
+            raise MacroError(f"recursive macro expansion: '{name}'", source_loc)
+
+        # Check expansion depth
+        self._expansion_depth += 1
+        if self._expansion_depth > self.MAX_EXPANSION_DEPTH:
+            raise MacroError(
+                f"macro expansion depth exceeded ({self.MAX_EXPANSION_DEPTH} levels)",
+                source_loc
+            )
+
+        self._expanding.add(name)
+
+        try:
+            # Match arguments to parameters
+            bindings = self._match_params(macro, args, source_loc)
+
+            # Substitute parameters in body
+            expanded_tokens = self._substitute(macro.body_tokens, bindings)
+
+            # Parse the expanded tokens as a complete program
+            expanded_source = self._join_tokens(expanded_tokens)
+
+            try:
+                # Parse directly as a program (not wrapped in a function)
+                program = parse(expanded_source, f"<macro:{name}>")
+
+                # Extract declarations and recursively expand nested macros
+                result: List[ast.Declaration] = []
+                for item in program.items:
+                    if isinstance(item, ast.MacroInvocationStmt):
+                        # Recursively expand nested top-level macro invocations
+                        nested = self._expand_top_level_invocation(
+                            item.name, item.args, item.source_loc
+                        )
+                        result.extend(nested)
+                    elif isinstance(item, ast.MacroDecl):
+                        # Register any new macro definitions from expansion
+                        body = item.body_tokens
+                        if body and body[0] == '{' and body[-1] == '}':
+                            body = body[1:-1]
+                        self.macros[item.name] = MacroDefinition(
+                            name=item.name,
+                            params=item.params,
+                            body_tokens=body,
+                            source_loc=item.source_loc
+                        )
+                    elif isinstance(item, ast.FunctionDecl):
+                        # Expand macros inside function bodies
+                        expanded_func = self._expand_function(item)
+                        result.append(expanded_func)
+                    else:
+                        result.append(item)
+
+                return result
+            except Exception as e:
+                raise MacroError(
+                    f"error parsing expanded macro '{name}': {e}\n"
+                    f"Expanded source: {expanded_source}",
+                    source_loc
+                )
+        finally:
+            self._expanding.remove(name)
+            self._expansion_depth -= 1
 
     def _expand_statement_invocation(
         self,

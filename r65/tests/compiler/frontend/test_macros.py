@@ -692,3 +692,250 @@ class TestStringifyMacro:
             expand_macros(program)
         
         assert "undefined macro: 'unknown_macro'" in str(exc_info.value)
+
+
+# ============================================================================
+# Top-Level Macro Invocation Tests
+# ============================================================================
+
+class TestTopLevelMacroInvocation:
+    """Tests for top-level macro invocations that expand to declarations."""
+
+    def test_top_level_static_declaration(self):
+        """Test macro that expands to a static variable declaration."""
+        source = """
+        macro_rules! define_port($name:ident, $addr:literal) {
+            #[hw($addr)]
+            static mut $name: u8;
+        }
+
+        define_port!(INIDISP, 0x2100);
+        """
+        program = parse(source, "<test>")
+        expanded = expand_macros(program)
+
+        # Should have one static declaration
+        assert len(expanded.items) == 1
+        static = expanded.items[0]
+        assert isinstance(static, ast.StaticDecl)
+        assert static.name == "INIDISP"
+
+    def test_top_level_multiple_declarations(self):
+        """Test macro that expands to multiple declarations."""
+        source = """
+        macro_rules! define_ports($name1:ident, $name2:ident) {
+            #[zeropage]
+            static mut $name1: u8;
+            #[zeropage]
+            static mut $name2: u8;
+        }
+
+        define_ports!(PORT_A, PORT_B);
+        """
+        program = parse(source, "<test>")
+        expanded = expand_macros(program)
+
+        # Should have two static declarations
+        assert len(expanded.items) == 2
+        assert all(isinstance(item, ast.StaticDecl) for item in expanded.items)
+        assert expanded.items[0].name == "PORT_A"
+        assert expanded.items[1].name == "PORT_B"
+
+    def test_top_level_function_declaration(self):
+        """Test macro that expands to a function declaration."""
+        source = """
+        macro_rules! define_handler($name:ident) {
+            fn $name() {
+                A = 0;
+            }
+        }
+
+        define_handler!(my_handler);
+        """
+        program = parse(source, "<test>")
+        expanded = expand_macros(program)
+
+        # Should have one function declaration
+        assert len(expanded.items) == 1
+        func = expanded.items[0]
+        assert isinstance(func, ast.FunctionDecl)
+        assert func.name == "my_handler"
+
+    def test_top_level_multiple_invocations(self):
+        """Test multiple top-level macro invocations."""
+        source = """
+        macro_rules! define_var($name:ident) {
+            #[zeropage]
+            static mut $name: u8;
+        }
+
+        define_var!(VAR1);
+        define_var!(VAR2);
+        define_var!(VAR3);
+        """
+        program = parse(source, "<test>")
+        expanded = expand_macros(program)
+
+        # Should have three static declarations
+        assert len(expanded.items) == 3
+        assert expanded.items[0].name == "VAR1"
+        assert expanded.items[1].name == "VAR2"
+        assert expanded.items[2].name == "VAR3"
+
+    def test_top_level_with_repeated_params(self):
+        """Test top-level macro with repeated parameters."""
+        source = """
+        macro_rules! define_vars($($name:ident),*) {
+            $(#[zeropage]
+            static mut $name: u8;)*
+        }
+
+        define_vars!(X, Y, Z);
+        """
+        program = parse(source, "<test>")
+        expanded = expand_macros(program)
+
+        # Should have three static declarations
+        assert len(expanded.items) == 3
+        names = [item.name for item in expanded.items]
+        assert "X" in names
+        assert "Y" in names
+        assert "Z" in names
+
+    def test_top_level_nested_macro_invocation(self):
+        """Test top-level macro that expands to another macro invocation."""
+        source = """
+        macro_rules! inner_macro($name:ident) {
+            #[zeropage]
+            static mut $name: u8;
+        }
+
+        macro_rules! outer_macro($name:ident) {
+            inner_macro!($name);
+        }
+
+        outer_macro!(NESTED_VAR);
+        """
+        program = parse(source, "<test>")
+        expanded = expand_macros(program)
+
+        # Should have one static declaration after nested expansion
+        assert len(expanded.items) == 1
+        assert isinstance(expanded.items[0], ast.StaticDecl)
+        assert expanded.items[0].name == "NESTED_VAR"
+
+    def test_top_level_struct_declaration(self):
+        """Test macro that expands to a struct declaration."""
+        source = """
+        macro_rules! define_struct($name:ident) {
+            struct $name {
+                x: u8,
+                y: u8,
+            }
+        }
+
+        define_struct!(Point);
+        """
+        program = parse(source, "<test>")
+        expanded = expand_macros(program)
+
+        # Should have one struct declaration
+        assert len(expanded.items) == 1
+        struct = expanded.items[0]
+        assert isinstance(struct, ast.StructDecl)
+        assert struct.name == "Point"
+
+    def test_top_level_enum_declaration(self):
+        """Test macro that expands to an enum declaration."""
+        source = """
+        macro_rules! define_enum($name:ident) {
+            enum $name {
+                A = 0,
+                B = 1,
+            }
+        }
+
+        define_enum!(State);
+        """
+        program = parse(source, "<test>")
+        expanded = expand_macros(program)
+
+        # Should have one enum declaration
+        assert len(expanded.items) == 1
+        enum = expanded.items[0]
+        assert isinstance(enum, ast.EnumDecl)
+        assert enum.name == "State"
+
+    def test_top_level_const_declaration(self):
+        """Test macro that expands to a const declaration."""
+        source = """
+        macro_rules! define_const($name:ident, $val:literal) {
+            const $name: u8 = $val;
+        }
+
+        define_const!(MAX_VALUE, 255);
+        """
+        program = parse(source, "<test>")
+        expanded = expand_macros(program)
+
+        # Should have one const declaration
+        assert len(expanded.items) == 1
+        const = expanded.items[0]
+        assert isinstance(const, ast.ConstDecl)
+        assert const.name == "MAX_VALUE"
+
+    def test_top_level_mixed_declarations(self):
+        """Test macro that expands to mixed declaration types."""
+        source = """
+        macro_rules! define_component($name:ident) {
+            struct $name {
+                value: u8,
+            }
+
+            #[zeropage]
+            static mut CURRENT: $name;
+
+            fn init() {
+                A = 0;
+            }
+        }
+
+        define_component!(Component);
+        """
+        program = parse(source, "<test>")
+        expanded = expand_macros(program)
+
+        # Should have struct, static, and function
+        assert len(expanded.items) == 3
+        types = [type(item).__name__ for item in expanded.items]
+        assert "StructDecl" in types
+        assert "StaticDecl" in types
+        assert "FunctionDecl" in types
+
+    def test_top_level_undefined_macro_error(self):
+        """Test that undefined macro at top level raises error."""
+        source = """
+        undefined_macro!(arg);
+        """
+        program = parse(source, "<test>")
+
+        with pytest.raises(MacroError) as exc_info:
+            expand_macros(program)
+
+        assert "undefined macro: 'undefined_macro'" in str(exc_info.value)
+
+    def test_top_level_recursive_macro_error(self):
+        """Test that recursive macro at top level raises error."""
+        source = """
+        macro_rules! recursive($x:ident) {
+            recursive!($x);
+        }
+
+        recursive!(test);
+        """
+        program = parse(source, "<test>")
+
+        with pytest.raises(MacroError) as exc_info:
+            expand_macros(program)
+
+        assert "recursive macro expansion" in str(exc_info.value)
