@@ -610,6 +610,102 @@ fn local_func() {
         assert func.is_far == False
 
 
+class TestLabeledLoops:
+    """Test labeled loop handling."""
+
+    def test_labeled_loop_hir(self):
+        """Test labeled loop produces HIR with label."""
+        source = """
+#[mode(m8, x8)]
+fn test() {
+    'outer: loop {
+        break;
+    }
+}
+"""
+        hir = build_hir(source)
+        func = hir.declarations[0]
+        while_stmt = func.body.statements[0]
+        assert isinstance(while_stmt, HIRWhileStmt)
+        assert while_stmt.label == 'outer'
+        assert while_stmt.is_infinite == True
+
+    def test_labeled_while_hir(self):
+        """Test labeled while produces HIR with label."""
+        source = """
+#[mode(m8, x8)]
+fn test() {
+    'inner: while A < 10 {
+        A = A + 1;
+    }
+}
+"""
+        hir = build_hir(source)
+        func = hir.declarations[0]
+        while_stmt = func.body.statements[0]
+        assert isinstance(while_stmt, HIRWhileStmt)
+        assert while_stmt.label == 'inner'
+        assert while_stmt.is_infinite == False
+
+    def test_labeled_break_hir(self):
+        """Test labeled break has correct label in HIR."""
+        source = """
+#[mode(m8, x8)]
+fn test() {
+    'outer: loop {
+        break 'outer;
+    }
+}
+"""
+        hir = build_hir(source)
+        func = hir.declarations[0]
+        while_stmt = func.body.statements[0]
+        from r65.compiler.hir import HIRBreakStmt
+        break_stmt = while_stmt.body.statements[0]
+        assert isinstance(break_stmt, HIRBreakStmt)
+        assert break_stmt.label == 'outer'
+
+    def test_labeled_continue_hir(self):
+        """Test labeled continue has correct label in HIR."""
+        source = """
+#[mode(m8, x8)]
+fn test() {
+    'outer: while A < 10 {
+        continue 'outer;
+    }
+}
+"""
+        hir = build_hir(source)
+        func = hir.declarations[0]
+        while_stmt = func.body.statements[0]
+        from r65.compiler.hir import HIRContinueStmt
+        continue_stmt = while_stmt.body.statements[0]
+        assert isinstance(continue_stmt, HIRContinueStmt)
+        assert continue_stmt.label == 'outer'
+
+    def test_nested_labeled_loops(self):
+        """Test nested labeled loops."""
+        source = """
+#[mode(m8, x8)]
+fn test() {
+    'outer: loop {
+        'inner: while A < 10 {
+            if A == 5 {
+                break 'outer;
+            }
+            continue 'inner;
+        }
+    }
+}
+"""
+        hir = build_hir(source)
+        func = hir.declarations[0]
+        outer_loop = func.body.statements[0]
+        assert outer_loop.label == 'outer'
+        inner_while = outer_loop.body.statements[0]
+        assert inner_while.label == 'inner'
+
+
 class TestForLoopDesugaring:
     """Test for loop desugaring to while loop."""
 

@@ -859,8 +859,8 @@ class MIRBuilder:
 
         # Body: track loop context for break/continue
         self.current_block = body_block
-        # Push loop context: (continue_target=header, break_target=exit)
-        self.loop_stack.append((header_block.block_id, exit_block.block_id))
+        # Push loop context: (continue_target=header, break_target=exit, label)
+        self.loop_stack.append((header_block.block_id, exit_block.block_id, stmt.label))
         self.lower_block(stmt.body)
         self.loop_stack.pop()
 
@@ -872,17 +872,37 @@ class MIRBuilder:
         # Continue at exit block
         self.current_block = exit_block
 
+    def _find_loop_target(self, label: str = None) -> tuple:
+        """
+        Find the loop target for break/continue.
+
+        If label is None, returns the innermost loop.
+        If label is specified, searches the stack for matching label.
+
+        Returns: (continue_target, break_target, label)
+        """
+        if not self.loop_stack:
+            raise MIRLoweringError("Break/continue statement outside of loop")
+
+        if label is None:
+            # Use innermost loop
+            return self.loop_stack[-1]
+
+        # Search for labeled loop (from innermost to outermost)
+        for loop_ctx in reversed(self.loop_stack):
+            if loop_ctx[2] == label:
+                return loop_ctx
+
+        raise MIRLoweringError(f"Label '{label}' not found in enclosing loops")
+
     def lower_break_statement(self, stmt: HIRBreakStmt):
         """
         Lower break statement.
 
-        Jumps to the exit block of the innermost loop.
+        Jumps to the exit block of the target loop.
+        If labeled, jumps to the exit block of the labeled loop.
         """
-        if not self.loop_stack:
-            # Should have been caught by type checker, but be defensive
-            raise MIRLoweringError("Break statement outside of loop")
-
-        _, break_target = self.loop_stack[-1]
+        continue_target, break_target, _ = self._find_loop_target(stmt.label)
         self.emit(Jump(target=break_target))
 
         # Add CFG edge
@@ -893,13 +913,10 @@ class MIRBuilder:
         """
         Lower continue statement.
 
-        Jumps to the header block of the innermost loop.
+        Jumps to the header block of the target loop.
+        If labeled, jumps to the header block of the labeled loop.
         """
-        if not self.loop_stack:
-            # Should have been caught by type checker, but be defensive
-            raise MIRLoweringError("Continue statement outside of loop")
-
-        continue_target, _ = self.loop_stack[-1]
+        continue_target, break_target, _ = self._find_loop_target(stmt.label)
         self.emit(Jump(target=continue_target))
 
         # Add CFG edge

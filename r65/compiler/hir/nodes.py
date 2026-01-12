@@ -316,14 +316,14 @@ class HIRReturnStmt(HIRStatement):
 
 @dataclass
 class HIRBreakStmt(HIRStatement):
-    """Break statement."""
-    pass
+    """Break statement with optional label target."""
+    label: Optional[str] = None  # Target label for labeled break
 
 
 @dataclass
 class HIRContinueStmt(HIRStatement):
-    """Continue statement."""
-    pass
+    """Continue statement with optional label target."""
+    label: Optional[str] = None  # Target label for labeled continue
 
 
 @dataclass
@@ -340,6 +340,7 @@ class HIRWhileStmt(HIRStatement):
     condition: Optional[HIRExpression] = None
     body: Optional[HIRBlock] = None
     is_infinite: bool = False  # True for `loop` (while true)
+    label: Optional[str] = None  # Loop label for labeled break/continue
 
 
 @dataclass

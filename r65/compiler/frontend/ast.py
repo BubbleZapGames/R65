@@ -419,14 +419,14 @@ class ReturnStmt(Statement):
 
 @dataclass
 class BreakStmt(Statement):
-    """Break statement."""
-    pass
+    """Break statement with optional label."""
+    label: Optional[str] = None  # Target label for labeled break
 
 
 @dataclass
 class ContinueStmt(Statement):
-    """Continue statement."""
-    pass
+    """Continue statement with optional label."""
+    label: Optional[str] = None  # Target label for labeled continue
 
 
 @dataclass
@@ -439,15 +439,17 @@ class IfStmt(Statement):
 
 @dataclass
 class LoopStmt(Statement):
-    """Loop statement."""
+    """Loop statement with optional label."""
     body: Block
+    label: Optional[str] = None  # Loop label for break/continue
 
 
 @dataclass
 class WhileStmt(Statement):
-    """While statement."""
+    """While statement with optional label."""
     condition: Expression
     body: Block
+    label: Optional[str] = None  # Loop label for break/continue
 
 
 @dataclass
@@ -457,6 +459,7 @@ class ForStmt(Statement):
     start: Expression       # Start expression (inclusive)
     end: Expression         # End expression (exclusive)
     body: Block
+    label: Optional[str] = None  # Loop label for break/continue
 
 
 @dataclass

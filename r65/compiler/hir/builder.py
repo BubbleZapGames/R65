@@ -648,10 +648,10 @@ class HIRBuilder:
             return hir.HIRReturnStmt(values=values, source_loc=stmt.source_loc)
 
         elif isinstance(stmt, ast.BreakStmt):
-            return hir.HIRBreakStmt(source_loc=stmt.source_loc)
+            return hir.HIRBreakStmt(label=stmt.label, source_loc=stmt.source_loc)
 
         elif isinstance(stmt, ast.ContinueStmt):
-            return hir.HIRContinueStmt(source_loc=stmt.source_loc)
+            return hir.HIRContinueStmt(label=stmt.label, source_loc=stmt.source_loc)
 
         elif isinstance(stmt, ast.IfStmt):
             return self._build_if(stmt)
@@ -777,6 +777,7 @@ class HIRBuilder:
             condition=condition,
             body=body,
             is_infinite=False,
+            label=while_stmt.label,
             source_loc=while_stmt.source_loc
         )
 
@@ -788,6 +789,7 @@ class HIRBuilder:
             condition=hir.HIRBooleanLiteral(value=True),
             body=body,
             is_infinite=True,
+            label=loop.label,
             source_loc=loop.source_loc
         )
 
@@ -886,6 +888,7 @@ class HIRBuilder:
             condition=condition,
             body=while_body,
             is_infinite=False,
+            label=for_stmt.label,
             source_loc=src_loc
         )
 

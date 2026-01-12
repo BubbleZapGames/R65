@@ -221,6 +221,84 @@ def test_for_loop():
     print("✓ For loop test passed")
 
 
+def test_labeled_loops():
+    """Test parsing labeled loops and break/continue."""
+    source = """
+    fn test() {
+        'outer: loop {
+            'inner: while A < 10 {
+                if A == 5 {
+                    break 'outer;
+                }
+                continue 'inner;
+            }
+            break;
+        }
+    }
+    """
+
+    program = parse(source)
+    func = program.items[0]
+
+    # Outer loop
+    loop_stmt = func.body.statements[0]
+    assert isinstance(loop_stmt, ast.LoopStmt)
+    assert loop_stmt.label == 'outer'
+
+    # Inner while
+    while_stmt = loop_stmt.body.statements[0]
+    assert isinstance(while_stmt, ast.WhileStmt)
+    assert while_stmt.label == 'inner'
+
+    # Break 'outer
+    if_stmt = while_stmt.body.statements[0]
+    break_outer = if_stmt.then_block.statements[0]
+    assert isinstance(break_outer, ast.BreakStmt)
+    assert break_outer.label == 'outer'
+
+    # Continue 'inner
+    continue_inner = while_stmt.body.statements[1]
+    assert isinstance(continue_inner, ast.ContinueStmt)
+    assert continue_inner.label == 'inner'
+
+    # Plain break (no label)
+    plain_break = loop_stmt.body.statements[1]
+    assert isinstance(plain_break, ast.BreakStmt)
+    assert plain_break.label is None
+
+    print("✓ Labeled loops test passed")
+
+
+def test_labeled_for_loop():
+    """Test parsing labeled for loop."""
+    source = """
+    fn test() {
+        'rows: for y in 0..8 {
+            'cols: for x in 0..8 {
+                if x == y {
+                    continue 'rows;
+                }
+            }
+        }
+    }
+    """
+
+    program = parse(source)
+    func = program.items[0]
+
+    outer_for = func.body.statements[0]
+    assert isinstance(outer_for, ast.ForStmt)
+    assert outer_for.label == 'rows'
+    assert outer_for.variable == 'y'
+
+    inner_for = outer_for.body.statements[0]
+    assert isinstance(inner_for, ast.ForStmt)
+    assert inner_for.label == 'cols'
+    assert inner_for.variable == 'x'
+
+    print("✓ Labeled for loop test passed")
+
+
 def test_binary_operations():
     """Test parsing binary operations."""
     source = """
@@ -665,6 +743,8 @@ if __name__ == '__main__':
     test_if_statement()
     test_loop_statements()
     test_for_loop()
+    test_labeled_loops()
+    test_labeled_for_loop()
     test_binary_operations()
     test_function_call()
     test_array_and_field_access()

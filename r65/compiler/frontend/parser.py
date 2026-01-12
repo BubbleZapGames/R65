@@ -1045,12 +1045,22 @@ class ASTBuilder(Transformer):
         return [item for item in items if not isinstance(item, LarkToken)]
 
     def break_stmt(self, items):
-        """Break statement."""
-        return ast.BreakStmt()
+        """Break statement with optional label."""
+        label = None
+        for item in items:
+            if isinstance(item, LarkToken) and item.type == 'LABEL_REF':
+                # Strip leading quote: 'outer -> outer
+                label = item.value[1:]
+        return ast.BreakStmt(label=label)
 
     def continue_stmt(self, items):
-        """Continue statement."""
-        return ast.ContinueStmt()
+        """Continue statement with optional label."""
+        label = None
+        for item in items:
+            if isinstance(item, LarkToken) and item.type == 'LABEL_REF':
+                # Strip leading quote: 'outer -> outer
+                label = item.value[1:]
+        return ast.ContinueStmt(label=label)
 
     def increment_stmt(self, items):
         """Increment statement (x++;) - desugars to x += 1;"""
@@ -1089,22 +1099,31 @@ class ASTBuilder(Transformer):
         items = self._filter_tokens(items)
         return items[0]
 
+    def _extract_label(self, items):
+        """Extract label from LABEL_DEF token if present."""
+        for item in items:
+            if isinstance(item, LarkToken) and item.type == 'LABEL_DEF':
+                # Strip leading quote and trailing colon: 'outer: -> outer
+                return item.value[1:-1]
+        return None
+
     def loop_stmt(self, items):
-        """Loop statement."""
+        """Loop statement with optional label."""
+        label = self._extract_label(items)
         items = self._filter_tokens(items)
-        return ast.LoopStmt(body=items[0])
+        return ast.LoopStmt(body=items[0], label=label)
 
     def while_stmt(self, items):
-        """While statement."""
+        """While statement with optional label."""
+        label = self._extract_label(items)
         items = self._filter_tokens(items)
         condition = items[0]
         body = items[1]
-        return ast.WhileStmt(condition=condition, body=body)
+        return ast.WhileStmt(condition=condition, body=body, label=label)
 
     def for_stmt(self, items):
         """For loop statement: for i in start..end { body }"""
-        # Items: FOR, IDENT, IN, start_expr, DOTDOT, end_expr, block
-        # After filtering: IDENT, start_expr, end_expr, block
+        label = self._extract_label(items)
         variable = None
         exprs = []
         body = None
@@ -1124,7 +1143,8 @@ class ASTBuilder(Transformer):
             variable=variable,
             start=exprs[0],
             end=exprs[1],
-            body=body
+            body=body,
+            label=label
         )
 
     def asm_stmt(self, items):

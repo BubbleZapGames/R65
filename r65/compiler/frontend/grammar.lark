@@ -203,17 +203,17 @@ expr_stmt: expr ";"
 // Return statement - single value or parenthesized tuple: return; | return x; | return (a, b);
 return_stmt: RETURN (return_tuple | expr)?  ";"
 return_tuple: "(" expr ("," expr)+ ")"
-break_stmt: BREAK ";"
-continue_stmt: CONTINUE ";"
+break_stmt: BREAK LABEL_REF? ";"
+continue_stmt: CONTINUE LABEL_REF? ";"
 increment_stmt: lvalue PLUSPLUS ";"
 decrement_stmt: lvalue MINUSMINUS ";"
 
 if_stmt: IF expr block (ELSE else_clause)?
 else_clause: if_stmt | block
 
-loop_stmt: LOOP block
-while_stmt: WHILE expr block
-for_stmt: FOR IDENT IN expr DOTDOT expr block
+loop_stmt: LABEL_DEF? LOOP block
+while_stmt: LABEL_DEF? WHILE expr block
+for_stmt: LABEL_DEF? FOR IDENT IN expr DOTDOT expr block
 
 asm_stmt: ASM "!" "(" STRING ("," STRING)* ")" ";"
 
@@ -405,6 +405,12 @@ CFG_NOT.10: /not\b/
 
 // Macro keyword
 MACRO_RULES.10: /macro_rules\b/
+
+// Loop labels
+// Label definition: 'outer: (before a loop)
+LABEL_DEF.10: /'[a-zA-Z_][a-zA-Z0-9_]*:/
+// Label reference: 'outer (in break/continue)
+LABEL_REF.10: /'[a-zA-Z_][a-zA-Z0-9_]*/
 
 // Macro variable reference ($name)
 MACRO_VAR.10: /\$[a-zA-Z_][a-zA-Z0-9_]*/
