@@ -741,7 +741,7 @@ R65 uses **hardware-aware operators**: syntax indicates performance cost.
 - ✅ Function pointers: `fn()` (near) and `far fn()` (cross-bank) with calling convention encoded in type
 - ✅ Register preservation: `#[preserves(A, X, Y, STATUS, D, DBR, S)]` to declare preservation guarantees
 - ✅ Interrupt handlers: `#[interrupt(nmi/irq/brk/cop/abort)]` with automatic register preservation and RTI
-- ✅ Control flow: `if/else, loop, while, loop-while, break, continue, return, never type (!)` - See [docs/control-flow.md](docs/control-flow.md)
+- ✅ Control flow: `if/else, loop, while, for i in 0..n, loop-while, break, continue, return, never type (!)`; labeled loops (`'label: loop`) with `break 'label`/`continue 'label` - See [docs/control-flow.md](docs/control-flow.md)
 - ✅ Operators with hardware cost model:
   - Arithmetic: `+`, `-`, `*` (constants 1/2/4/8 only), `/` (constants 1/2/4/8 only)
   - Static string concatenation: `"Hello, " + "World"` becomes `"Hello, World"` at compile time
