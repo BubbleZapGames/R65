@@ -331,7 +331,7 @@ array_literal_expr: "[" (expr ("," expr)* ","?)? "]"  // [a, b, c] - explicit el
 // Note: Not directly in primary to avoid IDENT "{" ambiguity with blocks.
 // Only used in initializer_expr (after = in let/static declarations).
 struct_literal_expr: IDENT "{" struct_field_init ("," struct_field_init)* ","? "}"
-struct_field_init: IDENT ":" expr
+struct_field_init: IDENT ":" initializer_expr
 
 // Initializer expression - used after = in let/static declarations
 // Allows struct literals which would be ambiguous in general expression context

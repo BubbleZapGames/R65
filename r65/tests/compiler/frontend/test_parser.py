@@ -116,6 +116,47 @@ def test_struct_declaration():
     print("✓ Struct declaration test passed")
 
 
+def test_nested_struct_literal():
+    """Test parsing nested struct literals in field initializers."""
+    source = """
+    struct Point { x: u8, y: u8 }
+    struct Rect { top_left: Point, bottom_right: Point }
+
+    #[ram]
+    static mut R: Rect = Rect {
+        top_left: Point { x: 0, y: 0 },
+        bottom_right: Point { x: 10, y: 10 }
+    };
+    """
+
+    program = parse(source)
+
+    # Check the static declaration
+    static = program.items[2]
+    assert isinstance(static, ast.StaticDecl)
+    assert static.name == 'R'
+
+    # Check outer struct literal
+    init = static.initializer
+    assert isinstance(init, ast.StructLiteralExpr)
+    assert init.struct_name == 'Rect'
+    assert len(init.fields) == 2
+
+    # Check nested struct literal in top_left field
+    top_left = init.fields[0]
+    assert top_left.name == 'top_left'
+    assert isinstance(top_left.value, ast.StructLiteralExpr)
+    assert top_left.value.struct_name == 'Point'
+
+    # Check nested struct literal in bottom_right field
+    bottom_right = init.fields[1]
+    assert bottom_right.name == 'bottom_right'
+    assert isinstance(bottom_right.value, ast.StructLiteralExpr)
+    assert bottom_right.value.struct_name == 'Point'
+
+    print("✓ Nested struct literal test passed")
+
+
 def test_enum_declaration():
     """Test parsing enum declaration."""
     source = """
@@ -739,6 +780,7 @@ if __name__ == '__main__':
     test_register_aliasing()
     test_static_declaration()
     test_struct_declaration()
+    test_nested_struct_literal()
     test_enum_declaration()
     test_if_statement()
     test_loop_statements()
