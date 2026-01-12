@@ -341,17 +341,19 @@ class ControlFlowInstructionSelector(BaseSelector):
             self._emit_implied(Opcode.PLP, "Restore processor status")
 
     def _emit_return_instruction(self):
-        """Emit appropriate return instruction (RTL, RTS, or WAI for never type).
+        """Emit appropriate return instruction (RTL, RTS, or WAI).
 
-        For functions returning ! (never type), we emit WAI instead of a return
-        instruction since the function is not expected to return. This handles
-        cases where the function body ends without an explicit infinite loop.
+        For functions returning ! (never type) or entry functions, we emit WAI
+        instead of a return instruction since there's no valid return address.
         """
         from r65.compiler.hir.types import NeverTypeInfo
 
-        # Check if function returns ! (never type)
-        if self.current_function and isinstance(self.current_function.return_type, NeverTypeInfo):
-            self._emit_implied(Opcode.WAI, "Never returns")
+        # Never type or entry functions have no valid return address
+        if self.current_function and (
+            isinstance(self.current_function.return_type, NeverTypeInfo)
+            or self.current_function.is_entry
+        ):
+            self._emit_implied(Opcode.WAI, "No return - wait for interrupt")
             return
 
         if self.current_function and self.current_function.is_far:

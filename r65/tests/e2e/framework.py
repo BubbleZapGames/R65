@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Union
 
-from r65.emulator.cpu import CPU65816, StopExecution
+from r65.emulator.cpu import CPU65816, StopExecution, WaitForInterrupt
 from r65.emulator.memory import Memory
 
 
@@ -178,7 +178,7 @@ class E2ETest:
             while instructions < max_instructions:
                 cpu.step()
                 instructions += 1
-        except StopExecution:
+        except (StopExecution, WaitForInterrupt):
             pass
 
         cpu._instructions_executed = instructions

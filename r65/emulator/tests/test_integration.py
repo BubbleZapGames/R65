@@ -8,7 +8,7 @@ import tempfile
 import os
 from pathlib import Path
 
-from r65.emulator.cpu import CPU65816, StopExecution
+from r65.emulator.cpu import CPU65816, StopExecution, WaitForInterrupt
 from r65.emulator.memory import Memory
 
 
@@ -69,7 +69,7 @@ def run_program(rom_data: bytes, max_instructions: int = 1000) -> CPU65816:
         while instructions < max_instructions:
             cpu.step()
             instructions += 1
-    except StopExecution:
+    except (StopExecution, WaitForInterrupt):
         pass
 
     return cpu

@@ -88,7 +88,6 @@ class TestArithmetic:
     def e2e(self):
         return E2ETest()
 
-    @pytest.mark.xfail(reason="Carry flag not cleared before addition - off by one")
     def test_addition(self, e2e):
         """Test addition operation."""
         result = e2e.run('''
