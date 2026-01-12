@@ -5,8 +5,52 @@
 // Usage:
 //   include!("lib/math.r65")
 
-// Multiplication functions
-// Provides hardware and software implementations
+// ============================================================================
+// SNES Hardware Multiplication Registers
+// ============================================================================
+
+#[cfg(snes)]
+#[hw(0x4202)]
+static mut WRMPYA: u8;  // Multiplicand A (write-only)
+
+#[cfg(snes)]
+#[hw(0x4203)]
+static mut WRMPYB: u8;  // Multiplicand B (write triggers multiply)
+
+#[cfg(snes)]
+#[hw(0x4216)]
+static mut RDMPYL: u8;  // Product low byte (read-only)
+
+#[cfg(snes)]
+#[hw(0x4217)]
+static mut RDMPYH: u8;  // Product high byte (read-only)
+
+// SNES Hardware Division Registers
+#[cfg(snes)]
+#[hw(0x4204)]
+static mut WRDIVL: u8;  // Dividend low byte (write-only)
+
+#[cfg(snes)]
+#[hw(0x4205)]
+static mut WRDIVH: u8;  // Dividend high byte (write-only)
+
+#[cfg(snes)]
+#[hw(0x4206)]
+static mut WRDIVB: u8;  // Divisor (write triggers divide)
+
+#[cfg(snes)]
+#[hw(0x4214)]
+static mut RDDIVL: u8;  // Quotient low byte (read-only)
+
+#[cfg(snes)]
+#[hw(0x4215)]
+static mut RDDIVH: u8;  // Quotient high byte (read-only)
+
+// Note: RDMPYL/RDMPYH are also used for division remainder
+
+// ============================================================================
+// Multiplication Functions
+// ============================================================================
 
 // Hardware 8x8 -> 8 unsigned multiply (widening)
 #[cfg(snes)]

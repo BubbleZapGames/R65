@@ -168,6 +168,7 @@ block: "{" statement* "}"
 
 // Statements
 ?statement: let_stmt
+          | multi_assign_stmt
           | expr_stmt
           | return_stmt
           | break_stmt
@@ -180,6 +181,11 @@ block: "{" statement* "}"
           | increment_stmt
           | decrement_stmt
           | macro_invocation_stmt_inner
+
+// Multi-assignment statement: (a, b) = tuple_expr;
+multi_assign_stmt: "(" multi_assign_target ("," multi_assign_target)+ ")" "=" expr ";"
+multi_assign_target: IDENT   -> multi_assign_ident
+                   | REGISTER -> multi_assign_register
 
 // Uses initializer_expr to allow struct literals after =
 // Supports both single binding and tuple destructuring:

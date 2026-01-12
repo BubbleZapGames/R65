@@ -18,10 +18,32 @@ class Memory:
     Memory regions:
     - WRAM: 128KB at $7E0000-$7FFFFF, mirrored at $0000-$1FFF in banks $00-$3F, $80-$BF
     - ROM: Mapped according to LoROM or HiROM layout
-    - Hardware registers: $2100-$21FF, $4200-$44FF (stubbed for CPU-only emulation)
+    - Hardware registers: $2100-$21FF, $4200-$44FF
+
+    Math hardware registers:
+    - $4202 WRMPYA: Multiplicand A (write-only)
+    - $4203 WRMPYB: Multiplicand B (write triggers 8x8 multiply)
+    - $4204 WRDIVL: Dividend low byte (write-only)
+    - $4205 WRDIVH: Dividend high byte (write-only)
+    - $4206 WRDIVB: Divisor (write triggers 16/8 divide)
+    - $4214 RDDIVL: Quotient low byte (read-only)
+    - $4215 RDDIVH: Quotient high byte (read-only)
+    - $4216 RDMPYL: Product/Remainder low byte (read-only)
+    - $4217 RDMPYH: Product/Remainder high byte (read-only)
     """
 
     WRAM_SIZE = 128 * 1024  # 128KB
+
+    # Math hardware register addresses
+    WRMPYA = 0x4202  # Multiplicand A
+    WRMPYB = 0x4203  # Multiplicand B (write triggers multiply)
+    WRDIVL = 0x4204  # Dividend low
+    WRDIVH = 0x4205  # Dividend high
+    WRDIVB = 0x4206  # Divisor (write triggers divide)
+    RDDIVL = 0x4214  # Quotient low (read-only)
+    RDDIVH = 0x4215  # Quotient high (read-only)
+    RDMPYL = 0x4216  # Product/Remainder low (read-only)
+    RDMPYH = 0x4217  # Product/Remainder high (read-only)
 
     def __init__(self, rom_data: bytes, mapping: str = "lorom"):
         """
@@ -37,6 +59,12 @@ class Memory:
 
         # Hardware register stubs (return 0 on read, ignore writes)
         self._hw_regs = {}
+
+        # Math hardware state
+        self._wrmpya = 0      # Multiplicand A
+        self._wrdiv = 0       # 16-bit dividend
+        self._rdmpy = 0       # 16-bit product/remainder
+        self._rddiv = 0       # 16-bit quotient
 
     def read(self, bank: int, addr: int) -> int:
         """Read a byte from the 24-bit address space."""
@@ -180,13 +208,52 @@ class Memory:
             return None
 
     def _read_hw_reg(self, bank: int, addr: int) -> int:
-        """Read from hardware register (stub)."""
-        # Return stored value or 0
+        """Read from hardware register."""
+        # Math result registers (read-only)
+        if addr == self.RDDIVL:
+            return self._rddiv & 0xFF
+        elif addr == self.RDDIVH:
+            return (self._rddiv >> 8) & 0xFF
+        elif addr == self.RDMPYL:
+            return self._rdmpy & 0xFF
+        elif addr == self.RDMPYH:
+            return (self._rdmpy >> 8) & 0xFF
+
+        # Return stored value or 0 for other registers
         return self._hw_regs.get(addr, 0)
 
     def _write_hw_reg(self, bank: int, addr: int, value: int):
-        """Write to hardware register (stub)."""
-        self._hw_regs[addr] = value
+        """Write to hardware register."""
+        value &= 0xFF
+
+        # Math registers
+        if addr == self.WRMPYA:
+            # Store multiplicand A
+            self._wrmpya = value
+        elif addr == self.WRMPYB:
+            # Writing multiplicand B triggers 8x8 unsigned multiplication
+            # Result = WRMPYA * WRMPYB (16-bit product)
+            self._rdmpy = (self._wrmpya * value) & 0xFFFF
+        elif addr == self.WRDIVL:
+            # Store dividend low byte
+            self._wrdiv = (self._wrdiv & 0xFF00) | value
+        elif addr == self.WRDIVH:
+            # Store dividend high byte
+            self._wrdiv = (self._wrdiv & 0x00FF) | (value << 8)
+        elif addr == self.WRDIVB:
+            # Writing divisor triggers 16/8 unsigned division
+            if value == 0:
+                # Division by zero: quotient = 0xFFFF, remainder = dividend
+                self._rddiv = 0xFFFF
+                self._rdmpy = self._wrdiv
+            else:
+                # quotient = dividend / divisor
+                # remainder = dividend % divisor
+                self._rddiv = (self._wrdiv // value) & 0xFFFF
+                self._rdmpy = (self._wrdiv % value) & 0xFFFF
+        else:
+            # Store other registers
+            self._hw_regs[addr] = value
 
     def get_reset_vector(self) -> int:
         """Get the reset vector address from ROM."""

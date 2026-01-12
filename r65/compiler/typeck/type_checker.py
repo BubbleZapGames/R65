@@ -12,7 +12,7 @@ from r65.compiler.hir import (
     HIRStringLiteral,
     HIRStructFieldInit, HIRStructLiteralExpr,
     HIRTypeCast, HIRFunctionCall,
-    HIRMethodCall, HIRArrayIndex, HIRFieldAccess, HIRDereference, HIRAddressOf, HIRAssignment,
+    HIRMethodCall, HIRArrayIndex, HIRFieldAccess, HIRDereference, HIRAddressOf, HIRAssignment, HIRMultiAssignment,
     HIRLetStmt, HIRTupleLetStmt, HIRExprStmt, HIRReturnStmt, HIRIfStmt, HIRWhileStmt,
     HIRStaticDecl, HIRConstDecl, HIRTypeAlias,
     HIRMatchExpression, HIRPattern, HIRLiteralPattern, HIREnumPattern, HIRWildcardPattern, HIRIdentifierPattern, HIROrPattern,
@@ -739,6 +739,9 @@ class TypeChecker:
         elif isinstance(expr, HIRAssignment):
             return self.check_assignment(expr)
 
+        elif isinstance(expr, HIRMultiAssignment):
+            return self.check_multi_assignment(expr)
+
         elif isinstance(expr, HIRDereference):
             return self.pointer_validator.check_dereference(expr)
 
@@ -1098,3 +1101,50 @@ class TypeChecker:
 
         expr.expr_type = target_type
         return target_type
+
+    def check_multi_assignment(self, expr: HIRMultiAssignment) -> TypeInfo:
+        """Type check multi-assignment (tuple destructuring).
+
+        Handles: (A, X) = func() where func returns a tuple.
+        """
+        # Type check the value expression (should return a tuple)
+        value_type = self.check_expression(expr.value)
+
+        # Value must be a tuple type
+        if not isinstance(value_type, TupleTypeInfo):
+            raise TypeCheckError(
+                f"Multi-assignment requires a tuple value, got '{value_type}'",
+                source_loc=expr.source_loc
+            )
+
+        # Number of targets must match number of tuple elements
+        num_targets = len(expr.targets)
+        num_elements = len(value_type.element_types)
+        if num_targets != num_elements:
+            raise TypeCheckError(
+                f"Multi-assignment has {num_targets} targets but value has {num_elements} elements",
+                source_loc=expr.source_loc
+            )
+
+        # Type check each target against corresponding tuple element
+        for i, (target, elem_type) in enumerate(zip(expr.targets, value_type.element_types)):
+            target_type = self.check_expression(target)
+
+            # Arrays and structs cannot be assigned by value
+            if TypeUtils.is_aggregate_type(target_type):
+                type_name = str(target_type)
+                raise TypeCheckError(
+                    f"Cannot assign '{type_name}' by value in multi-assignment\n"
+                    f"  Arrays and structs cannot be copied by value",
+                    source_loc=expr.source_loc
+                )
+
+            # Types must be compatible
+            self._check_type_match(
+                target_type, elem_type, target,
+                f"multi-assignment element {i}", expr.source_loc, use_compatible=True
+            )
+
+        # The type of the expression is the tuple type
+        expr.expr_type = value_type
+        return value_type

@@ -8,9 +8,10 @@ array index assignments, and pointer dereference assignments.
 from typing import TYPE_CHECKING, Union
 
 from r65.compiler.hir import (
-    HIRAssignment, HIRBinaryOp, HIRRegister, HIRIdentifier,
+    HIRAssignment, HIRMultiAssignment, HIRBinaryOp, HIRRegister, HIRIdentifier,
     HIRFieldAccess, HIRArrayIndex, HIRDereference,
 )
+from r65.compiler.hir.types import TupleTypeInfo
 from r65.compiler.mir.nodes import (
     VirtualRegister, HardwareRegister, Immediate, MemoryLocation,
     Move, Store, StoreIndirect, BinaryOp,
@@ -77,9 +78,24 @@ class AssignmentLowerer:
             # Check if it's target = target op value
             if (isinstance(binary_op.left, HIRRegister) and
                 binary_op.left.name == expr.target.name):
-                # Direct hardware register op: X = X + 1 becomes BinaryOp(dest=X, left=X, right=1)
+                # Direct hardware register op: A = A + TEMP becomes BinaryOp(dest=A, left=A, right=memloc)
                 hw_reg = HardwareRegister(expr.target.name)
-                right = self.builder.lower_expression(binary_op.right)
+
+                # CRITICAL: For A = A op MEMORY, we must NOT emit a Load instruction
+                # that would clobber A. Check if right operand is a memory location
+                # and use it directly instead of going through lower_expression.
+                right = None
+                if isinstance(binary_op.right, HIRIdentifier):
+                    symbol = binary_op.right.symbol
+                    # Check if it has explicit memory location (not an alias)
+                    alias = self.ctx.current_function.alias_tracker.get_alias(symbol)
+                    if alias is None and self.builder.has_explicit_location(symbol):
+                        # Use memory location directly - no Load instruction needed
+                        right = self.builder.get_memory_location(symbol)
+
+                if right is None:
+                    # Fall back to lower_expression for other cases (immediates, etc.)
+                    right = self.builder.lower_expression(binary_op.right)
 
                 self.emit(BinaryOp(
                     dest=hw_reg,
@@ -89,6 +105,22 @@ class AssignmentLowerer:
                     type_info=expr.expr_type
                 ))
                 return hw_reg
+
+        # OPTIMIZATION: Direct memory-to-register load for X/Y registers
+        # Avoid going through a virtual register (which gets allocated to stack)
+        # This allows LDX/LDY to be used directly instead of LDA; TAX/TAY
+        if isinstance(expr.target, HIRRegister) and isinstance(expr.value, HIRIdentifier):
+            target_reg = expr.target.name
+            if target_reg in ('X', 'Y', 'A'):
+                symbol = expr.value.symbol
+                # Check if it has explicit memory location (not an alias)
+                hw_alias = self.ctx.current_function.alias_tracker.get_alias(symbol)
+                if hw_alias is None and self.builder.has_explicit_location(symbol):
+                    # Direct load from memory to hardware register
+                    hw_reg = HardwareRegister(target_reg)
+                    mem_loc = self.builder.get_memory_location(symbol)
+                    self.emit(Move(dest=hw_reg, source=mem_loc, type_info=expr.expr_type))
+                    return hw_reg
 
         # Lower value
         value = self.builder.lower_expression(expr.value)
@@ -365,3 +397,88 @@ class AssignmentLowerer:
             type_info=expr.expr_type
         ))
         return value
+
+    # ========================================================================
+    # Multi-Assignment (Tuple Destructuring)
+    # ========================================================================
+
+    def lower_multi_assignment(self, expr: HIRMultiAssignment) -> HardwareRegister:
+        """
+        Lower multi-assignment (tuple destructuring).
+
+        Handles: (A, X) = func() where func returns a tuple.
+
+        For tuple returns, values are placed in registers in order:
+        - First element -> A register
+        - Second element -> X register
+        - Third element -> Y register (if applicable)
+
+        Args:
+            expr: HIR multi-assignment expression
+
+        Returns:
+            HardwareRegister of the first element (A)
+        """
+        # Lower the value expression (function call returning tuple)
+        # This will execute the call and leave results in A, X, (Y)
+        self.builder.lower_expression(expr.value)
+
+        # Map tuple index to return register
+        return_registers = ['A', 'X', 'Y']
+
+        # Get the tuple type from the expression
+        value_type = expr.value.expr_type
+        if not isinstance(value_type, TupleTypeInfo):
+            raise MIRLoweringError(f"Multi-assignment requires tuple type, got: {value_type}")
+
+        num_elements = len(value_type.element_types)
+        if num_elements > len(return_registers):
+            raise MIRLoweringError(f"Tuple has too many elements ({num_elements}), max supported is {len(return_registers)}")
+
+        # Assign each target from the corresponding return register
+        # Note: We need to be careful about order if targets overlap with source registers
+        # For (A, X) = func(), if func returns in A and X, and targets are A and X,
+        # no moves are needed. But if targets are (X, A), we need to swap.
+
+        # Collect assignments that need to be made
+        assignments = []
+        for i, target in enumerate(expr.targets):
+            source_reg = HardwareRegister(return_registers[i])
+            elem_type = value_type.element_types[i]
+
+            if isinstance(target, HIRRegister):
+                target_reg = HardwareRegister(target.name)
+                if target_reg.name != source_reg.name:
+                    assignments.append((target_reg, source_reg, elem_type))
+            elif isinstance(target, HIRIdentifier):
+                # Assign to variable
+                symbol = target.symbol
+                hw_reg = self.ctx.current_function.alias_tracker.get_alias(symbol)
+                if hw_reg:
+                    if hw_reg.name != source_reg.name:
+                        assignments.append((hw_reg, source_reg, elem_type))
+                else:
+                    # Store to memory location
+                    if self.builder.has_explicit_location(symbol):
+                        mem_loc = self.builder.get_memory_location(symbol)
+                        self.emit(Store(source=source_reg, dest=mem_loc, type_info=elem_type))
+                    else:
+                        # Update or create virtual register
+                        symbol_id = id(symbol)
+                        if symbol_id in self.ctx.symbol_to_vreg:
+                            vreg = self.ctx.symbol_to_vreg[symbol_id]
+                        else:
+                            vreg = self.ctx.alloc_vreg(elem_type, symbol.name)
+                            self.ctx.symbol_to_vreg[symbol_id] = vreg
+                        self.emit(Move(dest=vreg, source=source_reg, type_info=elem_type))
+            else:
+                raise MIRLoweringError(f"Unsupported multi-assignment target: {type(target)}")
+
+        # Emit register-to-register moves
+        # TODO: Handle cycles in assignments (e.g., (X, A) = func() where func returns in A, X)
+        # For now, emit moves in order - may need temp register for swaps
+        for target_reg, source_reg, elem_type in assignments:
+            self.emit(Move(dest=target_reg, source=source_reg, type_info=elem_type))
+
+        # Return the first element's register
+        return HardwareRegister(return_registers[0])

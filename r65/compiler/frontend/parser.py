@@ -1453,6 +1453,30 @@ class ASTBuilder(Transformer):
 
         return ast.MultiAssignment(targets=targets, value=value)
 
+    def multi_assign_stmt(self, items):
+        """Multi-assignment statement: (a, b) = tuple_expr;"""
+        items = self._filter_tokens(items)
+        # All items except the last are targets, the last is the expression
+        targets = list(items[:-1])
+        value = items[-1]
+
+        multi_assign = ast.MultiAssignment(targets=targets, value=value)
+        return ast.ExprStmt(expr=multi_assign)
+
+    def multi_assign_ident(self, items):
+        """Multi-assignment target identifier."""
+        items = self._filter_tokens(items)
+        token = items[0]
+        identifier = token.value if isinstance(token, LarkToken) else token
+        if isinstance(token, LarkToken):
+            self._validate_identifier_not_register(identifier, token)
+        return ast.Identifier(name=identifier)
+
+    def multi_assign_register(self, items):
+        """Multi-assignment target register."""
+        items = self._filter_tokens(items, keep_types={'REGISTER'})
+        return ast.Register(name=items[0].value if isinstance(items[0], LarkToken) else items[0])
+
     def compound_op(self, items):
         """Compound operator."""
         # Return the first token which is the compound operator

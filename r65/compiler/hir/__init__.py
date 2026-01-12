@@ -65,6 +65,7 @@ from r65.compiler.hir.nodes import (
     HIRDereference,
     HIRAddressOf,
     HIRAssignment,
+    HIRMultiAssignment,
     HIRFunctionAddress,
 
     # Pattern Matching
@@ -150,6 +151,7 @@ __all__ = [
     'HIRDereference',
     'HIRAddressOf',
     'HIRAssignment',
+    'HIRMultiAssignment',
     'HIRFunctionAddress',
 
     # Pattern Matching

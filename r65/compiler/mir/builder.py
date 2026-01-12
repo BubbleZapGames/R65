@@ -12,7 +12,7 @@ from r65.compiler.hir import (
     HIRIfStmt, HIRWhileStmt, HIRBreakStmt, HIRContinueStmt, HIRAsmStmt,
     HIRExpression, HIRIntegerLiteral, HIRBooleanLiteral, HIREnumVariantExpr, HIRIdentifier,
     HIRFunctionAddress, HIRRegister, HIRBinaryOp, HIRUnaryOp, HIRTypeCast, HIRAssignment,
-    HIRFunctionCall, HIRMethodCall, HIRArrayIndex, HIRFieldAccess, HIRDereference, HIRAddressOf,
+    HIRFunctionCall, HIRMethodCall, HIRArrayIndex, HIRFieldAccess, HIRDereference, HIRAddressOf, HIRMultiAssignment,
     HIRArrayFillExpr, HIRArrayLiteralExpr, HIRStringLiteral, HIRStructLiteralExpr,
     HIRMatchExpression, HIRPattern, HIRLiteralPattern, HIREnumPattern, HIRWildcardPattern, HIRIdentifierPattern, HIROrPattern,
     RegisterLetBinding, VariableLetBinding,
@@ -655,6 +655,9 @@ class MIRBuilder:
 
         elif isinstance(expr, HIRAssignment):
             return self.assign_lowerer.lower_assignment(expr)
+
+        elif isinstance(expr, HIRMultiAssignment):
+            return self.assign_lowerer.lower_multi_assignment(expr)
 
         elif isinstance(expr, HIRFunctionCall):
             return self.call_lowerer.lower_function_call(expr)

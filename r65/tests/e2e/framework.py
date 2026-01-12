@@ -127,8 +127,9 @@ class E2ETest:
             src_path.write_text(source)
 
             # Compile R65 to assembly
+            # Always pass --cfg snes since these are SNES e2e tests
             result = subprocess.run(
-                ["r65c", str(src_path), "-o", str(asm_path)],
+                ["r65c", str(src_path), "-o", str(asm_path), "--cfg", "snes"],
                 capture_output=True,
                 text=True
             )
