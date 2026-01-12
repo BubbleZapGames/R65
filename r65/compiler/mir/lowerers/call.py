@@ -125,13 +125,16 @@ class CallLowerer:
                 return_type = func_type.return_type
 
         if return_type:
-            # Single return value (multiple returns would need tuple type support)
-            call_name = func_decl.name if func_decl else "indirect_call"
-            result_vreg = self.ctx.alloc_vreg(
-                return_type,
-                f"call_{call_name}_result"
-            )
-            returns.append(result_vreg)
+            # Skip vreg allocation for tuple returns - lower_multi_assignment handles
+            # tuple destructuring directly from A, X, Y registers
+            from r65.compiler.hir.types import TupleTypeInfo
+            if not isinstance(return_type, TupleTypeInfo):
+                call_name = func_decl.name if func_decl else "indirect_call"
+                result_vreg = self.ctx.alloc_vreg(
+                    return_type,
+                    f"call_{call_name}_result"
+                )
+                returns.append(result_vreg)
 
         # Handle built-in calls
         if call_expr.builtin_name:

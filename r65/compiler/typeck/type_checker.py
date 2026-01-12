@@ -1145,6 +1145,90 @@ class TypeChecker:
                 f"multi-assignment element {i}", expr.source_loc, use_compatible=True
             )
 
+        # Check for out-of-order register assignments
+        self._check_tuple_register_order(expr)
+
         # The type of the expression is the tuple type
         expr.expr_type = value_type
         return value_type
+
+    def _check_tuple_register_order(self, expr: HIRMultiAssignment):
+        """
+        Check that registers appearing in both return statement and assignment
+        targets are at the same position.
+
+        If a function returns (A, X) and we assign to (X, A), this creates a
+        problematic swap situation. Enforce that overlapping registers must be
+        at the same position.
+        """
+        # Get the function declaration if this is a direct function call
+        if not isinstance(expr.value, HIRFunctionCall):
+            return
+
+        func_call = expr.value
+        if not isinstance(func_call.func, HIRIdentifier):
+            return  # Indirect call - can't check
+
+        if func_call.func.symbol.kind != SymbolKind.FUNCTION:
+            return
+
+        func_decl = self._lookup_function_decl(func_call.func.symbol.name, expr.source_loc)
+        if not func_decl:
+            return
+
+        # Extract register positions from return statements
+        return_reg_positions = self._get_return_register_positions(func_decl)
+        if not return_reg_positions:
+            return  # No register returns to check
+
+        # Extract register positions from assignment targets
+        target_reg_positions = {}
+        for i, target in enumerate(expr.targets):
+            if isinstance(target, HIRRegister):
+                target_reg_positions[target.name] = i
+
+        # Check for conflicts: same register at different positions
+        for reg_name, return_pos in return_reg_positions.items():
+            if reg_name in target_reg_positions:
+                target_pos = target_reg_positions[reg_name]
+                if return_pos != target_pos:
+                    raise TypeCheckError(
+                        f"Register '{reg_name}' appears at position {return_pos} in return "
+                        f"but position {target_pos} in assignment targets\n"
+                        f"  This creates an impossible swap situation",
+                        source_loc=expr.source_loc,
+                        hint=f"Reorder assignment targets to match return order, "
+                             f"or use intermediate variables"
+                    )
+
+    def _get_return_register_positions(self, func_decl: HIRFunctionDecl) -> dict:
+        """
+        Extract register positions from a function's return statements.
+
+        Returns a dict mapping register name to position in return tuple.
+        Only considers direct register returns (not expressions).
+        """
+        result = {}
+
+        def visit_statement(stmt):
+            if isinstance(stmt, HIRReturnStmt):
+                for i, value in enumerate(stmt.values):
+                    if isinstance(value, HIRRegister):
+                        # Only record first occurrence of each register
+                        if value.name not in result:
+                            result[value.name] = i
+            elif isinstance(stmt, HIRIfStmt):
+                for s in stmt.then_block.statements:
+                    visit_statement(s)
+                if stmt.else_block:
+                    for s in stmt.else_block.statements:
+                        visit_statement(s)
+            elif isinstance(stmt, HIRWhileStmt):
+                for s in stmt.body.statements:
+                    visit_statement(s)
+
+        if func_decl.body:
+            for stmt in func_decl.body.statements:
+                visit_statement(stmt)
+
+        return result
