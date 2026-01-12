@@ -368,49 +368,95 @@ loop {
 
 ---
 
-### For Loop (Future - Not in Initial Version)
+### For Loop (Range-Based)
 
-Classic C-style for loops are **not in the initial version**. Use `while` or iterator patterns instead:
-
+**Syntax**:
 ```rust
-// Instead of: for (i = 0; i < 10; i++)
-let mut i = 0;
-while i < 10 {
-    process(i);
-    i += 1;
-}
-
-// Or use loop with break:
-let mut i = 0;
-loop {
-    if i >= 10 { break; }
-    process(i);
-    i += 1;
+for variable in start..end {
+    // body
 }
 ```
 
-**Future consideration**: Iterator-style for loops
+**Semantics**:
+- Iterates from `start` (inclusive) to `end` (exclusive)
+- Loop variable is automatically declared as mutable
+- Range `start..end` must be integer expressions
+- Equivalent to `let mut i = start; while i < end { body; i += 1; }`
+
+**Assembly Mapping**:
 ```rust
-// Possible future syntax:
 for i in 0..10 {
     process(i);
 }
 
-for item in array {
-    process(item);
+// Desugars to:
+// let mut i = 0;
+// while i < 10 {
+//     process(i);
+//     i = i + 1;
+// }
+
+// loop_start:
+// LDA i
+// CMP #10
+// BCS loop_end
+// JSR process
+// INC i
+// JMP loop_start
+// loop_end:
+```
+
+**Examples**:
+```rust
+// Simple iteration
+for i in 0..256 {
+    buffer[i] = 0;
+}
+
+// Nested loops for 2D processing
+for y in 0..8 {
+    for x in 0..8 {
+        process_tile(x, y);
+    }
+}
+
+// Using constants
+const WIDTH: u8 = 32;
+const HEIGHT: u8 = 28;
+for row in 0..HEIGHT {
+    for col in 0..WIDTH {
+        draw_cell(col, row);
+    }
+}
+
+// Labeled for loop (see Labeled Break/Continue)
+'rows: for y in 0..8 {
+    'cols: for x in 0..8 {
+        if tile[y][x] == target {
+            break 'rows;  // Exit both loops
+        }
+    }
 }
 ```
+
+**Note**: Iterator-based for loops (`for item in collection`) are not supported. Only range syntax `start..end` works.
 
 ---
 
 ## Break Statement
 
-**Syntax**: `break;`
+**Syntax**:
+```rust
+break;           // Break innermost loop
+break 'label;    // Break labeled loop
+```
 
 **Semantics**:
-- Immediately exits the innermost loop (`loop`, `while`, or `loop-while`)
-- Execution continues after the loop
+- `break;` immediately exits the innermost loop (`loop`, `while`, `for`, or `loop-while`)
+- `break 'label;` exits the loop with the specified label
+- Execution continues after the target loop
 - **Not allowed** outside of loops (compile error)
+- Label must refer to an enclosing loop (compile error otherwise)
 
 **Assembly Mapping**:
 ```rust
@@ -452,18 +498,43 @@ loop {
     }
     process(input);
 }
+
+// Labeled break - exit outer loop from inner loop
+'outer: for y in 0..8 {
+    for x in 0..8 {
+        if tile[y][x] == target {
+            break 'outer;  // Exit both loops immediately
+        }
+    }
+}
+
+// Labeled break with loop
+'search: loop {
+    'inner: while A < 10 {
+        if found {
+            break 'search;  // Exit outer loop
+        }
+        A = A + 1;
+    }
+}
 ```
 
 ---
 
 ## Continue Statement
 
-**Syntax**: `continue;`
+**Syntax**:
+```rust
+continue;           // Continue innermost loop
+continue 'label;    // Continue labeled loop
+```
 
 **Semantics**:
-- Skips rest of current iteration
-- Jumps to loop condition check (for `while`) or loop start (for `loop`)
+- `continue;` skips rest of current iteration of innermost loop
+- `continue 'label;` skips to next iteration of the labeled loop
+- Jumps to loop condition check (for `while`/`for`) or loop start (for `loop`)
 - **Not allowed** outside of loops (compile error)
+- Label must refer to an enclosing loop (compile error otherwise)
 
 **Assembly Mapping**:
 ```rust
@@ -520,6 +591,27 @@ loop {
     if done {
         break;
     }
+}
+
+// Labeled continue - skip to next iteration of outer loop
+'rows: for y in 0..HEIGHT {
+    for x in 0..WIDTH {
+        if skip_row[y] {
+            continue 'rows;  // Skip rest of this row, go to next y
+        }
+        process_cell(x, y);
+    }
+}
+
+// Labeled continue with nested processing
+'outer: loop {
+    'inner: while A < 10 {
+        if should_restart {
+            continue 'outer;  // Restart outer loop
+        }
+        A = A + 1;
+    }
+    break;
 }
 ```
 
@@ -633,21 +725,51 @@ while y < 8 {
 }
 ```
 
-### Labeled Break/Continue (Future Enhancement)
+### Labeled Break/Continue
 
-Not in initial version, but consider:
+Labels allow breaking or continuing outer loops from nested code:
+
+**Syntax**:
 ```rust
-// Future syntax:
-'outer: while y < 8 {
-    'inner: while x < 8 {
-        if found {
-            break 'outer;  // Break outer loop directly
+'label: loop { }      // Label a loop
+'label: while { }     // Label a while
+'label: for { }       // Label a for
+break 'label;         // Break to labeled loop
+continue 'label;      // Continue labeled loop
+```
+
+**Example - Search with early exit**:
+```rust
+'outer: for y in 0..8 {
+    for x in 0..8 {
+        if tile[y][x] == target {
+            break 'outer;  // Exit both loops immediately
         }
-        x += 1;
     }
-    y += 1;
+}
+// Execution continues here after break 'outer
+```
+
+**Example - Skip to next outer iteration**:
+```rust
+'rows: for y in 0..HEIGHT {
+    'cols: for x in 0..WIDTH {
+        if should_skip_row(y) {
+            continue 'rows;  // Skip to next row
+        }
+        if should_skip_col(x) {
+            continue 'cols;  // Skip to next column
+        }
+        process(x, y);
+    }
 }
 ```
+
+**Label Rules**:
+- Labels start with `'` followed by an identifier and `:`
+- Labels are only valid on `loop`, `while`, and `for` statements
+- `break 'label` and `continue 'label` must reference an enclosing labeled loop
+- Referencing a non-existent label is a compile error
 
 ---
 
@@ -1143,31 +1265,23 @@ match state {
 // Could compile to jump table for dense enum values
 ```
 
-### Labeled Breaks
+### Iterator-Based For Loops
 
 ```rust
-'outer: while y < 8 {
-    while x < 8 {
-        if found {
-            break 'outer;
-        }
-        x += 1;
-    }
-    y += 1;
+// Possible future syntax for iterating over collections:
+for item in array {
+    process(item);
 }
+
+// Note: Range-based for loops (for i in 0..10) are already implemented
 ```
 
-### Range-Based For Loops
+### If-Let Pattern Matching
 
 ```rust
-for i in 0..10 {
-    process(i);
-}
-
-for x in 0..width {
-    for y in 0..height {
-        process_pixel(x, y);
-    }
+// Possible future syntax:
+if let Some(value) = optional {
+    use_value(value);
 }
 ```
 
