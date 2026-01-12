@@ -1,0 +1,300 @@
+"""
+End-to-end testing framework for R65.
+
+Compiles R65 source, runs on emulator, validates results.
+"""
+
+import subprocess
+import tempfile
+import shutil
+import re
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Dict, List, Optional, Union
+
+from r65.emulator.cpu import CPU65816, StopExecution
+from r65.emulator.memory import Memory
+
+
+class CompilationError(Exception):
+    """Raised when R65 compilation or assembly fails."""
+    pass
+
+
+class ExecutionError(Exception):
+    """Raised when program execution fails."""
+    pass
+
+
+class ValidationError(Exception):
+    """Raised when expected state doesn't match actual state."""
+    pass
+
+
+@dataclass
+class ExpectedState:
+    """
+    Expected CPU/memory state after program execution.
+
+    All fields are optional - only specified fields are validated.
+
+    Attributes:
+        A: Expected accumulator value
+        X: Expected X register value
+        Y: Expected Y register value
+        SP: Expected stack pointer value
+        flags: Expected flag states {'C': True, 'Z': False, ...}
+        memory: Expected memory values {address: value} or {address: [values]}
+    """
+    A: Optional[int] = None
+    X: Optional[int] = None
+    Y: Optional[int] = None
+    SP: Optional[int] = None
+    flags: Optional[Dict[str, bool]] = None
+    memory: Optional[Dict[int, Union[int, List[int]]]] = None
+
+    def __post_init__(self):
+        if self.flags is None:
+            self.flags = {}
+        if self.memory is None:
+            self.memory = {}
+
+
+@dataclass
+class TestResult:
+    """Result of an end-to-end test run."""
+    success: bool
+    cpu: Optional[CPU65816] = None
+    error: Optional[str] = None
+    instructions_executed: int = 0
+    cycles: int = 0
+    failures: List[str] = field(default_factory=list)
+
+    def __bool__(self):
+        return self.success
+
+
+class E2ETest:
+    """
+    End-to-end test runner for R65 programs.
+
+    Compiles R65 source code, runs it on the emulator,
+    and validates the resulting CPU/memory state.
+
+    Example:
+        result = E2ETest().run('''
+            #[mode(m8, x8)]
+            #[entry]
+            fn main() {
+                A = 0x42;
+            }
+        ''', ExpectedState(A=0x42))
+
+        assert result.success
+    """
+
+    def __init__(self):
+        self._check_toolchain()
+
+    def _check_toolchain(self):
+        """Verify required tools are available."""
+        tools = ["r65c", "wla-65816", "wlalink"]
+        missing = [t for t in tools if shutil.which(t) is None]
+        if missing:
+            raise RuntimeError(f"Missing required tools: {', '.join(missing)}")
+
+    def compile(self, source: str) -> bytes:
+        """
+        Compile R65 source code to ROM bytes.
+
+        Args:
+            source: R65 source code
+
+        Returns:
+            ROM binary data
+
+        Raises:
+            CompilationError: If compilation fails
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmpdir = Path(tmpdir)
+            src_path = tmpdir / "test.r65"
+            asm_path = tmpdir / "test.asm"
+            obj_path = tmpdir / "test.o"
+            rom_path = tmpdir / "test.sfc"
+            link_path = tmpdir / "linkfile"
+
+            src_path.write_text(source)
+
+            # Compile R65 to assembly
+            result = subprocess.run(
+                ["r65c", str(src_path), "-o", str(asm_path)],
+                capture_output=True,
+                text=True
+            )
+            if result.returncode != 0:
+                raise CompilationError(f"R65 compilation failed:\n{result.stderr}")
+
+            # Assemble with WLA-DX
+            result = subprocess.run(
+                ["wla-65816", "-o", str(obj_path), str(asm_path)],
+                capture_output=True,
+                text=True
+            )
+            if result.returncode != 0:
+                raise CompilationError(f"Assembly failed:\n{result.stderr}")
+
+            # Link
+            link_path.write_text(f"[objects]\n{obj_path}\n")
+            result = subprocess.run(
+                ["wlalink", "-r", str(link_path), str(rom_path)],
+                capture_output=True,
+                text=True
+            )
+            if result.returncode != 0:
+                raise CompilationError(f"Linking failed:\n{result.stderr}")
+
+            return rom_path.read_bytes()
+
+    def execute(self, rom_data: bytes, max_instructions: int = 10000) -> CPU65816:
+        """
+        Execute ROM on emulator.
+
+        Args:
+            rom_data: ROM binary data
+            max_instructions: Maximum instructions to execute
+
+        Returns:
+            CPU65816 instance after execution
+        """
+        memory = Memory(rom_data, mapping="lorom")
+        cpu = CPU65816(memory)
+
+        cpu.PC = memory.get_reset_vector()
+        cpu.PBR = 0x00
+
+        instructions = 0
+        try:
+            while instructions < max_instructions:
+                cpu.step()
+                instructions += 1
+        except StopExecution:
+            pass
+
+        cpu._instructions_executed = instructions
+        return cpu
+
+    def validate(self, cpu: CPU65816, expected: ExpectedState) -> List[str]:
+        """
+        Validate CPU state against expected state.
+
+        Args:
+            cpu: CPU after execution
+            expected: Expected state
+
+        Returns:
+            List of failure messages (empty if all passed)
+        """
+        failures = []
+
+        # Validate registers
+        if expected.A is not None:
+            actual = cpu.A & (0xFF if cpu.flag_m else 0xFFFF)
+            if actual != expected.A:
+                failures.append(f"A: expected 0x{expected.A:X}, got 0x{actual:X}")
+
+        if expected.X is not None:
+            actual = cpu.X & (0xFF if cpu.flag_x else 0xFFFF)
+            if actual != expected.X:
+                failures.append(f"X: expected 0x{expected.X:X}, got 0x{actual:X}")
+
+        if expected.Y is not None:
+            actual = cpu.Y & (0xFF if cpu.flag_x else 0xFFFF)
+            if actual != expected.Y:
+                failures.append(f"Y: expected 0x{expected.Y:X}, got 0x{actual:X}")
+
+        if expected.SP is not None:
+            if cpu.SP != expected.SP:
+                failures.append(f"SP: expected 0x{expected.SP:X}, got 0x{cpu.SP:X}")
+
+        # Validate flags
+        flag_map = {
+            'C': cpu.flag_c, 'Z': cpu.flag_z, 'I': cpu.flag_i,
+            'D': cpu.flag_d, 'V': cpu.flag_v, 'N': cpu.flag_n,
+            'M': cpu.flag_m, 'X': cpu.flag_x
+        }
+        for flag, expected_val in expected.flags.items():
+            actual_val = flag_map.get(flag.upper())
+            if actual_val is None:
+                failures.append(f"Unknown flag: {flag}")
+            elif actual_val != expected_val:
+                failures.append(f"Flag {flag}: expected {expected_val}, got {actual_val}")
+
+        # Validate memory
+        for addr, expected_val in expected.memory.items():
+            if isinstance(expected_val, list):
+                # Array of values
+                for i, val in enumerate(expected_val):
+                    actual = cpu.memory.read(addr >> 16, (addr + i) & 0xFFFF)
+                    if actual != val:
+                        failures.append(
+                            f"Memory 0x{addr + i:06X}: expected 0x{val:02X}, got 0x{actual:02X}"
+                        )
+            else:
+                # Single value
+                actual = cpu.memory.read(addr >> 16, addr & 0xFFFF)
+                if actual != expected_val:
+                    failures.append(
+                        f"Memory 0x{addr:06X}: expected 0x{expected_val:02X}, got 0x{actual:02X}"
+                    )
+
+        return failures
+
+    def run(self, source: str, expected: ExpectedState,
+            max_instructions: int = 10000) -> TestResult:
+        """
+        Compile, execute, and validate an R65 program.
+
+        Args:
+            source: R65 source code
+            expected: Expected state after execution
+            max_instructions: Maximum instructions to execute
+
+        Returns:
+            TestResult with success status and details
+        """
+        try:
+            rom_data = self.compile(source)
+        except CompilationError as e:
+            return TestResult(success=False, error=str(e))
+
+        try:
+            cpu = self.execute(rom_data, max_instructions)
+        except Exception as e:
+            return TestResult(success=False, error=f"Execution error: {e}")
+
+        failures = self.validate(cpu, expected)
+
+        return TestResult(
+            success=len(failures) == 0,
+            cpu=cpu,
+            instructions_executed=getattr(cpu, '_instructions_executed', 0),
+            cycles=cpu.cycles,
+            failures=failures
+        )
+
+
+def e2e_test(source: str, expected: ExpectedState,
+             max_instructions: int = 10000) -> TestResult:
+    """
+    Convenience function for running an end-to-end test.
+
+    Args:
+        source: R65 source code
+        expected: Expected state after execution
+        max_instructions: Maximum instructions to execute
+
+    Returns:
+        TestResult with success status and details
+    """
+    return E2ETest().run(source, expected, max_instructions)
