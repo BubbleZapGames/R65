@@ -306,6 +306,28 @@ class MIRBuilder:
             self.emit(InlineAsm(instructions=["CLC"]))      # Clear carry for XCE
             self.emit(InlineAsm(instructions=["XCE"]))      # Enter native mode
 
+            # After XCE, CPU is in native mode with M=1, X=1 (8-bit mode)
+            # Set up the function's declared mode using SEP/REP
+            if hir_func.mode_attr and self.current_mode.is_fully_known():
+                entry_mode = self.current_mode
+                sep_mask = 0
+                rep_mask = 0
+
+                if entry_mode.m_mode == ModeState.M8:
+                    sep_mask |= 0x20
+                elif entry_mode.m_mode == ModeState.M16:
+                    rep_mask |= 0x20
+
+                if entry_mode.x_mode == XModeState.X8:
+                    sep_mask |= 0x10
+                elif entry_mode.x_mode == XModeState.X16:
+                    rep_mask |= 0x10
+
+                if sep_mask:
+                    self.emit(SetMode(mask=sep_mask, is_set=True))
+                if rep_mask:
+                    self.emit(SetMode(mask=rep_mask, is_set=False))
+
             if self.has_init_start:
                 # Emit call to __init_start()
                 self.emit(Call(

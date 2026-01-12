@@ -245,7 +245,6 @@ class Test16BitMode:
     def e2e(self):
         return E2ETest()
 
-    @pytest.mark.xfail(reason="16-bit mode transition not working - CPU stays in 8-bit mode")
     def test_16bit_accumulator(self, e2e):
         """Test 16-bit accumulator assignment."""
         result = e2e.run('''
@@ -258,7 +257,6 @@ class Test16BitMode:
 
         assert result.success, f"Failures: {result.failures}"
 
-    @pytest.mark.xfail(reason="16-bit mode transition not working - CPU stays in 8-bit mode")
     def test_16bit_index_registers(self, e2e):
         """Test 16-bit index register assignment."""
         result = e2e.run('''
@@ -272,7 +270,6 @@ class Test16BitMode:
 
         assert result.success, f"Failures: {result.failures}"
 
-    @pytest.mark.xfail(reason="16-bit mode transition not working - CPU stays in 8-bit mode")
     def test_16bit_addition(self, e2e):
         """Test 16-bit addition."""
         result = e2e.run('''
