@@ -78,7 +78,7 @@ class TestUnsupportedSyntax:
     def test_unsupported_features(self):
         """Test unsupported Rust features fail."""
         cases = [
-            "fn test() { for i in 0..10 { } }",  # For loops
+            # For loops are now supported
             "fn test() { let f = |x| x + 1; }",  # Closures
             "trait Foo { fn bar(); }",  # Traits
             "impl Foo { fn bar() { } }",  # Impl blocks

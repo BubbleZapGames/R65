@@ -176,6 +176,7 @@ block: "{" statement* "}"
           | if_stmt
           | loop_stmt
           | while_stmt
+          | for_stmt
           | block
           | asm_stmt
           | increment_stmt
@@ -212,6 +213,7 @@ else_clause: if_stmt | block
 
 loop_stmt: LOOP block
 while_stmt: WHILE expr block
+for_stmt: FOR IDENT IN expr DOTDOT expr block
 
 asm_stmt: ASM "!" "(" STRING ("," STRING)* ")" ";"
 
@@ -383,6 +385,8 @@ WHILE.10: /while\b/
 MATCH.10: /match\b/
 ENUM.10: /enum\b/
 LOOP.10: /loop\b/
+FOR.10: /for\b/
+IN.10: /in\b/
 TYPE.10: /type\b/
 ELSE.10: /else\b/
 NEAR.10: /near\b/
@@ -411,7 +415,8 @@ FRAGMENT_TYPE.10: /expr\b/ | /ident\b/ | /literal\b/ | /ty\b/ | /reg\b/ | /tt\b/
 // Reserved keywords (not used in parser, but reserved for future use)
 // Rust reserved words only - builtin functions (mul, div, etc.) are regular identifiers
 // Note: 'macro' removed - now a first-class keyword
-KEYWORD.10: /abstract\b/ | /override\b/ | /unsized\b/ | /virtual\b/ | /typeof\b/ | /unsafe\b/ | /extern\b/ | /become\b/ | /async\b/ | /await\b/ | /where\b/ | /super\b/ | /trait\b/ | /yield\b/ | /crate\b/ | /final\b/ | /impl\b/ | /move\b/ | /priv\b/ | /self\b/ | /Self\b/ | /box\b/ | /dyn\b/ | /for\b/ | /pub\b/ | /ref\b/ | /try\b/ | /use\b/ | /in\b/ | /do\b/
+// Note: 'for' and 'in' removed - now first-class keywords for for loops
+KEYWORD.10: /abstract\b/ | /override\b/ | /unsized\b/ | /virtual\b/ | /typeof\b/ | /unsafe\b/ | /extern\b/ | /become\b/ | /async\b/ | /await\b/ | /where\b/ | /super\b/ | /trait\b/ | /yield\b/ | /crate\b/ | /final\b/ | /impl\b/ | /move\b/ | /priv\b/ | /self\b/ | /Self\b/ | /box\b/ | /dyn\b/ | /pub\b/ | /ref\b/ | /try\b/ | /use\b/ | /do\b/
 
 // Booleans
 BOOLEAN.10: /true\b/ | /false\b/
@@ -441,6 +446,7 @@ OR: "||"
 RARROW: "->"
 PLUSPLUS: "++"
 MINUSMINUS: "--"
+DOTDOT: ".."
 
 // Compound assignment operators (must come before single-char operators)
 LSHIFTEQUAL: "<<="

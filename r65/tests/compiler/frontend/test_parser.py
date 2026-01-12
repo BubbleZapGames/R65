@@ -196,6 +196,31 @@ def test_loop_statements():
     print("✓ Loop statements test passed")
 
 
+def test_for_loop():
+    """Test parsing for loop statements."""
+    source = """
+    fn test() {
+        for i in 0..10 {
+            x = x + i;
+        }
+    }
+    """
+
+    program = parse(source)
+    func = program.items[0]
+
+    for_stmt = func.body.statements[0]
+    assert isinstance(for_stmt, ast.ForStmt)
+    assert for_stmt.variable == 'i'
+    assert isinstance(for_stmt.start, ast.IntegerLiteral)
+    assert for_stmt.start.value == 0
+    assert isinstance(for_stmt.end, ast.IntegerLiteral)
+    assert for_stmt.end.value == 10
+    assert isinstance(for_stmt.body, ast.Block)
+
+    print("✓ For loop test passed")
+
+
 def test_binary_operations():
     """Test parsing binary operations."""
     source = """
@@ -639,6 +664,7 @@ if __name__ == '__main__':
     test_enum_declaration()
     test_if_statement()
     test_loop_statements()
+    test_for_loop()
     test_binary_operations()
     test_function_call()
     test_array_and_field_access()

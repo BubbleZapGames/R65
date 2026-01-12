@@ -451,6 +451,15 @@ class WhileStmt(Statement):
 
 
 @dataclass
+class ForStmt(Statement):
+    """For loop statement: for i in start..end { body }"""
+    variable: str           # Loop variable name
+    start: Expression       # Start expression (inclusive)
+    end: Expression         # End expression (exclusive)
+    body: Block
+
+
+@dataclass
 class AsmStmt(Statement):
     """Inline assembly statement."""
     instructions: List[str]

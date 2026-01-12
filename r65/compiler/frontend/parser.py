@@ -1101,6 +1101,32 @@ class ASTBuilder(Transformer):
         body = items[1]
         return ast.WhileStmt(condition=condition, body=body)
 
+    def for_stmt(self, items):
+        """For loop statement: for i in start..end { body }"""
+        # Items: FOR, IDENT, IN, start_expr, DOTDOT, end_expr, block
+        # After filtering: IDENT, start_expr, end_expr, block
+        variable = None
+        exprs = []
+        body = None
+
+        for item in items:
+            if isinstance(item, LarkToken) and item.type == 'IDENT':
+                variable = item.value
+            elif isinstance(item, ast.Block):
+                body = item
+            elif isinstance(item, ast.Expression):
+                exprs.append(item)
+
+        if len(exprs) != 2:
+            raise ParseError(f"For loop requires start and end expressions, got {len(exprs)}")
+
+        return ast.ForStmt(
+            variable=variable,
+            start=exprs[0],
+            end=exprs[1],
+            body=body
+        )
+
     def asm_stmt(self, items):
         """Inline assembly statement."""
         # Keep only STRING tokens

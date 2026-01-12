@@ -18,7 +18,7 @@ from r65.compiler.hir import (
     HIRIntegerLiteral, HIRBooleanLiteral, HIRIdentifier, HIRRegister,
     HIRBinaryOp, HIRUnaryOp, HIRFunctionCall, HIRArrayIndex,
     HIRLetStmt, HIRIfStmt, HIRWhileStmt, HIRReturnStmt,
-    HIRStringLiteral,
+    HIRStringLiteral, HIRBlock, HIRAssignment,
     SymbolKind, BasicTypeInfo, ArrayTypeInfo, StructTypeInfo,
 )
 from r65.compiler.hir.attributes import (
@@ -608,3 +608,132 @@ fn local_func() {
         hir = build_hir(source)
         func = hir.declarations[0]
         assert func.is_far == False
+
+
+class TestForLoopDesugaring:
+    """Test for loop desugaring to while loop."""
+
+    def test_basic_for_loop(self):
+        """Test basic for loop desugars to while loop."""
+        source = """
+#[mode(m8, x8)]
+fn test() {
+    for i in 0..10 {
+        A = A + 1;
+    }
+}
+"""
+        hir = build_hir(source)
+        func = hir.declarations[0]
+        # For loop desugars to a block containing let + while
+        stmt = func.body.statements[0]
+        assert isinstance(stmt, HIRBlock)
+        assert len(stmt.statements) == 2
+        # First statement is let
+        assert isinstance(stmt.statements[0], HIRLetStmt)
+        assert stmt.statements[0].name == "i"
+        assert stmt.statements[0].is_mutable == True
+        # Second statement is while
+        assert isinstance(stmt.statements[1], HIRWhileStmt)
+
+    def test_for_loop_variable_scope(self):
+        """Test for loop variable is in loop scope."""
+        source = """
+#[mode(m8, x8)]
+fn test() {
+    for x in 0..5 {
+        A = x;
+    }
+}
+"""
+        hir = build_hir(source)
+        func = hir.declarations[0]
+        # Should build without errors - variable resolved in loop
+        block = func.body.statements[0]
+        assert isinstance(block, HIRBlock)
+        let_stmt = block.statements[0]
+        assert let_stmt.name == "x"
+
+    def test_for_loop_with_expressions(self):
+        """Test for loop with expressions for start/end."""
+        source = """
+const START: u8 = 5;
+const END: u8 = 15;
+
+#[mode(m8, x8)]
+fn test() {
+    for i in START..END {
+        A = i;
+    }
+}
+"""
+        hir = build_hir(source)
+        func = hir.declarations[-1]
+        block = func.body.statements[0]
+        assert isinstance(block, HIRBlock)
+        # Let statement has START as initializer
+        let_stmt = block.statements[0]
+        assert isinstance(let_stmt.initializer, HIRIdentifier)
+        assert let_stmt.initializer.name == "START"
+
+    def test_for_loop_body_contains_increment(self):
+        """Test for loop body ends with increment statement."""
+        source = """
+#[mode(m8, x8)]
+fn test() {
+    for i in 0..3 {
+        X = i;
+    }
+}
+"""
+        hir = build_hir(source)
+        func = hir.declarations[0]
+        block = func.body.statements[0]
+        while_stmt = block.statements[1]
+        # Body should have original statement + increment
+        assert len(while_stmt.body.statements) == 2
+        # Last statement is the increment (assignment)
+        increment = while_stmt.body.statements[-1]
+        assert isinstance(increment, HIRAssignment)
+
+    def test_for_loop_condition_is_less_than(self):
+        """Test for loop condition uses < operator."""
+        source = """
+#[mode(m8, x8)]
+fn test() {
+    for i in 0..10 {
+        A = i;
+    }
+}
+"""
+        hir = build_hir(source)
+        func = hir.declarations[0]
+        block = func.body.statements[0]
+        while_stmt = block.statements[1]
+        # Condition should be i < end
+        assert isinstance(while_stmt.condition, HIRBinaryOp)
+        assert while_stmt.condition.op == '<'
+
+    def test_nested_for_loops(self):
+        """Test nested for loops."""
+        source = """
+#[mode(m8, x8)]
+fn test() {
+    for i in 0..3 {
+        for j in 0..3 {
+            A = i;
+        }
+    }
+}
+"""
+        hir = build_hir(source)
+        func = hir.declarations[0]
+        # Outer for loop
+        outer_block = func.body.statements[0]
+        assert isinstance(outer_block, HIRBlock)
+        outer_while = outer_block.statements[1]
+        # Inner for loop is in outer while body
+        inner_block = outer_while.body.statements[0]
+        assert isinstance(inner_block, HIRBlock)
+        inner_let = inner_block.statements[0]
+        assert inner_let.name == "j"

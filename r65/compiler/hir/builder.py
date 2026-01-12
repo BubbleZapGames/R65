@@ -662,6 +662,9 @@ class HIRBuilder:
         elif isinstance(stmt, ast.LoopStmt):
             return self._build_loop(stmt)
 
+        elif isinstance(stmt, ast.ForStmt):
+            return self._build_for(stmt)
+
         elif isinstance(stmt, ast.AsmStmt):
             return hir.HIRAsmStmt(instructions=stmt.instructions, source_loc=stmt.source_loc)
 
@@ -786,6 +789,113 @@ class HIRBuilder:
             body=body,
             is_infinite=True,
             source_loc=loop.source_loc
+        )
+
+    def _build_for(self, for_stmt: ast.ForStmt) -> hir.HIRBlock:
+        """Desugar for loop to while loop.
+
+        for i in start..end { body }
+        →
+        {
+            let mut i = start;
+            while i < end {
+                body
+                i = i + 1;
+            }
+        }
+        """
+        src_loc = for_stmt.source_loc
+
+        # Enter a new scope for the for-loop block
+        self.symbol_table.enter_scope(ScopeKind.BLOCK)
+
+        # Build start and end expressions
+        start_expr = self._build_expression(for_stmt.start)
+        end_expr = self._build_expression(for_stmt.end)
+
+        # Create symbol for loop variable (mutable, type inferred from start)
+        loop_var_symbol = Symbol(
+            name=for_stmt.variable,
+            kind=SymbolKind.LOCAL_VAR,
+            definition=for_stmt,
+            scope_id=self.symbol_table.current_scope_id,
+            var_type=None,  # Will be inferred during type checking
+            is_mutable=True
+        )
+        self.symbol_table.declare(for_stmt.variable, loop_var_symbol)
+
+        # Create let statement: let mut i = start;
+        let_stmt = hir.HIRLetStmt(
+            name=for_stmt.variable,
+            is_mutable=True,
+            var_type=None,  # Inferred
+            initializer=start_expr,
+            binding=None,
+            symbol=loop_var_symbol,
+            source_loc=src_loc
+        )
+
+        # Create condition: i < end
+        loop_var_ref = hir.HIRIdentifier(
+            name=for_stmt.variable,
+            symbol=loop_var_symbol,
+            source_loc=src_loc
+        )
+        condition = hir.HIRBinaryOp(
+            op='<',
+            left=loop_var_ref,
+            right=end_expr,
+            source_loc=src_loc
+        )
+
+        # Build the original body statements
+        body_statements = []
+        for stmt in for_stmt.body.statements:
+            body_statements.append(self._build_statement(stmt))
+
+        # Create increment: i = i + 1;
+        increment_expr = hir.HIRBinaryOp(
+            op='+',
+            left=hir.HIRIdentifier(
+                name=for_stmt.variable,
+                symbol=loop_var_symbol,
+                source_loc=src_loc
+            ),
+            right=hir.HIRIntegerLiteral(value=1, source_loc=src_loc),
+            source_loc=src_loc
+        )
+        increment_stmt = hir.HIRAssignment(
+            target=hir.HIRIdentifier(
+                name=for_stmt.variable,
+                symbol=loop_var_symbol,
+                source_loc=src_loc
+            ),
+            value=increment_expr,
+            source_loc=src_loc
+        )
+        body_statements.append(increment_stmt)
+
+        # Create while body block
+        while_body = hir.HIRBlock(
+            statements=body_statements,
+            source_loc=for_stmt.body.source_loc
+        )
+
+        # Create while statement
+        while_stmt = hir.HIRWhileStmt(
+            condition=condition,
+            body=while_body,
+            is_infinite=False,
+            source_loc=src_loc
+        )
+
+        # Exit the for-loop scope
+        self.symbol_table.exit_scope()
+
+        # Return block containing let and while
+        return hir.HIRBlock(
+            statements=[let_stmt, while_stmt],
+            source_loc=src_loc
         )
 
     # =========================================================================
