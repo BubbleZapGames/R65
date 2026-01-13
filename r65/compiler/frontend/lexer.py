@@ -165,7 +165,7 @@ class Lexer:
         """
         self.source = source
         self.filename = filename
-        self.lark = Lark(GRAMMAR, parser='lalr', lexer='contextual')
+        self.lark = Lark(GRAMMAR, parser='earley', lexer='standard', ambiguity='resolve')
         self.tokens: List[Token] = []
 
     def _parse_integer(self, value: str, line: int, column: int) -> int:

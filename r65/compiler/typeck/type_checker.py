@@ -1117,12 +1117,13 @@ class TypeChecker:
                 source_loc=expr.source_loc
             )
 
-        # Number of targets must match number of tuple elements
+        # Number of targets must not exceed number of tuple elements
+        # Partial assignment is allowed: (A,) = func() discards extra elements
         num_targets = len(expr.targets)
         num_elements = len(value_type.element_types)
-        if num_targets != num_elements:
+        if num_targets > num_elements:
             raise TypeCheckError(
-                f"Multi-assignment has {num_targets} targets but value has {num_elements} elements",
+                f"Multi-assignment has {num_targets} targets but value only has {num_elements} elements",
                 source_loc=expr.source_loc
             )
 

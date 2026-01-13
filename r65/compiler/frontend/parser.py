@@ -323,6 +323,12 @@ class ASTBuilder(Transformer):
             initializer=initializer
         )
 
+    def var_name(self, items):
+        """Variable name - can be IDENT or REGISTER token."""
+        items = self._filter_tokens(items, keep_types={'IDENT', 'REGISTER'})
+        token = items[0]
+        return token.value if isinstance(token, LarkToken) else token
+
     @v_args(tree=True)
     def static_decl_safe_ptr_error(self, tree):
         """Error handler for safe pointer syntax in static declarations."""
@@ -1561,6 +1567,29 @@ class ASTBuilder(Transformer):
         items = self._filter_tokens(items)
         return ast.Dereference(pointer=items[0])
 
+    def tuple_assign_stmt(self, items):
+        """Tuple assignment statement: (a, b) = expr; or (a) = expr;"""
+        items = self._filter_tokens(items)
+        # All items except the last are targets, the last is the value
+        targets = list(items[:-1])
+        value = items[-1]
+        multi_assign = ast.MultiAssignment(targets=targets, value=value)
+        return ast.ExprStmt(expr=multi_assign)
+
+    def tuple_target_ident(self, items):
+        """Tuple assignment target - identifier."""
+        items = self._filter_tokens(items)
+        token = items[0]
+        identifier = token.value if isinstance(token, LarkToken) else token
+        if isinstance(token, LarkToken):
+            self._validate_identifier_not_register(identifier, token)
+        return ast.Identifier(name=identifier)
+
+    def tuple_target_register(self, items):
+        """Tuple assignment target - register."""
+        items = self._filter_tokens(items, keep_types={'REGISTER'})
+        return ast.Register(name=items[0].value if isinstance(items[0], LarkToken) else items[0])
+
     # ========================================================================
     # Types
     # ========================================================================
@@ -1649,7 +1678,9 @@ class Parser:
         """Initialize the parser."""
         self.lark = Lark(
             GRAMMAR,
-            parser='lalr',
+            parser='earley',  # Earley handles ambiguous grammars
+            lexer='standard',  # Standard lexer works with terminal priorities
+            ambiguity='resolve',  # Prefer first matching rule
             start='start',
             keep_all_tokens=True,
             propagate_positions=True  # Enable source location tracking

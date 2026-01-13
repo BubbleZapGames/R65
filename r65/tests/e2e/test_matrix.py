@@ -71,8 +71,7 @@ class TestMatrixMultiplication:
             #[mode(m8, x8)]
             fn multiply_matrix() {{
                 // RESULT[0] = MAT_A[0]*MAT_B[0] + MAT_A[1]*MAT_B[2]
-                (A, X) = mul8(MAT_A[0], MAT_B[0]);
-                TEMP = A;
+                (TEMP) = mul8(MAT_A[0], MAT_B[0]);
                 (A, X) = mul8(MAT_A[1], MAT_B[2]);
                 RESULT[0] = A + TEMP;
 
