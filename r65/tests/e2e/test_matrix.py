@@ -71,64 +71,28 @@ class TestMatrixMultiplication:
             #[mode(m8, x8)]
             fn multiply_matrix() {{
                 // RESULT[0] = MAT_A[0]*MAT_B[0] + MAT_A[1]*MAT_B[2]
-                TEMP_A = MAT_A[0];
-                TEMP_X = MAT_B[0];
-                A = TEMP_A;
-                X = TEMP_X;
-                (A, X) = mul8(A, X);
+                (A, X) = mul8(MAT_A[0], MAT_B[0]);
                 TEMP = A;
-                TEMP_A = MAT_A[1];
-                TEMP_X = MAT_B[2];
-                A = TEMP_A;
-                X = TEMP_X;
-                (A, X) = mul8(A, X);
-                A = A + TEMP;
-                RESULT[0] = A;
+                (A, X) = mul8(MAT_A[1], MAT_B[2]);
+                RESULT[0] = A + TEMP;
 
                 // RESULT[1] = MAT_A[0]*MAT_B[1] + MAT_A[1]*MAT_B[3]
-                TEMP_A = MAT_A[0];
-                TEMP_X = MAT_B[1];
-                A = TEMP_A;
-                X = TEMP_X;
-                (A, X) = mul8(A, X);
+                (A, X) = mul8(MAT_A[0], MAT_B[1]);
                 TEMP = A;
-                TEMP_A = MAT_A[1];
-                TEMP_X = MAT_B[3];
-                A = TEMP_A;
-                X = TEMP_X;
-                (A, X) = mul8(A, X);
-                A = A + TEMP;
-                RESULT[1] = A;
+                (A, X) = mul8(MAT_A[1], MAT_B[3]);
+                RESULT[1] = A + TEMP;
 
                 // RESULT[2] = MAT_A[2]*MAT_B[0] + MAT_A[3]*MAT_B[2]
-                TEMP_A = MAT_A[2];
-                TEMP_X = MAT_B[0];
-                A = TEMP_A;
-                X = TEMP_X;
-                (A, X) = mul8(A, X);
+                (A, X) = mul8(MAT_A[2], MAT_B[0]);
                 TEMP = A;
-                TEMP_A = MAT_A[3];
-                TEMP_X = MAT_B[2];
-                A = TEMP_A;
-                X = TEMP_X;
-                (A, X) = mul8(A, X);
-                A = A + TEMP;
-                RESULT[2] = A;
+                (A, X) = mul8(MAT_A[3], MAT_B[2]);
+                RESULT[2] = A + TEMP;
 
                 // RESULT[3] = MAT_A[2]*MAT_B[1] + MAT_A[3]*MAT_B[3]
-                TEMP_A = MAT_A[2];
-                TEMP_X = MAT_B[1];
-                A = TEMP_A;
-                X = TEMP_X;
-                (A, X) = mul8(A, X);
+                (A, X) = mul8(MAT_A[2], MAT_B[1]);
                 TEMP = A;
-                TEMP_A = MAT_A[3];
-                TEMP_X = MAT_B[3];
-                A = TEMP_A;
-                X = TEMP_X;
-                (A, X) = mul8(A, X);
-                A = A + TEMP;
-                RESULT[3] = A;
+                (A, X) = mul8(MAT_A[3], MAT_B[3]);
+                RESULT[3] = A + TEMP;
             }}
 
             #[mode(m8, x8)]

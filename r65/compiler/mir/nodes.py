@@ -310,10 +310,14 @@ class BinaryOp(MIRInstruction):
     Binary operation.
 
     dest = left op right
+
+    Operands can be registers, immediates, or memory locations.
+    Using MemoryLocation directly (instead of loading into a vreg first)
+    avoids clobbering A when A is already used as the left operand.
     """
     dest: Union[VirtualRegister, HardwareRegister]
-    left: Union[VirtualRegister, HardwareRegister, Immediate]
-    right: Union[VirtualRegister, HardwareRegister, Immediate]
+    left: Union[VirtualRegister, HardwareRegister, Immediate, MemoryLocation]
+    right: Union[VirtualRegister, HardwareRegister, Immediate, MemoryLocation]
     op: str  # '+', '-', '*', '/', '%', '&', '|', '^', '<<', '>>'
     type_info: Any  # TypeInfo determines 8-bit vs 16-bit operation
 

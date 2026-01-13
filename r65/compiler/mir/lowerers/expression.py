@@ -192,8 +192,26 @@ class ExpressionLowerer:
 
     def _lower_arithmetic_op(self, expr: HIRBinaryOp) -> VirtualRegister:
         """Lower arithmetic/bitwise binary operation."""
+        from r65.compiler.hir import HIRRegister
+        from r65.compiler.mir.nodes import MemoryLocation
+
         left = self.builder.lower_expression(expr.left)
-        right = self.builder.lower_expression(expr.right)
+
+        # OPTIMIZATION: If left operand uses A register (hardware reg or will load into A),
+        # and right operand is a simple static variable, pass right as MemoryLocation
+        # directly instead of loading it into a vreg (which would clobber A).
+        left_uses_a = (
+            isinstance(left, HardwareRegister) and left.name == 'A'
+        )
+
+        right_memloc = self._try_get_direct_memory_operand(expr.right)
+
+        if left_uses_a and right_memloc is not None:
+            # Use memory location directly - avoids Load instruction that would clobber A
+            right = right_memloc
+        else:
+            # Normal path: lower expression (may generate Load instruction)
+            right = self.builder.lower_expression(expr.right)
 
         result = self.ctx.alloc_vreg(expr.expr_type, f"{expr.op}_result")
 
@@ -206,6 +224,37 @@ class ExpressionLowerer:
         ))
 
         return result
+
+    def _try_get_direct_memory_operand(self, expr) -> 'MemoryLocation':
+        """
+        Try to get a MemoryLocation for an expression without generating Load.
+
+        Returns MemoryLocation if the expression is a simple static variable
+        that can be used directly as a memory operand for instructions like ADC.
+        Returns None if the expression requires computation (and thus a vreg).
+
+        This optimization avoids clobbering A when loading operands for binary ops.
+        """
+        from r65.compiler.hir import HIRIdentifier
+        from r65.compiler.hir.symbol_table import SymbolKind
+
+        if not isinstance(expr, HIRIdentifier):
+            return None
+
+        symbol = expr.symbol
+
+        # Only static variables can be used as direct memory operands
+        if symbol.kind != SymbolKind.STATIC_VAR:
+            return None
+
+        # Don't use direct memory for variables aliased to hardware registers
+        if self.ctx.current_function:
+            hw_reg = self.ctx.current_function.alias_tracker.get_alias(symbol)
+            if hw_reg:
+                return None
+
+        # Get the memory location for this static variable
+        return self.builder.get_memory_location(symbol)
 
     # ========================================================================
     # Unary Operations
