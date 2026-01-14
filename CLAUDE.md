@@ -86,7 +86,7 @@ static mut BUFFER: [u8; 256] = [0; 256];
 fn process() {
     BUFFER[0] = 42;      // OK
     BUFFER[255] = 99;    // OK
-    BUFFER[300] = 1;     // No bounds check - undefined behavior!
+    BUFFER[300] = 1;     // Const bounds check - compile error!
 
     let index = 10;
     BUFFER[index] = 5;   // No runtime bounds check
@@ -630,6 +630,8 @@ fn calculate() -> u8 {
 ```
 
 **Return conventions:** No `return` = A implicitly returned; `return X/Y` = specific register; `return (A, X)` = multiple registers; `return variable` = stack return; **arrays and structs cannot be returned by value** (use pointers or write to pre-allocated memory)
+
+**Receiving multiple returns:** Use `(A, X) = func();` for all values, or `(TEMP) = func();` for partial assignment (discards extra values).
 
 ### Built-in Functions for Special Instructions
 

@@ -72,25 +72,22 @@ class TestMatrixMultiplication:
             fn multiply_matrix() {{
                 // RESULT[0] = MAT_A[0]*MAT_B[0] + MAT_A[1]*MAT_B[2]
                 (TEMP) = mul8(MAT_A[0], MAT_B[0]);
-                (A, X) = mul8(MAT_A[1], MAT_B[2]);
+                (A) = mul8(MAT_A[1], MAT_B[2]);
                 RESULT[0] = A + TEMP;
 
                 // RESULT[1] = MAT_A[0]*MAT_B[1] + MAT_A[1]*MAT_B[3]
-                (A, X) = mul8(MAT_A[0], MAT_B[1]);
-                TEMP = A;
-                (A, X) = mul8(MAT_A[1], MAT_B[3]);
+                (TEMP) = mul8(MAT_A[0], MAT_B[1]);
+                (A) = mul8(MAT_A[1], MAT_B[3]);
                 RESULT[1] = A + TEMP;
 
                 // RESULT[2] = MAT_A[2]*MAT_B[0] + MAT_A[3]*MAT_B[2]
-                (A, X) = mul8(MAT_A[2], MAT_B[0]);
-                TEMP = A;
-                (A, X) = mul8(MAT_A[3], MAT_B[2]);
+                (TEMP) = mul8(MAT_A[2], MAT_B[0]);
+                (A) = mul8(MAT_A[3], MAT_B[2]);
                 RESULT[2] = A + TEMP;
 
                 // RESULT[3] = MAT_A[2]*MAT_B[1] + MAT_A[3]*MAT_B[3]
-                (A, X) = mul8(MAT_A[2], MAT_B[1]);
-                TEMP = A;
-                (A, X) = mul8(MAT_A[3], MAT_B[3]);
+                (TEMP) = mul8(MAT_A[2], MAT_B[1]);
+                (A) = mul8(MAT_A[3], MAT_B[3]);
                 RESULT[3] = A + TEMP;
             }}
 

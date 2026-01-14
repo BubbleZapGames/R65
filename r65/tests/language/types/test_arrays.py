@@ -86,3 +86,101 @@ class TestArrayHIR:
         """)
         assert len(hir_prog.statics) >= 1
         assert len(hir_prog.functions) >= 1
+
+
+class TestArrayLen:
+    """Tests for array len() method."""
+
+    def test_len_method_parsing(self):
+        """Test array.len() method parses correctly."""
+        func = parse_function("""
+            fn test() {
+                let size: u16 = BUFFER.len();
+            }
+        """)
+        let_stmt = func.body.statements[0]
+        # len() is parsed as a FunctionCall with FieldAccess
+        assert isinstance(let_stmt.initializer, ast.FunctionCall)
+        assert isinstance(let_stmt.initializer.func, ast.FieldAccess)
+        assert let_stmt.initializer.func.field == "len"
+
+    def test_len_hir_const_evaluation(self):
+        """Test len() is const-evaluated to HIRIntegerLiteral in HIR."""
+        from r65.compiler.hir import nodes as hir
+        hir_prog = build_hir("""
+            #[ram] static mut BUFFER: [u8; 256] = [0; 256];
+            fn test() {
+                let size: u16 = BUFFER.len();
+            }
+        """)
+        # Find the let statement in the function
+        func = hir_prog.functions[0]
+        let_stmt = func.body.statements[0]
+        # len() should be const-evaluated to an integer literal
+        assert isinstance(let_stmt.initializer, hir.HIRIntegerLiteral)
+        assert let_stmt.initializer.value == 256
+
+    def test_len_different_sizes(self):
+        """Test len() returns correct size for different array sizes."""
+        from r65.compiler.hir import nodes as hir
+        for size in [1, 10, 100, 256, 1000]:
+            hir_prog = build_hir(f"""
+                #[ram] static mut ARR: [u8; {size}] = [0; {size}];
+                fn test() {{
+                    let sz: u16 = ARR.len();
+                }}
+            """)
+            func = hir_prog.functions[0]
+            let_stmt = func.body.statements[0]
+            assert isinstance(let_stmt.initializer, hir.HIRIntegerLiteral)
+            assert let_stmt.initializer.value == size
+
+    def test_len_in_const_expression(self):
+        """Test len() can be used in const expressions."""
+        from r65.compiler.hir import nodes as hir
+        hir_prog = build_hir("""
+            #[ram] static mut SOURCE: [u8; 100] = [0; 100];
+            const SIZE: u16 = SOURCE.len();
+            fn test() {
+                A = SIZE as u8;
+            }
+        """)
+        # Find the const and verify its value
+        consts = [c for c in hir_prog.constants if c.name == "SIZE"]
+        assert len(consts) == 1
+        assert consts[0].evaluated_value == 100
+
+    def test_len_no_arguments(self):
+        """Test len() with arguments fails."""
+        import pytest
+        with pytest.raises(Exception) as exc_info:
+            build_hir("""
+                #[ram] static mut BUFFER: [u8; 10] = [0; 10];
+                fn test() {
+                    let size: u16 = BUFFER.len(1);
+                }
+            """)
+        assert "no arguments" in str(exc_info.value).lower() or "0 argument" in str(exc_info.value).lower()
+
+    def test_len_on_non_array_fails(self):
+        """Test len() on non-array types fails type checking."""
+        import pytest
+        from r65.compiler.typeck.type_checker import TypeChecker
+        from r65.compiler.hir.builder import HIRBuilder
+        from r65.compiler.frontend.parser import parse
+
+        # Build HIR first
+        program = parse("""
+            #[zeropage] static mut VALUE: u8;
+            fn test() {
+                let size: u16 = VALUE.len();
+            }
+        """)
+        builder = HIRBuilder()
+        hir_prog = builder.build_program(program)
+
+        # Type checking should fail
+        checker = TypeChecker(hir_prog)
+        with pytest.raises(Exception) as exc_info:
+            checker.check()
+        assert "array" in str(exc_info.value).lower()

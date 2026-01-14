@@ -172,10 +172,33 @@ class CallValidator:
         return expr.expr_type
 
     def check_method_call(self, expr: HIRMethodCall) -> TypeInfo:
-        """Type check method call (e.g., value.rotate_left(3))."""
+        """Type check method call (e.g., value.rotate_left(3) or array.len())."""
         # Type check receiver
         receiver_type = self.check_expression(expr.receiver)
 
+        # Handle len() method on arrays
+        if expr.method_name == 'len':
+            # Validate receiver is an array type
+            if not isinstance(receiver_type, ArrayTypeInfo):
+                raise TypeCheckError(
+                    f"method 'len' requires array type, found {receiver_type}",
+                    source_loc=expr.source_loc,
+                    hint="len() only works on arrays"
+                )
+
+            # Validate no arguments
+            if len(expr.args) != 0:
+                raise TypeCheckError(
+                    f"len() takes no arguments, got {len(expr.args)}",
+                    source_loc=expr.source_loc,
+                    hint="example: array.len()"
+                )
+
+            # Return type is u16 for arrays (can hold sizes up to 65535)
+            expr.expr_type = BasicTypeInfo('u16')
+            return expr.expr_type
+
+        # Handle rotate methods on integers
         # Validate receiver is an integer type
         if not isinstance(receiver_type, BasicTypeInfo) or receiver_type.name not in ['u8', 'i8', 'u16', 'i16']:
             raise TypeCheckError(

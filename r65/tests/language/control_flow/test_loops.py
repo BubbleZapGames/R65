@@ -113,3 +113,70 @@ class TestLoopErrors:
         """Test while without braces fails."""
         with pytest.raises(ParseError):
             parse_function("fn test() { while A != 0 A--; }")
+
+
+class TestForLoops:
+    """Tests for for loop statements."""
+
+    def test_basic_for_loop(self):
+        """Test basic for loop parsing."""
+        func = parse_function("fn test() { for i in 0..10 { A++; } }")
+        for_stmt = func.body.statements[0]
+        assert isinstance(for_stmt, ast.ForStmt)
+        assert for_stmt.variable == "i"
+
+    def test_for_loop_with_array_len(self):
+        """Test for loop using array.len() as range end."""
+        from r65.compiler.hir import nodes as hir
+        hir_prog = build_hir("""
+            #[ram] static mut BUFFER: [u8; 64] = [0; 64];
+            fn test() {
+                for index in 0..BUFFER.len() {
+                    BUFFER[index] = 0;
+                }
+            }
+        """)
+        func = hir_prog.functions[0]
+        # For loop desugars to block with let + while
+        block = func.body.statements[0]
+        assert isinstance(block, hir.HIRBlock)
+        let_stmt = block.statements[0]
+        assert isinstance(let_stmt, hir.HIRLetStmt)
+        assert let_stmt.name == "index"
+        while_stmt = block.statements[1]
+        assert isinstance(while_stmt, hir.HIRWhileStmt)
+        # Condition is: index < BUFFER.len() where len() is const-evaluated to 64
+        assert isinstance(while_stmt.condition, hir.HIRBinaryOp)
+        assert while_stmt.condition.op == '<'
+        # Right side should be const-evaluated to 64
+        assert isinstance(while_stmt.condition.right, hir.HIRIntegerLiteral)
+        assert while_stmt.condition.right.value == 64
+
+    def test_for_loop_with_array_len_expression(self):
+        """Test for loop using array.len() in arithmetic expression."""
+        from r65.compiler.hir import nodes as hir
+        hir_prog = build_hir("""
+            #[ram] static mut DATA: [u8; 100] = [0; 100];
+            fn test() {
+                for i in 0..DATA.len() - 1 {
+                    A = i as u8;
+                }
+            }
+        """)
+        func = hir_prog.functions[0]
+        # For loop desugars to block with let + while
+        block = func.body.statements[0]
+        assert isinstance(block, hir.HIRBlock)
+        while_stmt = block.statements[1]
+        assert isinstance(while_stmt, hir.HIRWhileStmt)
+        # Right side is: DATA.len() - 1 where len() is const-evaluated to 100
+        # The subtraction remains as HIRBinaryOp at HIR stage
+        end_expr = while_stmt.condition.right
+        assert isinstance(end_expr, hir.HIRBinaryOp)
+        assert end_expr.op == '-'
+        # Left side should be const-evaluated len() = 100
+        assert isinstance(end_expr.left, hir.HIRIntegerLiteral)
+        assert end_expr.left.value == 100
+        # Right side is literal 1
+        assert isinstance(end_expr.right, hir.HIRIntegerLiteral)
+        assert end_expr.right.value == 1

@@ -282,3 +282,56 @@ class Test16BitMode:
         ''', ExpectedState(A=0x1234))
 
         assert result.success, f"Failures: {result.failures}"
+
+
+class TestArrayOperations:
+    """Test array operations including len()."""
+
+    @pytest.fixture
+    def e2e(self):
+        return E2ETest()
+
+    def test_array_len_small(self, e2e):
+        """Test len() on a small array (no initializer)."""
+        result = e2e.run('''
+            #[ram]
+            static mut BUFFER: [u8; 10];
+
+            #[mode(m16, x16)]
+            #[entry]
+            fn main() {
+                A = BUFFER.len();
+            }
+        ''', ExpectedState(A=10))
+
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_array_len_large(self, e2e):
+        """Test len() on a larger array (no initializer)."""
+        result = e2e.run('''
+            #[ram]
+            static mut DATA: [u8; 256];
+
+            #[mode(m16, x16)]
+            #[entry]
+            fn main() {
+                A = DATA.len();
+            }
+        ''', ExpectedState(A=256))
+
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_array_len_in_expression(self, e2e):
+        """Test len() used in arithmetic expression."""
+        result = e2e.run('''
+            #[ram]
+            static mut ARR: [u8; 100];
+
+            #[mode(m16, x16)]
+            #[entry]
+            fn main() {
+                A = ARR.len() - (50 as u16);
+            }
+        ''', ExpectedState(A=50))
+
+        assert result.success, f"Failures: {result.failures}"

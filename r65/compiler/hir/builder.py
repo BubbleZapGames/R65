@@ -1011,7 +1011,7 @@ class HIRBuilder:
         elif isinstance(expr, ast.FunctionCall):
             from r65.compiler.builtins import BuiltinRegistry
 
-            # Check if this is a method call (e.g., value.rotate_left(3))
+            # Check if this is a method call (e.g., value.rotate_left(3) or array.len())
             if isinstance(expr.func, ast.FieldAccess):
                 method_name = expr.func.field
                 if method_name in ['rotate_left', 'rotate_right']:
@@ -1031,6 +1031,33 @@ class HIRBuilder:
                         receiver=base,
                         method_name=method_name,
                         args=[count_arg],
+                        source_loc=src_loc
+                    )
+                elif method_name == 'len':
+                    # This is a len() method call on an array
+                    # Validate: must have no arguments
+                    if len(expr.args) != 0:
+                        raise HIRError(f"len() takes no arguments, got {len(expr.args)}", source_loc=src_loc)
+
+                    # Build the base expression (the array)
+                    base = self._build_expression(expr.func.base)
+
+                    # Try to const-evaluate if base is an identifier with known array type
+                    if isinstance(expr.func.base, ast.Identifier):
+                        symbol = self.symbol_table.lookup(expr.func.base.name)
+                        if symbol and symbol.var_type and isinstance(symbol.var_type, ArrayTypeInfo):
+                            # We know the array size at compile time
+                            # len() returns u16 to hold array lengths up to 65535
+                            result = hir.HIRIntegerLiteral(value=symbol.var_type.size, source_loc=src_loc)
+                            result.expr_type = BasicTypeInfo('u16')
+                            return result
+
+                    # Return a special HIRMethodCall node for len method
+                    # Type checker will validate receiver is an array
+                    return hir.HIRMethodCall(
+                        receiver=base,
+                        method_name=method_name,
+                        args=[],
                         source_loc=src_loc
                     )
 

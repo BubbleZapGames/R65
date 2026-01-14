@@ -74,6 +74,7 @@ fn process() {
 - Arithmetic operations (`+`, `-`, `*`, `/`, `%`)
 - Bitwise operations (`&`, `|`, `^`, `<<`, `>>`)
 - Type casts with `as`
+- Array `len()` method (e.g., `BUFFER.len()` returns `256`)
 
 ## Implementation Details
 

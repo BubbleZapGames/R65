@@ -18,6 +18,7 @@ from r65.compiler.mir.nodes import (
     Move, Store, Call, Argument, ArgumentMechanism, Rotate,
     SetMode, Push, Pull,
 )
+from r65.compiler.hir.types import ArrayTypeInfo, BasicTypeInfo
 from r65.compiler.typeck.processor_mode import ProcessorMode, ModeState, XModeState
 from r65.compiler.errors import MIRLoweringError
 
@@ -180,9 +181,11 @@ class CallLowerer:
 
     def lower_method_call(self, call_expr: HIRMethodCall) -> VirtualRegister:
         """
-        Lower method call (e.g., value.rotate_left(3)).
+        Lower method call (e.g., value.rotate_left(3) or array.len()).
 
-        Currently only supports rotate_left and rotate_right methods.
+        Currently supports:
+        - rotate_left, rotate_right methods on integers
+        - len() method on arrays
 
         Args:
             call_expr: HIRMethodCall expression
@@ -190,6 +193,27 @@ class CallLowerer:
         Returns:
             VirtualRegister holding the result
         """
+        # Handle len() method on arrays
+        if call_expr.method_name == 'len':
+            # Get the receiver's type (must be ArrayTypeInfo, validated in type checker)
+            receiver_type = call_expr.receiver.expr_type
+            assert isinstance(receiver_type, ArrayTypeInfo), "len() receiver must be array"
+
+            # Get array size - this is always a compile-time constant
+            array_size = receiver_type.size
+
+            # Create result register (u16 to hold array lengths)
+            result_vreg = self.ctx.alloc_vreg(BasicTypeInfo('u16'), "len_result")
+
+            # Emit Move instruction to load the constant size
+            self.emit(Move(
+                dest=result_vreg,
+                source=Immediate(array_size),
+                type_info=BasicTypeInfo('u16')
+            ))
+
+            return result_vreg
+
         # Lower the receiver (value being rotated)
         receiver_value = self.builder.lower_expression(call_expr.receiver)
 
@@ -204,7 +228,7 @@ class CallLowerer:
         elif call_expr.method_name == 'rotate_right':
             direction = 'right'
         else:
-            raise MIRLoweringError(f"Unknown rotate method: {call_expr.method_name}")
+            raise MIRLoweringError(f"Unknown method: {call_expr.method_name}")
 
         # Create result register
         result_vreg = self.ctx.alloc_vreg(call_expr.expr_type, "rotate_result")

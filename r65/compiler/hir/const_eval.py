@@ -8,6 +8,7 @@ from typing import Any, Union
 from r65.compiler.frontend import ast
 from r65.compiler.hir.errors import *
 from r65.compiler.hir.unified_type_utils import get_unified_type_size
+from r65.compiler.hir.types import ArrayTypeInfo
 from r65.compiler.builtins.registry import BuiltinRegistry
 from r65.compiler.frontend.ast import CfgIdentifier
 
@@ -210,8 +211,12 @@ class ConstEvaluator:
 
     def _eval_function_call(self, expr: ast.FunctionCall) -> Union[int, bool, str]:
         """Evaluate function call in const expression."""
+        # Check if this is a method call (e.g., array.len())
+        if isinstance(expr.func, ast.FieldAccess):
+            return self._eval_method_call(expr)
+
         func_name = expr.func.name if isinstance(expr.func, ast.Identifier) else None
-        
+
         if not func_name:
             raise HIRError("Only direct function calls allowed in const expressions")
         
@@ -241,14 +246,44 @@ class ConstEvaluator:
         """Evaluate size_of builtin function using unified type utilities."""
         if len(expr.args) != 1:
             raise HIRError("size_of expects exactly 1 argument")
-        
+
         arg = expr.args[0]
-        
+
         try:
             return get_unified_type_size(arg, self.symbol_table)
         except Exception as e:
             # If type not yet available (e.g., struct declared later), defer evaluation
             raise HIRError(f"Cannot evaluate size_of at this time: {e}")
+
+    def _eval_method_call(self, expr: ast.FunctionCall) -> int:
+        """Evaluate method call in const expression (e.g., array.len())."""
+        assert isinstance(expr.func, ast.FieldAccess)
+
+        method_name = expr.func.field
+        receiver = expr.func.base
+
+        # Only len() is supported as a const method
+        if method_name != 'len':
+            raise HIRError(f"Method '{method_name}' is not allowed in const expressions")
+
+        # Validate no arguments
+        if len(expr.args) != 0:
+            raise HIRError(f"len() takes no arguments, got {len(expr.args)}")
+
+        # Get the receiver's type - must be an identifier for const evaluation
+        if not isinstance(receiver, ast.Identifier):
+            raise HIRError("len() receiver must be an identifier in const expressions")
+
+        symbol = self.symbol_table.lookup(receiver.name)
+        if symbol is None:
+            raise HIRError(f"Undefined identifier: {receiver.name}")
+
+        # Ensure it's an array type
+        if symbol.var_type is None or not isinstance(symbol.var_type, ArrayTypeInfo):
+            raise HIRError(f"len() requires array type, '{receiver.name}' is not an array")
+
+        # Return the array size
+        return symbol.var_type.size
 
     def _ensure_int(self, value: Any) -> int:
         """Ensure value is an integer."""
