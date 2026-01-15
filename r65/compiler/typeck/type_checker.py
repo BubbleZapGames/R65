@@ -8,7 +8,7 @@ from typing import Optional
 from r65.compiler.hir import (
     HIRProgram, HIRFunctionDecl, HIRExpression, HIRStatement,
     HIRBinaryOp, HIRUnaryOp, HIRIntegerLiteral, HIRBooleanLiteral, HIREnumVariantExpr,
-    HIRIdentifier, HIRFunctionAddress, HIRRegister, HIRIncludeBytesExpr, HIRArrayFillExpr, HIRArrayLiteralExpr,
+    HIRIdentifier, HIRFunctionAddress, HIRRegister, HIRStatusFlagAccess, HIRIncludeBytesExpr, HIRArrayFillExpr, HIRArrayLiteralExpr,
     HIRStringLiteral,
     HIRStructFieldInit, HIRStructLiteralExpr,
     HIRTypeCast, HIRFunctionCall,
@@ -739,6 +739,9 @@ class TypeChecker:
         elif isinstance(expr, HIRFieldAccess):
             return self.check_field_access(expr)
 
+        elif isinstance(expr, HIRStatusFlagAccess):
+            return self.check_status_flag_access(expr)
+
         elif isinstance(expr, HIRAssignment):
             return self.check_assignment(expr)
 
@@ -1070,8 +1073,46 @@ class TypeChecker:
         expr.field_offset = field.offset
         return expr.expr_type
 
+    def check_status_flag_access(self, expr: HIRStatusFlagAccess) -> TypeInfo:
+        """Type check STATUS flag access (e.g., STATUS.Carry)."""
+        # STATUS flags are always boolean
+        expr.expr_type = BasicTypeInfo(name='bool')
+        return expr.expr_type
+
+    def _check_status_flag_assignment(self, expr: HIRAssignment) -> TypeInfo:
+        """Type check STATUS flag assignment (e.g., STATUS.Carry = true)."""
+        from r65.compiler.hir.status_flags import get_status_flag
+
+        target = expr.target
+        flag = get_status_flag(target.flag_name)
+
+        # Check if the flag is writable
+        if not flag.is_writable:
+            writable_flags = "Carry, Irq, Decimal, Index, Accumulator"
+            raise TypeCheckError(
+                f"Cannot write to STATUS.{target.flag_name}\n"
+                f"  This flag is set by CPU operations, not directly writable\n"
+                f"  Writable flags: {writable_flags}",
+                source_loc=expr.source_loc
+            )
+
+        # Check value type is boolean
+        value_type = self.check_expression(expr.value)
+        if not TypeUtils.is_boolean_type(value_type):
+            raise TypeCheckError(
+                f"STATUS flag assignment requires boolean value, got '{value_type}'",
+                source_loc=expr.value.source_loc
+            )
+
+        expr.expr_type = BasicTypeInfo(name='bool')
+        return expr.expr_type
+
     def check_assignment(self, expr: HIRAssignment) -> TypeInfo:
         """Type check assignment."""
+        # Special handling for STATUS flag assignments
+        if isinstance(expr.target, HIRStatusFlagAccess):
+            return self._check_status_flag_assignment(expr)
+
         target_type = self.check_expression(expr.target)
         value_type = self.check_expression(expr.value, target_type)
 

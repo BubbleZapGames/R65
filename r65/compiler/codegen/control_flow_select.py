@@ -136,6 +136,38 @@ class ControlFlowInstructionSelector(BaseSelector):
         elif comparison == 'bit6_clear':
             self._emit_branch(Opcode.BVC, true_target, "Branch if bit 6 clear")
             self._emit_jump(Opcode.JMP_ABSOLUTE, false_target)
+        # Handle STATUS flag comparisons (branchable flags)
+        elif comparison == 'status_carry_set':
+            self._emit_branch(Opcode.BCS, true_target, "Branch if Carry set")
+            self._emit_jump(Opcode.JMP_ABSOLUTE, false_target)
+        elif comparison == 'status_carry_clear':
+            self._emit_branch(Opcode.BCC, true_target, "Branch if Carry clear")
+            self._emit_jump(Opcode.JMP_ABSOLUTE, false_target)
+        elif comparison == 'status_zero_set':
+            self._emit_branch(Opcode.BEQ, true_target, "Branch if Zero set")
+            self._emit_jump(Opcode.JMP_ABSOLUTE, false_target)
+        elif comparison == 'status_zero_clear':
+            self._emit_branch(Opcode.BNE, true_target, "Branch if Zero clear")
+            self._emit_jump(Opcode.JMP_ABSOLUTE, false_target)
+        elif comparison == 'status_overflow_set':
+            self._emit_branch(Opcode.BVS, true_target, "Branch if Overflow set")
+            self._emit_jump(Opcode.JMP_ABSOLUTE, false_target)
+        elif comparison == 'status_overflow_clear':
+            self._emit_branch(Opcode.BVC, true_target, "Branch if Overflow clear")
+            self._emit_jump(Opcode.JMP_ABSOLUTE, false_target)
+        elif comparison == 'status_negative_set':
+            self._emit_branch(Opcode.BMI, true_target, "Branch if Negative set")
+            self._emit_jump(Opcode.JMP_ABSOLUTE, false_target)
+        elif comparison == 'status_negative_clear':
+            self._emit_branch(Opcode.BPL, true_target, "Branch if Negative clear")
+            self._emit_jump(Opcode.JMP_ABSOLUTE, false_target)
+        # Handle STATUS flag comparisons (non-branchable flags after PHP; PLA; AND #mask)
+        elif comparison == 'status_nonbranch_set':
+            self._emit_branch(Opcode.BNE, true_target, "Branch if flag set (AND result != 0)")
+            self._emit_jump(Opcode.JMP_ABSOLUTE, false_target)
+        elif comparison == 'status_nonbranch_clear':
+            self._emit_branch(Opcode.BEQ, true_target, "Branch if flag clear (AND result == 0)")
+            self._emit_jump(Opcode.JMP_ABSOLUTE, false_target)
         # Handle comparison operators
         elif comparison == '==':
             self._emit_branch(Opcode.BEQ, true_target, "Branch if equal")

@@ -358,6 +358,9 @@ class HIRBuilder:
                     f"but is not a far function. DBR management requires 'far fn'."
                 )
 
+        # Detect STATUS flag return pattern for optimized branch generation at call sites
+        returns_status_flag = self._detect_status_flag_return(hir_body)
+
         return hir.HIRFunctionDecl(
             name=func.name,
             is_far=func.is_far,
@@ -370,8 +373,40 @@ class HIRBuilder:
             interrupt_attr=interrupt_attr,
             is_entry=is_entry,
             symbol=func_symbol,
+            returns_status_flag=returns_status_flag,
             source_loc=func.source_loc  # Propagate source location from AST
         )
+
+    def _detect_status_flag_return(self, body: hir.HIRBlock) -> Optional[str]:
+        """
+        Detect if function directly returns a STATUS flag.
+
+        Checks if the last statement is `return STATUS.Flag` pattern.
+        Returns the flag name if found, None otherwise.
+
+        This enables call sites to use direct branch instructions instead of
+        materializing the boolean return value.
+        """
+        if not body or not body.statements:
+            return None
+
+        last_stmt = body.statements[-1]
+
+        # Check if last statement is a return
+        if not isinstance(last_stmt, hir.HIRReturnStmt):
+            return None
+
+        # Check if return has exactly one value
+        if len(last_stmt.values) != 1:
+            return None
+
+        return_value = last_stmt.values[0]
+
+        # Check if return value is a STATUS flag access
+        if isinstance(return_value, hir.HIRStatusFlagAccess):
+            return return_value.flag_name
+
+        return None
 
     def _build_parameter(self, param: ast.Parameter) -> hir.HIRParameter:
         """Build HIR parameter from AST."""
@@ -1128,7 +1163,27 @@ class HIRBuilder:
 
         elif isinstance(expr, ast.FieldAccess):
             base = self._build_expression(expr.base)
-            # Field resolution happens in type checker
+
+            # Check for STATUS.Flag pattern
+            if isinstance(base, hir.HIRRegister) and base.name == 'STATUS':
+                from r65.compiler.hir.status_flags import get_status_flag, get_all_flag_names
+                flag = get_status_flag(expr.field)
+                if flag:
+                    return hir.HIRStatusFlagAccess(
+                        flag_name=flag.name,
+                        bit_position=flag.bit_position,
+                        bit_mask=flag.bit_mask,
+                        source_loc=src_loc
+                    )
+                else:
+                    valid_flags = ', '.join(get_all_flag_names())
+                    raise HIRError(
+                        f"Unknown STATUS flag '{expr.field}'. "
+                        f"Valid flags: {valid_flags}",
+                        source_loc=src_loc
+                    )
+
+            # Normal field resolution happens in type checker
             return hir.HIRFieldAccess(base=base, field_name=expr.field, source_loc=src_loc)
 
         elif isinstance(expr, ast.Dereference):

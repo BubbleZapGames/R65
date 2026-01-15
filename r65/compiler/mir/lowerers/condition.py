@@ -7,10 +7,10 @@ and comparison operations.
 
 from typing import TYPE_CHECKING, Optional, Tuple
 
-from r65.compiler.hir import HIRBinaryOp, HIRIntegerLiteral, HIRIdentifier, HIRExpression, HIRRegister
+from r65.compiler.hir import HIRBinaryOp, HIRUnaryOp, HIRIntegerLiteral, HIRIdentifier, HIRExpression, HIRRegister, HIRStatusFlagAccess
 from r65.compiler.mir.nodes import (
     VirtualRegister, HardwareRegister, Immediate, MemoryLocation,
-    Compare, CondBranch, BitTest,
+    Compare, CondBranch, BitTest, StatusFlagTest,
 )
 from r65.compiler.errors import MIRLoweringError
 
@@ -106,6 +106,17 @@ class ConditionLowerer:
             false_target: Block ID to jump to if condition is false
         """
         comparison_ops = {'==', '!=', '<', '<=', '>', '>='}
+
+        # OPTIMIZATION: Direct STATUS flag condition (e.g., if STATUS.Carry)
+        if isinstance(condition, HIRStatusFlagAccess):
+            self._lower_status_flag_condition(condition, true_target, false_target, inverted=False)
+            return
+
+        # OPTIMIZATION: Negated STATUS flag condition (e.g., if !STATUS.Carry)
+        if isinstance(condition, HIRUnaryOp) and condition.op == '!':
+            if isinstance(condition.operand, HIRStatusFlagAccess):
+                self._lower_status_flag_condition(condition.operand, true_target, false_target, inverted=True)
+                return
 
         # OPTIMIZATION 0: BIT instruction for bit testing
         bit_test = self._detect_bit_test_pattern(condition)
@@ -242,6 +253,69 @@ class ConditionLowerer:
             # Add CFG edges
             self.ctx.add_cfg_edge(self.ctx.current_block, self.ctx.current_function.blocks[true_target])
             self.ctx.add_cfg_edge(self.ctx.current_block, self.ctx.current_function.blocks[false_target])
+
+    # ========================================================================
+    # STATUS Flag Condition Lowering
+    # ========================================================================
+
+    def _lower_status_flag_condition(self, flag_expr: HIRStatusFlagAccess,
+                                      true_target: int, false_target: int, inverted: bool):
+        """
+        Lower STATUS flag condition to optimized branch instructions.
+
+        For branchable flags (Carry, Zero, Overflow, Negative):
+            - Emits StatusFlagTest (no-op) + CondBranch with status-specific comparison
+            - Generates: BCS/BCC, BEQ/BNE, BVS/BVC, BMI/BPL
+
+        For non-branchable flags (Irq, Decimal, Index, Accumulator):
+            - Emits StatusFlagTest which generates PHP; PLA; AND #mask
+            - Then uses BNE/BEQ based on result
+
+        Args:
+            flag_expr: STATUS flag access expression
+            true_target: Block ID if condition is true
+            false_target: Block ID if condition is false
+            inverted: True if condition is negated (e.g., !STATUS.Carry)
+        """
+        from r65.compiler.hir.status_flags import is_branchable_flag
+
+        flag_name = flag_expr.flag_name
+
+        # Emit StatusFlagTest instruction
+        # For branchable flags, this is a no-op (codegen handles it)
+        # For non-branchable flags, this emits PHP; PLA; AND #mask
+        self.emit(StatusFlagTest(
+            flag_name=flag_name,
+            bit_position=flag_expr.bit_position,
+            bit_mask=flag_expr.bit_mask
+        ))
+
+        # Determine comparison string for code generation
+        if is_branchable_flag(flag_name):
+            # Branchable flag: use direct branch instruction
+            if inverted:
+                comparison = f'status_{flag_name.lower()}_clear'
+            else:
+                comparison = f'status_{flag_name.lower()}_set'
+        else:
+            # Non-branchable flag: test was PHP; PLA; AND #mask
+            # Result is in A: 0 if flag clear, non-zero if flag set
+            # Use != 0 for set, == 0 for clear
+            if inverted:
+                comparison = 'status_nonbranch_clear'  # BEQ (result == 0)
+            else:
+                comparison = 'status_nonbranch_set'    # BNE (result != 0)
+
+        self.emit(CondBranch(
+            condition=None,  # Uses flags from StatusFlagTest
+            true_target=true_target,
+            false_target=false_target,
+            comparison=comparison
+        ))
+
+        # Add CFG edges
+        self.ctx.add_cfg_edge(self.ctx.current_block, self.ctx.current_function.blocks[true_target])
+        self.ctx.add_cfg_edge(self.ctx.current_block, self.ctx.current_function.blocks[false_target])
 
     # ========================================================================
     # Bit Test Pattern Detection

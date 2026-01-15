@@ -436,6 +436,56 @@ class CondBranch(MIRInstruction):
 
 
 @dataclass
+class StatusFlagTest(MIRInstruction):
+    """
+    Test a STATUS flag for conditional branching.
+
+    For branchable flags (Carry, Zero, Overflow, Negative), this is a no-op
+    since the branch instruction directly tests the flag.
+
+    For non-branchable flags (Irq, Decimal, Index, Accumulator), this emits
+    PHP; PLA; AND #mask to prepare for the branch.
+    """
+    flag_name: str        # "Carry", "Zero", etc.
+    bit_position: int     # 0-7
+    bit_mask: int         # 0x01, 0x02, etc.
+
+    def __repr__(self):
+        return f"StatusFlagTest {self.flag_name}"
+
+
+@dataclass
+class StatusFlagSet(MIRInstruction):
+    """
+    Set or clear a STATUS flag.
+
+    Generates: SEC/CLC, SEI/CLI, SED/CLD, SEP/REP depending on flag.
+    """
+    flag_name: str
+    value: bool  # True = set flag, False = clear flag
+
+    def __repr__(self):
+        action = "Set" if self.value else "Clear"
+        return f"StatusFlag{action} {self.flag_name}"
+
+
+@dataclass
+class StatusFlagRead(MIRInstruction):
+    """
+    Read a STATUS flag into a virtual register as boolean (0/1).
+
+    For reads like: let x = STATUS.Carry;
+    Generates: PHP; PLA; AND #mask; (normalize to 0/1)
+    """
+    dest: VirtualRegister
+    flag_name: str
+    bit_mask: int
+
+    def __repr__(self):
+        return f"{self.dest} = StatusFlagRead {self.flag_name}"
+
+
+@dataclass
 class JumpTable(MIRInstruction):
     """
     Jump table for efficient dense integer pattern matching.

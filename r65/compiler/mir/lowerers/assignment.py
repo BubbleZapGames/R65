@@ -9,12 +9,12 @@ from typing import TYPE_CHECKING, Union
 
 from r65.compiler.hir import (
     HIRAssignment, HIRMultiAssignment, HIRBinaryOp, HIRRegister, HIRIdentifier,
-    HIRFieldAccess, HIRArrayIndex, HIRDereference,
+    HIRFieldAccess, HIRArrayIndex, HIRDereference, HIRStatusFlagAccess, HIRBooleanLiteral,
 )
 from r65.compiler.hir.types import TupleTypeInfo
 from r65.compiler.mir.nodes import (
     VirtualRegister, HardwareRegister, Immediate, MemoryLocation,
-    Move, Store, StoreIndirect, BinaryOp,
+    Move, Store, StoreIndirect, BinaryOp, StatusFlagSet,
 )
 from r65.compiler.mir.lowerers.multiply import compute_array_field_offset
 from r65.compiler.errors import MIRLoweringError
@@ -140,6 +140,9 @@ class AssignmentLowerer:
 
         elif isinstance(expr.target, HIRDereference):
             return self._lower_dereference_assignment(expr, value)
+
+        elif isinstance(expr.target, HIRStatusFlagAccess):
+            return self._lower_status_flag_assignment(expr)
 
         else:
             # Unsupported target
@@ -397,6 +400,42 @@ class AssignmentLowerer:
             type_info=expr.expr_type
         ))
         return value
+
+    # ========================================================================
+    # STATUS Flag Assignment
+    # ========================================================================
+
+    def _lower_status_flag_assignment(self, expr: HIRAssignment) -> Immediate:
+        """
+        Lower assignment to STATUS flag (e.g., STATUS.Carry = true).
+
+        Emits StatusFlagSet instruction which generates:
+        - SEC/CLC for Carry
+        - SEI/CLI for Irq
+        - SED/CLD for Decimal
+        - SEP/REP for Index/Accumulator
+        """
+        target = expr.target
+        value_expr = expr.value
+
+        # Determine if setting or clearing the flag
+        if isinstance(value_expr, HIRBooleanLiteral):
+            set_flag = value_expr.value
+        else:
+            # Type checker should have ensured it's a boolean literal
+            # but handle the case where it's not for robustness
+            raise MIRLoweringError(
+                f"STATUS flag assignment requires constant boolean value, "
+                f"got {type(value_expr).__name__}"
+            )
+
+        self.emit(StatusFlagSet(
+            flag_name=target.flag_name,
+            value=set_flag
+        ))
+
+        # Return immediate value representing the assignment
+        return Immediate(1 if set_flag else 0)
 
     # ========================================================================
     # Multi-Assignment (Tuple Destructuring)

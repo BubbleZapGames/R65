@@ -75,6 +75,50 @@ let bank = PBR;          // Read current bank (write = error)
 
 *(See [docs/b-register.md](docs/b-register.md) for complete details, code generation tables, and optimization patterns)*
 
+### STATUS Register Flag Properties
+
+Individual STATUS register flags can be accessed via property syntax, enabling optimized branch instructions:
+
+```rust
+// Conditional branching on flags
+if STATUS.Carry {
+    // Generates: BCS label
+    handle_carry();
+}
+
+if !STATUS.Zero {
+    // Generates: BNE label
+    handle_not_zero();
+}
+
+// Flag manipulation
+STATUS.Carry = true;      // SEC
+STATUS.Carry = false;     // CLC
+STATUS.Irq = true;        // SEI (disable interrupts)
+STATUS.Decimal = false;   // CLD (disable BCD mode)
+STATUS.Index = true;      // SEP #$10 (8-bit index)
+STATUS.Accumulator = false; // REP #$20 (16-bit accumulator)
+```
+
+**Available flags:**
+
+| Property | Bit | Branch (set/clear) | Write Instructions | Writable |
+|----------|-----|-------------------|-------------------|----------|
+| `STATUS.Carry` | 0 | BCS / BCC | SEC / CLC | Yes |
+| `STATUS.Zero` | 1 | BEQ / BNE | - | No |
+| `STATUS.Irq` | 2 | bit test + branch | SEI / CLI | Yes |
+| `STATUS.Decimal` | 3 | bit test + branch | SED / CLD | Yes |
+| `STATUS.Index` | 4 | bit test + branch | SEP #$10 / REP #$10 | Yes |
+| `STATUS.Accumulator` | 5 | bit test + branch | SEP #$20 / REP #$20 | Yes |
+| `STATUS.Overflow` | 6 | BVS / BVC | - | No |
+| `STATUS.Negative` | 7 | BMI / BPL | - | No |
+
+**Branchable flags** (Carry, Zero, Overflow, Negative) generate single branch instructions. **Non-branchable flags** (Irq, Decimal, Index, Accumulator) generate a bit-test sequence: `PHP; PLA; AND #mask; BNE/BEQ`.
+
+**Non-writable flags** (Zero, Overflow, Negative) cannot be assigned - they are set by CPU operations. Attempting to write is a compile error.
+
+*(See [docs/status-flags.md](docs/status-flags.md) for complete details and code generation tables)*
+
 ### Arrays
 
 Fixed-size arrays with no bounds checking:
@@ -755,6 +799,7 @@ R65 uses **hardware-aware operators**: syntax indicates performance cost.
   - Increment/decrement: `++`, `--` (statement-only, postfix)
 - ✅ `let` bindings (immutable by default, `let mut` for mutable)
 - ✅ All 65816 processor registers: A, X, Y, STATUS, D, DBR, S (mutable); PBR (read-only); B (m8 mode only)
+- ✅ STATUS flag properties: `STATUS.Carry`, `STATUS.Zero`, etc. with optimized branch generation (BCS, BEQ, etc.) and flag manipulation (SEC, CLC, SEI, CLI, etc.)
 - ✅ B register support: Hidden accumulator high byte in m8 mode with parameter passing, return values, and XBA context tracking optimization
 - ✅ Storage attributes: `#[zeropage]`, `#[lowram]`, `#[ram]`, `#[rom]`, `#[hw]`, `#[stack(lower, upper)]`
 - ✅ Mode annotations: `#[mode(m8/m16, x8/x16)]` with optional `transition=none/auto/caller`
@@ -945,6 +990,7 @@ Performance characteristics of different storage:
 - [Pointers and Memory Model](docs/pointers-memory.md) - Near/far pointers, addressing modes, memory layout
 - [Type System](docs/type-system.md) - Type checking, conversions, and mode-aware types
 - [B Register](docs/b-register.md) - Hidden accumulator high byte (m8 mode only)
+- [STATUS Flags](docs/status-flags.md) - STATUS register property access and optimized branching
 - [Array Bounds Checking](docs/array-bounds-checking.md) - Design rationale for no bounds checking
 - [Calling Convention](docs/calling-convention.md) - ABI, parameter passing, register preservation
 - [Mode Transitions](docs/mode-transition-analysis.md) - Mode transition strategies and optimization
@@ -966,5 +1012,5 @@ Performance characteristics of different storage:
 - [Rust Compiler Architecture](https://rustc-dev-guide.rust-lang.org/)
 
 
-*Last Updated: 2026-01-06*
+*Last Updated: 2026-01-15*
 *STATUS: Design Complete, Implementation In Progress*

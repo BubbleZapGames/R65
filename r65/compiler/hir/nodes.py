@@ -182,6 +182,9 @@ class HIRFunctionDecl(HIRDeclaration):
     # Symbol reference
     symbol: Optional[Any] = None  # Will be Symbol
 
+    # STATUS flag return tracking (for optimized branch generation at call sites)
+    returns_status_flag: Optional[str] = None  # Flag name if function directly returns STATUS.Flag
+
 
 @dataclass
 class HIRStaticDecl(HIRDeclaration):
@@ -401,6 +404,21 @@ class HIRRegister(HIRExpression):
     """Hardware register reference."""
     name: str = ""  # "A", "X", "Y", "B", "STATUS", "D", "DBR", "PBR", "S"
     symbol: Any = None  # Points to register symbol
+
+
+@dataclass
+class HIRStatusFlagAccess(HIRExpression):
+    """
+    Access to a STATUS register flag (e.g., STATUS.Carry).
+
+    Represents property access on the STATUS register for individual CPU flags.
+    Used for optimized branch generation (BCS, BCC, BEQ, etc.) and flag manipulation.
+
+    Flags: Carry, Zero, Irq, Decimal, Index, Accumulator, Overflow, Negative
+    """
+    flag_name: str = ""       # "Carry", "Zero", "Irq", "Decimal", "Index", "Accumulator", "Overflow", "Negative"
+    bit_position: int = 0     # 0-7
+    bit_mask: int = 0x01      # 0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80
 
 
 @dataclass

@@ -15,6 +15,7 @@ from r65.compiler.mir.nodes import (
     Move, Return, Jump, JumpTable, CondBranch, Call,
     BinaryOp, UnaryOp, Compare, BitTest, Rotate, SetMode, TypeConvert,
     Push, Pull, SaveRegister, RestoreRegister, ReturnFromInterrupt,
+    StatusFlagTest, StatusFlagSet, StatusFlagRead,
     MemoryFill, BlockCopy, InlineAsm,
     VirtualRegister, HardwareRegister, Immediate as MIRImmediate, MemoryLocation
 )
@@ -603,6 +604,12 @@ class InstructionSelector:
             self.select_block_copy(instr)
         elif isinstance(instr, InlineAsm):
             self.select_inline_asm(instr)
+        elif isinstance(instr, StatusFlagTest):
+            self.select_status_flag_test(instr)
+        elif isinstance(instr, StatusFlagSet):
+            self.select_status_flag_set(instr)
+        elif isinstance(instr, StatusFlagRead):
+            self.select_status_flag_read(instr)
         else:
             raise InstructionSelectionError(f"Unsupported MIR instruction: {type(instr).__name__}")
 
@@ -1539,3 +1546,109 @@ class InstructionSelector:
             # The instruction string may contain operands, e.g., "LDA #$42"
             # Use raw emission since this is user-provided assembly
             self.emitter.emit_raw(asm_instr)
+
+    # ========================================================================
+    # STATUS Flag Operations
+    # ========================================================================
+
+    def select_status_flag_test(self, instr: StatusFlagTest):
+        """
+        Generate code for StatusFlagTest instruction.
+
+        For branchable flags (Carry, Zero, Overflow, Negative):
+            - No code needed; branch instruction directly tests the flag
+
+        For non-branchable flags (Irq, Decimal, Index, Accumulator):
+            - Emits: PHP; PLA; AND #mask
+            - Result in A is 0 if flag clear, non-zero if flag set
+        """
+        from r65.compiler.hir.status_flags import is_branchable_flag
+        from r65.compiler.codegen.opcodes import Opcode
+
+        if is_branchable_flag(instr.flag_name):
+            # No-op for branchable flags - branch instruction handles it
+            self.emitter.emit_comment(f"StatusFlagTest {instr.flag_name} (direct branch)")
+        else:
+            # Non-branchable flag - need to test via PHP; PLA; AND #mask
+            self.emitter.emit_comment(f"StatusFlagTest {instr.flag_name}")
+            self.emitter.emit_instr(Opcode.PHP, comment="Push STATUS to stack")
+            self.emitter.emit_instr(Opcode.PLA, comment="Pull STATUS into A")
+            self.emitter.emit_instr(Opcode.AND_IMMEDIATE, instr.bit_mask,
+                                    comment=f"Test {instr.flag_name} flag (bit {instr.bit_position})")
+
+    def select_status_flag_set(self, instr: StatusFlagSet):
+        """
+        Generate code for StatusFlagSet instruction.
+
+        Emits the appropriate instruction to set or clear a STATUS flag:
+        - Carry: SEC / CLC
+        - Irq: SEI / CLI
+        - Decimal: SED / CLD
+        - Index: SEP #$10 / REP #$10
+        - Accumulator: SEP #$20 / REP #$20
+        """
+        from r65.compiler.hir.status_flags import get_status_flag
+        from r65.compiler.codegen.opcodes import Opcode
+
+        flag = get_status_flag(instr.flag_name)
+        if not flag:
+            raise InstructionSelectionError(f"Unknown STATUS flag: {instr.flag_name}")
+
+        action = "Set" if instr.value else "Clear"
+        self.emitter.emit_comment(f"StatusFlag{action} {instr.flag_name}")
+
+        if instr.value:
+            # Set the flag
+            if instr.flag_name == 'Carry':
+                self.emitter.emit_instr(Opcode.SEC, comment="Set Carry flag")
+            elif instr.flag_name == 'Irq':
+                self.emitter.emit_instr(Opcode.SEI, comment="Set Interrupt disable flag")
+            elif instr.flag_name == 'Decimal':
+                self.emitter.emit_instr(Opcode.SED, comment="Set Decimal mode flag")
+            elif instr.flag_name == 'Index':
+                self.emitter.emit_instr(Opcode.SEP_IMMEDIATE, 0x10, comment="Set X flag (8-bit index)")
+            elif instr.flag_name == 'Accumulator':
+                self.emitter.emit_instr(Opcode.SEP_IMMEDIATE, 0x20, comment="Set M flag (8-bit accumulator)")
+        else:
+            # Clear the flag
+            if instr.flag_name == 'Carry':
+                self.emitter.emit_instr(Opcode.CLC, comment="Clear Carry flag")
+            elif instr.flag_name == 'Irq':
+                self.emitter.emit_instr(Opcode.CLI, comment="Clear Interrupt disable flag")
+            elif instr.flag_name == 'Decimal':
+                self.emitter.emit_instr(Opcode.CLD, comment="Clear Decimal mode flag")
+            elif instr.flag_name == 'Index':
+                self.emitter.emit_instr(Opcode.REP_IMMEDIATE, 0x10, comment="Clear X flag (16-bit index)")
+            elif instr.flag_name == 'Accumulator':
+                self.emitter.emit_instr(Opcode.REP_IMMEDIATE, 0x20, comment="Clear M flag (16-bit accumulator)")
+
+    def select_status_flag_read(self, instr: StatusFlagRead):
+        """
+        Generate code for StatusFlagRead instruction.
+
+        Reads a STATUS flag into a virtual register as boolean (0/1).
+        Emits: PHP; PLA; AND #mask; (normalize to 0/1 if needed)
+        """
+        from r65.compiler.codegen.opcodes import Opcode
+
+        self.emitter.emit_comment(f"StatusFlagRead {instr.flag_name}")
+
+        # Get STATUS into A
+        self.emitter.emit_instr(Opcode.PHP, comment="Push STATUS to stack")
+        self.emitter.emit_instr(Opcode.PLA, comment="Pull STATUS into A")
+        self.emitter.emit_instr(Opcode.AND_IMMEDIATE, instr.bit_mask,
+                                comment=f"Isolate {instr.flag_name} flag")
+
+        # Normalize to 0/1 (result is 0 if flag clear, or bit_mask if flag set)
+        # For bit 0 (Carry), result is already 0 or 1
+        # For other bits, we need to normalize
+        if instr.bit_mask != 0x01:
+            # Use BEQ to skip if already 0, otherwise load 1
+            norm_label = self.parent._get_unique_label()
+            self.emitter.emit_instr(Opcode.BEQ, norm_label, comment="Skip if flag clear")
+            self.emitter.emit_instr(Opcode.LDA_IMMEDIATE, 1, comment="Normalize to 1")
+            self.emitter.emit_label(norm_label)
+
+        # Store result to destination
+        dest_loc = self._get_operand_location(instr.dest)
+        self._emit_store('STA', dest_loc, comment=f"Store {instr.flag_name} flag value")

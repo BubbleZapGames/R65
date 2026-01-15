@@ -11,7 +11,7 @@ from r65.compiler.hir import (
     HIRStatement, HIRBlock, HIRLetStmt, HIRTupleLetStmt, HIRExprStmt, HIRReturnStmt,
     HIRIfStmt, HIRWhileStmt, HIRBreakStmt, HIRContinueStmt, HIRAsmStmt,
     HIRExpression, HIRIntegerLiteral, HIRBooleanLiteral, HIREnumVariantExpr, HIRIdentifier,
-    HIRFunctionAddress, HIRRegister, HIRBinaryOp, HIRUnaryOp, HIRTypeCast, HIRAssignment,
+    HIRFunctionAddress, HIRRegister, HIRStatusFlagAccess, HIRBinaryOp, HIRUnaryOp, HIRTypeCast, HIRAssignment,
     HIRFunctionCall, HIRMethodCall, HIRArrayIndex, HIRFieldAccess, HIRDereference, HIRAddressOf, HIRMultiAssignment,
     HIRArrayFillExpr, HIRArrayLiteralExpr, HIRStringLiteral, HIRStructLiteralExpr,
     HIRMatchExpression, HIRPattern, HIRLiteralPattern, HIREnumPattern, HIRWildcardPattern, HIRIdentifierPattern, HIROrPattern,
@@ -27,6 +27,7 @@ from r65.compiler.mir.nodes import (
     VirtualRegister, HardwareRegister, Immediate, FunctionPointer, MemoryLocation,
     Load, Store, LoadIndirect, StoreIndirect, Move, TypeConvert, BinaryOp, UnaryOp, Compare, BitTest,
     Jump, CondBranch, JumpTable, Return, ReturnFromInterrupt, Call, Argument, ArgumentMechanism,
+    StatusFlagRead,
     SetMode, SaveRegister, RestoreRegister,
     Push, Pull,
     MemoryFill, BlockCopy, ROMDataRef,
@@ -680,6 +681,9 @@ class MIRBuilder:
         elif isinstance(expr, HIRFieldAccess):
             return self.expr_lowerer.lower_field_access(expr)
 
+        elif isinstance(expr, HIRStatusFlagAccess):
+            return self._lower_status_flag_read(expr)
+
         elif isinstance(expr, HIRDereference):
             return self.expr_lowerer.lower_dereference(expr)
 
@@ -694,6 +698,27 @@ class MIRBuilder:
             # Allocate placeholder virtual register
             vreg = self.current_function.vreg_allocator.alloc(expr.expr_type, "unsupported")
             return vreg
+
+    def _lower_status_flag_read(self, expr: HIRStatusFlagAccess) -> VirtualRegister:
+        """
+        Lower STATUS flag read to MIR.
+
+        For reads like: let x = STATUS.Carry;
+        Emits StatusFlagRead instruction which will generate:
+        PHP; PLA; AND #mask; (normalize to 0/1)
+        """
+        from r65.compiler.hir.types import BasicTypeInfo
+
+        result = self.current_function.vreg_allocator.alloc(
+            BasicTypeInfo('bool'),
+            f"status_{expr.flag_name.lower()}"
+        )
+        self.emit(StatusFlagRead(
+            dest=result,
+            flag_name=expr.flag_name,
+            bit_mask=expr.bit_mask
+        ))
+        return result
 
     # ========================================================================
     # Expression Lowering (delegated to ExpressionLowerer)
