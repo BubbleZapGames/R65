@@ -65,8 +65,8 @@ STATUS_FLAGS: Dict[str, StatusFlag] = {
         clear_instruction='CLD',
         is_writable=True
     ),
-    'Index': StatusFlag(
-        name='Index',
+    'XY16': StatusFlag(
+        name='XY16',
         bit_position=4,
         bit_mask=0x10,
         branch_set=None,  # No dedicated branch instruction
@@ -75,8 +75,8 @@ STATUS_FLAGS: Dict[str, StatusFlag] = {
         clear_instruction='REP',  # REP #$10
         is_writable=True
     ),
-    'Accumulator': StatusFlag(
-        name='Accumulator',
+    'A16': StatusFlag(
+        name='A16',
         bit_position=5,
         bit_mask=0x20,
         branch_set=None,  # No dedicated branch instruction
@@ -126,7 +126,7 @@ def is_branchable_flag(name: str) -> bool:
     Check if a STATUS flag has dedicated branch instructions.
 
     Branchable flags: Carry, Zero, Overflow, Negative
-    Non-branchable flags: Irq, Decimal, Index, Accumulator
+    Non-branchable flags: Irq, Decimal, XY16, A16
 
     Args:
         name: Flag name

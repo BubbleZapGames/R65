@@ -1584,8 +1584,8 @@ class InstructionSelector:
         - Carry: SEC / CLC
         - Irq: SEI / CLI
         - Decimal: SED / CLD
-        - Index: SEP #$10 / REP #$10
-        - Accumulator: SEP #$20 / REP #$20
+        - XY16: SEP #$10 / REP #$10
+        - A16: SEP #$20 / REP #$20
         """
         from r65.compiler.hir.status_flags import get_status_flag
         from r65.compiler.codegen.opcodes import Opcode
@@ -1605,9 +1605,9 @@ class InstructionSelector:
                 self.emitter.emit_instr(Opcode.SEI, comment="Set Interrupt disable flag")
             elif instr.flag_name == 'Decimal':
                 self.emitter.emit_instr(Opcode.SED, comment="Set Decimal mode flag")
-            elif instr.flag_name == 'Index':
+            elif instr.flag_name == 'XY16':
                 self.emitter.emit_instr(Opcode.SEP_IMMEDIATE, 0x10, comment="Set X flag (8-bit index)")
-            elif instr.flag_name == 'Accumulator':
+            elif instr.flag_name == 'A16':
                 self.emitter.emit_instr(Opcode.SEP_IMMEDIATE, 0x20, comment="Set M flag (8-bit accumulator)")
         else:
             # Clear the flag
@@ -1617,9 +1617,9 @@ class InstructionSelector:
                 self.emitter.emit_instr(Opcode.CLI, comment="Clear Interrupt disable flag")
             elif instr.flag_name == 'Decimal':
                 self.emitter.emit_instr(Opcode.CLD, comment="Clear Decimal mode flag")
-            elif instr.flag_name == 'Index':
+            elif instr.flag_name == 'XY16':
                 self.emitter.emit_instr(Opcode.REP_IMMEDIATE, 0x10, comment="Clear X flag (16-bit index)")
-            elif instr.flag_name == 'Accumulator':
+            elif instr.flag_name == 'A16':
                 self.emitter.emit_instr(Opcode.REP_IMMEDIATE, 0x20, comment="Clear M flag (16-bit accumulator)")
 
     def select_status_flag_read(self, instr: StatusFlagRead):

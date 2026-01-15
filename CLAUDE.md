@@ -96,8 +96,8 @@ STATUS.Carry = true;      // SEC
 STATUS.Carry = false;     // CLC
 STATUS.Irq = true;        // SEI (disable interrupts)
 STATUS.Decimal = false;   // CLD (disable BCD mode)
-STATUS.Index = true;      // SEP #$10 (8-bit index)
-STATUS.Accumulator = false; // REP #$20 (16-bit accumulator)
+STATUS.XY16 = true;      // SEP #$10 (8-bit index)
+STATUS.A16 = false; // REP #$20 (16-bit accumulator)
 ```
 
 **Available flags:**
@@ -108,12 +108,12 @@ STATUS.Accumulator = false; // REP #$20 (16-bit accumulator)
 | `STATUS.Zero` | 1 | BEQ / BNE | - | No |
 | `STATUS.Irq` | 2 | bit test + branch | SEI / CLI | Yes |
 | `STATUS.Decimal` | 3 | bit test + branch | SED / CLD | Yes |
-| `STATUS.Index` | 4 | bit test + branch | SEP #$10 / REP #$10 | Yes |
-| `STATUS.Accumulator` | 5 | bit test + branch | SEP #$20 / REP #$20 | Yes |
+| `STATUS.XY16` | 4 | bit test + branch | SEP #$10 / REP #$10 | Yes |
+| `STATUS.A16` | 5 | bit test + branch | SEP #$20 / REP #$20 | Yes |
 | `STATUS.Overflow` | 6 | BVS / BVC | - | No |
 | `STATUS.Negative` | 7 | BMI / BPL | - | No |
 
-**Branchable flags** (Carry, Zero, Overflow, Negative) generate single branch instructions. **Non-branchable flags** (Irq, Decimal, Index, Accumulator) generate a bit-test sequence: `PHP; PLA; AND #mask; BNE/BEQ`.
+**Branchable flags** (Carry, Zero, Overflow, Negative) generate single branch instructions. **Non-branchable flags** (Irq, Decimal, XY16, A16) generate a bit-test sequence: `PHP; PLA; AND #mask; BNE/BEQ`.
 
 **Non-writable flags** (Zero, Overflow, Negative) cannot be assigned - they are set by CPU operations. Attempting to write is a compile error.
 

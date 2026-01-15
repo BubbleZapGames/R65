@@ -34,8 +34,8 @@ Bit 7  6  5  4  3  2  1  0
 | `STATUS.Zero` | 1 | 0x02 | BEQ / BNE | - | No |
 | `STATUS.Irq` | 2 | 0x04 | (bit test) | SEI / CLI | Yes |
 | `STATUS.Decimal` | 3 | 0x08 | (bit test) | SED / CLD | Yes |
-| `STATUS.Index` | 4 | 0x10 | (bit test) | SEP #$10 / REP #$10 | Yes |
-| `STATUS.Accumulator` | 5 | 0x20 | (bit test) | SEP #$20 / REP #$20 | Yes |
+| `STATUS.XY16` | 4 | 0x10 | (bit test) | SEP #$10 / REP #$10 | Yes |
+| `STATUS.A16` | 5 | 0x20 | (bit test) | SEP #$20 / REP #$20 | Yes |
 | `STATUS.Overflow` | 6 | 0x40 | BVS / BVC | - | No |
 | `STATUS.Negative` | 7 | 0x80 | BMI / BPL | - | No |
 
@@ -43,7 +43,7 @@ Bit 7  6  5  4  3  2  1  0
 
 **Branchable flags** (Carry, Zero, Overflow, Negative) have dedicated branch instructions that directly test the flag. These generate optimal single-instruction branches.
 
-**Non-branchable flags** (Irq, Decimal, Index, Accumulator) don't have dedicated branch instructions. Testing these flags generates a bit-test sequence: `PHP; PLA; AND #mask; BNE/BEQ`.
+**Non-branchable flags** (Irq, Decimal, XY16, A16) don't have dedicated branch instructions. Testing these flags generates a bit-test sequence: `PHP; PLA; AND #mask; BNE/BEQ`.
 
 ### Writable vs Read-Only Flags
 
@@ -51,8 +51,8 @@ Bit 7  6  5  4  3  2  1  0
 - `Carry` - SEC/CLC
 - `Irq` - SEI/CLI
 - `Decimal` - SED/CLD
-- `Index` - SEP #$10 / REP #$10
-- `Accumulator` - SEP #$20 / REP #$20
+- `XY16` - SEP #$10 / REP #$10
+- `A16` - SEP #$20 / REP #$20
 
 **Read-only flags** (Zero, Overflow, Negative) are set by CPU operations and cannot be written directly. Attempting to write to these flags is a compile error.
 
@@ -94,10 +94,10 @@ STATUS.Irq = false;       // CLI (enable interrupts)
 STATUS.Decimal = false;   // CLD (disable BCD mode)
 
 // Mode flags
-STATUS.Index = true;      // SEP #$10 (8-bit index)
-STATUS.Index = false;     // REP #$10 (16-bit index)
-STATUS.Accumulator = true;   // SEP #$20 (8-bit accumulator)
-STATUS.Accumulator = false;  // REP #$20 (16-bit accumulator)
+STATUS.XY16 = true;      // SEP #$10 (8-bit index)
+STATUS.XY16 = false;     // REP #$10 (16-bit index)
+STATUS.A16 = true;   // SEP #$20 (8-bit accumulator)
+STATUS.A16 = false;  // REP #$20 (16-bit accumulator)
 ```
 
 ### Reading Flag Values
@@ -146,8 +146,8 @@ if STATUS.Carry && STATUS.Zero {
 | `if STATUS.Irq` | `PHP; PLA; AND #$04; BNE label` |
 | `if !STATUS.Irq` | `PHP; PLA; AND #$04; BEQ label` |
 | `if STATUS.Decimal` | `PHP; PLA; AND #$08; BNE label` |
-| `if STATUS.Index` | `PHP; PLA; AND #$10; BNE label` |
-| `if STATUS.Accumulator` | `PHP; PLA; AND #$20; BNE label` |
+| `if STATUS.XY16` | `PHP; PLA; AND #$10; BNE label` |
+| `if STATUS.A16` | `PHP; PLA; AND #$20; BNE label` |
 
 ### Flag Write Instructions
 
@@ -159,10 +159,10 @@ if STATUS.Carry && STATUS.Zero {
 | `STATUS.Irq = false` | `CLI` |
 | `STATUS.Decimal = true` | `SED` |
 | `STATUS.Decimal = false` | `CLD` |
-| `STATUS.Index = true` | `SEP #$10` |
-| `STATUS.Index = false` | `REP #$10` |
-| `STATUS.Accumulator = true` | `SEP #$20` |
-| `STATUS.Accumulator = false` | `REP #$20` |
+| `STATUS.XY16 = true` | `SEP #$10` |
+| `STATUS.XY16 = false` | `REP #$10` |
+| `STATUS.A16 = true` | `SEP #$20` |
+| `STATUS.A16 = false` | `REP #$20` |
 
 ## Function Return Optimization
 
@@ -194,7 +194,7 @@ Error message:
 ```
 type error: Cannot write to STATUS.Zero
   This flag is set by CPU operations, not directly writable
-  Writable flags: Carry, Irq, Decimal, Index, Accumulator
+  Writable flags: Carry, Irq, Decimal, XY16, A16
 ```
 
 ### Invalid Flag Name Error
@@ -205,7 +205,7 @@ STATUS.Invalid = true;  // Compile error!
 
 Error message:
 ```
-HIR error: Unknown STATUS flag 'Invalid'. Valid flags: Carry, Zero, Irq, Decimal, Index, Accumulator, Overflow, Negative
+HIR error: Unknown STATUS flag 'Invalid'. Valid flags: Carry, Zero, Irq, Decimal, XY16, A16, Overflow, Negative
 ```
 
 ## Implementation Notes
