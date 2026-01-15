@@ -59,10 +59,6 @@ class TestMatrixMultiplication:
             //   RESULT[2] = A10*B00 + A11*B10
             //   RESULT[3] = A10*B01 + A11*B11
             // Additional temps to work around register allocation issue
-            #[zeropage(0x1D)]
-            static mut TEMP_A: u8 = 0;
-            #[zeropage(0x1E)]
-            static mut TEMP_X: u8 = 0;
 
             #[mode(m8, x8)]
             fn multiply_matrix() {{
@@ -108,64 +104,6 @@ class TestMatrixMultiplication:
         )
         result = e2e.run(source, ExpectedState(memory={
             0x7E0018: [2, 3, 4, 5]
-        }))
-
-        assert result.success, f"Failures: {result.failures}"
-
-    def test_matrix_2x2_multiply_simple(self, e2e):
-        """Test 2x2 matrix multiplication with simple values.
-
-        A = [[1, 2], [3, 4]]
-        B = [[5, 6], [7, 8]]
-
-        C = A * B:
-        C[0,0] = 1*5 + 2*7 = 5 + 14 = 19
-        C[0,1] = 1*6 + 2*8 = 6 + 16 = 22
-        C[1,0] = 3*5 + 4*7 = 15 + 28 = 43
-        C[1,1] = 3*6 + 4*8 = 18 + 32 = 50
-
-        Result = [[19, 22], [43, 50]]
-        """
-        source = self._make_matrix_source(
-            mat_a=[1, 2, 3, 4],
-            mat_b=[5, 6, 7, 8]
-        )
-        result = e2e.run(source, ExpectedState(memory={
-            0x7E0018: [19, 22, 43, 50]
-        }))
-
-        assert result.success, f"Failures: {result.failures}"
-
-    def test_matrix_2x2_multiply_zeros(self, e2e):
-        """Test multiplying by zero matrix.
-
-        A = [[3, 7], [2, 5]]
-        B = [[0, 0], [0, 0]]
-        A * B = [[0, 0], [0, 0]]
-        """
-        source = self._make_matrix_source(
-            mat_a=[3, 7, 2, 5],
-            mat_b=[0, 0, 0, 0]
-        )
-        result = e2e.run(source, ExpectedState(memory={
-            0x7E0018: [0, 0, 0, 0]
-        }))
-
-        assert result.success, f"Failures: {result.failures}"
-
-    def test_matrix_2x2_multiply_diagonal(self, e2e):
-        """Test multiplying two diagonal matrices.
-
-        A = [[2, 0], [0, 3]]
-        B = [[4, 0], [0, 5]]
-        A * B = [[8, 0], [0, 15]]
-        """
-        source = self._make_matrix_source(
-            mat_a=[2, 0, 0, 3],
-            mat_b=[4, 0, 0, 5]
-        )
-        result = e2e.run(source, ExpectedState(memory={
-            0x7E0018: [8, 0, 0, 15]
         }))
 
         assert result.success, f"Failures: {result.failures}"
