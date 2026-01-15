@@ -930,9 +930,10 @@ class ASTBuilder(Transformer):
         names = [item.value for item in items if isinstance(item, LarkToken) and item.type == 'IDENT']
         return ('tuple', names)
 
-    def let_stmt(self, items):
+    @v_args(tree=True)
+    def let_stmt(self, tree):
         """Let statement."""
-        items = self._filter_tokens(items, keep_types={'IDENT', 'MUT', 'FAR', 'NEAR', 'INTEGER', 'STRING', 'BOOLEAN', 'REGISTER'})
+        items = self._filter_tokens(tree.children, keep_types={'IDENT', 'MUT', 'FAR', 'NEAR', 'INTEGER', 'STRING', 'BOOLEAN', 'REGISTER'})
 
         idx = 0
 
@@ -987,6 +988,16 @@ class ASTBuilder(Transformer):
 
         # Initializer (always last)
         initializer = items[idx] if idx < len(items) else None
+
+        # Require either type annotation or initializer (or both)
+        if var_type is None and initializer is None:
+            var_name = name if name else (tuple_pattern.names[0] if tuple_pattern else "variable")
+            source_loc = self._make_source_loc(tree.meta) if hasattr(tree, 'meta') else None
+            raise ParseError(
+                f"variable '{var_name}' requires either a type annotation or an initializer",
+                source_loc=source_loc,
+                hint="add a type annotation (let x: u8;) or an initializer (let x = value;)"
+            )
 
         return ast.LetStmt(
             is_mut=is_mut,

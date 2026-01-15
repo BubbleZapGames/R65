@@ -199,8 +199,8 @@ tuple_target: IDENT    -> tuple_target_ident
 //   let x = expr;
 //   let (a, b) = tuple_expr;
 // Supports pointer declarations: let [far|near] [mut] *name: type = expr
-let_stmt: LET (FAR | NEAR)? MUT? (tuple_pattern | pointer_pattern | single_pattern) (":" type_expr)? "=" initializer_expr ";"
-        | LET (FAR | NEAR)? MUT? safe_ptr_pattern (":" type_expr)? "=" initializer_expr ";"  -> let_stmt_safe_ptr_error
+let_stmt: LET (FAR | NEAR)? MUT? (tuple_pattern | pointer_pattern | single_pattern) (":" type_expr)? ("=" initializer_expr)? ";"
+        | LET (FAR | NEAR)? MUT? safe_ptr_pattern (":" type_expr)? ("=" initializer_expr)? ";"  -> let_stmt_safe_ptr_error
 single_pattern: IDENT ("@" binding)?
 pointer_pattern: STAR IDENT ("@" binding)?
 safe_ptr_pattern: AMPER IDENT ("@" binding)?

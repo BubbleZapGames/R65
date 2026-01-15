@@ -673,8 +673,10 @@ class HIRBuilder:
 
     def _build_let(self, let: ast.LetStmt) -> Union[hir.HIRLetStmt, hir.HIRTupleLetStmt]:
         """Build HIR let statement from AST."""
-        # Build initializer
-        initializer = self._build_expression(let.initializer)
+        # Build initializer (may be None for uninitialized variables)
+        initializer = None
+        if let.initializer is not None:
+            initializer = self._build_expression(let.initializer)
 
         # Handle tuple destructuring pattern
         if let.pattern:

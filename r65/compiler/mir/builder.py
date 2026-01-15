@@ -504,6 +504,12 @@ class MIRBuilder:
                         vreg = self.current_function.vreg_allocator.alloc(stmt.var_type, stmt.name)
                         self.symbol_to_vreg[id(stmt.symbol)] = vreg
                         self.emit(Move(dest=vreg, source=init_value, type_info=stmt.var_type))
+            else:
+                # Uninitialized variable - just allocate storage
+                if not self.has_explicit_location(stmt.symbol):
+                    # Allocate virtual register for later use
+                    vreg = self.current_function.vreg_allocator.alloc(stmt.var_type, stmt.name)
+                    self.symbol_to_vreg[id(stmt.symbol)] = vreg
 
     def lower_tuple_let_statement(self, stmt: HIRTupleLetStmt):
         """

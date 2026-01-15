@@ -47,10 +47,6 @@ class TestMatrixMultiplication:
             #[zeropage(0x18)]
             static mut RESULT: [u8; 4] = [0, 0, 0, 0];
 
-            // Temporary for intermediate multiplication results
-            #[zeropage(0x1C)]
-            static mut TEMP: u8 = 0;
-
             // 2x2 Matrix multiplication: RESULT = MAT_A * MAT_B
             // Uses global arrays directly (avoiding pointer params for now)
             //
@@ -71,6 +67,7 @@ class TestMatrixMultiplication:
             #[mode(m8, x8)]
             fn multiply_matrix() {{
                 // RESULT[0] = MAT_A[0]*MAT_B[0] + MAT_A[1]*MAT_B[2]
+                let mut TEMP : u8; 
                 (TEMP) = mul8(MAT_A[0], MAT_B[0]);
                 (A) = mul8(MAT_A[1], MAT_B[2]);
                 RESULT[0] = A + TEMP;
