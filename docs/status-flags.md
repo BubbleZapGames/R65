@@ -34,8 +34,8 @@ Bit 7  6  5  4  3  2  1  0
 | `STATUS.Zero` | 1 | 0x02 | BEQ / BNE | - | No |
 | `STATUS.Irq` | 2 | 0x04 | (bit test) | SEI / CLI | Yes |
 | `STATUS.Decimal` | 3 | 0x08 | (bit test) | SED / CLD | Yes |
-| `STATUS.XY16` | 4 | 0x10 | (bit test) | SEP #$10 / REP #$10 | Yes |
-| `STATUS.A16` | 5 | 0x20 | (bit test) | SEP #$20 / REP #$20 | Yes |
+| `STATUS.XY16` | 4 | 0x10 | (bit test) | REP #$10 / SEP #$10 | Yes |
+| `STATUS.A16` | 5 | 0x20 | (bit test) | REP #$20 / SEP #$20 | Yes |
 | `STATUS.Overflow` | 6 | 0x40 | BVS / BVC | - | No |
 | `STATUS.Negative` | 7 | 0x80 | BMI / BPL | - | No |
 
@@ -51,8 +51,8 @@ Bit 7  6  5  4  3  2  1  0
 - `Carry` - SEC/CLC
 - `Irq` - SEI/CLI
 - `Decimal` - SED/CLD
-- `XY16` - SEP #$10 / REP #$10
-- `A16` - SEP #$20 / REP #$20
+- `XY16` - REP #$10 (true=16-bit) / SEP #$10 (false=8-bit)
+- `A16` - REP #$20 (true=16-bit) / SEP #$20 (false=8-bit)
 
 **Read-only flags** (Zero, Overflow, Negative) are set by CPU operations and cannot be written directly. Attempting to write to these flags is a compile error.
 
@@ -93,11 +93,11 @@ STATUS.Carry = false;     // CLC
 STATUS.Irq = false;       // CLI (enable interrupts)
 STATUS.Decimal = false;   // CLD (disable BCD mode)
 
-// Mode flags
-STATUS.XY16 = true;      // SEP #$10 (8-bit index)
-STATUS.XY16 = false;     // REP #$10 (16-bit index)
-STATUS.A16 = true;   // SEP #$20 (8-bit accumulator)
-STATUS.A16 = false;  // REP #$20 (16-bit accumulator)
+// Mode flags (A16/XY16 = true means 16-bit, false means 8-bit)
+STATUS.XY16 = true;       // REP #$10 (16-bit index)
+STATUS.XY16 = false;      // SEP #$10 (8-bit index)
+STATUS.A16 = true;    // REP #$20 (16-bit accumulator)
+STATUS.A16 = false;   // SEP #$20 (8-bit accumulator)
 ```
 
 ### Reading Flag Values
@@ -159,10 +159,39 @@ if STATUS.Carry && STATUS.Zero {
 | `STATUS.Irq = false` | `CLI` |
 | `STATUS.Decimal = true` | `SED` |
 | `STATUS.Decimal = false` | `CLD` |
-| `STATUS.XY16 = true` | `SEP #$10` |
-| `STATUS.XY16 = false` | `REP #$10` |
-| `STATUS.A16 = true` | `SEP #$20` |
-| `STATUS.A16 = false` | `REP #$20` |
+| `STATUS.XY16 = true` | `REP #$10` |
+| `STATUS.XY16 = false` | `SEP #$10` |
+| `STATUS.A16 = true` | `REP #$20` |
+| `STATUS.A16 = false` | `SEP #$20` |
+
+### SEP/REP Combining Optimization
+
+When multiple `STATUS.A16` and `STATUS.XY16` assignments occur sequentially with the same direction (both setting to `true` or both setting to `false`), the compiler automatically combines them into a single SEP or REP instruction:
+
+```rust
+// Sequential assignments to 16-bit mode (true = 16-bit)
+STATUS.A16 = true;
+STATUS.XY16 = true;
+// Generates: REP #$30 (not REP #$20; REP #$10)
+
+// Sequential assignments to 8-bit mode (false = 8-bit)
+STATUS.A16 = false;
+STATUS.XY16 = false;
+// Generates: SEP #$30 (not SEP #$20; SEP #$10)
+```
+
+This optimization only applies when:
+1. Both assignments are to `A16` or `XY16` flags (the mode flags that use SEP/REP)
+2. Both assignments have the same boolean value (both `true` or both `false`)
+3. There are no intervening instructions between the assignments
+
+Mixed directions are handled separately:
+
+```rust
+STATUS.A16 = true;   // 16-bit accumulator
+STATUS.XY16 = false; // 8-bit index
+// Generates: REP #$20; SEP #$10 (cannot be combined)
+```
 
 ## Function Return Optimization
 

@@ -63,18 +63,6 @@ class TestModeTransition:
 class TestModeBuiltins:
     """Tests for mode control built-in functions."""
 
-    def test_sep_builtin(self):
-        """Test SEP() built-in."""
-        func = parse_function("fn test() { SEP(0x30); }")
-        stmt = func.body.statements[0]
-        assert isinstance(stmt, ast.ExprStmt)
-
-    def test_rep_builtin(self):
-        """Test REP() built-in."""
-        func = parse_function("fn test() { REP(0x30); }")
-        stmt = func.body.statements[0]
-        assert isinstance(stmt, ast.ExprStmt)
-
     def test_xba_builtin(self):
         """Test xba() built-in."""
         func = parse_function("fn test() { xba(); }")

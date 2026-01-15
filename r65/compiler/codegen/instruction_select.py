@@ -91,9 +91,62 @@ class InstructionSelector:
         self.hw_tracker = HardwareRegisterTracker()
         self._instruction_index = 0
 
+        # Pending SEP/REP mask for combining sequential mode flag sets
+        # _pending_sep_mask: bits to set (8-bit mode), _pending_rep_mask: bits to clear (16-bit mode)
+        self._pending_sep_mask = 0
+        self._pending_rep_mask = 0
+
         # Initialize tracker from function parameters if available
         if current_function:
             self._init_hw_tracker(current_function)
+
+    # ========================================================================
+    # Pending Mode Flag Optimization
+    # ========================================================================
+
+    def _flush_pending_mode_flags(self):
+        """
+        Emit any pending SEP/REP instructions.
+
+        This optimizes sequential STATUS.A16/XY16 assignments by combining them
+        into a single SEP or REP instruction with a combined mask.
+
+        Semantics:
+            STATUS.A16 = true  -> 16-bit accumulator -> REP #$20 (clear M flag)
+            STATUS.A16 = false -> 8-bit accumulator  -> SEP #$20 (set M flag)
+            STATUS.XY16 = true  -> 16-bit index     -> REP #$10 (clear X flag)
+            STATUS.XY16 = false -> 8-bit index      -> SEP #$10 (set X flag)
+
+        For example:
+            STATUS.A16 = false; STATUS.XY16 = false;  // Switch to 8-bit mode
+        Becomes:
+            SEP #$30  (instead of SEP #$20; SEP #$10)
+        """
+        if self._pending_sep_mask:
+            mask = self._pending_sep_mask
+            comment_parts = []
+            if mask & 0x20:
+                comment_parts.append("M")
+            if mask & 0x10:
+                comment_parts.append("X")
+            comment = f"Set {'+'.join(comment_parts)} flag{'s' if len(comment_parts) > 1 else ''} (8-bit mode)"
+            self.emitter.emit_instr(Opcode.SEP_IMMEDIATE, mask, comment=comment)
+            self._pending_sep_mask = 0
+
+        if self._pending_rep_mask:
+            mask = self._pending_rep_mask
+            comment_parts = []
+            if mask & 0x20:
+                comment_parts.append("M")
+            if mask & 0x10:
+                comment_parts.append("X")
+            comment = f"Clear {'+'.join(comment_parts)} flag{'s' if len(comment_parts) > 1 else ''} (16-bit mode)"
+            self.emitter.emit_instr(Opcode.REP_IMMEDIATE, mask, comment=comment)
+            self._pending_rep_mask = 0
+
+    def flush_pending_mode_flags(self):
+        """Public method to flush pending mode flags (for function epilogue etc.)."""
+        self._flush_pending_mode_flags()
 
     # ========================================================================
     # Opcode Selection Helpers
@@ -554,6 +607,11 @@ class InstructionSelector:
         Args:
             instr: MIR instruction to convert
         """
+        # Flush pending mode flags before any non-StatusFlagSet instruction
+        # This enables combining sequential STATUS.A16/XY16 assignments
+        if not isinstance(instr, StatusFlagSet):
+            self._flush_pending_mode_flags()
+
         if isinstance(instr, Load):
             self.memory_selector.select_load(instr)
         elif isinstance(instr, Store):
@@ -1584,15 +1642,39 @@ class InstructionSelector:
         - Carry: SEC / CLC
         - Irq: SEI / CLI
         - Decimal: SED / CLD
-        - XY16: SEP #$10 / REP #$10
-        - A16: SEP #$20 / REP #$20
+        - XY16: SEP #$10 / REP #$10 (accumulated for combining)
+        - A16: SEP #$20 / REP #$20 (accumulated for combining)
+
+        For A16/XY16 flags, masks are accumulated and emitted together when:
+        - A non-StatusFlagSet instruction is encountered
+        - The direction changes (set vs clear)
         """
         from r65.compiler.hir.status_flags import get_status_flag
-        from r65.compiler.codegen.opcodes import Opcode
 
         flag = get_status_flag(instr.flag_name)
         if not flag:
             raise InstructionSelectionError(f"Unknown STATUS flag: {instr.flag_name}")
+
+        # For A16/XY16, accumulate masks for combining
+        # Note: A16=true means "16-bit mode" which requires M flag=0 (REP clears)
+        #       A16=false means "8-bit mode" which requires M flag=1 (SEP sets)
+        if instr.flag_name in ('A16', 'XY16'):
+            mask = 0x20 if instr.flag_name == 'A16' else 0x10
+
+            if instr.value:
+                # A16/XY16 = true means 16-bit mode, use REP to clear the flag bit
+                if self._pending_sep_mask:
+                    self._flush_pending_mode_flags()
+                self._pending_rep_mask |= mask
+            else:
+                # A16/XY16 = false means 8-bit mode, use SEP to set the flag bit
+                if self._pending_rep_mask:
+                    self._flush_pending_mode_flags()
+                self._pending_sep_mask |= mask
+            return
+
+        # For other flags, emit immediately (and flush pending mode flags first)
+        self._flush_pending_mode_flags()
 
         action = "Set" if instr.value else "Clear"
         self.emitter.emit_comment(f"StatusFlag{action} {instr.flag_name}")
@@ -1605,10 +1687,6 @@ class InstructionSelector:
                 self.emitter.emit_instr(Opcode.SEI, comment="Set Interrupt disable flag")
             elif instr.flag_name == 'Decimal':
                 self.emitter.emit_instr(Opcode.SED, comment="Set Decimal mode flag")
-            elif instr.flag_name == 'XY16':
-                self.emitter.emit_instr(Opcode.SEP_IMMEDIATE, 0x10, comment="Set X flag (8-bit index)")
-            elif instr.flag_name == 'A16':
-                self.emitter.emit_instr(Opcode.SEP_IMMEDIATE, 0x20, comment="Set M flag (8-bit accumulator)")
         else:
             # Clear the flag
             if instr.flag_name == 'Carry':
@@ -1617,10 +1695,6 @@ class InstructionSelector:
                 self.emitter.emit_instr(Opcode.CLI, comment="Clear Interrupt disable flag")
             elif instr.flag_name == 'Decimal':
                 self.emitter.emit_instr(Opcode.CLD, comment="Clear Decimal mode flag")
-            elif instr.flag_name == 'XY16':
-                self.emitter.emit_instr(Opcode.REP_IMMEDIATE, 0x10, comment="Clear X flag (16-bit index)")
-            elif instr.flag_name == 'A16':
-                self.emitter.emit_instr(Opcode.REP_IMMEDIATE, 0x20, comment="Clear M flag (16-bit accumulator)")
 
     def select_status_flag_read(self, instr: StatusFlagRead):
         """

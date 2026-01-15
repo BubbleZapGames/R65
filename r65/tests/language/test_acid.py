@@ -417,12 +417,14 @@ fn halt() {
 // -----------------------------------------------------------------------------
 #[mode(m16, x16)]
 fn set_16bit_mode() {
-    REP(0x30);
+    STATUS.A16 = false;
+    STATUS.XY16 = false;
 }
 
 #[mode(m8, x8)]
 fn set_8bit_mode() {
-    SEP(0x30);
+    STATUS.A16 = true;
+    STATUS.XY16 = true;
 }
 
 fn swap_accum_bytes() {

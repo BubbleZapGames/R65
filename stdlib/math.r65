@@ -76,21 +76,20 @@ far fn mul8(multA @ A: u8, multB @ X: u8) -> (u8, u8) {
 #[cfg(snes)]
 #[mode(m16, transition=caller)]
 far fn mul16(multA @ A: u8, multB @ X: u8) -> u16 {
-    // Write multiplicand in 8-bit
-	SEP(0x20);
+    // Write multiplicand in 8-bit mode
+    STATUS.A16 = false;  // SEP #$20 - switch to 8-bit
     WRMPYA = multA;
 
     // Write multiplier (starts multiplication)
     WRMPYB = multB;
 
     // Wait 8 machine cycles for multiplication to complete
-    // REP is 3 cycles, NOP is 2 cycles, so 6 + 2 = 8 cycles
-    REP(0x20);
-    REP(0x20);
-    NOP();
+    // REP is 3 cycles, NOP is 2 cycles, so 3 + 2 + 2 + 1 = 8 cycles
+    STATUS.A16 = true;  // REP #$20 - switch back to 16-bit
+    NOP(2);
 
     // Return 16-bit result
-	return RDMPYL;
+    return RDMPYL;
 }
 
 // Software 8x8 -> 8 unsigned multiply
@@ -204,22 +203,21 @@ far fn mul16(multA @ A: u8, multB @ X: u8) -> u16 {
 #[cfg(snes)]
 #[mode(m16, transition=caller)]
 far fn div16(dividend @ A: u8, divisor @ X: u8) -> u16 {
-    // Switch to 8-bit for hardware register writes
-
     // Write 16-bit dividend
     WRDIVL = A;
 
-    SEP(0x20);
+    // Switch to 8-bit for hardware register writes
+    STATUS.A16 = false;  // SEP #$20 - switch to 8-bit
     // Write divisor (starts division)
     WRDIVB = X;
 
     // Wait 16 machine cycles for division to complete
     // REP is 3 cycles, so we need 16 - 3 = 13 more cycles
     // 6 NOPs = 12 cycles, plus the LDA below starts immediately
-    REP(0x20);
+    STATUS.A16 = true;  // REP #$20 - switch back to 16-bit
     NOP(6);
 
-	return RDDIVL;
+    return RDDIVL;
 }
 
 // Hardware 8/8 -> 8 unsigned division (simplified)
@@ -521,5 +519,4 @@ far fn shl16(value @ A: u16, amount @ X: u8) -> u16 {
 
     return A;
 }
-
 

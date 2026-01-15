@@ -1,0 +1,652 @@
+// R65 Standard Library - U32 (32-bit Unsigned Integer) Support
+//
+// Provides 32-bit unsigned integer arithmetic, comparisons, and conversions.
+//
+// Usage:
+//   include!("lib/u32.r65")
+
+include!("math.r65")
+
+// ============================================================================
+// U32 (32-bit Unsigned Integer) Support
+// ============================================================================
+
+// 32-bit unsigned integer (little-endian)
+// Size: 4 bytes, packed
+struct U32 {
+    lo: u16,    // Offset 0-1: Low 16 bits
+    hi: u16     // Offset 2-3: High 16 bits
+}
+
+// ============================================================================
+// U32 Conversion Functions
+// ============================================================================
+
+// Convert u16 to U32 (zero-extend)
+#[mode(m16, transition=caller)]
+far fn u32_from_u16(value @ A: u16, *result: U32) {
+    (*result).lo = A;
+    A = 0;
+    (*result).hi = A;
+}
+
+// Convert U32 to u16 (truncate, keeps low 16 bits)
+#[mode(m16, transition=caller)]
+far fn u32_to_u16(*value: U32) -> u16 {
+    A = (*value).lo;
+    return A;
+}
+
+// ============================================================================
+// U32 Arithmetic Functions
+// ============================================================================
+
+// Add: result = a + b (with overflow wrapping)
+#[mode(m16, transition=caller)]
+far fn u32_add(*a: U32, *b: U32, *result: U32) {
+    // Add low words with carry clear
+    asm!("CLC");
+    A = (*a).lo;
+    A = A + (*b).lo;
+    (*result).lo = A;
+
+    // Add high words with carry from low addition
+    A = (*a).hi;
+    asm!("ADC _u32_add_b_hi");
+    (*result).hi = A;
+}
+
+// Subtract: result = a - b (with underflow wrapping)
+#[mode(m16, transition=caller)]
+far fn u32_sub(*a: U32, *b: U32, *result: U32) {
+    // Subtract low words with borrow clear (SEC for SBC)
+    asm!("SEC");
+    A = (*a).lo;
+    A = A - (*b).lo;
+    (*result).lo = A;
+
+    // Subtract high words with borrow from low subtraction
+    A = (*a).hi;
+    asm!("SBC _u32_sub_b_hi");
+    (*result).hi = A;
+}
+
+// ============================================================================
+// U32 Comparison Functions (return 1 for true, 0 for false)
+// ============================================================================
+
+// Equality: a == b
+#[mode(m16, transition=caller)]
+far fn u32_eq(*a: U32, *b: U32) -> u8 {
+    // Compare high words first
+    A = (*a).hi;
+    if A != (*b).hi {
+        A = 0;
+        return A;
+    }
+
+    // Compare low words
+    A = (*a).lo;
+    if A != (*b).lo {
+        A = 0;
+        return A;
+    }
+
+    A = 1;
+    return A;
+}
+
+// Less than: a < b
+#[mode(m16, transition=caller)]
+far fn u32_lt(*a: U32, *b: U32) -> u8 {
+    // Compare high words
+    A = (*a).hi;
+    if A < (*b).hi {
+        A = 1;
+        return A;
+    }
+    if A > (*b).hi {
+        A = 0;
+        return A;
+    }
+
+    // High words equal, compare low words
+    A = (*a).lo;
+    if A < (*b).lo {
+        A = 1;
+        return A;
+    }
+
+    A = 0;
+    return A;
+}
+
+// Greater than: a > b
+#[mode(m16, transition=caller)]
+far fn u32_gt(*a: U32, *b: U32) -> u8 {
+    // Compare high words
+    A = (*a).hi;
+    if A > (*b).hi {
+        A = 1;
+        return A;
+    }
+    if A < (*b).hi {
+        A = 0;
+        return A;
+    }
+
+    // High words equal, compare low words
+    A = (*a).lo;
+    if A > (*b).lo {
+        A = 1;
+        return A;
+    }
+
+    A = 0;
+    return A;
+}
+
+// Less than or equal: a <= b
+#[mode(m16, transition=caller)]
+far fn u32_le(*a: U32, *b: U32) -> u8 {
+    // Compare high words
+    A = (*a).hi;
+    if A < (*b).hi {
+        A = 1;
+        return A;
+    }
+    if A > (*b).hi {
+        A = 0;
+        return A;
+    }
+
+    // High words equal, compare low words
+    A = (*a).lo;
+    if A <= (*b).lo {
+        A = 1;
+        return A;
+    }
+
+    A = 0;
+    return A;
+}
+
+// Greater than or equal: a >= b
+#[mode(m16, transition=caller)]
+far fn u32_ge(*a: U32, *b: U32) -> u8 {
+    // Compare high words
+    A = (*a).hi;
+    if A > (*b).hi {
+        A = 1;
+        return A;
+    }
+    if A < (*b).hi {
+        A = 0;
+        return A;
+    }
+
+    // High words equal, compare low words
+    A = (*a).lo;
+    if A >= (*b).lo {
+        A = 1;
+        return A;
+    }
+
+    A = 0;
+    return A;
+}
+
+// ============================================================================
+// U32 Internal Helpers
+// ============================================================================
+
+// Temporary storage for multiplication
+#[zeropage]
+static mut _mul_a_lo: u8;
+#[zeropage]
+static mut _mul_a_hi: u8;
+#[zeropage]
+static mut _mul_b_lo: u8;
+#[zeropage]
+static mut _mul_b_hi: u8;
+#[zeropage]
+static mut _mul_p0: u16;
+#[zeropage]
+static mut _mul_p1: u16;
+#[zeropage]
+static mut _mul_p2: u16;
+#[zeropage]
+static mut _mul_p3: u16;
+
+// 16x16 -> 32 bit multiplication using SNES hardware
+// Uses four 8x8 multiplies: (a_hi*256 + a_lo) * (b_hi*256 + b_lo)
+// Result stored in result_lo (low 16 bits) and result_hi (high 16 bits)
+#[cfg(snes)]
+#[mode(m8, transition=caller)]
+far fn _mul16x16(a @ A: u16, b @ X: u16, *result_lo: u16, *result_hi: u16) {
+    // Extract bytes from a (already in A)
+    _mul_a_lo = A;
+    STATUS.A16 = false;
+    xba();
+    _mul_a_hi = A;
+
+    // Extract bytes from b (in X)
+    A = X;
+    _mul_b_lo = A;
+    A = X >> 8;
+    _mul_b_hi = A;
+
+    // Product 0: a_lo * b_lo (contributes to bits 0-15)
+    WRMPYA = _mul_a_lo;
+    WRMPYB = _mul_b_lo;
+    NOP(4);
+    STATUS.A16 = true;
+    A = RDMPYL;
+    _mul_p0 = A;
+
+    // Product 1: a_lo * b_hi (contributes to bits 8-23)
+    STATUS.A16 = false;
+    WRMPYA = _mul_a_lo;
+    WRMPYB = _mul_b_hi;
+    NOP(4);
+    STATUS.A16 = true;
+    A = RDMPYL;
+    _mul_p1 = A;
+
+    // Product 2: a_hi * b_lo (contributes to bits 8-23)
+    STATUS.A16 = false;
+    WRMPYA = _mul_a_hi;
+    WRMPYB = _mul_b_lo;
+    NOP(4);
+    STATUS.A16 = true;
+    A = RDMPYL;
+    _mul_p2 = A;
+
+    // Product 3: a_hi * b_hi (contributes to bits 16-31)
+    STATUS.A16 = false;
+    WRMPYA = _mul_a_hi;
+    WRMPYB = _mul_b_hi;
+    NOP(4);
+    STATUS.A16 = true;
+    A = RDMPYL;
+    _mul_p3 = A;
+
+    // Combine products:
+    // result = p0 + (p1 << 8) + (p2 << 8) + (p3 << 16)
+
+    // Start with p0 as base
+    A = _mul_p0;
+    (*result_lo) = A;
+    A = 0;
+    (*result_hi) = A;
+
+    // Add p1 << 8 (p1_lo goes to result_lo high byte, p1_hi goes to result_hi low byte)
+    A = _mul_p1;
+    A = A << 8;
+    asm!("CLC");
+    A = A + (*result_lo);
+    (*result_lo) = A;
+    A = _mul_p1;
+    A = A >> 8;
+    asm!("ADC _mul16x16_result_hi");
+    (*result_hi) = A;
+
+    // Add p2 << 8 (same pattern)
+    A = _mul_p2;
+    A = A << 8;
+    asm!("CLC");
+    A = A + (*result_lo);
+    (*result_lo) = A;
+    A = _mul_p2;
+    A = A >> 8;
+    asm!("ADC _mul16x16_result_hi");
+    (*result_hi) = A;
+
+    // Add p3 << 16 (goes entirely to result_hi)
+    asm!("CLC");
+    A = (*result_hi);
+    A = A + _mul_p3;
+    (*result_hi) = A;
+}
+
+// Software 16x16 -> 32 bit multiplication (shift-and-add)
+#[cfg(not(snes))]
+#[mode(m16, transition=caller)]
+far fn _mul16x16(a @ A: u16, b @ X: u16, *result_lo: u16, *result_hi: u16) {
+    let mut multiplicand_lo: u16 = A;
+    let mut multiplicand_hi: u16 = 0;
+    let mut multiplier: u16 = X;
+
+    // Clear result
+    A = 0;
+    (*result_lo) = A;
+    (*result_hi) = A;
+
+    loop {
+        if multiplier == 0 {
+            break;
+        }
+
+        // Test lowest bit of multiplier
+        A = multiplier;
+        A = A & 1;
+        if A != 0 {
+            // Add multiplicand to result (32-bit add)
+            asm!("CLC");
+            A = (*result_lo);
+            A = A + multiplicand_lo;
+            (*result_lo) = A;
+            A = (*result_hi);
+            asm!("ADC _mul16x16_multiplicand_hi");
+            (*result_hi) = A;
+        }
+
+        // Shift multiplicand left (32-bit shift)
+        A = multiplicand_lo;
+        asm!("ASL A");
+        multiplicand_lo = A;
+        A = multiplicand_hi;
+        asm!("ROL A");
+        multiplicand_hi = A;
+
+        // Shift multiplier right
+        A = multiplier;
+        A = A >> 1;
+        multiplier = A;
+    }
+}
+
+// Shift U32 left by 1 bit
+#[mode(m16, transition=caller)]
+far fn _u32_shl1(*value: U32) {
+    A = (*value).lo;
+    asm!("ASL A");
+    (*value).lo = A;
+    A = (*value).hi;
+    asm!("ROL A");
+    (*value).hi = A;
+}
+
+// Shift U32 right by 1 bit
+#[mode(m16, transition=caller)]
+far fn _u32_shr1(*value: U32) {
+    A = (*value).hi;
+    asm!("LSR A");
+    (*value).hi = A;
+    A = (*value).lo;
+    asm!("ROR A");
+    (*value).lo = A;
+}
+
+// ============================================================================
+// U32 Multiplication
+// ============================================================================
+
+// Temporary storage for U32 operations
+#[zeropage]
+static mut _u32_temp_lo: u16;
+#[zeropage]
+static mut _u32_temp_hi: u16;
+
+// Multiply: result = a * b (32x32 -> 32, lower 32 bits only)
+#[mode(m16, transition=caller)]
+far fn u32_mul(*a: U32, *b: U32, *result: U32) {
+    // 32-bit multiply uses partial products:
+    // result.lo = low16(a.lo * b.lo)
+    // result.hi = high16(a.lo * b.lo) + low16(a.lo * b.hi) + low16(a.hi * b.lo)
+    // (a.hi * b.hi contributes to bits 32-63, which we discard)
+
+    // Compute a.lo * b.lo -> 32-bit result
+    A = (*a).lo;
+    X = (*b).lo;
+    _mul16x16(A, X, result, &_u32_temp_hi);
+
+    // result.lo is already set, _u32_temp_hi has the high 16 bits
+    // Now add contributions to high word
+
+    // Compute a.lo * b.hi (only need low 16 bits)
+    A = (*a).lo;
+    X = (*b).hi;
+    _mul16x16(A, X, &_u32_temp_lo, &_u32_temp_lo);  // Discard high result
+
+    // Add to result.hi
+    asm!("CLC");
+    A = _u32_temp_hi;
+    A = A + _u32_temp_lo;
+    _u32_temp_hi = A;
+
+    // Compute a.hi * b.lo (only need low 16 bits)
+    A = (*a).hi;
+    X = (*b).lo;
+    _mul16x16(A, X, &_u32_temp_lo, &_u32_temp_lo);  // Discard high result
+
+    // Add to result.hi (ignore overflow - wraps)
+    asm!("CLC");
+    A = _u32_temp_hi;
+    A = A + _u32_temp_lo;
+    (*result).hi = A;
+}
+
+// ============================================================================
+// U32 Division and Modulo
+// ============================================================================
+
+// Temporary storage for division
+#[zeropage]
+static mut _div_remainder_lo: u16;
+#[zeropage]
+static mut _div_remainder_hi: u16;
+#[zeropage]
+static mut _div_quotient_lo: u16;
+#[zeropage]
+static mut _div_quotient_hi: u16;
+#[zeropage]
+static mut _div_dividend_lo: u16;
+#[zeropage]
+static mut _div_dividend_hi: u16;
+
+// Divide: result = a / b (returns 0xFFFFFFFF if b == 0)
+#[mode(m16, transition=caller)]
+far fn u32_div(*a: U32, *b: U32, *result: U32) {
+    // Handle division by zero
+    A = (*b).lo;
+    if A == 0 {
+        A = (*b).hi;
+        if A == 0 {
+            A = 0xFFFF;
+            (*result).lo = A;
+            (*result).hi = A;
+            return;
+        }
+    }
+
+    // Initialize remainder to 0
+    A = 0;
+    _div_remainder_lo = A;
+    _div_remainder_hi = A;
+
+    // Initialize quotient to 0
+    _div_quotient_lo = A;
+    _div_quotient_hi = A;
+
+    // Copy dividend
+    A = (*a).lo;
+    _div_dividend_lo = A;
+    A = (*a).hi;
+    _div_dividend_hi = A;
+
+    // Process 32 bits
+    let mut bit_count: u8 = 32;
+
+    loop {
+        // Shift remainder left by 1, bringing in MSB of dividend
+        A = _div_remainder_lo;
+        asm!("ASL A");
+        _div_remainder_lo = A;
+        A = _div_remainder_hi;
+        asm!("ROL A");
+        _div_remainder_hi = A;
+
+        // Get MSB of dividend into remainder
+        A = _div_dividend_hi;
+        if A & 0x8000 != 0 {
+            A = _div_remainder_lo;
+            A = A | 1;
+            _div_remainder_lo = A;
+        }
+
+        // Shift dividend left
+        A = _div_dividend_lo;
+        asm!("ASL A");
+        _div_dividend_lo = A;
+        A = _div_dividend_hi;
+        asm!("ROL A");
+        _div_dividend_hi = A;
+
+        // Shift quotient left
+        A = _div_quotient_lo;
+        asm!("ASL A");
+        _div_quotient_lo = A;
+        A = _div_quotient_hi;
+        asm!("ROL A");
+        _div_quotient_hi = A;
+
+        // Compare remainder >= divisor (32-bit compare)
+        // First compare high words
+        A = _div_remainder_hi;
+        if A > (*b).hi {
+            // remainder > divisor, subtract and set quotient bit
+            asm!("SEC");
+            A = _div_remainder_lo;
+            A = A - (*b).lo;
+            _div_remainder_lo = A;
+            A = _div_remainder_hi;
+            asm!("SBC _u32_div_b_hi");
+            _div_remainder_hi = A;
+            A = _div_quotient_lo;
+            A = A | 1;
+            _div_quotient_lo = A;
+        } else if A == (*b).hi {
+            // High words equal, check low words
+            A = _div_remainder_lo;
+            if A >= (*b).lo {
+                // remainder >= divisor
+                asm!("SEC");
+                A = _div_remainder_lo;
+                A = A - (*b).lo;
+                _div_remainder_lo = A;
+                A = _div_remainder_hi;
+                asm!("SBC _u32_div_b_hi");
+                _div_remainder_hi = A;
+                A = _div_quotient_lo;
+                A = A | 1;
+                _div_quotient_lo = A;
+            }
+        }
+        // else remainder < divisor, quotient bit stays 0
+
+        bit_count--;
+        if bit_count == 0 {
+            break;
+        }
+    }
+
+    // Copy quotient to result
+    A = _div_quotient_lo;
+    (*result).lo = A;
+    A = _div_quotient_hi;
+    (*result).hi = A;
+}
+
+// Modulo: result = a % b (returns a if b == 0)
+#[mode(m16, transition=caller)]
+far fn u32_mod(*a: U32, *b: U32, *result: U32) {
+    // Handle division by zero - return original value
+    A = (*b).lo;
+    if A == 0 {
+        A = (*b).hi;
+        if A == 0 {
+            A = (*a).lo;
+            (*result).lo = A;
+            A = (*a).hi;
+            (*result).hi = A;
+            return;
+        }
+    }
+
+    // Initialize remainder to 0
+    A = 0;
+    _div_remainder_lo = A;
+    _div_remainder_hi = A;
+
+    // Copy dividend
+    A = (*a).lo;
+    _div_dividend_lo = A;
+    A = (*a).hi;
+    _div_dividend_hi = A;
+
+    // Process 32 bits
+    let mut bit_count: u8 = 32;
+
+    loop {
+        // Shift remainder left by 1, bringing in MSB of dividend
+        A = _div_remainder_lo;
+        asm!("ASL A");
+        _div_remainder_lo = A;
+        A = _div_remainder_hi;
+        asm!("ROL A");
+        _div_remainder_hi = A;
+
+        // Get MSB of dividend into remainder
+        A = _div_dividend_hi;
+        if A & 0x8000 != 0 {
+            A = _div_remainder_lo;
+            A = A | 1;
+            _div_remainder_lo = A;
+        }
+
+        // Shift dividend left
+        A = _div_dividend_lo;
+        asm!("ASL A");
+        _div_dividend_lo = A;
+        A = _div_dividend_hi;
+        asm!("ROL A");
+        _div_dividend_hi = A;
+
+        // Compare remainder >= divisor (32-bit compare)
+        A = _div_remainder_hi;
+        if A > (*b).hi {
+            // remainder > divisor, subtract
+            asm!("SEC");
+            A = _div_remainder_lo;
+            A = A - (*b).lo;
+            _div_remainder_lo = A;
+            A = _div_remainder_hi;
+            asm!("SBC _u32_mod_b_hi");
+            _div_remainder_hi = A;
+        } else if A == (*b).hi {
+            A = _div_remainder_lo;
+            if A >= (*b).lo {
+                // remainder >= divisor
+                asm!("SEC");
+                A = _div_remainder_lo;
+                A = A - (*b).lo;
+                _div_remainder_lo = A;
+                A = _div_remainder_hi;
+                asm!("SBC _u32_mod_b_hi");
+                _div_remainder_hi = A;
+            }
+        }
+
+        bit_count--;
+        if bit_count == 0 {
+            break;
+        }
+    }
+
+    // Copy remainder to result
+    A = _div_remainder_lo;
+    (*result).lo = A;
+    A = _div_remainder_hi;
+    (*result).hi = A;
+}

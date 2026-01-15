@@ -508,8 +508,6 @@ class CallInstructionSelector(BaseSelector):
 
         if builtin.kind == BuiltinKind.PROCESSOR_CONTROL:
             self._emit_processor_control_builtin(instr, builtin)
-        elif builtin.kind == BuiltinKind.MODE_CONTROL:
-            self._emit_mode_control_builtin(instr, builtin)
         elif builtin.kind == BuiltinKind.SOFTWARE_INTERRUPT:
             self._emit_software_interrupt_builtin(instr, builtin)
         elif builtin.kind == BuiltinKind.BLOCK_MOVE:
@@ -520,8 +518,7 @@ class CallInstructionSelector(BaseSelector):
     # Mapping from builtin instruction names to Opcode enum values
     _BUILTIN_OPCODES = {
         'NOP': Opcode.NOP, 'WAI': Opcode.WAI, 'STP': Opcode.STP, 'XBA': Opcode.XBA,
-        'SEP': Opcode.SEP_IMMEDIATE, 'REP': Opcode.REP_IMMEDIATE, 'COP': Opcode.COP,
-        'MVN': Opcode.MVN, 'MVP': Opcode.MVP,
+        'COP': Opcode.COP, 'MVN': Opcode.MVN, 'MVP': Opcode.MVP,
     }
 
     def _emit_processor_control_builtin(self, instr: Call, builtin):
@@ -543,28 +540,6 @@ class CallInstructionSelector(BaseSelector):
                 self._emit_implied(opcode)
         else:
             self._emit_implied(opcode)
-
-    def _emit_mode_control_builtin(self, instr: Call, builtin):
-        """Emit mode control built-in (SEP, REP)."""
-        if len(instr.args) != 1:
-            raise InstructionSelectionError(
-                f"{instr.builtin_name}() expects 1 argument, got {len(instr.args)}")
-
-        opcode = self._BUILTIN_OPCODES.get(builtin.instruction)
-        if not opcode:
-            raise InstructionSelectionError(f"Unknown mode control builtin: {builtin.instruction}")
-
-        arg = instr.args[0]
-        arg_loc = self.parent._get_operand_location(arg.value)
-
-        if isinstance(arg.value, MIRImmediate):
-            self._emit_immediate(opcode, arg.value.value)
-        else:
-            # SEP/REP with dynamic value - load and use accumulator mode
-            self.parent._emit_load('LDA', arg_loc)
-            # Note: SEP A and REP A are not valid - dynamic mode control is not supported
-            raise InstructionSelectionError(
-                f"{instr.builtin_name}() requires an immediate constant value")
 
     def _emit_software_interrupt_builtin(self, instr: Call, builtin):
         """Emit software interrupt built-in (cop)."""

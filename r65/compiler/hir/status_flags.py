@@ -71,8 +71,10 @@ STATUS_FLAGS: Dict[str, StatusFlag] = {
         bit_mask=0x10,
         branch_set=None,  # No dedicated branch instruction
         branch_clear=None,
-        set_instruction='SEP',  # SEP #$10
-        clear_instruction='REP',  # REP #$10
+        # Note: XY16=true means 16-bit mode (X flag=0), XY16=false means 8-bit (X flag=1)
+        # So set_instruction (for XY16=false->8-bit) is SEP, clear_instruction (for XY16=true->16-bit) is REP
+        set_instruction='SEP',  # SEP #$10 - sets X flag to 1 (8-bit mode, XY16=false)
+        clear_instruction='REP',  # REP #$10 - clears X flag to 0 (16-bit mode, XY16=true)
         is_writable=True
     ),
     'A16': StatusFlag(
@@ -81,8 +83,10 @@ STATUS_FLAGS: Dict[str, StatusFlag] = {
         bit_mask=0x20,
         branch_set=None,  # No dedicated branch instruction
         branch_clear=None,
-        set_instruction='SEP',  # SEP #$20
-        clear_instruction='REP',  # REP #$20
+        # Note: A16=true means 16-bit mode (M flag=0), A16=false means 8-bit (M flag=1)
+        # So set_instruction (for A16=false->8-bit) is SEP, clear_instruction (for A16=true->16-bit) is REP
+        set_instruction='SEP',  # SEP #$20 - sets M flag to 1 (8-bit mode, A16=false)
+        clear_instruction='REP',  # REP #$20 - clears M flag to 0 (16-bit mode, A16=true)
         is_writable=True
     ),
     'Overflow': StatusFlag(

@@ -96,8 +96,8 @@ STATUS.Carry = true;      // SEC
 STATUS.Carry = false;     // CLC
 STATUS.Irq = true;        // SEI (disable interrupts)
 STATUS.Decimal = false;   // CLD (disable BCD mode)
-STATUS.XY16 = true;      // SEP #$10 (8-bit index)
-STATUS.A16 = false; // REP #$20 (16-bit accumulator)
+STATUS.XY16 = true;       // REP #$10 (16-bit index registers)
+STATUS.A16 = false;  // SEP #$20 (8-bit accumulator)
 ```
 
 **Available flags:**
@@ -108,8 +108,8 @@ STATUS.A16 = false; // REP #$20 (16-bit accumulator)
 | `STATUS.Zero` | 1 | BEQ / BNE | - | No |
 | `STATUS.Irq` | 2 | bit test + branch | SEI / CLI | Yes |
 | `STATUS.Decimal` | 3 | bit test + branch | SED / CLD | Yes |
-| `STATUS.XY16` | 4 | bit test + branch | SEP #$10 / REP #$10 | Yes |
-| `STATUS.A16` | 5 | bit test + branch | SEP #$20 / REP #$20 | Yes |
+| `STATUS.XY16` | 4 | bit test + branch | REP #$10 / SEP #$10 | Yes |
+| `STATUS.A16` | 5 | bit test + branch | REP #$20 / SEP #$20 | Yes |
 | `STATUS.Overflow` | 6 | BVS / BVC | - | No |
 | `STATUS.Negative` | 7 | BMI / BPL | - | No |
 
@@ -687,9 +687,12 @@ Y = 0x2000;     // dest_addr
 mvn(0x00, 0x7E);  // Move forward from bank 0x00 to bank 0x7E
 mvp(0x7E, 0x00);  // Move backward from bank 0x7E to bank 0x00
 
-// Processor mode control
-SEP(0x30);  // Set processor status bits (m8, x8 mode)
-REP(0x30);  // Reset processor status bits (m16, x16 mode)
+// Processor mode control (via STATUS flag properties)
+// A16/XY16 = true means 16-bit mode, false means 8-bit mode
+STATUS.A16 = true;   // REP #$20 (16-bit accumulator mode)
+STATUS.A16 = false;  // SEP #$20 (8-bit accumulator mode)
+STATUS.XY16 = true;  // REP #$10 (16-bit index mode)
+STATUS.XY16 = false; // SEP #$10 (8-bit index mode)
 
 // B register access (m8 mode only)
 xba();  // Exchange B and A registers (swap high/low bytes)
@@ -803,7 +806,7 @@ R65 uses **hardware-aware operators**: syntax indicates performance cost.
 - ✅ B register support: Hidden accumulator high byte in m8 mode with parameter passing, return values, and XBA context tracking optimization
 - ✅ Storage attributes: `#[zeropage]`, `#[lowram]`, `#[ram]`, `#[rom]`, `#[hw]`, `#[stack(lower, upper)]`
 - ✅ Mode annotations: `#[mode(m8/m16, x8/x16)]` with optional `transition=none/auto/caller`
-- ✅ Built-in mode control: `SEP()`, `REP()`, and `xba()` functions for manual mode and register control
+- ✅ Built-in mode control: `STATUS.A16`, `STATUS.XY16` flag properties and `xba()` function for manual mode and register control
 - ✅ Far/near calling conventions: `far fn()` for JSL/RTL cross-bank calls; `fn()` for JSR/RTS near calls
 - ✅ Bank management: `#[bank(n)]` for explicit bank, `#[bank(auto)]` for automatic placement (requires `far`); DBR management via `#[mode(databank=none/inline/caller)]`
 - ✅ Bank size validation: Compile-time check that each bank fits within limits (32KB LoROM, 64KB HiROM)

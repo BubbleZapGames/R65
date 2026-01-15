@@ -45,8 +45,6 @@ class Lexer:
         'AS': TokenType.KEYWORD,
 
         # Built-in functions
-        'SEP': TokenType.KEYWORD,
-        'REP': TokenType.KEYWORD,
         'MVN': TokenType.KEYWORD,
         'MVP': TokenType.KEYWORD,
         'WAI': TokenType.KEYWORD,

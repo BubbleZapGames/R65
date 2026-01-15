@@ -159,20 +159,21 @@ def test_keywords_case_sensitivity():
 def test_builtin_functions():
     """Test built-in function names.
 
-    Built-in functions (SEP, REP, mul, div, etc.) are now regular identifiers,
+    Built-in functions (mul, div, etc.) are now regular identifiers,
     not keywords. This allows them to be called like normal functions and
     recognized by the BuiltinRegistry during HIR building.
     """
-    source = "SEP(0x30) REP(0x20) mvn(0, 1) mul(a, b) div(x, y)"
+    source = "mvn(0, 1) mul(a, b) div(x, y) wai() stp()"
     tokens = tokenize(source)
 
-    # SEP, REP, mvn, mul, div are identifiers (not keywords)
+    # mvn, mul, div, wai, stp are identifiers (not keywords)
+    # Token positions: mvn(0), ((1), 0(2), ,(3), 1(4), )(5), mul(6), ...
     assert tokens[0].type == TokenType.IDENTIFIER
-    assert tokens[0].value == 'SEP'
-    assert tokens[4].type == TokenType.IDENTIFIER
-    assert tokens[4].value == 'REP'
-    assert tokens[8].type == TokenType.IDENTIFIER
-    assert tokens[8].value == 'mvn'
+    assert tokens[0].value == 'mvn'
+    assert tokens[6].type == TokenType.IDENTIFIER
+    assert tokens[6].value == 'mul'
+    assert tokens[12].type == TokenType.IDENTIFIER
+    assert tokens[12].value == 'div'
 
     print("✓ Built-in functions test passed")
 

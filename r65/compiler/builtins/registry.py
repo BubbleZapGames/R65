@@ -12,7 +12,6 @@ from typing import Optional, List
 class BuiltinKind(Enum):
     """Categories of built-in functions."""
     PROCESSOR_CONTROL = "processor_control"  # wai, stp, NOP, xba
-    MODE_CONTROL = "mode_control"            # SEP, REP
     SOFTWARE_INTERRUPT = "software_interrupt"  # cop, brk
     BLOCK_MOVE = "block_move"                # mvn, mvp
     ARITHMETIC = "arithmetic"                 # mul, div, mod
@@ -75,24 +74,6 @@ class BuiltinRegistry:
             returns_value=False,
             description='Exchange B and A registers (swap high/low bytes)',
             instruction='XBA'
-        ),
-
-        # Mode control (1 parameter: flags, no return value)
-        'SEP': BuiltinSignature(
-            name='SEP',
-            kind=BuiltinKind.MODE_CONTROL,
-            param_count=1,
-            returns_value=False,
-            description='Set processor status bits',
-            instruction='SEP'
-        ),
-        'REP': BuiltinSignature(
-            name='REP',
-            kind=BuiltinKind.MODE_CONTROL,
-            param_count=1,
-            returns_value=False,
-            description='Reset processor status bits',
-            instruction='REP'
         ),
 
         # Software interrupts (1 parameter: signature byte, no return value)

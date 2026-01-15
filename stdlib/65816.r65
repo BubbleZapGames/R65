@@ -30,7 +30,7 @@ const STATUS_M: u8 = 0x20;  // Memory/Accumulator Size (1=8-bit, 0=16-bit)
 const STATUS_V: u8 = 0x40;  // Overflow
 const STATUS_N: u8 = 0x80;  // Negative
 
-// Common flag combinations for SEP/REP
+// Common flag combinations
 const STATUS_MX: u8 = 0x30;   // Both M and X flags (8-bit mode for both)
 const STATUS_NV: u8 = 0xC0;   // Negative and Overflow
 const STATUS_NZ: u8 = 0x82;   // Negative and Zero (common test flags)
@@ -41,46 +41,55 @@ const STATUS_NVZC: u8 = 0xC3; // Arithmetic result flags
 // ============================================================================
 //
 // These macros temporarily switch processor modes for a block of code,
-// then restore the previous mode. Uses SEP/REP instructions
+// then restore the previous mode. Uses STATUS flag properties.
+//
+// Note: STATUS.A16 = true means 16-bit accumulator (M flag = 0)
+//       STATUS.A16 = false means 8-bit accumulator (M flag = 1)
+//       STATUS.XY16 = true means 16-bit index (X flag = 0)
+//       STATUS.XY16 = false means 8-bit index (X flag = 1)
 
-// Switch to 16-bit accumulator mode (M=0), execute block, restore 8-bit
+// Switch to 16-bit accumulator mode, execute block, restore 8-bit
 macro_rules! modeM16($body:tt) {
-    REP(0x20);
+    STATUS.A16 = true;
     $body
-    SEP(0x20);
+    STATUS.A16 = false;
 }
 
-// Switch to 8-bit accumulator mode (M=1), execute block, restore 16-bit
+// Switch to 8-bit accumulator mode, execute block, restore 16-bit
 macro_rules! modeM8($body:tt) {
-    SEP(0x20);
+    STATUS.A16 = false;
     $body
-    REP(0x20);
+    STATUS.A16 = true;
 }
 
-// Switch to 16-bit index mode (X=0), execute block, restore 8-bit
+// Switch to 16-bit index mode, execute block, restore 8-bit
 macro_rules! modeX16($body:tt) {
-    REP(0x10);
+    STATUS.XY16 = true;
     $body
-    SEP(0x10);
+    STATUS.XY16 = false;
 }
 
-// Switch to 8-bit index mode (X=1), execute block, restore 16-bit
+// Switch to 8-bit index mode, execute block, restore 16-bit
 macro_rules! modeX8($body:tt) {
-    SEP(0x10);
+    STATUS.XY16 = false;
     $body
-    REP(0x10);
+    STATUS.XY16 = true;
 }
 
 // Switch to 16-bit accumulator and index mode, execute block, restore 8-bit
 macro_rules! modeM16X16($body:tt) {
-    REP(0x30);
+    STATUS.A16 = true;
+    STATUS.XY16 = true;
     $body
-    SEP(0x30);
+    STATUS.A16 = false;
+    STATUS.XY16 = false;
 }
 
 // Switch to 8-bit accumulator and index mode, execute block, restore 16-bit
 macro_rules! modeM8X8($body:tt) {
-    SEP(0x30);
+    STATUS.A16 = false;
+    STATUS.XY16 = false;
     $body
-    REP(0x30);
+    STATUS.A16 = true;
+    STATUS.XY16 = true;
 }
