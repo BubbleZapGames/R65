@@ -228,10 +228,17 @@ class MemoryOperationSelector(BaseSelector):
         self._validate_pointer_location(ptr_loc)
 
         # Handle field offset - load into Y for indexed indirect
+        # For stack indirect addressing, Y is always required (d,S),Y mode
         offset = getattr(instr, 'offset', 0)
+        has_explicit_offset = hasattr(instr, 'offset') and instr.offset is not None
+        needs_y_for_stack = ptr_loc.kind == LocationKind.STACK and instr.index_register is None
+
         if offset > 0:
             self._emit_instr(Opcode.LDY_IMMEDIATE, Immediate(offset), f"Load field offset {offset}")
-            # Use Y-indexed indirect addressing
+            instr_index = 'Y'
+        elif needs_y_for_stack or (has_explicit_offset and offset == 0):
+            # Stack indirect requires Y, or explicit offset of 0 for field access
+            self._emit_instr(Opcode.LDY_IMMEDIATE, Immediate(0), "Load field offset 0")
             instr_index = 'Y'
         else:
             instr_index = instr.index_register
@@ -301,10 +308,17 @@ class MemoryOperationSelector(BaseSelector):
         self._validate_pointer_location(ptr_loc)
 
         # Handle field offset - load into Y for indexed indirect
+        # For stack indirect addressing, Y is always required (d,S),Y mode
         offset = getattr(instr, 'offset', 0)
+        has_explicit_offset = hasattr(instr, 'offset') and instr.offset is not None
+        needs_y_for_stack = ptr_loc.kind == LocationKind.STACK and instr.index_register is None
+
         if offset > 0:
             self._emit_instr(Opcode.LDY_IMMEDIATE, Immediate(offset), f"Load field offset {offset}")
-            # Use Y-indexed indirect addressing
+            instr_index = 'Y'
+        elif needs_y_for_stack or (has_explicit_offset and offset == 0):
+            # Stack indirect requires Y, or explicit offset of 0 for field access
+            self._emit_instr(Opcode.LDY_IMMEDIATE, Immediate(0), "Load field offset 0")
             instr_index = 'Y'
         else:
             instr_index = instr.index_register
