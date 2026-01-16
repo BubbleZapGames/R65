@@ -15,7 +15,7 @@ from r65.compiler.hir import (
 from r65.compiler.hir.types import PointerTypeInfo
 from r65.compiler.mir.nodes import (
     VirtualRegister, HardwareRegister, Immediate, MemoryLocation,
-    Move, Load, LoadIndirect, BinaryOp, UnaryOp, TypeConvert,
+    Move, Load, LoadIndirect, BinaryOp, UnaryOp, TypeConvert, ToBool,
 )
 from r65.compiler.mir.lowerers.multiply import compute_array_field_offset
 from r65.compiler.errors import MIRLoweringError
@@ -318,6 +318,15 @@ class ExpressionLowerer:
 
         result = self.ctx.alloc_vreg(target_type, "cast_result")
 
+        # Boolean conversions - check BEFORE size comparisons since bool is 1 byte
+        if str(target_type) == 'bool' and str(source_type) != 'bool':
+            return self._lower_to_bool(source_operand, source_type, target_type)
+
+        if str(source_type) == 'bool' and str(target_type) != 'bool':
+            # bool -> integer: just move (0 or 1 value already correct)
+            self.emit(Move(dest=result, source=source_operand, type_info=target_type))
+            return result
+
         # Same size reinterpretation (zero-cost)
         if source_size == target_size:
             self.emit(Move(dest=result, source=source_operand, type_info=target_type))
@@ -343,27 +352,20 @@ class ExpressionLowerer:
             ))
             return result
 
-        # Boolean conversions
-        if str(target_type) == 'bool':
-            return self._lower_to_bool(source_operand, source_type, target_type)
-
-        if str(source_type) == 'bool':
-            self.emit(Move(dest=result, source=source_operand, type_info=target_type))
-            return result
-
         raise MIRLoweringError(f"Unsupported type cast: {source_type} to {target_type}")
 
     def _lower_to_bool(self, source_operand, source_type, target_type) -> VirtualRegister:
-        """Convert value to boolean (0 = false, non-zero = true)."""
-        if isinstance(source_operand, Immediate):
-            temp = self.ctx.alloc_vreg(source_type, "bool_temp")
-            self.emit(Move(dest=temp, source=source_operand, type_info=source_type))
-            source_operand = temp
+        """
+        Convert value to boolean (0 = false, non-zero = true).
 
-        return self.builder._emit_conditional_set(
-            source_operand, true_when_nonzero=True,
-            result_type=target_type, hint="bool_result"
-        )
+        Uses branchless ToBool instruction which generates:
+            CMP #1    ; C=1 if value >= 1 (non-zero)
+            LDA #0
+            ADC #0    ; A = carry (0 or 1)
+        """
+        result = self.ctx.alloc_vreg(target_type, "bool_result")
+        self.emit(ToBool(dest=result, source=source_operand, source_type=source_type))
+        return result
 
     # ========================================================================
     # Array Indexing

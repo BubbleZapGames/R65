@@ -300,6 +300,24 @@ class TypeConvert(MIRInstruction):
         return f"{self.dest} = TypeConvert {self.source} from {self.source_type} to {self.target_type}"
 
 
+@dataclass
+class ToBool(MIRInstruction):
+    """
+    Convert value to boolean (branchless).
+
+    dest = (source != 0) ? 1 : 0
+
+    Uses branchless CMP #1 / LDA #0 / ADC #0 sequence.
+    Result is 0 for false, 1 for true.
+    """
+    dest: Union[VirtualRegister, HardwareRegister]
+    source: Union[VirtualRegister, HardwareRegister, Immediate]
+    source_type: Any  # TypeInfo for source (u8/u16)
+
+    def __repr__(self):
+        return f"{self.dest} = ToBool {self.source}"
+
+
 # ============================================================================
 # Arithmetic and Logical Operations
 # ============================================================================

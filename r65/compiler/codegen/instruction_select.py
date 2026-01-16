@@ -13,7 +13,7 @@ from r65.compiler.mir.nodes import (
     MIRFunction, MIRInstruction,
     Load, Store, LoadIndirect, StoreIndirect,
     Move, Return, Jump, JumpTable, CondBranch, Call,
-    BinaryOp, UnaryOp, Compare, BitTest, Rotate, SetMode, TypeConvert,
+    BinaryOp, UnaryOp, Compare, BitTest, Rotate, SetMode, TypeConvert, ToBool,
     Push, Pull, SaveRegister, RestoreRegister, ReturnFromInterrupt,
     StatusFlagTest, StatusFlagSet, StatusFlagRead,
     MemoryFill, BlockCopy, InlineAsm,
@@ -624,6 +624,8 @@ class InstructionSelector:
             self.move_selector.select_move(instr)
         elif isinstance(instr, TypeConvert):
             self.type_conversion_selector.select_type_convert(instr)
+        elif isinstance(instr, ToBool):
+            self.select_to_bool(instr)
         elif isinstance(instr, BinaryOp):
             self.select_binary_op(instr)
         elif isinstance(instr, UnaryOp):
@@ -681,6 +683,45 @@ class InstructionSelector:
     # select_store_indirect
     # See move_select.py for: select_move
     # See type_conversion_select.py for: select_type_convert
+
+    def select_to_bool(self, instr: ToBool):
+        """
+        Generate branchless boolean conversion.
+
+        Converts value to boolean: 0 = false (0), non-zero = true (1).
+
+        Uses branchless sequence:
+            LDA source   ; Load value
+            CMP #1       ; C=1 if A >= 1 (non-zero), C=0 if A = 0
+            LDA #0       ; Clear A
+            ADC #0       ; A = 0 + 0 + C = C (0 or 1)
+            STA dest     ; Store result
+
+        Args:
+            instr: ToBool instruction
+        """
+        source = instr.source
+        dest_loc = self._get_operand_location(instr.dest)
+
+        # Load source value into A
+        if isinstance(source, MIRImmediate):
+            # Constant folding: evaluate at compile time
+            result = 1 if source.value != 0 else 0
+            self.emitter.emit_instr(Opcode.LDA_IMMEDIATE, result, comment="ToBool constant")
+        else:
+            # Load the source value
+            src_loc = self._get_operand_location(source)
+            src_opcode, src_operand = self._get_opcode_for_location('LDA', src_loc)
+            self.emitter.emit_instr(src_opcode, src_operand)
+
+            # Branchless conversion: CMP #1 / LDA #0 / ADC #0
+            self.emitter.emit_instr(Opcode.CMP_IMMEDIATE, Immediate(1), comment="C=1 if non-zero")
+            self.emitter.emit_instr(Opcode.LDA_IMMEDIATE, Immediate(0))
+            self.emitter.emit_instr(Opcode.ADC_IMMEDIATE, Immediate(0), comment="A = carry (0 or 1)")
+
+        # Store result
+        dest_opcode, dest_operand = self._get_opcode_for_location('STA', dest_loc)
+        self.emitter.emit_instr(dest_opcode, dest_operand)
 
     # ========================================================================
     # Arithmetic Operations

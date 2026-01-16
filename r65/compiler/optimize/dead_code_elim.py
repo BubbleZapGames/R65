@@ -8,7 +8,7 @@ from typing import Set, Dict, List
 from r65.compiler.mir.nodes import (
     MIRProgram, MIRFunction, BasicBlock, MIRInstruction,
     VirtualRegister, HardwareRegister,
-    Move, Load, Store, BinaryOp, UnaryOp, Compare, TypeConvert,
+    Move, Load, Store, BinaryOp, UnaryOp, Compare, TypeConvert, ToBool,
     Jump, CondBranch, Return, ReturnFromInterrupt, Call,
     LoadIndirect, StoreIndirect, Rotate, BitTest, JumpTable,
     Push, Pull, SaveRegister, RestoreRegister, InlineAsm, SetMode,
@@ -244,6 +244,8 @@ class DeadCodeEliminator:
             add_if_vreg(instr.right)
         elif isinstance(instr, TypeConvert):
             add_if_vreg(instr.source)
+        elif isinstance(instr, ToBool):
+            add_if_vreg(instr.source)
         elif isinstance(instr, CondBranch):
             add_if_vreg(instr.condition)
         elif isinstance(instr, Return):
@@ -280,7 +282,7 @@ class DeadCodeEliminator:
         """
         dest = None
 
-        if isinstance(instr, (Move, Load, LoadIndirect, BinaryOp, UnaryOp, TypeConvert, Rotate)):
+        if isinstance(instr, (Move, Load, LoadIndirect, BinaryOp, UnaryOp, TypeConvert, ToBool, Rotate)):
             dest = instr.dest
         elif isinstance(instr, SaveRegister):
             dest = instr.save_location
@@ -310,7 +312,7 @@ class DeadCodeEliminator:
         # These instructions only write to a destination register
         # and have no other side effects
         return isinstance(instr, (Move, Load, LoadIndirect, BinaryOp, UnaryOp,
-                                   TypeConvert, Rotate, SaveRegister))
+                                   TypeConvert, ToBool, Rotate, SaveRegister))
 
     def _remove_dead_stores(self, func: MIRFunction, used_vregs: Set[int]) -> int:
         """

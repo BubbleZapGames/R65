@@ -11,7 +11,7 @@ from r65.compiler.mir.nodes import (
     MIRInstruction, VirtualRegister, HardwareRegister,
     BasicBlock, MIRFunction,
     Load, Store, Move, BinaryOp, UnaryOp, Compare, BitTest, Rotate,
-    Call, Return, Jump, CondBranch, TypeConvert,
+    Call, Return, Jump, CondBranch, TypeConvert, ToBool,
     LoadIndirect, StoreIndirect
 )
 
@@ -176,6 +176,10 @@ class LivenessAnalyzer:
             if isinstance(instr.source, VirtualRegister):
                 uses.append(instr.source)
 
+        elif isinstance(instr, ToBool):
+            if isinstance(instr.source, VirtualRegister):
+                uses.append(instr.source)
+
         elif isinstance(instr, LoadIndirect):
             # LoadIndirect uses the pointer
             if isinstance(instr.pointer, VirtualRegister):
@@ -235,6 +239,10 @@ class LivenessAnalyzer:
                 defs.append(instr.dest)
 
         elif isinstance(instr, TypeConvert):
+            if isinstance(instr.dest, VirtualRegister):
+                defs.append(instr.dest)
+
+        elif isinstance(instr, ToBool):
             if isinstance(instr.dest, VirtualRegister):
                 defs.append(instr.dest)
 
