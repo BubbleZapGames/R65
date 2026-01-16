@@ -74,49 +74,6 @@ let bank = PBR;          // Read current bank (write = error)
 - **Safety**: Modifying `D`, `DBR`, `S` without restoration causes bugs/crashes
 
 *(See [docs/b-register.md](docs/b-register.md) for complete details, code generation tables, and optimization patterns)*
-
-### STATUS Register Flag Properties
-
-Individual STATUS register flags can be accessed via property syntax, enabling optimized branch instructions:
-
-```rust
-// Conditional branching on flags
-if STATUS.Carry {
-    // Generates: BCS label
-    handle_carry();
-}
-
-if !STATUS.Zero {
-    // Generates: BNE label
-    handle_not_zero();
-}
-
-// Flag manipulation
-STATUS.Carry = true;      // SEC
-STATUS.Carry = false;     // CLC
-STATUS.Irq = true;        // SEI (disable interrupts)
-STATUS.Decimal = false;   // CLD (disable BCD mode)
-STATUS.XY16 = true;       // REP #$10 (16-bit index registers)
-STATUS.A16 = false;  // SEP #$20 (8-bit accumulator)
-```
-
-**Available flags:**
-
-| Property | Bit | Branch (set/clear) | Write Instructions | Writable |
-|----------|-----|-------------------|-------------------|----------|
-| `STATUS.Carry` | 0 | BCS / BCC | SEC / CLC | Yes |
-| `STATUS.Zero` | 1 | BEQ / BNE | - | No |
-| `STATUS.Irq` | 2 | bit test + branch | SEI / CLI | Yes |
-| `STATUS.Decimal` | 3 | bit test + branch | SED / CLD | Yes |
-| `STATUS.XY16` | 4 | bit test + branch | REP #$10 / SEP #$10 | Yes |
-| `STATUS.A16` | 5 | bit test + branch | REP #$20 / SEP #$20 | Yes |
-| `STATUS.Overflow` | 6 | BVS / BVC | - | No |
-| `STATUS.Negative` | 7 | BMI / BPL | - | No |
-
-**Branchable flags** (Carry, Zero, Overflow, Negative) generate single branch instructions. **Non-branchable flags** (Irq, Decimal, XY16, A16) generate a bit-test sequence: `PHP; PLA; AND #mask; BNE/BEQ`.
-
-**Non-writable flags** (Zero, Overflow, Negative) cannot be assigned - they are set by CPU operations. Attempting to write is a compile error.
-
 *(See [docs/status-flags.md](docs/status-flags.md) for complete details and code generation tables)*
 
 ### Arrays
@@ -157,10 +114,7 @@ String literals can be used to initialize `[u8; N]` arrays in static declaration
 static mut MESSAGE: [u8; 16] = "Hello, World!";  // Zero-padded to 16 bytes
 
 #[ram]
-static mut ESCAPED: [u8; 8] = "A\nB\tC\0";  // With escape sequences
-
-#[ram]
-static mut HEX_DATA: [u8; 4] = "\xC0\xC1\xFE\xFF";  // Hex escapes for high bytes
+static mut ESCAPED: [u8; 8] = "A\nB\tC\0\xC0";  // With escape sequences and Hex
 ```
 
 **String literal rules:**
@@ -169,17 +123,6 @@ static mut HEX_DATA: [u8; 4] = "\xC0\xC1\xFE\xFF";  // Hex escapes for high byte
 - Extended ASCII (0x00-0xFF) allowed; UTF-8 multi-byte characters are rejected
 - If string is shorter than array, remaining bytes are zero-padded
 - If string is longer than array, compile error
-
-**Supported escape sequences:**
-| Escape | Value | Description |
-|--------|-------|-------------|
-| `\n` | 0x0A | Newline |
-| `\t` | 0x09 | Tab |
-| `\r` | 0x0D | Carriage return |
-| `\0` | 0x00 | Null |
-| `\\` | 0x5C | Backslash |
-| `\"` | 0x22 | Double quote |
-| `\x##` | 0x00-0xFF | Hex byte value |
 
 **No automatic null termination:** Strings are not null-terminated by default. Add explicit `\0` if needed:
 ```rust
@@ -252,8 +195,6 @@ fn multi_instruction() {
     asm!("PHP","WAI");
 }
 ```
-
-**Rules**: `asm!("inst1","inst2" ...)` emits raw assembly verbatim; no variable interpolation; compiler assumes all registers clobbered; no optimization across boundaries; programmer handles register preservation.
 
 ### Macros
 
@@ -512,18 +453,6 @@ fn preserves_xy(value @ A: u8) -> u8 {
 }
 ```
 
-**Generated code:**
-```asm
-preserves_xy:
-    PHX          ; Auto-generated save
-    PHY          ; Auto-generated save
-    LDX #$0A
-    LDY #$14
-    PLY          ; Auto-generated restore
-    PLX          ; Auto-generated restore
-    RTS
-```
-
 **Valid registers**: `A`, `X`, `Y`, `STATUS`, `D`, `DBR`
 **Invalid registers**: `B` (tied to A), `PBR` (read-only), `S` (stack pointer)
 
@@ -676,31 +605,6 @@ fn calculate() -> u8 {
 **Return conventions:** No `return` = A implicitly returned; `return X/Y` = specific register; `return (A, X)` = multiple registers; `return variable` = stack return; **arrays and structs cannot be returned by value** (use pointers or write to pre-allocated memory)
 
 **Receiving multiple returns:** Use `(A, X) = func();` for all values, or `(TEMP) = func();` for partial assignment (discards extra values).
-
-### Built-in Functions for Special Instructions
-
-```rust
-// Block move instructions (65816 only)
-A = 255;        // count - 1
-X = 0x1000;     // src_addr
-Y = 0x2000;     // dest_addr
-mvn(0x00, 0x7E);  // Move forward from bank 0x00 to bank 0x7E
-mvp(0x7E, 0x00);  // Move backward from bank 0x7E to bank 0x00
-
-// Processor mode control (via STATUS flag properties)
-// A16/XY16 = true means 16-bit mode, false means 8-bit mode
-STATUS.A16 = true;   // REP #$20 (16-bit accumulator mode)
-STATUS.A16 = false;  // SEP #$20 (8-bit accumulator mode)
-STATUS.XY16 = true;  // REP #$10 (16-bit index mode)
-STATUS.XY16 = false; // SEP #$10 (8-bit index mode)
-
-// B register access (m8 mode only)
-xba();  // Exchange B and A registers (swap high/low bytes)
-
-// Control instructions
-wai();  // Wait for interrupt
-stp();  // Stop processor
-```
 
 ### Pointer Types
 
@@ -874,24 +778,6 @@ r65c game.r65 -o game.asm -v
 
 # Quiet mode (suppress all non-error output)
 r65c game.r65 -o game.asm -q
-```
-
-### Development/Debugging Options
-
-For compiler developers and debugging:
-
-```bash
-# Dump intermediate representations
-r65c game.r65 --dump-ast         # Show parsed AST
-r65c game.r65 --dump-hir         # Show High-Level IR
-r65c game.r65 --dump-mir         # Show Mid-Level IR
-r65c game.r65 --dump-tokens      # Show tokenized output
-
-# Stop at specific compilation phase
-r65c game.r65 --stop-after parse      # Stop after parsing
-r65c game.r65 --stop-after hir        # Stop after HIR building
-r65c game.r65 --stop-after typecheck  # Stop after type checking
-r65c game.r65 --stop-after mir        # Stop after MIR building
 ```
 
 ### Installation

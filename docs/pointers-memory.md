@@ -514,9 +514,8 @@ The following pointer declarations are compile errors:
 static mut *ptr: [u8:30];      // ERROR
 
 // Safe/reference pointers - NOT allowed
-static mut &ptr: u8;           // ERROR
-static far mut &ptr: [u8];     // ERROR
-static far mut &ptr: [u8: 10]; // ERROR
+static mut *ptr: [u8:30];      // ERROR: Size in pointer type not allowed
+static mut &ptr: u8;           // ERROR: Safe/reference pointers not supported
 ```
 
 ---
