@@ -46,6 +46,38 @@ HIROM_SLOT_SIZE = 0x10000  # 64KB
 HIROM_SLOT_ADDR = 0x0000
 
 # =============================================================================
+# Processor Status Flag Masks
+# =============================================================================
+
+# 65816 processor status register bits for mode control
+M_FLAG = 0x20         # Accumulator mode: 0=16-bit, 1=8-bit
+X_FLAG = 0x10         # Index register mode: 0=16-bit, 1=8-bit
+MX_FLAGS = 0x30       # Both M and X flags combined
+
+# =============================================================================
+# Bit Masks and Value Limits
+# =============================================================================
+
+# Common bit masks for value operations
+BYTE_MASK = 0xFF      # 8-bit mask
+WORD_MASK = 0xFFFF    # 16-bit mask
+
+# Size boundary for direct page addressing
+DP_BOUNDARY = 0x100   # Addresses >= this use absolute addressing
+
+# =============================================================================
+# SNES Memory Banks
+# =============================================================================
+
+# SNES Work RAM bank numbers (for block move instructions)
+WRAM_BANK = 0x7E      # Work RAM bank ($7E0000-$7EFFFF)
+WRAM_BANK2 = 0x7F     # Work RAM bank 2 ($7F0000-$7FFFFF)
+
+# SNES Work RAM bank start addresses
+WRAM_BANK_START = 0x7E0000   # Start of WRAM bank $7E
+WRAM_BANK2_START = 0x7F0000  # Start of WRAM bank $7F
+
+# =============================================================================
 # Addressing Mode Thresholds
 # =============================================================================
 

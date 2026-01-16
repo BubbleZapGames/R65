@@ -8,7 +8,7 @@ immediate loads, function pointers, and memory-to-memory moves.
 from r65.compiler.mir.nodes import Move, Immediate as MIRImmediate, FunctionPointer
 from r65.compiler.codegen.register_alloc import LocationKind
 from r65.compiler.errors import InstructionSelectionError
-from r65.compiler.codegen.opcodes import Opcode
+from r65.compiler.codegen.opcodes import Opcode, STORE_MNEMONICS, LOAD_MNEMONICS
 from r65.compiler.codegen.asm_nodes import Immediate
 from r65.compiler.codegen.base_selector import BaseSelector
 
@@ -108,8 +108,6 @@ class MoveOperationSelector(BaseSelector):
 
     def _load_memory_to_hw_register(self, hw_register: str, src_loc):
         """Load from memory into a hardware register."""
-        load_mnemonics = {'A': 'LDA', 'X': 'LDX', 'Y': 'LDY'}
-
         # Handle stack-relative addressing: LDX/LDY don't support sr,S mode
         # Must go through A with transfer
         if hw_register in ('X', 'Y') and src_loc.kind == LocationKind.STACK:
@@ -118,8 +116,8 @@ class MoveOperationSelector(BaseSelector):
                 self._emit_instr(Opcode.TAX, comment="Transfer to X (no LDX sr,S)")
             else:
                 self._emit_instr(Opcode.TAY, comment="Transfer to Y (no LDY sr,S)")
-        elif hw_register in load_mnemonics:
-            self._emit_load_store(load_mnemonics[hw_register], src_loc)
+        elif hw_register in LOAD_MNEMONICS:
+            self._emit_load_store(LOAD_MNEMONICS[hw_register], src_loc)
         elif hw_register == 'B':
             self._emit_load_store('LDA', src_loc)
             self._emit_instr(Opcode.XBA, comment="Load into B register")
@@ -273,9 +271,7 @@ class MoveOperationSelector(BaseSelector):
 
     def _store_hw_register_to_memory(self, src_reg: str, dest_loc, is_u16: bool):
         """Store a hardware register to memory."""
-        store_mnemonics = {'A': 'STA', 'X': 'STX', 'Y': 'STY'}
-
-        if src_reg in store_mnemonics:
+        if src_reg in STORE_MNEMONICS:
             # Check for unsupported addressing modes for STX and STY
             need_transfer_to_a = False
 
@@ -292,11 +288,11 @@ class MoveOperationSelector(BaseSelector):
 
             if need_transfer_to_a:
                 transfer_op = Opcode.TXA if src_reg == 'X' else Opcode.TYA
-                self._emit_instr(transfer_op, comment=f"Transfer to A (no {store_mnemonics[src_reg]} with this addressing)")
+                self._emit_instr(transfer_op, comment=f"Transfer to A (no {STORE_MNEMONICS[src_reg]} with this addressing)")
                 self._emit_load_store('STA', dest_loc)
                 self.parent._mark_a_modified()
             else:
-                self._emit_load_store(store_mnemonics[src_reg], dest_loc)
+                self._emit_load_store(STORE_MNEMONICS[src_reg], dest_loc)
         else:
             raise InstructionSelectionError(
                 f"Cannot move {'16-bit ' if is_u16 else ''}value from register {src_reg} to memory")

@@ -25,6 +25,10 @@ from r65.compiler.codegen.register_alloc import (
 )
 from r65.compiler.codegen.memory_alloc import MemoryAllocator
 from r65.compiler.errors import InstructionSelectionError
+from r65.compiler.codegen.errors import (
+    unsupported_addressing_mode, unknown_value, missing_allocation,
+    requires_constant, unsupported_operation
+)
 from r65.compiler.codegen.instruction_select_helpers import (
     XBAState, XBAStateManager
 )
@@ -37,7 +41,14 @@ from r65.compiler.codegen.memory_select import MemoryOperationSelector
 from r65.compiler.codegen.move_select import MoveOperationSelector
 from r65.compiler.codegen.type_conversion_select import TypeConversionSelector
 from r65.compiler.codegen.compare_select import CompareSelector
-from r65.compiler.codegen.opcodes import Opcode
+from r65.compiler.codegen.opcodes import (
+    Opcode, OPCODE_VARIANTS, PUSH_OPCODES, PULL_OPCODES,
+    TRANSFER_OPCODES, LOAD_IMMEDIATE_OPCODES, STORE_DP_OPCODES, POWER_OF_2_SHIFTS
+)
+from r65.compiler.codegen.constants import (
+    M_FLAG, X_FLAG, MX_FLAGS, BYTE_MASK, WORD_MASK, DP_BOUNDARY,
+    WRAM_BANK, WRAM_BANK2, WRAM_BANK_START, WRAM_BANK2_START
+)
 from r65.compiler.codegen.asm_nodes import Immediate, Address, StackOffset
 
 
@@ -125,9 +136,9 @@ class InstructionSelector:
         if self._pending_sep_mask:
             mask = self._pending_sep_mask
             comment_parts = []
-            if mask & 0x20:
+            if mask & M_FLAG:
                 comment_parts.append("M")
-            if mask & 0x10:
+            if mask & X_FLAG:
                 comment_parts.append("X")
             comment = f"Set {'+'.join(comment_parts)} flag{'s' if len(comment_parts) > 1 else ''} (8-bit mode)"
             self.emitter.emit_instr(Opcode.SEP_IMMEDIATE, mask, comment=comment)
@@ -136,9 +147,9 @@ class InstructionSelector:
         if self._pending_rep_mask:
             mask = self._pending_rep_mask
             comment_parts = []
-            if mask & 0x20:
+            if mask & M_FLAG:
                 comment_parts.append("M")
-            if mask & 0x10:
+            if mask & X_FLAG:
                 comment_parts.append("X")
             comment = f"Clear {'+'.join(comment_parts)} flag{'s' if len(comment_parts) > 1 else ''} (16-bit mode)"
             self.emitter.emit_instr(Opcode.REP_IMMEDIATE, mask, comment=comment)
@@ -152,130 +163,6 @@ class InstructionSelector:
     # Opcode Selection Helpers
     # ========================================================================
 
-    # Mapping from base mnemonic to opcode variants by addressing mode
-    _OPCODE_VARIANTS = {
-        'LDA': {
-            'DP': Opcode.LDA_DP, 'DP_X': Opcode.LDA_DP_X,
-            'ABSOLUTE': Opcode.LDA_ABSOLUTE, 'ABSOLUTE_X': Opcode.LDA_ABSOLUTE_X,
-            'ABSOLUTE_Y': Opcode.LDA_ABSOLUTE_Y,
-            'STACK': Opcode.LDA_STACK, 'IMMEDIATE': Opcode.LDA_IMMEDIATE,
-        },
-        'STA': {
-            'DP': Opcode.STA_DP, 'DP_X': Opcode.STA_DP_X,
-            'ABSOLUTE': Opcode.STA_ABSOLUTE, 'ABSOLUTE_X': Opcode.STA_ABSOLUTE_X,
-            'ABSOLUTE_Y': Opcode.STA_ABSOLUTE_Y,
-            'STACK': Opcode.STA_STACK,
-        },
-        'LDX': {
-            'DP': Opcode.LDX_DP, 'DP_Y': Opcode.LDX_DP_Y,
-            'ABSOLUTE': Opcode.LDX_ABSOLUTE, 'ABSOLUTE_Y': Opcode.LDX_ABSOLUTE_Y,
-            'IMMEDIATE': Opcode.LDX_IMMEDIATE,
-        },
-        'STX': {
-            'DP': Opcode.STX_DP, 'DP_Y': Opcode.STX_DP_Y,
-            'ABSOLUTE': Opcode.STX_ABSOLUTE,
-        },
-        'LDY': {
-            'DP': Opcode.LDY_DP, 'DP_X': Opcode.LDY_DP_X,
-            'ABSOLUTE': Opcode.LDY_ABSOLUTE, 'ABSOLUTE_X': Opcode.LDY_ABSOLUTE_X,
-            'IMMEDIATE': Opcode.LDY_IMMEDIATE,
-        },
-        'STY': {
-            'DP': Opcode.STY_DP, 'DP_X': Opcode.STY_DP_X,
-            'ABSOLUTE': Opcode.STY_ABSOLUTE,
-        },
-        'STZ': {
-            'DP': Opcode.STZ_DP, 'DP_X': Opcode.STZ_DP_X,
-            'ABSOLUTE': Opcode.STZ_ABSOLUTE, 'ABSOLUTE_X': Opcode.STZ_ABSOLUTE_X,
-        },
-        'ADC': {
-            'DP': Opcode.ADC_DP, 'DP_X': Opcode.ADC_DP_X,
-            'ABSOLUTE': Opcode.ADC_ABSOLUTE, 'ABSOLUTE_X': Opcode.ADC_ABSOLUTE_X,
-            'ABSOLUTE_Y': Opcode.ADC_ABSOLUTE_Y,
-            'STACK': Opcode.ADC_STACK, 'IMMEDIATE': Opcode.ADC_IMMEDIATE,
-        },
-        'SBC': {
-            'DP': Opcode.SBC_DP, 'DP_X': Opcode.SBC_DP_X,
-            'ABSOLUTE': Opcode.SBC_ABSOLUTE, 'ABSOLUTE_X': Opcode.SBC_ABSOLUTE_X,
-            'ABSOLUTE_Y': Opcode.SBC_ABSOLUTE_Y,
-            'STACK': Opcode.SBC_STACK, 'IMMEDIATE': Opcode.SBC_IMMEDIATE,
-        },
-        'AND': {
-            'DP': Opcode.AND_DP, 'DP_X': Opcode.AND_DP_X,
-            'ABSOLUTE': Opcode.AND_ABSOLUTE, 'ABSOLUTE_X': Opcode.AND_ABSOLUTE_X,
-            'ABSOLUTE_Y': Opcode.AND_ABSOLUTE_Y,
-            'STACK': Opcode.AND_STACK, 'IMMEDIATE': Opcode.AND_IMMEDIATE,
-        },
-        'ORA': {
-            'DP': Opcode.ORA_DP, 'DP_X': Opcode.ORA_DP_X,
-            'ABSOLUTE': Opcode.ORA_ABSOLUTE, 'ABSOLUTE_X': Opcode.ORA_ABSOLUTE_X,
-            'ABSOLUTE_Y': Opcode.ORA_ABSOLUTE_Y,
-            'STACK': Opcode.ORA_STACK, 'IMMEDIATE': Opcode.ORA_IMMEDIATE,
-        },
-        'EOR': {
-            'DP': Opcode.EOR_DP, 'DP_X': Opcode.EOR_DP_X,
-            'ABSOLUTE': Opcode.EOR_ABSOLUTE, 'ABSOLUTE_X': Opcode.EOR_ABSOLUTE_X,
-            'ABSOLUTE_Y': Opcode.EOR_ABSOLUTE_Y,
-            'STACK': Opcode.EOR_STACK, 'IMMEDIATE': Opcode.EOR_IMMEDIATE,
-        },
-        'BIT': {
-            'DP': Opcode.BIT_DP, 'DP_X': Opcode.BIT_DP_X,
-            'ABSOLUTE': Opcode.BIT_ABSOLUTE, 'ABSOLUTE_X': Opcode.BIT_ABSOLUTE_X,
-            'IMMEDIATE': Opcode.BIT_IMMEDIATE,
-        },
-        'CMP': {
-            'DP': Opcode.CMP_DP, 'DP_X': Opcode.CMP_DP_X,
-            'ABSOLUTE': Opcode.CMP_ABSOLUTE, 'ABSOLUTE_X': Opcode.CMP_ABSOLUTE_X,
-            'ABSOLUTE_Y': Opcode.CMP_ABSOLUTE_Y,
-            'STACK': Opcode.CMP_STACK, 'IMMEDIATE': Opcode.CMP_IMMEDIATE,
-        },
-        'CPX': {
-            'DP': Opcode.CPX_DP, 'ABSOLUTE': Opcode.CPX_ABSOLUTE,
-            'IMMEDIATE': Opcode.CPX_IMMEDIATE,
-        },
-        'CPY': {
-            'DP': Opcode.CPY_DP, 'ABSOLUTE': Opcode.CPY_ABSOLUTE,
-            'IMMEDIATE': Opcode.CPY_IMMEDIATE,
-        },
-    }
-
-    # Mappings from register name to push/pull opcodes
-    _PUSH_OPCODES = {
-        'A': Opcode.PHA, 'X': Opcode.PHX, 'Y': Opcode.PHY,
-        'STATUS': Opcode.PHP, 'P': Opcode.PHP,
-        'D': Opcode.PHD, 'DBR': Opcode.PHB, 'B': Opcode.PHB,
-    }
-
-    _PULL_OPCODES = {
-        'A': Opcode.PLA, 'X': Opcode.PLX, 'Y': Opcode.PLY,
-        'STATUS': Opcode.PLP, 'P': Opcode.PLP,
-        'D': Opcode.PLD, 'DBR': Opcode.PLB, 'B': Opcode.PLB,
-    }
-
-    # Mappings for register transfers
-    _TRANSFER_OPCODES = {
-        ('A', 'X'): Opcode.TAX,
-        ('A', 'Y'): Opcode.TAY,
-        ('X', 'A'): Opcode.TXA,
-        ('Y', 'A'): Opcode.TYA,
-        ('X', 'Y'): Opcode.TXY,
-        ('Y', 'X'): Opcode.TYX,
-    }
-
-    # Mappings for load immediate by register
-    _LOAD_IMMEDIATE_OPCODES = {
-        'A': Opcode.LDA_IMMEDIATE,
-        'X': Opcode.LDX_IMMEDIATE,
-        'Y': Opcode.LDY_IMMEDIATE,
-    }
-
-    # Mappings for store to DP by register
-    _STORE_DP_OPCODES = {
-        'A': Opcode.STA_DP,
-        'X': Opcode.STX_DP,
-        'Y': Opcode.STY_DP,
-    }
-
     def _get_opcode_for_location(self, mnemonic: str, location: PhysicalLocation) -> tuple[Opcode, Address | StackOffset]:
         """
         Get the appropriate Opcode variant and operand for a memory location.
@@ -287,14 +174,14 @@ class InstructionSelector:
         Returns:
             Tuple of (Opcode variant, Operand)
         """
-        variants = self._OPCODE_VARIANTS.get(mnemonic)
+        variants = OPCODE_VARIANTS.get(mnemonic)
         if not variants:
             raise InstructionSelectionError(f"No opcode variants for mnemonic: {mnemonic}")
 
         if location.kind == LocationKind.STACK:
             opcode = variants.get('STACK')
             if not opcode:
-                raise InstructionSelectionError(f"{mnemonic} does not support stack-relative addressing")
+                raise unsupported_addressing_mode(mnemonic, "stack-relative")
             return opcode, StackOffset(location.stack_offset)
 
         elif location.kind == LocationKind.SCRATCH:
@@ -302,15 +189,15 @@ class InstructionSelector:
             if location.index_register == 'X':
                 opcode = variants.get('DP_X')
                 if not opcode:
-                    raise InstructionSelectionError(f"{mnemonic} does not support DP,X addressing")
+                    raise unsupported_addressing_mode(mnemonic, "DP,X")
             elif location.index_register == 'Y':
                 opcode = variants.get('DP_Y')
                 if not opcode:
-                    raise InstructionSelectionError(f"{mnemonic} does not support DP,Y addressing")
+                    raise unsupported_addressing_mode(mnemonic, "DP,Y")
             else:
                 opcode = variants.get('DP')
                 if not opcode:
-                    raise InstructionSelectionError(f"{mnemonic} does not support DP addressing")
+                    raise unsupported_addressing_mode(mnemonic, "DP")
             return opcode, Address(addr)
 
         elif location.kind == LocationKind.MEMORY:
@@ -320,19 +207,19 @@ class InstructionSelector:
                 if location.index_register == 'X':
                     opcode = variants.get('ABSOLUTE_X')
                     if not opcode:
-                        raise InstructionSelectionError(f"{mnemonic} does not support absolute X addressing")
+                        raise unsupported_addressing_mode(mnemonic, "absolute X")
                 elif location.index_register == 'Y':
                     opcode = variants.get('ABSOLUTE_Y')
                     if not opcode:
-                        raise InstructionSelectionError(f"{mnemonic} does not support absolute Y addressing")
+                        raise unsupported_addressing_mode(mnemonic, "absolute Y")
                 else:
                     opcode = variants.get('ABSOLUTE')
                     if not opcode:
-                        raise InstructionSelectionError(f"{mnemonic} does not support absolute addressing")
+                        raise unsupported_addressing_mode(mnemonic, "absolute")
                 return opcode, Address(location.memory_label)
 
             addr = location.memory_addr
-            is_dp = addr < 0x100
+            is_dp = addr < DP_BOUNDARY
 
             if location.index_register == 'X':
                 if is_dp:
@@ -340,14 +227,14 @@ class InstructionSelector:
                 else:
                     opcode = variants.get('ABSOLUTE_X')
                 if not opcode:
-                    raise InstructionSelectionError(f"{mnemonic} does not support indexed X addressing")
+                    raise unsupported_addressing_mode(mnemonic, "indexed X")
             elif location.index_register == 'Y':
                 if is_dp:
                     opcode = variants.get('DP_Y')
                 else:
                     opcode = variants.get('ABSOLUTE_Y')
                 if not opcode:
-                    raise InstructionSelectionError(f"{mnemonic} does not support indexed Y addressing")
+                    raise unsupported_addressing_mode(mnemonic, "indexed Y")
             else:
                 if is_dp:
                     opcode = variants.get('DP')
@@ -360,7 +247,7 @@ class InstructionSelector:
         elif location.kind == LocationKind.IMMEDIATE:
             opcode = variants.get('IMMEDIATE')
             if not opcode:
-                raise InstructionSelectionError(f"{mnemonic} does not support immediate addressing")
+                raise unsupported_addressing_mode(mnemonic, "immediate")
             return opcode, Immediate(location.immediate_value)
 
         else:
@@ -859,7 +746,7 @@ class InstructionSelector:
         elif op == '/':
             self._emit_divide(instr.right, is_u16)
         else:
-            raise InstructionSelectionError(f"Unsupported binary operation: {op}")
+            raise unsupported_operation("binary operation", op)
 
         # Store result from A (if destination is not A)
         if dest_loc.kind == LocationKind.HARDWARE and dest_loc.hw_register == 'A':
@@ -953,7 +840,7 @@ class InstructionSelector:
             self._emit_immediate(Opcode.EOR_IMMEDIATE, 0xFF, "Complement")
             self._emit_implied(Opcode.INC, "Add 1 for two's complement")
         else:
-            raise InstructionSelectionError(f"Unsupported unary operation: {op}")
+            raise unsupported_operation("unary operation", op)
 
         # Store result
         self._emit_store('STA', dest_loc)
@@ -996,7 +883,7 @@ class InstructionSelector:
     def _require_immediate(self, operand, operation: str) -> int:
         """Validate operand is immediate and return its value."""
         if not isinstance(operand, MIRImmediate):
-            raise InstructionSelectionError(f"{operation} requires constant operand")
+            raise requires_constant(operation)
         return operand.value
 
     def _emit_repeated_opcode(self, opcode: Opcode, count: int):
@@ -1028,13 +915,10 @@ class InstructionSelector:
 
         self._emit_repeated_opcode(Opcode.LSR, count)
 
-    # Power-of-2 to shift count mapping
-    _POWER_OF_2_SHIFTS = {1: 0, 2: 1, 4: 2, 8: 3}
-
     def _emit_multiply(self, right_operand, is_u16: bool):
         """Emit multiply by power of 2 (A * 1/2/4/8) using ASL instructions."""
         value = self._require_immediate(right_operand, "Multiply")
-        shift_count = self._POWER_OF_2_SHIFTS.get(value)
+        shift_count = POWER_OF_2_SHIFTS.get(value)
 
         if shift_count is None:
             raise InstructionSelectionError(
@@ -1046,7 +930,7 @@ class InstructionSelector:
     def _emit_divide(self, right_operand, is_u16: bool):
         """Emit divide by power of 2 (A / 1/2/4/8) using LSR instructions."""
         value = self._require_immediate(right_operand, "Divide")
-        shift_count = self._POWER_OF_2_SHIFTS.get(value)
+        shift_count = POWER_OF_2_SHIFTS.get(value)
 
         if shift_count is None:
             raise InstructionSelectionError(
@@ -1094,7 +978,7 @@ class InstructionSelector:
             instr: SaveRegister instruction
         """
         reg_name = instr.register.name
-        push_opcode = self._PUSH_OPCODES.get(reg_name)
+        push_opcode = PUSH_OPCODES.get(reg_name)
         if push_opcode:
             self._emit_implied(push_opcode)
         else:
@@ -1108,7 +992,7 @@ class InstructionSelector:
             instr: RestoreRegister instruction
         """
         reg_name = instr.register.name
-        pull_opcode = self._PULL_OPCODES.get(reg_name)
+        pull_opcode = PULL_OPCODES.get(reg_name)
         if pull_opcode:
             self._emit_implied(pull_opcode)
         else:
@@ -1126,7 +1010,7 @@ class InstructionSelector:
             instr: Push instruction
         """
         reg = instr.register.name
-        push_opcode = self._PUSH_OPCODES.get(reg)
+        push_opcode = PUSH_OPCODES.get(reg)
         if push_opcode:
             self._emit_implied(push_opcode)
         else:
@@ -1140,7 +1024,7 @@ class InstructionSelector:
             instr: Pull instruction
         """
         reg = instr.register.name
-        pull_opcode = self._PULL_OPCODES.get(reg)
+        pull_opcode = PULL_OPCODES.get(reg)
         if pull_opcode:
             self._emit_implied(pull_opcode)
         else:
@@ -1221,7 +1105,7 @@ class InstructionSelector:
             is_u16: Whether this is a 16-bit operation
         """
         # Get the immediate opcode for this operation
-        immediate_opcode = self._OPCODE_VARIANTS[operation]['IMMEDIATE']
+        immediate_opcode = OPCODE_VARIANTS[operation]['IMMEDIATE']
 
         if isinstance(right_operand, MIRImmediate):
             # Use the operand value directly - any necessary masking for 8-bit mode
@@ -1253,7 +1137,7 @@ class InstructionSelector:
                     if temp_addr:
                         # Use scratch register
                         temp_loc = PhysicalLocation(kind=LocationKind.SCRATCH, scratch_addr=temp_addr.value, size=1)
-                        store_opcode = self._STORE_DP_OPCODES[right_loc.hw_register]
+                        store_opcode = STORE_DP_OPCODES[right_loc.hw_register]
                         self.emitter.emit_instr(store_opcode, temp_addr, f"Store {right_loc.hw_register} to temp")
                         self._emit_op(operation, temp_loc)
                     else:
@@ -1367,7 +1251,7 @@ class InstructionSelector:
                 return
 
         # Direct transfers
-        transfer_opcode = self._TRANSFER_OPCODES.get((src_reg, dest_reg))
+        transfer_opcode = TRANSFER_OPCODES.get((src_reg, dest_reg))
 
         if transfer_opcode:
             self._emit_implied(transfer_opcode)
@@ -1387,7 +1271,7 @@ class InstructionSelector:
             value: Immediate value
             is_u16: Whether to use 16-bit format
         """
-        load_opcode = self._LOAD_IMMEDIATE_OPCODES[reg]
+        load_opcode = LOAD_IMMEDIATE_OPCODES[reg]
         self._emit_immediate(load_opcode, value)
 
     def _get_operand_location(self, operand) -> PhysicalLocation:
@@ -1436,7 +1320,7 @@ class InstructionSelector:
                         index_register=operand.index_register  # Pass indexed addressing info
                     )
                 else:
-                    raise InstructionSelectionError(f"No allocation for symbol: {operand.symbol.name}")
+                    raise missing_allocation(operand.symbol.name)
         elif isinstance(operand, MIRImmediate):
             # Immediate value - return as immediate location
             return PhysicalLocation(
@@ -1471,7 +1355,7 @@ class InstructionSelector:
             if location.memory_label:
                 base = location.memory_label
             elif location.memory_addr is not None:
-                if location.memory_addr < 0x100:
+                if location.memory_addr < DP_BOUNDARY:
                     # Zero-page
                     base = f"${location.memory_addr:02X}"
                 else:
@@ -1548,7 +1432,7 @@ class InstructionSelector:
 
     def _emit_indexed_store(self, base_addr: int, index_reg: str, comment: str = None):
         """Emit a store with indexed addressing: STA base,X or STA base,Y."""
-        is_dp = base_addr < 0x100
+        is_dp = base_addr < DP_BOUNDARY
         if index_reg == 'X':
             opcode = Opcode.STA_DP_X if is_dp else Opcode.STA_ABSOLUTE_X
         else:  # 'Y'
@@ -1659,7 +1543,7 @@ class InstructionSelector:
 
         # Set up for MVN: A = count - 1, X = source, Y = dest
         # For 16-bit index mode, we need REP #$10 first
-        self._emit_immediate(Opcode.REP_IMMEDIATE, 0x30, "16-bit A and index")
+        self._emit_immediate(Opcode.REP_IMMEDIATE, MX_FLAGS, "16-bit A and index")
 
         # Load count - 1 into A
         self._emit_immediate(Opcode.LDA_IMMEDIATE, count - 1)
@@ -1668,24 +1552,24 @@ class InstructionSelector:
         self.emitter.emit_instr(Opcode.LDX_IMMEDIATE, Address(rom_label))
 
         # Load destination address
-        self._emit_immediate(Opcode.LDY_IMMEDIATE, dest_loc.memory_addr & 0xFFFF)
+        self._emit_immediate(Opcode.LDY_IMMEDIATE, dest_loc.memory_addr & WORD_MASK)
 
         # Perform block move
         # MVN src_bank, dst_bank
         # Assuming ROM is in bank 0 and RAM destination bank is $7E
         # For now, use bank 0 for ROM and calculate destination bank from address
         dest_addr = dest_loc.memory_addr
-        if dest_addr >= 0x7E0000:
-            dest_bank = 0x7E
-        elif dest_addr >= 0x7F0000:
-            dest_bank = 0x7F
+        if dest_addr >= WRAM_BANK2_START:
+            dest_bank = WRAM_BANK2
+        elif dest_addr >= WRAM_BANK_START:
+            dest_bank = WRAM_BANK
         else:
             dest_bank = 0x00  # Low RAM or zeropage
 
         self.emitter.emit_instr(Opcode.MVN, BlockMove(0x00, dest_bank))
 
         # Restore 8-bit mode if needed (depends on context)
-        self._emit_immediate(Opcode.SEP_IMMEDIATE, 0x30, "Restore 8-bit mode")
+        self._emit_immediate(Opcode.SEP_IMMEDIATE, MX_FLAGS, "Restore 8-bit mode")
 
     # ========================================================================
     # Inline Assembly
@@ -1755,13 +1639,13 @@ class InstructionSelector:
 
         flag = get_status_flag(instr.flag_name)
         if not flag:
-            raise InstructionSelectionError(f"Unknown STATUS flag: {instr.flag_name}")
+            raise unknown_value("STATUS flag", instr.flag_name)
 
         # For A16/XY16, accumulate masks for combining
         # Note: A16=true means "16-bit mode" which requires M flag=0 (REP clears)
         #       A16=false means "8-bit mode" which requires M flag=1 (SEP sets)
         if instr.flag_name in ('A16', 'XY16'):
-            mask = 0x20 if instr.flag_name == 'A16' else 0x10
+            mask = M_FLAG if instr.flag_name == 'A16' else X_FLAG
 
             if instr.value:
                 # A16/XY16 = true means 16-bit mode, use REP to clear the flag bit

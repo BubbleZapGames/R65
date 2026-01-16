@@ -8,7 +8,7 @@ addressing modes for the 65816 processor.
 from r65.compiler.mir.nodes import Load, Store, LoadIndirect, StoreIndirect, Immediate as MIRImmediate, FunctionPointer
 from r65.compiler.codegen.register_alloc import LocationKind
 from r65.compiler.errors import InstructionSelectionError
-from r65.compiler.codegen.opcodes import Opcode
+from r65.compiler.codegen.opcodes import Opcode, STORE_MNEMONICS
 from r65.compiler.codegen.asm_nodes import Immediate, Address, StackOffset
 from r65.compiler.codegen.base_selector import BaseSelector
 
@@ -140,7 +140,6 @@ class MemoryOperationSelector(BaseSelector):
 
     def _store_from_hardware_register(self, src_loc, dest_loc, is_u16: bool):
         """Store from a hardware register to memory."""
-        store_mnemonics = {'A': 'STA', 'X': 'STX', 'Y': 'STY'}
         reg = src_loc.hw_register
 
         if reg == 'B':
@@ -148,7 +147,7 @@ class MemoryOperationSelector(BaseSelector):
             self.parent._access_b_value_in_a()
             self._emit_load_store('STA', dest_loc)
             self.parent._ensure_xba_state_normal("Restore A register")
-        elif reg not in store_mnemonics:
+        elif reg not in STORE_MNEMONICS:
             raise InstructionSelectionError(f"Cannot store from hardware register: {reg}")
         else:
             # Check for unsupported addressing modes for STX and STY
@@ -167,11 +166,11 @@ class MemoryOperationSelector(BaseSelector):
 
             if need_transfer_to_a:
                 transfer_op = Opcode.TXA if reg == 'X' else Opcode.TYA
-                self._emit_instr(transfer_op, comment=f"Transfer to A (no {store_mnemonics[reg]} with this addressing)")
+                self._emit_instr(transfer_op, comment=f"Transfer to A (no {STORE_MNEMONICS[reg]} with this addressing)")
                 self._emit_load_store('STA', dest_loc)
                 self.parent._mark_a_modified()
             else:
-                self._emit_load_store(store_mnemonics[reg], dest_loc)
+                self._emit_load_store(STORE_MNEMONICS[reg], dest_loc)
 
     def _store_function_pointer(self, func_ptr: FunctionPointer, dest_loc, type_info):
         """Store a function pointer address directly to memory."""

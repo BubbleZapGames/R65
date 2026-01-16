@@ -12,7 +12,7 @@ from r65.compiler.codegen.register_alloc import ScratchRegisterPool, RegisterAll
 from r65.compiler.codegen.memory_alloc import MemoryAllocator
 from r65.compiler.codegen.instruction_select_helpers import RegisterMappings
 from r65.compiler.codegen.type_utils import get_type_size
-from r65.compiler.codegen.constants import DEFAULT_STACK_UPPER
+from r65.compiler.codegen.constants import DEFAULT_STACK_UPPER, M_FLAG, X_FLAG
 from r65.compiler.codegen.opcodes import Opcode
 from r65.compiler.codegen.asm_nodes import Immediate, Address, StackOffset
 
@@ -377,10 +377,10 @@ class FunctionCodeGenerator:
         if mir_func.is_entry and self.mem_alloc.stack_upper is not None:
             if self.mem_alloc.stack_upper != DEFAULT_STACK_UPPER:
                 stack_addr = self.mem_alloc.stack_upper
-                self._emit_instr(Opcode.REP_IMMEDIATE, Immediate(0x20), "16-bit A for stack setup")
+                self._emit_instr(Opcode.REP_IMMEDIATE, Immediate(M_FLAG), "16-bit A for stack setup")
                 self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(stack_addr), "Stack top")
                 self._emit_instr(Opcode.TCS, comment="Set stack pointer")
-                self._emit_instr(Opcode.SEP_IMMEDIATE, Immediate(0x20), "Restore 8-bit A")
+                self._emit_instr(Opcode.SEP_IMMEDIATE, Immediate(M_FLAG), "Restore 8-bit A")
 
         # Handle DBR management for far functions with databank=inline
         if mir_func.is_far and mir_func.mode_attr and mir_func.bank_attr:
@@ -406,29 +406,29 @@ class FunctionCodeGenerator:
 
                 # Determine which bits to set/clear based on mode
                 # STATUS register bits: NV-BDIZC (- is unused, M is bit 5, X is bit 4)
-                # Bit 5 (0x20): M flag (0=16-bit accumulator, 1=8-bit accumulator)
-                # Bit 4 (0x10): X flag (0=16-bit index, 1=8-bit index)
+                # M_FLAG (0x20): M flag (0=16-bit accumulator, 1=8-bit accumulator)
+                # X_FLAG (0x10): X flag (0=16-bit index, 1=8-bit index)
                 bits_to_clear = 0  # REP (Reset bits)
                 bits_to_set = 0    # SEP (Set bits)
 
                 # Determine M mode
                 if mir_func.mode_attr.m_mode == MMode.M16:
-                    bits_to_clear |= 0x20  # Clear M bit for 16-bit accumulator
+                    bits_to_clear |= M_FLAG  # Clear M bit for 16-bit accumulator
                 elif mir_func.mode_attr.m_mode == MMode.M8:
-                    bits_to_set |= 0x20    # Set M bit for 8-bit accumulator
+                    bits_to_set |= M_FLAG    # Set M bit for 8-bit accumulator
 
                 # Determine X mode
                 if mir_func.mode_attr.x_mode == XMode.X16:
-                    bits_to_clear |= 0x10  # Clear X bit for 16-bit index
+                    bits_to_clear |= X_FLAG  # Clear X bit for 16-bit index
                 elif mir_func.mode_attr.x_mode == XMode.X8:
-                    bits_to_set |= 0x10    # Set X bit for 8-bit index
+                    bits_to_set |= X_FLAG    # Set X bit for 8-bit index
 
                 # Emit REP and/or SEP instructions
                 if bits_to_clear:
-                    mode_comment = f"Set mode: {'m16 ' if bits_to_clear & 0x20 else ''}{'x16' if bits_to_clear & 0x10 else ''}".strip()
+                    mode_comment = f"Set mode: {'m16 ' if bits_to_clear & M_FLAG else ''}{'x16' if bits_to_clear & X_FLAG else ''}".strip()
                     self._emit_instr(Opcode.REP_IMMEDIATE, Immediate(bits_to_clear), mode_comment)
                 if bits_to_set:
-                    mode_comment = f"Set mode: {'m8 ' if bits_to_set & 0x20 else ''}{'x8' if bits_to_set & 0x10 else ''}".strip()
+                    mode_comment = f"Set mode: {'m8 ' if bits_to_set & M_FLAG else ''}{'x8' if bits_to_set & X_FLAG else ''}".strip()
                     self._emit_instr(Opcode.SEP_IMMEDIATE, Immediate(bits_to_set), mode_comment)
 
         # Emit register saves for #[preserves(...)]

@@ -978,6 +978,163 @@ X16_IMMEDIATE_OPCODES = frozenset({
 })
 
 
+# ============================================================================
+# Instruction Selection Mappings
+# ============================================================================
+# Consolidated opcode mappings used by instruction selectors.
+# Previously duplicated across instruction_select.py and call_select.py.
+
+# Mapping from base mnemonic to opcode variants by addressing mode
+OPCODE_VARIANTS: dict[str, dict[str, Opcode]] = {
+    'LDA': {
+        'DP': Opcode.LDA_DP, 'DP_X': Opcode.LDA_DP_X,
+        'ABSOLUTE': Opcode.LDA_ABSOLUTE, 'ABSOLUTE_X': Opcode.LDA_ABSOLUTE_X,
+        'ABSOLUTE_Y': Opcode.LDA_ABSOLUTE_Y,
+        'STACK': Opcode.LDA_STACK, 'IMMEDIATE': Opcode.LDA_IMMEDIATE,
+    },
+    'STA': {
+        'DP': Opcode.STA_DP, 'DP_X': Opcode.STA_DP_X,
+        'ABSOLUTE': Opcode.STA_ABSOLUTE, 'ABSOLUTE_X': Opcode.STA_ABSOLUTE_X,
+        'ABSOLUTE_Y': Opcode.STA_ABSOLUTE_Y,
+        'STACK': Opcode.STA_STACK,
+    },
+    'LDX': {
+        'DP': Opcode.LDX_DP, 'DP_Y': Opcode.LDX_DP_Y,
+        'ABSOLUTE': Opcode.LDX_ABSOLUTE, 'ABSOLUTE_Y': Opcode.LDX_ABSOLUTE_Y,
+        'IMMEDIATE': Opcode.LDX_IMMEDIATE,
+    },
+    'STX': {
+        'DP': Opcode.STX_DP, 'DP_Y': Opcode.STX_DP_Y,
+        'ABSOLUTE': Opcode.STX_ABSOLUTE,
+    },
+    'LDY': {
+        'DP': Opcode.LDY_DP, 'DP_X': Opcode.LDY_DP_X,
+        'ABSOLUTE': Opcode.LDY_ABSOLUTE, 'ABSOLUTE_X': Opcode.LDY_ABSOLUTE_X,
+        'IMMEDIATE': Opcode.LDY_IMMEDIATE,
+    },
+    'STY': {
+        'DP': Opcode.STY_DP, 'DP_X': Opcode.STY_DP_X,
+        'ABSOLUTE': Opcode.STY_ABSOLUTE,
+    },
+    'STZ': {
+        'DP': Opcode.STZ_DP, 'DP_X': Opcode.STZ_DP_X,
+        'ABSOLUTE': Opcode.STZ_ABSOLUTE, 'ABSOLUTE_X': Opcode.STZ_ABSOLUTE_X,
+    },
+    'ADC': {
+        'DP': Opcode.ADC_DP, 'DP_X': Opcode.ADC_DP_X,
+        'ABSOLUTE': Opcode.ADC_ABSOLUTE, 'ABSOLUTE_X': Opcode.ADC_ABSOLUTE_X,
+        'ABSOLUTE_Y': Opcode.ADC_ABSOLUTE_Y,
+        'STACK': Opcode.ADC_STACK, 'IMMEDIATE': Opcode.ADC_IMMEDIATE,
+    },
+    'SBC': {
+        'DP': Opcode.SBC_DP, 'DP_X': Opcode.SBC_DP_X,
+        'ABSOLUTE': Opcode.SBC_ABSOLUTE, 'ABSOLUTE_X': Opcode.SBC_ABSOLUTE_X,
+        'ABSOLUTE_Y': Opcode.SBC_ABSOLUTE_Y,
+        'STACK': Opcode.SBC_STACK, 'IMMEDIATE': Opcode.SBC_IMMEDIATE,
+    },
+    'AND': {
+        'DP': Opcode.AND_DP, 'DP_X': Opcode.AND_DP_X,
+        'ABSOLUTE': Opcode.AND_ABSOLUTE, 'ABSOLUTE_X': Opcode.AND_ABSOLUTE_X,
+        'ABSOLUTE_Y': Opcode.AND_ABSOLUTE_Y,
+        'STACK': Opcode.AND_STACK, 'IMMEDIATE': Opcode.AND_IMMEDIATE,
+    },
+    'ORA': {
+        'DP': Opcode.ORA_DP, 'DP_X': Opcode.ORA_DP_X,
+        'ABSOLUTE': Opcode.ORA_ABSOLUTE, 'ABSOLUTE_X': Opcode.ORA_ABSOLUTE_X,
+        'ABSOLUTE_Y': Opcode.ORA_ABSOLUTE_Y,
+        'STACK': Opcode.ORA_STACK, 'IMMEDIATE': Opcode.ORA_IMMEDIATE,
+    },
+    'EOR': {
+        'DP': Opcode.EOR_DP, 'DP_X': Opcode.EOR_DP_X,
+        'ABSOLUTE': Opcode.EOR_ABSOLUTE, 'ABSOLUTE_X': Opcode.EOR_ABSOLUTE_X,
+        'ABSOLUTE_Y': Opcode.EOR_ABSOLUTE_Y,
+        'STACK': Opcode.EOR_STACK, 'IMMEDIATE': Opcode.EOR_IMMEDIATE,
+    },
+    'BIT': {
+        'DP': Opcode.BIT_DP, 'DP_X': Opcode.BIT_DP_X,
+        'ABSOLUTE': Opcode.BIT_ABSOLUTE, 'ABSOLUTE_X': Opcode.BIT_ABSOLUTE_X,
+        'IMMEDIATE': Opcode.BIT_IMMEDIATE,
+    },
+    'CMP': {
+        'DP': Opcode.CMP_DP, 'DP_X': Opcode.CMP_DP_X,
+        'ABSOLUTE': Opcode.CMP_ABSOLUTE, 'ABSOLUTE_X': Opcode.CMP_ABSOLUTE_X,
+        'ABSOLUTE_Y': Opcode.CMP_ABSOLUTE_Y,
+        'STACK': Opcode.CMP_STACK, 'IMMEDIATE': Opcode.CMP_IMMEDIATE,
+    },
+    'CPX': {
+        'DP': Opcode.CPX_DP, 'ABSOLUTE': Opcode.CPX_ABSOLUTE,
+        'IMMEDIATE': Opcode.CPX_IMMEDIATE,
+    },
+    'CPY': {
+        'DP': Opcode.CPY_DP, 'ABSOLUTE': Opcode.CPY_ABSOLUTE,
+        'IMMEDIATE': Opcode.CPY_IMMEDIATE,
+    },
+}
+
+# Mappings from register name to push/pull opcodes
+PUSH_OPCODES: dict[str, Opcode] = {
+    'A': Opcode.PHA, 'X': Opcode.PHX, 'Y': Opcode.PHY,
+    'STATUS': Opcode.PHP, 'P': Opcode.PHP,
+    'D': Opcode.PHD, 'DBR': Opcode.PHB, 'B': Opcode.PHB,
+}
+
+PULL_OPCODES: dict[str, Opcode] = {
+    'A': Opcode.PLA, 'X': Opcode.PLX, 'Y': Opcode.PLY,
+    'STATUS': Opcode.PLP, 'P': Opcode.PLP,
+    'D': Opcode.PLD, 'DBR': Opcode.PLB, 'B': Opcode.PLB,
+}
+
+# Mappings for register transfers
+TRANSFER_OPCODES: dict[tuple[str, str], Opcode] = {
+    ('A', 'X'): Opcode.TAX,
+    ('A', 'Y'): Opcode.TAY,
+    ('X', 'A'): Opcode.TXA,
+    ('Y', 'A'): Opcode.TYA,
+    ('X', 'Y'): Opcode.TXY,
+    ('Y', 'X'): Opcode.TYX,
+}
+
+# Mappings for load immediate by register
+LOAD_IMMEDIATE_OPCODES: dict[str, Opcode] = {
+    'A': Opcode.LDA_IMMEDIATE,
+    'X': Opcode.LDX_IMMEDIATE,
+    'Y': Opcode.LDY_IMMEDIATE,
+}
+
+# Mappings for store to DP by register
+STORE_DP_OPCODES: dict[str, Opcode] = {
+    'A': Opcode.STA_DP,
+    'X': Opcode.STX_DP,
+    'Y': Opcode.STY_DP,
+}
+
+# Mappings for load from DP by register
+LOAD_DP_OPCODES: dict[str, Opcode] = {
+    'A': Opcode.LDA_DP,
+    'X': Opcode.LDX_DP,
+    'Y': Opcode.LDY_DP,
+}
+
+# Load mnemonic by register
+LOAD_MNEMONICS: dict[str, str] = {
+    'A': 'LDA', 'X': 'LDX', 'Y': 'LDY',
+}
+
+# Store mnemonic by register
+STORE_MNEMONICS: dict[str, str] = {
+    'A': 'STA', 'X': 'STX', 'Y': 'STY',
+}
+
+# Power-of-2 to shift count mapping (for multiply/divide optimization)
+POWER_OF_2_SHIFTS: dict[int, int] = {1: 0, 2: 1, 4: 2, 8: 3}
+
+# Builtin instruction to opcode mapping
+BUILTIN_OPCODES: dict[str, Opcode] = {
+    'NOP': Opcode.NOP, 'WAI': Opcode.WAI, 'STP': Opcode.STP, 'XBA': Opcode.XBA,
+    'COP': Opcode.COP, 'MVN': Opcode.MVN, 'MVP': Opcode.MVP,
+}
+
+
 def instruction_size(op: Opcode, m16: bool = False, x16: bool = False) -> int:
     """
     Get the size of an instruction in bytes.

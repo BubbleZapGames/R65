@@ -7,9 +7,15 @@ return value collection, and built-in function expansion.
 
 from r65.compiler.mir.nodes import Call, VirtualRegister, ArgumentMechanism, Immediate as MIRImmediate
 from r65.compiler.codegen.register_alloc import LocationKind
-from r65.compiler.codegen.opcodes import Opcode
+from r65.compiler.codegen.opcodes import (
+    Opcode, TRANSFER_OPCODES, PUSH_OPCODES, PULL_OPCODES,
+    LOAD_IMMEDIATE_OPCODES, STORE_MNEMONICS, BUILTIN_OPCODES
+)
 from r65.compiler.codegen.asm_nodes import BlockMove
 from r65.compiler.errors import InstructionSelectionError
+from r65.compiler.codegen.errors import (
+    unknown_value, argument_count_error, requires_constant
+)
 from r65.compiler.codegen.base_selector import BaseSelector
 
 
@@ -22,50 +28,30 @@ class CallInstructionSelector(BaseSelector):
     """
 
     # ========================================================================
-    # Opcode Mappings
-    # ========================================================================
-
-    # Transfer opcode mapping
-    _TRANSFER_OPCODES = {
-        ('A', 'X'): Opcode.TAX, ('A', 'Y'): Opcode.TAY,
-        ('X', 'A'): Opcode.TXA, ('Y', 'A'): Opcode.TYA,
-        ('X', 'Y'): Opcode.TXY, ('Y', 'X'): Opcode.TYX,
-    }
-
-    # Push/Pull opcode mapping
-    _PUSH_OPCODES = {'A': Opcode.PHA, 'X': Opcode.PHX, 'Y': Opcode.PHY, 'B': Opcode.PHB}
-    _PULL_OPCODES = {'A': Opcode.PLA, 'X': Opcode.PLX, 'Y': Opcode.PLY, 'B': Opcode.PLB}
-
-    # Load immediate opcode mapping
-    _LOAD_IMMEDIATE_OPCODES = {
-        'A': Opcode.LDA_IMMEDIATE, 'X': Opcode.LDX_IMMEDIATE, 'Y': Opcode.LDY_IMMEDIATE
-    }
-
-    # ========================================================================
     # Call-Specific Emission Helpers
     # ========================================================================
 
     def _emit_transfer(self, source: str, dest: str):
         """Emit a register transfer instruction."""
-        opcode = self._TRANSFER_OPCODES.get((source, dest))
+        opcode = TRANSFER_OPCODES.get((source, dest))
         if opcode:
             self._emit_implied(opcode)
 
     def _emit_push(self, reg: str, comment: str = None):
         """Emit a push instruction."""
-        opcode = self._PUSH_OPCODES.get(reg)
+        opcode = PUSH_OPCODES.get(reg)
         if opcode:
             self._emit_implied(opcode, comment)
 
     def _emit_pull(self, reg: str, comment: str = None):
         """Emit a pull instruction."""
-        opcode = self._PULL_OPCODES.get(reg)
+        opcode = PULL_OPCODES.get(reg)
         if opcode:
             self._emit_implied(opcode, comment)
 
     def _emit_load_immediate(self, reg: str, value: int, comment: str = None):
         """Emit a load immediate instruction."""
-        opcode = self._LOAD_IMMEDIATE_OPCODES.get(reg)
+        opcode = LOAD_IMMEDIATE_OPCODES.get(reg)
         if opcode:
             self._emit_immediate(opcode, value, comment)
 
@@ -503,7 +489,7 @@ class CallInstructionSelector(BaseSelector):
 
     def _emit_return_store(self, source_reg: str, dest_loc):
         """Store return value from register to memory."""
-        mnemonic = {'A': 'STA', 'X': 'STX', 'Y': 'STY'}.get(source_reg)
+        mnemonic = STORE_MNEMONICS.get(source_reg)
         if mnemonic:
             self.parent._emit_store(mnemonic, dest_loc)
 
@@ -529,7 +515,7 @@ class CallInstructionSelector(BaseSelector):
 
         builtin = BuiltinRegistry.get_builtin(instr.builtin_name)
         if not builtin:
-            raise InstructionSelectionError(f"Unknown built-in function: {instr.builtin_name}")
+            raise unknown_value("built-in function", instr.builtin_name)
 
         if builtin.kind == BuiltinKind.PROCESSOR_CONTROL:
             self._emit_processor_control_builtin(instr, builtin)
@@ -540,17 +526,11 @@ class CallInstructionSelector(BaseSelector):
         elif builtin.kind in (BuiltinKind.ARITHMETIC, BuiltinKind.SHIFT):
             self._emit_runtime_builtin(instr, builtin)
 
-    # Mapping from builtin instruction names to Opcode enum values
-    _BUILTIN_OPCODES = {
-        'NOP': Opcode.NOP, 'WAI': Opcode.WAI, 'STP': Opcode.STP, 'XBA': Opcode.XBA,
-        'COP': Opcode.COP, 'MVN': Opcode.MVN, 'MVP': Opcode.MVP,
-    }
-
     def _emit_processor_control_builtin(self, instr: Call, builtin):
         """Emit processor control built-in (wai, stp, xba, NOP)."""
-        opcode = self._BUILTIN_OPCODES.get(builtin.instruction)
+        opcode = BUILTIN_OPCODES.get(builtin.instruction)
         if not opcode:
-            raise InstructionSelectionError(f"Unknown processor control builtin: {builtin.instruction}")
+            raise unknown_value("processor control builtin", builtin.instruction)
 
         if instr.builtin_name == 'NOP':
             count = 1  # Default
@@ -572,9 +552,9 @@ class CallInstructionSelector(BaseSelector):
             raise InstructionSelectionError(
                 f"{instr.builtin_name}() expects 1 argument, got {len(instr.args)}")
 
-        opcode = self._BUILTIN_OPCODES.get(builtin.instruction)
+        opcode = BUILTIN_OPCODES.get(builtin.instruction)
         if not opcode:
-            raise InstructionSelectionError(f"Unknown software interrupt builtin: {builtin.instruction}")
+            raise unknown_value("software interrupt builtin", builtin.instruction)
 
         arg = instr.args[0]
 
@@ -601,9 +581,9 @@ class CallInstructionSelector(BaseSelector):
         src_bank = src_bank_arg.value.value
         dst_bank = dst_bank_arg.value.value
 
-        opcode = self._BUILTIN_OPCODES.get(builtin.instruction)
+        opcode = BUILTIN_OPCODES.get(builtin.instruction)
         if not opcode:
-            raise InstructionSelectionError(f"Unknown block move builtin: {builtin.instruction}")
+            raise unknown_value("block move builtin", builtin.instruction)
 
         self.emitter.emit_instr(opcode, BlockMove(src_bank, dst_bank))
 
