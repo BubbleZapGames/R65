@@ -207,6 +207,11 @@ class AssignmentLowerer:
         if field_offset is None:
             raise MIRLoweringError(f"Field offset not computed for field: {field_access.field_name}")
 
+        # Handle auto-dereference case (self.field = value where self is a pointer)
+        if getattr(field_access, 'auto_deref', False):
+            self._lower_pointer_field_assignment(field_access, value, field_offset, expr.expr_type)
+            return value
+
         if isinstance(field_access.base, HIRIdentifier):
             # Simple case: static_struct.field = value
             struct_symbol = field_access.base.symbol
@@ -224,6 +229,34 @@ class AssignmentLowerer:
             )
 
         return value
+
+    def _lower_pointer_field_assignment(self, field_access: HIRFieldAccess, value, field_offset: int, type_info):
+        """
+        Lower pointer-based field assignment (auto-dereference).
+
+        For self.field = value where self is *StructName:
+        - Load the pointer value
+        - Use indirect store with offset to write the field
+
+        Uses StoreIndirect with field offset for efficient code generation.
+        """
+        from r65.compiler.hir.types import PointerTypeInfo
+
+        # Lower the base expression (the pointer)
+        ptr_vreg = self.builder.lower_expression(field_access.base)
+
+        # Get pointer type info to determine if it's a far pointer
+        base_type = field_access.base.expr_type
+        is_far = isinstance(base_type, PointerTypeInfo) and base_type.is_far
+
+        # Emit StoreIndirect with field offset
+        self.emit(StoreIndirect(
+            source=value,
+            pointer=ptr_vreg,
+            is_far=is_far,
+            type_info=type_info,
+            offset=field_offset
+        ))
 
     def _lower_array_field_assignment(self, field_access: HIRFieldAccess, value, field_offset: int, type_info):
         """

@@ -210,13 +210,14 @@ class MemoryOperationSelector(BaseSelector):
         """
         Generate code for LoadIndirect instruction.
 
-        dest = *ptr  (indirect addressing)
+        dest = *ptr  or  dest = *(ptr + offset)  (indirect addressing)
 
         For 65816:
         - near pointers use (zp) or (zp),Y addressing modes
         - far pointers use [zp] or [zp],Y addressing modes
         - Stack-located near pointers use (d,S),Y addressing mode
         - Stack-located far pointers are copied to temp DP location first
+        - Field offset is loaded into Y for indexed indirect addressing
 
         Args:
             instr: LoadIndirect instruction
@@ -225,6 +226,15 @@ class MemoryOperationSelector(BaseSelector):
         dest_loc = self.parent._get_operand_location(instr.dest)
 
         self._validate_pointer_location(ptr_loc)
+
+        # Handle field offset - load into Y for indexed indirect
+        offset = getattr(instr, 'offset', 0)
+        if offset > 0:
+            self._emit_instr(Opcode.LDY_IMMEDIATE, Immediate(offset), f"Load field offset {offset}")
+            # Use Y-indexed indirect addressing
+            instr_index = 'Y'
+        else:
+            instr_index = instr.index_register
 
         is_u16 = self.parent._is_16bit(instr.type_info)
 
@@ -235,14 +245,14 @@ class MemoryOperationSelector(BaseSelector):
                     current_func = self.parent.current_function
                     if current_func and current_func.has_far_ptr_stack_params:
                         # D = S is set up: use efficient [dp],Y addressing
-                        self._emit_16bit_far_ptr_load_via_d_equals_s(ptr_loc, dest_loc, instr.index_register)
+                        self._emit_16bit_far_ptr_load_via_d_equals_s(ptr_loc, dest_loc, instr_index)
                     else:
                         # Fallback: use DBR manipulation
-                        self._emit_16bit_far_ptr_load_via_dbr(ptr_loc, dest_loc, instr.index_register)
+                        self._emit_16bit_far_ptr_load_via_dbr(ptr_loc, dest_loc, instr_index)
                 else:
-                    self._emit_16bit_stack_indirect_load(ptr_loc, dest_loc, instr.index_register)
+                    self._emit_16bit_stack_indirect_load(ptr_loc, dest_loc, instr_index)
             else:
-                self._emit_16bit_indirect_load(ptr_loc, dest_loc, instr.is_far, instr.index_register)
+                self._emit_16bit_indirect_load(ptr_loc, dest_loc, instr.is_far, instr_index)
             return
 
         # Handle 8-bit indirect loads
@@ -253,19 +263,19 @@ class MemoryOperationSelector(BaseSelector):
                 current_func = self.parent.current_function
                 if current_func and current_func.has_far_ptr_stack_params:
                     # D = S is set up: use efficient [dp],Y addressing
-                    self._emit_far_ptr_access_via_d_equals_s('LDA', ptr_loc, instr.index_register)
+                    self._emit_far_ptr_access_via_d_equals_s('LDA', ptr_loc, instr_index)
                 else:
                     # Fallback: use DBR manipulation
-                    self._emit_far_ptr_access_via_dbr('LDA', ptr_loc, instr.index_register)
+                    self._emit_far_ptr_access_via_dbr('LDA', ptr_loc, instr_index)
                 self._emit_load_store('STA', dest_loc)
                 return
             else:
                 opcode, operand = self._get_stack_indirect_opcode(
-                    'LDA', ptr_loc, instr.is_far, instr.index_register
+                    'LDA', ptr_loc, instr.is_far, instr_index
                 )
         else:
             opcode, operand = self._get_indirect_opcode(
-                'LDA', ptr_loc, instr.is_far, instr.index_register
+                'LDA', ptr_loc, instr.is_far, instr_index
             )
 
         self._emit_instr(opcode, operand, "Load through pointer")
@@ -275,11 +285,12 @@ class MemoryOperationSelector(BaseSelector):
         """
         Generate code for StoreIndirect instruction.
 
-        *ptr = source  (indirect addressing)
+        *ptr = source  or  *(ptr + offset) = source  (indirect addressing)
 
         For 65816:
         - near pointers use (zp) or (zp),Y addressing modes
         - far pointers use [zp] or [zp],Y addressing modes
+        - Field offset is loaded into Y for indexed indirect addressing
 
         Args:
             instr: StoreIndirect instruction
@@ -288,6 +299,15 @@ class MemoryOperationSelector(BaseSelector):
         src_loc = self.parent._get_operand_location(instr.source)
 
         self._validate_pointer_location(ptr_loc)
+
+        # Handle field offset - load into Y for indexed indirect
+        offset = getattr(instr, 'offset', 0)
+        if offset > 0:
+            self._emit_instr(Opcode.LDY_IMMEDIATE, Immediate(offset), f"Load field offset {offset}")
+            # Use Y-indexed indirect addressing
+            instr_index = 'Y'
+        else:
+            instr_index = instr.index_register
 
         is_u16 = self.parent._is_16bit(instr.type_info)
 
@@ -298,19 +318,19 @@ class MemoryOperationSelector(BaseSelector):
                     current_func = self.parent.current_function
                     if current_func and current_func.has_far_ptr_stack_params:
                         # D = S is set up: use efficient [dp],Y addressing
-                        self._emit_16bit_far_ptr_store_via_d_equals_s(ptr_loc, src_loc, instr.source, instr.index_register)
+                        self._emit_16bit_far_ptr_store_via_d_equals_s(ptr_loc, src_loc, instr.source, instr_index)
                     else:
                         # Fallback: use DBR manipulation
-                        self._emit_16bit_far_ptr_store_via_dbr(ptr_loc, src_loc, instr.source, instr.index_register)
+                        self._emit_16bit_far_ptr_store_via_dbr(ptr_loc, src_loc, instr.source, instr_index)
                 else:
-                    self._emit_16bit_stack_indirect_store(ptr_loc, src_loc, instr.source, instr.index_register)
+                    self._emit_16bit_stack_indirect_store(ptr_loc, src_loc, instr.source, instr_index)
             else:
-                self._emit_16bit_indirect_store(ptr_loc, src_loc, instr.source, instr.is_far, instr.index_register)
+                self._emit_16bit_indirect_store(ptr_loc, src_loc, instr.source, instr.is_far, instr_index)
             return
 
         # Handle 8-bit indirect stores
-        # Handle stack-located far pointers specially
-        if ptr_loc.kind == LocationKind.STACK and instr.is_far:
+        # Handle stack-located pointers
+        if ptr_loc.kind == LocationKind.STACK:
             # Load source value into A first
             if isinstance(instr.source, MIRImmediate):
                 value = instr.source.value & 0xFF
@@ -320,17 +340,24 @@ class MemoryOperationSelector(BaseSelector):
             else:
                 self._emit_load_store('LDA', src_loc)
 
-            # Far pointer on stack: choose approach based on prologue setup
-            current_func = self.parent.current_function
-            if current_func and current_func.has_far_ptr_stack_params:
-                # D = S is set up: use efficient [dp],Y addressing
-                self._emit_far_ptr_access_via_d_equals_s('STA', ptr_loc, instr.index_register)
+            if instr.is_far:
+                # Far pointer on stack: choose approach based on prologue setup
+                current_func = self.parent.current_function
+                if current_func and current_func.has_far_ptr_stack_params:
+                    # D = S is set up: use efficient [dp],Y addressing
+                    self._emit_far_ptr_access_via_d_equals_s('STA', ptr_loc, instr_index)
+                else:
+                    # Fallback: use DBR manipulation
+                    self._emit_far_ptr_access_via_dbr('STA', ptr_loc, instr_index)
             else:
-                # Fallback: use DBR manipulation
-                self._emit_far_ptr_access_via_dbr('STA', ptr_loc, instr.index_register)
+                # Near pointer on stack: use (d,S),Y addressing
+                opcode, operand = self._get_stack_indirect_opcode(
+                    'STA', ptr_loc, instr.is_far, instr_index
+                )
+                self._emit_instr(opcode, operand, "Store through stack pointer")
             return
 
-        opcode, operand = self._get_indirect_opcode('STA', ptr_loc, instr.is_far, instr.index_register)
+        opcode, operand = self._get_indirect_opcode('STA', ptr_loc, instr.is_far, instr_index)
 
         # Load source value into A
         if isinstance(instr.source, MIRImmediate):

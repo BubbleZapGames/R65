@@ -157,23 +157,26 @@ class LoadIndirect(MIRInstruction):
     """
     Load from memory through pointer (indirect addressing).
 
-    dest = *ptr
+    dest = *ptr  or  dest = *(ptr + offset)
 
     For 65816:
     - near pointers use (zp) or (zp),Y addressing
     - far pointers use [zp] or [zp],Y addressing
+    - offset is loaded into Y for (zp),Y or [zp],Y addressing
     """
     dest: VirtualRegister
     pointer: VirtualRegister  # Points to memory location holding the address
     is_far: bool  # True for far pointer (long indirect), False for near
     index_register: Optional[str] = None  # 'Y' for indexed indirect
     type_info: Any = None  # TypeInfo for size/sign extension
+    offset: int = 0  # Constant offset for field access (ptr->field)
 
     def __repr__(self):
         far_str = "[" if self.is_far else "("
         close_str = "]" if self.is_far else ")"
         index_str = f",{self.index_register}" if self.index_register else ""
-        return f"{self.dest} = LoadIndirect {far_str}{self.pointer}{close_str}{index_str} : {self.type_info}"
+        offset_str = f"+{self.offset}" if self.offset else ""
+        return f"{self.dest} = LoadIndirect {far_str}{self.pointer}{offset_str}{close_str}{index_str} : {self.type_info}"
 
 
 @dataclass
@@ -181,17 +184,19 @@ class StoreIndirect(MIRInstruction):
     """
     Store to memory through pointer (indirect addressing).
 
-    *ptr = source
+    *ptr = source  or  *(ptr + offset) = source
 
     For 65816:
     - near pointers use (zp) or (zp),Y addressing
     - far pointers use [zp] or [zp],Y addressing
+    - offset is loaded into Y for (zp),Y or [zp],Y addressing
     """
     source: Union[VirtualRegister, HardwareRegister, Immediate]
     pointer: VirtualRegister  # Points to memory location holding the address
     is_far: bool  # True for far pointer (long indirect), False for near
     index_register: Optional[str] = None  # 'Y' for indexed indirect
     type_info: Any = None  # TypeInfo for size
+    offset: int = 0  # Constant offset for field access (ptr->field)
 
     def __repr__(self):
         far_str = "[" if self.is_far else "("

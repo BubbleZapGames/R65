@@ -545,6 +545,7 @@ class ExpressionLowerer:
 
         Computes: struct.field → Load from (base_address + field_offset)
         For array[index].field → Load from (array_base + index * struct_size + field_offset)
+        For ptr.field (auto_deref) → Load indirect through pointer + offset
 
         Args:
             expr: HIR field access expression
@@ -557,6 +558,11 @@ class ExpressionLowerer:
             raise MIRLoweringError(f"Field offset not computed for field: {expr.field_name}")
 
         result = self.ctx.alloc_vreg(expr.expr_type, f"field_{expr.field_name}")
+
+        # Handle auto-dereference case (self.field where self is a pointer)
+        if getattr(expr, 'auto_deref', False):
+            self._lower_pointer_field_access(expr, result, field_offset)
+            return result
 
         if isinstance(expr.base, HIRIdentifier):
             # Simple case: static_struct.field
@@ -575,6 +581,35 @@ class ExpressionLowerer:
             )
 
         return result
+
+    def _lower_pointer_field_access(self, expr: HIRFieldAccess, result: VirtualRegister, field_offset: int):
+        """
+        Lower pointer-based field access (auto-dereference).
+
+        For self.field where self is *StructName:
+        - Load the pointer value
+        - Use indirect addressing with offset to access the field
+
+        Uses LoadIndirect with field offset for efficient code generation.
+        """
+        from r65.compiler.mir.nodes import LoadIndirect
+        from r65.compiler.hir.types import PointerTypeInfo
+
+        # Lower the base expression (the pointer)
+        ptr_vreg = self.builder.lower_expression(expr.base)
+
+        # Get pointer type info to determine if it's a far pointer
+        base_type = expr.base.expr_type
+        is_far = isinstance(base_type, PointerTypeInfo) and base_type.is_far
+
+        # Emit LoadIndirect with field offset
+        self.emit(LoadIndirect(
+            dest=result,
+            pointer=ptr_vreg,
+            is_far=is_far,
+            type_info=expr.expr_type,
+            offset=field_offset
+        ))
 
     def _lower_array_field_access(self, expr: HIRFieldAccess, result: VirtualRegister, field_offset: int):
         """
