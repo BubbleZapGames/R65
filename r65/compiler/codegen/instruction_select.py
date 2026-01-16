@@ -373,6 +373,25 @@ class InstructionSelector:
 
     def _emit_store(self, mnemonic: str, location: PhysicalLocation, comment: str = None):
         """Emit a store instruction with the appropriate addressing mode."""
+        # Handle STX/STY limitations: these instructions don't support all addressing modes
+        # STX doesn't support X-indexed (can't use STX addr,X)
+        # STY doesn't support Y-indexed (can't use STY addr,Y)
+        # STX/STY don't support stack-relative
+        if mnemonic == 'STX' and (location.index_register == 'X' or location.kind == LocationKind.STACK):
+            # Transfer X to A, then use STA
+            self.emitter.emit_instr(Opcode.TXA, None, "Transfer X to A (no STX with this addressing)")
+            opcode, operand = self._get_opcode_for_location('STA', location)
+            self.emitter.emit_instr(opcode, operand, comment)
+            self._mark_a_modified()
+            return
+        if mnemonic == 'STY' and (location.index_register == 'Y' or location.kind == LocationKind.STACK):
+            # Transfer Y to A, then use STA
+            self.emitter.emit_instr(Opcode.TYA, None, "Transfer Y to A (no STY with this addressing)")
+            opcode, operand = self._get_opcode_for_location('STA', location)
+            self.emitter.emit_instr(opcode, operand, comment)
+            self._mark_a_modified()
+            return
+
         opcode, operand = self._get_opcode_for_location(mnemonic, location)
         self.emitter.emit_instr(opcode, operand, comment)
 
@@ -803,17 +822,34 @@ class InstructionSelector:
                 # Load left operand from memory/stack into A
                 self._emit_load('LDA', left_loc)
 
+        # Determine if this is a memory-to-memory 16-bit operation
+        # In this case, we handle low/high bytes separately in 8-bit chunks
+        is_mem_to_mem_16bit = (
+            is_u16 and
+            op in ('+', '-', '&', '|', '^') and
+            left_loc.kind != LocationKind.HARDWARE and
+            dest_loc.kind != LocationKind.HARDWARE
+        )
+
+        # For memory-to-memory 16-bit ops with immediate values,
+        # we need to mask the immediate to 8 bits for the low-byte operation
+        # (high byte is handled separately later)
+        right_operand = instr.right
+        if is_mem_to_mem_16bit and isinstance(instr.right, MIRImmediate):
+            # Create masked immediate for low-byte operation
+            right_operand = MIRImmediate(instr.right.value & 0xFF)
+
         # Perform operation
         if op == '+':
-            self._emit_add(instr.right, is_u16)
+            self._emit_add(right_operand, is_u16)
         elif op == '-':
-            self._emit_sub(instr.right, is_u16)
+            self._emit_sub(right_operand, is_u16)
         elif op == '&':
-            self._emit_and(instr.right, is_u16)
+            self._emit_and(right_operand, is_u16)
         elif op == '|':
-            self._emit_or(instr.right, is_u16)
+            self._emit_or(right_operand, is_u16)
         elif op == '^':
-            self._emit_xor(instr.right, is_u16)
+            self._emit_xor(right_operand, is_u16)
         elif op == '<<':
             self._emit_shift_left(instr.right, is_u16)
         elif op == '>>':
@@ -839,7 +875,7 @@ class InstructionSelector:
         # Handle high byte for 16-bit operations
         # NOTE: Only needed for memory-to-memory operations
         # Hardware registers in 16-bit mode are handled as single 16-bit values
-        if is_u16 and op in ('+', '-'):
+        if is_u16 and op in ('+', '-', '&', '|', '^'):
             # Skip high byte handling if any operand is a hardware register
             # In 16-bit mode (m16/x16), hardware registers are accessed as complete 16-bit values
             if (left_loc.kind == LocationKind.HARDWARE or
@@ -858,16 +894,28 @@ class InstructionSelector:
                     high_value = (instr.right.value >> 8) & 0xFF
                     if op == '+':
                         self._emit_immediate(Opcode.ADC_IMMEDIATE, high_value)
-                    else:  # '-'
+                    elif op == '-':
                         self._emit_immediate(Opcode.SBC_IMMEDIATE, high_value)
+                    elif op == '&':
+                        self._emit_immediate(Opcode.AND_IMMEDIATE, high_value)
+                    elif op == '|':
+                        self._emit_immediate(Opcode.ORA_IMMEDIATE, high_value)
+                    elif op == '^':
+                        self._emit_immediate(Opcode.EOR_IMMEDIATE, high_value)
                 else:
                     right_loc = self._get_operand_location(instr.right)
                     if right_loc.kind != LocationKind.HARDWARE:
                         right_high = self._offset_location(right_loc, 1)
                         if op == '+':
                             self._emit_op('ADC', right_high)
-                        else:  # '-'
+                        elif op == '-':
                             self._emit_op('SBC', right_high)
+                        elif op == '&':
+                            self._emit_op('AND', right_high)
+                        elif op == '|':
+                            self._emit_op('ORA', right_high)
+                        elif op == '^':
+                            self._emit_op('EOR', right_high)
 
                 self._emit_store('STA', dest_high)
 
@@ -1176,7 +1224,10 @@ class InstructionSelector:
         immediate_opcode = self._OPCODE_VARIANTS[operation]['IMMEDIATE']
 
         if isinstance(right_operand, MIRImmediate):
-            value = right_operand.value & 0xFF if not is_u16 else right_operand.value
+            # Use the operand value directly - any necessary masking for 8-bit mode
+            # is handled by the caller (select_binary_op) for memory-to-memory operations
+            # For 16-bit ops with hardware registers, the full value is needed
+            value = right_operand.value
             self._emit_immediate(immediate_opcode, value)
         else:
             right_loc = self._get_operand_location(right_operand)
@@ -1253,8 +1304,13 @@ class InstructionSelector:
         dest_high = self._offset_location(dest_loc, 1)
 
         # Use STZ for zero bytes (more efficient)
-        # But STZ doesn't support stack-relative addressing
-        can_use_stz = dest_loc.kind != LocationKind.STACK
+        # But STZ doesn't support stack-relative or 24-bit long addressing
+        can_use_stz = (
+            dest_loc.kind != LocationKind.STACK and
+            not (dest_loc.kind == LocationKind.MEMORY and
+                 dest_loc.memory_addr is not None and
+                 dest_loc.memory_addr > 0xFFFF)
+        )
 
         if low == 0 and can_use_stz:
             self._emit_store('STZ', dest_loc)

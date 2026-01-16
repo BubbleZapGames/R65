@@ -280,6 +280,9 @@ class CallInstructionSelector(BaseSelector):
             self._emit_b_register_argument(arg, arg_loc)
         elif isinstance(arg.value, MIRImmediate):
             self._emit_immediate_to_register(arg.value.value, target_reg)
+        elif arg_loc.kind == LocationKind.HARDWARE:
+            # Source is a hardware register - emit transfer
+            self._emit_hw_to_register(arg_loc.hw_register, target_reg)
         else:
             self._emit_memory_to_register(arg_loc, target_reg)
 
@@ -313,6 +316,28 @@ class CallInstructionSelector(BaseSelector):
             mnemonic = {'A': 'LDA', 'X': 'LDX', 'Y': 'LDY'}.get(target_reg)
             if mnemonic:
                 self.parent._emit_load(mnemonic, arg_loc)
+
+    def _emit_hw_to_register(self, src_reg: str, target_reg: str):
+        """Transfer from one hardware register to another."""
+        if src_reg == target_reg:
+            return  # Nothing to do
+
+        # Use appropriate transfer instruction
+        if src_reg == 'A' and target_reg == 'X':
+            self._emit_implied(Opcode.TAX, f"Transfer A to X")
+        elif src_reg == 'A' and target_reg == 'Y':
+            self._emit_implied(Opcode.TAY, f"Transfer A to Y")
+        elif src_reg == 'X' and target_reg == 'A':
+            self._emit_implied(Opcode.TXA, f"Transfer X to A")
+        elif src_reg == 'X' and target_reg == 'Y':
+            self._emit_implied(Opcode.TXY, f"Transfer X to Y")
+        elif src_reg == 'Y' and target_reg == 'A':
+            self._emit_implied(Opcode.TYA, f"Transfer Y to A")
+        elif src_reg == 'Y' and target_reg == 'X':
+            self._emit_implied(Opcode.TYX, f"Transfer Y to X")
+        else:
+            raise InstructionSelectionError(
+                f"Cannot transfer from {src_reg} to {target_reg}")
 
     def _emit_variable_argument(self, arg, arg_loc):
         """Emit variable-bound argument (store to memory location)."""

@@ -111,8 +111,16 @@ class MemoryOperationSelector(BaseSelector):
         else:
             value_masked = value & 0xFF
             # Use STZ for storing zero (more efficient than LDA #0; STA)
-            # But STZ doesn't support stack-relative addressing
-            if value_masked == 0 and dest_loc.kind != LocationKind.STACK:
+            # But STZ doesn't support stack-relative or 24-bit long addressing
+            can_use_stz = (
+                value_masked == 0 and
+                dest_loc.kind != LocationKind.STACK and
+                # STZ only supports 16-bit absolute addresses
+                not (dest_loc.kind == LocationKind.MEMORY and
+                     dest_loc.memory_addr is not None and
+                     dest_loc.memory_addr > 0xFFFF)
+            )
+            if can_use_stz:
                 self._emit_load_store('STZ', dest_loc)
             else:
                 self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(value_masked))
@@ -143,7 +151,27 @@ class MemoryOperationSelector(BaseSelector):
         elif reg not in store_mnemonics:
             raise InstructionSelectionError(f"Cannot store from hardware register: {reg}")
         else:
-            self._emit_load_store(store_mnemonics[reg], dest_loc)
+            # Check for unsupported addressing modes for STX and STY
+            need_transfer_to_a = False
+
+            # STX and STY don't support stack-relative addressing
+            if reg in ('X', 'Y') and dest_loc.kind == LocationKind.STACK:
+                need_transfer_to_a = True
+
+            # STX doesn't support X-indexed addressing (can't use STX addr,X)
+            # STY doesn't support Y-indexed addressing (can't use STY addr,Y)
+            if reg == 'X' and dest_loc.index_register == 'X':
+                need_transfer_to_a = True
+            if reg == 'Y' and dest_loc.index_register == 'Y':
+                need_transfer_to_a = True
+
+            if need_transfer_to_a:
+                transfer_op = Opcode.TXA if reg == 'X' else Opcode.TYA
+                self._emit_instr(transfer_op, comment=f"Transfer to A (no {store_mnemonics[reg]} with this addressing)")
+                self._emit_load_store('STA', dest_loc)
+                self.parent._mark_a_modified()
+            else:
+                self._emit_load_store(store_mnemonics[reg], dest_loc)
 
     def _store_function_pointer(self, func_ptr: FunctionPointer, dest_loc, type_info):
         """Store a function pointer address directly to memory."""

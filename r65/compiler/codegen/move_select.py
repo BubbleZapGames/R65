@@ -276,11 +276,23 @@ class MoveOperationSelector(BaseSelector):
         store_mnemonics = {'A': 'STA', 'X': 'STX', 'Y': 'STY'}
 
         if src_reg in store_mnemonics:
+            # Check for unsupported addressing modes for STX and STY
+            need_transfer_to_a = False
+
             # STX and STY don't support stack-relative addressing
-            # Transfer to A first, then store
             if src_reg in ('X', 'Y') and dest_loc.kind == LocationKind.STACK:
+                need_transfer_to_a = True
+
+            # STX doesn't support X-indexed addressing (can't use STX addr,X)
+            # STY doesn't support Y-indexed addressing (can't use STY addr,Y)
+            if src_reg == 'X' and dest_loc.index_register == 'X':
+                need_transfer_to_a = True
+            if src_reg == 'Y' and dest_loc.index_register == 'Y':
+                need_transfer_to_a = True
+
+            if need_transfer_to_a:
                 transfer_op = Opcode.TXA if src_reg == 'X' else Opcode.TYA
-                self._emit_instr(transfer_op, comment=f"Transfer to A (no {store_mnemonics[src_reg]} sr,S)")
+                self._emit_instr(transfer_op, comment=f"Transfer to A (no {store_mnemonics[src_reg]} with this addressing)")
                 self._emit_load_store('STA', dest_loc)
                 self.parent._mark_a_modified()
             else:

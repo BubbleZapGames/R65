@@ -40,9 +40,44 @@ class CompareSelector(BaseSelector):
             opcode = getattr(Opcode, f"{mnemonic}_DP")
             self._emit_instr(opcode, operand)
         else:
-            # It's a location - use parent's opcode selection
-            opcode, op = self.parent._get_opcode_for_location(mnemonic, operand)
-            self._emit_instr(opcode, op)
+            # It's a location - check for addressing mode limitations
+            # CPX and CPY don't support stack-relative or indexed addressing
+            if mnemonic in ('CPX', 'CPY') and (
+                operand.kind == LocationKind.STACK or
+                operand.index_register is not None
+            ):
+                # Load to temp via A, then compare with temp
+                temp_addr = self.parent._get_temp_address()
+                if temp_addr:
+                    self._emit_load_store('LDA', operand)
+                    self._emit_instr(Opcode.STA_DP, temp_addr, "Store to temp for CPX/CPY")
+                    opcode = getattr(Opcode, f"{mnemonic}_DP")
+                    self._emit_instr(opcode, temp_addr)
+                else:
+                    # No scratch available - use push/pop pattern
+                    # LDA operand, PHA, then compare X/Y with stack value
+                    # This is more complex: transfer X/Y to A, compare with memory
+                    # Actually, simpler: transfer to A, push, compare using CMP
+                    # But we want CPX/CPY because the comparison is with X/Y
+                    # Solution: Load value to A, then use TXA/TYA + CMP approach
+                    # But that changes the register... Let's use the opposite approach:
+                    # Push X/Y, load A with operand, store to temp location on stack,
+                    # then compare X/Y with stack[1]
+                    # Actually, simplest: transfer X/Y to A and compare with memory
+                    if mnemonic == 'CPX':
+                        self._emit_instr(Opcode.PHX, comment="Save X")
+                        self._emit_instr(Opcode.TXA, comment="Transfer X to A for comparison")
+                        self._emit_load_store('CMP', operand)  # CMP supports all addressing modes
+                        self._emit_instr(Opcode.PLX, comment="Restore X")
+                    else:  # CPY
+                        self._emit_instr(Opcode.PHY, comment="Save Y")
+                        self._emit_instr(Opcode.TYA, comment="Transfer Y to A for comparison")
+                        self._emit_load_store('CMP', operand)  # CMP supports all addressing modes
+                        self._emit_instr(Opcode.PLY, comment="Restore Y")
+            else:
+                # Use parent's opcode selection
+                opcode, op = self.parent._get_opcode_for_location(mnemonic, operand)
+                self._emit_instr(opcode, op)
 
     # ========================================================================
     # Compare Instruction
