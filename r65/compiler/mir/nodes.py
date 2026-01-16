@@ -125,11 +125,11 @@ class MIRInstruction:
 @dataclass
 class Load(MIRInstruction):
     """
-    Load from memory into virtual register.
+    Load from memory into register.
 
     dest = *source
     """
-    dest: VirtualRegister
+    dest: Union[VirtualRegister, HardwareRegister]
     source: MemoryLocation
     type_info: Any  # TypeInfo for size/sign extension
 

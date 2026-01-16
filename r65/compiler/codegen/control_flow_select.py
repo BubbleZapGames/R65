@@ -254,7 +254,12 @@ class ControlFlowInstructionSelector(BaseSelector):
     def _emit_value_based_branch(self, instr: CondBranch):
         """Emit branch based on condition value (zero/non-zero)."""
         cond_loc = self.parent._get_operand_location(instr.condition)
-        self.parent._emit_load('LDA', cond_loc)
+        # Skip load if condition is already in A (from bitwise optimization)
+        # The Z flag is already set from the previous BinaryOp
+        if cond_loc.kind == LocationKind.HARDWARE and cond_loc.hw_register == 'A':
+            pass  # Z flag already set from previous operation
+        else:
+            self.parent._emit_load('LDA', cond_loc)
 
         true_target = self._block_label(instr.true_target)
         false_target = self._block_label(instr.false_target)

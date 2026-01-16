@@ -52,7 +52,11 @@ class MemoryOperationSelector(BaseSelector):
             self.parent._emit_16bit_mem_to_mem(src_loc, dest_loc)
         else:
             self._emit_load_store('LDA', src_loc)
-            self._emit_load_store('STA', dest_loc)
+            # Skip store if destination is already the accumulator
+            if dest_loc.kind == LocationKind.HARDWARE and dest_loc.hw_register == 'A':
+                pass  # Value already in A from LDA
+            else:
+                self._emit_load_store('STA', dest_loc)
 
     def select_store(self, instr: Store):
         """

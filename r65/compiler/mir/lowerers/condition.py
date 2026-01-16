@@ -11,6 +11,7 @@ from r65.compiler.hir import HIRBinaryOp, HIRUnaryOp, HIRIntegerLiteral, HIRBool
 from r65.compiler.mir.nodes import (
     VirtualRegister, HardwareRegister, Immediate, MemoryLocation,
     Compare, CondBranch, BitTest, StatusFlagTest, BinaryOp,
+    Load, Move,
 )
 from r65.compiler.errors import MIRLoweringError
 
@@ -524,37 +525,100 @@ class ConditionLowerer:
         # Everything else is not safe for this optimization
         return False
 
+    def _get_direct_operand(self, expr: HIRExpression):
+        """
+        Get operand directly without allocating a virtual register.
+
+        Returns MemoryLocation, Immediate, or HardwareRegister for simple operands.
+        Falls back to lower_expression() for complex expressions.
+        """
+        # Integer literal → Immediate
+        if isinstance(expr, HIRIntegerLiteral):
+            return Immediate(expr.value)
+
+        # Hardware register → HardwareRegister
+        if isinstance(expr, HIRRegister):
+            return HardwareRegister(expr.name)
+
+        # Identifier → check for direct access
+        if isinstance(expr, HIRIdentifier):
+            symbol = expr.symbol
+
+            # Check if aliased to hardware register
+            hw_reg = self.ctx.current_function.alias_tracker.get_alias(symbol)
+            if hw_reg:
+                return hw_reg
+
+            # Check for explicit memory location (zeropage, ram, etc.)
+            if self.builder.has_explicit_location(symbol):
+                return self.builder.get_memory_location(symbol)
+
+        # Complex expression - fall back to vreg
+        return self.builder.lower_expression(expr)
+
     def _emit_bitwise_chain(self, expr: HIRExpression):
         """
-        Emit chained bitwise operations.
+        Emit optimized bitwise chain that operates in the accumulator.
 
-        For (A | B | C): evaluates to LDA A / ORA B / ORA C
-        Flattens chains of the same operator for efficiency.
+        For (A | B | C): LDA A / ORA B / ORA C
+        Result stays in accumulator - no stack temporaries needed.
 
-        Returns the VirtualRegister holding the result.
+        Returns HardwareRegister('A') since result is in accumulator.
         """
         if not isinstance(expr, HIRBinaryOp):
-            return self.builder.lower_expression(expr)
+            return self._get_direct_operand(expr)
 
         # Flatten chain of same operator for efficiency
         operands = self._flatten_bitwise_chain(expr, expr.op)
 
-        # Emit: evaluate first, then OP with each subsequent operand
-        result = self.builder.lower_expression(operands[0])
+        # Get first operand directly (avoid vreg allocation)
+        first = self._get_direct_operand(operands[0])
+        acc = HardwareRegister('A')
 
+        # Load first operand into accumulator
+        if isinstance(first, MemoryLocation):
+            self.emit(Load(
+                dest=acc,
+                source=first,
+                type_info=expr.expr_type
+            ))
+        elif isinstance(first, Immediate):
+            # Use Move for immediate → A
+            self.emit(Move(
+                dest=acc,
+                source=first,
+                type_info=expr.expr_type
+            ))
+        elif isinstance(first, HardwareRegister):
+            if first.name != 'A':
+                # Transfer X/Y to A
+                self.emit(Move(
+                    dest=acc,
+                    source=first,
+                    type_info=expr.expr_type
+                ))
+            # else: already in A, no load needed
+        elif isinstance(first, VirtualRegister):
+            # Complex expression result - transfer from vreg to A
+            self.emit(Move(
+                dest=acc,
+                source=first,
+                type_info=expr.expr_type
+            ))
+
+        # Apply bitwise operations with remaining operands
         for operand in operands[1:]:
-            right = self.builder.lower_expression(operand)
-            new_result = self.ctx.alloc_vreg(expr.expr_type, "bitwise_cond")
+            right = self._get_direct_operand(operand)
+
             self.emit(BinaryOp(
-                dest=new_result,
-                left=result,
+                dest=acc,
+                left=acc,
                 op=expr.op,
                 right=right,
                 type_info=expr.expr_type
             ))
-            result = new_result
 
-        return result
+        return acc
 
     def _flatten_bitwise_chain(self, expr: HIRExpression, op: str) -> list:
         """
