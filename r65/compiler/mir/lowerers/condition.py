@@ -7,10 +7,10 @@ and comparison operations.
 
 from typing import TYPE_CHECKING, Optional, Tuple
 
-from r65.compiler.hir import HIRBinaryOp, HIRUnaryOp, HIRIntegerLiteral, HIRIdentifier, HIRExpression, HIRRegister, HIRStatusFlagAccess
+from r65.compiler.hir import HIRBinaryOp, HIRUnaryOp, HIRIntegerLiteral, HIRBooleanLiteral, HIRIdentifier, HIRExpression, HIRRegister, HIRStatusFlagAccess
 from r65.compiler.mir.nodes import (
     VirtualRegister, HardwareRegister, Immediate, MemoryLocation,
-    Compare, CondBranch, BitTest, StatusFlagTest,
+    Compare, CondBranch, BitTest, StatusFlagTest, BinaryOp,
 )
 from r65.compiler.errors import MIRLoweringError
 
@@ -26,6 +26,7 @@ class ConditionLowerer:
     Handles:
     - Short-circuit evaluation for && and ||
     - BIT instruction optimization for bit 6/7 testing
+    - Bitwise expression optimization (ORA/AND/EOR + branch on Z flag)
     - Direct comparison with Compare + CondBranch
     - General boolean conditions
 
@@ -179,6 +180,11 @@ class ConditionLowerer:
                 self.ctx.add_cfg_edge(self.ctx.current_block, self.ctx.current_function.blocks[false_target])
                 return
             # If value is in hardware register, fall through to normal comparison handling
+
+        # OPTIMIZATION: Bitwise expression conditions (ORA/AND/EOR + branch)
+        # For patterns like: if (A | B), if (X & mask), if !(A ^ B)
+        if self._try_bitwise_condition(condition, true_target, false_target):
+            return
 
         # OPTIMIZATION 1: Short-circuit AND (&&)
         if isinstance(condition, HIRBinaryOp) and condition.op == '&&':
@@ -376,3 +382,188 @@ class ConditionLowerer:
         inverted = (condition.op == '==')
 
         return (left.left, bit_number, inverted)
+
+    # ========================================================================
+    # Bitwise Expression Condition Optimization
+    # ========================================================================
+
+    def _try_bitwise_condition(self, condition: HIRExpression,
+                                true_target: int, false_target: int) -> bool:
+        """
+        Try to optimize bitwise expressions used as conditions.
+
+        Handles patterns like:
+        - if (A | B) {}         → ORA + BNE
+        - if (A & mask) {}      → AND + BNE
+        - if (X ^ Y) {}         → EOR + BNE
+        - if (A | B | C) {}     → chained ORA + BNE
+        - if !(A | B) {}        → ORA + BEQ (inverted)
+        - if ((A | B) == 0) {}  → ORA + BEQ
+        - if ((A | B) != 0) {}  → ORA + BNE
+        - if ((A & mask) > 5) {} → AND + CMP + branch
+
+        Returns True if optimization was applied, False otherwise.
+        """
+        expr = condition
+        inverted = False
+        comparison_op = None
+        compare_value = None
+
+        # Handle negation: if !(expr)
+        if isinstance(expr, HIRUnaryOp) and expr.op == '!':
+            expr = expr.operand
+            inverted = True
+
+        # Handle explicit comparison with zero: if (expr != 0) or if (expr == 0)
+        if isinstance(expr, HIRBinaryOp) and expr.op in ('==', '!='):
+            if self._is_zero_literal(expr.right):
+                if expr.op == '==':
+                    inverted = not inverted
+                expr = expr.left
+            elif self._is_zero_literal(expr.left):
+                if expr.op == '==':
+                    inverted = not inverted
+                expr = expr.right
+
+        # Handle other comparisons: if (expr > N), if (expr <= N), etc.
+        # These need to compute the bitwise result then compare
+        if isinstance(expr, HIRBinaryOp) and expr.op in ('<', '<=', '>', '>='):
+            inner_expr = expr.left
+            if self._is_bitwise_expr(inner_expr) and self._all_operands_safe(inner_expr):
+                comparison_op = expr.op
+                compare_value = expr.right
+                expr = inner_expr
+
+        # Check if expr is a bitwise operation
+        if not self._is_bitwise_expr(expr):
+            return False
+
+        # Check all operands are safe (non-volatile, no side effects)
+        if not self._all_operands_safe(expr):
+            return False
+
+        # Emit optimized bitwise chain
+        result = self._emit_bitwise_chain(expr)
+
+        # Emit comparison if needed (for > < >= <=)
+        if comparison_op is not None:
+            compare_operand = self._lower_compare_operand(compare_value)
+            self.emit(Compare(
+                left=result,
+                right=compare_operand,
+                comparison=comparison_op,
+                type_info=expr.expr_type
+            ))
+            self.emit(CondBranch(
+                condition=None,  # Uses flags from Compare
+                true_target=true_target,
+                false_target=false_target,
+                comparison=comparison_op
+            ))
+        else:
+            # Direct branch on Z flag from bitwise operation
+            # != 0 means branch if non-zero (BNE), == 0 means branch if zero (BEQ)
+            branch_op = '==' if inverted else '!='
+            self.emit(CondBranch(
+                condition=result,
+                true_target=true_target,
+                false_target=false_target,
+                comparison=branch_op
+            ))
+
+        # Add CFG edges
+        self.ctx.add_cfg_edge(self.ctx.current_block, self.ctx.current_function.blocks[true_target])
+        self.ctx.add_cfg_edge(self.ctx.current_block, self.ctx.current_function.blocks[false_target])
+
+        return True
+
+    def _is_zero_literal(self, expr: HIRExpression) -> bool:
+        """Check if expression is the literal value 0."""
+        return isinstance(expr, HIRIntegerLiteral) and expr.value == 0
+
+    def _is_bitwise_expr(self, expr: HIRExpression) -> bool:
+        """Check if expression is a bitwise operation (&, |, ^)."""
+        return isinstance(expr, HIRBinaryOp) and expr.op in ('&', '|', '^')
+
+    def _all_operands_safe(self, expr: HIRExpression) -> bool:
+        """
+        Check all operands in expression tree are safe for optimization.
+
+        Safe operands:
+        - Integer/boolean literals
+        - Hardware registers (A, X, Y)
+        - Non-volatile static variables
+        - Nested bitwise ops with safe operands
+
+        Unsafe (require short-circuit or order preservation):
+        - Volatile #[hw] variables
+        - Function calls
+        - Complex expressions with side effects
+        """
+        # Literals are always safe
+        if isinstance(expr, (HIRIntegerLiteral, HIRBooleanLiteral)):
+            return True
+
+        # Hardware registers are safe
+        if isinstance(expr, HIRRegister):
+            return True
+
+        # Static variables - check for volatile
+        if isinstance(expr, HIRIdentifier):
+            symbol = expr.symbol
+            # Reject volatile #[hw] variables - must preserve evaluation order
+            if hasattr(symbol, 'hw_address') and symbol.hw_address is not None:
+                return False
+            return True
+
+        # Bitwise ops on safe operands (recursive check)
+        if isinstance(expr, HIRBinaryOp) and expr.op in ('&', '|', '^'):
+            return (self._all_operands_safe(expr.left) and
+                    self._all_operands_safe(expr.right))
+
+        # Everything else is not safe for this optimization
+        return False
+
+    def _emit_bitwise_chain(self, expr: HIRExpression):
+        """
+        Emit chained bitwise operations.
+
+        For (A | B | C): evaluates to LDA A / ORA B / ORA C
+        Flattens chains of the same operator for efficiency.
+
+        Returns the VirtualRegister holding the result.
+        """
+        if not isinstance(expr, HIRBinaryOp):
+            return self.builder.lower_expression(expr)
+
+        # Flatten chain of same operator for efficiency
+        operands = self._flatten_bitwise_chain(expr, expr.op)
+
+        # Emit: evaluate first, then OP with each subsequent operand
+        result = self.builder.lower_expression(operands[0])
+
+        for operand in operands[1:]:
+            right = self.builder.lower_expression(operand)
+            new_result = self.ctx.alloc_vreg(expr.expr_type, "bitwise_cond")
+            self.emit(BinaryOp(
+                dest=new_result,
+                left=result,
+                op=expr.op,
+                right=right,
+                type_info=expr.expr_type
+            ))
+            result = new_result
+
+        return result
+
+    def _flatten_bitwise_chain(self, expr: HIRExpression, op: str) -> list:
+        """
+        Flatten chained bitwise ops of the same operator.
+
+        (a | b | c) with op='|' -> [a, b, c]
+        (a | (b & c)) with op='|' -> [a, (b & c)]  (different op, don't flatten)
+        """
+        if isinstance(expr, HIRBinaryOp) and expr.op == op:
+            return (self._flatten_bitwise_chain(expr.left, op) +
+                    self._flatten_bitwise_chain(expr.right, op))
+        return [expr]

@@ -125,7 +125,7 @@ class LoweringContext:
     def new_block(self) -> BasicBlock:
         """Create a new basic block and add to current function."""
         block = self.cfg_builder.new_block()
-        self.current_function.blocks.append(block)
+        self.current_function.blocks[block.block_id] = block
         return block
 
     def add_cfg_edge(self, from_block: BasicBlock, to_block: BasicBlock):

@@ -218,6 +218,11 @@ class InstructionSelector:
             'ABSOLUTE_Y': Opcode.EOR_ABSOLUTE_Y,
             'STACK': Opcode.EOR_STACK, 'IMMEDIATE': Opcode.EOR_IMMEDIATE,
         },
+        'BIT': {
+            'DP': Opcode.BIT_DP, 'DP_X': Opcode.BIT_DP_X,
+            'ABSOLUTE': Opcode.BIT_ABSOLUTE, 'ABSOLUTE_X': Opcode.BIT_ABSOLUTE_X,
+            'IMMEDIATE': Opcode.BIT_IMMEDIATE,
+        },
         'CMP': {
             'DP': Opcode.CMP_DP, 'DP_X': Opcode.CMP_DP_X,
             'ABSOLUTE': Opcode.CMP_ABSOLUTE, 'ABSOLUTE_X': Opcode.CMP_ABSOLUTE_X,
