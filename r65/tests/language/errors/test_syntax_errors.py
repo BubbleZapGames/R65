@@ -81,7 +81,7 @@ class TestUnsupportedSyntax:
             # For loops are now supported
             "fn test() { let f = |x| x + 1; }",  # Closures
             "trait Foo { fn bar(); }",  # Traits
-            "impl Foo { fn bar() { } }",  # Impl blocks
+            # impl blocks are now supported
             "fn test<T>(x: T) { }",  # Generics
             "fn test<'a>(x: &'a u8) { }",  # Lifetimes
         ]

@@ -24,6 +24,8 @@ class SymbolKind(Enum):
     ENUM_VARIANT = "enum_variant"
     REGISTER = "register"  # Hardware registers (A, X, Y, etc.)
     BUILTIN_FUNC = "builtin_func"  # Built-in functions (SEP, REP, etc.)
+    METHOD = "method"  # Method in impl block (desugars to function)
+    IMPL_CONST = "impl_const"  # Associated constant in impl block
 
 
 @dataclass

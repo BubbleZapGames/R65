@@ -238,6 +238,59 @@ class EnumDecl(Declaration):
 
 
 @dataclass
+class ImplMethod(ASTNode):
+    """Method declaration in an impl block.
+
+    Example:
+        #[mode(m8, x16)]
+        fn take_damage(*self, amount @ A: u8) {
+            self.health -= amount;
+        }
+    """
+    attributes: List[Attribute]
+    is_far: bool  # True if fn is declared far
+    name: str
+    self_is_far: bool  # True if self param is `far *self`
+    params: List[Parameter]  # Parameters after self
+    return_type: Optional[Union[Type, NeverType]]
+    body: 'Block'
+
+
+@dataclass
+class ImplConst(ASTNode):
+    """Associated constant in an impl block.
+
+    Example:
+        const MAX_HEALTH: u8 = 100;
+    """
+    name: str
+    const_type: Type
+    value: Expression
+
+
+@dataclass
+class ImplDecl(Declaration):
+    """Impl block declaration.
+
+    Example:
+        impl Player {
+            const MAX_HEALTH: u8 = 100;
+
+            #[mode(m8, x16)]
+            fn take_damage(*self, amount @ A: u8) { ... }
+        }
+
+        impl far Player {
+            fn update(far *self) { ... }
+        }
+    """
+    struct_name: str
+    is_far: bool  # True for `impl far StructName`
+    methods: List[ImplMethod]
+    constants: List[ImplConst]
+
+
+@dataclass
 class TypeAlias(Declaration):
     """Type alias declaration."""
     name: str

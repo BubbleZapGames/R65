@@ -14,6 +14,7 @@ start: item*
      | const_decl
      | struct_decl
      | enum_decl
+     | impl_decl
      | type_alias
      | include_stmt
      | stack_directive
@@ -74,6 +75,28 @@ struct_field: (FAR | NEAR)? STAR? IDENT ":" type_expr ","?
 // Enum declaration
 enum_decl: ENUM IDENT "{" enum_variant ("," enum_variant)* ","? "}"
 enum_variant: var_name ("=" expr)?
+
+// Impl block declaration
+// impl StructName { ... } for near *self
+// impl far StructName { ... } for far *self
+impl_decl: IMPL FAR? IDENT "{" impl_item* "}"
+
+?impl_item: impl_method
+          | impl_const
+
+// Method declaration in impl block
+// fn name(*self, ...) or fn name(far *self, ...) for explicit far self
+impl_method: attribute* FAR? FN IDENT "(" impl_param_list? ")" return_type? block
+
+// Parameters for impl methods - self parameter comes first
+impl_param_list: self_param ("," param)* ","?
+               | param_list
+
+// Self parameter: *self, far *self, or near *self
+self_param: (FAR | NEAR)? STAR SELF
+
+// Associated constant in impl block
+impl_const: CONST IDENT ":" type_expr "=" expr ";"
 
 // Type alias
 type_alias: TYPE IDENT "=" type_expr ";"
@@ -324,6 +347,7 @@ arg_list: expr ("," expr)* ","?
         | INCLUDE_BYTES "!" "(" STRING ")"      -> include_bytes_expr
         | IDENT "::" IDENT                      -> enum_variant_expr
         | IDENT                                 -> identifier
+        | SELF                                  -> self_identifier
         | REGISTER                              -> register_ref
         | "(" expr ")"                          -> paren
         | match_expr
@@ -400,6 +424,8 @@ NEAR.10: /near\b/
 LET.10: /let\b/
 MUT.10: /mut\b/
 ASM.10: /asm\b/
+IMPL.10: /impl\b/
+SELF.10: /self\b/
 FAR.10: /far\b/
 FN.10: /fn\b/
 IF.10: /if\b/
@@ -429,7 +455,8 @@ FRAGMENT_TYPE.10: /expr\b/ | /ident\b/ | /literal\b/ | /ty\b/ | /reg\b/ | /tt\b/
 // Rust reserved words only - builtin functions (mul, div, etc.) are regular identifiers
 // Note: 'macro' removed - now a first-class keyword
 // Note: 'for' and 'in' removed - now first-class keywords for for loops
-KEYWORD.10: /abstract\b/ | /override\b/ | /unsized\b/ | /virtual\b/ | /typeof\b/ | /unsafe\b/ | /extern\b/ | /become\b/ | /async\b/ | /await\b/ | /where\b/ | /super\b/ | /trait\b/ | /yield\b/ | /crate\b/ | /final\b/ | /impl\b/ | /move\b/ | /priv\b/ | /self\b/ | /Self\b/ | /box\b/ | /dyn\b/ | /pub\b/ | /ref\b/ | /try\b/ | /use\b/ | /do\b/
+// Note: 'impl' and 'self' removed - now first-class keywords for impl blocks
+KEYWORD.10: /abstract\b/ | /override\b/ | /unsized\b/ | /virtual\b/ | /typeof\b/ | /unsafe\b/ | /extern\b/ | /become\b/ | /async\b/ | /await\b/ | /where\b/ | /super\b/ | /trait\b/ | /yield\b/ | /crate\b/ | /final\b/ | /move\b/ | /priv\b/ | /Self\b/ | /box\b/ | /dyn\b/ | /pub\b/ | /ref\b/ | /try\b/ | /use\b/ | /do\b/
 
 // Booleans
 BOOLEAN.10: /true\b/ | /false\b/
@@ -509,7 +536,7 @@ DOLLAR: "$"
 // Use negative lookahead to exclude all keywords, registers, types, and booleans
 // Identifiers - lowest priority, with negative lookahead to exclude all keywords, registers, types, and booleans
 // Note: Builtin functions (mul, div, SEP, REP, etc.) are NOT excluded - they are valid identifiers
-IDENT.1: /(?!(include_bytes|macro_rules|continue|include|return|struct|static|break|const|while|enum|loop|type|else|near|let|mut|asm|far|fn|if|as|abstract|override|unsized|virtual|typeof|unsafe|extern|become|async|await|match|where|super|trait|yield|crate|final|impl|move|priv|self|Self|box|dyn|for|mod|pub|ref|try|use|in|do|expr|ident|literal|ty|reg|tt|STATUS|DBR|PBR|bool|u16|i16|u8|i8|true|false|[AXYDS])$)[a-zA-Z_][a-zA-Z0-9_]*/
+IDENT.1: /(?!(include_bytes|macro_rules|continue|include|return|struct|static|break|const|while|enum|impl|self|loop|type|else|near|let|mut|asm|far|fn|if|as|abstract|override|unsized|virtual|typeof|unsafe|extern|become|async|await|match|where|super|trait|yield|crate|final|move|priv|Self|box|dyn|for|mod|pub|ref|try|use|in|do|expr|ident|literal|ty|reg|tt|STATUS|DBR|PBR|bool|u16|i16|u8|i8|true|false|[AXYDS])$)[a-zA-Z_][a-zA-Z0-9_]*/
 
 // Imports and ignores
 %import common.ESCAPED_STRING

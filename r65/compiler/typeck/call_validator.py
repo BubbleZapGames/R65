@@ -8,10 +8,11 @@ and function address expressions.
 from typing import Callable, Optional
 from r65.compiler.hir import (
     HIRFunctionCall, HIRMethodCall, HIRFunctionAddress, HIRFunctionDecl,
-    HIRIdentifier, HIRArrayIndex, HIRIntegerLiteral,
+    HIRIdentifier, HIRArrayIndex, HIRIntegerLiteral, HIRFieldAccess,
+    HIRAddressOf,
     SymbolKind, BasicTypeInfo, StructTypeInfo, NeverTypeInfo
 )
-from r65.compiler.hir.types import TypeInfo, FunctionTypeInfo, ArrayTypeInfo
+from r65.compiler.hir.types import TypeInfo, FunctionTypeInfo, ArrayTypeInfo, PointerTypeInfo
 from r65.compiler.typeck.errors import TypeCheckError
 from r65.compiler.typeck.type_utils import TypeUtils
 from r65.compiler.typeck.processor_mode import ProcessorMode, ModeTransition
@@ -47,10 +48,17 @@ class CallValidator:
         - Direct calls: expr.func is HIRIdentifier pointing to function
         - Indirect calls: expr.func is expression with function pointer type
         - Built-in calls: expr.builtin_name is set
+        - Method calls: expr.func is HIRFieldAccess on struct type
         """
         # Check if this is a built-in function call
         if expr.builtin_name:
             return self._check_builtin_call(expr)
+
+        # Check if this is a method call (receiver.method(args))
+        if isinstance(expr.func, HIRFieldAccess):
+            method_result = self._try_method_call(expr)
+            if method_result is not None:
+                return method_result
 
         # Handle direct call vs indirect call
         if isinstance(expr.func, HIRIdentifier) and expr.func.symbol.kind == SymbolKind.FUNCTION:
@@ -124,6 +132,149 @@ class CallValidator:
                 expr.expr_type = func_type.return_type
             else:
                 expr.expr_type = BasicTypeInfo('void')
+
+        return expr.expr_type
+
+    def _try_method_call(self, expr: HIRFunctionCall) -> Optional[TypeInfo]:
+        """
+        Try to handle expr as a method call (receiver.method(args)).
+
+        Returns the result type if this is a valid method call,
+        or None if it's not a method call (should fall through to field access).
+        """
+        field_access = expr.func
+        method_name = field_access.field_name
+
+        # Get the type of the receiver (e.g., PLAYER has type Player)
+        # We need to check the type without throwing an error for missing field
+        try:
+            receiver_type = self.check_expression(field_access.base)
+        except TypeCheckError:
+            return None
+
+        # Determine struct name from receiver type
+        struct_name = None
+        receiver_is_pointer = False
+        pointer_is_far = False
+
+        if isinstance(receiver_type, StructTypeInfo):
+            struct_name = receiver_type.name
+        elif isinstance(receiver_type, PointerTypeInfo):
+            if isinstance(receiver_type.pointee_type, StructTypeInfo):
+                struct_name = receiver_type.pointee_type.name
+                receiver_is_pointer = True
+                pointer_is_far = receiver_type.is_far
+
+        if not struct_name:
+            return None
+
+        # Look up method symbol using StructName.method_name key
+        method_key = f"{struct_name}.{method_name}"
+        method_symbol = self.symbol_table.lookup(method_key)
+
+        if not method_symbol or method_symbol.kind != SymbolKind.METHOD:
+            return None
+
+        # Found a method! Get the mangled function name
+        method_info = method_symbol.type_info
+        if not method_info or not isinstance(method_info, dict):
+            return None
+
+        mangled_name = method_info.get('mangled_name')
+        impl_is_far = method_info.get('impl_is_far', False)
+        method_self_is_far = method_info.get('method_self_is_far', False)
+
+        # Look up the actual function declaration
+        func_decl = self.lookup_function_decl(mangled_name, expr.source_loc)
+        if not func_decl:
+            raise TypeCheckError(
+                f"method '{method_name}' not found for struct '{struct_name}'",
+                source_loc=expr.source_loc
+            )
+
+        # Check self pointer compatibility
+        # impl far StructName -> expects far *self
+        # impl StructName -> expects near *self
+        expected_far_self = impl_is_far or method_self_is_far
+
+        # If receiver is a pointer, check far/near compatibility
+        if receiver_is_pointer:
+            if expected_far_self and not pointer_is_far:
+                raise TypeCheckError(
+                    f"method '{method_name}' expects far pointer but got near pointer",
+                    source_loc=expr.source_loc,
+                    hint=f"method is defined in 'impl far {struct_name}'"
+                )
+            elif not expected_far_self and pointer_is_far:
+                raise TypeCheckError(
+                    f"method '{method_name}' expects near pointer but got far pointer",
+                    source_loc=expr.source_loc,
+                    hint=f"use 'impl far {struct_name}' for far pointer methods"
+                )
+
+        # Transform: receiver.method(args) -> mangled_name(&receiver, args)
+        # Create address-of expression for the receiver (unless already a pointer)
+        if receiver_is_pointer:
+            self_arg = field_access.base
+        else:
+            self_arg = HIRAddressOf(
+                operand=field_access.base,
+                source_loc=field_access.base.source_loc if hasattr(field_access.base, 'source_loc') else None
+            )
+            # Set the type of the address-of expression
+            self_arg.expr_type = PointerTypeInfo(
+                pointee_type=receiver_type,
+                is_far=expected_far_self
+            )
+
+        # Check argument count (method has self as first param)
+        expected_args = len(func_decl.parameters) - 1  # Exclude self
+        if len(expr.args) != expected_args:
+            param_names = [p.name for p in func_decl.parameters[1:]]
+            raise TypeCheckError(
+                f"method '{method_name}' expects {expected_args} argument(s), got {len(expr.args)}",
+                source_loc=expr.source_loc,
+                hint=f"parameters: {', '.join(param_names)}" if param_names else None
+            )
+
+        # Type check self argument
+        self_param = func_decl.parameters[0]
+        if not TypeUtils.types_compatible(self_arg.expr_type, self_param.param_type):
+            raise TypeCheckError(
+                f"self argument has wrong type: expected {self_param.param_type}, found {self_arg.expr_type}",
+                source_loc=expr.source_loc
+            )
+
+        # Type check remaining arguments
+        for i, (arg, param) in enumerate(zip(expr.args, func_decl.parameters[1:])):
+            arg_type = self.check_expression(arg)
+            if not isinstance(arg_type, NeverTypeInfo):
+                if not TypeUtils.types_compatible(arg_type, param.param_type):
+                    raise TypeCheckError(
+                        f"argument {i + 1} to '{method_name}' has wrong type: expected {param.param_type}, found {arg_type}",
+                        source_loc=arg.source_loc if hasattr(arg, 'source_loc') else expr.source_loc,
+                        hint=f"parameter '{param.name}' expects type {param.param_type}"
+                    )
+
+        # Check mode compatibility
+        self._check_call_mode_compatibility(mangled_name, func_decl, expr.source_loc)
+
+        # Check bank compatibility
+        self._check_call_bank_compatibility(mangled_name, func_decl, expr.source_loc)
+
+        # Transform the HIR node for code generation
+        # Store the mangled name and self argument in the expression
+        expr.method_call_info = {
+            'mangled_name': mangled_name,
+            'self_arg': self_arg,
+            'func_decl': func_decl
+        }
+
+        # Set return type
+        if func_decl.return_type:
+            expr.expr_type = func_decl.return_type
+        else:
+            expr.expr_type = BasicTypeInfo('void')
 
         return expr.expr_type
 

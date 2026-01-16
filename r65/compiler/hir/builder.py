@@ -286,6 +286,10 @@ class HIRBuilder:
             # Include statements are handled by preprocessing (not in this phase)
             pass
 
+        elif isinstance(decl, ast.ImplDecl):
+            # Declare impl block methods and constants
+            self._declare_impl(decl)
+
     # =========================================================================
     # Pass 2: Build HIR Declarations
     # =========================================================================
@@ -304,6 +308,8 @@ class HIRBuilder:
             return self._build_enum(decl)
         elif isinstance(decl, ast.TypeAlias):
             return self._build_type_alias(decl)
+        elif isinstance(decl, ast.ImplDecl):
+            return self._build_impl(decl)
         else:
             raise HIRError(f"Unknown declaration type: {type(decl).__name__}")
 
@@ -683,6 +689,203 @@ class HIRBuilder:
         alias_symbol.definition = hir_alias
 
         return hir_alias
+
+    def _declare_impl(self, impl: ast.ImplDecl):
+        """First pass: declare impl block methods and constants."""
+        # Validate struct exists
+        struct_symbol = self.symbol_table.lookup(impl.struct_name)
+        if not struct_symbol:
+            raise HIRError(
+                f"impl block for undefined struct: {impl.struct_name}",
+                source_loc=impl.source_loc
+            )
+        if struct_symbol.kind != SymbolKind.STRUCT:
+            raise HIRError(
+                f"impl block target '{impl.struct_name}' is not a struct",
+                source_loc=impl.source_loc
+            )
+
+        # Declare associated constants with qualified names: StructName::CONSTANT
+        for const in impl.constants:
+            qualified_name = f"{impl.struct_name}::{const.name}"
+            const_type = self.type_resolver.resolve_type(const.const_type)
+            const_value = self.const_evaluator.eval(const.value)
+
+            symbol = Symbol(
+                name=qualified_name,
+                kind=SymbolKind.IMPL_CONST,
+                definition=const,
+                scope_id=0,
+                var_type=const_type,
+                const_value=const_value
+            )
+            self.symbol_table.declare(qualified_name, symbol)
+
+        # Declare methods with mangled names: StructName__method
+        for method in impl.methods:
+            mangled_name = f"{impl.struct_name}__{method.name}"
+
+            # Create function symbol for method
+            symbol = Symbol(
+                name=mangled_name,
+                kind=SymbolKind.METHOD,
+                definition=method,
+                scope_id=0
+            )
+            self.symbol_table.declare(mangled_name, symbol)
+
+            # Also register method lookup: struct_name + method_name -> mangled_name
+            # This allows type checker to resolve method calls
+            method_key = f"{impl.struct_name}.{method.name}"
+            method_info_symbol = Symbol(
+                name=method_key,
+                kind=SymbolKind.METHOD,
+                definition=method,
+                scope_id=0,
+                # Store impl block info for self type resolution
+                type_info={
+                    'struct_name': impl.struct_name,
+                    'mangled_name': mangled_name,
+                    'impl_is_far': impl.is_far,
+                    'method_self_is_far': method.self_is_far
+                }
+            )
+            self.symbol_table.declare(method_key, method_info_symbol)
+
+    def _build_impl(self, impl: ast.ImplDecl) -> hir.HIRImplDecl:
+        """Build HIR impl block from AST."""
+        # Build associated constants
+        hir_constants = []
+        for const in impl.constants:
+            qualified_name = f"{impl.struct_name}::{const.name}"
+            const_type = self.type_resolver.resolve_type(const.const_type)
+            value_expr = self._build_expression(const.value)
+            const_symbol = self.symbol_table.lookup(qualified_name)
+            evaluated_value = const_symbol.const_value if const_symbol else None
+
+            hir_const = hir.HIRConstDecl(
+                name=qualified_name,
+                const_type=const_type,
+                value=value_expr,
+                evaluated_value=evaluated_value,
+                symbol=const_symbol
+            )
+            hir_constants.append(hir_const)
+
+        # Build methods as functions with mangled names
+        hir_methods = []
+        for method in impl.methods:
+            hir_method = self._build_impl_method(impl, method)
+            hir_methods.append(hir_method)
+
+        return hir.HIRImplDecl(
+            struct_name=impl.struct_name,
+            is_far=impl.is_far,
+            methods=hir_methods,
+            constants=hir_constants,
+            source_loc=impl.source_loc
+        )
+
+    def _build_impl_method(self, impl: ast.ImplDecl, method: ast.ImplMethod) -> hir.HIRFunctionDecl:
+        """Build HIR function from impl method."""
+        mangled_name = f"{impl.struct_name}__{method.name}"
+
+        # Process attributes
+        processed_attrs = self.attr_processor.process_attributes(
+            method.attributes,
+            context='function'
+        )
+
+        # Extract specific attributes
+        attrs = self._extract_attributes(processed_attrs)
+        mode_attr = attrs['mode']
+        preserves_attr = attrs['preserves']
+        interrupt_attr = attrs['interrupt']
+        is_entry = attrs['is_entry']
+
+        # Bank comes from current bank context
+        if self.auto_bank_mode:
+            bank_attr = BankAttribute(name='bank', bank_number=None)
+            if not method.is_far:
+                raise HIRError(
+                    f"method '{impl.struct_name}::{method.name}' in auto-bank mode must be declared as 'far fn'",
+                    source_loc=method.source_loc,
+                    hint=f"use 'far fn {method.name}(...)' or place in explicit bank with #[bank(n)]"
+                )
+        else:
+            bank_attr = BankAttribute(name='bank', bank_number=self.current_bank)
+
+        # Enter function scope
+        func_scope_id = self.symbol_table.enter_scope(ScopeKind.FUNCTION)
+
+        # Determine self pointer type
+        # impl far StructName -> far *self
+        # impl StructName -> *self (near)
+        # Method can override with explicit far *self or near *self
+        self_is_far = impl.is_far or method.self_is_far
+
+        # Build self parameter
+        struct_type = StructTypeInfo(name=impl.struct_name)
+        self_ptr_type = PointerTypeInfo(pointee_type=struct_type, is_far=self_is_far)
+
+        self_param_symbol = Symbol(
+            name='self',
+            kind=SymbolKind.PARAMETER,
+            definition=method,
+            scope_id=self.symbol_table.current_scope_id,
+            var_type=self_ptr_type,
+            is_mutable=True
+        )
+        self.symbol_table.declare('self', self_param_symbol)
+
+        hir_self_param = hir.HIRParameter(
+            name='self',
+            param_type=self_ptr_type,
+            binding=None,  # Self is always stack-passed
+            symbol=self_param_symbol
+        )
+
+        # Process additional parameters
+        hir_params = [hir_self_param]
+        for param in method.params:
+            hir_param = self._build_parameter(param)
+            hir_params.append(hir_param)
+
+        # Process body
+        hir_body = self._build_block(method.body)
+
+        # Add implicit return A if needed
+        self._add_implicit_return(hir_body, method.return_type, interrupt_attr)
+
+        # Exit function scope
+        self.symbol_table.exit_scope()
+
+        # Resolve return type
+        ret_type = None
+        if method.return_type:
+            ret_type = self.type_resolver.resolve_type(method.return_type)
+
+        # Get method symbol
+        method_symbol = self.symbol_table.lookup(mangled_name)
+
+        # Detect STATUS flag return pattern
+        returns_status_flag = self._detect_status_flag_return(hir_body)
+
+        return hir.HIRFunctionDecl(
+            name=mangled_name,
+            is_far=method.is_far,
+            parameters=hir_params,
+            return_type=ret_type,
+            body=hir_body,
+            mode_attr=mode_attr,
+            preserves_attr=preserves_attr,
+            bank_attr=bank_attr,
+            interrupt_attr=interrupt_attr,
+            is_entry=is_entry,
+            symbol=method_symbol,
+            returns_status_flag=returns_status_flag,
+            source_loc=method.source_loc
+        )
 
     # =========================================================================
     # Build Statements

@@ -127,9 +127,16 @@ class TypeChecker:
         Raises:
             TypeCheckError: If function not found
         """
+        from r65.compiler.hir import HIRImplDecl
+
         for decl in self.program.declarations:
             if isinstance(decl, HIRFunctionDecl) and decl.name == func_name:
                 return decl
+            # Also search inside impl blocks for methods
+            if isinstance(decl, HIRImplDecl):
+                for method in decl.methods:
+                    if method.name == func_name:
+                        return method
 
         raise TypeCheckError(
             f"Function '{func_name}' not found",
@@ -416,9 +423,15 @@ class TypeChecker:
                     )
 
         # Type check all functions
+        from r65.compiler.hir import HIRImplDecl
+
         for decl in self.program.declarations:
             if isinstance(decl, HIRFunctionDecl):
                 self.check_function(decl)
+            # Also check methods inside impl blocks
+            elif isinstance(decl, HIRImplDecl):
+                for method in decl.methods:
+                    self.check_function(method)
 
     def check_function(self, func: HIRFunctionDecl):
         """Type check a single function."""
@@ -1023,8 +1036,22 @@ class TypeChecker:
         """Type check field access."""
         base_type = self.check_expression(expr.base)
 
-        # Base must be struct type
+        # Auto-dereference pointers for field access (like Rust's -> operator)
+        # This allows `self.field` to work when self is *StructName
         from r65.compiler.hir import StructTypeInfo
+        if isinstance(base_type, PointerTypeInfo):
+            if isinstance(base_type.pointee_type, StructTypeInfo):
+                # Mark that this access is through a pointer (for codegen)
+                expr.auto_deref = True
+                base_type = base_type.pointee_type
+            else:
+                raise TypeCheckError(
+                    f"cannot access field '{expr.field_name}' on pointer to non-struct type {base_type.pointee_type}",
+                    source_loc=expr.base.source_loc,
+                    hint="pointer field access requires pointer to struct type"
+                )
+
+        # Base must be struct type
         if not isinstance(base_type, StructTypeInfo):
             raise TypeCheckError(
                 f"cannot access field '{expr.field_name}' on type {base_type}",

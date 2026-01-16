@@ -307,7 +307,7 @@ class ASTBuilder(Transformer):
 
         # If this is a pointer declaration, wrap the type in PointerType
         # Note: The is_far on StaticDecl is for auto-bank (far static),
-        # not for the pointer type. Pointer type far-ness comes from the type expression.
+        # not for the pointer type. For far pointers, use type: far *T
         if is_pointer:
             var_type = ast.PointerType(is_far=False, pointee_type=var_type)
 
@@ -435,6 +435,127 @@ class ASTBuilder(Transformer):
         name = items[0].value if isinstance(items[0], LarkToken) else items[0]
         value = items[1] if len(items) > 1 else None
         return ast.EnumVariant(name=name, value=value)
+
+    @v_args(tree=True)
+    def impl_decl(self, tree):
+        """Impl block declaration: impl [far] StructName { methods and constants }"""
+        items = self._filter_tokens(tree.children, keep_types={'IDENT', 'FAR'})
+
+        idx = 0
+
+        # Check for far modifier
+        is_far = False
+        if idx < len(items) and isinstance(items[idx], LarkToken) and items[idx].type == 'FAR':
+            is_far = True
+            idx += 1
+
+        # Struct name
+        struct_name = items[idx].value if isinstance(items[idx], LarkToken) else items[idx]
+        idx += 1
+
+        # Collect methods and constants from remaining items
+        methods = []
+        constants = []
+        for item in items[idx:]:
+            if isinstance(item, ast.ImplMethod):
+                methods.append(item)
+            elif isinstance(item, ast.ImplConst):
+                constants.append(item)
+
+        return ast.ImplDecl(
+            struct_name=struct_name,
+            is_far=is_far,
+            methods=methods,
+            constants=constants,
+            source_loc=self._make_source_loc(tree.meta)
+        )
+
+    @v_args(tree=True)
+    def impl_method(self, tree):
+        """Method declaration in impl block."""
+        items = self._filter_tokens(tree.children, keep_types={'IDENT', 'FAR'})
+
+        # Collect attributes
+        attrs, idx = self._collect_attributes(items, 0)
+
+        # Check for far fn
+        is_far = False
+        if idx < len(items) and isinstance(items[idx], LarkToken) and items[idx].type == 'FAR':
+            is_far = True
+            idx += 1
+
+        # Method name
+        name = items[idx].value if isinstance(items[idx], LarkToken) else items[idx]
+        idx += 1
+
+        # Parameters (from impl_param_list)
+        self_is_far = False
+        params = []
+        if idx < len(items):
+            param_result = items[idx]
+            if isinstance(param_result, tuple) and param_result[0] == 'impl_params':
+                self_is_far = param_result[1]
+                params = param_result[2]
+                idx += 1
+            elif isinstance(param_result, list):
+                # Regular param_list (no self)
+                params = param_result
+                idx += 1
+
+        # Return type (optional)
+        return_type = None
+        if idx < len(items) and not isinstance(items[idx], ast.Block):
+            return_type = items[idx]
+            idx += 1
+
+        # Body
+        body = items[idx] if idx < len(items) else ast.Block(statements=[])
+
+        return ast.ImplMethod(
+            attributes=attrs,
+            is_far=is_far,
+            name=name,
+            self_is_far=self_is_far,
+            params=params,
+            return_type=return_type,
+            body=body,
+            source_loc=self._make_source_loc(tree.meta)
+        )
+
+    def impl_param_list(self, items):
+        """Parameter list for impl methods - may include self parameter."""
+        # Check if first item is a self_param tuple
+        if items and isinstance(items[0], tuple) and items[0][0] == 'self_param':
+            self_is_far = items[0][1]
+            # Rest are regular parameters
+            params = [item for item in items[1:] if isinstance(item, ast.Parameter)]
+            return ('impl_params', self_is_far, params)
+        else:
+            # No self param - just regular parameters
+            params = [item for item in items if isinstance(item, ast.Parameter)]
+            return params
+
+    def self_param(self, items):
+        """Self parameter: *self, far *self, or near *self"""
+        items = self._filter_tokens(items, keep_types={'FAR', 'NEAR', 'STAR', 'SELF'})
+
+        is_far = False
+        for item in items:
+            if isinstance(item, LarkToken):
+                if item.type == 'FAR':
+                    is_far = True
+                elif item.type == 'NEAR':
+                    is_far = False
+
+        return ('self_param', is_far)
+
+    def impl_const(self, items):
+        """Associated constant in impl block: const NAME: type = value;"""
+        items = self._filter_tokens(items)
+        name = items[0].value if isinstance(items[0], LarkToken) else items[0]
+        const_type = items[1]
+        value = items[2]
+        return ast.ImplConst(name=name, const_type=const_type, value=value)
 
     def type_alias(self, items):
         """Type alias."""
@@ -1198,6 +1319,12 @@ class ASTBuilder(Transformer):
         # Validate that this isn't a wrong-case register name
         self._validate_identifier_not_register(identifier, token)
         return ast.Identifier(name=identifier, source_loc=self._make_source_loc(tree.meta))
+
+    @v_args(tree=True)
+    def self_identifier(self, tree):
+        """Self keyword used as identifier in method bodies."""
+        # self refers to the self parameter in method bodies
+        return ast.Identifier(name='self', source_loc=self._make_source_loc(tree.meta))
 
     @v_args(tree=True)
     def enum_variant_expr(self, tree):

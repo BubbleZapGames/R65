@@ -263,6 +263,19 @@ class HIRTypeAlias(HIRDeclaration):
     symbol: Optional[Any] = None  # Will be Symbol
 
 
+@dataclass
+class HIRImplDecl(HIRDeclaration):
+    """Impl block declaration.
+
+    Contains methods and associated constants for a struct.
+    Methods are desugared to regular functions with mangled names (StructName__method).
+    """
+    struct_name: str = ""
+    is_far: bool = False  # True for `impl far StructName`
+    methods: List['HIRFunctionDecl'] = field(default_factory=list)
+    constants: List['HIRConstDecl'] = field(default_factory=list)
+
+
 # =============================================================================
 # Statements
 # =============================================================================
@@ -515,6 +528,7 @@ class HIRFunctionCall(HIRExpression):
     func: Optional[HIRExpression] = None  # Usually HIRIdentifier (resolved)
     args: List[HIRExpression] = field(default_factory=list)
     builtin_name: Optional[str] = None  # Set if this is a built-in function call
+    method_call_info: Optional[dict] = None  # Set by type checker for method calls
 
 
 @dataclass
@@ -541,6 +555,7 @@ class HIRFieldAccess(HIRExpression):
     field_name: str = ""
     field_index: Optional[int] = None  # Resolved during HIR construction
     field_offset: Optional[int] = None  # Computed during HIR construction
+    auto_deref: bool = False  # True if base is a pointer that gets auto-dereferenced
 
 
 @dataclass
