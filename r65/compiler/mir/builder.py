@@ -155,9 +155,14 @@ class MIRBuilder:
         self._hir_program = hir_program
 
         # Build function name → HIRFunctionDecl mapping
+        from r65.compiler.hir import HIRImplDecl
         for decl in hir_program.declarations:
             if isinstance(decl, HIRFunctionDecl):
                 self.function_decls[decl.name] = decl
+            # Also register methods from impl blocks
+            elif isinstance(decl, HIRImplDecl):
+                for method in decl.methods:
+                    self.function_decls[method.name] = method
 
         mir_functions = []
 
@@ -180,6 +185,12 @@ class MIRBuilder:
             if isinstance(decl, HIRFunctionDecl) and decl.body:
                 mir_func = self.lower_function(decl)
                 mir_functions.append(mir_func)
+            # Also lower methods from impl blocks
+            elif isinstance(decl, HIRImplDecl):
+                for method in decl.methods:
+                    if method.body:
+                        mir_func = self.lower_function(method)
+                        mir_functions.append(mir_func)
 
         # Create MIR program (keep HIR declarations for statics, etc.)
         return MIRProgram(

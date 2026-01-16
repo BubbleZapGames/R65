@@ -72,12 +72,19 @@ class CallLowerer:
         - Register alias parameters (param @ A)
         - Variable-bound parameters (param @ VAR)
 
+        Also handles method calls (expr.method(args)) which have been transformed
+        by the type checker with method_call_info set.
+
         Args:
             call_expr: HIR function call expression
 
         Returns:
             VirtualRegister or HardwareRegister holding return value, or None for void
         """
+        # Check if this is a method call (set by type checker)
+        if call_expr.method_call_info:
+            return self._lower_method_call(call_expr)
+
         # Get function symbol and declaration
         # func is usually HIRIdentifier for direct calls
         # For indirect calls (function pointers), func is an expression with FunctionTypeInfo
@@ -243,6 +250,78 @@ class CallLowerer:
         ))
 
         return result_vreg
+
+    def _lower_method_call(self, call_expr: HIRFunctionCall) -> Union[VirtualRegister, HardwareRegister, None]:
+        """
+        Lower impl block method call.
+
+        Method calls like `player.take_damage(5)` have been transformed by the
+        type checker to have method_call_info containing:
+        - mangled_name: The mangled function name (e.g., "Player__take_damage")
+        - self_arg: The self argument (address of receiver)
+        - func_decl: The HIR function declaration
+
+        Args:
+            call_expr: HIR function call with method_call_info set
+
+        Returns:
+            VirtualRegister or HardwareRegister holding return value, or None for void
+        """
+        method_info = call_expr.method_call_info
+        mangled_name = method_info['mangled_name']
+        self_arg = method_info['self_arg']
+        func_decl = method_info['func_decl']
+
+        # Lower self argument
+        self_vreg = self.builder.lower_expression(self_arg)
+
+        # Create argument list with self as first argument
+        args = []
+
+        # Self parameter (always stack-passed)
+        args.append(Argument(
+            value=self_vreg,
+            mechanism=ArgumentMechanism.STACK,
+            location=None
+        ))
+
+        # Lower remaining arguments
+        for i, arg_expr in enumerate(call_expr.args):
+            param = func_decl.parameters[i + 1]  # +1 to skip self
+            arg_vreg = self.builder.lower_expression(arg_expr)
+
+            # Determine argument mechanism and location from parameter binding
+            mechanism = ArgumentMechanism.STACK
+            location = None
+            if param.binding:
+                if isinstance(param.binding, RegisterBinding):
+                    mechanism = ArgumentMechanism.REGISTER
+                    location = HardwareRegister(param.binding.register_name)
+                elif isinstance(param.binding, VariableBinding):
+                    mechanism = ArgumentMechanism.VARIABLE
+                    location = param.binding.variable_symbol
+
+            args.append(Argument(
+                value=arg_vreg,
+                mechanism=mechanism,
+                location=location
+            ))
+
+        # Allocate virtual register for return value
+        returns = []
+        if func_decl.return_type:
+            from r65.compiler.hir.types import TupleTypeInfo
+            if not isinstance(func_decl.return_type, TupleTypeInfo):
+                result_vreg = self.ctx.alloc_vreg(
+                    func_decl.return_type,
+                    f"call_{mangled_name}_result"
+                )
+                returns.append(result_vreg)
+
+        # Emit call with mode transition handling
+        self._emit_call_with_mode_transition(func_decl, args, returns, None)
+
+        return returns[0] if returns else None
 
     # ========================================================================
     # Mode Transition Helpers
