@@ -100,6 +100,28 @@ class TestImplicitRom:
         assert "Unknown attribute" in str(exc_info.value)
 
 
+class TestConstTypeRestrictions:
+    """Tests for const type restrictions (only primitives allowed)."""
+
+    def test_const_array_rejected(self):
+        """Const cannot have array type."""
+        with pytest.raises(HIRError) as exc_info:
+            build_hir("const TABLE: [u8; 3] = [1, 2, 3];")
+        assert "cannot have array type" in str(exc_info.value)
+
+    def test_const_struct_rejected(self):
+        """Const cannot have struct type."""
+        with pytest.raises(HIRError) as exc_info:
+            build_hir("struct Point { x: u8, y: u8 } const ORIGIN: Point = 0;")
+        assert "cannot have struct type" in str(exc_info.value)
+
+    def test_const_primitive_allowed(self):
+        """Const with primitive type should work."""
+        hir_prog = build_hir("const MAX_VALUE: u8 = 255;")
+        assert len(hir_prog.constants) == 1
+        assert hir_prog.constants[0].evaluated_value == 255
+
+
 class TestHardware:
     """Tests for #[hw] attribute."""
 
