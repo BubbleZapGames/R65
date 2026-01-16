@@ -49,6 +49,10 @@ from r65.compiler.codegen.constants import (
     M_FLAG, X_FLAG, MX_FLAGS, BYTE_MASK, WORD_MASK, DP_BOUNDARY,
     WRAM_BANK, WRAM_BANK2, WRAM_BANK_START, WRAM_BANK2_START
 )
+from r65.compiler.codegen.location_resolver import (
+    LocationResolver, StoreResolver, default_resolver
+)
+from r65.compiler.codegen.selector_context import SelectorContext
 from r65.compiler.codegen.asm_nodes import Immediate, Address, StackOffset
 
 
@@ -82,6 +86,21 @@ class InstructionSelector:
         self.mem_alloc = memory_allocator
         self.current_function = current_function
         self.func_gen = func_gen
+
+        # Location resolver for addressing mode and opcode selection
+        self._resolver = default_resolver
+
+        # Shared context for composed selectors
+        self._context = SelectorContext(
+            emitter=emitter,
+            register_allocator=register_allocator,
+            memory_allocator=memory_allocator,
+            resolver=self._resolver,
+            current_function=current_function
+        )
+        # Wire up callbacks for context
+        self._context.set_a_modified_callback(self._mark_a_modified)
+        self._context.set_operand_location_callback(self._get_operand_location)
 
         # Helper classes for modular instruction selection
         self.xba_manager = XBAStateManager(emitter)
@@ -167,6 +186,8 @@ class InstructionSelector:
         """
         Get the appropriate Opcode variant and operand for a memory location.
 
+        Delegates to the LocationResolver for unified addressing mode handling.
+
         Args:
             mnemonic: Base instruction mnemonic (e.g., 'LDA', 'STA')
             location: Physical memory location
@@ -174,84 +195,7 @@ class InstructionSelector:
         Returns:
             Tuple of (Opcode variant, Operand)
         """
-        variants = OPCODE_VARIANTS.get(mnemonic)
-        if not variants:
-            raise InstructionSelectionError(f"No opcode variants for mnemonic: {mnemonic}")
-
-        if location.kind == LocationKind.STACK:
-            opcode = variants.get('STACK')
-            if not opcode:
-                raise unsupported_addressing_mode(mnemonic, "stack-relative")
-            return opcode, StackOffset(location.stack_offset)
-
-        elif location.kind == LocationKind.SCRATCH:
-            addr = location.scratch_addr
-            if location.index_register == 'X':
-                opcode = variants.get('DP_X')
-                if not opcode:
-                    raise unsupported_addressing_mode(mnemonic, "DP,X")
-            elif location.index_register == 'Y':
-                opcode = variants.get('DP_Y')
-                if not opcode:
-                    raise unsupported_addressing_mode(mnemonic, "DP,Y")
-            else:
-                opcode = variants.get('DP')
-                if not opcode:
-                    raise unsupported_addressing_mode(mnemonic, "DP")
-            return opcode, Address(addr)
-
-        elif location.kind == LocationKind.MEMORY:
-            # Check for ROM label (for #[rom] data accessed directly)
-            if location.memory_label:
-                # ROM labels always use absolute addressing
-                if location.index_register == 'X':
-                    opcode = variants.get('ABSOLUTE_X')
-                    if not opcode:
-                        raise unsupported_addressing_mode(mnemonic, "absolute X")
-                elif location.index_register == 'Y':
-                    opcode = variants.get('ABSOLUTE_Y')
-                    if not opcode:
-                        raise unsupported_addressing_mode(mnemonic, "absolute Y")
-                else:
-                    opcode = variants.get('ABSOLUTE')
-                    if not opcode:
-                        raise unsupported_addressing_mode(mnemonic, "absolute")
-                return opcode, Address(location.memory_label)
-
-            addr = location.memory_addr
-            is_dp = addr < DP_BOUNDARY
-
-            if location.index_register == 'X':
-                if is_dp:
-                    opcode = variants.get('DP_X')
-                else:
-                    opcode = variants.get('ABSOLUTE_X')
-                if not opcode:
-                    raise unsupported_addressing_mode(mnemonic, "indexed X")
-            elif location.index_register == 'Y':
-                if is_dp:
-                    opcode = variants.get('DP_Y')
-                else:
-                    opcode = variants.get('ABSOLUTE_Y')
-                if not opcode:
-                    raise unsupported_addressing_mode(mnemonic, "indexed Y")
-            else:
-                if is_dp:
-                    opcode = variants.get('DP')
-                else:
-                    opcode = variants.get('ABSOLUTE')
-                if not opcode:
-                    raise InstructionSelectionError(f"{mnemonic} does not support {'DP' if is_dp else 'absolute'} addressing")
-            return opcode, Address(addr)
-
-        elif location.kind == LocationKind.IMMEDIATE:
-            opcode = variants.get('IMMEDIATE')
-            if not opcode:
-                raise unsupported_addressing_mode(mnemonic, "immediate")
-            return opcode, Immediate(location.immediate_value)
-
-        else:
-            raise InstructionSelectionError(f"Cannot use location kind {location.kind} as memory operand")
+        return self._resolver.resolve_and_get_opcode(mnemonic, location)
 
     def _emit_load(self, mnemonic: str, location: PhysicalLocation, comment: str = None):
         """Emit a load instruction with the appropriate addressing mode."""
@@ -259,21 +203,15 @@ class InstructionSelector:
         self.emitter.emit_instr(opcode, operand, comment)
 
     def _emit_store(self, mnemonic: str, location: PhysicalLocation, comment: str = None):
-        """Emit a store instruction with the appropriate addressing mode."""
-        # Handle STX/STY limitations: these instructions don't support all addressing modes
-        # STX doesn't support X-indexed (can't use STX addr,X)
-        # STY doesn't support Y-indexed (can't use STY addr,Y)
-        # STX/STY don't support stack-relative
-        if mnemonic == 'STX' and (location.index_register == 'X' or location.kind == LocationKind.STACK):
-            # Transfer X to A, then use STA
-            self.emitter.emit_instr(Opcode.TXA, None, "Transfer X to A (no STX with this addressing)")
-            opcode, operand = self._get_opcode_for_location('STA', location)
-            self.emitter.emit_instr(opcode, operand, comment)
-            self._mark_a_modified()
-            return
-        if mnemonic == 'STY' and (location.index_register == 'Y' or location.kind == LocationKind.STACK):
-            # Transfer Y to A, then use STA
-            self.emitter.emit_instr(Opcode.TYA, None, "Transfer Y to A (no STY with this addressing)")
+        """
+        Emit a store instruction with the appropriate addressing mode.
+
+        Uses StoreResolver to handle STX/STY addressing mode limitations.
+        """
+        if StoreResolver.needs_workaround(mnemonic, location):
+            # Transfer to A first, then use STA
+            transfer_op = StoreResolver.get_transfer_opcode(mnemonic)
+            self.emitter.emit_instr(transfer_op, None, f"Transfer to A (no {mnemonic} with this addressing)")
             opcode, operand = self._get_opcode_for_location('STA', location)
             self.emitter.emit_instr(opcode, operand, comment)
             self._mark_a_modified()
