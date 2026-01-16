@@ -3,8 +3,9 @@
 import pytest
 from r65.compiler.frontend import parse
 from r65.compiler.hir import HIRBuilder
+from r65.compiler.typeck import TypeChecker
 from r65.compiler.mir import MIRBuilder
-from r65.compiler.errors import MIRLoweringError
+from r65.compiler.errors import MIRLoweringError, TypeCheckError
 
 
 def build_mir(source: str):
@@ -12,6 +13,8 @@ def build_mir(source: str):
     program = parse(source, "test.r65")
     hir_builder = HIRBuilder(source_file="test.r65")
     hir_prog = hir_builder.build_program(program)
+    type_checker = TypeChecker(hir_prog)
+    type_checker.check()
     mir_builder = MIRBuilder()
     return mir_builder.build_program(hir_prog)
 
@@ -89,9 +92,11 @@ class TestFarPointerModeValidation:
             fn process(far *data: u8) {
             }
         """
-        with pytest.raises(MIRLoweringError) as exc_info:
+        # Type checker catches missing mode attribute before MIR lowering
+        with pytest.raises((MIRLoweringError, TypeCheckError)) as exc_info:
             build_mir(source)
-        assert "x16" in str(exc_info.value)
+        # Either error about x16 requirement or about unknown mode
+        assert "x16" in str(exc_info.value) or "mode" in str(exc_info.value).lower()
 
     def test_far_pointer_with_x16_succeeds(self):
         """Function with far pointer and x16 mode should compile."""

@@ -107,11 +107,14 @@ class CallInstructionSelector(BaseSelector):
         # Step 6: Collect return values
         self._emit_return_value_collection(instr)
 
-        # Step 7: Re-establish D = S if needed for continued far pointer access
+        # Step 7: Restore D to stack and optionally re-establish D = S
         if needs_d_management:
-            # Check if there are more far pointer dereferences after this call
+            # We used PLD before the call, so we must push D back
+            # If there are more far pointer dereferences, also set D = S
             if self._has_far_ptr_derefs_after_call(instr):
-                self._emit_d_equals_s_restore()
+                self._emit_d_equals_s_restore()  # PHD + TSC + TCD
+            else:
+                self._emit_d_push_only()  # Just PHD (for epilogue)
 
     # ========================================================================
     # Argument Setup
@@ -655,25 +658,32 @@ class CallInstructionSelector(BaseSelector):
         When D = S is set up for far pointer parameters, D must be restored
         before calling other functions that may use zeropage/DP addressing.
 
-        The original D value was saved by PHD in the prologue and is at [D + 1]
-        (2 bytes, since D is 16-bit and PHD was the last push before TSC; TCD).
+        The original D value was saved by PHD in the prologue. We use PLD to
+        pop it from the stack and restore it. After the call returns, if we
+        need D = S again, we'll push it back with PHD.
         """
-        from r65.compiler.codegen.asm_nodes import Address
+        self._emit_instr(Opcode.PLD, comment="Restore D from stack before call")
 
-        # We need 16-bit A to load the full D value
-        # Save current M mode, switch to 16-bit, load D, restore mode
-        self._emit_instr(Opcode.REP_IMMEDIATE, 0x20, "16-bit A for D restore")
-        self._emit_instr(Opcode.LDA_DP, Address(0x01), "Load saved D from [D + 1]")
-        self._emit_instr(Opcode.TCD, comment="Restore D to original value")
-        self._emit_instr(Opcode.SEP_IMMEDIATE, 0x20, "Restore 8-bit A")
+    def _emit_d_push_only(self):
+        """
+        Push D back onto the stack after a call.
+
+        Since we used PLD before the call, we must push D back so the
+        epilogue's PLD will pop the correct value. This is used when there
+        are no more far pointer dereferences after this call.
+        """
+        self._emit_instr(Opcode.PHD, comment="Save D back to stack for epilogue")
 
     def _emit_d_equals_s_restore(self):
         """
         Re-establish D = S after a call for continued far pointer access.
 
         After a call returns, if there are more far pointer dereferences,
-        we need to set D back to the current stack pointer.
+        we need to:
+        1. Push D back onto the stack (since PLD popped it before the call)
+        2. Set D = S for continued far pointer access
         """
+        self._emit_instr(Opcode.PHD, comment="Save D back to stack")
         self._emit_instr(Opcode.TSC, comment="Transfer S to A")
         self._emit_instr(Opcode.TCD, comment="Set D = S for far pointer access")
 
