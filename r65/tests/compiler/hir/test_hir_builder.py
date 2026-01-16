@@ -134,15 +134,17 @@ static mut COUNT: u8 = 42;
         assert static.initializer.value == 42
 
     def test_immutable_static(self):
-        """Test immutable static (no mut)."""
+        """Test immutable static (no mut) - implicit ROM."""
         source = """
-#[rom]
 static DATA: u8 = 0xFF;
 """
         hir = build_hir(source)
         static = hir.declarations[0]
         assert static.is_mutable == False
-        assert static.storage_attr.storage_kind == StorageKind.ROM
+        # Immutable statics without storage attr are ROM (storage_attr is None)
+        assert static.storage_attr is None
+        # ROM statics have a bank attribute
+        assert static.bank_attr is not None
 
 
 class TestConstDeclarations:

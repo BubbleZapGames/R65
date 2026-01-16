@@ -14,7 +14,6 @@ include!("lib/sneslib.r65")
 // Message to display
 // ----------------------------------------------------------------------------
 
-#[rom]
 static MESSAGE: [u8; 12] = "HELLO WORLD\0";
 
 // ----------------------------------------------------------------------------
@@ -22,7 +21,6 @@ static MESSAGE: [u8; 12] = "HELLO WORLD\0";
 // Each character is 8 bytes (8 rows of 8 pixels)
 // ----------------------------------------------------------------------------
 
-#[rom]
 static FONT: [u8; 216] = [
     // Tile 0: Space (blank)
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -110,7 +108,6 @@ static FONT: [u8; 216] = [
 // Palette data (4 colors for 2bpp mode)
 // ----------------------------------------------------------------------------
 
-#[rom]
 static PALETTE: [u8; 8] = [
     0x00, 0x00,  // Color 0: Black (background)
     0x29, 0x25,  // Color 1: Dark gray

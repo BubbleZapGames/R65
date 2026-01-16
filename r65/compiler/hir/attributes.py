@@ -73,13 +73,13 @@ class StorageKind(Enum):
     ZEROPAGE = "zeropage"  # Direct page ($0000-$00FF) - uses DP addressing
     LOWRAM = "lowram"      # Low RAM ($0000-$1FFF) - auto starts at $0100
     RAM = "ram"            # Main RAM ($7E2000-$7FFFFF)
-    ROM = "rom"
+    # ROM removed - immutable statics are implicitly ROM
     HW = "hw"              # Hardware-mapped I/O (automatically volatile)
 
 
 @dataclass
 class StorageAttribute(ProcessedAttribute):
-    """#[zeropage], #[ram], #[rom], #[hw]"""
+    """#[zeropage], #[lowram], #[ram], #[hw]"""
     storage_kind: StorageKind = StorageKind.RAM
     address: Optional[int] = None  # For explicit addresses
     is_register: bool = False  # True if marked as scratch register with 'register' parameter
@@ -159,7 +159,7 @@ class AttributeProcessor:
                 processed.append(self._process_mode(attr, context))
             elif attr.name == 'preserves':
                 processed.append(self._process_preserves(attr, context))
-            elif attr.name in ['zeropage', 'lowram', 'ram', 'rom', 'hw']:
+            elif attr.name in ['zeropage', 'lowram', 'ram', 'hw']:
                 processed.append(self._process_storage(attr, context))
             elif attr.name == 'stack':
                 processed.append(self._process_stack(attr, context))
@@ -274,7 +274,7 @@ class AttributeProcessor:
         )
 
     def _process_storage(self, attr: ast.Attribute, context: str) -> StorageAttribute:
-        """Process #[zeropage], #[ram], #[rom], #[hw] attributes."""
+        """Process #[zeropage], #[lowram], #[ram], #[hw] attributes."""
         if context not in ['static']:
             raise HIRError(f"#{attr.name} attribute only valid on static variables")
 
@@ -283,7 +283,6 @@ class AttributeProcessor:
             'zeropage': StorageKind.ZEROPAGE,
             'lowram': StorageKind.LOWRAM,
             'ram': StorageKind.RAM,
-            'rom': StorageKind.ROM,
             'hw': StorageKind.HW,
         }
         storage_kind = storage_map[attr.name]
@@ -336,7 +335,7 @@ class AttributeProcessor:
         raise HIRError(
             f"#[bank(n)] is a global directive, not a function attribute. "
             f"Place #[bank(n)] before function declarations to set the bank for "
-            f"all following functions and #[rom] statics. Example:\n"
+            f"all following functions and ROM statics. Example:\n"
             f"  #[bank(1)]\n"
             f"  far fn my_function() {{ }}"
         )

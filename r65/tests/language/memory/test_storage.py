@@ -1,6 +1,8 @@
 """Tests for storage class attributes."""
 
+import pytest
 from r65.compiler.frontend import ast
+from r65.compiler.hir.errors import HIRError
 from r65.tests.language.common import parse_static, parse_program, get_attr, build_hir
 
 
@@ -52,14 +54,50 @@ class TestRam:
         assert static.initializer is not None
 
 
-class TestRom:
-    """Tests for #[rom] attribute."""
+class TestImplicitRom:
+    """Tests for implicit ROM storage (immutable statics without storage attr)."""
 
-    def test_rom_declaration(self):
-        """Test rom static declaration."""
-        static = parse_static("#[rom(0x8000)] static GRAPHICS: [u8; 256];")
-        attr = get_attr(static, "rom")
-        assert attr is not None
+    def test_immutable_static_is_rom(self):
+        """Immutable static without attribute is ROM."""
+        hir_prog = build_hir("static MESSAGE: [u8; 5] = [1, 2, 3, 4, 5];")
+        assert len(hir_prog.statics) == 1
+        static = hir_prog.statics[0]
+        # storage_attr is None for ROM
+        assert static.storage_attr is None
+        # Should have bank_attr since it's ROM
+        assert static.bank_attr is not None
+
+    def test_mutable_static_requires_attribute(self):
+        """Mutable static without attribute should error."""
+        with pytest.raises(HIRError) as exc_info:
+            build_hir("static mut VAR: u8;")
+        assert "requires explicit storage attribute" in str(exc_info.value)
+
+    def test_immutable_static_ram_error(self):
+        """Immutable static with #[ram] should error."""
+        with pytest.raises(HIRError) as exc_info:
+            build_hir("#[ram] static DATA: u8 = 42;")
+        assert "cannot use #ram storage" in str(exc_info.value)
+
+    def test_immutable_static_zeropage_error(self):
+        """Immutable static with #[zeropage] should error."""
+        with pytest.raises(HIRError) as exc_info:
+            build_hir("#[zeropage] static DATA: u8 = 42;")
+        assert "cannot use #zeropage storage" in str(exc_info.value)
+
+    def test_immutable_static_hw_allowed(self):
+        """Immutable static with #[hw] is OK for read-only hardware registers."""
+        hir_prog = build_hir("#[hw(0x4212)] static HVBJOY: u8;")
+        assert len(hir_prog.statics) == 1
+        static = hir_prog.statics[0]
+        assert static.storage_attr is not None
+        assert static.storage_attr.storage_kind.value == "hw"
+
+    def test_rom_attribute_unknown(self):
+        """#[rom] attribute should be rejected as unknown."""
+        with pytest.raises(HIRError) as exc_info:
+            build_hir("#[rom] static DATA: u8 = 42;")
+        assert "Unknown attribute" in str(exc_info.value)
 
 
 class TestHardware:

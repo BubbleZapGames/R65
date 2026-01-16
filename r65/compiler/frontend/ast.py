@@ -194,7 +194,7 @@ class FunctionDecl(Declaration):
 class StaticDecl(Declaration):
     """Static variable declaration."""
     attributes: List[Attribute]
-    is_far: bool  # True if declared with 'far' keyword (required for #[rom] in auto-bank mode)
+    is_far: bool  # True if declared with 'far' keyword (required for ROM statics in auto-bank mode)
     is_mut: bool
     name: str
     var_type: Type
@@ -264,7 +264,7 @@ class BankDirective(Declaration):
 
     Sets current ROM bank context for following declarations.
     - #[bank(n)]: Explicit bank number, near functions allowed
-    - #[bank(auto)]: Automatic placement, requires far functions and far #[rom] statics
+    - #[bank(auto)]: Automatic placement, requires far functions and far ROM statics
 
     bank_number is None for auto mode, otherwise the explicit bank number.
     """

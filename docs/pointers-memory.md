@@ -109,7 +109,7 @@ let far *ram_ptr: [u8; 256] = &BUFFER;  // Far pointer - ram is bank $7E
 
 **Automatic type inference**: The compiler infers near or far based on storage:
 - `#[zeropage]`, `#[lowram]`, `#[hw]` → near pointer (16-bit, bank 0)
-- `#[ram]`, `#[rom]` → far pointer (24-bit, includes bank)
+- `#[ram]`, immutable statics (ROM) → far pointer (24-bit, includes bank)
 
 **Restrictions**:
 - Cannot take address of register aliases (`&A` is error)
@@ -298,16 +298,19 @@ static mut DATA: u16;
 
 ---
 
-### `#[rom]` - Read-Only Memory
+### Immutable Statics - ROM
 
 **Mutability**: Read-only (writes are compile error)
 **Best for**: Graphics, levels, constants, sound data
 
+Immutable statics (without `mut`) are automatically placed in ROM:
+
 ```rust
-#[rom(0x8000)]
 static GRAPHICS: [u8; 4096] = include_bytes!("gfx.bin");
 
-GRAPHICS[0] = 1;  // ERROR: cannot write to ROM
+static SINE_TABLE: [u8; 256] = [0, 3, 6, 9, /* ... */];
+
+GRAPHICS[0] = 1;  // ERROR: cannot write to immutable static
 ```
 
 ---
@@ -471,8 +474,7 @@ fn traverse(*head: Node) {
 ### ROM Table Lookup
 
 ```rust
-#[rom]
-static SIN_TABLE: [u8; 256] = [ /* ... */ ];
+static SIN_TABLE: [u8; 256] = [ /* ... */ ];  // Immutable = ROM
 
 fn get_sin(angle @ A: u8) -> u8 {
     return (&SIN_TABLE)[angle];

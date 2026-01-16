@@ -396,8 +396,7 @@ macro_rules! debug_only($body:tt) {
 
 ```rust
 macro_rules! sin_table($name:ident, $size:literal) {
-    #[rom]
-    static $name: [u8; $size] = [
+    static $name: [u8; $size] = [  // Immutable = ROM
         // Pre-computed at compile time
         // (Requires const evaluation support)
     ];

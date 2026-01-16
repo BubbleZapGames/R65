@@ -55,9 +55,8 @@ static mut MSG: [u8; 16] = "Hello";
         assert mir.rom_data_sections[0].data[5:] == [0] * 11
 
     def test_immutable_string_literal(self):
-        """Test string literal works with non-mutable static."""
+        """Test string literal works with non-mutable static (implicit ROM)."""
         source = '''
-#[rom]
 static MSG: [u8; 8] = "Test";
 '''
         hir, mir = compile_to_mir(source)

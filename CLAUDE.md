@@ -142,15 +142,22 @@ loop { if HVBJOY & 0x01 != 0 { break; } }  // Always reads hardware
 | Direct Page | `$0000-$00FF` | 2-3 cycles | `#[zeropage]` |
 | Low RAM | `$0000-$1FFF` | 3-4 cycles | `#[lowram]` |
 | Main RAM | `$7E2000-$7FFFFF` | 4-5 cycles | `#[ram]` |
-| ROM | Various | 4-5 cycles | `#[rom]` |
+| ROM | Various | 4-5 cycles | *(implicit)* |
 | Hardware | I/O addresses | 4-6 cycles | `#[hw(addr)]` |
 
+**Storage class is determined by mutability:**
+- `static` (immutable) → automatically ROM, no attribute needed
+- `static mut` → requires explicit storage attribute (`#[zeropage]`, `#[lowram]`, `#[ram]`, or `#[hw]`)
+
 ```rust
+static MESSAGE: [u8; 12] = "Hello";     // Immutable = ROM (no attribute)
 #[zeropage(0x42)]
-static mut TEMP: u8;           // Explicit address
+static mut TEMP: u8;                     // Explicit zeropage address
 #[zeropage]
-static mut AUTO_ZP: u8;        // Auto-allocated
-#[stack(0x1F00, 0x1FFF)]       // Reserve stack region (default: $0100-$01FF)
+static mut AUTO_ZP: u8;                  // Auto-allocated zeropage
+#[ram]
+static mut BUFFER: [u8; 256];            // Main RAM
+#[stack(0x1F00, 0x1FFF)]                 // Reserve stack region
 ```
 
 Auto-allocation finds next available address. Zeropage and lowram share physical memory.
@@ -235,7 +242,7 @@ far fn sound_engine() { }         // JSL/RTL, bank 1
 far fn graphics_code() { }        // Callee manages DBR
 ```
 
-**Bank directive**: `#[bank(n)]` sets bank context, `#[bank(auto)]` for automatic placement. Only `#[rom]` statics inherit bank.
+**Bank directive**: `#[bank(n)]` sets bank context, `#[bank(auto)]` for automatic placement. Immutable statics (ROM) inherit bank.
 
 **Call rules**: Near functions can only call near functions in same bank. Far functions callable from anywhere.
 

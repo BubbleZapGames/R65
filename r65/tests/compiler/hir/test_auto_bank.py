@@ -65,10 +65,9 @@ far fn test() {}
         assert func.bank_attr.is_auto
 
     def test_auto_bank_rom_static_requires_far(self):
-        """#[rom] statics in auto-bank mode must be far."""
+        """ROM statics (immutable) in auto-bank mode must be far."""
         code = '''
 #[bank(auto)]
-#[rom]
 static DATA: u8 = 0;
 '''
         ast = parse(code)
@@ -79,10 +78,9 @@ static DATA: u8 = 0;
         assert "auto-bank mode must be declared as 'far static'" in str(exc_info.value)
 
     def test_auto_bank_far_rom_static_succeeds(self):
-        """Far #[rom] statics in auto-bank mode should succeed."""
+        """Far ROM statics (immutable) in auto-bank mode should succeed."""
         code = '''
 #[bank(auto)]
-#[rom]
 far static DATA: u8 = 0;
 '''
         ast = parse(code)
@@ -143,10 +141,9 @@ far fn test() {}
         assert func.bank_attr.bank_number == 1
 
     def test_explicit_bank_rom_static(self):
-        """#[rom] statics in explicit bank mode don't need far."""
+        """ROM statics (immutable) in explicit bank mode don't need far."""
         code = '''
 #[bank(2)]
-#[rom]
 static DATA: u8 = 0;
 '''
         ast = parse(code)
@@ -243,7 +240,6 @@ class TestFarStaticParsing:
     def test_parse_far_static(self):
         """far static should parse correctly."""
         code = '''
-#[rom]
 far static DATA: u8 = 0;
 '''
         ast = parse(code)

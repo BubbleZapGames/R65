@@ -456,9 +456,9 @@ class MemoryAllocator:
         symbol = static_decl.symbol
         storage_attr = static_decl.storage_attr
 
-        if not storage_attr:
-            # No storage attribute - default to RAM
-            self.allocate_ram(symbol, static_decl, explicit_addr)
+        if storage_attr is None:
+            # No storage attr = ROM (immutable static)
+            self.allocate_rom(symbol, static_decl, explicit_addr)
             return
 
         storage_kind = storage_attr.storage_kind
@@ -473,8 +473,6 @@ class MemoryAllocator:
             if explicit_addr is None:
                 raise MemoryAllocationError(f"Hardware register '{symbol.name}' must have explicit address")
             self.allocate_hw(symbol, static_decl, explicit_addr)
-        elif storage_kind == StorageKind.ROM:
-            self.allocate_rom(symbol, static_decl, explicit_addr)
         else:
             raise MemoryAllocationError(f"Unknown storage kind: {storage_kind}")
 

@@ -113,13 +113,11 @@ loop {
 
 ### ROM Data
 
-Store constant data in ROM:
+Immutable statics are automatically stored in ROM:
 
 ```rust
-#[rom]
 static SPRITE_DATA: [u8; 256] = include_bytes!("sprites.bin");
 
-#[rom]
 static SINE_TABLE: [u8; 256] = [0, 3, 6, 9, /* ... */];
 ```
 

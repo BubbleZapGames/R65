@@ -13,7 +13,6 @@ from r65.compiler.hir import HIRBuilder, HIRError
 def test_include_bytes_file_not_found():
     """Test that include_bytes! with nonexistent file raises HIRError."""
     source = '''
-#[rom(0x8000)]
 static DATA: [u8; 100] = include_bytes!("nonexistent_file.bin");
 '''
     program = parse(source, "test.r65")
@@ -39,7 +38,6 @@ def test_include_bytes_with_existing_file():
         temp_name = os.path.basename(temp_path)
 
         source = f'''
-#[rom(0x8000)]
 static DATA: [u8; 100] = include_bytes!("{temp_name}");
 '''
         program = parse(source, "test.r65")
@@ -56,7 +54,6 @@ static DATA: [u8; 100] = include_bytes!("{temp_name}");
 def test_include_bytes_directory_error():
     """Test that include_bytes! with directory path raises HIRError."""
     source = '''
-#[rom(0x8000)]
 static DATA: [u8; 100] = include_bytes!(".");
 '''
     program = parse(source, "test.r65")
@@ -72,7 +69,6 @@ static DATA: [u8; 100] = include_bytes!(".");
 def test_include_bytes_error_has_source_location():
     """Test that include_bytes! error includes source location."""
     source = '''
-#[rom(0x8000)]
 static DATA: [u8; 100] = include_bytes!("missing.bin");
 '''
     program = parse(source, "myfile.r65")

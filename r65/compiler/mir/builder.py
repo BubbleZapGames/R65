@@ -1246,13 +1246,10 @@ class MIRBuilder:
 
         # Generate initialization code for each static variable
         for static_decl in statics:
-            # Check if this is a #[rom] static - ROM data should be accessed directly,
+            # Check if this is a ROM static - ROM data should be accessed directly,
             # not copied to RAM. We still create the ROM data section but skip BlockCopy.
-            is_rom_storage = (
-                hasattr(static_decl, 'storage_attr') and
-                static_decl.storage_attr and
-                static_decl.storage_attr.storage_kind == StorageKind.ROM
-            )
+            # ROM storage is indicated by storage_attr being None (immutable static)
+            is_rom_storage = static_decl.storage_attr is None
 
             # Get memory location for the static
             mem_loc = self.get_memory_location(static_decl.symbol)
@@ -1261,20 +1258,20 @@ class MIRBuilder:
             # Handle different initializer types
             if isinstance(initializer, HIRArrayFillExpr):
                 # Array fill: use MemoryFill instruction (loop-based)
-                # Note: #[rom] with fill expression doesn't make sense, but handle it
+                # Note: ROM with fill expression doesn't make sense, but handle it
                 if not is_rom_storage:
                     self._emit_array_fill_init(static_decl, mem_loc, initializer)
 
             elif isinstance(initializer, HIRArrayLiteralExpr):
-                # Array literal: create ROM data, copy to RAM only if not #[rom]
+                # Array literal: create ROM data, copy to RAM only if not ROM
                 self._emit_array_literal_init(static_decl, mem_loc, initializer, skip_copy=is_rom_storage)
 
             elif isinstance(initializer, HIRStringLiteral):
-                # String literal: create ROM data, copy to RAM only if not #[rom]
+                # String literal: create ROM data, copy to RAM only if not ROM
                 self._emit_string_literal_init(static_decl, mem_loc, initializer, skip_copy=is_rom_storage)
 
             elif isinstance(initializer, HIRStructLiteralExpr):
-                # Struct literal: create ROM data, copy to RAM only if not #[rom]
+                # Struct literal: create ROM data, copy to RAM only if not ROM
                 self._emit_struct_literal_init(static_decl, mem_loc, initializer, skip_copy=is_rom_storage)
 
             elif self._is_function_pointer_init(initializer):
@@ -1600,7 +1597,7 @@ class MIRBuilder:
             static_decl: Static declaration being initialized
             mem_loc: Memory location of the array
             literal_expr: HIR array literal expression
-            skip_copy: If True, create ROM data but don't emit BlockCopy (for #[rom] statics)
+            skip_copy: If True, create ROM data but don't emit BlockCopy (for ROM statics)
         """
         from r65.compiler.hir.types import ArrayTypeInfo, StructTypeInfo
 
@@ -1652,7 +1649,7 @@ class MIRBuilder:
         else:
             setattr(static_decl.symbol, 'rom_label', label)
 
-        # Emit block copy instruction (unless this is #[rom] storage)
+        # Emit block copy instruction (unless this is ROM storage)
         if not skip_copy:
             self.emit(BlockCopy(
                 dest=mem_loc,
@@ -1742,7 +1739,7 @@ class MIRBuilder:
             static_decl: Static declaration being initialized
             mem_loc: Memory location of the array
             string_literal: HIR string literal expression
-            skip_copy: If True, create ROM data but don't emit BlockCopy (for #[rom] statics)
+            skip_copy: If True, create ROM data but don't emit BlockCopy (for ROM statics)
         """
         from r65.compiler.hir.types import ArrayTypeInfo
 
@@ -1777,7 +1774,7 @@ class MIRBuilder:
         else:
             setattr(static_decl.symbol, 'rom_label', label)
 
-        # Emit block copy instruction (unless this is #[rom] storage)
+        # Emit block copy instruction (unless this is ROM storage)
         if not skip_copy:
             self.emit(BlockCopy(
                 dest=mem_loc,
@@ -1801,7 +1798,7 @@ class MIRBuilder:
             static_decl: Static declaration being initialized
             mem_loc: Memory location of the struct
             struct_expr: HIR struct literal expression
-            skip_copy: If True, create ROM data but don't emit BlockCopy (for #[rom] statics)
+            skip_copy: If True, create ROM data but don't emit BlockCopy (for ROM statics)
         """
         from r65.compiler.hir.types import StructTypeInfo
         from r65.compiler.hir import HIRStructDecl
@@ -1877,7 +1874,7 @@ class MIRBuilder:
         else:
             setattr(static_decl.symbol, 'rom_label', label)
 
-        # Emit block copy instruction (unless this is #[rom] storage)
+        # Emit block copy instruction (unless this is ROM storage)
         if not skip_copy:
             self.emit(BlockCopy(
                 dest=mem_loc,

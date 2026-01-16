@@ -65,13 +65,13 @@ class PointerValidator:
 
         Far pointers (24-bit) are needed for:
         - #[ram] variables: stored in bank $7E ($7E2000-$7FFFFF)
-        - #[rom] variables in banks other than 0
+        - ROM variables (immutable statics) in banks other than 0
 
         Near pointers (16-bit) are sufficient for:
         - #[zeropage] variables: bank 0 ($0000-$00FF)
         - #[lowram] variables: bank 0 ($0000-$1FFF)
         - #[hw] variables: typically bank 0
-        - #[rom] variables in bank 0: same bank as code
+        - ROM variables in bank 0: same bank as code
         - Local variables: on stack in current bank
 
         Args:

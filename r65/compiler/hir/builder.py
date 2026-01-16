@@ -470,6 +470,32 @@ class HIRBuilder:
             symbol=param_symbol
         )
 
+    def _validate_static_storage(
+        self,
+        static: ast.StaticDecl,
+        storage_attr: Optional[StorageAttribute]
+    ) -> Optional[StorageAttribute]:
+        """Validate storage class based on mutability. Returns None for ROM."""
+        if static.is_mut:
+            # Mutable: must have explicit storage attribute
+            if storage_attr is None:
+                raise HIRError(
+                    f"mutable static '{static.name}' requires explicit storage attribute",
+                    hint="add #[zeropage], #[lowram], #[ram], or #[hw(addr)]"
+                )
+            return storage_attr
+        else:
+            # Immutable: no storage attr = ROM, #[hw] allowed for read-only regs
+            if storage_attr is None:
+                return None  # Signals ROM (no StorageKind.ROM exists)
+            if storage_attr.storage_kind == StorageKind.HW:
+                return storage_attr  # Read-only HW registers OK
+            # Any RAM-type storage on immutable is an error
+            raise HIRError(
+                f"immutable static '{static.name}' cannot use #{storage_attr.storage_kind.value} storage",
+                hint="add 'mut' to make mutable, or remove attribute for ROM"
+            )
+
     def _build_static(self, static: ast.StaticDecl) -> hir.HIRStaticDecl:
         """Build HIR static declaration from AST."""
         # Process attributes
@@ -478,10 +504,13 @@ class HIRBuilder:
             context='static'
         )
 
-        storage_attr = None
+        raw_storage_attr = None
         for attr in processed_attrs:
             if isinstance(attr, StorageAttribute):
-                storage_attr = attr
+                raw_storage_attr = attr
+
+        # Validate storage class based on mutability
+        storage_attr = self._validate_static_storage(static, raw_storage_attr)
 
         # Resolve type
         var_type = self.type_resolver.resolve_type(static.var_type)
@@ -494,16 +523,16 @@ class HIRBuilder:
         # Get static symbol
         static_symbol = self.symbol_table.lookup(static.name)
 
-        # Bank applies only to ROM statics (code and ROM data share banks)
+        # Bank applies only to ROM statics (storage_attr=None means ROM)
         bank_attr = None
-        if storage_attr and storage_attr.storage_kind == StorageKind.ROM:
+        if storage_attr is None:  # ROM static
             if self.auto_bank_mode:
                 bank_attr = BankAttribute(name='bank', bank_number=None)
-                # Validate: #[rom] statics in auto-bank mode must be far
+                # Validate: ROM statics in auto-bank mode must be far
                 if not static.is_far:
                     raise HIRError(
-                        f"#[rom] static '{static.name}' in auto-bank mode must be declared as 'far static'",
-                        hint="use '#[rom] far static " + static.name + ": ...' or place in explicit bank with #[bank(n)]"
+                        f"ROM static '{static.name}' in auto-bank mode must be declared as 'far static'",
+                        hint="use 'far static " + static.name + ": ...' or place in explicit bank with #[bank(n)]"
                     )
             else:
                 bank_attr = BankAttribute(name='bank', bank_number=self.current_bank)

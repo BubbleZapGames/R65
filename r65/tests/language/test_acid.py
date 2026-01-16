@@ -104,7 +104,7 @@ struct Handler {
 #[ram] static mut TILE_BUFFER: [u8; 1024] = [0; 1024];
 #[ram] static mut MESSAGE: [u8; 32] = "Game Over!\\0";
 
-#[rom(0x8000)] static SINE_TABLE: [u8; 256] = [0; 256];
+static SINE_TABLE: [u8; 256] = [0; 256];  // Immutable = ROM
 
 // -----------------------------------------------------------------------------
 // Function Pointers and Pointer Types
@@ -689,7 +689,7 @@ class TestAcidTest:
             'hw_attr': False,
             'zeropage_attr': False,
             'ram_attr': False,
-            'rom_attr': False,
+            'immutable_static': False,  # ROM is implicit via immutable statics
             'far_function': False,
             'match_expr': False,
             'register_param': False,
@@ -739,8 +739,10 @@ class TestAcidTest:
                         features_found['zeropage_attr'] = True
                     elif attr.name == 'ram':
                         features_found['ram_attr'] = True
-                    elif attr.name == 'rom':
-                        features_found['rom_attr'] = True
+
+                # Check for immutable static (ROM)
+                if not item.is_mut:
+                    features_found['immutable_static'] = True
 
                 # Check for array of function pointers
                 if isinstance(item.var_type, ast.ArrayType):
