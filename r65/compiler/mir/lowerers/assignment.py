@@ -289,25 +289,73 @@ class AssignmentLowerer:
     # ========================================================================
 
     def _lower_array_assignment(self, expr: HIRAssignment, value):
-        """Lower assignment to an array element."""
+        """Lower assignment to an array element or pointer index."""
+        from r65.compiler.hir.types import PointerTypeInfo
+
         array_index = expr.target
         element_type = expr.expr_type
         element_size = self.builder._get_type_size(element_type)
 
-        # Lower index expression
-        index_operand = self.builder.lower_expression(array_index.index)
-
-        # Get the array symbol
+        # Get the base (array or pointer)
         if not isinstance(array_index.array, HIRIdentifier):
-            raise MIRLoweringError(f"Array indexing only supports static arrays currently, got: {type(array_index.array)}")
+            raise MIRLoweringError(f"Array indexing only supports identifiers currently, got: {type(array_index.array)}")
 
-        array_symbol = array_index.array.symbol
+        base_symbol = array_index.array.symbol
+        base_type = array_index.array.expr_type
+
+        # Check if base is a pointer type (ptr[i] = x) vs array type (arr[i] = x)
+        if isinstance(base_type, PointerTypeInfo):
+            return self._lower_pointer_index_assignment(expr, value, base_type)
+
+        # Lower index expression for array indexing
+        index_operand = self.builder.lower_expression(array_index.index)
 
         # Calculate offset and create memory location
         if isinstance(index_operand, Immediate):
-            return self._lower_constant_index_assignment(value, array_symbol, index_operand.value, element_size, element_type)
+            return self._lower_constant_index_assignment(value, base_symbol, index_operand.value, element_size, element_type)
         else:
-            return self._lower_variable_index_assignment(value, array_symbol, index_operand, element_size, element_type)
+            return self._lower_variable_index_assignment(value, base_symbol, index_operand, element_size, element_type)
+
+    def _lower_pointer_index_assignment(self, expr: HIRAssignment, value, pointer_type):
+        """Lower assignment through indexed pointer (ptr[i] = x)."""
+        from r65.compiler.hir.types import PointerTypeInfo
+
+        array_index = expr.target
+        element_type = expr.expr_type
+
+        # Lower index expression
+        index_operand = self.builder.lower_expression(array_index.index)
+
+        # Lower the pointer expression to get the pointer value
+        ptr_operand = self.builder.lower_expression(array_index.array)
+
+        # Determine index register - must be Y for [dp],Y addressing
+        index_register = None
+        if isinstance(index_operand, HardwareRegister):
+            if index_operand.name == 'Y':
+                index_register = 'Y'
+            elif index_operand.name == 'X':
+                # Move X to Y for indirect addressing
+                y_reg = HardwareRegister('Y')
+                self.emit(Move(dest=y_reg, source=index_operand, type_info=element_type))
+                index_register = 'Y'
+            else:
+                raise MIRLoweringError(f"Pointer indexing requires X or Y register, got: {index_operand.name}")
+        else:
+            # Move index value to Y register
+            y_reg = HardwareRegister('Y')
+            self.emit(Move(dest=y_reg, source=index_operand, type_info=element_type))
+            index_register = 'Y'
+
+        # Emit StoreIndirect with index register
+        self.emit(StoreIndirect(
+            source=value,
+            pointer=ptr_operand,
+            is_far=pointer_type.is_far,
+            type_info=element_type,
+            index_register=index_register
+        ))
+        return value
 
     def _lower_constant_index_assignment(self, value, array_symbol, index_value, element_size, element_type):
         """Lower constant array index assignment with compile-time offset."""
