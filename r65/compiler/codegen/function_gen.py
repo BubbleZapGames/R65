@@ -445,6 +445,14 @@ class FunctionCodeGenerator:
                     if push_opcode:
                         self._emit_instr(push_opcode, comment=f"Preserve {reg}")
 
+        # Set up D = S for far pointer stack parameters
+        # This enables [dp],Y addressing to access 24-bit pointers on the stack
+        # Must come AFTER all other prologue pushes so D reflects final SP
+        if mir_func.has_far_ptr_stack_params:
+            self._emit_instr(Opcode.PHD, comment="Save Direct Page register")
+            self._emit_instr(Opcode.TSC, comment="Transfer Stack to A")
+            self._emit_instr(Opcode.TCD, comment="Transfer A to Direct Page (D = S)")
+
         # NOTE: Stack parameters are now accessed directly at their passed locations.
         # No copying is needed, which means we also don't need to save/restore the
         # A register parameter (the save was only needed because the copy used LDA).
@@ -500,6 +508,10 @@ class FunctionCodeGenerator:
                 elif reg == 'DBR':
                     bytes_pushed += 1  # Data bank is always 8-bit
 
+        # Far pointer stack params: PHD pushes 2 bytes
+        if mir_func.has_far_ptr_stack_params:
+            bytes_pushed += 2
+
         return bytes_pushed
 
     def _offset_location(self, location, offset: int):
@@ -532,9 +544,10 @@ class FunctionCodeGenerator:
         Emit function epilogue.
 
         Epilogue includes (in order):
-        1. Preserved register restoration (reverse of prologue push order)
-        2. DBR restoration (for databank=inline)
-        3. Mode restoration (for transition=inline)
+        1. D restore for far pointer stack params (PLD)
+        2. Preserved register restoration (reverse of prologue push order)
+        3. DBR restoration (for databank=inline)
+        4. Mode restoration (for transition=inline)
 
         Note: Return value loading and RTS/RTL are handled separately
         by the return instruction.
@@ -543,6 +556,11 @@ class FunctionCodeGenerator:
             mir_func: MIR function
             reg_alloc: Register allocator
         """
+        # Restore D register if we set up D = S for far pointer params
+        # This must come first since PHD was the last push in prologue
+        if mir_func.has_far_ptr_stack_params:
+            self._emit_instr(Opcode.PLD, comment="Restore Direct Page register")
+
         self._emit_preserved_register_restores(mir_func)
         self._emit_dbr_restore(mir_func)
         self._emit_mode_restore(mir_func)

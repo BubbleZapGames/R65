@@ -74,11 +74,22 @@ class CallInstructionSelector(BaseSelector):
             self._emit_builtin_call(instr)
             return
 
+        # Check if we need D register management for far pointer params
+        needs_d_management = (
+            self.parent.current_function and
+            self.parent.current_function.has_far_ptr_stack_params
+        )
+
         # Step 1: Set up arguments
         stack_bytes_pushed = self._emit_argument_setup(instr)
 
         # Step 2: Handle caller-managed DBR (databank=caller)
         needs_dbr_restore = self._emit_caller_dbr_setup(instr)
+
+        # Step 2.5: Restore D register before call (for far pointer functions)
+        # The called function may use zeropage, so D must be restored to original value
+        if needs_d_management:
+            self._emit_d_restore_before_call()
 
         # Step 3: Make the call
         self._emit_call_instruction(instr)
@@ -95,6 +106,12 @@ class CallInstructionSelector(BaseSelector):
 
         # Step 6: Collect return values
         self._emit_return_value_collection(instr)
+
+        # Step 7: Re-establish D = S if needed for continued far pointer access
+        if needs_d_management:
+            # Check if there are more far pointer dereferences after this call
+            if self._has_far_ptr_derefs_after_call(instr):
+                self._emit_d_equals_s_restore()
 
     # ========================================================================
     # Argument Setup
@@ -626,3 +643,71 @@ class CallInstructionSelector(BaseSelector):
                 pass  # Already in A
             else:
                 self.parent._emit_store('STA', dest_loc)
+
+    # ========================================================================
+    # D Register Management for Far Pointer Parameters
+    # ========================================================================
+
+    def _emit_d_restore_before_call(self):
+        """
+        Restore D register to its original value before making a call.
+
+        When D = S is set up for far pointer parameters, D must be restored
+        before calling other functions that may use zeropage/DP addressing.
+
+        The original D value was saved by PHD in the prologue and is at [D + 1]
+        (2 bytes, since D is 16-bit and PHD was the last push before TSC; TCD).
+        """
+        from r65.compiler.codegen.asm_nodes import Address
+
+        # We need 16-bit A to load the full D value
+        # Save current M mode, switch to 16-bit, load D, restore mode
+        self._emit_instr(Opcode.REP_IMMEDIATE, 0x20, "16-bit A for D restore")
+        self._emit_instr(Opcode.LDA_DP, Address(0x01), "Load saved D from [D + 1]")
+        self._emit_instr(Opcode.TCD, comment="Restore D to original value")
+        self._emit_instr(Opcode.SEP_IMMEDIATE, 0x20, "Restore 8-bit A")
+
+    def _emit_d_equals_s_restore(self):
+        """
+        Re-establish D = S after a call for continued far pointer access.
+
+        After a call returns, if there are more far pointer dereferences,
+        we need to set D back to the current stack pointer.
+        """
+        self._emit_instr(Opcode.TSC, comment="Transfer S to A")
+        self._emit_instr(Opcode.TCD, comment="Set D = S for far pointer access")
+
+    def _has_far_ptr_derefs_after_call(self, call_instr: Call) -> bool:
+        """
+        Check if there are far pointer dereferences after this call.
+
+        Uses simple scan approach: checks all remaining instructions in the
+        function for LoadIndirect/StoreIndirect with is_far=True.
+
+        Args:
+            call_instr: The current Call instruction
+
+        Returns:
+            True if far pointer dereferences exist after this call
+        """
+        from r65.compiler.mir.nodes import LoadIndirect, StoreIndirect
+
+        if not self.parent.current_function:
+            return False
+
+        # Find the call instruction's position and scan forward
+        found_call = False
+
+        for block in self.parent.current_function.blocks.values():
+            for instr in block.instructions:
+                if instr is call_instr:
+                    found_call = True
+                    continue
+
+                if found_call:
+                    # Check for far pointer indirect operations
+                    if isinstance(instr, (LoadIndirect, StoreIndirect)):
+                        if instr.is_far:
+                            return True
+
+        return False

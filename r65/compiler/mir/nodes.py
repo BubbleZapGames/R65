@@ -779,6 +779,12 @@ class MIRFunction:
     is_entry: bool = False
     is_far: bool = False
 
+    # Far pointer stack parameter tracking
+    # True if any stack parameters are far pointers (need D=S prologue)
+    has_far_ptr_stack_params: bool = False
+    # Set of parameter indices that are far pointers on stack
+    far_ptr_param_indices: Set[int] = field(default_factory=set)
+
     # Source location for debugging (from HIR)
     source_loc: Optional[Any] = None  # SourceLocation
 

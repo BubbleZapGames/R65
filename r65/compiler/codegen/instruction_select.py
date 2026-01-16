@@ -188,6 +188,10 @@ class InstructionSelector:
 
         Delegates to the LocationResolver for unified addressing mode handling.
 
+        When the current function has far pointer stack params (D = S setup),
+        scratch/zeropage locations must use absolute addressing instead of DP
+        because D no longer points to page 0.
+
         Args:
             mnemonic: Base instruction mnemonic (e.g., 'LDA', 'STA')
             location: Physical memory location
@@ -195,6 +199,32 @@ class InstructionSelector:
         Returns:
             Tuple of (Opcode variant, Operand)
         """
+        # When D = S, DP addressing is unavailable - force absolute addressing
+        # for both scratch registers and zeropage memory locations
+        if (self.current_function and
+            self.current_function.has_far_ptr_stack_params):
+            if location.kind == LocationKind.SCRATCH:
+                # Convert scratch to memory location with absolute addressing
+                abs_location = PhysicalLocation(
+                    kind=LocationKind.MEMORY,
+                    memory_addr=location.scratch_addr,
+                    size=location.size,
+                    index_register=location.index_register
+                )
+                return self._resolver.resolve_and_get_opcode(mnemonic, abs_location)
+            elif location.kind == LocationKind.MEMORY and location.memory_addr < 0x100:
+                # Zeropage memory location - force absolute addressing
+                # by using a resolver that treats it as non-DP
+                from r65.compiler.codegen.location_resolver import ResolvedLocation, AddressingMode
+                resolved = ResolvedLocation(
+                    mode=self._resolver._get_indexed_mode(location.index_register, is_dp=False),
+                    operand=Address(location.memory_addr),
+                    address=location.memory_addr,
+                    is_dp=False
+                )
+                opcode = self._resolver.get_opcode(mnemonic, resolved)
+                return opcode, resolved.operand
+
         return self._resolver.resolve_and_get_opcode(mnemonic, location)
 
     def _emit_load(self, mnemonic: str, location: PhysicalLocation, comment: str = None):

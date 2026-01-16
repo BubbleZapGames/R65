@@ -288,6 +288,8 @@ class MIRBuilder:
         #
         # Parameters with lower index are at lower stack offsets
         if stack_params:
+            from r65.compiler.hir.types import PointerTypeInfo
+
             return_addr_size = 3 if hir_func.is_far else 2
             current_offset = return_addr_size + 1  # First param starts after return address
 
@@ -295,9 +297,22 @@ class MIRBuilder:
                 mir_func.stack_param_offsets[idx] = current_offset
                 mir_func.param_to_vreg[idx] = param_vreg
 
+                # Check if this is a far pointer parameter
+                if isinstance(param.param_type, PointerTypeInfo) and param.param_type.is_far:
+                    mir_func.has_far_ptr_stack_params = True
+                    mir_func.far_ptr_param_indices.add(idx)
+
                 # Advance offset by parameter size
                 param_size = self._get_type_size(param.param_type)
                 current_offset += param_size
+
+            # Validate: far pointer stack params require x16 mode for [dp],Y addressing
+            if mir_func.has_far_ptr_stack_params:
+                if hir_func.mode_attr is None or self.current_mode.x_mode != XModeState.X16:
+                    raise MIRLoweringError(
+                        f"Function '{hir_func.name}' has far pointer stack parameters and "
+                        f"must be declared with #[mode(..., x16)] for 16-bit Y indexing"
+                    )
 
         # If this is an entry point function, initialize native mode and call __init_start()
         if hir_func.is_entry:
