@@ -292,9 +292,18 @@ class TypeConversionSelector(BaseSelector):
                 self._emit_load_store('LDA', src_high)
                 self._emit_load_store('STA', dest_high)
 
-        # Set bank byte to 0 (ROM bank)
+        # Set bank byte - use symbol's ROM bank if available, else 0
         dest_bank = self.parent._offset_location(dest_loc, 2)
-        self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(0x00), "Bank byte = 0")
+        bank_ref = 0x00
+        symbol = None
+        # Check if source has a symbol with ROM label (for address-of ROM data)
+        # Symbol can be on Immediate or VirtualRegister (propagated from address-of)
+        if hasattr(src_operand, 'symbol') and src_operand.symbol:
+            symbol = src_operand.symbol
+            if hasattr(symbol, 'rom_label') and symbol.rom_label:
+                bank_ref = f":{symbol.rom_label}"
+        self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(bank_ref),
+                        f"Bank byte{' of ' + symbol.rom_label if isinstance(bank_ref, str) else ' = 0'}")
         self._emit_load_store('STA', dest_bank)
 
     def _emit_far_to_near_pointer(self, src_operand, dest_loc):
@@ -364,8 +373,23 @@ class TypeConversionSelector(BaseSelector):
         """Copy pointer of given size."""
         if isinstance(src_operand, MIRImmediate):
             value = src_operand.value
+            # Check if source has a symbol with ROM label (for address-of ROM data)
+            symbol = None
+            if hasattr(src_operand, 'symbol') and src_operand.symbol:
+                symbol = src_operand.symbol
+                if hasattr(symbol, 'rom_label') and symbol.rom_label:
+                    pass  # Will use symbol.rom_label for bank byte
+                else:
+                    symbol = None  # No ROM label, use numeric value
+
             for i in range(size):
-                self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate((value >> (i * 8)) & 0xFF))
+                if i == 2 and symbol and hasattr(symbol, 'rom_label') and symbol.rom_label:
+                    # Use symbol's ROM bank for byte 2 (bank byte)
+                    bank_ref = f":{symbol.rom_label}"
+                    self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(bank_ref),
+                                    f"Bank byte of {symbol.rom_label}")
+                else:
+                    self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate((value >> (i * 8)) & 0xFF))
                 if i == 0:
                     self._emit_load_store('STA', dest_loc)
                 else:
@@ -384,9 +408,10 @@ class TypeConversionSelector(BaseSelector):
                 self._emit_load_store('STA', dest_high)
                 self._emit_instr(Opcode.XBA, comment="Restore A")
             if size > 2:
-                # Bank byte - set to 0 for ROM pointers
+                # Bank byte - X/Y registers are only 16-bit so we can't get bank from them
+                # Default to 0 (caller should use near-to-far conversion for ROM addresses)
                 dest_bank = self.parent._offset_location(dest_loc, 2)
-                self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(0x00), "Bank byte = 0")
+                self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(0x00), "Bank byte = 0 (register has no bank)")
                 self._emit_load_store('STA', dest_bank)
         else:
             src_loc = self.parent._get_operand_location(src_operand)
@@ -403,8 +428,10 @@ class TypeConversionSelector(BaseSelector):
                     self._emit_load_store('STA', dest_high)
                     self._emit_instr(Opcode.XBA, comment="Restore A")
                 if size > 2:
+                    # Bank byte - X/Y registers are only 16-bit so we can't get bank from them
+                    # Default to 0 (caller should use near-to-far conversion for ROM addresses)
                     dest_bank = self.parent._offset_location(dest_loc, 2)
-                    self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(0x00), "Bank byte = 0")
+                    self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(0x00), "Bank byte = 0 (register has no bank)")
                     self._emit_load_store('STA', dest_bank)
             else:
                 for i in range(size):

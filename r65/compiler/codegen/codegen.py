@@ -120,10 +120,10 @@ class ProgramCodeGenerator:
         for bank_num in sorted(functions_by_bank.keys()):
             bank_functions = functions_by_bank[bank_num]
 
-            # Emit bank directive
-            if bank_num > 0 or len(functions_by_bank) > 1:
-                self.emitter.emit_section_header(f"Bank {bank_num}")
-                self.emitter.emit_bank_directive(bank_num)
+            # Always emit bank directive to ensure correct bank after ROM data sections
+            # ROM data is emitted before code by symbol_gen and can leave assembler in different bank
+            self.emitter.emit_section_header(f"Bank {bank_num}")
+            self.emitter.emit_bank_directive(bank_num)
 
             # Generate functions in this bank
             for mir_func in bank_functions:

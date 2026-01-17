@@ -777,6 +777,9 @@ class ExpressionLowerer:
 
         self.emit(Move(dest=result, source=addr_immediate, type_info=expr.expr_type))
 
+        # Propagate symbol to vreg for type conversion to access (e.g., near-to-far ptr)
+        result.symbol = symbol
+
         return result
 
     def _lower_addressof_array_index(self, expr: HIRAddressOf) -> VirtualRegister:

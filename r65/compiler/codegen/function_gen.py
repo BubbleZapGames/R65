@@ -402,7 +402,10 @@ class FunctionCodeGenerator:
             if mir_func.mode_attr.transition == ModeTransition.INLINE:
                 # Save current processor status and set required mode
                 # Sequence: PHP, REP/SEP #bits, body, PLP, RTS
-                self._emit_instr(Opcode.PHP, comment="Save processor status")
+                # NOTE: Skip PHP for interrupt handlers - they save STATUS in their own prologue
+                # and the PHP would cause stack imbalance since RTI uses the interrupt's PLP
+                if not mir_func.interrupt_attr:
+                    self._emit_instr(Opcode.PHP, comment="Save processor status")
 
                 # Determine which bits to set/clear based on mode
                 # STATUS register bits: NV-BDIZC (- is unused, M is bit 5, X is bit 4)

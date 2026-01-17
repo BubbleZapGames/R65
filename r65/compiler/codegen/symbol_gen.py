@@ -179,70 +179,95 @@ class SymbolDefinitionGenerator:
         Emit ROM data with initializers.
 
         For static variables in ROM with include_bytes! initializers,
-        emits .INCBIN directives.
+        emits .INCBIN directives. Respects #[bank(n)] attributes.
 
         Generated:
             ; ============================================================================
             ; ROM Data
             ; ============================================================================
+            .BANK 1 SLOT 0
             GRAPHICS_DATA:
             .INCBIN "gfx.bin"
         """
         from r65.compiler.hir import HIRIncludeBytesExpr
+        from collections import defaultdict
+        import os
 
         allocations = self.allocator.get_allocations_by_type('rom')
 
         if not allocations:
             return
 
-        # Check if any ROM allocations have include_bytes initializers
-        has_rom_data = False
+        # Collect ROM data allocations with include_bytes initializers
+        # Group by bank number
+        bank_data = defaultdict(list)  # bank_number -> [(alloc, static_decl, file_size)]
+        auto_bank_data = []  # allocations without explicit bank
+
         for alloc in allocations:
             if hasattr(alloc.symbol, 'definition') and alloc.symbol.definition:
                 static_decl = alloc.symbol.definition
                 if hasattr(static_decl, 'initializer') and static_decl.initializer:
                     if isinstance(static_decl.initializer, HIRIncludeBytesExpr):
-                        has_rom_data = True
-                        break
-
-        if not has_rom_data:
-            return
-
-        # ROM data goes in dedicated data banks (bank 4+) to avoid overflow
-        self.emitter.emit_section_header("ROM Data")
-        self.emitter.emit_bank_directive(4, slot=0)
-
-        # Track current position and switch banks if needed
-        current_bank = 4
-        current_size = 0
-        bank_size = 0x8000  # 32KB per bank
-
-        import os
-
-        # Emit ROM data for each allocation with include_bytes initializer
-        for alloc in allocations:
-            if hasattr(alloc.symbol, 'definition') and alloc.symbol.definition:
-                static_decl = alloc.symbol.definition
-                if hasattr(static_decl, 'initializer') and static_decl.initializer:
-                    if isinstance(static_decl.initializer, HIRIncludeBytesExpr):
-                        # Emit label and .INCBIN directive
-                        label = f"{alloc.symbol.name}_data"
                         filepath = static_decl.initializer.path
-
-                        # Get file size to track bank overflow
                         try:
                             file_size = os.path.getsize(filepath)
                         except OSError:
-                            file_size = 0  # Assume small if we can't check
+                            file_size = 0
 
-                        # Check if we need to switch banks
-                        if current_size + file_size > bank_size:
-                            current_bank += 1
-                            current_size = 0
-                            self.emitter.emit_bank_directive(current_bank, slot=0)
+                        # Check for bank attribute
+                        if hasattr(static_decl, 'bank_attr') and static_decl.bank_attr:
+                            bank_num = static_decl.bank_attr.bank_number
+                            if bank_num is not None:
+                                bank_data[bank_num].append((alloc, static_decl, file_size))
+                            else:
+                                # Auto-placement mode
+                                auto_bank_data.append((alloc, static_decl, file_size))
+                        else:
+                            # No bank attribute - use auto-placement
+                            auto_bank_data.append((alloc, static_decl, file_size))
 
-                        self.emitter.emit_incbin(filepath, label=label)
-                        current_size += file_size
+        if not bank_data and not auto_bank_data:
+            return
+
+        self.emitter.emit_section_header("ROM Data")
+
+        bank_size = 0x8000  # 32KB per bank
+
+        # Emit data for each explicit bank in order
+        for bank_num in sorted(bank_data.keys()):
+            self.emitter.emit_bank_directive(bank_num, slot=0)
+            for alloc, static_decl, file_size in bank_data[bank_num]:
+                label = f"{alloc.symbol.name}_data"
+                filepath = static_decl.initializer.path
+                alloc.symbol.rom_label = label
+                self.emitter.emit_incbin(filepath, label=label)
+
+        # Emit auto-bank data starting at bank 4 (or higher if explicit banks used)
+        if auto_bank_data:
+            # Find next available bank after explicit banks
+            if bank_data:
+                auto_start_bank = max(bank_data.keys()) + 1
+                if auto_start_bank < 4:
+                    auto_start_bank = 4
+            else:
+                auto_start_bank = 4
+
+            current_bank = auto_start_bank
+            current_size = 0
+            self.emitter.emit_bank_directive(current_bank, slot=0)
+
+            for alloc, static_decl, file_size in auto_bank_data:
+                # Check if we need to switch banks
+                if current_size + file_size > bank_size:
+                    current_bank += 1
+                    current_size = 0
+                    self.emitter.emit_bank_directive(current_bank, slot=0)
+
+                label = f"{alloc.symbol.name}_data"
+                filepath = static_decl.initializer.path
+                alloc.symbol.rom_label = label
+                self.emitter.emit_incbin(filepath, label=label)
+                current_size += file_size
 
         self.emitter.emit_blank_line()
 

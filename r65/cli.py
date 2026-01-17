@@ -70,7 +70,7 @@ class TemplateManager:
                 content = item.read_text(encoding='utf-8')
                 content = content.replace("{{PROJECT_NAME}}", project_name)
                 content = content.replace("{{PROJECT_NAME_UPPER}}", project_name.upper())
-                
+
                 # Determine destination based on file type
                 if item.suffix == '.md':
                     # Keep README.md in project root
@@ -81,7 +81,7 @@ class TemplateManager:
                 else:
                     # R65 source files go to src directory
                     dst_item = dst / item.name
-                
+
                 dst_item.write_text(content, encoding='utf-8')
             elif item.is_dir():
                 # Recursively copy subdirectories

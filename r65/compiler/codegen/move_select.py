@@ -11,6 +11,7 @@ from r65.compiler.errors import InstructionSelectionError
 from r65.compiler.codegen.opcodes import Opcode, STORE_MNEMONICS, LOAD_MNEMONICS
 from r65.compiler.codegen.asm_nodes import Immediate
 from r65.compiler.codegen.base_selector import BaseSelector
+from r65.compiler.hir.types import PointerTypeInfo
 
 
 class MoveOperationSelector(BaseSelector):
@@ -47,6 +48,9 @@ class MoveOperationSelector(BaseSelector):
         src_operand = instr.source
         is_u16 = self.parent._is_16bit(instr.type_info)
 
+        # Check if this is a far pointer (3 bytes)
+        is_far_ptr = isinstance(instr.type_info, PointerTypeInfo) and instr.type_info.is_far
+
         # SPECIAL CASE: Destination is hardware register
         if dest_loc.kind == LocationKind.HARDWARE:
             self._move_to_hardware_register(instr, dest_loc, src_operand, is_u16)
@@ -63,7 +67,7 @@ class MoveOperationSelector(BaseSelector):
             return
 
         # Move from register/memory to memory
-        self._move_from_location(instr, dest_loc, src_operand, is_u16)
+        self._move_from_location(instr, dest_loc, src_operand, is_u16, is_far_ptr)
 
     # ========================================================================
     # Move to Hardware Register
@@ -257,17 +261,36 @@ class MoveOperationSelector(BaseSelector):
     # Memory-to-Memory Move
     # ========================================================================
 
-    def _move_from_location(self, instr: Move, dest_loc, src_operand, is_u16: bool):
+    def _move_from_location(self, instr: Move, dest_loc, src_operand, is_u16: bool, is_far_ptr: bool = False):
         """Handle moving from a source location to memory destination."""
         src_loc = self.parent._get_operand_location(src_operand)
 
         if src_loc.kind == LocationKind.HARDWARE:
             self._store_hw_register_to_memory(src_loc.hw_register, dest_loc, is_u16)
+        elif is_far_ptr:
+            # 3-byte far pointer copy
+            self._emit_far_pointer_mem_to_mem(src_loc, dest_loc)
         elif is_u16:
             self.parent._emit_16bit_mem_to_mem(src_loc, dest_loc)
         else:
             self._emit_load_store('LDA', src_loc)
             self._emit_load_store('STA', dest_loc)
+
+    def _emit_far_pointer_mem_to_mem(self, src_loc, dest_loc):
+        """Copy a 3-byte far pointer from source to destination."""
+        # Low byte
+        self._emit_load_store('LDA', src_loc)
+        self._emit_load_store('STA', dest_loc)
+        # High byte
+        src_high = self.parent._offset_location(src_loc, 1)
+        dest_high = self.parent._offset_location(dest_loc, 1)
+        self._emit_load_store('LDA', src_high)
+        self._emit_load_store('STA', dest_high)
+        # Bank byte
+        src_bank = self.parent._offset_location(src_loc, 2)
+        dest_bank = self.parent._offset_location(dest_loc, 2)
+        self._emit_load_store('LDA', src_bank)
+        self._emit_load_store('STA', dest_bank)
 
     def _store_hw_register_to_memory(self, src_reg: str, dest_loc, is_u16: bool):
         """Store a hardware register to memory."""
