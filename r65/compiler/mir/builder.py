@@ -1177,6 +1177,14 @@ class MIRBuilder:
                     symbol=symbol,
                     is_volatile=storage_attr.storage_kind == StorageKind.HW
                 )
+            # Immutable statics without storage attribute are ROM
+            elif hasattr(static_decl, 'is_mutable') and not static_decl.is_mutable:
+                return MemoryLocation(
+                    storage_type='rom',
+                    address=None,
+                    symbol=symbol,
+                    is_volatile=False
+                )
 
         # Default: unknown storage (will be allocated later)
         return MemoryLocation(

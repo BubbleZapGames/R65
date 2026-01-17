@@ -11,6 +11,7 @@ from r65.compiler.errors import InstructionSelectionError
 from r65.compiler.codegen.opcodes import Opcode, STORE_MNEMONICS
 from r65.compiler.codegen.asm_nodes import Immediate, Address, StackOffset
 from r65.compiler.codegen.base_selector import BaseSelector
+from r65.compiler.hir.types import PointerTypeInfo
 
 
 class MemoryOperationSelector(BaseSelector):
@@ -85,6 +86,9 @@ class MemoryOperationSelector(BaseSelector):
         dest_loc = self.parent._get_operand_location(instr.dest)
         is_u16 = self.parent._is_16bit(instr.type_info)
 
+        # Check if this is a far pointer (3 bytes)
+        is_far_ptr = isinstance(instr.type_info, PointerTypeInfo) and instr.type_info.is_far
+
         # SPECIAL CASE: Storing to B register
         if dest_loc.kind == LocationKind.HARDWARE and dest_loc.hw_register == 'B':
             self._store_to_b_register(instr, dest_loc)
@@ -101,7 +105,7 @@ class MemoryOperationSelector(BaseSelector):
             return
 
         # Normal case: memory-to-memory or register-to-memory store
-        self._store_from_location(instr, dest_loc, is_u16)
+        self._store_from_location(instr, dest_loc, is_u16, is_far_ptr)
 
     def _store_to_b_register(self, instr: Store, dest_loc):
         """Handle storing to the B register (hidden accumulator high byte)."""
@@ -141,17 +145,36 @@ class MemoryOperationSelector(BaseSelector):
                 self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(value_masked))
                 self._emit_load_store('STA', dest_loc)
 
-    def _store_from_location(self, instr: Store, dest_loc, is_u16: bool):
+    def _store_from_location(self, instr: Store, dest_loc, is_u16: bool, is_far_ptr: bool = False):
         """Store from a source location to destination."""
         src_loc = self.parent._get_operand_location(instr.source)
 
         if src_loc.kind == LocationKind.HARDWARE:
             self._store_from_hardware_register(src_loc, dest_loc, is_u16)
+        elif is_far_ptr:
+            # 3-byte far pointer copy
+            self._store_far_pointer(src_loc, dest_loc)
         elif is_u16:
             self.parent._emit_16bit_mem_to_mem(src_loc, dest_loc)
         else:
             self._emit_load_store('LDA', src_loc)
             self._emit_load_store('STA', dest_loc)
+
+    def _store_far_pointer(self, src_loc, dest_loc):
+        """Store a 3-byte far pointer from source to destination."""
+        # Low byte
+        self._emit_load_store('LDA', src_loc)
+        self._emit_load_store('STA', dest_loc)
+        # High byte
+        src_high = self.parent._offset_location(src_loc, 1)
+        dest_high = self.parent._offset_location(dest_loc, 1)
+        self._emit_load_store('LDA', src_high)
+        self._emit_load_store('STA', dest_high)
+        # Bank byte
+        src_bank = self.parent._offset_location(src_loc, 2)
+        dest_bank = self.parent._offset_location(dest_loc, 2)
+        self._emit_load_store('LDA', src_bank)
+        self._emit_load_store('STA', dest_bank)
 
     def _store_from_hardware_register(self, src_loc, dest_loc, is_u16: bool):
         """Store from a hardware register to memory."""
@@ -249,18 +272,21 @@ class MemoryOperationSelector(BaseSelector):
         # Handle field offset - load into Y for indexed indirect
         # For stack indirect addressing, Y is always required (d,S),Y mode
         offset = getattr(instr, 'offset', 0)
-        has_explicit_offset = hasattr(instr, 'offset') and instr.offset is not None
         needs_y_for_stack = ptr_loc.kind == LocationKind.STACK and instr.index_register is None
 
-        if offset > 0:
+        if instr.index_register:
+            # Index register already set by MIR lowerer (e.g., for ptr[i] access)
+            # The index value is already in the register, don't overwrite it
+            instr_index = instr.index_register
+        elif offset > 0:
             self._emit_instr(Opcode.LDY_IMMEDIATE, Immediate(offset), f"Load field offset {offset}")
             instr_index = 'Y'
-        elif needs_y_for_stack or (has_explicit_offset and offset == 0):
-            # Stack indirect requires Y, or explicit offset of 0 for field access
+        elif needs_y_for_stack:
+            # Stack indirect requires Y with offset 0
             self._emit_instr(Opcode.LDY_IMMEDIATE, Immediate(0), "Load field offset 0")
             instr_index = 'Y'
         else:
-            instr_index = instr.index_register
+            instr_index = None
 
         is_u16 = self.parent._is_16bit(instr.type_info)
 
@@ -333,18 +359,21 @@ class MemoryOperationSelector(BaseSelector):
         # Handle field offset - load into Y for indexed indirect
         # For stack indirect addressing, Y is always required (d,S),Y mode
         offset = getattr(instr, 'offset', 0)
-        has_explicit_offset = hasattr(instr, 'offset') and instr.offset is not None
         needs_y_for_stack = ptr_loc.kind == LocationKind.STACK and instr.index_register is None
 
-        if offset > 0:
+        if instr.index_register:
+            # Index register already set by MIR lowerer (e.g., for ptr[i] access)
+            # The index value is already in the register, don't overwrite it
+            instr_index = instr.index_register
+        elif offset > 0:
             self._emit_instr(Opcode.LDY_IMMEDIATE, Immediate(offset), f"Load field offset {offset}")
             instr_index = 'Y'
-        elif needs_y_for_stack or (has_explicit_offset and offset == 0):
-            # Stack indirect requires Y, or explicit offset of 0 for field access
+        elif needs_y_for_stack:
+            # Stack indirect requires Y with offset 0
             self._emit_instr(Opcode.LDY_IMMEDIATE, Immediate(0), "Load field offset 0")
             instr_index = 'Y'
         else:
-            instr_index = instr.index_register
+            instr_index = None
 
         is_u16 = self.parent._is_16bit(instr.type_info)
 
