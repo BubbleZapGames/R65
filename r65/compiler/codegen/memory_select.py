@@ -457,11 +457,11 @@ class MemoryOperationSelector(BaseSelector):
 
         # Spill the pointer from hardware register to scratch
         if ptr_loc.hw_register == 'X':
-            self._emit_instr(Opcode.STX_DP, Immediate(scratch_addr), "Spill X pointer to scratch")
+            self._emit_instr(Opcode.STX_DP, Address(scratch_addr), "Spill X pointer to scratch")
         elif ptr_loc.hw_register == 'Y':
-            self._emit_instr(Opcode.STY_DP, Immediate(scratch_addr), "Spill Y pointer to scratch")
+            self._emit_instr(Opcode.STY_DP, Address(scratch_addr), "Spill Y pointer to scratch")
         elif ptr_loc.hw_register == 'A':
-            self._emit_instr(Opcode.STA_DP, Immediate(scratch_addr), "Spill A pointer to scratch")
+            self._emit_instr(Opcode.STA_DP, Address(scratch_addr), "Spill A pointer to scratch")
         else:
             raise InstructionSelectionError(f"Cannot spill pointer from hardware register {ptr_loc.hw_register}")
 

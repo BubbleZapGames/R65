@@ -65,6 +65,9 @@ class InstructionSelector:
     selection.
     """
 
+    # Class-level counter for globally unique labels across all functions
+    _global_label_counter = 0
+
     def __init__(self,
                  emitter: AssemblyEmitter,
                  register_allocator: RegisterAllocator,
@@ -114,9 +117,6 @@ class InstructionSelector:
         # Track type info from last Compare instruction for signed/unsigned branching
         self.last_comparison_type = None
 
-        # Counter for generating unique labels
-        self._label_counter = 0
-
         # Hardware register state tracker for optimization
         self.hw_tracker = HardwareRegisterTracker()
         self._instruction_index = 0
@@ -160,7 +160,7 @@ class InstructionSelector:
             if mask & X_FLAG:
                 comment_parts.append("X")
             comment = f"Set {'+'.join(comment_parts)} flag{'s' if len(comment_parts) > 1 else ''} (8-bit mode)"
-            self.emitter.emit_instr(Opcode.SEP_IMMEDIATE, mask, comment=comment)
+            self.emitter.emit_instr(Opcode.SEP_IMMEDIATE, Immediate(mask), comment=comment)
             self._pending_sep_mask = 0
 
         if self._pending_rep_mask:
@@ -171,7 +171,7 @@ class InstructionSelector:
             if mask & X_FLAG:
                 comment_parts.append("X")
             comment = f"Clear {'+'.join(comment_parts)} flag{'s' if len(comment_parts) > 1 else ''} (16-bit mode)"
-            self.emitter.emit_instr(Opcode.REP_IMMEDIATE, mask, comment=comment)
+            self.emitter.emit_instr(Opcode.REP_IMMEDIATE, Immediate(mask), comment=comment)
             self._pending_rep_mask = 0
 
     def flush_pending_mode_flags(self):
@@ -284,8 +284,8 @@ class InstructionSelector:
 
     def _get_unique_label(self) -> str:
         """Generate a unique label for inline branching."""
-        self._label_counter += 1
-        return f"__SCMP{self._label_counter}"
+        InstructionSelector._global_label_counter += 1
+        return f"__SCMP{InstructionSelector._global_label_counter}"
 
     # ========================================================================
     # XBA State Management (delegates to XBAStateManager)

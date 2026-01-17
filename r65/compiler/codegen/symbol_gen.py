@@ -208,7 +208,16 @@ class SymbolDefinitionGenerator:
         if not has_rom_data:
             return
 
+        # ROM data goes in dedicated data banks (bank 4+) to avoid overflow
         self.emitter.emit_section_header("ROM Data")
+        self.emitter.emit_bank_directive(4, slot=0)
+
+        # Track current position and switch banks if needed
+        current_bank = 4
+        current_size = 0
+        bank_size = 0x8000  # 32KB per bank
+
+        import os
 
         # Emit ROM data for each allocation with include_bytes initializer
         for alloc in allocations:
@@ -219,7 +228,21 @@ class SymbolDefinitionGenerator:
                         # Emit label and .INCBIN directive
                         label = f"{alloc.symbol.name}_data"
                         filepath = static_decl.initializer.path
+
+                        # Get file size to track bank overflow
+                        try:
+                            file_size = os.path.getsize(filepath)
+                        except OSError:
+                            file_size = 0  # Assume small if we can't check
+
+                        # Check if we need to switch banks
+                        if current_size + file_size > bank_size:
+                            current_bank += 1
+                            current_size = 0
+                            self.emitter.emit_bank_directive(current_bank, slot=0)
+
                         self.emitter.emit_incbin(filepath, label=label)
+                        current_size += file_size
 
         self.emitter.emit_blank_line()
 

@@ -73,13 +73,19 @@ class ProgramCodeGenerator:
         max_bank = max(functions_by_bank.keys()) if functions_by_bank else 0
         bank_count = max_bank + 1  # Banks are 0-indexed
 
+        # Add extra banks for ROM data (graphics, sound, etc.)
+        # Data starts at bank 4, reserve enough for typical game assets
+        # Need ~100KB of data = ~4 banks, plus code banks, rounded up
+        data_banks = 8
+        total_banks = max(bank_count + data_banks, 16)  # At least 16 banks for data + code
+
         # Determine ROM type from snesrom_config
         is_hirom = False
         if mir_program.snesrom_config:
             is_hirom = mir_program.snesrom_config.hirom or mir_program.snesrom_config.exhirom
 
         # Calculate minimum ROM size (power-of-2 banks and ROMSIZE value)
-        rom_banks, self.romsize_value = calculate_rom_size(bank_count, is_hirom)
+        rom_banks, self.romsize_value = calculate_rom_size(total_banks, is_hirom)
 
         # Emit memory map with calculated bank count
         self.emitter.emit_memory_map(banks=rom_banks)

@@ -35,7 +35,9 @@ from r65.compiler.codegen.asm_nodes import (
 # ============================================================================
 
 # Maximum branch distance (signed 8-bit: -128 to +127)
-MAX_BRANCH_DISTANCE = 127
+# Use conservative threshold to account for potential size calculation differences
+# between our estimation and actual assembled output
+MAX_BRANCH_DISTANCE = 100
 
 # Conditional branches that can be inverted for long branch fixup
 # BRA and BRL are unconditional and don't need fixup
@@ -253,12 +255,25 @@ def fixup_nodes(nodes: List[AsmNode]) -> Tuple[List[AsmNode], int]:
     This function should be called after peephole optimization and before
     final assembly output.
 
+    Runs multiple passes because fixing one branch can push other branches
+    over the 127-byte limit.
+
     Args:
         nodes: List of AsmNode objects
 
     Returns:
         Tuple of (fixed nodes, number of branches fixed)
     """
-    fixup = BranchFixup()
-    fixed = fixup.fixup(nodes)
-    return fixed, fixup.branches_fixed
+    total_fixed = 0
+    max_iterations = 10  # Prevent infinite loop
+
+    for _ in range(max_iterations):
+        fixup = BranchFixup()
+        nodes = fixup.fixup(nodes)
+
+        if fixup.branches_fixed == 0:
+            break  # No more branches need fixing
+
+        total_fixed += fixup.branches_fixed
+
+    return nodes, total_fixed

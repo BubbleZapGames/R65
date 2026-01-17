@@ -1302,22 +1302,26 @@ class MIRBuilder:
 
             elif self._is_function_pointer_init(initializer):
                 # Function pointer: emit Store with FunctionPointer directly
-                func_name = self._get_function_name(initializer)
-                func_ptr = FunctionPointer(function_name=func_name)
-                self.emit(Store(
-                    source=func_ptr,
-                    dest=mem_loc,
-                    type_info=static_decl.var_type
-                ))
+                # Skip for ROM statics (function pointer tables in ROM)
+                if not is_rom_storage:
+                    func_name = self._get_function_name(initializer)
+                    func_ptr = FunctionPointer(function_name=func_name)
+                    self.emit(Store(
+                        source=func_ptr,
+                        dest=mem_loc,
+                        type_info=static_decl.var_type
+                    ))
 
             else:
                 # Scalar value: simple store
-                init_value = self.lower_expression(initializer)
-                self.emit(Store(
-                    source=init_value,
-                    dest=mem_loc,
-                    type_info=static_decl.var_type
-                ))
+                # Skip for ROM statics (constants in ROM don't need runtime init)
+                if not is_rom_storage:
+                    init_value = self.lower_expression(initializer)
+                    self.emit(Store(
+                        source=init_value,
+                        dest=mem_loc,
+                        type_info=static_decl.var_type
+                    ))
 
         # Emit return instruction
         self.emit(Return(values=[]))
