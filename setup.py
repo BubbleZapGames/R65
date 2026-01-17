@@ -63,6 +63,7 @@ setup(
         "r65": [
             "templates/**/*.r65",  # Project templates
             "templates/**/*.md",   # Template documentation
+            "templates/**/Makefile",  # Project Makefiles
         ],
     },
 
