@@ -1,0 +1,971 @@
+// R65 Standard Library - I32 (32-bit Signed Integer) Support
+//
+// Provides 32-bit signed integer arithmetic, comparisons, and conversions.
+// Uses two's complement representation.
+//
+// Usage:
+//   include!("lib/i32.r65")
+
+include!("math.r65")
+
+// ============================================================================
+// I32 (32-bit Signed Integer) Support
+// ============================================================================
+
+// 32-bit signed integer (little-endian, two's complement)
+// Size: 4 bytes, packed
+struct I32 {
+    lo: u16,    // Offset 0-1: Low 16 bits
+    hi: u16     // Offset 2-3: High 16 bits (bit 15 = sign bit)
+}
+
+// ============================================================================
+// I32 Macros - Binary operations with destination (dest = a op b)
+// ============================================================================
+
+// dest = a + b
+macro_rules! i32_add($dest:expr, $a:expr, $b:expr) {
+    $dest.copy($a);
+    $dest.add($b);
+}
+
+// dest = a - b
+macro_rules! i32_sub($dest:expr, $a:expr, $b:expr) {
+    $dest.copy($a);
+    $dest.sub($b);
+}
+
+// dest = a * b
+macro_rules! i32_mul($dest:expr, $a:expr, $b:expr) {
+    $dest.copy($a);
+    $dest.mul($b);
+}
+
+// dest = a / b
+macro_rules! i32_div($dest:expr, $a:expr, $b:expr) {
+    $dest.copy($a);
+    $dest.div($b);
+}
+
+// dest = a % b
+macro_rules! i32_mod($dest:expr, $a:expr, $b:expr) {
+    $dest.copy($a);
+    $dest.mod($b);
+}
+
+// dest = -a
+macro_rules! i32_neg($dest:expr, $a:expr) {
+    $dest.copy($a);
+    $dest.neg();
+}
+
+// dest = |a|
+macro_rules! i32_abs($dest:expr, $a:expr) {
+    $dest.copy($a);
+    $dest.abs();
+}
+
+// ============================================================================
+// Internal Macros (used to reduce code repetition)
+// ============================================================================
+
+// Shift 32-bit value left by 1 bit (lo/hi are u16 variables)
+macro_rules! _i32_shl1($lo:expr, $hi:expr) {
+    A = $lo;
+    asm!("ASL A");
+    $lo = A;
+    A = $hi;
+    asm!("ROL A");
+    $hi = A;
+}
+
+// Shift 32-bit value right by 1 bit (logical - zero fill)
+macro_rules! _i32_shr1($lo:expr, $hi:expr) {
+    A = $hi;
+    asm!("LSR A");
+    $hi = A;
+    A = $lo;
+    asm!("ROR A");
+    $lo = A;
+}
+
+// SNES hardware 8x8 multiply: result = a * b (switches to m16 for result)
+// Only used within #[cfg(snes)] functions
+macro_rules! _hwmul8x8($a:expr, $b:expr, $result:expr) {
+    WRMPYA = $a;
+    WRMPYB = $b;
+    NOP(4);
+    STATUS.A16 = true;
+    A = RDMPYL;
+    $result = A;
+    STATUS.A16 = false;
+}
+
+// SNES hardware division step: divides (remainder:byte) by divisor
+// Expects byte value already in A. Reads divisor from X.
+// Only used within #[cfg(snes)] functions
+macro_rules! _hwdiv_step($remainder:expr) {
+    WRDIVL = A;
+    A = $remainder;
+    WRDIVH = A;
+    WRDIVB = X;
+    NOP(8);
+}
+
+// First hardware division step (remainder starts at 0)
+// Expects byte value already in A. Reads divisor from X.
+// Only used within #[cfg(snes)] functions
+macro_rules! _hwdiv_first() {
+    WRDIVL = A;
+    WRDIVH = 0;
+    WRDIVB = X;
+    NOP(8);
+}
+
+// ============================================================================
+// Internal 16x16 -> 32 bit multiplication (shared with U32)
+// ============================================================================
+
+// 16x16 -> 32 bit multiplication using SNES hardware
+// Uses four 8x8 multiplies: (a_hi*256 + a_lo) * (b_hi*256 + b_lo)
+// Result stored in result_lo (low 16 bits) and result_hi (high 16 bits)
+#[cfg(snes)]
+#[mode(m8, transition=caller)]
+far fn _i32_mul16x16(a @ A: u16, b @ X: u16, *result_lo: u16, *result_hi: u16) {
+    // Local temporaries for multiplication
+    let mut a_lo: u8;
+    let mut a_hi: u8;
+    let mut b_lo: u8;
+    let mut b_hi: u8;
+    let mut p1: u16;
+    let mut p2: u16;
+    let mut p3: u16;
+
+    // Extract bytes from a (already in A)
+    a_lo = A;
+    STATUS.A16 = false;
+    xba();
+    a_hi = A;
+
+    // Extract bytes from b (in X)
+    A = X;
+    b_lo = A;
+    A = X >> 8;
+    b_hi = A;
+
+    // Four partial products using hardware multiplier
+    _hwmul8x8!(a_lo, b_lo, *result_lo);  // Product 0: bits 0-15
+    A = 0;
+    *result_hi = A;
+
+    _hwmul8x8!(a_lo, b_hi, p1);          // Product 1: bits 8-23
+    _hwmul8x8!(a_hi, b_lo, p2);          // Product 2: bits 8-23
+    _hwmul8x8!(a_hi, b_hi, p3);          // Product 3: bits 16-31
+
+    // Combine products:
+    // result = result_lo + (p1 << 8) + (p2 << 8) + (p3 << 16)
+
+    // Add p1 << 8 (p1_lo goes to result_lo high byte, p1_hi goes to result_hi low byte)
+    A = p1;
+    A = A << 8;
+    STATUS.Carry = false;
+    A = A + (*result_lo);
+    *result_lo = A;
+    A = p1;
+    A = A >> 8;
+    A = A + (*result_hi);
+    *result_hi = A;
+
+    // Add p2 << 8 (same pattern)
+    A = p2;
+    A = A << 8;
+    STATUS.Carry = false;
+    A = A + (*result_lo);
+    *result_lo = A;
+    A = p2;
+    A = A >> 8;
+    A = A + (*result_hi);
+    *result_hi = A;
+
+    // Add p3 << 16 (goes entirely to result_hi)
+    STATUS.Carry = false;
+    A = (*result_hi);
+    A = A + p3;
+    *result_hi = A;
+}
+
+// Software 16x16 -> 32 bit multiplication (shift-and-add)
+#[cfg(not(snes))]
+#[mode(m16, transition=caller)]
+far fn _i32_mul16x16(a @ A: u16, b @ X: u16, *result_lo: u16, *result_hi: u16) {
+    let mut multiplicand_lo: u16 = A;
+    let mut multiplicand_hi: u16 = 0;
+    let mut multiplier: u16 = X;
+
+    // Clear result
+    A = 0;
+    *result_lo = A;
+    *result_hi = A;
+
+    loop {
+        if multiplier == 0 {
+            break;
+        }
+
+        // Test lowest bit of multiplier
+        A = multiplier;
+        A = A & 1;
+        if A != 0 {
+            // Add multiplicand to result (32-bit add)
+            STATUS.Carry = false;
+            A = (*result_lo);
+            A = A + multiplicand_lo;
+            *result_lo = A;
+            A = (*result_hi);
+            A = A + multiplicand_hi;
+            *result_hi = A;
+        }
+
+        // Shift multiplicand left (32-bit shift)
+        _i32_shl1!(multiplicand_lo, multiplicand_hi);
+
+        // Shift multiplier right
+        A = multiplier;
+        A = A >> 1;
+        multiplier = A;
+    }
+}
+
+// ============================================================================
+// I32 Implementation
+// ============================================================================
+
+impl far I32 {
+    // ========================================================================
+    // Conversion and Copy Methods
+    // ========================================================================
+
+    // Copy another I32 into self
+    #[mode(m16, transition=caller)]
+    far fn copy(far *self, far *src: I32) {
+        A = src.lo;
+        self.lo = A;
+        A = src.hi;
+        self.hi = A;
+    }
+
+    // Initialize from i16 (sign-extend)
+    // If value is negative, extends 0xFFFF to high word
+    #[mode(m16, transition=caller)]
+    far fn from_i16(far *self, value @ A: i16) {
+        self.lo = A as u16;
+        // Check sign bit (bit 15) - cast to u16 for bitwise operation
+        if (A as u16) & 0x8000 != 0 as u16 {
+            // Negative: sign extend with 0xFFFF
+            self.hi = 0xFFFF;
+        } else {
+            // Positive: zero extend
+            self.hi = 0;
+        }
+    }
+
+    // Initialize from u16 (zero-extend, for positive values only)
+    #[mode(m16, transition=caller)]
+    far fn from_u16(far *self, value @ A: u16) {
+        self.lo = A;
+        self.hi = 0;
+    }
+
+    // Convert to i16 (truncate, keeps low 16 bits)
+    #[mode(m16, transition=caller)]
+    far fn to_i16(far *self) -> i16 {
+        return self.lo as i16;
+    }
+
+    // ========================================================================
+    // Sign-Related Methods
+    // ========================================================================
+
+    // Check if the value is negative (sign bit set)
+    // Returns true if negative, false if zero or positive
+    #[mode(m16, transition=caller)]
+    far fn is_negative(far *self) -> bool {
+        A = self.hi;
+        if A & 0x8000 != 0 {
+            return true;
+        }
+        return false;
+    }
+
+    // Negate the value (two's complement: ~self + 1)
+    #[mode(m16, transition=caller)]
+    far fn neg(far *self) {
+        // Two's complement negation: invert all bits and add 1
+        // ~lo
+        A = self.lo;
+        A = A ^ 0xFFFF;
+        self.lo = A;
+        // ~hi
+        A = self.hi;
+        A = A ^ 0xFFFF;
+        self.hi = A;
+        // Add 1 with carry propagation
+        STATUS.Carry = false;
+        A = self.lo;
+        A = A + 1;
+        self.lo = A;
+        A = self.hi;
+        A = A + 0;  // Add carry only
+        self.hi = A;
+    }
+
+    // Absolute value: if negative, negate
+    #[mode(m16, transition=caller)]
+    far fn abs(far *self) {
+        A = self.hi;
+        if A & 0x8000 != 0 {
+            self.neg();
+        }
+    }
+
+    // ========================================================================
+    // Arithmetic Methods (all modify self in-place)
+    // ========================================================================
+
+    // Add: self += other (with overflow wrapping)
+    // Two's complement addition is identical to unsigned
+    #[mode(m16, transition=caller)]
+    far fn add(far *self, far *other: I32) {
+        // Add low words with carry clear
+        STATUS.Carry = false;
+        A = self.lo;
+        A = A + other.lo;
+        self.lo = A;
+
+        // Add high words with carry from low addition
+        A = self.hi;
+        A = A + other.hi;
+        self.hi = A;
+    }
+
+    // Subtract: self -= other (with underflow wrapping)
+    // Two's complement subtraction is identical to unsigned
+    #[mode(m16, transition=caller)]
+    far fn sub(far *self, far *other: I32) {
+        // Subtract low words with borrow clear (SEC for SBC)
+        STATUS.Carry = true;
+        A = self.lo;
+        A = A - other.lo;
+        self.lo = A;
+
+        // Subtract high words with borrow from low subtraction
+        A = self.hi;
+        A = A - other.hi;
+        self.hi = A;
+    }
+
+    // Multiply: self *= other (32x32 -> 32, lower 32 bits only)
+    // Signed multiplication: track signs, multiply magnitudes, fix sign
+    #[mode(m16, transition=caller)]
+    far fn mul(far *self, far *other: I32) {
+        let mut negate_result: bool = false;
+        let mut self_lo: u16;
+        let mut temp_lo: u16;
+        let mut temp_hi: u16;
+
+        // Determine if result should be negative (signs differ)
+        A = self.hi;
+        A = A ^ other.hi;
+        if A & 0x8000 != 0 {
+            negate_result = true;
+        }
+
+        // Make self positive (we'll work with magnitudes)
+        A = self.hi;
+        if A & 0x8000 != 0 {
+            self.neg();
+        }
+
+        // Create local copy of other's magnitude
+        let mut other_lo: u16 = other.lo;
+        let mut other_hi: u16 = other.hi;
+        A = other_hi;
+        if A & 0x8000 != 0 {
+            // Negate local copy: ~other + 1
+            A = other_lo;
+            A = A ^ 0xFFFF;
+            other_lo = A;
+            A = other_hi;
+            A = A ^ 0xFFFF;
+            other_hi = A;
+            STATUS.Carry = false;
+            A = other_lo;
+            A = A + 1;
+            other_lo = A;
+            A = other_hi;
+            A = A + 0;
+            other_hi = A;
+        }
+
+        // Save self.lo since we'll overwrite it
+        A = self.lo;
+        self_lo = A;
+
+        // 32-bit multiply uses partial products (same as U32):
+        // self.lo = low16(self.lo * other.lo)
+        // self.hi = high16(self.lo * other.lo) + low16(self.lo * other.hi) + low16(self.hi * other.lo)
+
+        // Compute self.lo * other.lo -> self.lo and temp_hi
+        A = self_lo;
+        X = other_lo;
+        _i32_mul16x16(A, X, &self.lo, &temp_hi);
+
+        // Compute self.lo * other.hi (only need low 16 bits)
+        A = self_lo;
+        X = other_hi;
+        _i32_mul16x16(A, X, &temp_lo, &temp_lo);  // Discard high result
+
+        // Add to temp_hi
+        STATUS.Carry = false;
+        A = temp_hi;
+        A = A + temp_lo;
+        temp_hi = A;
+
+        // Compute self.hi * other.lo (only need low 16 bits)
+        A = self.hi;
+        X = other_lo;
+        _i32_mul16x16(A, X, &temp_lo, &temp_lo);  // Discard high result
+
+        // Add to temp_hi and store in self.hi
+        STATUS.Carry = false;
+        A = temp_hi;
+        A = A + temp_lo;
+        self.hi = A;
+
+        // Fix sign of result
+        if negate_result {
+            self.neg();
+        }
+    }
+
+    // Divide: self /= other (rounds toward zero, returns MIN_I32 if other == 0)
+    // Signed division: track signs, divide magnitudes, fix sign
+    #[mode(m16, transition=caller)]
+    far fn div(far *self, far *other: I32) {
+        let mut remainder_lo: u16;
+        let mut remainder_hi: u16;
+        let mut dividend_lo: u16;
+        let mut dividend_hi: u16;
+        let mut divisor_lo: u16;
+        let mut divisor_hi: u16;
+        let mut bit_count: u8;
+        let mut negate_result: bool = false;
+
+        // Handle division by zero
+        A = other.lo;
+        if A == 0 {
+            A = other.hi;
+            if A == 0 {
+                // Return MIN_I32 (0x80000000) for division by zero
+                A = 0;
+                self.lo = A;
+                A = 0x8000;
+                self.hi = A;
+                return;
+            }
+        }
+
+        // Determine if result should be negative (signs differ)
+        A = self.hi;
+        A = A ^ other.hi;
+        if A & 0x8000 != 0 {
+            negate_result = true;
+        }
+
+        // Copy dividend (self) and take absolute value
+        A = self.lo;
+        dividend_lo = A;
+        A = self.hi;
+        dividend_hi = A;
+        if A & 0x8000 != 0 {
+            // Negate dividend
+            A = dividend_lo;
+            A = A ^ 0xFFFF;
+            dividend_lo = A;
+            A = dividend_hi;
+            A = A ^ 0xFFFF;
+            dividend_hi = A;
+            STATUS.Carry = false;
+            A = dividend_lo;
+            A = A + 1;
+            dividend_lo = A;
+            A = dividend_hi;
+            A = A + 0;
+            dividend_hi = A;
+        }
+
+        // Copy divisor (other) and take absolute value
+        A = other.lo;
+        divisor_lo = A;
+        A = other.hi;
+        divisor_hi = A;
+        if A & 0x8000 != 0 {
+            // Negate divisor
+            A = divisor_lo;
+            A = A ^ 0xFFFF;
+            divisor_lo = A;
+            A = divisor_hi;
+            A = A ^ 0xFFFF;
+            divisor_hi = A;
+            STATUS.Carry = false;
+            A = divisor_lo;
+            A = A + 1;
+            divisor_lo = A;
+            A = divisor_hi;
+            A = A + 0;
+            divisor_hi = A;
+        }
+
+        // Initialize remainder to 0
+        A = 0;
+        remainder_lo = A;
+        remainder_hi = A;
+
+        // Initialize quotient (self) to 0
+        self.lo = A;
+        self.hi = A;
+
+        // Process 32 bits
+        bit_count = 32;
+
+        loop {
+            // Shift remainder left by 1, bringing in MSB of dividend
+            _i32_shl1!(remainder_lo, remainder_hi);
+
+            // Get MSB of dividend into remainder
+            A = dividend_hi;
+            if A & 0x8000 != 0 {
+                A = remainder_lo;
+                A = A | 1;
+                remainder_lo = A;
+            }
+
+            // Shift dividend left
+            _i32_shl1!(dividend_lo, dividend_hi);
+
+            // Shift quotient (self) left
+            A = self.lo;
+            asm!("ASL A");
+            self.lo = A;
+            A = self.hi;
+            asm!("ROL A");
+            self.hi = A;
+
+            // Compare remainder >= divisor (32-bit compare)
+            // First compare high words
+            A = remainder_hi;
+            if A > divisor_hi {
+                // remainder > divisor, subtract and set quotient bit
+                STATUS.Carry = true;
+                A = remainder_lo;
+                A = A - divisor_lo;
+                remainder_lo = A;
+                A = remainder_hi;
+                A = A - divisor_hi;
+                remainder_hi = A;
+                A = self.lo;
+                A = A | 1;
+                self.lo = A;
+            } else if A == divisor_hi {
+                // High words equal, check low words
+                A = remainder_lo;
+                if A >= divisor_lo {
+                    // remainder >= divisor
+                    STATUS.Carry = true;
+                    A = remainder_lo;
+                    A = A - divisor_lo;
+                    remainder_lo = A;
+                    A = remainder_hi;
+                    A = A - divisor_hi;
+                    remainder_hi = A;
+                    A = self.lo;
+                    A = A | 1;
+                    self.lo = A;
+                }
+            }
+            // else remainder < divisor, quotient bit stays 0
+
+            bit_count--;
+            if bit_count == 0 {
+                break;
+            }
+        }
+
+        // Fix sign of result
+        if negate_result {
+            self.neg();
+        }
+    }
+
+    // Modulo: self %= other (remainder has same sign as dividend)
+    // Unchanged if other == 0
+    #[mode(m16, transition=caller)]
+    far fn mod(far *self, far *other: I32) {
+        let mut dividend_lo: u16;
+        let mut dividend_hi: u16;
+        let mut divisor_lo: u16;
+        let mut divisor_hi: u16;
+        let mut bit_count: u8;
+        let mut negate_result: bool = false;
+
+        // Handle division by zero - leave self unchanged
+        A = other.lo;
+        if A == 0 {
+            A = other.hi;
+            if A == 0 {
+                return;
+            }
+        }
+
+        // Remainder has same sign as dividend
+        A = self.hi;
+        if A & 0x8000 != 0 {
+            negate_result = true;
+        }
+
+        // Copy dividend (self) and take absolute value
+        A = self.lo;
+        dividend_lo = A;
+        A = self.hi;
+        dividend_hi = A;
+        if A & 0x8000 != 0 {
+            // Negate dividend
+            A = dividend_lo;
+            A = A ^ 0xFFFF;
+            dividend_lo = A;
+            A = dividend_hi;
+            A = A ^ 0xFFFF;
+            dividend_hi = A;
+            STATUS.Carry = false;
+            A = dividend_lo;
+            A = A + 1;
+            dividend_lo = A;
+            A = dividend_hi;
+            A = A + 0;
+            dividend_hi = A;
+        }
+
+        // Copy divisor (other) and take absolute value
+        A = other.lo;
+        divisor_lo = A;
+        A = other.hi;
+        divisor_hi = A;
+        if A & 0x8000 != 0 {
+            // Negate divisor
+            A = divisor_lo;
+            A = A ^ 0xFFFF;
+            divisor_lo = A;
+            A = divisor_hi;
+            A = A ^ 0xFFFF;
+            divisor_hi = A;
+            STATUS.Carry = false;
+            A = divisor_lo;
+            A = A + 1;
+            divisor_lo = A;
+            A = divisor_hi;
+            A = A + 0;
+            divisor_hi = A;
+        }
+
+        // Initialize remainder (self) to 0
+        A = 0;
+        self.lo = A;
+        self.hi = A;
+
+        // Process 32 bits
+        bit_count = 32;
+
+        loop {
+            // Shift remainder (self) left by 1, bringing in MSB of dividend
+            A = self.lo;
+            asm!("ASL A");
+            self.lo = A;
+            A = self.hi;
+            asm!("ROL A");
+            self.hi = A;
+
+            // Get MSB of dividend into remainder
+            A = dividend_hi;
+            if A & 0x8000 != 0 {
+                A = self.lo;
+                A = A | 1;
+                self.lo = A;
+            }
+
+            // Shift dividend left
+            _i32_shl1!(dividend_lo, dividend_hi);
+
+            // Compare remainder >= divisor (32-bit compare)
+            A = self.hi;
+            if A > divisor_hi {
+                // remainder > divisor, subtract
+                STATUS.Carry = true;
+                A = self.lo;
+                A = A - divisor_lo;
+                self.lo = A;
+                A = self.hi;
+                A = A - divisor_hi;
+                self.hi = A;
+            } else if A == divisor_hi {
+                A = self.lo;
+                if A >= divisor_lo {
+                    // remainder >= divisor
+                    STATUS.Carry = true;
+                    A = self.lo;
+                    A = A - divisor_lo;
+                    self.lo = A;
+                    A = self.hi;
+                    A = A - divisor_hi;
+                    self.hi = A;
+                }
+            }
+
+            bit_count--;
+            if bit_count == 0 {
+                break;
+            }
+        }
+
+        // Fix sign of result (remainder has same sign as dividend)
+        if negate_result {
+            self.neg();
+        }
+    }
+
+    // ========================================================================
+    // Comparison Method
+    // ========================================================================
+
+    // Compare self with other, setting STATUS flags for signed comparison.
+    // Signed comparison: check sign bits first, then compare magnitudes.
+    // After calling:
+    //   eq: STATUS.Zero == true
+    //   ne: STATUS.Zero == false
+    //   lt: STATUS.Carry == false (for signed, considering sign)
+    //   ge: STATUS.Carry == true
+    //   gt: STATUS.Carry == true && STATUS.Zero == false
+    //   le: STATUS.Carry == false || STATUS.Zero == true
+    #[mode(m16, transition=caller)]
+    far fn cmp(far *self, far *other: I32) -> u8 {
+        let mut self_sign: u16;
+        let mut other_sign: u16;
+
+        // Get sign bits
+        A = self.hi;
+        self_sign = A & 0x8000;
+        A = other.hi;
+        other_sign = A & 0x8000;
+
+        // Check if signs differ
+        if self_sign != other_sign {
+            // Signs differ - negative is less than positive
+            if self_sign != 0 as u16 {
+                // self is negative, other is positive: self < other
+                STATUS.Carry = false;  // Clear carry = less than
+            } else {
+                // self is positive, other is negative: self > other
+                STATUS.Carry = true;   // Set carry = greater or equal
+            }
+            return STATUS;
+        }
+
+        // Signs are the same - compare as unsigned
+        // Compare high words first
+        A = self.hi;
+        if A != other.hi {
+            // High words differ - compare them to set flags
+            A = self.hi;
+            asm!("CMP _I32__cmp_other_hi");
+            return;
+        }
+
+        // High words equal - compare low words to set flags
+        A = self.lo;
+        asm!("CMP _I32__cmp_other_lo");
+        return STATUS;
+    }
+
+    // ========================================================================
+    // Bitwise Shift Methods
+    // ========================================================================
+
+    // Shift left by n bits (in place) - identical to unsigned
+    #[mode(m16, transition=caller)]
+    far fn shl(far *self, count @ X: u8) {
+        loop {
+            if X == 0 {
+                break;
+            }
+            A = self.lo;
+            asm!("ASL A");
+            self.lo = A;
+            A = self.hi;
+            asm!("ROL A");
+            self.hi = A;
+            X--;
+        }
+    }
+
+    // Arithmetic shift right by n bits (in place) - preserves sign bit
+    #[mode(m16, transition=caller)]
+    far fn sar(far *self, count @ X: u8) {
+        loop {
+            if X == 0 {
+                break;
+            }
+            // Check sign bit before shift
+            A = self.hi;
+            if A & 0x8000 != 0 {
+                // Negative: shift right and restore sign bit
+                asm!("LSR A");
+                A = A | 0x8000;  // Restore sign bit
+            } else {
+                // Positive: normal logical shift
+                asm!("LSR A");
+            }
+            self.hi = A;
+            A = self.lo;
+            asm!("ROR A");
+            self.lo = A;
+            X--;
+        }
+    }
+
+    // ========================================================================
+    // SNES Hardware-Accelerated Division
+    // ========================================================================
+
+    // Divide by signed 8-bit value using SNES hardware divider.
+    // self /= divisor, returns remainder.
+    // Signed version: handles sign conversion.
+    // If divisor is 0, sets self to MIN_I32 and returns 0.
+    #[cfg(snes)]
+    #[mode(m8, transition=caller)]
+    far fn div_i8(far *self, divisor @ X: i8) -> i8 {
+        let mut remainder: u8;
+        let mut q3: u8;
+        let mut q2: u8;
+        let mut q1: u8;
+        let mut q0: u8;
+        let mut hi_word: u16;
+        let mut lo_word: u16;
+        let mut negate_result: bool = false;
+        let mut negate_remainder: bool = false;
+        let mut abs_divisor: u8;
+
+        // Handle division by zero
+        if X == 0 {
+            self.lo = 0;
+            self.hi = 0x8000;  // MIN_I32
+            A = 0;
+            return A as i8;
+        }
+
+        // Determine signs
+        A = self.hi >> 8;  // Get high byte of hi word (sign byte)
+        if A & 0x80 != 0 {
+            negate_result = true;
+            negate_remainder = true;
+            // Negate self (make positive)
+            self.neg();
+        }
+
+        // Get absolute value of divisor
+        A = X as u8;
+        if A & 0x80 != 0 {
+            negate_result = !negate_result;  // XOR sign flags
+            // Negate divisor
+            A = A ^ 0xFF;
+            A = A + 1;
+        }
+        abs_divisor = A;
+        X = A;
+
+        // Load words into locals
+        hi_word = self.hi;
+        lo_word = self.lo;
+
+        // Process 4 bytes from MSB to LSB using hardware divider
+        // Each step: dividend = (remainder << 8) | byte, then divide by X
+
+        // Byte 3 (MSB): high byte of hi word
+        A = (hi_word >> 8) as u8;
+        _hwdiv_first!();
+        q3 = RDDIVL;
+        remainder = RDMPYL;
+
+        // Byte 2: low byte of hi word
+        A = hi_word as u8;
+        _hwdiv_step!(remainder);
+        q2 = RDDIVL;
+        remainder = RDMPYL;
+
+        // Byte 1: high byte of lo word
+        A = (lo_word >> 8) as u8;
+        _hwdiv_step!(remainder);
+        q1 = RDDIVL;
+        remainder = RDMPYL;
+
+        // Byte 0 (LSB): low byte of lo word
+        A = lo_word as u8;
+        _hwdiv_step!(remainder);
+        q0 = RDDIVL;
+        remainder = RDMPYL;
+
+        // Reassemble quotient into self
+        self.lo = ((q1 as u16) << 8) | (q0 as u16);
+        self.hi = ((q3 as u16) << 8) | (q2 as u16);
+
+        // Fix signs
+        if negate_result {
+            self.neg();
+        }
+        if negate_remainder {
+            A = remainder;
+            A = A ^ 0xFF;
+            A = A + 1;
+            remainder = A;
+        }
+
+        A = remainder;
+        return A as i8;
+    }
+
+    // Modulo by signed 8-bit value using SNES hardware divider.
+    // self %= divisor (self becomes remainder, which fits in 8 bits).
+    // If divisor is 0, self is unchanged.
+    #[cfg(snes)]
+    #[mode(m8, transition=caller)]
+    far fn mod_i8(far *self, divisor @ X: i8) {
+        // Handle zero divisor
+        if X == 0 {
+            return;
+        }
+
+        // div_i8 computes quotient (stored in self) and returns remainder
+        // We discard the quotient and store only the remainder
+        let mut remainder: i8 = self.div_i8(X);
+
+        // Sign extend remainder to 32 bits
+        A = remainder as u8;
+        if A & 0x80 != 0 {
+            // Negative: sign extend
+            self.lo = (0xFF00 | (A as u16));
+            self.hi = 0xFFFF;
+        } else {
+            // Positive: zero extend
+            self.lo = A as u16;
+            self.hi = 0;
+        }
+    }
+}
