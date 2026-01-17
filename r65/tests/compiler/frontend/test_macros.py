@@ -134,9 +134,11 @@ class TestMacroInvocationParsing:
         func = program.items[1]
         assert isinstance(func, ast.FunctionDecl)
         stmt = func.body.statements[0]
-        assert isinstance(stmt, ast.MacroInvocationStmtInner)
-        assert stmt.name == "inc"
-        assert stmt.args == ["X"]
+        # Macro invocations are now ExprStmt(MacroInvocation(...))
+        assert isinstance(stmt, ast.ExprStmt)
+        assert isinstance(stmt.expr, ast.MacroInvocation)
+        assert stmt.expr.name == "inc"
+        assert stmt.expr.args == ["X"]
 
     def test_invocation_with_expr_arg(self):
         """Test macro invocation with expression argument."""
@@ -151,10 +153,13 @@ class TestMacroInvocationParsing:
 
         func = program.items[1]
         stmt = func.body.statements[0]
-        assert stmt.name == "add"
+        # Macro invocations are now ExprStmt(MacroInvocation(...))
+        assert isinstance(stmt, ast.ExprStmt)
+        assert isinstance(stmt.expr, ast.MacroInvocation)
+        assert stmt.expr.name == "add"
         # Args should contain the expression as a single string
-        assert len(stmt.args) == 1
-        assert "1" in stmt.args[0] and "2" in stmt.args[0]
+        assert len(stmt.expr.args) == 1
+        assert "1" in stmt.expr.args[0] and "2" in stmt.expr.args[0]
 
     def test_invocation_with_multiple_args(self):
         """Test macro invocation with multiple arguments."""
@@ -169,9 +174,12 @@ class TestMacroInvocationParsing:
 
         func = program.items[1]
         stmt = func.body.statements[0]
-        assert len(stmt.args) == 2
-        assert stmt.args[0] == "X"
-        assert stmt.args[1] == "Y"
+        # Macro invocations are now ExprStmt(MacroInvocation(...))
+        assert isinstance(stmt, ast.ExprStmt)
+        assert isinstance(stmt.expr, ast.MacroInvocation)
+        assert len(stmt.expr.args) == 2
+        assert stmt.expr.args[0] == "X"
+        assert stmt.expr.args[1] == "Y"
 
 # ============================================================================
 # Macro Expansion Tests

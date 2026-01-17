@@ -84,9 +84,18 @@ class OperatorValidator:
         """Validate shift operators (<< and >>)."""
         right = op_node.right
 
-        if not isinstance(right, HIRIntegerLiteral):
-            raise TypeCheckError(
-                f"shift operator ({op_node.op}) requires a constant shift amount",
-                source_loc=op_node.source_loc,
-                hint="use shl() or shr() for variable shift amounts"
-            )
+        # Accept integer literals
+        if isinstance(right, HIRIntegerLiteral):
+            return
+
+        # Accept const identifiers (references to const values)
+        if isinstance(right, HIRIdentifier):
+            symbol = right.symbol
+            if symbol and symbol.kind == SymbolKind.CONST:
+                return
+
+        raise TypeCheckError(
+            f"shift operator ({op_node.op}) requires a constant shift amount",
+            source_loc=op_node.source_loc,
+            hint="use shl() or shr() for variable shift amounts"
+        )

@@ -761,6 +761,9 @@ class TestAcidTest:
         for stmt in statements:
             if isinstance(stmt, ast.MacroInvocationStmtInner):
                 features_found['macro_invocation'] = True
+            elif isinstance(stmt, ast.ExprStmt) and isinstance(stmt.expr, ast.MacroInvocation):
+                # Macro invocations are now parsed as ExprStmt(MacroInvocation(...))
+                features_found['macro_invocation'] = True
             elif isinstance(stmt, ast.LetStmt):
                 if stmt.binding is not None:
                     features_found['register_alias'] = True

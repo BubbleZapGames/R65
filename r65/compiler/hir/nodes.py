@@ -437,7 +437,9 @@ class HIRStatusFlagAccess(HIRExpression):
 @dataclass
 class HIRIncludeBytesExpr(HIRExpression):
     """Include binary data from file."""
-    path: str = ""  # Path to binary file
+    path: str = ""  # Path to binary file (original, may be relative)
+    resolved_path: str = ""  # Fully resolved path to binary file
+    size: int = 0  # Size of the file in bytes
 
 
 @dataclass

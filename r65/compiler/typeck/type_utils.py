@@ -107,6 +107,14 @@ class TypeUtils:
                 if TypeUtils._pointee_types_compatible(t1.pointee_type, t2.pointee_type):
                     return True
 
+        # Integer type compatibility for comparisons
+        # Allow comparing different-size integers (e.g., u16 vs u8)
+        # This is common in 65816 code and safe for comparisons
+        if isinstance(t1, BasicTypeInfo) and isinstance(t2, BasicTypeInfo):
+            int_types = {'u8', 'i8', 'u16', 'i16'}
+            if t1.name in int_types and t2.name in int_types:
+                return True
+
         # Enum to/from integer compatibility
         # Enums are compatible with u8 (their underlying type)
         if isinstance(t1, EnumTypeInfo) and isinstance(t2, BasicTypeInfo) and t2.name == 'u8':
@@ -165,6 +173,12 @@ class TypeUtils:
 
         # Pointer <-> Pointer
         if isinstance(from_type, PointerTypeInfo) and isinstance(to_type, PointerTypeInfo):
+            return True
+
+        # Pointer <-> Integer (needed for DMA address setup and low-level programming)
+        if isinstance(from_type, PointerTypeInfo) and TypeUtils.is_integer_type(to_type):
+            return True
+        if TypeUtils.is_integer_type(from_type) and isinstance(to_type, PointerTypeInfo):
             return True
 
         # Enum <-> Integer

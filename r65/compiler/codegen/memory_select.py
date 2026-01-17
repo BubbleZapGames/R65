@@ -49,7 +49,22 @@ class MemoryOperationSelector(BaseSelector):
         is_u16 = self.parent._is_16bit(instr.type_info)
 
         if is_u16:
-            self.parent._emit_16bit_mem_to_mem(src_loc, dest_loc)
+            # Check for hardware register destination - handle differently
+            if dest_loc.kind == LocationKind.HARDWARE:
+                if dest_loc.hw_register == 'A':
+                    # Load 16-bit into A - single LDA if in 16-bit mode
+                    self._emit_load_store('LDA', src_loc)
+                elif dest_loc.hw_register in ('X', 'Y'):
+                    # Load into A then transfer to X/Y
+                    self._emit_load_store('LDA', src_loc)
+                    if dest_loc.hw_register == 'X':
+                        self._emit_implied(Opcode.TAX, "Transfer to X")
+                    else:
+                        self._emit_implied(Opcode.TAY, "Transfer to Y")
+                else:
+                    raise InstructionSelectionError(f"Cannot load 16-bit into hardware register {dest_loc.hw_register}")
+            else:
+                self.parent._emit_16bit_mem_to_mem(src_loc, dest_loc)
         else:
             self._emit_load_store('LDA', src_loc)
             # Skip store if destination is already the accumulator
@@ -225,6 +240,10 @@ class MemoryOperationSelector(BaseSelector):
         ptr_loc = self.parent._get_operand_location(instr.pointer)
         dest_loc = self.parent._get_operand_location(instr.dest)
 
+        # Spill hardware register pointers to scratch for indirect addressing
+        if ptr_loc.kind == LocationKind.HARDWARE:
+            ptr_loc = self._spill_pointer_to_scratch(ptr_loc)
+
         self._validate_pointer_location(ptr_loc)
 
         # Handle field offset - load into Y for indexed indirect
@@ -304,6 +323,10 @@ class MemoryOperationSelector(BaseSelector):
         """
         ptr_loc = self.parent._get_operand_location(instr.pointer)
         src_loc = self.parent._get_operand_location(instr.source)
+
+        # Spill hardware register pointers to scratch for indirect addressing
+        if ptr_loc.kind == LocationKind.HARDWARE:
+            ptr_loc = self._spill_pointer_to_scratch(ptr_loc)
 
         self._validate_pointer_location(ptr_loc)
 
@@ -385,10 +408,64 @@ class MemoryOperationSelector(BaseSelector):
         self._emit_instr(opcode, operand, "Store through pointer")
 
     def _validate_pointer_location(self, ptr_loc):
-        """Validate that pointer is in memory (not immediate or hardware register)."""
-        if ptr_loc.kind == LocationKind.HARDWARE or ptr_loc.kind == LocationKind.IMMEDIATE:
+        """Validate that pointer is in memory (not immediate or hardware register).
+
+        Note: Hardware register pointers should be spilled to scratch before indirect access.
+        This method just checks the location is valid for indirect addressing.
+        """
+        if ptr_loc.kind == LocationKind.IMMEDIATE:
             raise InstructionSelectionError(
-                f"Pointer for indirect addressing must be in memory, got: {ptr_loc}")
+                f"Pointer for indirect addressing must be in memory, got immediate value")
+        if ptr_loc.kind == LocationKind.HARDWARE:
+            raise InstructionSelectionError(
+                f"Pointer for indirect addressing must be in memory, got: {ptr_loc.hw_register}")
+
+    def _spill_pointer_to_scratch(self, ptr_loc) -> 'PhysicalLocation':
+        """Spill a hardware register pointer to a scratch location for indirect addressing.
+
+        Args:
+            ptr_loc: Physical location of pointer (must be hardware register)
+
+        Returns:
+            New PhysicalLocation with pointer in scratch memory
+        """
+        from r65.compiler.codegen.register_alloc import PhysicalLocation
+
+        if ptr_loc.kind != LocationKind.HARDWARE:
+            return ptr_loc
+
+        # Find a scratch register with at least 2 bytes
+        # Even if it's "in use", we can temporarily reuse it since this is
+        # just a temporary spill within a single instruction sequence
+        scratch_addr = None
+        if hasattr(self.parent.reg_alloc, 'scratch_pool') and self.parent.reg_alloc.scratch_pool:
+            for scratch in self.parent.reg_alloc.scratch_pool.scratches:
+                if scratch.size >= 2:
+                    scratch_addr = scratch.address
+                    break
+
+        if scratch_addr is None:
+            # Fallback: use a known scratch location (typically reserved for temp ops)
+            # This assumes zeropage 0x00-0x01 is available as a temp pointer location
+            scratch_addr = 0x00
+
+        scratch_loc = PhysicalLocation(
+            kind=LocationKind.SCRATCH,
+            scratch_addr=scratch_addr,
+            size=2
+        )
+
+        # Spill the pointer from hardware register to scratch
+        if ptr_loc.hw_register == 'X':
+            self._emit_instr(Opcode.STX_DP, Immediate(scratch_addr), "Spill X pointer to scratch")
+        elif ptr_loc.hw_register == 'Y':
+            self._emit_instr(Opcode.STY_DP, Immediate(scratch_addr), "Spill Y pointer to scratch")
+        elif ptr_loc.hw_register == 'A':
+            self._emit_instr(Opcode.STA_DP, Immediate(scratch_addr), "Spill A pointer to scratch")
+        else:
+            raise InstructionSelectionError(f"Cannot spill pointer from hardware register {ptr_loc.hw_register}")
+
+        return scratch_loc
 
     def _get_indirect_opcode(self, mnemonic: str, ptr_loc, is_far: bool, index_register: str = None):
         """
@@ -405,9 +482,9 @@ class MemoryOperationSelector(BaseSelector):
         """
         # Get the address value from the pointer location
         if ptr_loc.kind == LocationKind.SCRATCH:
-            addr_value = ptr_loc.scratch_address
+            addr_value = ptr_loc.scratch_addr
         elif ptr_loc.kind == LocationKind.MEMORY:
-            addr_value = ptr_loc.memory_address
+            addr_value = ptr_loc.memory_addr
         else:
             raise InstructionSelectionError(f"Invalid pointer location for indirect addressing: {ptr_loc}")
 

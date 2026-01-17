@@ -352,6 +352,98 @@ class TypeChecker:
 
         return None
 
+    def _get_promoted_type(self, left_type: TypeInfo, right_type: TypeInfo) -> Optional[TypeInfo]:
+        """
+        Get the result type when implicitly promoting operands in arithmetic.
+
+        Supports automatic integer promotion for mixed-size operands:
+        - u8 + u16 -> u16 (u8 widened to u16)
+        - i8 + i16 -> i16 (i8 widened to i16)
+        - u8 + i8 -> i8 (reinterpret, no runtime cost)
+
+        Args:
+            left_type: Type of left operand
+            right_type: Type of right operand
+
+        Returns:
+            The promoted result type, or None if promotion is not allowed
+        """
+        if not isinstance(left_type, BasicTypeInfo) or not isinstance(right_type, BasicTypeInfo):
+            return None
+
+        left_name = left_type.name
+        right_name = right_type.name
+
+        # Define type hierarchy (smaller -> larger)
+        unsigned_hierarchy = {'u8': 8, 'u16': 16}
+        signed_hierarchy = {'i8': 8, 'i16': 16}
+
+        # Both unsigned: promote to larger
+        if left_name in unsigned_hierarchy and right_name in unsigned_hierarchy:
+            left_bits = unsigned_hierarchy[left_name]
+            right_bits = unsigned_hierarchy[right_name]
+            if left_bits > right_bits:
+                return left_type
+            else:
+                return right_type
+
+        # Both signed: promote to larger
+        if left_name in signed_hierarchy and right_name in signed_hierarchy:
+            left_bits = signed_hierarchy[left_name]
+            right_bits = signed_hierarchy[right_name]
+            if left_bits > right_bits:
+                return left_type
+            else:
+                return right_type
+
+        # Mixed signed/unsigned of same size: allow (reinterpret)
+        if (left_name == 'u8' and right_name == 'i8') or (left_name == 'i8' and right_name == 'u8'):
+            return BasicTypeInfo(name='u8')  # Prefer unsigned for mixed 8-bit
+        if (left_name == 'u16' and right_name == 'i16') or (left_name == 'i16' and right_name == 'u16'):
+            return BasicTypeInfo(name='u16')  # Prefer unsigned for mixed 16-bit
+
+        # Mixed signed/unsigned of different sizes: promote to larger signed type
+        # u8 + i16 -> i16 (u8 zero-extended to i16)
+        # i8 + u16 -> i16 (both promoted to signed 16-bit)
+        int_types = {'u8', 'i8', 'u16', 'i16'}
+        if left_name in int_types and right_name in int_types:
+            # Return the 16-bit type, preferring signed for mixed operations
+            left_bits = 16 if left_name in ['u16', 'i16'] else 8
+            right_bits = 16 if right_name in ['u16', 'i16'] else 8
+            if left_bits > right_bits:
+                return left_type
+            elif right_bits > left_bits:
+                return right_type
+
+        return None
+
+    def _are_compatible_element_types(self, type1: TypeInfo, type2: TypeInfo) -> bool:
+        """
+        Check if two types are compatible for array elements.
+
+        Allows same-size signed/unsigned types to coexist:
+        - i8 and u8 are compatible (both 8-bit)
+        - i16 and u16 are compatible (both 16-bit)
+        """
+        if not isinstance(type1, BasicTypeInfo) or not isinstance(type2, BasicTypeInfo):
+            return False
+
+        name1, name2 = type1.name, type2.name
+
+        # Same type is always compatible
+        if name1 == name2:
+            return True
+
+        # 8-bit types are compatible
+        if name1 in ('i8', 'u8') and name2 in ('i8', 'u8'):
+            return True
+
+        # 16-bit types are compatible
+        if name1 in ('i16', 'u16') and name2 in ('i16', 'u16'):
+            return True
+
+        return False
+
     # ========================================================================
     # Main Type Checking
     # ========================================================================
@@ -732,10 +824,10 @@ class TypeChecker:
             return self.call_validator.check_function_address(expr)
 
         elif isinstance(expr, HIRBinaryOp):
-            return self.check_binary_op(expr)
+            return self.check_binary_op(expr, context_type)
 
         elif isinstance(expr, HIRUnaryOp):
-            return self.check_unary_op(expr)
+            return self.check_unary_op(expr, context_type)
 
         elif isinstance(expr, HIRTypeCast):
             return self.check_type_cast(expr)
@@ -768,13 +860,11 @@ class TypeChecker:
             return self.pointer_validator.check_addressof(expr)
 
         elif isinstance(expr, HIRIncludeBytesExpr):
-            # include_bytes! returns an array of bytes
-            # The exact type will be inferred from context (variable declaration)
-            # For now, return a generic array type
+            # include_bytes! returns an array of bytes with the actual file size
             from r65.compiler.hir.types import ArrayTypeInfo
             elem_type = BasicTypeInfo(name='u8')
-            # Size is unknown here - will be validated against variable type
-            array_type = ArrayTypeInfo(element_type=elem_type, size=0)
+            # Use the actual file size stored during HIR building
+            array_type = ArrayTypeInfo(element_type=elem_type, size=expr.size)
             expr.expr_type = array_type
             return array_type
 
@@ -796,17 +886,29 @@ class TypeChecker:
                     "Empty array literals are not allowed",
                     source_loc=expr.source_loc
                 )
-            # Type check first element to determine element type
-            first_type = self.check_expression(expr.elements[0])
-            # Type check remaining elements, ensuring they match
+            # Get expected element type from context if available
+            expected_elem_type = None
+            if context_type and isinstance(context_type, ArrayTypeInfo):
+                expected_elem_type = context_type.element_type
+
+            # Type check elements with context
+            elem_type = self.check_expression(expr.elements[0], expected_elem_type)
+
+            # If we have expected type, use it; otherwise use inferred type
+            final_elem_type = expected_elem_type if expected_elem_type else elem_type
+
+            # Type check remaining elements
             for i, elem in enumerate(expr.elements[1:], 2):
-                elem_type = self.check_expression(elem)
-                if not TypeUtils.types_equal(first_type, elem_type):
-                    raise TypeCheckError(
-                        f"Array element {i} has type {elem_type}, expected {first_type}",
-                        source_loc=elem.source_loc
-                    )
-            array_type = ArrayTypeInfo(element_type=first_type, size=len(expr.elements))
+                elem_type = self.check_expression(elem, final_elem_type)
+                # Allow i8/u8 mixing and i16/u16 mixing (same size, compatible)
+                if not TypeUtils.types_equal(final_elem_type, elem_type):
+                    # Check if they're compatible same-size types
+                    if not self._are_compatible_element_types(final_elem_type, elem_type):
+                        raise TypeCheckError(
+                            f"Array element {i} has type {elem_type}, expected {final_elem_type}",
+                            source_loc=elem.source_loc
+                        )
+            array_type = ArrayTypeInfo(element_type=final_elem_type, size=len(expr.elements))
             expr.expr_type = array_type
             return array_type
 
@@ -827,13 +929,15 @@ class TypeChecker:
                 source_loc=expr.source_loc
             )
 
-    def check_binary_op(self, expr: HIRBinaryOp) -> TypeInfo:
+    def check_binary_op(self, expr: HIRBinaryOp, context_type: Optional[TypeInfo] = None) -> TypeInfo:
         """Type check binary operation."""
         # Validate operator restrictions
         OperatorValidator.validate_binary_op(expr)
 
-        # Check operands
-        left_type = self.check_expression(expr.left)
+        # For shift ops and arithmetic, propagate context type to left operand
+        # This allows `const X: u16 = 0 << 2` to infer 0 as u16
+        left_context = context_type if expr.op in ['<<', '>>', '+', '-', '*', '/', '%', '&', '|', '^'] else None
+        left_type = self.check_expression(expr.left, left_context)
         right_type = self.check_expression(expr.right)
 
         # Type rules for binary operators
@@ -857,13 +961,30 @@ class TypeChecker:
             return left_type
 
         elif expr.op in ['+', '-', '*', '/', '%', '&', '|', '^']:
-            # Arithmetic and bitwise: operands must match
+            # Check for pointer arithmetic: pointer + integer or pointer - integer
+            if expr.op in ['+', '-']:
+                if isinstance(left_type, PointerTypeInfo) and TypeUtils.is_integer_type(right_type):
+                    # pointer + int = pointer (result is same pointer type)
+                    expr.expr_type = left_type
+                    return left_type
+                if isinstance(right_type, PointerTypeInfo) and TypeUtils.is_integer_type(left_type):
+                    # int + pointer = pointer (result is same pointer type)
+                    expr.expr_type = right_type
+                    return right_type
+
+            # Arithmetic and bitwise: operands must match or be implicitly promotable
             if not TypeUtils.types_equal(left_type, right_type):
-                raise TypeCheckError(
-                    f"type mismatch in '{expr.op}' operation: {left_type} vs {right_type}",
-                    source_loc=expr.source_loc,
-                    hint=f"cast one operand to match: (value as {left_type})"
-                )
+                # Check for implicit integer promotion (u8 -> u16, i8 -> i16)
+                promoted_type = self._get_promoted_type(left_type, right_type)
+                if promoted_type is None:
+                    raise TypeCheckError(
+                        f"type mismatch in '{expr.op}' operation: {left_type} vs {right_type}",
+                        source_loc=expr.source_loc,
+                        hint=f"cast one operand to match: (value as {left_type})"
+                    )
+                # Use the promoted type as the result
+                expr.expr_type = promoted_type
+                return promoted_type
 
             # Result is same type
             expr.expr_type = left_type
@@ -895,12 +1016,11 @@ class TypeChecker:
                 source_loc=expr.source_loc
             )
 
-    def check_unary_op(self, expr: HIRUnaryOp) -> TypeInfo:
+    def check_unary_op(self, expr: HIRUnaryOp, context_type: Optional[TypeInfo] = None) -> TypeInfo:
         """Type check unary operation."""
-        operand_type = self.check_expression(expr.operand)
-
         if expr.op == '!':
-            # Logical NOT: operand must be bool
+            # Logical NOT: operand must be bool (no context propagation needed)
+            operand_type = self.check_expression(expr.operand)
             if not TypeUtils.is_boolean_type(operand_type):
                 raise TypeCheckError(
                     f"logical NOT '!' requires boolean operand, found {operand_type}",
@@ -910,7 +1030,8 @@ class TypeChecker:
             expr.expr_type = BasicTypeInfo('bool')
 
         elif expr.op == '~':
-            # Bitwise NOT: operand must be integer
+            # Bitwise NOT: propagate context type to operand
+            operand_type = self.check_expression(expr.operand, context_type)
             if not TypeUtils.is_integer_type(operand_type):
                 raise TypeCheckError(
                     f"bitwise NOT '~' requires integer operand, found {operand_type}",
@@ -920,7 +1041,8 @@ class TypeChecker:
             expr.expr_type = operand_type
 
         elif expr.op == '-':
-            # Negation: operand must be integer
+            # Negation: propagate context type to operand for proper literal typing
+            operand_type = self.check_expression(expr.operand, context_type)
             if not TypeUtils.is_integer_type(operand_type):
                 raise TypeCheckError(
                     f"negation '-' requires integer operand, found {operand_type}",

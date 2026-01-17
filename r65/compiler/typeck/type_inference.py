@@ -41,11 +41,19 @@ class TypeInference:
             elif context_type.name == 'i16' and -32768 <= value <= 32767:
                 return context_type
 
-        # Default inference: smallest unsigned type
+        # Default inference: smallest type that fits the value
+        # Check u8 range first (0-255)
         if 0 <= value <= 255:
             return BasicTypeInfo('u8')
+        # Check i8 range for negative values (-128 to -1)
+        elif -128 <= value < 0:
+            return BasicTypeInfo('i8')
+        # Check u16 range (256-65535)
         elif 0 <= value <= 65535:
             return BasicTypeInfo('u16')
+        # Check i16 range for negative values (-32768 to -129)
+        elif -32768 <= value < -128:
+            return BasicTypeInfo('i16')
         else:
             # Value too large - error will be caught later
             return BasicTypeInfo('u16')

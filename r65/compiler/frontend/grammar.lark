@@ -30,7 +30,10 @@ stack_directive: "#" "[" "stack" "(" INTEGER "," INTEGER ")" "]"
 
 // Bank directive - sets current ROM bank for following declarations
 // #[bank(0)] for explicit bank, #[bank(auto)] for automatic placement
-bank_directive: "#" "[" "bank" "(" (INTEGER | "auto") ")" "]"
+// Uses IDENT to avoid tokenization issues with "bank" as a parameter name
+bank_directive: "#" "[" BANK_KEYWORD "(" (INTEGER | AUTO_KEYWORD) ")" "]"
+BANK_KEYWORD.20: /bank(?=\()/
+AUTO_KEYWORD.20: /auto(?=\))/
 
 // SNES ROM header directive - configures .SNESHEADER output
 // #[snesrom(name="ROM NAME", id="SNES", lorom, fastrom, ...)]
@@ -166,7 +169,8 @@ macro_arg_token: IDENT | REGISTER | TYPE_NAME | INTEGER | STRING | BOOLEAN
 // Attributes
 attribute: "#" "[" attribute_inner "]"
 attribute_inner: CFG "(" cfg_condition ")"            -> cfg_attribute
-             | IDENT ("(" attribute_args? ")")?
+             | attr_name ("(" attribute_args? ")")?
+attr_name: IDENT | "stack" | "snesrom"
 
 attribute_args: attribute_arg ("," attribute_arg)* ","?
 attribute_arg: IDENT "=" expr      -> named_arg
@@ -345,6 +349,7 @@ arg_list: expr ("," expr)* ","?
          | STRING                                -> string_literal
          | CFG_FUNCTION "(" expr ")"               -> cfg_function_call
         | INCLUDE_BYTES "!" "(" STRING ")"      -> include_bytes_expr
+        | IDENT "!" "(" macro_args? ")"         -> macro_invocation_expr
         | IDENT "::" IDENT                      -> enum_variant_expr
         | IDENT                                 -> identifier
         | SELF                                  -> self_identifier

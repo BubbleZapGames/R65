@@ -40,6 +40,63 @@ class HIRBuilder:
         self.source_dir = Path(source_file).parent if source_file else Path.cwd()
         self.current_bank = 0  # Current ROM bank for declarations (set by #[bank(n)])
         self.auto_bank_mode = False  # True when in #[bank(auto)] mode (NOT default for backward compatibility)
+        self._pending_snesrom_config = None  # Store snesrom config when parsed as attribute
+
+    def _process_snesrom_attribute(self, attr: ast.Attribute):
+        """Process snesrom attribute that was mistakenly attached to a function."""
+        # Extract values from attribute args
+        name = None
+        id = None
+        cartridge_type = None
+        sram_size = None
+        country = None
+        version = None
+        lorom = True  # default
+        hirom = False
+        fastrom = False
+        slowrom = True  # default
+
+        for arg in attr.args:
+            if arg.name == 'name' and isinstance(arg.value, ast.StringLiteral):
+                name = arg.value.value
+            elif arg.name == 'id' and isinstance(arg.value, ast.StringLiteral):
+                id = arg.value.value
+            elif arg.name == 'cartridge_type' and isinstance(arg.value, ast.IntegerLiteral):
+                cartridge_type = arg.value.value
+            elif arg.name == 'sram_size' and isinstance(arg.value, ast.IntegerLiteral):
+                sram_size = arg.value.value
+            elif arg.name == 'country' and isinstance(arg.value, ast.IntegerLiteral):
+                country = arg.value.value
+            elif arg.name == 'version' and isinstance(arg.value, ast.IntegerLiteral):
+                version = arg.value.value
+            elif arg.name is None and isinstance(arg.value, ast.Identifier):
+                # Flag arguments like fastrom, slowrom, lorom, hirom
+                flag = arg.value.name
+                if flag == 'fastrom':
+                    fastrom = True
+                    slowrom = False
+                elif flag == 'slowrom':
+                    slowrom = True
+                    fastrom = False
+                elif flag == 'lorom':
+                    lorom = True
+                    hirom = False
+                elif flag == 'hirom':
+                    hirom = True
+                    lorom = False
+
+        self._pending_snesrom_config = hir.SnesRomConfig(
+            name=name,
+            id=id,
+            cartridge_type=cartridge_type,
+            sram_size=sram_size,
+            country=country,
+            version=version,
+            lorom=lorom,
+            hirom=hirom,
+            fastrom=fastrom,
+            slowrom=slowrom
+        )
 
     def build_program(self, ast_program: ast.Program) -> hir.HIRProgram:
         """
@@ -117,6 +174,10 @@ class HIRBuilder:
             if self._should_include_declaration(decl):
                 hir_decl = self._build_declaration(decl)
                 hir_decls.append(hir_decl)
+
+        # Use pending snesrom config if it was set from an attribute
+        if snesrom_config is None and self._pending_snesrom_config is not None:
+            snesrom_config = self._pending_snesrom_config
 
         return hir.HIRProgram(
             declarations=hir_decls,
@@ -315,9 +376,19 @@ class HIRBuilder:
 
     def _build_function(self, func: ast.FunctionDecl) -> hir.HIRFunctionDecl:
         """Build HIR function from AST."""
+        # Filter out snesrom attributes (they're program-level, not function-level)
+        # This can happen due to parser ambiguity when #[snesrom(...)] is followed by function
+        func_attrs = []
+        for attr in func.attributes:
+            if attr.name == 'snesrom':
+                # Convert attribute back to directive and process at program level
+                self._process_snesrom_attribute(attr)
+            else:
+                func_attrs.append(attr)
+
         # Process attributes
         processed_attrs = self.attr_processor.process_attributes(
-            func.attributes,
+            func_attrs,
             context='function'
         )
 
@@ -1214,9 +1285,14 @@ class HIRBuilder:
 
         elif isinstance(expr, ast.IncludeBytesExpr):
             # Include binary data from file
-            # Validate that the file exists
-            self._validate_include_bytes_path(expr.path, expr.source_loc)
-            return hir.HIRIncludeBytesExpr(path=expr.path, source_loc=src_loc)
+            # Validate that the file exists and get file info
+            resolved_path, file_size = self._validate_include_bytes_path(expr.path, expr.source_loc)
+            return hir.HIRIncludeBytesExpr(
+                path=expr.path,
+                resolved_path=resolved_path,
+                size=file_size,
+                source_loc=src_loc
+            )
 
         elif isinstance(expr, ast.ArrayFillExpr):
             # Array fill expression: [value; count]
@@ -1710,13 +1786,16 @@ class HIRBuilder:
         else:
             raise HIRError(f"Cannot determine size of type: {type(type_info).__name__}")
 
-    def _validate_include_bytes_path(self, path: str, source_loc: Optional[SourceLocation]):
+    def _validate_include_bytes_path(self, path: str, source_loc: Optional[SourceLocation]) -> tuple[str, int]:
         """
-        Validate that the file path for include_bytes! exists.
+        Validate that the file path for include_bytes! exists and return its info.
 
         Args:
             path: The file path from the include_bytes! expression
             source_loc: Source location for error reporting
+
+        Returns:
+            Tuple of (resolved_path, file_size)
 
         Raises:
             HIRError: If the file does not exist
@@ -1736,3 +1815,7 @@ class HIRBuilder:
                 f"include_bytes!: path is not a file: '{path}'",
                 source_loc=source_loc
             )
+
+        # Get file size
+        file_size = resolved_path.stat().st_size
+        return str(resolved_path), file_size

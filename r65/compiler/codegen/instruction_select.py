@@ -1374,6 +1374,14 @@ class InstructionSelector:
                 stack_offset=location.stack_offset + offset,
                 size=1
             )
+        elif location.kind == LocationKind.IMMEDIATE:
+            # For immediate values, shift to get the high byte
+            new_value = (location.immediate_value >> (offset * 8)) & 0xFF
+            return PhysicalLocation(
+                kind=LocationKind.IMMEDIATE,
+                immediate_value=new_value,
+                size=1
+            )
         else:
             raise InstructionSelectionError(f"Cannot offset location kind: {location.kind}")
 

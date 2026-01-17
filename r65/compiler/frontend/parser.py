@@ -580,12 +580,12 @@ class ASTBuilder(Transformer):
 
     def bank_directive(self, items):
         """Bank directive: #[bank(n)] or #[bank(auto)] - sets current ROM bank for following declarations."""
-        # Lark creates an anonymous 'AUTO' terminal for the literal "auto" in the grammar
-        items = self._filter_tokens(items, keep_types={'INTEGER', 'AUTO'})
+        # Grammar uses AUTO_KEYWORD for "auto"
+        items = self._filter_tokens(items, keep_types={'INTEGER', 'AUTO_KEYWORD'})
         if items:
             token = items[0]
             if isinstance(token, LarkToken):
-                if token.type == 'AUTO':
+                if token.type == 'AUTO_KEYWORD':
                     # #[bank(auto)] - automatic placement
                     return ast.BankDirective(bank_number=None)
                 elif token.type == 'INTEGER':
@@ -828,6 +828,25 @@ class ASTBuilder(Transformer):
             source_loc=self._make_source_loc(tree.meta)
         )
 
+    @v_args(tree=True)
+    def macro_invocation_expr(self, tree):
+        """Expression-level macro invocation: name!(args)"""
+        items = tree.children
+        name = None
+        args = []
+
+        for item in items:
+            if isinstance(item, LarkToken) and item.type == 'IDENT':
+                name = item.value
+            elif isinstance(item, list):  # macro_args result
+                args = item
+
+        return ast.MacroInvocation(
+            name=name,
+            args=args,
+            source_loc=self._make_source_loc(tree.meta)
+        )
+
     def macro_args(self, items):
         """Macro arguments - list of token strings."""
         result = []
@@ -891,11 +910,20 @@ class ASTBuilder(Transformer):
 
     def attribute_inner(self, items):
         """Attribute inner."""
-        items = self._filter_tokens(items, keep_types={'IDENT'})
-        name = items[0].value if isinstance(items[0], LarkToken) else items[0]
+        items = self._filter_tokens(items)
+        name = items[0]  # Will be string from attr_name
         # args will be a list from attribute_args if present
         args = items[1] if len(items) > 1 and isinstance(items[1], list) else []
         return ast.Attribute(name=name, args=args)
+
+    def attr_name(self, items):
+        """Attribute name - can be IDENT or literal keyword."""
+        if not items:
+            return None
+        item = items[0]
+        if isinstance(item, LarkToken):
+            return item.value
+        return str(item)
 
     @v_args(tree=True)
     def cfg_attribute(self, tree):

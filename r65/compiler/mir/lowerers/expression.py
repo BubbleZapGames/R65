@@ -352,6 +352,40 @@ class ExpressionLowerer:
             ))
             return result
 
+        # Pointer to integer cast (for DMA address setup and low-level programming)
+        # Far pointer (3 bytes) → u16: extract low 16 bits (address within bank)
+        # Near pointer (2 bytes) → u16: same size, direct move
+        # Pointer → u8: extract lowest byte
+        if isinstance(source_type, PointerTypeInfo):
+            if target_size == 2:
+                # Cast pointer to u16 - extract low 16 bits of address
+                self.emit(TypeConvert(
+                    dest=result,
+                    source=source_operand,
+                    source_type=source_type,
+                    target_type=target_type
+                ))
+                return result
+            elif target_size == 1:
+                # Cast pointer to u8 - extract lowest byte of address
+                self.emit(TypeConvert(
+                    dest=result,
+                    source=source_operand,
+                    source_type=source_type,
+                    target_type=target_type
+                ))
+                return result
+
+        # Integer to pointer cast
+        if isinstance(target_type, PointerTypeInfo):
+            self.emit(TypeConvert(
+                dest=result,
+                source=source_operand,
+                source_type=source_type,
+                target_type=target_type
+            ))
+            return result
+
         raise MIRLoweringError(f"Unsupported type cast: {source_type} to {target_type}")
 
     def _lower_to_bool(self, source_operand, source_type, target_type) -> VirtualRegister:
@@ -712,9 +746,10 @@ class ExpressionLowerer:
 
     def lower_addressof(self, expr: HIRAddressOf) -> VirtualRegister:
         """
-        Lower address-of operator (&variable).
+        Lower address-of operator (&variable or &array[index]).
 
         For static variables, loads the address as an immediate value.
+        For array indexing, computes base_address + index * element_size.
 
         Args:
             expr: HIR address-of expression
@@ -722,9 +757,13 @@ class ExpressionLowerer:
         Returns:
             VirtualRegister holding the address
         """
+        # Handle address-of array index: &array[index]
+        if isinstance(expr.operand, HIRArrayIndex):
+            return self._lower_addressof_array_index(expr)
+
         if not isinstance(expr.operand, HIRIdentifier):
             raise MIRLoweringError(
-                f"Address-of only supports static variables, got: {type(expr.operand)}"
+                f"Address-of only supports static variables or array indexing, got: {type(expr.operand)}"
             )
 
         symbol = expr.operand.symbol
@@ -737,5 +776,77 @@ class ExpressionLowerer:
         addr_immediate.symbol = symbol
 
         self.emit(Move(dest=result, source=addr_immediate, type_info=expr.expr_type))
+
+        return result
+
+    def _lower_addressof_array_index(self, expr: HIRAddressOf) -> VirtualRegister:
+        """
+        Lower address-of array index: &array[index]
+
+        Computes: base_address + index * element_size
+
+        Args:
+            expr: HIR address-of expression with HIRArrayIndex operand
+
+        Returns:
+            VirtualRegister holding pointer to the array element
+        """
+        from r65.compiler.hir.types import ArrayTypeInfo, BasicTypeInfo
+
+        array_index = expr.operand
+        if not isinstance(array_index.array, HIRIdentifier):
+            raise MIRLoweringError(
+                f"Address-of array index requires static array, got: {type(array_index.array)}"
+            )
+
+        array_symbol = array_index.array.symbol
+        self.builder.get_memory_location(array_symbol)  # Validate symbol has location
+
+        # Get element size
+        array_type = array_index.array.expr_type
+        if isinstance(array_type, ArrayTypeInfo):
+            element_size = self.builder._get_type_size(array_type.element_type)
+        else:
+            element_size = 1
+
+        result = self.ctx.alloc_vreg(expr.expr_type, f"addr_of_{array_symbol.name}_elem")
+
+        # Lower the index
+        index_operand = self.builder.lower_expression(array_index.index)
+
+        if isinstance(index_operand, Immediate):
+            # Constant index: compute offset at compile time
+            offset = index_operand.value * element_size
+
+            # Create symbolic address with offset (resolved in codegen)
+            addr_immediate = Immediate(offset)
+            addr_immediate.symbol = array_symbol
+            addr_immediate.symbol_offset = offset
+
+            self.emit(Move(dest=result, source=addr_immediate, type_info=expr.expr_type))
+        else:
+            # Variable index: compute base + index * element_size at runtime
+            # First, load base address
+            base_addr = self.ctx.alloc_vreg(expr.expr_type, f"base_addr_{array_symbol.name}")
+            addr_immediate = Immediate(0)
+            addr_immediate.symbol = array_symbol
+
+            self.emit(Move(dest=base_addr, source=addr_immediate, type_info=expr.expr_type))
+
+            # If element_size > 1, multiply index by element_size
+            if element_size > 1:
+                offset_type = BasicTypeInfo('u16')
+                offset_vreg = self._compute_index_offset(index_operand, element_size, offset_type)
+            else:
+                offset_vreg = index_operand
+
+            # Add base + offset
+            self.emit(BinaryOp(
+                dest=result,
+                op='+',
+                left=base_addr,
+                right=offset_vreg,
+                type_info=expr.expr_type
+            ))
 
         return result
