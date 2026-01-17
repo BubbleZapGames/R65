@@ -105,18 +105,7 @@ class PointerValidator:
         if storage_kind == StorageKind.RAM:
             return True
 
-        # ROM with explicit bank number can use near pointers (bank is known)
-        # ROM with auto-bank or no bank needs far pointers (bank is unknown)
-        if storage_kind == StorageKind.ROM:
-            if static_decl.bank_attr and hasattr(static_decl.bank_attr, 'bank_number'):
-                bank_number = static_decl.bank_attr.bank_number
-                # bank_number=None means #[bank(auto)] - needs far pointer
-                # bank_number>=0 means explicit bank - can use near pointer
-                if bank_number is None:
-                    return True  # Auto-bank: far pointer required
-                return False  # Explicit bank: near pointer OK
-            else:
-                # No bank attribute - implicitly auto-bank, needs far pointer
-                return True
-
+        # ZEROPAGE, LOWRAM, and HW are all in bank 0, so near pointers work
+        # Note: Immutable statics (ROM) don't have storage_attr, they're handled
+        # earlier by returning False when storage_attr is None.
         return False
