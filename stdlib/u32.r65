@@ -19,6 +19,97 @@ struct U32 {
 }
 
 // ============================================================================
+// U32 Macros - Binary operations with destination (dest = a op b)
+// ============================================================================
+
+// dest = a + b
+macro_rules! u32_add($dest:expr, $a:expr, $b:expr) {
+    $dest.copy($a);
+    $dest.add($b);
+}
+
+// dest = a - b
+macro_rules! u32_sub($dest:expr, $a:expr, $b:expr) {
+    $dest.copy($a);
+    $dest.sub($b);
+}
+
+// dest = a * b
+macro_rules! u32_mul($dest:expr, $a:expr, $b:expr) {
+    $dest.copy($a);
+    $dest.mul($b);
+}
+
+// dest = a / b
+macro_rules! u32_div($dest:expr, $a:expr, $b:expr) {
+    $dest.copy($a);
+    $dest.div($b);
+}
+
+// dest = a % b
+macro_rules! u32_mod($dest:expr, $a:expr, $b:expr) {
+    $dest.copy($a);
+    $dest.mod($b);
+}
+
+// ============================================================================
+// Internal Macros (used to reduce code repetition)
+// ============================================================================
+
+// Shift 32-bit value left by 1 bit (lo/hi are u16 variables)
+macro_rules! _u32_shl1($lo:expr, $hi:expr) {
+    A = $lo;
+    asm!("ASL A");
+    $lo = A;
+    A = $hi;
+    asm!("ROL A");
+    $hi = A;
+}
+
+// Shift 32-bit value right by 1 bit (lo/hi are u16 variables)
+macro_rules! _u32_shr1($lo:expr, $hi:expr) {
+    A = $hi;
+    asm!("LSR A");
+    $hi = A;
+    A = $lo;
+    asm!("ROR A");
+    $lo = A;
+}
+
+// SNES hardware 8x8 multiply: result = a * b (switches to m16 for result)
+// Only used within #[cfg(snes)] functions
+macro_rules! _hwmul8x8($a:expr, $b:expr, $result:expr) {
+    WRMPYA = $a;
+    WRMPYB = $b;
+    NOP(4);
+    STATUS.A16 = true;
+    A = RDMPYL;
+    $result = A;
+    STATUS.A16 = false;
+}
+
+// SNES hardware division step: divides (remainder:byte) by divisor
+// Expects byte value already in A. Reads divisor from X.
+// Only used within #[cfg(snes)] functions
+macro_rules! _hwdiv_step($remainder:expr) {
+    WRDIVL = A;
+    A = $remainder;
+    WRDIVH = A;
+    WRDIVB = X;
+    NOP(8);
+}
+
+// First hardware division step (remainder starts at 0)
+// Expects byte value already in A. Reads divisor from X.
+// Only used within #[cfg(snes)] functions
+macro_rules! _hwdiv_first() {
+    WRDIVL = A;
+    WRDIVH = 0;
+    WRDIVB = X;
+    NOP(8);
+}
+
+// ============================================================================
 // Internal 16x16 -> 32 bit multiplication
 // ============================================================================
 
@@ -33,7 +124,6 @@ far fn _mul16x16(a @ A: u16, b @ X: u16, *result_lo: u16, *result_hi: u16) {
     let mut a_hi: u8;
     let mut b_lo: u8;
     let mut b_hi: u8;
-    let mut p0: u16;
     let mut p1: u16;
     let mut p2: u16;
     let mut p3: u16;
@@ -50,77 +140,45 @@ far fn _mul16x16(a @ A: u16, b @ X: u16, *result_lo: u16, *result_hi: u16) {
     A = X >> 8;
     b_hi = A;
 
-    // Product 0: a_lo * b_lo (contributes to bits 0-15)
-    WRMPYA = a_lo;
-    WRMPYB = b_lo;
-    NOP(4);
-    STATUS.A16 = true;
-    A = RDMPYL;
-    p0 = A;
+    // Four partial products using hardware multiplier
+    _hwmul8x8!(a_lo, b_lo, *result_lo);  // Product 0: bits 0-15
+    A = 0;
+    *result_hi = A;
 
-    // Product 1: a_lo * b_hi (contributes to bits 8-23)
-    STATUS.A16 = false;
-    WRMPYA = a_lo;
-    WRMPYB = b_hi;
-    NOP(4);
-    STATUS.A16 = true;
-    A = RDMPYL;
-    p1 = A;
-
-    // Product 2: a_hi * b_lo (contributes to bits 8-23)
-    STATUS.A16 = false;
-    WRMPYA = a_hi;
-    WRMPYB = b_lo;
-    NOP(4);
-    STATUS.A16 = true;
-    A = RDMPYL;
-    p2 = A;
-
-    // Product 3: a_hi * b_hi (contributes to bits 16-31)
-    STATUS.A16 = false;
-    WRMPYA = a_hi;
-    WRMPYB = b_hi;
-    NOP(4);
-    STATUS.A16 = true;
-    A = RDMPYL;
-    p3 = A;
+    _hwmul8x8!(a_lo, b_hi, p1);          // Product 1: bits 8-23
+    _hwmul8x8!(a_hi, b_lo, p2);          // Product 2: bits 8-23
+    _hwmul8x8!(a_hi, b_hi, p3);          // Product 3: bits 16-31
 
     // Combine products:
-    // result = p0 + (p1 << 8) + (p2 << 8) + (p3 << 16)
-
-    // Start with p0 as base
-    A = p0;
-    (*result_lo) = A;
-    A = 0;
-    (*result_hi) = A;
+    // result = result_lo + (p1 << 8) + (p2 << 8) + (p3 << 16)
 
     // Add p1 << 8 (p1_lo goes to result_lo high byte, p1_hi goes to result_hi low byte)
     A = p1;
     A = A << 8;
     STATUS.Carry = false;
     A = A + (*result_lo);
-    (*result_lo) = A;
+    *result_lo = A;
     A = p1;
     A = A >> 8;
     A = A + (*result_hi);
-    (*result_hi) = A;
+    *result_hi = A;
 
     // Add p2 << 8 (same pattern)
     A = p2;
     A = A << 8;
     STATUS.Carry = false;
     A = A + (*result_lo);
-    (*result_lo) = A;
+    *result_lo = A;
     A = p2;
     A = A >> 8;
     A = A + (*result_hi);
-    (*result_hi) = A;
+    *result_hi = A;
 
     // Add p3 << 16 (goes entirely to result_hi)
     STATUS.Carry = false;
     A = (*result_hi);
     A = A + p3;
-    (*result_hi) = A;
+    *result_hi = A;
 }
 
 // Software 16x16 -> 32 bit multiplication (shift-and-add)
@@ -133,8 +191,8 @@ far fn _mul16x16(a @ A: u16, b @ X: u16, *result_lo: u16, *result_hi: u16) {
 
     // Clear result
     A = 0;
-    (*result_lo) = A;
-    (*result_hi) = A;
+    *result_lo = A;
+    *result_hi = A;
 
     loop {
         if multiplier == 0 {
@@ -149,19 +207,14 @@ far fn _mul16x16(a @ A: u16, b @ X: u16, *result_lo: u16, *result_hi: u16) {
             STATUS.Carry = false;
             A = (*result_lo);
             A = A + multiplicand_lo;
-            (*result_lo) = A;
+            *result_lo = A;
             A = (*result_hi);
             A = A + multiplicand_hi;
-            (*result_hi) = A;
+            *result_hi = A;
         }
 
         // Shift multiplicand left (32-bit shift)
-        A = multiplicand_lo;
-        asm!("ASL A");
-        multiplicand_lo = A;
-        A = multiplicand_hi;
-        asm!("ROL A");
-        multiplicand_hi = A;
+        _u32_shl1!(multiplicand_lo, multiplicand_hi);
 
         // Shift multiplier right
         A = multiplier;
@@ -176,83 +229,92 @@ far fn _mul16x16(a @ A: u16, b @ X: u16, *result_lo: u16, *result_hi: u16) {
 
 impl far U32 {
     // ========================================================================
-    // Conversion Methods
+    // Conversion and Copy Methods
     // ========================================================================
+
+    // Copy another U32 into self
+    #[mode(m16, transition=caller)]
+    far fn copy(far *self, far *src: U32) {
+        A = src.lo;
+        self.lo = A;
+        A = src.hi;
+        self.hi = A;
+    }
 
     // Initialize from u16 (zero-extend)
     #[mode(m16, transition=caller)]
-    fn from_u16(far *self, value @ A: u16) {
+    far fn from_u16(far *self, value @ A: u16) {
         self.lo = A;
-        A = 0;
-        self.hi = A;
+        self.hi = 0;
     }
 
     // Convert to u16 (truncate, keeps low 16 bits)
     #[mode(m16, transition=caller)]
-    fn to_u16(far *self) -> u16 {
-        A = self.lo;
-        return A;
+    far fn to_u16(far *self) -> u16 {
+        return self.lo;
     }
 
     // ========================================================================
-    // Arithmetic Methods
+    // Arithmetic Methods (all modify self in-place)
     // ========================================================================
 
-    // Add: result = self + other (with overflow wrapping)
+    // Add: self += other (with overflow wrapping)
     #[mode(m16, transition=caller)]
-    fn add(far *self, far *other: U32, far *result: U32) {
+    far fn add(far *self, far *other: U32) {
         // Add low words with carry clear
         STATUS.Carry = false;
         A = self.lo;
         A = A + other.lo;
-        result.lo = A;
+        self.lo = A;
 
         // Add high words with carry from low addition
         A = self.hi;
         A = A + other.hi;
-        result.hi = A;
+        self.hi = A;
     }
 
-    // Subtract: result = self - other (with underflow wrapping)
+    // Subtract: self -= other (with underflow wrapping)
     #[mode(m16, transition=caller)]
-    fn sub(far *self, far *other: U32, far *result: U32) {
+    far fn sub(far *self, far *other: U32) {
         // Subtract low words with borrow clear (SEC for SBC)
         STATUS.Carry = true;
         A = self.lo;
         A = A - other.lo;
-        result.lo = A;
+        self.lo = A;
 
         // Subtract high words with borrow from low subtraction
         A = self.hi;
         A = A - other.hi;
-        result.hi = A;
+        self.hi = A;
     }
 
-    // Multiply: result = self * other (32x32 -> 32, lower 32 bits only)
+    // Multiply: self *= other (32x32 -> 32, lower 32 bits only)
     #[mode(m16, transition=caller)]
-    fn mul(far *self, far *other: U32, far *result: U32) {
+    far fn mul(far *self, far *other: U32) {
+        let mut self_lo: u16;
         let mut temp_lo: u16;
         let mut temp_hi: u16;
 
+        // Save self.lo since we'll overwrite it
+        A = self.lo;
+        self_lo = A;
+
         // 32-bit multiply uses partial products:
-        // result.lo = low16(self.lo * other.lo)
-        // result.hi = high16(self.lo * other.lo) + low16(self.lo * other.hi) + low16(self.hi * other.lo)
+        // self.lo = low16(self.lo * other.lo)
+        // self.hi = high16(self.lo * other.lo) + low16(self.lo * other.hi) + low16(self.hi * other.lo)
         // (self.hi * other.hi contributes to bits 32-63, which we discard)
 
-        // Compute self.lo * other.lo -> 32-bit result
-        A = self.lo;
+        // Compute self.lo * other.lo -> self.lo and temp_hi
+        A = self_lo;
         X = other.lo;
-        _mul16x16(A, X, &result.lo, &temp_hi);
-
-        // result.lo is already set, temp_hi has the high 16 bits
-        // Now add contributions to high word
+        _mul16x16(A, X, &self.lo, &temp_hi);
 
         // Compute self.lo * other.hi (only need low 16 bits)
-        A = self.lo;
+        A = self_lo;
         X = other.hi;
         _mul16x16(A, X, &temp_lo, &temp_lo);  // Discard high result
 
-        // Add to result.hi
+        // Add to temp_hi
         STATUS.Carry = false;
         A = temp_hi;
         A = A + temp_lo;
@@ -263,20 +325,18 @@ impl far U32 {
         X = other.lo;
         _mul16x16(A, X, &temp_lo, &temp_lo);  // Discard high result
 
-        // Add to result.hi (ignore overflow - wraps)
+        // Add to temp_hi and store in self.hi
         STATUS.Carry = false;
         A = temp_hi;
         A = A + temp_lo;
-        result.hi = A;
+        self.hi = A;
     }
 
-    // Divide: result = self / other (returns 0xFFFFFFFF if other == 0)
+    // Divide: self /= other (returns 0xFFFFFFFF if other == 0)
     #[mode(m16, transition=caller)]
-    fn div(far *self, far *other: U32, far *result: U32) {
+    far fn div(far *self, far *other: U32) {
         let mut remainder_lo: u16;
         let mut remainder_hi: u16;
-        let mut quotient_lo: u16;
-        let mut quotient_hi: u16;
         let mut dividend_lo: u16;
         let mut dividend_hi: u16;
         let mut bit_count: u8;
@@ -287,38 +347,33 @@ impl far U32 {
             A = other.hi;
             if A == 0 {
                 A = 0xFFFF;
-                result.lo = A;
-                result.hi = A;
+                self.lo = A;
+                self.hi = A;
                 return;
             }
         }
+
+        // Copy self to dividend before we overwrite self with quotient
+        A = self.lo;
+        dividend_lo = A;
+        A = self.hi;
+        dividend_hi = A;
 
         // Initialize remainder to 0
         A = 0;
         remainder_lo = A;
         remainder_hi = A;
 
-        // Initialize quotient to 0
-        quotient_lo = A;
-        quotient_hi = A;
-
-        // Copy dividend
-        A = self.lo;
-        dividend_lo = A;
-        A = self.hi;
-        dividend_hi = A;
+        // Initialize quotient (self) to 0
+        self.lo = A;
+        self.hi = A;
 
         // Process 32 bits
         bit_count = 32;
 
         loop {
             // Shift remainder left by 1, bringing in MSB of dividend
-            A = remainder_lo;
-            asm!("ASL A");
-            remainder_lo = A;
-            A = remainder_hi;
-            asm!("ROL A");
-            remainder_hi = A;
+            _u32_shl1!(remainder_lo, remainder_hi);
 
             // Get MSB of dividend into remainder
             A = dividend_hi;
@@ -329,20 +384,15 @@ impl far U32 {
             }
 
             // Shift dividend left
-            A = dividend_lo;
-            asm!("ASL A");
-            dividend_lo = A;
-            A = dividend_hi;
-            asm!("ROL A");
-            dividend_hi = A;
+            _u32_shl1!(dividend_lo, dividend_hi);
 
-            // Shift quotient left
-            A = quotient_lo;
+            // Shift quotient (self) left
+            A = self.lo;
             asm!("ASL A");
-            quotient_lo = A;
-            A = quotient_hi;
+            self.lo = A;
+            A = self.hi;
             asm!("ROL A");
-            quotient_hi = A;
+            self.hi = A;
 
             // Compare remainder >= divisor (32-bit compare)
             // First compare high words
@@ -356,9 +406,9 @@ impl far U32 {
                 A = remainder_hi;
                 A = A - other.hi;
                 remainder_hi = A;
-                A = quotient_lo;
+                A = self.lo;
                 A = A | 1;
-                quotient_lo = A;
+                self.lo = A;
             } else if A == other.hi {
                 // High words equal, check low words
                 A = remainder_lo;
@@ -371,9 +421,9 @@ impl far U32 {
                     A = remainder_hi;
                     A = A - other.hi;
                     remainder_hi = A;
-                    A = quotient_lo;
+                    A = self.lo;
                     A = A | 1;
-                    quotient_lo = A;
+                    self.lo = A;
                 }
             }
             // else remainder < divisor, quotient bit stays 0
@@ -383,97 +433,80 @@ impl far U32 {
                 break;
             }
         }
-
-        // Copy quotient to result
-        A = quotient_lo;
-        result.lo = A;
-        A = quotient_hi;
-        result.hi = A;
     }
 
-    // Modulo: result = self % other (returns self if other == 0)
+    // Modulo: self %= other (unchanged if other == 0)
     #[mode(m16, transition=caller)]
-    fn mod(far *self, far *other: U32, far *result: U32) {
-        let mut remainder_lo: u16;
-        let mut remainder_hi: u16;
+    far fn mod(far *self, far *other: U32) {
         let mut dividend_lo: u16;
         let mut dividend_hi: u16;
         let mut bit_count: u8;
 
-        // Handle division by zero - return original value
+        // Handle division by zero - leave self unchanged
         A = other.lo;
         if A == 0 {
             A = other.hi;
             if A == 0 {
-                A = self.lo;
-                result.lo = A;
-                A = self.hi;
-                result.hi = A;
                 return;
             }
         }
 
-        // Initialize remainder to 0
-        A = 0;
-        remainder_lo = A;
-        remainder_hi = A;
-
-        // Copy dividend
+        // Copy self to dividend before we overwrite self with remainder
         A = self.lo;
         dividend_lo = A;
         A = self.hi;
         dividend_hi = A;
 
+        // Initialize remainder (self) to 0
+        A = 0;
+        self.lo = A;
+        self.hi = A;
+
         // Process 32 bits
         bit_count = 32;
 
         loop {
-            // Shift remainder left by 1, bringing in MSB of dividend
-            A = remainder_lo;
+            // Shift remainder (self) left by 1, bringing in MSB of dividend
+            A = self.lo;
             asm!("ASL A");
-            remainder_lo = A;
-            A = remainder_hi;
+            self.lo = A;
+            A = self.hi;
             asm!("ROL A");
-            remainder_hi = A;
+            self.hi = A;
 
             // Get MSB of dividend into remainder
             A = dividend_hi;
             if A & 0x8000 != 0 {
-                A = remainder_lo;
+                A = self.lo;
                 A = A | 1;
-                remainder_lo = A;
+                self.lo = A;
             }
 
             // Shift dividend left
-            A = dividend_lo;
-            asm!("ASL A");
-            dividend_lo = A;
-            A = dividend_hi;
-            asm!("ROL A");
-            dividend_hi = A;
+            _u32_shl1!(dividend_lo, dividend_hi);
 
             // Compare remainder >= divisor (32-bit compare)
-            A = remainder_hi;
+            A = self.hi;
             if A > other.hi {
                 // remainder > divisor, subtract
                 STATUS.Carry = true;
-                A = remainder_lo;
+                A = self.lo;
                 A = A - other.lo;
-                remainder_lo = A;
-                A = remainder_hi;
+                self.lo = A;
+                A = self.hi;
                 A = A - other.hi;
-                remainder_hi = A;
+                self.hi = A;
             } else if A == other.hi {
-                A = remainder_lo;
+                A = self.lo;
                 if A >= other.lo {
                     // remainder >= divisor
                     STATUS.Carry = true;
-                    A = remainder_lo;
+                    A = self.lo;
                     A = A - other.lo;
-                    remainder_lo = A;
-                    A = remainder_hi;
+                    self.lo = A;
+                    A = self.hi;
                     A = A - other.hi;
-                    remainder_hi = A;
+                    self.hi = A;
                 }
             }
 
@@ -482,12 +515,6 @@ impl far U32 {
                 break;
             }
         }
-
-        // Copy remainder to result
-        A = remainder_lo;
-        result.lo = A;
-        A = remainder_hi;
-        result.hi = A;
     }
 
     // ========================================================================
@@ -503,7 +530,7 @@ impl far U32 {
     //   gt: STATUS.Carry == true && STATUS.Zero == false
     //   le: STATUS.Carry == false || STATUS.Zero == true
     #[mode(m16, transition=caller)]
-    fn cmp(far *self, far *other: U32) -> u8 {
+    far fn cmp(far *self, far *other: U32) -> u8 {
         // Compare high words first
         A = self.hi;
         if A != other.hi {
@@ -525,7 +552,7 @@ impl far U32 {
 
     // Shift left by n bits (in place)
     #[mode(m16, transition=caller)]
-    fn shl(far *self, count @ X: u8) {
+    far fn shl(far *self, count @ X: u8) {
         loop {
             if X == 0 {
                 break;
@@ -542,7 +569,7 @@ impl far U32 {
 
     // Shift right by n bits (in place)
     #[mode(m16, transition=caller)]
-    fn shr(far *self, count @ X: u8) {
+    far fn shr(far *self, count @ X: u8) {
         loop {
             if X == 0 {
                 break;
@@ -555,5 +582,85 @@ impl far U32 {
             self.lo = A;
             X--;
         }
+    }
+
+    // ========================================================================
+    // SNES Hardware-Accelerated Division
+    // ========================================================================
+
+    // Divide by 8-bit value using SNES hardware divider.
+    // self /= divisor, returns remainder.
+    // Much faster than software div when dividing by small values.
+    // If divisor is 0, sets self to 0xFFFFFFFF and returns 0.
+    #[cfg(snes)]
+    #[mode(m8, transition=caller)]
+    far fn div_u8(far *self, divisor @ X: u8) -> u8 {
+        let mut remainder: u8;
+        let mut q3: u8;
+        let mut q2: u8;
+        let mut q1: u8;
+        let mut q0: u8;
+        let mut hi_word: u16;
+        let mut lo_word: u16;
+
+        // Handle division by zero
+        if X == 0 {
+            self.lo = 0xFFFF;
+            self.hi = 0xFFFF;
+            A = 0;
+            return A;
+        }
+
+        // Load words into locals
+        hi_word = self.hi;
+        lo_word = self.lo;
+
+        // Process 4 bytes from MSB to LSB using hardware divider
+        // Each step: dividend = (remainder << 8) | byte, then divide by X
+
+        // Byte 3 (MSB): high byte of hi word
+        A = (hi_word >> 8) as u8;
+        _hwdiv_first!();
+        q3 = RDDIVL;
+        remainder = RDMPYL;
+
+        // Byte 2: low byte of hi word
+        A = hi_word as u8;
+        _hwdiv_step!(remainder);
+        q2 = RDDIVL;
+        remainder = RDMPYL;
+
+        // Byte 1: high byte of lo word
+        A = (lo_word >> 8) as u8;
+        _hwdiv_step!(remainder);
+        q1 = RDDIVL;
+        remainder = RDMPYL;
+
+        // Byte 0 (LSB): low byte of lo word
+        A = lo_word as u8;
+        _hwdiv_step!(remainder);
+        q0 = RDDIVL;
+        remainder = RDMPYL;
+
+        // Reassemble quotient into self
+        // self.lo = (q1 << 8) | q0, self.hi = (q3 << 8) | q2
+        self.lo = ((q1 as u16) << 8) | (q0 as u16);
+        self.hi = ((q3 as u16) << 8) | (q2 as u16);
+
+        A = remainder;
+        return A;
+    }
+
+    // Modulo by 8-bit value using SNES hardware divider.
+    // self %= divisor (self becomes remainder, which fits in 8 bits).
+    // If divisor is 0, self is unchanged.
+    #[cfg(snes)]
+    #[mode(m8, transition=caller)]
+    far fn mod_u8(far *self, divisor @ X: u8) {
+        // div_u8 computes quotient (stored in self) and returns remainder
+        // We discard the quotient and store only the remainder
+        let mut remainder: u8 = self.div_u8(X);
+        self.lo = remainder as u16;
+        self.hi = 0;
     }
 }
