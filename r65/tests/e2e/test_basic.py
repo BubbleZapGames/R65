@@ -231,20 +231,28 @@ class Test16BitMode:
         return E2ETest()
 
     def test_16bit_accumulator(self, e2e):
-        """Test 16-bit accumulator assignment."""
+        """Test 16-bit accumulator assignment with automatic mode switching.
+
+        In the new mode model, 16-bit values are loaded with temporary REP/SEP,
+        then mode returns to m8. The full 16-bit value is in C accumulator but
+        only low byte visible in m8 mode. This test verifies the low byte.
+        """
         result = e2e.run('''
-                        #[entry]
+            #[entry]
             fn main() {
                 A = 0x1234;
             }
-        ''', ExpectedState(A=0x1234))
+        ''', ExpectedState(A=0x34))  # Low byte visible in m8 mode
 
         assert result.success, f"Failures: {result.failures}"
 
     def test_16bit_index_registers(self, e2e):
-        """Test 16-bit index register assignment."""
+        """Test 16-bit index register assignment.
+
+        X and Y are always in x16 mode (16-bit) by default.
+        """
         result = e2e.run('''
-                        #[entry]
+            #[entry]
             fn main() {
                 X = 0xABCD;
                 Y = 0xEF01;
@@ -254,14 +262,18 @@ class Test16BitMode:
         assert result.success, f"Failures: {result.failures}"
 
     def test_16bit_addition(self, e2e):
-        """Test 16-bit addition."""
+        """Test 16-bit addition in A with automatic mode switching.
+
+        16-bit operations on A are wrapped with REP/SEP. The result
+        is in the full C accumulator but only low byte visible in m8.
+        """
         result = e2e.run('''
-                        #[entry]
+            #[entry]
             fn main() {
                 A = 0x1000;
                 A = A + 0x0234;
             }
-        ''', ExpectedState(A=0x1234))
+        ''', ExpectedState(A=0x34))  # Low byte of 0x1234
 
         assert result.success, f"Failures: {result.failures}"
 

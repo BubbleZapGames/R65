@@ -13,6 +13,9 @@ from r65.compiler.codegen.asm_nodes import Immediate, Address, StackOffset
 from r65.compiler.codegen.base_selector import BaseSelector
 from r65.compiler.hir.types import PointerTypeInfo
 
+# Mode flag constants
+M_FLAG = 0x20  # Accumulator size (0=16-bit, 1=8-bit)
+
 
 class MemoryOperationSelector(BaseSelector):
     """
@@ -30,6 +33,16 @@ class MemoryOperationSelector(BaseSelector):
         """Emit a load/store instruction using parent's emit_load/emit_store."""
         opcode, operand = self.parent._get_opcode_for_location(mnemonic, location)
         self._emit_instr(opcode, operand, comment)
+
+    def _switch_to_16bit_a(self):
+        """Switch to 16-bit accumulator mode (REP #$20)."""
+        self._emit_instr(Opcode.REP_IMMEDIATE, Immediate(M_FLAG), "16-bit A")
+        self.emitter.emit_accu_mode(16)
+
+    def _switch_to_8bit_a(self):
+        """Switch back to 8-bit accumulator mode (SEP #$20)."""
+        self._emit_instr(Opcode.SEP_IMMEDIATE, Immediate(M_FLAG), "8-bit A")
+        self.emitter.emit_accu_mode(8)
 
     # ========================================================================
     # Direct Memory Operations
@@ -53,15 +66,19 @@ class MemoryOperationSelector(BaseSelector):
             # Check for hardware register destination - handle differently
             if dest_loc.kind == LocationKind.HARDWARE:
                 if dest_loc.hw_register == 'A':
-                    # Load 16-bit into A - single LDA if in 16-bit mode
+                    # Load 16-bit into A - need 16-bit mode
+                    self._switch_to_16bit_a()
                     self._emit_load_store('LDA', src_loc)
+                    self._switch_to_8bit_a()
                 elif dest_loc.hw_register in ('X', 'Y'):
-                    # Load into A then transfer to X/Y
+                    # Load into A then transfer to X/Y - need 16-bit A for the transfer
+                    self._switch_to_16bit_a()
                     self._emit_load_store('LDA', src_loc)
                     if dest_loc.hw_register == 'X':
                         self._emit_implied(Opcode.TAX, "Transfer to X")
                     else:
                         self._emit_implied(Opcode.TAY, "Transfer to Y")
+                    self._switch_to_8bit_a()
                 else:
                     raise InstructionSelectionError(f"Cannot load 16-bit into hardware register {dest_loc.hw_register}")
             else:
@@ -124,7 +141,15 @@ class MemoryOperationSelector(BaseSelector):
                 self.parent._store_to_b_from_a()
 
     def _store_immediate(self, value: int, dest_loc, is_u16: bool):
-        """Store an immediate value to memory."""
+        """Store an immediate value to memory or hardware register."""
+        # Special handling for hardware register A with 16-bit values
+        if is_u16 and dest_loc.kind == LocationKind.HARDWARE and dest_loc.hw_register == 'A':
+            # Load 16-bit immediate into A - need 16-bit mode
+            self._switch_to_16bit_a()
+            self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(value & 0xFFFF))
+            self._switch_to_8bit_a()
+            return
+
         if is_u16:
             self.parent._emit_16bit_immediate_store(value, dest_loc)
         else:

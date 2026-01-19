@@ -657,6 +657,36 @@ class InstructionSelector:
         left_loc = self._get_operand_location(instr.left)
         dest_loc = self._get_operand_location(instr.dest)
 
+        # Determine if this is a memory-to-memory 16-bit operation
+        # In this case, we handle low/high bytes separately in 8-bit chunks
+        is_mem_to_mem_16bit = (
+            is_u16 and
+            op in ('+', '-', '&', '|', '^') and
+            left_loc.kind != LocationKind.HARDWARE and
+            dest_loc.kind != LocationKind.HARDWARE
+        )
+
+        # Check if immediate value exceeds 8-bit range
+        has_large_immediate = (
+            isinstance(instr.right, MIRImmediate) and instr.right.value > 0xFF
+        )
+
+        # Determine if we need 16-bit mode for hardware register A operations
+        # This is for 16-bit operations involving A that are NOT memory-to-memory
+        # Also switch if the immediate value exceeds 8 bits
+        needs_16bit_mode = (
+            (is_u16 or has_large_immediate) and
+            not is_mem_to_mem_16bit and
+            op in ('+', '-', '&', '|', '^') and
+            ((left_loc.kind == LocationKind.HARDWARE and left_loc.hw_register == 'A') or
+             (dest_loc.kind == LocationKind.HARDWARE and dest_loc.hw_register == 'A'))
+        )
+
+        # Switch to 16-bit mode for A register if needed
+        if needs_16bit_mode:
+            self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "16-bit A")
+            self.emitter.emit_accu_mode(16)
+
         # Load left operand into A (if not already there)
         if left_loc.kind == LocationKind.HARDWARE and left_loc.hw_register == 'A':
             # Left operand is already in A, no need to load
@@ -664,6 +694,14 @@ class InstructionSelector:
         elif left_loc.kind == LocationKind.HARDWARE:
             # Transfer from other hardware register to A
             self._emit_register_transfer(left_loc.hw_register, 'A')
+        elif left_loc.kind == LocationKind.IMMEDIATE:
+            # For mem-to-mem 16-bit ops, mask the immediate to low byte only
+            # (high byte is handled separately later)
+            if is_mem_to_mem_16bit:
+                masked_value = left_loc.immediate_value & 0xFF
+                self._emit_immediate(Opcode.LDA_IMMEDIATE, masked_value)
+            else:
+                self._emit_load('LDA', left_loc)
         else:
             # OPTIMIZATION: Check if vreg value is already in X or Y
             # If so, use TXA/TYA instead of loading from memory
@@ -676,15 +714,6 @@ class InstructionSelector:
             else:
                 # Load left operand from memory/stack into A
                 self._emit_load('LDA', left_loc)
-
-        # Determine if this is a memory-to-memory 16-bit operation
-        # In this case, we handle low/high bytes separately in 8-bit chunks
-        is_mem_to_mem_16bit = (
-            is_u16 and
-            op in ('+', '-', '&', '|', '^') and
-            left_loc.kind != LocationKind.HARDWARE and
-            dest_loc.kind != LocationKind.HARDWARE
-        )
 
         # For memory-to-memory 16-bit ops with immediate values,
         # we need to mask the immediate to 8 bits for the low-byte operation
@@ -726,6 +755,11 @@ class InstructionSelector:
         else:
             # Store result from A to memory/stack
             self._emit_store('STA', dest_loc)
+
+        # Switch back to 8-bit mode after 16-bit A operation
+        if needs_16bit_mode:
+            self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "8-bit A")
+            self.emitter.emit_accu_mode(8)
 
         # Handle high byte for 16-bit operations
         # NOTE: Only needed for memory-to-memory operations
@@ -1234,13 +1268,30 @@ class InstructionSelector:
         """
         Emit load immediate into hardware register.
 
+        For 16-bit loads to A register in m8 mode, wraps with REP/SEP mode switches.
+        Also handles values that exceed 8-bit range by switching to 16-bit mode.
+
         Args:
             reg: Register name ('A', 'X', 'Y')
             value: Immediate value
             is_u16: Whether to use 16-bit format
         """
         load_opcode = LOAD_IMMEDIATE_OPCODES[reg]
-        self._emit_immediate(load_opcode, value)
+
+        # Handle 16-bit load to A register - need mode switch
+        # Also switch if value exceeds 8-bit range (0-255)
+        needs_16bit = is_u16 or (reg == 'A' and value > 0xFF)
+        if needs_16bit and reg == 'A':
+            # Switch to 16-bit A mode
+            self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "16-bit A")
+            self.emitter.emit_accu_mode(16)
+            # Load full 16-bit value
+            self._emit_immediate(load_opcode, value & 0xFFFF)
+            # Switch back to 8-bit A mode
+            self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "8-bit A")
+            self.emitter.emit_accu_mode(8)
+        else:
+            self._emit_immediate(load_opcode, value)
 
     def _get_operand_location(self, operand) -> PhysicalLocation:
         """
@@ -1363,11 +1414,25 @@ class InstructionSelector:
                 size=1
             )
         elif location.kind == LocationKind.MEMORY:
-            return PhysicalLocation(
-                kind=LocationKind.MEMORY,
-                memory_addr=location.memory_addr + offset,
-                size=1
-            )
+            if location.memory_addr is not None:
+                return PhysicalLocation(
+                    kind=LocationKind.MEMORY,
+                    memory_addr=location.memory_addr + offset,
+                    size=1
+                )
+            elif location.memory_label is not None:
+                # Label-based location - create new location with offset applied to label
+                return PhysicalLocation(
+                    kind=LocationKind.MEMORY,
+                    memory_label=f"{location.memory_label}+{offset}",
+                    size=1
+                )
+            else:
+                # Get all attributes for debugging
+                attrs = {k: v for k, v in vars(location).items() if not k.startswith('_')}
+                raise InstructionSelectionError(
+                    f"Cannot offset MEMORY location with no address or label. Location attrs: {attrs}"
+                )
         elif location.kind == LocationKind.STACK:
             return PhysicalLocation(
                 kind=LocationKind.STACK,
