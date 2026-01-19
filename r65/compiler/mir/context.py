@@ -43,7 +43,7 @@ class LoweringContext:
     # Processor Mode
     # ========================================================================
 
-    current_mode: ProcessorMode = field(default_factory=ProcessorMode.unknown)
+    current_mode: ProcessorMode = field(default_factory=ProcessorMode.default)
 
     # ========================================================================
     # Symbol Tables

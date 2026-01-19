@@ -32,28 +32,6 @@ class ProcessedAttribute:
 # - Auto REP/SEP inserted around 16-bit A operations
 
 
-# DEPRECATED: These enums are kept for backwards compatibility with existing code.
-# The #[mode(m8/m16, x8/x16, transition=...)] syntax is no longer supported.
-# CPU mode is now automatically inferred from parameter types.
-class MMode(Enum):
-    """DEPRECATED: Accumulator mode (now inferred from parameter types)."""
-    M8 = "m8"    # 8-bit accumulator
-    M16 = "m16"  # 16-bit accumulator
-
-
-class XMode(Enum):
-    """DEPRECATED: Index register mode (now always x16)."""
-    X8 = "x8"    # 8-bit index (no longer supported)
-    X16 = "x16"  # 16-bit index (always)
-
-
-class ModeTransition(Enum):
-    """DEPRECATED: Mode transition strategy (now automatic)."""
-    NONE = "none"        # No automatic transitions
-    INLINE = "inline"    # Callee manages transition
-    CALLER = "caller"    # Caller manages transition
-
-
 class DataBankMode(Enum):
     """Data bank register management mode."""
     NONE = "none"        # No DBR management (default)

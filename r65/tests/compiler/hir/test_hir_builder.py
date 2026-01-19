@@ -22,7 +22,7 @@ from r65.compiler.hir import (
     SymbolKind, BasicTypeInfo, ArrayTypeInfo, StructTypeInfo,
 )
 from r65.compiler.hir.attributes import (
-    StorageKind, MMode, XMode, ModeTransition,
+    StorageKind,
     InterruptVector,
 )
 

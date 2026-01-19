@@ -5,11 +5,10 @@ Extracted from MIRBuilder to improve modularity and reduce file size.
 """
 
 from typing import Union, Optional, Dict, Any, List, TYPE_CHECKING
-from dataclasses import dataclass
 from r65.compiler.mir.nodes import (
     VirtualRegister, HardwareRegister, Immediate, MemoryLocation,
     MIRInstruction, Load, Store, BinaryOp, UnaryOp, TypeConvert,
-    Compare, Move, Call, SetMode
+    Compare, Move, Call
 )
 from r65.compiler.errors import MIRLoweringError
 from r65.compiler.codegen.type_utils import get_type_size
@@ -17,69 +16,6 @@ from r65.compiler.codegen.type_utils import get_type_size
 if TYPE_CHECKING:
     from r65.compiler.mir.builder import MIRBuilder
     from r65.compiler.hir.nodes import HIRExpression
-
-
-@dataclass
-class ProcessorMode:
-    """Represents processor mode (m8/m16, x8/x16)."""
-    m_mode: Optional[str] = None  # 'm8' or 'm16'
-    x_mode: Optional[str] = None  # 'x8' or 'x16'
-
-    @property
-    def is_m8(self) -> bool:
-        return self.m_mode == 'm8'
-
-    @property
-    def is_m16(self) -> bool:
-        return self.m_mode == 'm16'
-
-    @property
-    def is_x8(self) -> bool:
-        return self.x_mode == 'x8'
-
-    @property
-    def is_x16(self) -> bool:
-        return self.x_mode == 'x16'
-
-
-class ModeTransitionEmitter:
-    """
-    Handles processor mode transitions in MIR.
-
-    Emits SetMode instructions when transitioning between different
-    processor modes (m8/m16, x8/x16).
-    """
-
-    def __init__(self, builder: 'MIRBuilder'):
-        self.builder = builder
-
-    def emit_transition(self, from_mode: ProcessorMode, to_mode: ProcessorMode):
-        """
-        Emit mode transition instructions if needed.
-
-        Args:
-            from_mode: Current processor mode
-            to_mode: Target processor mode
-        """
-        if from_mode is None or to_mode is None:
-            return
-
-        # Check if M mode needs to change
-        m_changed = (from_mode.m_mode != to_mode.m_mode and
-                    from_mode.m_mode is not None and
-                    to_mode.m_mode is not None)
-
-        # Check if X mode needs to change
-        x_changed = (from_mode.x_mode != to_mode.x_mode and
-                    from_mode.x_mode is not None and
-                    to_mode.x_mode is not None)
-
-        if m_changed or x_changed:
-            # Emit SetMode instruction
-            self.builder.emit(SetMode(
-                m_mode=to_mode.m_mode,
-                x_mode=to_mode.x_mode
-            ))
 
 
 class TypeSizeCalculator:

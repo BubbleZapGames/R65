@@ -18,7 +18,6 @@ from r65.compiler.hir import (
     RegisterLetBinding, VariableLetBinding,
     RegisterBinding, VariableBinding,
     SymbolKind,
-    ModeTransition
 )
 from r65.compiler.hir.attributes import StorageKind
 
@@ -46,7 +45,6 @@ from r65.compiler.mir.lowerers.call import CallLowerer
 from r65.compiler.mir.lowerers.assignment import AssignmentLowerer
 from r65.compiler.mir.lowerers.condition import ConditionLowerer
 from r65.compiler.typeck.processor_mode import ProcessorMode, ModeState, XModeState
-from r65.compiler.hir import ModeTransition
 from r65.compiler.errors import MIRLoweringError
 
 
@@ -344,10 +342,8 @@ class MIRBuilder:
                 elif entry_mode.m_mode == ModeState.M16:
                     rep_mask |= 0x20
 
-                if entry_mode.x_mode == XModeState.X8:
-                    sep_mask |= 0x10
-                elif entry_mode.x_mode == XModeState.X16:
-                    rep_mask |= 0x10
+                # X is always x16 in the new design
+                rep_mask |= 0x10
 
                 if sep_mask:
                     self.emit(SetMode(mask=sep_mask, is_set=True))
@@ -389,10 +385,8 @@ class MIRBuilder:
                 elif handler_mode.m_mode == ModeState.M16:
                     rep_mask |= 0x20
 
-                if handler_mode.x_mode == XModeState.X8:
-                    sep_mask |= 0x10
-                elif handler_mode.x_mode == XModeState.X16:
-                    rep_mask |= 0x10
+                # X is always x16 in the new design
+                rep_mask |= 0x10
 
                 if sep_mask:
                     self.emit(SetMode(mask=sep_mask, is_set=True))
@@ -1270,7 +1264,7 @@ class MIRBuilder:
         self.cfg_builder = CFGBuilder(mir_func)
         self.symbol_to_vreg.clear()
         self.loop_stack.clear()
-        self.current_mode = ProcessorMode.unknown()
+        self.current_mode = ProcessorMode.default()
 
         # Create entry block
         entry_block = self.cfg_builder.new_block()

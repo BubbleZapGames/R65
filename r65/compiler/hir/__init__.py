@@ -198,9 +198,6 @@ __all__ = [
     # Attributes
     'ProcessedAttribute',
     'ModeAttribute',
-    'MMode',
-    'XMode',
-    'ModeTransition',
     'PreservesAttribute',
     'StorageAttribute',
     'StorageKind',

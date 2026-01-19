@@ -54,7 +54,7 @@ class TypeChecker:
 
         # Current context during type checking
         self.current_function: Optional[HIRFunctionDecl] = None
-        self.current_mode: ProcessorMode = ProcessorMode.unknown()
+        self.current_mode: ProcessorMode = ProcessorMode.default()
         self.mode_tracker: Optional[ModeTracker] = None
 
         # Collect warnings during type checking

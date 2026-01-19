@@ -17,8 +17,6 @@ from r65.compiler.hir.attributes import (
     BankAttribute,
     DataBankMode,
     ModeAttribute,
-    MMode,
-    XMode,
 )
 from r65.compiler.mir.virtual_registers import VirtualRegisterAllocator
 

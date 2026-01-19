@@ -120,7 +120,7 @@ class AttributeArg(ASTNode):
 
 @dataclass
 class Attribute(ASTNode):
-    """Attribute like #[mode(m8, x8)]"""
+    """Attribute like #[mode(databank=inline)] or #[bank(2)]"""
     name: str
     args: List[AttributeArg]
 
@@ -242,7 +242,6 @@ class ImplMethod(ASTNode):
     """Method declaration in an impl block.
 
     Example:
-        #[mode(m8, x16)]
         fn take_damage(*self, amount @ A: u8) {
             self.health -= amount;
         }
@@ -276,7 +275,6 @@ class ImplDecl(Declaration):
         impl Player {
             const MAX_HEALTH: u8 = 100;
 
-            #[mode(m8, x16)]
             fn take_damage(*self, amount @ A: u8) { ... }
         }
 

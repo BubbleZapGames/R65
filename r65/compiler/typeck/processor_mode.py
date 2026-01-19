@@ -32,10 +32,6 @@ class XModeState(Enum):
     X16 = "x16"     # 16-bit (X=0) - the only supported mode
 
 
-# DEPRECATED: Re-export ModeTransition for backwards compatibility
-from r65.compiler.hir.attributes import ModeTransition
-
-
 @dataclass(frozen=True)  # Immutable for hashing
 class ProcessorMode:
     """
@@ -83,25 +79,6 @@ class ProcessorMode:
                             return ProcessorMode(ModeState.M16, XModeState.X16)
 
         # Default: m8 entry mode
-        return ProcessorMode.default()
-
-    @staticmethod
-    def from_attribute(mode_attr) -> 'ProcessorMode':
-        """DEPRECATED: Create ProcessorMode from ModeAttribute.
-
-        This method is kept for backwards compatibility. New code should use
-        default() or for_function() instead.
-        """
-        # Mode attributes no longer specify m/x modes - use default
-        return ProcessorMode.default()
-
-    @staticmethod
-    def unknown() -> 'ProcessorMode':
-        """DEPRECATED: Create an 'unknown' mode.
-
-        In the new design, mode is always known (m8 or m16, always x16).
-        Returns the default mode instead.
-        """
         return ProcessorMode.default()
 
     def is_fully_known(self) -> bool:

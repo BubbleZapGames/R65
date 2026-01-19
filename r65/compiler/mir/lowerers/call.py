@@ -11,7 +11,6 @@ from r65.compiler.hir import (
     HIRFunctionCall, HIRMethodCall, HIRFunctionDecl,
     HIRIdentifier, HIRIntegerLiteral,
     RegisterBinding, VariableBinding,
-    ModeTransition,
 )
 from r65.compiler.mir.nodes import (
     VirtualRegister, HardwareRegister, Immediate,
@@ -19,7 +18,7 @@ from r65.compiler.mir.nodes import (
     SetMode, Push, Pull,
 )
 from r65.compiler.hir.types import ArrayTypeInfo, BasicTypeInfo
-from r65.compiler.typeck.processor_mode import ProcessorMode, ModeState, XModeState
+from r65.compiler.typeck.processor_mode import ProcessorMode, ModeState
 from r65.compiler.errors import MIRLoweringError
 
 if TYPE_CHECKING:
@@ -344,19 +343,12 @@ class CallLowerer:
         sep_mask = 0  # Bits to set (8-bit mode)
         rep_mask = 0  # Bits to clear (16-bit mode)
 
-        # M flag (bit 5, 0x20)
+        # M flag (bit 5, 0x20) - X is always x16, no need to check
         if from_mode.m_mode != to_mode.m_mode:
             if to_mode.m_mode == ModeState.M8:
                 sep_mask |= 0x20  # SEP #$20 for M8
             elif to_mode.m_mode == ModeState.M16:
                 rep_mask |= 0x20  # REP #$20 for M16
-
-        # X flag (bit 4, 0x10)
-        if from_mode.x_mode != to_mode.x_mode:
-            if to_mode.x_mode == XModeState.X8:
-                sep_mask |= 0x10  # SEP #$10 for X8
-            elif to_mode.x_mode == XModeState.X16:
-                rep_mask |= 0x10  # REP #$10 for X16
 
         # Emit instructions
         if sep_mask:
@@ -372,12 +364,10 @@ class CallLowerer:
         builtin_name: Optional[str] = None
     ):
         """
-        Emit function call with mode transition handling.
+        Emit function call.
 
-        Handles three cases:
-        1. transition=none: No wrapper (default)
-        2. transition=auto: Callee handles it
-        3. transition=caller + mode mismatch: Caller handles it
+        Mode transitions are now automatic - the callee's prologue handles
+        REP #$20 for m16 entry mode, and epilogue handles SEP #$20 to restore.
 
         Args:
             func_decl: Function being called
@@ -385,63 +375,15 @@ class CallLowerer:
             returns: Virtual registers for return values
             builtin_name: Name of built-in function if this is a built-in call
         """
-        caller_mode = self.ctx.current_mode
-        callee_mode = ProcessorMode.from_attribute(func_decl.mode_attr) if func_decl.mode_attr else ProcessorMode.unknown()
-        transition = func_decl.mode_attr.transition if func_decl.mode_attr and hasattr(func_decl.mode_attr, 'transition') else ModeTransition.NONE
-
-        # Check if mode transition needed
-        mode_mismatch = (
-            caller_mode != callee_mode and
-            caller_mode.is_fully_known() and
-            callee_mode.is_fully_known()
-        )
-
-        if not mode_mismatch or transition != ModeTransition.CALLER:
-            # No wrapper needed (transition=none, transition=auto, or same mode)
-            self.emit(Call(
-                function=func_decl.name,
-                args=args,
-                returns=returns,
-                is_far=func_decl.is_far,
-                mode_attr=func_decl.mode_attr,
-                bank_attr=func_decl.bank_attr,
-                builtin_name=builtin_name
-            ))
-            return
-
-        # Caller handles mode transition
-        preserves_status = (
-            func_decl.preserves_attr and
-            'STATUS' in func_decl.preserves_attr.registers
-        )
-
-        if preserves_status:
-            # Use SEP/REP before and after
-            self._emit_mode_transition(caller_mode, callee_mode)
-            self.emit(Call(
-                function=func_decl.name,
-                args=args,
-                returns=returns,
-                is_far=func_decl.is_far,
-                mode_attr=func_decl.mode_attr,
-                bank_attr=func_decl.bank_attr,
-                builtin_name=builtin_name
-            ))
-            self._emit_mode_transition(callee_mode, caller_mode)
-        else:
-            # Use PHP/PLP wrapper
-            self.emit(Push(register=HardwareRegister('STATUS')))
-            self._emit_mode_transition(caller_mode, callee_mode)
-            self.emit(Call(
-                function=func_decl.name,
-                args=args,
-                returns=returns,
-                is_far=func_decl.is_far,
-                mode_attr=func_decl.mode_attr,
-                bank_attr=func_decl.bank_attr,
-                builtin_name=builtin_name
-            ))
-            self.emit(Pull(register=HardwareRegister('STATUS')))
+        self.emit(Call(
+            function=func_decl.name,
+            args=args,
+            returns=returns,
+            is_far=func_decl.is_far,
+            mode_attr=func_decl.mode_attr,
+            bank_attr=func_decl.bank_attr,
+            builtin_name=builtin_name
+        ))
 
     # ========================================================================
     # Argument Lowering
