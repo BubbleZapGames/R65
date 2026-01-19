@@ -15,7 +15,7 @@ from r65.compiler.hir import (
 from r65.compiler.hir.types import TypeInfo, FunctionTypeInfo, ArrayTypeInfo, PointerTypeInfo
 from r65.compiler.typeck.errors import TypeCheckError
 from r65.compiler.typeck.type_utils import TypeUtils
-from r65.compiler.typeck.processor_mode import ProcessorMode, ModeTransition
+from r65.compiler.typeck.processor_mode import ProcessorMode
 
 
 class CallValidator:
@@ -419,41 +419,18 @@ class CallValidator:
         return func_type
 
     def _check_call_mode_compatibility(self, func_name: str, func_decl: HIRFunctionDecl, source_loc):
-        """Check mode compatibility between caller and callee."""
-        # Get callee mode
-        if func_decl.mode_attr:
-            callee_mode = ProcessorMode.from_attribute(func_decl.mode_attr)
-        else:
-            callee_mode = ProcessorMode.unknown()
+        """Check mode compatibility between caller and callee.
 
-        caller_mode = self.get_current_mode()
+        In the new design, mode transitions are handled automatically by the compiler:
+        - Compiler inserts REP/SEP around 16-bit A operations
+        - Call sites switch to callee's entry mode as needed
 
-        if caller_mode == callee_mode:
-            return
-
-        if not caller_mode.is_fully_known() or not callee_mode.is_fully_known():
-            return
-
-        mode_attr = func_decl.mode_attr
-        if mode_attr and hasattr(mode_attr, 'transition'):
-            transition = mode_attr.transition
-        else:
-            transition = ModeTransition.NONE
-
-        if transition == ModeTransition.INLINE:
-            if func_decl.preserves_attr and 'STATUS' in func_decl.preserves_attr.registers:
-                raise TypeCheckError(
-                    f"function '{func_name}' cannot use transition=inline with #[preserves(STATUS)]",
-                    source_loc=source_loc,
-                    hint="transition=inline modifies STATUS to switch modes, which conflicts with preservation"
-                )
-
-        if transition == ModeTransition.NONE:
-            raise TypeCheckError(
-                f"cannot call '{func_name}': mode mismatch (caller: {caller_mode}, callee: {callee_mode})",
-                source_loc=source_loc,
-                hint="add transition=inline or transition=caller to the callee's #[mode(...)] attribute"
-            )
+        This method no longer raises errors for mode mismatches - the compiler
+        will generate the appropriate mode switch code.
+        """
+        # Mode transitions are now automatic - no validation needed
+        # The MIR builder will insert REP/SEP instructions as needed at call sites
+        pass
 
     def _check_call_bank_compatibility(self, func_name: str, func_decl: HIRFunctionDecl, source_loc):
         """

@@ -250,8 +250,7 @@ def test_example_program():
     #[zeropage(0x20)]
     static mut FRAME_COUNT: u16 = 0;
 
-    #[mode(m8, x8)]
-    #[preserves(X, Y)]
+        #[preserves(X, Y)]
     fn wait_vblank() {
         loop {
             let flag @ A = VBLANK_FLAG;

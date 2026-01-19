@@ -20,7 +20,7 @@ from r65.compiler.hir import (
     RegisterLetBinding, ArrayTypeInfo, StructTypeInfo, EnumTypeInfo
 )
 from r65.compiler.hir.types import FunctionTypeInfo, PointerTypeInfo, SliceTypeInfo
-from r65.compiler.typeck.processor_mode import ProcessorMode, ModeTransition
+from r65.compiler.typeck.processor_mode import ProcessorMode, ModeState, XModeState
 from r65.compiler.typeck.mode_tracker import ModeTracker
 from r65.compiler.typeck.cfg_builder import CFGBuilder
 from r65.compiler.typeck.type_utils import TypeUtils
@@ -548,21 +548,17 @@ class TypeChecker:
                 verb="returned"
             )
 
-        # Validate interrupt handler mode transition
-        if func.interrupt_attr and func.mode_attr:
-            # Interrupt handlers with mode attributes MUST explicitly use transition=inline
-            # because interrupts can fire from any mode and must restore properly
-            if func.mode_attr.transition != ModeTransition.INLINE:
-                raise TypeCheckError(
-                    f"Interrupt handler '{func.name}' has #[mode] attribute but transition={func.mode_attr.transition.value}\n"
-                    f"  Interrupt handlers with mode attributes MUST use transition=inline\n"
-                    f"  Example: #[mode(m8, x8, transition=inline)]\n"
-                    f"  Reason: Interrupts can fire from any mode and need automatic mode management",
-                    source_loc=func.source_loc
-                )
+        # Interrupt handlers use automatic mode management (mode is saved/restored by RTI)
+        # No validation needed since mode is now inferred automatically
 
-        # Get entry mode from function attribute
-        entry_mode = ProcessorMode.from_attribute(func.mode_attr)
+        # Get entry mode from inferred mode (based on parameter types)
+        # entry_m_mode is set by HIR builder based on A parameter type
+        if func.entry_m_mode is not None:
+            entry_mode = ProcessorMode(func.entry_m_mode, XModeState.X16)
+        else:
+            # Fallback: use default mode (m8, x16)
+            entry_mode = ProcessorMode.default()
+
         self.current_mode = entry_mode
 
         if func.body is None:

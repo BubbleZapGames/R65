@@ -172,7 +172,7 @@ fn init_player() {
     PLAYER.flags = 0;
 }
 
-fn init_entity(index @ X: u8) {
+fn init_entity(index @ X: u16) {
     ENEMIES[X].pos.x = 0;
     ENEMIES[X].pos.y = 0;
     ENEMIES[X].state = State::Dead as u8;
@@ -182,7 +182,6 @@ fn init_entity(index @ X: u8) {
 // -----------------------------------------------------------------------------
 // Game Logic
 // -----------------------------------------------------------------------------
-#[mode(m8, x8)]
 fn update_game() {
     if GAME.paused {
         return;
@@ -240,7 +239,7 @@ fn update_player() {
     }
 }
 
-fn update_enemy(index @ X: u8) {
+fn update_enemy(index @ X: u16) {
     // Simple enemy AI using match
     let state: u8 = ENEMIES[X].state;
     let behavior: u8 = match state {
@@ -274,7 +273,7 @@ fn check_collisions() {
     }
 }
 
-fn check_entity_collision(index @ X: u8) -> bool {
+fn check_entity_collision(index @ X: u16) -> bool {
     let dx: i16 = PLAYER.pos.x as i16 - ENEMIES[X].pos.x as i16;
     let dy: i16 = PLAYER.pos.y as i16 - ENEMIES[X].pos.y as i16;
 
@@ -285,7 +284,7 @@ fn check_entity_collision(index @ X: u8) -> bool {
     return dx < TILE_SIZE as i16 && dy < TILE_SIZE as i16;
 }
 
-fn handle_collision(enemy_index @ X: u8) {
+fn handle_collision(enemy_index @ X: u16) {
     // Damage player
     if PLAYER.health > 10 {
         PLAYER.health = PLAYER.health - 10;
@@ -415,13 +414,11 @@ fn halt() {
 // -----------------------------------------------------------------------------
 // Mode Control
 // -----------------------------------------------------------------------------
-#[mode(m16, x16)]
 fn set_16bit_mode() {
     STATUS.A16 = false;
     STATUS.XY16 = false;
 }
 
-#[mode(m8, x8)]
 fn set_8bit_mode() {
     STATUS.A16 = true;
     STATUS.XY16 = true;
@@ -541,7 +538,7 @@ fn init_handlers() {
     HANDLER_TABLE[0].priority = 10;
 }
 
-fn dispatch_handler(state @ X: u8, input @ A: u8) -> u8 {
+fn dispatch_handler(state @ X: u16, input @ A: u8) -> u8 {
     // Call through function pointer array
     let handler: fn(u8) -> u8 = STATE_HANDLERS[X];
     return handler(input);

@@ -137,9 +137,10 @@ add:
 **Characteristics**:
 - Fastest (no stack access)
 - Limited to 3 registers (A, X, Y) in most modes
-- **In `#[mode(m8)]` mode: 4 registers available (A, X, Y, B)**
+- **In m8 mode (default): 4 registers available (A, X, Y, B)**
 - Zero overhead if values already in registers
 - Order: Any order (explicit)
+- **X/Y must be u16** (always x16 mode)
 
 **Use when**: Performance critical, few parameters, matching register-based calling convention
 
@@ -147,20 +148,19 @@ add:
 
 ### 2a. B Register Parameters (m8 Mode Only)
 
-**In `#[mode(m8)]` mode**, the B register (high byte of accumulator) can be used for parameters:
+**In m8 mode** (default, or when A parameter is u8), the B register (high byte of accumulator) can be used for parameters:
 
 **Syntax**: `param @ B: Type`
 
 **Mechanism**: Caller places value in B register (via XBA instruction)
 
 ```rust
-#[mode(m8, x8)]
+// m8 mode (default) - B is available
 fn pack_word(low @ A: u8, high @ B: u8) -> u16 {
     // Both A and B are available as parameters
     return A as u16 | ((B as u16) << 8);
 }
 
-#[mode(m8, x8)]
 fn process_high_byte(value @ B: u8) -> u8 {
     B = B & 0xF0;
     return B;
@@ -190,8 +190,8 @@ pack_word:
 ```
 
 **Key Points**:
-- **Mode restriction**: B register only available in `#[mode(m8)]` mode
-  - Compiler error if B used in `#[mode(m16)]`
+- **Mode restriction**: B register only available in m8 mode
+  - Compiler error if B used with `@ A: u16` (m16 mode)
   - B is meaningless when accumulator is 16-bit
 - **Caller responsibility**: Caller must set up B register before call
   - Typically via XBA instruction to exchange A and B
@@ -1200,67 +1200,55 @@ fn process(count: u8, base @ A: u8) -> u8 {
 
 ## Mode Transitions in Calls
 
-### Manual Mode Handling (transition=none)
+### Automatic Mode System
+
+Mode transitions are now handled automatically by the compiler:
+
+- **Default mode**: m8 (8-bit A), x16 (16-bit X/Y)
+- **m16 mode**: Inferred when function has `@ A: u16` parameter
+- **X/Y always u16**: No x8 mode in R65
 
 ```rust
-#[mode(m16, x16)]
-fn needs_16bit(value @ A: u16) -> u16 {
+// m8 mode (default)
+fn process_byte(value @ A: u8) -> u8 {
     return value + 1;
 }
 
-#[mode(m8, x8)]
-fn caller() {
-    REP(0x30);         // Switch to m16, x16
-    let result = needs_16bit(1000);
-    SEP(0x30);         // Back to m8, x8
-}
-```
-
----
-
-### Inline Mode Handling (transition=inline)
-
-```rust
-#[mode(m16, x16, transition=inline)]
-fn safe_function(value @ A: u16) -> u16 {
+// m16 mode (inferred from u16 @ A)
+fn process_word(value @ A: u16) -> u16 {
     return value + 1;
 }
 
-#[mode(m8, x8)]
 fn caller() {
-    // No mode change needed
-    let result @ A = safe_function(1000);  // Callee handles mode
+    let byte = process_byte(10);    // Caller in m8, callee in m8
+    let word = process_word(1000);  // Callee switches to m16, returns to m8
 }
 ```
 
-**Generated (callee)**:
+**Generated (m16 callee)**:
 ```asm
-safe_function:
-    PHP            ; Save mode
-    REP #$30       ; Switch to m16, x16
+process_word:
+    REP #$20       ; Switch to m16
     ; ... function body ...
-    PLP            ; Restore mode
+    SEP #$20       ; Restore m8
     RTS
 ```
 
 ---
 
-### Caller-Side Mode Handling (transition=caller)
+### Cross-Mode Calls
+
+When caller and callee have different modes, the callee handles the transition:
 
 ```rust
-#[mode(m16, x16, transition=caller)]
-fn batchable(value @ A: u16) -> u16 {
-    return value + 1;
+fn caller() {
+    // caller is m8 (default)
+    let result = needs_16bit(0x1234);  // callee handles REP/SEP
 }
 
-#[mode(m8, x8)]
-fn caller() {
-    REP(0x30);
-    let a = batchable(100);
-    let b = batchable(200);
-    let c = batchable(300);
-    SEP(0x30);
-    // Batched: one mode change for multiple calls
+fn needs_16bit(value @ A: u16) -> u16 {
+    // callee is m16 (inferred)
+    return value + 1;
 }
 ```
 

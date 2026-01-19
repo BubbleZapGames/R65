@@ -1,577 +1,251 @@
-# Mode Transition Logic Analysis
+# Processor Mode System
 
-## Current Implementation Review
+## Overview
 
-### 1. Unknown Mode Handling ✅
+R65 uses a **simplified automatic mode system** where CPU modes are inferred from function parameter types rather than specified via attributes.
 
-**Logic:** Wrappers only generated when both caller and callee modes are fully known.
-```python
-mode_mismatch = (caller_mode != callee_mode and
-                caller_mode.is_fully_known() and
-                callee_mode.is_fully_known())
-```
+### Key Principles
 
-**Implications:**
-- Functions with no `#[mode]` attribute have unknown mode
-- No wrappers generated for unknown modes
-- **Perfect for disassembly**: Preserves original code without injection
-- **Safe for new code**: Programmer should specify modes explicitly
-
-**Edge Cases:**
-- Partial modes (e.g., `#[mode(m8)]` without X): Treated as unknown, no wrapper
-- Mixed unknown/known: No wrapper generated (conservative approach)
+1. **X/Y Always 16-bit**: Index registers X and Y are always in x16 mode (16-bit)
+2. **A Mode Inferred**: Accumulator mode (m8/m16) is inferred from `@ A` parameter type
+3. **Automatic Transitions**: Compiler inserts REP/SEP instructions as needed
+4. **`#[mode]` for DBR only**: The attribute only controls data bank register management
 
 ---
 
-### 2. Partial Mode Transitions ✅
+## Mode Rules
 
-**Logic:** Correctly handles M-only or X-only transitions via mask combination.
+### Default Mode
 
-**Examples:**
+All functions start with the default mode:
+- **M mode**: m8 (8-bit accumulator)
+- **X mode**: x16 (16-bit index registers) - always
+
+### Function Entry Mode
+
+The compiler infers entry mode from function parameters:
+
 ```rust
-// M changes only: (m8, x8) → (m16, x8)
-REP #$20        ; Only M bit changes
+// m8 mode (default) - no u16 @ A parameter
+fn process(value @ A: u8) { }
+fn helper() { }
 
-// X changes only: (m8, x8) → (m8, x16)
-REP #$10        ; Only X bit changes
-
-// Both change same direction: (m8, x8) → (m16, x16)
-REP #$30        ; Combined mask (0x20 | 0x10)
-
-// Opposite directions: (m8, x16) → (m16, x8)
-REP #$20        ; M: 8→16
-SEP #$10        ; X: 16→8
+// m16 mode - inferred from u16 @ A parameter
+fn process16(value @ A: u16) { }
+fn wide_ops(data @ A: u16, idx @ X: u16) { }
 ```
 
-**Implementation:**
-```python
-# Build mask for mode changes
-sep_mask = 0  # Bits to set (8-bit mode)
-rep_mask = 0  # Bits to clear (16-bit mode)
+### X/Y Parameter Validation
 
-# M flag (bit 5, 0x20)
-if from_mode.m_mode != to_mode.m_mode:
-    if to_mode.m_mode == ModeState.M8:
-        sep_mask |= 0x20
-    elif to_mode.m_mode == ModeState.M16:
-        rep_mask |= 0x20
+X and Y register parameters **must** be u16. The compiler rejects u8/i8:
 
-# X flag (bit 4, 0x10)
-if from_mode.x_mode != to_mode.x_mode:
-    if to_mode.x_mode == XModeState.X8:
-        sep_mask |= 0x10
-    elif to_mode.x_mode == XModeState.X16:
-        rep_mask |= 0x10
-
-# Emit combined instructions
-if sep_mask:
-    emit(SetMode(mask=sep_mask, is_set=True))
-if rep_mask:
-    emit(SetMode(mask=rep_mask, is_set=False))
-```
-
-**Optimization:** Masks combined when transitions are in same direction (both SEP or both REP).
-
----
-
-### 3. STATUS Preservation Logic
-
-**Current Implementation:**
-```python
-if mode_mismatch and transition == ModeTransition.CALLER:
-    if callee has #[preserves(STATUS)]:
-        # Path A: Explicit mode transitions
-        SEP/REP to switch to callee mode
-        JSR callee
-        SEP/REP to restore caller mode
-    else:
-        # Path B: Stack-based preservation
-        PHP                     ; Save STATUS
-        SEP/REP to switch to callee mode
-        JSR callee
-        PLP                     ; Restore STATUS
-```
-
-**Analysis:**
-
-#### Path A: Callee Preserves STATUS
-```
-Caller mode: m8, x8
-REP #$30                ; Switch to m16, x16 (callee's mode)
-JSR callee              ; Callee preserves STATUS (guaranteed)
-                        ; STATUS still has M=0, X=0 (m16, x16)
-SEP #$30                ; Restore to m8, x8 (caller's mode)
-```
-
-**Contract:** Callee with `#[preserves(STATUS)]` promises:
-- Won't execute SEP or REP
-- Won't modify any STATUS bits
-- Expects to be called in its declared mode
-
-**Byte count:** 4 bytes (REP=2, SEP=2)
-
-#### Path B: Callee Doesn't Preserve STATUS
-```
-Caller mode: m8, x8
-PHP                     ; Push STATUS (saves all bits including M=1, X=1)
-REP #$30                ; Switch to m16, x16
-JSR callee              ; Callee might modify STATUS in any way
-PLP                     ; Restore original STATUS (M=1, X=1 restored)
-```
-
-**Safety:** Works regardless of what callee does to STATUS internally.
-
-**Byte count:** 4 bytes (PHP=1, REP=2, PLP=1)
-**Stack usage:** 1 byte
-
----
-
-## Edge Cases Identified
-
-### 1. Internal Mode Changes
-
-**Scenario:** Callee switches modes internally but returns to declared mode:
 ```rust
-#[mode(m16, x16)]
-fn callee() {
-    // Start in m16
-    SEP(0x20);      // Switch to m8 temporarily
-    do_work();
-    REP(0x20);      // Back to m16
-    // Exit in m16
-}
-```
+// ✅ Correct - X/Y are u16
+fn indexed(idx @ X: u16) { }
+fn both_index(x @ X: u16, y @ Y: u16) { }
 
-**Analysis:**
-- Callee doesn't have `#[preserves(STATUS)]` (it modifies STATUS)
-- Wrapper uses PHP/PLP path
-- After call, caller's mode is correctly restored ✅
+// ❌ Compile error - X/Y must be u16
+fn invalid(idx @ X: u8) { }  // Error: X/Y registers are always 16-bit
+```
 
 ---
 
-### 2. Recursive Calls
+## Code Generation
 
-**Scenario:** Function calls itself
-```rust
-#[mode(m8, x8)]
-fn recursive(n: u8) {
-    if n > 0 {
-        recursive(n - 1);  // Same mode
-    }
-}
+### Prologue
+
+For functions with m16 entry mode (u16 @ A parameter):
+```asm
+function_name:
+    .ACCU 16          ; Tell assembler A is 16-bit
+    .INDEX 16         ; Tell assembler X/Y are 16-bit
+    REP #$20          ; Set 16-bit accumulator mode
+    ; ... function body ...
 ```
 
-**Analysis:**
-- `caller_mode == callee_mode` → no wrapper generated ✅
+For functions with m8 entry mode (default):
+```asm
+function_name:
+    .ACCU 8           ; Tell assembler A is 8-bit
+    .INDEX 16         ; Tell assembler X/Y are 16-bit
+    ; ... function body (no mode switch needed) ...
+```
 
----
+### Epilogue
 
-### 3. Call Chains with Multiple Transitions
+For m16 functions, restore m8 before return:
+```asm
+    ; ... function body ...
+    SEP #$20          ; Restore 8-bit accumulator mode
+    RTS/RTL
+```
 
-**Scenario:**
+### Cross-Mode Calls
+
+When calling a function with different entry mode:
 ```rust
-#[mode(m8, x8)]
 fn caller() {
-    bridge();  // m8 → m16
+    // caller is m8 (default)
+    callee_m16(0x1234);  // callee expects m16
 }
 
-#[mode(m16, x16, transition=caller)]
-fn bridge() {
-    worker();  // m16 → m8
-}
-
-#[mode(m8, x8, transition=caller)]
-fn worker() {
-    // work
+fn callee_m16(value @ A: u16) {
+    // callee runs in m16
 }
 ```
 
-**Generated code:**
-```
-caller:
-    ; Call to bridge (m8 → m16, transition=caller)
-    PHP
-    REP #$30
-    JSR bridge
-    PLP
-
-bridge:
-    ; Call to worker (m16 → m8, transition=caller)
-    PHP
-    REP #$30           ; Actually SEP #$30
-    JSR worker
-    PLP
-```
-
-**Analysis:** Each call site independently handles transitions ✅
+The callee's prologue handles the mode switch (REP #$20), and epilogue restores (SEP #$20).
 
 ---
 
-### 4. Interrupt Handlers
+## Data Bank Management
 
-**Question:** How do mode transitions interact with interrupt handlers?
+The `#[mode]` attribute is retained **only** for data bank register (DBR) management:
 
-**Interrupt handler structure:**
+### databank=none (default)
+
+No DBR management. Function uses whatever DBR is set by caller:
+```rust
+fn local_work() { }  // Uses caller's DBR
+```
+
+### databank=inline
+
+Callee saves DBR, sets it to function's bank, restores on exit:
+```rust
+#[mode(databank=inline)]
+#[bank(2)]
+far fn graphics_helper() {
+    // DBR automatically set to bank 2
+    // Original DBR restored before RTL
+}
+```
+
+Generated code:
+```asm
+graphics_helper:
+    PHB              ; Save caller's DBR
+    LDA #$02         ; Load function's bank
+    PHA
+    PLB              ; Set DBR to bank 2
+    ; ... function body ...
+    PLB              ; Restore caller's DBR
+    RTL
+```
+
+### databank=caller
+
+Caller is responsible for setting DBR (useful for batching):
+```rust
+#[mode(databank=caller)]
+#[bank(2)]
+far fn helper1() { }
+
+#[mode(databank=caller)]
+#[bank(2)]
+far fn helper2() { }
+
+fn caller() {
+    // Manually manage DBR for multiple calls
+    PHB
+    LDA #$02
+    PHA
+    PLB
+    helper1();  // DBR already set
+    helper2();  // DBR already set
+    PLB
+}
+```
+
+---
+
+## Migration from Old System
+
+### Old Syntax (No Longer Supported)
+
+```rust
+// ❌ These no longer work:
+#[mode(m8, x8)]
+#[mode(m16, x16)]
+#[mode(m8, x16, transition=inline)]
+#[mode(m16, transition=caller)]
+```
+
+### New Syntax
+
+```rust
+// ✅ Mode inferred from parameters:
+fn process(val @ A: u8) { }       // m8
+fn wide(val @ A: u16) { }         // m16 (inferred)
+fn indexed(idx @ X: u16) { }      // m8, X/Y always u16
+
+// ✅ Only databank in #[mode]:
+#[mode(databank=inline)]
+far fn far_func() { }
+```
+
+### Compiler Errors
+
+The compiler provides helpful errors for old syntax:
+```
+error: #[mode(m8)] is no longer supported.
+  CPU mode is now automatically inferred from parameter types:
+  - u16 @ A parameter -> m16 entry mode
+  - otherwise -> m8 entry mode (default)
+  - X/Y registers are always u16 (x16 mode)
+  Use #[mode(databank=...)] for data bank management only.
+```
+
+---
+
+## Interrupt Handlers
+
+Interrupt handlers use automatic mode management:
+
 ```rust
 #[interrupt(nmi)]
-#[mode(m8, x8)]
-fn nmi_handler() {
-    // Interrupt handler code
+fn vblank_handler() {
+    // Interrupts can fire in any mode
+    // RTI restores original STATUS (including M/X flags)
 }
 ```
 
-**Analysis:**
-- Interrupts already have automatic register preservation (PHP/PHA/PHX/PHY/...)
-- PHP at entry saves STATUS including current mode
-- If handler has `#[mode]` attribute, it declares what mode it expects
-- **Issue:** Who ensures the mode matches?
-  - Hardware doesn't guarantee mode on interrupt
-  - Handler might need mode transition wrapper at entry
-  - **This is not currently implemented!** ⚠️
+The interrupt prologue saves STATUS via PHP, and RTI restores it. The handler body executes in the default mode (m8, x16).
 
 ---
 
-### 5. Unknown Mode Function Calls
+## Design Rationale
 
-**Scenario:** Disassembled function with no mode annotation
-```rust
-// Disassembled from ROM - mode unknown
-fn original_routine() {
-    // ...
-}
+### Why Always x16?
 
-#[mode(m8, x8)]
-fn new_code() {
-    original_routine();  // What happens here?
-}
-```
+1. **Simplicity**: One less thing to track and manage
+2. **Performance**: 16-bit index registers are generally more useful for SNES
+3. **Safety**: Prevents mode mismatch bugs with X/Y parameters
+4. **Compatibility**: Most SNES code uses x16 mode
 
-**Current behavior:**
-- `callee_mode = ProcessorMode.unknown()`
-- `mode_mismatch` check fails (callee not fully known)
-- No wrapper generated
-- **Programmer must manually ensure correct mode** ✅
+### Why Infer A Mode?
 
-**For disassembly:** This is correct! Preserves original calling convention.
+1. **Ergonomics**: No need for explicit mode annotations
+2. **Type Safety**: Mode is tied to actual parameter type
+3. **Automatic Transitions**: Compiler handles REP/SEP
+4. **Fewer Bugs**: Can't have type/mode mismatch
 
----
+### Why Keep databank in #[mode]?
 
-### 6. Function Pointers (Not Yet Implemented)
-
-**Question:** How would indirect calls work?
-```rust
-type Handler = fn(x @ A: u8) -> u8;
-static mut CALLBACK: Handler;
-
-fn indirect_call() {
-    CALLBACK(10);  // How to handle mode transition?
-}
-```
-
-**Challenges:**
-- Mode of target function unknown at compile time
-- Function pointer type could encode mode and transition strategy
-- Trampoline might need to handle transition dynamically
-- **Needs design** 🔴
-
----
-
-### 7. Bank Boundaries and Far Calls
-
-**Question:** Do far calls (JSL/RTL) need special mode handling?
-
-**Current implementation:**
-- `is_far` flag passed to Call instruction
-- Mode transitions independent of near/far distinction
-- Generates same wrappers for JSR and JSL ✅
-
-**DBR + Mode interaction:**
-- `databank=inline`: Callee sets DBR to its program bank
-- Could combine with mode transition for single wrapper
-- **Optimization opportunity:** Combine PHB+PHP → PHB+PHP+SEP/REP+... ⚡
-
----
-
-### 8. Batching Optimization (Not Implemented)
-
-**Scenario:** Multiple calls to same-mode functions
-```rust
-#[mode(m8, x8)]
-fn caller() {
-    func1();  // m8 → m16
-    func2();  // m8 → m16
-    func3();  // m8 → m16
-}
-
-#[mode(m16, x16, transition=caller)]
-fn func1() { }
-
-#[mode(m16, x16, transition=caller)]
-fn func2() { }
-
-#[mode(m16, x16, transition=caller)]
-fn func3() { }
-```
-
-**Current (inefficient):**
-```
-PHP
-REP #$30
-JSR func1
-PLP
-
-PHP
-REP #$30
-JSR func2
-PLP
-
-PHP
-REP #$30
-JSR func3
-PLP
-```
-
-**Optimized (batched):**
-```
-REP #$30     ; Switch once
-JSR func1
-JSR func2
-JSR func3
-SEP #$30     ; Restore once
-```
-
-**Challenge:** Requires basic block analysis to identify consecutive same-mode calls
-**Benefit:** Significant code size and performance improvement
-**Status:** Not implemented, mentioned in original design docs ⚡
-
----
-
-### 9. transition=inline Implementation Status
-
-**Current status:** Validation only, not implemented
-
-**What's validated:**
-```python
-if transition == ModeTransition.INLINE:
-    if func_decl.preserves_attr and 'STATUS' in func_decl.preserves_attr.registers:
-        raise TypeCheckError(
-            "Function cannot use transition=inline with #[preserves(STATUS)]"
-        )
-```
-
-**What's missing:** Callee-side wrapper generation
-- Need to wrap function body with mode transition
-- Structure:
-  ```
-  function_entry:
-      PHP                          ; Save caller's STATUS
-      SEP/REP to switch to declared mode
-      ; ... function body ...
-      PLP                          ; Restore caller's STATUS
-      RTS/RTL
-  ```
-
-**Challenge:** Where to insert wrapper?
-- Entry point: Before first instruction
-- Exit points: Before ALL return statements (could be multiple!)
-- Need to track all exit blocks
-
-**Interaction with register preservation:**
-- If function already has `#[preserves(A, X, Y)]`, stack order matters
-- Could conflict with hand-written preservation code
-- **Needs careful design** 🔴
-
----
-
-## Disassembly Use Case Analysis
-
-### Requirements
-
-For reverse engineering SNES ROMs:
-1. Disassemble existing assembly to R65
-2. Preserve original behavior exactly
-3. Don't inject code that wasn't there
-4. Allow incremental annotation/improvement
-
-### How Current Implementation Supports This
-
-#### ✅ **Unknown Modes Respected**
-```rust
-// Disassembled function - original mode unknown
-fn subroutine_80C234() {
-    A = HWREG;
-    X = 0;
-}
-
-// Can call without wrapper injection
-fn main() {
-    subroutine_80C234();  // No wrapper, preserves original behavior
-}
-```
-
-#### ✅ **Explicit Opt-In for Wrappers**
-```rust
-// Annotated after analysis
-#[mode(m8, x8)]
-fn subroutine_80C234() {
-    A = HWREG;
-    X = 0;
-}
-
-// Can still call without wrapper (transition=none is default)
-#[mode(m16, x16)]
-fn new_function() {
-    subroutine_80C234();  // No wrapper unless transition=caller
-}
-```
-
-#### ✅ **Original SEP/REP Preserved**
-```rust
-// If original had explicit mode switching:
-fn original_code() {
-    SEP(0x30);  // Original instruction preserved
-    process_8bit();
-    REP(0x30);  // Original instruction preserved
-}
-```
-
-#### ✅ **Incremental Annotation**
-```rust
-// Stage 1: Disassemble without modes
-fn func1() { }
-fn func2() { }
-
-// Stage 2: Add modes after analysis
-#[mode(m8, x8)]
-fn func1() { }
-
-#[mode(m16, x16)]
-fn func2() { }
-
-// Stage 3: Opt-in to wrappers for new code
-#[mode(m8, x8, transition=caller)]  // Only when ready!
-fn new_func() {
-    func2();  // Now gets wrapper
-}
-```
-
-### Potential Issues for Disassembly
-
-#### ⚠️ **Parser Limitation**
-- Named attribute arguments (`transition=caller`) currently don't parse
-- Workaround: MIRBuilder defaults to `transition=none`
-- **Impact:** Low - default behavior is correct for disassembly
-
-#### ⚠️ **Mode Inference**
-- Static analysis could infer modes from SEP/REP instructions
-- Would help with incremental annotation
-- **Not currently implemented**
-- Example:
-  ```rust
-  fn analyze_me() {
-      SEP(0x30);   // Could infer: starts unknown, now m8/x8
-      work();
-      REP(0x20);   // Could infer: now m16/x8
-      more_work();
-  }
-  ```
-
-#### ⚠️ **Interrupt Mode Mismatch**
-- Interrupts can fire in any mode
-- Handler might expect specific mode
-- No inline mode setup on interrupt entry
-- **Needs design:** Auto-insert SEP/REP at interrupt entry?
-
----
-
-## Recommendations
-
-### High Priority
-
-1. **✅ DONE - Review and validate current implementation**
-   - Unknown mode handling: Correct
-   - Partial transitions: Correct
-   - STATUS preservation: Correct
-
-2. **🔴 TODO - Implement interrupt handler mode entry**
-   - Add inline mode transition at interrupt entry if mode declared
-   - Structure:
-     ```
-     nmi_handler:
-         ; Auto-generated by #[interrupt]
-         PHP
-         PHA
-         PHX
-         PHY
-         PHD
-         PHB
-
-         ; Auto-generated by #[mode(m8, x8)]
-         SEP #$30     ; Ensure handler's expected mode
-
-         ; User's handler body
-         ...
-
-         ; Auto-generated exit
-         PLB
-         PLD
-         PLY
-         PLX
-         PLA
-         PLP
-         RTI
-     ```
-
-3. **🟡 TODO - Document parser limitation**
-   - Add note about named attribute arguments
-   - Explain workaround (defaults work correctly)
-
-### Medium Priority
-
-4. **⚡ TODO - Implement batching optimization**
-   - Detect consecutive calls to same-mode functions
-   - Hoist mode transitions outside call sequence
-   - Significant performance win for tight loops
-
-5. **🔴 TODO - Design and implement transition=inline**
-   - Callee-side wrapper generation
-   - Handle multiple return paths
-   - Coordinate with register preservation
-
-6. **🔴 TODO - Design function pointer mode handling**
-   - Encode mode/transition in function pointer types
-   - Generate appropriate trampolines
-   - Consider dynamic vs static mode checking
-
-### Low Priority
-
-7. **⚡ TODO - Mode inference from SEP/REP**
-   - Static analysis to infer modes
-   - Help with disassembly annotation
-   - Optional, not required for correctness
-
-8. **📝 TODO - Add comprehensive tests**
-   - Test all edge cases identified
-   - Test disassembly workflow
-   - Test mode transitions with far calls, DBR changes
+1. **Orthogonal Concern**: DBR management is separate from CPU mode
+2. **Far Calls**: Only relevant for cross-bank calls
+3. **Batching**: Allows `databank=caller` optimization
 
 ---
 
 ## Summary
 
-**Current implementation is sound and correct** ✅
+| Aspect | Old System | New System |
+|--------|-----------|------------|
+| M mode | `#[mode(m8/m16)]` | Inferred from `@ A` type |
+| X mode | `#[mode(x8/x16)]` | Always x16 |
+| Transitions | `transition=none/inline/caller` | Automatic |
+| DBR | `databank=none/inline/caller` | Unchanged |
+| X/Y params | Any type | Must be u16 |
 
-**Key strengths:**
-- Conservative approach: No wrappers for unknown modes
-- Perfect for disassembly: Preserves original behavior
-- Correct handling of partial transitions
-- Proper STATUS preservation logic
-- Explicit opt-in via transition attribute
-
-**Key gaps:**
-- Interrupt handler mode entry (safety issue)
-- transition=inline not implemented (functional gap)
-- No batching optimization (performance opportunity)
-- Parser doesn't support named attributes (tooling issue)
-
-**For disassembly use case:** Current implementation is **excellent** - defaults are conservative and preserve original code.
+*Last Updated: 2026-01-19*

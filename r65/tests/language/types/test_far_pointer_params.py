@@ -25,8 +25,7 @@ class TestFarPointerStackParamDetection:
     def test_far_pointer_stack_param_detected(self):
         """Function with far pointer stack param should have flag set."""
         source = """
-            #[mode(m8, x16)]
-            fn process(far *data: u8) {
+                        fn process(far *data: u8) {
             }
         """
         mir = build_mir(source)
@@ -37,8 +36,7 @@ class TestFarPointerStackParamDetection:
     def test_near_pointer_stack_param_not_detected(self):
         """Function with near pointer stack param should not have flag set."""
         source = """
-            #[mode(m8, x16)]
-            fn process(*data: u8) {
+                        fn process(*data: u8) {
             }
         """
         mir = build_mir(source)
@@ -48,8 +46,7 @@ class TestFarPointerStackParamDetection:
     def test_register_bound_far_pointer_not_detected(self):
         """Register-bound far pointer should not set stack param flag."""
         source = """
-            #[mode(m16, x16)]
-            fn process(far *data @ A: u8) {
+                        fn process(far *data @ A: u8) {
             }
         """
         mir = build_mir(source)
@@ -60,8 +57,7 @@ class TestFarPointerStackParamDetection:
     def test_multiple_far_pointer_params(self):
         """Multiple far pointer stack params should all be tracked."""
         source = """
-            #[mode(m8, x16)]
-            fn copy(far *src: u8, far *dst: u8) {
+                        fn copy(far *src: u8, far *dst: u8) {
             }
         """
         mir = build_mir(source)
@@ -72,37 +68,36 @@ class TestFarPointerStackParamDetection:
 
 
 class TestFarPointerModeValidation:
-    """Tests for x16 mode requirement with far pointer params."""
+    """Tests for far pointer params with automatic x16 mode.
 
-    def test_far_pointer_requires_x16_mode(self):
-        """Function with far pointer stack param must use x16 mode."""
-        source = """
-            #[mode(m8, x8)]
-            fn process(far *data: u8) {
-            }
-        """
-        with pytest.raises(MIRLoweringError) as exc_info:
-            build_mir(source)
-        assert "x16" in str(exc_info.value)
-        assert "far pointer" in str(exc_info.value).lower()
+    In the simplified mode system, X/Y registers are always 16-bit (x16 mode),
+    so far pointer stack params always work without explicit mode attributes.
+    """
 
-    def test_far_pointer_no_mode_attr_fails(self):
-        """Function with far pointer stack param without mode attr fails."""
+    def test_far_pointer_always_succeeds(self):
+        """Function with far pointer stack param succeeds (x16 is automatic)."""
         source = """
             fn process(far *data: u8) {
             }
         """
-        # Type checker catches missing mode attribute before MIR lowering
-        with pytest.raises((MIRLoweringError, TypeCheckError)) as exc_info:
-            build_mir(source)
-        # Either error about x16 requirement or about unknown mode
-        assert "x16" in str(exc_info.value) or "mode" in str(exc_info.value).lower()
+        # Should succeed - X/Y are always 16-bit in the new design
+        mir = build_mir(source)
+        assert len(mir.functions) == 1
+
+    def test_far_pointer_no_mode_attr_succeeds(self):
+        """Function with far pointer stack param without mode attr succeeds."""
+        source = """
+            fn process(far *data: u8) {
+            }
+        """
+        # Should succeed - X/Y are always 16-bit in the new design
+        mir = build_mir(source)
+        assert len(mir.functions) == 1
 
     def test_far_pointer_with_x16_succeeds(self):
         """Function with far pointer and x16 mode should compile."""
         source = """
-            #[mode(m8, x16)]
-            fn process(far *data: u8) {
+                        fn process(far *data: u8) {
             }
         """
         # Should not raise
@@ -112,8 +107,7 @@ class TestFarPointerModeValidation:
     def test_far_pointer_with_m16_x16_succeeds(self):
         """Function with far pointer and m16/x16 mode should compile."""
         source = """
-            #[mode(m16, x16)]
-            fn process(far *data: u16) {
+                        fn process(far *data: u16) {
             }
         """
         # Should not raise
@@ -129,8 +123,7 @@ class TestFarPointerCodegen:
         # This test verifies MIR is built correctly
         # Full codegen tests would need assembly output verification
         source = """
-            #[mode(m8, x16)]
-            fn process(far *data: u8) {
+                        fn process(far *data: u8) {
             }
         """
         mir = build_mir(source)
@@ -144,8 +137,7 @@ class TestMixedParams:
     def test_far_and_near_pointers(self):
         """Function with both far and near pointer params."""
         source = """
-            #[mode(m8, x16)]
-            fn copy(far *src: u8, *dst: u8) {
+                        fn copy(far *src: u8, *dst: u8) {
             }
         """
         mir = build_mir(source)
@@ -158,8 +150,7 @@ class TestMixedParams:
     def test_far_pointer_and_regular_params(self):
         """Function with far pointer and regular (non-pointer) params."""
         source = """
-            #[mode(m8, x16)]
-            fn process(far *data: u8, count: u8) {
+                        fn process(far *data: u8, count: u8) {
             }
         """
         mir = build_mir(source)
@@ -176,12 +167,10 @@ class TestCallHandlingWithFarPointers:
     def test_function_with_call_and_far_pointer(self):
         """Function with far pointer param that makes a call."""
         source = """
-            #[mode(m8, x16)]
-            fn helper() {
+                        fn helper() {
             }
 
-            #[mode(m8, x16)]
-            fn process(far *data: u8) {
+                        fn process(far *data: u8) {
                 helper();
             }
         """
@@ -195,16 +184,13 @@ class TestCallHandlingWithFarPointers:
     def test_function_with_multiple_calls(self):
         """Function with far pointer param that makes multiple calls."""
         source = """
-            #[mode(m8, x16)]
-            fn helper1() {
+                        fn helper1() {
             }
 
-            #[mode(m8, x16)]
-            fn helper2() {
+                        fn helper2() {
             }
 
-            #[mode(m8, x16)]
-            fn process(far *data: u8) {
+                        fn process(far *data: u8) {
                 helper1();
                 helper2();
             }
@@ -218,12 +204,10 @@ class TestCallHandlingWithFarPointers:
     def test_nested_function_calls(self):
         """Far pointer function calling another far pointer function."""
         source = """
-            #[mode(m8, x16)]
-            fn inner(far *ptr: u8) {
+                        fn inner(far *ptr: u8) {
             }
 
-            #[mode(m8, x16)]
-            fn outer(far *data: u8) {
+                        fn outer(far *data: u8) {
                 inner(data);
             }
         """

@@ -103,8 +103,7 @@ class TestU32ImplBlock:
         """impl far U32 block parses correctly."""
         source = U32_HEADER + """
             impl far U32 {
-                #[mode(m16, transition=caller)]
-                far fn from_u16(far *self, value @ A: u16) {
+                                far fn from_u16(far *self, value @ A: u16) {
                     self.lo = A;
                     self.hi = 0;
                 }
@@ -121,8 +120,7 @@ class TestU32ImplBlock:
         """U32 methods are mangled to U32__method."""
         source = U32_HEADER + """
             impl far U32 {
-                #[mode(m16, transition=caller)]
-                far fn add(far *self, far *other: U32) {
+                                far fn add(far *self, far *other: U32) {
                     STATUS.Carry = false;
                     A = self.lo;
                     A = A + other.lo;
@@ -146,8 +144,7 @@ class TestU32ConversionMethods:
         """from_u16 method type checks."""
         source = U32_HEADER + """
             impl far U32 {
-                #[mode(m16, transition=caller)]
-                far fn from_u16(far *self, value @ A: u16) {
+                                far fn from_u16(far *self, value @ A: u16) {
                     self.lo = A;
                     self.hi = 0;
                 }
@@ -156,8 +153,7 @@ class TestU32ConversionMethods:
             #[zeropage]
             static mut VALUE: U32;
 
-            #[mode(m16, x16)]
-            fn test() {
+                        fn test() {
                 VALUE.from_u16(1000);
             }
         """
@@ -167,8 +163,7 @@ class TestU32ConversionMethods:
         """to_u16 method returns u16."""
         source = U32_HEADER + """
             impl far U32 {
-                #[mode(m16, transition=caller)]
-                far fn to_u16(far *self) -> u16 {
+                                far fn to_u16(far *self) -> u16 {
                     return self.lo;
                 }
             }
@@ -178,8 +173,7 @@ class TestU32ConversionMethods:
             #[zeropage]
             static mut RESULT: u16;
 
-            #[mode(m16, x16)]
-            fn test() {
+                        fn test() {
                 A = VALUE.to_u16();
                 RESULT = A;
             }
@@ -190,8 +184,7 @@ class TestU32ConversionMethods:
         """copy method copies another U32."""
         source = U32_HEADER + """
             impl far U32 {
-                #[mode(m16, transition=caller)]
-                far fn copy(far *self, far *src: U32) {
+                                far fn copy(far *self, far *src: U32) {
                     A = src.lo;
                     self.lo = A;
                     A = src.hi;
@@ -204,8 +197,7 @@ class TestU32ConversionMethods:
             #[zeropage]
             static mut B_PTR: far *U32;
 
-            #[mode(m16, x16)]
-            fn test() {
+                        fn test() {
                 A_VAL.copy(B_PTR);
             }
         """
@@ -219,8 +211,7 @@ class TestU32ArithmeticMethods:
         """add method performs 32-bit addition."""
         source = U32_HEADER + """
             impl far U32 {
-                #[mode(m16, transition=caller)]
-                far fn add(far *self, far *other: U32) {
+                                far fn add(far *self, far *other: U32) {
                     STATUS.Carry = false;
                     A = self.lo;
                     A = A + other.lo;
@@ -236,8 +227,7 @@ class TestU32ArithmeticMethods:
             #[zeropage]
             static mut B_PTR: far *U32;
 
-            #[mode(m16, x16)]
-            fn test() {
+                        fn test() {
                 A_VAL.add(B_PTR);
             }
         """
@@ -247,8 +237,7 @@ class TestU32ArithmeticMethods:
         """sub method performs 32-bit subtraction."""
         source = U32_HEADER + """
             impl far U32 {
-                #[mode(m16, transition=caller)]
-                far fn sub(far *self, far *other: U32) {
+                                far fn sub(far *self, far *other: U32) {
                     STATUS.Carry = true;
                     A = self.lo;
                     A = A - other.lo;
@@ -264,8 +253,7 @@ class TestU32ArithmeticMethods:
             #[zeropage]
             static mut B_PTR: far *U32;
 
-            #[mode(m16, x16)]
-            fn test() {
+                        fn test() {
                 A_VAL.sub(B_PTR);
             }
         """
@@ -275,8 +263,7 @@ class TestU32ArithmeticMethods:
         """div method handles division by zero."""
         source = U32_HEADER + """
             impl far U32 {
-                #[mode(m16, transition=caller)]
-                far fn div(far *self, far *other: U32) {
+                                far fn div(far *self, far *other: U32) {
                     A = other.lo;
                     if A == 0 as u16 {
                         A = other.hi;
@@ -296,8 +283,7 @@ class TestU32ArithmeticMethods:
             #[zeropage]
             static mut B_PTR: far *U32;
 
-            #[mode(m16, x16)]
-            fn test() {
+                        fn test() {
                 A_VAL.div(B_PTR);
             }
         """
@@ -311,8 +297,7 @@ class TestU32ComparisonMethod:
         """cmp method returns u8 (STATUS)."""
         source = U32_HEADER + """
             impl far U32 {
-                #[mode(m16, transition=caller)]
-                far fn cmp(far *self, far *other: U32) -> u8 {
+                                far fn cmp(far *self, far *other: U32) -> u8 {
                     A = self.hi;
                     if A != other.hi {
                         A = self.hi;
@@ -330,8 +315,7 @@ class TestU32ComparisonMethod:
             #[zeropage]
             static mut B_PTR: far *U32;
 
-            #[mode(m16, x16)]
-            fn test() {
+                        fn test() {
                 A_VAL.cmp(B_PTR);
             }
         """
@@ -345,8 +329,7 @@ class TestU32ShiftMethods:
         """shl method shifts left by count."""
         source = U32_HEADER + """
             impl far U32 {
-                #[mode(m16, transition=caller)]
-                far fn shl(far *self, count @ X: u8) {
+                                far fn shl(far *self, count @ X: u16) {
                     loop {
                         if X == 0 {
                             break;
@@ -365,8 +348,7 @@ class TestU32ShiftMethods:
             #[zeropage]
             static mut VALUE: U32;
 
-            #[mode(m16, x16)]
-            fn test() {
+                        fn test() {
                 VALUE.shl(4);
             }
         """
@@ -376,8 +358,7 @@ class TestU32ShiftMethods:
         """shr method shifts right by count."""
         source = U32_HEADER + """
             impl far U32 {
-                #[mode(m16, transition=caller)]
-                far fn shr(far *self, count @ X: u8) {
+                                far fn shr(far *self, count @ X: u16) {
                     loop {
                         if X == 0 {
                             break;
@@ -396,8 +377,7 @@ class TestU32ShiftMethods:
             #[zeropage]
             static mut VALUE: U32;
 
-            #[mode(m16, x16)]
-            fn test() {
+                        fn test() {
                 VALUE.shr(4);
             }
         """
@@ -411,8 +391,7 @@ class TestU32HardwareMethods:
         """div_u8 takes u8 divisor and returns u8 remainder."""
         source = U32_HEADER + """
             impl far U32 {
-                #[mode(m8, transition=caller)]
-                far fn div_u8(far *self, divisor @ X: u8) -> u8 {
+                                far fn div_u8(far *self, divisor @ X: u16) -> u8 {
                     if X == 0 {
                         self.lo = 0xFFFF;
                         self.hi = 0xFFFF;
@@ -429,8 +408,7 @@ class TestU32HardwareMethods:
             #[zeropage]
             static mut REMAINDER: u8;
 
-            #[mode(m8, x16)]
-            fn test() {
+                        fn test() {
                 A = VALUE.div_u8(10);
                 REMAINDER = A;
             }
@@ -441,14 +419,12 @@ class TestU32HardwareMethods:
         """mod_u8 can call div_u8 for code reuse."""
         source = U32_HEADER + """
             impl far U32 {
-                #[mode(m8, transition=caller)]
-                far fn div_u8(far *self, divisor @ X: u8) -> u8 {
+                                far fn div_u8(far *self, divisor @ X: u16) -> u8 {
                     A = 0;
                     return A;
                 }
 
-                #[mode(m8, transition=caller)]
-                far fn mod_u8(far *self, divisor @ X: u8) {
+                                far fn mod_u8(far *self, divisor @ X: u16) {
                     let mut remainder: u8 = self.div_u8(X);
                     self.lo = remainder as u16;
                     self.hi = 0;
@@ -458,8 +434,7 @@ class TestU32HardwareMethods:
             #[zeropage]
             static mut VALUE: U32;
 
-            #[mode(m8, x16)]
-            fn test() {
+                        fn test() {
                 VALUE.mod_u8(10);
             }
         """
@@ -473,16 +448,14 @@ class TestU32Macros:
         """u32_add macro expands to copy and add."""
         source = U32_HEADER + """
             impl far U32 {
-                #[mode(m16, transition=caller)]
-                far fn copy(far *self, far *src: U32) {
+                                far fn copy(far *self, far *src: U32) {
                     A = src.lo;
                     self.lo = A;
                     A = src.hi;
                     self.hi = A;
                 }
 
-                #[mode(m16, transition=caller)]
-                far fn add(far *self, far *other: U32) {
+                                far fn add(far *self, far *other: U32) {
                     STATUS.Carry = false;
                     A = self.lo;
                     A = A + other.lo;
@@ -505,8 +478,7 @@ class TestU32Macros:
             #[zeropage]
             static mut RESULT: U32;
 
-            #[mode(m16, x16)]
-            fn test() {
+                        fn test() {
                 u32_add!(RESULT, A_PTR, B_PTR);
             }
         """
@@ -516,16 +488,14 @@ class TestU32Macros:
         """u32_sub macro expands to copy and sub."""
         source = U32_HEADER + """
             impl far U32 {
-                #[mode(m16, transition=caller)]
-                far fn copy(far *self, far *src: U32) {
+                                far fn copy(far *self, far *src: U32) {
                     A = src.lo;
                     self.lo = A;
                     A = src.hi;
                     self.hi = A;
                 }
 
-                #[mode(m16, transition=caller)]
-                far fn sub(far *self, far *other: U32) {
+                                far fn sub(far *self, far *other: U32) {
                     STATUS.Carry = true;
                     A = self.lo;
                     A = A - other.lo;
@@ -548,8 +518,7 @@ class TestU32Macros:
             #[zeropage]
             static mut RESULT: U32;
 
-            #[mode(m16, x16)]
-            fn test() {
+                        fn test() {
                 u32_sub!(RESULT, A_PTR, B_PTR);
             }
         """
@@ -563,14 +532,12 @@ class TestU32MethodChaining:
         """Methods can be called on static U32 variables."""
         source = U32_HEADER + """
             impl far U32 {
-                #[mode(m16, transition=caller)]
-                far fn from_u16(far *self, value @ A: u16) {
+                                far fn from_u16(far *self, value @ A: u16) {
                     self.lo = A;
                     self.hi = 0;
                 }
 
-                #[mode(m16, transition=caller)]
-                far fn add(far *self, far *other: U32) {
+                                far fn add(far *self, far *other: U32) {
                     STATUS.Carry = false;
                     A = self.lo;
                     A = A + other.lo;
@@ -588,14 +555,12 @@ class TestU32MethodChaining:
             #[zeropage]
             static mut INC_PTR: far *U32;
 
-            #[mode(m16, x16)]
-            fn init() {
+                        fn init() {
                 COUNTER.from_u16(0 as u16);
                 INCREMENT.from_u16(1 as u16);
             }
 
-            #[mode(m16, x16)]
-            fn tick() {
+                        fn tick() {
                 COUNTER.add(INC_PTR);
             }
         """
@@ -605,8 +570,7 @@ class TestU32MethodChaining:
         """Methods can be called via far pointer."""
         source = U32_HEADER + """
             impl far U32 {
-                #[mode(m16, transition=caller)]
-                far fn to_u16(far *self) -> u16 {
+                                far fn to_u16(far *self) -> u16 {
                     return self.lo;
                 }
             }
@@ -618,8 +582,7 @@ class TestU32MethodChaining:
             #[zeropage]
             static mut RESULT: u16;
 
-            #[mode(m16, x16)]
-            fn test() {
+                        fn test() {
                 A = PTR.to_u16();
                 RESULT = A;
             }
@@ -634,8 +597,7 @@ class TestU32Errors:
         """Passing wrong type to U32 method fails."""
         source = U32_HEADER + """
             impl far U32 {
-                #[mode(m16, transition=caller)]
-                far fn add(far *self, far *other: U32) {
+                                far fn add(far *self, far *other: U32) {
                     A = self.lo;
                 }
             }
@@ -645,8 +607,7 @@ class TestU32Errors:
             #[zeropage]
             static mut OTHER_PTR: far *u16;
 
-            #[mode(m16, x16)]
-            fn test() {
+                        fn test() {
                 VALUE.add(OTHER_PTR);
             }
         """
@@ -657,8 +618,7 @@ class TestU32Errors:
         """Using near pointer with far impl fails."""
         source = U32_HEADER + """
             impl far U32 {
-                #[mode(m16, transition=caller)]
-                far fn to_u16(far *self) -> u16 {
+                                far fn to_u16(far *self) -> u16 {
                     return self.lo;
                 }
             }
@@ -666,8 +626,7 @@ class TestU32Errors:
             #[zeropage]
             static mut PTR: *U32;  // Near pointer
 
-            #[mode(m16, x16)]
-            fn test() -> u16 {
+                        fn test() -> u16 {
                 return PTR.to_u16();  // Should fail - near ptr to far method
             }
         """
@@ -713,8 +672,7 @@ class TestI32ImplBlock:
         """impl far I32 block parses correctly."""
         source = I32_HEADER + """
             impl far I32 {
-                #[mode(m16, transition=caller)]
-                far fn from_i16(far *self, value @ A: i16) {
+                                far fn from_i16(far *self, value @ A: i16) {
                     self.lo = A as u16;
                     if (A as u16) & 0x8000 != 0 as u16 {
                         self.hi = 0xFFFF;
@@ -735,8 +693,7 @@ class TestI32ImplBlock:
         """I32 methods are mangled to I32__method."""
         source = I32_HEADER + """
             impl far I32 {
-                #[mode(m16, transition=caller)]
-                far fn add(far *self, far *other: I32) {
+                                far fn add(far *self, far *other: I32) {
                     STATUS.Carry = false;
                     A = self.lo;
                     A = A + other.lo;
@@ -760,8 +717,7 @@ class TestI32ConversionMethods:
         """from_i16 with positive value zero-extends."""
         source = I32_HEADER + """
             impl far I32 {
-                #[mode(m16, transition=caller)]
-                far fn from_i16(far *self, value @ A: i16) {
+                                far fn from_i16(far *self, value @ A: i16) {
                     self.lo = A as u16;
                     if (A as u16) & 0x8000 != 0 as u16 {
                         self.hi = 0xFFFF;
@@ -774,8 +730,7 @@ class TestI32ConversionMethods:
             #[zeropage]
             static mut VALUE: I32;
 
-            #[mode(m16, x16)]
-            fn test() {
+                        fn test() {
                 VALUE.from_i16(1000 as i16);
             }
         """
@@ -785,8 +740,7 @@ class TestI32ConversionMethods:
         """from_i16 with negative value sign-extends."""
         source = I32_HEADER + """
             impl far I32 {
-                #[mode(m16, transition=caller)]
-                far fn from_i16(far *self, value @ A: i16) {
+                                far fn from_i16(far *self, value @ A: i16) {
                     self.lo = A as u16;
                     if (A as u16) & 0x8000 != 0 as u16 {
                         self.hi = 0xFFFF;
@@ -799,8 +753,7 @@ class TestI32ConversionMethods:
             #[zeropage]
             static mut VALUE: I32;
 
-            #[mode(m16, x16)]
-            fn test() {
+                        fn test() {
                 VALUE.from_i16(-100 as i16);
             }
         """
@@ -810,8 +763,7 @@ class TestI32ConversionMethods:
         """to_i16 method returns i16."""
         source = I32_HEADER + """
             impl far I32 {
-                #[mode(m16, transition=caller)]
-                far fn to_i16(far *self) -> u16 {
+                                far fn to_i16(far *self) -> u16 {
                     // Return low word (interpret as truncated value)
                     return self.lo;
                 }
@@ -822,8 +774,7 @@ class TestI32ConversionMethods:
             #[zeropage]
             static mut RESULT: u16;
 
-            #[mode(m16, x16)]
-            fn test() {
+                        fn test() {
                 A = VALUE.to_i16();
                 RESULT = A;
             }
@@ -834,8 +785,7 @@ class TestI32ConversionMethods:
         """copy method copies another I32."""
         source = I32_HEADER + """
             impl far I32 {
-                #[mode(m16, transition=caller)]
-                far fn copy(far *self, far *src: I32) {
+                                far fn copy(far *self, far *src: I32) {
                     A = src.lo;
                     self.lo = A;
                     A = src.hi;
@@ -848,8 +798,7 @@ class TestI32ConversionMethods:
             #[zeropage]
             static mut B_PTR: far *I32;
 
-            #[mode(m16, x16)]
-            fn test() {
+                        fn test() {
                 A_VAL.copy(B_PTR);
             }
         """
@@ -863,8 +812,7 @@ class TestI32SignMethods:
         """is_negative returns bool based on sign bit."""
         source = I32_HEADER + """
             impl far I32 {
-                #[mode(m16, transition=caller)]
-                far fn is_negative(far *self) -> bool {
+                                far fn is_negative(far *self) -> bool {
                     A = self.hi;
                     if A & 0x8000 != 0 as u16 {
                         return true;
@@ -878,8 +826,7 @@ class TestI32SignMethods:
             #[zeropage]
             static mut IS_NEG: bool;
 
-            #[mode(m16, x16)]
-            fn test() {
+                        fn test() {
                 IS_NEG = VALUE.is_negative();
             }
         """
@@ -889,8 +836,7 @@ class TestI32SignMethods:
         """neg method negates using two's complement."""
         source = I32_HEADER + """
             impl far I32 {
-                #[mode(m16, transition=caller)]
-                far fn neg(far *self) {
+                                far fn neg(far *self) {
                     A = self.lo;
                     A = A ^ 0xFFFF;
                     self.lo = A;
@@ -910,8 +856,7 @@ class TestI32SignMethods:
             #[zeropage]
             static mut VALUE: I32;
 
-            #[mode(m16, x16)]
-            fn test() {
+                        fn test() {
                 VALUE.neg();
             }
         """
@@ -921,8 +866,7 @@ class TestI32SignMethods:
         """abs method takes absolute value."""
         source = I32_HEADER + """
             impl far I32 {
-                #[mode(m16, transition=caller)]
-                far fn neg(far *self) {
+                                far fn neg(far *self) {
                     A = self.lo;
                     A = A ^ 0xFFFF;
                     self.lo = A;
@@ -938,8 +882,7 @@ class TestI32SignMethods:
                     self.hi = A;
                 }
 
-                #[mode(m16, transition=caller)]
-                far fn abs(far *self) {
+                                far fn abs(far *self) {
                     A = self.hi;
                     if A & 0x8000 != 0 as u16 {
                         self.neg();
@@ -950,8 +893,7 @@ class TestI32SignMethods:
             #[zeropage]
             static mut VALUE: I32;
 
-            #[mode(m16, x16)]
-            fn test() {
+                        fn test() {
                 VALUE.abs();
             }
         """
@@ -965,8 +907,7 @@ class TestI32ArithmeticMethods:
         """add method performs 32-bit signed addition."""
         source = I32_HEADER + """
             impl far I32 {
-                #[mode(m16, transition=caller)]
-                far fn add(far *self, far *other: I32) {
+                                far fn add(far *self, far *other: I32) {
                     STATUS.Carry = false;
                     A = self.lo;
                     A = A + other.lo;
@@ -982,8 +923,7 @@ class TestI32ArithmeticMethods:
             #[zeropage]
             static mut B_PTR: far *I32;
 
-            #[mode(m16, x16)]
-            fn test() {
+                        fn test() {
                 A_VAL.add(B_PTR);
             }
         """
@@ -993,8 +933,7 @@ class TestI32ArithmeticMethods:
         """sub method performs 32-bit signed subtraction."""
         source = I32_HEADER + """
             impl far I32 {
-                #[mode(m16, transition=caller)]
-                far fn sub(far *self, far *other: I32) {
+                                far fn sub(far *self, far *other: I32) {
                     STATUS.Carry = true;
                     A = self.lo;
                     A = A - other.lo;
@@ -1010,8 +949,7 @@ class TestI32ArithmeticMethods:
             #[zeropage]
             static mut B_PTR: far *I32;
 
-            #[mode(m16, x16)]
-            fn test() {
+                        fn test() {
                 A_VAL.sub(B_PTR);
             }
         """
@@ -1021,8 +959,7 @@ class TestI32ArithmeticMethods:
         """div method handles division by zero."""
         source = I32_HEADER + """
             impl far I32 {
-                #[mode(m16, transition=caller)]
-                far fn div(far *self, far *other: I32) {
+                                far fn div(far *self, far *other: I32) {
                     A = other.lo;
                     if A == 0 as u16 {
                         A = other.hi;
@@ -1043,8 +980,7 @@ class TestI32ArithmeticMethods:
             #[zeropage]
             static mut B_PTR: far *I32;
 
-            #[mode(m16, x16)]
-            fn test() {
+                        fn test() {
                 A_VAL.div(B_PTR);
             }
         """
@@ -1058,8 +994,7 @@ class TestI32ComparisonMethod:
         """cmp method returns u8 (STATUS)."""
         source = I32_HEADER + """
             impl far I32 {
-                #[mode(m16, transition=caller)]
-                far fn cmp(far *self, far *other: I32) -> u8 {
+                                far fn cmp(far *self, far *other: I32) -> u8 {
                     let mut self_sign: u16;
                     let mut other_sign: u16;
 
@@ -1097,8 +1032,7 @@ class TestI32ComparisonMethod:
             #[zeropage]
             static mut B_PTR: far *I32;
 
-            #[mode(m16, x16)]
-            fn test() {
+                        fn test() {
                 A_VAL.cmp(B_PTR);
             }
         """
@@ -1108,8 +1042,7 @@ class TestI32ComparisonMethod:
         """cmp handles comparison when signs differ."""
         source = I32_HEADER + """
             impl far I32 {
-                #[mode(m16, transition=caller)]
-                far fn cmp(far *self, far *other: I32) -> u8 {
+                                far fn cmp(far *self, far *other: I32) -> u8 {
                     let mut self_sign: u16;
                     let mut other_sign: u16;
 
@@ -1137,8 +1070,7 @@ class TestI32ComparisonMethod:
             #[zeropage]
             static mut B_PTR: far *I32;
 
-            #[mode(m16, x16)]
-            fn test() {
+                        fn test() {
                 A_VAL.cmp(B_PTR);
             }
         """
@@ -1152,8 +1084,7 @@ class TestI32ShiftMethods:
         """shl method shifts left by count (same as unsigned)."""
         source = I32_HEADER + """
             impl far I32 {
-                #[mode(m16, transition=caller)]
-                far fn shl(far *self, count @ X: u8) {
+                                far fn shl(far *self, count @ X: u16) {
                     loop {
                         if X == 0 as u8 {
                             break;
@@ -1172,8 +1103,7 @@ class TestI32ShiftMethods:
             #[zeropage]
             static mut VALUE: I32;
 
-            #[mode(m16, x16)]
-            fn test() {
+                        fn test() {
                 VALUE.shl(4);
             }
         """
@@ -1183,8 +1113,7 @@ class TestI32ShiftMethods:
         """sar method performs arithmetic shift right (preserves sign)."""
         source = I32_HEADER + """
             impl far I32 {
-                #[mode(m16, transition=caller)]
-                far fn sar(far *self, count @ X: u8) {
+                                far fn sar(far *self, count @ X: u16) {
                     loop {
                         if X == 0 as u8 {
                             break;
@@ -1208,8 +1137,7 @@ class TestI32ShiftMethods:
             #[zeropage]
             static mut VALUE: I32;
 
-            #[mode(m16, x16)]
-            fn test() {
+                        fn test() {
                 VALUE.sar(4);
             }
         """
@@ -1223,8 +1151,7 @@ class TestI32HardwareMethods:
         """div_i8 takes i8 divisor and returns u8 remainder (as bit pattern)."""
         source = I32_HEADER + """
             impl far I32 {
-                #[mode(m8, transition=caller)]
-                far fn div_i8(far *self, divisor @ X: i8) -> u8 {
+                                far fn div_i8(far *self, divisor @ X: u16) -> u8 {
                     if X == 0 as i8 {
                         self.lo = 0;
                         self.hi = 0x8000;
@@ -1241,8 +1168,7 @@ class TestI32HardwareMethods:
             #[zeropage]
             static mut REMAINDER: u8;
 
-            #[mode(m8, x16)]
-            fn test() {
+                        fn test() {
                 A = VALUE.div_i8(10 as i8);
                 REMAINDER = A;
             }
@@ -1253,14 +1179,12 @@ class TestI32HardwareMethods:
         """mod_i8 can call div_i8 for code reuse."""
         source = I32_HEADER + """
             impl far I32 {
-                #[mode(m8, transition=caller)]
-                far fn div_i8(far *self, divisor @ X: i8) -> i8 {
+                                far fn div_i8(far *self, divisor @ X: u16) -> i8 {
                     A = 0;
                     return A as i8;
                 }
 
-                #[mode(m8, transition=caller)]
-                far fn mod_i8(far *self, divisor @ X: i8) {
+                                far fn mod_i8(far *self, divisor @ X: u16) {
                     if X == 0 as i8 {
                         return;
                     }
@@ -1279,8 +1203,7 @@ class TestI32HardwareMethods:
             #[zeropage]
             static mut VALUE: I32;
 
-            #[mode(m8, x16)]
-            fn test() {
+                        fn test() {
                 VALUE.mod_i8(10 as i8);
             }
         """
@@ -1294,16 +1217,14 @@ class TestI32Macros:
         """i32_add macro expands to copy and add."""
         source = I32_HEADER + """
             impl far I32 {
-                #[mode(m16, transition=caller)]
-                far fn copy(far *self, far *src: I32) {
+                                far fn copy(far *self, far *src: I32) {
                     A = src.lo;
                     self.lo = A;
                     A = src.hi;
                     self.hi = A;
                 }
 
-                #[mode(m16, transition=caller)]
-                far fn add(far *self, far *other: I32) {
+                                far fn add(far *self, far *other: I32) {
                     STATUS.Carry = false;
                     A = self.lo;
                     A = A + other.lo;
@@ -1326,8 +1247,7 @@ class TestI32Macros:
             #[zeropage]
             static mut RESULT: I32;
 
-            #[mode(m16, x16)]
-            fn test() {
+                        fn test() {
                 i32_add!(RESULT, A_PTR, B_PTR);
             }
         """
@@ -1337,16 +1257,14 @@ class TestI32Macros:
         """i32_neg macro expands to copy and neg."""
         source = I32_HEADER + """
             impl far I32 {
-                #[mode(m16, transition=caller)]
-                far fn copy(far *self, far *src: I32) {
+                                far fn copy(far *self, far *src: I32) {
                     A = src.lo;
                     self.lo = A;
                     A = src.hi;
                     self.hi = A;
                 }
 
-                #[mode(m16, transition=caller)]
-                far fn neg(far *self) {
+                                far fn neg(far *self) {
                     A = self.lo;
                     A = A ^ 0xFFFF;
                     self.lo = A;
@@ -1373,8 +1291,7 @@ class TestI32Macros:
             #[zeropage]
             static mut RESULT: I32;
 
-            #[mode(m16, x16)]
-            fn test() {
+                        fn test() {
                 i32_neg!(RESULT, SRC_PTR);
             }
         """
@@ -1384,16 +1301,14 @@ class TestI32Macros:
         """i32_abs macro expands to copy and abs."""
         source = I32_HEADER + """
             impl far I32 {
-                #[mode(m16, transition=caller)]
-                far fn copy(far *self, far *src: I32) {
+                                far fn copy(far *self, far *src: I32) {
                     A = src.lo;
                     self.lo = A;
                     A = src.hi;
                     self.hi = A;
                 }
 
-                #[mode(m16, transition=caller)]
-                far fn neg(far *self) {
+                                far fn neg(far *self) {
                     A = self.lo;
                     A = A ^ 0xFFFF;
                     self.lo = A;
@@ -1409,8 +1324,7 @@ class TestI32Macros:
                     self.hi = A;
                 }
 
-                #[mode(m16, transition=caller)]
-                far fn abs(far *self) {
+                                far fn abs(far *self) {
                     A = self.hi;
                     if A & 0x8000 != 0 as u16 {
                         self.neg();
@@ -1428,8 +1342,7 @@ class TestI32Macros:
             #[zeropage]
             static mut RESULT: I32;
 
-            #[mode(m16, x16)]
-            fn test() {
+                        fn test() {
                 i32_abs!(RESULT, SRC_PTR);
             }
         """
@@ -1443,8 +1356,7 @@ class TestI32MethodChaining:
         """Methods can be called on static I32 variables."""
         source = I32_HEADER + """
             impl far I32 {
-                #[mode(m16, transition=caller)]
-                far fn from_i16(far *self, value @ A: i16) {
+                                far fn from_i16(far *self, value @ A: i16) {
                     self.lo = A as u16;
                     if (A as u16) & 0x8000 != 0 as u16 {
                         self.hi = 0xFFFF;
@@ -1453,8 +1365,7 @@ class TestI32MethodChaining:
                     }
                 }
 
-                #[mode(m16, transition=caller)]
-                far fn add(far *self, far *other: I32) {
+                                far fn add(far *self, far *other: I32) {
                     STATUS.Carry = false;
                     A = self.lo;
                     A = A + other.lo;
@@ -1472,14 +1383,12 @@ class TestI32MethodChaining:
             #[zeropage]
             static mut INC_PTR: far *I32;
 
-            #[mode(m16, x16)]
-            fn init() {
+                        fn init() {
                 COUNTER.from_i16(0 as i16);
                 INCREMENT.from_i16(1 as i16);
             }
 
-            #[mode(m16, x16)]
-            fn tick() {
+                        fn tick() {
                 COUNTER.add(INC_PTR);
             }
         """
@@ -1489,8 +1398,7 @@ class TestI32MethodChaining:
         """Methods can be called via far pointer."""
         source = I32_HEADER + """
             impl far I32 {
-                #[mode(m16, transition=caller)]
-                far fn to_u16(far *self) -> u16 {
+                                far fn to_u16(far *self) -> u16 {
                     return self.lo;
                 }
             }
@@ -1502,8 +1410,7 @@ class TestI32MethodChaining:
             #[zeropage]
             static mut RESULT: u16;
 
-            #[mode(m16, x16)]
-            fn test() {
+                        fn test() {
                 A = PTR.to_u16();
                 RESULT = A;
             }
@@ -1518,8 +1425,7 @@ class TestI32Errors:
         """Passing wrong type to I32 method fails."""
         source = I32_HEADER + """
             impl far I32 {
-                #[mode(m16, transition=caller)]
-                far fn add(far *self, far *other: I32) {
+                                far fn add(far *self, far *other: I32) {
                     A = self.lo;
                 }
             }
@@ -1529,8 +1435,7 @@ class TestI32Errors:
             #[zeropage]
             static mut OTHER_PTR: far *u16;
 
-            #[mode(m16, x16)]
-            fn test() {
+                        fn test() {
                 VALUE.add(OTHER_PTR);
             }
         """
@@ -1541,8 +1446,7 @@ class TestI32Errors:
         """Using near pointer with far impl fails."""
         source = I32_HEADER + """
             impl far I32 {
-                #[mode(m16, transition=caller)]
-                far fn to_i16(far *self) -> i16 {
+                                far fn to_i16(far *self) -> i16 {
                     return self.lo as i16;
                 }
             }
@@ -1550,8 +1454,7 @@ class TestI32Errors:
             #[zeropage]
             static mut PTR: *I32;  // Near pointer
 
-            #[mode(m16, x16)]
-            fn test() -> i16 {
+                        fn test() -> i16 {
                 return PTR.to_i16();  // Should fail - near ptr to far method
             }
         """
@@ -1565,8 +1468,7 @@ class TestI32Errors:
             struct U32 { lo: u16, hi: u16 }
 
             impl far I32 {
-                #[mode(m16, transition=caller)]
-                far fn add(far *self, far *other: I32) {
+                                far fn add(far *self, far *other: I32) {
                     A = self.lo;
                 }
             }
@@ -1576,8 +1478,7 @@ class TestI32Errors:
             #[zeropage]
             static mut UNSIGNED_PTR: far *U32;
 
-            #[mode(m16, x16)]
-            fn test() {
+                        fn test() {
                 SIGNED_VAL.add(UNSIGNED_PTR);  // Should fail - U32 != I32
             }
         """
@@ -1592,8 +1493,7 @@ class TestI32SignedSpecific:
         """Negative literals work with from_i16."""
         source = I32_HEADER + """
             impl far I32 {
-                #[mode(m16, transition=caller)]
-                far fn from_i16(far *self, value @ A: i16) {
+                                far fn from_i16(far *self, value @ A: i16) {
                     self.lo = A as u16;
                     if (A as u16) & 0x8000 != 0 as u16 {
                         self.hi = 0xFFFF;
@@ -1606,8 +1506,7 @@ class TestI32SignedSpecific:
             #[zeropage]
             static mut VALUE: I32;
 
-            #[mode(m16, x16)]
-            fn test() {
+                        fn test() {
                 VALUE.from_i16(-1 as i16);
                 VALUE.from_i16(-32768 as i16);
             }
@@ -1618,8 +1517,7 @@ class TestI32SignedSpecific:
         """Subtraction that crosses zero (positive to negative)."""
         source = I32_HEADER + """
             impl far I32 {
-                #[mode(m16, transition=caller)]
-                far fn from_i16(far *self, value @ A: i16) {
+                                far fn from_i16(far *self, value @ A: i16) {
                     self.lo = A as u16;
                     if (A as u16) & 0x8000 != 0 as u16 {
                         self.hi = 0xFFFF;
@@ -1628,8 +1526,7 @@ class TestI32SignedSpecific:
                     }
                 }
 
-                #[mode(m16, transition=caller)]
-                far fn sub(far *self, far *other: I32) {
+                                far fn sub(far *self, far *other: I32) {
                     STATUS.Carry = true;
                     A = self.lo;
                     A = A - other.lo;
@@ -1645,8 +1542,7 @@ class TestI32SignedSpecific:
             #[zeropage]
             static mut LARGE_PTR: far *I32;
 
-            #[mode(m16, x16)]
-            fn test() {
+                        fn test() {
                 SMALL.from_i16(5 as i16);
                 // Subtracting a larger value should make SMALL negative
                 SMALL.sub(LARGE_PTR);

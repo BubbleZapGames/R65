@@ -20,7 +20,6 @@ static mut VALUE: u16 = 0x1234;
 static mut LIVES: u8 = 3;
 
 #[entry]
-#[mode(m8, x8)]
 fn main() -> ! {
     loop {
         A = FLAGS;

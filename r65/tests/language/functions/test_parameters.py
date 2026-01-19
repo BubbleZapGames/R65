@@ -36,7 +36,7 @@ class TestRegisterParameters:
 
     def test_multiple_register_params(self):
         """Test multiple register parameters."""
-        func = parse_function("fn coords(x @ X: u8, y @ Y: u8) { }")
+        func = parse_function("fn coords(x @ X: u16, y @ Y: u16) { }")
         assert len(func.params) == 2
         assert func.params[0].binding.name == "X"
         assert func.params[1].binding.name == "Y"

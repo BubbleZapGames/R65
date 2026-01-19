@@ -17,8 +17,7 @@ class TestAggregateParameterRestriction:
             y: u8,
         }
 
-        #[mode(m8, x8)]
-        fn bad_func(player: Player) {
+                fn bad_func(player: Player) {
             A = player.x;
         }
         """
@@ -32,8 +31,7 @@ class TestAggregateParameterRestriction:
     def test_array_parameter_by_value_error(self):
         """Passing an array by value should produce a compile error."""
         source = """
-        #[mode(m8, x8)]
-        fn bad_func(data: [u8; 256]) {
+                fn bad_func(data: [u8; 256]) {
             A = data[0];
         }
         """
@@ -55,8 +53,7 @@ class TestAggregateParameterRestriction:
         #[zeropage(0x10)]
         static mut *PTR: Player;
 
-        #[mode(m8, x8)]
-        fn good_func(*player @ PTR: Player) {
+                fn good_func(*player @ PTR: Player) {
             // Just verify the function signature is accepted
             A = 0;
         }
@@ -71,8 +68,7 @@ class TestAggregateParameterRestriction:
         #[zeropage(0x10)]
         static mut *PTR: [u8];
 
-        #[mode(m8, x8)]
-        fn good_func(*data @ PTR: [u8]) {
+                fn good_func(*data @ PTR: [u8]) {
             // Just verify the function signature is accepted
             A = 0;
         }
@@ -93,8 +89,7 @@ class TestAggregateReturnRestriction:
             y: u8,
         }
 
-        #[mode(m8, x8)]
-        fn bad_func() -> Player {
+                fn bad_func() -> Player {
             A = 0;
         }
         """
@@ -108,8 +103,7 @@ class TestAggregateReturnRestriction:
     def test_array_return_by_value_error(self):
         """Returning an array by value should produce a compile error."""
         source = """
-        #[mode(m8, x8)]
-        fn bad_func() -> [u8; 8] {
+                fn bad_func() -> [u8; 8] {
             A = 0;
         }
         """
@@ -131,8 +125,7 @@ class TestAggregateReturnRestriction:
         #[ram]
         static mut PLAYER: Player = Player { x: 0, y: 0 };
 
-        #[mode(m8, x8)]
-        fn good_func() -> *Player {
+                fn good_func() -> *Player {
             return &PLAYER;
         }
         """
@@ -214,8 +207,7 @@ class TestAggregateAssignmentRestriction:
         #[ram]
         static mut PLAYER2: Entity;
 
-        #[mode(m8, x8)]
-        fn main() {
+                fn main() {
             PLAYER1 = PLAYER2;
         }
         """
@@ -235,8 +227,7 @@ class TestAggregateAssignmentRestriction:
         #[ram]
         static mut BUFFER2: [u8; 256];
 
-        #[mode(m8, x8)]
-        fn main() {
+                fn main() {
             BUFFER1 = BUFFER2;
         }
         """
@@ -261,8 +252,7 @@ class TestAggregateAssignmentRestriction:
         #[ram]
         static mut PLAYER2: Entity;
 
-        #[mode(m8, x8)]
-        fn copy_entity() {
+                fn copy_entity() {
             PLAYER1.x = PLAYER2.x;
             PLAYER1.y = PLAYER2.y;
         }
@@ -279,8 +269,7 @@ class TestAggregateAssignmentRestriction:
         #[ram]
         static mut BUFFER2: [u8; 8];
 
-        #[mode(m8, x8)]
-        fn copy_element() {
+                fn copy_element() {
             BUFFER1[0] = BUFFER2[0];
         }
         """
@@ -294,8 +283,7 @@ class TestPrimitiveTypesStillWork:
     def test_u8_parameter_ok(self):
         """u8 parameter should work."""
         source = """
-        #[mode(m8, x8)]
-        fn add(a: u8, b: u8) -> u8 {
+                fn add(a: u8, b: u8) -> u8 {
             A = a + b;
             return A;
         }
@@ -306,8 +294,7 @@ class TestPrimitiveTypesStillWork:
     def test_u16_return_ok(self):
         """u16 return should work."""
         source = """
-        #[mode(m16, x16)]
-        fn get_value() -> u16 {
+                fn get_value() -> u16 {
             A = 1000;
             return A;
         }
@@ -318,8 +305,7 @@ class TestPrimitiveTypesStillWork:
     def test_register_parameter_ok(self):
         """Register parameter should work."""
         source = """
-        #[mode(m8, x8)]
-        fn set_value(value @ A: u8) {
+                fn set_value(value @ A: u8) {
             A = A + 1;
         }
         """

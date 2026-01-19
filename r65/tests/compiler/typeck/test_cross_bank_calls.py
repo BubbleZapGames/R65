@@ -26,13 +26,11 @@ class TestCrossBankCalls:
         """Near functions in the same bank can call each other."""
         # Both functions default to bank 0
         source = """
-        #[mode(m8, x8)]
-        fn helper() {
+                fn helper() {
             A = 1;
         }
 
-        #[mode(m8, x8)]
-        fn main() {
+                fn main() {
             helper();
         }
         """
@@ -43,13 +41,11 @@ class TestCrossBankCalls:
         """Near functions in explicitly same bank can call each other."""
         source = """
         #[bank(1)]
-        #[mode(m8, x8)]
-        fn helper() {
+                fn helper() {
             A = 1;
         }
 
-        #[mode(m8, x8)]
-        fn caller() {
+                fn caller() {
             helper();
         }
         """
@@ -60,14 +56,12 @@ class TestCrossBankCalls:
         """Near function in different bank cannot be called by near function."""
         source = """
         #[bank(0)]
-        #[mode(m8, x8)]
-        fn bank0_func() {
+                fn bank0_func() {
             bank1_func();
         }
 
         #[bank(1)]
-        #[mode(m8, x8)]
-        fn bank1_func() {
+                fn bank1_func() {
             A = 1;
         }
         """
@@ -86,14 +80,12 @@ class TestCrossBankCalls:
         """Far functions can be called from any bank."""
         source = """
         #[bank(0)]
-        #[mode(m8, x8)]
-        fn bank0_func() {
+                fn bank0_func() {
             bank1_func();
         }
 
         #[bank(1)]
-        #[mode(m8, x8)]
-        far fn bank1_func() {
+                far fn bank1_func() {
             A = 1;
         }
         """
@@ -104,13 +96,11 @@ class TestCrossBankCalls:
         """Far function can call near function in same bank."""
         source = """
         #[bank(1)]
-        #[mode(m8, x8)]
-        fn helper() {
+                fn helper() {
             A = 1;
         }
 
-        #[mode(m8, x8)]
-        far fn main() {
+                far fn main() {
             helper();
         }
         """
@@ -121,14 +111,12 @@ class TestCrossBankCalls:
         """Far function cannot call near function in different bank."""
         source = """
         #[bank(0)]
-        #[mode(m8, x8)]
-        fn bank0_helper() {
+                fn bank0_helper() {
             A = 1;
         }
 
         #[bank(1)]
-        #[mode(m8, x8)]
-        far fn bank1_main() {
+                far fn bank1_main() {
             bank0_helper();
         }
         """
@@ -141,14 +129,12 @@ class TestCrossBankCalls:
     def test_default_bank_zero(self):
         """Functions without explicit bank default to bank 0."""
         source = """
-        #[mode(m8, x8)]
-        fn helper() {
+                fn helper() {
             A = 1;
         }
 
         #[bank(1)]
-        #[mode(m8, x8)]
-        fn bank1_caller() {
+                fn bank1_caller() {
             helper();
         }
         """
@@ -164,20 +150,15 @@ class TestCrossBankCalls:
         """Test multiple bank directive switches."""
         source = """
         #[bank(0)]
-        #[mode(m8, x8)]
-        fn bank0_a() { A = 1; }
-        #[mode(m8, x8)]
-        fn bank0_b() { bank0_a(); }  // OK - same bank
+                fn bank0_a() { A = 1; }
+                fn bank0_b() { bank0_a(); }  // OK - same bank
 
         #[bank(1)]
-        #[mode(m8, x8)]
-        fn bank1_a() { A = 2; }
-        #[mode(m8, x8)]
-        fn bank1_b() { bank1_a(); }  // OK - same bank
+                fn bank1_a() { A = 2; }
+                fn bank1_b() { bank1_a(); }  // OK - same bank
 
         #[bank(0)]
-        #[mode(m8, x8)]
-        fn bank0_c() { bank0_b(); }  // OK - both in bank 0
+                fn bank0_c() { bank0_b(); }  // OK - both in bank 0
         """
         # Should not raise
         typecheck(source)
@@ -186,14 +167,12 @@ class TestCrossBankCalls:
         """Bank check works together with mode attributes."""
         source = """
         #[bank(0)]
-        #[mode(m8)]
-        fn bank0_func() {
+                fn bank0_func() {
             bank1_func();
         }
 
         #[bank(1)]
-        #[mode(m8, transition=inline)]
-        far fn bank1_func() {
+                far fn bank1_func() {
             A = 1;
         }
         """

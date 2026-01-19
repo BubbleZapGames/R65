@@ -229,6 +229,7 @@ class MIRBuilder:
             interrupt_attr=hir_func.interrupt_attr,
             is_entry=hir_func.is_entry,
             is_far=hir_func.is_far,
+            entry_m_mode=hir_func.entry_m_mode,  # Inferred entry mode
             source_loc=hir_func.source_loc,  # Propagate source location
             vreg_allocator=VirtualRegisterAllocator(),
             alias_tracker=RegisterAliasTracker()
@@ -240,11 +241,13 @@ class MIRBuilder:
         self.symbol_to_vreg.clear()
         self.loop_stack.clear()
 
-        # Initialize current mode from function's mode attribute
-        if hir_func.mode_attr:
-            self.current_mode = ProcessorMode.from_attribute(hir_func.mode_attr)
+        # Initialize current mode from function's inferred entry mode
+        # entry_m_mode is set by HIR builder based on A parameter type
+        if hir_func.entry_m_mode:
+            self.current_mode = ProcessorMode(hir_func.entry_m_mode, XModeState.X16)
         else:
-            self.current_mode = ProcessorMode.unknown()
+            # Default: m8, x16
+            self.current_mode = ProcessorMode.default()
 
         # Create entry block
         entry_block = self.cfg_builder.new_block()
@@ -317,13 +320,9 @@ class MIRBuilder:
                 param_size = self._get_type_size(param.param_type)
                 current_offset += param_size
 
-            # Validate: far pointer stack params require x16 mode for [dp],Y addressing
-            if mir_func.has_far_ptr_stack_params:
-                if hir_func.mode_attr is None or self.current_mode.x_mode != XModeState.X16:
-                    raise MIRLoweringError(
-                        f"Function '{hir_func.name}' has far pointer stack parameters and "
-                        f"must be declared with #[mode(..., x16)] for 16-bit Y indexing"
-                    )
+            # Note: Far pointer stack params require x16 mode for [dp],Y addressing
+            # In the simplified mode system, X/Y are always 16-bit (x16 mode),
+            # so no validation is needed - far pointer params always work
 
         # If this is an entry point function, initialize native mode and call __init_start()
         if hir_func.is_entry:

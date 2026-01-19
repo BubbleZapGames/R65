@@ -81,8 +81,7 @@ class TestTypeCastHIR:
     def test_hir_type_cast_node(self):
         """Test HIR generates HIRTypeCast nodes."""
         hir_prog = build_hir("""
-            #[mode(m8, x8)]
-            fn test() {
+                        fn test() {
                 let x: u16 = (A as u16);
             }
         """)
@@ -94,8 +93,7 @@ class TestTypeCastHIR:
     def test_hir_cast_target_type(self):
         """Test HIR type cast has correct target type."""
         hir_prog = build_hir("""
-            #[mode(m8, x8)]
-            fn test() {
+                        fn test() {
                 let x: i16 = (A as i16);
             }
         """)
@@ -108,8 +106,7 @@ class TestTypeCastHIR:
     def test_hir_bool_cast(self):
         """Test HIR for bool cast."""
         hir_prog = build_hir("""
-            #[mode(m8, x8)]
-            fn test() {
+                        fn test() {
                 let flag: bool = (A as bool);
             }
         """)
@@ -139,8 +136,7 @@ class TestTypeCastTypeCheck:
     def test_typecheck_u8_to_u16(self):
         """Type check u8 -> u16 widening."""
         self._typecheck("""
-            #[mode(m8, x8)]
-            fn test() {
+                        fn test() {
                 let x: u16 = (A as u16);
             }
         """)
@@ -150,8 +146,7 @@ class TestTypeCastTypeCheck:
         self._typecheck("""
             #[zeropage]
             static mut VAL: i8;
-            #[mode(m8, x8)]
-            fn test() {
+                        fn test() {
                 let x: i16 = (VAL as i16);
             }
         """)
@@ -161,8 +156,7 @@ class TestTypeCastTypeCheck:
         self._typecheck("""
             #[zeropage]
             static mut VAL: u16;
-            #[mode(m8, x8)]
-            fn test() {
+                        fn test() {
                 let x: u8 = (VAL as u8);
             }
         """)
@@ -170,8 +164,7 @@ class TestTypeCastTypeCheck:
     def test_typecheck_u8_to_bool(self):
         """Type check u8 -> bool."""
         self._typecheck("""
-            #[mode(m8, x8)]
-            fn test() {
+                        fn test() {
                 let flag: bool = (A as bool);
             }
         """)
@@ -181,8 +174,7 @@ class TestTypeCastTypeCheck:
         self._typecheck("""
             #[zeropage]
             static mut VAL: u16;
-            #[mode(m8, x8)]
-            fn test() {
+                        fn test() {
                 let flag: bool = (VAL as bool);
             }
         """)
@@ -192,8 +184,7 @@ class TestTypeCastTypeCheck:
         self._typecheck("""
             #[zeropage]
             static mut FLAG: bool;
-            #[mode(m8, x8)]
-            fn test() {
+                        fn test() {
                 let x: u8 = (FLAG as u8);
             }
         """)
@@ -203,8 +194,7 @@ class TestTypeCastTypeCheck:
         self._typecheck("""
             #[zeropage]
             static mut FLAG: bool;
-            #[mode(m8, x8)]
-            fn test() {
+                        fn test() {
                 let x: u16 = (FLAG as u16);
             }
         """)
@@ -212,8 +202,7 @@ class TestTypeCastTypeCheck:
     def test_typecheck_reinterpret_u8_i8(self):
         """Type check u8 <-> i8 reinterpret."""
         self._typecheck("""
-            #[mode(m8, x8)]
-            fn test() {
+                        fn test() {
                 let x: i8 = (A as i8);
             }
         """)
@@ -223,8 +212,7 @@ class TestTypeCastTypeCheck:
         self._typecheck("""
             #[zeropage]
             static mut VAL: u16;
-            #[mode(m8, x8)]
-            fn test() {
+                        fn test() {
                 let x: i16 = (VAL as i16);
             }
         """)
@@ -271,8 +259,7 @@ class TestTypeCastMIR:
         mir_prog = self._build_mir("""
             #[zeropage]
             static mut RESULT: u16;
-            #[mode(m8, x8)]
-            fn test() {
+                        fn test() {
                 RESULT = (A as u16);
             }
         """)
@@ -288,8 +275,7 @@ class TestTypeCastMIR:
             static mut VAL: i8;
             #[zeropage]
             static mut RESULT: i16;
-            #[mode(m8, x8)]
-            fn test() {
+                        fn test() {
                 RESULT = (VAL as i16);
             }
         """)
@@ -305,8 +291,7 @@ class TestTypeCastMIR:
             static mut VAL: u16;
             #[zeropage]
             static mut RESULT: u8;
-            #[mode(m8, x8)]
-            fn test() {
+                        fn test() {
                 RESULT = (VAL as u8);
             }
         """)
@@ -320,8 +305,7 @@ class TestTypeCastMIR:
         mir_prog = self._build_mir("""
             #[zeropage]
             static mut RESULT: bool;
-            #[mode(m8, x8)]
-            fn test() {
+                        fn test() {
                 RESULT = (A as bool);
             }
         """)
@@ -335,8 +319,7 @@ class TestTypeCastMIR:
             static mut VAL: u16;
             #[zeropage]
             static mut RESULT: bool;
-            #[mode(m8, x8)]
-            fn test() {
+                        fn test() {
                 RESULT = (VAL as bool);
             }
         """)
@@ -350,8 +333,7 @@ class TestTypeCastMIR:
             static mut FLAG: bool;
             #[zeropage]
             static mut RESULT: u8;
-            #[mode(m8, x8)]
-            fn test() {
+                        fn test() {
                 RESULT = (FLAG as u8);
             }
         """)
@@ -364,8 +346,7 @@ class TestTypeCastMIR:
         mir_prog = self._build_mir("""
             #[zeropage]
             static mut RESULT: i8;
-            #[mode(m8, x8)]
-            fn test() {
+                        fn test() {
                 RESULT = (A as i8);
             }
         """)
@@ -403,8 +384,7 @@ class TestTypeCastCodeGen:
             static mut VALUE: u8;
             #[zeropage(0x11)]
             static mut RESULT: bool;
-            #[mode(m8, x8)]
-            fn test() {
+                        fn test() {
                 RESULT = (VALUE as bool);
             }
         """)
@@ -430,8 +410,7 @@ class TestTypeCastCodeGen:
             static mut VALUE: u8;
             #[zeropage(0x11)]
             static mut RESULT: u16;
-            #[mode(m8, x8)]
-            fn test() {
+                        fn test() {
                 RESULT = (VALUE as u16);
             }
         """)
@@ -445,8 +424,7 @@ class TestTypeCastCodeGen:
             static mut VALUE: u16;
             #[zeropage(0x12)]
             static mut RESULT: u8;
-            #[mode(m8, x8)]
-            fn test() {
+                        fn test() {
                 RESULT = (VALUE as u8);
             }
         """)
@@ -475,8 +453,7 @@ class TestTypeCastEdgeCases:
         self._typecheck("""
             #[zeropage]
             static mut FLAG: bool;
-            #[mode(m8, x8)]
-            fn test() {
+                        fn test() {
                 FLAG = (1 as bool);
                 FLAG = (0 as bool);
             }
@@ -488,8 +465,7 @@ class TestTypeCastEdgeCases:
             enum State { Idle = 0, Running = 1 }
             #[zeropage]
             static mut VAL: u8;
-            #[mode(m8, x8)]
-            fn test() {
+                        fn test() {
                 VAL = (State::Running as u8);
             }
         """)
@@ -499,8 +475,7 @@ class TestTypeCastEdgeCases:
         self._typecheck("""
             #[zeropage]
             static mut RESULT: u16;
-            #[mode(m8, x8)]
-            fn test() {
+                        fn test() {
                 RESULT = ((A as i16) as u16);
             }
         """)
@@ -510,8 +485,7 @@ class TestTypeCastEdgeCases:
         self._typecheck("""
             #[zeropage]
             static mut FLAG: bool;
-            #[mode(m8, x8)]
-            fn test() {
+                        fn test() {
                 if (A as bool) {
                     FLAG = true;
                 }

@@ -11,7 +11,6 @@ source = """
 static mut FLAG: u8 = 0;
 
 #[interrupt(nmi)]
-#[mode(m8, x8, transition=inline)]
 fn nmi_handler() {
     A = 0x42;
     FLAG = A;

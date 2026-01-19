@@ -340,23 +340,24 @@ class FunctionCodeGenerator:
         index registers are, so it can assemble instructions correctly. They don't
         emit any code - they're just for the assembler.
 
+        In the simplified mode system:
+        - X/Y are always 16-bit (x16)
+        - A is m8 by default, m16 if function has u16 @ A parameter
+
         Args:
             mir_func: MIR function
         """
-        if mir_func.mode_attr:
-            from r65.compiler.hir.attributes import MMode, XMode
+        from r65.compiler.typeck.processor_mode import ModeState
 
-            # Emit accumulator mode directive
-            if mir_func.mode_attr.m_mode == MMode.M16:
-                self.emitter.emit_directive("    .ACCU 16")
-            elif mir_func.mode_attr.m_mode == MMode.M8:
-                self.emitter.emit_directive("    .ACCU 8")
+        # Emit accumulator mode directive based on inferred entry mode
+        if mir_func.entry_m_mode == ModeState.M16:
+            self.emitter.emit_directive("    .ACCU 16")
+        else:
+            # Default: m8 (8-bit accumulator)
+            self.emitter.emit_directive("    .ACCU 8")
 
-            # Emit index mode directive
-            if mir_func.mode_attr.x_mode == XMode.X16:
-                self.emitter.emit_directive("    .INDEX 16")
-            elif mir_func.mode_attr.x_mode == XMode.X8:
-                self.emitter.emit_directive("    .INDEX 8")
+        # Emit index mode directive - always 16-bit in R65
+        self.emitter.emit_directive("    .INDEX 16")
 
     def emit_prologue(self, mir_func: MIRFunction, reg_alloc: RegisterAllocator):
         """
@@ -395,44 +396,19 @@ class FunctionCodeGenerator:
                 self._emit_instr(Opcode.PHA, comment="Push bank number")
                 self._emit_instr(Opcode.PLB, comment="Set data bank register")
 
-        # Handle processor mode transitions with transition=inline
-        if mir_func.mode_attr:
-            from r65.compiler.hir.attributes import ModeTransition, MMode, XMode
+        # Set up processor mode based on inferred entry mode
+        # In R65, X/Y are always x16, A mode is based on parameter types
+        # Mode transitions are now automatic - compiler inserts REP/SEP as needed
+        from r65.compiler.typeck.processor_mode import ModeState
 
-            if mir_func.mode_attr.transition == ModeTransition.INLINE:
-                # Save current processor status and set required mode
-                # Sequence: PHP, REP/SEP #bits, body, PLP, RTS
-                # NOTE: Skip PHP for interrupt handlers - they save STATUS in their own prologue
-                # and the PHP would cause stack imbalance since RTI uses the interrupt's PLP
-                if not mir_func.interrupt_attr:
-                    self._emit_instr(Opcode.PHP, comment="Save processor status")
-
-                # Determine which bits to set/clear based on mode
-                # STATUS register bits: NV-BDIZC (- is unused, M is bit 5, X is bit 4)
-                # M_FLAG (0x20): M flag (0=16-bit accumulator, 1=8-bit accumulator)
-                # X_FLAG (0x10): X flag (0=16-bit index, 1=8-bit index)
-                bits_to_clear = 0  # REP (Reset bits)
-                bits_to_set = 0    # SEP (Set bits)
-
-                # Determine M mode
-                if mir_func.mode_attr.m_mode == MMode.M16:
-                    bits_to_clear |= M_FLAG  # Clear M bit for 16-bit accumulator
-                elif mir_func.mode_attr.m_mode == MMode.M8:
-                    bits_to_set |= M_FLAG    # Set M bit for 8-bit accumulator
-
-                # Determine X mode
-                if mir_func.mode_attr.x_mode == XMode.X16:
-                    bits_to_clear |= X_FLAG  # Clear X bit for 16-bit index
-                elif mir_func.mode_attr.x_mode == XMode.X8:
-                    bits_to_set |= X_FLAG    # Set X bit for 8-bit index
-
-                # Emit REP and/or SEP instructions
-                if bits_to_clear:
-                    mode_comment = f"Set mode: {'m16 ' if bits_to_clear & M_FLAG else ''}{'x16' if bits_to_clear & X_FLAG else ''}".strip()
-                    self._emit_instr(Opcode.REP_IMMEDIATE, Immediate(bits_to_clear), mode_comment)
-                if bits_to_set:
-                    mode_comment = f"Set mode: {'m8 ' if bits_to_set & M_FLAG else ''}{'x8' if bits_to_set & X_FLAG else ''}".strip()
-                    self._emit_instr(Opcode.SEP_IMMEDIATE, Immediate(bits_to_set), mode_comment)
+        # For functions with m16 entry (u16 @ A parameter), set up 16-bit A mode
+        # The default execution mode is m8, x16 (set by the bootstrap/interrupt context)
+        # If this function requires m16, we need to switch to it
+        if mir_func.entry_m_mode == ModeState.M16:
+            # REP #$20 to set 16-bit accumulator mode
+            self._emit_instr(Opcode.REP_IMMEDIATE, Immediate(M_FLAG), "Set m16 mode for u16 @ A parameter")
+        # If m8 (default), no prologue mode switch needed - we assume caller is in m8 mode
+        # For now, we trust that the caller will set up the correct mode
 
         # Emit register saves for #[preserves(...)]
         # Registers are pushed in order: STATUS, A, X, Y, D, DBR
@@ -464,9 +440,14 @@ class FunctionCodeGenerator:
         """
         Calculate bytes pushed by prologue that affect stack parameter offsets.
 
-        The prologue may push registers for DBR management, mode transitions,
-        and register preservation. These pushes change the stack pointer,
-        so stack parameter offsets must be adjusted accordingly.
+        The prologue may push registers for DBR management and register preservation.
+        These pushes change the stack pointer, so stack parameter offsets must be
+        adjusted accordingly.
+
+        In the simplified mode system:
+        - Mode transitions no longer push PHP (handled automatically)
+        - X/Y are always 16-bit (2 bytes when pushed)
+        - A is 1 byte in m8 mode, 2 bytes in m16 mode
 
         Args:
             mir_func: MIR function
@@ -474,6 +455,8 @@ class FunctionCodeGenerator:
         Returns:
             Number of bytes pushed by prologue
         """
+        from r65.compiler.typeck.processor_mode import ModeState
+
         bytes_pushed = 0
 
         # DBR management: PHB pushes 1 byte
@@ -482,30 +465,23 @@ class FunctionCodeGenerator:
             if mir_func.mode_attr.databank == DataBankMode.INLINE:
                 bytes_pushed += 1
 
-        # Mode transition: PHP pushes 1 byte
-        if mir_func.mode_attr:
-            from r65.compiler.hir.attributes import ModeTransition
-            if mir_func.mode_attr.transition == ModeTransition.INLINE:
-                bytes_pushed += 1
+        # Note: Mode transitions no longer push PHP in the simplified system
+        # REP/SEP for mode changes don't push anything
 
         # Register preservation pushes
         if mir_func.preserves_attr:
-            from r65.compiler.hir.attributes import MMode, XMode
             for reg in mir_func.preserves_attr.registers:
                 if reg == 'STATUS':
                     bytes_pushed += 1  # PHP pushes 1 byte
                 elif reg == 'A':
                     # PHA pushes 1 or 2 bytes depending on M mode
-                    if mir_func.mode_attr and mir_func.mode_attr.m_mode == MMode.M16:
+                    if mir_func.entry_m_mode == ModeState.M16:
                         bytes_pushed += 2
                     else:
-                        bytes_pushed += 1
+                        bytes_pushed += 1  # Default: m8
                 elif reg in ('X', 'Y'):
-                    # PHX/PHY pushes 1 or 2 bytes depending on X mode
-                    if mir_func.mode_attr and mir_func.mode_attr.x_mode == XMode.X16:
-                        bytes_pushed += 2
-                    else:
-                        bytes_pushed += 1
+                    # PHX/PHY always pushes 2 bytes (x16 always)
+                    bytes_pushed += 2
                 elif reg == 'D':
                     bytes_pushed += 2  # Direct page is always 16-bit
                 elif reg == 'DBR':
@@ -597,13 +573,18 @@ class FunctionCodeGenerator:
             self._emit_instr(Opcode.PLB, comment="Restore data bank")
 
     def _emit_mode_restore(self, mir_func: MIRFunction):
-        """Restore processor mode for transition=inline functions."""
-        if not mir_func.mode_attr:
-            return
+        """Restore processor mode after function body.
 
-        from r65.compiler.hir.attributes import ModeTransition
-        if mir_func.mode_attr.transition == ModeTransition.INLINE:
-            self._emit_instr(Opcode.PLP, comment="Restore processor status")
+        In the simplified mode system, mode transitions are automatic.
+        If this function uses m16 mode, we need to restore m8 before returning
+        to ensure the caller gets back to the default mode.
+        """
+        from r65.compiler.typeck.processor_mode import ModeState
+
+        # If function runs in m16 mode, restore to m8 before returning
+        # This ensures caller (which is in m8 mode) can continue correctly
+        if mir_func.entry_m_mode == ModeState.M16:
+            self._emit_instr(Opcode.SEP_IMMEDIATE, Immediate(M_FLAG), "Restore m8 mode")
 
 
 class ProgramFunctionGenerator:

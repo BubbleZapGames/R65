@@ -777,12 +777,16 @@ class MIRFunction:
     exit_block_ids: List[int] = field(default_factory=list)
 
     # Metadata from HIR (preserved for code generation)
-    mode_attr: Optional[Any] = None         # ModeAttribute
+    mode_attr: Optional[Any] = None         # ModeAttribute (databank only)
     preserves_attr: Optional[Any] = None    # PreservesAttribute
     bank_attr: Optional[Any] = None         # BankAttribute
     interrupt_attr: Optional[Any] = None    # InterruptAttribute
     is_entry: bool = False
     is_far: bool = False
+
+    # Inferred entry mode (M8 or M16, always X16)
+    # Set based on A parameter type: u16 @ A -> M16, otherwise M8
+    entry_m_mode: Optional[Any] = None      # ModeState (M8 or M16)
 
     # Far pointer stack parameter tracking
     # True if any stack parameters are far pointers (need D=S prologue)

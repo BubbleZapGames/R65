@@ -14,7 +14,6 @@ def test_no_static_initializers():
 static mut COUNTER: u8;  // No initializer - undefined value!
 
 #[entry]
-#[mode(m8, x8)]
 fn main() -> ! {
     COUNTER = 0;  // Must initialize manually in code
     loop {

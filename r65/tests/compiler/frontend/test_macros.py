@@ -548,8 +548,7 @@ class TestMacroCompilation:
             $reg++;
         }
 
-        #[mode(m8, x8)]
-        fn main() {
+                fn main() {
             X = 0;
             inc_twice!(X);
             A = X;
@@ -569,8 +568,7 @@ class TestMacroCompilation:
             A = A + $val;
         }
 
-        #[mode(m8, x8)]
-        fn test() {
+                fn test() {
             A = 10;
             add_const!(5);
         }
@@ -595,8 +593,7 @@ class TestMacroCompilation:
             inc!($reg);
         }
 
-        #[mode(m8, x8)]
-        fn test() {
+                fn test() {
             X = 0;
             inc_three_times!(X);
         }

@@ -1,12 +1,17 @@
 """
 Mode tracking through MIR CFG.
 
-Performs dataflow analysis to track processor modes (M8/M16, X8/X16)
+In the simplified mode system:
+- X/Y registers are always 16-bit (x16 mode)
+- A register mode (m8/m16) is inferred from parameter types
+- Auto REP/SEP is inserted around 16-bit A operations when in m8 mode
+
+Performs dataflow analysis to track processor M mode (M8/M16)
 through the control flow graph.
 """
 
 from typing import Dict, List, Set, Optional
-from r65.compiler.typeck.processor_mode import *
+from r65.compiler.typeck.processor_mode import ProcessorMode, ModeState, XModeState
 from r65.compiler.mir.nodes import *
 
 
@@ -14,8 +19,12 @@ class MIRModeTracker:
     """
     Tracks processor modes through MIR CFG using dataflow analysis.
 
+    In R65:
+    - X mode is always X16 (16-bit index registers)
+    - M mode is inferred from A parameter type (m8 default, m16 if u16 @ A)
+
     Algorithm:
-    1. Initialize entry block with function's mode attribute
+    1. Initialize entry block with function's inferred entry mode
     2. Propagate modes through CFG using worklist algorithm
     3. At each block:
        - Entry mode = join of predecessor exit modes
@@ -38,12 +47,12 @@ class MIRModeTracker:
         Side effects:
             - Sets entry_mode and exit_mode on each BasicBlock
         """
-        # Get entry mode from function attribute
-        if self.mir_func.mode_attr:
-            entry_mode = ProcessorMode.from_attribute(self.mir_func.mode_attr)
+        # Get entry mode from inferred entry_m_mode (based on A parameter type)
+        if self.mir_func.entry_m_mode is not None:
+            entry_mode = ProcessorMode(self.mir_func.entry_m_mode, XModeState.X16)
         else:
-            # No mode attribute = unknown mode
-            entry_mode = ProcessorMode.unknown()
+            # Default: m8, x16
+            entry_mode = ProcessorMode.default()
 
         # Set entry block mode
         entry_block = self.mir_func.blocks[self.mir_func.entry_block_id]
@@ -101,8 +110,8 @@ class MIRModeTracker:
             Joined ProcessorMode, or None if modes conflict
         """
         if not block.predecessors:
-            # No predecessors - use unknown mode
-            return ProcessorMode.unknown()
+            # No predecessors - use default mode (m8, x16)
+            return ProcessorMode.default()
 
         # Get exit modes from all predecessors
         pred_modes = []
@@ -139,7 +148,7 @@ class MIRModeTracker:
         """
         current_mode = block.entry_mode
         if current_mode is None:
-            current_mode = ProcessorMode.unknown()
+            current_mode = ProcessorMode.default()
 
         # Apply each instruction's effect on mode
         for instr in block.instructions:

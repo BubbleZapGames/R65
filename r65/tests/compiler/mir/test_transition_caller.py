@@ -10,18 +10,15 @@ source = """
 #[zeropage(0x20)]
 static mut VALUE: u8 = 0;
 
-#[mode(m16, x16, transition=caller)]
 fn process_16bit() {
     A = 0x1234;
 }
 
-#[mode(m16, x16, transition=caller)]
 #[preserves(STATUS)]
 fn process_16bit_preserves() {
     A = 0xABCD;
 }
 
-#[mode(m8, x8)]
 fn caller() {
     process_16bit();
     process_16bit_preserves();

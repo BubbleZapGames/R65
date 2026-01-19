@@ -173,7 +173,7 @@ class HIRFunctionDecl(HIRDeclaration):
     body: Optional['HIRBlock'] = None
 
     # Processed attributes
-    mode_attr: Optional[Any] = None  # Will be ModeAttribute
+    mode_attr: Optional[Any] = None  # Will be ModeAttribute (databank only)
     preserves_attr: Optional[Any] = None  # Will be PreservesAttribute
     bank_attr: Optional[Any] = None  # Will be BankAttribute
     interrupt_attr: Optional[Any] = None  # Will be InterruptAttribute
@@ -184,6 +184,11 @@ class HIRFunctionDecl(HIRDeclaration):
 
     # STATUS flag return tracking (for optimized branch generation at call sites)
     returns_status_flag: Optional[str] = None  # Flag name if function directly returns STATUS.Flag
+
+    # Inferred processor mode (populated by HIR builder)
+    # - entry_m_mode: m8 if no u16 A parameter, m16 if u16 @ A parameter
+    # - x_mode is always x16 (16-bit X/Y)
+    entry_m_mode: Optional[Any] = None  # Will be ModeState (M8 or M16)
 
 
 @dataclass

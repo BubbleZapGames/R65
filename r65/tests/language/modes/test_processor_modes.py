@@ -76,8 +76,7 @@ class TestModeHIR:
     def test_mode_hir(self):
         """Test mode annotations generate proper HIR."""
         hir_prog = build_hir("""
-            #[mode(m8, x8)]
-            fn eight_bit() { A = 0xFF; }
+                        fn eight_bit() { A = 0xFF; }
         """)
         func = hir_prog.functions[0]
         assert func is not None

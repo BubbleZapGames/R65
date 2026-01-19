@@ -60,8 +60,7 @@ class TestMatrixMultiplication:
             //   RESULT[3] = A10*B01 + A11*B11
             // Additional temps to work around register allocation issue
 
-            #[mode(m8, x8)]
-            fn multiply_matrix() {{
+                        fn multiply_matrix() {{
                 // RESULT[0] = MAT_A[0]*MAT_B[0] + MAT_A[1]*MAT_B[2]
                 let mut TEMP : u8; 
                 (TEMP) = mul8(MAT_A[0], MAT_B[0]);
@@ -84,8 +83,7 @@ class TestMatrixMultiplication:
                 RESULT[3] = A + TEMP;
             }}
 
-            #[mode(m8, x8)]
-            #[entry]
+                        #[entry]
             fn main() {{
                 multiply_matrix();
             }}

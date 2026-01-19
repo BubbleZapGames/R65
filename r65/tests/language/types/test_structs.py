@@ -111,8 +111,7 @@ class TestStructArrayTypeCheck:
             struct Card { suit: u8, rank: u8 }
             #[ram] static mut CARDS: [Card; 8];
 
-            #[mode(m8, x8)]
-            fn test() {
+                        fn test() {
                 let idx: u8 = 0;
                 CARDS[idx].suit = 3;
                 CARDS[idx].rank = 7;
@@ -137,8 +136,7 @@ class TestStructArrayTypeCheck:
             struct Point { x: u8, y: u8 }
             #[ram] static mut POINTS: [Point; 4];
 
-            #[mode(m8, x8)]
-            fn init() {
+                        fn init() {
                 POINTS[0].x = 10;
                 POINTS[0].y = 20;
                 POINTS[1].x = 30;
@@ -163,8 +161,7 @@ class TestStructArrayTypeCheck:
             struct Entity { x: u8, y: u8, health: u16 }
             #[ram] static mut ENTITIES: [Entity; 8];
 
-            #[mode(m8, x8)]
-            fn get_health(idx @ X: u8) -> u16 {
+                        fn get_health(idx @ X: u16) -> u16 {
                 return ENTITIES[idx].health;
             }
         """

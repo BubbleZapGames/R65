@@ -92,8 +92,7 @@ class TestSnesRomDirectiveHIR:
         """Test that snesrom config is passed to HIR program."""
         source = '''
         #[snesrom(name="MY GAME", version=0x05, fastrom)]
-        #[mode(m8, x8)]
-        fn main() { A = 1; }
+                fn main() { A = 1; }
         '''
         prog = parse(source)
         builder = HIRBuilder()
@@ -110,8 +109,7 @@ class TestSnesRomDirectiveHIR:
     def test_hir_no_snesrom_config(self):
         """Test that snesrom_config is None when not specified."""
         source = '''
-        #[mode(m8, x8)]
-        fn main() { A = 1; }
+                fn main() { A = 1; }
         '''
         prog = parse(source)
         builder = HIRBuilder()
@@ -125,8 +123,7 @@ class TestSnesRomDirectiveHIR:
         #[snesrom(name="GAME", hirom)]
         #[stack(0x1F00, 0x1FFF)]
         #[bank(1)]
-        #[mode(m8, x8)]
-        far fn main() { A = 1; }
+                far fn main() { A = 1; }
         '''
         prog = parse(source)
         builder = HIRBuilder()

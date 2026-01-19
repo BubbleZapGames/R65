@@ -17,14 +17,12 @@ static mut VBLANK_FLAG: u8 = 1;
 
 // Interrupt handler with automatic preservation
 #[interrupt(nmi)]
-#[mode(m8, x8, transition=inline)]
 fn vblank_handler() {
     VBLANK_FLAG = 1;
     return;
 }
 
 // Regular function
-#[mode(m8, x8)]
 fn wait_vblank() {
     loop {
         let flag @ A = VBLANK_FLAG;
@@ -37,7 +35,6 @@ fn wait_vblank() {
 
 // Entry point - should call __init_start()
 #[entry]
-#[mode(m8, x8)]
 fn main() -> ! {
     loop {
         wait_vblank();

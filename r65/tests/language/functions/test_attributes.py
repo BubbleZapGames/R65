@@ -88,11 +88,12 @@ class TestMultipleAttributes:
     def test_combined_attributes(self):
         """Test function with multiple attributes."""
         func = parse_function("""
-            #[mode(m8, x8)]
             #[preserves(X, Y)]
             fn complex() { }
         """)
-        assert get_attr(func, "mode") is not None
+        # In the simplified mode system, mode is inferred from parameters,
+        # not specified via attribute. Only preserves attribute should be present.
+        assert get_attr(func, "mode") is None  # Mode is no longer an attribute
         assert get_attr(func, "preserves") is not None
 
 
@@ -102,8 +103,7 @@ class TestAttributeHIR:
     def test_attribute_hir(self):
         """Test attributes generate proper HIR."""
         hir_prog = build_hir("""
-            #[mode(m8)]
-            #[preserves(X)]
+                        #[preserves(X)]
             fn process() { A = 1; }
         """)
         func = hir_prog.functions[0]

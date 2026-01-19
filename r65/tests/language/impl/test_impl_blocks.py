@@ -25,8 +25,7 @@ class TestImplBlockParsing:
         source = """
             struct Player { x: u8, y: u8 }
             impl Player {
-                #[mode(m8, x16)]
-                fn get_x(*self) -> u8 {
+                                fn get_x(*self) -> u8 {
                     return self.x;
                 }
             }
@@ -43,8 +42,7 @@ class TestImplBlockParsing:
         source = """
             struct Player { x: u8 }
             impl far Player {
-                #[mode(m8, x16)]
-                fn update(far *self) {
+                                fn update(far *self) {
                 }
             }
         """
@@ -72,8 +70,7 @@ class TestImplBlockParsing:
         source = """
             struct Player { x: u8 }
             impl Player {
-                #[mode(m8, x16)]
-                fn move_by(*self, dx @ A: u8, dy @ X: u8) {
+                                fn move_by(*self, dx @ A: u8, dy @ X: u16) {
                 }
             }
         """
@@ -93,8 +90,7 @@ class TestImplBlockHIR:
         source = """
             struct Player { x: u8 }
             impl Player {
-                #[mode(m8, x16)]
-                fn get_x(*self) -> u8 {
+                                fn get_x(*self) -> u8 {
                     return self.x;
                 }
             }
@@ -128,8 +124,7 @@ class TestImplBlockHIR:
         source = """
             struct Player { x: u8 }
             impl Player {
-                #[mode(m8, x16)]
-                fn get_x(*self) -> u8 {
+                                fn get_x(*self) -> u8 {
                     return self.x;
                 }
             }
@@ -150,8 +145,7 @@ class TestImplBlockHIR:
         source = """
             struct Player { x: u8 }
             impl far Player {
-                #[mode(m8, x16)]
-                fn update(far *self) {
+                                fn update(far *self) {
                 }
             }
         """
@@ -173,16 +167,14 @@ class TestMethodCalls:
         source = """
             struct Player { x: u8, health: u8 }
             impl Player {
-                #[mode(m8, x16)]
-                fn take_damage(*self, amount @ A: u8) {
+                                fn take_damage(*self, amount @ A: u8) {
                     self.health -= amount;
                 }
             }
             #[zeropage]
             static mut PLAYER: Player;
 
-            #[mode(m8, x16)]
-            fn test() {
+                        fn test() {
                 PLAYER.take_damage(5);
             }
         """
@@ -204,16 +196,14 @@ class TestMethodCalls:
         source = """
             struct Player { x: u8 }
             impl Player {
-                #[mode(m8, x16)]
-                fn get_x(*self) -> u8 {
+                                fn get_x(*self) -> u8 {
                     return self.x;
                 }
             }
             #[zeropage]
             static mut *PLAYER_PTR: Player;
 
-            #[mode(m8, x16)]
-            fn test() -> u8 {
+                        fn test() -> u8 {
                 return PLAYER_PTR.get_x();
             }
         """
@@ -237,8 +227,7 @@ class TestAutoDeref:
         source = """
             struct Player { x: u8 }
             impl Player {
-                #[mode(m8, x16)]
-                fn get_x(*self) -> u8 {
+                                fn get_x(*self) -> u8 {
                     return self.x;
                 }
             }
@@ -256,8 +245,7 @@ class TestImplErrors:
         """impl block for undefined struct fails."""
         source = """
             impl Undefined {
-                #[mode(m8, x16)]
-                fn foo(*self) {}
+                                fn foo(*self) {}
             }
         """
         with pytest.raises(Exception) as exc_info:
@@ -269,16 +257,14 @@ class TestImplErrors:
         source = """
             struct Player { x: u8 }
             impl Player {
-                #[mode(m8, x16)]
-                fn get_x(*self) -> u8 {
+                                fn get_x(*self) -> u8 {
                     return self.x;
                 }
             }
             #[zeropage]
             static mut FAR_PTR: far *Player;
 
-            #[mode(m8, x16)]
-            fn test() -> u8 {
+                        fn test() -> u8 {
                 return FAR_PTR.get_x();
             }
         """
@@ -296,15 +282,13 @@ class TestMultipleImplBlocks:
             struct Player { x: u8, y: u8 }
 
             impl Player {
-                #[mode(m8, x16)]
-                fn get_x(*self) -> u8 {
+                                fn get_x(*self) -> u8 {
                     return self.x;
                 }
             }
 
             impl Player {
-                #[mode(m8, x16)]
-                fn get_y(*self) -> u8 {
+                                fn get_y(*self) -> u8 {
                     return self.y;
                 }
             }

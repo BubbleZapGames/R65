@@ -83,8 +83,7 @@ class E2ETest:
 
     Example:
         result = E2ETest().run('''
-            #[mode(m8, x8)]
-            #[entry]
+                        #[entry]
             fn main() {
                 A = 0x42;
             }

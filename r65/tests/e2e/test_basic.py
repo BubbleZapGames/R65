@@ -19,8 +19,7 @@ class TestBasicOperations:
     def test_assign_accumulator(self, e2e):
         """Test simple accumulator assignment."""
         result = e2e.run('''
-            #[mode(m8, x8)]
-            #[entry]
+                        #[entry]
             fn main() {
                 A = 0x42;
             }
@@ -31,8 +30,7 @@ class TestBasicOperations:
     def test_assign_x_register(self, e2e):
         """Test X register assignment."""
         result = e2e.run('''
-            #[mode(m8, x8)]
-            #[entry]
+                        #[entry]
             fn main() {
                 X = 0x10;
             }
@@ -43,8 +41,7 @@ class TestBasicOperations:
     def test_assign_y_register(self, e2e):
         """Test Y register assignment."""
         result = e2e.run('''
-            #[mode(m8, x8)]
-            #[entry]
+                        #[entry]
             fn main() {
                 Y = 0xFF;
             }
@@ -55,8 +52,7 @@ class TestBasicOperations:
     def test_assign_all_registers(self, e2e):
         """Test assignment to all registers."""
         result = e2e.run('''
-            #[mode(m8, x8)]
-            #[entry]
+                        #[entry]
             fn main() {
                 A = 0x11;
                 X = 0x22;
@@ -69,8 +65,7 @@ class TestBasicOperations:
     def test_register_copy(self, e2e):
         """Test copying between registers."""
         result = e2e.run('''
-            #[mode(m8, x8)]
-            #[entry]
+                        #[entry]
             fn main() {
                 A = 0x55;
                 X = A;
@@ -91,8 +86,7 @@ class TestArithmetic:
     def test_addition(self, e2e):
         """Test addition operation."""
         result = e2e.run('''
-            #[mode(m8, x8)]
-            #[entry]
+                        #[entry]
             fn main() {
                 A = 10;
                 A = A + 5;
@@ -104,8 +98,7 @@ class TestArithmetic:
     def test_subtraction(self, e2e):
         """Test subtraction operation."""
         result = e2e.run('''
-            #[mode(m8, x8)]
-            #[entry]
+                        #[entry]
             fn main() {
                 A = 20;
                 A = A - 8;
@@ -117,8 +110,7 @@ class TestArithmetic:
     def test_increment(self, e2e):
         """Test increment operation."""
         result = e2e.run('''
-            #[mode(m8, x8)]
-            #[entry]
+                        #[entry]
             fn main() {
                 X = 0;
                 X++;
@@ -132,8 +124,7 @@ class TestArithmetic:
     def test_decrement(self, e2e):
         """Test decrement operation."""
         result = e2e.run('''
-            #[mode(m8, x8)]
-            #[entry]
+                        #[entry]
             fn main() {
                 Y = 10;
                 Y--;
@@ -157,8 +148,7 @@ class TestMemoryOperations:
             #[zeropage(0x10)]
             static mut VALUE: u8;
 
-            #[mode(m8, x8)]
-            #[entry]
+                        #[entry]
             fn main() {
                 VALUE = 0xAB;
             }
@@ -172,8 +162,7 @@ class TestMemoryOperations:
             #[zeropage(0x10)]
             static mut VALUE: u8 = 0x99;
 
-            #[mode(m8, x8)]
-            #[entry]
+                        #[entry]
             fn main() {
                 A = VALUE;
             }
@@ -192,8 +181,7 @@ class TestFlags:
     def test_zero_flag_set(self, e2e):
         """Test zero flag is set when result is zero."""
         result = e2e.run('''
-            #[mode(m8, x8)]
-            #[entry]
+                        #[entry]
             fn main() {
                 A = 0;
             }
@@ -204,8 +192,7 @@ class TestFlags:
     def test_zero_flag_clear(self, e2e):
         """Test zero flag is clear when result is non-zero."""
         result = e2e.run('''
-            #[mode(m8, x8)]
-            #[entry]
+                        #[entry]
             fn main() {
                 A = 1;
             }
@@ -216,8 +203,7 @@ class TestFlags:
     def test_negative_flag_set(self, e2e):
         """Test negative flag is set for values >= 0x80."""
         result = e2e.run('''
-            #[mode(m8, x8)]
-            #[entry]
+                        #[entry]
             fn main() {
                 A = 0x80;
             }
@@ -228,8 +214,7 @@ class TestFlags:
     def test_negative_flag_clear(self, e2e):
         """Test negative flag is clear for values < 0x80."""
         result = e2e.run('''
-            #[mode(m8, x8)]
-            #[entry]
+                        #[entry]
             fn main() {
                 A = 0x7F;
             }
@@ -248,8 +233,7 @@ class Test16BitMode:
     def test_16bit_accumulator(self, e2e):
         """Test 16-bit accumulator assignment."""
         result = e2e.run('''
-            #[mode(m16, x16)]
-            #[entry]
+                        #[entry]
             fn main() {
                 A = 0x1234;
             }
@@ -260,8 +244,7 @@ class Test16BitMode:
     def test_16bit_index_registers(self, e2e):
         """Test 16-bit index register assignment."""
         result = e2e.run('''
-            #[mode(m16, x16)]
-            #[entry]
+                        #[entry]
             fn main() {
                 X = 0xABCD;
                 Y = 0xEF01;
@@ -273,8 +256,7 @@ class Test16BitMode:
     def test_16bit_addition(self, e2e):
         """Test 16-bit addition."""
         result = e2e.run('''
-            #[mode(m16, x16)]
-            #[entry]
+                        #[entry]
             fn main() {
                 A = 0x1000;
                 A = A + 0x0234;
@@ -297,8 +279,7 @@ class TestArrayOperations:
             #[ram]
             static mut BUFFER: [u8; 10];
 
-            #[mode(m16, x16)]
-            #[entry]
+                        #[entry]
             fn main() {
                 A = BUFFER.len();
             }
@@ -312,8 +293,7 @@ class TestArrayOperations:
             #[ram]
             static mut DATA: [u8; 256];
 
-            #[mode(m16, x16)]
-            #[entry]
+                        #[entry]
             fn main() {
                 A = DATA.len();
             }
@@ -327,8 +307,7 @@ class TestArrayOperations:
             #[ram]
             static mut ARR: [u8; 100];
 
-            #[mode(m16, x16)]
-            #[entry]
+                        #[entry]
             fn main() {
                 A = ARR.len() - (50 as u16);
             }

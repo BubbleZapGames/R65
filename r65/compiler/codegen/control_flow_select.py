@@ -369,13 +369,20 @@ class ControlFlowInstructionSelector(BaseSelector):
             self._emit_implied(Opcode.PLB, "Restore data bank")
 
     def _emit_mode_restore(self):
-        """Restore processor mode for transition=inline functions."""
-        if not (self.current_function and self.current_function.mode_attr):
+        """Restore processor mode for m16 functions.
+
+        In the simplified mode system, if a function runs in m16 mode,
+        we need to restore m8 mode before returning so the caller
+        (which is in m8 mode) can continue correctly.
+        """
+        if not self.current_function:
             return
 
-        from r65.compiler.hir.attributes import ModeTransition
-        if self.current_function.mode_attr.transition == ModeTransition.INLINE:
-            self._emit_implied(Opcode.PLP, "Restore processor status")
+        from r65.compiler.typeck.processor_mode import ModeState
+        from r65.compiler.codegen.constants import M_FLAG
+
+        if self.current_function.entry_m_mode == ModeState.M16:
+            self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "Restore m8 mode")
 
     def _emit_return_instruction(self):
         """Emit appropriate return instruction (RTL, RTS, or WAI).

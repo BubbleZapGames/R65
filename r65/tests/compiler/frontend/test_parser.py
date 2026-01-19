@@ -33,8 +33,7 @@ def test_simple_function():
 def test_function_with_attributes():
     """Test parsing function with attributes."""
     source = """
-    #[mode(m8, x8)]
-    #[preserves(X, Y)]
+        #[preserves(X, Y)]
     fn process() {
         A = 42;
     }
@@ -43,9 +42,10 @@ def test_function_with_attributes():
     program = parse(source)
     func = program.items[0]
 
-    assert len(func.attributes) == 2
-    assert func.attributes[0].name == 'mode'
-    assert func.attributes[1].name == 'preserves'
+    # Since #[mode] attribute was removed (mode is now inferred from parameter types),
+    # only the preserves attribute should be present
+    assert len(func.attributes) == 1
+    assert func.attributes[0].name == 'preserves'
 
     print("✓ Function with attributes test passed")
 
@@ -739,8 +739,7 @@ def test_complete_program():
     #[zeropage(0x20)]
     static mut COUNTER: u16 = 0;
 
-    #[mode(m8, x8)]
-    #[preserves(X, Y)]
+        #[preserves(X, Y)]
     fn increment() -> u16 {
         let value @ A = COUNTER;
         value = value + 1;

@@ -150,7 +150,6 @@ def assemble_and_link(assembly: str, workdir: Path) -> Path:
 # =============================================================================
 
 MINIMAL_PROGRAM = '''
-#[mode(m8, x8)]
 #[entry]
 fn main() -> ! {
     A = 42;
@@ -209,9 +208,9 @@ class TestEndToEnd:
 
             assert rom_file.exists(), "ROM file was not created"
 
-            # Verify ROM size (minimum 256KB for SNES ROMSIZE $08)
+            # Verify ROM size (512KB for SNES ROMSIZE $09)
             rom_size = rom_file.stat().st_size
-            assert rom_size == 262144, f"Expected 256KB ROM, got {rom_size} bytes"
+            assert rom_size == 524288, f"Expected 512KB ROM, got {rom_size} bytes"
 
 
 # =============================================================================
@@ -225,7 +224,6 @@ static mut COUNTER: u8 = 0;
 #[ram]
 static mut BUFFER: [u8; 16] = [0; 16];
 
-#[mode(m8, x8)]
 #[entry]
 fn main() -> ! {
     COUNTER = 42;
@@ -262,7 +260,7 @@ class TestProgramWithVariables:
             rom_file = assemble_and_link(assembly, workdir)
 
             assert rom_file.exists()
-            assert rom_file.stat().st_size == 262144  # 256KB minimum
+            assert rom_file.stat().st_size == 524288  # 512KB ROM
 
 
 # =============================================================================
@@ -273,17 +271,14 @@ PROGRAM_WITH_FUNCTIONS = '''
 #[zeropage(0x10)]
 static mut VALUE: u8 = 0;
 
-#[mode(m8, x8)]
 fn increment() {
     VALUE = VALUE + 1;
 }
 
-#[mode(m8, x8)]
 fn add_ten() {
     VALUE = VALUE + 10;
 }
 
-#[mode(m8, x8)]
 #[entry]
 fn main() -> ! {
     VALUE = 0;
@@ -324,7 +319,7 @@ class TestProgramWithFunctions:
             rom_file = assemble_and_link(assembly, workdir)
 
             assert rom_file.exists()
-            assert rom_file.stat().st_size == 262144  # 256KB minimum
+            assert rom_file.stat().st_size == 524288  # 512KB ROM
 
 
 # =============================================================================
@@ -338,7 +333,6 @@ static mut XPOS: u8 = 0;
 #[zeropage(0x11)]
 static mut YPOS: u8 = 0;
 
-#[mode(m8, x8)]
 fn process() {
     if XPOS > 10 {
         YPOS = 1;
@@ -351,7 +345,6 @@ fn process() {
     }
 }
 
-#[mode(m8, x8)]
 #[entry]
 fn main() -> ! {
     XPOS = 20;
@@ -385,7 +378,7 @@ class TestProgramWithControlFlow:
             rom_file = assemble_and_link(assembly, workdir)
 
             assert rom_file.exists()
-            assert rom_file.stat().st_size == 262144  # 256KB minimum
+            assert rom_file.stat().st_size == 524288  # 512KB ROM
 
 
 # =============================================================================

@@ -25,9 +25,9 @@ Standard Rust/C-style comments: `//` for line comments, `/* */` for block commen
 All 65816 processor registers are exposed as global variables:
 
 ```rust
-A: u8       // Accumulator (u16 in m16 mode)
-X: u8       // X index register (u16 in x16 mode)
-Y: u8       // Y index register (u16 in x16 mode)
+A: u8       // Accumulator (u16 when u16 @ A parameter)
+X: u16      // X index register (always 16-bit in R65)
+Y: u16      // Y index register (always 16-bit in R65)
 B: u8       // Accumulator high byte (m8 mode only)
 STATUS: u8  // Processor status flags (NVMXDIZC)
 D: u16      // Direct Page register
@@ -36,7 +36,7 @@ PBR: u8     // Program Bank Register (read-only)
 S: u16      // Stack Pointer
 ```
 
-**Rules**: All mutable except `PBR` (read-only). `A`, `X`, `Y` types change with processor mode. `B` only in `#[mode(m8)]`. Modifying `D`, `DBR`, `S` without restoration causes bugs.
+**Rules**: All mutable except `PBR` (read-only). `A` type depends on function parameter (u8 default, u16 if `@ A: u16`). `X` and `Y` are always u16 (x16 mode). `B` only available in m8 mode. Modifying `D`, `DBR`, `S` without restoration causes bugs.
 
 *(See [docs/b-register.md](docs/b-register.md) and [docs/status-flags.md](docs/status-flags.md) for details)*
 
@@ -170,20 +170,31 @@ static mut SCRATCH0: u8;
 
 *(See [docs/pointers-memory.md](docs/pointers-memory.md) for complete memory model and [docs/snes-rom-header.md](docs/snes-rom-header.md) for ROM header configuration)*
 
-### Processor Mode Annotations
+### Processor Mode (Automatic)
 
-Functions specify register sizes with `#[mode(...)]`:
+**Simplified mode system**: CPU mode is automatically inferred from parameter types.
 
 ```rust
-#[mode(m8, x8)]                           // 8-bit A and X/Y
-#[mode(m16, x16)]                         // 16-bit A and X/Y
-#[mode(m16, x16, transition=inline)]      // Callee saves/restores mode
-#[mode(m16, x16, transition=caller)]      // Caller manages mode (batching)
+fn process(value @ A: u8) { }    // m8 mode (8-bit A) - default
+fn process16(value @ A: u16) { } // m16 mode (16-bit A) - inferred from u16 @ A
+fn indexed(idx @ X: u16) { }     // X/Y always u16 (x16 mode)
 ```
 
-Default `transition=none` means programmer handles mode changes manually.
+**Rules**:
+- **Default mode**: m8 (8-bit A), x16 (16-bit X/Y)
+- **Function entry**: m16 if function has `@ A: u16` parameter, otherwise m8
+- **X/Y registers**: Always u16 - compiler error if `@ X: u8` or `@ Y: u8`
+- **Auto REP/SEP**: Compiler inserts mode switches around 16-bit A operations
 
-*(See [docs/mode-transition-analysis.md](docs/mode-transition-analysis.md) for mode tracking)*
+**`#[mode]` attribute**: Only for data bank management, not CPU mode:
+
+```rust
+#[mode(databank=inline)]  // Callee manages DBR (saves/restores)
+#[mode(databank=caller)]  // Caller manages DBR
+far fn graphics_code() { }
+```
+
+*(See [docs/mode-transition-analysis.md](docs/mode-transition-analysis.md) for details)*
 
 ### Register Aliasing and Preservation
 
@@ -219,10 +230,12 @@ Three parameter-passing mechanisms:
 | Stack | `param: u8` | 5-10 cycles |
 
 ```rust
-fn add(left @ A: u8, right @ X: u8) -> u8 { }     // Register
+fn add(left @ A: u8, right @ X: u16) -> u8 { }    // Register (X/Y must be u16)
 fn process(temp @ TEMP: u8) -> u8 { }              // Variable-bound
 fn calculate(a: u8, b: u8) -> u8 { }               // Stack (must come first)
 ```
+
+**Note**: X/Y register parameters must be u16 (always 16-bit in R65).
 
 **Returns**: Implicit A return, explicit `return X`, multiple `return (A, X)`, or via zero-page variables. All return paths must have identical signatures.
 
@@ -233,18 +246,23 @@ fn calculate(a: u8, b: u8) -> u8 { }               // Stack (must come first)
 ### Cross-Bank Function Calls
 
 ```rust
-fn local_function() { }           // JSR/RTS, bank 0
+fn local_function() { }              // JSR/RTS, bank 0
 
 #[bank(1)]
-far fn sound_engine() { }         // JSL/RTL, bank 1
+far fn sound_engine() { }            // JSL/RTL, bank 1
 
 #[mode(databank=inline)]
-far fn graphics_code() { }        // Callee manages DBR
+far fn graphics_code() { }           // Callee manages DBR (PHB/PLB)
 ```
 
 **Bank directive**: `#[bank(n)]` sets bank context, `#[bank(auto)]` for automatic placement. Immutable statics (ROM) inherit bank.
 
 **Call rules**: Near functions can only call near functions in same bank. Far functions callable from anywhere.
+
+**Data bank modes** (via `#[mode(databank=...)]`):
+- `none` (default): No DBR management
+- `inline`: Callee saves/restores DBR and sets it to function's bank
+- `caller`: Caller manages DBR (for batching multiple far calls)
 
 *(See [docs/calling-convention.md](docs/calling-convention.md) for cross-bank details)*
 
@@ -369,7 +387,7 @@ r65x init --platform snes my_project  # Create test project
 7. **Hybrid parameters**: Register, variable-bound, or stack with explicit syntax
 8. **Automatic preservation**: `#[preserves(...)]` generates save/restore
 9. **Implicit A return**: No explicit return = A returned
-10. **Flexible mode handling**: `transition=none/inline/caller`
+10. **Automatic mode inference**: X/Y always x16; A mode inferred from `@ A: u16` parameter
 
 ## Detailed Design Documents
 
@@ -399,5 +417,5 @@ r65x init --platform snes my_project  # Create test project
 - [65816 Programming Manual](http://archive.6502.org/datasheets/wdc_65816_programming_manual.pdf)
 - [Super Famicom Development Wiki](https://wiki.superfamicom.org/)
 
-*Last Updated: 2026-01-15*
+*Last Updated: 2026-01-19*
 *STATUS: Design Complete, Implementation In Progress*

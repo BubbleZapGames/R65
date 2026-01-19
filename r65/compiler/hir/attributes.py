@@ -24,24 +24,34 @@ class ProcessedAttribute:
     source_loc: Optional[SourceLocation] = None
 
 
-# Mode attribute
+# Mode attribute - simplified to only contain databank parameter
+# CPU mode (m8/m16, x8/x16) is now inferred from parameter types:
+# - Default: m8 (8-bit A), x16 (16-bit X/Y)
+# - Function entry: m16 if A parameter is u16, else m8
+# - X/Y always u16 (compiler error if u8 X/Y parameter)
+# - Auto REP/SEP inserted around 16-bit A operations
+
+
+# DEPRECATED: These enums are kept for backwards compatibility with existing code.
+# The #[mode(m8/m16, x8/x16, transition=...)] syntax is no longer supported.
+# CPU mode is now automatically inferred from parameter types.
 class MMode(Enum):
-    """Accumulator mode."""
+    """DEPRECATED: Accumulator mode (now inferred from parameter types)."""
     M8 = "m8"    # 8-bit accumulator
     M16 = "m16"  # 16-bit accumulator
 
 
 class XMode(Enum):
-    """Index register mode."""
-    X8 = "x8"    # 8-bit index
-    X16 = "x16"  # 16-bit index
+    """DEPRECATED: Index register mode (now always x16)."""
+    X8 = "x8"    # 8-bit index (no longer supported)
+    X16 = "x16"  # 16-bit index (always)
 
 
 class ModeTransition(Enum):
-    """Mode transition strategy."""
-    NONE = "none"        # No automatic transitions (default)
-    INLINE = "inline"    # Callee manages transition (PHP/REP/SEP/PLP inlined in function)
-    CALLER = "caller"    # Caller manages transition (batching)
+    """DEPRECATED: Mode transition strategy (now automatic)."""
+    NONE = "none"        # No automatic transitions
+    INLINE = "inline"    # Callee manages transition
+    CALLER = "caller"    # Caller manages transition
 
 
 class DataBankMode(Enum):
@@ -53,10 +63,12 @@ class DataBankMode(Enum):
 
 @dataclass
 class ModeAttribute(ProcessedAttribute):
-    """#[mode(m8/m16, x8/x16, transition=..., databank=...)]"""
-    m_mode: Optional[MMode] = None  # None if not specified
-    x_mode: Optional[XMode] = None  # None if not specified
-    transition: ModeTransition = field(default=ModeTransition.NONE)
+    """#[mode(databank=...)] - only databank parameter retained.
+
+    CPU mode (m8/m16, x8/x16) is now automatically inferred from:
+    - Parameter types: u16 @ A -> m16 entry, otherwise m8
+    - X/Y registers are always u16 (x16 mode)
+    """
     databank: DataBankMode = field(default=DataBankMode.NONE)
 
 
@@ -177,40 +189,39 @@ class AttributeProcessor:
         return processed
 
     def _process_mode(self, attr: ast.Attribute, context: str) -> ModeAttribute:
-        """Process #[mode(...)] attribute."""
+        """Process #[mode(...)] attribute.
+
+        The #[mode] attribute now only supports the databank parameter.
+        CPU mode (m8/m16, x8/x16) is automatically inferred from parameter types.
+        """
         if context not in ['function']:
             raise HIRError(f"#[mode] attribute only valid on functions")
 
-        m_mode = None
-        x_mode = None
-        transition = ModeTransition.NONE
         databank = DataBankMode.NONE
 
         for arg in attr.args:
             if arg.name is None:  # Positional argument
                 value_str = self._get_arg_identifier(arg.value)
 
-                if value_str == 'm8':
-                    m_mode = MMode.M8
-                elif value_str == 'm16':
-                    m_mode = MMode.M16
-                elif value_str == 'x8':
-                    x_mode = XMode.X8
-                elif value_str == 'x16':
-                    x_mode = XMode.X16
+                # Reject old m8/m16/x8/x16 positional arguments
+                if value_str in ('m8', 'm16', 'x8', 'x16'):
+                    raise HIRError(
+                        f"#[mode({value_str})] is no longer supported.\n"
+                        f"  CPU mode is now automatically inferred from parameter types:\n"
+                        f"  - u16 @ A parameter -> m16 entry mode\n"
+                        f"  - otherwise -> m8 entry mode (default)\n"
+                        f"  - X/Y registers are always u16 (x16 mode)\n"
+                        f"  Use #[mode(databank=...)] for data bank management only."
+                    )
                 else:
                     raise HIRError(f"Invalid mode value: {value_str}")
             elif arg.name == 'transition':
-                value_str = self._get_arg_identifier(arg.value)
-
-                if value_str == 'none':
-                    transition = ModeTransition.NONE
-                elif value_str == 'inline':
-                    transition = ModeTransition.INLINE
-                elif value_str == 'caller':
-                    transition = ModeTransition.CALLER
-                else:
-                    raise HIRError(f"Invalid transition value: {value_str}")
+                raise HIRError(
+                    f"#[mode(transition=...)] is no longer supported.\n"
+                    f"  Mode transitions are now handled automatically:\n"
+                    f"  - Compiler inserts REP/SEP around 16-bit A operations\n"
+                    f"  - Call sites switch to callee's entry mode as needed"
+                )
             elif arg.name == 'databank':
                 value_str = self._get_arg_identifier(arg.value)
 
@@ -227,9 +238,6 @@ class AttributeProcessor:
 
         return ModeAttribute(
             name='mode',
-            m_mode=m_mode,
-            x_mode=x_mode,
-            transition=transition,
             databank=databank
         )
 

@@ -68,8 +68,7 @@ class TestBitwiseOrCondition:
         #[zeropage(0x12)]
         static mut RESULT: u8;
 
-        #[mode(m8, x8)]
-        fn test() {
+                fn test() {
             if ((A_VAR | B_VAR) != 0) {
                 RESULT = 1;
             }
@@ -93,8 +92,7 @@ class TestBitwiseOrCondition:
         #[zeropage(0x12)]
         static mut RESULT: u8;
 
-        #[mode(m8, x8)]
-        fn test() {
+                fn test() {
             if (0 == (FLAGS | MASK)) {
                 RESULT = 1;
             }
@@ -116,8 +114,7 @@ class TestBitwiseOrCondition:
         #[zeropage(0x12)]
         static mut RESULT: u8;
 
-        #[mode(m8, x8)]
-        fn test() {
+                fn test() {
             if ((A_VAR | B_VAR) == 0) {
                 RESULT = 1;
             }
@@ -146,8 +143,7 @@ class TestBitwiseAndCondition:
         #[zeropage(0x12)]
         static mut RESULT: u8;
 
-        #[mode(m8, x8)]
-        fn test() {
+                fn test() {
             if ((FLAGS & 0x0F) != 0) {
                 RESULT = 1;
             }
@@ -167,8 +163,7 @@ class TestBitwiseAndCondition:
         #[zeropage(0x12)]
         static mut RESULT: u8;
 
-        #[mode(m8, x8)]
-        fn test() {
+                fn test() {
             if ((FLAGS & 0x80) != 0) {
                 RESULT = 1;
             }
@@ -188,8 +183,7 @@ class TestBitwiseAndCondition:
         #[zeropage(0x12)]
         static mut RESULT: u8;
 
-        #[mode(m8, x8)]
-        fn test() {
+                fn test() {
             if ((FLAGS & 0x40) != 0) {
                 RESULT = 1;
             }
@@ -215,8 +209,7 @@ class TestBitwiseXorCondition:
         #[zeropage(0x12)]
         static mut RESULT: u8;
 
-        #[mode(m8, x8)]
-        fn test() {
+                fn test() {
             if ((A_VAR ^ B_VAR) != 0) {
                 RESULT = 1;
             }
@@ -244,8 +237,7 @@ class TestChainedBitwiseCondition:
         #[zeropage(0x14)]
         static mut RESULT: u8;
 
-        #[mode(m8, x8)]
-        fn test() {
+                fn test() {
             if ((A_VAR | B_VAR | C_VAR) != 0) {
                 RESULT = 1;
             }
@@ -275,8 +267,7 @@ class TestNegatedBitwiseCondition:
         #[zeropage(0x12)]
         static mut RESULT: u8;
 
-        #[mode(m8, x8)]
-        fn test() {
+                fn test() {
             if ((A_VAR | B_VAR) == 0) {
                 RESULT = 1;
             }
@@ -307,8 +298,7 @@ class TestLogicalVsBitwiseCondition:
         #[zeropage(0x12)]
         static mut RESULT: u8;
 
-        #[mode(m8, x8)]
-        fn test() {
+                fn test() {
             if (A_VAR != 0 || B_VAR != 0) {
                 RESULT = 1;
             }
@@ -331,8 +321,7 @@ class TestLogicalVsBitwiseCondition:
         #[zeropage(0x12)]
         static mut RESULT: u8;
 
-        #[mode(m8, x8)]
-        fn test() {
+                fn test() {
             if (A_VAR != 0 && B_VAR != 0) {
                 RESULT = 1;
             }
@@ -359,8 +348,7 @@ class TestVolatileNotOptimized:
         #[zeropage(0x12)]
         static mut RESULT: u8;
 
-        #[mode(m8, x8)]
-        fn test() {
+                fn test() {
             if ((HVBJOY | JOYSER0) != 0) {
                 RESULT = 1;
             }
@@ -391,8 +379,7 @@ class TestBitwiseWithComparison:
         #[zeropage(0x12)]
         static mut RESULT: u8;
 
-        #[mode(m8, x8)]
-        fn test() {
+                fn test() {
             if ((FLAGS & 0x0F) > 5) {
                 RESULT = 1;
             }
@@ -425,8 +412,7 @@ class TestBitwiseConditionCodegen:
         #[zeropage(0x12)]
         static mut RESULT: u8;
 
-        #[mode(m8, x8)]
-        fn test_or() {
+                fn test_or() {
             if ((FLAGS | MASK) != 0) {
                 RESULT = 1;
             }
@@ -456,8 +442,7 @@ class TestBitwiseConditionCodegen:
         #[zeropage(0x12)]
         static mut RESULT: u8;
 
-        #[mode(m8, x8)]
-        fn test_and() {
+                fn test_and() {
             if ((FLAGS & 0x0F) != 0) {
                 RESULT = 2;
             }
@@ -489,8 +474,7 @@ class TestBitwiseConditionCodegen:
         #[zeropage(0x12)]
         static mut RESULT: u8;
 
-        #[mode(m8, x8)]
-        fn test_xor() {
+                fn test_xor() {
             if ((FLAGS ^ MASK) != 0) {
                 RESULT = 3;
             }
@@ -520,8 +504,7 @@ class TestBitwiseConditionCodegen:
         #[zeropage(0x12)]
         static mut RESULT: u8;
 
-        #[mode(m8, x8)]
-        fn test_bit7() {
+                fn test_bit7() {
             if ((FLAGS & 0x80) != 0) {
                 RESULT = 1;
             }

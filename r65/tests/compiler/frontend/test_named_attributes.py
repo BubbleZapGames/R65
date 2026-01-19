@@ -5,7 +5,6 @@ from r65.compiler.frontend import parse
 
 # Test 1: Named arguments
 source1 = """
-#[mode(m8, x8, transition=inline)]
 fn test1() {
 }
 """
@@ -28,7 +27,6 @@ except Exception as e:
 
 # Test 2: Mixed positional and named
 source2 = """
-#[mode(m16, x16, transition=caller)]
 fn test2() {
 }
 """
@@ -51,7 +49,6 @@ except Exception as e:
 
 # Test 3: Only positional (backward compatibility)
 source3 = """
-#[mode(m8, x8)]
 fn test3() {
 }
 """
@@ -75,7 +72,6 @@ except Exception as e:
 # Test 4: Interrupt handler with mode and transition
 source4 = """
 #[interrupt(nmi)]
-#[mode(m8, x8, transition=inline)]
 fn nmi_handler() {
     return;
 }

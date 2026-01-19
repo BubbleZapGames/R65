@@ -450,6 +450,9 @@ class HIRBuilder:
         # Detect STATUS flag return pattern for optimized branch generation at call sites
         returns_status_flag = self._detect_status_flag_return(hir_body)
 
+        # Infer entry mode from parameters and validate X/Y are u16
+        entry_m_mode = self._infer_entry_mode_and_validate(hir_params, func.name, func.source_loc)
+
         return hir.HIRFunctionDecl(
             name=func.name,
             is_far=func.is_far,
@@ -463,6 +466,7 @@ class HIRBuilder:
             is_entry=is_entry,
             symbol=func_symbol,
             returns_status_flag=returns_status_flag,
+            entry_m_mode=entry_m_mode,
             source_loc=func.source_loc  # Propagate source location from AST
         )
 
@@ -496,6 +500,51 @@ class HIRBuilder:
             return return_value.flag_name
 
         return None
+
+    def _infer_entry_mode_and_validate(self, params: List[hir.HIRParameter], func_name: str, source_loc) -> 'ModeState':
+        """
+        Infer entry mode from function parameters and validate X/Y are u16.
+
+        Rules:
+        - If any parameter is bound to A with type u16/i16 -> m16 entry
+        - Otherwise -> m8 entry (default)
+        - X/Y parameters must be u16/i16 (compiler error if u8/i8)
+
+        Args:
+            params: List of HIR function parameters
+            func_name: Function name for error messages
+            source_loc: Source location for error messages
+
+        Returns:
+            ModeState for function entry (M8 or M16)
+        """
+        from r65.compiler.typeck.processor_mode import ModeState
+
+        entry_mode = ModeState.M8  # Default
+
+        for param in params:
+            if isinstance(param.binding, hir.RegisterBinding):
+                reg_name = param.binding.register_name
+
+                if reg_name == "A":
+                    # Check if A parameter is 16-bit
+                    if param.param_type and isinstance(param.param_type, BasicTypeInfo):
+                        if param.param_type.name in ('u16', 'i16'):
+                            entry_mode = ModeState.M16
+
+                elif reg_name in ("X", "Y"):
+                    # Validate X/Y parameters are 16-bit
+                    if param.param_type and isinstance(param.param_type, BasicTypeInfo):
+                        if param.param_type.name in ('u8', 'i8'):
+                            raise HIRError(
+                                f"Function '{func_name}': Parameter '{param.name}' bound to {reg_name} "
+                                f"has type {param.param_type.name}, but X/Y registers are always 16-bit (u16).\n"
+                                f"  In R65, index registers X and Y are always 16-bit.\n"
+                                f"  Change the parameter type to u16: {param.name} @ {reg_name}: u16",
+                                source_loc=source_loc
+                            )
+
+        return entry_mode
 
     def _build_parameter(self, param: ast.Parameter) -> hir.HIRParameter:
         """Build HIR parameter from AST."""
@@ -942,6 +991,9 @@ class HIRBuilder:
         # Detect STATUS flag return pattern
         returns_status_flag = self._detect_status_flag_return(hir_body)
 
+        # Infer entry mode from parameters and validate X/Y are u16
+        entry_m_mode = self._infer_entry_mode_and_validate(hir_params, mangled_name, method.source_loc)
+
         return hir.HIRFunctionDecl(
             name=mangled_name,
             is_far=method.is_far,
@@ -955,6 +1007,7 @@ class HIRBuilder:
             is_entry=is_entry,
             symbol=method_symbol,
             returns_status_flag=returns_status_flag,
+            entry_m_mode=entry_m_mode,
             source_loc=method.source_loc
         )
 

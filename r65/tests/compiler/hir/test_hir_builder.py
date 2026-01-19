@@ -308,44 +308,49 @@ enum State { Idle, Running }
             assert symbol.kind == SymbolKind.REGISTER
 
 
-class TestModeAttributes:
-    """Test processor mode attribute processing."""
+class TestModeInference:
+    """Test processor mode inference from parameter types.
 
-    def test_mode_m8_x8(self):
-        """Test #[mode(m8, x8)] attribute."""
+    In the simplified mode system:
+    - X/Y are always 16-bit (x16)
+    - A mode is inferred from parameter types:
+      - u16 @ A parameter -> m16 entry mode
+      - otherwise -> m8 entry mode (default)
+    """
+
+    def test_default_m8_mode(self):
+        """Test that functions without u16 @ A use m8 mode."""
         source = """
-#[mode(m8, x8)]
 fn process() {
 }
 """
         hir = build_hir(source)
         func = hir.declarations[0]
-        assert func.mode_attr is not None
-        assert func.mode_attr.m_mode == MMode.M8
-        assert func.mode_attr.x_mode == XMode.X8
+        # entry_m_mode is inferred from parameters
+        from r65.compiler.typeck.processor_mode import ModeState
+        assert func.entry_m_mode == ModeState.M8
 
-    def test_mode_m16_x16(self):
-        """Test #[mode(m16, x16)] attribute."""
+    def test_m16_mode_from_u16_a_param(self):
+        """Test that u16 @ A parameter infers m16 mode."""
         source = """
-#[mode(m16, x16)]
-fn wide_mode() {
+fn wide_mode(value @ A: u16) {
 }
 """
         hir = build_hir(source)
         func = hir.declarations[0]
-        assert func.mode_attr.m_mode == MMode.M16
-        assert func.mode_attr.x_mode == XMode.X16
+        from r65.compiler.typeck.processor_mode import ModeState
+        assert func.entry_m_mode == ModeState.M16
 
-    def test_mode_with_transition(self):
-        """Test mode with transition attribute."""
+    def test_m8_mode_with_u8_a_param(self):
+        """Test that u8 @ A parameter uses m8 mode."""
         source = """
-#[mode(m8, x8, transition=inline)]
-fn safe_func() {
+fn narrow_mode(value @ A: u8) {
 }
 """
         hir = build_hir(source)
         func = hir.declarations[0]
-        assert func.mode_attr.transition == ModeTransition.INLINE
+        from r65.compiler.typeck.processor_mode import ModeState
+        assert func.entry_m_mode == ModeState.M8
 
 
 class TestPreservesAttribute:
@@ -455,7 +460,6 @@ class TestStatementBuilding:
     def test_let_statement(self):
         """Test let statement building."""
         source = """
-#[mode(m8, x8)]
 fn test() {
     let x: u8 = 10;
 }
@@ -470,7 +474,6 @@ fn test() {
     def test_let_mut_statement(self):
         """Test let mut statement."""
         source = """
-#[mode(m8, x8)]
 fn test() {
     let mut count: u8 = 0;
 }
@@ -483,7 +486,6 @@ fn test() {
     def test_if_statement(self):
         """Test if statement building."""
         source = """
-#[mode(m8, x8)]
 fn test() {
     if A == 0 {
         X = 1;
@@ -500,7 +502,6 @@ fn test() {
     def test_if_else_statement(self):
         """Test if-else statement."""
         source = """
-#[mode(m8, x8)]
 fn test() {
     if A == 0 {
         X = 1;
@@ -517,7 +518,6 @@ fn test() {
     def test_while_statement(self):
         """Test while statement building."""
         source = """
-#[mode(m8, x8)]
 fn test() {
     while A != 0 {
         A = A - 1;
@@ -532,7 +532,6 @@ fn test() {
     def test_return_statement(self):
         """Test return statement."""
         source = """
-#[mode(m8, x8)]
 fn get_value() -> u8 {
     return A;
 }
@@ -552,7 +551,6 @@ class TestNameResolution:
 #[ram]
 static mut COUNT: u8 = 0;
 
-#[mode(m8, x8)]
 fn increment() {
     COUNT = COUNT + 1;
 }
@@ -565,7 +563,6 @@ fn increment() {
         source = """
 const MAX: u8 = 100;
 
-#[mode(m8, x8)]
 fn check() {
     if A == MAX {
         X = 1;
@@ -578,7 +575,6 @@ fn check() {
     def test_undefined_identifier_error(self):
         """Test error on undefined identifier."""
         source = """
-#[mode(m8, x8)]
 fn test() {
     A = UNDEFINED;
 }
@@ -618,7 +614,6 @@ class TestLabeledLoops:
     def test_labeled_loop_hir(self):
         """Test labeled loop produces HIR with label."""
         source = """
-#[mode(m8, x8)]
 fn test() {
     'outer: loop {
         break;
@@ -635,7 +630,6 @@ fn test() {
     def test_labeled_while_hir(self):
         """Test labeled while produces HIR with label."""
         source = """
-#[mode(m8, x8)]
 fn test() {
     'inner: while A < 10 {
         A = A + 1;
@@ -652,7 +646,6 @@ fn test() {
     def test_labeled_break_hir(self):
         """Test labeled break has correct label in HIR."""
         source = """
-#[mode(m8, x8)]
 fn test() {
     'outer: loop {
         break 'outer;
@@ -670,7 +663,6 @@ fn test() {
     def test_labeled_continue_hir(self):
         """Test labeled continue has correct label in HIR."""
         source = """
-#[mode(m8, x8)]
 fn test() {
     'outer: while A < 10 {
         continue 'outer;
@@ -688,7 +680,6 @@ fn test() {
     def test_nested_labeled_loops(self):
         """Test nested labeled loops."""
         source = """
-#[mode(m8, x8)]
 fn test() {
     'outer: loop {
         'inner: while A < 10 {
@@ -714,7 +705,6 @@ class TestForLoopDesugaring:
     def test_basic_for_loop(self):
         """Test basic for loop desugars to while loop."""
         source = """
-#[mode(m8, x8)]
 fn test() {
     for i in 0..10 {
         A = A + 1;
@@ -737,7 +727,6 @@ fn test() {
     def test_for_loop_variable_scope(self):
         """Test for loop variable is in loop scope."""
         source = """
-#[mode(m8, x8)]
 fn test() {
     for x in 0..5 {
         A = x;
@@ -758,7 +747,6 @@ fn test() {
 const START: u8 = 5;
 const END: u8 = 15;
 
-#[mode(m8, x8)]
 fn test() {
     for i in START..END {
         A = i;
@@ -777,7 +765,6 @@ fn test() {
     def test_for_loop_body_contains_increment(self):
         """Test for loop body ends with increment statement."""
         source = """
-#[mode(m8, x8)]
 fn test() {
     for i in 0..3 {
         X = i;
@@ -797,7 +784,6 @@ fn test() {
     def test_for_loop_condition_is_less_than(self):
         """Test for loop condition uses < operator."""
         source = """
-#[mode(m8, x8)]
 fn test() {
     for i in 0..10 {
         A = i;
@@ -815,7 +801,6 @@ fn test() {
     def test_nested_for_loops(self):
         """Test nested for loops."""
         source = """
-#[mode(m8, x8)]
 fn test() {
     for i in 0..3 {
         for j in 0..3 {
