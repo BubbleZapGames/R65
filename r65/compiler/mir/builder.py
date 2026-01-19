@@ -371,8 +371,8 @@ class MIRBuilder:
             self.emit(Push(register=HardwareRegister('D')))       # PHD
             self.emit(Push(register=HardwareRegister('DBR')))     # PHB
 
-            # If handler has mode attribute, set the mode (transition=auto)
-            # Interrupts can fire from any mode, so we force the handler's mode
+            # Set the handler's mode (interrupts can fire from any mode)
+            # Force the handler's inferred mode using SEP/REP
             if hir_func.mode_attr and self.current_mode.is_fully_known():
                 # Generate SEP/REP to force handler's mode
                 # We don't know the incoming mode, so we just set all bits explicitly

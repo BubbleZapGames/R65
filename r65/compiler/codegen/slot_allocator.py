@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from r65.compiler.mir.nodes import VirtualRegister, MIRFunction
 from r65.compiler.mir.liveness import LivenessAnalyzer
 from r65.compiler.hir.unified_type_utils import get_unified_type_size
+from r65.compiler.hir import HIRError
 
 
 @dataclass
@@ -117,7 +118,7 @@ class StackSlotAllocator:
         """
         try:
             return get_unified_type_size(vreg.type_info)
-        except Exception:
+        except (HIRError, AttributeError, TypeError):
             # Default to 1 byte if type info is missing or invalid
             return 1
 

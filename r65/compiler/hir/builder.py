@@ -1401,7 +1401,7 @@ class HIRBuilder:
                         const_value = self.const_evaluator.eval(expr)
                         if isinstance(const_value, str):
                             return hir.HIRStringLiteral(value=const_value, source_loc=src_loc)
-                    except Exception:
+                    except HIRError:
                         # If constant evaluation fails, fall back to normal processing
                         pass
 
@@ -1486,7 +1486,7 @@ class HIRBuilder:
                             const_value = self.const_evaluator.eval(expr)
                             if isinstance(const_value, int):
                                 return hir.HIRIntegerLiteral(value=const_value, source_loc=src_loc)
-                        except Exception:
+                        except HIRError:
                             # If const evaluation fails, fall back to runtime call
                             pass
 

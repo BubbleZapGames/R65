@@ -10,7 +10,8 @@ from r65.compiler.hir import (
     HIRFunctionCall, HIRMethodCall, HIRFunctionAddress, HIRFunctionDecl,
     HIRIdentifier, HIRArrayIndex, HIRIntegerLiteral, HIRFieldAccess,
     HIRAddressOf,
-    SymbolKind, BasicTypeInfo, StructTypeInfo, NeverTypeInfo
+    SymbolKind, BasicTypeInfo, StructTypeInfo, NeverTypeInfo,
+    HIRError,
 )
 from r65.compiler.hir.types import TypeInfo, FunctionTypeInfo, ArrayTypeInfo, PointerTypeInfo
 from r65.compiler.typeck.errors import TypeCheckError
@@ -506,7 +507,7 @@ class CallValidator:
                     expr.evaluated_size = size
                     expr.expr_type = BasicTypeInfo('u8') if size <= 255 else BasicTypeInfo('u16')
                     return expr.expr_type
-                except Exception:
+                except HIRError:
                     raise TypeCheckError(
                         f"Cannot determine size of struct '{type_name}'",
                         source_loc=expr.source_loc
@@ -538,7 +539,7 @@ class CallValidator:
                 expr.evaluated_size = array_size
                 expr.expr_type = BasicTypeInfo('u8') if array_size <= 255 else BasicTypeInfo('u16')
                 return expr.expr_type
-            except Exception:
+            except HIRError:
                 raise TypeCheckError(
                     "Cannot determine size of array type",
                     source_loc=arg.source_loc

@@ -14,7 +14,7 @@ from r65.compiler.hir import (
 from r65.compiler.hir.types import TupleTypeInfo
 from r65.compiler.mir.nodes import (
     VirtualRegister, HardwareRegister, Immediate, MemoryLocation,
-    Move, Store, StoreIndirect, BinaryOp, StatusFlagSet,
+    Move, Store, StoreIndirect, BinaryOp, StatusFlagSet, Push, Pull,
 )
 from r65.compiler.mir.lowerers.multiply import compute_array_field_offset
 from r65.compiler.errors import MIRLoweringError
@@ -594,11 +594,72 @@ class AssignmentLowerer:
             else:
                 raise MIRLoweringError(f"Unsupported multi-assignment target: {type(target)}")
 
-        # Emit register-to-register moves
-        # TODO: Handle cycles in assignments (e.g., (X, A) = func() where func returns in A, X)
-        # For now, emit moves in order - may need temp register for swaps
-        for target_reg, source_reg, elem_type in assignments:
-            self.emit(Move(dest=target_reg, source=source_reg, type_info=elem_type))
+        # Emit register-to-register moves with cycle detection
+        # Handle cycles (e.g., (X, A) = func() where func returns in A, X) using temp register
+        self._emit_moves_with_cycle_handling(assignments)
 
         # Return the first element's register
         return HardwareRegister(return_registers[0])
+
+    def _emit_moves_with_cycle_handling(self, assignments: list):
+        """
+        Emit register moves handling potential cycles.
+
+        When assignments form a cycle (e.g., A->X, X->A), we need to use
+        a temporary register to break the cycle.
+
+        Args:
+            assignments: List of (target_reg, source_reg, elem_type) tuples
+        """
+        if not assignments:
+            return
+
+        # Build sets of targets and sources
+        targets = {a[0].name for a in assignments}
+        sources = {a[1].name for a in assignments}
+
+        # Check for cycles: a cycle exists if any target is also a source
+        # in a different assignment
+        has_cycle = False
+        for target, source, _ in assignments:
+            # Check if this target is used as a source in another assignment
+            for other_target, other_source, _ in assignments:
+                if target.name == other_source.name and source.name == other_target.name:
+                    has_cycle = True
+                    break
+            if has_cycle:
+                break
+
+        if not has_cycle:
+            # No cycle - emit moves in order
+            for target_reg, source_reg, elem_type in assignments:
+                self.emit(Move(dest=target_reg, source=source_reg, type_info=elem_type))
+        else:
+            # Cycle detected - need to use a temporary
+            # Find a register not involved in the assignments to use as temp
+            all_regs = {'A', 'X', 'Y'}
+            involved_regs = targets | sources
+            available_temps = all_regs - involved_regs
+
+            if available_temps:
+                # Use an available register as temp
+                temp_reg = HardwareRegister(next(iter(available_temps)))
+                # For a simple 2-way swap (A<->X):
+                # 1. temp = A
+                # 2. A = X
+                # 3. X = temp
+                first_target, first_source, first_type = assignments[0]
+                self.emit(Move(dest=temp_reg, source=first_source, type_info=first_type))
+                # Emit other moves
+                for target_reg, source_reg, elem_type in assignments[1:]:
+                    self.emit(Move(dest=target_reg, source=source_reg, type_info=elem_type))
+                # Complete the swap
+                self.emit(Move(dest=first_target, source=temp_reg, type_info=first_type))
+            else:
+                # All registers involved - use stack as temp
+                # This is rare (all 3 registers in a cycle)
+                first_target, first_source, first_type = assignments[0]
+                self.emit(Push(register=first_source))
+                for target_reg, source_reg, elem_type in assignments[1:]:
+                    self.emit(Move(dest=target_reg, source=source_reg, type_info=elem_type))
+                self.emit(Pull(register=first_target))

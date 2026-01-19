@@ -17,7 +17,8 @@ from r65.compiler.hir import (
     HIRStaticDecl, HIRConstDecl, HIRTypeAlias,
     HIRMatchExpression, HIRPattern, HIRLiteralPattern, HIREnumPattern, HIRWildcardPattern, HIRIdentifierPattern, HIROrPattern,
     BasicTypeInfo, TypeInfo, SymbolKind, NeverTypeInfo, TupleTypeInfo,
-    RegisterLetBinding, ArrayTypeInfo, StructTypeInfo, EnumTypeInfo
+    RegisterLetBinding, ArrayTypeInfo, StructTypeInfo, EnumTypeInfo,
+    HIRError,
 )
 from r65.compiler.hir.types import FunctionTypeInfo, PointerTypeInfo, SliceTypeInfo
 from r65.compiler.typeck.processor_mode import ProcessorMode, ModeState, XModeState
@@ -804,13 +805,13 @@ class TypeChecker:
                         raise TypeCheckError(
                             f"B register only available in m8 mode",
                             source_loc=expr.source_loc,
-                            hint="add #[mode(m8, ...)] attribute to the function"
+                            hint="B is accessible when the function has no u16 @ A parameter (m8 mode)"
                         )
                 else:
                     raise TypeCheckError(
                         f"cannot determine type of register {expr.name} in unknown mode",
                         source_loc=expr.source_loc,
-                        hint="add #[mode(m8/m16, x8/x16)] attribute to specify register sizes"
+                        hint="mode is inferred from parameter types: u16 @ A means m16, otherwise m8"
                     )
 
             expr.expr_type = reg_type
@@ -1101,7 +1102,7 @@ class TypeChecker:
                                 source_loc=expr.index.source_loc,
                                 hint=f"valid indices are 0 to {array_size - 1}"
                             )
-                    except Exception:
+                    except HIRError:
                         # If const evaluation fails, skip bounds checking
                         pass
                 expr.expr_type = pointee.element_type
