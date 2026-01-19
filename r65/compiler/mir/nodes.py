@@ -274,13 +274,19 @@ class Move(MIRInstruction):
     Move between registers or load immediate.
 
     dest = source
+
+    persist_16bit_mode: If True and dest is A with u16 type, keep A in m16 mode
+    after the move (don't emit trailing SEP #$20). Used for `let x @ A : u16 = expr;`
+    where the binding should keep A in 16-bit mode for its scope.
     """
     dest: Union[VirtualRegister, HardwareRegister]
     source: Union[VirtualRegister, HardwareRegister, Immediate]
     type_info: Any  # TypeInfo for size
+    persist_16bit_mode: bool = False  # Keep m16 mode after 16-bit load to A
 
     def __repr__(self):
-        return f"{self.dest} = Move {self.source} : {self.type_info}"
+        persist = " [persist_m16]" if self.persist_16bit_mode else ""
+        return f"{self.dest} = Move {self.source} : {self.type_info}{persist}"
 
 
 @dataclass

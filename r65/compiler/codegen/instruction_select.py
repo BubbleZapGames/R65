@@ -1264,7 +1264,8 @@ class InstructionSelector:
             if dest_reg != 'A':
                 self._emit_register_transfer('A', dest_reg)
 
-    def _emit_load_immediate_to_register(self, reg: str, value: int, is_u16: bool):
+    def _emit_load_immediate_to_register(self, reg: str, value: int, is_u16: bool,
+                                          persist_16bit_mode: bool = False):
         """
         Emit load immediate into hardware register.
 
@@ -1275,6 +1276,8 @@ class InstructionSelector:
             reg: Register name ('A', 'X', 'Y')
             value: Immediate value
             is_u16: Whether to use 16-bit format
+            persist_16bit_mode: If True, keep A in m16 mode after load (no trailing SEP).
+                               Used for `let x @ A : u16 = expr;` register bindings.
         """
         load_opcode = LOAD_IMMEDIATE_OPCODES[reg]
 
@@ -1287,9 +1290,11 @@ class InstructionSelector:
             self.emitter.emit_accu_mode(16)
             # Load full 16-bit value
             self._emit_immediate(load_opcode, value & 0xFFFF)
-            # Switch back to 8-bit A mode
-            self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "8-bit A")
-            self.emitter.emit_accu_mode(8)
+            # Switch back to 8-bit A mode UNLESS persist_16bit_mode is set
+            if not persist_16bit_mode:
+                self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "8-bit A")
+                self.emitter.emit_accu_mode(8)
+            # If persist_16bit_mode, stay in m16 mode for register binding scope
         else:
             self._emit_immediate(load_opcode, value)
 

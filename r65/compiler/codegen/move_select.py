@@ -75,19 +75,21 @@ class MoveOperationSelector(BaseSelector):
 
     def _move_to_hardware_register(self, instr: Move, dest_loc, src_operand, is_u16: bool):
         """Handle moving data to a hardware register."""
+        persist_mode = getattr(instr, 'persist_16bit_mode', False)
         if isinstance(src_operand, MIRImmediate):
-            self._load_immediate_to_hw_register(dest_loc.hw_register, src_operand.value, is_u16)
+            self._load_immediate_to_hw_register(dest_loc.hw_register, src_operand.value, is_u16, persist_mode)
         else:
             src_loc = self.parent._get_operand_location(src_operand)
             if src_loc.kind == LocationKind.HARDWARE:
                 self.parent._emit_register_transfer(src_loc.hw_register, dest_loc.hw_register)
             else:
-                self._load_memory_to_hw_register(dest_loc.hw_register, src_loc)
+                self._load_memory_to_hw_register(dest_loc.hw_register, src_loc, persist_mode)
 
-    def _load_immediate_to_hw_register(self, hw_register: str, value: int, is_u16: bool):
+    def _load_immediate_to_hw_register(self, hw_register: str, value: int, is_u16: bool,
+                                        persist_16bit_mode: bool = False):
         """Load an immediate value into a hardware register."""
         if hw_register in ['A', 'X', 'Y']:
-            self.parent._emit_load_immediate_to_register(hw_register, value, is_u16)
+            self.parent._emit_load_immediate_to_register(hw_register, value, is_u16, persist_16bit_mode)
         elif hw_register == 'B':
             value_masked = value & 0xFF
             self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(value_masked))
@@ -110,8 +112,14 @@ class MoveOperationSelector(BaseSelector):
         else:
             raise InstructionSelectionError(f"Cannot load immediate into register {hw_register}")
 
-    def _load_memory_to_hw_register(self, hw_register: str, src_loc):
-        """Load from memory into a hardware register."""
+    def _load_memory_to_hw_register(self, hw_register: str, src_loc, persist_16bit_mode: bool = False):
+        """Load from memory into a hardware register.
+
+        Args:
+            hw_register: Target register ('A', 'X', 'Y', 'B')
+            src_loc: Source memory location
+            persist_16bit_mode: If True and loading to A, stay in m16 mode after load
+        """
         # Handle stack-relative addressing: LDX/LDY don't support sr,S mode
         # Must go through A with transfer
         if hw_register in ('X', 'Y') and src_loc.kind == LocationKind.STACK:

@@ -637,15 +637,38 @@ class TypeChecker:
         mode = self._get_mode_at(stmt)
 
         # Determine variable type
+        # Track if we inferred type from initializer (skip re-checking in that case)
+        inferred_from_initializer = False
+
         if stmt.var_type:
             # Explicit type provided
             var_type = stmt.var_type
         elif isinstance(stmt.binding, RegisterLetBinding):
-            # Infer from register type
-            var_type = TypeInference.infer_register_alias_type(
-                stmt.binding.register_name,
-                mode
-            )
+            # For register bindings without explicit type:
+            # 1. If there's an initializer, infer type from it
+            # 2. Otherwise, infer from processor mode
+            if stmt.initializer:
+                # Infer type from initializer expression first
+                init_type = self.check_expression(stmt.initializer, context_type=None)
+                # Handle tuple: use first element type
+                if isinstance(init_type, TupleTypeInfo):
+                    init_type = init_type.element_types[0]
+                # Validate the initializer type is valid for register A (u8/i8/u16/i16)
+                if isinstance(init_type, BasicTypeInfo) and init_type.name in ('u8', 'i8', 'u16', 'i16'):
+                    var_type = init_type
+                    inferred_from_initializer = True  # Already type-checked
+                else:
+                    # Fall back to mode-based type
+                    var_type = TypeInference.infer_register_alias_type(
+                        stmt.binding.register_name,
+                        mode
+                    )
+            else:
+                # No initializer, infer from register type based on mode
+                var_type = TypeInference.infer_register_alias_type(
+                    stmt.binding.register_name,
+                    mode
+                )
             if var_type is None:
                 raise TypeCheckError(
                     f"Cannot determine type of register {stmt.binding.register_name} in unknown mode",
@@ -663,8 +686,8 @@ class TypeChecker:
         if stmt.symbol:
             stmt.symbol.var_type = var_type
 
-        # Check initializer type matches
-        if stmt.initializer:
+        # Check initializer type matches (skip if already checked during type inference)
+        if stmt.initializer and not inferred_from_initializer:
             init_type = self.check_expression(stmt.initializer, var_type)
             # Handle tuple-to-scalar: let x: u8 = tuple_func() drops extra return values
             if isinstance(init_type, TupleTypeInfo) and not isinstance(var_type, TupleTypeInfo):

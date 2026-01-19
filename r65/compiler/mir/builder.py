@@ -489,11 +489,20 @@ class MIRBuilder:
             if stmt.initializer:
                 init_value = self.lower_expression(stmt.initializer)
                 if not (isinstance(init_value, HardwareRegister) and init_value.name == hw_reg.name):
+                    # Check if this is a u16 @ A binding that should keep m16 mode
+                    persist_mode = False
+                    if (stmt.binding.register_name == "A" and
+                        stmt.var_type and
+                        hasattr(stmt.var_type, 'name') and
+                        stmt.var_type.name in ('u16', 'i16')):
+                        persist_mode = True
+
                     # Move to hardware register if not already there
                     self.emit(Move(
                         dest=hw_reg,
                         source=init_value,
-                        type_info=stmt.var_type
+                        type_info=stmt.var_type,
+                        persist_16bit_mode=persist_mode
                     ))
 
         else:

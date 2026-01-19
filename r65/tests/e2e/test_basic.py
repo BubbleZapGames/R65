@@ -317,13 +317,11 @@ class TestArrayOperations:
 
         assert result.success, f"Failures: {result.failures}"
 
-    @pytest.mark.xfail(reason="TODO: u16 register bindings should keep A in m16 mode")
     def test_array_len_large_explicit_u16(self, e2e):
         """Test len() with explicit u16 let binding preserves full 16-bit value.
 
-        TODO: Currently, auto mode switching always returns to m8 after 16-bit ops.
-        For `let x @ A : u16 = expr;`, the compiler should keep A in m16 mode
-        since the binding type is u16.
+        With `let x @ A : u16 = expr;`, the compiler keeps A in m16 mode
+        since the binding type is u16 (persist_16bit_mode flag on Move instruction).
         """
         result = e2e.run('''
             #[ram]
@@ -337,12 +335,11 @@ class TestArrayOperations:
 
         assert result.success, f"Failures: {result.failures}"
 
-    @pytest.mark.xfail(reason="TODO: type inference for register bindings from len()")
     def test_array_len_large_implicit_u16(self, e2e):
         """Test len() with implicit u16 let binding preserves full 16-bit value.
 
-        TODO: Type inference should infer u16 from DATA.len() return type,
-        and the register binding should keep A in m16 mode.
+        Type inference infers u16 from DATA.len() return type,
+        and the register binding keeps A in m16 mode (persist_16bit_mode).
         """
         result = e2e.run('''
             #[ram]
