@@ -331,24 +331,19 @@ class MIRBuilder:
             self.emit(InlineAsm(instructions=["XCE"]))      # Enter native mode
 
             # After XCE, CPU is in native mode with M=1, X=1 (8-bit mode)
-            # Set up the function's declared mode using SEP/REP
+            # Set up the default mode: m8 (8-bit A), x16 (16-bit X/Y)
+            # X/Y are ALWAYS 16-bit in R65, so we always emit REP #$10
+            # A is 8-bit by default (m8), which is already set after XCE
+            rep_mask = 0x10  # Clear X flag for 16-bit index mode
+
+            # If function has mode attribute with m16, also clear M flag
             if hir_func.mode_attr and self.current_mode.is_fully_known():
                 entry_mode = self.current_mode
-                sep_mask = 0
-                rep_mask = 0
+                if entry_mode.m_mode == ModeState.M16:
+                    rep_mask |= 0x20  # Clear M flag for 16-bit accumulator
 
-                if entry_mode.m_mode == ModeState.M8:
-                    sep_mask |= 0x20
-                elif entry_mode.m_mode == ModeState.M16:
-                    rep_mask |= 0x20
-
-                # X is always x16 in the new design
-                rep_mask |= 0x10
-
-                if sep_mask:
-                    self.emit(SetMode(mask=sep_mask, is_set=True))
-                if rep_mask:
-                    self.emit(SetMode(mask=rep_mask, is_set=False))
+            # Emit REP to set up x16 mode (always) and m16 mode (if requested)
+            self.emit(SetMode(mask=rep_mask, is_set=False))
 
             if self.has_init_start:
                 # Emit call to __init_start()
