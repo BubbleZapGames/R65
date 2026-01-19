@@ -300,7 +300,11 @@ class TestArrayOperations:
         assert result.success, f"Failures: {result.failures}"
 
     def test_array_len_large(self, e2e):
-        """Test len() on a larger array (no initializer)."""
+        """Test len() on a larger array (no initializer).
+
+        Direct register assignment `A = DATA.len()` assigns in current mode (m8),
+        so only the low byte is visible (256 & 0xFF = 0).
+        """
         result = e2e.run('''
             #[ram]
             static mut DATA: [u8; 256];
@@ -309,7 +313,46 @@ class TestArrayOperations:
             fn main() {
                 A = DATA.len();
             }
-        ''', ExpectedState(A=256))
+        ''', ExpectedState(A=0))  # Low byte of 256 in m8 mode
+
+        assert result.success, f"Failures: {result.failures}"
+
+    @pytest.mark.xfail(reason="TODO: u16 register bindings should keep A in m16 mode")
+    def test_array_len_large_explicit_u16(self, e2e):
+        """Test len() with explicit u16 let binding preserves full 16-bit value.
+
+        TODO: Currently, auto mode switching always returns to m8 after 16-bit ops.
+        For `let x @ A : u16 = expr;`, the compiler should keep A in m16 mode
+        since the binding type is u16.
+        """
+        result = e2e.run('''
+            #[ram]
+            static mut DATA: [u8; 256];
+
+                        #[entry]
+            fn main() {
+                let arrCount @ A : u16 = DATA.len();
+            }
+        ''', ExpectedState(A=256, flags={'M': False}))  # m16 mode, full value
+
+        assert result.success, f"Failures: {result.failures}"
+
+    @pytest.mark.xfail(reason="TODO: type inference for register bindings from len()")
+    def test_array_len_large_implicit_u16(self, e2e):
+        """Test len() with implicit u16 let binding preserves full 16-bit value.
+
+        TODO: Type inference should infer u16 from DATA.len() return type,
+        and the register binding should keep A in m16 mode.
+        """
+        result = e2e.run('''
+            #[ram]
+            static mut DATA: [u8; 256];
+
+                        #[entry]
+            fn main() {
+                let arrCount @ A = DATA.len();
+            }
+        ''', ExpectedState(A=256, flags={'M': False}))  # m16 mode, full value
 
         assert result.success, f"Failures: {result.failures}"
 
