@@ -348,6 +348,11 @@ class PeepholeOptimizer:
             if next_node.opcode in CONTROL_FLOW_OPCODES:
                 return False
 
+            # Mode change = stop analysis (16-bit mode can read adjacent bytes)
+            # REP/SEP change how many bytes are accessed by subsequent instructions
+            if next_node.opcode in (Opcode.REP_IMMEDIATE, Opcode.SEP_IMMEDIATE):
+                return False
+
             # Indirect addressing = conservative, might read from any address
             # We can't track what address is being accessed through the pointer
             if next_node.opcode in INDIRECT_ADDRESSING_OPCODES:

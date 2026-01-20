@@ -266,6 +266,9 @@ class AssemblyEmitter:
         """
         self.source_file = source_file or "unknown.r65"
         self.nodes: List[AsmNode] = []
+        # Track current processor modes for optimization
+        self._current_accu_mode = 8  # Default m8 mode
+        self._current_index_mode = 16  # Default x16 mode
 
     # ========================================================================
     # Low-Level Node Emission
@@ -313,12 +316,22 @@ class AssemblyEmitter:
         self.nodes.append(Comment(text))
 
     def emit_accu_mode(self, bits: int):
-        """Emit .ACCU directive."""
+        """Emit .ACCU directive and update tracked mode."""
         self.nodes.append(Directive(".ACCU", [str(bits)]))
+        self._current_accu_mode = bits
 
     def emit_index_mode(self, bits: int):
-        """Emit .INDEX directive."""
+        """Emit .INDEX directive and update tracked mode."""
         self.nodes.append(Directive(".INDEX", [str(bits)]))
+        self._current_index_mode = bits
+
+    def get_accu_mode(self) -> int:
+        """Get current tracked accumulator mode (8 or 16)."""
+        return self._current_accu_mode
+
+    def get_index_mode(self) -> int:
+        """Get current tracked index mode (8 or 16)."""
+        return self._current_index_mode
 
     # ========================================================================
     # Section Headers

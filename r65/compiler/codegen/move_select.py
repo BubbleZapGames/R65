@@ -83,7 +83,7 @@ class MoveOperationSelector(BaseSelector):
             if src_loc.kind == LocationKind.HARDWARE:
                 self.parent._emit_register_transfer(src_loc.hw_register, dest_loc.hw_register)
             else:
-                self._load_memory_to_hw_register(dest_loc.hw_register, src_loc, persist_mode)
+                self._load_memory_to_hw_register(dest_loc.hw_register, src_loc, is_u16, persist_mode)
 
     def _load_immediate_to_hw_register(self, hw_register: str, value: int, is_u16: bool,
                                         persist_16bit_mode: bool = False):
@@ -112,14 +112,39 @@ class MoveOperationSelector(BaseSelector):
         else:
             raise InstructionSelectionError(f"Cannot load immediate into register {hw_register}")
 
-    def _load_memory_to_hw_register(self, hw_register: str, src_loc, persist_16bit_mode: bool = False):
+    def _load_memory_to_hw_register(self, hw_register: str, src_loc, is_u16: bool = False,
+                                      persist_16bit_mode: bool = False):
         """Load from memory into a hardware register.
 
         Args:
             hw_register: Target register ('A', 'X', 'Y', 'B')
             src_loc: Source memory location
+            is_u16: Whether this is a 16-bit load
             persist_16bit_mode: If True and loading to A, stay in m16 mode after load
         """
+        # Handle 16-bit A register loads
+        if hw_register == 'A' and is_u16:
+            # Check if we're already in 16-bit mode
+            already_in_16bit = self.parent.emitter.get_accu_mode() == 16
+            if not already_in_16bit:
+                self._emit_instr(Opcode.REP_IMMEDIATE, Immediate(0x20), "16-bit A")
+                self.parent.emitter.emit_accu_mode(16)
+            self._emit_load_store('LDA', src_loc)
+            # Switch back to 8-bit unless persist mode
+            if not persist_16bit_mode and not already_in_16bit:
+                self._emit_instr(Opcode.SEP_IMMEDIATE, Immediate(0x20), "8-bit A")
+                self.parent.emitter.emit_accu_mode(8)
+            return
+
+        # Handle 8-bit A register loads - must switch to m8 if currently in m16
+        if hw_register == 'A' and not is_u16:
+            currently_in_16bit = self.parent.emitter.get_accu_mode() == 16
+            if currently_in_16bit:
+                self._emit_instr(Opcode.SEP_IMMEDIATE, Immediate(0x20), "8-bit A")
+                self.parent.emitter.emit_accu_mode(8)
+            self._emit_load_store('LDA', src_loc)
+            return
+
         # Handle stack-relative addressing: LDX/LDY don't support sr,S mode
         # Must go through A with transfer
         if hw_register in ('X', 'Y') and src_loc.kind == LocationKind.STACK:

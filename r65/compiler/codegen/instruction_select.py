@@ -671,19 +671,30 @@ class InstructionSelector:
             isinstance(instr.right, MIRImmediate) and instr.right.value > 0xFF
         )
 
+        # Check if operation involves X or Y registers (always 16-bit in x16 mode)
+        # When doing arithmetic on X/Y, we use A as intermediate via TXA/TYA,
+        # so A must be in 16-bit mode to preserve the full value
+        involves_index_register = (
+            (left_loc.kind == LocationKind.HARDWARE and left_loc.hw_register in ('X', 'Y')) or
+            (dest_loc.kind == LocationKind.HARDWARE and dest_loc.hw_register in ('X', 'Y'))
+        )
+
         # Determine if we need 16-bit mode for hardware register A operations
         # This is for 16-bit operations involving A that are NOT memory-to-memory
         # Also switch if the immediate value exceeds 8 bits
+        # Also switch if we're operating on X/Y (which are always 16-bit)
         needs_16bit_mode = (
-            (is_u16 or has_large_immediate) and
+            (is_u16 or has_large_immediate or involves_index_register) and
             not is_mem_to_mem_16bit and
             op in ('+', '-', '&', '|', '^') and
-            ((left_loc.kind == LocationKind.HARDWARE and left_loc.hw_register == 'A') or
-             (dest_loc.kind == LocationKind.HARDWARE and dest_loc.hw_register == 'A'))
+            ((left_loc.kind == LocationKind.HARDWARE and left_loc.hw_register in ('A', 'X', 'Y')) or
+             (dest_loc.kind == LocationKind.HARDWARE and dest_loc.hw_register in ('A', 'X', 'Y')))
         )
 
         # Switch to 16-bit mode for A register if needed
-        if needs_16bit_mode:
+        # Check if we're already in 16-bit mode (e.g., from persist_16bit_mode binding)
+        already_in_16bit = self.emitter.get_accu_mode() == 16
+        if needs_16bit_mode and not already_in_16bit:
             self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "16-bit A")
             self.emitter.emit_accu_mode(16)
 
@@ -757,7 +768,8 @@ class InstructionSelector:
             self._emit_store('STA', dest_loc)
 
         # Switch back to 8-bit mode after 16-bit A operation
-        if needs_16bit_mode:
+        # But don't switch back if we were already in 16-bit mode (persisted mode)
+        if needs_16bit_mode and not already_in_16bit:
             self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "8-bit A")
             self.emitter.emit_accu_mode(8)
 
@@ -1285,17 +1297,24 @@ class InstructionSelector:
         # Also switch if value exceeds 8-bit range (0-255)
         needs_16bit = is_u16 or (reg == 'A' and value > 0xFF)
         if needs_16bit and reg == 'A':
-            # Switch to 16-bit A mode
-            self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "16-bit A")
-            self.emitter.emit_accu_mode(16)
+            # Check if already in 16-bit mode
+            already_in_16bit = self.emitter.get_accu_mode() == 16
+            if not already_in_16bit:
+                # Switch to 16-bit A mode
+                self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "16-bit A")
+                self.emitter.emit_accu_mode(16)
             # Load full 16-bit value
             self._emit_immediate(load_opcode, value & 0xFFFF)
-            # Switch back to 8-bit A mode UNLESS persist_16bit_mode is set
-            if not persist_16bit_mode:
+            # Switch back to 8-bit A mode UNLESS persist_16bit_mode is set or we were already in 16-bit
+            if not persist_16bit_mode and not already_in_16bit:
                 self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "8-bit A")
                 self.emitter.emit_accu_mode(8)
             # If persist_16bit_mode, stay in m16 mode for register binding scope
         else:
+            # 8-bit load - make sure we're in m8 mode for A register
+            if reg == 'A' and self.emitter.get_accu_mode() == 16:
+                self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "8-bit A")
+                self.emitter.emit_accu_mode(8)
             self._emit_immediate(load_opcode, value)
 
     def _get_operand_location(self, operand) -> PhysicalLocation:
