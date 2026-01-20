@@ -22,19 +22,25 @@ class TestPreservesAttribute:
 
 
 class TestModeAttribute:
-    """Tests for #[mode(...)] attribute."""
+    """Tests for #[mode(...)] attribute.
 
-    def test_mode_m8(self):
-        """Test mode with m8."""
-        func = parse_function("#[mode(m8)] fn test() { }")
-        attr = get_attr(func, "mode")
-        assert attr is not None
+    The #[mode] attribute now only supports the databank parameter.
+    CPU mode (m8/m16) is inferred from parameter types automatically.
+    """
 
-    def test_mode_combined(self):
-        """Test mode with m8 and x16."""
-        func = parse_function("#[mode(m8, x16)] fn test() { }")
-        attr = get_attr(func, "mode")
-        assert len(attr.args) >= 2
+    def test_mode_databank_inline(self):
+        """Test mode with databank=inline."""
+        hir_prog = build_hir("#[mode(databank=inline)] far fn test() { }")
+        func = hir_prog.functions[0]
+        assert func.mode_attr is not None
+
+    def test_mode_m8_rejected(self):
+        """Test mode with m8 is rejected at HIR level."""
+        import pytest
+        from r65.compiler.hir.errors import HIRError
+        with pytest.raises(HIRError) as exc_info:
+            build_hir("#[mode(m8)] fn test() { }")
+        assert "no longer supported" in str(exc_info.value)
 
 
 class TestBankDirective:

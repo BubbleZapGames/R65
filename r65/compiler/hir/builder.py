@@ -453,6 +453,9 @@ class HIRBuilder:
         # Infer entry mode from parameters and validate X/Y are u16
         entry_m_mode = self._infer_entry_mode_and_validate(hir_params, func.name, func.source_loc)
 
+        # Infer exit mode from return type
+        exit_m_mode = self._infer_exit_mode(ret_type)
+
         return hir.HIRFunctionDecl(
             name=func.name,
             is_far=func.is_far,
@@ -467,6 +470,7 @@ class HIRBuilder:
             symbol=func_symbol,
             returns_status_flag=returns_status_flag,
             entry_m_mode=entry_m_mode,
+            exit_m_mode=exit_m_mode,
             source_loc=func.source_loc  # Propagate source location from AST
         )
 
@@ -545,6 +549,31 @@ class HIRBuilder:
                             )
 
         return entry_mode
+
+    def _infer_exit_mode(self, return_type: Optional[TypeInfo]) -> 'ModeState':
+        """
+        Infer exit mode from function return type.
+
+        Rules:
+        - If return type is u16/i16 (returns in A register) -> m16 exit
+        - Otherwise -> m8 exit (default)
+
+        Args:
+            return_type: Function return type (or None for void)
+
+        Returns:
+            ModeState for function exit (M8 or M16)
+        """
+        from r65.compiler.typeck.processor_mode import ModeState
+
+        if return_type is None:
+            return ModeState.M8
+
+        if isinstance(return_type, BasicTypeInfo):
+            if return_type.name in ('u16', 'i16'):
+                return ModeState.M16
+
+        return ModeState.M8
 
     def _build_parameter(self, param: ast.Parameter) -> hir.HIRParameter:
         """Build HIR parameter from AST."""
@@ -994,6 +1023,9 @@ class HIRBuilder:
         # Infer entry mode from parameters and validate X/Y are u16
         entry_m_mode = self._infer_entry_mode_and_validate(hir_params, mangled_name, method.source_loc)
 
+        # Infer exit mode from return type
+        exit_m_mode = self._infer_exit_mode(ret_type)
+
         return hir.HIRFunctionDecl(
             name=mangled_name,
             is_far=method.is_far,
@@ -1008,6 +1040,7 @@ class HIRBuilder:
             symbol=method_symbol,
             returns_status_flag=returns_status_flag,
             entry_m_mode=entry_m_mode,
+            exit_m_mode=exit_m_mode,
             source_loc=method.source_loc
         )
 

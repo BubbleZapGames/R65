@@ -187,8 +187,10 @@ class HIRFunctionDecl(HIRDeclaration):
 
     # Inferred processor mode (populated by HIR builder)
     # - entry_m_mode: m8 if no u16 A parameter, m16 if u16 @ A parameter
+    # - exit_m_mode: m16 if return type is u16/i16, else m8
     # - x_mode is always x16 (16-bit X/Y)
     entry_m_mode: Optional[Any] = None  # Will be ModeState (M8 or M16)
+    exit_m_mode: Optional[Any] = None   # Will be ModeState (M8 or M16)
 
 
 @dataclass
