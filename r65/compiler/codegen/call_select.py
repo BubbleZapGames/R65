@@ -66,6 +66,11 @@ class CallInstructionSelector(BaseSelector):
         Handles argument setup, call, and return value collection.
         Also handles built-in function calls.
 
+        Cross-mode call handling:
+        - Before call: switch to callee's entry mode if different from current
+        - After call: caller receives return value in callee's exit mode
+        - After using return value: switch back to m8 (default mode)
+
         Args:
             instr: Call instruction
         """
@@ -91,11 +96,19 @@ class CallInstructionSelector(BaseSelector):
         if needs_d_management:
             self._emit_d_restore_before_call()
 
+        # Step 2.6: Switch to callee's entry mode if needed
+        # Callee's prologue expects to be in entry_m_mode
+        self._emit_entry_mode_switch(instr)
+
         # Step 3: Make the call
         self._emit_call_instruction(instr)
 
         # Invalidate XBA state after call (function may have modified A/B)
         self.parent._invalidate_xba_state()
+
+        # Step 3.5: Update emitter mode to reflect callee's exit mode
+        # This is critical - the callee may exit in a different mode than entry
+        self._update_mode_after_call(instr)
 
         # Step 4: Restore DBR if caller-managed
         if needs_dbr_restore:
@@ -104,10 +117,14 @@ class CallInstructionSelector(BaseSelector):
         # Step 5: Clean up stack arguments (callee cleanup for R65)
         self._emit_stack_cleanup(stack_bytes_pushed)
 
-        # Step 6: Collect return values
+        # Step 6: Collect return values (in callee's exit mode)
         self._emit_return_value_collection(instr)
 
-        # Step 7: Restore D to stack and optionally re-establish D = S
+        # Step 7: Restore mode after receiving return value
+        # If callee exited in m16 (u16 return), switch back to m8
+        self._emit_exit_mode_restore(instr)
+
+        # Step 8: Restore D to stack and optionally re-establish D = S
         if needs_d_management:
             # We used PLD before the call, so we must push D back
             # If there are more far pointer dereferences, also set D = S
@@ -392,6 +409,87 @@ class CallInstructionSelector(BaseSelector):
         self._emit_push('A', "Push bank number")
         self._emit_pull('B', "Set data bank for callee")
         return True
+
+    # ========================================================================
+    # Cross-Mode Call Handling
+    # ========================================================================
+
+    def _emit_entry_mode_switch(self, instr: Call):
+        """
+        Switch to callee's entry mode before making the call.
+
+        The callee expects to receive arguments in its entry mode.
+        Default caller mode is m8, so we only need to switch if callee expects m16.
+
+        Args:
+            instr: Call instruction with callee mode info
+        """
+        from r65.compiler.typeck.processor_mode import ModeState
+
+        callee_entry = instr.callee_entry_m_mode
+        if callee_entry is None:
+            return  # No mode info (indirect call or unknown), assume compatible
+
+        # Get current mode from emitter
+        current_mode_bits = self.emitter.get_accu_mode()
+        current_is_m16 = (current_mode_bits == 16)
+        callee_wants_m16 = (callee_entry == ModeState.M16)
+
+        if not current_is_m16 and callee_wants_m16:
+            # Caller is m8, callee wants m16 - switch to m16
+            self._emit_immediate(Opcode.REP_IMMEDIATE, 0x20, "Switch to m16 for callee")
+            self.emitter.emit_accu_mode(16)
+        elif current_is_m16 and not callee_wants_m16:
+            # Caller is m16, callee wants m8 - switch to m8
+            self._emit_immediate(Opcode.SEP_IMMEDIATE, 0x20, "Switch to m8 for callee")
+            self.emitter.emit_accu_mode(8)
+        # Otherwise modes match, no switch needed
+
+    def _emit_exit_mode_restore(self, instr: Call):
+        """
+        Restore mode after receiving return value from callee.
+
+        After the call, the caller is in callee's exit mode.
+        If callee exited in m16 (u16 return), switch back to m8 (default mode).
+
+        This ensures the caller continues in the expected default mode.
+
+        Args:
+            instr: Call instruction with callee mode info
+        """
+        from r65.compiler.typeck.processor_mode import ModeState
+
+        callee_exit = instr.callee_exit_m_mode
+        if callee_exit is None:
+            return  # No mode info (indirect call or unknown), assume m8
+
+        if callee_exit == ModeState.M16:
+            # Callee returned in m16 mode, switch back to m8
+            self._emit_immediate(Opcode.SEP_IMMEDIATE, 0x20, "Restore m8 after u16 return")
+            self.emitter.emit_accu_mode(8)
+        # If callee exited in m8, we're already in the right mode
+
+    def _update_mode_after_call(self, instr: Call):
+        """
+        Update emitter's mode tracking to reflect callee's exit mode.
+
+        After the call returns, the CPU is in the callee's exit mode (not entry mode).
+        This updates the emitter's tracking without emitting any instructions, so that
+        subsequent code (like return value collection) uses the correct mode.
+
+        Args:
+            instr: Call instruction with callee mode info
+        """
+        from r65.compiler.typeck.processor_mode import ModeState
+
+        callee_exit = instr.callee_exit_m_mode
+        if callee_exit is None:
+            return  # No mode info, assume unchanged
+
+        if callee_exit == ModeState.M16:
+            self.emitter.emit_accu_mode(16)
+        else:
+            self.emitter.emit_accu_mode(8)
 
     # ========================================================================
     # Call Emission

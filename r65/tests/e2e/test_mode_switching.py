@@ -670,3 +670,151 @@ class TestModeSwitchingLoops:
             }
         ))
         assert result.success, f"Failures: {result.failures}"
+
+
+class TestCrossModeFunctionCalls:
+    """Tests for calling functions with different entry/exit modes."""
+
+    @pytest.fixture
+    def e2e(self):
+        return E2ETest()
+
+    def test_call_m8_function_from_m8(self, e2e):
+        """Test calling an m8 function from m8 context (no mode switch needed)."""
+        result = e2e.run('''
+            #[zeropage(0x10)]
+            static mut RESULT: u8;
+
+            fn add_five(val @ A: u8) -> u8 {
+                return A + 5;
+            }
+
+            #[entry]
+            fn main() {
+                A = 10;
+                A = add_five(A);
+                RESULT = A;
+            }
+        ''', ExpectedState(
+            A=15,
+            memory={0x7E0010: 15}
+        ))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_call_m16_function_from_m8(self, e2e):
+        """Test calling an m16 function (u16 @ A param) from m8 context.
+
+        The caller should switch to m16 before the call, and the callee
+        expects to receive the u16 argument in 16-bit mode.
+        """
+        result = e2e.run('''
+            #[zeropage(0x10)]
+            static mut RESULT: u16;
+
+            fn add_hundred(val @ A: u16) -> u16 {
+                return A + 100;
+            }
+
+            #[entry]
+            fn main() {
+                // Start in m8 mode
+                let w @ A : u16 = 1000;
+                A = add_hundred(A);  // Call m16 function
+                RESULT = A;
+            }
+        ''', ExpectedState(
+            memory={0x7E0010: [0x4C, 0x04]}  # 1100 = 0x044C in little endian
+        ))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_u16_return_value(self, e2e):
+        """Test function returning u16 - callee exits in m16 mode."""
+        result = e2e.run('''
+            #[zeropage(0x10)]
+            static mut RESULT: u16;
+
+            fn get_big_value() -> u16 {
+                return 0xABCD;
+            }
+
+            #[entry]
+            fn main() {
+                let r @ A : u16 = get_big_value();
+                RESULT = A;
+            }
+        ''', ExpectedState(
+            memory={0x7E0010: [0xCD, 0xAB]}  # 0xABCD in little endian
+        ))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_u8_return_after_u16_function(self, e2e):
+        """Test that u8 operations work correctly after calling u16 function."""
+        result = e2e.run('''
+            #[zeropage(0x10)]
+            static mut RESULT16: u16;
+            #[zeropage(0x12)]
+            static mut RESULT8: u8;
+
+            fn get_u16() -> u16 {
+                return 0x1234;
+            }
+
+            #[entry]
+            fn main() {
+                // Call u16 function, receive in m16 mode
+                let r @ A : u16 = get_u16();
+                RESULT16 = A;
+
+                // After call, caller should be back in m8
+                // Do an 8-bit operation
+                A = 0x42;
+                RESULT8 = A;
+            }
+        ''', ExpectedState(
+            memory={
+                0x7E0010: [0x34, 0x12],
+                0x7E0012: 0x42
+            }
+        ))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_mixed_function_calls(self, e2e):
+        """Test calling both u8 and u16 functions in sequence."""
+        result = e2e.run('''
+            #[zeropage(0x10)]
+            static mut R8: u8;
+            #[zeropage(0x12)]
+            static mut R16: u16;
+
+            fn inc_u8(val @ A: u8) -> u8 {
+                return A + 1;
+            }
+
+            fn inc_u16(val @ A: u16) -> u16 {
+                return A + 1;
+            }
+
+            #[entry]
+            fn main() {
+                // Call u8 function
+                A = 10;
+                A = inc_u8(A);
+                R8 = A;
+
+                // Call u16 function
+                let w @ A : u16 = 1000;
+                A = inc_u16(A);
+                R16 = A;
+
+                // Call u8 function again (should work after u16 call)
+                A = R8;
+                A = inc_u8(A);
+                R8 = A;
+            }
+        ''', ExpectedState(
+            memory={
+                0x7E0010: 12,  # 10 + 1 + 1
+                0x7E0012: [0xE9, 0x03]  # 1001 = 0x03E9
+            }
+        ))
+        assert result.success, f"Failures: {result.failures}"

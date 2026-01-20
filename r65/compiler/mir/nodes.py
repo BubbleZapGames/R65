@@ -604,6 +604,10 @@ class Call(MIRInstruction):
     bank_attr: Optional[Any] = None  # BankAttribute from callee (for bank number)
     builtin_name: Optional[str] = None  # Set if this is a built-in function call
 
+    # Callee's inferred modes for cross-mode call handling
+    callee_entry_m_mode: Optional[Any] = None  # ModeState: callee's expected entry mode
+    callee_exit_m_mode: Optional[Any] = None   # ModeState: callee's exit mode (return type)
+
     def __repr__(self):
         args_str = ', '.join(str(arg) for arg in self.args)
         if self.returns:
@@ -793,6 +797,11 @@ class MIRFunction:
     # Inferred entry mode (M8 or M16, always X16)
     # Set based on A parameter type: u16 @ A -> M16, otherwise M8
     entry_m_mode: Optional[Any] = None      # ModeState (M8 or M16)
+
+    # Inferred exit mode (M8 or M16, always X16)
+    # Set based on return type: u16/i16 -> M16, otherwise M8
+    # Determines mode at function exit (for return value)
+    exit_m_mode: Optional[Any] = None       # ModeState (M8 or M16)
 
     # Far pointer stack parameter tracking
     # True if any stack parameters are far pointers (need D=S prologue)

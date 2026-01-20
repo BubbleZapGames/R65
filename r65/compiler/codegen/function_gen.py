@@ -573,18 +573,16 @@ class FunctionCodeGenerator:
             self._emit_instr(Opcode.PLB, comment="Restore data bank")
 
     def _emit_mode_restore(self, mir_func: MIRFunction):
-        """Restore processor mode after function body.
+        """Mode restore placeholder.
 
-        In the simplified mode system, mode transitions are automatic.
-        If this function uses m16 mode, we need to restore m8 before returning
-        to ensure the caller gets back to the default mode.
+        Mode switching for return values is now handled in select_return's
+        _switch_to_exit_mode(), which runs BEFORE loading return values.
+        This ensures 16-bit return values are loaded in the correct mode.
+
+        This method is kept for API compatibility but no longer emits code.
         """
-        from r65.compiler.typeck.processor_mode import ModeState
-
-        # If function runs in m16 mode, restore to m8 before returning
-        # This ensures caller (which is in m8 mode) can continue correctly
-        if mir_func.entry_m_mode == ModeState.M16:
-            self._emit_instr(Opcode.SEP_IMMEDIATE, Immediate(M_FLAG), "Restore m8 mode")
+        # Mode switching is now handled in control_flow_select.py:_switch_to_exit_mode()
+        pass
 
 
 class ProgramFunctionGenerator:

@@ -284,22 +284,58 @@ class ControlFlowInstructionSelector(BaseSelector):
         Generate code for Return instruction.
 
         Handles loading return values into appropriate registers before returning.
+        Mode switching for exit mode happens BEFORE loading return values so that
+        16-bit return values are loaded in the correct mode.
 
         Args:
             instr: Return instruction
         """
+        # Switch to exit mode BEFORE loading return values
+        # This ensures u16 return values are loaded in m16 mode
+        self._switch_to_exit_mode()
+
         self._emit_return_values(instr)
 
         # Use consolidated emit_epilogue from FunctionCodeGenerator
+        # Note: emit_epilogue no longer does mode switching (we did it above)
         if self.parent.func_gen:
             self.parent.func_gen.emit_epilogue(self.current_function, self.parent.reg_alloc)
         else:
             # Fallback to inline methods if func_gen not available
             self._emit_preserved_register_restores()
             self._emit_dbr_restore()
-            self._emit_mode_restore()
+            # Mode restore is now handled by _switch_to_exit_mode above
 
         self._emit_return_instruction()
+
+    def _switch_to_exit_mode(self):
+        """
+        Switch to function's exit mode before loading return values.
+
+        If exit_m_mode differs from entry_m_mode, emit REP or SEP to switch.
+        This must happen BEFORE loading return values so 16-bit values are
+        loaded correctly.
+        """
+        from r65.compiler.typeck.processor_mode import ModeState
+        from r65.compiler.codegen.constants import M_FLAG
+
+        if not self.current_function:
+            return
+
+        entry_mode = self.current_function.entry_m_mode or ModeState.M8
+        exit_mode = self.current_function.exit_m_mode or ModeState.M8
+
+        if entry_mode == exit_mode:
+            return  # No switch needed
+
+        if entry_mode == ModeState.M8 and exit_mode == ModeState.M16:
+            # Switch from m8 to m16 for u16 return value
+            self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "Switch to m16 for u16 return")
+            self.parent.emitter.emit_accu_mode(16)
+        elif entry_mode == ModeState.M16 and exit_mode == ModeState.M8:
+            # Switch from m16 to m8 for u8 return value
+            self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "Switch to m8 for return")
+            self.parent.emitter.emit_accu_mode(8)
 
     # Mappings from register name to pull opcodes
     _PULL_OPCODES = {

@@ -382,7 +382,9 @@ class CallLowerer:
             is_far=func_decl.is_far,
             mode_attr=func_decl.mode_attr,
             bank_attr=func_decl.bank_attr,
-            builtin_name=builtin_name
+            builtin_name=builtin_name,
+            callee_entry_m_mode=func_decl.entry_m_mode,
+            callee_exit_m_mode=func_decl.exit_m_mode
         ))
 
     # ========================================================================

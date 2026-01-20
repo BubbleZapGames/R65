@@ -228,6 +228,7 @@ class MIRBuilder:
             is_entry=hir_func.is_entry,
             is_far=hir_func.is_far,
             entry_m_mode=hir_func.entry_m_mode,  # Inferred entry mode
+            exit_m_mode=hir_func.exit_m_mode,    # Inferred exit mode
             source_loc=hir_func.source_loc,  # Propagate source location
             vreg_allocator=VirtualRegisterAllocator(),
             alias_tracker=RegisterAliasTracker()

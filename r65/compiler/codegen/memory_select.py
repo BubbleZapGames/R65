@@ -232,6 +232,17 @@ class MemoryOperationSelector(BaseSelector):
                 self._emit_instr(transfer_op, comment=f"Transfer to A (no {STORE_MNEMONICS[reg]} with this addressing)")
                 self._emit_load_store('STA', dest_loc)
                 self.parent._mark_a_modified()
+            elif reg == 'A' and is_u16:
+                # 16-bit store from A register needs 16-bit mode
+                # Only switch if not already in 16-bit mode
+                current_mode = self.emitter.get_accu_mode()
+                if current_mode != 16:
+                    self._switch_to_16bit_a()
+                    self._emit_load_store('STA', dest_loc)
+                    self._switch_to_8bit_a()
+                else:
+                    # Already in 16-bit mode, just store
+                    self._emit_load_store('STA', dest_loc)
             else:
                 self._emit_load_store(STORE_MNEMONICS[reg], dest_loc)
 
