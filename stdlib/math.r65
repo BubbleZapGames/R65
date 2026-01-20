@@ -73,7 +73,7 @@ far fn mul8(multA @ A: u8, multB @ X: u16) -> (u8, u8) {
 // Uses SNES $4202-$4203 multiplication unit
 // Result: 16-bit widening product
 #[cfg(snes)]
-far fn mul16(multA @ A: u8, multB @ X: u16) -> u16 {
+far fn mul16(multA @ A: u8, multB: u16) -> u16 {
     // Write multiplicand in 8-bit mode
     STATUS.A16 = false;  // SEP #$20 - switch to 8-bit
     WRMPYA = multA;
@@ -95,7 +95,7 @@ far fn mul16(multA @ A: u8, multB @ X: u16) -> u16 {
 // Returns: low byte and high byte
 // Cycles: ~150-300 depending on operands
 #[cfg(not(snes))]
-far fn mul8(multA @ A: u8, multB @ X: u16) -> (u8, u8) {
+far fn mul8(multA @ A: u8, multB: u16) -> (u8, u8) {
     // Store multiplicand for shifting
     let mut _mul_temp : u8 = multA;
 
@@ -144,7 +144,7 @@ far fn mul8(multA @ A: u8, multB @ X: u16) -> (u8, u8) {
 // Uses mode switch to return 16-bit value
 // Cycles: ~150-300 depending on operands
 #[cfg(not(snes))]
-far fn mul16(multA @ A: u8, multB @ X: u16) -> u16 {
+far fn mul16(multA @ A: u8, multB: u16) -> u16 {
     // Store multiplicand for shifting
     let mut _mul_temp : u8 = multA;
 
@@ -197,14 +197,14 @@ far fn mul16(multA @ A: u8, multB @ X: u16) -> u16 {
 // Returns: 16-bit quotient
 // Cycles: ~30 (16 wait + overhead)
 #[cfg(snes)]
-far fn div16(dividend @ A: u8, divisor @ X: u16) -> u16 {
+far fn div16(dividend @ A: u16, divisor: u8) -> u16 {
     // Write 16-bit dividend
     WRDIVL = A;
 
     // Switch to 8-bit for hardware register writes
     STATUS.A16 = false;  // SEP #$20 - switch to 8-bit
     // Write divisor (starts division)
-    WRDIVB = X;
+    WRDIVB = divisor;
 
     // Wait 16 machine cycles for division to complete
     // REP is 3 cycles, so we need 16 - 3 = 13 more cycles
@@ -219,13 +219,13 @@ far fn div16(dividend @ A: u8, divisor @ X: u16) -> u16 {
 // Extends dividend to 16-bit with zero high byte
 // Returns: 8-bit quotient
 #[cfg(snes)]
-far fn div8(dividend @ A: u8, divisor @ X: u16) -> u8 {
+far fn div8(dividend @ A: u8, divisor: u8) -> u8 {
     // Write dividend with zero high byte
     WRDIVL = A;
     WRDIVH = 0;
 
     // Write divisor
-    WRDIVB = X;
+    WRDIVB = divisor;
 
     // Wait 16 cycles
     NOP(8);
@@ -237,13 +237,13 @@ far fn div8(dividend @ A: u8, divisor @ X: u16) -> u8 {
 // Hardware 8/8 -> 8 modulo
 // Performs division and returns remainder
 #[cfg(snes)]
-far fn mod8(dividend @ A: u8, divisor @ X: u16) -> u8 {
+far fn mod8(dividend @ A: u8, divisor: u8) -> u8 {
     // Write dividend with zero high byte
     WRDIVL = A;
     WRDIVH = 0;
 
     // Write divisor
-    WRDIVB = X;
+    WRDIVB = divisor;
 
     // Wait 16 cycles
     NOP(8);
@@ -257,7 +257,7 @@ far fn mod8(dividend @ A: u8, divisor @ X: u16) -> u8 {
 // Returns: quotient
 // Cycles: ~200-400
 #[cfg(not(snes))]
-far fn div8(dividend @ A: u8, divisor @ X: u16) -> u8 {
+far fn div8(dividend @ A: u8, divisor: u8) -> u8 {
     // Handle division by zero - return 0xFF (max value)
     if X == 0 {
         A = 0xFF;
@@ -265,7 +265,6 @@ far fn div8(dividend @ A: u8, divisor @ X: u16) -> u8 {
     }
 
     let mut _dividend: u8 = A;
-    let mut _divisor: u8 = X;
     let mut _quotient: u8 = 0;
     let mut _remainder: u8 = 0;
     let mut _count: u8 = 8;
@@ -297,8 +296,8 @@ far fn div8(dividend @ A: u8, divisor @ X: u16) -> u8 {
 
         // Try to subtract divisor from remainder
         A = _remainder;
-        if A >= _divisor {
-            A = A - _divisor;
+        if A >= divisor {
+            A = A - divisor;
             _remainder = A;
             // Set low bit of quotient
             A = _quotient;
@@ -319,14 +318,13 @@ far fn div8(dividend @ A: u8, divisor @ X: u16) -> u8 {
 // Software 8/8 -> 8 modulo
 // Uses division algorithm, returns remainder
 #[cfg(not(snes))]
-far fn mod_shift(dividend @ A: u8, divisor @ X: u16) -> u8 {
+far fn mod_shift(dividend @ A: u8, divisor: u8) -> u8 {
     // Handle division by zero - return original dividend
     if X == 0 {
         return A;
     }
 
     let mut _dividend: u8 = A;
-    let mut _divisor: u8 = X;
     let mut _remainder: u8 = 0;
     let mut _count: u8 = 8;
 
@@ -352,8 +350,8 @@ far fn mod_shift(dividend @ A: u8, divisor @ X: u16) -> u8 {
 
         // Try to subtract divisor from remainder
         A = _remainder;
-        if A >= _divisor {
-            A = A - _divisor;
+        if A >= divisor {
+            A = A - divisor;
             _remainder = A;
         }
 
