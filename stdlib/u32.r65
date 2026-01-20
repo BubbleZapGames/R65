@@ -117,9 +117,9 @@ macro_rules! _hwdiv_first() {
 // Uses four 8x8 multiplies: (a_hi*256 + a_lo) * (b_hi*256 + b_lo)
 // Result stored in result_lo (low 16 bits) and result_hi (high 16 bits)
 #[cfg(snes)]
-#[mode(m8, transition=caller)]
 far fn _mul16x16(a @ A: u16, b @ X: u16, *result_lo: u16, *result_hi: u16) {
     // Local temporaries for multiplication
+    let mut a_val: u16 = A;  // Save 16-bit value before mode switch
     let mut a_lo: u8;
     let mut a_hi: u8;
     let mut b_lo: u8;
@@ -128,10 +128,13 @@ far fn _mul16x16(a @ A: u16, b @ X: u16, *result_lo: u16, *result_hi: u16) {
     let mut p2: u16;
     let mut p3: u16;
 
-    // Extract bytes from a (already in A)
-    a_lo = A;
+    // Switch to m8 for byte operations with hardware multiplier
     STATUS.A16 = false;
-    xba();
+
+    // Extract bytes from saved a value
+    A = a_val as u8;
+    a_lo = A;
+    A = (a_val >> 8) as u8;
     a_hi = A;
 
     // Extract bytes from b (in X)
@@ -183,7 +186,6 @@ far fn _mul16x16(a @ A: u16, b @ X: u16, *result_lo: u16, *result_hi: u16) {
 
 // Software 16x16 -> 32 bit multiplication (shift-and-add)
 #[cfg(not(snes))]
-#[mode(m16, transition=caller)]
 far fn _mul16x16(a @ A: u16, b @ X: u16, *result_lo: u16, *result_hi: u16) {
     let mut multiplicand_lo: u16 = A;
     let mut multiplicand_hi: u16 = 0;
@@ -233,7 +235,6 @@ impl far U32 {
     // ========================================================================
 
     // Copy another U32 into self
-    #[mode(m16, transition=caller)]
     far fn copy(far *self, far *src: U32) {
         A = src.lo;
         self.lo = A;
@@ -242,14 +243,12 @@ impl far U32 {
     }
 
     // Initialize from u16 (zero-extend)
-    #[mode(m16, transition=caller)]
     far fn from_u16(far *self, value @ A: u16) {
         self.lo = A;
         self.hi = 0;
     }
 
     // Convert to u16 (truncate, keeps low 16 bits)
-    #[mode(m16, transition=caller)]
     far fn to_u16(far *self) -> u16 {
         return self.lo;
     }
@@ -259,7 +258,6 @@ impl far U32 {
     // ========================================================================
 
     // Add: self += other (with overflow wrapping)
-    #[mode(m16, transition=caller)]
     far fn add(far *self, far *other: U32) {
         // Add low words with carry clear
         STATUS.Carry = false;
@@ -274,7 +272,6 @@ impl far U32 {
     }
 
     // Subtract: self -= other (with underflow wrapping)
-    #[mode(m16, transition=caller)]
     far fn sub(far *self, far *other: U32) {
         // Subtract low words with borrow clear (SEC for SBC)
         STATUS.Carry = true;
@@ -289,7 +286,6 @@ impl far U32 {
     }
 
     // Multiply: self *= other (32x32 -> 32, lower 32 bits only)
-    #[mode(m16, transition=caller)]
     far fn mul(far *self, far *other: U32) {
         let mut self_lo: u16;
         let mut temp_lo: u16;
@@ -333,7 +329,6 @@ impl far U32 {
     }
 
     // Divide: self /= other (returns 0xFFFFFFFF if other == 0)
-    #[mode(m16, transition=caller)]
     far fn div(far *self, far *other: U32) {
         let mut remainder_lo: u16;
         let mut remainder_hi: u16;
@@ -436,7 +431,6 @@ impl far U32 {
     }
 
     // Modulo: self %= other (unchanged if other == 0)
-    #[mode(m16, transition=caller)]
     far fn mod(far *self, far *other: U32) {
         let mut dividend_lo: u16;
         let mut dividend_hi: u16;
@@ -529,7 +523,6 @@ impl far U32 {
     //   ge: STATUS.Carry == true
     //   gt: STATUS.Carry == true && STATUS.Zero == false
     //   le: STATUS.Carry == false || STATUS.Zero == true
-    #[mode(m16, transition=caller)]
     far fn cmp(far *self, far *other: U32) -> u8 {
         // Compare high words first
         A = self.hi;
@@ -551,7 +544,6 @@ impl far U32 {
     // ========================================================================
 
     // Shift left by n bits (in place)
-    #[mode(m16, transition=caller)]
     far fn shl(far *self, count @ X: u8) {
         loop {
             if X == 0 {
@@ -568,7 +560,6 @@ impl far U32 {
     }
 
     // Shift right by n bits (in place)
-    #[mode(m16, transition=caller)]
     far fn shr(far *self, count @ X: u8) {
         loop {
             if X == 0 {
@@ -593,7 +584,6 @@ impl far U32 {
     // Much faster than software div when dividing by small values.
     // If divisor is 0, sets self to 0xFFFFFFFF and returns 0.
     #[cfg(snes)]
-    #[mode(m8, transition=caller)]
     far fn div_u8(far *self, divisor @ X: u8) -> u8 {
         let mut remainder: u8;
         let mut q3: u8;
@@ -655,7 +645,6 @@ impl far U32 {
     // self %= divisor (self becomes remainder, which fits in 8 bits).
     // If divisor is 0, self is unchanged.
     #[cfg(snes)]
-    #[mode(m8, transition=caller)]
     far fn mod_u8(far *self, divisor @ X: u8) {
         // div_u8 computes quotient (stored in self) and returns remainder
         // We discard the quotient and store only the remainder

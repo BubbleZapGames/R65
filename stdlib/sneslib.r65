@@ -1583,7 +1583,6 @@ macro_rules! set_virq($pos:expr) {
 // ============================================================================
 
 // Wait for VBlank (polling loop)
-#[mode(m8, x8)]
 fn wait_vblank() {
     loop {
         A = HVBJOY;
@@ -1594,7 +1593,6 @@ fn wait_vblank() {
 }
 
 // Wait for NMI (clears NMI flag first)
-#[mode(m8, x8)]
 fn wait_nmi() {
     A = RDNMI;
     loop {
@@ -1606,7 +1604,6 @@ fn wait_nmi() {
 }
 
 // Wait for auto-joypad read to complete
-#[mode(m8, x8)]
 fn wait_autojoy() {
     loop {
         A = HVBJOY;
@@ -1617,7 +1614,6 @@ fn wait_autojoy() {
 }
 
 // Clear VRAM (fill with zeros) - slow but thorough
-#[mode(m8, x8)]
 fn clear_vram() {
     VMADDL = 0;
     VMADDH = 0;
@@ -1639,7 +1635,6 @@ fn clear_vram() {
 }
 
 // Clear CGRAM (all colors to black)
-#[mode(m8, x8)]
 fn clear_cgram() {
     CGADD = 0;
     X = 0;
@@ -1654,7 +1649,6 @@ fn clear_cgram() {
 }
 
 // Clear OAM (all sprites off-screen)
-#[mode(m8, x8)]
 fn clear_oam() {
     OAMADDL = 0;
     OAMADDH = 0;
@@ -1683,7 +1677,6 @@ fn clear_oam() {
 }
 
 // Initialize PPU registers to safe defaults
-#[mode(m8, x8)]
 fn init_ppu() {
     INIDISP = FORCE_BLANK;
     OBSEL = 0;
@@ -1755,7 +1748,6 @@ fn init_ppu() {
 }
 
 // Initialize CPU registers
-#[mode(m8, x8)]
 fn init_cpu() {
     NMITIMEN = 0;
     HDMAEN = 0;
@@ -1763,7 +1755,6 @@ fn init_cpu() {
 }
 
 // Full SNES initialization
-#[mode(m8, x8)]
 fn snes_init() {
     init_cpu();
     init_ppu();
@@ -1775,8 +1766,7 @@ fn snes_init() {
 
 // Delay for specified number of frames
 // Usage: delay(60);  // Wait ~1 second (NTSC)
-#[mode(m8, x8)]
-fn delay(frames @ X: u8) {
+fn delay(frames @ X: u16) {
     loop {
         wait_nmi();
         X--;
@@ -1788,7 +1778,6 @@ fn delay(frames @ X: u8) {
 
 // Check if console is NTSC (returns 1) or PAL (returns 0)
 // Usage: if is_ntsc() { ... }
-#[mode(m8, x8)]
 fn is_ntsc() -> u8 {
     A = STAT78;
     A = A & 0x10;
@@ -1802,7 +1791,6 @@ fn is_ntsc() -> u8 {
 
 // Check if console is PAL (returns 1) or NTSC (returns 0)
 // Usage: if is_pal() { ... }
-#[mode(m8, x8)]
 fn is_pal() -> u8 {
     A = STAT78;
     A = A & 0x10;
@@ -1818,8 +1806,7 @@ fn is_pal() -> u8 {
 // level: 0 = off, 1-16 = min to max pixelization
 // bgs: which backgrounds to apply mosaic to (use SCREEN_BG1, etc.)
 // Usage: set_pixelize(4, SCREEN_BG1 | SCREEN_BG2);
-#[mode(m8, x8)]
-fn set_pixelize(level @ A: u8, bgs @ X: u8) {
+fn set_pixelize(level @ A: u8, bgs @ X: u16) {
     if A == 0 {
         MOSAIC = 0;
     } else {
@@ -1834,8 +1821,7 @@ fn set_pixelize(level @ A: u8, bgs @ X: u8) {
 // Set scroll for a specific layer (0-3)
 // Mirrors the layer-indexed approach from sneslib.h
 // Usage: set_scroll(0, x_scroll, y_scroll);  // Set BG1 scroll
-#[mode(m8, x8)]
-fn set_scroll(layer @ A: u8, scroll_x @ X: u8, scroll_y @ Y: u8) {
+fn set_scroll(layer @ A: u8, scroll_x @ X: u16, scroll_y @ Y: u16) {
     if A == 0 {
         BG1HOFS = X;
         BG1HOFS = 0;
@@ -1865,7 +1851,6 @@ fn set_scroll(layer @ A: u8, scroll_x @ X: u8, scroll_y @ Y: u8) {
 // ============================================================================
 
 // Wait for SPC700 to be ready
-#[mode(m8, x8)]
 fn spc_wait_ready() -> u8 {
     let timeout: u8 = 0;
     loop {
@@ -1886,8 +1871,7 @@ fn spc_wait_ready() -> u8 {
 }
 
 // Begin SPC700 transfer to destination address
-#[mode(m8, x8)]
-fn spc_begin_transfer(dest_low @ A: u8, dest_high @ X: u8) {
+fn spc_begin_transfer(dest_low @ A: u8, dest_high @ X: u16) {
     APUIO2 = dest_low;
     APUIO3 = dest_high;
     APUIO1 = 0x01;
@@ -1902,8 +1886,7 @@ fn spc_begin_transfer(dest_low @ A: u8, dest_high @ X: u8) {
 }
 
 // Transfer byte to SPC700
-#[mode(m8, x8)]
-fn spc_transfer_byte(data @ A: u8, index @ X: u8) {
+fn spc_transfer_byte(data @ A: u8, index @ X: u16) {
     APUIO1 = data;
     APUIO0 = index;
 
@@ -1916,8 +1899,7 @@ fn spc_transfer_byte(data @ A: u8, index @ X: u8) {
 }
 
 // End SPC700 transfer and start execution
-#[mode(m8, x8)]
-fn spc_end_transfer(exec_low @ A: u8, exec_high @ X: u8) {
+fn spc_end_transfer(exec_low @ A: u8, exec_high @ X: u16) {
     APUIO2 = exec_low;
     APUIO3 = exec_high;
 

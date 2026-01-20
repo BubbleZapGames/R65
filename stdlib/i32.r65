@@ -130,9 +130,9 @@ macro_rules! _hwdiv_first() {
 // Uses four 8x8 multiplies: (a_hi*256 + a_lo) * (b_hi*256 + b_lo)
 // Result stored in result_lo (low 16 bits) and result_hi (high 16 bits)
 #[cfg(snes)]
-#[mode(m8, transition=caller)]
 far fn _i32_mul16x16(a @ A: u16, b @ X: u16, *result_lo: u16, *result_hi: u16) {
     // Local temporaries for multiplication
+    let mut a_val: u16 = A;  // Save 16-bit value before mode switch
     let mut a_lo: u8;
     let mut a_hi: u8;
     let mut b_lo: u8;
@@ -141,10 +141,13 @@ far fn _i32_mul16x16(a @ A: u16, b @ X: u16, *result_lo: u16, *result_hi: u16) {
     let mut p2: u16;
     let mut p3: u16;
 
-    // Extract bytes from a (already in A)
-    a_lo = A;
+    // Switch to m8 for byte operations with hardware multiplier
     STATUS.A16 = false;
-    xba();
+
+    // Extract bytes from saved a value
+    A = a_val as u8;
+    a_lo = A;
+    A = (a_val >> 8) as u8;
     a_hi = A;
 
     // Extract bytes from b (in X)
@@ -196,7 +199,6 @@ far fn _i32_mul16x16(a @ A: u16, b @ X: u16, *result_lo: u16, *result_hi: u16) {
 
 // Software 16x16 -> 32 bit multiplication (shift-and-add)
 #[cfg(not(snes))]
-#[mode(m16, transition=caller)]
 far fn _i32_mul16x16(a @ A: u16, b @ X: u16, *result_lo: u16, *result_hi: u16) {
     let mut multiplicand_lo: u16 = A;
     let mut multiplicand_hi: u16 = 0;
@@ -246,7 +248,6 @@ impl far I32 {
     // ========================================================================
 
     // Copy another I32 into self
-    #[mode(m16, transition=caller)]
     far fn copy(far *self, far *src: I32) {
         A = src.lo;
         self.lo = A;
@@ -256,7 +257,6 @@ impl far I32 {
 
     // Initialize from i16 (sign-extend)
     // If value is negative, extends 0xFFFF to high word
-    #[mode(m16, transition=caller)]
     far fn from_i16(far *self, value @ A: i16) {
         self.lo = A as u16;
         // Check sign bit (bit 15) - cast to u16 for bitwise operation
@@ -270,14 +270,12 @@ impl far I32 {
     }
 
     // Initialize from u16 (zero-extend, for positive values only)
-    #[mode(m16, transition=caller)]
     far fn from_u16(far *self, value @ A: u16) {
         self.lo = A;
         self.hi = 0;
     }
 
     // Convert to i16 (truncate, keeps low 16 bits)
-    #[mode(m16, transition=caller)]
     far fn to_i16(far *self) -> i16 {
         return self.lo as i16;
     }
@@ -288,7 +286,6 @@ impl far I32 {
 
     // Check if the value is negative (sign bit set)
     // Returns true if negative, false if zero or positive
-    #[mode(m16, transition=caller)]
     far fn is_negative(far *self) -> bool {
         A = self.hi;
         if A & 0x8000 != 0 {
@@ -298,7 +295,6 @@ impl far I32 {
     }
 
     // Negate the value (two's complement: ~self + 1)
-    #[mode(m16, transition=caller)]
     far fn neg(far *self) {
         // Two's complement negation: invert all bits and add 1
         // ~lo
@@ -320,7 +316,6 @@ impl far I32 {
     }
 
     // Absolute value: if negative, negate
-    #[mode(m16, transition=caller)]
     far fn abs(far *self) {
         A = self.hi;
         if A & 0x8000 != 0 {
@@ -334,7 +329,6 @@ impl far I32 {
 
     // Add: self += other (with overflow wrapping)
     // Two's complement addition is identical to unsigned
-    #[mode(m16, transition=caller)]
     far fn add(far *self, far *other: I32) {
         // Add low words with carry clear
         STATUS.Carry = false;
@@ -350,7 +344,6 @@ impl far I32 {
 
     // Subtract: self -= other (with underflow wrapping)
     // Two's complement subtraction is identical to unsigned
-    #[mode(m16, transition=caller)]
     far fn sub(far *self, far *other: I32) {
         // Subtract low words with borrow clear (SEC for SBC)
         STATUS.Carry = true;
@@ -366,7 +359,6 @@ impl far I32 {
 
     // Multiply: self *= other (32x32 -> 32, lower 32 bits only)
     // Signed multiplication: track signs, multiply magnitudes, fix sign
-    #[mode(m16, transition=caller)]
     far fn mul(far *self, far *other: I32) {
         let mut negate_result: bool = false;
         let mut self_lo: u16;
@@ -450,7 +442,6 @@ impl far I32 {
 
     // Divide: self /= other (rounds toward zero, returns MIN_I32 if other == 0)
     // Signed division: track signs, divide magnitudes, fix sign
-    #[mode(m16, transition=caller)]
     far fn div(far *self, far *other: I32) {
         let mut remainder_lo: u16;
         let mut remainder_hi: u16;
@@ -609,7 +600,6 @@ impl far I32 {
 
     // Modulo: self %= other (remainder has same sign as dividend)
     // Unchanged if other == 0
-    #[mode(m16, transition=caller)]
     far fn mod(far *self, far *other: I32) {
         let mut dividend_lo: u16;
         let mut dividend_hi: u16;
@@ -755,7 +745,6 @@ impl far I32 {
     //   ge: STATUS.Carry == true
     //   gt: STATUS.Carry == true && STATUS.Zero == false
     //   le: STATUS.Carry == false || STATUS.Zero == true
-    #[mode(m16, transition=caller)]
     far fn cmp(far *self, far *other: I32) -> u8 {
         let mut self_sign: u16;
         let mut other_sign: u16;
@@ -800,7 +789,6 @@ impl far I32 {
     // ========================================================================
 
     // Shift left by n bits (in place) - identical to unsigned
-    #[mode(m16, transition=caller)]
     far fn shl(far *self, count @ X: u8) {
         loop {
             if X == 0 {
@@ -817,7 +805,6 @@ impl far I32 {
     }
 
     // Arithmetic shift right by n bits (in place) - preserves sign bit
-    #[mode(m16, transition=caller)]
     far fn sar(far *self, count @ X: u8) {
         loop {
             if X == 0 {
@@ -850,7 +837,6 @@ impl far I32 {
     // Signed version: handles sign conversion.
     // If divisor is 0, sets self to MIN_I32 and returns 0.
     #[cfg(snes)]
-    #[mode(m8, transition=caller)]
     far fn div_i8(far *self, divisor @ X: i8) -> i8 {
         let mut remainder: u8;
         let mut q3: u8;
@@ -945,7 +931,6 @@ impl far I32 {
     // self %= divisor (self becomes remainder, which fits in 8 bits).
     // If divisor is 0, self is unchanged.
     #[cfg(snes)]
-    #[mode(m8, transition=caller)]
     far fn mod_i8(far *self, divisor @ X: i8) {
         // Handle zero divisor
         if X == 0 {
