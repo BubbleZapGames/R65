@@ -686,7 +686,7 @@ class InstructionSelector:
         needs_16bit_mode = (
             (is_u16 or has_large_immediate or involves_index_register) and
             not is_mem_to_mem_16bit and
-            op in ('+', '-', '&', '|', '^') and
+            op in ('+', '-', '&', '|', '^', '<<', '>>') and
             ((left_loc.kind == LocationKind.HARDWARE and left_loc.hw_register in ('A', 'X', 'Y')) or
              (dest_loc.kind == LocationKind.HARDWARE and dest_loc.hw_register in ('A', 'X', 'Y')))
         )
