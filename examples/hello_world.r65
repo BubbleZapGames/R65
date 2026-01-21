@@ -119,26 +119,21 @@ static PALETTE: [u8; 8] = [
 // Entry Point
 // ----------------------------------------------------------------------------
 
-#[mode(m8, x8)]
 #[entry]
 fn main() -> ! {
     // Initialize SNES (PPU, clear VRAM/CGRAM/OAM)
     snes_init();
 
     // Configure BG mode and tilemap
-    BGMODE = BGMODE_0;                  // Mode 0: 4 layers, 2bpp each
-    BG1SC = 0x00;                       // Tilemap at VRAM $0000, 32x32
-    BG12NBA = 0x01;                     // Characters at VRAM $1000
-
-    // Set VRAM increment mode
-    set_vram_inc!(VMAIN_INCREMENT_HIGH);
+    set_bgmode!(0, 0);                  // Mode 0: 4 layers, 2bpp each
+    set_bg1_map!(0x00, 0);              // Tilemap at VRAM $0000, 32x32
+    set_bg12_chr!(1, 0);                // BG1 characters at VRAM $1000
 
     // Upload font to VRAM
     upload_font();
 
-    // Write message to tilemap
-    // Centered: row 14, column 10 = 14*32 + 10 = 458 = $01CA
-    write_message(0xCA, 0x01, &MESSAGE);
+    // Write message to tilemap (centered: row 14, column 10)
+    write_message(10, 14, &MESSAGE);
 
     // Upload palette
     upload_palette();
@@ -146,8 +141,8 @@ fn main() -> ! {
     // Enable BG1 on main screen
     enable_main!(SCREEN_BG1);
 
-    // Turn on screen
-    screen_on!(BRIGHTNESS_FULL);
+    // Turn on screen at full brightness
+    screen_on!(15);
 
     // Main loop
     loop {
@@ -156,10 +151,18 @@ fn main() -> ! {
 }
 
 // ----------------------------------------------------------------------------
+// NMI Handler (called during vblank)
+// ----------------------------------------------------------------------------
+
+#[interrupt(nmi)]
+fn nmi_handler() {
+    A = RDNMI;  // Acknowledge NMI
+}
+
+// ----------------------------------------------------------------------------
 // Upload font tiles to VRAM
 // ----------------------------------------------------------------------------
 
-#[mode(m8, x8)]
 fn upload_font() {
     // Set VRAM address for character data
     // BG12NBA = 0x01 means char base at 1 * $2000 bytes = $1000 words
@@ -173,37 +176,30 @@ fn upload_font() {
     // To get color 3 (both bits set), write same byte to both bitplanes.
     // Each source byte (1bpp row) becomes one VRAM word.
 
-    X = 0;
-    loop {
-        A = FONT[X];
+    for i in 0..216 {
+        A = FONT[i];
         VMDATAL = A;  // Row N, Bitplane 0
         VMDATAH = A;  // Row N, Bitplane 1
-        X++;
-        if X == 216 {
-            break;
-        }
     }
 }
 
 // ----------------------------------------------------------------------------
-// Write "HELLO WORLD" to the tilemap
+// Write a null-terminated message to the tilemap
 // ----------------------------------------------------------------------------
 
-#[mode(m8, x8)]
-fn write_message(vram_lo @ A: u8, vram_hi @ X: u8, message: *[u8]) {
-    // Set VRAM address to tilemap position
-    VMADDL = A;
-    VMADDH = X;
+fn write_message(col @ A: u8, row @ X: u16, msg: *[u8]) {
+    // Calculate VRAM address: row * 32 + col
+    X = row << 5;  // row * 32
+    X = X + (A as u16);
+    set_vram_addr!(X);
 
     // Write each character as a tile
     X = 0;
     loop {
-        A = message[X];
+        A = msg[X];
 
         // Check for null terminator
-        if A == 0 {
-            break;
-        }
+        if A == 0 { break; }
 
         // Convert ASCII to tile index
         A = ascii_to_tile(A);
@@ -219,7 +215,6 @@ fn write_message(vram_lo @ A: u8, vram_hi @ X: u8, message: *[u8]) {
 // Convert ASCII character to tile index
 // ----------------------------------------------------------------------------
 
-#[mode(m8, x8)]
 fn ascii_to_tile(char @ A: u8) -> u8 {
     if A == 0x20 {
         // Space -> tile 0
@@ -235,17 +230,11 @@ fn ascii_to_tile(char @ A: u8) -> u8 {
 // Upload palette to CGRAM
 // ----------------------------------------------------------------------------
 
-#[mode(m8, x8)]
 fn upload_palette() {
     set_cgram_addr!(0);
 
-    X = 0;
-    loop {
-        A = PALETTE[X];
+    for i in 0..8 {
+        A = PALETTE[i];
         CGDATA = A;
-        X++;
-        if X == 8 {
-            break;
-        }
     }
 }
