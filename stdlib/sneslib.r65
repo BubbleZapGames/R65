@@ -374,6 +374,10 @@ static mut WRDIVH: u8;
 #[hw(0x4206)]
 static mut WRDIVB: u8;
 
+// H-Count Timer (16-bit)
+#[hw(0x4207)]
+static mut HTIME: u16;
+
 // H-Count Timer (low byte)
 #[hw(0x4207)]
 static mut HTIMEL: u8;
@@ -381,6 +385,10 @@ static mut HTIMEL: u8;
 // H-Count Timer (high byte)
 #[hw(0x4208)]
 static mut HTIMEH: u8;
+
+// V-Count Timer (16-bit)
+#[hw(0x4209)]
+static mut VTIME: u16;
 
 // V-Count Timer (low byte)
 #[hw(0x4209)]
@@ -494,7 +502,10 @@ static mut DMAP0: u8;
 #[hw(0x4301)]
 static mut BBAD0: u8;
 
-// DMA Source Address (Channel 0)
+// DMA Source Address (Channel 0, 16-bit)
+#[hw(0x4302)]
+static mut A1T0: u16;
+
 #[hw(0x4302)]
 static mut A1T0L: u8;
 
@@ -504,7 +515,10 @@ static mut A1T0H: u8;
 #[hw(0x4304)]
 static mut A1B0: u8;
 
-// DMA Size / HDMA Indirect Address (Channel 0)
+// DMA Size / HDMA Indirect Address (Channel 0, 16-bit)
+#[hw(0x4305)]
+static mut DAS0: u16;
+
 #[hw(0x4305)]
 static mut DAS0L: u8;
 
@@ -515,7 +529,10 @@ static mut DAS0H: u8;
 #[hw(0x4307)]
 static mut DASB0: u8;
 
-// HDMA Table Address (Channel 0)
+// HDMA Table Address (Channel 0, 16-bit)
+#[hw(0x4308)]
+static mut A2A0: u16;
+
 #[hw(0x4308)]
 static mut A2A0L: u8;
 
@@ -538,6 +555,9 @@ static mut DMAP1: u8;
 static mut BBAD1: u8;
 
 #[hw(0x4312)]
+static mut A1T1: u16;
+
+#[hw(0x4312)]
 static mut A1T1L: u8;
 
 #[hw(0x4313)]
@@ -547,6 +567,9 @@ static mut A1T1H: u8;
 static mut A1B1: u8;
 
 #[hw(0x4315)]
+static mut DAS1: u16;
+
+#[hw(0x4315)]
 static mut DAS1L: u8;
 
 #[hw(0x4316)]
@@ -554,6 +577,9 @@ static mut DAS1H: u8;
 
 #[hw(0x4317)]
 static mut DASB1: u8;
+
+#[hw(0x4318)]
+static mut A2A1: u16;
 
 #[hw(0x4318)]
 static mut A2A1L: u8;
@@ -576,6 +602,9 @@ static mut DMAP2: u8;
 static mut BBAD2: u8;
 
 #[hw(0x4322)]
+static mut A1T2: u16;
+
+#[hw(0x4322)]
 static mut A1T2L: u8;
 
 #[hw(0x4323)]
@@ -585,6 +614,9 @@ static mut A1T2H: u8;
 static mut A1B2: u8;
 
 #[hw(0x4325)]
+static mut DAS2: u16;
+
+#[hw(0x4325)]
 static mut DAS2L: u8;
 
 #[hw(0x4326)]
@@ -592,6 +624,9 @@ static mut DAS2H: u8;
 
 #[hw(0x4327)]
 static mut DASB2: u8;
+
+#[hw(0x4328)]
+static mut A2A2: u16;
 
 #[hw(0x4328)]
 static mut A2A2L: u8;
@@ -614,6 +649,9 @@ static mut DMAP3: u8;
 static mut BBAD3: u8;
 
 #[hw(0x4332)]
+static mut A1T3: u16;
+
+#[hw(0x4332)]
 static mut A1T3L: u8;
 
 #[hw(0x4333)]
@@ -623,6 +661,9 @@ static mut A1T3H: u8;
 static mut A1B3: u8;
 
 #[hw(0x4335)]
+static mut DAS3: u16;
+
+#[hw(0x4335)]
 static mut DAS3L: u8;
 
 #[hw(0x4336)]
@@ -630,6 +671,9 @@ static mut DAS3H: u8;
 
 #[hw(0x4337)]
 static mut DASB3: u8;
+
+#[hw(0x4338)]
+static mut A2A3: u16;
 
 #[hw(0x4338)]
 static mut A2A3L: u8;
@@ -652,6 +696,9 @@ static mut DMAP4: u8;
 static mut BBAD4: u8;
 
 #[hw(0x4342)]
+static mut A1T4: u16;
+
+#[hw(0x4342)]
 static mut A1T4L: u8;
 
 #[hw(0x4343)]
@@ -661,6 +708,9 @@ static mut A1T4H: u8;
 static mut A1B4: u8;
 
 #[hw(0x4345)]
+static mut DAS4: u16;
+
+#[hw(0x4345)]
 static mut DAS4L: u8;
 
 #[hw(0x4346)]
@@ -668,6 +718,9 @@ static mut DAS4H: u8;
 
 #[hw(0x4347)]
 static mut DASB4: u8;
+
+#[hw(0x4348)]
+static mut A2A4: u16;
 
 #[hw(0x4348)]
 static mut A2A4L: u8;
@@ -690,6 +743,9 @@ static mut DMAP5: u8;
 static mut BBAD5: u8;
 
 #[hw(0x4352)]
+static mut A1T5: u16;
+
+#[hw(0x4352)]
 static mut A1T5L: u8;
 
 #[hw(0x4353)]
@@ -699,6 +755,9 @@ static mut A1T5H: u8;
 static mut A1B5: u8;
 
 #[hw(0x4355)]
+static mut DAS5: u16;
+
+#[hw(0x4355)]
 static mut DAS5L: u8;
 
 #[hw(0x4356)]
@@ -706,6 +765,9 @@ static mut DAS5H: u8;
 
 #[hw(0x4357)]
 static mut DASB5: u8;
+
+#[hw(0x4358)]
+static mut A2A5: u16;
 
 #[hw(0x4358)]
 static mut A2A5L: u8;
@@ -728,6 +790,9 @@ static mut DMAP6: u8;
 static mut BBAD6: u8;
 
 #[hw(0x4362)]
+static mut A1T6: u16;
+
+#[hw(0x4362)]
 static mut A1T6L: u8;
 
 #[hw(0x4363)]
@@ -737,6 +802,9 @@ static mut A1T6H: u8;
 static mut A1B6: u8;
 
 #[hw(0x4365)]
+static mut DAS6: u16;
+
+#[hw(0x4365)]
 static mut DAS6L: u8;
 
 #[hw(0x4366)]
@@ -744,6 +812,9 @@ static mut DAS6H: u8;
 
 #[hw(0x4367)]
 static mut DASB6: u8;
+
+#[hw(0x4368)]
+static mut A2A6: u16;
 
 #[hw(0x4368)]
 static mut A2A6L: u8;
@@ -766,6 +837,9 @@ static mut DMAP7: u8;
 static mut BBAD7: u8;
 
 #[hw(0x4372)]
+static mut A1T7: u16;
+
+#[hw(0x4372)]
 static mut A1T7L: u8;
 
 #[hw(0x4373)]
@@ -775,6 +849,9 @@ static mut A1T7H: u8;
 static mut A1B7: u8;
 
 #[hw(0x4375)]
+static mut DAS7: u16;
+
+#[hw(0x4375)]
 static mut DAS7L: u8;
 
 #[hw(0x4376)]
@@ -782,6 +859,9 @@ static mut DAS7H: u8;
 
 #[hw(0x4377)]
 static mut DASB7: u8;
+
+#[hw(0x4378)]
+static mut A2A7: u16;
 
 #[hw(0x4378)]
 static mut A2A7L: u8;
@@ -1130,8 +1210,9 @@ macro_rules! write_rgb($r:expr, $g:expr, $b:expr) {
 // Usage: set_backdrop!(0x001F);  // Red backdrop
 macro_rules! set_backdrop($color:expr) {
     CGADD = 0;
-    CGDATA = $color as u8;
-    CGDATA = ($color >> 8) as u8;
+    A = $color as u16;
+    CGDATA = A as u8;
+    CGDATA = B;
 }
 
 
@@ -1198,43 +1279,51 @@ macro_rules! set_bg34_chr($bg3:expr, $bg4:expr) {
 // Set BG scroll position (writes twice for 10-bit value)
 // Usage: set_bg1_scroll!(hscroll, vscroll);
 macro_rules! set_bg1_hscroll($scroll:expr) {
-    BG1HOFS = $scroll as u8;
-    BG1HOFS = ($scroll >> 8) as u8;
+    A = $scroll as u16;
+    BG1HOFS = A as u8;
+    BG1HOFS = B;
 }
 
 macro_rules! set_bg1_vscroll($scroll:expr) {
-    BG1VOFS = $scroll as u8;
-    BG1VOFS = ($scroll >> 8) as u8;
+    A = $scroll as u16;
+    BG1VOFS = A as u8;
+    BG1VOFS = B;
 }
 
 macro_rules! set_bg2_hscroll($scroll:expr) {
-    BG2HOFS = $scroll as u8;
-    BG2HOFS = ($scroll >> 8) as u8;
+    A = $scroll as u16;
+    BG2HOFS = A as u8;
+    BG2HOFS = B;
 }
 
 macro_rules! set_bg2_vscroll($scroll:expr) {
-    BG2VOFS = $scroll as u8;
-    BG2VOFS = ($scroll >> 8) as u8;
+    A = $scroll as u16;
+    BG2VOFS = A as u8;
+    BG2VOFS = B;
 }
 
 macro_rules! set_bg3_hscroll($scroll:expr) {
-    BG3HOFS = $scroll as u8;
-    BG3HOFS = ($scroll >> 8) as u8;
+    A = $scroll as u16;
+    BG3HOFS = A as u8;
+    BG3HOFS = B;
 }
 
 macro_rules! set_bg3_vscroll($scroll:expr) {
-    BG3VOFS = $scroll as u8;
-    BG3VOFS = ($scroll >> 8) as u8;
+    A = $scroll as u16;
+    BG3VOFS = A as u8;
+    BG3VOFS = B;
 }
 
 macro_rules! set_bg4_hscroll($scroll:expr) {
-    BG4HOFS = $scroll as u8;
-    BG4HOFS = ($scroll >> 8) as u8;
+    A = $scroll as u16;
+    BG4HOFS = A as u8;
+    BG4HOFS = B;
 }
 
 macro_rules! set_bg4_vscroll($scroll:expr) {
-    BG4VOFS = $scroll as u8;
-    BG4VOFS = ($scroll >> 8) as u8;
+    A = $scroll as u16;
+    BG4VOFS = A as u8;
+    BG4VOFS = B;
 }
 
 
@@ -1301,94 +1390,89 @@ macro_rules! clear_nmi() {
 
 
 // ============================================================================
-// MACROS - DMA Setup (Channel 0)
+// MACROS - DMA Setup
 // ============================================================================
 
-// Set DMA source address (channel 0)
-// Usage: dma0_src!(0x8000, 0x00);  // Address $008000
-macro_rules! dma0_src($addr:expr, $bank:expr) {
-    A1T0L = $addr as u8;
-    A1T0H = ($addr >> 8) as u8;
-    A1B0 = $bank;
+// Trigger DMA transfer on a channel
+// Usage: dma_trigger!(0);  // Trigger channel 0
+macro_rules! dma_trigger($channel:expr) {
+    MDMAEN = 1 << $channel;
 }
 
-// Set DMA transfer size (channel 0)
-// Usage: dma0_size!(0x1000);  // 4KB
-macro_rules! dma0_size($size:expr) {
-    DAS0L = $size as u8;
-    DAS0H = ($size >> 8) as u8;
+// Set DMA source address
+// Usage: dma_src!(0, 0x8000, 0x00);  // Channel 0, Address $008000
+macro_rules! dma_src($channel:expr, $addr:expr, $bank:expr) {
+    A1T$channel = $addr as u16;
+    A1B$channel = $bank;
 }
 
-// Configure DMA for VRAM transfer and execute (channel 0)
-// Usage: dma0_to_vram!();
-macro_rules! dma0_to_vram() {
+// Set DMA transfer size
+// Usage: dma_size!(0, 0x1000);  // Channel 0, 4KB
+macro_rules! dma_size($channel:expr, $size:expr) {
+    DAS$channel = $size as u16;
+}
+
+// Configure DMA for VRAM transfer and execute
+// Usage: dma_to_vram!(0);  // Channel 0
+macro_rules! dma_to_vram($channel:expr) {
     VMAIN = VMAIN_INCREMENT_HIGH;
-    DMAP0 = DMA_MODE_2REG_1WRITE;
-    BBAD0 = 0x18;
-    MDMAEN = 0x01;
+    DMAP$channel = DMA_MODE_2REG_1WRITE;
+    BBAD$channel = 0x18;
+    dma_trigger!($channel);
 }
 
-// Configure DMA for CGRAM transfer and execute (channel 0)
-// Usage: dma0_to_cgram!();
-macro_rules! dma0_to_cgram() {
-    DMAP0 = DMA_MODE_1REG_2WRITE;
-    BBAD0 = 0x22;
-    MDMAEN = 0x01;
+// Configure DMA for CGRAM transfer and execute
+// Usage: dma_to_cgram!(0);  // Channel 0
+macro_rules! dma_to_cgram($channel:expr) {
+    DMAP$channel = DMA_MODE_1REG_2WRITE;
+    BBAD$channel = 0x22;
+    dma_trigger!($channel);
 }
 
-// Configure DMA for OAM transfer and execute (channel 0)
-// Usage: dma0_to_oam!();
-macro_rules! dma0_to_oam() {
-    OAMADDL = 0;
-    OAMADDH = 0;
-    DMAP0 = DMA_MODE_1REG_1WRITE;
-    BBAD0 = 0x04;
-    MDMAEN = 0x01;
+// Configure DMA for OAM transfer and execute
+// Usage: dma_to_oam!(0);  // Channel 0
+macro_rules! dma_to_oam($channel:expr) {
+    OAMADD = 0;
+    DMAP$channel = DMA_MODE_1REG_1WRITE;
+    BBAD$channel = 0x04;
+    dma_trigger!($channel);
 }
 
 // Full DMA to VRAM macro
-// Usage: dma_vram!(src_addr, src_bank, dest_vram, size);
-macro_rules! dma_vram($src:expr, $bank:expr, $dest:expr, $size:expr) {
-    A1T0L = $src as u8;
-    A1T0H = ($src >> 8) as u8;
-    A1B0 = $bank;
-    DAS0L = $size as u8;
-    DAS0H = ($size >> 8) as u8;
-    VMADDL = $dest as u8;
-    VMADDH = ($dest >> 8) as u8;
+// Usage: dma_vram!(0, src_addr, src_bank, dest_vram, size);
+macro_rules! dma_vram($channel:expr, $src:expr, $bank:expr, $dest:expr, $size:expr) {
+    A1T$channel = $src as u16;
+    DAS$channel = $size as u16;
+    VMADD = $dest as u16;
+    A1B$channel = $bank;
     VMAIN = VMAIN_INCREMENT_HIGH;
-    DMAP0 = DMA_MODE_2REG_1WRITE;
-    BBAD0 = 0x18;
-    MDMAEN = 0x01;
+    DMAP$channel = DMA_MODE_2REG_1WRITE;
+    BBAD$channel = 0x18;
+    dma_trigger!($channel);
 }
 
 // Full DMA to CGRAM macro
-// Usage: dma_cgram!(src_addr, src_bank, start_color, size);
-macro_rules! dma_cgram($src:expr, $bank:expr, $start:expr, $size:expr) {
-    A1T0L = $src as u8;
-    A1T0H = ($src >> 8) as u8;
-    A1B0 = $bank;
-    DAS0L = $size as u8;
-    DAS0H = ($size >> 8) as u8;
+// Usage: dma_cgram!(0, src_addr, src_bank, start_color, size);
+macro_rules! dma_cgram($channel:expr, $src:expr, $bank:expr, $start:expr, $size:expr) {
+    A1T$channel = $src as u16;
+    DAS$channel = $size as u16;
+    A1B$channel = $bank;
     CGADD = $start;
-    DMAP0 = DMA_MODE_1REG_2WRITE;
-    BBAD0 = 0x22;
-    MDMAEN = 0x01;
+    DMAP$channel = DMA_MODE_1REG_2WRITE;
+    BBAD$channel = 0x22;
+    dma_trigger!($channel);
 }
 
 // Full DMA to OAM macro
-// Usage: dma_oam!(src_addr, src_bank, size);
-macro_rules! dma_oam($src:expr, $bank:expr, $size:expr) {
-    A1T0L = $src as u8;
-    A1T0H = ($src >> 8) as u8;
-    A1B0 = $bank;
-    DAS0L = $size as u8;
-    DAS0H = ($size >> 8) as u8;
-    OAMADDL = 0;
-    OAMADDH = 0;
-    DMAP0 = DMA_MODE_1REG_1WRITE;
-    BBAD0 = 0x04;
-    MDMAEN = 0x01;
+// Usage: dma_oam!(0, src_addr, src_bank, size);
+macro_rules! dma_oam($channel:expr, $src:expr, $bank:expr, $size:expr) {
+    A1T$channel = $src as u16;
+    DAS$channel = $size as u16;
+    OAMADD = 0;
+    A1B$channel = $bank;
+    DMAP$channel = DMA_MODE_1REG_1WRITE;
+    BBAD$channel = 0x04;
+    dma_trigger!($channel);
 }
 
 
@@ -1397,62 +1481,56 @@ macro_rules! dma_oam($src:expr, $bank:expr, $size:expr) {
 // ============================================================================
 
 // Fill VRAM with a value using DMA (fixed source address mode)
-// Usage: fill_vram!(dest_vram, value, size);
+// Usage: fill_vram!(0, dest_vram, value_addr, bank, size);
 // Note: value must be a memory address containing the fill byte
-macro_rules! fill_vram($dest:expr, $value_addr:expr, $bank:expr, $size:expr) {
-    A1T0L = $value_addr as u8;
-    A1T0H = ($value_addr >> 8) as u8;
-    A1B0 = $bank;
-    DAS0L = $size as u8;
-    DAS0H = ($size >> 8) as u8;
-    VMADDL = $dest as u8;
-    VMADDH = ($dest >> 8) as u8;
+macro_rules! fill_vram($channel:expr, $dest:expr, $value_addr:expr, $bank:expr, $size:expr) {
+    A1T$channel = $value_addr as u16;
+    DAS$channel = $size as u16;
+    VMADD = $dest as u16;
+    A1B$channel = $bank;
     VMAIN = VMAIN_INCREMENT_HIGH;
-    DMAP0 = DMA_MODE_2REG_1WRITE | DMA_FIXED;
-    BBAD0 = 0x18;
-    MDMAEN = 0x01;
+    DMAP$channel = DMA_MODE_2REG_1WRITE | DMA_FIXED;
+    BBAD$channel = 0x18;
+    dma_trigger!($channel);
 }
 
 // Copy from VRAM to RAM using DMA (reverse direction)
-// Usage: copy_from_vram!(src_vram, dest_addr, dest_bank, size);
+// Usage: copy_from_vram!(0, src_vram, dest_addr, dest_bank, size);
 // Note: Requires dummy read first to prime the VRAM read buffer
-macro_rules! copy_from_vram($src:expr, $dest:expr, $bank:expr, $size:expr) {
-    VMADDL = $src as u8;
-    VMADDH = ($src >> 8) as u8;
+macro_rules! copy_from_vram($channel:expr, $src:expr, $dest:expr, $bank:expr, $size:expr) {
+    VMADD = $src as u16;
+    A1T$channel = $dest as u16;
+    DAS$channel = $size as u16;
     VMAIN = VMAIN_INCREMENT_HIGH;
-    A1T0L = $dest as u8;
-    A1T0H = ($dest >> 8) as u8;
-    A1B0 = $bank;
-    DAS0L = $size as u8;
-    DAS0H = ($size >> 8) as u8;
-    DMAP0 = DMA_MODE_2REG_1WRITE | DMA_DIRECTION_TO_CPU;
-    BBAD0 = 0x39;
-    MDMAEN = 0x01;
+    A1B$channel = $bank;
+    DMAP$channel = DMA_MODE_2REG_1WRITE | DMA_DIRECTION_TO_CPU;
+    BBAD$channel = 0x39;
+    dma_trigger!($channel);
 }
 
 // Set WRAM address for sequential access
 // Usage: set_wram_addr!(0x7E0000);  // Full 24-bit address
 macro_rules! set_wram_addr($addr:expr) {
-    WMADDL = $addr as u8;
-    WMADDM = ($addr >> 8) as u8;
+    A = $addr as u16;
+    WMADDL = A as u8;
+    WMADDM = B;
     WMADDH = ($addr >> 16) as u8;
 }
 
 // Copy memory using WRAM DMA (ROM to RAM or RAM to WRAM)
 // Note: RAM-to-RAM copy is not possible, source must be ROM or different bank
-// Usage: copy_mem!(dest_wram, src_addr, src_bank, size);
-macro_rules! copy_mem($dest:expr, $src:expr, $bank:expr, $size:expr) {
-    WMADDL = $dest as u8;
-    WMADDM = ($dest >> 8) as u8;
+// Usage: copy_mem!(0, dest_wram, src_addr, src_bank, size);
+macro_rules! copy_mem($channel:expr, $dest:expr, $src:expr, $bank:expr, $size:expr) {
+    A1T$channel = $src as u16;
+    DAS$channel = $size as u16;
+    A = $dest as u16;
+    WMADDL = A as u8;
+    WMADDM = B;
     WMADDH = ($dest >> 16) as u8;
-    A1T0L = $src as u8;
-    A1T0H = ($src >> 8) as u8;
-    A1B0 = $bank;
-    DAS0L = $size as u8;
-    DAS0H = ($size >> 8) as u8;
-    DMAP0 = DMA_MODE_1REG_1WRITE;
-    BBAD0 = 0x80;
-    MDMAEN = 0x01;
+    A1B$channel = $bank;
+    DMAP$channel = DMA_MODE_1REG_1WRITE;
+    BBAD$channel = 0x80;
+    dma_trigger!($channel);
 }
 
 
@@ -1480,32 +1558,38 @@ macro_rules! disable_hdma() {
 // Set Mode 7 matrix parameter A (cosine for rotation)
 // Usage: set_m7a!(0x0100);  // 1.0 in fixed point
 macro_rules! set_m7a($val:expr) {
-    M7A = $val as u8;
-    M7A = ($val >> 8) as u8;
+    A = $val as u16;
+    M7A = A as u8;
+    M7A = B;
 }
 
 macro_rules! set_m7b($val:expr) {
-    M7B = $val as u8;
-    M7B = ($val >> 8) as u8;
+    A = $val as u16;
+    M7B = A as u8;
+    M7B = B;
 }
 
 macro_rules! set_m7c($val:expr) {
-    M7C = $val as u8;
-    M7C = ($val >> 8) as u8;
+    A = $val as u16;
+    M7C = A as u8;
+    M7C = B;
 }
 
 macro_rules! set_m7d($val:expr) {
-    M7D = $val as u8;
-    M7D = ($val >> 8) as u8;
+    A = $val as u16;
+    M7D = A as u8;
+    M7D = B;
 }
 
 // Set Mode 7 center point
 // Usage: set_m7_center!(128, 112);
 macro_rules! set_m7_center($x:expr, $y:expr) {
-    M7X = $x as u8;
-    M7X = ($x >> 8) as u8;
-    M7Y = $y as u8;
-    M7Y = ($y >> 8) as u8;
+    A = $x as u16;
+    M7X = A as u8;
+    M7X = B;
+    A = $y as u16;
+    M7Y = A as u8;
+    M7Y = B;
 }
 
 
@@ -1563,15 +1647,13 @@ macro_rules! set_mosaic($size:expr, $bgs:expr) {
 // Set H-count IRQ position (0-339)
 // Usage: set_hirq!(128);
 macro_rules! set_hirq($pos:expr) {
-    HTIMEL = $pos as u8;
-    HTIMEH = ($pos >> 8) as u8;
+    HTIME = $pos as u16;
 }
 
 // Set V-count IRQ position (0-261 NTSC, 0-311 PAL)
 // Usage: set_virq!(200);
 macro_rules! set_virq($pos:expr) {
-    VTIMEL = $pos as u8;
-    VTIMEH = ($pos >> 8) as u8;
+    VTIME = $pos as u16;
 }
 
 
@@ -1910,32 +1992,27 @@ macro_rules! rgb($r:expr, $g:expr, $b:expr) {
 
 // Fast VRAM clear using DMA (much faster than loop)
 // Requires a zero byte somewhere in ROM/RAM for the fill value
-// Usage: fast_clear_vram!(zero_byte_addr, bank);
-macro_rules! fast_clear_vram($zero_addr:expr, $bank:expr) {
-    VMADDL = 0;
-    VMADDH = 0;
+// Usage: fast_clear_vram!(0, zero_byte_addr, bank);
+macro_rules! fast_clear_vram($channel:expr, $zero_addr:expr, $bank:expr) {
+    VMADD = 0;
+    A1T$channel = $zero_addr as u16;
+    DAS$channel = 0;
     VMAIN = VMAIN_INCREMENT_HIGH;
-    A1T0L = $zero_addr as u8;
-    A1T0H = ($zero_addr >> 8) as u8;
-    A1B0 = $bank;
-    DAS0L = 0x00;
-    DAS0H = 0x00;
-    DMAP0 = DMA_MODE_2REG_1WRITE | DMA_FIXED;
-    BBAD0 = 0x18;
-    MDMAEN = 0x01;
+    A1B$channel = $bank;
+    DMAP$channel = DMA_MODE_2REG_1WRITE | DMA_FIXED;
+    BBAD$channel = 0x18;
+    dma_trigger!($channel);
 }
 
 // Fast CGRAM clear using DMA
-// Usage: fast_clear_cgram!(zero_addr, bank);
-macro_rules! fast_clear_cgram($zero_addr:expr, $bank:expr) {
+// Usage: fast_clear_cgram!(0, zero_addr, bank);
+macro_rules! fast_clear_cgram($channel:expr, $zero_addr:expr, $bank:expr) {
+    A1T$channel = $zero_addr as u16;
+    DAS$channel = 0x0200;
     CGADD = 0;
-    A1T0L = $zero_addr as u8;
-    A1T0H = ($zero_addr >> 8) as u8;
-    A1B0 = $bank;
-    DAS0L = 0x00;
-    DAS0H = 0x02;
-    DMAP0 = DMA_MODE_1REG_2WRITE | DMA_FIXED;
-    BBAD0 = 0x22;
-    MDMAEN = 0x01;
+    A1B$channel = $bank;
+    DMAP$channel = DMA_MODE_1REG_2WRITE | DMA_FIXED;
+    BBAD$channel = 0x22;
+    dma_trigger!($channel);
 }
 
