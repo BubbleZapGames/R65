@@ -88,7 +88,8 @@ class CompareSelector(BaseSelector):
         Generate code for Compare instruction.
 
         Emits CMP/CPX/CPY instruction and sets processor flags for subsequent
-        conditional branch.
+        conditional branch. For 16-bit types (u16/i16), switches to 16-bit
+        accumulator mode.
 
         Args:
             instr: Compare instruction
@@ -96,11 +97,33 @@ class CompareSelector(BaseSelector):
         # Store type info for subsequent CondBranch (for signed/unsigned detection)
         self.parent.last_comparison_type = instr.type_info
 
+        # Check if this is a 16-bit comparison
+        is_16bit = self._is_16bit_type(instr.type_info)
+
         left_loc = self.parent._get_operand_location(instr.left)
-        right_operand, is_immediate, pushed_reg = self._prepare_right_operand(instr.right)
+        right_operand, is_immediate, pushed_reg = self._prepare_right_operand(instr.right, is_16bit)
+
+        # Switch to 16-bit mode if needed (for A comparisons only)
+        needs_mode_switch = is_16bit and left_loc.kind == LocationKind.HARDWARE and left_loc.hw_register == 'A'
+        already_in_16bit = self.parent.emitter.get_accu_mode() == 16
+
+        if needs_mode_switch and not already_in_16bit:
+            self._emit_instr(Opcode.REP_IMMEDIATE, Immediate(0x20), "16-bit A for comparison")
+            self.parent.emitter.emit_accu_mode(16)
+
+        # For stack-relative comparisons with 16-bit values, we need to use A
+        if is_16bit and left_loc.kind == LocationKind.STACK and not already_in_16bit:
+            self._emit_instr(Opcode.REP_IMMEDIATE, Immediate(0x20), "16-bit A for comparison")
+            self.parent.emitter.emit_accu_mode(16)
+            needs_mode_switch = True
 
         # Emit appropriate comparison instruction based on left operand
         self._emit_comparison(left_loc, right_operand, is_immediate)
+
+        # Switch back to 8-bit mode if we changed it
+        if needs_mode_switch and not already_in_16bit:
+            self._emit_instr(Opcode.SEP_IMMEDIATE, Immediate(0x20), "8-bit A")
+            self.parent.emitter.emit_accu_mode(8)
 
         # Pop register if we pushed it for temp storage
         if pushed_reg:
@@ -109,7 +132,16 @@ class CompareSelector(BaseSelector):
             elif pushed_reg == 'Y':
                 self._emit_instr(Opcode.PLY, comment="Restore Y")
 
-    def _prepare_right_operand(self, right):
+    def _is_16bit_type(self, type_info) -> bool:
+        """Check if the type is a 16-bit type (u16 or i16)."""
+        if type_info is None:
+            return False
+        from r65.compiler.hir import BasicTypeInfo
+        if isinstance(type_info, BasicTypeInfo):
+            return type_info.name in ('u16', 'i16')
+        return False
+
+    def _prepare_right_operand(self, right, is_16bit: bool = False):
         """
         Prepare right operand for comparison.
 
@@ -117,13 +149,17 @@ class CompareSelector(BaseSelector):
 
         Args:
             right: Right operand
+            is_16bit: Whether the comparison is 16-bit
 
         Returns:
             Tuple of (operand, is_immediate, needs_pop) for comparison emission
             needs_pop is True if we pushed X/Y and need to pop after comparison
         """
         if isinstance(right, MIRImmediate):
-            return Immediate(right.value & 0xFF), True, False
+            if is_16bit:
+                return Immediate(right.value & 0xFFFF), True, False
+            else:
+                return Immediate(right.value & 0xFF), True, False
 
         right_loc = self.parent._get_operand_location(right)
 

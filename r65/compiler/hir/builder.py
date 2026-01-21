@@ -1253,13 +1253,17 @@ class HIRBuilder:
         start_expr = self._build_expression(for_stmt.start)
         end_expr = self._build_expression(for_stmt.end)
 
-        # Create symbol for loop variable (mutable, type inferred from start)
+        # Determine loop variable type from range bounds
+        # Try to const-evaluate both bounds to pick appropriate type
+        loop_var_type = self._infer_for_loop_type(for_stmt.start, for_stmt.end, src_loc)
+
+        # Create symbol for loop variable (mutable, type inferred from range)
         loop_var_symbol = Symbol(
             name=for_stmt.variable,
             kind=SymbolKind.LOCAL_VAR,
             definition=for_stmt,
             scope_id=self.symbol_table.current_scope_id,
-            var_type=None,  # Will be inferred during type checking
+            var_type=loop_var_type,
             is_mutable=True
         )
         self.symbol_table.declare(for_stmt.variable, loop_var_symbol)
@@ -1268,7 +1272,7 @@ class HIRBuilder:
         let_stmt = hir.HIRLetStmt(
             name=for_stmt.variable,
             is_mutable=True,
-            var_type=None,  # Inferred
+            var_type=loop_var_type,
             initializer=start_expr,
             binding=None,
             symbol=loop_var_symbol,
@@ -1338,6 +1342,80 @@ class HIRBuilder:
             statements=[let_stmt, while_stmt],
             source_loc=src_loc
         )
+
+    def _infer_for_loop_type(self, start: ast.Expression, end: ast.Expression, src_loc) -> TypeInfo:
+        """Infer the appropriate type for a for loop variable based on range bounds.
+
+        Examines both start and end values to determine the smallest type that
+        can hold all values in the range. Falls back to u16 if bounds cannot
+        be const-evaluated.
+
+        Args:
+            start: Start expression of the range
+            end: End expression of the range (exclusive)
+            src_loc: Source location for error reporting
+
+        Returns:
+            TypeInfo for the loop variable (u8, i8, u16, or i16)
+        """
+        # Try to const-evaluate the bounds
+        start_val = self._try_const_eval(start)
+        end_val = self._try_const_eval(end)
+
+        # If we can't evaluate bounds, default to u16 (safest choice)
+        if start_val is None or end_val is None:
+            return BasicTypeInfo('u16')
+
+        # Determine the range of values
+        min_val = min(start_val, end_val - 1) if end_val > start_val else start_val
+        max_val = max(start_val, end_val - 1) if end_val > start_val else start_val
+
+        # Check if values fit in each type (prefer unsigned, smallest first)
+        if min_val >= 0:
+            # Unsigned range
+            if max_val <= 255:
+                return BasicTypeInfo('u8')
+            elif max_val <= 65535:
+                return BasicTypeInfo('u16')
+        else:
+            # Signed range (negative start)
+            if min_val >= -128 and max_val <= 127:
+                return BasicTypeInfo('i8')
+            elif min_val >= -32768 and max_val <= 32767:
+                return BasicTypeInfo('i16')
+
+        # Default to u16 if nothing fits
+        return BasicTypeInfo('u16')
+
+    def _try_const_eval(self, expr: ast.Expression) -> Optional[int]:
+        """Try to const-evaluate an expression, returning None if not possible."""
+        try:
+            if isinstance(expr, ast.IntegerLiteral):
+                return expr.value
+            elif isinstance(expr, ast.Identifier):
+                # Look up const value if it's a constant
+                symbol = self.symbol_table.lookup(expr.name)
+                if symbol and symbol.kind == SymbolKind.CONST and hasattr(symbol, 'const_value'):
+                    return symbol.const_value
+            elif isinstance(expr, ast.BinaryOp):
+                left = self._try_const_eval(expr.left)
+                right = self._try_const_eval(expr.right)
+                if left is not None and right is not None:
+                    if expr.op == '+':
+                        return left + right
+                    elif expr.op == '-':
+                        return left - right
+                    elif expr.op == '*':
+                        return left * right
+                    elif expr.op == '/':
+                        return left // right if right != 0 else None
+                    elif expr.op == '<<':
+                        return left << right
+                    elif expr.op == '>>':
+                        return left >> right
+        except Exception:
+            pass
+        return None
 
     # =========================================================================
     # Build Expressions

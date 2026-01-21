@@ -466,6 +466,12 @@ class MIRBuilder:
         elif isinstance(stmt, HIRBlock):
             # Nested block - flatten by recursively lowering its statements
             self.lower_block(stmt)
+        elif isinstance(stmt, HIRAssignment):
+            # Assignment statement (e.g., from for loop increment)
+            self.assign_lowerer.lower_assignment(stmt)
+        elif isinstance(stmt, HIRMultiAssignment):
+            # Multi-assignment statement
+            self.assign_lowerer.lower_multi_assignment(stmt)
         else:
             # Unsupported statement type (placeholder for future expansion)
             pass
@@ -898,15 +904,8 @@ class MIRBuilder:
             return
         elif stmt.condition:
             # while condition: conditional loop
-            cond_value = self.lower_expression(stmt.condition)
-            self.emit(CondBranch(
-                condition=cond_value,
-                true_target=body_block.block_id,
-                false_target=exit_block.block_id,
-                comparison='!='
-            ))
-            self.cfg_builder.add_edge(header_block, body_block)
-            self.cfg_builder.add_edge(header_block, exit_block)
+            # Use condition lowerer for proper Compare + CondBranch generation
+            self.cond_lowerer.lower_condition(stmt.condition, body_block.block_id, exit_block.block_id)
         else:
             # loop: infinite loop (fallback)
             self.emit(Jump(target=body_block.block_id))

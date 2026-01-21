@@ -1721,19 +1721,18 @@ fn clear_vram() {
     VMADDH = 0;
     VMAIN = VMAIN_INCREMENT_HIGH;
 
-    for row in 0..128 {
-        for col in 0..256 {
-            VMDATAL = 0;
-            VMDATAH = 0;
-        }
+    // 128 * 256 = 32768 words to clear
+    for i in 0..32768 {
+        VMDATAL = 0;
+        VMDATAH = 0;
     }
 }
 
 // Clear CGRAM (all colors to black)
 fn clear_cgram() {
     CGADD = 0;
-    for i in 0..256 {
-        CGDATA = 0;
+    // 256 colors * 2 bytes each = 512 bytes
+    for i in 0..512 {
         CGDATA = 0;
     }
 }

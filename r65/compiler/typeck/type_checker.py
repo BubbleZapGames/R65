@@ -13,7 +13,7 @@ from r65.compiler.hir import (
     HIRStructFieldInit, HIRStructLiteralExpr,
     HIRTypeCast, HIRFunctionCall,
     HIRMethodCall, HIRArrayIndex, HIRFieldAccess, HIRDereference, HIRAddressOf, HIRAssignment, HIRMultiAssignment,
-    HIRLetStmt, HIRTupleLetStmt, HIRExprStmt, HIRReturnStmt, HIRIfStmt, HIRWhileStmt,
+    HIRLetStmt, HIRTupleLetStmt, HIRExprStmt, HIRReturnStmt, HIRIfStmt, HIRWhileStmt, HIRBlock,
     HIRStaticDecl, HIRConstDecl, HIRTypeAlias,
     HIRMatchExpression, HIRPattern, HIRLiteralPattern, HIREnumPattern, HIRWildcardPattern, HIRIdentifierPattern, HIROrPattern,
     BasicTypeInfo, TypeInfo, SymbolKind, NeverTypeInfo, TupleTypeInfo,
@@ -630,6 +630,18 @@ class TypeChecker:
                 cond_type = self.check_expression(stmt.condition)
                 self._require_boolean_type(cond_type, "While condition", stmt.condition.source_loc)
             self.check_block(stmt.body)
+
+        elif isinstance(stmt, HIRBlock):
+            # Nested block (e.g., from for loop desugaring)
+            self.check_block(stmt)
+
+        elif isinstance(stmt, HIRAssignment):
+            # Assignment statement (e.g., from for loop increment)
+            self.check_assignment(stmt)
+
+        elif isinstance(stmt, HIRMultiAssignment):
+            # Multi-assignment statement
+            self.check_multi_assignment(stmt)
 
     def check_let_statement(self, stmt: HIRLetStmt):
         """Type check let binding."""
