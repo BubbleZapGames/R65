@@ -22,6 +22,11 @@ static mut INIDISP: u8;
 #[hw(0x2101)]
 static mut OBSEL: u8;
 
+
+// OAM Address (16-bit)
+#[hw(0x2102)]
+static mut OAMADD: u16;
+
 // OAM Address (low byte)
 #[hw(0x2102)]
 static mut OAMADDL: u8;
@@ -114,6 +119,10 @@ static mut BG4VOFS: u8;
 #[hw(0x2115)]
 static mut VMAIN: u8;
 
+// VRAM Address (16-bit)
+#[hw(0x2116)]
+static mut VMADD: u16;
+
 // VRAM Address (low byte)
 #[hw(0x2116)]
 static mut VMADDL: u8;
@@ -121,6 +130,10 @@ static mut VMADDL: u8;
 // VRAM Address (high byte)
 #[hw(0x2117)]
 static mut VMADDH: u8;
+
+// VRAM Data Write (16-bit)
+#[hw(0x2118)]
+static mut VMDATA: u16;
 
 // VRAM Data Write (low byte)
 #[hw(0x2118)]
@@ -1073,35 +1086,20 @@ macro_rules! set_brightness($level:expr) {
 // Set VRAM address for writing
 // Usage: set_vram_addr!(0x0000);
 macro_rules! set_vram_addr($addr:expr) {
-    VMADDL = $addr as u8;
-    VMADDH = ($addr >> 8) as u8;
+    VMADD = $addr as u16;
 }
 
 // Set VRAM increment mode
 // Usage: set_vram_inc!(VMAIN_INCREMENT_HIGH);
 macro_rules! set_vram_inc($mode:expr) {
-    VMAIN = $mode;
+    VMAIN = $mode as u8;
 }
 
-// Write word to VRAM (low then high)
+// Write word to VRAM
 // Usage: write_vram!(0x1234);
 macro_rules! write_vram($data:expr) {
-    VMDATAL = $data as u8;
-    VMDATAH = ($data >> 8) as u8;
+    VMDATA = $data as u16;
 }
-
-// Write byte to VRAM low
-// Usage: write_vram_low!(0x12);
-macro_rules! write_vram_low($data:expr) {
-    VMDATAL = $data;
-}
-
-// Write byte to VRAM high
-// Usage: write_vram_high!(0x34);
-macro_rules! write_vram_high($data:expr) {
-    VMDATAH = $data;
-}
-
 
 // ============================================================================
 // MACROS - CGRAM (Palette) Access
@@ -1110,14 +1108,15 @@ macro_rules! write_vram_high($data:expr) {
 // Set CGRAM address (color index 0-255)
 // Usage: set_cgram_addr!(0);
 macro_rules! set_cgram_addr($index:expr) {
-    CGADD = $index;
+    CGADD = $index as u8;
 }
 
 // Write 15-bit color to CGRAM
 // Usage: write_color!(0x7FFF);  // White
 macro_rules! write_color($color:expr) {
-    CGDATA = $color as u8;
-    CGDATA = ($color >> 8) as u8;
+    A = $color as u16;
+    CGDATA = A as u8
+    CGDATA = B
 }
 
 // Write RGB color to CGRAM (each component 0-31)
@@ -1143,8 +1142,7 @@ macro_rules! set_backdrop($color:expr) {
 // Set OAM address
 // Usage: set_oam_addr!(0);
 macro_rules! set_oam_addr($addr:expr) {
-    OAMADDL = $addr as u8;
-    OAMADDH = ($addr >> 8) as u8;
+    OAMADD = $addr as u16;
 }
 
 // Write sprite entry to OAM (4 bytes)
@@ -1255,7 +1253,6 @@ macro_rules! enable_main($layers:expr) {
 macro_rules! enable_sub($layers:expr) {
     TS = $layers;
 }
-
 
 // ============================================================================
 // MACROS - Object/Sprite Settings
@@ -1619,17 +1616,10 @@ fn clear_vram() {
     VMADDH = 0;
     VMAIN = VMAIN_INCREMENT_HIGH;
 
-    X = 0;
-    Y = 0;
-    loop {
-        VMDATAL = 0;
-        VMDATAH = 0;
-        X++;
-        if X == 0 {
-            Y++;
-            if Y == 0x80 {
-                break;
-            }
+    for Y in 0..128 {
+        for X in 0..256 {
+            VMDATAL = 0;
+            VMDATAH = 0;
         }
     }
 }
@@ -1637,14 +1627,9 @@ fn clear_vram() {
 // Clear CGRAM (all colors to black)
 fn clear_cgram() {
     CGADD = 0;
-    X = 0;
-    loop {
+    for X in 0..256 {
         CGDATA = 0;
         CGDATA = 0;
-        X++;
-        if X == 0 {
-            break;
-        }
     }
 }
 
@@ -1653,26 +1638,16 @@ fn clear_oam() {
     OAMADDL = 0;
     OAMADDH = 0;
 
-    X = 0;
-    loop {
+    for X in 0..128 {
         OAMDATA = 0;
         OAMDATA = 240;  // Y off-screen
         OAMDATA = 0;
         OAMDATA = 0;
-        X++;
-        if X == 128 {
-            break;
-        }
     }
 
     // Extended table
-    X = 0;
-    loop {
+    for X in 0..32 {
         OAMDATA = 0;
-        X++;
-        if X == 32 {
-            break;
-        }
     }
 }
 
@@ -1767,12 +1742,8 @@ fn snes_init() {
 // Delay for specified number of frames
 // Usage: delay(60);  // Wait ~1 second (NTSC)
 fn delay(frames @ X: u16) {
-    loop {
+    for _ in 0..frames {
         wait_nmi();
-        X--;
-        if X == 0 {
-            break;
-        }
     }
 }
 
