@@ -148,11 +148,26 @@ class MoveOperationSelector(BaseSelector):
         # Handle stack-relative addressing: LDX/LDY don't support sr,S mode
         # Must go through A with transfer
         if hw_register in ('X', 'Y') and src_loc.kind == LocationKind.STACK:
-            self._emit_load_store('LDA', src_loc)
-            if hw_register == 'X':
-                self._emit_instr(Opcode.TAX, comment="Transfer to X (no LDX sr,S)")
+            # For 16-bit values, we need to be in 16-bit A mode for the load/transfer
+            if is_u16:
+                already_in_16bit = self.parent.emitter.get_accu_mode() == 16
+                if not already_in_16bit:
+                    self._emit_instr(Opcode.REP_IMMEDIATE, Immediate(0x20), "16-bit A for transfer")
+                    self.parent.emitter.emit_accu_mode(16)
+                self._emit_load_store('LDA', src_loc)
+                if hw_register == 'X':
+                    self._emit_instr(Opcode.TAX, comment="Transfer to X (no LDX sr,S)")
+                else:
+                    self._emit_instr(Opcode.TAY, comment="Transfer to Y (no LDY sr,S)")
+                if not already_in_16bit:
+                    self._emit_instr(Opcode.SEP_IMMEDIATE, Immediate(0x20), "8-bit A")
+                    self.parent.emitter.emit_accu_mode(8)
             else:
-                self._emit_instr(Opcode.TAY, comment="Transfer to Y (no LDY sr,S)")
+                self._emit_load_store('LDA', src_loc)
+                if hw_register == 'X':
+                    self._emit_instr(Opcode.TAX, comment="Transfer to X (no LDX sr,S)")
+                else:
+                    self._emit_instr(Opcode.TAY, comment="Transfer to Y (no LDY sr,S)")
         elif hw_register in LOAD_MNEMONICS:
             self._emit_load_store(LOAD_MNEMONICS[hw_register], src_loc)
         elif hw_register == 'B':
@@ -342,10 +357,26 @@ class MoveOperationSelector(BaseSelector):
             if src_reg == 'Y' and dest_loc.index_register == 'Y':
                 need_transfer_to_a = True
 
+            # For 16-bit stores from X/Y, we must transfer to A
+            if is_u16 and src_reg in ('X', 'Y'):
+                need_transfer_to_a = True
+
             if need_transfer_to_a:
                 transfer_op = Opcode.TXA if src_reg == 'X' else Opcode.TYA
-                self._emit_instr(transfer_op, comment=f"Transfer to A (no {STORE_MNEMONICS[src_reg]} with this addressing)")
-                self._emit_load_store('STA', dest_loc)
+                if is_u16 and src_reg in ('X', 'Y'):
+                    # 16-bit store: switch to 16-bit A, transfer, store both bytes
+                    already_in_16bit = self.parent.emitter.get_accu_mode() == 16
+                    if not already_in_16bit:
+                        self._emit_instr(Opcode.REP_IMMEDIATE, Immediate(0x20), "16-bit A for store")
+                        self.parent.emitter.emit_accu_mode(16)
+                    self._emit_instr(transfer_op, comment=f"Transfer to A (16-bit)")
+                    self._emit_load_store('STA', dest_loc)
+                    if not already_in_16bit:
+                        self._emit_instr(Opcode.SEP_IMMEDIATE, Immediate(0x20), "8-bit A")
+                        self.parent.emitter.emit_accu_mode(8)
+                else:
+                    self._emit_instr(transfer_op, comment=f"Transfer to A (no {STORE_MNEMONICS[src_reg]} with this addressing)")
+                    self._emit_load_store('STA', dest_loc)
                 self.parent._mark_a_modified()
             else:
                 self._emit_load_store(STORE_MNEMONICS[src_reg], dest_loc)
