@@ -1127,15 +1127,6 @@ const BG_PALETTE_5: u16 = 0x1400; // Palette 5
 const BG_PALETTE_6: u16 = 0x1800; // Palette 6
 const BG_PALETTE_7: u16 = 0x1C00; // Palette 7
 
-
-// ============================================================================
-// CONSTANTS - Boolean Values
-// ============================================================================
-
-const FALSE: u8 = 0;
-const TRUE: u8 = 1;
-
-
 // ============================================================================
 // MACROS - Screen Control
 // ============================================================================
@@ -1151,13 +1142,6 @@ macro_rules! screen_on($brightness:expr) {
 macro_rules! screen_off() {
     INIDISP = FORCE_BLANK;
 }
-
-// Set screen brightness without changing force blank
-// Usage: set_brightness!(8);
-macro_rules! set_brightness($level:expr) {
-    INIDISP = $level & 0x0F;
-}
-
 
 // ============================================================================
 // MACROS - VRAM Access
@@ -1401,77 +1385,101 @@ macro_rules! dma_trigger($channel:expr) {
 
 // Set DMA source address
 // Usage: dma_src!(0, 0x8000, 0x00);  // Channel 0, Address $008000
-macro_rules! dma_src($channel:expr, $addr:expr, $bank:expr) {
-    A1T$channel = $addr as u16;
-    A1B$channel = $bank;
+macro_rules! dma_src($channel:literal, $addr:expr, $bank:expr) {
+    A = $addr as u16;
+    asm!("STA A1T" + stringify!($channel));
+    A = $bank as u8;
+    asm!("STA A1B" + stringify!($channel));
 }
 
 // Set DMA transfer size
 // Usage: dma_size!(0, 0x1000);  // Channel 0, 4KB
-macro_rules! dma_size($channel:expr, $size:expr) {
-    DAS$channel = $size as u16;
+macro_rules! dma_size($channel:literal, $size:expr) {
+    A = $size as u16;
+    asm!("STA DAS" + stringify!($channel));
 }
 
 // Configure DMA for VRAM transfer and execute
 // Usage: dma_to_vram!(0);  // Channel 0
-macro_rules! dma_to_vram($channel:expr) {
+macro_rules! dma_to_vram($channel:literal) {
     VMAIN = VMAIN_INCREMENT_HIGH;
-    DMAP$channel = DMA_MODE_2REG_1WRITE;
-    BBAD$channel = 0x18;
+    A = DMA_MODE_2REG_1WRITE;
+    asm!("STA DMAP" + stringify!($channel));
+    A = 0x18;
+    asm!("STA BBAD" + stringify!($channel));
     dma_trigger!($channel);
 }
 
 // Configure DMA for CGRAM transfer and execute
 // Usage: dma_to_cgram!(0);  // Channel 0
-macro_rules! dma_to_cgram($channel:expr) {
-    DMAP$channel = DMA_MODE_1REG_2WRITE;
-    BBAD$channel = 0x22;
+macro_rules! dma_to_cgram($channel:literal) {
+    A = DMA_MODE_1REG_2WRITE;
+    asm!("STA DMAP" + stringify!($channel));
+    A = 0x22;
+    asm!("STA BBAD" + stringify!($channel));
     dma_trigger!($channel);
 }
 
 // Configure DMA for OAM transfer and execute
 // Usage: dma_to_oam!(0);  // Channel 0
-macro_rules! dma_to_oam($channel:expr) {
+macro_rules! dma_to_oam($channel:literal) {
     OAMADD = 0;
-    DMAP$channel = DMA_MODE_1REG_1WRITE;
-    BBAD$channel = 0x04;
+    A = DMA_MODE_1REG_1WRITE;
+    asm!("STA DMAP" + stringify!($channel));
+    A = 0x04;
+    asm!("STA BBAD" + stringify!($channel));
     dma_trigger!($channel);
 }
 
 // Full DMA to VRAM macro
 // Usage: dma_vram!(0, src_addr, src_bank, dest_vram, size);
-macro_rules! dma_vram($channel:expr, $src:expr, $bank:expr, $dest:expr, $size:expr) {
-    A1T$channel = $src as u16;
-    DAS$channel = $size as u16;
+macro_rules! dma_vram($channel:literal, $src:expr, $bank:expr, $dest:expr, $size:expr) {
+    A = $src as u16;
+    asm!("STA A1T" + stringify!($channel));
+    A = $size as u16;
+    asm!("STA DAS" + stringify!($channel));
     VMADD = $dest as u16;
-    A1B$channel = $bank;
+    A = $bank as u8;
+    asm!("STA A1B" + stringify!($channel));
     VMAIN = VMAIN_INCREMENT_HIGH;
-    DMAP$channel = DMA_MODE_2REG_1WRITE;
-    BBAD$channel = 0x18;
+    A = DMA_MODE_2REG_1WRITE;
+    asm!("STA DMAP" + stringify!($channel));
+    A = 0x18;
+    asm!("STA BBAD" + stringify!($channel));
     dma_trigger!($channel);
 }
 
 // Full DMA to CGRAM macro
 // Usage: dma_cgram!(0, src_addr, src_bank, start_color, size);
-macro_rules! dma_cgram($channel:expr, $src:expr, $bank:expr, $start:expr, $size:expr) {
-    A1T$channel = $src as u16;
-    DAS$channel = $size as u16;
-    A1B$channel = $bank;
+macro_rules! dma_cgram($channel:literal, $src:expr, $bank:expr, $start:expr, $size:expr) {
+    A = $src as u16;
+    asm!("STA A1T" + stringify!($channel));
+    A = $size as u16;
+    asm!("STA DAS" + stringify!($channel));
+    A = $bank as u8;
+    asm!("STA A1B" + stringify!($channel));
     CGADD = $start;
-    DMAP$channel = DMA_MODE_1REG_2WRITE;
-    BBAD$channel = 0x22;
+    A = DMA_MODE_1REG_2WRITE;
+    asm!("STA DMAP" + stringify!($channel));
+    A = 0x22;
+    asm!("STA BBAD" + stringify!($channel));
     dma_trigger!($channel);
 }
 
 // Full DMA to OAM macro
 // Usage: dma_oam!(0, src_addr, src_bank, size);
-macro_rules! dma_oam($channel:expr, $src:expr, $bank:expr, $size:expr) {
-    A1T$channel = $src as u16;
-    DAS$channel = $size as u16;
+macro_rules! dma_oam($channel:literal, $src:expr, $bank:expr, $size:expr) {
+    A = $src as u16;
+    asm!("STA A1T" + stringify!($channel));
+    A = $size as u16;
+    asm!("STA DAS" + stringify!($channel));
     OAMADD = 0;
-    A1B$channel = $bank;
-    DMAP$channel = DMA_MODE_1REG_1WRITE;
-    BBAD$channel = 0x04;
+    A = $bank as u8;
+    asm!("STA A1B" + stringify!($channel));
+    A = DMA_MODE_1REG_1WRITE;
+    asm!("STA DMAP" + stringify!($channel));
+    A = 0x04;
+    asm!("STA BBAD" + stringify!($channel));
     dma_trigger!($channel);
 }
 
@@ -1483,28 +1491,38 @@ macro_rules! dma_oam($channel:expr, $src:expr, $bank:expr, $size:expr) {
 // Fill VRAM with a value using DMA (fixed source address mode)
 // Usage: fill_vram!(0, dest_vram, value_addr, bank, size);
 // Note: value must be a memory address containing the fill byte
-macro_rules! fill_vram($channel:expr, $dest:expr, $value_addr:expr, $bank:expr, $size:expr) {
-    A1T$channel = $value_addr as u16;
-    DAS$channel = $size as u16;
+macro_rules! fill_vram($channel:literal, $dest:expr, $value_addr:expr, $bank:expr, $size:expr) {
+    A = $value_addr as u16;
+    asm!("STA A1T" + stringify!($channel));
+    A = $size as u16;
+    asm!("STA DAS" + stringify!($channel));
     VMADD = $dest as u16;
-    A1B$channel = $bank;
+    A = $bank as u8;
+    asm!("STA A1B" + stringify!($channel));
     VMAIN = VMAIN_INCREMENT_HIGH;
-    DMAP$channel = DMA_MODE_2REG_1WRITE | DMA_FIXED;
-    BBAD$channel = 0x18;
+    A = DMA_MODE_2REG_1WRITE | DMA_FIXED;
+    asm!("STA DMAP" + stringify!($channel));
+    A = 0x18;
+    asm!("STA BBAD" + stringify!($channel));
     dma_trigger!($channel);
 }
 
 // Copy from VRAM to RAM using DMA (reverse direction)
 // Usage: copy_from_vram!(0, src_vram, dest_addr, dest_bank, size);
 // Note: Requires dummy read first to prime the VRAM read buffer
-macro_rules! copy_from_vram($channel:expr, $src:expr, $dest:expr, $bank:expr, $size:expr) {
+macro_rules! copy_from_vram($channel:literal, $src:expr, $dest:expr, $bank:expr, $size:expr) {
     VMADD = $src as u16;
-    A1T$channel = $dest as u16;
-    DAS$channel = $size as u16;
+    A = $dest as u16;
+    asm!("STA A1T" + stringify!($channel));
+    A = $size as u16;
+    asm!("STA DAS" + stringify!($channel));
     VMAIN = VMAIN_INCREMENT_HIGH;
-    A1B$channel = $bank;
-    DMAP$channel = DMA_MODE_2REG_1WRITE | DMA_DIRECTION_TO_CPU;
-    BBAD$channel = 0x39;
+    A = $bank as u8;
+    asm!("STA A1B" + stringify!($channel));
+    A = DMA_MODE_2REG_1WRITE | DMA_DIRECTION_TO_CPU;
+    asm!("STA DMAP" + stringify!($channel));
+    A = 0x39;
+    asm!("STA BBAD" + stringify!($channel));
     dma_trigger!($channel);
 }
 
@@ -1520,16 +1538,21 @@ macro_rules! set_wram_addr($addr:expr) {
 // Copy memory using WRAM DMA (ROM to RAM or RAM to WRAM)
 // Note: RAM-to-RAM copy is not possible, source must be ROM or different bank
 // Usage: copy_mem!(0, dest_wram, src_addr, src_bank, size);
-macro_rules! copy_mem($channel:expr, $dest:expr, $src:expr, $bank:expr, $size:expr) {
-    A1T$channel = $src as u16;
-    DAS$channel = $size as u16;
+macro_rules! copy_mem($channel:literal, $dest:expr, $src:expr, $bank:expr, $size:expr) {
+    A = $src as u16;
+    asm!("STA A1T" + stringify!($channel));
+    A = $size as u16;
+    asm!("STA DAS" + stringify!($channel));
     A = $dest as u16;
     WMADDL = A as u8;
     WMADDM = B;
     WMADDH = ($dest >> 16) as u8;
-    A1B$channel = $bank;
-    DMAP$channel = DMA_MODE_1REG_1WRITE;
-    BBAD$channel = 0x80;
+    A = $bank as u8;
+    asm!("STA A1B" + stringify!($channel));
+    A = DMA_MODE_1REG_1WRITE;
+    asm!("STA DMAP" + stringify!($channel));
+    A = 0x80;
+    asm!("STA BBAD" + stringify!($channel));
     dma_trigger!($channel);
 }
 
@@ -1698,8 +1721,8 @@ fn clear_vram() {
     VMADDH = 0;
     VMAIN = VMAIN_INCREMENT_HIGH;
 
-    for Y in 0..128 {
-        for X in 0..256 {
+    for row in 0..128 {
+        for col in 0..256 {
             VMDATAL = 0;
             VMDATAH = 0;
         }
@@ -1709,7 +1732,7 @@ fn clear_vram() {
 // Clear CGRAM (all colors to black)
 fn clear_cgram() {
     CGADD = 0;
-    for X in 0..256 {
+    for i in 0..256 {
         CGDATA = 0;
         CGDATA = 0;
     }
@@ -1720,7 +1743,7 @@ fn clear_oam() {
     OAMADDL = 0;
     OAMADDH = 0;
 
-    for X in 0..128 {
+    for i in 0..128 {
         OAMDATA = 0;
         OAMDATA = 240;  // Y off-screen
         OAMDATA = 0;
@@ -1728,7 +1751,7 @@ fn clear_oam() {
     }
 
     // Extended table
-    for X in 0..32 {
+    for j in 0..32 {
         OAMDATA = 0;
     }
 }
@@ -1824,78 +1847,43 @@ fn snes_init() {
 // Delay for specified number of frames
 // Usage: delay(60);  // Wait ~1 second (NTSC)
 fn delay(frames @ X: u16) {
-    for _ in 0..frames {
+    for i in 0..frames {
         wait_nmi();
     }
 }
 
-// Check if console is NTSC (returns 1) or PAL (returns 0)
-// Usage: if is_ntsc() { ... }
-fn is_ntsc() -> u8 {
-    A = STAT78;
-    A = A & 0x10;
-    if A == 0 {
-        A = 1;  // Bit clear = NTSC
-    } else {
-        A = 0;  // Bit set = PAL
-    }
-    return A;
-}
-
 // Check if console is PAL (returns 1) or NTSC (returns 0)
 // Usage: if is_pal() { ... }
-fn is_pal() -> u8 {
-    A = STAT78;
-    A = A & 0x10;
-    if A != 0 {
-        A = 1;  // Bit set = PAL
-    } else {
-        A = 0;  // Bit clear = NTSC
-    }
-    return A;
+fn is_pal() -> bool {
+    A = STAT78 & 0x10;
+    return !STATUS.Zero;
 }
 
 // Set pixelization/mosaic effect (user-friendly version)
 // level: 0 = off, 1-16 = min to max pixelization
 // bgs: which backgrounds to apply mosaic to (use SCREEN_BG1, etc.)
 // Usage: set_pixelize(4, SCREEN_BG1 | SCREEN_BG2);
-fn set_pixelize(level @ A: u8, bgs @ X: u16) {
+fn set_pixelize(level @ A: u8, bgs: u8) {
     if A == 0 {
         MOSAIC = 0;
     } else {
         // Convert 1-16 to mosaic size (0-15 in high nibble)
         A--;
         A = A << 4;
-        A = A | X;
+        A = A | bgs;
         MOSAIC = A;
     }
 }
 
-// Set scroll for a specific layer (0-3)
-// Mirrors the layer-indexed approach from sneslib.h
-// Usage: set_scroll(0, x_scroll, y_scroll);  // Set BG1 scroll
-fn set_scroll(layer @ A: u8, scroll_x @ X: u16, scroll_y @ Y: u16) {
-    if A == 0 {
-        BG1HOFS = X;
-        BG1HOFS = 0;
-        BG1VOFS = Y;
-        BG1VOFS = 0;
-    } else if A == 1 {
-        BG2HOFS = X;
-        BG2HOFS = 0;
-        BG2VOFS = Y;
-        BG2VOFS = 0;
-    } else if A == 2 {
-        BG3HOFS = X;
-        BG3HOFS = 0;
-        BG3VOFS = Y;
-        BG3VOFS = 0;
-    } else {
-        BG4HOFS = X;
-        BG4HOFS = 0;
-        BG4VOFS = Y;
-        BG4VOFS = 0;
-    }
+// Set scroll for a specific layer (1-4)
+// Usage: set_scroll!(1, x_scroll, y_scroll);  // Set BG1 scroll
+macro_rules! set_scroll($layer:literal, $scroll_x:expr, $scroll_y:expr) {
+    A = $scroll_x as u16;
+    asm!("STA BG" + stringify!($layer) + "HOFS");
+    asm!("STZ BG" + stringify!($layer) + "HOFS");
+    A = $scroll_y as u16;
+    asm!("STA BG" + stringify!($layer) + "VOFS");
+    asm!("STZ BG" + stringify!($layer) + "VOFS");
 }
 
 
@@ -1924,7 +1912,7 @@ fn spc_wait_ready() -> u8 {
 }
 
 // Begin SPC700 transfer to destination address
-fn spc_begin_transfer(dest_low @ A: u8, dest_high @ X: u16) {
+fn spc_begin_transfer(dest_low @ A: u8, dest_high: u16) {
     APUIO2 = dest_low;
     APUIO3 = dest_high;
     APUIO1 = 0x01;
@@ -1939,7 +1927,7 @@ fn spc_begin_transfer(dest_low @ A: u8, dest_high @ X: u16) {
 }
 
 // Transfer byte to SPC700
-fn spc_transfer_byte(data @ A: u8, index @ X: u16) {
+fn spc_transfer_byte(data @ A: u8, index: u16) {
     APUIO1 = data;
     APUIO0 = index;
 
@@ -1952,7 +1940,7 @@ fn spc_transfer_byte(data @ A: u8, index @ X: u16) {
 }
 
 // End SPC700 transfer and start execution
-fn spc_end_transfer(exec_low @ A: u8, exec_high @ X: u16) {
+fn spc_end_transfer(exec_low @ A: u8, exec_high: u16) {
     APUIO2 = exec_low;
     APUIO3 = exec_high;
 
@@ -1965,54 +1953,42 @@ fn spc_end_transfer(exec_low @ A: u8, exec_high @ X: u16) {
 
 
 // ============================================================================
-// UTILITY MACROS - Attribute Builders
-// ============================================================================
-
-// Build sprite attribute word from palette and priority
-// Usage: let attr: u16 = spr_attr!(3, 2);  // Palette 3, priority 2
-macro_rules! spr_attr($pal:expr, $pri:expr) {
-    (($pal & 0x07) << 9) | (($pri & 0x03) << 12)
-}
-
-// Build BG tile attribute word
-// Usage: let tile: u16 = bg_tile!(tile_num, palette, priority, hflip, vflip);
-macro_rules! bg_attr($pal:expr, $pri:expr) {
-    (($pal & 0x07) << 10) | (($pri & 0x01) << 13)
-}
-
-// Create a 15-bit BGR color from RGB components (each 0-31)
-// Usage: let color: u16 = rgb!(31, 0, 0);  // Red
-macro_rules! rgb($r:expr, $g:expr, $b:expr) {
-    ($r & 0x1F) | (($g & 0x1F) << 5) | (($b & 0x1F) << 10)
-}
-
-// ============================================================================
 // FAST DMA CLEAR FUNCTIONS
 // ============================================================================
 
 // Fast VRAM clear using DMA (much faster than loop)
 // Requires a zero byte somewhere in ROM/RAM for the fill value
 // Usage: fast_clear_vram!(0, zero_byte_addr, bank);
-macro_rules! fast_clear_vram($channel:expr, $zero_addr:expr, $bank:expr) {
+macro_rules! fast_clear_vram($channel:literal, $zero_addr:expr, $bank:expr) {
     VMADD = 0;
-    A1T$channel = $zero_addr as u16;
-    DAS$channel = 0;
+    A = $zero_addr as u16;
+    asm!("STA A1T" + stringify!($channel));
+    A = 0 as u16;
+    asm!("STA DAS" + stringify!($channel));
     VMAIN = VMAIN_INCREMENT_HIGH;
-    A1B$channel = $bank;
-    DMAP$channel = DMA_MODE_2REG_1WRITE | DMA_FIXED;
-    BBAD$channel = 0x18;
+    A = $bank as u8;
+    asm!("STA A1B" + stringify!($channel));
+    A = DMA_MODE_2REG_1WRITE | DMA_FIXED;
+    asm!("STA DMAP" + stringify!($channel));
+    A = 0x18;
+    asm!("STA BBAD" + stringify!($channel));
     dma_trigger!($channel);
 }
 
 // Fast CGRAM clear using DMA
 // Usage: fast_clear_cgram!(0, zero_addr, bank);
-macro_rules! fast_clear_cgram($channel:expr, $zero_addr:expr, $bank:expr) {
-    A1T$channel = $zero_addr as u16;
-    DAS$channel = 0x0200;
+macro_rules! fast_clear_cgram($channel:literal, $zero_addr:expr, $bank:expr) {
+    A = $zero_addr as u16;
+    asm!("STA A1T" + stringify!($channel));
+    A = 0x0200 as u16;
+    asm!("STA DAS" + stringify!($channel));
     CGADD = 0;
-    A1B$channel = $bank;
-    DMAP$channel = DMA_MODE_1REG_2WRITE | DMA_FIXED;
-    BBAD$channel = 0x22;
+    A = $bank as u8;
+    asm!("STA A1B" + stringify!($channel));
+    A = DMA_MODE_1REG_2WRITE | DMA_FIXED;
+    asm!("STA DMAP" + stringify!($channel));
+    A = 0x22;
+    asm!("STA BBAD" + stringify!($channel));
     dma_trigger!($channel);
 }
 

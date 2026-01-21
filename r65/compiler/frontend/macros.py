@@ -203,7 +203,7 @@ class MacroExpander:
                 result.append(ast.ReturnStmt(values=new_values, source_loc=stmt.source_loc))
             elif isinstance(stmt, ast.ForStmt):
                 new_stmt = ast.ForStmt(
-                    var_name=stmt.var_name,
+                    variable=stmt.variable,
                     start=self._expand_expression(stmt.start),
                     end=self._expand_expression(stmt.end),
                     body=self._expand_block(stmt.body),
@@ -230,10 +230,20 @@ class MacroExpander:
             return self._expand_expression_invocation(expr.name, expr.args, expr.source_loc)
 
         elif isinstance(expr, ast.BinaryOp):
+            left = self._expand_expression(expr.left)
+            right = self._expand_expression(expr.right)
+
+            # Compile-time string concatenation with + operator
+            if expr.op == '+' and isinstance(left, ast.StringLiteral) and isinstance(right, ast.StringLiteral):
+                return ast.StringLiteral(
+                    value=left.value + right.value,
+                    source_loc=expr.source_loc
+                )
+
             return ast.BinaryOp(
                 op=expr.op,
-                left=self._expand_expression(expr.left),
-                right=self._expand_expression(expr.right),
+                left=left,
+                right=right,
                 source_loc=expr.source_loc
             )
 
@@ -389,6 +399,9 @@ class MacroExpander:
             # Substitute parameters in body
             expanded_tokens = self._substitute(macro.body_tokens, bindings)
 
+            # Process string operations (stringify!, string concatenation)
+            expanded_tokens = self._process_string_operations(expanded_tokens)
+
             # Parse the expanded tokens as an expression
             expanded_source = self._join_tokens(expanded_tokens)
 
@@ -488,6 +501,9 @@ class MacroExpander:
             # Substitute parameters in body
             expanded_tokens = self._substitute(macro.body_tokens, bindings)
 
+            # Process string operations (stringify!, string concatenation)
+            expanded_tokens = self._process_string_operations(expanded_tokens)
+
             # Parse the expanded tokens as a complete program
             expanded_source = self._join_tokens(expanded_tokens)
 
@@ -580,6 +596,9 @@ class MacroExpander:
 
             # Substitute parameters in body
             expanded_tokens = self._substitute(macro.body_tokens, bindings)
+
+            # Process string operations (stringify!, string concatenation)
+            expanded_tokens = self._process_string_operations(expanded_tokens)
 
             # Parse the expanded tokens as statements
             expanded_source = self._join_tokens(expanded_tokens)
@@ -849,6 +868,93 @@ class MacroExpander:
             if idx > 0 and separator:
                 result.append(separator)
             result.extend(expanded)
+
+        return result
+
+    def _process_string_operations(self, tokens: List[str]) -> List[str]:
+        """
+        Process compile-time string operations in token list.
+
+        Handles:
+        - stringify!(args) -> "args"
+        - "string1" + "string2" -> "string1string2"
+
+        Args:
+            tokens: List of tokens
+
+        Returns:
+            Processed token list with string operations resolved
+        """
+        if not tokens:
+            return tokens
+
+        result = list(tokens)
+        changed = True
+
+        # Keep processing until no more changes
+        while changed:
+            changed = False
+
+            # First pass: expand stringify!(...)
+            i = 0
+            new_result = []
+            while i < len(result):
+                # Look for stringify ! ( ... )
+                if (i + 3 < len(result) and
+                    result[i] == 'stringify' and
+                    result[i + 1] == '!' and
+                    result[i + 2] == '('):
+                    # Find matching close paren
+                    depth = 1
+                    j = i + 3
+                    args = []
+                    while j < len(result) and depth > 0:
+                        if result[j] == '(':
+                            depth += 1
+                        elif result[j] == ')':
+                            depth -= 1
+                            if depth == 0:
+                                break
+                        if depth > 0:
+                            args.append(result[j])
+                        j += 1
+
+                    # Create string literal from args
+                    arg_str = ' '.join(args)
+                    # Escape the string
+                    escaped = self._escape_string_literal(arg_str)
+                    new_result.append(f'"{escaped}"')
+                    i = j + 1  # Skip past closing paren
+                    changed = True
+                else:
+                    new_result.append(result[i])
+                    i += 1
+
+            result = new_result
+
+            # Second pass: concatenate adjacent string literals with +
+            i = 0
+            new_result = []
+            while i < len(result):
+                token = result[i]
+
+                # Check if this is a string literal
+                if (token.startswith('"') and token.endswith('"') and
+                    i + 2 < len(result) and
+                    result[i + 1] == '+' and
+                    result[i + 2].startswith('"') and result[i + 2].endswith('"')):
+                    # Concatenate the strings (remove quotes, join, re-quote)
+                    left_str = token[1:-1]  # Remove quotes
+                    right_str = result[i + 2][1:-1]  # Remove quotes
+                    concatenated = f'"{left_str}{right_str}"'
+                    new_result.append(concatenated)
+                    i += 3  # Skip left, +, right
+                    changed = True
+                else:
+                    new_result.append(token)
+                    i += 1
+
+            result = new_result
 
         return result
 
