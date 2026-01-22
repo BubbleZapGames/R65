@@ -151,6 +151,8 @@ The 65816 STATUS register has two mode bits:
   - X=1: 8-bit mode (x8)
   - X=0: 16-bit mode (x16)
 
+**Note**: While the 65816 hardware supports x8 mode, **R65 always uses x16 mode**. X and Y registers are always 16-bit (`u16`). Attempting to use `@ X: u8` or `@ Y: u8` is a compile error.
+
 
 ---
 

@@ -197,7 +197,7 @@ pack_word:
   - Typically via XBA instruction to exchange A and B
 - **Mixed parameters**: B can be combined with A, X, Y
   ```rust
-  fn example(a @ A: u8, b @ B: u8, x @ X: u8)  // All valid
+  fn example(a @ A: u8, b @ B: u8, x @ X: u16)  // All valid
   ```
 - **Not preserved**: B cannot appear in `#[preserves(...)]` attribute
   - B is part of the same hardware register as A

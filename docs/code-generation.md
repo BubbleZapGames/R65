@@ -642,8 +642,6 @@ main:
     ; ... rest of main
 ```
 
-Note: The `#[mode(m8, x8)]` attribute shown in the source example is outdated syntax. In the current design, mode is automatically inferred from function parameter types (e.g., `@ A: u16` triggers m16 mode).
-
 ### Edge Cases
 
 | Scenario | Behavior |
