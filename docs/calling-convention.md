@@ -398,23 +398,23 @@ let (q @ A, r @ X) = divide(dividend, divisor);
 
 ### B Register Return Values (m8 Mode Only)
 
-**In `#[mode(m8)]` mode**, B register can be returned alone or with other registers:
+**In m8 mode** (default, or when no `@ A: u16` parameter), B register can be returned alone or with other registers:
 
 ```rust
-#[mode(m8, x8)]
+// m8 mode (default)
 fn get_high_byte(value: u16) -> u8 {
     B = (value >> 8) as u8;
     return B;  // Return B only
 }
 
-#[mode(m8, x8)]
+// m8 mode (default)
 fn unpack_word(value: u16) -> (u8, u8) {
     A = value as u8;
     B = (value >> 8) as u8;
     return (A, B);  // Return both A and B
 }
 
-#[mode(m8, x8)]
+// m8 mode (default)
 fn swap_bytes(low @ A: u8, high @ B: u8) -> (u8, u8) {
     return (B, A);  // Return B first, A second
 }
@@ -434,14 +434,13 @@ fn swap_bytes(low @ A: u8, high @ B: u8) -> (u8, u8) {
 When a function returns only B (or B with non-A registers), the callee does **not** restore A:
 
 ```rust
-#[mode(m8, x8)]
+// m8 mode (default)
 fn get_high_byte(value: u16) -> u8 {
     B = (value >> 8) as u8;
     return B;  // A is NOT restored
 }
 
 // Caller must preserve A if needed:
-#[mode(m8, x8)]
 fn caller() {
     let saved_a = A;           // Save A before call
     let high = get_high_byte(0x1234);
@@ -1344,10 +1343,10 @@ Mode transition (auto):   +12 cycles (PHP/PLP)
 - Same bank → near `fn()`
 - Cross-bank → far `far fn()`
 
-**5. Choose mode transition**:
-- Manual control → `transition=none`
-- Safe/flexible → `transition=inline`
-- Performance (batching) → `transition=caller`
+**5. Mode is automatic**:
+- Mode is inferred from function parameters (`@ A: u16` → m16 mode)
+- X/Y are always u16 (x16 mode)
+- For data bank management only, use `#[mode(databank=...)]`
 
 **6. Declare preservation**:
 - `#[preserves(X, Y)]` for callee-save registers

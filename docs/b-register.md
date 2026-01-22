@@ -2,7 +2,7 @@
 
 ## Overview
 
-The B register is the **hidden high byte** of the 65816's 16-bit accumulator. In `#[mode(m8)]` mode, the accumulator splits into:
+The B register is the **hidden high byte** of the 65816's 16-bit accumulator. In m8 mode (the default), the accumulator splits into:
 - **A** (low byte) - directly accessible
 - **B** (high byte) - accessible via XBA (Exchange B and A) instruction
 
@@ -18,8 +18,8 @@ The 65816 accumulator has two modes:
 
 | Mode | Size | A Register | B Register |
 |------|------|------------|------------|
-| `#[mode(m16)]` | 16-bit | Full 16-bit accumulator | N/A (meaningless) |
-| `#[mode(m8)]` | 8-bit | Low byte (bits 0-7) | High byte (bits 8-15) |
+| m16 (via `@ A: u16` param) | 16-bit | Full 16-bit accumulator | N/A (meaningless) |
+| m8 (default) | 8-bit | Low byte (bits 0-7) | High byte (bits 8-15) |
 
 ### XBA Instruction
 
@@ -45,31 +45,29 @@ XBA
 
 ### Mode Restriction
 
-**B register is ONLY available in `#[mode(m8)]` mode**
+**B register is ONLY available in m8 mode** (default, when function does not have a `@ A: u16` parameter)
 
 ```rust
-// OK: m8 mode
-#[mode(m8, x8)]
+// OK: m8 mode (default - no @ A: u16 parameter)
 fn process(value @ B: u8) -> u8 {
     return B;
 }
 
-// ERROR: m16 mode
-#[mode(m16, x16)]
-fn process(value @ B: u8) -> u8 {  // Compile error!
-    return B;
+// ERROR: m16 mode (inferred from @ A: u16 parameter)
+fn process16(value @ A: u16) {
+    B = 0x12;  // Compile error! B not available in m16 mode
 }
 ```
 
 **Error message**:
 ```
 error: B register only available in m8 mode
-  --> test.r65:2:20
+  --> test.r65:2:5
    |
-2  | fn process(val @ B: u8) {
-   |                    ^ B requires #[mode(m8, ...)]
+2  |     B = 0x12;
+   |     ^ B requires m8 mode
    |
-   = note: function has mode m16 where accumulator is 16-bit
+   = note: function has m16 mode due to @ A: u16 parameter
 ```
 
 **Rationale**: In m16 mode, the accumulator is a single 16-bit register. The concept of "high byte" and "low byte" as separate entities doesn't apply.
@@ -80,31 +78,27 @@ error: B register only available in m8 mode
 
 ### B as Function Parameter
 
-B can be used alone or combined with other registers:
+B can be used alone or combined with other registers (in m8 mode):
 
 ```rust
-// B only
-#[mode(m8, x8)]
+// B only (m8 mode - default)
 fn process_high(value @ B: u8) -> u8 {
     return B & 0xF0;
 }
 
-// A and B together
-#[mode(m8, x8)]
+// A and B together (m8 mode - default)
 fn pack_word(low @ A: u8, high @ B: u8) -> u16 {
     return A as u16 | ((B as u16) << 8);
 }
 
-// B with X
-#[mode(m8, x8)]
-fn combine(high @ B: u8, index @ X: u8) -> u8 {
-    return B + X;
+// B with X (m8 mode - default, X/Y always u16)
+fn combine(high @ B: u8, index @ X: u16) -> u8 {
+    return B + (index as u8);
 }
 
-// All registers
-#[mode(m8, x8)]
-fn use_all(a @ A: u8, b @ B: u8, x @ X: u8, y @ Y: u8) -> u8 {
-    return a + b + x + y;
+// All registers (m8 mode - default, X/Y always u16)
+fn use_all(a @ A: u8, b @ B: u8, x @ X: u16, y @ Y: u16) -> u8 {
+    return a + b + (x as u8) + (y as u8);
 }
 ```
 
@@ -113,7 +107,7 @@ fn use_all(a @ A: u8, b @ B: u8, x @ X: u8, y @ Y: u8) -> u8 {
 The caller is responsible for setting up the B register before the call:
 
 ```rust
-#[mode(m8, x8)]
+// m8 mode (default)
 fn caller() {
     let low: u8 = 0x34;
     let high: u8 = 0x12;
@@ -143,35 +137,31 @@ caller:
 
 ### Returning B
 
-B can be returned alone or with other registers:
+B can be returned alone or with other registers (in m8 mode):
 
 ```rust
-// Return B only
-#[mode(m8, x8)]
+// Return B only (m8 mode - default)
 fn get_high_byte(value: u16) -> u8 {
     B = (value >> 8) as u8;
     return B;  // A is NOT restored!
 }
 
-// Return A and B
-#[mode(m8, x8)]
+// Return A and B (m8 mode - default)
 fn unpack_word(value: u16) -> (u8, u8) {
     A = value as u8;           // Low byte
     B = (value >> 8) as u8;    // High byte
     return (A, B);
 }
 
-// Return B first, A second
-#[mode(m8, x8)]
+// Return B first, A second (m8 mode - default)
 fn swap_bytes(low @ A: u8, high @ B: u8) -> (u8, u8) {
     return (B, A);  // Swap order
 }
 
-// Return B and X
-#[mode(m8, x8)]
-fn get_high_and_index(value: u16, index: u8) -> (u8, u8) {
+// Return B and X (m8 mode - default)
+fn get_high_and_index(value: u16, index: u8) -> (u8, u16) {
     B = (value >> 8) as u8;
-    X = index;
+    X = index as u16;
     return (B, X);  // A not returned - caller must preserve!
 }
 ```
@@ -192,14 +182,13 @@ fn get_high_and_index(value: u16, index: u8) -> (u8, u8) {
 **When a function returns only B (or B without A), the callee does NOT restore A.**
 
 ```rust
-#[mode(m8, x8)]
+// m8 mode (default)
 fn get_high_byte(value: u16) -> u8 {
     B = (value >> 8) as u8;
     return B;  // A is clobbered!
 }
 
 // WRONG: A is lost
-#[mode(m8, x8)]
 fn bad_caller() {
     A = 0x42;  // Important value in A
     let high = get_high_byte(0x1234);
@@ -207,7 +196,6 @@ fn bad_caller() {
 }
 
 // CORRECT: Preserve A
-#[mode(m8, x8)]
 fn good_caller() {
     A = 0x42;  // Important value in A
     let saved_a = A;
@@ -222,7 +210,7 @@ fn good_caller() {
 After calling a function that returns B, the caller must read the B value:
 
 ```rust
-#[mode(m8, x8)]
+// m8 mode (default)
 fn caller() {
     let high = get_high_byte(0x1234);  // Returns in B
 
@@ -243,10 +231,10 @@ fn caller() {
 
 ## Register Aliasing
 
-B can be aliased just like other registers:
+B can be aliased just like other registers (in m8 mode):
 
 ```rust
-#[mode(m8, x8)]
+// m8 mode (default)
 fn process() {
     let high_byte @ B = 0x12;   // Alias B register
     high_byte = high_byte & 0xF0;  // Modifies B
@@ -279,7 +267,6 @@ process:
 
 ```rust
 // ERROR: B in preserves
-#[mode(m8, x8)]
 #[preserves(B, X, Y)]  // Compile error!
 fn bad_function() { }
 ```
@@ -287,15 +274,15 @@ fn bad_function() { }
 **Error message**:
 ```
 error: B register not allowed in preserves attribute
-  --> test.r65:3:14
+  --> test.r65:2:14
    |
-3  | #[preserves(B, X, Y)]
+2  | #[preserves(B, X, Y)]
    |              ^ B cannot be preserved separately from A
    |
    = note: B is the high byte of the A register
 ```
 
-**Rationale**: B and A are two halves of the same hardware register. Preserving B without preserving A is meaningless. If you need to preserve the high byte, preserve the entire accumulator state via `#[mode(..., transition=inline)]`.
+**Rationale**: B and A are two halves of the same hardware register. Preserving B without preserving A is meaningless.
 
 ---
 
@@ -306,7 +293,7 @@ error: B register not allowed in preserves attribute
 The compiler **minimizes XBA instructions** by batching B operations:
 
 ```rust
-#[mode(m8, x8)]
+// m8 mode (default)
 fn efficient_b_usage() {
     B = 0x12;      // XBA to set B
     B = B + 1;     // No XBA - still working with B
@@ -349,7 +336,7 @@ The compiler does NOT emit XBA:
 R65 provides the `xba()` builtin for explicit exchange:
 
 ```rust
-#[mode(m8, x8)]
+// m8 mode (default)
 fn manual_exchange() {
     A = 0x34;
     B = 0x12;
@@ -385,14 +372,13 @@ manual_exchange:
 ### Pattern 1: Pack Two Bytes into Word
 
 ```rust
-#[mode(m8, x8)]
+// m8 mode (default)
 fn pack_word(low @ A: u8, high @ B: u8) -> u16 {
     // Combine using type casts and shifts
     return (low as u16) | ((high as u16) << 8);
 }
 
 // Alternative: Return both bytes and let caller combine
-#[mode(m8, x8)]
 fn pack_word_v2(low @ A: u8, high @ B: u8) -> (u8, u8) {
     return (A, B);  // Caller assembles into u16
 }
@@ -401,7 +387,7 @@ fn pack_word_v2(low @ A: u8, high @ B: u8) -> (u8, u8) {
 ### Pattern 2: Unpack Word into Two Bytes
 
 ```rust
-#[mode(m8, x8)]
+// m8 mode (default)
 fn unpack_word(value: u16) -> (u8, u8) {
     A = value as u8;           // Low byte (truncate)
     B = (value >> 8) as u8;    // High byte (shift and truncate)
@@ -416,7 +402,7 @@ let (low @ A, high @ B) = unpack_word(0x1234);
 ### Pattern 3: Extract High Byte Only
 
 ```rust
-#[mode(m8, x8)]
+// m8 mode (default)
 fn get_high_byte(value: u16) -> u8 {
     B = (value >> 8) as u8;
     return B;  // Caller must preserve A
@@ -426,7 +412,7 @@ fn get_high_byte(value: u16) -> u8 {
 ### Pattern 4: Byte Swapping
 
 ```rust
-#[mode(m8, x8)]
+// m8 mode (default)
 fn swap_bytes(value: u16) -> u16 {
     A = value as u8;
     B = (value >> 8) as u8;
@@ -438,7 +424,7 @@ fn swap_bytes(value: u16) -> u16 {
 ### Pattern 5: BCD Addition with Carry
 
 ```rust
-#[mode(m8, x8)]
+// m8 mode (default)
 fn bcd_add_16bit(a: u16, b: u16) -> u16 {
     // Split into bytes
     let a_low = a as u8;
@@ -462,26 +448,25 @@ fn bcd_add_16bit(a: u16, b: u16) -> u16 {
 
 ---
 
-## Mode Transitions and B Register
+## Mode and B Register
 
-B register works correctly with mode transitions:
+B register is only available in m8 mode (the default). Functions using B should not have a `@ A: u16` parameter:
 
 ```rust
-#[mode(m8, x8, transition=inline)]
+// m8 mode (default) - B is available
 fn safe_b_function(value @ B: u8) -> u8 {
     B = B & 0xF0;
     return B;
 }
 
-// Function will emit:
-// 1. PHP (save status)
-// 2. SEP #$30 (ensure m8, x8)
-// 3. ... B operations ...
-// 4. PLP (restore status)
-// 5. RTS
+// m16 mode (due to @ A: u16) - B is NOT available
+fn wide_function(value @ A: u16) -> u16 {
+    // B = 0x12;  // ERROR: B not available in m16 mode
+    return value + 1;
+}
 ```
 
-The mode transition ensures the function operates in m8 mode even if called from m16 mode context.
+The compiler automatically handles mode transitions when calling between m8 and m16 functions.
 
 ---
 

@@ -2,52 +2,31 @@
 
 ## Design Decision
 
-**Rule:** Interrupt handlers with `#[mode]` attributes MUST explicitly specify `transition=inline`
+**Rule:** Interrupt handlers automatically run in the default mode (m8, x16). The compiler handles all mode management automatically.
 
 ## Rationale
 
-1. **Interrupts fire from unknown mode**: An NMI/IRQ can occur while processor is in any mode (m8 or m16, x8 or x16)
-2. **Handler needs specific mode**: Handler code expects to run in its declared mode
+1. **Interrupts fire from unknown mode**: An NMI/IRQ can occur while processor is in any mode (m8 or m16)
+2. **Handler needs specific mode**: Handler code expects to run in a known mode
 3. **Must restore original mode**: After handling interrupt, must return to interrupted code's mode
-4. **Only callee-side works**: Handler cannot know caller's mode (there is no caller!) → must use `transition=inline`
+4. **Automatic management**: Compiler generates PHP/PLP to save and restore the processor status
 
 ## Implementation
 
-### 1. Required Explicit Transition
+### 1. Automatic Mode Management
 
-Type checker enforces `transition=inline` for interrupt handlers with mode attributes:
-
-```python
-# In TypeChecker.check_function()
-if func.interrupt_attr and func.mode_attr:
-    if func.mode_attr.transition != ModeTransition.INLINE:
-        raise TypeCheckError(
-            "Interrupt handlers with mode attributes MUST use transition=inline"
-        )
-```
-
-**User experience:** Must explicitly specify `transition=inline` - makes the requirement visible!
+Interrupt handlers automatically save and restore processor status:
 
 ```rust
-// ❌ ERROR - Missing transition=inline:
+// Interrupt handler - runs in default m8 mode
+// Compiler automatically generates PHP/PLP wrapper
 #[interrupt(nmi)]
-#[mode(m8, x8)]
 fn nmi_handler() {
-    // handler code
-}
-
-// ✅ CORRECT - Explicit transition=inline:
-#[interrupt(nmi)]
-#[mode(m8, x8, transition=inline)]
-fn nmi_handler() {
-    // handler code
+    // handler code runs in m8 mode
 }
 ```
 
-**Rationale:** Making it explicit:
-- Self-documenting: Reader immediately sees special behavior
-- Forces programmer awareness: Can't accidentally forget
-- Clear intent: Explicitly states "this needs inline mode management"
+**Note:** Interrupt handlers always run in the default m8/x16 mode. The compiler automatically generates the PHP (save status) at entry and PLP (restore status) at exit to preserve the interrupted code's mode.
 
 ### 2. Entry Wrapper Generation
 
@@ -63,16 +42,8 @@ if hir_func.interrupt_attr:
     self.emit(Push(register=HardwareRegister('D')))       # PHD
     self.emit(Push(register=HardwareRegister('DBR')))     # PHB
 
-    # 2. If handler has mode attribute, force the mode
-    if hir_func.mode_attr and self.current_mode.is_fully_known():
-        # Generate SEP/REP to set handler's mode
-        if handler_mode.m_mode == ModeState.M8:
-            sep_mask |= 0x20
-        # ... etc
-        if sep_mask:
-            self.emit(SetMode(mask=sep_mask, is_set=True))
-        if rep_mask:
-            self.emit(SetMode(mask=rep_mask, is_set=False))
+    # 2. Force default m8/x16 mode for handler body
+    self.emit(SetMode(mask=0x20, is_set=True))   # SEP #$20 - m8 mode
 ```
 
 ### 3. Exit Wrapper Generation
@@ -116,7 +87,6 @@ class ReturnFromInterrupt(MIRInstruction):
 
 ```rust
 #[interrupt(nmi)]
-#[mode(m8, x8, transition=inline)]  // Required!
 fn nmi_handler() {
     A = 0x42;
     FLAG = A;
@@ -124,7 +94,7 @@ fn nmi_handler() {
 }
 ```
 
-**Note:** Named attribute parameters (`transition=inline`) require parser support (currently not implemented). Until parser is updated, interrupt handlers cannot use mode attributes.
+**Note:** Interrupt handlers automatically run in m8/x16 mode. The compiler generates all necessary mode management code.
 
 ### Generated MIR
 
@@ -136,7 +106,7 @@ Block 0:
    3: PHY  ; Push Y              │ Entry wrapper
    4: PHD  ; Push D              │ (6 pushes + mode set)
    5: PHB  ; Push DBR           ─┤
-   6: SEP #$30                   ─┘ Force m8/x8 mode
+   6: SEP #$20                   ─┘ Force m8 mode (x16 is default)
 
    7: A = Move #66 : u8         ─┐
    8: Store A -> FLAG : u8      ─┘ Handler body
@@ -150,7 +120,7 @@ Block 0:
   15: RTI                        ─┘ Return from interrupt
 ```
 
-### Future WLA-DX Assembly Output
+### WLA-DX Assembly Output
 
 ```asm
 nmi_handler:
@@ -161,7 +131,7 @@ nmi_handler:
     PHD                     ; Save D
     PHB                     ; Save DBR (data bank)
 
-    SEP #$30                ; Force m8, x8 mode for handler
+    SEP #$20                ; Force m8 mode for handler (x16 is default)
 
     LDA #$42                ; Handler code
     STA FLAG
@@ -179,26 +149,26 @@ nmi_handler:
 
 ### 1. **Automatic Mode Management** ✅
 
-Interrupt can fire in any mode, handler runs in declared mode, original mode restored:
+Interrupt can fire in any mode, handler runs in default m8/x16 mode, original mode restored:
 
 ```
-Main code running in m16/x16 mode...
+Main code running in m16 mode...
     ↓
 Interrupt fires → NMI vector
     ↓
 nmi_handler entry:
-    PHP             ; Save STATUS (m16/x16 saved on stack)
+    PHP             ; Save STATUS (m16 saved on stack)
     ...             ; Save other registers
-    SEP #$30        ; Force m8/x8 mode
+    SEP #$20        ; Force m8 mode (x16 is always the default)
     ↓
-Handler body runs in m8/x8 mode
+Handler body runs in m8/x16 mode
     ↓
 nmi_handler exit:
     ...             ; Restore other registers
-    PLP             ; Restore STATUS (m16/x16 restored!)
+    PLP             ; Restore STATUS (m16 restored!)
     RTI
     ↓
-Main code continues in m16/x16 mode (seamlessly!)
+Main code continues in m16 mode (seamlessly!)
 ```
 
 ### 2. **Automatic Register Preservation** ✅
@@ -218,7 +188,6 @@ User doesn't write preservation code:
 ```rust
 // User writes clean handler code:
 #[interrupt(nmi)]
-#[mode(m8, x8)]
 fn nmi_handler() {
     FRAME_COUNT = FRAME_COUNT + 1;
     // No manual saves/restores!
@@ -227,38 +196,37 @@ fn nmi_handler() {
 // Compiler automatically wraps with PHP/PHA/PHX/PHY/PHD/PHB...PLB/PLD/PLY/PLX/PLA/PLP/RTI
 ```
 
-### 4. **Mode Transition Forced** ✅
+### 4. **Known Mode Established** ✅
 
-Handler's mode is established regardless of interrupted code's mode:
+Handler runs in the default m8/x16 mode regardless of interrupted code's mode:
 
 ```rust
 #[interrupt(nmi)]
-#[mode(m16, x16)]  // Handler wants 16-bit mode
 fn nmi_handler() {
-    A = 0x1234;     // Always works, even if interrupted code was in m8 mode
+    A = 0x42;     // Always works in m8 mode, even if interrupted code was in m16 mode
 }
 ```
 
 ## Edge Cases Handled
 
-### 1. **Interrupt Handler Without Mode Attribute**
+### 1. **Interrupt Handler Mode**
+
+All interrupt handlers run in the default m8/x16 mode:
 
 ```rust
 #[interrupt(nmi)]
 fn nmi_handler() {
-    // No mode specified - runs in whatever mode interrupted
-    // No SEP/REP generated
-    // Still gets register preservation (PHP/PHA/.../PLP/RTI)
+    // Runs in m8/x16 mode (default)
+    // Gets full register preservation (PHP/PHA/.../PLP/RTI)
 }
 ```
 
-**Generated MIR:** Push/Pull wrappers but no mode transition
+**Generated MIR:** Push/Pull wrappers with SEP #$20 to force m8 mode
 
 ### 2. **Interrupt Handler with Return Values**
 
 ```rust
 #[interrupt(nmi)]
-#[mode(m8, x8)]
 fn nmi_handler() -> u8 {  // ❌ ERROR
     return 42;
 }
@@ -274,7 +242,6 @@ If interrupts are re-enabled within handler (via CLI), could get nested interrup
 
 ```rust
 #[interrupt(nmi)]
-#[mode(m8, x8)]
 fn nmi_handler() {
     // Re-enable interrupts
     asm!("CLI");
@@ -293,7 +260,6 @@ fn nmi_handler() {
 
 ```rust
 #[interrupt(nmi)]
-#[mode(m8, x8)]
 fn nmi_handler() -> ! {
     loop {
         // Process forever
@@ -305,37 +271,36 @@ fn nmi_handler() -> ! {
 
 ## Comparison with Regular Functions
 
-### Regular Function (transition=caller)
+### Regular Function (m16 via parameter)
 
 ```rust
-#[mode(m16, x16, transition=caller)]
-fn process() {
-    A = 0x1234;
+// m16 mode inferred from @ A: u16 parameter
+fn process(value @ A: u16) {
+    A = A + 0x1234;
 }
 
-#[mode(m8, x8)]
+// m8 mode (default)
 fn caller() {
-    process();  // Caller wraps: PHP, REP #$30, JSR, PLP
+    process(0x1000);  // Callee handles: REP #$20, ..., SEP #$20
 }
 ```
 
-**Wrapper at:** Call site (caller)
-**Knows incoming mode:** Yes (caller's mode)
-**Restoration:** Via PLP or explicit SEP/REP
+**Mode management:** Callee-side (function prologue/epilogue)
+**Knows incoming mode:** Yes (m8 is default)
+**Restoration:** Via SEP #$20 in epilogue
 
-### Interrupt Handler (transition=inline)
+### Interrupt Handler (automatic)
 
 ```rust
 #[interrupt(nmi)]
-#[mode(m16, x16)]
 fn nmi_handler() {
-    A = 0x1234;
+    A = 0x42;  // Runs in m8/x16 mode
 }
 
 // Can fire from anywhere
 ```
 
-**Wrapper at:** Handler entry/exit (callee)
+**Mode management:** Automatic entry/exit wrapper
 **Knows incoming mode:** No (could be any mode)
 **Restoration:** Via PLP (restores whatever mode was interrupted)
 
@@ -352,7 +317,6 @@ fn nmi_handler() {
 
 ```rust
 #[interrupt(nmi)]
-#[mode(m8, x8)]
 fn nmi_handler() {
     A = 0x42;
     FLAG = A;
@@ -367,7 +331,7 @@ fn nmi_handler() {
 ## Implementation Files Modified
 
 1. **`r65/compiler/typeck/type_checker.py`**
-   - Auto-set `transition=inline` for interrupt handlers with mode
+   - Validate interrupt handlers don't have return values
 
 2. **`r65/compiler/mir/nodes.py`**
    - Added `ReturnFromInterrupt` instruction

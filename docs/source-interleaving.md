@@ -234,7 +234,7 @@ STA $20             ; Store to zero-page
 
 **R65 Source:**
 ```rust
-#[mode(m8, x8)]
+// m8 mode (default)
 fn calculate(a @ A: u8, b @ X: u8) -> u8 {
     let sum @ A = a + b;
     return sum;
@@ -245,7 +245,7 @@ fn calculate(a @ A: u8, b @ X: u8) -> u8 {
 ```asm
 ; ============================================================================
 ; Function: calculate
-; Mode: m8, x8
+; Mode: m8 (default)
 ; ============================================================================
 calculate:
     STX $16
@@ -259,7 +259,7 @@ calculate:
 ```asm
 ; ============================================================================
 ; Function: calculate
-; Mode: m8, x8
+; Mode: m8 (default)
 ; ============================================================================
 calculate:
     ; | fn calculate(a @ A: u8, b @ X: u8) -> u8 {
@@ -727,20 +727,18 @@ wait:
 
 ### Case 3: Compiler-Generated Code
 
-**Mode Transitions** (not in original source):
+**Mode Transitions** (compiler-generated for m16 functions):
 ```asm
-    ; | #[mode(m16, x16, transition=inline)]
-    ; | fn process() {
-    PHP             ; Compiler-generated (no source line)
-    REP #$30        ; Compiler-generated
+    ; | fn process(value @ A: u16) {  // m16 mode inferred from @ A: u16
+    REP #$20        ; Compiler-generated (switch to 16-bit A)
     ; |     statement;
     LDA #$1234
     ; | }
-    PLP             ; Compiler-generated
+    SEP #$20        ; Compiler-generated (restore to 8-bit A)
     RTS
 ```
 
-**Strategy**: Emit source line for user-written code only. Compiler-generated wrappers get standard comments.
+**Strategy**: Emit source line for user-written code only. Compiler-generated mode transitions get standard comments.
 
 ---
 
@@ -879,7 +877,7 @@ source_headers_only = false
 #[zeropage(0x20)]
 static mut COUNTER: u8 = 0;
 
-#[mode(m8, x8)]
+// m8 mode (default)
 fn increment() {
     // Load current counter value
     let value @ A = COUNTER;
@@ -915,10 +913,10 @@ fn increment() {
 ; ============================================================================
 ; Function: increment
 ; Source: complete.r65:5
-; Mode: m8, x8
+; Mode: m8 (default)
 ; ============================================================================
 increment:
-; | #[mode(m8, x8)]
+; | // m8 mode (default)
 ; | fn increment() {
 ; |     // Load current counter value
 ; |     let value @ A = COUNTER;

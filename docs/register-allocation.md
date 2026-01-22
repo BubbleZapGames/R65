@@ -531,47 +531,41 @@ fn example() {
 
 ---
 
-## Mode-Aware Allocation
+## Scratch Register Sizing
 
 ### Scratch Register Types
 
-Scratch registers can have mode-dependent types:
+Scratch registers are declared with explicit types:
 
 ```rust
-#[mode(m8, x8)]
 #[zeropage(0x16, register)]
-static mut SCRATCH_A: u8;  // 8-bit scratch in m8 mode
+static mut SCRATCH_U8: u8;   // 8-bit scratch
 
-#[mode(m16, x16)]
-#[zeropage(0x16, register)]
-static mut SCRATCH_A: u16;  // 16-bit scratch in m16 mode
+#[zeropage(0x18, register)]
+static mut SCRATCH_U16: u16;  // 16-bit scratch (takes 0x18-0x19)
 ```
 
-**Different modes** = different scratch register types
+The compiler automatically selects appropriately-sized scratch registers based on the operation being performed.
 
-### Separate Scratch Pools Per Mode
+### Mixed Scratch Pools
 
 ```rust
 // 8-bit scratch space
-#[mode(m8)]
 #[zeropage(0x16, register)]
 static mut SCRATCH8_0: u8;
 
-#[mode(m8)]
 #[zeropage(0x17, register)]
 static mut SCRATCH8_1: u8;
 
 // 16-bit scratch space
-#[mode(m16)]
 #[zeropage(0x18, register)]
 static mut SCRATCH16_0: u16;
 
-#[mode(m16)]
 #[zeropage(0x1A, register)]
 static mut SCRATCH16_1: u16;
 ```
 
-**Mode-specific pools** for type safety
+**Size-appropriate allocation**: Compiler picks u8 scratch for 8-bit operations, u16 scratch for 16-bit operations.
 
 ---
 

@@ -469,7 +469,6 @@ The FunctionCodeGenerator orchestrates all components to generate complete, comm
 ; ============================================================================
 ; Function: process_player
 ; Source: game.r65:42
-; Mode: m8, x8
 ; Preserves: X, Y
 ; Parameters: player_id @ A: u8
 ; Returns: health @ A: u8
@@ -505,7 +504,6 @@ process_player:
 ; ============================================================================
 ; Function: calculate_damage
 ; Source: combat.r65:15
-; Mode: m8, x8
 ; ============================================================================
 calculate_damage:
     ; Load attack value
@@ -622,7 +620,6 @@ static mut COUNTER: u8 = 0;      // Initialized (zero) - MUST initialize!
 static mut TEMP: u8;             // Uninitialized - undefined value!
 
 #[entry]
-#[mode(m8, x8)]
 fn main() -> ! {
     TEMP = 0;  // Must initialize manually
     loop { }
@@ -644,6 +641,8 @@ main:
     JSR __init_start    ; Initialize all statics first
     ; ... rest of main
 ```
+
+Note: The `#[mode(m8, x8)]` attribute shown in the source example is outdated syntax. In the current design, mode is automatically inferred from function parameter types (e.g., `@ A: u16` triggers m16 mode).
 
 ### Edge Cases
 
