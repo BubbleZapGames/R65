@@ -14,7 +14,7 @@ WLA_LINK = wlalink
 
 # Flags
 WLA_FLAGS = -o
-R65C_FLAGS = -v --cfg snes
+R65C_FLAGS = -v --cfg snes -I src/lib
 
 # Default target
 all: $(ROM_FILE)

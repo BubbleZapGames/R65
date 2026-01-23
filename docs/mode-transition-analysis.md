@@ -159,19 +159,7 @@ fn caller() {
 
 ---
 
-## Migration from Old System
-
-### Old Syntax (No Longer Supported)
-
-```rust
-// ❌ These no longer work:
-#[mode(m8, x8)]
-#[mode(m16, x16)]
-#[mode(m8, x16, transition=inline)]
-#[mode(m16, transition=caller)]
-```
-
-### New Syntax
+### Inferred function modes
 
 ```rust
 // ✅ Mode inferred from parameters:
@@ -182,18 +170,6 @@ fn indexed(idx @ X: u16) { }      // m8, X/Y always u16
 // ✅ Only databank in #[mode]:
 #[mode(databank=inline)]
 far fn far_func() { }
-```
-
-### Compiler Errors
-
-The compiler provides helpful errors for old syntax:
-```
-error: #[mode(m8)] is no longer supported.
-  CPU mode is now automatically inferred from parameter types:
-  - u16 @ A parameter -> m16 entry mode
-  - otherwise -> m8 entry mode (default)
-  - X/Y registers are always u16 (x16 mode)
-  Use #[mode(databank=...)] for data bank management only.
 ```
 
 ---

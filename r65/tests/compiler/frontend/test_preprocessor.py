@@ -38,7 +38,7 @@ include!(".")
             preprocess(program, "/tmp/test.r65")
 
         assert "include!" in str(exc_info.value)
-        assert "not a file" in str(exc_info.value)
+        assert "file not found" in str(exc_info.value)  # Directories don't match is_file()
 
     def test_include_with_existing_file(self):
         """Test that include! with existing file succeeds."""

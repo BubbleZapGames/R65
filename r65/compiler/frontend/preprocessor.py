@@ -30,17 +30,21 @@ class Preprocessor:
     - Circular include detection
     - File existence validation
     - Source location tracking through include chains
+    - Include path searching (-I option)
     """
 
-    def __init__(self, source_file: str):
+    def __init__(self, source_file: str, include_paths: List[str] = None):
         """
         Initialize preprocessor.
 
         Args:
             source_file: Path to the main source file being compiled.
+            include_paths: Additional directories to search for included files.
         """
         self.source_file = Path(source_file).resolve()
         self.source_dir = self.source_file.parent
+        # Include paths for searching (resolved to absolute paths)
+        self.include_paths = [Path(p).resolve() for p in (include_paths or [])]
         # Track files currently being processed (for cycle detection)
         self._include_stack: List[IncludeContext] = []
         # Track all files that have been included (to avoid duplicate processing)
@@ -94,6 +98,34 @@ class Preprocessor:
 
         return result
 
+    def _resolve_include_path(self, include_path: str, base_dir: Path) -> Optional[Path]:
+        """
+        Resolve an include path by searching base directory and include paths.
+
+        Search order:
+        1. Relative to the including file's directory (base_dir)
+        2. Each directory in include_paths (-I options)
+
+        Args:
+            include_path: The path from the include! statement
+            base_dir: Directory of the file containing the include!
+
+        Returns:
+            Resolved absolute path if found, None otherwise
+        """
+        # First try relative to the including file
+        candidate = (base_dir / include_path).resolve()
+        if candidate.exists() and candidate.is_file():
+            return candidate
+
+        # Then search include paths
+        for inc_dir in self.include_paths:
+            candidate = (inc_dir / include_path).resolve()
+            if candidate.exists() and candidate.is_file():
+                return candidate
+
+        return None
+
     def _process_include(
         self,
         include_stmt: ast.IncludeStmt,
@@ -112,20 +144,15 @@ class Preprocessor:
         include_path = include_stmt.path
         source_loc = include_stmt.source_loc
 
-        # Resolve the path relative to the including file's directory
-        resolved_path = (base_dir / include_path).resolve()
+        # Resolve the path (searches base_dir and include paths)
+        resolved_path = self._resolve_include_path(include_path, base_dir)
 
-        # Validate file exists
-        if not resolved_path.exists():
+        # Validate file was found
+        if resolved_path is None:
+            searched_dirs = [str(base_dir)] + [str(p) for p in self.include_paths]
             raise PreprocessorError(
-                f"include!: file not found: '{include_path}' "
-                f"(resolved to '{resolved_path}')",
-                source_loc=source_loc
-            )
-
-        if not resolved_path.is_file():
-            raise PreprocessorError(
-                f"include!: path is not a file: '{include_path}'",
+                f"include!: file not found: '{include_path}'\n"
+                f"  searched in: {', '.join(searched_dirs)}",
                 source_loc=source_loc
             )
 
@@ -170,13 +197,14 @@ class Preprocessor:
             self._include_stack.pop()
 
 
-def preprocess(program: ast.Program, source_file: str) -> ast.Program:
+def preprocess(program: ast.Program, source_file: str, include_paths: List[str] = None) -> ast.Program:
     """
     Preprocess an AST program by expanding include! statements.
 
     Args:
         program: Parsed AST program
         source_file: Path to the source file
+        include_paths: Additional directories to search for included files (-I option)
 
     Returns:
         New AST program with includes expanded
@@ -184,5 +212,5 @@ def preprocess(program: ast.Program, source_file: str) -> ast.Program:
     Raises:
         PreprocessorError: If an include fails (file not found, circular, etc.)
     """
-    preprocessor = Preprocessor(source_file)
+    preprocessor = Preprocessor(source_file, include_paths=include_paths)
     return preprocessor.preprocess(program)

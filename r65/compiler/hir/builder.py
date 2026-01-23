@@ -22,7 +22,8 @@ from r65.compiler.hir.errors import *
 class HIRBuilder:
     """Builds HIR from AST with name resolution and desugaring."""
 
-    def __init__(self, source_file: Optional[str] = None, cfg_evaluator: Optional[CfgEvaluator] = None):
+    def __init__(self, source_file: Optional[str] = None, cfg_evaluator: Optional[CfgEvaluator] = None,
+                 include_paths: Optional[List[str]] = None):
         """
         Initialize HIR builder.
 
@@ -30,6 +31,7 @@ class HIRBuilder:
             source_file: Path to source file being compiled.
                         Used for resolving relative paths in include_bytes!.
             cfg_evaluator: Optional cfg evaluator for conditional compilation.
+            include_paths: Additional directories to search for include_bytes! files.
         """
         self.symbol_table = SymbolTable()
         self.cfg_evaluator = cfg_evaluator
@@ -38,6 +40,8 @@ class HIRBuilder:
         self.attr_processor = AttributeProcessor()
         self.source_file = source_file
         self.source_dir = Path(source_file).parent if source_file else Path.cwd()
+        # Include paths for searching (resolved to absolute paths)
+        self.include_paths = [Path(p).resolve() for p in (include_paths or [])]
         self.current_bank = 0  # Current ROM bank for declarations (set by #[bank(n)])
         self.auto_bank_mode = False  # True when in #[bank(auto)] mode (NOT default for backward compatibility)
         self._pending_snesrom_config = None  # Store snesrom config when parsed as attribute
@@ -2065,6 +2069,33 @@ class HIRBuilder:
         else:
             raise HIRError(f"Cannot determine size of type: {type(type_info).__name__}")
 
+    def _resolve_include_bytes_path(self, path: str) -> Optional[Path]:
+        """
+        Resolve an include_bytes! path by searching source directory and include paths.
+
+        Search order:
+        1. Relative to the source file's directory
+        2. Each directory in include_paths (-I options)
+
+        Args:
+            path: The path from the include_bytes! expression
+
+        Returns:
+            Resolved absolute path if found, None otherwise
+        """
+        # First try relative to the source file
+        candidate = (self.source_dir / path).resolve()
+        if candidate.exists() and candidate.is_file():
+            return candidate
+
+        # Then search include paths
+        for inc_dir in self.include_paths:
+            candidate = (inc_dir / path).resolve()
+            if candidate.exists() and candidate.is_file():
+                return candidate
+
+        return None
+
     def _validate_include_bytes_path(self, path: str, source_loc: Optional[SourceLocation]) -> tuple[str, int]:
         """
         Validate that the file path for include_bytes! exists and return its info.
@@ -2079,19 +2110,14 @@ class HIRBuilder:
         Raises:
             HIRError: If the file does not exist
         """
-        # Resolve path relative to source file directory
-        resolved_path = self.source_dir / path
+        # Resolve path (searches source_dir and include paths)
+        resolved_path = self._resolve_include_bytes_path(path)
 
-        if not resolved_path.exists():
+        if resolved_path is None:
+            searched_dirs = [str(self.source_dir)] + [str(p) for p in self.include_paths]
             raise HIRError(
-                f"include_bytes!: file not found: '{path}' "
-                f"(resolved to '{resolved_path}')",
-                source_loc=source_loc
-            )
-
-        if not resolved_path.is_file():
-            raise HIRError(
-                f"include_bytes!: path is not a file: '{path}'",
+                f"include_bytes!: file not found: '{path}'\n"
+                f"  searched in: {', '.join(searched_dirs)}",
                 source_loc=source_loc
             )
 

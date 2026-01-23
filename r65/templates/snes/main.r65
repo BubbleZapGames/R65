@@ -13,7 +13,6 @@ include!("lib/65816.r65")
 
 // Program entry point
 #[entry]
-#[mode(m8, x8)]
 fn main() -> ! {
     // Turn on screen full brightness
     INIDISP = 0x0F;

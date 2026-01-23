@@ -122,12 +122,18 @@ def dump_mir(source: str, filename: str):
 
 
 def compile_source(source: str, filename: str, output_file: str = None,
-                   verbose: bool = False, quiet: bool = False, cfg_options: list[str] = None):
+                   verbose: bool = False, quiet: bool = False, cfg_options: list[str] = None,
+                   include_paths: list[str] = None):
     """Compile R65 source to WLA-DX assembly."""
 
     def log(msg: str):
         if not quiet:
             print(msg, file=sys.stderr)
+
+    # Normalize include paths
+    include_paths = include_paths or []
+    if verbose and include_paths:
+        log(f"  Include paths: {include_paths}")
 
     # Create cfg evaluator if options provided
     cfg_evaluator = None
@@ -146,7 +152,7 @@ def compile_source(source: str, filename: str, output_file: str = None,
         # Preprocess (expand includes)
         if verbose:
             log(f"  [2/8] Preprocessing...")
-        program = preprocess(program, filename)
+        program = preprocess(program, filename, include_paths=include_paths)
 
         # Expand macros
         if verbose:
@@ -156,7 +162,7 @@ def compile_source(source: str, filename: str, output_file: str = None,
         # Build HIR
         if verbose:
             log(f"  [4/8] Building HIR...")
-        builder = HIRBuilder(source_file=filename, cfg_evaluator=cfg_evaluator)
+        builder = HIRBuilder(source_file=filename, cfg_evaluator=cfg_evaluator, include_paths=include_paths)
         hir_program = builder.build_program(program)
 
         # Type check
@@ -310,11 +316,12 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 examples:
-  r65c game.r65 -o game.asm        Compile game.r65 to game.asm
-  r65c game.r65                     Compile game.r65 to stdout
-  r65c -                            Compile from stdin to stdout
-  r65c game.r65 -v -o game.asm     Compile with verbose output
-  r65c game.r65 --dump-ast          Dump AST for debugging
+  r65c game.r65 -o game.asm         Compile game.r65 to game.asm
+  r65c game.r65                      Compile game.r65 to stdout
+  r65c -                             Compile from stdin to stdout
+  r65c game.r65 -v -o game.asm      Compile with verbose output
+  r65c game.r65 -I lib -I ../common  Add include search paths
+  r65c game.r65 --dump-ast           Dump AST for debugging
         """
     )
 
@@ -336,9 +343,16 @@ examples:
                        action='store_true',
                        help='Suppress all output except errors')
 
+    # Include paths
+    parser.add_argument('-I', '--include',
+                       action='append',
+                       dest='include_paths',
+                       metavar='PATH',
+                       help='Add directory to include search path (can be used multiple times)')
+
     # Conditional compilation options
     cfg_group = parser.add_argument_group('conditional compilation options')
-    
+
     cfg_group.add_argument('--cfg',
                          action='append',
                          dest='cfg_options',
@@ -419,7 +433,7 @@ examples:
             return
 
         # Normal compilation
-        compile_source(source, filename, args.output, args.verbose, args.quiet, args.cfg_options)
+        compile_source(source, filename, args.output, args.verbose, args.quiet, args.cfg_options, args.include_paths)
 
     except (LexerError, ParseError, PreprocessorError, MacroError, HIRError, TypeCheckError) as e:
         # These are already handled in dump/compile functions

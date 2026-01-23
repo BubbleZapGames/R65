@@ -63,7 +63,7 @@ static DATA: [u8; 100] = include_bytes!(".");
         builder.build_program(program)
 
     assert "include_bytes!" in str(exc_info.value)
-    assert "not a file" in str(exc_info.value)
+    assert "file not found" in str(exc_info.value)  # Directories don't match is_file()
 
 
 def test_include_bytes_error_has_source_location():
