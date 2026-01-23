@@ -372,7 +372,7 @@ get_value:
 ```rust
 fn divide(dividend @ A: u8, divisor @ X: u8) -> (u8, u8) {
     // quotient in A, remainder in X
-    return (A, X);
+    return A, X;
 }
 ```
 
@@ -411,12 +411,12 @@ fn get_high_byte(value: u16) -> u8 {
 fn unpack_word(value: u16) -> (u8, u8) {
     A = value as u8;
     B = (value >> 8) as u8;
-    return (A, B);  // Return both A and B
+    return A, B;  // Return both A and B
 }
 
 // m8 mode (default)
 fn swap_bytes(low @ A: u8, high @ B: u8) -> (u8, u8) {
-    return (B, A);  // Return B first, A second
+    return B, A;  // Return B first, A second
 }
 ```
 
@@ -425,9 +425,9 @@ fn swap_bytes(low @ A: u8, high @ B: u8) -> (u8, u8) {
 | Return Statement | Meaning | A Status | B Status |
 |-----------------|---------|----------|----------|
 | `return B;` | Return B only | **Caller must preserve A** | Returns in B |
-| `return (A, B);` | Return A first, B second | Returns in A | Returns in B |
-| `return (B, A);` | Return B first, A second | Returns in A (but as 2nd value) | Returns in B (as 1st value) |
-| `return (B, X);` | Return B and X | **Caller must preserve A** | Returns in B |
+| `return A, B;` | Return A first, B second | Returns in A | Returns in B |
+| `return B, A;` | Return B first, A second | Returns in A (but as 2nd value) | Returns in B (as 1st value) |
+| `return B, X;` | Return B and X | **Caller must preserve A** | Returns in B |
 
 **Critical Rule: Caller Responsibility for A**
 
@@ -480,7 +480,7 @@ unpack_word:
   - Reading B value (via XBA or direct B access)
 - **No implicit A preservation**: Unlike typical calling conventions, returning B doesn't preserve A
 - **Explicit contract**: Function signature makes it clear B is being returned
-- **Mixed returns allowed**: `return (B, X);` or `return (B, A);` are both valid
+- **Mixed returns allowed**: `return B, X;` or `return B, A;` are both valid
 
 **Use when**: Returning high byte, byte unpacking, matching hand-written assembly patterns
 
@@ -532,7 +532,7 @@ static mut RESULT: u16;
 fn mixed_return() {
     RESULT = 1000;
     A = 42;
-    return (X, RESULT);  // Returns X register and RESULT variable
+    return X, RESULT;  // Returns X register and RESULT variable
 }
 
 // Caller:
@@ -554,15 +554,15 @@ let zp_value = RESULT;     // RESULT contains returned value
 ### Valid Examples
 
 ```rust
-// Good: All paths return (X, RESULT)
+// Good: All paths return X, RESULT
 #[zeropage(0x10)]
 static mut RESULT: u16;
 
 fn good(flag: bool) {
     if flag {
-        return (X, RESULT);    // Signature: (X, RESULT)
+        return X, RESULT;    // Signature: (X, RESULT)
     } else {
-        return (X, RESULT);    // Same signature ✓
+        return X, RESULT;    // Same signature ✓
     }
 }
 
@@ -580,9 +580,9 @@ fn good3(val: u16) {
     RESULT = 1;
     A = 2;
     if val == 0 {
-        return (X, RESULT);
+        return X, RESULT;
     } else {
-        return (X, RESULT);  // Same signature ✓
+        return X, RESULT;  // Same signature ✓
     }
 }
 ```
@@ -619,7 +619,7 @@ fn bad2(val: u16) {
 // BAD: Different number of return values
 fn bad3(val: u16) {
     if val == 1 {
-        return (A, X);       // Signature: (A, X)
+        return A, X;       // Signature: (A, X)
     } else {
         return A;          // Signature: (A) ✗ MISMATCH!
     }
@@ -628,9 +628,9 @@ fn bad3(val: u16) {
 // BAD: Different order
 fn bad4(val: u16) {
     if val == 1 {
-        return (A, X);       // Signature: (A, X)
+        return A, X;       // Signature: (A, X)
     } else {
-        return (X, A);       // Signature: (X, A) ✗ MISMATCH!
+        return X, A;       // Signature: (X, A) ✗ MISMATCH!
     }
 }
 ```
@@ -1332,7 +1332,7 @@ Mode transition (auto):   +12 cycles (PHP/PLP)
 - Many parameters, need reentrancy → Stack
 
 **2. Choose return mechanism**:
-- Register return → Explicit `return A` or `return (A, X)`
+- Register return → Explicit `return A` or `return A, X`
 - Zero-page return → Write to zero-page variable
 - Mixed → Combine both
 
