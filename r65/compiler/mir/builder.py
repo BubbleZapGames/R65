@@ -1105,7 +1105,7 @@ class MIRBuilder:
         """
         Check if current block already has a terminator instruction.
 
-        Terminator instructions: Return, Jump, CondBranch
+        Terminator instructions: Return, ReturnFromInterrupt, Jump, CondBranch
 
         Returns:
             True if block ends with terminator, False otherwise
@@ -1114,7 +1114,7 @@ class MIRBuilder:
             return False
 
         last_instr = self.current_block.instructions[-1]
-        return isinstance(last_instr, (Return, Jump, CondBranch))
+        return isinstance(last_instr, (Return, ReturnFromInterrupt, Jump, CondBranch))
 
     def emit(self, instruction: MIRInstruction):
         """
