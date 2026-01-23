@@ -933,3 +933,35 @@ fn set_masked(val @ A: u8) {
         hir = build_hir(source)
         func = hir.declarations[1]
         assert func.inline_attr is not None
+
+    def test_impl_method_getter_auto_inlined(self):
+        """Impl method getter should be auto-inlined."""
+        source = """
+struct Point { x: u8, y: u8 }
+
+impl Point {
+    fn get_x(*self) -> u8 {
+        return self.x;
+    }
+}
+"""
+        hir = build_hir(source)
+        impl_decl = hir.declarations[1]  # Second is impl
+        method = impl_decl.methods[0]
+        assert method.inline_attr is not None
+
+    def test_impl_method_setter_with_expr_auto_inlined(self):
+        """Impl method setter with expression should be auto-inlined."""
+        source = """
+struct Point { x: u8, y: u8 }
+
+impl Point {
+    fn set_x(*self, val @ A: u8) {
+        self.x = val & 0x0F;
+    }
+}
+"""
+        hir = build_hir(source)
+        impl_decl = hir.declarations[1]
+        method = impl_decl.methods[0]
+        assert method.inline_attr is not None

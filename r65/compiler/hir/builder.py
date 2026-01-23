@@ -1122,6 +1122,15 @@ class HIRBuilder:
         # Detect STATUS flag return pattern
         returns_status_flag = self._detect_status_flag_return(hir_body)
 
+        # Auto-detect trivial getters/setters and mark for inlining
+        # Only if not already marked and not a far/interrupt/entry method
+        if (inline_attr is None and
+            not method.is_far and
+            interrupt_attr is None and
+            not is_entry and
+            self._is_trivial_getter_or_setter(hir_body)):
+            inline_attr = InlineAttribute(name='inline')
+
         # Infer entry mode from parameters and validate X/Y are u16
         entry_m_mode = self._infer_entry_mode_and_validate(hir_params, mangled_name, method.source_loc)
 
