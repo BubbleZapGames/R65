@@ -225,6 +225,7 @@ class MIRBuilder:
             preserves_attr=hir_func.preserves_attr,
             bank_attr=hir_func.bank_attr,
             interrupt_attr=hir_func.interrupt_attr,
+            inline_attr=hir_func.inline_attr,
             is_entry=hir_func.is_entry,
             is_far=hir_func.is_far,
             entry_m_mode=hir_func.entry_m_mode,  # Inferred entry mode

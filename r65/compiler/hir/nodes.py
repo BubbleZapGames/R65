@@ -177,6 +177,7 @@ class HIRFunctionDecl(HIRDeclaration):
     preserves_attr: Optional[Any] = None  # Will be PreservesAttribute
     bank_attr: Optional[Any] = None  # Will be BankAttribute
     interrupt_attr: Optional[Any] = None  # Will be InterruptAttribute
+    inline_attr: Optional[Any] = None  # Will be InlineAttribute
     is_entry: bool = False
 
     # Symbol reference

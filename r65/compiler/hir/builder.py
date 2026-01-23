@@ -397,6 +397,7 @@ class HIRBuilder:
         mode_attr = attrs['mode']
         preserves_attr = attrs['preserves']
         interrupt_attr = attrs['interrupt']
+        inline_attr = attrs['inline']
         is_entry = attrs['is_entry']
 
         # Bank comes from current bank context (set by #[bank(n)] directive)
@@ -466,6 +467,7 @@ class HIRBuilder:
             preserves_attr=preserves_attr,
             bank_attr=bank_attr,
             interrupt_attr=interrupt_attr,
+            inline_attr=inline_attr,
             is_entry=is_entry,
             symbol=func_symbol,
             returns_status_flag=returns_status_flag,
@@ -950,6 +952,7 @@ class HIRBuilder:
         mode_attr = attrs['mode']
         preserves_attr = attrs['preserves']
         interrupt_attr = attrs['interrupt']
+        inline_attr = attrs['inline']
         is_entry = attrs['is_entry']
 
         # Bank comes from current bank context
@@ -1036,6 +1039,7 @@ class HIRBuilder:
             preserves_attr=preserves_attr,
             bank_attr=bank_attr,
             interrupt_attr=interrupt_attr,
+            inline_attr=inline_attr,
             is_entry=is_entry,
             symbol=method_symbol,
             returns_status_flag=returns_status_flag,
@@ -1848,6 +1852,7 @@ class HIRBuilder:
             'mode': None,
             'preserves': None,
             'interrupt': None,
+            'inline': None,
             'is_entry': False
         }
 
@@ -1858,6 +1863,8 @@ class HIRBuilder:
                 result['preserves'] = attr
             elif isinstance(attr, InterruptAttribute):
                 result['interrupt'] = attr
+            elif isinstance(attr, InlineAttribute):
+                result['inline'] = attr
             elif isinstance(attr, EntryAttribute):
                 result['is_entry'] = True
 

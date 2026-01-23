@@ -791,6 +791,7 @@ class MIRFunction:
     preserves_attr: Optional[Any] = None    # PreservesAttribute
     bank_attr: Optional[Any] = None         # BankAttribute
     interrupt_attr: Optional[Any] = None    # InterruptAttribute
+    inline_attr: Optional[Any] = None       # InlineAttribute
     is_entry: bool = False
     is_far: bool = False
 

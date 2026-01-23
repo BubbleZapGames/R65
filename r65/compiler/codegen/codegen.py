@@ -16,7 +16,7 @@ from r65.compiler.codegen.branch_fixup import fixup_nodes
 from r65.compiler.codegen.emitter import emit_nodes
 from r65.compiler.codegen.constants import DEFAULT_STACK_LOWER, DEFAULT_STACK_UPPER, calculate_rom_size
 from r65.compiler.codegen.bank_size import validate_bank_sizes
-from r65.compiler.optimize import DeadFunctionEliminator, DeadCodeEliminator
+# Note: Optimize imports are done lazily in generate() to avoid circular imports
 
 
 class ProgramCodeGenerator:
@@ -52,6 +52,11 @@ class ProgramCodeGenerator:
         # Create emitter
         self.emitter = AssemblyEmitter(source_file="<unknown>")
 
+        # Import optimize modules lazily to avoid circular imports
+        from r65.compiler.optimize.dead_function_elim import DeadFunctionEliminator
+        from r65.compiler.optimize.dead_code_elim import DeadCodeEliminator
+        from r65.compiler.optimize.inline import FunctionInliner
+
         # Dead function elimination - remove functions that are never called
         dead_func_elim = DeadFunctionEliminator(verbose=False)
         func_eliminated = dead_func_elim.eliminate(mir_program)
@@ -63,6 +68,19 @@ class ProgramCodeGenerator:
         code_eliminated = dead_code_elim.eliminate(mir_program)
         if code_eliminated > 0:
             print(f"Dead code elimination: {code_eliminated} block(s)/instruction(s) removed")
+
+        # Function inlining - replace call sites with inlined function bodies
+        func_inliner = FunctionInliner(verbose=False)
+        inlined_count = func_inliner.run(mir_program)
+        if inlined_count > 0:
+            print(f"Function inlining: {inlined_count} call site(s) inlined")
+
+            # Re-run dead function elimination after inlining
+            # (inlined functions may now be unused)
+            dead_func_elim2 = DeadFunctionEliminator(verbose=False)
+            func_eliminated2 = dead_func_elim2.eliminate(mir_program)
+            if func_eliminated2 > 0:
+                print(f"Post-inlining dead function elimination: {func_eliminated2} function(s) removed")
 
         # Emit file header and processor directives
         self.emitter.emit_file_header()

@@ -12,6 +12,7 @@ from r65.compiler.mir.nodes import (
     HardwareRegister,
     Argument,
     ArgumentMechanism,
+    InlineAsm,
 )
 from r65.compiler.hir.attributes import (
     BankAttribute,
@@ -340,8 +341,10 @@ def test_near_call_jsr():
     vreg_alloc = VirtualRegisterAllocator()
 
     # Create callee (near function)
+    # Include InlineAsm to prevent function inlining
     callee_block = BasicBlock(block_id=0)
     callee_block.instructions = [
+        InlineAsm(instructions=["NOP"]),  # Prevents inlining
         Return(values=[])
     ]
 

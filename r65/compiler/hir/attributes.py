@@ -114,6 +114,19 @@ class EntryAttribute(ProcessedAttribute):
     pass
 
 
+# Inline attribute
+@dataclass
+class InlineAttribute(ProcessedAttribute):
+    """#[inline] - marks function for inlining.
+
+    The compiler uses heuristics to decide when to inline marked functions:
+    - Functions called exactly once are always inlined
+    - Functions marked #[inline] are inlined if < 30 instructions
+    - Functions without attribute are inlined only if very small (< 10 instructions)
+    """
+    pass
+
+
 # CFG attribute
 @dataclass
 class CfgAttribute(ProcessedAttribute):
@@ -161,6 +174,8 @@ class AttributeProcessor:
                 processed.append(self._process_interrupt(attr, context))
             elif attr.name == 'entry':
                 processed.append(self._process_entry(attr, context))
+            elif attr.name == 'inline':
+                processed.append(self._process_inline(attr, context))
             else:
                 raise HIRError(f"Unknown attribute '{attr.name}'")
 
@@ -388,6 +403,16 @@ class AttributeProcessor:
             raise HIRError(f"#[entry] does not accept arguments")
 
         return EntryAttribute(name='entry')
+
+    def _process_inline(self, attr: ast.Attribute, context: str) -> InlineAttribute:
+        """Process #[inline] attribute."""
+        if context not in ['function']:
+            raise HIRError(f"#[inline] attribute only valid on functions")
+
+        if len(attr.args) > 0:
+            raise HIRError(f"#[inline] does not accept arguments")
+
+        return InlineAttribute(name='inline')
 
     def _process_stack(self, attr: ast.Attribute, context: str) -> StackAttribute:
         """Process #[stack(lower, upper)] attribute."""
