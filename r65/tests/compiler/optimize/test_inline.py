@@ -410,7 +410,10 @@ def create_large_function(num_instructions: int) -> MIRFunction:
 
 
 def create_getter_function() -> MIRFunction:
-    """Create a simple getter function: fn get_value() -> u8 { return 15; }"""
+    """Create a simple getter function: fn get_value() -> u8 { return 15; }
+
+    Note: inline_attr is set because HIR builder auto-detects trivial getters.
+    """
     func = MIRFunction(
         name="get_value",
         parameters=[],
@@ -422,7 +425,7 @@ def create_getter_function() -> MIRFunction:
         preserves_attr=None,
         bank_attr=None,
         interrupt_attr=None,
-        inline_attr=None,  # No inline attribute - should still be auto-inlined
+        inline_attr=InlineAttribute(name='inline'),  # Auto-set by HIR builder for trivial getters
         is_entry=False,
         is_far=False,
         vreg_allocator=VirtualRegisterAllocator(),
@@ -446,7 +449,10 @@ def create_getter_function() -> MIRFunction:
 
 
 def create_getter_with_load() -> MIRFunction:
-    """Create a getter that loads from memory: fn get_static() -> u8 { return STATIC; }"""
+    """Create a getter that loads from memory: fn get_static() -> u8 { return STATIC; }
+
+    Note: inline_attr is set because HIR builder auto-detects trivial getters.
+    """
     func = MIRFunction(
         name="get_static",
         parameters=[],
@@ -458,7 +464,7 @@ def create_getter_with_load() -> MIRFunction:
         preserves_attr=None,
         bank_attr=None,
         interrupt_attr=None,
-        inline_attr=None,
+        inline_attr=InlineAttribute(name='inline'),  # Auto-set by HIR builder for trivial getters
         is_entry=False,
         is_far=False,
         vreg_allocator=VirtualRegisterAllocator(),
@@ -483,7 +489,10 @@ def create_getter_with_load() -> MIRFunction:
 
 
 def create_setter_function() -> MIRFunction:
-    """Create a simple setter function: fn set_value(v @ A: u8) { STATIC = v; }"""
+    """Create a simple setter function: fn set_value(v @ A: u8) { STATIC = v; }
+
+    Note: inline_attr is set because HIR builder auto-detects trivial setters.
+    """
     func = MIRFunction(
         name="set_value",
         parameters=[],
@@ -495,7 +504,7 @@ def create_setter_function() -> MIRFunction:
         preserves_attr=None,
         bank_attr=None,
         interrupt_attr=None,
-        inline_attr=None,
+        inline_attr=InlineAttribute(name='inline'),  # Auto-set by HIR builder for trivial setters
         is_entry=False,
         is_far=False,
         vreg_allocator=VirtualRegisterAllocator(),
@@ -520,7 +529,10 @@ def create_setter_function() -> MIRFunction:
 
 
 def create_pointer_getter_function() -> MIRFunction:
-    """Create a pointer-based getter: fn get_damage(*self) -> u8 { return self.damage; }"""
+    """Create a pointer-based getter: fn get_damage(*self) -> u8 { return self.damage; }
+
+    Note: inline_attr is set because HIR builder auto-detects trivial getters.
+    """
     func = MIRFunction(
         name="get_damage",
         parameters=[],
@@ -532,7 +544,7 @@ def create_pointer_getter_function() -> MIRFunction:
         preserves_attr=None,
         bank_attr=None,
         interrupt_attr=None,
-        inline_attr=None,  # No #[inline] attribute
+        inline_attr=InlineAttribute(name='inline'),  # Auto-set by HIR builder for trivial getters
         is_entry=False,
         is_far=False,
         vreg_allocator=VirtualRegisterAllocator(),
@@ -560,7 +572,10 @@ def create_pointer_getter_function() -> MIRFunction:
 
 
 def create_pointer_setter_function() -> MIRFunction:
-    """Create a pointer-based setter: fn set_damage(*self, v @ A: u8) { self.damage = v; }"""
+    """Create a pointer-based setter: fn set_damage(*self, v @ A: u8) { self.damage = v; }
+
+    Note: inline_attr is set because HIR builder auto-detects trivial setters.
+    """
     func = MIRFunction(
         name="set_damage",
         parameters=[],
@@ -572,7 +587,7 @@ def create_pointer_setter_function() -> MIRFunction:
         preserves_attr=None,
         bank_attr=None,
         interrupt_attr=None,
-        inline_attr=None,  # No #[inline] attribute
+        inline_attr=InlineAttribute(name='inline'),  # Auto-set by HIR builder for trivial setters
         is_entry=False,
         is_far=False,
         vreg_allocator=VirtualRegisterAllocator(),
@@ -913,8 +928,7 @@ class TestInlinabilityChecker:
         program = MIRProgram(functions=[caller, getter])
 
         checker = InlinabilityChecker(program)
-        # Pointer getter should be inlined even though called twice and no #[inline]
-        assert checker._is_getter_or_setter(getter) is True
+        # Pointer getter should be inlined (has inline_attr from HIR auto-detection)
         assert checker.should_inline("get_damage") is True
 
     def test_should_inline_pointer_setter(self):
@@ -954,8 +968,7 @@ class TestInlinabilityChecker:
         program = MIRProgram(functions=[caller, setter])
 
         checker = InlinabilityChecker(program)
-        # Pointer setter should be inlined even though called twice and no #[inline]
-        assert checker._is_getter_or_setter(setter) is True
+        # Pointer setter should be inlined (has inline_attr from HIR auto-detection)
         assert checker.should_inline("set_damage") is True
 
 

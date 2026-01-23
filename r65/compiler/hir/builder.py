@@ -451,6 +451,15 @@ class HIRBuilder:
         # Detect STATUS flag return pattern for optimized branch generation at call sites
         returns_status_flag = self._detect_status_flag_return(hir_body)
 
+        # Auto-detect trivial getters/setters and mark for inlining
+        # Only if not already marked and not a far/interrupt/entry function
+        if (inline_attr is None and
+            not func.is_far and
+            interrupt_attr is None and
+            not is_entry and
+            self._is_trivial_getter_or_setter(hir_body)):
+            inline_attr = InlineAttribute(name='inline')
+
         # Infer entry mode from parameters and validate X/Y are u16
         entry_m_mode = self._infer_entry_mode_and_validate(hir_params, func.name, func.source_loc)
 
@@ -506,6 +515,58 @@ class HIRBuilder:
             return return_value.flag_name
 
         return None
+
+    def _is_trivial_getter_or_setter(self, body: hir.HIRBlock) -> bool:
+        """
+        Detect if function is a trivial getter or setter.
+
+        Getter patterns (single return statement):
+        - return 15;              -> HIRReturnStmt with HIRIntegerLiteral
+        - return self.field;      -> HIRReturnStmt with HIRFieldAccess
+        - return variable;        -> HIRReturnStmt with HIRIdentifier
+
+        Setter patterns (single assignment, possibly with implicit return):
+        - self.field = value;     -> HIRExprStmt with HIRAssignment to HIRFieldAccess
+        - STATIC = value;         -> HIRExprStmt with HIRAssignment to HIRIdentifier
+
+        These trivial functions should always be inlined to eliminate call overhead.
+
+        Returns:
+            True if function matches a getter/setter pattern.
+        """
+        if not body or not body.statements:
+            return False
+
+        stmts = body.statements
+
+        # Getter: single return statement with a simple expression
+        if len(stmts) == 1 and isinstance(stmts[0], hir.HIRReturnStmt):
+            ret_stmt = stmts[0]
+            if len(ret_stmt.values) == 1:
+                value = ret_stmt.values[0]
+                # Simple getter patterns: literal, field access, or identifier
+                if isinstance(value, (hir.HIRIntegerLiteral, hir.HIRBooleanLiteral,
+                                      hir.HIRFieldAccess, hir.HIRIdentifier)):
+                    return True
+
+        # Setter: single assignment (possibly followed by implicit return)
+        # After _add_implicit_return, a setter looks like: [HIRExprStmt(assignment), HIRReturnStmt]
+        if len(stmts) in (1, 2):
+            first_stmt = stmts[0]
+            # Check first statement is an assignment
+            if isinstance(first_stmt, hir.HIRExprStmt) and isinstance(first_stmt.expr, hir.HIRAssignment):
+                assignment = first_stmt.expr
+                # Target must be a field access or identifier (static variable)
+                if isinstance(assignment.target, (hir.HIRFieldAccess, hir.HIRIdentifier)):
+                    # Value must be simple (identifier = parameter/variable)
+                    if isinstance(assignment.value, hir.HIRIdentifier):
+                        # If there's a second statement, it must be an empty return
+                        if len(stmts) == 1:
+                            return True
+                        elif len(stmts) == 2 and isinstance(stmts[1], hir.HIRReturnStmt):
+                            return True
+
+        return False
 
     def _infer_entry_mode_and_validate(self, params: List[hir.HIRParameter], func_name: str, source_loc) -> 'ModeState':
         """

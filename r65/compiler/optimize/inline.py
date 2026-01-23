@@ -40,10 +40,11 @@ class InlinabilityChecker:
     5. No inline assembly (asm!())
 
     Heuristics for inlining decisions (in order):
-    1. Getter/setter pattern → always inline (trivial functions)
-    2. Called exactly once → always inline (no code size increase)
-    3. Marked #[inline] → inline if < 30 instructions
-    4. No attribute → inline only if very small (< 3 instructions)
+    1. Called exactly once → always inline (no code size increase)
+    2. Marked #[inline] → inline if < 30 instructions
+    3. No attribute → inline only if very small (< 3 instructions)
+
+    Note: Trivial getters/setters are auto-marked with #[inline] at HIR level.
     """
 
     def __init__(self, mir_program: MIRProgram):
@@ -122,70 +123,6 @@ class InlinabilityChecker:
                     return True
         return False
 
-    def _is_getter_or_setter(self, func: MIRFunction) -> bool:
-        """
-        Check if function is a simple getter or setter.
-
-        Getter patterns:
-        - Returns a constant: fn get() -> T { return CONST; }
-        - Returns a static: fn get() -> T { return STATIC; }
-        - Returns a register: fn get() -> T { return A; }
-        - Returns a struct field via pointer: fn get(*self) -> T { return self.field; }
-
-        Setter patterns:
-        - Sets a static from parameter: fn set(v @ A: T) { STATIC = v; }
-        - Sets a struct field via pointer: fn set(*self, v @ A: T) { self.field = v; }
-
-        These functions have minimal overhead and should always be inlined.
-        """
-        # Must have exactly one block (simple control flow)
-        if len(func.blocks) != 1:
-            return False
-
-        block = list(func.blocks.values())[0]
-        instructions = block.instructions
-
-        # Empty function is not a getter/setter
-        if not instructions:
-            return False
-
-        # Must end with Return
-        if not isinstance(instructions[-1], Return):
-            return False
-
-        # Filter out any Jump instructions that might be at the end
-        non_jump_instrs = [i for i in instructions if not isinstance(i, Jump)]
-
-        # Getter pattern: just returns a value
-        # Patterns: [Return], [Move, Return], [Load, Return], [LoadIndirect, Return],
-        #           [Load, Move, Return], [LoadIndirect, Move, Return]
-        if len(non_jump_instrs) <= 3:
-            # Check if it's a getter (ends with Return that has values)
-            ret_instr = non_jump_instrs[-1]
-            if isinstance(ret_instr, Return) and ret_instr.values:
-                # Count non-Return, non-Move-to-return instructions
-                setup_instrs = [i for i in non_jump_instrs[:-1]
-                                if not isinstance(i, Return)]
-                # Allow Load, LoadIndirect, Move, or nothing before the return
-                if len(setup_instrs) <= 2:
-                    if all(isinstance(i, (Load, LoadIndirect, Move)) for i in setup_instrs):
-                        return True
-
-        # Setter pattern: stores a value and returns (possibly empty)
-        # Patterns: [Store, Return], [StoreIndirect, Return],
-        #           [Move, Store, Return], [Move, StoreIndirect, Return]
-        if len(non_jump_instrs) <= 3:
-            has_store = any(isinstance(i, (Store, StoreIndirect)) for i in non_jump_instrs)
-            if has_store:
-                # Check other instructions are just Move or Return
-                other_instrs = [i for i in non_jump_instrs
-                                if not isinstance(i, (Store, StoreIndirect, Return))]
-                if len(other_instrs) <= 1:
-                    if all(isinstance(i, Move) for i in other_instrs):
-                        return True
-
-        return False
-
     def can_inline(self, func_name: str) -> bool:
         """
         Check if a function can be inlined (hard requirements).
@@ -236,10 +173,6 @@ class InlinabilityChecker:
 
         func = self.func_map[func_name]
         instr_count = self._count_instructions(func)
-
-        # Getter/setter pattern → always inline (very low overhead)
-        if self._is_getter_or_setter(func):
-            return True
 
         # Called exactly once → always inline
         if self.call_counts.get(func_name, 0) == 1:
