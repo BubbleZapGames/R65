@@ -100,8 +100,9 @@ class ProgramCodeGenerator:
         # calculate_rom_size rounds up to power of 2 and enforces 256KB minimum
         rom_banks, self.romsize_value = calculate_rom_size(bank_count, is_hirom)
 
-        # Emit memory map with calculated bank count
-        self.emitter.emit_memory_map(banks=rom_banks)
+        # Emit memory map with calculated bank count and ROM type
+        rom_type = "hirom" if is_hirom else "lorom"
+        self.emitter.emit_memory_map(rom_type=rom_type, banks=rom_banks)
 
         # Phase 1: Memory allocation
         self.allocator = MemoryAllocator()
