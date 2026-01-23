@@ -516,14 +516,55 @@ class HIRBuilder:
 
         return None
 
+    def _is_simple_expression(self, expr: hir.HIRExpression, depth: int = 0) -> bool:
+        """
+        Check if expression is simple enough for auto-inlining.
+
+        Simple expressions are those that compile to just a few instructions:
+        - Literals (integers, booleans)
+        - Identifiers (variables, parameters)
+        - Field access (self.field)
+        - Binary ops with simple operands (myVar & 0xF, x + 1)
+        - Unary ops with simple operand (~flags, !condition)
+
+        Args:
+            expr: HIR expression to check
+            depth: Current recursion depth (limits complexity)
+
+        Returns:
+            True if expression is simple enough.
+        """
+        # Limit recursion depth to avoid complex nested expressions
+        if depth > 2:
+            return False
+
+        # Direct simple values
+        if isinstance(expr, (hir.HIRIntegerLiteral, hir.HIRBooleanLiteral,
+                             hir.HIRIdentifier, hir.HIRFieldAccess,
+                             hir.HIRRegister)):
+            return True
+
+        # Binary op with simple operands: myVar & 0xF, x + 1, etc.
+        if isinstance(expr, hir.HIRBinaryOp):
+            return (self._is_simple_expression(expr.left, depth + 1) and
+                    self._is_simple_expression(expr.right, depth + 1))
+
+        # Unary op with simple operand: ~flags, !condition
+        if isinstance(expr, hir.HIRUnaryOp):
+            return self._is_simple_expression(expr.operand, depth + 1)
+
+        return False
+
     def _is_trivial_getter_or_setter(self, body: hir.HIRBlock) -> bool:
         """
         Detect if function is a trivial getter or setter.
 
-        Getter patterns (single return statement):
-        - return 15;              -> HIRReturnStmt with HIRIntegerLiteral
-        - return self.field;      -> HIRReturnStmt with HIRFieldAccess
-        - return variable;        -> HIRReturnStmt with HIRIdentifier
+        Getter patterns (single return statement with simple expression):
+        - return 15;              -> literal
+        - return self.field;      -> field access
+        - return variable;        -> identifier
+        - return myVar & 0xF;     -> simple binary op
+        - return ~flags;          -> simple unary op
 
         Setter patterns (single assignment, possibly with implicit return):
         - self.field = value;     -> HIRExprStmt with HIRAssignment to HIRFieldAccess
@@ -543,10 +584,7 @@ class HIRBuilder:
         if len(stmts) == 1 and isinstance(stmts[0], hir.HIRReturnStmt):
             ret_stmt = stmts[0]
             if len(ret_stmt.values) == 1:
-                value = ret_stmt.values[0]
-                # Simple getter patterns: literal, field access, or identifier
-                if isinstance(value, (hir.HIRIntegerLiteral, hir.HIRBooleanLiteral,
-                                      hir.HIRFieldAccess, hir.HIRIdentifier)):
+                if self._is_simple_expression(ret_stmt.values[0]):
                     return True
 
         # Setter: single assignment (possibly followed by implicit return)
@@ -558,8 +596,8 @@ class HIRBuilder:
                 assignment = first_stmt.expr
                 # Target must be a field access or identifier (static variable)
                 if isinstance(assignment.target, (hir.HIRFieldAccess, hir.HIRIdentifier)):
-                    # Value must be simple (identifier = parameter/variable)
-                    if isinstance(assignment.value, hir.HIRIdentifier):
+                    # Value must be a simple expression
+                    if self._is_simple_expression(assignment.value):
                         # If there's a second statement, it must be an empty return
                         if len(stmts) == 1:
                             return True

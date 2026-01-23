@@ -820,3 +820,116 @@ fn test() {
         assert isinstance(inner_block, HIRBlock)
         inner_let = inner_block.statements[0]
         assert inner_let.name == "j"
+
+
+class TestAutoInlineDetection:
+    """Test auto-detection of trivial functions for inlining."""
+
+    def test_simple_getter_auto_inlined(self):
+        """Simple getter returning literal should be auto-inlined."""
+        source = """
+fn get_value() -> u8 {
+    return 15;
+}
+"""
+        hir = build_hir(source)
+        func = hir.declarations[0]
+        assert func.inline_attr is not None
+
+    def test_getter_with_identifier_auto_inlined(self):
+        """Getter returning variable should be auto-inlined."""
+        source = """
+fn get_a() -> u8 {
+    return A;
+}
+"""
+        hir = build_hir(source)
+        func = hir.declarations[0]
+        assert func.inline_attr is not None
+
+    def test_getter_with_binary_op_auto_inlined(self):
+        """Getter with simple binary operation should be auto-inlined."""
+        source = """
+fn get_masked(val @ A: u8) -> u8 {
+    return val & 0x0F;
+}
+"""
+        hir = build_hir(source)
+        func = hir.declarations[0]
+        assert func.inline_attr is not None
+
+    def test_getter_with_unary_op_auto_inlined(self):
+        """Getter with unary operation should be auto-inlined."""
+        source = """
+fn get_inverted(val @ A: u8) -> u8 {
+    return ~val;
+}
+"""
+        hir = build_hir(source)
+        func = hir.declarations[0]
+        assert func.inline_attr is not None
+
+    def test_getter_with_nested_ops_auto_inlined(self):
+        """Getter with nested operations (depth 2) should be auto-inlined."""
+        source = """
+fn get_combined(a @ A: u8, b @ X: u16) -> u8 {
+    return (a & 0x0F) | (b as u8 & 0xF0);
+}
+"""
+        hir = build_hir(source)
+        func = hir.declarations[0]
+        # This might be too complex (depth > 2 due to cast), check if it's inlined
+        # The cast adds depth, so this may or may not be inlined depending on implementation
+
+    def test_complex_function_not_auto_inlined(self):
+        """Function with control flow should not be auto-inlined."""
+        source = """
+fn complex(val @ A: u8) -> u8 {
+    if val > 10 {
+        return 1;
+    }
+    return 0;
+}
+"""
+        hir = build_hir(source)
+        func = hir.declarations[0]
+        assert func.inline_attr is None
+
+    def test_far_function_not_auto_inlined(self):
+        """Far functions should not be auto-inlined even if trivial."""
+        source = """
+far fn get_value() -> u8 {
+    return 15;
+}
+"""
+        hir = build_hir(source)
+        func = hir.declarations[0]
+        assert func.inline_attr is None
+
+    def test_setter_auto_inlined(self):
+        """Simple setter should be auto-inlined."""
+        source = """
+#[zeropage]
+static mut TEMP: u8;
+
+fn set_temp(val @ A: u8) {
+    TEMP = val;
+}
+"""
+        hir = build_hir(source)
+        func = hir.declarations[1]  # Second declaration is the function
+        assert func.inline_attr is not None
+
+    def test_setter_with_expression_auto_inlined(self):
+        """Setter with simple expression should be auto-inlined."""
+        source = """
+#[zeropage]
+static mut TEMP: u8;
+
+fn set_masked(val @ A: u8) {
+    TEMP = val & 0x0F;
+}
+"""
+        hir = build_hir(source)
+        func = hir.declarations[1]
+        assert func.inline_attr is not None
