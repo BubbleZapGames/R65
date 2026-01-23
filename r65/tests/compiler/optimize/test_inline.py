@@ -13,12 +13,19 @@ from r65.compiler.optimize.inline import (
 from r65.compiler.mir.nodes import (
     MIRProgram, MIRFunction, BasicBlock,
     Move, BinaryOp, Jump, CondBranch, Return, Call,
+    Load, Store, LoadIndirect, StoreIndirect, MemoryLocation,
     VirtualRegister, HardwareRegister, Immediate,
     InlineAsm, Argument, ArgumentMechanism,
 )
 from r65.compiler.hir.types import BasicTypeInfo
 from r65.compiler.hir.attributes import InlineAttribute, InterruptAttribute, InterruptVector
 from r65.compiler.mir.virtual_registers import VirtualRegisterAllocator
+
+
+class MockSymbol:
+    """Simple mock symbol for testing MemoryLocation."""
+    def __init__(self, name: str):
+        self.name = name
 
 
 def create_simple_callee() -> MIRFunction:
@@ -402,6 +409,195 @@ def create_large_function(num_instructions: int) -> MIRFunction:
     return func
 
 
+def create_getter_function() -> MIRFunction:
+    """Create a simple getter function: fn get_value() -> u8 { return 15; }"""
+    func = MIRFunction(
+        name="get_value",
+        parameters=[],
+        return_type=BasicTypeInfo('u8'),
+        blocks={},
+        entry_block_id=0,
+        exit_block_ids=[0],
+        mode_attr=None,
+        preserves_attr=None,
+        bank_attr=None,
+        interrupt_attr=None,
+        inline_attr=None,  # No inline attribute - should still be auto-inlined
+        is_entry=False,
+        is_far=False,
+        vreg_allocator=VirtualRegisterAllocator(),
+        alias_tracker=None,
+    )
+
+    vreg_result = VirtualRegister(id=0, type_info=BasicTypeInfo('u8'), hint="result")
+
+    entry_block = BasicBlock(
+        block_id=0,
+        instructions=[
+            Move(dest=vreg_result, source=Immediate(15), type_info=BasicTypeInfo('u8')),
+            Return(values=[vreg_result])
+        ],
+        predecessors=[],
+        successors=[]
+    )
+
+    func.blocks[0] = entry_block
+    return func
+
+
+def create_getter_with_load() -> MIRFunction:
+    """Create a getter that loads from memory: fn get_static() -> u8 { return STATIC; }"""
+    func = MIRFunction(
+        name="get_static",
+        parameters=[],
+        return_type=BasicTypeInfo('u8'),
+        blocks={},
+        entry_block_id=0,
+        exit_block_ids=[0],
+        mode_attr=None,
+        preserves_attr=None,
+        bank_attr=None,
+        interrupt_attr=None,
+        inline_attr=None,
+        is_entry=False,
+        is_far=False,
+        vreg_allocator=VirtualRegisterAllocator(),
+        alias_tracker=None,
+    )
+
+    vreg_result = VirtualRegister(id=0, type_info=BasicTypeInfo('u8'), hint="result")
+    mem_loc = MemoryLocation(storage_type="zeropage", address=0x10, symbol=MockSymbol("STATIC"))
+
+    entry_block = BasicBlock(
+        block_id=0,
+        instructions=[
+            Load(dest=vreg_result, source=mem_loc, type_info=BasicTypeInfo('u8')),
+            Return(values=[vreg_result])
+        ],
+        predecessors=[],
+        successors=[]
+    )
+
+    func.blocks[0] = entry_block
+    return func
+
+
+def create_setter_function() -> MIRFunction:
+    """Create a simple setter function: fn set_value(v @ A: u8) { STATIC = v; }"""
+    func = MIRFunction(
+        name="set_value",
+        parameters=[],
+        return_type=None,
+        blocks={},
+        entry_block_id=0,
+        exit_block_ids=[0],
+        mode_attr=None,
+        preserves_attr=None,
+        bank_attr=None,
+        interrupt_attr=None,
+        inline_attr=None,
+        is_entry=False,
+        is_far=False,
+        vreg_allocator=VirtualRegisterAllocator(),
+        alias_tracker=None,
+    )
+
+    vreg_value = VirtualRegister(id=0, type_info=BasicTypeInfo('u8'), hint="value")
+    mem_loc = MemoryLocation(storage_type="zeropage", address=0x10, symbol=MockSymbol("STATIC"))
+
+    entry_block = BasicBlock(
+        block_id=0,
+        instructions=[
+            Store(dest=mem_loc, source=vreg_value, type_info=BasicTypeInfo('u8')),
+            Return(values=[])
+        ],
+        predecessors=[],
+        successors=[]
+    )
+
+    func.blocks[0] = entry_block
+    return func
+
+
+def create_pointer_getter_function() -> MIRFunction:
+    """Create a pointer-based getter: fn get_damage(*self) -> u8 { return self.damage; }"""
+    func = MIRFunction(
+        name="get_damage",
+        parameters=[],
+        return_type=BasicTypeInfo('u8'),
+        blocks={},
+        entry_block_id=0,
+        exit_block_ids=[0],
+        mode_attr=None,
+        preserves_attr=None,
+        bank_attr=None,
+        interrupt_attr=None,
+        inline_attr=None,  # No #[inline] attribute
+        is_entry=False,
+        is_far=False,
+        vreg_allocator=VirtualRegisterAllocator(),
+        alias_tracker=None,
+    )
+
+    # Simulates: self.damage where self is a pointer
+    # This would be lowered to LoadIndirect (near pointer for impl methods)
+    vreg_self = VirtualRegister(id=0, type_info=BasicTypeInfo('u16'), hint="self")  # pointer
+    vreg_result = VirtualRegister(id=1, type_info=BasicTypeInfo('u8'), hint="result")
+
+    entry_block = BasicBlock(
+        block_id=0,
+        instructions=[
+            # LoadIndirect: load from pointer (with Y register for offset)
+            LoadIndirect(dest=vreg_result, pointer=vreg_self, is_far=False, index_register='Y', type_info=BasicTypeInfo('u8')),
+            Return(values=[vreg_result])
+        ],
+        predecessors=[],
+        successors=[]
+    )
+
+    func.blocks[0] = entry_block
+    return func
+
+
+def create_pointer_setter_function() -> MIRFunction:
+    """Create a pointer-based setter: fn set_damage(*self, v @ A: u8) { self.damage = v; }"""
+    func = MIRFunction(
+        name="set_damage",
+        parameters=[],
+        return_type=None,
+        blocks={},
+        entry_block_id=0,
+        exit_block_ids=[0],
+        mode_attr=None,
+        preserves_attr=None,
+        bank_attr=None,
+        interrupt_attr=None,
+        inline_attr=None,  # No #[inline] attribute
+        is_entry=False,
+        is_far=False,
+        vreg_allocator=VirtualRegisterAllocator(),
+        alias_tracker=None,
+    )
+
+    # Simulates: self.damage = v where self is a pointer
+    vreg_self = VirtualRegister(id=0, type_info=BasicTypeInfo('u16'), hint="self")  # pointer
+    vreg_value = VirtualRegister(id=1, type_info=BasicTypeInfo('u8'), hint="value")
+
+    entry_block = BasicBlock(
+        block_id=0,
+        instructions=[
+            # StoreIndirect: store to pointer (with Y register for offset)
+            StoreIndirect(source=vreg_value, pointer=vreg_self, is_far=False, index_register='Y', type_info=BasicTypeInfo('u8')),
+            Return(values=[])
+        ],
+        predecessors=[],
+        successors=[]
+    )
+
+    func.blocks[0] = entry_block
+    return func
+
+
 class TestInlinabilityChecker:
     """Tests for InlinabilityChecker."""
 
@@ -532,6 +728,235 @@ class TestInlinabilityChecker:
         checker = InlinabilityChecker(program)
         # Called once, so should inline
         assert checker.should_inline("add_one") is True
+
+    def test_should_inline_getter_function(self):
+        """Getter functions should be auto-inlined even without #[inline]."""
+        getter = create_getter_function()
+        caller = create_caller_with_call("get_value")
+
+        # Create a second caller so the function is called twice
+        caller2 = MIRFunction(
+            name="caller2",
+            parameters=[],
+            return_type=BasicTypeInfo('u8'),
+            blocks={},
+            entry_block_id=0,
+            exit_block_ids=[0],
+            mode_attr=None,
+            preserves_attr=None,
+            bank_attr=None,
+            interrupt_attr=None,
+            inline_attr=None,
+            is_entry=False,
+            is_far=False,
+            vreg_allocator=VirtualRegisterAllocator(),
+            alias_tracker=None,
+        )
+        vreg_result = VirtualRegister(id=0, type_info=BasicTypeInfo('u8'), hint="result")
+        caller2.blocks[0] = BasicBlock(
+            block_id=0,
+            instructions=[
+                Call(function="get_value", args=[], returns=[vreg_result], is_far=False),
+                Return(values=[vreg_result])
+            ],
+            predecessors=[],
+            successors=[]
+        )
+
+        program = MIRProgram(functions=[caller, caller2, getter])
+
+        checker = InlinabilityChecker(program)
+        # Getter should be inlined even though called twice and no #[inline]
+        assert checker.should_inline("get_value") is True
+
+    def test_should_inline_getter_with_load(self):
+        """Getter that loads from static should be auto-inlined."""
+        getter = create_getter_with_load()
+        caller = create_caller_with_call("get_static")
+
+        # Create a second caller
+        caller2 = MIRFunction(
+            name="caller2",
+            parameters=[],
+            return_type=BasicTypeInfo('u8'),
+            blocks={},
+            entry_block_id=0,
+            exit_block_ids=[0],
+            mode_attr=None,
+            preserves_attr=None,
+            bank_attr=None,
+            interrupt_attr=None,
+            inline_attr=None,
+            is_entry=False,
+            is_far=False,
+            vreg_allocator=VirtualRegisterAllocator(),
+            alias_tracker=None,
+        )
+        vreg_result = VirtualRegister(id=0, type_info=BasicTypeInfo('u8'), hint="result")
+        caller2.blocks[0] = BasicBlock(
+            block_id=0,
+            instructions=[
+                Call(function="get_static", args=[], returns=[vreg_result], is_far=False),
+                Return(values=[vreg_result])
+            ],
+            predecessors=[],
+            successors=[]
+        )
+
+        program = MIRProgram(functions=[caller, caller2, getter])
+
+        checker = InlinabilityChecker(program)
+        # Getter with Load should also be inlined
+        assert checker.should_inline("get_static") is True
+
+    def test_should_inline_setter_function(self):
+        """Setter functions should be auto-inlined even without #[inline]."""
+        setter = create_setter_function()
+
+        # Create caller that calls the setter
+        caller = MIRFunction(
+            name="main",
+            parameters=[],
+            return_type=None,
+            blocks={},
+            entry_block_id=0,
+            exit_block_ids=[0],
+            mode_attr=None,
+            preserves_attr=None,
+            bank_attr=None,
+            interrupt_attr=None,
+            inline_attr=None,
+            is_entry=True,
+            is_far=False,
+            vreg_allocator=VirtualRegisterAllocator(),
+            alias_tracker=None,
+        )
+        caller.blocks[0] = BasicBlock(
+            block_id=0,
+            instructions=[
+                Call(function="set_value", args=[], returns=[], is_far=False),
+                Return(values=[])
+            ],
+            predecessors=[],
+            successors=[]
+        )
+
+        # Create second caller
+        caller2 = MIRFunction(
+            name="caller2",
+            parameters=[],
+            return_type=None,
+            blocks={},
+            entry_block_id=0,
+            exit_block_ids=[0],
+            mode_attr=None,
+            preserves_attr=None,
+            bank_attr=None,
+            interrupt_attr=None,
+            inline_attr=None,
+            is_entry=False,
+            is_far=False,
+            vreg_allocator=VirtualRegisterAllocator(),
+            alias_tracker=None,
+        )
+        caller2.blocks[0] = BasicBlock(
+            block_id=0,
+            instructions=[
+                Call(function="set_value", args=[], returns=[], is_far=False),
+                Return(values=[])
+            ],
+            predecessors=[],
+            successors=[]
+        )
+
+        program = MIRProgram(functions=[caller, caller2, setter])
+
+        checker = InlinabilityChecker(program)
+        # Setter should be inlined even though called twice and no #[inline]
+        assert checker.should_inline("set_value") is True
+
+    def test_should_inline_pointer_getter(self):
+        """Pointer-based getter (LoadIndirect) should be auto-inlined."""
+        # Tests: fn get_damage(*self) -> u8 { return self.damage; }
+        getter = create_pointer_getter_function()
+
+        # Create caller that calls get_damage multiple times
+        caller = MIRFunction(
+            name="main",
+            parameters=[],
+            return_type=None,
+            blocks={},
+            entry_block_id=0,
+            exit_block_ids=[0],
+            mode_attr=None,
+            preserves_attr=None,
+            bank_attr=None,
+            interrupt_attr=None,
+            inline_attr=None,
+            is_entry=True,
+            is_far=False,
+            vreg_allocator=VirtualRegisterAllocator(),
+            alias_tracker=None,
+        )
+        vreg_result = VirtualRegister(id=0, type_info=BasicTypeInfo('u8'), hint="result")
+        caller.blocks[0] = BasicBlock(
+            block_id=0,
+            instructions=[
+                Call(function="get_damage", args=[], returns=[vreg_result], is_far=False),
+                Call(function="get_damage", args=[], returns=[vreg_result], is_far=False),
+                Return(values=[])
+            ],
+            predecessors=[],
+            successors=[]
+        )
+
+        program = MIRProgram(functions=[caller, getter])
+
+        checker = InlinabilityChecker(program)
+        # Pointer getter should be inlined even though called twice and no #[inline]
+        assert checker._is_getter_or_setter(getter) is True
+        assert checker.should_inline("get_damage") is True
+
+    def test_should_inline_pointer_setter(self):
+        """Pointer-based setter (StoreIndirect) should be auto-inlined."""
+        # Tests: fn set_damage(*self, v @ A: u8) { self.damage = v; }
+        setter = create_pointer_setter_function()
+
+        # Create caller that calls set_damage multiple times
+        caller = MIRFunction(
+            name="main",
+            parameters=[],
+            return_type=None,
+            blocks={},
+            entry_block_id=0,
+            exit_block_ids=[0],
+            mode_attr=None,
+            preserves_attr=None,
+            bank_attr=None,
+            interrupt_attr=None,
+            inline_attr=None,
+            is_entry=True,
+            is_far=False,
+            vreg_allocator=VirtualRegisterAllocator(),
+            alias_tracker=None,
+        )
+        caller.blocks[0] = BasicBlock(
+            block_id=0,
+            instructions=[
+                Call(function="set_damage", args=[], returns=[], is_far=False),
+                Call(function="set_damage", args=[], returns=[], is_far=False),
+                Return(values=[])
+            ],
+            predecessors=[],
+            successors=[]
+        )
+
+        program = MIRProgram(functions=[caller, setter])
+
+        checker = InlinabilityChecker(program)
+        # Pointer setter should be inlined even though called twice and no #[inline]
+        assert checker._is_getter_or_setter(setter) is True
+        assert checker.should_inline("set_damage") is True
 
 
 class TestBlockCloner:
