@@ -249,6 +249,241 @@ class TestEdgeCases:
         assert directives[0].name == ".ACCU"
 
 
+class TestExactBoundaries:
+    """Test exact 127-byte boundary behavior."""
+
+    def test_exactly_127_bytes_no_fixup(self):
+        """Branch exactly 127 bytes away should NOT be fixed."""
+        nodes = [
+            Label("func"),
+            Instruction(Opcode.BEQ, Address("target")),  # 2 bytes
+        ]
+        # Add 125 NOPs (125 bytes) - branch ends at byte 2, target at byte 127
+        # Distance = 127 - 2 = 125, but we need target at offset 127 from branch end
+        # Branch instruction is 2 bytes, so branch end is at offset 2
+        # We need 127 bytes of code after the branch
+        for _ in range(127):
+            nodes.append(Instruction(Opcode.NOP))  # 1 byte each
+        nodes.append(Label("target"))
+        nodes.append(Instruction(Opcode.RTS))
+
+        fixed, num_fixups = fixup_nodes(nodes)
+
+        # Should NOT be fixed - exactly at the limit
+        assert num_fixups == 0
+
+    def test_exactly_128_bytes_needs_fixup(self):
+        """Branch exactly 128 bytes away should be fixed."""
+        nodes = [
+            Label("func"),
+            Instruction(Opcode.BEQ, Address("target")),  # 2 bytes
+        ]
+        # Add 128 NOPs - distance will be 128 bytes (exceeds 127)
+        for _ in range(128):
+            nodes.append(Instruction(Opcode.NOP))
+        nodes.append(Label("target"))
+        nodes.append(Instruction(Opcode.RTS))
+
+        fixed, num_fixups = fixup_nodes(nodes)
+
+        # Should be fixed - exceeds the limit
+        assert num_fixups == 1
+
+    def test_backward_branch_exactly_127_bytes(self):
+        """Backward branch exactly -127 bytes should NOT be fixed."""
+        nodes = [
+            Label("func"),
+            Label("target"),
+        ]
+        # Add 125 NOPs (branch will be 2 bytes, total 127 from target to branch end)
+        for _ in range(125):
+            nodes.append(Instruction(Opcode.NOP))
+        nodes.append(Instruction(Opcode.BNE, Address("target")))
+        nodes.append(Instruction(Opcode.RTS))
+
+        fixed, num_fixups = fixup_nodes(nodes)
+
+        # Should NOT be fixed
+        assert num_fixups == 0
+
+    def test_backward_branch_exactly_128_bytes(self):
+        """Backward branch exactly -128 bytes should be fixed."""
+        nodes = [
+            Label("func"),
+            Label("target"),
+        ]
+        # Add 128 NOPs - backward distance will exceed -127
+        for _ in range(128):
+            nodes.append(Instruction(Opcode.NOP))
+        nodes.append(Instruction(Opcode.BNE, Address("target")))
+        nodes.append(Instruction(Opcode.RTS))
+
+        fixed, num_fixups = fixup_nodes(nodes)
+
+        # Should be fixed
+        assert num_fixups == 1
+
+
+class TestCascadingFixups:
+    """Test cascading fixup behavior where fixing one branch affects others."""
+
+    def test_cascading_forward_branches(self):
+        """Fixing an early branch can push later branches over the limit."""
+        # Two branches close to the limit - fixing the first adds 3 bytes,
+        # which could push the second over
+        nodes = [
+            Label("func"),
+            Instruction(Opcode.BEQ, Address("target1")),  # Branch 1
+            Instruction(Opcode.BNE, Address("target2")),  # Branch 2
+        ]
+        # Add 126 NOPs - first branch is at limit, second is 2 bytes further
+        for _ in range(126):
+            nodes.append(Instruction(Opcode.NOP))
+        nodes.append(Label("target1"))
+        nodes.append(Instruction(Opcode.NOP))
+        nodes.append(Label("target2"))
+        nodes.append(Instruction(Opcode.RTS))
+
+        fixed, num_fixups = fixup_nodes(nodes)
+
+        # First branch: 126 bytes - within limit (no fix needed)
+        # Second branch: 128 bytes - needs fix
+        # After fixing second: first is still 126, second expanded
+        assert num_fixups >= 1
+
+    def test_multiple_cascading_fixups(self):
+        """Multiple branches near the limit that cascade."""
+        nodes = [
+            Label("func"),
+            Instruction(Opcode.BEQ, Address("target")),
+            Instruction(Opcode.BNE, Address("target")),
+            Instruction(Opcode.BCC, Address("target")),
+            Instruction(Opcode.BCS, Address("target")),
+        ]
+        # Add enough NOPs to put all branches just over the limit
+        for _ in range(130):
+            nodes.append(Instruction(Opcode.NOP))
+        nodes.append(Label("target"))
+        nodes.append(Instruction(Opcode.RTS))
+
+        fixed, num_fixups = fixup_nodes(nodes)
+
+        # All 4 branches should need fixing
+        assert num_fixups == 4
+
+        # Verify we have 4 JMPs (one for each long branch)
+        jmp_count = sum(1 for n in fixed
+                       if isinstance(n, Instruction) and n.opcode == Opcode.JMP_ABSOLUTE)
+        assert jmp_count == 4
+
+
+class TestDataDirectiveSizing:
+    """Test that data directives are properly sized."""
+
+    def test_db_directive_sizing(self):
+        """Test .DB directive byte counting."""
+        nodes = [
+            Label("func"),
+            Instruction(Opcode.BEQ, Address("target")),
+        ]
+        # Add data that totals >127 bytes
+        # 130 bytes of .DB data
+        nodes.append(Directive(".DB", ["$00"] * 130))
+        nodes.append(Label("target"))
+        nodes.append(Instruction(Opcode.RTS))
+
+        fixed, num_fixups = fixup_nodes(nodes)
+
+        # Branch should be fixed due to data size
+        assert num_fixups == 1
+
+    def test_dw_directive_sizing(self):
+        """Test .DW directive word counting (2 bytes each)."""
+        nodes = [
+            Label("func"),
+            Instruction(Opcode.BEQ, Address("target")),
+        ]
+        # 65 words = 130 bytes
+        nodes.append(Directive(".DW", ["$0000"] * 65))
+        nodes.append(Label("target"))
+        nodes.append(Instruction(Opcode.RTS))
+
+        fixed, num_fixups = fixup_nodes(nodes)
+
+        # Branch should be fixed due to data size
+        assert num_fixups == 1
+
+    def test_mixed_code_and_data(self):
+        """Test branch distance calculation with mixed code and data."""
+        nodes = [
+            Label("func"),
+            Instruction(Opcode.BEQ, Address("target")),
+            Instruction(Opcode.NOP),  # 1 byte
+            Directive(".DB", ["$00"] * 50),  # 50 bytes
+            Instruction(Opcode.NOP),  # 1 byte
+            Directive(".DW", ["$0000"] * 40),  # 80 bytes
+            # Total: 1 + 50 + 1 + 80 = 132 bytes
+        ]
+        nodes.append(Label("target"))
+        nodes.append(Instruction(Opcode.RTS))
+
+        fixed, num_fixups = fixup_nodes(nodes)
+
+        # Should be fixed (132 > 127)
+        assert num_fixups == 1
+
+
+class TestConvergence:
+    """Test algorithm convergence behavior."""
+
+    def test_algorithm_converges(self):
+        """Test that the algorithm reaches a stable state."""
+        # Create a complex scenario with many branches
+        nodes = [Label("func")]
+
+        # Add 10 branches targeting the same far label
+        for i in range(10):
+            nodes.append(Instruction(Opcode.BEQ, Address("far_target")))
+            nodes.append(Instruction(Opcode.NOP))
+
+        # Add enough code to make branches long
+        for _ in range(150):
+            nodes.append(Instruction(Opcode.NOP))
+
+        nodes.append(Label("far_target"))
+        nodes.append(Instruction(Opcode.RTS))
+
+        # Should complete without hanging
+        fixed, num_fixups = fixup_nodes(nodes)
+
+        # All 10 branches should be fixed
+        assert num_fixups == 10
+
+    def test_no_infinite_loop_on_dense_branches(self):
+        """Ensure no infinite loop with many branches close together."""
+        nodes = [Label("func")]
+
+        # Dense branches - each one could affect the others
+        for i in range(20):
+            nodes.append(Instruction(Opcode.BEQ, Address(f"target_{i}")))
+
+        # Add targets far away
+        for _ in range(200):
+            nodes.append(Instruction(Opcode.NOP))
+
+        for i in range(20):
+            nodes.append(Label(f"target_{i}"))
+            nodes.append(Instruction(Opcode.NOP))
+
+        nodes.append(Instruction(Opcode.RTS))
+
+        # Should complete without hanging (max 20 iterations in algorithm)
+        fixed, num_fixups = fixup_nodes(nodes)
+
+        # All branches should be fixed
+        assert num_fixups == 20
+
+
 class TestBranchInversion:
     """Test branch inversion functionality."""
 
