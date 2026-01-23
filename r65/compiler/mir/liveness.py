@@ -50,6 +50,7 @@ class LivenessAnalyzer:
         """
         self.func = mir_func
         self.liveness: Dict[int, LivenessInfo] = {}
+        self._live_ranges_cache: Optional[Dict[VirtualRegister, Set[int]]] = None
 
     def analyze(self) -> Dict[int, LivenessInfo]:
         """
@@ -293,11 +294,15 @@ class LivenessAnalyzer:
         Compute live ranges for all virtual registers.
 
         Returns a dictionary mapping each virtual register to the set of
-        basic block IDs where it is live.
+        basic block IDs where it is live. Results are cached for performance.
 
         Returns:
             Dictionary mapping VirtualRegister to set of live block IDs
         """
+        # Return cached result if available
+        if self._live_ranges_cache is not None:
+            return self._live_ranges_cache
+
         live_ranges: Dict[VirtualRegister, Set[int]] = {}
 
         for block_id, info in self.liveness.items():
@@ -309,6 +314,8 @@ class LivenessAnalyzer:
                     live_ranges[var] = set()
                 live_ranges[var].add(block_id)
 
+        # Cache the result
+        self._live_ranges_cache = live_ranges
         return live_ranges
 
     def interferes(self, var1: VirtualRegister, var2: VirtualRegister) -> bool:

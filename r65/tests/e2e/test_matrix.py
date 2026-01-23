@@ -8,10 +8,12 @@ import pytest
 from pathlib import Path
 from r65.tests.e2e import E2ETest, ExpectedState
 
-# Absolute path to stdlib/math.r65
+# Absolute paths to stdlib files
 # test_matrix.py is at r65/tests/e2e/test_matrix.py
 # So we need 4 parents to get to R65 root: e2e -> tests -> r65 -> R65
-MATH_R65_PATH = Path(__file__).parent.parent.parent.parent / "stdlib" / "math.r65"
+STDLIB_DIR = Path(__file__).parent.parent.parent.parent / "stdlib"
+SNESLIB_R65_PATH = STDLIB_DIR / "sneslib.r65"
+MATH_R65_PATH = STDLIB_DIR / "math.r65"
 
 
 class TestMatrixMultiplication:
@@ -33,7 +35,8 @@ class TestMatrixMultiplication:
             R65 source code string
         """
         return f'''
-            // Include math library for mul8 function
+            // Include sneslib (provides hardware registers) then math library
+            include!("{SNESLIB_R65_PATH}")
             include!("{MATH_R65_PATH}")
 
             // Input matrices stored in row-major order
