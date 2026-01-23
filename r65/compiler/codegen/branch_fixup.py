@@ -2,24 +2,31 @@
 Branch fixup pass: handles conditional branches that exceed 127-byte range.
 
 The 65816's conditional branch instructions (BEQ, BNE, BCC, BCS, BMI, BPL, BVC, BVS)
-have an 8-bit signed offset, limiting them to ±127 bytes. This pass identifies
+have an 8-bit signed offset, limiting them to -128 to +127 bytes. This pass identifies
 branches that exceed this limit and rewrites them using the inverted pattern:
 
-    ; Original (broken if target > 127 bytes):
+    ; Original (broken if target > 127 bytes away):
     BEQ far_target
-    JMP other_target
 
     ; Rewritten:
-    BNE __branch_skip_N    ; Inverted condition
-    JMP far_target         ; JMP can reach anywhere
-    __branch_skip_N:
-    JMP other_target
+    BNE __skip_N       ; Inverted condition, skip over JMP
+    JMP far_target     ; JMP can reach anywhere in bank
+    __skip_N:
 
-This pass runs after peephole optimization to work with final instruction sizes.
+Algorithm:
+1. Build branch/label index for the code
+2. Calculate initial offsets assuming all branches are short (2 bytes)
+3. Mark branches exceeding 127 bytes as "long" (will become 5 bytes)
+4. Iterate until stable:
+   - Recalculate offsets with long branches at 5 bytes
+   - Check if any branches changed status (short↔long)
+5. Single rewrite pass: expand all "long" branches
+
+This approach avoids the inefficiency of recalculating after each individual fixup.
 """
 
-from dataclasses import dataclass
-from typing import List, Dict, Tuple, Set
+from dataclasses import dataclass, field
+from typing import List, Dict, Tuple, Set, Optional
 
 from r65.compiler.codegen.opcodes import (
     Opcode, mnemonic, instruction_size,
@@ -35,12 +42,17 @@ from r65.compiler.codegen.asm_nodes import (
 # ============================================================================
 
 # Maximum branch distance (signed 8-bit: -128 to +127)
-# Use conservative threshold to account for potential size calculation differences
-# between our estimation and actual assembled output
-MAX_BRANCH_DISTANCE = 100
+# Use exact limit - the algorithm handles cascading correctly
+MAX_BRANCH_DISTANCE = 127
+
+# Size of short branch instruction (e.g., BEQ rel8)
+SHORT_BRANCH_SIZE = 2
+
+# Size of long branch replacement (inverted branch + JMP + label)
+# BNE skip (2) + JMP target (3) + skip: (0) = 5 bytes
+LONG_BRANCH_SIZE = 5
 
 # Conditional branches that can be inverted for long branch fixup
-# BRA and BRL are unconditional and don't need fixup
 CONDITIONAL_BRANCH_OPCODES: Set[Opcode] = {
     Opcode.BEQ, Opcode.BNE,
     Opcode.BCC, Opcode.BCS,
@@ -50,15 +62,16 @@ CONDITIONAL_BRANCH_OPCODES: Set[Opcode] = {
 
 
 # ============================================================================
-# Statistics Tracking
+# Branch Info
 # ============================================================================
 
 @dataclass
-class BranchFixupStats:
-    """Track branch fixup statistics."""
-    branches_analyzed: int = 0
-    branches_fixed: int = 0
-    labels_created: int = 0
+class BranchInfo:
+    """Information about a conditional branch instruction."""
+    index: int              # Index in node list
+    target_label: str       # Target label name
+    opcode: Opcode          # Original opcode
+    is_long: bool = False   # Whether this needs long form
 
 
 # ============================================================================
@@ -67,23 +80,15 @@ class BranchFixupStats:
 
 class BranchFixup:
     """
-    Branch fixup that works directly on AsmNode objects.
+    Optimized branch fixup using iterative convergence.
 
-    Uses typed Opcode enum for efficient pattern matching.
-    Identifies conditional branches that exceed 127-byte range and rewrites
-    them using the inverted branch + JMP pattern.
+    Analyzes all branches first, determines which need long form,
+    then applies fixups in a single pass.
     """
 
     def __init__(self):
-        self.stats = BranchFixupStats()
         self._skip_label_counter = 0
-        self._acc_16bit = False
-        self._idx_16bit = False
-
-    @property
-    def branches_fixed(self) -> int:
-        """Number of branches that were fixed."""
-        return self.stats.branches_fixed
+        self.branches_fixed = 0
 
     def fixup(self, nodes: List[AsmNode]) -> List[AsmNode]:
         """
@@ -93,153 +98,243 @@ class BranchFixup:
             nodes: List of AsmNode objects
 
         Returns:
-            Fixed node list
+            Fixed node list with long branches expanded
         """
-        # Calculate initial label offsets
-        label_offsets = self._calculate_label_offsets(nodes)
+        if not nodes:
+            return nodes
 
-        # Process nodes, fixing long branches
-        fixed: List[AsmNode] = []
-        i = 0
+        # Phase 1: Build indices
+        branches, label_indices = self._build_indices(nodes)
 
-        while i < len(nodes):
-            node = nodes[i]
+        if not branches:
+            return nodes  # No conditional branches to fix
 
-            # Track mode directives
-            self._track_mode_directive(node)
+        # Phase 2: Determine which branches need long form (iterative)
+        self._analyze_branches(nodes, branches, label_indices)
 
-            # Check for conditional branch that might need fixup
-            if self._is_fixable_branch(node):
-                assert isinstance(node, Instruction)
-                target_label = self._get_branch_target(node)
+        # Phase 3: Apply fixups
+        return self._apply_fixups(nodes, branches)
 
-                if target_label and target_label in label_offsets:
-                    self.stats.branches_analyzed += 1
+    def _build_indices(
+        self, nodes: List[AsmNode]
+    ) -> Tuple[List[BranchInfo], Dict[str, int]]:
+        """
+        Build indices for branches and labels.
 
-                    # Calculate branch distance
-                    branch_offset = self._calculate_current_offset(fixed)
-                    branch_size = instruction_size(node.opcode, self._acc_16bit, self._idx_16bit)
-                    target_offset = label_offsets[target_label]
-                    distance = target_offset - (branch_offset + branch_size)
+        Returns:
+            Tuple of (branch_infos, label_to_index mapping)
+        """
+        branches: List[BranchInfo] = []
+        label_indices: Dict[str, int] = {}
 
-                    if abs(distance) > MAX_BRANCH_DISTANCE:
-                        # Fix this long branch
-                        fixed_nodes = self._rewrite_long_branch(node)
-                        fixed.extend(fixed_nodes)
-                        self.stats.branches_fixed += 1
+        for i, node in enumerate(nodes):
+            if isinstance(node, Label):
+                label_indices[node.name] = i
+            elif isinstance(node, Instruction):
+                if node.opcode in CONDITIONAL_BRANCH_OPCODES:
+                    target = self._get_branch_target(node)
+                    if target:
+                        branches.append(BranchInfo(
+                            index=i,
+                            target_label=target,
+                            opcode=node.opcode
+                        ))
 
-                        # Recalculate label offsets with the new nodes
-                        label_offsets = self._calculate_label_offsets(fixed + nodes[i + 1:])
-                        i += 1
-                        continue
+        return branches, label_indices
 
-            fixed.append(node)
-            i += 1
-
-        return fixed
-
-    def _is_fixable_branch(self, node: AsmNode) -> bool:
-        """Check if node is a conditional branch that can be fixed."""
-        if not isinstance(node, Instruction):
-            return False
-        return node.opcode in CONDITIONAL_BRANCH_OPCODES
-
-    def _get_branch_target(self, instr: Instruction) -> str | None:
+    def _get_branch_target(self, instr: Instruction) -> Optional[str]:
         """Extract target label from a branch instruction."""
         if isinstance(instr.operand, Address) and isinstance(instr.operand.value, str):
             return instr.operand.value
         return None
 
-    def _track_mode_directive(self, node: AsmNode):
-        """Track .ACCU/.INDEX directives for instruction sizing."""
-        if isinstance(node, Directive):
-            if node.name == '.ACCU':
-                self._acc_16bit = '16' in ''.join(node.args)
-            elif node.name == '.INDEX':
-                self._idx_16bit = '16' in ''.join(node.args)
+    def _analyze_branches(
+        self,
+        nodes: List[AsmNode],
+        branches: List[BranchInfo],
+        label_indices: Dict[str, int]
+    ):
+        """
+        Iteratively determine which branches need long form.
 
-    def _calculate_label_offsets(self, nodes: List[AsmNode]) -> Dict[str, int]:
-        """Calculate byte offsets for all labels."""
-        label_offsets: Dict[str, int] = {}
+        Continues until no branch changes status (convergence).
+        """
+        max_iterations = 20  # Safety limit
+
+        for _ in range(max_iterations):
+            # Calculate byte offsets for all nodes
+            offsets = self._calculate_offsets(nodes, branches)
+
+            # Check each branch and update is_long status
+            changed = False
+            for branch in branches:
+                if branch.target_label not in label_indices:
+                    continue  # Target not in this scope
+
+                target_idx = label_indices[branch.target_label]
+
+                # Calculate distance from end of branch instruction to target
+                branch_end_offset = offsets[branch.index + 1] if branch.index + 1 < len(offsets) else offsets[-1]
+                target_offset = offsets[target_idx]
+                distance = target_offset - branch_end_offset
+
+                needs_long = abs(distance) > MAX_BRANCH_DISTANCE
+
+                if needs_long != branch.is_long:
+                    branch.is_long = needs_long
+                    changed = True
+
+            if not changed:
+                break  # Converged
+
+    def _calculate_offsets(
+        self,
+        nodes: List[AsmNode],
+        branches: List[BranchInfo]
+    ) -> List[int]:
+        """
+        Calculate byte offset for each node position.
+
+        Accounts for branch instructions that are marked as long (5 bytes)
+        vs short (2 bytes).
+
+        Returns:
+            List where offsets[i] is byte offset at start of nodes[i]
+        """
+        # Build set of long branch indices for O(1) lookup
+        long_branch_indices = {b.index for b in branches if b.is_long}
+
+        offsets: List[int] = []
         current_offset = 0
         acc_16 = False
         idx_16 = False
 
-        for node in nodes:
-            if isinstance(node, Label):
-                label_offsets[node.name] = current_offset
-            elif isinstance(node, Instruction):
-                current_offset += instruction_size(node.opcode, acc_16, idx_16)
-            elif isinstance(node, Directive):
-                if node.name == '.ACCU':
-                    acc_16 = '16' in ''.join(node.args)
-                elif node.name == '.INDEX':
-                    idx_16 = '16' in ''.join(node.args)
+        for i, node in enumerate(nodes):
+            offsets.append(current_offset)
 
-        return label_offsets
-
-    def _calculate_current_offset(self, nodes: List[AsmNode]) -> int:
-        """Calculate byte offset at current position."""
-        offset = 0
-        acc_16 = False
-        idx_16 = False
-
-        for node in nodes:
             if isinstance(node, Instruction):
-                offset += instruction_size(node.opcode, acc_16, idx_16)
+                if i in long_branch_indices:
+                    # This branch will be expanded to long form
+                    current_offset += LONG_BRANCH_SIZE
+                else:
+                    current_offset += instruction_size(node.opcode, acc_16, idx_16)
             elif isinstance(node, Directive):
                 if node.name == '.ACCU':
                     acc_16 = '16' in ''.join(node.args)
                 elif node.name == '.INDEX':
                     idx_16 = '16' in ''.join(node.args)
+                # Handle data directives
+                current_offset += self._directive_size(node)
 
-        return offset
+        # Add final offset (end of code)
+        offsets.append(current_offset)
 
-    def _rewrite_long_branch(self, branch: Instruction) -> List[AsmNode]:
+        return offsets
+
+    def _directive_size(self, directive: Directive) -> int:
+        """Calculate size in bytes of a directive."""
+        name = directive.name.upper()
+        args = directive.args
+
+        if name in ('.DB', '.BYTE'):
+            return len(args)
+        elif name in ('.DW', '.WORD'):
+            return len(args) * 2
+        elif name in ('.DL', '.LONG', '.FARADDR'):
+            return len(args) * 3
+        elif name in ('.DD', '.DWORD'):
+            return len(args) * 4
+        elif name == '.DSB':
+            # .DSB count - reserve count bytes
+            if args:
+                try:
+                    return int(args[0], 0)
+                except (ValueError, IndexError):
+                    pass
+        elif name == '.DSW':
+            # .DSW count - reserve count words
+            if args:
+                try:
+                    return int(args[0], 0) * 2
+                except (ValueError, IndexError):
+                    pass
+
+        return 0
+
+    def _apply_fixups(
+        self,
+        nodes: List[AsmNode],
+        branches: List[BranchInfo]
+    ) -> List[AsmNode]:
         """
-        Rewrite a long branch using the inverted pattern.
+        Apply fixups to all branches marked as long.
+
+        Single pass through nodes, expanding long branches.
+        """
+        # Build set of indices that need expansion
+        long_indices = {b.index: b for b in branches if b.is_long}
+
+        if not long_indices:
+            return nodes  # Nothing to fix
+
+        result: List[AsmNode] = []
+
+        for i, node in enumerate(nodes):
+            if i in long_indices:
+                # Expand this branch
+                branch_info = long_indices[i]
+                assert isinstance(node, Instruction)
+                expanded = self._expand_long_branch(node, branch_info)
+                result.extend(expanded)
+                self.branches_fixed += 1
+            else:
+                result.append(node)
+
+        return result
+
+    def _expand_long_branch(
+        self,
+        branch: Instruction,
+        info: BranchInfo
+    ) -> List[AsmNode]:
+        """
+        Expand a long branch using the inverted pattern.
 
         Original:
             BEQ far_target
 
-        Rewritten:
-            BNE __branch_skip_N
-            JMP far_target
-            __branch_skip_N:
+        Expanded:
+            BNE __skip_N       ; Inverted, jumps over the JMP
+            JMP far_target     ; Unconditional jump to original target
+            __skip_N:          ; Continue here if condition was false
         """
         # Generate unique skip label
-        skip_label = f"__branch_skip_{self._skip_label_counter}"
+        skip_label = f"__skip_{self._skip_label_counter}"
         self._skip_label_counter += 1
-        self.stats.labels_created += 1
 
         # Get inverted branch opcode
         inverted_opcode = invert_branch(branch.opcode)
         if inverted_opcode is None:
-            # Can't invert - shouldn't happen for conditional branches
+            # Shouldn't happen for conditional branches
             return [branch]
-
-        original_target = branch.operand
 
         result: List[AsmNode] = []
 
-        # 1. Inverted branch to skip label
-        inverted_branch = Instruction(
+        # 1. Inverted branch to skip label (skips over JMP if condition false)
+        result.append(Instruction(
             opcode=inverted_opcode,
             operand=Address(skip_label),
-            comment=f"Long branch fixup (was {mnemonic(branch.opcode)})"
-        )
-        result.append(inverted_branch)
+            comment=f"long branch (was {mnemonic(branch.opcode)})"
+        ))
 
-        # 2. JMP to original target
-        jmp_instr = Instruction(
+        # 2. JMP to original target (taken if original condition was true)
+        result.append(Instruction(
             opcode=Opcode.JMP_ABSOLUTE,
-            operand=original_target
-        )
-        result.append(jmp_instr)
+            operand=branch.operand
+        ))
 
-        # 3. Skip label
-        skip_label_node = Label(name=skip_label)
-        result.append(skip_label_node)
+        # 3. Skip label (continue point if original condition was false)
+        result.append(Label(name=skip_label))
 
         return result
 
@@ -252,11 +347,8 @@ def fixup_nodes(nodes: List[AsmNode]) -> Tuple[List[AsmNode], int]:
     """
     Apply long branch fixup to AsmNode list.
 
-    This function should be called after peephole optimization and before
-    final assembly output.
-
-    Runs multiple passes because fixing one branch can push other branches
-    over the 127-byte limit.
+    Uses iterative convergence to determine optimal branch sizing,
+    then applies fixups in a single pass.
 
     Args:
         nodes: List of AsmNode objects
@@ -264,16 +356,6 @@ def fixup_nodes(nodes: List[AsmNode]) -> Tuple[List[AsmNode], int]:
     Returns:
         Tuple of (fixed nodes, number of branches fixed)
     """
-    total_fixed = 0
-    max_iterations = 10  # Prevent infinite loop
-
-    for _ in range(max_iterations):
-        fixup = BranchFixup()
-        nodes = fixup.fixup(nodes)
-
-        if fixup.branches_fixed == 0:
-            break  # No more branches need fixing
-
-        total_fixed += fixup.branches_fixed
-
-    return nodes, total_fixed
+    fixup = BranchFixup()
+    fixed_nodes = fixup.fixup(nodes)
+    return fixed_nodes, fixup.branches_fixed
