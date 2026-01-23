@@ -76,13 +76,13 @@ class TestReturnStatements:
         assert len(ret.values) == 1
         assert isinstance(ret.values[0], ast.BinaryOp)
 
-        # Return multiple values (parenthesized tuple syntax)
-        func = parse_function("fn test() { return (A, X); }")
+        # Return multiple values (comma-separated)
+        func = parse_function("fn test() { return A, X; }")
         ret = func.body.statements[0]
         assert len(ret.values) == 2
 
-        # Return three values (parenthesized tuple syntax)
-        func = parse_function("fn test() { return (A, X, Y); }")
+        # Return three values (comma-separated)
+        func = parse_function("fn test() { return A, X, Y; }")
         ret = func.body.statements[0]
         assert len(ret.values) == 3
 
@@ -96,8 +96,8 @@ class TestReturnStatements:
             assert isinstance(ret, ast.ReturnStmt)
             assert len(ret.values) == 1
 
-        # Multiple values require parenthesized tuple syntax
-        multi = ["(A, X)", "(A, Y)", "(X, Y)", "(A, X, Y)"]
+        # Multiple values use comma-separated syntax (no parentheses)
+        multi = ["A, X", "A, Y", "X, Y", "A, X, Y"]
         for combo in multi:
             func = parse_function(f"fn test() {{ return {combo}; }}")
             ret = func.body.statements[0]

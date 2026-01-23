@@ -65,24 +65,26 @@ class TestMatrixMultiplication:
 
                         fn multiply_matrix() {{
                 // RESULT[0] = MAT_A[0]*MAT_B[0] + MAT_A[1]*MAT_B[2]
-                let mut TEMP : u8; 
-                (TEMP) = mul8(MAT_A[0], MAT_B[0]);
-                (A) = mul8(MAT_A[1], MAT_B[2]);
+                // mul8 returns (low, high) - we only need low byte
+                let mut TEMP : u8;
+                let mut DISCARD : u8;
+                TEMP, DISCARD = mul8(MAT_A[0], MAT_B[0]);
+                A, DISCARD = mul8(MAT_A[1], MAT_B[2]);
                 RESULT[0] = A + TEMP;
 
                 // RESULT[1] = MAT_A[0]*MAT_B[1] + MAT_A[1]*MAT_B[3]
-                (TEMP) = mul8(MAT_A[0], MAT_B[1]);
-                (A) = mul8(MAT_A[1], MAT_B[3]);
+                TEMP, DISCARD = mul8(MAT_A[0], MAT_B[1]);
+                A, DISCARD = mul8(MAT_A[1], MAT_B[3]);
                 RESULT[1] = A + TEMP;
 
                 // RESULT[2] = MAT_A[2]*MAT_B[0] + MAT_A[3]*MAT_B[2]
-                (TEMP) = mul8(MAT_A[2], MAT_B[0]);
-                (A) = mul8(MAT_A[3], MAT_B[2]);
+                TEMP, DISCARD = mul8(MAT_A[2], MAT_B[0]);
+                A, DISCARD = mul8(MAT_A[3], MAT_B[2]);
                 RESULT[2] = A + TEMP;
 
                 // RESULT[3] = MAT_A[2]*MAT_B[1] + MAT_A[3]*MAT_B[3]
-                (TEMP) = mul8(MAT_A[2], MAT_B[1]);
-                (A) = mul8(MAT_A[3], MAT_B[3]);
+                TEMP, DISCARD = mul8(MAT_A[2], MAT_B[1]);
+                A, DISCARD = mul8(MAT_A[3], MAT_B[3]);
                 RESULT[3] = A + TEMP;
             }}
 

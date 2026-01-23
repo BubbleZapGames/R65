@@ -214,10 +214,10 @@ block: "{" statement* "}"
           | decrement_stmt
           | macro_invocation_stmt_inner
 
-// Tuple assignment statement: (a, b) = tuple_expr; or (a) = tuple_expr;
+// Tuple assignment statement: a, b = tuple_expr;
+// No parentheses needed - comma separates targets
 // Uses tuple_target which only allows identifiers and registers
-// Must be before expr_stmt to be tried first
-tuple_assign_stmt: "(" tuple_target ("," tuple_target)* ")" "=" expr ";"
+tuple_assign_stmt: tuple_target "," tuple_target ("," tuple_target)* "=" expr ";"
 tuple_target: IDENT    -> tuple_target_ident
             | REGISTER -> tuple_target_register
 
@@ -233,9 +233,9 @@ pointer_pattern: STAR IDENT ("@" binding)?
 safe_ptr_pattern: AMPER IDENT ("@" binding)?
 tuple_pattern: "(" IDENT ("," IDENT)* ")"
 expr_stmt: expr ";"
-// Return statement - single value or parenthesized tuple: return; | return x; | return (a, b);
+// Return statement - single value or tuple: return; | return x; | return a, b;
 return_stmt: RETURN (return_tuple | expr)?  ";"
-return_tuple: "(" expr ("," expr)+ ")"
+return_tuple: expr ("," expr)+
 break_stmt: BREAK LABEL_REF? ";"
 continue_stmt: CONTINUE LABEL_REF? ";"
 increment_stmt: lvalue PLUSPLUS ";"

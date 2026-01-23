@@ -8,6 +8,26 @@ from r65.compiler.frontend import parse, expand_macros, MacroError
 from r65.compiler.frontend import ast
 
 
+def get_macro_invocation(stmt):
+    """Extract MacroInvocation from statement, handling both parser outputs.
+
+    LALR parser returns MacroInvocationStmtInner directly.
+    Earley parser returns ExprStmt(MacroInvocation).
+    Both are semantically equivalent.
+    """
+    if isinstance(stmt, ast.MacroInvocationStmtInner):
+        # Create a MacroInvocation-like object for uniform access
+        class MacroInvocationWrapper:
+            def __init__(self, stmt):
+                self.name = stmt.name
+                self.args = stmt.args
+        return MacroInvocationWrapper(stmt)
+    elif isinstance(stmt, ast.ExprStmt) and isinstance(stmt.expr, ast.MacroInvocation):
+        return stmt.expr
+    else:
+        raise AssertionError(f"Expected macro invocation, got {type(stmt)}")
+
+
 # ============================================================================
 # Macro Definition Parsing Tests
 # ============================================================================
@@ -134,11 +154,9 @@ class TestMacroInvocationParsing:
         func = program.items[1]
         assert isinstance(func, ast.FunctionDecl)
         stmt = func.body.statements[0]
-        # Macro invocations are now ExprStmt(MacroInvocation(...))
-        assert isinstance(stmt, ast.ExprStmt)
-        assert isinstance(stmt.expr, ast.MacroInvocation)
-        assert stmt.expr.name == "inc"
-        assert stmt.expr.args == ["X"]
+        macro = get_macro_invocation(stmt)
+        assert macro.name == "inc"
+        assert macro.args == ["X"]
 
     def test_invocation_with_expr_arg(self):
         """Test macro invocation with expression argument."""
@@ -153,13 +171,11 @@ class TestMacroInvocationParsing:
 
         func = program.items[1]
         stmt = func.body.statements[0]
-        # Macro invocations are now ExprStmt(MacroInvocation(...))
-        assert isinstance(stmt, ast.ExprStmt)
-        assert isinstance(stmt.expr, ast.MacroInvocation)
-        assert stmt.expr.name == "add"
+        macro = get_macro_invocation(stmt)
+        assert macro.name == "add"
         # Args should contain the expression as a single string
-        assert len(stmt.expr.args) == 1
-        assert "1" in stmt.expr.args[0] and "2" in stmt.expr.args[0]
+        assert len(macro.args) == 1
+        assert "1" in macro.args[0] and "2" in macro.args[0]
 
     def test_invocation_with_multiple_args(self):
         """Test macro invocation with multiple arguments."""
@@ -174,12 +190,10 @@ class TestMacroInvocationParsing:
 
         func = program.items[1]
         stmt = func.body.statements[0]
-        # Macro invocations are now ExprStmt(MacroInvocation(...))
-        assert isinstance(stmt, ast.ExprStmt)
-        assert isinstance(stmt.expr, ast.MacroInvocation)
-        assert len(stmt.expr.args) == 2
-        assert stmt.expr.args[0] == "X"
-        assert stmt.expr.args[1] == "Y"
+        macro = get_macro_invocation(stmt)
+        assert len(macro.args) == 2
+        assert macro.args[0] == "X"
+        assert macro.args[1] == "Y"
 
 # ============================================================================
 # Macro Expansion Tests

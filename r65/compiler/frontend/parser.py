@@ -1844,9 +1844,8 @@ class Parser:
         """Initialize the parser."""
         self.lark = Lark(
             GRAMMAR,
-            parser='earley',  # Earley handles ambiguous grammars
-            lexer='standard',  # Standard lexer works with terminal priorities
-            ambiguity='resolve',  # Prefer first matching rule
+            parser='lalr',  # LALR is much faster than Earley
+            lexer='standard',  # Standard lexer
             start='start',
             keep_all_tokens=True,
             propagate_positions=True  # Enable source location tracking

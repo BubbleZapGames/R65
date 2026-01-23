@@ -28,7 +28,7 @@ far fn mul8(multA @ A: u8, multB @ X: u16) -> (u8, u8) {
     NOP(4);
 
     // Return low byte (caller can read RDMPYH for high byte)
-    return (RDMPYL, RDMPYH);
+    return RDMPYL, RDMPYH;
 }
 
 // Hardware 8x8 -> 16 unsigned multiply
@@ -98,7 +98,7 @@ far fn mul8(multA @ A: u8, multB: u16) -> (u8, u8) {
     }
 
     // Return low byte
-    return (_mul_result_lo, _mul_result_hi);
+    return _mul_result_lo, _mul_result_hi;
 }
 
 // Software 8x8 -> 16 unsigned multiply (returns as u16)
