@@ -208,9 +208,9 @@ class TestEndToEnd:
 
             assert rom_file.exists(), "ROM file was not created"
 
-            # Verify ROM size (512KB for SNES ROMSIZE $09)
+            # Verify ROM size (256KB for SNES ROMSIZE $08 - minimum size)
             rom_size = rom_file.stat().st_size
-            assert rom_size == 524288, f"Expected 512KB ROM, got {rom_size} bytes"
+            assert rom_size == 262144, f"Expected 256KB ROM, got {rom_size} bytes"
 
 
 # =============================================================================
@@ -260,7 +260,7 @@ class TestProgramWithVariables:
             rom_file = assemble_and_link(assembly, workdir)
 
             assert rom_file.exists()
-            assert rom_file.stat().st_size == 524288  # 512KB ROM
+            assert rom_file.stat().st_size == 262144  # 256KB ROM (minimum)
 
 
 # =============================================================================
@@ -325,7 +325,7 @@ class TestProgramWithFunctions:
             rom_file = assemble_and_link(assembly, workdir)
 
             assert rom_file.exists()
-            assert rom_file.stat().st_size == 524288  # 512KB ROM
+            assert rom_file.stat().st_size == 262144  # 256KB ROM (minimum)
 
 
 # =============================================================================
@@ -387,7 +387,7 @@ class TestProgramWithControlFlow:
             rom_file = assemble_and_link(assembly, workdir)
 
             assert rom_file.exists()
-            assert rom_file.stat().st_size == 524288  # 512KB ROM
+            assert rom_file.stat().st_size == 262144  # 256KB ROM (minimum)
 
 
 # =============================================================================
