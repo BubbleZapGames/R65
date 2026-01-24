@@ -472,8 +472,10 @@ class PeepholeOptimizer:
             SEP #$XX; SEP #$XX -> SEP #$XX (same value)
             REP #$XX; REP #$XX -> REP #$XX (same value)
             SEP #$20; REP #$20 -> (cancel out for m flag)
+
+        Also handles directives (.ACCU) between SEP/REP pairs.
         """
-        from r65.compiler.codegen.asm_nodes import Instruction, Immediate
+        from r65.compiler.codegen.asm_nodes import Instruction, Immediate, Directive
 
         optimized = []
         i = 0
@@ -486,29 +488,45 @@ class PeepholeOptimizer:
                 i += 1
                 continue
 
-            if node.opcode in (Opcode.SEP_IMMEDIATE, Opcode.REP_IMMEDIATE) and i + 1 < len(nodes):
-                next_node = nodes[i + 1]
+            if node.opcode in (Opcode.SEP_IMMEDIATE, Opcode.REP_IMMEDIATE):
+                # Find the next instruction, skipping over directives
+                next_instr_idx = i + 1
+                directives_between = []
+                while next_instr_idx < len(nodes):
+                    next_node = nodes[next_instr_idx]
+                    if isinstance(next_node, Directive):
+                        directives_between.append(next_node)
+                        next_instr_idx += 1
+                    elif isinstance(next_node, Instruction):
+                        break
+                    else:
+                        # Comments, labels, etc. - stop looking
+                        break
 
-                if isinstance(next_node, Instruction):
-                    # Same instruction with same operand
-                    if (next_node.opcode == node.opcode and
-                        node.operand == next_node.operand):
-                        # Duplicate - keep first, skip second
-                        optimized.append(node)
-                        i += 2
-                        self.stats.redundant_mode_changes_eliminated += 1
-                        continue
+                if next_instr_idx < len(nodes):
+                    next_instr = nodes[next_instr_idx]
 
-                    # SEP followed by REP (or vice versa) with same bits
-                    if ((node.opcode == Opcode.SEP_IMMEDIATE and next_node.opcode == Opcode.REP_IMMEDIATE) or
-                        (node.opcode == Opcode.REP_IMMEDIATE and next_node.opcode == Opcode.SEP_IMMEDIATE)):
-                        if (isinstance(node.operand, Immediate) and
-                            isinstance(next_node.operand, Immediate) and
-                            node.operand.value == next_node.operand.value):
-                            # Canceling mode changes - remove both
-                            i += 2
+                    if isinstance(next_instr, Instruction):
+                        # Same instruction with same operand
+                        if (next_instr.opcode == node.opcode and
+                            node.operand == next_instr.operand):
+                            # Duplicate - keep first, skip second (and directives between)
+                            optimized.append(node)
+                            optimized.extend(directives_between)
+                            i = next_instr_idx + 1
                             self.stats.redundant_mode_changes_eliminated += 1
                             continue
+
+                        # SEP followed by REP (or vice versa) with same bits
+                        if ((node.opcode == Opcode.SEP_IMMEDIATE and next_instr.opcode == Opcode.REP_IMMEDIATE) or
+                            (node.opcode == Opcode.REP_IMMEDIATE and next_instr.opcode == Opcode.SEP_IMMEDIATE)):
+                            if (isinstance(node.operand, Immediate) and
+                                isinstance(next_instr.operand, Immediate) and
+                                node.operand.value == next_instr.operand.value):
+                                # Canceling mode changes - remove both (and directives between)
+                                i = next_instr_idx + 1
+                                self.stats.redundant_mode_changes_eliminated += 1
+                                continue
 
             optimized.append(node)
             i += 1

@@ -657,15 +657,6 @@ class InstructionSelector:
         left_loc = self._get_operand_location(instr.left)
         dest_loc = self._get_operand_location(instr.dest)
 
-        # Determine if this is a memory-to-memory 16-bit operation
-        # In this case, we handle low/high bytes separately in 8-bit chunks
-        is_mem_to_mem_16bit = (
-            is_u16 and
-            op in ('+', '-', '&', '|', '^') and
-            left_loc.kind != LocationKind.HARDWARE and
-            dest_loc.kind != LocationKind.HARDWARE
-        )
-
         # Check if immediate value exceeds 8-bit range
         has_large_immediate = (
             isinstance(instr.right, MIRImmediate) and instr.right.value > 0xFF
@@ -679,16 +670,13 @@ class InstructionSelector:
             (dest_loc.kind == LocationKind.HARDWARE and dest_loc.hw_register in ('X', 'Y'))
         )
 
-        # Determine if we need 16-bit mode for hardware register A operations
-        # This is for 16-bit operations involving A that are NOT memory-to-memory
-        # Also switch if the immediate value exceeds 8 bits
-        # Also switch if we're operating on X/Y (which are always 16-bit)
+        # Determine if we need 16-bit mode
+        # Use 16-bit mode for ALL 16-bit operations, including memory-to-memory.
+        # In 16-bit mode, LDA/STA/ADC etc. automatically handle both bytes.
+        # This is more efficient than byte-by-byte operations in 8-bit mode.
         needs_16bit_mode = (
             (is_u16 or has_large_immediate or involves_index_register) and
-            not is_mem_to_mem_16bit and
-            op in ('+', '-', '&', '|', '^', '<<', '>>') and
-            ((left_loc.kind == LocationKind.HARDWARE and left_loc.hw_register in ('A', 'X', 'Y')) or
-             (dest_loc.kind == LocationKind.HARDWARE and dest_loc.hw_register in ('A', 'X', 'Y')))
+            op in ('+', '-', '&', '|', '^', '<<', '>>')
         )
 
         # Switch to 16-bit mode for A register if needed
@@ -706,13 +694,7 @@ class InstructionSelector:
             # Transfer from other hardware register to A
             self._emit_register_transfer(left_loc.hw_register, 'A')
         elif left_loc.kind == LocationKind.IMMEDIATE:
-            # For mem-to-mem 16-bit ops, mask the immediate to low byte only
-            # (high byte is handled separately later)
-            if is_mem_to_mem_16bit:
-                masked_value = left_loc.immediate_value & 0xFF
-                self._emit_immediate(Opcode.LDA_IMMEDIATE, masked_value)
-            else:
-                self._emit_load('LDA', left_loc)
+            self._emit_load('LDA', left_loc)
         else:
             # OPTIMIZATION: Check if vreg value is already in X or Y
             # If so, use TXA/TYA instead of loading from memory
@@ -726,25 +708,17 @@ class InstructionSelector:
                 # Load left operand from memory/stack into A
                 self._emit_load('LDA', left_loc)
 
-        # For memory-to-memory 16-bit ops with immediate values,
-        # we need to mask the immediate to 8 bits for the low-byte operation
-        # (high byte is handled separately later)
-        right_operand = instr.right
-        if is_mem_to_mem_16bit and isinstance(instr.right, MIRImmediate):
-            # Create masked immediate for low-byte operation
-            right_operand = MIRImmediate(instr.right.value & 0xFF)
-
         # Perform operation
         if op == '+':
-            self._emit_add(right_operand, is_u16)
+            self._emit_add(instr.right, is_u16)
         elif op == '-':
-            self._emit_sub(right_operand, is_u16)
+            self._emit_sub(instr.right, is_u16)
         elif op == '&':
-            self._emit_and(right_operand, is_u16)
+            self._emit_and(instr.right, is_u16)
         elif op == '|':
-            self._emit_or(right_operand, is_u16)
+            self._emit_or(instr.right, is_u16)
         elif op == '^':
-            self._emit_xor(right_operand, is_u16)
+            self._emit_xor(instr.right, is_u16)
         elif op == '<<':
             self._emit_shift_left(instr.right, is_u16)
         elif op == '>>':
@@ -772,53 +746,6 @@ class InstructionSelector:
         if needs_16bit_mode and not already_in_16bit:
             self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "8-bit A")
             self.emitter.emit_accu_mode(8)
-
-        # Handle high byte for 16-bit operations
-        # NOTE: Only needed for memory-to-memory operations
-        # Hardware registers in 16-bit mode are handled as single 16-bit values
-        if is_u16 and op in ('+', '-', '&', '|', '^'):
-            # Skip high byte handling if any operand is a hardware register
-            # In 16-bit mode (m16/x16), hardware registers are accessed as complete 16-bit values
-            if (left_loc.kind == LocationKind.HARDWARE or
-                dest_loc.kind == LocationKind.HARDWARE):
-                # Hardware registers don't need separate high byte handling
-                # The single operation above already handled the full 16-bit value
-                pass
-            else:
-                # Memory-to-memory 16-bit operation: handle high byte separately
-                left_high = self._offset_location(left_loc, 1)
-                dest_high = self._offset_location(dest_loc, 1)
-
-                self._emit_load('LDA', left_high)
-
-                if isinstance(instr.right, MIRImmediate):
-                    high_value = (instr.right.value >> 8) & 0xFF
-                    if op == '+':
-                        self._emit_immediate(Opcode.ADC_IMMEDIATE, high_value)
-                    elif op == '-':
-                        self._emit_immediate(Opcode.SBC_IMMEDIATE, high_value)
-                    elif op == '&':
-                        self._emit_immediate(Opcode.AND_IMMEDIATE, high_value)
-                    elif op == '|':
-                        self._emit_immediate(Opcode.ORA_IMMEDIATE, high_value)
-                    elif op == '^':
-                        self._emit_immediate(Opcode.EOR_IMMEDIATE, high_value)
-                else:
-                    right_loc = self._get_operand_location(instr.right)
-                    if right_loc.kind != LocationKind.HARDWARE:
-                        right_high = self._offset_location(right_loc, 1)
-                        if op == '+':
-                            self._emit_op('ADC', right_high)
-                        elif op == '-':
-                            self._emit_op('SBC', right_high)
-                        elif op == '&':
-                            self._emit_op('AND', right_high)
-                        elif op == '|':
-                            self._emit_op('ORA', right_high)
-                        elif op == '^':
-                            self._emit_op('EOR', right_high)
-
-                self._emit_store('STA', dest_high)
 
     def select_unary_op(self, instr: UnaryOp):
         """
@@ -1172,55 +1099,47 @@ class InstructionSelector:
 
     def _emit_16bit_mem_to_mem(self, src_loc: PhysicalLocation, dest_loc: PhysicalLocation, comment: str = None):
         """
-        Emit 16-bit memory-to-memory move (low byte + high byte).
+        Emit 16-bit memory-to-memory move using 16-bit mode.
+
+        Switches to 16-bit accumulator mode, performs single LDA/STA,
+        then switches back to 8-bit mode.
 
         Args:
             src_loc: Source memory location
             dest_loc: Destination memory location
             comment: Optional comment for first instruction
         """
-        # Low byte
+        already_in_16bit = self.emitter.get_accu_mode() == 16
+        if not already_in_16bit:
+            self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "16-bit A for move")
+            self.emitter.emit_accu_mode(16)
+
         self._emit_load('LDA', src_loc, comment)
         self._emit_store('STA', dest_loc)
 
-        # High byte
-        src_high = self._offset_location(src_loc, 1)
-        dest_high = self._offset_location(dest_loc, 1)
-        self._emit_load('LDA', src_high)
-        self._emit_store('STA', dest_high)
+        if not already_in_16bit:
+            self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "8-bit A")
+            self.emitter.emit_accu_mode(8)
 
     def _emit_16bit_immediate_store(self, value: int, dest_loc: PhysicalLocation):
         """
-        Emit 16-bit immediate store (split into low/high bytes).
+        Emit 16-bit immediate store using 16-bit mode.
 
         Args:
             value: 16-bit immediate value
             dest_loc: Destination memory location
         """
-        low = value & 0xFF
-        high = (value >> 8) & 0xFF
-        dest_high = self._offset_location(dest_loc, 1)
+        already_in_16bit = self.emitter.get_accu_mode() == 16
+        if not already_in_16bit:
+            self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "16-bit A for store")
+            self.emitter.emit_accu_mode(16)
 
-        # Use STZ for zero bytes (more efficient)
-        # But STZ doesn't support stack-relative or 24-bit long addressing
-        can_use_stz = (
-            dest_loc.kind != LocationKind.STACK and
-            not (dest_loc.kind == LocationKind.MEMORY and
-                 dest_loc.memory_addr is not None and
-                 dest_loc.memory_addr > 0xFFFF)
-        )
+        self._emit_immediate(Opcode.LDA_IMMEDIATE, value)
+        self._emit_store('STA', dest_loc)
 
-        if low == 0 and can_use_stz:
-            self._emit_store('STZ', dest_loc)
-        else:
-            self._emit_immediate(Opcode.LDA_IMMEDIATE, low)
-            self._emit_store('STA', dest_loc)
-
-        if high == 0 and can_use_stz:
-            self._emit_store('STZ', dest_high)
-        else:
-            self._emit_immediate(Opcode.LDA_IMMEDIATE, high)
-            self._emit_store('STA', dest_high)
+        if not already_in_16bit:
+            self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "8-bit A")
+            self.emitter.emit_accu_mode(8)
 
     def _emit_register_transfer(self, src_reg: str, dest_reg: str):
         """
