@@ -1769,7 +1769,7 @@ class InstructionSelector:
         # For other bits, we need to normalize
         if instr.bit_mask != 0x01:
             # Use BEQ to skip if already 0, otherwise load 1
-            norm_label = self.parent._get_unique_label()
+            norm_label = self._get_unique_label()
             self.emitter.emit_instr(Opcode.BEQ, norm_label, comment="Skip if flag clear")
             self.emitter.emit_instr(Opcode.LDA_IMMEDIATE, 1, comment="Normalize to 1")
             self.emitter.emit_label(norm_label)
