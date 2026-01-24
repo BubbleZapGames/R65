@@ -1770,40 +1770,26 @@ fn init_ppu() {
     BG12NBA = 0;
     BG34NBA = 0;
 
-    BG1HOFS = 0;
-    BG1HOFS = 0;
-    BG1VOFS = 0;
-    BG1VOFS = 0;
-    BG2HOFS = 0;
-    BG2HOFS = 0;
-    BG2VOFS = 0;
-    BG2VOFS = 0;
-    BG3HOFS = 0;
-    BG3HOFS = 0;
-    BG3VOFS = 0;
-    BG3VOFS = 0;
-    BG4HOFS = 0;
-    BG4HOFS = 0;
-    BG4VOFS = 0;
-    BG4VOFS = 0;
+    // BG scroll registers (write-twice each)
+    let *ptr: u8 = 0x210D as *u8;
+    for i in 0..16 {
+        *ptr = 0;
+        ptr = ptr + 1;
+    }
 
     VMAIN = VMAIN_INCREMENT_HIGH;
     VMADDL = 0;
     VMADDH = 0;
 
+    // Mode 7: identity matrix
     M7SEL = 0;
-    M7D = 1;
-    M7A = 1;
-    M7A = 0;
-    M7B = 0;
-    M7B = 0;
-    M7C = 0;
-    M7C = 0;
-    M7D = 0;
-    M7X = 0;
-    M7X = 0;
-    M7Y = 0;
-    M7Y = 0;
+    M7A = 1; M7A = 0;
+    M7B = 0; M7B = 0;
+    M7C = 0; M7C = 0;
+    M7D = 1; M7D = 0;
+    M7X = 0; M7X = 0;
+    M7Y = 0; M7Y = 0;
+
     CGADD = 0;
     W12SEL = 0;
     W34SEL = 0;
