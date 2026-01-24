@@ -3,8 +3,12 @@ Call instruction selector: Function calls and built-ins.
 
 Handles function call generation including argument setup, call emission,
 return value collection, and built-in function expansion.
+
+Includes hardware register spill/reload around calls based on liveness
+and callee's #[preserves()] attribute.
 """
 
+from typing import List, Set, NamedTuple, Optional
 from r65.compiler.mir.nodes import Call, VirtualRegister, ArgumentMechanism, Immediate as MIRImmediate
 from r65.compiler.codegen.register_alloc import LocationKind
 from r65.compiler.codegen.opcodes import (
@@ -17,6 +21,13 @@ from r65.compiler.codegen.errors import (
     unknown_value, argument_count_error, requires_constant
 )
 from r65.compiler.codegen.base_selector import BaseSelector
+
+
+class SpillInfo(NamedTuple):
+    """Information about a hardware register that needs spilling."""
+    vreg: VirtualRegister  # The virtual register allocated to the hw reg
+    hw_reg: str            # Hardware register name ('A', 'X', 'Y')
+    # Stack spill location will be managed via push/pull
 
 
 class CallInstructionSelector(BaseSelector):
@@ -71,6 +82,10 @@ class CallInstructionSelector(BaseSelector):
         - After call: caller receives return value in callee's exit mode
         - After using return value: switch back to m8 (default mode)
 
+        Hardware register spilling:
+        - Before call: spill hw registers that are live across call and not preserved
+        - After call: reload those registers
+
         Args:
             instr: Call instruction
         """
@@ -84,6 +99,13 @@ class CallInstructionSelector(BaseSelector):
             self.parent.current_function and
             self.parent.current_function.has_far_ptr_stack_params
         )
+
+        # Step 0: Compute hardware register spills needed
+        # Spill hw registers that are live across this call and not preserved by callee
+        spills = self._compute_hw_spills(instr)
+
+        # Step 0.5: Emit spills BEFORE argument setup (to avoid clobbering args)
+        self._emit_hw_spills(spills)
 
         # Step 1: Set up arguments
         stack_bytes_pushed = self._emit_argument_setup(instr)
@@ -124,6 +146,9 @@ class CallInstructionSelector(BaseSelector):
         # If callee exited in m16 (u16 return), switch back to m8
         self._emit_exit_mode_restore(instr)
 
+        # Step 7.5: Reload spilled hardware registers
+        self._emit_hw_reloads(spills)
+
         # Step 8: Restore D to stack and optionally re-establish D = S
         if needs_d_management:
             # We used PLD before the call, so we must push D back
@@ -132,6 +157,84 @@ class CallInstructionSelector(BaseSelector):
                 self._emit_d_equals_s_restore()  # PHD + TSC + TCD
             else:
                 self._emit_d_push_only()  # Just PHD (for epilogue)
+
+    # ========================================================================
+    # Hardware Register Spill/Reload
+    # ========================================================================
+
+    def _compute_hw_spills(self, instr: Call) -> List[SpillInfo]:
+        """
+        Compute which hardware registers need spilling around a call.
+
+        A hardware register needs spilling if:
+        1. It has an allocated vreg that is live after this call
+        2. The callee does not preserve it (via #[preserves()])
+
+        Args:
+            instr: The Call instruction
+
+        Returns:
+            List of SpillInfo for registers that need spilling
+        """
+        spills: List[SpillInfo] = []
+
+        # Get callee's preserved registers
+        preserved: Set[str] = set()
+        if instr.preserves_attr:
+            preserved = set(instr.preserves_attr.registers)
+
+        # Check each hardware register
+        reg_alloc = self.parent.reg_alloc
+        if not reg_alloc:
+            return spills
+
+        for reg_name in ['A', 'X', 'Y']:
+            # Skip if callee preserves this register
+            if reg_name in preserved:
+                continue
+
+            # Check if this hw register has an allocated vreg
+            hw_alloc = reg_alloc.get_hw_alloc(reg_name)
+            vreg = hw_alloc.allocated_vreg
+            if vreg is None:
+                continue
+
+            # Check if the vreg is live after this call
+            # Use instruction liveness if available
+            if reg_alloc.instr_liveness:
+                pos = reg_alloc.instr_liveness.get_instruction_position(instr)
+                if pos:
+                    block_id, instr_idx = pos
+                    if reg_alloc.instr_liveness.is_live_after(vreg, block_id, instr_idx):
+                        spills.append(SpillInfo(vreg=vreg, hw_reg=reg_name))
+            else:
+                # Conservative: assume live if we have an allocation
+                if hw_alloc.is_bound:
+                    spills.append(SpillInfo(vreg=vreg, hw_reg=reg_name))
+
+        return spills
+
+    def _emit_hw_spills(self, spills: List[SpillInfo]):
+        """
+        Emit push instructions to spill hardware registers.
+
+        Args:
+            spills: List of registers to spill
+        """
+        for spill in spills:
+            self._emit_push(spill.hw_reg, f"Spill {spill.hw_reg} (live across call)")
+
+    def _emit_hw_reloads(self, spills: List[SpillInfo]):
+        """
+        Emit pull instructions to reload spilled hardware registers.
+
+        Must be called in reverse order of spills due to stack behavior.
+
+        Args:
+            spills: List of registers to reload (will be processed in reverse)
+        """
+        for spill in reversed(spills):
+            self._emit_pull(spill.hw_reg, f"Reload {spill.hw_reg}")
 
     # ========================================================================
     # Argument Setup
@@ -536,23 +639,37 @@ class CallInstructionSelector(BaseSelector):
             PHA
             RTL             ; Long return
 
+        Note: For stack-relative locations, each PHA changes the stack pointer,
+        so subsequent loads need their offsets adjusted by +1 for each previous PHA.
+
         Args:
             func_ptr_vreg: VirtualRegister holding the function pointer
             is_far: True for far call (24-bit), False for near call (16-bit)
         """
         ptr_loc = self.parent._get_operand_location(func_ptr_vreg)
+        is_stack = ptr_loc.kind == LocationKind.STACK
 
         if is_far:
             # Far call trampoline (24-bit address)
+            # Each PHA shifts subsequent stack-relative offsets by +1
             bank_loc = self.parent._offset_location(ptr_loc, 2)
             self.parent._emit_load('LDA', bank_loc, "Load bank byte")
             self._emit_push('A', "Push bank")
 
-            high_loc = self.parent._offset_location(ptr_loc, 1)
+            # After 1 PHA, stack offsets need +1 adjustment
+            if is_stack:
+                high_loc = self.parent._offset_location(ptr_loc, 1 + 1)  # +1 for PHA
+            else:
+                high_loc = self.parent._offset_location(ptr_loc, 1)
             self.parent._emit_load('LDA', high_loc, "Load high byte")
             self._emit_push('A', "Push high")
 
-            self.parent._emit_load('LDA', ptr_loc, "Load low byte")
+            # After 2 PHAs, stack offsets need +2 adjustment
+            if is_stack:
+                low_loc = self.parent._offset_location(ptr_loc, 0 + 2)  # +2 for 2 PHAs
+            else:
+                low_loc = ptr_loc
+            self.parent._emit_load('LDA', low_loc, "Load low byte")
             self._emit_push('A', "Push low")
 
             self._emit_implied(Opcode.RTL, "Indirect far call via trampoline")
@@ -562,7 +679,12 @@ class CallInstructionSelector(BaseSelector):
             self.parent._emit_load('LDA', high_loc, "Load high byte")
             self._emit_push('A', "Push high")
 
-            self.parent._emit_load('LDA', ptr_loc, "Load low byte")
+            # After 1 PHA, stack offsets need +1 adjustment
+            if is_stack:
+                low_loc = self.parent._offset_location(ptr_loc, 0 + 1)  # +1 for PHA
+            else:
+                low_loc = ptr_loc
+            self.parent._emit_load('LDA', low_loc, "Load low byte")
             self._emit_push('A', "Push low")
 
             self._emit_implied(Opcode.RTS, "Indirect near call via trampoline")

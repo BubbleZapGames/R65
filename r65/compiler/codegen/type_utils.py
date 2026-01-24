@@ -79,12 +79,23 @@ def get_type_size(type_info) -> int:
             return 3
         return 2
 
+    # Handle FunctionTypeInfo (function pointers)
+    from r65.compiler.hir.types import FunctionTypeInfo
+    if isinstance(type_info, FunctionTypeInfo):
+        # Near function pointer = 2 bytes, far function pointer = 3 bytes
+        return 3 if type_info.is_far else 2
+
     # Check for pointer type names (fallback for string representations)
     type_name_str = str(type_info)
     if type_name_str.startswith('far *'):
         return 3  # 24-bit far pointer
     elif type_name_str.startswith('*'):
         return 2  # 16-bit near pointer
+    # Check for function pointer string representations
+    elif type_name_str.startswith('far fn('):
+        return 3  # 24-bit far function pointer
+    elif type_name_str.startswith('fn('):
+        return 2  # 16-bit near function pointer
 
     # Default to 1 byte
     return 1

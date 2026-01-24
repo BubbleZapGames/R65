@@ -608,6 +608,9 @@ class Call(MIRInstruction):
     callee_entry_m_mode: Optional[Any] = None  # ModeState: callee's expected entry mode
     callee_exit_m_mode: Optional[Any] = None   # ModeState: callee's exit mode (return type)
 
+    # Callee's preserved registers (for caller-save optimization)
+    preserves_attr: Optional[Any] = None  # PreservesAttribute from callee
+
     def __repr__(self):
         args_str = ', '.join(str(arg) for arg in self.args)
         if self.returns:

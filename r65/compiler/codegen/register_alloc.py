@@ -2,16 +2,23 @@
 Register allocation: maps virtual registers to physical locations.
 
 Maps MIR virtual registers to:
-1. Scratch registers (designated zero-page locations)
-2. Stack slots (when scratch pool exhausted)
+1. Hardware registers (A, X, Y) - when available and beneficial
+2. Scratch registers (designated zero-page locations)
+3. Stack slots (when scratch pool exhausted)
+
+Includes call-graph-aware scratch allocation to avoid conflicts with callees.
 """
 
-from typing import Dict, List, Optional
-from dataclasses import dataclass
+from typing import Dict, List, Optional, Set, TYPE_CHECKING
+from dataclasses import dataclass, field
 from enum import Enum
 from r65.compiler.mir.nodes import VirtualRegister, HardwareRegister, MIRFunction
 from r65.compiler.codegen.slot_allocator import StackSlotAllocator, SlotAllocation
 from r65.compiler.codegen.type_utils import get_type_size
+
+if TYPE_CHECKING:
+    from r65.compiler.analysis.scratch_analysis import ScratchUsageAnalyzer
+    from r65.compiler.mir.liveness import InstructionLivenessAnalyzer
 
 
 class LocationKind(Enum):
@@ -78,6 +85,20 @@ class ScratchRegister:
     size: int         # Size in bytes (1 or 2)
     name: str         # Name (e.g., "SCRATCH0")
     is_free: bool = True
+
+
+@dataclass
+class HardwareRegAllocation:
+    """
+    Tracks allocation state of a hardware register.
+
+    Hardware registers (A, X, Y) can hold virtual register values
+    temporarily. This tracks which vreg is currently allocated to each.
+    """
+    name: str                                  # Register name ('A', 'X', 'Y')
+    size: int                                  # Size in bytes (1 for A in m8, 2 for A in m16 or X/Y)
+    allocated_vreg: Optional[VirtualRegister] = None  # Currently allocated vreg, if any
+    is_bound: bool = False                     # True if vreg has explicit binding (@ A)
 
 
 class ScratchRegisterPool:
@@ -157,6 +178,17 @@ class ScratchRegisterPool:
                 del self.allocated[vreg.id]
                 return
 
+    def reset(self):
+        """
+        Reset pool for a new function.
+
+        Marks all scratches as free and clears allocations.
+        Called before each function to allow scratch reuse across functions.
+        """
+        for scratch in self.scratches:
+            scratch.is_free = True
+        self.allocated.clear()
+
     def _get_vreg_size(self, vreg: VirtualRegister) -> int:
         """Get size of virtual register in bytes."""
         return get_type_size(vreg.type_info)
@@ -218,15 +250,20 @@ class RegisterAllocator:
     Main register allocator for virtual registers.
 
     Allocation priority:
-    1. Hardware registers (A, X, Y) - already handled by MIR
-    2. Scratch registers (designated zero-page locations)
+    1. Hardware registers (A, X, Y) - for explicitly bound variables or temporaries
+    2. Scratch registers (designated zero-page locations, call-graph aware)
     3. Stack slots (spill when scratch exhausted, with reuse optimization)
+
+    Call-graph aware: Variables that live across calls cannot use scratches
+    that callees might use.
     """
 
     def __init__(self,
                  scratch_pool: Optional[ScratchRegisterPool] = None,
                  mir_func: Optional[MIRFunction] = None,
-                 prologue_stack_bytes: int = 0):
+                 prologue_stack_bytes: int = 0,
+                 scratch_analyzer: Optional['ScratchUsageAnalyzer'] = None,
+                 instr_liveness: Optional['InstructionLivenessAnalyzer'] = None):
         """
         Initialize register allocator.
 
@@ -234,13 +271,27 @@ class RegisterAllocator:
             scratch_pool: Pool of scratch registers (or None for empty pool)
             mir_func: MIR function for liveness analysis (enables slot reuse)
             prologue_stack_bytes: Bytes pushed by prologue (affects stack param offsets)
+            scratch_analyzer: Call-graph scratch usage analyzer (for call-aware allocation)
+            instr_liveness: Instruction-level liveness analyzer (for precise liveness)
         """
         self.scratch_pool = scratch_pool or ScratchRegisterPool()
         self.mir_func = mir_func
         self.prologue_stack_bytes = prologue_stack_bytes
+        self.scratch_analyzer = scratch_analyzer
+        self.instr_liveness = instr_liveness
         self.slot_allocator: Optional[StackSlotAllocator] = None
         self.slot_allocation: Optional[SlotAllocation] = None
         self.allocations: Dict[int, PhysicalLocation] = {}  # vreg.id → PhysicalLocation
+
+        # Hardware register tracking
+        self.hw_allocs: Dict[str, HardwareRegAllocation] = {
+            'A': HardwareRegAllocation('A', size=1),  # Size depends on mode
+            'X': HardwareRegAllocation('X', size=2),  # Always 16-bit
+            'Y': HardwareRegAllocation('Y', size=2),  # Always 16-bit
+        }
+
+        # Track which vregs are bound to hw registers (from @ bindings)
+        self.hw_bindings: Dict[int, str] = {}  # vreg.id -> hw reg name
 
         # Base offset for stack slots (starts after scratch registers)
         self.stack_base_offset = 0x16  # Start after common scratch locations
@@ -284,8 +335,9 @@ class RegisterAllocator:
         Allocate physical location for virtual register.
 
         Strategy:
-        1. Try scratch register first
-        2. Spill to stack if no scratch available (using slot reuse if available)
+        1. Check for explicit hardware register binding
+        2. Try scratch register (respecting call graph constraints)
+        3. Spill to stack if no scratch available (using slot reuse if available)
 
         Args:
             vreg: Virtual register to allocate
@@ -297,16 +349,31 @@ class RegisterAllocator:
         if vreg.id in self.allocations:
             return self.allocations[vreg.id]
 
-        # Try scratch register first
-        scratch = self.scratch_pool.allocate(vreg)
-        if scratch:
+        # Check if this vreg has an explicit hw binding
+        if vreg.id in self.hw_bindings:
+            hw_reg = self.hw_bindings[vreg.id]
             location = PhysicalLocation(
-                kind=LocationKind.SCRATCH,
-                scratch_addr=scratch.address,
+                kind=LocationKind.HARDWARE,
+                hw_register=hw_reg,
                 size=self._get_vreg_size(vreg)
             )
             self.allocations[vreg.id] = location
+            self.hw_allocs[hw_reg].allocated_vreg = vreg
+            self.hw_allocs[hw_reg].is_bound = True
             return location
+
+        # Determine if this vreg lives across any call
+        live_across_call = False
+        live_across_indirect_call = False
+        if self.instr_liveness:
+            live_across_call = self.instr_liveness.is_live_across_any_call(vreg)
+            if live_across_call:
+                live_across_indirect_call = self.instr_liveness.is_live_across_indirect_call(vreg)
+
+        # Try scratch register (call-graph aware)
+        scratch_loc = self._try_scratch(vreg, live_across_call, live_across_indirect_call)
+        if scratch_loc:
+            return scratch_loc
 
         # Spill to stack using slot allocation if available
         if self.slot_allocation:
@@ -336,6 +403,77 @@ class RegisterAllocator:
         )
         self.allocations[vreg.id] = location
         return location
+
+    def _try_scratch(self, vreg: VirtualRegister, live_across_call: bool,
+                     live_across_indirect_call: bool = False) -> Optional[PhysicalLocation]:
+        """
+        Try to allocate a scratch register for a vreg.
+
+        If live_across_call is True, only use scratches that callees don't use.
+        If live_across_indirect_call is True, also avoid scratches used by any
+        function whose address is taken (conservative for function pointers).
+
+        Args:
+            vreg: Virtual register to allocate
+            live_across_call: True if vreg lives across a call
+            live_across_indirect_call: True if vreg lives across an indirect call
+
+        Returns:
+            PhysicalLocation if scratch allocated, None otherwise
+        """
+        vreg_size = self._get_vreg_size(vreg)
+
+        # Get available scratches based on call graph
+        available_addrs: Optional[Set[int]] = None
+        if live_across_call and self.scratch_analyzer and self.mir_func:
+            available_addrs = self.scratch_analyzer.get_available_scratches(
+                self.mir_func.name,
+                live_across_call=True,
+                live_across_indirect_call=live_across_indirect_call
+            )
+
+        # Try to find a compatible scratch
+        for scratch in self.scratch_pool.scratches:
+            if not scratch.is_free:
+                continue
+            if scratch.size < vreg_size:
+                continue
+
+            # Check call graph constraint
+            if available_addrs is not None and scratch.address not in available_addrs:
+                continue
+
+            # Allocate this scratch
+            scratch.is_free = False
+            self.scratch_pool.allocated[vreg.id] = vreg
+
+            location = PhysicalLocation(
+                kind=LocationKind.SCRATCH,
+                scratch_addr=scratch.address,
+                size=vreg_size
+            )
+            self.allocations[vreg.id] = location
+
+            # Register usage with scratch analyzer for propagation
+            if self.scratch_analyzer and self.mir_func:
+                self.scratch_analyzer.register_scratch_usage(
+                    self.mir_func.name, scratch.address)
+
+            return location
+
+        return None
+
+    def bind_vreg_to_hw(self, vreg: VirtualRegister, hw_reg: str):
+        """
+        Bind a virtual register to a hardware register.
+
+        Used for explicit @ bindings like `let x @ A = ...`
+
+        Args:
+            vreg: Virtual register
+            hw_reg: Hardware register name ('A', 'X', or 'Y')
+        """
+        self.hw_bindings[vreg.id] = hw_reg
 
     def get_location(self, vreg: VirtualRegister) -> PhysicalLocation:
         """
@@ -367,6 +505,52 @@ class RegisterAllocator:
             hw_register=hw_reg.name,
             size=2 if hw_reg.name in ('A', 'X', 'Y') else 1
         )
+
+    def get_hw_alloc(self, hw_reg: str) -> HardwareRegAllocation:
+        """
+        Get hardware register allocation info.
+
+        Args:
+            hw_reg: Hardware register name ('A', 'X', 'Y')
+
+        Returns:
+            HardwareRegAllocation for the register
+        """
+        return self.hw_allocs.get(hw_reg, HardwareRegAllocation(hw_reg, size=1))
+
+    def free_hw_register(self, hw_reg: str):
+        """
+        Free a hardware register (mark as available for reuse).
+
+        Called when a bound variable's liveness ends.
+
+        Args:
+            hw_reg: Hardware register name to free
+        """
+        if hw_reg in self.hw_allocs:
+            alloc = self.hw_allocs[hw_reg]
+            if alloc.allocated_vreg:
+                vreg_id = alloc.allocated_vreg.id
+                if vreg_id in self.hw_bindings:
+                    del self.hw_bindings[vreg_id]
+            alloc.allocated_vreg = None
+            alloc.is_bound = False
+
+    def is_vreg_in_hw_register(self, vreg: VirtualRegister) -> Optional[str]:
+        """
+        Check if a vreg is currently allocated to a hardware register.
+
+        Args:
+            vreg: Virtual register to check
+
+        Returns:
+            Hardware register name if allocated, None otherwise
+        """
+        if vreg.id in self.allocations:
+            loc = self.allocations[vreg.id]
+            if loc.kind == LocationKind.HARDWARE:
+                return loc.hw_register
+        return None
 
     def allocate_all(self, vregs: List[VirtualRegister]):
         """

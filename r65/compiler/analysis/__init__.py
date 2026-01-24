@@ -11,10 +11,16 @@ from r65.compiler.analysis.call_graph import (
     RecursionChecker,
     RecursionError
 )
+from r65.compiler.analysis.scratch_analysis import (
+    ScratchUsageAnalyzer,
+    ScratchUsageInfo
+)
 
 __all__ = [
     'CallGraph',
     'CallGraphAnalyzer',
     'RecursionChecker',
-    'RecursionError'
+    'RecursionError',
+    'ScratchUsageAnalyzer',
+    'ScratchUsageInfo'
 ]

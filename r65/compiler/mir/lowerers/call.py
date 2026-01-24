@@ -384,7 +384,8 @@ class CallLowerer:
             bank_attr=func_decl.bank_attr,
             builtin_name=builtin_name,
             callee_entry_m_mode=func_decl.entry_m_mode,
-            callee_exit_m_mode=func_decl.exit_m_mode
+            callee_exit_m_mode=func_decl.exit_m_mode,
+            preserves_attr=func_decl.preserves_attr
         ))
 
     # ========================================================================

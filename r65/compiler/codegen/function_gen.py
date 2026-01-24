@@ -4,7 +4,7 @@ Function code generation: MIR functions → assembly.
 Generates complete function bodies with headers, labels, and instructions.
 """
 
-from typing import List, Set
+from typing import List, Set, Optional, TYPE_CHECKING
 from r65.compiler.mir.nodes import MIRFunction
 from r65.compiler.codegen.emitter import AssemblyEmitter
 from r65.compiler.codegen.instruction_select import InstructionSelector
@@ -15,6 +15,9 @@ from r65.compiler.codegen.type_utils import get_type_size
 from r65.compiler.codegen.constants import DEFAULT_STACK_UPPER, M_FLAG, X_FLAG
 from r65.compiler.codegen.opcodes import Opcode
 from r65.compiler.codegen.asm_nodes import Immediate, Address, StackOffset
+
+if TYPE_CHECKING:
+    from r65.compiler.analysis.scratch_analysis import ScratchUsageAnalyzer
 
 
 class FunctionCodeGenerator:
@@ -53,17 +56,24 @@ class FunctionCodeGenerator:
     # Main Generation
     # ========================================================================
 
-    def generate_function(self, mir_func: MIRFunction, scratch_pool: ScratchRegisterPool = None):
+    def generate_function(self,
+                          mir_func: MIRFunction,
+                          scratch_pool: ScratchRegisterPool = None,
+                          scratch_analyzer: Optional['ScratchUsageAnalyzer'] = None):
         """
         Generate complete assembly for MIR function.
 
         Args:
             mir_func: MIR function to generate
             scratch_pool: Optional scratch register pool (if None, no scratch registers available)
+            scratch_analyzer: Optional scratch usage analyzer for call-graph-aware allocation
         """
         # Setup register allocator for this function
         if scratch_pool is None:
             scratch_pool = ScratchRegisterPool()  # Empty pool if not provided
+
+        # Reset scratch pool for this function (each function gets fresh allocation)
+        scratch_pool.reset()
 
         # Calculate prologue bytes BEFORE creating register allocator
         # This allows stack params to be allocated at their passed locations
@@ -73,10 +83,16 @@ class FunctionCodeGenerator:
         # Stack params are accessed directly at their passed locations without
         # copying, so there's no need to save/restore A during the prologue.
 
+        # Create instruction-level liveness analyzer for precise liveness tracking
+        from r65.compiler.mir.liveness import InstructionLivenessAnalyzer
+        instr_liveness = InstructionLivenessAnalyzer(mir_func)
+
         reg_alloc = RegisterAllocator(
             scratch_pool=scratch_pool,
             mir_func=mir_func,
-            prologue_stack_bytes=prologue_bytes
+            prologue_stack_bytes=prologue_bytes,
+            scratch_analyzer=scratch_analyzer,
+            instr_liveness=instr_liveness
         )
 
         # Allocate all virtual registers in function

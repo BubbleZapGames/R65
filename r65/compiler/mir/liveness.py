@@ -5,14 +5,14 @@ Determines which virtual registers are live (in use) at each program point,
 enabling optimizations like stack slot reuse and better register allocation.
 """
 
-from typing import Set, Dict, List, Optional
+from typing import Set, Dict, List, Optional, Tuple
 from dataclasses import dataclass, field
 from r65.compiler.mir.nodes import (
     MIRInstruction, VirtualRegister, HardwareRegister,
     BasicBlock, MIRFunction,
     Load, Store, Move, BinaryOp, UnaryOp, Compare, BitTest, Rotate,
     Call, Return, Jump, CondBranch, TypeConvert, ToBool,
-    LoadIndirect, StoreIndirect
+    LoadIndirect, StoreIndirect, StatusFlagRead
 )
 
 
@@ -396,3 +396,233 @@ class LivenessAnalyzer:
                     return True
 
         return False
+
+
+class InstructionLivenessAnalyzer:
+    """
+    Per-instruction liveness analysis.
+
+    Provides fine-grained liveness information at the instruction level,
+    enabling precise tracking of register liveness across calls.
+    """
+
+    def __init__(self, mir_func: MIRFunction):
+        """
+        Initialize instruction liveness analyzer.
+
+        Args:
+            mir_func: MIR function to analyze
+        """
+        self.func = mir_func
+        self.block_analyzer = LivenessAnalyzer(mir_func)
+        self.liveness = self.block_analyzer.analyze()
+
+        # Cache for instruction-level liveness
+        # Key: (block_id, instr_idx), Value: set of live vregs after instruction
+        self._live_after_cache: Dict[Tuple[int, int], Set[VirtualRegister]] = {}
+
+        # Cache for calls each vreg is live across
+        self._live_across_calls_cache: Dict[int, List[Call]] = {}
+
+        # Build instruction position index
+        self._instruction_positions: Dict[id, Tuple[int, int]] = {}
+        self._build_instruction_index()
+
+    def _build_instruction_index(self):
+        """Build index mapping instructions to their positions."""
+        for block_id, block in self.func.blocks.items():
+            for instr_idx, instr in enumerate(block.instructions):
+                self._instruction_positions[id(instr)] = (block_id, instr_idx)
+
+    def get_instruction_position(self, instr: MIRInstruction) -> Optional[Tuple[int, int]]:
+        """
+        Get the (block_id, instr_idx) position of an instruction.
+
+        Args:
+            instr: Instruction to find
+
+        Returns:
+            (block_id, instr_idx) tuple or None if not found
+        """
+        return self._instruction_positions.get(id(instr))
+
+    def is_live_after(self, vreg: VirtualRegister,
+                      block_id: int, instr_idx: int) -> bool:
+        """
+        Check if a virtual register is live after a given instruction.
+
+        Args:
+            vreg: Virtual register to check
+            block_id: Block ID containing the instruction
+            instr_idx: Index of instruction within the block
+
+        Returns:
+            True if vreg is live after the instruction
+        """
+        live_after = self._get_live_after(block_id, instr_idx)
+        return vreg in live_after
+
+    def _get_live_after(self, block_id: int, instr_idx: int) -> Set[VirtualRegister]:
+        """
+        Get the set of virtual registers live after an instruction.
+
+        Uses backward scan within the block.
+        """
+        cache_key = (block_id, instr_idx)
+        if cache_key in self._live_after_cache:
+            return self._live_after_cache[cache_key]
+
+        block = self.func.blocks.get(block_id)
+        if not block:
+            return set()
+
+        info = self.liveness.get(block_id)
+        if not info:
+            return set()
+
+        # Start with live_out and work backward
+        live = info.live_out.copy()
+
+        # Process instructions in reverse from end to instr_idx
+        for i in range(len(block.instructions) - 1, instr_idx, -1):
+            instr = block.instructions[i]
+            # Remove definitions (they become live before, not after)
+            for d in self.block_analyzer._get_defs(instr):
+                if isinstance(d, VirtualRegister):
+                    live.discard(d)
+            # Add uses (they must be live before this instruction)
+            for u in self.block_analyzer._get_uses(instr):
+                if isinstance(u, VirtualRegister):
+                    live.add(u)
+
+        # Cache and return
+        self._live_after_cache[cache_key] = live
+        return live
+
+    def is_live_across_any_call(self, vreg: VirtualRegister) -> bool:
+        """
+        Check if a virtual register is live across any Call instruction.
+
+        A vreg is "live across a call" if it is:
+        1. Live before the call (used after the call)
+        2. Defined before the call
+
+        Args:
+            vreg: Virtual register to check
+
+        Returns:
+            True if vreg is live across at least one call
+        """
+        calls = self.get_calls_vreg_is_live_across(vreg)
+        return len(calls) > 0
+
+    def is_live_across_indirect_call(self, vreg: VirtualRegister) -> bool:
+        """
+        Check if a virtual register is live across any indirect Call.
+
+        An indirect call is a call through a function pointer, where
+        we don't know statically which function will be called.
+
+        Args:
+            vreg: Virtual register to check
+
+        Returns:
+            True if vreg is live across at least one indirect call
+        """
+        calls = self.get_calls_vreg_is_live_across(vreg)
+        for call in calls:
+            # Indirect call: function is a VirtualRegister, not a string
+            if not isinstance(call.function, str):
+                return True
+        return False
+
+    def get_calls_vreg_is_live_across(self, vreg: VirtualRegister) -> List[Call]:
+        """
+        Get all Call instructions where a vreg is live across.
+
+        Args:
+            vreg: Virtual register to check
+
+        Returns:
+            List of Call instructions the vreg is live across
+        """
+        if vreg.id in self._live_across_calls_cache:
+            return self._live_across_calls_cache[vreg.id]
+
+        calls = []
+        vreg_ranges = self.block_analyzer.get_live_ranges()
+
+        # Get blocks where vreg is live (in live_in/live_out)
+        vreg_blocks = vreg_ranges.get(vreg, set())
+
+        # Also check blocks where vreg is defined (it may be live within the
+        # block even if not in live_in/live_out)
+        for block_id, block in self.func.blocks.items():
+            for instr in block.instructions:
+                defs = self.block_analyzer._get_defs(instr)
+                if vreg in defs:
+                    vreg_blocks = vreg_blocks | {block_id}
+                    break
+
+        for block_id in vreg_blocks:
+            block = self.func.blocks.get(block_id)
+            if not block:
+                continue
+
+            # Track if vreg is defined yet (only live across call if defined before)
+            info = self.liveness.get(block_id)
+            vreg_defined = vreg in info.live_in if info else False
+
+            for instr_idx, instr in enumerate(block.instructions):
+                # Check if this instruction defines vreg
+                defs = self.block_analyzer._get_defs(instr)
+                if vreg in defs:
+                    vreg_defined = True
+
+                # Check if this is a Call and vreg is live after it
+                if isinstance(instr, Call) and vreg_defined:
+                    # Check if vreg is live after this call
+                    if self.is_live_after(vreg, block_id, instr_idx):
+                        calls.append(instr)
+
+        self._live_across_calls_cache[vreg.id] = calls
+        return calls
+
+    def get_live_vregs_at_call(self, call_instr: Call) -> Set[VirtualRegister]:
+        """
+        Get all virtual registers that are live across a specific call.
+
+        Args:
+            call_instr: The Call instruction
+
+        Returns:
+            Set of VirtualRegisters live across this call
+        """
+        pos = self.get_instruction_position(call_instr)
+        if not pos:
+            return set()
+
+        block_id, instr_idx = pos
+
+        # Get vregs live after the call
+        live_after = self._get_live_after(block_id, instr_idx)
+
+        # Filter to only those defined before the call
+        result = set()
+        block = self.func.blocks[block_id]
+        info = self.liveness.get(block_id)
+
+        for vreg in live_after:
+            # Check if vreg was defined before this call
+            vreg_defined = vreg in info.live_in if info else False
+
+            for i in range(instr_idx):
+                defs = self.block_analyzer._get_defs(block.instructions[i])
+                if vreg in defs:
+                    vreg_defined = True
+                    break
+
+            if vreg_defined:
+                result.add(vreg)
+
+        return result
