@@ -38,13 +38,15 @@ class ProgramCodeGenerator:
         self.func_gen: Optional[ProgramFunctionGenerator] = None
         self.warnings: List[str] = []
 
-    def generate(self, mir_program: MIRProgram, output_file: Optional[str] = None) -> str:
+    def generate(self, mir_program: MIRProgram, output_file: Optional[str] = None,
+                 optimize: bool = True) -> str:
         """
         Generate WLA-DX assembly from MIR program.
 
         Args:
             mir_program: MIR program to compile
             output_file: Optional output file path
+            optimize: Enable optimizations (default True). Set to False for -O0.
 
         Returns:
             Generated assembly as string
@@ -52,35 +54,37 @@ class ProgramCodeGenerator:
         # Create emitter
         self.emitter = AssemblyEmitter(source_file="<unknown>")
 
-        # Import optimize modules lazily to avoid circular imports
-        from r65.compiler.optimize.dead_function_elim import DeadFunctionEliminator
-        from r65.compiler.optimize.dead_code_elim import DeadCodeEliminator
-        from r65.compiler.optimize.inline import FunctionInliner
+        # Run optimizations only if enabled (-O1, default)
+        if optimize:
+            # Import optimize modules lazily to avoid circular imports
+            from r65.compiler.optimize.dead_function_elim import DeadFunctionEliminator
+            from r65.compiler.optimize.dead_code_elim import DeadCodeEliminator
+            from r65.compiler.optimize.inline import FunctionInliner
 
-        # Dead function elimination - remove functions that are never called
-        dead_func_elim = DeadFunctionEliminator(verbose=False)
-        func_eliminated = dead_func_elim.eliminate(mir_program)
-        if func_eliminated > 0:
-            print(f"Dead function elimination: {func_eliminated} function(s) removed")
+            # Dead function elimination - remove functions that are never called
+            dead_func_elim = DeadFunctionEliminator(verbose=False)
+            func_eliminated = dead_func_elim.eliminate(mir_program)
+            if func_eliminated > 0:
+                print(f"Dead function elimination: {func_eliminated} function(s) removed")
 
-        # Dead code elimination - remove unreachable blocks and dead stores
-        dead_code_elim = DeadCodeEliminator(verbose=False)
-        code_eliminated = dead_code_elim.eliminate(mir_program)
-        if code_eliminated > 0:
-            print(f"Dead code elimination: {code_eliminated} block(s)/instruction(s) removed")
+            # Dead code elimination - remove unreachable blocks and dead stores
+            dead_code_elim = DeadCodeEliminator(verbose=False)
+            code_eliminated = dead_code_elim.eliminate(mir_program)
+            if code_eliminated > 0:
+                print(f"Dead code elimination: {code_eliminated} block(s)/instruction(s) removed")
 
-        # Function inlining - replace call sites with inlined function bodies
-        func_inliner = FunctionInliner(verbose=False)
-        inlined_count = func_inliner.run(mir_program)
-        if inlined_count > 0:
-            print(f"Function inlining: {inlined_count} call site(s) inlined")
+            # Function inlining - replace call sites with inlined function bodies
+            func_inliner = FunctionInliner(verbose=False)
+            inlined_count = func_inliner.run(mir_program)
+            if inlined_count > 0:
+                print(f"Function inlining: {inlined_count} call site(s) inlined")
 
-            # Re-run dead function elimination after inlining
-            # (inlined functions may now be unused)
-            dead_func_elim2 = DeadFunctionEliminator(verbose=False)
-            func_eliminated2 = dead_func_elim2.eliminate(mir_program)
-            if func_eliminated2 > 0:
-                print(f"Post-inlining dead function elimination: {func_eliminated2} function(s) removed")
+                # Re-run dead function elimination after inlining
+                # (inlined functions may now be unused)
+                dead_func_elim2 = DeadFunctionEliminator(verbose=False)
+                func_eliminated2 = dead_func_elim2.eliminate(mir_program)
+                if func_eliminated2 > 0:
+                    print(f"Post-inlining dead function elimination: {func_eliminated2} function(s) removed")
 
         # Emit file header and processor directives
         self.emitter.emit_file_header()
@@ -155,13 +159,15 @@ class ProgramCodeGenerator:
         # Get structured nodes from emitter
         nodes = self.emitter.get_nodes()
 
-        # Apply node-based peephole optimizations
-        optimized_nodes, num_optimizations = optimize_nodes(nodes)
+        # Apply node-based peephole optimizations (only if optimize enabled)
+        if optimize:
+            optimized_nodes, num_optimizations = optimize_nodes(nodes)
+            if num_optimizations > 0:
+                print(f"Peephole optimizer: {num_optimizations} optimization(s) applied")
+        else:
+            optimized_nodes = nodes
 
-        if num_optimizations > 0:
-            print(f"Peephole optimizer: {num_optimizations} optimization(s) applied")
-
-        # Apply node-based long branch fixup
+        # Apply node-based long branch fixup (always required for correct assembly)
         fixed_nodes, num_branch_fixups = fixup_nodes(optimized_nodes)
 
         if num_branch_fixups > 0:

@@ -123,8 +123,19 @@ def dump_mir(source: str, filename: str):
 
 def compile_source(source: str, filename: str, output_file: str = None,
                    verbose: bool = False, quiet: bool = False, cfg_options: list[str] = None,
-                   include_paths: list[str] = None):
-    """Compile R65 source to WLA-DX assembly."""
+                   include_paths: list[str] = None, optimize: bool = True):
+    """Compile R65 source to WLA-DX assembly.
+
+    Args:
+        source: Source code string
+        filename: Source file name (for error messages)
+        output_file: Optional output file path
+        verbose: Show compilation progress
+        quiet: Suppress all output except errors
+        cfg_options: List of cfg conditions
+        include_paths: List of include search paths
+        optimize: Enable optimizations (default True, -O1). Set to False for -O0.
+    """
 
     def log(msg: str):
         if not quiet:
@@ -197,7 +208,7 @@ def compile_source(source: str, filename: str, output_file: str = None,
         if verbose:
             log(f"  [8/8] Generating assembly...")
         codegen = ProgramCodeGenerator()
-        assembly = codegen.generate(mir_program, output_file=output_file)
+        assembly = codegen.generate(mir_program, output_file=output_file, optimize=optimize)
 
         # Print codegen warnings (always printed, not gated by quiet mode)
         if codegen.warnings:
@@ -320,6 +331,7 @@ examples:
   r65c game.r65                      Compile game.r65 to stdout
   r65c -                             Compile from stdin to stdout
   r65c game.r65 -v -o game.asm      Compile with verbose output
+  r65c game.r65 -O0 -o game.asm     Compile without optimizations
   r65c game.r65 -I lib -I ../common  Add include search paths
   r65c game.r65 --dump-ast           Dump AST for debugging
         """
@@ -342,6 +354,20 @@ examples:
     parser.add_argument('-q', '--quiet',
                        action='store_true',
                        help='Suppress all output except errors')
+
+    # Optimization level
+    parser.add_argument('-O0',
+                       action='store_const',
+                       const=0,
+                       dest='opt_level',
+                       help='Disable optimizations (faster compilation)')
+
+    parser.add_argument('-O1',
+                       action='store_const',
+                       const=1,
+                       dest='opt_level',
+                       default=1,
+                       help='Enable optimizations (default)')
 
     # Include paths
     parser.add_argument('-I', '--include',
@@ -433,7 +459,8 @@ examples:
             return
 
         # Normal compilation
-        compile_source(source, filename, args.output, args.verbose, args.quiet, args.cfg_options, args.include_paths)
+        compile_source(source, filename, args.output, args.verbose, args.quiet,
+                       args.cfg_options, args.include_paths, optimize=(args.opt_level != 0))
 
     except (LexerError, ParseError, PreprocessorError, MacroError, HIRError, TypeCheckError) as e:
         # These are already handled in dump/compile functions
