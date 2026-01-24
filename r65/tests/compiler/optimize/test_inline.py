@@ -18,7 +18,7 @@ from r65.compiler.mir.nodes import (
     InlineAsm, Argument, ArgumentMechanism,
 )
 from r65.compiler.hir.types import BasicTypeInfo
-from r65.compiler.hir.attributes import InlineAttribute, InterruptAttribute, InterruptVector
+from r65.compiler.hir.attributes import InlineAttribute, InlineMode, InterruptAttribute, InterruptVector
 from r65.compiler.mir.virtual_registers import VirtualRegisterAllocator
 
 
@@ -1163,3 +1163,50 @@ class TestFunctionInliner:
         inlined_count = inliner.run(program)
 
         assert inlined_count == 0
+
+    def test_inline_always_behaves_like_inline(self):
+        """Test that #[inline(always)] behaves the same as #[inline]."""
+        callee = create_simple_callee()
+        callee.inline_attr = InlineAttribute(name='inline', mode=InlineMode.ALWAYS)
+        caller = create_caller_with_call("add_one")
+        program = MIRProgram(functions=[caller, callee])
+
+        checker = InlinabilityChecker(program)
+        assert checker.should_inline("add_one") is True
+
+    def test_inline_never_not_inlined_even_when_called_once(self):
+        """Test that #[inline(never)] prevents inlining even when called exactly once."""
+        callee = create_simple_callee()
+        callee.inline_attr = InlineAttribute(name='inline', mode=InlineMode.NEVER)
+        caller = create_caller_with_call("add_one")
+        program = MIRProgram(functions=[caller, callee])
+
+        checker = InlinabilityChecker(program)
+        # Function is called exactly once, but #[inline(never)] should prevent inlining
+        assert checker.should_inline("add_one") is False
+
+    def test_inline_never_small_function_not_inlined(self):
+        """Test that #[inline(never)] prevents inlining even for trivial functions."""
+        getter = create_getter_function()
+        getter.inline_attr = InlineAttribute(name='inline', mode=InlineMode.NEVER)
+        caller = create_caller_with_call("get_value")
+        program = MIRProgram(functions=[caller, getter])
+
+        checker = InlinabilityChecker(program)
+        # Even trivial getters should not be inlined with #[inline(never)]
+        assert checker.should_inline("get_value") is False
+
+    def test_inline_never_prevents_actual_inlining(self):
+        """Test that #[inline(never)] actually prevents inlining in the FunctionInliner pass."""
+        callee = create_simple_callee()
+        callee.inline_attr = InlineAttribute(name='inline', mode=InlineMode.NEVER)
+        caller = create_caller_with_call("add_one")
+        program = MIRProgram(functions=[caller, callee])
+
+        inliner = FunctionInliner(verbose=False)
+        inlined_count = inliner.run(program)
+
+        # No functions should be inlined
+        assert inlined_count == 0
+        # Both functions should still exist
+        assert len(program.functions) == 2

@@ -24,6 +24,7 @@ from r65.compiler.hir import (
 from r65.compiler.hir.attributes import (
     StorageKind,
     InterruptVector,
+    InlineMode,
 )
 
 
@@ -965,3 +966,82 @@ impl Point {
         impl_decl = hir.declarations[1]
         method = impl_decl.methods[0]
         assert method.inline_attr is not None
+
+
+class TestInlineAttribute:
+    """Test #[inline], #[inline(always)], and #[inline(never)] attribute parsing."""
+
+    def test_inline_bare(self):
+        """Bare #[inline] should set mode to ALWAYS."""
+        source = """
+#[inline]
+fn add_one(val @ A: u8) -> u8 {
+    return val + 1;
+}
+"""
+        hir = build_hir(source)
+        func = hir.declarations[0]
+        assert func.inline_attr is not None
+        assert func.inline_attr.mode == InlineMode.ALWAYS
+
+    def test_inline_always(self):
+        """#[inline(always)] should set mode to ALWAYS."""
+        source = """
+#[inline(always)]
+fn add_one(val @ A: u8) -> u8 {
+    return val + 1;
+}
+"""
+        hir = build_hir(source)
+        func = hir.declarations[0]
+        assert func.inline_attr is not None
+        assert func.inline_attr.mode == InlineMode.ALWAYS
+
+    def test_inline_never(self):
+        """#[inline(never)] should set mode to NEVER."""
+        source = """
+#[inline(never)]
+fn add_one(val @ A: u8) -> u8 {
+    return val + 1;
+}
+"""
+        hir = build_hir(source)
+        func = hir.declarations[0]
+        assert func.inline_attr is not None
+        assert func.inline_attr.mode == InlineMode.NEVER
+
+    def test_inline_invalid_argument_rejected(self):
+        """#[inline(invalid)] should be rejected."""
+        source = """
+#[inline(invalid)]
+fn add_one(val @ A: u8) -> u8 {
+    return val + 1;
+}
+"""
+        with pytest.raises(Exception) as exc_info:
+            build_hir(source)
+        assert "Invalid #[inline] argument" in str(exc_info.value)
+
+    def test_inline_multiple_arguments_rejected(self):
+        """#[inline(always, never)] should be rejected."""
+        source = """
+#[inline(always, never)]
+fn add_one(val @ A: u8) -> u8 {
+    return val + 1;
+}
+"""
+        with pytest.raises(Exception) as exc_info:
+            build_hir(source)
+        assert "at most one argument" in str(exc_info.value)
+
+    def test_inline_named_argument_rejected(self):
+        """#[inline(mode=always)] should be rejected."""
+        source = """
+#[inline(mode=always)]
+fn add_one(val @ A: u8) -> u8 {
+    return val + 1;
+}
+"""
+        with pytest.raises(Exception) as exc_info:
+            build_hir(source)
+        assert "does not accept named arguments" in str(exc_info.value)

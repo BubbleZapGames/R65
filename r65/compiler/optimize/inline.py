@@ -21,6 +21,7 @@ from r65.compiler.mir.nodes import (
     Argument, ArgumentMechanism,
 )
 from r65.compiler.hir import RegisterBinding, VariableBinding
+from r65.compiler.hir.attributes import InlineMode
 
 
 # Size thresholds for inlining decisions
@@ -174,11 +175,15 @@ class InlinabilityChecker:
         func = self.func_map[func_name]
         instr_count = self._count_instructions(func)
 
-        # Called exactly once → always inline
+        # Check for #[inline(never)] - never inline these functions
+        if func.inline_attr is not None and func.inline_attr.mode == InlineMode.NEVER:
+            return False
+
+        # Called exactly once → always inline (unless #[inline(never)] which is handled above)
         if self.call_counts.get(func_name, 0) == 1:
             return True
 
-        # Marked #[inline] → inline if under threshold
+        # Marked #[inline] or #[inline(always)] → inline if under threshold
         if func.inline_attr is not None:
             return instr_count < INLINE_THRESHOLD_WITH_ATTR
 

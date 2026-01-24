@@ -115,16 +115,23 @@ class EntryAttribute(ProcessedAttribute):
 
 
 # Inline attribute
+class InlineMode(Enum):
+    """Inline attribute mode."""
+    ALWAYS = "always"  # #[inline] or #[inline(always)] - inline if under threshold
+    NEVER = "never"    # #[inline(never)] - never inline this function
+
+
 @dataclass
 class InlineAttribute(ProcessedAttribute):
-    """#[inline] - marks function for inlining.
+    """#[inline], #[inline(always)], or #[inline(never)] - controls function inlining.
 
     The compiler uses heuristics to decide when to inline marked functions:
-    - Functions called exactly once are always inlined
-    - Functions marked #[inline] are inlined if < 30 instructions
-    - Functions without attribute are inlined only if very small (< 10 instructions)
+    - Functions called exactly once are always inlined (unless #[inline(never)])
+    - Functions marked #[inline] or #[inline(always)] are inlined if < 30 instructions
+    - Functions marked #[inline(never)] are never inlined
+    - Functions without attribute are inlined only if very small (< 3 instructions)
     """
-    pass
+    mode: InlineMode = InlineMode.ALWAYS
 
 
 # CFG attribute
@@ -405,14 +412,30 @@ class AttributeProcessor:
         return EntryAttribute(name='entry')
 
     def _process_inline(self, attr: ast.Attribute, context: str) -> InlineAttribute:
-        """Process #[inline] attribute."""
+        """Process #[inline], #[inline(always)], or #[inline(never)] attribute."""
         if context not in ['function']:
             raise HIRError(f"#[inline] attribute only valid on functions")
 
-        if len(attr.args) > 0:
-            raise HIRError(f"#[inline] does not accept arguments")
+        mode = InlineMode.ALWAYS  # Default for bare #[inline]
 
-        return InlineAttribute(name='inline')
+        if len(attr.args) > 1:
+            raise HIRError(f"#[inline] accepts at most one argument (always or never)")
+
+        if len(attr.args) == 1:
+            arg = attr.args[0]
+            if arg.name is not None:
+                raise HIRError(f"#[inline] does not accept named arguments")
+
+            value_str = self._get_arg_identifier(arg.value)
+
+            if value_str == 'always':
+                mode = InlineMode.ALWAYS
+            elif value_str == 'never':
+                mode = InlineMode.NEVER
+            else:
+                raise HIRError(f"Invalid #[inline] argument: {value_str}. Expected 'always' or 'never'")
+
+        return InlineAttribute(name='inline', mode=mode)
 
     def _process_stack(self, attr: ast.Attribute, context: str) -> StackAttribute:
         """Process #[stack(lower, upper)] attribute."""
