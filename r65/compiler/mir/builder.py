@@ -77,6 +77,9 @@ class MIRBuilder:
         # Current HIR program being lowered (for symbol table lookups)
         self._hir_program: Optional[HIRProgram] = None
 
+        # Current source location for debug info propagation
+        self._current_source_loc = None
+
     # ========================================================================
     # Context Property Accessors (for gradual migration)
     # ========================================================================
@@ -467,6 +470,10 @@ class MIRBuilder:
         Args:
             stmt: HIR statement
         """
+        # Capture source location for debug info propagation
+        if hasattr(stmt, 'source_loc') and stmt.source_loc is not None:
+            self._current_source_loc = stmt.source_loc
+
         if isinstance(stmt, HIRLetStmt):
             self.lower_let_statement(stmt)
         elif isinstance(stmt, HIRTupleLetStmt):
@@ -651,6 +658,10 @@ class MIRBuilder:
         Returns:
             VirtualRegister, HardwareRegister, or Immediate
         """
+        # Capture source location for debug info propagation
+        if hasattr(expr, 'source_loc') and expr.source_loc is not None:
+            self._current_source_loc = expr.source_loc
+
         if isinstance(expr, HIRIntegerLiteral):
             # Integer literal → Immediate
             return Immediate(expr.value)
@@ -1243,6 +1254,10 @@ class MIRBuilder:
         Args:
             instruction: MIR instruction to emit
         """
+        # Propagate source location to instruction if not already set
+        if instruction.source_loc is None and self._current_source_loc is not None:
+            instruction.source_loc = self._current_source_loc
+
         if self.current_block is not None:
             self.current_block.instructions.append(instruction)
 
