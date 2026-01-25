@@ -130,6 +130,9 @@ class InstructionSelector:
         if current_function:
             self._init_hw_tracker(current_function)
 
+        # Current source location for debug info propagation
+        self._current_source_loc = None
+
     # ========================================================================
     # Pending Mode Flag Optimization
     # ========================================================================
@@ -230,7 +233,7 @@ class InstructionSelector:
     def _emit_load(self, mnemonic: str, location: PhysicalLocation, comment: str = None):
         """Emit a load instruction with the appropriate addressing mode."""
         opcode, operand = self._get_opcode_for_location(mnemonic, location)
-        self.emitter.emit_instr(opcode, operand, comment)
+        self.emitter.emit_instr(opcode, operand, comment, self._current_source_loc)
 
     def _emit_store(self, mnemonic: str, location: PhysicalLocation, comment: str = None):
         """
@@ -241,31 +244,31 @@ class InstructionSelector:
         if StoreResolver.needs_workaround(mnemonic, location):
             # Transfer to A first, then use STA
             transfer_op = StoreResolver.get_transfer_opcode(mnemonic)
-            self.emitter.emit_instr(transfer_op, None, f"Transfer to A (no {mnemonic} with this addressing)")
+            self.emitter.emit_instr(transfer_op, None, f"Transfer to A (no {mnemonic} with this addressing)", self._current_source_loc)
             opcode, operand = self._get_opcode_for_location('STA', location)
-            self.emitter.emit_instr(opcode, operand, comment)
+            self.emitter.emit_instr(opcode, operand, comment, self._current_source_loc)
             self._mark_a_modified()
             return
 
         opcode, operand = self._get_opcode_for_location(mnemonic, location)
-        self.emitter.emit_instr(opcode, operand, comment)
+        self.emitter.emit_instr(opcode, operand, comment, self._current_source_loc)
 
     def _emit_op(self, mnemonic: str, location: PhysicalLocation, comment: str = None):
         """Emit an ALU operation with the appropriate addressing mode."""
         opcode, operand = self._get_opcode_for_location(mnemonic, location)
-        self.emitter.emit_instr(opcode, operand, comment)
+        self.emitter.emit_instr(opcode, operand, comment, self._current_source_loc)
 
     def _emit_implied(self, opcode: Opcode, comment: str = None):
         """Emit an implied addressing mode instruction."""
-        self.emitter.emit_instr(opcode, None, comment)
+        self.emitter.emit_instr(opcode, None, comment, self._current_source_loc)
 
     def _emit_immediate(self, opcode: Opcode, value: int, comment: str = None):
         """Emit an immediate addressing mode instruction."""
-        self.emitter.emit_instr(opcode, Immediate(value), comment)
+        self.emitter.emit_instr(opcode, Immediate(value), comment, self._current_source_loc)
 
     def _emit_branch(self, opcode: Opcode, label: str, comment: str = None):
         """Emit a branch instruction to a label."""
-        self.emitter.emit_instr(opcode, Address(label), comment)
+        self.emitter.emit_instr(opcode, Address(label), comment, self._current_source_loc)
 
     def _block_label(self, block_id: int) -> str:
         """Format a block label with function-scoped naming."""
@@ -486,6 +489,9 @@ class InstructionSelector:
         Args:
             instr: MIR instruction to convert
         """
+        # Capture source location for debug info propagation
+        self._current_source_loc = instr.source_loc
+
         # Flush pending mode flags before any non-StatusFlagSet instruction
         # This enables combining sequential STATUS.A16/XY16 assignments
         if not isinstance(instr, StatusFlagSet):

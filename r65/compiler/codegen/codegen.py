@@ -19,6 +19,9 @@ from r65.compiler.codegen.branch_fixup import fixup_nodes
 from r65.compiler.codegen.emitter import emit_nodes
 from r65.compiler.codegen.constants import DEFAULT_STACK_LOWER, DEFAULT_STACK_UPPER, calculate_rom_size
 from r65.compiler.codegen.bank_size import validate_bank_sizes
+from r65.compiler.codegen.debug_info import DebugInfoCollector
+from r65.compiler.codegen.debug_writer import Cc65DebugWriter
+from r65.compiler.codegen.address_calc import AddressCalculator
 # Note: Optimize imports are done lazily in generate() to avoid circular imports
 
 
@@ -40,9 +43,10 @@ class ProgramCodeGenerator:
         self.emitter: Optional[AssemblyEmitter] = None
         self.func_gen: Optional[ProgramFunctionGenerator] = None
         self.warnings: List[str] = []
+        self.debug_info: Optional[DebugInfoCollector] = None
 
     def generate(self, mir_program: MIRProgram, output_file: Optional[str] = None,
-                 optimize: bool = True) -> str:
+                 optimize: bool = True, debug: bool = False) -> str:
         """
         Generate WLA-DX assembly from MIR program.
 
@@ -50,10 +54,15 @@ class ProgramCodeGenerator:
             mir_program: MIR program to compile
             output_file: Optional output file path
             optimize: Enable optimizations (default True). Set to False for -O0.
+            debug: Generate Mesen-compatible .dbg file (default False)
 
         Returns:
             Generated assembly as string
         """
+        # Initialize debug info collector if debug mode enabled
+        if debug:
+            self.debug_info = DebugInfoCollector()
+
         # Create emitter
         self.emitter = AssemblyEmitter(source_file="<unknown>")
 
@@ -193,6 +202,10 @@ class ProgramCodeGenerator:
         if output_file:
             with open(output_file, 'w') as f:
                 f.write(assembly)
+
+        # Generate debug file if requested
+        if debug and output_file:
+            self._generate_debug_file(mir_program, fixed_nodes, output_file)
 
         return assembly
 
@@ -385,3 +398,278 @@ class ProgramCodeGenerator:
 
         # Validate bank sizes
         validate_bank_sizes(nodes, is_hirom=is_hirom, has_header=has_header)
+
+    # ========================================================================
+    # Debug File Generation
+    # ========================================================================
+
+    def _generate_debug_file(self, mir_program: MIRProgram, nodes: list, output_file: str):
+        """
+        Generate Mesen-compatible .dbg file alongside assembly output.
+
+        Collects debug information including:
+        - Source files referenced
+        - Memory segments (banks)
+        - Symbols (functions, constants, statics)
+        - Scopes (function boundaries)
+        - Line mappings (source line to address)
+
+        Args:
+            mir_program: MIR program with source info
+            nodes: Final assembly nodes
+            output_file: Assembly output path (used to derive .dbg path)
+        """
+        from r65.compiler.codegen.asm_nodes import Label, Instruction, Directive
+
+        # Determine ROM type for address calculation
+        is_hirom = False
+        if mir_program.snesrom_config:
+            is_hirom = mir_program.snesrom_config.hirom or mir_program.snesrom_config.exhirom
+
+        # Calculate base address for LoROM/HiROM
+        base_address = 0xC000 if is_hirom else 0x8000
+
+        # Collect segments (one per bank)
+        self._collect_segments(mir_program, nodes, base_address, is_hirom)
+
+        # Collect symbols (functions, constants, statics)
+        self._collect_symbols(mir_program, nodes, base_address)
+
+        # Collect scopes (function boundaries)
+        self._collect_scopes(mir_program, nodes, base_address)
+
+        # Collect line mappings
+        self._collect_line_info(nodes, base_address)
+
+        # Write debug file
+        dbg_path = output_file.replace('.asm', '.dbg')
+        if dbg_path == output_file:
+            dbg_path = output_file + '.dbg'
+
+        writer = Cc65DebugWriter(self.debug_info)
+        writer.write_to_file(dbg_path)
+        print(f"Debug info written to: {dbg_path}")
+
+    def _collect_segments(self, mir_program: MIRProgram, nodes: list, base_address: int, is_hirom: bool):
+        """
+        Collect segment information for debug output.
+
+        Creates a segment entry for each bank used in the program.
+
+        Args:
+            mir_program: MIR program
+            nodes: Assembly nodes
+            base_address: Base address (0x8000 for LoROM, 0xC000 for HiROM)
+            is_hirom: Whether using HiROM mapping
+        """
+        # Organize functions by bank to determine which banks are used
+        functions_by_bank = self._organize_functions_by_bank(mir_program.functions)
+
+        # Bank size in bytes
+        bank_size = 0x10000 if is_hirom else 0x8000
+
+        # Create segment for each bank
+        for bank_num in sorted(functions_by_bank.keys()):
+            # Calculate start address for this bank
+            start = base_address
+
+            # Output file offset (bank * bank_size for LoROM)
+            ooffs = bank_num * bank_size
+
+            self.debug_info.add_segment(
+                name=f"BANK{bank_num}",
+                start=start,
+                size=bank_size,
+                bank=bank_num,
+                ooffs=ooffs,
+                seg_type="ro"
+            )
+
+    def _collect_symbols(self, mir_program: MIRProgram, nodes: list, base_address: int):
+        """
+        Collect symbol information for debug output.
+
+        Collects:
+        - Function labels
+        - Static variables
+        - Constants
+
+        Args:
+            mir_program: MIR program
+            nodes: Assembly nodes
+            base_address: Base address for the segment
+        """
+        from r65.compiler.codegen.asm_nodes import Label
+
+        # Calculate label addresses
+        calc = AddressCalculator(base_address)
+        _, label_addresses = calc.calculate_with_labels(nodes)
+
+        # Add function symbols
+        for func in mir_program.functions:
+            # Get address from label
+            addr = label_addresses.get(func.name, base_address)
+
+            # Determine segment (bank)
+            bank_num = 0
+            if func.bank_attr and func.bank_attr.bank_number is not None:
+                bank_num = func.bank_attr.bank_number
+
+            # Find segment ID for this bank
+            seg_id = None
+            for seg in self.debug_info.segments:
+                if seg.bank == bank_num:
+                    seg_id = seg.id
+                    break
+
+            # Register source file
+            file_id = None
+            if func.source_loc and func.source_loc.file_path:
+                dbg_file = self.debug_info.get_or_create_file(func.source_loc.file_path)
+                file_id = dbg_file.id
+
+            self.debug_info.add_symbol(
+                name=func.name,
+                value=addr,
+                seg_id=seg_id,
+                sym_type="lab"
+            )
+
+        # Add constant symbols
+        for const in mir_program.constants:
+            self.debug_info.add_symbol(
+                name=const.name,
+                value=const.value if isinstance(const.value, int) else 0,
+                seg_id=None,  # Constants are absolute
+                sym_type="equ"
+            )
+
+        # Add static variable symbols
+        if self.allocator:
+            for name, alloc in self.allocator.allocations.items():
+                # Skip if already added (some overlap with functions)
+                if any(s.name == name for s in self.debug_info.symbols):
+                    continue
+
+                self.debug_info.add_symbol(
+                    name=name,
+                    value=alloc.address,
+                    seg_id=None,  # RAM addresses are absolute
+                    sym_type="lab",
+                    size=alloc.size
+                )
+
+    def _collect_scopes(self, mir_program: MIRProgram, nodes: list, base_address: int):
+        """
+        Collect scope information for debug output.
+
+        Creates scope entries for each function.
+
+        Args:
+            mir_program: MIR program
+            nodes: Assembly nodes
+            base_address: Base address
+        """
+        # First add a global scope
+        global_scope = self.debug_info.add_scope(
+            name="",
+            scope_type="global",
+            size=0,
+            span_ids=[]
+        )
+
+        # Calculate label addresses to get function sizes
+        calc = AddressCalculator(base_address)
+        _, label_addresses = calc.calculate_with_labels(nodes)
+
+        # Sort functions by address to calculate sizes
+        func_addrs = []
+        for func in mir_program.functions:
+            addr = label_addresses.get(func.name, base_address)
+            func_addrs.append((func, addr))
+        func_addrs.sort(key=lambda x: x[1])
+
+        # Add scope for each function
+        for i, (func, addr) in enumerate(func_addrs):
+            # Estimate size (distance to next function or end of bank)
+            if i + 1 < len(func_addrs):
+                size = func_addrs[i + 1][1] - addr
+            else:
+                size = 0x100  # Default size for last function
+
+            # Find symbol ID for this function
+            sym_id = None
+            for sym in self.debug_info.symbols:
+                if sym.name == func.name and sym.sym_type == "lab":
+                    sym_id = sym.id
+                    break
+
+            self.debug_info.add_scope(
+                name=func.name,
+                scope_type="scope",
+                size=size,
+                span_ids=[],  # Will be filled by line info collection
+                parent_id=global_scope.id,
+                sym_id=sym_id
+            )
+
+    def _collect_line_info(self, nodes: list, base_address: int):
+        """
+        Collect source line to address mappings for debug output.
+
+        Walks through assembly nodes and creates line entries for
+        instructions that have source location information.
+
+        Args:
+            nodes: Assembly nodes
+            base_address: Base address
+        """
+        from r65.compiler.codegen.asm_nodes import Instruction, Label
+
+        # Calculate addresses for all nodes
+        calc = AddressCalculator(base_address)
+        node_addresses = calc.calculate(nodes)
+
+        # Track current segment (assume bank 0 for now)
+        current_seg_id = 0 if self.debug_info.segments else None
+
+        # Group instructions by source line
+        line_spans: Dict[tuple, List[tuple]] = {}  # (file_id, line) -> [(start, size), ...]
+
+        for i, node in enumerate(nodes):
+            if not isinstance(node, Instruction):
+                continue
+
+            if node.source_loc is None:
+                continue
+
+            if i not in node_addresses:
+                continue
+
+            addr, size = node_addresses[i]
+
+            # Get or create file entry
+            file_path = node.source_loc.file_path
+            dbg_file = self.debug_info.get_or_create_file(file_path)
+
+            # Group by (file_id, line)
+            key = (dbg_file.id, node.source_loc.line)
+            if key not in line_spans:
+                line_spans[key] = []
+            line_spans[key].append((addr - base_address, size))
+
+        # Create spans and line entries
+        for (file_id, line), spans in sorted(line_spans.items()):
+            span_ids = []
+            for start, size in spans:
+                if current_seg_id is not None:
+                    span = self.debug_info.find_or_add_span(current_seg_id, start, size)
+                    span_ids.append(span.id)
+
+            if span_ids:
+                self.debug_info.add_line(
+                    file_id=file_id,
+                    line=line,
+                    span_ids=span_ids,
+                    line_type=0  # Assembly source
+                )

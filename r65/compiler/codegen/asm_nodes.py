@@ -12,6 +12,10 @@ The final emission step converts nodes to WLA-DX assembly text.
 
 from __future__ import annotations
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from r65.compiler.errors import SourceLocation
 
 from r65.compiler.codegen.opcodes import (
     Opcode, mnemonic, addressing_mode, instruction_size, is_branch,
@@ -100,6 +104,7 @@ class Instruction(AsmNode):
     opcode: Opcode
     operand: Operand | None = None
     comment: str | None = None
+    source_loc: SourceLocation | None = None
 
     def size(self, m16: bool = False, x16: bool = False) -> int:
         """Get instruction size in bytes."""
@@ -127,6 +132,7 @@ class Instruction(AsmNode):
 class Label(AsmNode):
     """A label definition."""
     name: str
+    source_loc: SourceLocation | None = None
 
     def __repr__(self) -> str:
         return f"Label({self.name})"
@@ -160,6 +166,7 @@ class Directive(AsmNode):
     """
     name: str
     args: list[str] = field(default_factory=list)
+    source_loc: SourceLocation | None = None
 
     def __repr__(self) -> str:
         if self.args:

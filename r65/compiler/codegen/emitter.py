@@ -8,8 +8,11 @@ Builds structured AsmNode objects which are converted to assembly text
 via emit_nodes().
 """
 
-from typing import List, Optional
+from typing import List, Optional, TYPE_CHECKING
 from datetime import datetime
+
+if TYPE_CHECKING:
+    from r65.compiler.errors import SourceLocation
 
 from r65.compiler.codegen.opcodes import (
     Opcode, mnemonic, addressing_mode, BRANCH_OPCODES,
@@ -278,7 +281,8 @@ class AssemblyEmitter:
         """Emit a single node."""
         self.nodes.append(node)
 
-    def emit_instr(self, opcode: Opcode, operand: Operand | None = None, comment: str | None = None):
+    def emit_instr(self, opcode: Opcode, operand: Operand | None = None,
+                   comment: str | None = None, source_loc: 'SourceLocation | None' = None):
         """
         Emit an instruction using structured Opcode enum.
 
@@ -286,8 +290,9 @@ class AssemblyEmitter:
             opcode: The Opcode enum value (e.g., Opcode.LDA_IMMEDIATE)
             operand: The operand (Immediate, Address, StackOffset, etc.)
             comment: Optional comment
+            source_loc: Optional source location for debug info
         """
-        self.nodes.append(Instruction(opcode, operand, comment))
+        self.nodes.append(Instruction(opcode, operand, comment, source_loc))
 
     def emit_raw(self, text: str):
         """Emit raw assembly text."""
@@ -483,19 +488,20 @@ class AssemblyEmitter:
     # Labels
     # ========================================================================
 
-    def emit_label(self, label: str):
+    def emit_label(self, label: str, source_loc: 'SourceLocation | None' = None):
         """
         Emit a label.
 
         Args:
             label: Label name (with or without trailing :)
+            source_loc: Optional source location for debug info
 
         Generated:
             label:
         """
         # Strip trailing colon (emit_node adds it back)
         label_name = label.rstrip(':')
-        self.nodes.append(Label(label_name))
+        self.nodes.append(Label(label_name, source_loc))
 
     def emit_local_label(self, label: str):
         """

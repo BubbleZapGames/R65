@@ -123,7 +123,7 @@ def dump_mir(source: str, filename: str):
 
 def compile_source(source: str, filename: str, output_file: str = None,
                    verbose: bool = False, quiet: bool = False, cfg_options: list[str] = None,
-                   include_paths: list[str] = None, optimize: bool = True):
+                   include_paths: list[str] = None, optimize: bool = True, debug: bool = False):
     """Compile R65 source to WLA-DX assembly.
 
     Args:
@@ -135,6 +135,7 @@ def compile_source(source: str, filename: str, output_file: str = None,
         cfg_options: List of cfg conditions
         include_paths: List of include search paths
         optimize: Enable optimizations (default True, -O1). Set to False for -O0.
+        debug: Generate Mesen-compatible .dbg file (default False)
     """
 
     def log(msg: str):
@@ -208,7 +209,7 @@ def compile_source(source: str, filename: str, output_file: str = None,
         if verbose:
             log(f"  [8/8] Generating assembly...")
         codegen = ProgramCodeGenerator()
-        assembly = codegen.generate(mir_program, output_file=output_file, optimize=optimize)
+        assembly = codegen.generate(mir_program, output_file=output_file, optimize=optimize, debug=debug)
 
         # Print codegen warnings (always printed, not gated by quiet mode)
         if codegen.warnings:
@@ -369,6 +370,12 @@ examples:
                        default=1,
                        help='Enable optimizations (default)')
 
+    # Debug info generation
+    parser.add_argument('--dbg',
+                       action='store_true',
+                       dest='generate_debug',
+                       help='Generate Mesen-compatible debug file (.dbg)')
+
     # Include paths
     parser.add_argument('-I', '--include',
                        action='append',
@@ -460,7 +467,8 @@ examples:
 
         # Normal compilation
         compile_source(source, filename, args.output, args.verbose, args.quiet,
-                       args.cfg_options, args.include_paths, optimize=(args.opt_level != 0))
+                       args.cfg_options, args.include_paths, optimize=(args.opt_level != 0),
+                       debug=args.generate_debug)
 
     except (LexerError, ParseError, PreprocessorError, MacroError, HIRError, TypeCheckError) as e:
         # These are already handled in dump/compile functions
