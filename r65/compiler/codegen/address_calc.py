@@ -60,6 +60,9 @@ class AddressCalculator:
         """
         Calculate addresses for all nodes and collect label addresses.
 
+        Tracks .ACCU and .INDEX mode changes to correctly size immediate
+        instructions based on the current processor mode.
+
         Args:
             nodes: List of AsmNode objects
 
@@ -72,12 +75,24 @@ class AddressCalculator:
         label_addresses = {}
         offset = 0
 
+        # Track current processor mode (may change via .ACCU/.INDEX directives)
+        current_m16 = self.m16
+        current_x16 = self.x16
+
         for i, node in enumerate(nodes):
+            # Check for mode-changing directives
+            if isinstance(node, Directive):
+                name_upper = node.name.upper()
+                if name_upper == '.ACCU' and node.args:
+                    current_m16 = node.args[0] == '16'
+                elif name_upper == '.INDEX' and node.args:
+                    current_x16 = node.args[0] == '16'
+
             # Record label address before processing
             if isinstance(node, Label):
                 label_addresses[node.name] = self.base_address + offset
 
-            size = self._node_size(node)
+            size = self._node_size_with_mode(node, current_m16, current_x16)
             if size > 0:
                 node_addresses[i] = (self.base_address + offset, size)
             offset += size
@@ -100,15 +115,31 @@ class AddressCalculator:
         """
         Get size of a single node in bytes.
 
+        Uses the instance's default m16/x16 modes.
+
         Args:
             node: AsmNode to measure
 
         Returns:
             Size in bytes (0 for labels, comments, blank lines)
         """
+        return self._node_size_with_mode(node, self.m16, self.x16)
+
+    def _node_size_with_mode(self, node: AsmNode, m16: bool, x16: bool) -> int:
+        """
+        Get size of a single node in bytes with explicit mode.
+
+        Args:
+            node: AsmNode to measure
+            m16: True if accumulator is 16-bit
+            x16: True if index registers are 16-bit
+
+        Returns:
+            Size in bytes (0 for labels, comments, blank lines)
+        """
         match node:
             case Instruction(opcode, _, _, _):
-                return instruction_size(opcode, self.m16, self.x16)
+                return instruction_size(opcode, m16, x16)
             case Directive(name, args, _):
                 return self._directive_size(name, args)
             case RawAsm(text):
@@ -199,8 +230,49 @@ class AddressCalculator:
         if text.endswith(':'):
             return 0
 
-        # For actual instructions, assume average of 2-3 bytes
-        # This is imprecise but better than nothing for raw asm
+        # Skip WLA-DX control directives (inside .MEMORYMAP, .ROMBANKMAP, etc.)
+        # These don't start with '.' but produce no code
+        first_word = text.split()[0].upper() if text.split() else ''
+        wla_control_directives = {
+            'DEFAULTSLOT', 'SLOTSIZE', 'SLOT',
+            'BANKSTOTAL', 'BANKSIZE', 'BANKS',
+            'LOROM', 'HIROM', 'EXLOROM', 'EXHIROM',
+            'SLOWROM', 'FASTROM',
+            'CARTRIDGETYPE', 'ROMSIZE', 'SRAMSIZE',
+            'COUNTRY', 'LICENSEECODE', 'VERSION',
+            'ID', 'NAME',
+            'COMPUTESNESCHECKSUM', 'COMPUTEGBCHECKSUM',
+            'FORCE', 'BACKGROUND', 'INTERRUPT',
+            'NMI', 'IRQ', 'BRK', 'COP', 'ABORT', 'UNUSED',
+            'EMUNMI', 'EMUIRQ', 'EMUCOP', 'EMUABORT', 'EMUUNUSED', 'EMURESET',
+            'NATIVECOP', 'NATIVEBRK', 'NATIVEABORT', 'NATIVENMI',
+            'NATIVEIRQ', 'NATIVERESET', 'NATIVEUNUSED',
+        }
+        if first_word in wla_control_directives:
+            return 0
+
+        # Single-byte implied instructions (no operand)
+        single_byte_implied = {
+            # Flag operations
+            'CLC', 'CLD', 'CLI', 'CLV', 'SEC', 'SED', 'SEI',
+            # Transfer operations
+            'TAX', 'TAY', 'TXA', 'TYA', 'TSX', 'TXS',
+            'TCD', 'TDC', 'TCS', 'TSC', 'TXY', 'TYX',
+            # Stack operations
+            'PHA', 'PHP', 'PHX', 'PHY', 'PHB', 'PHD', 'PHK',
+            'PLA', 'PLP', 'PLX', 'PLY', 'PLB', 'PLD',
+            # Increment/Decrement
+            'INX', 'INY', 'DEX', 'DEY', 'INC', 'DEC',  # INC A / DEC A
+            # Returns and misc
+            'RTS', 'RTI', 'RTL', 'NOP', 'WAI', 'STP', 'WDM',
+            # 65816 specific
+            'XBA', 'XCE',
+        }
+        if first_word in single_byte_implied:
+            return 1
+
+        # For other instructions, estimate based on instruction type
+        # 2 bytes for most instructions with operands, 3 for absolute addressing
         return 2
 
     def _parse_int(self, value: str) -> int:
