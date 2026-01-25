@@ -62,27 +62,27 @@ class BaseSelector(ABC):
 
     def _emit_instr(self, opcode: Opcode, operand=None, comment: str | None = None):
         """Emit an instruction with optional operand and comment."""
-        self.emitter.emit_instr(opcode, operand, comment)
+        self.emitter.emit_instr(opcode, operand, comment, self.parent._current_source_loc)
 
     def _emit_implied(self, opcode: Opcode, comment: str | None = None):
         """Emit an implied addressing mode instruction (no operand)."""
-        self.emitter.emit_instr(opcode, None, comment)
+        self.emitter.emit_instr(opcode, None, comment, self.parent._current_source_loc)
 
     def _emit_immediate(self, opcode: Opcode, value: int, comment: str | None = None):
         """Emit an immediate addressing mode instruction."""
-        self.emitter.emit_instr(opcode, Immediate(value), comment)
+        self.emitter.emit_instr(opcode, Immediate(value), comment, self.parent._current_source_loc)
 
     def _emit_address(self, opcode: Opcode, addr: int | str, comment: str | None = None):
         """Emit an instruction with an address operand (absolute, DP, or label)."""
-        self.emitter.emit_instr(opcode, Address(addr), comment)
+        self.emitter.emit_instr(opcode, Address(addr), comment, self.parent._current_source_loc)
 
     def _emit_branch(self, opcode: Opcode, label: str, comment: str | None = None):
         """Emit a branch instruction to a label."""
-        self.emitter.emit_instr(opcode, Address(label), comment)
+        self.emitter.emit_instr(opcode, Address(label), comment, self.parent._current_source_loc)
 
     def _emit_jump(self, opcode: Opcode, label: str, comment: str | None = None):
         """Emit a jump instruction to a label."""
-        self.emitter.emit_instr(opcode, Address(label), comment)
+        self.emitter.emit_instr(opcode, Address(label), comment, self.parent._current_source_loc)
 
     # ========================================================================
     # Location Resolution Helpers

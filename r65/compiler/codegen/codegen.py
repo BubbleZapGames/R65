@@ -537,9 +537,13 @@ class ProgramCodeGenerator:
 
         # Add constant symbols
         for const in mir_program.constants:
+            # Use evaluated_value if available (it's the const-evaluated integer)
+            value = const.evaluated_value if const.evaluated_value is not None else 0
+            if not isinstance(value, int):
+                value = 0
             self.debug_info.add_symbol(
                 name=const.name,
-                value=const.value if isinstance(const.value, int) else 0,
+                value=value,
                 seg_id=None,  # Constants are absolute
                 sym_type="equ"
             )

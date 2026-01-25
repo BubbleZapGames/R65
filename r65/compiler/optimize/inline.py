@@ -541,6 +541,14 @@ class FunctionInliner:
         cloned_blocks = cloner.clone_blocks()
         inlined_entry_id = cloner.get_entry_block_id()
 
+        # Override source_loc on all inlined instructions to use call site location
+        # This ensures debug info points to where the function was called, not defined
+        call_site_loc = call.source_loc
+        if call_site_loc:
+            for block in cloned_blocks.values():
+                for instr in block.instructions:
+                    instr.source_loc = call_site_loc
+
         # Create merge block for code after the call
         merge_block_id = max(caller.blocks.keys()) + 1
         while merge_block_id in cloned_blocks:

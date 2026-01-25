@@ -38,6 +38,9 @@ class AddressCalculator:
         """
         Calculate addresses for all nodes.
 
+        Tracks .ACCU and .INDEX mode changes to correctly size immediate
+        instructions based on the current processor mode.
+
         Args:
             nodes: List of AsmNode objects
 
@@ -48,8 +51,20 @@ class AddressCalculator:
         result = {}
         offset = 0
 
+        # Track current processor mode (may change via .ACCU/.INDEX directives)
+        current_m16 = self.m16
+        current_x16 = self.x16
+
         for i, node in enumerate(nodes):
-            size = self._node_size(node)
+            # Check for mode-changing directives
+            if isinstance(node, Directive):
+                name_upper = node.name.upper()
+                if name_upper == '.ACCU' and node.args:
+                    current_m16 = node.args[0] == '16'
+                elif name_upper == '.INDEX' and node.args:
+                    current_x16 = node.args[0] == '16'
+
+            size = self._node_size_with_mode(node, current_m16, current_x16)
             if size > 0:
                 result[i] = (self.base_address + offset, size)
             offset += size

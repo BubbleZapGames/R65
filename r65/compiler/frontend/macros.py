@@ -417,7 +417,10 @@ class MacroExpander:
                         stmt = func.body.statements[0]
                         if isinstance(stmt, ast.LetStmt) and stmt.initializer:
                             # Recursively expand any nested macro invocations
-                            return self._expand_expression(stmt.initializer)
+                            expanded_expr = self._expand_expression(stmt.initializer)
+                            # Override source_loc to point to invocation site
+                            self._override_source_loc(expanded_expr, source_loc)
+                            return expanded_expr
 
                 raise MacroError(
                     f"macro '{name}' did not expand to a valid expression",
@@ -613,6 +616,9 @@ class MacroExpander:
                     func = program.items[0]
                     # Recursively expand any nested macro invocations
                     expanded_stmts = self._expand_statements(func.body.statements)
+                    # Override source_loc on expanded statements to point to invocation site
+                    for stmt in expanded_stmts:
+                        self._override_source_loc(stmt, source_loc)
                     return expanded_stmts
                 return []
             except Exception as e:
@@ -1005,6 +1011,79 @@ class MacroExpander:
             result.append(curr)
 
         return ''.join(result)
+
+    def _override_source_loc(self, node: ast.ASTNode, source_loc: Optional[SourceLocation]):
+        """
+        Override source_loc on an AST node and its children to point to the macro invocation site.
+
+        This ensures expanded macro code has source_loc pointing to where the macro was called,
+        not where it was defined.
+
+        Args:
+            node: AST node to update
+            source_loc: Source location of the macro invocation
+        """
+        if source_loc is None:
+            return
+
+        # Override this node's source_loc
+        if hasattr(node, 'source_loc'):
+            node.source_loc = source_loc
+
+        # Recursively process children based on node type
+        if isinstance(node, ast.ExprStmt):
+            self._override_source_loc(node.expr, source_loc)
+        elif isinstance(node, ast.LetStmt):
+            if node.initializer:
+                self._override_source_loc(node.initializer, source_loc)
+        elif isinstance(node, ast.IfStmt):
+            if node.condition:
+                self._override_source_loc(node.condition, source_loc)
+            if node.then_block:
+                self._override_source_loc(node.then_block, source_loc)
+            if node.else_block:
+                self._override_source_loc(node.else_block, source_loc)
+        elif isinstance(node, ast.WhileStmt):
+            if node.condition:
+                self._override_source_loc(node.condition, source_loc)
+            if node.body:
+                self._override_source_loc(node.body, source_loc)
+        elif isinstance(node, ast.LoopStmt):
+            if node.body:
+                self._override_source_loc(node.body, source_loc)
+        elif isinstance(node, ast.ForStmt):
+            if node.start:
+                self._override_source_loc(node.start, source_loc)
+            if node.end:
+                self._override_source_loc(node.end, source_loc)
+            if node.body:
+                self._override_source_loc(node.body, source_loc)
+        elif isinstance(node, ast.Block):
+            for stmt in node.statements:
+                self._override_source_loc(stmt, source_loc)
+        elif isinstance(node, ast.BinaryOp):
+            self._override_source_loc(node.left, source_loc)
+            self._override_source_loc(node.right, source_loc)
+        elif isinstance(node, ast.UnaryOp):
+            self._override_source_loc(node.operand, source_loc)
+        elif isinstance(node, ast.Assignment):
+            self._override_source_loc(node.target, source_loc)
+            self._override_source_loc(node.value, source_loc)
+        elif isinstance(node, ast.CompoundAssignment):
+            self._override_source_loc(node.target, source_loc)
+            self._override_source_loc(node.value, source_loc)
+        elif isinstance(node, ast.FunctionCall):
+            if node.func:
+                self._override_source_loc(node.func, source_loc)
+            for arg in node.args:
+                self._override_source_loc(arg, source_loc)
+        elif isinstance(node, ast.ArrayIndex):
+            self._override_source_loc(node.array, source_loc)
+            self._override_source_loc(node.index, source_loc)
+        elif isinstance(node, ast.FieldAccess):
+            self._override_source_loc(node.base, source_loc)
+        elif isinstance(node, ast.Dereference):
+            self._override_source_loc(node.pointer, source_loc)
 
 
 def expand_macros(program: ast.Program) -> ast.Program:

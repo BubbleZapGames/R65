@@ -216,6 +216,10 @@ class MIRBuilder:
         Returns:
             MIRFunction with CFG
         """
+        # Reset source location to function's own location for entry code
+        # This ensures prologue instructions get the function's source_loc
+        self._current_source_loc = hir_func.source_loc
+
         # Create MIR function structure
         mir_func = MIRFunction(
             name=hir_func.name,

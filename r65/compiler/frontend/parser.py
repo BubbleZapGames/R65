@@ -1191,74 +1191,86 @@ class ASTBuilder(Transformer):
                 binding = item.value
         return ('safe_ptr', name, binding)
 
-    def expr_stmt(self, items):
+    @v_args(tree=True)
+    def expr_stmt(self, tree):
         """Expression statement."""
-        items = self._filter_tokens(items)
-        return ast.ExprStmt(expr=items[0])
+        items = self._filter_tokens(tree.children)
+        return ast.ExprStmt(expr=items[0], source_loc=self._make_source_loc(tree.meta))
 
-    def return_stmt(self, items):
+    @v_args(tree=True)
+    def return_stmt(self, tree):
         """Return statement."""
         # Filter out 'return' keyword and semicolon, keep only expressions
-        values = [item for item in items if not isinstance(item, LarkToken)]
+        values = [item for item in tree.children if not isinstance(item, LarkToken)]
         # Flatten if we have a return_tuple (list of expressions)
         if values and isinstance(values[0], list):
             values = values[0]
-        return ast.ReturnStmt(values=values)
+        return ast.ReturnStmt(values=values, source_loc=self._make_source_loc(tree.meta))
 
     def return_tuple(self, items):
         """Return tuple: (expr, expr, ...)."""
         # Filter out punctuation tokens
         return [item for item in items if not isinstance(item, LarkToken)]
 
-    def break_stmt(self, items):
+    @v_args(tree=True)
+    def break_stmt(self, tree):
         """Break statement with optional label."""
         label = None
-        for item in items:
+        for item in tree.children:
             if isinstance(item, LarkToken) and item.type == 'LABEL_REF':
                 # Strip leading quote: 'outer -> outer
                 label = item.value[1:]
-        return ast.BreakStmt(label=label)
+        return ast.BreakStmt(label=label, source_loc=self._make_source_loc(tree.meta))
 
-    def continue_stmt(self, items):
+    @v_args(tree=True)
+    def continue_stmt(self, tree):
         """Continue statement with optional label."""
         label = None
-        for item in items:
+        for item in tree.children:
             if isinstance(item, LarkToken) and item.type == 'LABEL_REF':
                 # Strip leading quote: 'outer -> outer
                 label = item.value[1:]
-        return ast.ContinueStmt(label=label)
+        return ast.ContinueStmt(label=label, source_loc=self._make_source_loc(tree.meta))
 
-    def increment_stmt(self, items):
+    @v_args(tree=True)
+    def increment_stmt(self, tree):
         """Increment statement (x++;) - desugars to x += 1;"""
-        items = self._filter_tokens(items)
+        items = self._filter_tokens(tree.children)
         lvalue = items[0]
+        source_loc = self._make_source_loc(tree.meta)
         # Desugar to compound assignment: x++ becomes x += 1
         compound_assign = ast.CompoundAssignment(
             target=lvalue,
             operator='+',
-            value=ast.IntegerLiteral(value=1)
+            value=ast.IntegerLiteral(value=1, source_loc=source_loc),
+            source_loc=source_loc
         )
-        return ast.ExprStmt(expr=compound_assign)
+        return ast.ExprStmt(expr=compound_assign, source_loc=source_loc)
 
-    def decrement_stmt(self, items):
+    @v_args(tree=True)
+    def decrement_stmt(self, tree):
         """Decrement statement (x--;) - desugars to x -= 1;"""
-        items = self._filter_tokens(items)
+        items = self._filter_tokens(tree.children)
         lvalue = items[0]
+        source_loc = self._make_source_loc(tree.meta)
         # Desugar to compound assignment: x-- becomes x -= 1
         compound_assign = ast.CompoundAssignment(
             target=lvalue,
             operator='-',
-            value=ast.IntegerLiteral(value=1)
+            value=ast.IntegerLiteral(value=1, source_loc=source_loc),
+            source_loc=source_loc
         )
-        return ast.ExprStmt(expr=compound_assign)
+        return ast.ExprStmt(expr=compound_assign, source_loc=source_loc)
 
-    def if_stmt(self, items):
+    @v_args(tree=True)
+    def if_stmt(self, tree):
         """If statement."""
-        items = self._filter_tokens(items)
+        items = self._filter_tokens(tree.children)
         condition = items[0]
         then_block = items[1]
         else_block = items[2] if len(items) > 2 else None
-        return ast.IfStmt(condition=condition, then_block=then_block, else_block=else_block)
+        return ast.IfStmt(condition=condition, then_block=then_block, else_block=else_block,
+                         source_loc=self._make_source_loc(tree.meta))
 
     def else_clause(self, items):
         """Else clause."""
@@ -1273,28 +1285,33 @@ class ASTBuilder(Transformer):
                 return item.value[1:-1]
         return None
 
-    def loop_stmt(self, items):
+    @v_args(tree=True)
+    def loop_stmt(self, tree):
         """Loop statement with optional label."""
-        label = self._extract_label(items)
-        items = self._filter_tokens(items)
-        return ast.LoopStmt(body=items[0], label=label)
+        label = self._extract_label(tree.children)
+        items = self._filter_tokens(tree.children)
+        return ast.LoopStmt(body=items[0], label=label,
+                           source_loc=self._make_source_loc(tree.meta))
 
-    def while_stmt(self, items):
+    @v_args(tree=True)
+    def while_stmt(self, tree):
         """While statement with optional label."""
-        label = self._extract_label(items)
-        items = self._filter_tokens(items)
+        label = self._extract_label(tree.children)
+        items = self._filter_tokens(tree.children)
         condition = items[0]
         body = items[1]
-        return ast.WhileStmt(condition=condition, body=body, label=label)
+        return ast.WhileStmt(condition=condition, body=body, label=label,
+                            source_loc=self._make_source_loc(tree.meta))
 
-    def for_stmt(self, items):
+    @v_args(tree=True)
+    def for_stmt(self, tree):
         """For loop statement: for i in start..end { body }"""
-        label = self._extract_label(items)
+        label = self._extract_label(tree.children)
         variable = None
         exprs = []
         body = None
 
-        for item in items:
+        for item in tree.children:
             if isinstance(item, LarkToken) and item.type == 'IDENT':
                 variable = item.value
             elif isinstance(item, ast.Block):
@@ -1310,15 +1327,17 @@ class ASTBuilder(Transformer):
             start=exprs[0],
             end=exprs[1],
             body=body,
-            label=label
+            label=label,
+            source_loc=self._make_source_loc(tree.meta)
         )
 
-    def asm_stmt(self, items):
+    @v_args(tree=True)
+    def asm_stmt(self, tree):
         """Inline assembly statement."""
         # Keep only STRING tokens
-        items = self._filter_tokens(items, keep_types={'STRING'})
+        items = self._filter_tokens(tree.children, keep_types={'STRING'})
         instructions = [item.value.strip('"') for item in items]
-        return ast.AsmStmt(instructions=instructions)
+        return ast.AsmStmt(instructions=instructions, source_loc=self._make_source_loc(tree.meta))
 
     # ========================================================================
     # Expressions
@@ -1669,15 +1688,17 @@ class ASTBuilder(Transformer):
 
         return ast.MultiAssignment(targets=targets, value=value)
 
-    def multi_assign_stmt(self, items):
+    @v_args(tree=True)
+    def multi_assign_stmt(self, tree):
         """Multi-assignment statement: (a, b) = tuple_expr;"""
-        items = self._filter_tokens(items)
+        items = self._filter_tokens(tree.children)
         # All items except the last are targets, the last is the expression
         targets = list(items[:-1])
         value = items[-1]
+        source_loc = self._make_source_loc(tree.meta)
 
-        multi_assign = ast.MultiAssignment(targets=targets, value=value)
-        return ast.ExprStmt(expr=multi_assign)
+        multi_assign = ast.MultiAssignment(targets=targets, value=value, source_loc=source_loc)
+        return ast.ExprStmt(expr=multi_assign, source_loc=source_loc)
 
     def multi_assign_ident(self, items):
         """Multi-assignment target identifier."""
@@ -1733,14 +1754,16 @@ class ASTBuilder(Transformer):
         items = self._filter_tokens(items)
         return ast.Dereference(pointer=items[0])
 
-    def tuple_assign_stmt(self, items):
+    @v_args(tree=True)
+    def tuple_assign_stmt(self, tree):
         """Tuple assignment statement: (a, b) = expr; or (a) = expr;"""
-        items = self._filter_tokens(items)
+        items = self._filter_tokens(tree.children)
         # All items except the last are targets, the last is the value
         targets = list(items[:-1])
         value = items[-1]
-        multi_assign = ast.MultiAssignment(targets=targets, value=value)
-        return ast.ExprStmt(expr=multi_assign)
+        source_loc = self._make_source_loc(tree.meta)
+        multi_assign = ast.MultiAssignment(targets=targets, value=value, source_loc=source_loc)
+        return ast.ExprStmt(expr=multi_assign, source_loc=source_loc)
 
     def tuple_target_ident(self, items):
         """Tuple assignment target - identifier."""
