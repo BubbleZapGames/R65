@@ -263,15 +263,36 @@ class MIRBuilder:
         # Track stack parameters for offset calculation
         stack_params = []
 
+        # Count how many times each register-aliased parameter is used.
+        # If the parameter is used at all, save it to a vreg at entry because
+        # intermediate code (local variable initializers, etc.) may clobber A
+        # before the parameter is used.
+        param_usage_counts = self._count_param_usages(hir_func)
+
         for idx, param in enumerate(hir_func.parameters):
             if isinstance(param.binding, RegisterBinding):
-                # Register-aliased parameter: add to alias tracker
                 hw_reg = HardwareRegister(param.binding.register_name)
-                self.current_function.alias_tracker.add_alias(
-                    param.symbol,
-                    hw_reg,
-                    param.symbol.scope_id
-                )
+                param_uses = param_usage_counts.get(id(param.symbol), 0)
+
+                if param_uses >= 1:
+                    # Parameter is used - MUST save to vreg at entry
+                    # Because any intermediate instruction could clobber A
+                    # (local variable initializers, expression evaluation, etc.)
+                    vreg = self.current_function.vreg_allocator.alloc(
+                        param.param_type,
+                        f"saved_{param.name}"
+                    )
+                    self.symbol_to_vreg[id(param.symbol)] = vreg
+                    # Emit move from hardware register to vreg
+                    self.emit(Move(dest=vreg, source=hw_reg, type_info=param.param_type))
+                else:
+                    # Parameter not used - just track as hw register alias
+                    # (might be a side-effect function that just uses A directly)
+                    self.current_function.alias_tracker.add_alias(
+                        param.symbol,
+                        hw_reg,
+                        param.symbol.scope_id
+                    )
             elif isinstance(param.binding, VariableBinding):
                 # Variable-bound parameter: treat it as an alias to the bound variable
                 # When the parameter is referenced in the function, it should load from the bound variable
@@ -528,9 +549,15 @@ class MIRBuilder:
                     ))
                 else:
                     # Allocate virtual register (will map to scratch later)
-                    if isinstance(init_value, (VirtualRegister, HardwareRegister)):
+                    if isinstance(init_value, VirtualRegister):
                         # Reuse the virtual register from initializer
                         self.symbol_to_vreg[id(stmt.symbol)] = init_value
+                    elif isinstance(init_value, HardwareRegister):
+                        # MUST copy from hardware register - it can be clobbered later!
+                        # Cannot just alias the symbol to the hw register.
+                        vreg = self.current_function.vreg_allocator.alloc(stmt.var_type, stmt.name)
+                        self.symbol_to_vreg[id(stmt.symbol)] = vreg
+                        self.emit(Move(dest=vreg, source=init_value, type_info=stmt.var_type))
                     else:
                         # Allocate new virtual register for immediate
                         vreg = self.current_function.vreg_allocator.alloc(stmt.var_type, stmt.name)
@@ -1100,6 +1127,99 @@ class MIRBuilder:
                 symbol=symbol,
                 is_volatile=base_memloc.is_volatile
             )
+
+    def _count_param_usages(self, hir_func: HIRFunctionDecl) -> Dict[int, int]:
+        """
+        Count how many times each parameter symbol is used in the function body.
+
+        This is needed to determine if register-aliased parameters need to be
+        saved to a vreg at function entry (if used more than once).
+
+        Args:
+            hir_func: HIR function declaration
+
+        Returns:
+            Dict mapping symbol id to usage count
+        """
+        counts: Dict[int, int] = {}
+
+        # Build set of parameter symbol ids
+        param_ids = set()
+        for param in hir_func.parameters:
+            if isinstance(param.binding, RegisterBinding):
+                param_ids.add(id(param.symbol))
+
+        if not param_ids:
+            return counts
+
+        def count_in_expr(expr):
+            """Recursively count parameter uses in an expression."""
+            if expr is None:
+                return
+
+            if isinstance(expr, HIRIdentifier):
+                sym_id = id(expr.symbol)
+                if sym_id in param_ids:
+                    counts[sym_id] = counts.get(sym_id, 0) + 1
+            elif isinstance(expr, HIRBinaryOp):
+                count_in_expr(expr.left)
+                count_in_expr(expr.right)
+            elif isinstance(expr, HIRUnaryOp):
+                count_in_expr(expr.operand)
+            elif isinstance(expr, HIRTypeCast):
+                count_in_expr(expr.expr)
+            elif isinstance(expr, HIRAssignment):
+                count_in_expr(expr.value)
+                # Don't count target - writing to param doesn't need reading it
+            elif isinstance(expr, HIRFunctionCall):
+                for arg in expr.args:
+                    count_in_expr(arg)
+            elif isinstance(expr, HIRMethodCall):
+                count_in_expr(expr.receiver)
+                for arg in expr.args:
+                    count_in_expr(arg)
+            elif isinstance(expr, HIRArrayIndex):
+                count_in_expr(expr.array)
+                count_in_expr(expr.index)
+            elif isinstance(expr, HIRFieldAccess):
+                count_in_expr(expr.base)
+            elif isinstance(expr, HIRDereference):
+                count_in_expr(expr.operand)
+            elif isinstance(expr, HIRAddressOf):
+                count_in_expr(expr.operand)
+
+        def count_in_stmt(stmt):
+            """Recursively count parameter uses in a statement."""
+            if stmt is None:
+                return
+
+            if isinstance(stmt, HIRLetStmt):
+                count_in_expr(stmt.initializer)
+            elif isinstance(stmt, HIRExprStmt):
+                count_in_expr(stmt.expr)
+            elif isinstance(stmt, HIRReturnStmt):
+                for val in stmt.values:
+                    count_in_expr(val)
+            elif isinstance(stmt, HIRIfStmt):
+                count_in_expr(stmt.condition)
+                count_in_block(stmt.then_block)
+                if stmt.else_block:
+                    count_in_block(stmt.else_block)
+            elif isinstance(stmt, HIRWhileStmt):
+                count_in_expr(stmt.condition)
+                count_in_block(stmt.body)
+
+        def count_in_block(block):
+            """Count parameter uses in a block."""
+            if block is None:
+                return
+            for stmt in block.statements:
+                count_in_stmt(stmt)
+
+        # Count in function body
+        count_in_block(hir_func.body)
+
+        return counts
 
     def _block_has_terminator(self) -> bool:
         """
