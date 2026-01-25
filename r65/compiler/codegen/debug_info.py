@@ -7,6 +7,7 @@ scopes during code generation for output in cc65-compatible .dbg format.
 
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, TYPE_CHECKING
+import os
 
 if TYPE_CHECKING:
     from r65.compiler.errors import SourceLocation
@@ -100,12 +101,19 @@ class DebugInfoCollector:
         """
         Get existing file entry or create new one.
 
+        Normalizes paths to absolute paths for consistent source file lookup.
+        Special paths (like macro expansions) are preserved as-is.
+
         Args:
             path: Source file path
 
         Returns:
             DbgFile entry for this path
         """
+        # Normalize to absolute path unless it's a special path (e.g., <macro:...>)
+        if not path.startswith('<'):
+            path = os.path.abspath(path)
+
         if path not in self.files:
             self.files[path] = DbgFile(self._next_file_id, path)
             self._next_file_id += 1
