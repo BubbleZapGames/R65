@@ -20,12 +20,12 @@ class Cc65DebugWriter:
     Format:
         version major=2,minor=0
         info csym=0,file=N,...
-        fil id=0,name="file.r65"
+        file id=0,name="file.r65",size=0,mtime=0
         seg id=0,name="CODE",start=0x8000,...
-        lin id=0,file=0,line=10,type=0,span=0
-        spa id=0,seg=0,start=0,size=3
-        sym id=0,name="main",val=0x8000,seg=0,type=lab
-        sco id=0,name="main",type=scope,size=16,span=0+1+2
+        line id=0,file=0,line=10,type=0,span=0
+        span id=0,seg=0,start=0,size=3
+        sym id=0,name="main",addrsize=absolute,val=0x8000,seg=0,type=lab
+        scope id=0,name="main",type=scope,size=16,span=0+1+2
     """
 
     VERSION_MAJOR = 2
@@ -91,7 +91,7 @@ class Cc65DebugWriter:
         for dbg_file in sorted(self.info.files.values(), key=lambda x: x.id):
             # Escape backslashes and quotes in filename
             escaped_name = dbg_file.name.replace('\\', '/').replace('"', '\\"')
-            f.write(f"fil\tid={dbg_file.id},name=\"{escaped_name}\"\n")
+            f.write(f"file\tid={dbg_file.id},name=\"{escaped_name}\",size=0,mtime=0\n")
 
     def _write_segments(self, f: TextIO):
         """Write segment records."""
@@ -109,14 +109,14 @@ class Cc65DebugWriter:
 
     def _write_lines(self, f: TextIO):
         """Write line records."""
-        for line in self.info.lines:
-            spans = "+".join(str(s) for s in line.span_ids) if line.span_ids else "0"
+        for line_entry in self.info.lines:
+            spans = "+".join(str(s) for s in line_entry.span_ids) if line_entry.span_ids else "0"
             f.write(
-                f"lin\t"
-                f"id={line.id},"
-                f"file={line.file_id},"
-                f"line={line.line},"
-                f"type={line.line_type},"
+                f"line\t"
+                f"id={line_entry.id},"
+                f"file={line_entry.file_id},"
+                f"line={line_entry.line},"
+                f"type={line_entry.line_type},"
                 f"span={spans}\n"
             )
 
@@ -124,7 +124,7 @@ class Cc65DebugWriter:
         """Write span records."""
         for span in self.info.spans:
             f.write(
-                f"spa\t"
+                f"span\t"
                 f"id={span.id},"
                 f"seg={span.seg_id},"
                 f"start={span.start},"
@@ -135,6 +135,7 @@ class Cc65DebugWriter:
         """Write symbol records."""
         for sym in self.info.symbols:
             parts = [f"id={sym.id}", f"name=\"{sym.name}\""]
+            parts.append("addrsize=absolute")
             parts.append(f"val=0x{sym.value:06X}")
             if sym.seg_id is not None:
                 parts.append(f"seg={sym.seg_id}")
@@ -158,4 +159,4 @@ class Cc65DebugWriter:
             if scope.span_ids:
                 spans = "+".join(str(s) for s in scope.span_ids)
                 parts.append(f"span={spans}")
-            f.write(f"sco\t{','.join(parts)}\n")
+            f.write(f"scope\t{','.join(parts)}\n")
