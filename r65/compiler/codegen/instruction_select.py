@@ -203,6 +203,35 @@ class InstructionSelector:
             self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "16-bit A")
             self.emitter.emit_accu_mode(16)
 
+    def _has_16bit_binding(self, register_name: str) -> bool:
+        """
+        Check if a hardware register has a 16-bit alias binding.
+
+        This is used to determine if operations on a register should be
+        done in 16-bit mode, even when the MIR instruction type says u8.
+
+        Example: After `let w @ A : u16 = 1000`, operations on A should
+        use 16-bit mode because A is bound to a u16 alias.
+
+        Args:
+            register_name: Hardware register name ('A', 'X', 'Y', etc.)
+
+        Returns:
+            True if register has an active u16/i16 binding
+        """
+        if not self.current_function:
+            return False
+
+        alias_tracker = getattr(self.current_function, 'alias_tracker', None)
+        if not alias_tracker:
+            return False
+
+        binding_type = alias_tracker.get_register_binding_type(register_name)
+        if binding_type and hasattr(binding_type, 'name'):
+            return binding_type.name in ('u16', 'i16')
+
+        return False
+
     # ========================================================================
     # Opcode Selection Helpers
     # ========================================================================
@@ -698,12 +727,23 @@ class InstructionSelector:
             (dest_loc.kind == LocationKind.HARDWARE and dest_loc.hw_register in ('X', 'Y'))
         )
 
+        # Check if we should use 16-bit mode because A is already in 16-bit mode
+        # and the left operand is in A. This preserves 16-bit values that were
+        # loaded by previous operations (e.g., after `let w @ A : u16 = 1000`).
+        # Only apply this when left operand is specifically in A, not when loading
+        # a new value from memory.
+        a_already_in_16bit = (
+            left_loc.kind == LocationKind.HARDWARE and
+            left_loc.hw_register == 'A' and
+            self.emitter.get_accu_mode() == 16
+        )
+
         # Determine if we need 16-bit mode
         # Use 16-bit mode for ALL 16-bit operations, including memory-to-memory.
         # In 16-bit mode, LDA/STA/ADC etc. automatically handle both bytes.
         # This is more efficient than byte-by-byte operations in 8-bit mode.
         needs_16bit_mode = (
-            (is_u16 or has_large_immediate or involves_index_register) and
+            (is_u16 or has_large_immediate or involves_index_register or a_already_in_16bit) and
             op in ('+', '-', '&', '|', '^', '<<', '>>')
         )
 

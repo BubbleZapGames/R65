@@ -187,16 +187,17 @@ class ProgramCodeGenerator:
             optimized_nodes = nodes
 
         # Apply node-based long branch fixup (always required for correct assembly)
-        fixed_nodes, num_branch_fixups = fixup_nodes(optimized_nodes)
+        # Code generator emits BRA by default; fixup converts to JMP when target > 127 bytes
+        final_nodes, num_branch_fixups = fixup_nodes(optimized_nodes)
 
         if num_branch_fixups > 0:
             print(f"Branch fixup: {num_branch_fixups} long branch(es) fixed")
 
         # Validate bank sizes
-        self._validate_bank_sizes(fixed_nodes, mir_program)
+        self._validate_bank_sizes(final_nodes, mir_program)
 
         # Convert nodes to assembly string
-        assembly = emit_nodes(fixed_nodes)
+        assembly = emit_nodes(final_nodes)
 
         # Write to file if specified
         if output_file:
@@ -205,7 +206,7 @@ class ProgramCodeGenerator:
 
         # Generate debug file if requested
         if debug and output_file:
-            self._generate_debug_file(mir_program, fixed_nodes, output_file)
+            self._generate_debug_file(mir_program, final_nodes, output_file)
 
         return assembly
 

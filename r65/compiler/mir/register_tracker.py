@@ -14,14 +14,16 @@ class RegisterAlias:
     """
     Represents a register alias binding.
 
-    Example: `let x @ A = value`
+    Example: `let x @ A : u16 = value`
     - symbol: HIR Symbol for 'x'
     - hardware_reg: HardwareRegister('A')
     - scope_id: Lexical scope where alias is valid
+    - binding_type: Type of the binding (e.g., u16)
     """
     symbol: Any  # HIR Symbol
     hardware_reg: HardwareRegister
     scope_id: int
+    binding_type: Optional[Any] = None  # TypeInfo for the binding
 
 
 class RegisterAliasTracker:
@@ -40,7 +42,8 @@ class RegisterAliasTracker:
         # Maps id(Symbol) → RegisterAlias (use id() since Symbol is not hashable)
         self.aliases: Dict[int, RegisterAlias] = {}
 
-    def add_alias(self, symbol: Any, hw_reg: HardwareRegister, scope_id: int):
+    def add_alias(self, symbol: Any, hw_reg: HardwareRegister, scope_id: int,
+                  binding_type: Optional[Any] = None):
         """
         Register a new alias binding.
 
@@ -48,11 +51,13 @@ class RegisterAliasTracker:
             symbol: HIR Symbol being aliased
             hw_reg: Hardware register (A, X, Y, etc.)
             scope_id: Lexical scope ID
+            binding_type: Type of the binding (e.g., u16 TypeInfo)
         """
         self.aliases[id(symbol)] = RegisterAlias(
             symbol=symbol,
             hardware_reg=hw_reg,
-            scope_id=scope_id
+            scope_id=scope_id,
+            binding_type=binding_type
         )
 
     def get_alias(self, symbol: Any) -> Optional[HardwareRegister]:
@@ -94,3 +99,21 @@ class RegisterAliasTracker:
     def clear(self):
         """Clear all aliases (for new function)."""
         self.aliases.clear()
+
+    def get_register_binding_type(self, register_name: str) -> Optional[Any]:
+        """
+        Get the binding type for a hardware register.
+
+        Searches all active aliases to find one bound to the specified register.
+        Returns the binding type if found (e.g., u16 for `let w @ A : u16`).
+
+        Args:
+            register_name: Hardware register name ('A', 'X', 'Y', etc.)
+
+        Returns:
+            TypeInfo if register has a typed binding, None otherwise
+        """
+        for alias in self.aliases.values():
+            if alias.hardware_reg.name == register_name:
+                return alias.binding_type
+        return None

@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Union
 from r65.compiler.hir import (
     HIRAssignment, HIRMultiAssignment, HIRBinaryOp, HIRRegister, HIRIdentifier,
     HIRFieldAccess, HIRArrayIndex, HIRDereference, HIRStatusFlagAccess, HIRBooleanLiteral,
+    HIRTypeCast,
 )
 from r65.compiler.hir.types import TupleTypeInfo
 from r65.compiler.mir.nodes import (
@@ -76,8 +77,12 @@ class AssignmentLowerer:
         if isinstance(expr.value, HIRBinaryOp) and isinstance(expr.target, HIRRegister):
             binary_op = expr.value
             # Check if it's target = target op value
-            if (isinstance(binary_op.left, HIRRegister) and
-                binary_op.left.name == expr.target.name):
+            # The left operand may be wrapped in HIRTypeCast for mode promotion
+            left_op = binary_op.left
+            if isinstance(left_op, HIRTypeCast):
+                left_op = left_op.expr  # Unwrap the cast
+            if (isinstance(left_op, HIRRegister) and
+                left_op.name == expr.target.name):
                 # Direct hardware register op: A = A + TEMP becomes BinaryOp(dest=A, left=A, right=memloc)
                 hw_reg = HardwareRegister(expr.target.name)
 

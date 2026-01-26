@@ -334,6 +334,18 @@ class ExpressionLowerer:
 
         # Widening (8-bit → 16-bit)
         if source_size == 1 and target_size == 2:
+            # OPTIMIZATION: If source is a hardware register with a u16 alias binding,
+            # the value is already 16-bit at runtime. Return the register directly
+            # to avoid unnecessary spilling to scratch registers.
+            if isinstance(source_operand, HardwareRegister):
+                alias_tracker = getattr(self.ctx.current_function, 'alias_tracker', None)
+                if alias_tracker:
+                    binding_type = alias_tracker.get_register_binding_type(source_operand.name)
+                    if binding_type and hasattr(binding_type, 'name'):
+                        if binding_type.name in ('u16', 'i16'):
+                            # Register already holds 16-bit value, use it directly
+                            return source_operand
+
             self.emit(TypeConvert(
                 dest=result,
                 source=source_operand,

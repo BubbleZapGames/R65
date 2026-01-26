@@ -48,9 +48,13 @@ MAX_BRANCH_DISTANCE = 127
 # Size of short branch instruction (e.g., BEQ rel8)
 SHORT_BRANCH_SIZE = 2
 
-# Size of long branch replacement (inverted branch + JMP + label)
+# Size of long conditional branch replacement (inverted branch + JMP + label)
 # BNE skip (2) + JMP target (3) + skip: (0) = 5 bytes
-LONG_BRANCH_SIZE = 5
+LONG_CONDITIONAL_BRANCH_SIZE = 5
+
+# Size of long unconditional branch replacement (just JMP)
+# BRA → JMP = 3 bytes (was 2)
+LONG_UNCONDITIONAL_BRANCH_SIZE = 3
 
 # Conditional branches that can be inverted for long branch fixup
 CONDITIONAL_BRANCH_OPCODES: Set[Opcode] = {
@@ -59,6 +63,9 @@ CONDITIONAL_BRANCH_OPCODES: Set[Opcode] = {
     Opcode.BMI, Opcode.BPL,
     Opcode.BVC, Opcode.BVS,
 }
+
+# All branch opcodes that have limited range (need fixup if too far)
+ALL_BRANCH_OPCODES: Set[Opcode] = CONDITIONAL_BRANCH_OPCODES | {Opcode.BRA}
 
 
 # ============================================================================
@@ -131,7 +138,7 @@ class BranchFixup:
             if isinstance(node, Label):
                 label_indices[node.name] = i
             elif isinstance(node, Instruction):
-                if node.opcode in CONDITIONAL_BRANCH_OPCODES:
+                if node.opcode in ALL_BRANCH_OPCODES:
                     target = self._get_branch_target(node)
                     if target:
                         branches.append(BranchInfo(
@@ -195,14 +202,16 @@ class BranchFixup:
         """
         Calculate byte offset for each node position.
 
-        Accounts for branch instructions that are marked as long (5 bytes)
-        vs short (2 bytes).
+        Accounts for branch instructions that are marked as long:
+        - Conditional branches: 5 bytes (inverted branch + JMP + label)
+        - BRA: 3 bytes (just JMP)
+        - Short branches: 2 bytes
 
         Returns:
             List where offsets[i] is byte offset at start of nodes[i]
         """
-        # Build set of long branch indices for O(1) lookup
-        long_branch_indices = {b.index for b in branches if b.is_long}
+        # Build map of long branch indices to their info for O(1) lookup
+        long_branch_map = {b.index: b for b in branches if b.is_long}
 
         offsets: List[int] = []
         current_offset = 0
@@ -213,9 +222,15 @@ class BranchFixup:
             offsets.append(current_offset)
 
             if isinstance(node, Instruction):
-                if i in long_branch_indices:
+                if i in long_branch_map:
                     # This branch will be expanded to long form
-                    current_offset += LONG_BRANCH_SIZE
+                    branch_info = long_branch_map[i]
+                    if branch_info.opcode == Opcode.BRA:
+                        # BRA → JMP is just 3 bytes
+                        current_offset += LONG_UNCONDITIONAL_BRANCH_SIZE
+                    else:
+                        # Conditional branch → inverted + JMP + label is 5 bytes
+                        current_offset += LONG_CONDITIONAL_BRANCH_SIZE
                 else:
                     current_offset += instruction_size(node.opcode, acc_16, idx_16)
             elif isinstance(node, Directive):
@@ -298,16 +313,25 @@ class BranchFixup:
         info: BranchInfo
     ) -> List[AsmNode]:
         """
-        Expand a long branch using the inverted pattern.
+        Expand a long branch to reach far targets.
 
-        Original:
-            BEQ far_target
+        For BRA (unconditional):
+            BRA far_target  →  JMP far_target
 
-        Expanded:
-            BNE __skip_N       ; Inverted, jumps over the JMP
-            JMP far_target     ; Unconditional jump to original target
-            __skip_N:          ; Continue here if condition was false
+        For conditional branches (BEQ, BNE, etc.):
+            BEQ far_target  →  BNE __skip_N       ; Inverted, jumps over the JMP
+                               JMP far_target     ; Unconditional jump to original target
+                               __skip_N:          ; Continue here if condition was false
         """
+        # Handle BRA specially - just convert to JMP
+        if branch.opcode == Opcode.BRA:
+            return [Instruction(
+                opcode=Opcode.JMP_ABSOLUTE,
+                operand=branch.operand,
+                comment=branch.comment
+            )]
+
+        # For conditional branches, use the inverted pattern
         # Generate unique skip label
         skip_label = f"__skip_{self._skip_label_counter}"
         self._skip_label_counter += 1

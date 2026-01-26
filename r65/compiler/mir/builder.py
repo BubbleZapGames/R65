@@ -298,7 +298,8 @@ class MIRBuilder:
                     self.current_function.alias_tracker.add_alias(
                         param.symbol,
                         hw_reg,
-                        param.symbol.scope_id
+                        param.symbol.scope_id,
+                        binding_type=param.param_type  # Track type for mode optimization
                     )
             elif isinstance(param.binding, VariableBinding):
                 # Variable-bound parameter: treat it as an alias to the bound variable
@@ -517,12 +518,13 @@ class MIRBuilder:
             stmt: HIR let statement
         """
         if isinstance(stmt.binding, RegisterLetBinding):
-            # Register alias: track in alias tracker
+            # Register alias: track in alias tracker with binding type
             hw_reg = HardwareRegister(stmt.binding.register_name)
             self.current_function.alias_tracker.add_alias(
                 stmt.symbol,
                 hw_reg,
-                stmt.symbol.scope_id
+                stmt.symbol.scope_id,
+                binding_type=stmt.var_type  # Track the type for mode optimization
             )
 
             # If there's an initializer, load it into hardware register

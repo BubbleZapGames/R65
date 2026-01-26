@@ -43,7 +43,7 @@ class ControlFlowInstructionSelector(BaseSelector):
         Args:
             instr: Jump instruction
         """
-        self._emit_jump(Opcode.JMP_ABSOLUTE, self._block_label(instr.target))
+        self._emit_jump(Opcode.BRA, self._block_label(instr.target))
 
     def select_jump_table(self, instr: JumpTable):
         """
@@ -79,13 +79,13 @@ class ControlFlowInstructionSelector(BaseSelector):
         # Generate comparison chain with optimized jump targets
         for i, target_block in enumerate(instr.targets):
             if i == table_size - 1:
-                self._emit_jump(Opcode.JMP_ABSOLUTE, self._block_label(target_block))
+                self._emit_jump(Opcode.BRA, self._block_label(target_block))
             else:
                 self._emit_immediate(Opcode.CMP_IMMEDIATE, i)
                 self._emit_branch(Opcode.BEQ, self._block_label(target_block))
 
         # Fallback
-        self._emit_jump(Opcode.JMP_ABSOLUTE, self._block_label(instr.default_target))
+        self._emit_jump(Opcode.BRA, self._block_label(instr.default_target))
 
     # ========================================================================
     # Conditional Branch
@@ -126,55 +126,55 @@ class ControlFlowInstructionSelector(BaseSelector):
         # Handle BIT-based comparisons
         if comparison == 'bit7_set':
             self._emit_branch(Opcode.BMI, true_target, "Branch if bit 7 set")
-            self._emit_jump(Opcode.JMP_ABSOLUTE, false_target)
+            self._emit_jump(Opcode.BRA, false_target)
         elif comparison == 'bit7_clear':
             self._emit_branch(Opcode.BPL, true_target, "Branch if bit 7 clear")
-            self._emit_jump(Opcode.JMP_ABSOLUTE, false_target)
+            self._emit_jump(Opcode.BRA, false_target)
         elif comparison == 'bit6_set':
             self._emit_branch(Opcode.BVS, true_target, "Branch if bit 6 set")
-            self._emit_jump(Opcode.JMP_ABSOLUTE, false_target)
+            self._emit_jump(Opcode.BRA, false_target)
         elif comparison == 'bit6_clear':
             self._emit_branch(Opcode.BVC, true_target, "Branch if bit 6 clear")
-            self._emit_jump(Opcode.JMP_ABSOLUTE, false_target)
+            self._emit_jump(Opcode.BRA, false_target)
         # Handle STATUS flag comparisons (branchable flags)
         elif comparison == 'status_carry_set':
             self._emit_branch(Opcode.BCS, true_target, "Branch if Carry set")
-            self._emit_jump(Opcode.JMP_ABSOLUTE, false_target)
+            self._emit_jump(Opcode.BRA, false_target)
         elif comparison == 'status_carry_clear':
             self._emit_branch(Opcode.BCC, true_target, "Branch if Carry clear")
-            self._emit_jump(Opcode.JMP_ABSOLUTE, false_target)
+            self._emit_jump(Opcode.BRA, false_target)
         elif comparison == 'status_zero_set':
             self._emit_branch(Opcode.BEQ, true_target, "Branch if Zero set")
-            self._emit_jump(Opcode.JMP_ABSOLUTE, false_target)
+            self._emit_jump(Opcode.BRA, false_target)
         elif comparison == 'status_zero_clear':
             self._emit_branch(Opcode.BNE, true_target, "Branch if Zero clear")
-            self._emit_jump(Opcode.JMP_ABSOLUTE, false_target)
+            self._emit_jump(Opcode.BRA, false_target)
         elif comparison == 'status_overflow_set':
             self._emit_branch(Opcode.BVS, true_target, "Branch if Overflow set")
-            self._emit_jump(Opcode.JMP_ABSOLUTE, false_target)
+            self._emit_jump(Opcode.BRA, false_target)
         elif comparison == 'status_overflow_clear':
             self._emit_branch(Opcode.BVC, true_target, "Branch if Overflow clear")
-            self._emit_jump(Opcode.JMP_ABSOLUTE, false_target)
+            self._emit_jump(Opcode.BRA, false_target)
         elif comparison == 'status_negative_set':
             self._emit_branch(Opcode.BMI, true_target, "Branch if Negative set")
-            self._emit_jump(Opcode.JMP_ABSOLUTE, false_target)
+            self._emit_jump(Opcode.BRA, false_target)
         elif comparison == 'status_negative_clear':
             self._emit_branch(Opcode.BPL, true_target, "Branch if Negative clear")
-            self._emit_jump(Opcode.JMP_ABSOLUTE, false_target)
+            self._emit_jump(Opcode.BRA, false_target)
         # Handle STATUS flag comparisons (non-branchable flags after PHP; PLA; AND #mask)
         elif comparison == 'status_nonbranch_set':
             self._emit_branch(Opcode.BNE, true_target, "Branch if flag set (AND result != 0)")
-            self._emit_jump(Opcode.JMP_ABSOLUTE, false_target)
+            self._emit_jump(Opcode.BRA, false_target)
         elif comparison == 'status_nonbranch_clear':
             self._emit_branch(Opcode.BEQ, true_target, "Branch if flag clear (AND result == 0)")
-            self._emit_jump(Opcode.JMP_ABSOLUTE, false_target)
+            self._emit_jump(Opcode.BRA, false_target)
         # Handle comparison operators
         elif comparison == '==':
             self._emit_branch(Opcode.BEQ, true_target, "Branch if equal")
-            self._emit_jump(Opcode.JMP_ABSOLUTE, false_target)
+            self._emit_jump(Opcode.BRA, false_target)
         elif comparison == '!=':
             self._emit_branch(Opcode.BNE, true_target, "Branch if not equal")
-            self._emit_jump(Opcode.JMP_ABSOLUTE, false_target)
+            self._emit_jump(Opcode.BRA, false_target)
         elif comparison == '<':
             self._emit_less_than_branch(true_target, false_target, is_signed)
         elif comparison == '>=':
@@ -196,11 +196,11 @@ class ControlFlowInstructionSelector(BaseSelector):
             self._emit_immediate(Opcode.EOR_IMMEDIATE, 0x80, "Flip sign bit if overflow")
             self.emitter.emit_label(label)
             self._emit_branch(Opcode.BMI, true_target, "Branch if less than (signed)")
-            self._emit_jump(Opcode.JMP_ABSOLUTE, false_target)
+            self._emit_jump(Opcode.BRA, false_target)
         else:
             # Unsigned less than: C flag clear
             self._emit_branch(Opcode.BCC, true_target, "Branch if less than (unsigned)")
-            self._emit_jump(Opcode.JMP_ABSOLUTE, false_target)
+            self._emit_jump(Opcode.BRA, false_target)
 
     def _emit_greater_equal_branch(self, true_target: str, false_target: str, is_signed: bool):
         """Emit branch for >= comparison."""
@@ -211,11 +211,11 @@ class ControlFlowInstructionSelector(BaseSelector):
             self._emit_immediate(Opcode.EOR_IMMEDIATE, 0x80, "Flip sign bit if overflow")
             self.emitter.emit_label(label)
             self._emit_branch(Opcode.BPL, true_target, "Branch if >= (signed)")
-            self._emit_jump(Opcode.JMP_ABSOLUTE, false_target)
+            self._emit_jump(Opcode.BRA, false_target)
         else:
             # Unsigned >=: C flag set
             self._emit_branch(Opcode.BCS, true_target, "Branch if >= (unsigned)")
-            self._emit_jump(Opcode.JMP_ABSOLUTE, false_target)
+            self._emit_jump(Opcode.BRA, false_target)
 
     def _emit_greater_than_branch(self, true_target: str, false_target: str, is_signed: bool):
         """Emit branch for > comparison."""
@@ -227,12 +227,12 @@ class ControlFlowInstructionSelector(BaseSelector):
             self._emit_immediate(Opcode.EOR_IMMEDIATE, 0x80, "Flip sign bit if overflow")
             self.emitter.emit_label(label)
             self._emit_branch(Opcode.BPL, true_target, "Branch if > (signed)")
-            self._emit_jump(Opcode.JMP_ABSOLUTE, false_target)
+            self._emit_jump(Opcode.BRA, false_target)
         else:
             # Unsigned >: (C set) AND (Z clear)
             self._emit_branch(Opcode.BEQ, false_target, "Skip if equal")
             self._emit_branch(Opcode.BCS, true_target, "Branch if > (unsigned)")
-            self._emit_jump(Opcode.JMP_ABSOLUTE, false_target)
+            self._emit_jump(Opcode.BRA, false_target)
 
     def _emit_less_equal_branch(self, true_target: str, false_target: str, is_signed: bool):
         """Emit branch for <= comparison."""
@@ -244,12 +244,12 @@ class ControlFlowInstructionSelector(BaseSelector):
             self._emit_immediate(Opcode.EOR_IMMEDIATE, 0x80, "Flip sign bit if overflow")
             self.emitter.emit_label(label)
             self._emit_branch(Opcode.BMI, true_target, "Branch if <= (signed)")
-            self._emit_jump(Opcode.JMP_ABSOLUTE, false_target)
+            self._emit_jump(Opcode.BRA, false_target)
         else:
             # Unsigned <=: (C clear) OR (Z set)
             self._emit_branch(Opcode.BEQ, true_target, "Branch if equal")
             self._emit_branch(Opcode.BCC, true_target, "Branch if less than")
-            self._emit_jump(Opcode.JMP_ABSOLUTE, false_target)
+            self._emit_jump(Opcode.BRA, false_target)
 
     def _emit_value_based_branch(self, instr: CondBranch):
         """Emit branch based on condition value (zero/non-zero)."""
@@ -266,14 +266,14 @@ class ControlFlowInstructionSelector(BaseSelector):
 
         if instr.comparison == '!=':
             self._emit_branch(Opcode.BEQ, false_target, "Branch if zero")
-            self._emit_jump(Opcode.JMP_ABSOLUTE, true_target)
+            self._emit_jump(Opcode.BRA, true_target)
         elif instr.comparison == '==':
             self._emit_branch(Opcode.BNE, false_target, "Branch if non-zero")
-            self._emit_jump(Opcode.JMP_ABSOLUTE, true_target)
+            self._emit_jump(Opcode.BRA, true_target)
         else:
             # For other comparisons on boolean values, treat as != 0
             self._emit_branch(Opcode.BEQ, false_target)
-            self._emit_jump(Opcode.JMP_ABSOLUTE, true_target)
+            self._emit_jump(Opcode.BRA, true_target)
 
     # ========================================================================
     # Return Instruction
@@ -315,6 +315,10 @@ class ControlFlowInstructionSelector(BaseSelector):
         Checks the CURRENT tracked mode (not entry mode) and switches if needed.
         This must happen BEFORE loading return values so 16-bit values are
         loaded correctly.
+
+        For entry functions with a u16 register alias for A, we preserve the
+        m16 mode since the user explicitly requested 16-bit storage via
+        `let x @ A : u16 = ...`.
         """
         from r65.compiler.typeck.processor_mode import ModeState
         from r65.compiler.codegen.constants import M_FLAG
@@ -323,6 +327,17 @@ class ControlFlowInstructionSelector(BaseSelector):
             return
 
         exit_mode = self.current_function.exit_m_mode or ModeState.M8
+
+        # For entry functions, check if there's a u16 alias for A register
+        # If so, preserve the 16-bit mode at exit
+        if self.current_function.is_entry:
+            alias_tracker = getattr(self.current_function, 'alias_tracker', None)
+            if alias_tracker:
+                a_binding_type = alias_tracker.get_register_binding_type('A')
+                if a_binding_type and hasattr(a_binding_type, 'name'):
+                    if a_binding_type.name in ('u16', 'i16'):
+                        # Entry function with u16 @ A binding - stay in m16 mode
+                        return
 
         # Check current tracked mode vs required exit mode
         current_mode_bits = self.parent.emitter.get_accu_mode()
