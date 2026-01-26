@@ -34,15 +34,13 @@ class MemoryOperationSelector(BaseSelector):
         opcode, operand = self.parent._get_opcode_for_location(mnemonic, location)
         self._emit_instr(opcode, operand, comment)
 
-    def _switch_to_16bit_a(self):
-        """Switch to 16-bit accumulator mode (REP #$20)."""
-        self._emit_instr(Opcode.REP_IMMEDIATE, Immediate(M_FLAG), "16-bit A")
-        self.emitter.emit_accu_mode(16)
+    def _ensure_m16_mode(self):
+        """Ensure 16-bit accumulator mode. Delegates to parent for mode tracking."""
+        self.parent._ensure_m16_mode()
 
-    def _switch_to_8bit_a(self):
-        """Switch back to 8-bit accumulator mode (SEP #$20)."""
-        self._emit_instr(Opcode.SEP_IMMEDIATE, Immediate(M_FLAG), "8-bit A")
-        self.emitter.emit_accu_mode(8)
+    def _ensure_m8_mode(self):
+        """Ensure 8-bit accumulator mode. Delegates to parent for mode tracking."""
+        self.parent._ensure_m8_mode()
 
     # ========================================================================
     # Direct Memory Operations
@@ -67,23 +65,25 @@ class MemoryOperationSelector(BaseSelector):
             if dest_loc.kind == LocationKind.HARDWARE:
                 if dest_loc.hw_register == 'A':
                     # Load 16-bit into A - need 16-bit mode
-                    self._switch_to_16bit_a()
+                    self._ensure_m16_mode()
                     self._emit_load_store('LDA', src_loc)
-                    self._switch_to_8bit_a()
+                    # Note: Do NOT switch back - mode will be restored when needed
                 elif dest_loc.hw_register in ('X', 'Y'):
                     # Load into A then transfer to X/Y - need 16-bit A for the transfer
-                    self._switch_to_16bit_a()
+                    self._ensure_m16_mode()
                     self._emit_load_store('LDA', src_loc)
                     if dest_loc.hw_register == 'X':
                         self._emit_implied(Opcode.TAX, "Transfer to X")
                     else:
                         self._emit_implied(Opcode.TAY, "Transfer to Y")
-                    self._switch_to_8bit_a()
+                    # Note: Do NOT switch back - mode will be restored when needed
                 else:
                     raise InstructionSelectionError(f"Cannot load 16-bit into hardware register {dest_loc.hw_register}")
             else:
                 self.parent._emit_16bit_mem_to_mem(src_loc, dest_loc)
         else:
+            # 8-bit load - ensure we're in m8 mode for A register
+            self._ensure_m8_mode()
             self._emit_load_store('LDA', src_loc)
             # Skip store if destination is already the accumulator
             if dest_loc.kind == LocationKind.HARDWARE and dest_loc.hw_register == 'A':
@@ -145,14 +145,16 @@ class MemoryOperationSelector(BaseSelector):
         # Special handling for hardware register A with 16-bit values
         if is_u16 and dest_loc.kind == LocationKind.HARDWARE and dest_loc.hw_register == 'A':
             # Load 16-bit immediate into A - need 16-bit mode
-            self._switch_to_16bit_a()
+            self._ensure_m16_mode()
             self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(value & 0xFFFF))
-            self._switch_to_8bit_a()
+            # Note: Do NOT switch back - mode will be restored when needed
             return
 
         if is_u16:
             self.parent._emit_16bit_immediate_store(value, dest_loc)
         else:
+            # 8-bit store - ensure correct mode
+            self._ensure_m8_mode()
             value_masked = value & 0xFF
             # Use STZ for storing zero (more efficient than LDA #0; STA)
             # But STZ doesn't support stack-relative or 24-bit long addressing
@@ -234,15 +236,9 @@ class MemoryOperationSelector(BaseSelector):
                 self.parent._mark_a_modified()
             elif reg == 'A' and is_u16:
                 # 16-bit store from A register needs 16-bit mode
-                # Only switch if not already in 16-bit mode
-                current_mode = self.emitter.get_accu_mode()
-                if current_mode != 16:
-                    self._switch_to_16bit_a()
-                    self._emit_load_store('STA', dest_loc)
-                    self._switch_to_8bit_a()
-                else:
-                    # Already in 16-bit mode, just store
-                    self._emit_load_store('STA', dest_loc)
+                self._ensure_m16_mode()
+                self._emit_load_store('STA', dest_loc)
+                # Note: Do NOT switch back - mode will be restored when needed
             else:
                 self._emit_load_store(STORE_MNEMONICS[reg], dest_loc)
 

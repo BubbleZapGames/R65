@@ -312,7 +312,7 @@ class ControlFlowInstructionSelector(BaseSelector):
         """
         Switch to function's exit mode before loading return values.
 
-        If exit_m_mode differs from entry_m_mode, emit REP or SEP to switch.
+        Checks the CURRENT tracked mode (not entry mode) and switches if needed.
         This must happen BEFORE loading return values so 16-bit values are
         loaded correctly.
         """
@@ -322,18 +322,22 @@ class ControlFlowInstructionSelector(BaseSelector):
         if not self.current_function:
             return
 
-        entry_mode = self.current_function.entry_m_mode or ModeState.M8
         exit_mode = self.current_function.exit_m_mode or ModeState.M8
 
-        if entry_mode == exit_mode:
-            return  # No switch needed
+        # Check current tracked mode vs required exit mode
+        current_mode_bits = self.parent.emitter.get_accu_mode()
+        current_is_m16 = (current_mode_bits == 16)
+        exit_is_m16 = (exit_mode == ModeState.M16)
 
-        if entry_mode == ModeState.M8 and exit_mode == ModeState.M16:
-            # Switch from m8 to m16 for u16 return value
-            self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "Switch to m16 for u16 return")
+        if current_is_m16 == exit_is_m16:
+            return  # Already in correct mode
+
+        if exit_is_m16:
+            # Need to switch to m16 for u16 return value
+            self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "Switch to m16 for return")
             self.parent.emitter.emit_accu_mode(16)
-        elif entry_mode == ModeState.M16 and exit_mode == ModeState.M8:
-            # Switch from m16 to m8 for u8 return value
+        else:
+            # Need to switch to m8 for u8 return value
             self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "Switch to m8 for return")
             self.parent.emitter.emit_accu_mode(8)
 

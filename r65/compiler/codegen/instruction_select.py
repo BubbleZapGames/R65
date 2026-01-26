@@ -181,6 +181,28 @@ class InstructionSelector:
         """Public method to flush pending mode flags (for function epilogue etc.)."""
         self._flush_pending_mode_flags()
 
+    def _ensure_m8_mode(self):
+        """
+        Ensure accumulator is in 8-bit mode, switching if necessary.
+
+        Call this before operations that require m8 mode when we might
+        currently be in m16 mode. This is more efficient than switching
+        back to m8 after every 16-bit operation.
+        """
+        if self.emitter.get_accu_mode() == 16:
+            self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "8-bit A")
+            self.emitter.emit_accu_mode(8)
+
+    def _ensure_m16_mode(self):
+        """
+        Ensure accumulator is in 16-bit mode, switching if necessary.
+
+        Call this before operations that require m16 mode.
+        """
+        if self.emitter.get_accu_mode() != 16:
+            self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "16-bit A")
+            self.emitter.emit_accu_mode(16)
+
     # ========================================================================
     # Opcode Selection Helpers
     # ========================================================================
@@ -685,12 +707,15 @@ class InstructionSelector:
             op in ('+', '-', '&', '|', '^', '<<', '>>')
         )
 
-        # Switch to 16-bit mode for A register if needed
-        # Check if we're already in 16-bit mode (e.g., from persist_16bit_mode binding)
-        already_in_16bit = self.emitter.get_accu_mode() == 16
-        if needs_16bit_mode and not already_in_16bit:
-            self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "16-bit A")
-            self.emitter.emit_accu_mode(16)
+        # Switch to appropriate mode for operation
+        # Note: We do NOT switch back immediately after the operation.
+        # The mode will be switched when the next operation needs a different mode,
+        # or at function return. This avoids redundant REP/SEP pairs.
+        if needs_16bit_mode:
+            self._ensure_m16_mode()
+        else:
+            # For 8-bit operations, ensure we're in m8 mode
+            self._ensure_m8_mode()
 
         # Load left operand into A (if not already there)
         if left_loc.kind == LocationKind.HARDWARE and left_loc.hw_register == 'A':
@@ -747,11 +772,9 @@ class InstructionSelector:
             # Store result from A to memory/stack
             self._emit_store('STA', dest_loc)
 
-        # Switch back to 8-bit mode after 16-bit A operation
-        # But don't switch back if we were already in 16-bit mode (persisted mode)
-        if needs_16bit_mode and not already_in_16bit:
-            self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "8-bit A")
-            self.emitter.emit_accu_mode(8)
+        # Note: We do NOT switch back to 8-bit mode here.
+        # The mode will be restored when needed by the next operation
+        # or at function return. This avoids redundant REP/SEP pairs.
 
     def select_unary_op(self, instr: UnaryOp):
         """
@@ -763,8 +786,15 @@ class InstructionSelector:
             instr: UnaryOp instruction
         """
         op = instr.op
+        is_u16 = self._is_16bit(instr.type_info)
         operand_loc = self._get_operand_location(instr.operand)
         dest_loc = self._get_operand_location(instr.dest)
+
+        # Ensure correct mode for operation
+        if is_u16:
+            self._ensure_m16_mode()
+        else:
+            self._ensure_m8_mode()
 
         # Load operand
         self._emit_load('LDA', operand_loc)
@@ -781,10 +811,12 @@ class InstructionSelector:
             self.emitter.emit_label("++")
         elif op == '~':
             # Bitwise NOT
-            self._emit_immediate(Opcode.EOR_IMMEDIATE, 0xFF, "Bitwise complement")
+            mask = 0xFFFF if is_u16 else 0xFF
+            self._emit_immediate(Opcode.EOR_IMMEDIATE, mask, "Bitwise complement")
         elif op == '-':
             # Negation
-            self._emit_immediate(Opcode.EOR_IMMEDIATE, 0xFF, "Complement")
+            mask = 0xFFFF if is_u16 else 0xFF
+            self._emit_immediate(Opcode.EOR_IMMEDIATE, mask, "Complement")
             self._emit_implied(Opcode.INC, "Add 1 for two's complement")
         else:
             raise unsupported_operation("unary operation", op)
@@ -1107,45 +1139,34 @@ class InstructionSelector:
         """
         Emit 16-bit memory-to-memory move using 16-bit mode.
 
-        Switches to 16-bit accumulator mode, performs single LDA/STA,
-        then switches back to 8-bit mode.
+        Switches to 16-bit accumulator mode if needed and performs single LDA/STA.
+        Does NOT switch back after - mode will be restored when needed.
 
         Args:
             src_loc: Source memory location
             dest_loc: Destination memory location
             comment: Optional comment for first instruction
         """
-        already_in_16bit = self.emitter.get_accu_mode() == 16
-        if not already_in_16bit:
-            self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "16-bit A for move")
-            self.emitter.emit_accu_mode(16)
-
+        self._ensure_m16_mode()
         self._emit_load('LDA', src_loc, comment)
         self._emit_store('STA', dest_loc)
-
-        if not already_in_16bit:
-            self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "8-bit A")
-            self.emitter.emit_accu_mode(8)
+        # Note: Do NOT switch back here - mode will be restored when needed
 
     def _emit_16bit_immediate_store(self, value: int, dest_loc: PhysicalLocation):
         """
         Emit 16-bit immediate store using 16-bit mode.
 
+        Switches to 16-bit mode if needed. Does NOT switch back after -
+        mode will be restored when needed.
+
         Args:
             value: 16-bit immediate value
             dest_loc: Destination memory location
         """
-        already_in_16bit = self.emitter.get_accu_mode() == 16
-        if not already_in_16bit:
-            self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "16-bit A for store")
-            self.emitter.emit_accu_mode(16)
-
+        self._ensure_m16_mode()
         self._emit_immediate(Opcode.LDA_IMMEDIATE, value)
         self._emit_store('STA', dest_loc)
-
-        if not already_in_16bit:
-            self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "8-bit A")
-            self.emitter.emit_accu_mode(8)
+        # Note: Do NOT switch back here - mode will be restored when needed
 
     def _emit_register_transfer(self, src_reg: str, dest_reg: str):
         """
@@ -1206,15 +1227,15 @@ class InstructionSelector:
         """
         Emit load immediate into hardware register.
 
-        For 16-bit loads to A register in m8 mode, wraps with REP/SEP mode switches.
-        Also handles values that exceed 8-bit range by switching to 16-bit mode.
+        Switches to appropriate mode if needed. Does NOT switch back after -
+        mode will be restored when needed by subsequent operations.
 
         Args:
             reg: Register name ('A', 'X', 'Y')
             value: Immediate value
             is_u16: Whether to use 16-bit format
-            persist_16bit_mode: If True, keep A in m16 mode after load (no trailing SEP).
-                               Used for `let x @ A : u16 = expr;` register bindings.
+            persist_16bit_mode: Deprecated - mode is always persisted now.
+                               Kept for API compatibility.
         """
         load_opcode = LOAD_IMMEDIATE_OPCODES[reg]
 
@@ -1222,24 +1243,13 @@ class InstructionSelector:
         # Also switch if value exceeds 8-bit range (0-255)
         needs_16bit = is_u16 or (reg == 'A' and value > 0xFF)
         if needs_16bit and reg == 'A':
-            # Check if already in 16-bit mode
-            already_in_16bit = self.emitter.get_accu_mode() == 16
-            if not already_in_16bit:
-                # Switch to 16-bit A mode
-                self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "16-bit A")
-                self.emitter.emit_accu_mode(16)
-            # Load full 16-bit value
+            self._ensure_m16_mode()
             self._emit_immediate(load_opcode, value & 0xFFFF)
-            # Switch back to 8-bit A mode UNLESS persist_16bit_mode is set or we were already in 16-bit
-            if not persist_16bit_mode and not already_in_16bit:
-                self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "8-bit A")
-                self.emitter.emit_accu_mode(8)
-            # If persist_16bit_mode, stay in m16 mode for register binding scope
+            # Note: Do NOT switch back here - mode will be restored when needed
         else:
             # 8-bit load - make sure we're in m8 mode for A register
-            if reg == 'A' and self.emitter.get_accu_mode() == 16:
-                self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "8-bit A")
-                self.emitter.emit_accu_mode(8)
+            if reg == 'A':
+                self._ensure_m8_mode()
             self._emit_immediate(load_opcode, value)
 
     def _get_operand_location(self, operand) -> PhysicalLocation:

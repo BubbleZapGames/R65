@@ -97,18 +97,18 @@ class MoveOperationSelector(BaseSelector):
             self.parent._store_to_b_from_a()
         elif hw_register == 'S':
             # Set stack pointer: TCS always transfers full 16-bit A
-            self._emit_instr(Opcode.REP_IMMEDIATE, Immediate(0x20), "16-bit A for stack")
+            self.parent._ensure_m16_mode()
             self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(value))
             self._emit_instr(Opcode.TCS, comment="Set stack pointer")
-            self._emit_instr(Opcode.SEP_IMMEDIATE, Immediate(0x20), "Restore 8-bit A")
             self.parent._mark_a_modified()
+            # Note: Do NOT switch back - mode will be restored when needed
         elif hw_register == 'D':
             # Set direct page register
-            self._emit_instr(Opcode.REP_IMMEDIATE, Immediate(0x20), "16-bit A for direct page")
+            self.parent._ensure_m16_mode()
             self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(value))
             self._emit_instr(Opcode.TCD, comment="Set direct page")
-            self._emit_instr(Opcode.SEP_IMMEDIATE, Immediate(0x20), "Restore 8-bit A")
             self.parent._mark_a_modified()
+            # Note: Do NOT switch back - mode will be restored when needed
         else:
             raise InstructionSelectionError(f"Cannot load immediate into register {hw_register}")
 
@@ -124,24 +124,14 @@ class MoveOperationSelector(BaseSelector):
         """
         # Handle 16-bit A register loads
         if hw_register == 'A' and is_u16:
-            # Check if we're already in 16-bit mode
-            already_in_16bit = self.parent.emitter.get_accu_mode() == 16
-            if not already_in_16bit:
-                self._emit_instr(Opcode.REP_IMMEDIATE, Immediate(0x20), "16-bit A")
-                self.parent.emitter.emit_accu_mode(16)
+            self.parent._ensure_m16_mode()
             self._emit_load_store('LDA', src_loc)
-            # Switch back to 8-bit unless persist mode
-            if not persist_16bit_mode and not already_in_16bit:
-                self._emit_instr(Opcode.SEP_IMMEDIATE, Immediate(0x20), "8-bit A")
-                self.parent.emitter.emit_accu_mode(8)
+            # Note: Do NOT switch back - mode will be restored when needed
             return
 
-        # Handle 8-bit A register loads - must switch to m8 if currently in m16
+        # Handle 8-bit A register loads - must ensure m8 mode
         if hw_register == 'A' and not is_u16:
-            currently_in_16bit = self.parent.emitter.get_accu_mode() == 16
-            if currently_in_16bit:
-                self._emit_instr(Opcode.SEP_IMMEDIATE, Immediate(0x20), "8-bit A")
-                self.parent.emitter.emit_accu_mode(8)
+            self.parent._ensure_m8_mode()
             self._emit_load_store('LDA', src_loc)
             return
 
@@ -150,35 +140,28 @@ class MoveOperationSelector(BaseSelector):
         if hw_register in ('X', 'Y') and src_loc.kind == LocationKind.STACK:
             # For 16-bit values, we need to be in 16-bit A mode for the load/transfer
             if is_u16:
-                already_in_16bit = self.parent.emitter.get_accu_mode() == 16
-                if not already_in_16bit:
-                    self._emit_instr(Opcode.REP_IMMEDIATE, Immediate(0x20), "16-bit A for transfer")
-                    self.parent.emitter.emit_accu_mode(16)
+                self.parent._ensure_m16_mode()
                 self._emit_load_store('LDA', src_loc)
                 if hw_register == 'X':
                     self._emit_instr(Opcode.TAX, comment="Transfer to X (no LDX sr,S)")
                 else:
                     self._emit_instr(Opcode.TAY, comment="Transfer to Y (no LDY sr,S)")
-                if not already_in_16bit:
-                    self._emit_instr(Opcode.SEP_IMMEDIATE, Immediate(0x20), "8-bit A")
-                    self.parent.emitter.emit_accu_mode(8)
+                # Note: Do NOT switch back - mode will be restored when needed
             else:
                 # 8-bit source to 16-bit X/Y: must zero-extend to avoid B register pollution
                 # The B register (high byte of C) may contain garbage that would
                 # corrupt X/Y if we just did TAX/TAY in 8-bit mode
+                self.parent._ensure_m8_mode()
                 self._emit_load_store('LDA', src_loc)
-                # Switch to 16-bit A to access full C register
-                self._emit_instr(Opcode.REP_IMMEDIATE, Immediate(0x20), "16-bit A for zero-extend")
-                self.parent.emitter.emit_accu_mode(16)
+                # Switch to 16-bit A to access full C register and zero-extend
+                self.parent._ensure_m16_mode()
                 # Clear high byte (B register) to zero-extend
                 self._emit_instr(Opcode.AND_IMMEDIATE, Immediate(0x00FF), "Zero-extend to 16-bit")
                 if hw_register == 'X':
                     self._emit_instr(Opcode.TAX, comment="Transfer to X (no LDX sr,S)")
                 else:
                     self._emit_instr(Opcode.TAY, comment="Transfer to Y (no LDY sr,S)")
-                # Switch back to 8-bit A
-                self._emit_instr(Opcode.SEP_IMMEDIATE, Immediate(0x20), "8-bit A")
-                self.parent.emitter.emit_accu_mode(8)
+                # Note: Do NOT switch back - mode will be restored when needed
         elif hw_register in LOAD_MNEMONICS:
             self._emit_load_store(LOAD_MNEMONICS[hw_register], src_loc)
         elif hw_register == 'B':
@@ -376,15 +359,10 @@ class MoveOperationSelector(BaseSelector):
                 transfer_op = Opcode.TXA if src_reg == 'X' else Opcode.TYA
                 if is_u16 and src_reg in ('X', 'Y'):
                     # 16-bit store: switch to 16-bit A, transfer, store both bytes
-                    already_in_16bit = self.parent.emitter.get_accu_mode() == 16
-                    if not already_in_16bit:
-                        self._emit_instr(Opcode.REP_IMMEDIATE, Immediate(0x20), "16-bit A for store")
-                        self.parent.emitter.emit_accu_mode(16)
+                    self.parent._ensure_m16_mode()
                     self._emit_instr(transfer_op, comment=f"Transfer to A (16-bit)")
                     self._emit_load_store('STA', dest_loc)
-                    if not already_in_16bit:
-                        self._emit_instr(Opcode.SEP_IMMEDIATE, Immediate(0x20), "8-bit A")
-                        self.parent.emitter.emit_accu_mode(8)
+                    # Note: Do NOT switch back - mode will be restored when needed
                 else:
                     self._emit_instr(transfer_op, comment=f"Transfer to A (no {STORE_MNEMONICS[src_reg]} with this addressing)")
                     self._emit_load_store('STA', dest_loc)

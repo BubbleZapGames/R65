@@ -103,27 +103,21 @@ class CompareSelector(BaseSelector):
         left_loc = self.parent._get_operand_location(instr.left)
         right_operand, is_immediate, pushed_reg = self._prepare_right_operand(instr.right, is_16bit)
 
-        # Switch to 16-bit mode if needed (for A comparisons only)
-        needs_mode_switch = is_16bit and left_loc.kind == LocationKind.HARDWARE and left_loc.hw_register == 'A'
-        already_in_16bit = self.parent.emitter.get_accu_mode() == 16
+        # Switch to appropriate mode for the comparison
+        needs_16bit = (is_16bit and
+            (left_loc.kind == LocationKind.HARDWARE and left_loc.hw_register == 'A') or
+            (is_16bit and left_loc.kind == LocationKind.STACK))
 
-        if needs_mode_switch and not already_in_16bit:
-            self._emit_instr(Opcode.REP_IMMEDIATE, Immediate(0x20), "16-bit A for comparison")
-            self.parent.emitter.emit_accu_mode(16)
-
-        # For stack-relative comparisons with 16-bit values, we need to use A
-        if is_16bit and left_loc.kind == LocationKind.STACK and not already_in_16bit:
-            self._emit_instr(Opcode.REP_IMMEDIATE, Immediate(0x20), "16-bit A for comparison")
-            self.parent.emitter.emit_accu_mode(16)
-            needs_mode_switch = True
+        if needs_16bit:
+            self.parent._ensure_m16_mode()
+        else:
+            # For 8-bit comparisons, ensure we're in m8 mode
+            self.parent._ensure_m8_mode()
 
         # Emit appropriate comparison instruction based on left operand
         self._emit_comparison(left_loc, right_operand, is_immediate)
 
-        # Switch back to 8-bit mode if we changed it
-        if needs_mode_switch and not already_in_16bit:
-            self._emit_instr(Opcode.SEP_IMMEDIATE, Immediate(0x20), "8-bit A")
-            self.parent.emitter.emit_accu_mode(8)
+        # Note: Do NOT switch back - mode will be restored when needed
 
         # Pop register if we pushed it for temp storage
         if pushed_reg:
