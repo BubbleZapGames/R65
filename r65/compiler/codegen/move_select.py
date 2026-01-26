@@ -163,11 +163,22 @@ class MoveOperationSelector(BaseSelector):
                     self._emit_instr(Opcode.SEP_IMMEDIATE, Immediate(0x20), "8-bit A")
                     self.parent.emitter.emit_accu_mode(8)
             else:
+                # 8-bit source to 16-bit X/Y: must zero-extend to avoid B register pollution
+                # The B register (high byte of C) may contain garbage that would
+                # corrupt X/Y if we just did TAX/TAY in 8-bit mode
                 self._emit_load_store('LDA', src_loc)
+                # Switch to 16-bit A to access full C register
+                self._emit_instr(Opcode.REP_IMMEDIATE, Immediate(0x20), "16-bit A for zero-extend")
+                self.parent.emitter.emit_accu_mode(16)
+                # Clear high byte (B register) to zero-extend
+                self._emit_instr(Opcode.AND_IMMEDIATE, Immediate(0x00FF), "Zero-extend to 16-bit")
                 if hw_register == 'X':
                     self._emit_instr(Opcode.TAX, comment="Transfer to X (no LDX sr,S)")
                 else:
                     self._emit_instr(Opcode.TAY, comment="Transfer to Y (no LDY sr,S)")
+                # Switch back to 8-bit A
+                self._emit_instr(Opcode.SEP_IMMEDIATE, Immediate(0x20), "8-bit A")
+                self.parent.emitter.emit_accu_mode(8)
         elif hw_register in LOAD_MNEMONICS:
             self._emit_load_store(LOAD_MNEMONICS[hw_register], src_loc)
         elif hw_register == 'B':
