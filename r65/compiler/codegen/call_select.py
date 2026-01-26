@@ -268,9 +268,11 @@ class CallInstructionSelector(BaseSelector):
 
             if arg.mechanism == ArgumentMechanism.STACK:
                 self._emit_stack_argument(arg, arg_loc)
-                # Track bytes pushed based on argument size
+                # Track bytes pushed based on argument size - prefer param_type
                 arg_size = 1
-                if hasattr(arg.value, 'type_info') and arg.value.type_info:
+                if arg.param_type is not None:
+                    arg_size = get_type_size(arg.param_type)
+                elif hasattr(arg.value, 'type_info') and arg.value.type_info:
                     arg_size = get_type_size(arg.value.type_info)
                 stack_bytes_pushed += arg_size
 
@@ -302,12 +304,15 @@ class CallInstructionSelector(BaseSelector):
         """Emit stack argument (push onto stack)."""
         from r65.compiler.codegen.type_utils import get_type_size
 
-        # Determine argument size
+        # Determine argument size - prefer param_type from function signature
         arg_size = 1
-        if hasattr(arg.value, 'type_info') and arg.value.type_info:
+        if arg.param_type is not None:
+            # Use parameter type from function signature (most reliable)
+            arg_size = get_type_size(arg.param_type)
+        elif hasattr(arg.value, 'type_info') and arg.value.type_info:
             arg_size = get_type_size(arg.value.type_info)
         elif isinstance(arg.value, MIRImmediate):
-            # Infer size from immediate value range
+            # Fallback: infer size from immediate value range
             value = arg.value.value
             if value > 0xFFFF or value < -32768:
                 arg_size = 3  # 24-bit

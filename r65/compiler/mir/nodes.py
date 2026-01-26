@@ -579,6 +579,7 @@ class Argument:
     value: Union[VirtualRegister, HardwareRegister, Immediate]
     mechanism: ArgumentMechanism
     location: Optional[Union[HardwareRegister, Any]] = None  # Register or Symbol for VARIABLE
+    param_type: Optional[Any] = None  # Parameter type from function signature (for correct stack push size)
 
     def __repr__(self):
         if self.mechanism == ArgumentMechanism.STACK:

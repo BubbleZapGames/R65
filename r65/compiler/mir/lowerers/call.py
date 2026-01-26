@@ -278,10 +278,12 @@ class CallLowerer:
         args = []
 
         # Self parameter (always stack-passed)
+        self_param = func_decl.parameters[0]  # First parameter is self
         args.append(Argument(
             value=self_vreg,
             mechanism=ArgumentMechanism.STACK,
-            location=None
+            location=None,
+            param_type=self_param.param_type
         ))
 
         # Lower remaining arguments
@@ -303,7 +305,8 @@ class CallLowerer:
             args.append(Argument(
                 value=arg_vreg,
                 mechanism=mechanism,
-                location=location
+                location=location,
+                param_type=param.param_type
             ))
 
         # Allocate virtual register for return value
@@ -418,15 +421,17 @@ class CallLowerer:
             arg_value = self.builder.lower_expression(arg_expr)
 
             # Determine mechanism based on parameter binding (if available)
+            param_type = None
             if func_decl and i < len(func_decl.parameters):
                 param = func_decl.parameters[i]
                 mechanism, location = self._get_argument_mechanism(param, arg_value)
+                param_type = param.param_type  # Get parameter type for correct stack push size
             else:
                 # Indirect call or no binding info - use stack
                 mechanism = ArgumentMechanism.STACK
                 location = None
 
-            args.append(Argument(value=arg_value, mechanism=mechanism, location=location))
+            args.append(Argument(value=arg_value, mechanism=mechanism, location=location, param_type=param_type))
 
         return args
 
