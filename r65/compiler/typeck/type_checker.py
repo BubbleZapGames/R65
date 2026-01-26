@@ -1014,6 +1014,34 @@ class TypeChecker:
                         source_loc=expr.source_loc,
                         hint=f"cast one operand to match: (value as {left_type})"
                     )
+                # Insert implicit casts to widen the smaller operand
+                # Skip cast for integer literals - they can be widened at compile time
+                if not TypeUtils.types_equal(left_type, promoted_type):
+                    if not isinstance(expr.left, HIRIntegerLiteral):
+                        # Left operand needs runtime widening
+                        cast_node = HIRTypeCast(
+                            expr=expr.left,
+                            target_type=promoted_type,
+                            source_loc=expr.left.source_loc
+                        )
+                        cast_node.expr_type = promoted_type
+                        expr.left = cast_node
+                    else:
+                        # Just update the literal's type - no runtime conversion needed
+                        expr.left.expr_type = promoted_type
+                if not TypeUtils.types_equal(right_type, promoted_type):
+                    if not isinstance(expr.right, HIRIntegerLiteral):
+                        # Right operand needs runtime widening
+                        cast_node = HIRTypeCast(
+                            expr=expr.right,
+                            target_type=promoted_type,
+                            source_loc=expr.right.source_loc
+                        )
+                        cast_node.expr_type = promoted_type
+                        expr.right = cast_node
+                    else:
+                        # Just update the literal's type - no runtime conversion needed
+                        expr.right.expr_type = promoted_type
                 # Use the promoted type as the result
                 expr.expr_type = promoted_type
                 return promoted_type

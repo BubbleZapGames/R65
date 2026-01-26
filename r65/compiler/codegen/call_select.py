@@ -245,7 +245,7 @@ class CallInstructionSelector(BaseSelector):
         Set up call arguments in correct order.
 
         Process in specific order to avoid clobbering:
-        1. Stack arguments (pushed in order)
+        1. Stack arguments (pushed in REVERSE order - last param first per calling convention)
         2. Variable-bound arguments
         3. B register arguments (these clobber A via XBA)
         4. X and Y register arguments
@@ -261,22 +261,29 @@ class CallInstructionSelector(BaseSelector):
 
         stack_bytes_pushed = 0
 
-        sorted_args = sorted(instr.args, key=self._arg_sort_key)
+        # Separate stack arguments from others and reverse them
+        # Stack params must be pushed right-to-left (last param first) per calling convention
+        stack_args = [arg for arg in instr.args if arg.mechanism == ArgumentMechanism.STACK]
+        other_args = [arg for arg in instr.args if arg.mechanism != ArgumentMechanism.STACK]
 
-        for arg in sorted_args:
+        # Push stack arguments in reverse order (last param first)
+        for arg in reversed(stack_args):
+            arg_loc = self.parent._get_operand_location(arg.value)
+            self._emit_stack_argument(arg, arg_loc)
+            # Track bytes pushed based on argument size - prefer param_type
+            arg_size = 1
+            if arg.param_type is not None:
+                arg_size = get_type_size(arg.param_type)
+            elif hasattr(arg.value, 'type_info') and arg.value.type_info:
+                arg_size = get_type_size(arg.value.type_info)
+            stack_bytes_pushed += arg_size
+
+        # Process other arguments (variable-bound and register) in sorted order
+        sorted_other_args = sorted(other_args, key=self._arg_sort_key)
+        for arg in sorted_other_args:
             arg_loc = self.parent._get_operand_location(arg.value)
 
-            if arg.mechanism == ArgumentMechanism.STACK:
-                self._emit_stack_argument(arg, arg_loc)
-                # Track bytes pushed based on argument size - prefer param_type
-                arg_size = 1
-                if arg.param_type is not None:
-                    arg_size = get_type_size(arg.param_type)
-                elif hasattr(arg.value, 'type_info') and arg.value.type_info:
-                    arg_size = get_type_size(arg.value.type_info)
-                stack_bytes_pushed += arg_size
-
-            elif arg.mechanism == ArgumentMechanism.REGISTER:
+            if arg.mechanism == ArgumentMechanism.REGISTER:
                 self._emit_register_argument(arg, arg_loc)
 
             elif arg.mechanism == ArgumentMechanism.VARIABLE:
