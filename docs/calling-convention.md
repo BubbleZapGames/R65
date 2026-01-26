@@ -64,25 +64,24 @@ JSR add
 **Callee**:
 ```asm
 add:
-    TSC            ; Get stack pointer
-    CLC
-    ADC #1         ; Skip return address (2 bytes)
-    TAX
-
-    LDA $01,X      ; Load 'a' (first parameter)
-    STA temp_a
-    LDA $03,X      ; Load 'b' (second parameter)
-    STA temp_b
-
     ; ... function body ...
+    ; Access params via stack-relative addressing (e.g., LDA $03,S)
 
-    ; Cleanup: adjust stack pointer
-    TSC
+    ; Callee cleanup before return:
+    PLX            ; Pop return address into X (2 bytes)
+    REP #$20       ; 16-bit A for SP arithmetic
+    TSC            ; Transfer SP to A
     CLC
-    ADC #2         ; Remove 2 parameters
-    TCS
-    RTS
+    ADC #2         ; Skip past 2 parameter bytes
+    TCS            ; Transfer back to SP
+    SEP #$20       ; Restore 8-bit A
+    PHX            ; Push return address back
+    RTS            ; Return (pops the address we just pushed)
 ```
+
+**Optimization**: If the function returns only in A (most common), X is free for holding
+the return address. If A and X are both return values, Y is used instead. For functions
+returning A, X, and Y, inline stack manipulation is used (LDA/STA with stack-relative).
 
 **Characteristics**:
 - Slowest (stack access is slow on 65816)
@@ -1309,16 +1308,23 @@ fn project_style(a @ ARG0: u8, b @ ARG1: u8) {
 ```
 Register parameters:      0-3 cycles (setup)
 Variable-bound (zp):      3-6 cycles (memory writes)
-Stack parameters:         5-10 cycles (stack push/pop)
+Stack parameters:         5-10 cycles (per parameter push)
 
 Near call (JSR/RTS):      12 cycles
 Far call (JSL/RTL):       14 cycles
 Indirect call:            18-24 cycles (trampoline)
 
-Mode transition (auto):   +12 cycles (PHP/PLP)
+Mode transition (auto):   +6 cycles (REP/SEP)
+
+Callee stack cleanup:     ~24 cycles (PLX + REP + TSC/CLC/ADC/TCS + SEP + PHX)
+                          (constant regardless of parameter count)
 ```
 
 **Fastest**: Register parameters + near call + no mode transition
+
+**Stack cleanup note**: Callee cleanup has constant overhead (~24 cycles) regardless of
+parameter count, making it efficient for functions with multiple stack parameters.
+The cleanup uses PLX/PHX to preserve the return address while adjusting SP.
 
 ---
 

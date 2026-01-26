@@ -136,8 +136,8 @@ class CallInstructionSelector(BaseSelector):
         if needs_dbr_restore:
             self._emit_pull('B', "Restore data bank (caller)")
 
-        # Step 5: Clean up stack arguments (callee cleanup for R65)
-        self._emit_stack_cleanup(stack_bytes_pushed)
+        # Step 5: Stack arguments are cleaned up by callee (not caller)
+        # The callee's epilogue handles stack parameter cleanup before RTS/RTL
 
         # Step 6: Collect return values (in callee's exit mode)
         self._emit_return_value_collection(instr)
@@ -702,13 +702,8 @@ class CallInstructionSelector(BaseSelector):
             self._emit_implied(Opcode.RTS, "Indirect near call via trampoline")
 
     # ========================================================================
-    # Stack Cleanup and Return Values
+    # Return Value Collection
     # ========================================================================
-
-    def _emit_stack_cleanup(self, stack_bytes: int):
-        """Clean up stack arguments after call (pop N bytes)."""
-        for _ in range(stack_bytes):
-            self._emit_pull('A', "Clean up stack byte")
 
     def _emit_return_value_collection(self, instr: Call):
         """

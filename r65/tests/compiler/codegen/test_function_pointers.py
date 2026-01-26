@@ -15,6 +15,7 @@ from r65.compiler.mir.nodes import (
     ArgumentMechanism,
 )
 from r65.compiler.hir.types import FunctionTypeInfo, BasicTypeInfo
+from r65.compiler.hir.nodes import HIRParameter
 from r65.compiler.mir.virtual_registers import VirtualRegisterAllocator
 
 
@@ -355,9 +356,15 @@ def test_function_pointer_with_arguments():
         Return(values=[])
     ]
 
+    # Define stack parameters (binding=None means stack parameter)
+    callee_params = [
+        HIRParameter(name="a", param_type=BasicTypeInfo('u8'), binding=None),
+        HIRParameter(name="b", param_type=BasicTypeInfo('u8'), binding=None),
+    ]
+
     callee_func = MIRFunction(
         name="process",
-        parameters=[],  # Parameters would be defined in HIR, not MIR
+        parameters=callee_params,  # Stack parameters for callee cleanup
         return_type=None,
         blocks={0: callee_block},
         entry_block_id=0,
@@ -417,8 +424,9 @@ def test_function_pointer_with_arguments():
     assert 'LDA #$0A' in asm_output, "Should load first argument (10)"
     assert 'LDA #$14' in asm_output, "Should load second argument (20)"
 
-    # Verify stack cleanup
-    assert 'PLA' in asm_output, "Should clean up stack arguments"
+    # Verify callee cleanup (callee adjusts SP before returning)
+    # The callee (process) should have stack adjustment code: PLX, TSC, ADC, TCS, PHX
+    assert 'PLX' in asm_output and 'TSC' in asm_output, "Callee should clean up stack arguments"
 
     print("✓ Function pointer with arguments test passed")
 
