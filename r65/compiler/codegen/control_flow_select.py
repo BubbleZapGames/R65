@@ -735,11 +735,29 @@ class ControlFlowInstructionSelector(BaseSelector):
         # Special case: frame-only cleanup (no stack params)
         # When there are no stack params, we don't need to move the return address.
         if stack_param_bytes == 0 and frame_size > 0:
+            current_mode = self.parent.emitter.get_accu_mode()
+
+            # Optimization: For small frames (1-4 bytes) in m8 mode, use PLA
+            # which is much more efficient than TSC/ADC/TCS.
+            # In m8 mode, PLA pulls 1 byte. In m16 mode, PLA pulls 2 bytes.
+            if frame_size <= 4 and current_mode == 8:
+                if return_count == 0:
+                    # A is not a return value - just use PLA directly
+                    for _ in range(frame_size):
+                        self._emit_implied(Opcode.PLA, f"Deallocate frame ({frame_size} bytes)")
+                else:
+                    # A has return value - use XBA to save A in B register
+                    # XBA swaps A (low byte) with B (high byte of 16-bit accumulator)
+                    self._emit_implied(Opcode.XBA, "Save A in B")
+                    for _ in range(frame_size):
+                        self._emit_implied(Opcode.PLA, f"Deallocate frame ({frame_size} bytes)")
+                    self._emit_implied(Opcode.XBA, "Restore A from B")
+                return
+
+            # For larger frames or m16 mode, use TSC/ADC/TCS approach
             # NOTE: We can't use PLX/PLY for frame deallocation because in x16 mode
             # (which R65 always uses), PLX/PLY pull 2 bytes each, not 1. The frame
-            # is allocated with 8-bit PHAs (1 byte each), so we must use TSC/ADC/TCS.
-            #
-            # Need TSC/ADC/TCS which uses A - must preserve A if it's a return value
+            # is allocated with 8-bit PHAs (1 byte each).
             if return_count == 0:
                 # A is not a return value, can use it freely
                 self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "16-bit A for SP adjust")
