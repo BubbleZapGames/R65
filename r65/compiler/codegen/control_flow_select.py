@@ -754,57 +754,95 @@ class ControlFlowInstructionSelector(BaseSelector):
                     self._emit_implied(Opcode.XBA, "Restore A from B")
                 return
 
-            # For larger frames or m16 mode, use TSC/ADC/TCS approach
-            # NOTE: We can't use PLX/PLY for frame deallocation because in x16 mode
-            # (which R65 always uses), PLX/PLY pull 2 bytes each, not 1. The frame
-            # is allocated with 8-bit PHAs (1 byte each).
+            # Optimization: For small even frames in m16 mode, use PLX/PLY
+            # In x16 mode (always used), PLX/PLY pull 2 bytes each.
+            # This is efficient and doesn't touch A (preserves 16-bit return value).
+            if frame_size <= 4 and current_mode == 16 and frame_size % 2 == 0:
+                pulls_needed = frame_size // 2
+                if return_count == 0:
+                    # A is not a return value - use PLA (2 bytes each in m16)
+                    for _ in range(pulls_needed):
+                        self._emit_implied(Opcode.PLA, f"Deallocate frame ({frame_size} bytes)")
+                elif return_count == 1:
+                    # A has return value, X is free - use PLX (doesn't touch A)
+                    for _ in range(pulls_needed):
+                        self._emit_implied(Opcode.PLX, f"Deallocate frame ({frame_size} bytes)")
+                elif return_count == 2:
+                    # A and X have return values, Y is free - use PLY
+                    for _ in range(pulls_needed):
+                        self._emit_implied(Opcode.PLY, f"Deallocate frame ({frame_size} bytes)")
+                else:
+                    # All registers have return values - use TSC/ADC/TCS below
+                    pass
+                if return_count < 3:
+                    return
+
+            # For larger frames or odd m16 frames, use TSC/ADC/TCS approach
+            # NOTE: We can't use PLX/PLY for odd frame sizes in m16 mode because
+            # they pull 2 bytes each, but the frame may have odd byte count.
+            #
+            # IMPORTANT: Must restore to original mode before TXA/TYA to preserve
+            # full register width (16-bit return values need m16 TXA).
             if return_count == 0:
                 # A is not a return value, can use it freely
-                self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "16-bit A for SP adjust")
-                self.parent.emitter.emit_accu_mode(16)
+                if current_mode != 16:
+                    self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "16-bit A for SP adjust")
+                    self.parent.emitter.emit_accu_mode(16)
                 self._emit_implied(Opcode.TSC, "SP to A")
                 self._emit_implied(Opcode.CLC)
                 self._emit_immediate(Opcode.ADC_IMMEDIATE, frame_size, f"Adjust past {frame_size} bytes")
                 self._emit_implied(Opcode.TCS, "A to SP")
-                self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "Restore 8-bit A")
-                self.parent.emitter.emit_accu_mode(8)
+                if current_mode != 16:
+                    self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "Restore 8-bit A")
+                    self.parent.emitter.emit_accu_mode(8)
             elif return_count == 1:
                 # A is return value, X is free - use X to save A
                 self._emit_implied(Opcode.TAX, "Save return value A in X")
-                self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "16-bit A for SP adjust")
-                self.parent.emitter.emit_accu_mode(16)
+                if current_mode != 16:
+                    self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "16-bit A for SP adjust")
+                    self.parent.emitter.emit_accu_mode(16)
                 self._emit_implied(Opcode.TSC, "SP to A")
                 self._emit_implied(Opcode.CLC)
                 self._emit_immediate(Opcode.ADC_IMMEDIATE, frame_size, f"Adjust past {frame_size} bytes")
                 self._emit_implied(Opcode.TCS, "A to SP")
-                self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "Restore 8-bit A")
-                self.parent.emitter.emit_accu_mode(8)
+                # Restore original mode BEFORE TXA to preserve full register width
+                if current_mode != 16:
+                    self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "Restore 8-bit A")
+                    self.parent.emitter.emit_accu_mode(8)
                 self._emit_implied(Opcode.TXA, "Restore return value A from X")
             elif return_count == 2:
                 # A and X are return values, Y is free - use Y to save A
                 self._emit_implied(Opcode.TAY, "Save return value A in Y")
-                self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "16-bit A for SP adjust")
-                self.parent.emitter.emit_accu_mode(16)
+                if current_mode != 16:
+                    self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "16-bit A for SP adjust")
+                    self.parent.emitter.emit_accu_mode(16)
                 self._emit_implied(Opcode.TSC, "SP to A")
                 self._emit_implied(Opcode.CLC)
                 self._emit_immediate(Opcode.ADC_IMMEDIATE, frame_size, f"Adjust past {frame_size} bytes")
                 self._emit_implied(Opcode.TCS, "A to SP")
-                self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "Restore 8-bit A")
-                self.parent.emitter.emit_accu_mode(8)
+                # Restore original mode BEFORE TYA to preserve full register width
+                if current_mode != 16:
+                    self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "Restore 8-bit A")
+                    self.parent.emitter.emit_accu_mode(8)
                 self._emit_implied(Opcode.TYA, "Restore return value A from Y")
             else:
                 # All three registers are return values - save A to stack
                 # After SP adjustment, A will be at a different offset
+                # In m16 mode, PHA pushes 2 bytes; in m8 mode, 1 byte
+                push_size = 2 if current_mode == 16 else 1
                 self._emit_implied(Opcode.PHA, "Save return value A")
-                self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "16-bit A for SP adjust")
-                self.parent.emitter.emit_accu_mode(16)
+                if current_mode != 16:
+                    self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "16-bit A for SP adjust")
+                    self.parent.emitter.emit_accu_mode(16)
                 self._emit_implied(Opcode.TSC, "SP to A")
                 self._emit_implied(Opcode.CLC)
-                # Adjust past frame + 1 byte we pushed
-                self._emit_immediate(Opcode.ADC_IMMEDIATE, frame_size + 1, f"Adjust past {frame_size} frame + 1 saved A")
+                # Adjust past frame + bytes we pushed
+                self._emit_immediate(Opcode.ADC_IMMEDIATE, frame_size + push_size, f"Adjust past {frame_size} frame + {push_size} saved A")
                 self._emit_implied(Opcode.TCS, "A to SP")
-                self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "Restore 8-bit A")
-                self.parent.emitter.emit_accu_mode(8)
+                # Restore original mode BEFORE PLA to get correct width
+                if current_mode != 16:
+                    self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "Restore 8-bit A")
+                    self.parent.emitter.emit_accu_mode(8)
                 # A is now at SP+1 (right above the new stack pointer)
                 self._emit_implied(Opcode.PLA, "Restore return value A")
             return
