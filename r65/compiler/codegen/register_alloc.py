@@ -399,6 +399,18 @@ class RegisterAllocator:
             self.hw_allocs[hw_reg].is_bound = True
             return location
 
+        # Check if this vreg is hw-coalesceable (can stay in hardware register)
+        if self.slot_allocation and self.slot_allocation.hw_coalesceable:
+            hw_reg = self.slot_allocation.hw_coalesceable.get(vreg)
+            if hw_reg:
+                location = PhysicalLocation(
+                    kind=LocationKind.HARDWARE,
+                    hw_register=hw_reg,
+                    size=self._get_vreg_size(vreg)
+                )
+                self.allocations[vreg.id] = location
+                return location
+
         # Determine if this vreg lives across any call
         live_across_call = False
         live_across_indirect_call = False

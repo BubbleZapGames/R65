@@ -10,7 +10,7 @@ consecutive slots and tracking the full range for interference checking.
 
 from typing import Dict, Set, List, Optional, Tuple
 from dataclasses import dataclass
-from r65.compiler.mir.nodes import VirtualRegister, MIRFunction
+from r65.compiler.mir.nodes import VirtualRegister, MIRFunction, Move, Return, HardwareRegister
 from r65.compiler.mir.liveness import LivenessAnalyzer
 from r65.compiler.hir.unified_type_utils import get_unified_type_size
 from r65.compiler.hir import HIRError
@@ -36,6 +36,14 @@ class SlotAllocation:
     # Statistics
     variables_count: int
     slots_saved: int  # Number of slots saved by reuse
+
+    # Vregs that can stay in hardware registers (no spill needed)
+    # Maps vreg to the hardware register name it should stay in
+    hw_coalesceable: Dict[VirtualRegister, str] = None
+
+    def __post_init__(self):
+        if self.hw_coalesceable is None:
+            self.hw_coalesceable = {}
 
 
 class StackSlotAllocator:
@@ -66,8 +74,11 @@ class StackSlotAllocator:
         # Run liveness analysis
         self.liveness_analyzer.analyze()
 
-        # Collect all virtual registers with their sizes
-        virtual_regs = self._collect_virtual_registers()
+        # Identify vregs that can stay in hardware registers
+        hw_coalesceable = self._find_hw_coalesceable_vregs()
+
+        # Collect all virtual registers with their sizes, excluding hw-coalesceable ones
+        virtual_regs = self._collect_virtual_registers(exclude=set(hw_coalesceable.keys()))
 
         if not virtual_regs:
             return SlotAllocation(
@@ -75,7 +86,8 @@ class StackSlotAllocator:
                 register_to_size={},
                 total_slots=0,
                 variables_count=0,
-                slots_saved=0
+                slots_saved=0,
+                hw_coalesceable=hw_coalesceable
             )
 
         # Calculate sizes for all vregs
@@ -103,7 +115,8 @@ class StackSlotAllocator:
             register_to_size=vreg_sizes,
             total_slots=total_slots,
             variables_count=variables_count,
-            slots_saved=slots_saved
+            slots_saved=slots_saved,
+            hw_coalesceable=hw_coalesceable
         )
 
     def _get_vreg_size(self, vreg: VirtualRegister) -> int:
@@ -122,13 +135,118 @@ class StackSlotAllocator:
             # Default to 1 byte if type info is missing or invalid
             return 1
 
-    def _collect_virtual_registers(self) -> List[VirtualRegister]:
+    def _find_hw_coalesceable_vregs(self) -> Dict[VirtualRegister, str]:
+        """
+        Find vregs that can stay in hardware registers without spilling.
+
+        A vreg is hw-coalesceable if:
+        1. Its only definition is a Move from a hardware register
+        2. Its only use is as a Return source (which goes back to a hw register)
+
+        These vregs don't need stack slots - they can stay in the register.
+
+        Returns:
+            Dict mapping vreg to the hardware register name it should stay in
+        """
+        coalesceable: Dict[VirtualRegister, str] = {}
+
+        # Find all definitions and uses for each vreg
+        vreg_defs: Dict[int, List] = {}  # vreg.id -> list of (instr, hw_reg or None)
+        vreg_uses: Dict[int, List] = {}  # vreg.id -> list of instr
+
+        for block in self.func.blocks.values():
+            for instr in block.instructions:
+                # Check for Move from HardwareRegister to VirtualRegister
+                if isinstance(instr, Move):
+                    if isinstance(instr.dest, VirtualRegister):
+                        vreg_id = instr.dest.id
+                        if vreg_id not in vreg_defs:
+                            vreg_defs[vreg_id] = []
+
+                        # Check if source is a hardware register
+                        if isinstance(instr.source, HardwareRegister):
+                            vreg_defs[vreg_id].append((instr, instr.source.name))
+                        else:
+                            vreg_defs[vreg_id].append((instr, None))
+
+                    # Check uses in source
+                    if isinstance(instr.source, VirtualRegister):
+                        vreg_id = instr.source.id
+                        if vreg_id not in vreg_uses:
+                            vreg_uses[vreg_id] = []
+                        vreg_uses[vreg_id].append(instr)
+
+                # Check Return instruction
+                elif isinstance(instr, Return):
+                    if instr.values:
+                        for val in instr.values:
+                            if isinstance(val, VirtualRegister):
+                                vreg_id = val.id
+                                if vreg_id not in vreg_uses:
+                                    vreg_uses[vreg_id] = []
+                                vreg_uses[vreg_id].append(instr)
+
+                # For other instructions, mark vregs as used (not coalesceable)
+                else:
+                    uses = self.liveness_analyzer._get_uses(instr)
+                    for var in uses:
+                        if isinstance(var, VirtualRegister):
+                            if var.id not in vreg_uses:
+                                vreg_uses[var.id] = []
+                            vreg_uses[var.id].append(instr)
+
+        # Find vregs that meet coalescence criteria
+        for vreg_id, defs in vreg_defs.items():
+            # Must have exactly one definition
+            if len(defs) != 1:
+                continue
+
+            instr, hw_reg = defs[0]
+            # Must be from a hardware register
+            if hw_reg is None:
+                continue
+
+            # Check uses - must only be used in Return instructions
+            uses = vreg_uses.get(vreg_id, [])
+            if not uses:
+                # No uses - can coalesce (value unused)
+                # Find the vreg object
+                for block in self.func.blocks.values():
+                    for instr in block.instructions:
+                        if isinstance(instr, Move) and isinstance(instr.dest, VirtualRegister):
+                            if instr.dest.id == vreg_id:
+                                coalesceable[instr.dest] = hw_reg
+                                break
+                continue
+
+            # All uses must be Return instructions
+            all_returns = all(isinstance(use, Return) for use in uses)
+            if not all_returns:
+                continue
+
+            # Find the vreg object and add to coalesceable
+            for block in self.func.blocks.values():
+                for check_instr in block.instructions:
+                    if isinstance(check_instr, Move) and isinstance(check_instr.dest, VirtualRegister):
+                        if check_instr.dest.id == vreg_id:
+                            coalesceable[check_instr.dest] = hw_reg
+                            break
+
+        return coalesceable
+
+    def _collect_virtual_registers(self, exclude: Set[VirtualRegister] = None) -> List[VirtualRegister]:
         """
         Collect all virtual registers used in the function.
+
+        Args:
+            exclude: Set of vregs to exclude from collection (e.g., hw-coalesceable)
 
         Returns:
             List of unique virtual registers
         """
+        if exclude is None:
+            exclude = set()
+
         vregs: Set[VirtualRegister] = set()
 
         for block_id, block in self.func.blocks.items():
@@ -138,7 +256,7 @@ class StackSlotAllocator:
                 defs = self.liveness_analyzer._get_defs(instr)
 
                 for var in uses + defs:
-                    if isinstance(var, VirtualRegister):
+                    if isinstance(var, VirtualRegister) and var not in exclude:
                         vregs.add(var)
 
         return sorted(vregs, key=lambda v: v.id)
