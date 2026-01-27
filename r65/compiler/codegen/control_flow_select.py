@@ -520,6 +520,32 @@ class ControlFlowInstructionSelector(BaseSelector):
         # Single value return
         return 1
 
+    def _function_returns_b(self) -> bool:
+        """
+        Check if the current function returns a value in the B register.
+
+        B register returns are possible in m8 mode for functions like:
+        - return B;
+        - return A, B;
+        - return B, X;
+
+        Returns:
+            True if B is used as a return register, False otherwise
+        """
+        # Check all blocks for Return instructions that include B
+        if not self.current_function:
+            return False
+
+        from r65.compiler.mir.nodes import Return, HardwareRegister
+
+        for block in self.current_function.blocks.values():
+            for instr in block.instructions:
+                if isinstance(instr, Return):
+                    for value in instr.values:
+                        if isinstance(value, HardwareRegister) and value.name == 'B':
+                            return True
+        return False
+
     def _emit_stack_param_cleanup(self):
         """
         Emit callee cleanup code for stack parameters and frame deallocation.
@@ -740,19 +766,30 @@ class ControlFlowInstructionSelector(BaseSelector):
             # Optimization: For small frames (1-4 bytes) in m8 mode, use PLA
             # which is much more efficient than TSC/ADC/TCS.
             # In m8 mode, PLA pulls 1 byte. In m16 mode, PLA pulls 2 bytes.
+            #
+            # IMPORTANT: The XBA optimization below temporarily stores A in B.
+            # This is safe ONLY if B is not a return value. When B returns are
+            # implemented, this check must be updated to skip XBA if B is returned.
             if frame_size <= 4 and current_mode == 8:
+                # Check if B is being returned (XBA would clobber it)
+                returns_b = self._function_returns_b()
+
                 if return_count == 0:
                     # A is not a return value - just use PLA directly
                     for _ in range(frame_size):
                         self._emit_implied(Opcode.PLA, f"Deallocate frame ({frame_size} bytes)")
-                else:
-                    # A has return value - use XBA to save A in B register
+                elif not returns_b:
+                    # A has return value, B is free - use XBA to save A in B register
                     # XBA swaps A (low byte) with B (high byte of 16-bit accumulator)
                     self._emit_implied(Opcode.XBA, "Save A in B")
                     for _ in range(frame_size):
                         self._emit_implied(Opcode.PLA, f"Deallocate frame ({frame_size} bytes)")
                     self._emit_implied(Opcode.XBA, "Restore A from B")
-                return
+                else:
+                    # B is a return value - can't use XBA, fall through to TSC/ADC/TCS
+                    pass
+                if return_count == 0 or not returns_b:
+                    return
 
             # Optimization: For small even frames in m16 mode, use PLX/PLY
             # In x16 mode (always used), PLX/PLY pull 2 bytes each.
