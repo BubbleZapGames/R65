@@ -12,7 +12,7 @@ from dataclasses import dataclass
 
 from r65.compiler.codegen.opcodes import (
     Opcode,
-    BRANCH_OPCODES, JUMP_OPCODES,
+    BRANCH_OPCODES, JUMP_OPCODES, CALL_OPCODES,
     LOAD_A_OPCODES, LOAD_X_OPCODES, LOAD_Y_OPCODES,
     STORE_A_OPCODES, STORE_X_OPCODES, STORE_Y_OPCODES,
 )
@@ -153,8 +153,10 @@ READS_FROM_MEMORY_OPCODES: Set[Opcode] = (
 )
 
 # Control flow instructions that end a basic block
+# CALL_OPCODES (JSR/JSL) are included because the callee may modify any memory location,
+# so dead store analysis must stop at calls to avoid removing stores that are actually used
 CONTROL_FLOW_OPCODES: Set[Opcode] = (
-    BRANCH_OPCODES | JUMP_OPCODES | {Opcode.RTS, Opcode.RTL, Opcode.RTI}
+    BRANCH_OPCODES | JUMP_OPCODES | CALL_OPCODES | {Opcode.RTS, Opcode.RTL, Opcode.RTI}
 )
 
 
