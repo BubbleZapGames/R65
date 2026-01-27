@@ -522,44 +522,59 @@ class ControlFlowInstructionSelector(BaseSelector):
 
     def _emit_stack_param_cleanup(self):
         """
-        Emit callee cleanup code for stack parameters.
+        Emit callee cleanup code for stack parameters and frame deallocation.
+
+        This combines:
+        1. Frame deallocation (if function allocated a stack frame)
+        2. Stack parameter cleanup (if function has stack parameters)
+
+        These are combined into a single SP adjustment to avoid issues with
+        return address offsets when they're done separately.
 
         Strategy varies based on parameter count and return registers:
         - 0 bytes: no cleanup needed
         - Near functions: PLX, adjust SP, PHX, (RTS will follow)
         - Far functions: more complex due to 3-byte return address
 
-        The cleanup pops the return address, adjusts SP past parameters,
-        then pushes the return address back so RTS/RTL finds it.
-
-        Optimal strategy based on bytes to clean:
-        - For any amount: PLX + TSC/ADC/TCS + PHX (constant overhead)
-        - If X is a return register, use Y instead
-        - If both X and Y are return registers, use scratch or inline adjustment
+        The cleanup moves the return address from its current position
+        (S+frame_size+1) to its new position (S+total_cleanup+1), then
+        adjusts SP past frame + parameters.
         """
-        stack_bytes = self._get_stack_param_bytes()
-        if stack_bytes == 0:
+        stack_param_bytes = self._get_stack_param_bytes()
+
+        # Get frame size from register allocator
+        frame_size = 0
+        if self.parent.reg_alloc and self.parent.reg_alloc.has_frame_allocation:
+            frame_size = self.parent.reg_alloc.frame_size
+
+        # Total bytes to clean up: frame + stack parameters
+        total_cleanup_bytes = frame_size + stack_param_bytes
+
+        if total_cleanup_bytes == 0:
             return
 
         return_count = self._get_return_register_count()
         is_far = self.current_function and self.current_function.is_far
 
         if is_far:
-            self._emit_far_stack_cleanup(stack_bytes, return_count)
+            self._emit_far_stack_cleanup(frame_size, stack_param_bytes, return_count)
         else:
-            self._emit_near_stack_cleanup(stack_bytes, return_count)
+            self._emit_near_stack_cleanup(frame_size, stack_param_bytes, return_count)
 
-    def _emit_near_stack_cleanup(self, stack_bytes: int, return_count: int):
+    def _emit_near_stack_cleanup(self, frame_size: int, stack_param_bytes: int, return_count: int):
         """
         Emit stack cleanup for near functions (2-byte return address).
 
         Uses PLX/PLY to grab return address, adjusts SP, pushes back.
 
         Args:
-            stack_bytes: Number of parameter bytes to clean
+            frame_size: Number of bytes allocated for stack frame (0 if no frame)
+            stack_param_bytes: Number of parameter bytes to clean
             return_count: Number of registers used for return (0-3)
         """
         from r65.compiler.codegen.constants import M_FLAG
+
+        total_cleanup = frame_size + stack_param_bytes
 
         # Determine which register to use for return address
         # A is most commonly used for return, so prefer X, then Y
@@ -576,10 +591,17 @@ class ControlFlowInstructionSelector(BaseSelector):
         else:
             # All three registers used for return - need scratch or special handling
             # For now, use inline adjustment without a temp register
-            self._emit_near_stack_cleanup_no_free_reg(stack_bytes)
+            self._emit_near_stack_cleanup_no_free_reg(frame_size, stack_param_bytes)
             return
 
-        # Emit cleanup sequence:
+        # With frame allocation, return address is at S+frame_size+1, not S+1
+        # We need to load it from the correct offset before PLX can work
+        if frame_size > 0:
+            # Use inline stack manipulation instead of PL/PH for frame case
+            self._emit_near_stack_cleanup_with_frame(frame_size, stack_param_bytes, return_count)
+            return
+
+        # Emit cleanup sequence (no frame case):
         # PLX/PLY - pop return address (2 bytes)
         # REP #$20 - switch to m16 for 16-bit SP arithmetic
         # TSC - transfer SP to A
@@ -601,7 +623,7 @@ class ControlFlowInstructionSelector(BaseSelector):
 
         self._emit_implied(Opcode.TSC, "SP to A")
         self._emit_implied(Opcode.CLC)
-        self._emit_immediate(Opcode.ADC_IMMEDIATE, stack_bytes, f"Adjust past {stack_bytes} param bytes")
+        self._emit_immediate(Opcode.ADC_IMMEDIATE, total_cleanup, f"Adjust past {total_cleanup} bytes")
         self._emit_implied(Opcode.TCS, "A to SP")
 
         if need_mode_switch:
@@ -610,45 +632,63 @@ class ControlFlowInstructionSelector(BaseSelector):
 
         self._emit_implied(push_op, "Push return address back")
 
-    def _emit_near_stack_cleanup_no_free_reg(self, stack_bytes: int):
+    def _emit_near_stack_cleanup_with_frame(self, frame_size: int, stack_param_bytes: int, return_count: int):
         """
-        Emit stack cleanup when all A/X/Y have return values.
+        Emit stack cleanup for near functions when a stack frame is allocated.
 
-        Uses the stack itself to temporarily save X, then restores it.
+        With frame allocation, return address is at S+frame_size+1, not S+1.
+        Uses inline stack-relative loads/stores instead of PL/PH instructions.
 
         Args:
-            stack_bytes: Number of parameter bytes to clean
+            frame_size: Number of bytes allocated for stack frame
+            stack_param_bytes: Number of parameter bytes to clean
+            return_count: Number of registers used for return (0-3)
         """
         from r65.compiler.codegen.constants import M_FLAG
 
-        # Save X return value, use X for cleanup, restore X
-        # PHX - save X return value
-        # PLX - this pops what we just pushed... need different approach
+        total_cleanup = frame_size + stack_param_bytes
 
-        # Alternative: adjust return address in-place on stack
-        # This is complex but doesn't need a free register
-        #
-        # Stack layout:
-        #   SP+0: ret_lo
-        #   SP+1: ret_hi
-        #   SP+2: param1
-        #   ...
-        #
-        # We want to move ret_addr up by stack_bytes, then adjust SP
-        #
-        # LDA SP+0    ; ret_lo
-        # STA SP+stack_bytes+0
-        # LDA SP+1    ; ret_hi
-        # STA SP+stack_bytes+1
-        # TSC; CLC; ADC #stack_bytes; TCS
+        # Return address is at S+frame_size+1 (2 bytes for near)
+        ret_addr_offset = frame_size + 1
 
-        # Actually simpler: use Y to save X temporarily on stack in a nested way
-        # PHY - save Y (2 bytes)
-        # TXY - copy X to Y
-        # PLX - pop return address (but this pops Y we just pushed!)
+        current_mode = self.parent.emitter.get_accu_mode()
+        need_mode_switch = (current_mode != 16)
 
-        # Let's use a different approach: inline stack manipulation
-        # We'll temporarily use the space that will be freed
+        if need_mode_switch:
+            self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "16-bit A for cleanup")
+            self.parent.emitter.emit_accu_mode(16)
+
+        # Load return address from current position, store at new position
+        self._emit_stack_relative(Opcode.LDA_STACK, ret_addr_offset, "Load return address")
+        self._emit_stack_relative(Opcode.STA_STACK, total_cleanup + 1, "Store past cleanup area")
+
+        # Adjust SP
+        self._emit_implied(Opcode.TSC, "SP to A")
+        self._emit_implied(Opcode.CLC)
+        self._emit_immediate(Opcode.ADC_IMMEDIATE, total_cleanup, f"Adjust past {total_cleanup} bytes")
+        self._emit_implied(Opcode.TCS, "A to SP")
+
+        if need_mode_switch:
+            self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "Restore 8-bit A")
+            self.parent.emitter.emit_accu_mode(8)
+
+    def _emit_near_stack_cleanup_no_free_reg(self, frame_size: int, stack_param_bytes: int):
+        """
+        Emit stack cleanup when all A/X/Y have return values.
+
+        Uses inline stack manipulation since no registers are free.
+
+        Args:
+            frame_size: Number of bytes allocated for stack frame (0 if no frame)
+            stack_param_bytes: Number of parameter bytes to clean
+        """
+        from r65.compiler.codegen.constants import M_FLAG
+
+        total_cleanup = frame_size + stack_param_bytes
+
+        # Return address offset depends on whether we have a frame
+        # Without frame: SP+1, With frame: SP+frame_size+1
+        ret_addr_offset = frame_size + 1
 
         current_mode = self.parent.emitter.get_accu_mode()
         need_mode_switch = (current_mode != 16)
@@ -658,41 +698,123 @@ class ControlFlowInstructionSelector(BaseSelector):
             self.parent.emitter.emit_accu_mode(16)
 
         # Load return address from stack, store it higher up
-        self._emit_stack_relative(Opcode.LDA_STACK, 1, "Load return address")
-        self._emit_stack_relative(Opcode.STA_STACK, stack_bytes + 1, "Store past params")
+        self._emit_stack_relative(Opcode.LDA_STACK, ret_addr_offset, "Load return address")
+        self._emit_stack_relative(Opcode.STA_STACK, total_cleanup + 1, "Store past cleanup area")
 
         # Adjust SP
         self._emit_implied(Opcode.TSC, "SP to A")
         self._emit_implied(Opcode.CLC)
-        self._emit_immediate(Opcode.ADC_IMMEDIATE, stack_bytes, f"Adjust past {stack_bytes} param bytes")
+        self._emit_immediate(Opcode.ADC_IMMEDIATE, total_cleanup, f"Adjust past {total_cleanup} bytes")
         self._emit_implied(Opcode.TCS, "A to SP")
 
         if need_mode_switch:
             self._emit_immediate(Opcode.SEP_IMMEDIATE, 0x20, "Restore 8-bit A")
             self.parent.emitter.emit_accu_mode(8)
 
-    def _emit_far_stack_cleanup(self, stack_bytes: int, return_count: int):
+    def _emit_far_stack_cleanup(self, frame_size: int, stack_param_bytes: int, return_count: int):
         """
         Emit stack cleanup for far functions (3-byte return address).
 
         Far functions have bank byte + address on stack. More complex
         because we need to handle 3 bytes instead of 2.
 
+        IMPORTANT: Must preserve return values. Strategy:
+        - Small frames (1-4 bytes), no stack params: Use PLX/PLY (not PLA) to pop frame
+        - Large frames (>4 bytes): Transfer A to free register, do TSC/ADC/TCS, transfer back
+        - No free registers: Save A to stack, adjust SP with offset accounting, restore
+
         Args:
-            stack_bytes: Number of parameter bytes to clean
+            frame_size: Number of bytes allocated for stack frame (0 if no frame)
+            stack_param_bytes: Number of parameter bytes to clean
             return_count: Number of registers used for return (0-3)
         """
         from r65.compiler.codegen.constants import M_FLAG
 
+        total_cleanup = frame_size + stack_param_bytes
+
+        # Special case: frame-only cleanup (no stack params)
+        # When there are no stack params, we don't need to move the return address.
+        if stack_param_bytes == 0 and frame_size > 0:
+            # NOTE: We can't use PLX/PLY for frame deallocation because in x16 mode
+            # (which R65 always uses), PLX/PLY pull 2 bytes each, not 1. The frame
+            # is allocated with 8-bit PHAs (1 byte each), so we must use TSC/ADC/TCS.
+            #
+            # Need TSC/ADC/TCS which uses A - must preserve A if it's a return value
+            if return_count == 0:
+                # A is not a return value, can use it freely
+                self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "16-bit A for SP adjust")
+                self.parent.emitter.emit_accu_mode(16)
+                self._emit_implied(Opcode.TSC, "SP to A")
+                self._emit_implied(Opcode.CLC)
+                self._emit_immediate(Opcode.ADC_IMMEDIATE, frame_size, f"Adjust past {frame_size} bytes")
+                self._emit_implied(Opcode.TCS, "A to SP")
+                self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "Restore 8-bit A")
+                self.parent.emitter.emit_accu_mode(8)
+            elif return_count == 1:
+                # A is return value, X is free - use X to save A
+                self._emit_implied(Opcode.TAX, "Save return value A in X")
+                self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "16-bit A for SP adjust")
+                self.parent.emitter.emit_accu_mode(16)
+                self._emit_implied(Opcode.TSC, "SP to A")
+                self._emit_implied(Opcode.CLC)
+                self._emit_immediate(Opcode.ADC_IMMEDIATE, frame_size, f"Adjust past {frame_size} bytes")
+                self._emit_implied(Opcode.TCS, "A to SP")
+                self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "Restore 8-bit A")
+                self.parent.emitter.emit_accu_mode(8)
+                self._emit_implied(Opcode.TXA, "Restore return value A from X")
+            elif return_count == 2:
+                # A and X are return values, Y is free - use Y to save A
+                self._emit_implied(Opcode.TAY, "Save return value A in Y")
+                self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "16-bit A for SP adjust")
+                self.parent.emitter.emit_accu_mode(16)
+                self._emit_implied(Opcode.TSC, "SP to A")
+                self._emit_implied(Opcode.CLC)
+                self._emit_immediate(Opcode.ADC_IMMEDIATE, frame_size, f"Adjust past {frame_size} bytes")
+                self._emit_implied(Opcode.TCS, "A to SP")
+                self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "Restore 8-bit A")
+                self.parent.emitter.emit_accu_mode(8)
+                self._emit_implied(Opcode.TYA, "Restore return value A from Y")
+            else:
+                # All three registers are return values - save A to stack
+                # After SP adjustment, A will be at a different offset
+                self._emit_implied(Opcode.PHA, "Save return value A")
+                self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "16-bit A for SP adjust")
+                self.parent.emitter.emit_accu_mode(16)
+                self._emit_implied(Opcode.TSC, "SP to A")
+                self._emit_implied(Opcode.CLC)
+                # Adjust past frame + 1 byte we pushed
+                self._emit_immediate(Opcode.ADC_IMMEDIATE, frame_size + 1, f"Adjust past {frame_size} frame + 1 saved A")
+                self._emit_implied(Opcode.TCS, "A to SP")
+                self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "Restore 8-bit A")
+                self.parent.emitter.emit_accu_mode(8)
+                # A is now at SP+1 (right above the new stack pointer)
+                self._emit_implied(Opcode.PLA, "Restore return value A")
+            return
+
+        # General case: need to move return address past stack params
         # For far functions, return address is 3 bytes: addr_lo, addr_hi, bank
-        # Stack layout:
-        #   SP+0: addr_lo
-        #   SP+1: addr_hi
-        #   SP+2: bank
-        #   SP+3: param1...
-        #
-        # Strategy: use 16-bit loads/stores to move address, handle bank separately
-        # or move all 3 bytes using m16 LDA/STA for 2 bytes + m8 for 1 byte
+        ret_addr_offset = frame_size + 1
+        bank_offset = frame_size + 3
+
+        # Determine how to preserve A during cleanup
+        save_method = None  # 'X', 'Y', or 'stack'
+        if return_count >= 1:
+            if return_count == 1:
+                save_method = 'X'
+            elif return_count == 2:
+                save_method = 'Y'
+            else:
+                save_method = 'stack'
+
+        # Save return value if needed
+        if save_method == 'X':
+            self._emit_implied(Opcode.TAX, "Save return value A in X")
+        elif save_method == 'Y':
+            self._emit_implied(Opcode.TAY, "Save return value A in Y")
+        elif save_method == 'stack':
+            self._emit_implied(Opcode.PHA, "Save return value A")
+            ret_addr_offset += 1
+            bank_offset += 1
 
         current_mode = self.parent.emitter.get_accu_mode()
         need_mode_switch = (current_mode != 16)
@@ -702,16 +824,17 @@ class ControlFlowInstructionSelector(BaseSelector):
             self.parent.emitter.emit_accu_mode(16)
 
         # Load and store 16-bit address portion
-        self._emit_stack_relative(Opcode.LDA_STACK, 1, "Load return address")
-        self._emit_stack_relative(Opcode.STA_STACK, stack_bytes + 1, "Store past params")
+        self._emit_stack_relative(Opcode.LDA_STACK, ret_addr_offset, "Load return address")
+        store_offset = total_cleanup + 1 + (1 if save_method == 'stack' else 0)
+        self._emit_stack_relative(Opcode.STA_STACK, store_offset, "Store past cleanup area")
 
         # Switch to 8-bit for bank byte
         self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "8-bit A for bank")
         self.parent.emitter.emit_accu_mode(8)
 
         # Load and store bank byte
-        self._emit_stack_relative(Opcode.LDA_STACK, 3, "Load bank byte")
-        self._emit_stack_relative(Opcode.STA_STACK, stack_bytes + 3, "Store bank past params")
+        self._emit_stack_relative(Opcode.LDA_STACK, bank_offset, "Load bank byte")
+        self._emit_stack_relative(Opcode.STA_STACK, store_offset + 2, "Store bank past cleanup area")
 
         # Switch to 16-bit for SP adjustment
         self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "16-bit A for SP adjust")
@@ -720,13 +843,21 @@ class ControlFlowInstructionSelector(BaseSelector):
         # Adjust SP
         self._emit_implied(Opcode.TSC, "SP to A")
         self._emit_implied(Opcode.CLC)
-        self._emit_immediate(Opcode.ADC_IMMEDIATE, stack_bytes, f"Adjust past {stack_bytes} param bytes")
+        adj_amount = total_cleanup + (1 if save_method == 'stack' else 0)
+        self._emit_immediate(Opcode.ADC_IMMEDIATE, adj_amount, f"Adjust past {total_cleanup} bytes")
         self._emit_implied(Opcode.TCS, "A to SP")
 
-        # Restore original mode
-        if need_mode_switch:
-            self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "Restore 8-bit A")
-            self.parent.emitter.emit_accu_mode(8)
+        # Restore 8-bit mode
+        self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "Restore 8-bit A")
+        self.parent.emitter.emit_accu_mode(8)
+
+        # Restore return value
+        if save_method == 'X':
+            self._emit_implied(Opcode.TXA, "Restore return value A from X")
+        elif save_method == 'Y':
+            self._emit_implied(Opcode.TYA, "Restore return value A from Y")
+        elif save_method == 'stack':
+            self._emit_implied(Opcode.PLA, "Restore return value A")
 
     def _emit_stack_relative(self, opcode: Opcode, offset: int, comment: str = None):
         """Emit a stack-relative instruction."""

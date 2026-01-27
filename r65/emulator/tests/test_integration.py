@@ -92,7 +92,6 @@ class TestCompiledPrograms:
     def test_simple_assignment(self, has_toolchain):
         """Test basic register assignments."""
         source = '''
-#[mode(m8, x8)]
 #[entry]
 fn main() {
     A = 0x42;
@@ -110,7 +109,6 @@ fn main() {
     def test_arithmetic(self, has_toolchain):
         """Test arithmetic operations."""
         source = '''
-#[mode(m8, x8)]
 #[entry]
 fn main() {
     A = 10;
@@ -126,7 +124,6 @@ fn main() {
     def test_loop_countdown(self, has_toolchain):
         """Test loop with countdown."""
         source = '''
-#[mode(m8, x8)]
 #[entry]
 fn main() {
     X = 5;
@@ -150,7 +147,6 @@ fn main() {
     def test_conditional_branch(self, has_toolchain):
         """Test conditional branching."""
         source = '''
-#[mode(m8, x8)]
 #[entry]
 fn main() {
     A = 10;
@@ -169,13 +165,11 @@ fn main() {
     def test_16bit_mode(self, has_toolchain):
         """Test 16-bit accumulator mode."""
         # Note: Entry functions use CLC;XCE to enter native mode, then need
-        # REP #$30 to enable 16-bit mode. The compiler should generate this
-        # but currently doesn't for entry functions. Use explicit REP.
+        # REP #$20 to enable 16-bit A. X/Y are always 16-bit in R65.
         source = '''
-#[mode(m16, x16)]
 #[entry]
 fn main() {
-    REP(0x30);  // Enable 16-bit A and X/Y
+    asm!("REP #$20");  // Enable 16-bit A
     A = 0x1234;
     X = 0x5678;
 }
@@ -192,7 +186,6 @@ fn main() {
 #[zeropage(0x10)]
 static mut TEMP: u8;
 
-#[mode(m8, x8)]
 #[entry]
 fn main() {
     TEMP = 0x42;
@@ -209,12 +202,10 @@ fn main() {
     def test_subroutine_call(self, has_toolchain):
         """Test function call and return."""
         source = '''
-#[mode(m8, x8)]
 fn set_value() {
     A = 0x99;
 }
 
-#[mode(m8, x8)]
 #[entry]
 fn main() {
     A = 0;
@@ -230,7 +221,6 @@ fn main() {
     def test_compare_and_branch(self, has_toolchain):
         """Test comparison operations."""
         source = '''
-#[mode(m8, x8)]
 #[entry]
 fn main() {
     A = 5;
@@ -254,7 +244,6 @@ fn main() {
     def test_bitwise_operations(self, has_toolchain):
         """Test bitwise AND, OR, XOR."""
         source = '''
-#[mode(m8, x8)]
 #[entry]
 fn main() {
     A = 0xFF;

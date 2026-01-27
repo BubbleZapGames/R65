@@ -353,29 +353,10 @@ class MIRBuilder:
             # In the simplified mode system, X/Y are always 16-bit (x16 mode),
             # so no validation is needed - far pointer params always work
 
-        # If this is an entry point function, initialize native mode and call __init_start()
+        # If this is an entry point function, call __init_start() to initialize static data
+        # Note: The SEI/CLC/XCE/REP sequence for switching to native mode is now
+        # emitted in the prologue (function_gen.py) BEFORE frame allocation
         if hir_func.is_entry:
-            # SNES boots in 6502 emulation mode - must switch to 65816 native mode first
-            # This MUST happen before __init_start because MVN requires 16-bit index regs
-            self.emit(InlineAsm(instructions=["SEI"]))      # Disable interrupts
-            self.emit(InlineAsm(instructions=["CLC"]))      # Clear carry for XCE
-            self.emit(InlineAsm(instructions=["XCE"]))      # Enter native mode
-
-            # After XCE, CPU is in native mode with M=1, X=1 (8-bit mode)
-            # Set up the default mode: m8 (8-bit A), x16 (16-bit X/Y)
-            # X/Y are ALWAYS 16-bit in R65, so we always emit REP #$10
-            # A is 8-bit by default (m8), which is already set after XCE
-            rep_mask = 0x10  # Clear X flag for 16-bit index mode
-
-            # If function has mode attribute with m16, also clear M flag
-            if hir_func.mode_attr and self.current_mode.is_fully_known():
-                entry_mode = self.current_mode
-                if entry_mode.m_mode == ModeState.M16:
-                    rep_mask |= 0x20  # Clear M flag for 16-bit accumulator
-
-            # Emit REP to set up x16 mode (always) and m16 mode (if requested)
-            self.emit(SetMode(mask=rep_mask, is_set=False))
-
             if self.has_init_start:
                 # Emit call to __init_start()
                 self.emit(Call(

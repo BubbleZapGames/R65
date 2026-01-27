@@ -293,8 +293,21 @@ class RegisterAllocator:
         # Track which vregs are bound to hw registers (from @ bindings)
         self.hw_bindings: Dict[int, str] = {}  # vreg.id -> hw reg name
 
-        # Base offset for stack slots (starts after scratch registers)
-        self.stack_base_offset = 0x16  # Start after common scratch locations
+        # Frame allocation info (set by FunctionCodeGenerator after allocation)
+        self.frame_size: int = 0
+        self.has_frame_allocation: bool = False
+
+        # Calculate base offset for stack temporaries
+        # After frame allocation, locals start at S+1
+        # prologue_stack_bytes accounts for return address and preserved registers
+        # Entry functions have no return address or preserved registers, so offset is just 1
+        if mir_func and mir_func.is_entry:
+            self.stack_base_offset = 1  # Entry functions have no prologue overhead
+        else:
+            self.stack_base_offset = self.prologue_stack_bytes + 1
+
+        # Track which vregs are stack parameters so we can update them later
+        self._stack_param_vregs: Set[int] = set()
 
         # Pre-allocate stack parameter vregs at their passed locations
         # This avoids redundant copying in the prologue
@@ -307,6 +320,9 @@ class RegisterAllocator:
         Stack parameters are passed by the caller at known offsets. Rather than
         copying them to local stack slots, we use the passed locations directly.
         The offset is adjusted for bytes pushed by the prologue.
+
+        Note: For non-entry functions with frame allocation, update_stack_param_offsets()
+        must be called after frame size is known to add the frame offset.
         """
         if not self.mir_func:
             return
@@ -319,7 +335,7 @@ class RegisterAllocator:
             if not vreg:
                 continue
 
-            # Adjust offset for prologue pushes
+            # Adjust offset for prologue pushes (frame size added later if needed)
             adjusted_offset = base_offset + self.prologue_stack_bytes
 
             # Create physical location at the passed stack offset
@@ -329,6 +345,27 @@ class RegisterAllocator:
                 size=self._get_vreg_size(vreg)
             )
             self.allocations[vreg.id] = location
+            self._stack_param_vregs.add(vreg.id)
+
+    def update_stack_param_offsets(self, frame_size: int):
+        """
+        Update stack parameter offsets to account for frame allocation.
+
+        When a function allocates a stack frame, S moves down by frame_size.
+        This means all stack parameters (which are at higher addresses) now
+        appear at higher S-relative offsets.
+
+        Args:
+            frame_size: Number of bytes allocated for the stack frame
+        """
+        if frame_size == 0:
+            return
+
+        for vreg_id in self._stack_param_vregs:
+            if vreg_id in self.allocations:
+                location = self.allocations[vreg_id]
+                if location.kind == LocationKind.STACK:
+                    location.stack_offset += frame_size
 
     def allocate_vreg(self, vreg: VirtualRegister) -> PhysicalLocation:
         """

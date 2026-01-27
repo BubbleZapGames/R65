@@ -184,11 +184,15 @@ class MemoryOperationSelector(BaseSelector):
         elif is_u16:
             self.parent._emit_16bit_mem_to_mem(src_loc, dest_loc)
         else:
+            # 8-bit store requires m8 mode
+            self._ensure_m8_mode()
             self._emit_load_store('LDA', src_loc)
             self._emit_load_store('STA', dest_loc)
 
     def _store_far_pointer(self, src_loc, dest_loc):
         """Store a 3-byte far pointer from source to destination."""
+        # Far pointer copies are byte-by-byte, need 8-bit mode
+        self._ensure_m8_mode()
         # Low byte
         self._emit_load_store('LDA', src_loc)
         self._emit_load_store('STA', dest_loc)

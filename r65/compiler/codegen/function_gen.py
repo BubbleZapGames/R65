@@ -98,6 +98,17 @@ class FunctionCodeGenerator:
         # Allocate all virtual registers in function
         self._allocate_function_registers(mir_func, reg_alloc)
 
+        # Get frame size from allocator - all functions allocate frames for locals if needed
+        frame_size = reg_alloc.get_stack_frame_size()
+
+        # Update register allocator with frame info
+        reg_alloc.frame_size = frame_size
+        reg_alloc.has_frame_allocation = frame_size > 0
+
+        # Update stack parameter offsets to account for frame allocation
+        if reg_alloc.has_frame_allocation:
+            reg_alloc.update_stack_param_offsets(frame_size)
+
         # Create instruction selector with current function context
         instr_selector = InstructionSelector(self.emitter, reg_alloc, self.mem_alloc, mir_func, func_gen=self)
 
@@ -111,7 +122,7 @@ class FunctionCodeGenerator:
         self._emit_mode_directives(mir_func)
 
         # Emit prologue (if needed)
-        self.emit_prologue(mir_func, reg_alloc)
+        self.emit_prologue(mir_func, reg_alloc, frame_size)
 
         # Generate basic blocks
         block_order = self._compute_block_order(mir_func)
@@ -375,20 +386,25 @@ class FunctionCodeGenerator:
         # Emit index mode directive - always 16-bit in R65
         self.emitter.emit_directive("    .INDEX 16")
 
-    def emit_prologue(self, mir_func: MIRFunction, reg_alloc: RegisterAllocator):
+    def emit_prologue(self, mir_func: MIRFunction, reg_alloc: RegisterAllocator, frame_size: int = 0):
         """
         Emit function prologue.
 
-        Prologue may include:
-        - Stack pointer initialization (entry functions with custom stack)
-        - Stack frame setup
-        - Register preservation
-        - Mode transitions
-        - DBR management (databank=inline)
+        Prologue may include (in order):
+        1. Stack pointer initialization (entry functions with custom stack)
+        2. Entry function setup (SEI/CLC/XCE/REP - switch to native mode)
+        3. Stack frame allocation (if needed)
+        4. DBR management (databank=inline)
+        5. Mode transitions
+        6. Register preservation
+
+        Stack frame allocation comes BEFORE register saves so that saved registers
+        and stack parameters are at consistent offsets regardless of local variable count.
 
         Args:
             mir_func: MIR function
             reg_alloc: Register allocator
+            frame_size: Number of bytes to allocate for local stack frame
         """
         # Initialize stack pointer for entry functions with custom stack region
         if mir_func.is_entry and self.mem_alloc.stack_upper is not None:
@@ -398,6 +414,15 @@ class FunctionCodeGenerator:
                 self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(stack_addr), "Stack top")
                 self._emit_instr(Opcode.TCS, comment="Set stack pointer")
                 self._emit_instr(Opcode.SEP_IMMEDIATE, Immediate(M_FLAG), "Restore 8-bit A")
+
+        # Entry function setup: switch from emulation mode to native mode
+        # This must happen BEFORE frame allocation since PHA behavior differs between modes
+        if mir_func.is_entry:
+            self._emit_entry_setup(mir_func)
+
+        # Allocate stack frame for functions with locals
+        if frame_size > 0:
+            self._emit_frame_allocation(frame_size)
 
         # Handle DBR management for far functions with databank=inline
         if mir_func.is_far and mir_func.mode_attr and mir_func.bank_attr:
@@ -451,6 +476,106 @@ class FunctionCodeGenerator:
         # NOTE: Stack parameters are now accessed directly at their passed locations.
         # No copying is needed, which means we also don't need to save/restore the
         # A register parameter (the save was only needed because the copy used LDA).
+
+    def _emit_entry_setup(self, mir_func: MIRFunction):
+        """
+        Emit entry function setup code.
+
+        SNES boots in 6502 emulation mode - must switch to 65816 native mode first.
+        This must happen BEFORE frame allocation because PHA behavior differs
+        between emulation mode (8-bit push) and native mode (8-bit or 16-bit push).
+
+        After XCE, CPU is in native mode with M=1, X=1 (8-bit mode).
+        We then set up the R65 default mode: m8 (8-bit A), x16 (16-bit X/Y).
+
+        Args:
+            mir_func: MIR function
+        """
+        # Emit the mode switch sequence using raw assembly
+        # This is cleaner than emitting individual instructions since these
+        # are special bootstrap instructions that don't need comments
+        self.emitter.emit_raw("SEI")   # Disable interrupts
+        self.emitter.emit_raw("CLC")   # Clear carry for XCE
+        self.emitter.emit_raw("XCE")   # Enter native mode
+
+        # After XCE, set up x16 mode (always) and m16 mode (if requested)
+        # X/Y are ALWAYS 16-bit in R65, so we always emit REP #$10
+        from r65.compiler.typeck.processor_mode import ModeState
+        from r65.compiler.codegen.constants import M_FLAG, X_FLAG
+
+        rep_mask = X_FLAG  # Clear X flag for 16-bit index mode
+
+        # If function has m16 entry mode, also clear M flag
+        if mir_func.entry_m_mode == ModeState.M16:
+            rep_mask |= M_FLAG  # Clear M flag for 16-bit accumulator
+
+        # Emit REP to set up x16 mode (always) and m16 mode (if requested)
+        self._emit_instr(Opcode.REP_IMMEDIATE, Immediate(rep_mask))
+
+    def _emit_frame_allocation(self, frame_size: int):
+        """
+        Emit stack frame allocation code.
+
+        For small frames (1-4 bytes), uses PHA instructions which is more efficient.
+        For larger frames, uses TSC/SBC/TCS to subtract from stack pointer.
+
+        PHA approach (8-bit mode, 3 cycles per PHA):
+        - 1 byte:  PHA (3 cycles)
+        - 2 bytes: PHA PHA (6 cycles)
+        - 3 bytes: PHA PHA PHA (9 cycles)
+        - 4 bytes: PHA PHA PHA PHA (12 cycles)
+
+        TSC/SBC/TCS approach (15 cycles total):
+        - REP #$20 (3) + TSC (2) + SEC (2) + SBC #imm (3) + TCS (2) + SEP #$20 (3)
+
+        Break-even is at 5 bytes, so PHA wins for 1-4 bytes.
+
+        Args:
+            frame_size: Number of bytes to allocate
+        """
+        if frame_size <= 0:
+            return
+
+        if frame_size <= 4:
+            # Use PHA for small frames - more efficient
+            # PHA pushes junk (current A value) but that's fine since
+            # locals will be written before being read
+            for _ in range(frame_size):
+                self._emit_instr(Opcode.PHA, comment=f"Allocate frame ({frame_size} bytes)")
+        else:
+            # Use TSC/SBC/TCS for larger frames
+            self._emit_instr(Opcode.REP_IMMEDIATE, Immediate(M_FLAG), "16-bit A for frame setup")
+            self._emit_instr(Opcode.TSC, comment="Get stack pointer")
+            self._emit_instr(Opcode.SEC, comment="Set carry for subtraction")
+            self._emit_instr(Opcode.SBC_IMMEDIATE, Immediate(frame_size), f"Allocate {frame_size} bytes for locals")
+            self._emit_instr(Opcode.TCS, comment="Update stack pointer")
+            self._emit_instr(Opcode.SEP_IMMEDIATE, Immediate(M_FLAG), "Restore 8-bit A")
+
+    def _emit_frame_deallocation(self, frame_size: int):
+        """
+        Emit stack frame deallocation code.
+
+        For small frames (1-4 bytes), uses PLA instructions.
+        For larger frames, uses TSC/ADC/TCS to add to stack pointer.
+
+        Args:
+            frame_size: Number of bytes to deallocate
+        """
+        if frame_size <= 0:
+            return
+
+        if frame_size <= 4:
+            # Use PLA for small frames
+            for _ in range(frame_size):
+                self._emit_instr(Opcode.PLA, comment=f"Deallocate frame ({frame_size} bytes)")
+        else:
+            # Use TSC/ADC/TCS for larger frames
+            self._emit_instr(Opcode.REP_IMMEDIATE, Immediate(M_FLAG), "16-bit A for frame cleanup")
+            self._emit_instr(Opcode.TSC, comment="Get stack pointer")
+            self._emit_instr(Opcode.CLC, comment="Clear carry for addition")
+            self._emit_instr(Opcode.ADC_IMMEDIATE, Immediate(frame_size), f"Deallocate {frame_size} bytes")
+            self._emit_instr(Opcode.TCS, comment="Update stack pointer")
+            self._emit_instr(Opcode.SEP_IMMEDIATE, Immediate(M_FLAG), "Restore 8-bit A")
 
     def _get_prologue_stack_bytes(self, mir_func: MIRFunction) -> int:
         """
@@ -543,6 +668,7 @@ class FunctionCodeGenerator:
         2. Preserved register restoration (reverse of prologue push order)
         3. DBR restoration (for databank=inline)
         4. Mode restoration (for transition=inline)
+        5. Stack frame deallocation (non-entry functions)
 
         Note: Return value loading and RTS/RTL are handled separately
         by the return instruction.
@@ -559,6 +685,10 @@ class FunctionCodeGenerator:
         self._emit_preserved_register_restores(mir_func)
         self._emit_dbr_restore(mir_func)
         self._emit_mode_restore(mir_func)
+
+        # Note: Frame deallocation is NOT done here - it's combined with
+        # the SP adjustment in _emit_stack_param_cleanup (control_flow_select.py)
+        # to avoid issues with return address offsets.
 
     def _emit_preserved_register_restores(self, mir_func: MIRFunction):
         """
