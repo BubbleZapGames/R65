@@ -284,6 +284,203 @@ class TestHwCoalescingCodeGen:
             f"Function with locals should allocate frame\nOutput:\n{func_section}"
 
 
+class TestBRegisterReturns:
+    """Test that B register returns skip XBA frame cleanup optimization."""
+
+    def _has_xba_frame_cleanup(self, asm_section: str) -> bool:
+        """
+        Check if the assembly uses XBA for frame cleanup.
+
+        The XBA frame cleanup pattern is:
+            XBA  ; Save A in B
+            PLA  ; Deallocate frame
+            XBA  ; Restore A from B
+
+        This is different from XBA used for B register access/operations.
+        """
+        lines = [l.strip() for l in asm_section.split('\n')]
+        for i, line in enumerate(lines):
+            if 'XBA' in line and 'Save A in B' in line:
+                return True
+            # Also check for pattern: XBA followed by PLA followed by XBA
+            if line.startswith('XBA') and i + 2 < len(lines):
+                if 'PLA' in lines[i + 1] and lines[i + 2].startswith('XBA'):
+                    return True
+        return False
+
+    def test_return_b_skips_xba_frame_cleanup(self):
+        """Test that returning B uses TSC/ADC/TCS instead of XBA for cleanup."""
+        # Create a function that returns B and has a frame
+        # Frame cleanup should NOT use XBA (would clobber B return value)
+        vreg_alloc = VirtualRegisterAllocator()
+        vreg_a = vreg_alloc.alloc(BasicTypeInfo('u8'), "a")
+
+        entry_block = BasicBlock(block_id=0)
+        entry_block.instructions = [
+            # Save parameter to create a frame
+            Move(
+                dest=vreg_a,
+                source=HardwareRegister('A'),
+                type_info=BasicTypeInfo('u8')
+            ),
+            # Use vreg in a computation (forces frame allocation)
+            BinaryOp(
+                dest=vreg_a,
+                left=vreg_a,
+                op='+',
+                right=Immediate(1),
+                type_info=BasicTypeInfo('u8')
+            ),
+            # Move result to B and return B
+            Move(
+                dest=HardwareRegister('B'),
+                source=vreg_a,
+                type_info=BasicTypeInfo('u8')
+            ),
+            # Return B register directly
+            Return(values=[HardwareRegister('B')])
+        ]
+
+        func = MIRFunction(
+            name="return_b",
+            parameters=[],
+            return_type=BasicTypeInfo('u8'),
+            blocks={0: entry_block},
+            entry_block_id=0,
+            is_far=True,
+            bank_attr=BankAttribute(name='bank', bank_number=1),
+            vreg_allocator=vreg_alloc
+        )
+
+        program = MIRProgram(functions=[func])
+        codegen = ProgramCodeGenerator()
+        asm_output = codegen.generate(program)
+
+        # Find the function section
+        func_start = asm_output.find('return_b:')
+        assert func_start != -1, "return_b function not found"
+
+        func_section = asm_output[func_start:func_start + 500]
+
+        # Should NOT have XBA frame cleanup pattern (would clobber B return value)
+        has_xba_cleanup = self._has_xba_frame_cleanup(func_section)
+        assert not has_xba_cleanup, \
+            f"Function returning B should NOT use XBA for frame cleanup\nOutput:\n{func_section}"
+
+        # Should have TSC/TCS for frame cleanup
+        has_tsc = 'TSC' in func_section
+        has_tcs = 'TCS' in func_section
+        assert has_tsc and has_tcs, \
+            f"Function returning B should use TSC/TCS for cleanup\nOutput:\n{func_section}"
+
+    def test_return_a_uses_xba_frame_cleanup(self):
+        """Test that returning A (not B) uses XBA frame cleanup optimization."""
+        vreg_alloc = VirtualRegisterAllocator()
+        vreg_a = vreg_alloc.alloc(BasicTypeInfo('u8'), "a")
+
+        entry_block = BasicBlock(block_id=0)
+        entry_block.instructions = [
+            Move(
+                dest=vreg_a,
+                source=HardwareRegister('A'),
+                type_info=BasicTypeInfo('u8')
+            ),
+            BinaryOp(
+                dest=vreg_a,
+                left=vreg_a,
+                op='+',
+                right=Immediate(1),
+                type_info=BasicTypeInfo('u8')
+            ),
+            # Return A register (not B)
+            Return(values=[HardwareRegister('A')])
+        ]
+
+        func = MIRFunction(
+            name="return_a",
+            parameters=[],
+            return_type=BasicTypeInfo('u8'),
+            blocks={0: entry_block},
+            entry_block_id=0,
+            is_far=True,
+            bank_attr=BankAttribute(name='bank', bank_number=1),
+            vreg_allocator=vreg_alloc
+        )
+
+        program = MIRProgram(functions=[func])
+        codegen = ProgramCodeGenerator()
+        asm_output = codegen.generate(program)
+
+        func_start = asm_output.find('return_a:')
+        assert func_start != -1, "return_a function not found"
+
+        func_section = asm_output[func_start:func_start + 400]
+
+        # Should have XBA frame cleanup optimization (B is free)
+        has_xba_cleanup = self._has_xba_frame_cleanup(func_section)
+        assert has_xba_cleanup, \
+            f"Function returning A should use XBA for frame cleanup\nOutput:\n{func_section}"
+
+        # Should NOT have TSC/TCS (using XBA/PLA instead)
+        has_tsc = 'TSC' in func_section
+        assert not has_tsc, \
+            f"Function returning A should NOT use TSC/TCS\nOutput:\n{func_section}"
+
+    def test_return_a_and_b_skips_xba_frame_cleanup(self):
+        """Test that returning both A and B skips XBA frame cleanup."""
+        vreg_alloc = VirtualRegisterAllocator()
+        vreg_a = vreg_alloc.alloc(BasicTypeInfo('u8'), "a")
+
+        entry_block = BasicBlock(block_id=0)
+        entry_block.instructions = [
+            Move(
+                dest=vreg_a,
+                source=HardwareRegister('A'),
+                type_info=BasicTypeInfo('u8')
+            ),
+            BinaryOp(
+                dest=vreg_a,
+                left=vreg_a,
+                op='+',
+                right=Immediate(1),
+                type_info=BasicTypeInfo('u8')
+            ),
+            # Return both A and B
+            Return(values=[HardwareRegister('A'), HardwareRegister('B')])
+        ]
+
+        func = MIRFunction(
+            name="return_a_b",
+            parameters=[],
+            return_type=BasicTypeInfo('u8'),  # Simplified - real tuple would differ
+            blocks={0: entry_block},
+            entry_block_id=0,
+            is_far=True,
+            bank_attr=BankAttribute(name='bank', bank_number=1),
+            vreg_allocator=vreg_alloc
+        )
+
+        program = MIRProgram(functions=[func])
+        codegen = ProgramCodeGenerator()
+        asm_output = codegen.generate(program)
+
+        func_start = asm_output.find('return_a_b:')
+        assert func_start != -1, "return_a_b function not found"
+
+        func_section = asm_output[func_start:func_start + 500]
+
+        # Should NOT have XBA frame cleanup (would clobber B return value)
+        has_xba_cleanup = self._has_xba_frame_cleanup(func_section)
+        assert not has_xba_cleanup, \
+            f"Function returning A,B should NOT use XBA for frame cleanup\nOutput:\n{func_section}"
+
+        # Should have TSC/TCS for frame cleanup
+        has_tsc = 'TSC' in func_section
+        has_tcs = 'TCS' in func_section
+        assert has_tsc and has_tcs, \
+            f"Function returning A,B should use TSC/TCS for cleanup\nOutput:\n{func_section}"
+
+
 def test_hw_coalescing_summary():
     """Summary test showing the optimization in action."""
     print("\n=== Hardware Register Coalescing Tests ===\n")
