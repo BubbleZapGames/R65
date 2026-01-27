@@ -8,7 +8,7 @@
 #[snesrom(name="HELLO WORLD")]
 #[bank(0)]
 
-include!("../stdlib/sneslib.r65")
+include!("lib/sneslib.r65")
 
 // ----------------------------------------------------------------------------
 // Message to display
@@ -187,11 +187,11 @@ fn upload_font() {
 // Write a null-terminated message to the tilemap
 // ----------------------------------------------------------------------------
 
-fn write_message(col @ A: u8, row @ X: u16, msg: *[u8]) {
+fn write_message(col: u8, row: u16, msg: *[u8]) {
     // Calculate VRAM address: row * 32 + col
-    X = row << 5;  // row * 32
-    X = X + (A as u16);
-    set_vram_addr!(X);
+    row = row << 5;  // row * 32
+    row = row + col;
+    set_vram_addr!(row);
 
     // Write each character as a tile
     X = 0;
