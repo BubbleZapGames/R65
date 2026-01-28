@@ -40,22 +40,28 @@ class InlinabilityChecker:
     4. Not the entry point
     5. No inline assembly (asm!())
 
-    Heuristics for inlining decisions (in order):
-    1. Called exactly once → always inline (no code size increase)
-    2. Marked #[inline] → inline if < 30 instructions
-    3. No attribute → inline only if very small (< 3 instructions)
+    Heuristics for inlining decisions:
+    - Explicit inlining (always checked):
+      - Marked #[inline] or #[inline(always)] → inline if < 30 instructions
+    - Implicit inlining (only when implicit_inline=True, i.e., -O2):
+      - Called exactly once → always inline (no code size increase)
+      - No attribute → inline only if very small (< 3 instructions)
 
     Note: Trivial getters/setters are auto-marked with #[inline] at HIR level.
     """
 
-    def __init__(self, mir_program: MIRProgram):
+    def __init__(self, mir_program: MIRProgram, implicit_inline: bool = True):
         """
         Initialize the inlinability checker.
 
         Args:
             mir_program: The MIR program to analyze
+            implicit_inline: If True, allow implicit inlining (called-once and small
+                           functions without #[inline] attribute). If False, only
+                           inline functions with explicit #[inline] or #[inline(always)].
         """
         self.mir_program = mir_program
+        self.implicit_inline = implicit_inline
         self.func_map: Dict[str, MIRFunction] = {f.name: f for f in mir_program.functions}
         self.call_graph: Dict[str, Set[str]] = {}
         self.call_counts: Dict[str, int] = {}
@@ -179,13 +185,17 @@ class InlinabilityChecker:
         if func.inline_attr is not None and func.inline_attr.mode == InlineMode.NEVER:
             return False
 
+        # Marked #[inline] or #[inline(always)] → inline if under threshold (explicit inlining)
+        if func.inline_attr is not None:
+            return instr_count < INLINE_THRESHOLD_WITH_ATTR
+
+        # Below this point is implicit inlining - only allowed when implicit_inline=True
+        if not self.implicit_inline:
+            return False
+
         # Called exactly once → always inline (unless #[inline(never)] which is handled above)
         if self.call_counts.get(func_name, 0) == 1:
             return True
-
-        # Marked #[inline] or #[inline(always)] → inline if under threshold
-        if func.inline_attr is not None:
-            return instr_count < INLINE_THRESHOLD_WITH_ATTR
 
         # No attribute → inline only if very small
         return instr_count < INLINE_THRESHOLD_NO_ATTR
@@ -418,14 +428,17 @@ class FunctionInliner:
        f. Add cloned blocks to caller's CFG
     """
 
-    def __init__(self, verbose: bool = False):
+    def __init__(self, verbose: bool = False, implicit_inline: bool = True):
         """
         Initialize the function inliner.
 
         Args:
             verbose: If True, print information about inlined functions
+            implicit_inline: If True, allow implicit inlining (called-once and small
+                           functions). If False, only inline explicitly marked functions.
         """
         self.verbose = verbose
+        self.implicit_inline = implicit_inline
 
     def run(self, mir_program: MIRProgram) -> int:
         """
@@ -437,7 +450,7 @@ class FunctionInliner:
         Returns:
             Number of call sites inlined
         """
-        checker = InlinabilityChecker(mir_program)
+        checker = InlinabilityChecker(mir_program, implicit_inline=self.implicit_inline)
         inlined_count = 0
 
         # Process functions - we may need multiple passes as inlining
@@ -477,7 +490,7 @@ class FunctionInliner:
                             print(f"  Inlined {callee_name} into {caller_func.name}")
 
                         # Rebuild checker since call counts changed
-                        checker = InlinabilityChecker(mir_program)
+                        checker = InlinabilityChecker(mir_program, implicit_inline=self.implicit_inline)
                         break  # Restart the loop with updated function
 
                 if changed:

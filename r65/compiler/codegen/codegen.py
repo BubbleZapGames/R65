@@ -46,14 +46,14 @@ class ProgramCodeGenerator:
         self.debug_info: Optional[DebugInfoCollector] = None
 
     def generate(self, mir_program: MIRProgram, output_file: Optional[str] = None,
-                 optimize: bool = True, debug: bool = False) -> str:
+                 opt_level: int = 1, debug: bool = False) -> str:
         """
         Generate WLA-DX assembly from MIR program.
 
         Args:
             mir_program: MIR program to compile
             output_file: Optional output file path
-            optimize: Enable optimizations (default True). Set to False for -O0.
+            opt_level: Optimization level (0=none, 1=basic, 2=with implicit inlining)
             debug: Generate Mesen-compatible .dbg file (default False)
 
         Returns:
@@ -66,8 +66,8 @@ class ProgramCodeGenerator:
         # Create emitter
         self.emitter = AssemblyEmitter(source_file="<unknown>")
 
-        # Run optimizations only if enabled (-O1, default)
-        if optimize:
+        # Run optimizations only if enabled (-O1 or higher)
+        if opt_level >= 1:
             # Import optimize modules lazily to avoid circular imports
             from r65.compiler.optimize.dead_function_elim import DeadFunctionEliminator
             from r65.compiler.optimize.dead_code_elim import DeadCodeEliminator
@@ -86,7 +86,10 @@ class ProgramCodeGenerator:
                 print(f"Dead code elimination: {code_eliminated} block(s)/instruction(s) removed")
 
             # Function inlining - replace call sites with inlined function bodies
-            func_inliner = FunctionInliner(verbose=False)
+            # At -O1: only explicit inlining (#[inline] or #[inline(always)])
+            # At -O2: also implicit inlining (called-once and small functions)
+            implicit_inline = (opt_level >= 2)
+            func_inliner = FunctionInliner(verbose=False, implicit_inline=implicit_inline)
             inlined_count = func_inliner.run(mir_program)
             if inlined_count > 0:
                 print(f"Function inlining: {inlined_count} call site(s) inlined")
@@ -178,8 +181,8 @@ class ProgramCodeGenerator:
         # Get structured nodes from emitter
         nodes = self.emitter.get_nodes()
 
-        # Apply node-based peephole optimizations (only if optimize enabled)
-        if optimize:
+        # Apply node-based peephole optimizations (only if opt_level >= 1)
+        if opt_level >= 1:
             optimized_nodes, num_optimizations = optimize_nodes(nodes)
             if num_optimizations > 0:
                 print(f"Peephole optimizer: {num_optimizations} optimization(s) applied")
