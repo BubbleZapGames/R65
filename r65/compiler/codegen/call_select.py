@@ -269,6 +269,13 @@ class CallInstructionSelector(BaseSelector):
         # Push stack arguments in reverse order (last param first)
         for arg in reversed(stack_args):
             arg_loc = self.parent._get_operand_location(arg.value)
+
+            # CRITICAL: Adjust stack-relative source locations for bytes already pushed
+            # by previous arguments. Each push shifts the stack pointer, so source
+            # locations that were computed relative to the original SP need adjustment.
+            if arg_loc.kind == LocationKind.STACK and stack_bytes_pushed > 0:
+                arg_loc = self.parent._offset_location(arg_loc, stack_bytes_pushed)
+
             self._emit_stack_argument(arg, arg_loc)
             # Track bytes pushed based on argument size - prefer param_type
             arg_size = 1

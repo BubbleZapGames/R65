@@ -366,3 +366,91 @@ class TestArrayOperations:
         ''', ExpectedState(A=50))
 
         assert result.success, f"Failures: {result.failures}"
+
+
+class TestStackArgumentDrift:
+    """Test stack argument offset drift when pushing multiple arguments.
+
+    Regression tests for bug where passing the same stack-relative variable
+    as multiple arguments would use stale offsets after each push.
+    """
+
+    @pytest.fixture
+    def e2e(self):
+        return E2ETest()
+
+    def test_same_variable_as_multiple_stack_args(self, e2e):
+        """Test passing same variable as multiple stack arguments.
+
+        This was a codegen bug where stack-relative source locations weren't
+        adjusted for bytes already pushed by previous arguments.
+        """
+        result = e2e.run('''
+            #[zeropage]
+            static mut RESULT: u8;
+
+            fn add_three(a: u8, b: u8, c: u8) -> u8 {
+                A = a + b;
+                A = A + c;
+                return A;
+            }
+
+            #[entry]
+            fn main() {
+                let x: u8 = 10;
+                // Pass x three times - tests stack offset drift
+                RESULT = add_three(x, x, x);
+                A = RESULT;
+            }
+        ''', ExpectedState(A=30))  # 10 + 10 + 10 = 30
+
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_mixed_variable_sizes_stack_args(self, e2e):
+        """Test passing variables of different sizes as stack arguments.
+
+        Tests that offset adjustments account for different argument sizes.
+        """
+        result = e2e.run('''
+            #[zeropage]
+            static mut RESULT: u8;
+
+            fn compute(a: u8, b: u16, c: u8) -> u8 {
+                // Just return sum of u8 values
+                A = a + c;
+                return A;
+            }
+
+            #[entry]
+            fn main() {
+                let x: u8 = 5;
+                let y: u16 = 100;
+                // Mix of u8 and u16 arguments from stack variables
+                RESULT = compute(x, y, x);
+                A = RESULT;
+            }
+        ''', ExpectedState(A=10))  # 5 + 5 = 10
+
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_variable_and_constant_stack_args(self, e2e):
+        """Test mixing variable and constant stack arguments."""
+        result = e2e.run('''
+            #[zeropage]
+            static mut RESULT: u8;
+
+            fn add_pair(a: u8, b: u8) -> u8 {
+                A = a + b;
+                return A;
+            }
+
+            #[entry]
+            fn main() {
+                let x: u8 = 7;
+                // Variable x followed by constant, then x again
+                RESULT = add_pair(x, 3);
+                A = RESULT;
+            }
+        ''', ExpectedState(A=10))  # 7 + 3 = 10
+
+        assert result.success, f"Failures: {result.failures}"
