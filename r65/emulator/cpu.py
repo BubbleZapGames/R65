@@ -75,6 +75,9 @@ class CPU65816:
 
     def __init__(self, memory: 'Memory'):
         self.memory = memory
+        # Set back-reference for RDNMI reads
+        if hasattr(memory, 'set_cpu'):
+            memory.set_cpu(self)
 
         # Registers
         self.A: int = 0       # Accumulator (16-bit)

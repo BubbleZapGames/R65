@@ -696,6 +696,10 @@ class FunctionCodeGenerator:
 
         Prologue pushes: STATUS, A, X, Y, D, DBR
         Epilogue pops:   DBR, D, Y, X, A, STATUS
+
+        For interrupt handlers, we must ensure A is in the correct mode before
+        popping (8-bit mode for interrupt handlers, since that's the default entry mode).
+        PLA is mode-sensitive: it pulls 1 byte in m8 mode, 2 bytes in m16 mode.
         """
         if not mir_func.preserves_attr:
             return
@@ -705,6 +709,13 @@ class FunctionCodeGenerator:
 
         for reg in pop_order:
             if reg in preserved_regs:
+                # For A register in interrupt handlers, ensure we're in 8-bit mode
+                # since interrupt handlers always enter in m8 mode (default).
+                # This prevents stack corruption when the handler body switches to m16.
+                if reg == 'A' and mir_func.interrupt_attr:
+                    self._emit_instr(Opcode.SEP_IMMEDIATE, Immediate(M_FLAG),
+                                    "Ensure 8-bit mode for PLA")
+
                 pull_opcode = RegisterMappings.PULL_OPCODES.get(reg)
                 if pull_opcode:
                     self._emit_instr(pull_opcode, comment=f"Restore {reg}")

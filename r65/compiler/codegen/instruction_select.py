@@ -1053,9 +1053,35 @@ class InstructionSelector:
         """
         Generate code for ReturnFromInterrupt instruction.
 
+        Deallocates the stack frame (if any) before emitting RTI.
+        Interrupt handlers cannot have stack parameters, so we only
+        need to handle frame deallocation.
+
         Args:
             instr: ReturnFromInterrupt instruction
         """
+        # Deallocate stack frame before RTI
+        frame_size = 0
+        if self.reg_alloc:
+            frame_size = self.reg_alloc.frame_size
+
+        if frame_size > 0:
+            # In 8-bit mode (default for interrupt handlers), use PLA
+            # Each PLA deallocates 1 byte
+            if frame_size <= 4:
+                for _ in range(frame_size):
+                    self._emit_implied(Opcode.PLA, f"Deallocate frame ({frame_size} bytes)")
+            else:
+                # For larger frames, use TSC/CLC/ADC/TCS
+                self._emit_implied(Opcode.REP_IMMEDIATE)
+                self.emitter.emit_operand(Immediate(0x20), "16-bit A for stack adjustment")
+                self._emit_implied(Opcode.TSC, "Get stack pointer")
+                self._emit_implied(Opcode.CLC)
+                self._emit_immediate(Opcode.ADC_IMMEDIATE, Immediate(frame_size), f"Deallocate {frame_size} bytes")
+                self._emit_implied(Opcode.TCS, "Set stack pointer")
+                self._emit_implied(Opcode.SEP_IMMEDIATE)
+                self.emitter.emit_operand(Immediate(0x20), "Restore 8-bit A")
+
         self._emit_implied(Opcode.RTI)
 
     # ========================================================================

@@ -612,7 +612,12 @@ class RegisterAllocator:
         """
         # Run slot allocation with liveness analysis if MIR function available
         if self.mir_func:
-            self.slot_allocator = StackSlotAllocator(self.mir_func)
+            # Exclude stack param vregs - they already have fixed locations from caller
+            # This prevents inflating frame_size with params that don't need local space
+            self.slot_allocator = StackSlotAllocator(
+                self.mir_func,
+                exclude_vreg_ids=self._stack_param_vregs
+            )
             self.slot_allocation = self.slot_allocator.allocate()
 
             # Print statistics if any slots were saved

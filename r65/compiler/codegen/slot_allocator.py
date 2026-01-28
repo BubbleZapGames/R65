@@ -54,15 +54,17 @@ class StackSlotAllocator:
     the same memory location, reducing memory usage.
     """
 
-    def __init__(self, mir_func: MIRFunction):
+    def __init__(self, mir_func: MIRFunction, exclude_vreg_ids: Optional[Set[int]] = None):
         """
         Initialize slot allocator.
 
         Args:
             mir_func: MIR function to allocate slots for
+            exclude_vreg_ids: Set of vreg IDs to exclude from allocation (e.g., stack params)
         """
         self.func = mir_func
         self.liveness_analyzer = LivenessAnalyzer(mir_func)
+        self.exclude_vreg_ids = exclude_vreg_ids or set()
 
     def allocate(self) -> SlotAllocation:
         """
@@ -77,8 +79,15 @@ class StackSlotAllocator:
         # Identify vregs that can stay in hardware registers
         hw_coalesceable = self._find_hw_coalesceable_vregs()
 
-        # Collect all virtual registers with their sizes, excluding hw-coalesceable ones
-        virtual_regs = self._collect_virtual_registers(exclude=set(hw_coalesceable.keys()))
+        # Build exclusion set: hw-coalesceable vregs + pre-allocated stack params
+        exclude_vregs = set(hw_coalesceable.keys())
+        # Also exclude vregs by ID (for stack params that were pre-allocated)
+        for vreg in self._get_all_vregs():
+            if vreg.id in self.exclude_vreg_ids:
+                exclude_vregs.add(vreg)
+
+        # Collect all virtual registers with their sizes, excluding hw-coalesceable and stack params
+        virtual_regs = self._collect_virtual_registers(exclude=exclude_vregs)
 
         if not virtual_regs:
             return SlotAllocation(
@@ -260,6 +269,10 @@ class StackSlotAllocator:
                         vregs.add(var)
 
         return sorted(vregs, key=lambda v: v.id)
+
+    def _get_all_vregs(self) -> List[VirtualRegister]:
+        """Get all virtual registers in the function (no exclusions)."""
+        return self._collect_virtual_registers(exclude=set())
 
     def _allocate_with_reuse(
         self,

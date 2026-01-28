@@ -209,6 +209,9 @@ Examples:
     # Reset CPU
     cpu.reset()
 
+    # Enable automatic vblank timing (for games that poll RDNMI $4210)
+    cpu.enable_auto_nmi(True)
+
     # Override start address if specified
     if args.start:
         start = args.start
@@ -323,6 +326,7 @@ def run_rom(rom_data: bytes, mapping: str = "lorom",
     memory = Memory(rom_data, mapping)
     cpu = CPU65816(memory)
     cpu.reset()
+    cpu.enable_auto_nmi(True)  # Enable vblank timing
 
     if trace:
         logger = TraceLogger()

@@ -276,31 +276,50 @@ class MIRBuilder:
         # before the parameter is used.
         param_usage_counts = self._count_param_usages(hir_func)
 
-        for idx, param in enumerate(hir_func.parameters):
+        # CRITICAL: Process A register parameters FIRST, before X/Y parameters.
+        # Saving X/Y to memory requires TXA/TYA which clobbers A.
+        # If A holds a parameter that's used later, we must save it first.
+        # Process in two passes: first A, then X/Y.
+
+        def process_register_param(param, hw_reg):
+            """Process a register-bound parameter."""
+            param_uses = param_usage_counts.get(id(param.symbol), 0)
+            if param_uses >= 1:
+                # Parameter is used - MUST save to vreg at entry
+                vreg = self.current_function.vreg_allocator.alloc(
+                    param.param_type,
+                    f"saved_{param.name}"
+                )
+                self.symbol_to_vreg[id(param.symbol)] = vreg
+                # Emit move from hardware register to vreg
+                self.emit(Move(dest=vreg, source=hw_reg, type_info=param.param_type))
+            else:
+                # Parameter not used - just track as hw register alias
+                self.current_function.alias_tracker.add_alias(
+                    param.symbol,
+                    hw_reg,
+                    param.symbol.scope_id,
+                    binding_type=param.param_type
+                )
+
+        # First pass: process A register parameters (save before X/Y clobber A)
+        for param in hir_func.parameters:
             if isinstance(param.binding, RegisterBinding):
                 hw_reg = HardwareRegister(param.binding.register_name)
-                param_uses = param_usage_counts.get(id(param.symbol), 0)
+                if hw_reg.name == 'A':
+                    process_register_param(param, hw_reg)
 
-                if param_uses >= 1:
-                    # Parameter is used - MUST save to vreg at entry
-                    # Because any intermediate instruction could clobber A
-                    # (local variable initializers, expression evaluation, etc.)
-                    vreg = self.current_function.vreg_allocator.alloc(
-                        param.param_type,
-                        f"saved_{param.name}"
-                    )
-                    self.symbol_to_vreg[id(param.symbol)] = vreg
-                    # Emit move from hardware register to vreg
-                    self.emit(Move(dest=vreg, source=hw_reg, type_info=param.param_type))
-                else:
-                    # Parameter not used - just track as hw register alias
-                    # (might be a side-effect function that just uses A directly)
-                    self.current_function.alias_tracker.add_alias(
-                        param.symbol,
-                        hw_reg,
-                        param.symbol.scope_id,
-                        binding_type=param.param_type  # Track type for mode optimization
-                    )
+        # Second pass: process X/Y register parameters (may clobber A via TXA/TYA)
+        for param in hir_func.parameters:
+            if isinstance(param.binding, RegisterBinding):
+                hw_reg = HardwareRegister(param.binding.register_name)
+                if hw_reg.name in ('X', 'Y'):
+                    process_register_param(param, hw_reg)
+
+        # Third pass: process non-register parameters
+        for idx, param in enumerate(hir_func.parameters):
+            if isinstance(param.binding, RegisterBinding):
+                pass  # Already processed above
             elif isinstance(param.binding, VariableBinding):
                 # Variable-bound parameter: treat it as an alias to the bound variable
                 # When the parameter is referenced in the function, it should load from the bound variable
@@ -414,6 +433,9 @@ class MIRBuilder:
                 self.emit(Pull(register=HardwareRegister('D')))       # PLD
                 self.emit(Pull(register=HardwareRegister('Y')))       # PLY
                 self.emit(Pull(register=HardwareRegister('X')))       # PLX
+                # Ensure 8-bit mode before PLA - interrupt handlers always enter in m8 mode
+                # This prevents stack corruption when the handler body switches to m16
+                self.emit(SetMode(mask=0x20, is_set=True))  # SEP #$20
                 self.emit(Pull(register=HardwareRegister('A')))       # PLA
                 self.emit(Pull(register=HardwareRegister('STATUS')))  # PLP
                 self.emit(ReturnFromInterrupt())
@@ -623,6 +645,9 @@ class MIRBuilder:
             self.emit(Pull(register=HardwareRegister('D')))       # PLD
             self.emit(Pull(register=HardwareRegister('Y')))       # PLY
             self.emit(Pull(register=HardwareRegister('X')))       # PLX
+            # Ensure 8-bit mode before PLA - interrupt handlers always enter in m8 mode
+            # This prevents stack corruption when the handler body switches to m16
+            self.emit(SetMode(mask=0x20, is_set=True))  # SEP #$20
             self.emit(Pull(register=HardwareRegister('A')))       # PLA
             self.emit(Pull(register=HardwareRegister('STATUS')))  # PLP (restores mode!)
 

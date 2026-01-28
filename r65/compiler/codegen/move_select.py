@@ -357,6 +357,23 @@ class MoveOperationSelector(BaseSelector):
 
             if need_transfer_to_a:
                 transfer_op = Opcode.TXA if src_reg == 'X' else Opcode.TYA
+
+                # Check if A contains a live value that needs to be preserved
+                # This can happen when A holds a parameter that's used later
+                a_is_live = not self.parent._hw_reg_is_free('A')
+                saved_a = False
+
+                if a_is_live:
+                    # Save A before clobbering it with the transfer
+                    # Use PHA to push current A value
+                    self._emit_instr(Opcode.PHA, comment="Save A (live value)")
+                    saved_a = True
+                    # Adjust stack-relative destination if needed
+                    if dest_loc.kind == LocationKind.STACK:
+                        # Stack moved down by 1 byte (8-bit mode) or 2 bytes (16-bit mode)
+                        # For now assume 8-bit mode before mode switch
+                        dest_loc = self.parent._offset_location(dest_loc, 1)
+
                 if is_u16 and src_reg in ('X', 'Y'):
                     # 16-bit store: switch to 16-bit A, transfer, store both bytes
                     self.parent._ensure_m16_mode()
@@ -366,7 +383,14 @@ class MoveOperationSelector(BaseSelector):
                 else:
                     self._emit_instr(transfer_op, comment=f"Transfer to A (no {STORE_MNEMONICS[src_reg]} with this addressing)")
                     self._emit_load_store('STA', dest_loc)
-                self.parent._mark_a_modified()
+
+                if saved_a:
+                    # Restore A from stack
+                    # Need to be in 8-bit mode for PLA to restore just the low byte
+                    self.parent._ensure_m8_mode()
+                    self._emit_instr(Opcode.PLA, comment="Restore A (live value)")
+                else:
+                    self.parent._mark_a_modified()
             else:
                 self._emit_load_store(STORE_MNEMONICS[src_reg], dest_loc)
         else:

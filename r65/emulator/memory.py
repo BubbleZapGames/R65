@@ -35,11 +35,13 @@ class Memory:
     WRAM_SIZE = 128 * 1024  # 128KB
 
     # Math hardware register addresses
+    NMITIMEN = 0x4200  # NMI/IRQ enable
     WRMPYA = 0x4202  # Multiplicand A
     WRMPYB = 0x4203  # Multiplicand B (write triggers multiply)
     WRDIVL = 0x4204  # Dividend low
     WRDIVH = 0x4205  # Dividend high
     WRDIVB = 0x4206  # Divisor (write triggers divide)
+    RDNMI = 0x4210   # NMI flag (bit 7) and CPU version
     RDDIVL = 0x4214  # Quotient low (read-only)
     RDDIVH = 0x4215  # Quotient high (read-only)
     RDMPYL = 0x4216  # Product/Remainder low (read-only)
@@ -65,6 +67,13 @@ class Memory:
         self._wrdiv = 0       # 16-bit dividend
         self._rdmpy = 0       # 16-bit product/remainder
         self._rddiv = 0       # 16-bit quotient
+
+        # APU I/O port state (echoes writes back to reads after handshake)
+        self._apu_initialized = False
+        self._apu_ports = [0xAA, 0xBB, 0x00, 0x00]  # Initial ready state
+
+        # CPU reference for RDNMI ($4210) reads
+        self._cpu = None
 
     def read(self, bank: int, addr: int) -> int:
         """Read a byte from the 24-bit address space."""
@@ -207,8 +216,26 @@ class Memory:
                 return offset
             return None
 
+    def set_cpu(self, cpu) -> None:
+        """Set CPU reference for RDNMI reads."""
+        self._cpu = cpu
+
     def _read_hw_reg(self, bank: int, addr: int) -> int:
         """Read from hardware register."""
+        # APU I/O ports $2140-$2143 - SPC700 communication
+        # Echoes back what was written (simulates SPC700 acknowledgment)
+        if 0x2140 <= addr <= 0x2143:
+            port = addr - 0x2140
+            return self._apu_ports[port]
+
+        # RDNMI ($4210) - NMI flag in bit 7, CPU version in bits 0-3
+        if addr == self.RDNMI:
+            if self._cpu:
+                # Read and clear vblank flag, return with CPU version (2)
+                vblank = self._cpu.read_nmi_flag()
+                return (0x80 if vblank else 0x00) | 0x02  # Version 2
+            return 0x02  # Just CPU version if no CPU reference
+
         # Math result registers (read-only)
         if addr == self.RDDIVL:
             return self._rddiv & 0xFF
@@ -225,6 +252,24 @@ class Memory:
     def _write_hw_reg(self, bank: int, addr: int, value: int):
         """Write to hardware register."""
         value &= 0xFF
+
+        # APU I/O ports $2140-$2143 - SPC700 communication
+        # Echo writes back for read to simulate APU acknowledgment
+        if 0x2140 <= addr <= 0x2143:
+            port = addr - 0x2140
+            self._apu_ports[port] = value
+            # Mark APU as initialized once we get past handshake
+            if port == 0 and not self._apu_initialized:
+                self._apu_initialized = True
+            return
+
+        # NMITIMEN - NMI/IRQ enable
+        if addr == self.NMITIMEN:
+            self._hw_regs[addr] = value
+            # Update CPU's NMI enable flag based on bit 7
+            if self._cpu:
+                self._cpu.set_nmi_enabled((value & 0x80) != 0)
+            return
 
         # Math registers
         if addr == self.WRMPYA:
