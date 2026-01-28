@@ -104,9 +104,13 @@ class CompareSelector(BaseSelector):
         right_operand, is_immediate, pushed_reg = self._prepare_right_operand(instr.right, is_16bit)
 
         # Switch to appropriate mode for the comparison
+        # Need 16-bit mode for any 16-bit comparison that uses the accumulator:
+        # - If left is in A register
+        # - If left is in memory/stack (will be loaded to A)
+        # X/Y comparisons (CPX/CPY) use the X flag, not M flag, so no mode switch needed
         needs_16bit = (is_16bit and
-            (left_loc.kind == LocationKind.HARDWARE and left_loc.hw_register == 'A') or
-            (is_16bit and left_loc.kind == LocationKind.STACK))
+            left_loc.kind != LocationKind.HARDWARE or
+            (is_16bit and left_loc.kind == LocationKind.HARDWARE and left_loc.hw_register == 'A'))
 
         if needs_16bit:
             self.parent._ensure_m16_mode()

@@ -216,7 +216,7 @@ class BranchFixup:
         offsets: List[int] = []
         current_offset = 0
         acc_16 = False
-        idx_16 = False
+        idx_16 = True  # X/Y are always 16-bit in R65
 
         for i, node in enumerate(nodes):
             offsets.append(current_offset)

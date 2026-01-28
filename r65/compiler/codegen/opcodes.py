@@ -990,12 +990,14 @@ OPCODE_VARIANTS: dict[str, dict[str, Opcode]] = {
         'DP': Opcode.LDA_DP, 'DP_X': Opcode.LDA_DP_X,
         'ABSOLUTE': Opcode.LDA_ABSOLUTE, 'ABSOLUTE_X': Opcode.LDA_ABSOLUTE_X,
         'ABSOLUTE_Y': Opcode.LDA_ABSOLUTE_Y,
+        'LONG': Opcode.LDA_LONG, 'LONG_X': Opcode.LDA_LONG_X,
         'STACK': Opcode.LDA_STACK, 'IMMEDIATE': Opcode.LDA_IMMEDIATE,
     },
     'STA': {
         'DP': Opcode.STA_DP, 'DP_X': Opcode.STA_DP_X,
         'ABSOLUTE': Opcode.STA_ABSOLUTE, 'ABSOLUTE_X': Opcode.STA_ABSOLUTE_X,
         'ABSOLUTE_Y': Opcode.STA_ABSOLUTE_Y,
+        'LONG': Opcode.STA_LONG, 'LONG_X': Opcode.STA_LONG_X,
         'STACK': Opcode.STA_STACK,
     },
     'LDX': {

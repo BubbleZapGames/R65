@@ -1202,7 +1202,10 @@ class MIRBuilder:
                 count_in_expr(stmt.condition)
                 count_in_block(stmt.then_block)
                 if stmt.else_block:
-                    count_in_block(stmt.else_block)
+                    if isinstance(stmt.else_block, HIRIfStmt):
+                        count_in_stmt(stmt.else_block)
+                    else:
+                        count_in_block(stmt.else_block)
             elif isinstance(stmt, HIRWhileStmt):
                 count_in_expr(stmt.condition)
                 count_in_block(stmt.body)

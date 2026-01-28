@@ -141,9 +141,12 @@ class LocationResolver:
         """Resolve memory location (RAM, ROM, etc.)."""
         # Check for ROM label first
         if location.memory_label:
+            # Labels could be in any bank - assume they might need long addressing
+            # if they're labeled with a full address (e.g., $7ED410)
             mode = self._get_indexed_mode(
                 location.index_register,
-                is_dp=False
+                is_dp=False,
+                is_long=False  # Labels will be resolved by assembler
             )
             return ResolvedLocation(
                 mode=mode,
@@ -155,7 +158,8 @@ class LocationResolver:
         # Numeric address
         addr = location.memory_addr
         is_dp = addr < self.dp_boundary
-        mode = self._get_indexed_mode(location.index_register, is_dp)
+        is_long = addr > 0xFFFF  # 24-bit address needs long addressing
+        mode = self._get_indexed_mode(location.index_register, is_dp, is_long)
 
         return ResolvedLocation(
             mode=mode,
@@ -172,14 +176,34 @@ class LocationResolver:
             address=location.immediate_value
         )
 
-    def _get_indexed_mode(self, index_register: Optional[str], is_dp: bool) -> AddressingMode:
-        """Determine addressing mode based on index register and DP status."""
-        if index_register == 'X':
-            return AddressingMode.DP_X if is_dp else AddressingMode.ABSOLUTE_X
-        elif index_register == 'Y':
-            return AddressingMode.DP_Y if is_dp else AddressingMode.ABSOLUTE_Y
+    def _get_indexed_mode(self, index_register: Optional[str], is_dp: bool, is_long: bool = False) -> AddressingMode:
+        """Determine addressing mode based on index register, DP status, and address size."""
+        if is_long:
+            # 24-bit long addressing (bank + address)
+            if index_register == 'X':
+                return AddressingMode.LONG_X
+            elif index_register == 'Y':
+                # Note: LONG_Y doesn't exist on 65816, would need workaround
+                # For now, fall back to ABSOLUTE_Y (caller should handle this case)
+                return AddressingMode.ABSOLUTE_Y
+            else:
+                return AddressingMode.LONG
+        elif is_dp:
+            # Direct page (zero page) addressing
+            if index_register == 'X':
+                return AddressingMode.DP_X
+            elif index_register == 'Y':
+                return AddressingMode.DP_Y
+            else:
+                return AddressingMode.DP
         else:
-            return AddressingMode.DP if is_dp else AddressingMode.ABSOLUTE
+            # 16-bit absolute addressing
+            if index_register == 'X':
+                return AddressingMode.ABSOLUTE_X
+            elif index_register == 'Y':
+                return AddressingMode.ABSOLUTE_Y
+            else:
+                return AddressingMode.ABSOLUTE
 
     def get_opcode(self, mnemonic: str, resolved: ResolvedLocation) -> Opcode:
         """
