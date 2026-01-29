@@ -55,8 +55,8 @@ UNRESTRICTED_REGISTERS = {'STATUS', 'D', 'DBR', 'PBR', 'S'}
 # not against each other (no direct X vs Y comparison instruction)
 INDEX_REGISTERS = {'X', 'Y'}
 
-# Valid direct register-to-register transfers (single instruction)
-# Each tuple is (source, dest) -> instruction
+# Valid direct register-to-register transfers (single instruction or short sequence)
+# Each tuple is (source, dest) -> instruction(s)
 # Transfers not in this set require an intermediate register
 VALID_REGISTER_TRANSFERS = {
     # A <-> X: TAX, TXA
@@ -73,6 +73,13 @@ VALID_REGISTER_TRANSFERS = {
     ('X', 'S'), ('S', 'X'),
     # B <-> A: XBA swaps them (special case, but direct)
     ('A', 'B'), ('B', 'A'),
+    # STATUS <-> A: PHP+PLA / PHA+PLP (requires m8 mode)
+    ('STATUS', 'A'), ('A', 'STATUS'),
+    # STATUS <-> X: PHP+PLX (requires m8+x8 mode, but we're always x16)
+    # We allow this by going through A: PHP+PLA+TAX
+    ('STATUS', 'X'), ('X', 'STATUS'),
+    # STATUS <-> Y: PHP+PLA+TAY (through A)
+    ('STATUS', 'Y'), ('Y', 'STATUS'),
 }
 
 

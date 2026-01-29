@@ -1244,14 +1244,40 @@ class InstructionSelector:
         Handles all valid 65816 register transfer combinations.
         For indirect transfers (e.g., X to Y), routes through A.
         B register transfers use XBA instruction.
+        STATUS register transfers use PHP/PLP instructions.
 
         Args:
-            src_reg: Source register name ('A', 'X', 'Y', 'B')
-            dest_reg: Destination register name ('A', 'X', 'Y', 'B')
+            src_reg: Source register name ('A', 'X', 'Y', 'B', 'STATUS')
+            dest_reg: Destination register name ('A', 'X', 'Y', 'B', 'STATUS')
         """
         if src_reg == dest_reg:
             # No-op
             return
+
+        # Special handling for STATUS register
+        if src_reg == 'STATUS' or dest_reg == 'STATUS':
+            if src_reg == 'STATUS' and dest_reg == 'A':
+                # STATUS -> A: Push status, pull to A (requires m8)
+                self._ensure_m8_mode()
+                self._emit_implied(Opcode.PHP, "Push STATUS")
+                self._emit_implied(Opcode.PLA, "Pull STATUS to A")
+                return
+            elif src_reg == 'A' and dest_reg == 'STATUS':
+                # A -> STATUS: Push A, pull to status (requires m8)
+                self._ensure_m8_mode()
+                self._emit_implied(Opcode.PHA, "Push A")
+                self._emit_implied(Opcode.PLP, "Pull to STATUS")
+                return
+            elif src_reg == 'STATUS':
+                # STATUS -> X/Y: STATUS -> A -> X/Y
+                self._emit_register_transfer('STATUS', 'A')
+                self._emit_register_transfer('A', dest_reg)
+                return
+            elif dest_reg == 'STATUS':
+                # X/Y -> STATUS: X/Y -> A -> STATUS
+                self._emit_register_transfer(src_reg, 'A')
+                self._emit_register_transfer('A', 'STATUS')
+                return
 
         # Special handling for B register
         if src_reg == 'B' or dest_reg == 'B':

@@ -678,3 +678,39 @@ class TestRegisterTransferRestrictions:
         error = exc_info.value
         assert error.hint is not None
         assert "A" in error.hint or "through" in error.hint.lower()
+
+    def test_status_to_a_allowed(self):
+        """A = STATUS should be allowed (PHP + PLA)."""
+        source = """
+        fn test() {
+            A = STATUS;
+        }
+        """
+        compile_and_type_check(source)  # Should not raise
+
+    def test_a_to_status_allowed(self):
+        """STATUS = A should be allowed (PHA + PLP)."""
+        source = """
+        fn test() {
+            STATUS = A;
+        }
+        """
+        compile_and_type_check(source)  # Should not raise
+
+    def test_status_to_x_allowed(self):
+        """X = STATUS should be allowed (goes through A)."""
+        source = """
+        fn test() {
+            X = STATUS as u16;
+        }
+        """
+        compile_and_type_check(source)  # Should not raise
+
+    def test_status_to_y_allowed(self):
+        """Y = STATUS should be allowed (goes through A)."""
+        source = """
+        fn test() {
+            Y = STATUS as u16;
+        }
+        """
+        compile_and_type_check(source)  # Should not raise
