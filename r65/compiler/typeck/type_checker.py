@@ -27,6 +27,7 @@ from r65.compiler.typeck.cfg_builder import CFGBuilder
 from r65.compiler.typeck.type_utils import TypeUtils
 from r65.compiler.typeck.operator_validator import OperatorValidator
 from r65.compiler.typeck.preservation_checker import PreservationChecker
+from r65.compiler.typeck.register_capabilities import is_index_register
 from r65.compiler.typeck.type_inference import TypeInference
 from r65.compiler.typeck.errors import TypeCheckError, TypeCheckWarning
 from r65.compiler.typeck.string_validator import StringValidator
@@ -279,6 +280,33 @@ class TypeChecker:
             return target_reg == left_reg
 
         return False
+
+    def _validate_comparison_operands(self, expr: HIRBinaryOp) -> None:
+        """
+        Validate that comparison operands are valid for hardware.
+
+        Rejects comparing two index registers (X vs Y) because there's no
+        direct CPX Y or CPY X instruction - it would require using an
+        intermediate register.
+
+        Args:
+            expr: The comparison expression
+
+        Raises:
+            TypeCheckError: If comparing two index registers
+        """
+        left_reg = self._get_target_register(expr.left)
+        right_reg = self._get_target_register(expr.right)
+
+        # Check if both operands are index registers
+        if left_reg and right_reg:
+            if is_index_register(left_reg) and is_index_register(right_reg):
+                raise TypeCheckError(
+                    f"cannot compare {left_reg} with {right_reg} directly",
+                    source_loc=expr.source_loc,
+                    hint=f"no CPX {right_reg} or CPY {left_reg} instruction exists; "
+                         f"store one register to a variable first, then compare"
+                )
 
     def _check_no_aggregate_type(self, type_info: TypeInfo, context: str, source_loc=None,
                                    suggestion_suffix: str = "", verb: str = "used"):
@@ -1132,6 +1160,10 @@ class TypeChecker:
                     source_loc=expr.source_loc,
                     hint="comparison requires compatible types"
                 )
+
+            # Check for invalid index register comparison (X vs Y)
+            # There's no direct CPX Y or CPY X instruction
+            self._validate_comparison_operands(expr)
 
             expr.expr_type = BasicTypeInfo('bool')
             return expr.expr_type

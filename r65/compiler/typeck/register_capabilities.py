@@ -51,6 +51,10 @@ REGISTER_CAPABILITIES = {
 # These are control registers without arithmetic restrictions
 UNRESTRICTED_REGISTERS = {'STATUS', 'D', 'DBR', 'PBR', 'S'}
 
+# Index registers (X and Y) - these can only be compared against values,
+# not against each other (no direct X vs Y comparison instruction)
+INDEX_REGISTERS = {'X', 'Y'}
+
 
 def get_register_capabilities(register_name: str) -> dict:
     """
@@ -116,3 +120,19 @@ def get_register_hint(register_name: str) -> str:
     elif register_name == 'B':
         return "B register is accessed via XBA swap with A; perform operations on A instead"
     return ""
+
+
+def is_index_register(register_name: str) -> bool:
+    """
+    Check if a register is an index register (X or Y).
+
+    Index registers cannot be directly compared against each other
+    because there's no CPX Y or CPY X instruction.
+
+    Args:
+        register_name: Name of the register
+
+    Returns:
+        True if register is X or Y
+    """
+    return register_name in INDEX_REGISTERS

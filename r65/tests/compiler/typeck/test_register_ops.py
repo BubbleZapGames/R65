@@ -436,3 +436,126 @@ class TestEdgeCases:
         hint_lower = error.hint.lower()
         assert "increment" in hint_lower or "decrement" in hint_lower
         assert "move" in hint_lower or "transfer" in hint_lower or "a" in hint_lower
+
+
+class TestIndexRegisterComparison:
+    """Tests for index register comparison restrictions.
+
+    X and Y cannot be compared directly because there's no CPX Y or CPY X
+    instruction - it would require using an intermediate register.
+    """
+
+    def test_x_vs_y_rejected(self):
+        """X == Y should be rejected (no CPX Y instruction)."""
+        source = """
+        fn test() {
+            if X == Y {
+                A = 1;
+            }
+        }
+        """
+        with pytest.raises(TypeCheckError) as exc_info:
+            compile_and_type_check(source)
+        assert "cannot compare X with Y directly" in str(exc_info.value)
+
+    def test_x_less_than_y_rejected(self):
+        """X < Y should be rejected."""
+        source = """
+        fn test() {
+            if X < Y {
+                A = 1;
+            }
+        }
+        """
+        with pytest.raises(TypeCheckError) as exc_info:
+            compile_and_type_check(source)
+        assert "cannot compare X with Y directly" in str(exc_info.value)
+
+    def test_y_vs_x_rejected(self):
+        """Y > X should be rejected."""
+        source = """
+        fn test() {
+            if Y > X {
+                A = 1;
+            }
+        }
+        """
+        with pytest.raises(TypeCheckError) as exc_info:
+            compile_and_type_check(source)
+        assert "cannot compare Y with X directly" in str(exc_info.value)
+
+    def test_aliased_x_vs_y_rejected(self):
+        """Aliased X vs Y should be rejected."""
+        source = """
+        fn test() {
+            let x @ X = 100;
+            let y @ Y = 200;
+            if x == y {
+                A = 1;
+            }
+        }
+        """
+        with pytest.raises(TypeCheckError) as exc_info:
+            compile_and_type_check(source)
+        assert "cannot compare X with Y directly" in str(exc_info.value)
+
+    def test_x_vs_immediate_allowed(self):
+        """X == constant should be allowed (uses CPX instruction)."""
+        source = """
+        fn test() {
+            if X == 100 {
+                A = 1;
+            }
+        }
+        """
+        compile_and_type_check(source)  # Should not raise
+
+    def test_y_vs_immediate_allowed(self):
+        """Y < constant should be allowed (uses CPY instruction)."""
+        source = """
+        fn test() {
+            if Y < 200 {
+                A = 1;
+            }
+        }
+        """
+        compile_and_type_check(source)  # Should not raise
+
+    def test_x_vs_a_allowed(self):
+        """X == A should be allowed (can transfer A to temp and CPX)."""
+        source = """
+        fn test() {
+            if X == (A as u16) {
+                A = 1;
+            }
+        }
+        """
+        compile_and_type_check(source)  # Should not raise
+
+    def test_x_vs_memory_allowed(self):
+        """X == memory should be allowed (uses CPX addr)."""
+        source = """
+        #[zeropage]
+        static mut TEMP: u16;
+        fn test() {
+            if X == TEMP {
+                A = 1;
+            }
+        }
+        """
+        compile_and_type_check(source)  # Should not raise
+
+    def test_error_has_helpful_hint(self):
+        """Error message should suggest storing to variable first."""
+        source = """
+        fn test() {
+            if X == Y {
+                A = 1;
+            }
+        }
+        """
+        with pytest.raises(TypeCheckError) as exc_info:
+            compile_and_type_check(source)
+        error = exc_info.value
+        assert error.hint is not None
+        assert "store" in error.hint.lower() or "variable" in error.hint.lower()
