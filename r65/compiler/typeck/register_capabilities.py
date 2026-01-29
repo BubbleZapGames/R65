@@ -77,6 +77,8 @@ VALID_REGISTER_TRANSFERS = {
     ('STATUS', 'A'), ('A', 'STATUS'),
     # A <-> DBR: PHA+PLB / PHB+PLA (requires m8 mode)
     ('A', 'DBR'), ('DBR', 'A'),
+    # PBR -> A: PHK+PLA (PBR is read-only, no A -> PBR)
+    ('PBR', 'A'),
 }
 
 

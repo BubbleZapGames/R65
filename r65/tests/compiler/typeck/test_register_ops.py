@@ -718,3 +718,28 @@ class TestDBRTransfers:
         """
         compile_and_type_check(source)  # Should not raise
 
+
+class TestPBRTransfers:
+    """Tests for PBR register transfers via stack operations."""
+
+    def test_pbr_to_a_allowed(self):
+        """A = PBR should be allowed (PHK + PLA)."""
+        source = """
+        fn test() {
+            A = PBR;
+        }
+        """
+        compile_and_type_check(source)  # Should not raise
+
+    def test_a_to_pbr_rejected(self):
+        """PBR = A should be rejected (PBR is read-only)."""
+        source = """
+        fn test() {
+            PBR = A;
+        }
+        """
+        with pytest.raises(TypeCheckError) as exc_info:
+            compile_and_type_check(source)
+        # Should fail because PBR is read-only
+        assert "read-only" in str(exc_info.value).lower() or "cannot" in str(exc_info.value).lower()
+

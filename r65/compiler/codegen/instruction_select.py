@@ -1268,6 +1268,13 @@ class InstructionSelector:
                 self._emit_implied(Opcode.PHA, "Push A")
                 self._emit_implied(Opcode.PLP, "Pull to STATUS")
                 return
+        # Special handling for PBR register (read-only, via stack)
+        if src_reg == 'PBR' and dest_reg == 'A':
+            # PBR -> A: Push PBR, pull to A (requires m8)
+            self._ensure_m8_mode()
+            self._emit_implied(Opcode.PHK, "Push PBR")
+            self._emit_implied(Opcode.PLA, "Pull PBR to A")
+            return
         # Special handling for DBR register (via stack)
         if src_reg == 'DBR' or dest_reg == 'DBR':
             if src_reg == 'DBR' and dest_reg == 'A':
