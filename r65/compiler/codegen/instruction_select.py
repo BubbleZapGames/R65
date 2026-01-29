@@ -1268,6 +1268,16 @@ class InstructionSelector:
                 self._emit_implied(Opcode.PHA, "Push A")
                 self._emit_implied(Opcode.PLP, "Pull to STATUS")
                 return
+            elif src_reg == 'STATUS' and dest_reg == 'DBR':
+                # STATUS -> DBR: Direct (both 8-bit)
+                self._emit_implied(Opcode.PHP, "Push STATUS")
+                self._emit_implied(Opcode.PLB, "Pull to DBR")
+                return
+            elif src_reg == 'DBR' and dest_reg == 'STATUS':
+                # DBR -> STATUS: Direct (both 8-bit)
+                self._emit_implied(Opcode.PHB, "Push DBR")
+                self._emit_implied(Opcode.PLP, "Pull to STATUS")
+                return
             elif src_reg == 'STATUS':
                 # STATUS -> X/Y: STATUS -> A -> X/Y
                 self._emit_register_transfer('STATUS', 'A')
@@ -1277,6 +1287,31 @@ class InstructionSelector:
                 # X/Y -> STATUS: X/Y -> A -> STATUS
                 self._emit_register_transfer(src_reg, 'A')
                 self._emit_register_transfer('A', 'STATUS')
+                return
+
+        # Special handling for DBR register (via stack)
+        if src_reg == 'DBR' or dest_reg == 'DBR':
+            if src_reg == 'DBR' and dest_reg == 'A':
+                # DBR -> A: Push DBR, pull to A (requires m8)
+                self._ensure_m8_mode()
+                self._emit_implied(Opcode.PHB, "Push DBR")
+                self._emit_implied(Opcode.PLA, "Pull DBR to A")
+                return
+            elif src_reg == 'A' and dest_reg == 'DBR':
+                # A -> DBR: Push A, pull to DBR (requires m8)
+                self._ensure_m8_mode()
+                self._emit_implied(Opcode.PHA, "Push A")
+                self._emit_implied(Opcode.PLB, "Pull to DBR")
+                return
+            elif src_reg == 'DBR':
+                # DBR -> X/Y: DBR -> A -> X/Y
+                self._emit_register_transfer('DBR', 'A')
+                self._emit_register_transfer('A', dest_reg)
+                return
+            elif dest_reg == 'DBR':
+                # X/Y -> DBR: X/Y -> A -> DBR
+                self._emit_register_transfer(src_reg, 'A')
+                self._emit_register_transfer('A', 'DBR')
                 return
 
         # Special handling for B register
