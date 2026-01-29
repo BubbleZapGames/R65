@@ -85,6 +85,16 @@ class ProgramCodeGenerator:
             if code_eliminated > 0:
                 print(f"Dead code elimination: {code_eliminated} block(s)/instruction(s) removed")
 
+            # Far-to-near call optimization - convert far calls to near when
+            # call graph shows all callers and callee are in the same bank
+            # This saves 1 byte and 2 cycles per call (JSR vs JSL)
+            # Run before inlining so converted functions can become inlinable
+            from r65.compiler.optimize.far_to_near import FarToNearOptimizer
+            far_to_near = FarToNearOptimizer(verbose=False)
+            far_converted = far_to_near.optimize(mir_program)
+            if far_converted > 0:
+                print(f"Far-to-near optimization: {far_converted} function(s) converted")
+
             # Function inlining - replace call sites with inlined function bodies
             # At -O1: only explicit inlining (#[inline] or #[inline(always)])
             # At -O2: also implicit inlining (called-once and small functions)
