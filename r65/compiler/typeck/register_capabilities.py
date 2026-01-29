@@ -75,11 +75,6 @@ VALID_REGISTER_TRANSFERS = {
     ('A', 'B'), ('B', 'A'),
     # STATUS <-> A: PHP+PLA / PHA+PLP (requires m8 mode)
     ('STATUS', 'A'), ('A', 'STATUS'),
-    # STATUS <-> X: PHP+PLX (requires m8+x8 mode, but we're always x16)
-    # We allow this by going through A: PHP+PLA+TAX
-    ('STATUS', 'X'), ('X', 'STATUS'),
-    # STATUS <-> Y: PHP+PLA+TAY (through A)
-    ('STATUS', 'Y'), ('Y', 'STATUS'),
     # A <-> DBR: PHA+PLB / PHB+PLA (requires m8 mode)
     ('A', 'DBR'), ('DBR', 'A'),
     # DBR <-> X/Y: Through A (PHB+PLA+TAX / TXA+PHA+PLB)
