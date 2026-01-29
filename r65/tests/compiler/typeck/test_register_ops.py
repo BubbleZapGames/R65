@@ -718,38 +718,3 @@ class TestDBRTransfers:
         """
         compile_and_type_check(source)  # Should not raise
 
-    def test_dbr_to_x_allowed(self):
-        """X = DBR should be allowed (through A)."""
-        source = """
-        fn test() {
-            X = DBR as u16;
-        }
-        """
-        compile_and_type_check(source)  # Should not raise
-
-    def test_dbr_to_y_allowed(self):
-        """Y = DBR should be allowed (through A)."""
-        source = """
-        fn test() {
-            Y = DBR as u16;
-        }
-        """
-        compile_and_type_check(source)  # Should not raise
-
-    def test_x_to_dbr_allowed(self):
-        """DBR = X should be allowed (through A)."""
-        source = """
-        fn test() {
-            DBR = X as u8;
-        }
-        """
-        compile_and_type_check(source)  # Should not raise
-
-    def test_y_to_dbr_allowed(self):
-        """DBR = Y should be allowed (through A)."""
-        source = """
-        fn test() {
-            DBR = Y as u8;
-        }
-        """
-        compile_and_type_check(source)  # Should not raise

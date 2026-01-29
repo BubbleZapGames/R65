@@ -1282,17 +1282,6 @@ class InstructionSelector:
                 self._emit_implied(Opcode.PHA, "Push A")
                 self._emit_implied(Opcode.PLB, "Pull to DBR")
                 return
-            elif src_reg == 'DBR':
-                # DBR -> X/Y: DBR -> A -> X/Y
-                self._emit_register_transfer('DBR', 'A')
-                self._emit_register_transfer('A', dest_reg)
-                return
-            elif dest_reg == 'DBR':
-                # X/Y -> DBR: X/Y -> A -> DBR
-                self._emit_register_transfer(src_reg, 'A')
-                self._emit_register_transfer('A', 'DBR')
-                return
-
         # Special handling for B register
         if src_reg == 'B' or dest_reg == 'B':
             if src_reg == 'B' and dest_reg == 'A':
