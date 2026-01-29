@@ -737,24 +737,6 @@ class TestDBRTransfers:
         """
         compile_and_type_check(source)  # Should not raise
 
-    def test_status_to_dbr_allowed(self):
-        """DBR = STATUS should be allowed (PHP + PLB)."""
-        source = """
-        fn test() {
-            DBR = STATUS;
-        }
-        """
-        compile_and_type_check(source)  # Should not raise
-
-    def test_dbr_to_status_allowed(self):
-        """STATUS = DBR should be allowed (PHB + PLP)."""
-        source = """
-        fn test() {
-            STATUS = DBR;
-        }
-        """
-        compile_and_type_check(source)  # Should not raise
-
     def test_dbr_to_x_allowed(self):
         """X = DBR should be allowed (through A)."""
         source = """

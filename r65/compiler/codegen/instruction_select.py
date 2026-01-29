@@ -1268,16 +1268,6 @@ class InstructionSelector:
                 self._emit_implied(Opcode.PHA, "Push A")
                 self._emit_implied(Opcode.PLP, "Pull to STATUS")
                 return
-            elif src_reg == 'STATUS' and dest_reg == 'DBR':
-                # STATUS -> DBR: Direct (both 8-bit)
-                self._emit_implied(Opcode.PHP, "Push STATUS")
-                self._emit_implied(Opcode.PLB, "Pull to DBR")
-                return
-            elif src_reg == 'DBR' and dest_reg == 'STATUS':
-                # DBR -> STATUS: Direct (both 8-bit)
-                self._emit_implied(Opcode.PHB, "Push DBR")
-                self._emit_implied(Opcode.PLP, "Pull to STATUS")
-                return
             elif src_reg == 'STATUS':
                 # STATUS -> X/Y: STATUS -> A -> X/Y
                 self._emit_register_transfer('STATUS', 'A')
