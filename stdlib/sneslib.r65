@@ -1831,9 +1831,14 @@ fn snes_init() {
 
 // Delay for specified number of frames
 // Usage: delay(60);  // Wait ~1 second (NTSC)
-fn delay(frames @ X: u16) {
-    for i in 0..frames {
+far fn delay(frames: u16) {
+    let count: u16 = frames;
+    loop {
         wait_nmi();
+        count--;
+        if count == 0 {
+            break;
+        }
     }
 }
 
@@ -1848,15 +1853,14 @@ fn is_pal() -> bool {
 // level: 0 = off, 1-16 = min to max pixelization
 // bgs: which backgrounds to apply mosaic to (use SCREEN_BG1, etc.)
 // Usage: set_pixelize(4, SCREEN_BG1 | SCREEN_BG2);
-fn set_pixelize(level @ A: u8, bgs: u8) {
-    if A == 0 {
+far fn set_pixelize(level: u8, bgs: u16) {
+    if level == 0 {
         MOSAIC = 0;
     } else {
-        // Convert 1-16 to mosaic size (0-15 in high nibble)
-        A--;
-        A = A << 4;
-        A = A | bgs;
-        MOSAIC = A;
+        let val: u8 = level - 1;
+        val = val << 4;
+        val = val | (bgs as u8);
+        MOSAIC = val;
     }
 }
 

@@ -426,7 +426,11 @@ class TestModeSwitchingIndexRegisters:
         assert result.success, f"Failures: {result.failures}"
 
     def test_mixed_all_registers(self, e2e):
-        """Test mixed operations on A (8/16), X, and Y."""
+        """Test mixed operations on A (8/16), X, and Y.
+
+        Note: X and Y only support increment/decrement in 65816, not arbitrary
+        arithmetic. To add values > 1, we use loops with increment.
+        """
         result = e2e.run('''
             #[zeropage(0x10)]
             static mut R1: u8;
@@ -443,9 +447,21 @@ class TestModeSwitchingIndexRegisters:
                 A = 0x55;
                 R1 = A;
 
-                // Modify index registers
-                X = X + 0x50;
-                Y = Y + 0x50;
+                // Modify index registers using increment (X/Y only support ++/--)
+                // Add 0x10 to X by incrementing 16 times
+                loop {
+                    if X >= 0x110 {
+                        break;
+                    }
+                    X++;
+                }
+                // Add 0x10 to Y by incrementing 16 times
+                loop {
+                    if Y >= 0x210 {
+                        break;
+                    }
+                    Y++;
+                }
 
                 // 16-bit A
                 let w @ A : u16 = 0x300;
@@ -453,8 +469,8 @@ class TestModeSwitchingIndexRegisters:
                 R2 = A;
             }
         ''', ExpectedState(
-            X=0x150,
-            Y=0x250,
+            X=0x110,
+            Y=0x210,
             A=0x350,
             memory={0x7E0010: 0x55, 0x7E0012: [0x50, 0x03]}
         ))

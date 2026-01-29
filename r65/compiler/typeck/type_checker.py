@@ -70,6 +70,10 @@ class TypeChecker:
         self._call_validator: Optional[CallValidator] = None
         self._pointer_validator: Optional[PointerValidator] = None
 
+        # Track register aliases: symbol ID -> register name
+        # Maps local variables bound to registers (e.g., let x @ X = 10)
+        self._register_aliases: dict[int, str] = {}
+
     @property
     def match_validator(self) -> MatchValidator:
         """Lazy initialization of match validator."""
@@ -218,6 +222,63 @@ class TypeChecker:
                 f"{context} must be integer, found {expr_type}",
                 source_loc=source_loc
             )
+
+    def _get_target_register(self, target: HIRExpression) -> Optional[str]:
+        """
+        Get the register name if target is a register or register-aliased variable.
+
+        Args:
+            target: The assignment target expression
+
+        Returns:
+            Register name ('A', 'X', 'Y', 'B') or None if not a register target
+        """
+        # Direct register reference (e.g., X = ...)
+        if isinstance(target, HIRRegister):
+            return target.name
+
+        # Register-aliased variable (e.g., x = ... where let x @ X = ...)
+        if isinstance(target, HIRIdentifier) and target.symbol:
+            symbol_id = id(target.symbol)
+            if symbol_id in self._register_aliases:
+                return self._register_aliases[symbol_id]
+
+        return None
+
+    def _binary_op_uses_target(self, value: HIRExpression, target: HIRExpression) -> bool:
+        """
+        Check if a binary operation's left operand references the same target.
+
+        This detects patterns like `X = X + 5` where the target is used in the value.
+
+        Args:
+            value: The value expression (should be HIRBinaryOp)
+            target: The assignment target
+
+        Returns:
+            True if the binary op's left operand is the same as target
+        """
+        if not isinstance(value, HIRBinaryOp):
+            return False
+
+        left = value.left
+
+        # Direct register comparison
+        if isinstance(target, HIRRegister) and isinstance(left, HIRRegister):
+            return target.name == left.name
+
+        # Register-aliased variable comparison
+        if isinstance(target, HIRIdentifier) and isinstance(left, HIRIdentifier):
+            if target.symbol and left.symbol:
+                return id(target.symbol) == id(left.symbol)
+
+        # Mixed: target is register, left is aliased variable (or vice versa)
+        target_reg = self._get_target_register(target)
+        left_reg = self._get_target_register(left)
+        if target_reg and left_reg:
+            return target_reg == left_reg
+
+        return False
 
     def _check_no_aggregate_type(self, type_info: TypeInfo, context: str, source_loc=None,
                                    suggestion_suffix: str = "", verb: str = "used"):
@@ -530,6 +591,15 @@ class TypeChecker:
         """Type check a single function."""
         self.current_function = func
 
+        # Clear register aliases from previous function
+        self._register_aliases.clear()
+
+        # Track register aliases from function parameters
+        from r65.compiler.hir.nodes import RegisterBinding
+        for param in func.parameters:
+            if isinstance(param.binding, RegisterBinding) and param.symbol:
+                self._register_aliases[id(param.symbol)] = param.binding.register_name
+
         # Validate that parameters are not aggregate types (arrays/structs cannot be passed by value)
         for param in func.parameters:
             self._check_no_aggregate_type(
@@ -697,6 +767,10 @@ class TypeChecker:
         # Update symbol table with inferred type
         if stmt.symbol:
             stmt.symbol.var_type = var_type
+
+        # Track register alias if this is a register-bound let
+        if isinstance(stmt.binding, RegisterLetBinding) and stmt.symbol:
+            self._register_aliases[id(stmt.symbol)] = stmt.binding.register_name
 
         # Check initializer type matches (skip if already checked during type inference)
         if stmt.initializer and not inferred_from_initializer:
@@ -1324,6 +1398,19 @@ class TypeChecker:
 
         target_type = self.check_expression(expr.target)
         value_type = self.check_expression(expr.value, target_type)
+
+        # Validate register-specific operator restrictions
+        # If target is a register (or register-aliased) and value is a binary op using that register,
+        # validate that the register supports the operation
+        target_register = self._get_target_register(expr.target)
+        if target_register and self._binary_op_uses_target(expr.value, expr.target):
+            binary_op = expr.value
+            OperatorValidator.validate_register_binary_op(
+                op=binary_op.op,
+                target_register=target_register,
+                right_operand=binary_op.right,
+                source_loc=expr.source_loc
+            )
 
         # Arrays and structs cannot be assigned by value
         # Note: Using specific message here since assignment has unique suggestion
