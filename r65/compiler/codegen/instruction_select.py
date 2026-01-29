@@ -720,8 +720,11 @@ class InstructionSelector:
         )
 
         # Check if operation involves X or Y registers (always 16-bit in x16 mode)
-        # When doing arithmetic on X/Y, we use A as intermediate via TXA/TYA,
-        # so A must be in 16-bit mode to preserve the full value
+        # Note: Direct X/Y arithmetic like `X = X + 5` is rejected by the type checker
+        # (X/Y only support increment/decrement). This flag handles valid patterns like:
+        # - `X = TEMP + 5` (dest is X, result transferred via TAX)
+        # - `A = X + 5` (left is X, value transferred via TXA, operation in A)
+        # In these cases, A must be in 16-bit mode to preserve the full 16-bit X/Y value.
         involves_index_register = (
             (left_loc.kind == LocationKind.HARDWARE and left_loc.hw_register in ('X', 'Y')) or
             (dest_loc.kind == LocationKind.HARDWARE and dest_loc.hw_register in ('X', 'Y'))
