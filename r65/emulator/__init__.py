@@ -8,5 +8,9 @@ from .cpu import CPU65816
 from .memory import Memory
 from .trace import TraceLogger
 from .disasm import disassemble
+from .compare import RomComparator, NormalizedTrace, Divergence, CompareTraceLogger
 
-__all__ = ['CPU65816', 'Memory', 'TraceLogger', 'disassemble']
+__all__ = [
+    'CPU65816', 'Memory', 'TraceLogger', 'disassemble',
+    'RomComparator', 'NormalizedTrace', 'Divergence', 'CompareTraceLogger'
+]
