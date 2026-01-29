@@ -55,6 +55,26 @@ UNRESTRICTED_REGISTERS = {'STATUS', 'D', 'DBR', 'PBR', 'S'}
 # not against each other (no direct X vs Y comparison instruction)
 INDEX_REGISTERS = {'X', 'Y'}
 
+# Valid direct register-to-register transfers (single instruction)
+# Each tuple is (source, dest) -> instruction
+# Transfers not in this set require an intermediate register
+VALID_REGISTER_TRANSFERS = {
+    # A <-> X: TAX, TXA
+    ('A', 'X'), ('X', 'A'),
+    # A <-> Y: TAY, TYA
+    ('A', 'Y'), ('Y', 'A'),
+    # X <-> Y: TXY, TYX
+    ('X', 'Y'), ('Y', 'X'),
+    # A <-> D: TCD, TDC (16-bit A)
+    ('A', 'D'), ('D', 'A'),
+    # A <-> S: TCS, TSC (16-bit A)
+    ('A', 'S'), ('S', 'A'),
+    # X <-> S: TXS, TSX
+    ('X', 'S'), ('S', 'X'),
+    # B <-> A: XBA swaps them (special case, but direct)
+    ('A', 'B'), ('B', 'A'),
+}
+
 
 def get_register_capabilities(register_name: str) -> dict:
     """
@@ -136,3 +156,45 @@ def is_index_register(register_name: str) -> bool:
         True if register is X or Y
     """
     return register_name in INDEX_REGISTERS
+
+
+def can_transfer_directly(src_reg: str, dest_reg: str) -> bool:
+    """
+    Check if a direct register-to-register transfer is possible.
+
+    Returns True if there's a single instruction to transfer from
+    src_reg to dest_reg. Returns False if an intermediate register
+    would be needed.
+
+    Args:
+        src_reg: Source register name
+        dest_reg: Destination register name
+
+    Returns:
+        True if direct transfer is possible
+    """
+    # Same register is always valid (no-op)
+    if src_reg == dest_reg:
+        return True
+    return (src_reg, dest_reg) in VALID_REGISTER_TRANSFERS
+
+
+def get_transfer_error_hint(src_reg: str, dest_reg: str) -> str:
+    """
+    Get a helpful hint for an invalid register transfer.
+
+    Args:
+        src_reg: Source register name
+        dest_reg: Destination register name
+
+    Returns:
+        Hint string explaining the issue and suggesting alternatives
+    """
+    # Find which registers can be used as intermediates
+    if src_reg in ('D', 'S') or dest_reg in ('D', 'S'):
+        return f"no direct T{src_reg}{dest_reg} instruction; transfer through A first"
+    if src_reg == 'Y' and dest_reg == 'S':
+        return "no TYS instruction; use TYA then TCS, or transfer through X"
+    if src_reg == 'S' and dest_reg == 'Y':
+        return "no TSY instruction; use TSC then TAY, or transfer through X"
+    return f"no direct transfer instruction from {src_reg} to {dest_reg}"

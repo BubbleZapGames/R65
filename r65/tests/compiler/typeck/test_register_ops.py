@@ -559,3 +559,122 @@ class TestIndexRegisterComparison:
         error = exc_info.value
         assert error.hint is not None
         assert "store" in error.hint.lower() or "variable" in error.hint.lower()
+
+
+class TestRegisterTransferRestrictions:
+    """Tests for register-to-register transfer restrictions.
+
+    Some register pairs don't have direct transfer instructions and would
+    require an intermediate register, which we reject.
+    """
+
+    def test_d_to_x_rejected(self):
+        """D = X should be rejected (no TDX instruction)."""
+        source = """
+        fn test() {
+            X = D;
+        }
+        """
+        with pytest.raises(TypeCheckError) as exc_info:
+            compile_and_type_check(source)
+        assert "cannot transfer D to X directly" in str(exc_info.value)
+
+    def test_d_to_y_rejected(self):
+        """Y = D should be rejected (no TDY instruction)."""
+        source = """
+        fn test() {
+            Y = D;
+        }
+        """
+        with pytest.raises(TypeCheckError) as exc_info:
+            compile_and_type_check(source)
+        assert "cannot transfer D to Y directly" in str(exc_info.value)
+
+    def test_x_to_d_rejected(self):
+        """D = X should be rejected (no TXD instruction)."""
+        source = """
+        fn test() {
+            D = X;
+        }
+        """
+        with pytest.raises(TypeCheckError) as exc_info:
+            compile_and_type_check(source)
+        assert "cannot transfer X to D directly" in str(exc_info.value)
+
+    def test_y_to_d_rejected(self):
+        """D = Y should be rejected (no TYD instruction)."""
+        source = """
+        fn test() {
+            D = Y;
+        }
+        """
+        with pytest.raises(TypeCheckError) as exc_info:
+            compile_and_type_check(source)
+        assert "cannot transfer Y to D directly" in str(exc_info.value)
+
+    def test_x_to_y_allowed(self):
+        """Y = X should be allowed (TXY instruction exists)."""
+        source = """
+        fn test() {
+            Y = X;
+        }
+        """
+        compile_and_type_check(source)  # Should not raise
+
+    def test_y_to_x_allowed(self):
+        """X = Y should be allowed (TYX instruction exists)."""
+        source = """
+        fn test() {
+            X = Y;
+        }
+        """
+        compile_and_type_check(source)  # Should not raise
+
+    def test_a_to_x_allowed(self):
+        """X = A should be allowed (TAX instruction exists)."""
+        source = """
+        fn test() {
+            X = A as u16;
+        }
+        """
+        compile_and_type_check(source)  # Should not raise
+
+    def test_a_to_y_allowed(self):
+        """Y = A should be allowed (TAY instruction exists)."""
+        source = """
+        fn test() {
+            Y = A as u16;
+        }
+        """
+        compile_and_type_check(source)  # Should not raise
+
+    def test_x_to_a_allowed(self):
+        """A = X should be allowed (TXA instruction exists)."""
+        source = """
+        fn test() {
+            A = X as u8;
+        }
+        """
+        compile_and_type_check(source)  # Should not raise
+
+    def test_y_to_a_allowed(self):
+        """A = Y should be allowed (TYA instruction exists)."""
+        source = """
+        fn test() {
+            A = Y as u8;
+        }
+        """
+        compile_and_type_check(source)  # Should not raise
+
+    def test_error_suggests_intermediate(self):
+        """Error should suggest using A as intermediate."""
+        source = """
+        fn test() {
+            X = D;
+        }
+        """
+        with pytest.raises(TypeCheckError) as exc_info:
+            compile_and_type_check(source)
+        error = exc_info.value
+        assert error.hint is not None
+        assert "A" in error.hint or "through" in error.hint.lower()

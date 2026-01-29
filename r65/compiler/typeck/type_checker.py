@@ -27,7 +27,11 @@ from r65.compiler.typeck.cfg_builder import CFGBuilder
 from r65.compiler.typeck.type_utils import TypeUtils
 from r65.compiler.typeck.operator_validator import OperatorValidator
 from r65.compiler.typeck.preservation_checker import PreservationChecker
-from r65.compiler.typeck.register_capabilities import is_index_register
+from r65.compiler.typeck.register_capabilities import (
+    is_index_register,
+    can_transfer_directly,
+    get_transfer_error_hint,
+)
 from r65.compiler.typeck.type_inference import TypeInference
 from r65.compiler.typeck.errors import TypeCheckError, TypeCheckWarning
 from r65.compiler.typeck.string_validator import StringValidator
@@ -1443,6 +1447,18 @@ class TypeChecker:
                 right_operand=binary_op.right,
                 source_loc=expr.source_loc
             )
+
+        # Validate register-to-register transfers
+        # Some register pairs don't have direct transfer instructions (e.g., D to X)
+        source_register = self._get_target_register(expr.value)
+        if target_register and source_register:
+            if not can_transfer_directly(source_register, target_register):
+                hint = get_transfer_error_hint(source_register, target_register)
+                raise TypeCheckError(
+                    f"cannot transfer {source_register} to {target_register} directly",
+                    source_loc=expr.source_loc,
+                    hint=hint
+                )
 
         # Arrays and structs cannot be assigned by value
         # Note: Using specific message here since assignment has unique suggestion
