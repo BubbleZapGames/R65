@@ -66,6 +66,13 @@ class CallInstructionSelector(BaseSelector):
         if opcode:
             self._emit_immediate(opcode, value, comment)
 
+    def _ensure_m8_mode(self, comment: str = "8-bit A"):
+        """Switch to 8-bit accumulator mode if not already there."""
+        from r65.compiler.codegen.constants import M_FLAG
+        if self.parent.emitter.get_accu_mode() != 8:
+            self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, comment)
+            self.parent.emitter.emit_accu_mode(8)
+
     # ========================================================================
     # Main Call Selection
     # ========================================================================
@@ -369,9 +376,7 @@ class CallInstructionSelector(BaseSelector):
             # 24-bit value (far pointer): push all 3 bytes (bank, high, low order for stack)
             # Push in reverse order: bank first (ends up at highest address)
             # IMPORTANT: Must be in m8 mode so each PHA pushes exactly 1 byte
-            if current_mode != 8:
-                self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "8-bit A for byte push")
-                self.parent.emitter.emit_accu_mode(8)
+            self._ensure_m8_mode("8-bit A for byte push")
 
             if arg_loc.kind == LocationKind.HARDWARE and arg_loc.hw_register == 'A':
                 # This shouldn't happen for 24-bit values
@@ -454,9 +459,7 @@ class CallInstructionSelector(BaseSelector):
                     self._emit_push('A', "Push 16-bit stack arg")
             elif isinstance(arg.value, MIRImmediate):
                 # Immediate 16-bit value: push byte by byte in m8 mode
-                if current_mode != 8:
-                    self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "8-bit A for byte push")
-                    self.parent.emitter.emit_accu_mode(8)
+                self._ensure_m8_mode("8-bit A for byte push")
                 value = arg.value.value
                 high_byte = (value >> 8) & 0xFF
                 low_byte = value & 0xFF
@@ -466,9 +469,7 @@ class CallInstructionSelector(BaseSelector):
                 self._emit_push('A', "Push low byte")
             elif arg_loc.kind == LocationKind.STACK:
                 # Stack locations: offset drifts after push, must use m8 mode for byte-by-byte
-                if current_mode != 8:
-                    self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "8-bit A for byte push")
-                    self.parent.emitter.emit_accu_mode(8)
+                self._ensure_m8_mode("8-bit A for byte push")
 
                 # Check if source is smaller than parameter - need zero extension
                 if source_size == 1:
@@ -491,9 +492,7 @@ class CallInstructionSelector(BaseSelector):
                     self._emit_push('A', "Push low byte")
             else:
                 # Non-stack locations: no drift, use m8 for byte-by-byte
-                if current_mode != 8:
-                    self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "8-bit A for byte push")
-                    self.parent.emitter.emit_accu_mode(8)
+                self._ensure_m8_mode("8-bit A for byte push")
 
                 # Check if source is smaller than parameter - need zero extension
                 if source_size == 1:
@@ -513,9 +512,7 @@ class CallInstructionSelector(BaseSelector):
         else:
             # 8-bit value: single push
             # IMPORTANT: Must be in m8 mode so PHA pushes exactly 1 byte
-            if current_mode != 8:
-                self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "8-bit A for u8 push")
-                self.parent.emitter.emit_accu_mode(8)
+            self._ensure_m8_mode("8-bit A for u8 push")
 
             if arg_loc.kind == LocationKind.HARDWARE and arg_loc.hw_register == 'A':
                 pass  # Already in A

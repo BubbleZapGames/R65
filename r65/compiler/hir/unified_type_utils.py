@@ -119,10 +119,19 @@ def get_unified_type_size(type_obj: Any, symbol_table=None) -> int:
     # Handle Struct types (HIR StructTypeInfo or similar)
     if hasattr(type_obj, 'fields'):
         return _get_struct_size(type_obj)
-    
+
     # Handle HIR struct definition nodes
     if HIRStructDecl and isinstance(type_obj, HIRStructDecl):
         return _get_struct_size(type_obj)
+
+    # Handle StructTypeInfo with definition (name reference to struct)
+    if hasattr(type_obj, 'definition') and type_obj.definition is not None:
+        if hasattr(type_obj.definition, 'fields'):
+            return _get_struct_size(type_obj.definition)
+
+    # Handle EnumTypeInfo (default to 1 byte)
+    if hasattr(type_obj, '__class__') and type_obj.__class__.__name__ == 'EnumTypeInfo':
+        return 1
     
     # Handle pointer types
     if hasattr(type_obj, 'pointee_type'):

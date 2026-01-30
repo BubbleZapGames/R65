@@ -2025,52 +2025,9 @@ class HIRBuilder:
             )
 
     def _get_type_size(self, type_info) -> int:
-        """Get size of a type in bytes."""
-        from .types import BasicTypeInfo, ArrayTypeInfo, PointerTypeInfo, FunctionTypeInfo
-
-        if isinstance(type_info, BasicTypeInfo):
-            if type_info.name in ['u8', 'i8', 'bool']:
-                return 1
-            elif type_info.name in ['u16', 'i16']:
-                return 2
-            else:
-                raise HIRError(f"Unknown basic type: {type_info.name}")
-
-        elif isinstance(type_info, ArrayTypeInfo):
-            elem_size = self._get_type_size(type_info.element_type)
-            return elem_size * type_info.size
-
-        elif isinstance(type_info, PointerTypeInfo):
-            return 3 if type_info.is_far else 2
-
-        elif isinstance(type_info, FunctionTypeInfo):
-            # Function pointers: 2 bytes for near fn(), 3 bytes for far fn()
-            return 3 if type_info.is_far else 2
-
-        elif isinstance(type_info, StructTypeInfo):
-            # Look up struct definition and sum field sizes
-            struct_symbol = self.symbol_table.lookup(type_info.name)
-            if struct_symbol and struct_symbol.definition:
-                struct_def = struct_symbol.definition
-                if isinstance(struct_def, hir.HIRStructDecl):
-                    # Sum up field sizes
-                    return sum(self._get_type_size(f.field_type) for f in struct_def.fields)
-                elif isinstance(struct_def, ast.StructDecl):
-                    # Calculate from AST definition
-                    size = 0
-                    for field in struct_def.fields:
-                        field_type = self.type_resolver.resolve_type(field.field_type)
-                        size += self._get_type_size(field_type)
-                    return size
-            raise HIRError(f"Cannot determine size of struct: {type_info.name}")
-
-        elif isinstance(type_info, EnumTypeInfo):
-            # Enums are sized based on their underlying type
-            # Default to u8 (1 byte) if not specified
-            return 1
-
-        else:
-            raise HIRError(f"Cannot determine size of type: {type(type_info).__name__}")
+        """Get size of a type in bytes. Delegates to unified_type_utils."""
+        from .unified_type_utils import get_unified_type_size
+        return get_unified_type_size(type_info, self.symbol_table)
 
     def _resolve_include_bytes_path(self, path: str) -> Optional[Path]:
         """

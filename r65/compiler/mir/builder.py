@@ -1343,39 +1343,7 @@ class MIRBuilder:
         )
 
     def _get_type_size(self, type_info) -> int:
-        """
-        Get size in bytes for a type.
-
-        Delegates to TypeSizeCalculator for consistent type size handling.
-
-        Args:
-            type_info: TypeInfo
-
-        Returns:
-            Size in bytes
-        """
-        from r65.compiler.hir.types import FunctionTypeInfo
-
-        # Handle function types specially (FunctionTypeInfo has is_far)
-        if isinstance(type_info, FunctionTypeInfo):
-            return 3 if type_info.is_far else 2
-
-        # Use TypeSizeCalculator for standard types
-        type_str = str(type_info)
-
-        # Basic types
-        if type_str in ('u8', 'i8', 'bool'):
-            return 1
-        elif type_str in ('u16', 'i16'):
-            return 2
-
-        # Pointer/function types by string
-        if type_str.startswith('far'):
-            return 3
-        elif type_str.startswith('near') or type_str.startswith('fn'):
-            return 2
-
-        # Delegate to TypeSizeCalculator for complex types
+        """Get size in bytes for a type. Delegates to TypeSizeCalculator."""
         return TypeSizeCalculator.get_size(type_info)
 
     def _generate_init_start_function(self, statics: List[HIRStaticDecl]) -> MIRFunction:
