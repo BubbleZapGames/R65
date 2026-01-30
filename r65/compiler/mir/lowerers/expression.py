@@ -77,68 +77,9 @@ class ExpressionLowerer:
             return self._lower_arithmetic_op(expr)
 
     def _try_eval_const_binary(self, expr: HIRBinaryOp) -> Optional[int]:
-        """
-        Try to evaluate a binary operation at compile time.
-
-        Returns the result if both operands are constants, None otherwise.
-        """
-        left = self._try_get_const_value(expr.left)
-        right = self._try_get_const_value(expr.right)
-
-        if left is None or right is None:
-            return None
-
-        op = expr.op
-        if op == '+':
-            return (left + right) & self._get_mask(expr.expr_type)
-        elif op == '-':
-            return (left - right) & self._get_mask(expr.expr_type)
-        elif op == '*':
-            return (left * right) & self._get_mask(expr.expr_type)
-        elif op == '/':
-            return (left // right) if right != 0 else 0
-        elif op == '%':
-            return (left % right) if right != 0 else 0
-        elif op == '&':
-            return left & right
-        elif op == '|':
-            return left | right
-        elif op == '^':
-            return left ^ right
-        elif op == '<<':
-            return (left << right) & self._get_mask(expr.expr_type)
-        elif op == '>>':
-            return left >> right
-        else:
-            return None
-
-    def _try_get_const_value(self, expr) -> Optional[int]:
-        """Try to get constant integer value from expression."""
-        from r65.compiler.hir import HIRIntegerLiteral, HIRIdentifier, HIRTypeCast
-        from r65.compiler.hir.symbol_table import SymbolKind
-
-        if isinstance(expr, HIRIntegerLiteral):
-            return expr.value
-        elif isinstance(expr, HIRIdentifier):
-            if expr.symbol and expr.symbol.kind == SymbolKind.CONST:
-                return expr.symbol.const_value
-        elif isinstance(expr, HIRTypeCast):
-            inner = self._try_get_const_value(expr.expr)
-            if inner is not None:
-                return inner & self._get_mask(expr.expr_type)
-        elif isinstance(expr, HIRBinaryOp):
-            return self._try_eval_const_binary(expr)
-        return None
-
-    def _get_mask(self, type_info) -> int:
-        """Get bitmask for type size."""
-        from r65.compiler.hir.types import BasicTypeInfo
-        if isinstance(type_info, BasicTypeInfo):
-            if type_info.name in ('u8', 'i8', 'bool'):
-                return 0xFF
-            elif type_info.name in ('u16', 'i16'):
-                return 0xFFFF
-        return 0xFFFF  # Default to 16-bit
+        """Try to evaluate a binary operation at compile time with type masking."""
+        from r65.compiler.hir.hir_const_eval import try_eval_const_binary_masked
+        return try_eval_const_binary_masked(expr)
 
     def _lower_comparison_op(self, expr: HIRBinaryOp) -> VirtualRegister:
         """Lower comparison operation to boolean result."""
