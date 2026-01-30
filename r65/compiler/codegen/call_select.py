@@ -73,6 +73,42 @@ class CallInstructionSelector(BaseSelector):
             self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, comment)
             self.parent.emitter.emit_accu_mode(8)
 
+    def _push_multibyte_value(self, arg_loc, source_size: int, target_size: int, is_stack: bool):
+        """
+        Push a multi-byte value to stack with zero-extension as needed.
+
+        Handles stack drift compensation for stack-based source locations.
+        Bytes are pushed high-to-low (bank first for 24-bit, high first for 16-bit).
+
+        Args:
+            arg_loc: Source location
+            source_size: Size of source value in bytes
+            target_size: Size of target parameter in bytes
+            is_stack: True if arg_loc is on stack (needs drift compensation)
+        """
+        push_count = 0  # Track pushes for stack drift compensation
+
+        # Push bytes from high to low
+        for byte_idx in range(target_size - 1, -1, -1):
+            if byte_idx >= source_size:
+                # Zero-extend: push 0 for bytes beyond source size
+                byte_name = {2: "bank", 1: "high", 0: "low"}.get(byte_idx, f"byte{byte_idx}")
+                self._emit_load_immediate('A', 0, f"Zero-extend {byte_name} byte")
+                self._emit_push('A', f"Push {byte_name} byte (zero)")
+            else:
+                # Load from source location
+                byte_name = {2: "bank", 1: "high", 0: "low"}.get(byte_idx, f"byte{byte_idx}")
+                offset = byte_idx
+                if is_stack:
+                    offset += push_count  # Compensate for stack drift
+                if offset > 0:
+                    loc = self.parent._offset_location(arg_loc, offset)
+                else:
+                    loc = arg_loc
+                self.parent._emit_load('LDA', loc, f"Load {byte_name} byte")
+                self._emit_push('A', f"Push {byte_name} byte")
+            push_count += 1
+
     # ========================================================================
     # Main Call Selection
     # ========================================================================
@@ -374,77 +410,14 @@ class CallInstructionSelector(BaseSelector):
 
         if arg_size == 3:
             # 24-bit value (far pointer): push all 3 bytes (bank, high, low order for stack)
-            # Push in reverse order: bank first (ends up at highest address)
             # IMPORTANT: Must be in m8 mode so each PHA pushes exactly 1 byte
             self._ensure_m8_mode("8-bit A for byte push")
 
             if arg_loc.kind == LocationKind.HARDWARE and arg_loc.hw_register == 'A':
-                # This shouldn't happen for 24-bit values
                 raise InstructionSelectionError("Cannot push 24-bit value from A register")
-            elif arg_loc.kind == LocationKind.STACK:
-                # Stack locations: offsets drift after each push, so compensate
-                # After each PHA, stack offsets increase by 1
-                # Handle zero extension from smaller source sizes
-                if source_size == 1:
-                    # 8-bit -> 24-bit: zero extend bank and high
-                    self._emit_load_immediate('A', 0, "Zero-extend bank byte")
-                    self._emit_push('A', "Push bank byte (zero)")
-                    self._emit_load_immediate('A', 0, "Zero-extend high byte")
-                    self._emit_push('A', "Push high byte (zero)")
-                    low_loc = self.parent._offset_location(arg_loc, 0 + 2)
-                    self.parent._emit_load('LDA', low_loc, "Load low byte")
-                    self._emit_push('A', "Push low byte")
-                elif source_size == 2:
-                    # 16-bit -> 24-bit: zero extend bank
-                    self._emit_load_immediate('A', 0, "Zero-extend bank byte")
-                    self._emit_push('A', "Push bank byte (zero)")
-                    high_loc = self.parent._offset_location(arg_loc, 1 + 1)
-                    self.parent._emit_load('LDA', high_loc, "Load high byte")
-                    self._emit_push('A', "Push high byte")
-                    low_loc = self.parent._offset_location(arg_loc, 0 + 2)
-                    self.parent._emit_load('LDA', low_loc, "Load low byte")
-                    self._emit_push('A', "Push low byte")
-                else:
-                    # Source is already 24-bit
-                    bank_loc = self.parent._offset_location(arg_loc, 2)
-                    self.parent._emit_load('LDA', bank_loc, "Load bank byte")
-                    self._emit_push('A', "Push bank byte")
-                    high_loc = self.parent._offset_location(arg_loc, 1 + 1)
-                    self.parent._emit_load('LDA', high_loc, "Load high byte")
-                    self._emit_push('A', "Push high byte")
-                    low_loc = self.parent._offset_location(arg_loc, 0 + 2)
-                    self.parent._emit_load('LDA', low_loc, "Load low byte")
-                    self._emit_push('A', "Push low byte")
             else:
-                # Non-stack locations: no drift compensation needed
-                # Handle zero extension from smaller source sizes
-                if source_size == 1:
-                    # 8-bit -> 24-bit: zero extend bank and high
-                    self._emit_load_immediate('A', 0, "Zero-extend bank byte")
-                    self._emit_push('A', "Push bank byte (zero)")
-                    self._emit_load_immediate('A', 0, "Zero-extend high byte")
-                    self._emit_push('A', "Push high byte (zero)")
-                    self.parent._emit_load('LDA', arg_loc, "Load low byte")
-                    self._emit_push('A', "Push low byte")
-                elif source_size == 2:
-                    # 16-bit -> 24-bit: zero extend bank
-                    self._emit_load_immediate('A', 0, "Zero-extend bank byte")
-                    self._emit_push('A', "Push bank byte (zero)")
-                    high_loc = self.parent._offset_location(arg_loc, 1)
-                    self.parent._emit_load('LDA', high_loc, "Load high byte")
-                    self._emit_push('A', "Push high byte")
-                    self.parent._emit_load('LDA', arg_loc, "Load low byte")
-                    self._emit_push('A', "Push low byte")
-                else:
-                    # Source is already 24-bit
-                    bank_loc = self.parent._offset_location(arg_loc, 2)
-                    self.parent._emit_load('LDA', bank_loc, "Load bank byte")
-                    self._emit_push('A', "Push bank byte")
-                    high_loc = self.parent._offset_location(arg_loc, 1)
-                    self.parent._emit_load('LDA', high_loc, "Load high byte")
-                    self._emit_push('A', "Push high byte")
-                    self.parent._emit_load('LDA', arg_loc, "Load low byte")
-                    self._emit_push('A', "Push low byte")
+                is_stack = arg_loc.kind == LocationKind.STACK
+                self._push_multibyte_value(arg_loc, source_size, 3, is_stack)
 
         elif arg_size == 2:
             # 16-bit value: push both bytes (high first, then low)
@@ -467,47 +440,11 @@ class CallInstructionSelector(BaseSelector):
                 self._emit_push('A', "Push high byte")
                 self._emit_load_immediate('A', low_byte)
                 self._emit_push('A', "Push low byte")
-            elif arg_loc.kind == LocationKind.STACK:
-                # Stack locations: offset drifts after push, must use m8 mode for byte-by-byte
-                self._ensure_m8_mode("8-bit A for byte push")
-
-                # Check if source is smaller than parameter - need zero extension
-                if source_size == 1:
-                    # 8-bit source -> 16-bit param: zero-extend
-                    # Push high byte (0) first
-                    self._emit_load_immediate('A', 0, "Zero-extend high byte")
-                    self._emit_push('A', "Push high byte (zero)")
-                    # After 1 push, offset is +1
-                    low_loc = self.parent._offset_location(arg_loc, 0 + 1)
-                    self.parent._emit_load('LDA', low_loc, "Load low byte")
-                    self._emit_push('A', "Push low byte")
-                else:
-                    # Source is already 16-bit, load both bytes
-                    high_loc = self.parent._offset_location(arg_loc, 1)
-                    self.parent._emit_load('LDA', high_loc, "Load high byte")
-                    self._emit_push('A', "Push high byte")
-                    # After 1 push, offset is +1
-                    low_loc = self.parent._offset_location(arg_loc, 0 + 1)
-                    self.parent._emit_load('LDA', low_loc, "Load low byte")
-                    self._emit_push('A', "Push low byte")
             else:
-                # Non-stack locations: no drift, use m8 for byte-by-byte
+                # Memory locations: push byte by byte with zero-extension as needed
                 self._ensure_m8_mode("8-bit A for byte push")
-
-                # Check if source is smaller than parameter - need zero extension
-                if source_size == 1:
-                    # 8-bit source -> 16-bit param: zero-extend
-                    self._emit_load_immediate('A', 0, "Zero-extend high byte")
-                    self._emit_push('A', "Push high byte (zero)")
-                    self.parent._emit_load('LDA', arg_loc, "Load low byte")
-                    self._emit_push('A', "Push low byte")
-                else:
-                    # Source is already 16-bit, load both bytes
-                    high_loc = self.parent._offset_location(arg_loc, 1)
-                    self.parent._emit_load('LDA', high_loc, "Load high byte")
-                    self._emit_push('A', "Push high byte")
-                    self.parent._emit_load('LDA', arg_loc, "Load low byte")
-                    self._emit_push('A', "Push low byte")
+                is_stack = arg_loc.kind == LocationKind.STACK
+                self._push_multibyte_value(arg_loc, source_size, 2, is_stack)
 
         else:
             # 8-bit value: single push
