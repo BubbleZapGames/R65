@@ -12,7 +12,8 @@ from r65.compiler.hir.attributes import StorageKind
 from r65.compiler.errors import MemoryAllocationError
 from r65.compiler.codegen.type_utils import get_type_size as _get_type_size
 from r65.compiler.codegen.constants import (
-    LOWRAM_START, LOWRAM_END, ZEROPAGE_END, RAM_START, RAM_END
+    LOWRAM_START, LOWRAM_END, ZEROPAGE_END, RAM_START, RAM_END,
+    WRAM_BANK2_START
 )
 
 
@@ -280,6 +281,8 @@ class MemoryAllocator:
         """
         Find first available RAM address that fits 'size' bytes.
 
+        Ensures allocations don't cross the bank boundary at $7F0000.
+
         Args:
             size: Number of contiguous bytes needed
 
@@ -295,6 +298,12 @@ class MemoryAllocator:
         while True:
             if address + size - 1 > self.ram_end:
                 raise MemoryAllocationError(f"Out of RAM space (need {size} bytes)")
+
+            # Check if allocation would cross bank boundary at $7F0000
+            if address < WRAM_BANK2_START and address + size - 1 >= WRAM_BANK2_START:
+                # Would cross boundary - skip to bank $7F
+                address = WRAM_BANK2_START
+                continue
 
             # Check for conflicts with existing allocations
             conflict = False
@@ -331,11 +340,18 @@ class MemoryAllocator:
             address = explicit_addr
             is_explicit = True
 
-            # Validate range only
+            # Validate range
             if address < self.ram_start or address + size - 1 > self.ram_end:
                 raise MemoryAllocationError(
                     f"RAM address ${address:06X} for '{symbol.name}' "
                     f"out of range (${self.ram_start:06X}-${self.ram_end:06X})"
+                )
+
+            # Check bank boundary crossing at $7F0000
+            if address < WRAM_BANK2_START and address + size - 1 >= WRAM_BANK2_START:
+                raise MemoryAllocationError(
+                    f"RAM allocation '{symbol.name}' at ${address:06X} ({size} bytes) "
+                    f"crosses bank boundary at $7F0000"
                 )
         else:
             # Auto-allocate - find next available address that fits
