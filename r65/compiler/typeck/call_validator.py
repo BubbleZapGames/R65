@@ -41,6 +41,39 @@ class CallValidator:
         self.get_current_mode = get_current_mode_fn
         self.get_current_function = get_current_function_fn
 
+    def _validate_arguments(self, args, params, func_name: str, source_loc, is_indirect: bool = False):
+        """
+        Validate argument types against parameter types.
+
+        Args:
+            args: List of argument expressions
+            params: List of parameters (HIRParameter objects) or param types (TypeInfo for indirect)
+            func_name: Function name for error messages
+            source_loc: Source location for error reporting
+            is_indirect: True if params are raw TypeInfo (function pointer call)
+        """
+        for i, (arg, param) in enumerate(zip(args, params)):
+            arg_type = self.check_expression(arg)
+            if isinstance(arg_type, NeverTypeInfo):
+                continue
+
+            # Get param type - handle both HIRParameter objects and raw TypeInfo
+            if is_indirect:
+                param_type = param
+                param_name = None
+            else:
+                param_type = param.param_type
+                param_name = param.name
+
+            if not TypeUtils.types_compatible(arg_type, param_type):
+                hint = (f"parameter '{param_name}' expects type {param_type}"
+                        if param_name else f"use cast if needed: (value as {param_type})")
+                raise TypeCheckError(
+                    f"argument {i + 1} to '{func_name}' has wrong type: expected {param_type}, found {arg_type}",
+                    source_loc=arg.source_loc if hasattr(arg, 'source_loc') else source_loc,
+                    hint=hint
+                )
+
     def check_function_call(self, expr: HIRFunctionCall) -> TypeInfo:
         """
         Type check function call.
@@ -77,15 +110,7 @@ class CallValidator:
                 )
 
             # Type check each argument
-            for i, (arg, param) in enumerate(zip(expr.args, func_decl.parameters)):
-                arg_type = self.check_expression(arg)
-                if not isinstance(arg_type, NeverTypeInfo):
-                    if not TypeUtils.types_compatible(arg_type, param.param_type):
-                        raise TypeCheckError(
-                            f"argument {i + 1} to '{func_symbol.name}' has wrong type: expected {param.param_type}, found {arg_type}",
-                            source_loc=arg.source_loc if hasattr(arg, 'source_loc') else expr.source_loc,
-                            hint=f"parameter '{param.name}' expects type {param.param_type}"
-                        )
+            self._validate_arguments(expr.args, func_decl.parameters, func_symbol.name, expr.source_loc)
 
             # Check mode compatibility
             self._check_call_mode_compatibility(func_symbol.name, func_decl, expr.source_loc)
@@ -118,15 +143,7 @@ class CallValidator:
                 )
 
             # Type check each argument
-            for i, (arg, param_type) in enumerate(zip(expr.args, func_type.param_types)):
-                arg_type = self.check_expression(arg)
-                if not isinstance(arg_type, NeverTypeInfo):
-                    if not TypeUtils.types_compatible(arg_type, param_type):
-                        raise TypeCheckError(
-                            f"argument {i + 1} has wrong type: expected {param_type}, found {arg_type}",
-                            source_loc=arg.source_loc if hasattr(arg, 'source_loc') else expr.source_loc,
-                            hint=f"use cast if needed: (value as {param_type})"
-                        )
+            self._validate_arguments(expr.args, func_type.param_types, "function pointer", expr.source_loc, is_indirect=True)
 
             # Set return type
             if func_type.return_type:
@@ -247,15 +264,7 @@ class CallValidator:
             )
 
         # Type check remaining arguments
-        for i, (arg, param) in enumerate(zip(expr.args, func_decl.parameters[1:])):
-            arg_type = self.check_expression(arg)
-            if not isinstance(arg_type, NeverTypeInfo):
-                if not TypeUtils.types_compatible(arg_type, param.param_type):
-                    raise TypeCheckError(
-                        f"argument {i + 1} to '{method_name}' has wrong type: expected {param.param_type}, found {arg_type}",
-                        source_loc=arg.source_loc if hasattr(arg, 'source_loc') else expr.source_loc,
-                        hint=f"parameter '{param.name}' expects type {param.param_type}"
-                    )
+        self._validate_arguments(expr.args, func_decl.parameters[1:], method_name, expr.source_loc)
 
         # Check mode compatibility
         self._check_call_mode_compatibility(mangled_name, func_decl, expr.source_loc)
