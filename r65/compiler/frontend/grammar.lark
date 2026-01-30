@@ -25,19 +25,22 @@ start: item*
      | _reserved_keyword  // Dummy rule to make reserved keywords valid tokens
 
 // Stack directive - global attribute for stack region
-// Uses explicit syntax to avoid grammar ambiguity
-stack_directive: "#" "[" "stack" "(" INTEGER "," INTEGER ")" "]"
+// Uses STACK_KEYWORD to distinguish from regular attributes
+stack_directive: "#" "[" STACK_KEYWORD "(" INTEGER "," INTEGER ")" "]"
+STACK_KEYWORD.20: /stack(?=\()/
 
 // Bank directive - sets current ROM bank for following declarations
 // #[bank(0)] for explicit bank, #[bank(auto)] for automatic placement
-// Uses IDENT to avoid tokenization issues with "bank" as a parameter name
+// Uses BANK_KEYWORD to distinguish from regular attributes
 bank_directive: "#" "[" BANK_KEYWORD "(" (INTEGER | AUTO_KEYWORD) ")" "]"
 BANK_KEYWORD.20: /bank(?=\()/
 AUTO_KEYWORD.20: /auto(?=\))/
 
 // SNES ROM header directive - configures .SNESHEADER output
 // #[snesrom(name="ROM NAME", id="SNES", lorom, fastrom, ...)]
-snesrom_directive: "#" "[" "snesrom" "(" snesrom_arg ("," snesrom_arg)* ","? ")" "]"
+// Uses SNESROM_KEYWORD to distinguish from regular attributes
+snesrom_directive: "#" "[" SNESROM_KEYWORD "(" snesrom_arg ("," snesrom_arg)* ","? ")" "]"
+SNESROM_KEYWORD.20: /snesrom(?=\()/
 snesrom_arg: IDENT "=" (STRING | INTEGER)  -> snesrom_named_arg
            | IDENT                          -> snesrom_flag_arg
 
@@ -170,7 +173,8 @@ macro_arg_token: IDENT | REGISTER | TYPE_NAME | INTEGER | STRING | BOOLEAN
 attribute: "#" "[" attribute_inner "]"
 attribute_inner: CFG "(" cfg_condition ")"            -> cfg_attribute
              | attr_name ("(" attribute_args? ")")?
-attr_name: IDENT | "stack" | "snesrom"
+// Note: "snesrom", "stack", "bank" are NOT included here - they're standalone directives, not attributes
+attr_name: IDENT
 
 attribute_args: attribute_arg ("," attribute_arg)* ","?
 attribute_arg: IDENT "=" expr      -> named_arg
@@ -480,30 +484,32 @@ DEC_INTEGER: /[0-9][0-9_]*/
 STRING: ESCAPED_STRING
 
 // Two-character operators (must come before single-char)
-LSHIFT: "<<"
-RSHIFT: ">>"
-EQEQUAL: "=="
-NOTEQUAL: "!="
-LESSEQUAL: "<="
-GREATEREQUAL: ">="
-AND: "&&"
-OR: "||"
-RARROW: "->"
-PLUSPLUS: "++"
-MINUSMINUS: "--"
-DOTDOT: ".."
+// Priority .10 ensures these are lexed before single-char operators
+LSHIFT.10: "<<"
+RSHIFT.10: ">>"
+EQEQUAL.10: "=="
+NOTEQUAL.10: "!="
+LESSEQUAL.10: "<="
+GREATEREQUAL.10: ">="
+AND.10: "&&"
+OR.10: "||"
+RARROW.10: "->"
+PLUSPLUS.10: "++"
+MINUSMINUS.10: "--"
+DOTDOT.10: ".."
 
 // Compound assignment operators (must come before single-char operators)
-LSHIFTEQUAL: "<<="
-RSHIFTEQUAL: ">>="
-PLUSEQUAL: "+="
-MINUSEQUAL: "-="
-STAREQUAL: "*="
-SLASHEQUAL: "/="
-PERCENTEQUAL: "%="
-AMPEREQUAL: "&="
-VBAREQUAL: "|="
-CIRCUMFLEXEQUAL: "^="
+// Priority .11 ensures three-char operators are lexed before two-char
+LSHIFTEQUAL.11: "<<="
+RSHIFTEQUAL.11: ">>="
+PLUSEQUAL.10: "+="
+MINUSEQUAL.10: "-="
+STAREQUAL.10: "*="
+SLASHEQUAL.10: "/="
+PERCENTEQUAL.10: "%="
+AMPEREQUAL.10: "&="
+VBAREQUAL.10: "|="
+CIRCUMFLEXEQUAL.10: "^="
 
 // Single-character operators
 PLUS: "+"

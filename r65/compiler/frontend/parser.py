@@ -1868,7 +1868,7 @@ class Parser:
         self.lark = Lark(
             GRAMMAR,
             parser='lalr',  # LALR is much faster than Earley
-            lexer='standard',  # Standard lexer
+            lexer='contextual',  # Contextual lexer for LALR
             start='start',
             keep_all_tokens=True,
             propagate_positions=True  # Enable source location tracking
