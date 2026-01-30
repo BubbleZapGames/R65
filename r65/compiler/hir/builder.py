@@ -1885,11 +1885,14 @@ class HIRBuilder:
         elif isinstance(pattern, ast.IdentifierPattern):
             # Create a new binding in current scope
             # Determine type from scrutinee during type checking
-            symbol = self.symbol_table.define(
+            symbol = Symbol(
                 name=pattern.name,
                 kind=SymbolKind.LOCAL_VAR,
+                definition=None,  # Pattern bindings don't have a separate definition
+                scope_id=self.symbol_table.current_scope_id,
                 var_type=None  # Will be set during type checking
             )
+            self.symbol_table.declare(pattern.name, symbol)
             return hir.HIRIdentifierPattern(name=pattern.name, symbol=symbol)
 
         elif isinstance(pattern, ast.OrPattern):
