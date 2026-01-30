@@ -13,7 +13,7 @@ from typing import Dict, List, Optional, Set, TYPE_CHECKING
 from dataclasses import dataclass, field
 from enum import Enum
 from r65.compiler.mir.nodes import VirtualRegister, HardwareRegister, MIRFunction
-from r65.compiler.codegen.slot_allocator import StackSlotAllocator, SlotAllocation
+from r65.compiler.codegen.slot_allocator import StackSlotAllocator, SlotAllocation, PreassignedSlot
 from r65.compiler.codegen.type_utils import get_type_size
 
 if TYPE_CHECKING:
@@ -306,66 +306,30 @@ class RegisterAllocator:
         else:
             self.stack_base_offset = self.prologue_stack_bytes + 1
 
-        # Track which vregs are stack parameters so we can update them later
-        self._stack_param_vregs: Set[int] = set()
-
-        # Pre-allocate stack parameter vregs at their passed locations
-        # This avoids redundant copying in the prologue
-        self._preallocate_stack_params()
-
-    def _preallocate_stack_params(self):
+    def _build_preassigned_params(self) -> List[PreassignedSlot]:
         """
-        Pre-allocate physical locations for stack parameters.
+        Build preassigned slots from MIR function's stack parameters.
 
-        Stack parameters are passed by the caller at known offsets. Rather than
-        copying them to local stack slots, we use the passed locations directly.
-        The offset is adjusted for bytes pushed by the prologue.
-
-        Note: For non-entry functions with frame allocation, update_stack_param_offsets()
-        must be called after frame size is known to add the frame offset.
+        Returns:
+            List of PreassignedSlot for each stack parameter
         """
-        if not self.mir_func:
-            return
+        preassigned = []
 
-        if not self.mir_func.stack_param_offsets:
-            return
+        if not self.mir_func or not self.mir_func.stack_param_offsets:
+            return preassigned
 
         for param_idx, base_offset in self.mir_func.stack_param_offsets.items():
             vreg = self.mir_func.param_to_vreg.get(param_idx)
             if not vreg:
                 continue
 
-            # Adjust offset for prologue pushes (frame size added later if needed)
-            adjusted_offset = base_offset + self.prologue_stack_bytes
-
-            # Create physical location at the passed stack offset
-            location = PhysicalLocation(
-                kind=LocationKind.STACK,
-                stack_offset=adjusted_offset,
+            preassigned.append(PreassignedSlot(
+                vreg=vreg,
+                base_offset=base_offset,
                 size=self._get_vreg_size(vreg)
-            )
-            self.allocations[vreg.id] = location
-            self._stack_param_vregs.add(vreg.id)
+            ))
 
-    def update_stack_param_offsets(self, frame_size: int):
-        """
-        Update stack parameter offsets to account for frame allocation.
-
-        When a function allocates a stack frame, S moves down by frame_size.
-        This means all stack parameters (which are at higher addresses) now
-        appear at higher S-relative offsets.
-
-        Args:
-            frame_size: Number of bytes allocated for the stack frame
-        """
-        if frame_size == 0:
-            return
-
-        for vreg_id in self._stack_param_vregs:
-            if vreg_id in self.allocations:
-                location = self.allocations[vreg_id]
-                if location.kind == LocationKind.STACK:
-                    location.stack_offset += frame_size
+        return preassigned
 
     def allocate_vreg(self, vreg: VirtualRegister) -> PhysicalLocation:
         """
@@ -605,20 +569,34 @@ class RegisterAllocator:
         """
         Allocate all virtual registers at once.
 
-        Performs slot reuse optimization if MIR function is available.
+        Uses unified slot allocation that handles both stack parameters and
+        local variables in a single pass. Parameters get their final offsets
+        computed automatically (no post-hoc adjustment needed).
 
         Args:
             vregs: List of virtual registers to allocate
         """
-        # Run slot allocation with liveness analysis if MIR function available
+        # Run unified slot allocation if MIR function available
         if self.mir_func:
-            # Exclude stack param vregs - they already have fixed locations from caller
-            # This prevents inflating frame_size with params that don't need local space
+            # Build preassigned slots for stack parameters
+            preassigned = self._build_preassigned_params()
+
+            # Create unified allocator that handles params + locals together
             self.slot_allocator = StackSlotAllocator(
                 self.mir_func,
-                exclude_vreg_ids=self._stack_param_vregs
+                preassigned=preassigned,
+                prologue_stack_bytes=self.prologue_stack_bytes
             )
             self.slot_allocation = self.slot_allocator.allocate()
+
+            # Pre-allocate param vregs with their final computed offsets
+            for vreg, final_offset in self.slot_allocation.param_offsets.items():
+                location = PhysicalLocation(
+                    kind=LocationKind.STACK,
+                    stack_offset=final_offset,
+                    size=self.slot_allocation.param_sizes.get(vreg, 1)
+                )
+                self.allocations[vreg.id] = location
 
             # Print statistics if any slots were saved
             if self.slot_allocation.slots_saved > 0:

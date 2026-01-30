@@ -99,15 +99,13 @@ class FunctionCodeGenerator:
         self._allocate_function_registers(mir_func, reg_alloc)
 
         # Get frame size from allocator - all functions allocate frames for locals if needed
+        # Note: The unified slot allocator already computes final param offsets
+        # accounting for frame_size, so no post-hoc adjustment is needed.
         frame_size = reg_alloc.get_stack_frame_size()
 
         # Update register allocator with frame info
         reg_alloc.frame_size = frame_size
         reg_alloc.has_frame_allocation = frame_size > 0
-
-        # Update stack parameter offsets to account for frame allocation
-        if reg_alloc.has_frame_allocation:
-            reg_alloc.update_stack_param_offsets(frame_size)
 
         # Create instruction selector with current function context
         instr_selector = InstructionSelector(self.emitter, reg_alloc, self.mem_alloc, mir_func, func_gen=self)

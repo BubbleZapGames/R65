@@ -1,15 +1,20 @@
 """
-Stack slot allocator with reuse optimization.
+Unified stack slot allocator with reuse optimization.
 
 Allocates memory slots for local variables and temporaries, reusing slots
 when variable lifetimes don't overlap (determined by liveness analysis).
+
+This module provides a unified approach that handles both stack parameters
+(with fixed offsets from caller) and local variables in a single pass.
+Parameters are treated as preassigned slots that participate in liveness
+analysis but don't contribute to the local frame size.
 
 Handles multi-byte values (e.g., 3-byte far pointers) by allocating
 consecutive slots and tracking the full range for interference checking.
 """
 
-from typing import Dict, Set, List, Optional, Tuple
-from dataclasses import dataclass
+from typing import Dict, Set, List, Optional, Tuple, Any
+from dataclasses import dataclass, field
 from r65.compiler.mir.nodes import VirtualRegister, MIRFunction, Move, Return, HardwareRegister
 from r65.compiler.mir.liveness import LivenessAnalyzer
 from r65.compiler.hir.unified_type_utils import get_unified_type_size
@@ -17,131 +22,238 @@ from r65.compiler.hir import HIRError
 
 
 @dataclass
+class PreassignedSlot:
+    """A stack slot with a fixed offset (e.g., stack parameter)."""
+    vreg: VirtualRegister
+    base_offset: int  # Offset from S before frame allocation
+    size: int
+
+
+@dataclass
 class SlotAllocation:
     """
-    Result of slot allocation.
+    Result of unified slot allocation.
 
-    Maps virtual registers to memory slot numbers, with slots reused
-    when possible based on liveness analysis.
+    Contains both local allocations (contributing to frame_size) and
+    preassigned allocations (params) with their final computed offsets.
     """
-    # Maps VirtualRegister to slot number (offset from base)
+    # Local variables: vreg -> slot number (offset within frame, starting at 0)
     register_to_slot: Dict[VirtualRegister, int]
 
-    # Maps VirtualRegister to size in bytes (number of consecutive slots)
+    # Local variable sizes
     register_to_size: Dict[VirtualRegister, int]
 
-    # Total number of slots needed
+    # Total frame size (only locals, not params)
     total_slots: int
 
     # Statistics
     variables_count: int
-    slots_saved: int  # Number of slots saved by reuse
+    slots_saved: int
 
-    # Vregs that can stay in hardware registers (no spill needed)
-    # Maps vreg to the hardware register name it should stay in
+    # Hardware-coalesceable vregs (don't need stack slots)
     hw_coalesceable: Dict[VirtualRegister, str] = None
+
+    # Stack parameters: vreg -> final offset (after frame adjustment)
+    param_offsets: Dict[VirtualRegister, int] = None
+
+    # Param sizes
+    param_sizes: Dict[VirtualRegister, int] = None
 
     def __post_init__(self):
         if self.hw_coalesceable is None:
             self.hw_coalesceable = {}
+        if self.param_offsets is None:
+            self.param_offsets = {}
+        if self.param_sizes is None:
+            self.param_sizes = {}
+
+    def get_offset(self, vreg: VirtualRegister) -> Optional[int]:
+        """Get slot offset for any vreg (local only - params use param_offsets)."""
+        return self.register_to_slot.get(vreg)
+
+    def get_param_offset(self, vreg: VirtualRegister) -> Optional[int]:
+        """Get final stack offset for a parameter vreg."""
+        return self.param_offsets.get(vreg)
+
+    def get_size(self, vreg: VirtualRegister) -> Optional[int]:
+        """Get size for any vreg."""
+        if vreg in self.register_to_size:
+            return self.register_to_size[vreg]
+        if vreg in self.param_sizes:
+            return self.param_sizes[vreg]
+        return None
+
+    def is_param(self, vreg: VirtualRegister) -> bool:
+        """Check if vreg is a stack parameter."""
+        return vreg in self.param_offsets
 
 
 class StackSlotAllocator:
     """
-    Allocates stack/zero-page slots with reuse optimization.
+    Unified stack slot allocator handling params and locals together.
 
-    Uses liveness analysis to determine which variables can share
-    the same memory location, reducing memory usage.
+    Stack layout after frame allocation:
+
+        High addresses
+        [arg2]          <- param_offsets[1] = base + prologue + frame_size
+        [arg1]          <- param_offsets[0] = base + prologue + frame_size
+        [return addr]
+        [saved regs]    <- prologue_stack_bytes
+        [local N]       <- local_slots[N] = N
+        ...
+        [local 1]       <- local_slots[0] = 1
+        S ->
+        Low addresses
+
+    Parameters have fixed positions (above return addr) but their S-relative
+    offsets change when we allocate a frame. This allocator computes final
+    offsets for everything in one pass.
     """
 
-    def __init__(self, mir_func: MIRFunction, exclude_vreg_ids: Optional[Set[int]] = None):
+    def __init__(
+        self,
+        mir_func: MIRFunction,
+        preassigned: Optional[List[PreassignedSlot]] = None,
+        prologue_stack_bytes: int = 0
+    ):
         """
-        Initialize slot allocator.
+        Initialize unified slot allocator.
 
         Args:
             mir_func: MIR function to allocate slots for
-            exclude_vreg_ids: Set of vreg IDs to exclude from allocation (e.g., stack params)
+            preassigned: Stack parameters with their base offsets
+            prologue_stack_bytes: Bytes pushed by prologue (return addr + saved regs)
         """
         self.func = mir_func
+        self.preassigned = preassigned or []
+        self.prologue_stack_bytes = prologue_stack_bytes
         self.liveness_analyzer = LivenessAnalyzer(mir_func)
-        self.exclude_vreg_ids = exclude_vreg_ids or set()
+
+        # Build vreg lookup for preassigned
+        self._preassigned_vregs: Dict[int, PreassignedSlot] = {
+            slot.vreg.id: slot for slot in self.preassigned
+        }
 
     def allocate(self) -> SlotAllocation:
         """
-        Allocate slots for all virtual registers with reuse.
+        Allocate slots for all virtual registers.
 
         Returns:
-            SlotAllocation with mapping and statistics
+            SlotAllocation with locals and params mapped to final offsets
         """
-        # Run liveness analysis
+        # Run liveness analysis (includes all vregs)
         self.liveness_analyzer.analyze()
 
         # Identify vregs that can stay in hardware registers
         hw_coalesceable = self._find_hw_coalesceable_vregs()
 
-        # Build exclusion set: hw-coalesceable vregs + pre-allocated stack params
+        # Collect local vregs (excluding hw-coalesceable and preassigned params)
         exclude_vregs = set(hw_coalesceable.keys())
-        # Also exclude vregs by ID (for stack params that were pre-allocated)
-        for vreg in self._get_all_vregs():
-            if vreg.id in self.exclude_vreg_ids:
-                exclude_vregs.add(vreg)
+        for slot in self.preassigned:
+            exclude_vregs.add(slot.vreg)
 
-        # Collect all virtual registers with their sizes, excluding hw-coalesceable and stack params
-        virtual_regs = self._collect_virtual_registers(exclude=exclude_vregs)
+        local_vregs = self._collect_virtual_registers(exclude=exclude_vregs)
 
-        if not virtual_regs:
-            return SlotAllocation(
-                register_to_slot={},
-                register_to_size={},
-                total_slots=0,
-                variables_count=0,
-                slots_saved=0,
-                hw_coalesceable=hw_coalesceable
-            )
+        # Calculate sizes for locals
+        local_sizes: Dict[VirtualRegister, int] = {}
+        for vreg in local_vregs:
+            local_sizes[vreg] = self._get_vreg_size(vreg)
 
-        # Calculate sizes for all vregs
-        vreg_sizes: Dict[VirtualRegister, int] = {}
-        for vreg in virtual_regs:
-            vreg_sizes[vreg] = self._get_vreg_size(vreg)
+        # Allocate locals with liveness-based reuse
+        local_slots, frame_size, slots_saved = self._allocate_locals(local_vregs, local_sizes)
 
-        # Allocate slots using graph coloring approach (with size awareness)
-        register_to_slot = self._allocate_with_reuse(virtual_regs, vreg_sizes)
+        # Compute final param offsets (adjusted for frame allocation)
+        param_offsets: Dict[VirtualRegister, int] = {}
+        param_sizes: Dict[VirtualRegister, int] = {}
 
-        # Calculate total slots needed (considering multi-byte values)
-        total_slots = 0
-        for vreg, slot in register_to_slot.items():
-            end_slot = slot + vreg_sizes[vreg]
-            if end_slot > total_slots:
-                total_slots = end_slot
-
-        # Calculate slots that would have been used without reuse
-        total_bytes_without_reuse = sum(vreg_sizes.values())
-        variables_count = len(virtual_regs)
-        slots_saved = total_bytes_without_reuse - total_slots
+        for slot in self.preassigned:
+            # Final offset = base_offset + prologue_bytes + frame_size
+            final_offset = slot.base_offset + self.prologue_stack_bytes + frame_size
+            param_offsets[slot.vreg] = final_offset
+            param_sizes[slot.vreg] = slot.size
 
         return SlotAllocation(
-            register_to_slot=register_to_slot,
-            register_to_size=vreg_sizes,
-            total_slots=total_slots,
-            variables_count=variables_count,
+            register_to_slot=local_slots,
+            register_to_size=local_sizes,
+            total_slots=frame_size,
+            variables_count=len(local_vregs),
             slots_saved=slots_saved,
-            hw_coalesceable=hw_coalesceable
+            hw_coalesceable=hw_coalesceable,
+            param_offsets=param_offsets,
+            param_sizes=param_sizes
         )
 
-    def _get_vreg_size(self, vreg: VirtualRegister) -> int:
+    def _allocate_locals(
+        self,
+        local_vregs: List[VirtualRegister],
+        local_sizes: Dict[VirtualRegister, int]
+    ) -> Tuple[Dict[VirtualRegister, int], int, int]:
         """
-        Get the size in bytes of a virtual register.
+        Allocate local variables with liveness-based reuse.
 
         Args:
-            vreg: Virtual register
+            local_vregs: Local variables to allocate
+            local_sizes: Size of each local
 
         Returns:
-            Size in bytes (1, 2, or 3 typically)
+            (slot_mapping, frame_size, slots_saved)
         """
+        if not local_vregs:
+            return {}, 0, 0
+
+        allocation: Dict[VirtualRegister, int] = {}
+        # Track allocated ranges: (start, end, vreg)
+        allocated_ranges: List[Tuple[int, int, VirtualRegister]] = []
+        next_slot = 0
+
+        # Sort by size descending for better packing
+        sorted_vregs = sorted(local_vregs, key=lambda v: -local_sizes[v])
+
+        for vreg in sorted_vregs:
+            size = local_sizes[vreg]
+            assigned_slot = None
+
+            # Try to reuse existing slot
+            for start_slot in range(next_slot):
+                end_slot = start_slot + size
+                can_use = True
+
+                # Check against other locals
+                for (other_start, other_end, other_vreg) in allocated_ranges:
+                    if start_slot < other_end and end_slot > other_start:
+                        if self.liveness_analyzer.interferes(vreg, other_vreg):
+                            can_use = False
+                            break
+
+                if can_use:
+                    assigned_slot = start_slot
+                    break
+
+            if assigned_slot is None:
+                assigned_slot = next_slot
+                next_slot = assigned_slot + size
+            else:
+                new_end = assigned_slot + size
+                if new_end > next_slot:
+                    next_slot = new_end
+
+            allocation[vreg] = assigned_slot
+            allocated_ranges.append((assigned_slot, assigned_slot + size, vreg))
+
+        # Frame size is the total local slots needed
+        frame_size = next_slot
+
+        # Calculate slots saved
+        total_without_reuse = sum(local_sizes.values())
+        slots_saved = total_without_reuse - frame_size
+
+        return allocation, frame_size, slots_saved
+
+    def _get_vreg_size(self, vreg: VirtualRegister) -> int:
+        """Get size of virtual register in bytes."""
         try:
             return get_unified_type_size(vreg.type_info)
         except (HIRError, AttributeError, TypeError):
-            # Default to 1 byte if type info is missing or invalid
             return 1
 
     def _find_hw_coalesceable_vregs(self) -> Dict[VirtualRegister, str]:
@@ -159,33 +271,28 @@ class StackSlotAllocator:
         """
         coalesceable: Dict[VirtualRegister, str] = {}
 
-        # Find all definitions and uses for each vreg
-        vreg_defs: Dict[int, List] = {}  # vreg.id -> list of (instr, hw_reg or None)
-        vreg_uses: Dict[int, List] = {}  # vreg.id -> list of instr
+        vreg_defs: Dict[int, List] = {}
+        vreg_uses: Dict[int, List] = {}
 
         for block in self.func.blocks.values():
             for instr in block.instructions:
-                # Check for Move from HardwareRegister to VirtualRegister
                 if isinstance(instr, Move):
                     if isinstance(instr.dest, VirtualRegister):
                         vreg_id = instr.dest.id
                         if vreg_id not in vreg_defs:
                             vreg_defs[vreg_id] = []
 
-                        # Check if source is a hardware register
                         if isinstance(instr.source, HardwareRegister):
                             vreg_defs[vreg_id].append((instr, instr.source.name))
                         else:
                             vreg_defs[vreg_id].append((instr, None))
 
-                    # Check uses in source
                     if isinstance(instr.source, VirtualRegister):
                         vreg_id = instr.source.id
                         if vreg_id not in vreg_uses:
                             vreg_uses[vreg_id] = []
                         vreg_uses[vreg_id].append(instr)
 
-                # Check Return instruction
                 elif isinstance(instr, Return):
                     if instr.values:
                         for val in instr.values:
@@ -195,7 +302,6 @@ class StackSlotAllocator:
                                     vreg_uses[vreg_id] = []
                                 vreg_uses[vreg_id].append(instr)
 
-                # For other instructions, mark vregs as used (not coalesceable)
                 else:
                     uses = self.liveness_analyzer._get_uses(instr)
                     for var in uses:
@@ -204,36 +310,28 @@ class StackSlotAllocator:
                                 vreg_uses[var.id] = []
                             vreg_uses[var.id].append(instr)
 
-        # Find vregs that meet coalescence criteria
         for vreg_id, defs in vreg_defs.items():
-            # Must have exactly one definition
             if len(defs) != 1:
                 continue
 
             instr, hw_reg = defs[0]
-            # Must be from a hardware register
             if hw_reg is None:
                 continue
 
-            # Check uses - must only be used in Return instructions
             uses = vreg_uses.get(vreg_id, [])
             if not uses:
-                # No uses - can coalesce (value unused)
-                # Find the vreg object
                 for block in self.func.blocks.values():
-                    for instr in block.instructions:
-                        if isinstance(instr, Move) and isinstance(instr.dest, VirtualRegister):
-                            if instr.dest.id == vreg_id:
-                                coalesceable[instr.dest] = hw_reg
+                    for check_instr in block.instructions:
+                        if isinstance(check_instr, Move) and isinstance(check_instr.dest, VirtualRegister):
+                            if check_instr.dest.id == vreg_id:
+                                coalesceable[check_instr.dest] = hw_reg
                                 break
                 continue
 
-            # All uses must be Return instructions
             all_returns = all(isinstance(use, Return) for use in uses)
             if not all_returns:
                 continue
 
-            # Find the vreg object and add to coalesceable
             for block in self.func.blocks.values():
                 for check_instr in block.instructions:
                     if isinstance(check_instr, Move) and isinstance(check_instr.dest, VirtualRegister):
@@ -244,23 +342,14 @@ class StackSlotAllocator:
         return coalesceable
 
     def _collect_virtual_registers(self, exclude: Set[VirtualRegister] = None) -> List[VirtualRegister]:
-        """
-        Collect all virtual registers used in the function.
-
-        Args:
-            exclude: Set of vregs to exclude from collection (e.g., hw-coalesceable)
-
-        Returns:
-            List of unique virtual registers
-        """
+        """Collect all virtual registers, optionally excluding some."""
         if exclude is None:
             exclude = set()
 
         vregs: Set[VirtualRegister] = set()
 
-        for block_id, block in self.func.blocks.items():
+        for block in self.func.blocks.values():
             for instr in block.instructions:
-                # Get all virtual registers used/defined by instruction
                 uses = self.liveness_analyzer._get_uses(instr)
                 defs = self.liveness_analyzer._get_defs(instr)
 
@@ -269,83 +358,6 @@ class StackSlotAllocator:
                         vregs.add(var)
 
         return sorted(vregs, key=lambda v: v.id)
-
-    def _get_all_vregs(self) -> List[VirtualRegister]:
-        """Get all virtual registers in the function (no exclusions)."""
-        return self._collect_virtual_registers(exclude=set())
-
-    def _allocate_with_reuse(
-        self,
-        virtual_regs: List[VirtualRegister],
-        vreg_sizes: Dict[VirtualRegister, int]
-    ) -> Dict[VirtualRegister, int]:
-        """
-        Allocate slots with reuse using greedy graph coloring.
-
-        Algorithm:
-        1. For each variable, try to assign it to an existing slot range
-        2. A variable can use a slot range if:
-           - The slot range doesn't overlap with any interfering variable's range
-        3. If no existing slot range works, allocate at the end
-
-        Handles multi-byte values (e.g., 3-byte far pointers) by treating
-        them as occupying consecutive slots.
-
-        Args:
-            virtual_regs: List of virtual registers to allocate
-            vreg_sizes: Dictionary mapping vregs to their sizes in bytes
-
-        Returns:
-            Dictionary mapping VirtualRegister to slot number (start of range)
-        """
-        allocation: Dict[VirtualRegister, int] = {}
-        # Track allocated ranges: list of (start_slot, end_slot, vreg)
-        allocated_ranges: List[Tuple[int, int, VirtualRegister]] = []
-        next_slot = 0
-
-        # Sort by size descending to allocate larger values first (better packing)
-        sorted_vregs = sorted(virtual_regs, key=lambda v: -vreg_sizes[v])
-
-        for vreg in sorted_vregs:
-            size = vreg_sizes[vreg]
-
-            # Try to find an existing slot range this variable can use
-            assigned_slot = None
-
-            # Try each possible starting position
-            for start_slot in range(next_slot):
-                end_slot = start_slot + size
-
-                # Check if this range overlaps with any interfering variable
-                can_use_range = True
-
-                for (other_start, other_end, other_var) in allocated_ranges:
-                    # Check if ranges overlap
-                    if start_slot < other_end and end_slot > other_start:
-                        # Ranges overlap - check if they interfere
-                        if self.liveness_analyzer.interferes(vreg, other_var):
-                            can_use_range = False
-                            break
-
-                if can_use_range:
-                    assigned_slot = start_slot
-                    break
-
-            # If no existing slot range works, allocate at the end
-            if assigned_slot is None:
-                assigned_slot = next_slot
-                next_slot = assigned_slot + size
-            else:
-                # Update next_slot if this allocation extended it
-                new_end = assigned_slot + size
-                if new_end > next_slot:
-                    next_slot = new_end
-
-            # Record the allocation
-            allocation[vreg] = assigned_slot
-            allocated_ranges.append((assigned_slot, assigned_slot + size, vreg))
-
-        return allocation
 
     def get_slot_for_register(self, vreg: VirtualRegister, allocation: SlotAllocation) -> Optional[int]:
         """
