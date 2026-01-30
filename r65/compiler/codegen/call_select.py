@@ -321,25 +321,40 @@ class CallInstructionSelector(BaseSelector):
         For 8-bit arguments, we must be in m8 mode so PHA pushes 1 byte.
         For 16-bit arguments loaded byte-by-byte, we use m8 mode.
         For 16-bit arguments already in A, we use m16 mode (single PHA).
+
+        IMPORTANT: When source value is smaller than parameter type, we must
+        zero-extend. For example, an 8-bit loop variable passed to a u16
+        parameter needs its high byte set to 0, not loaded from garbage memory.
         """
         from r65.compiler.codegen.type_utils import get_type_size
         from r65.compiler.codegen.constants import M_FLAG
 
-        # Determine argument size - prefer param_type from function signature
-        arg_size = 1
+        # Determine PARAMETER size (what we need to push)
+        param_size = 1
         if arg.param_type is not None:
-            # Use parameter type from function signature (most reliable)
-            arg_size = get_type_size(arg.param_type)
+            param_size = get_type_size(arg.param_type)
         elif hasattr(arg.value, 'type_info') and arg.value.type_info:
-            arg_size = get_type_size(arg.value.type_info)
+            param_size = get_type_size(arg.value.type_info)
         elif isinstance(arg.value, MIRImmediate):
             # Fallback: infer size from immediate value range
             value = arg.value.value
             if value > 0xFFFF or value < -32768:
-                arg_size = 3  # 24-bit
+                param_size = 3  # 24-bit
             elif value > 0xFF or value < -128:
-                arg_size = 2  # 16-bit
+                param_size = 2  # 16-bit
             # else: 8-bit (default)
+
+        # Determine SOURCE size (what we're loading from)
+        # This is critical for proper zero-extension
+        source_size = param_size  # Default to param size
+        if hasattr(arg.value, 'type_info') and arg.value.type_info:
+            source_size = get_type_size(arg.value.type_info)
+        elif isinstance(arg.value, MIRImmediate):
+            # Immediates are already the right size (computed above)
+            source_size = param_size
+
+        # Use param_size for how many bytes to push (arg_size variable for compatibility)
+        arg_size = param_size
 
         # Track current mode for proper restoration
         current_mode = self.parent.emitter.get_accu_mode()
@@ -358,29 +373,67 @@ class CallInstructionSelector(BaseSelector):
             elif arg_loc.kind == LocationKind.STACK:
                 # Stack locations: offsets drift after each push, so compensate
                 # After each PHA, stack offsets increase by 1
-                bank_loc = self.parent._offset_location(arg_loc, 2)
-                self.parent._emit_load('LDA', bank_loc, "Load bank byte")
-                self._emit_push('A', "Push bank byte")
-
-                # After 1 push, offsets are +1
-                high_loc = self.parent._offset_location(arg_loc, 1 + 1)
-                self.parent._emit_load('LDA', high_loc, "Load high byte")
-                self._emit_push('A', "Push high byte")
-
-                # After 2 pushes, offsets are +2
-                low_loc = self.parent._offset_location(arg_loc, 0 + 2)
-                self.parent._emit_load('LDA', low_loc, "Load low byte")
-                self._emit_push('A', "Push low byte")
+                # Handle zero extension from smaller source sizes
+                if source_size == 1:
+                    # 8-bit -> 24-bit: zero extend bank and high
+                    self._emit_load_immediate('A', 0, "Zero-extend bank byte")
+                    self._emit_push('A', "Push bank byte (zero)")
+                    self._emit_load_immediate('A', 0, "Zero-extend high byte")
+                    self._emit_push('A', "Push high byte (zero)")
+                    low_loc = self.parent._offset_location(arg_loc, 0 + 2)
+                    self.parent._emit_load('LDA', low_loc, "Load low byte")
+                    self._emit_push('A', "Push low byte")
+                elif source_size == 2:
+                    # 16-bit -> 24-bit: zero extend bank
+                    self._emit_load_immediate('A', 0, "Zero-extend bank byte")
+                    self._emit_push('A', "Push bank byte (zero)")
+                    high_loc = self.parent._offset_location(arg_loc, 1 + 1)
+                    self.parent._emit_load('LDA', high_loc, "Load high byte")
+                    self._emit_push('A', "Push high byte")
+                    low_loc = self.parent._offset_location(arg_loc, 0 + 2)
+                    self.parent._emit_load('LDA', low_loc, "Load low byte")
+                    self._emit_push('A', "Push low byte")
+                else:
+                    # Source is already 24-bit
+                    bank_loc = self.parent._offset_location(arg_loc, 2)
+                    self.parent._emit_load('LDA', bank_loc, "Load bank byte")
+                    self._emit_push('A', "Push bank byte")
+                    high_loc = self.parent._offset_location(arg_loc, 1 + 1)
+                    self.parent._emit_load('LDA', high_loc, "Load high byte")
+                    self._emit_push('A', "Push high byte")
+                    low_loc = self.parent._offset_location(arg_loc, 0 + 2)
+                    self.parent._emit_load('LDA', low_loc, "Load low byte")
+                    self._emit_push('A', "Push low byte")
             else:
                 # Non-stack locations: no drift compensation needed
-                bank_loc = self.parent._offset_location(arg_loc, 2)
-                self.parent._emit_load('LDA', bank_loc, "Load bank byte")
-                self._emit_push('A', "Push bank byte")
-                high_loc = self.parent._offset_location(arg_loc, 1)
-                self.parent._emit_load('LDA', high_loc, "Load high byte")
-                self._emit_push('A', "Push high byte")
-                self.parent._emit_load('LDA', arg_loc, "Load low byte")
-                self._emit_push('A', "Push low byte")
+                # Handle zero extension from smaller source sizes
+                if source_size == 1:
+                    # 8-bit -> 24-bit: zero extend bank and high
+                    self._emit_load_immediate('A', 0, "Zero-extend bank byte")
+                    self._emit_push('A', "Push bank byte (zero)")
+                    self._emit_load_immediate('A', 0, "Zero-extend high byte")
+                    self._emit_push('A', "Push high byte (zero)")
+                    self.parent._emit_load('LDA', arg_loc, "Load low byte")
+                    self._emit_push('A', "Push low byte")
+                elif source_size == 2:
+                    # 16-bit -> 24-bit: zero extend bank
+                    self._emit_load_immediate('A', 0, "Zero-extend bank byte")
+                    self._emit_push('A', "Push bank byte (zero)")
+                    high_loc = self.parent._offset_location(arg_loc, 1)
+                    self.parent._emit_load('LDA', high_loc, "Load high byte")
+                    self._emit_push('A', "Push high byte")
+                    self.parent._emit_load('LDA', arg_loc, "Load low byte")
+                    self._emit_push('A', "Push low byte")
+                else:
+                    # Source is already 24-bit
+                    bank_loc = self.parent._offset_location(arg_loc, 2)
+                    self.parent._emit_load('LDA', bank_loc, "Load bank byte")
+                    self._emit_push('A', "Push bank byte")
+                    high_loc = self.parent._offset_location(arg_loc, 1)
+                    self.parent._emit_load('LDA', high_loc, "Load high byte")
+                    self._emit_push('A', "Push high byte")
+                    self.parent._emit_load('LDA', arg_loc, "Load low byte")
+                    self._emit_push('A', "Push low byte")
 
         elif arg_size == 2:
             # 16-bit value: push both bytes (high first, then low)
@@ -410,23 +463,46 @@ class CallInstructionSelector(BaseSelector):
                 if current_mode != 8:
                     self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "8-bit A for byte push")
                     self.parent.emitter.emit_accu_mode(8)
-                high_loc = self.parent._offset_location(arg_loc, 1)
-                self.parent._emit_load('LDA', high_loc, "Load high byte")
-                self._emit_push('A', "Push high byte")
-                # After 1 push, offset is +1
-                low_loc = self.parent._offset_location(arg_loc, 0 + 1)
-                self.parent._emit_load('LDA', low_loc, "Load low byte")
-                self._emit_push('A', "Push low byte")
+
+                # Check if source is smaller than parameter - need zero extension
+                if source_size == 1:
+                    # 8-bit source -> 16-bit param: zero-extend
+                    # Push high byte (0) first
+                    self._emit_load_immediate('A', 0, "Zero-extend high byte")
+                    self._emit_push('A', "Push high byte (zero)")
+                    # After 1 push, offset is +1
+                    low_loc = self.parent._offset_location(arg_loc, 0 + 1)
+                    self.parent._emit_load('LDA', low_loc, "Load low byte")
+                    self._emit_push('A', "Push low byte")
+                else:
+                    # Source is already 16-bit, load both bytes
+                    high_loc = self.parent._offset_location(arg_loc, 1)
+                    self.parent._emit_load('LDA', high_loc, "Load high byte")
+                    self._emit_push('A', "Push high byte")
+                    # After 1 push, offset is +1
+                    low_loc = self.parent._offset_location(arg_loc, 0 + 1)
+                    self.parent._emit_load('LDA', low_loc, "Load low byte")
+                    self._emit_push('A', "Push low byte")
             else:
                 # Non-stack locations: no drift, use m8 for byte-by-byte
                 if current_mode != 8:
                     self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "8-bit A for byte push")
                     self.parent.emitter.emit_accu_mode(8)
-                high_loc = self.parent._offset_location(arg_loc, 1)
-                self.parent._emit_load('LDA', high_loc, "Load high byte")
-                self._emit_push('A', "Push high byte")
-                self.parent._emit_load('LDA', arg_loc, "Load low byte")
-                self._emit_push('A', "Push low byte")
+
+                # Check if source is smaller than parameter - need zero extension
+                if source_size == 1:
+                    # 8-bit source -> 16-bit param: zero-extend
+                    self._emit_load_immediate('A', 0, "Zero-extend high byte")
+                    self._emit_push('A', "Push high byte (zero)")
+                    self.parent._emit_load('LDA', arg_loc, "Load low byte")
+                    self._emit_push('A', "Push low byte")
+                else:
+                    # Source is already 16-bit, load both bytes
+                    high_loc = self.parent._offset_location(arg_loc, 1)
+                    self.parent._emit_load('LDA', high_loc, "Load high byte")
+                    self._emit_push('A', "Push high byte")
+                    self.parent._emit_load('LDA', arg_loc, "Load low byte")
+                    self._emit_push('A', "Push low byte")
 
         else:
             # 8-bit value: single push
