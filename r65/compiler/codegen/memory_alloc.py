@@ -430,20 +430,35 @@ class MemoryAllocator:
 
     def allocate_all(self, static_decls: list[HIRStaticDecl]):
         """
-        Allocate all static declarations in source order.
+        Allocate all static declarations with two-pass strategy.
 
         Args:
             static_decls: List of static declarations from HIR
 
-        Allocates addresses in the order declarations appear in source code.
-        Auto-allocated variables get the next available address that fits.
-        Explicit addresses are used as-is without collision checking.
+        Pass 1: Allocate explicit addresses first (reserves space)
+        Pass 2: Auto-allocate remaining variables (finds gaps around explicit)
+
+        This ensures auto-allocation avoids explicit regions regardless of
+        source order. Explicit addresses can overlap with each other (user's
+        responsibility), but auto-allocated variables will find free space.
         """
+        # Separate explicit and auto declarations
+        explicit_decls = []
+        auto_decls = []
+
         for decl in static_decls:
             if decl.storage_attr and decl.storage_attr.address is not None:
-                self._allocate_static(decl, explicit_addr=decl.storage_attr.address)
+                explicit_decls.append(decl)
             else:
-                self._allocate_static(decl, explicit_addr=None)
+                auto_decls.append(decl)
+
+        # Pass 1: Allocate all explicit addresses first
+        for decl in explicit_decls:
+            self._allocate_static(decl, explicit_addr=decl.storage_attr.address)
+
+        # Pass 2: Auto-allocate remaining variables
+        for decl in auto_decls:
+            self._allocate_static(decl, explicit_addr=None)
 
     def _allocate_static(self, static_decl: HIRStaticDecl, explicit_addr: Optional[int]):
         """
