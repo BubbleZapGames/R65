@@ -1,4 +1,4 @@
 # R65 Compiler Dependencies
 
 # Core dependencies
-lark>=1.1.0  # Parser generator for R65 grammar
+lark>=1.3.1  # Parser generator for R65 grammar
