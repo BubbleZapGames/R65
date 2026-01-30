@@ -5,8 +5,10 @@ Handles macro definition collection and invocation expansion.
 Works at the AST level, expanding macro invocations into AST nodes.
 """
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Set, Union
+from typing import Dict, List, Optional, Set, Union, Callable, TypeVar
 from copy import deepcopy
+
+T = TypeVar('T')
 
 from r65.compiler.frontend import ast
 from r65.compiler.frontend.parser import parse
@@ -38,6 +40,75 @@ class MacroExpander:
         self.macros: Dict[str, MacroDefinition] = {}
         self._expansion_depth = 0
         self._expanding: Set[str] = set()  # Track currently expanding macros
+
+    def _invoke_macro(
+        self,
+        name: str,
+        args: List[str],
+        source_loc: Optional[SourceLocation],
+        parse_expanded: Callable[[str, str], T]
+    ) -> T:
+        """
+        Common macro invocation logic shared by all expansion contexts.
+
+        Handles: macro lookup, recursion check, depth check, parameter matching,
+        token substitution, and string operation processing.
+
+        Args:
+            name: Macro name
+            args: List of argument token strings
+            source_loc: Source location of invocation
+            parse_expanded: Function(expanded_source, macro_name) -> result
+
+        Returns:
+            Result from parse_expanded callback
+        """
+        # Check if macro exists
+        if name not in self.macros:
+            raise MacroError(f"undefined macro: '{name}'", source_loc)
+
+        macro = self.macros[name]
+
+        # Check for recursive expansion
+        if name in self._expanding:
+            raise MacroError(f"recursive macro expansion: '{name}'", source_loc)
+
+        # Check expansion depth
+        self._expansion_depth += 1
+        if self._expansion_depth > self.MAX_EXPANSION_DEPTH:
+            raise MacroError(
+                f"macro expansion depth exceeded ({self.MAX_EXPANSION_DEPTH} levels)",
+                source_loc
+            )
+
+        self._expanding.add(name)
+
+        try:
+            # Match arguments to parameters
+            bindings = self._match_params(macro, args, source_loc)
+
+            # Substitute parameters in body
+            expanded_tokens = self._substitute(macro.body_tokens, bindings)
+
+            # Process string operations (stringify!, string concatenation)
+            expanded_tokens = self._process_string_operations(expanded_tokens)
+
+            # Join tokens and call the context-specific parser
+            expanded_source = self._join_tokens(expanded_tokens)
+
+            try:
+                return parse_expanded(expanded_source, name)
+            except MacroError:
+                raise
+            except Exception as e:
+                raise MacroError(
+                    f"error parsing expanded macro '{name}': {e}\n"
+                    f"Expanded source: {expanded_source}",
+                    source_loc
+                )
+        finally:
+            self._expanding.remove(name)
+            self._expansion_depth -= 1
 
     def expand(self, program: ast.Program) -> ast.Program:
         """
@@ -361,82 +432,30 @@ class MacroExpander:
         args: List[str],
         source_loc: Optional[SourceLocation]
     ) -> ast.Expression:
-        """
-        Expand a macro invocation in expression context.
+        """Expand a macro invocation in expression context."""
+        def parse_as_expression(expanded_source: str, macro_name: str) -> ast.Expression:
+            # Wrap in a dummy function with expression statement
+            wrapped = f"fn __macro_expr__() {{ let __result__: u16 = {expanded_source}; }}"
+            program = parse(wrapped, f"<macro:{macro_name}>")
 
-        Args:
-            name: Macro name
-            args: List of argument token strings
-            source_loc: Source location of invocation
+            # Extract the expression from the let statement
+            if program.items and isinstance(program.items[0], ast.FunctionDecl):
+                func = program.items[0]
+                if func.body.statements:
+                    stmt = func.body.statements[0]
+                    if isinstance(stmt, ast.LetStmt) and stmt.initializer:
+                        # Recursively expand any nested macro invocations
+                        expanded_expr = self._expand_expression(stmt.initializer)
+                        # Override source_loc to point to invocation site
+                        self._override_source_loc(expanded_expr, source_loc)
+                        return expanded_expr
 
-        Returns:
-            Expanded expression
-        """
-        # Check if macro exists
-        if name not in self.macros:
-            raise MacroError(f"undefined macro: '{name}'", source_loc)
-
-        macro = self.macros[name]
-
-        # Check for recursive expansion
-        if name in self._expanding:
-            raise MacroError(f"recursive macro expansion: '{name}'", source_loc)
-
-        # Check expansion depth
-        self._expansion_depth += 1
-        if self._expansion_depth > self.MAX_EXPANSION_DEPTH:
             raise MacroError(
-                f"macro expansion depth exceeded ({self.MAX_EXPANSION_DEPTH} levels)",
+                f"macro '{macro_name}' did not expand to a valid expression",
                 source_loc
             )
 
-        self._expanding.add(name)
-
-        try:
-            # Match arguments to parameters
-            bindings = self._match_params(macro, args, source_loc)
-
-            # Substitute parameters in body
-            expanded_tokens = self._substitute(macro.body_tokens, bindings)
-
-            # Process string operations (stringify!, string concatenation)
-            expanded_tokens = self._process_string_operations(expanded_tokens)
-
-            # Parse the expanded tokens as an expression
-            expanded_source = self._join_tokens(expanded_tokens)
-
-            try:
-                # Wrap in a dummy function with expression statement
-                wrapped = f"fn __macro_expr__() {{ let __result__: u16 = {expanded_source}; }}"
-                program = parse(wrapped, f"<macro:{name}>")
-
-                # Extract the expression from the let statement
-                if program.items and isinstance(program.items[0], ast.FunctionDecl):
-                    func = program.items[0]
-                    if func.body.statements:
-                        stmt = func.body.statements[0]
-                        if isinstance(stmt, ast.LetStmt) and stmt.initializer:
-                            # Recursively expand any nested macro invocations
-                            expanded_expr = self._expand_expression(stmt.initializer)
-                            # Override source_loc to point to invocation site
-                            self._override_source_loc(expanded_expr, source_loc)
-                            return expanded_expr
-
-                raise MacroError(
-                    f"macro '{name}' did not expand to a valid expression",
-                    source_loc
-                )
-            except MacroError:
-                raise
-            except Exception as e:
-                raise MacroError(
-                    f"error parsing expanded macro '{name}': {e}\n"
-                    f"Expanded source: {expanded_source}",
-                    source_loc
-                )
-        finally:
-            self._expanding.remove(name)
-            self._expansion_depth -= 1
+        return self._invoke_macro(name, args, source_loc, parse_as_expression)
 
     def _expand_if(self, stmt: ast.IfStmt) -> ast.IfStmt:
         """Expand macros inside an if statement."""
@@ -462,95 +481,41 @@ class MacroExpander:
         args: List[str],
         source_loc: Optional[SourceLocation]
     ) -> List[ast.Declaration]:
-        """
-        Expand a top-level macro invocation into declarations.
+        """Expand a top-level macro invocation into declarations."""
+        def parse_as_declarations(expanded_source: str, macro_name: str) -> List[ast.Declaration]:
+            # Parse directly as a program (not wrapped in a function)
+            program = parse(expanded_source, f"<macro:{macro_name}>")
 
-        Unlike statement-level expansion which wraps in a dummy function,
-        top-level expansion parses the result as a complete program to
-        extract declarations (functions, statics, structs, etc.).
+            # Extract declarations and recursively expand nested macros
+            result: List[ast.Declaration] = []
+            for item in program.items:
+                if isinstance(item, ast.MacroInvocationStmt):
+                    # Recursively expand nested top-level macro invocations
+                    nested = self._expand_top_level_invocation(
+                        item.name, item.args, item.source_loc
+                    )
+                    result.extend(nested)
+                elif isinstance(item, ast.MacroDecl):
+                    # Register any new macro definitions from expansion
+                    body = item.body_tokens
+                    if body and body[0] == '{' and body[-1] == '}':
+                        body = body[1:-1]
+                    self.macros[item.name] = MacroDefinition(
+                        name=item.name,
+                        params=item.params,
+                        body_tokens=body,
+                        source_loc=item.source_loc
+                    )
+                elif isinstance(item, ast.FunctionDecl):
+                    # Expand macros inside function bodies
+                    expanded_func = self._expand_function(item)
+                    result.append(expanded_func)
+                else:
+                    result.append(item)
 
-        Args:
-            name: Macro name
-            args: List of argument token strings
-            source_loc: Source location of invocation
+            return result
 
-        Returns:
-            List of expanded declarations
-        """
-        # Check if macro exists
-        if name not in self.macros:
-            raise MacroError(f"undefined macro: '{name}'", source_loc)
-
-        macro = self.macros[name]
-
-        # Check for recursive expansion
-        if name in self._expanding:
-            raise MacroError(f"recursive macro expansion: '{name}'", source_loc)
-
-        # Check expansion depth
-        self._expansion_depth += 1
-        if self._expansion_depth > self.MAX_EXPANSION_DEPTH:
-            raise MacroError(
-                f"macro expansion depth exceeded ({self.MAX_EXPANSION_DEPTH} levels)",
-                source_loc
-            )
-
-        self._expanding.add(name)
-
-        try:
-            # Match arguments to parameters
-            bindings = self._match_params(macro, args, source_loc)
-
-            # Substitute parameters in body
-            expanded_tokens = self._substitute(macro.body_tokens, bindings)
-
-            # Process string operations (stringify!, string concatenation)
-            expanded_tokens = self._process_string_operations(expanded_tokens)
-
-            # Parse the expanded tokens as a complete program
-            expanded_source = self._join_tokens(expanded_tokens)
-
-            try:
-                # Parse directly as a program (not wrapped in a function)
-                program = parse(expanded_source, f"<macro:{name}>")
-
-                # Extract declarations and recursively expand nested macros
-                result: List[ast.Declaration] = []
-                for item in program.items:
-                    if isinstance(item, ast.MacroInvocationStmt):
-                        # Recursively expand nested top-level macro invocations
-                        nested = self._expand_top_level_invocation(
-                            item.name, item.args, item.source_loc
-                        )
-                        result.extend(nested)
-                    elif isinstance(item, ast.MacroDecl):
-                        # Register any new macro definitions from expansion
-                        body = item.body_tokens
-                        if body and body[0] == '{' and body[-1] == '}':
-                            body = body[1:-1]
-                        self.macros[item.name] = MacroDefinition(
-                            name=item.name,
-                            params=item.params,
-                            body_tokens=body,
-                            source_loc=item.source_loc
-                        )
-                    elif isinstance(item, ast.FunctionDecl):
-                        # Expand macros inside function bodies
-                        expanded_func = self._expand_function(item)
-                        result.append(expanded_func)
-                    else:
-                        result.append(item)
-
-                return result
-            except Exception as e:
-                raise MacroError(
-                    f"error parsing expanded macro '{name}': {e}\n"
-                    f"Expanded source: {expanded_source}",
-                    source_loc
-                )
-        finally:
-            self._expanding.remove(name)
-            self._expansion_depth -= 1
+        return self._invoke_macro(name, args, source_loc, parse_as_declarations)
 
     def _expand_statement_invocation(
         self,
@@ -558,78 +523,28 @@ class MacroExpander:
         args: List[str],
         source_loc: Optional[SourceLocation]
     ) -> List[ast.Statement]:
-        """
-        Expand a statement-level macro invocation.
-
-        Args:
-            name: Macro name
-            args: List of argument token strings
-            source_loc: Source location of invocation
-
-        Returns:
-            List of expanded statements
-        """
+        """Expand a statement-level macro invocation."""
         # Handle built-in stringify! macro
         if name == "stringify":
             return self._expand_stringify(args, source_loc)
 
-        # Check if macro exists
-        if name not in self.macros:
-            raise MacroError(f"undefined macro: '{name}'", source_loc)
+        def parse_as_statements(expanded_source: str, macro_name: str) -> List[ast.Statement]:
+            # Wrap in a dummy function to parse as statements
+            wrapped = f"fn __macro_expand__() {{ {expanded_source} }}"
+            program = parse(wrapped, f"<macro:{macro_name}>")
 
-        macro = self.macros[name]
+            # Extract the statements from the function body
+            if program.items and isinstance(program.items[0], ast.FunctionDecl):
+                func = program.items[0]
+                # Recursively expand any nested macro invocations
+                expanded_stmts = self._expand_statements(func.body.statements)
+                # Override source_loc on expanded statements to point to invocation site
+                for stmt in expanded_stmts:
+                    self._override_source_loc(stmt, source_loc)
+                return expanded_stmts
+            return []
 
-        # Check for recursive expansion
-        if name in self._expanding:
-            raise MacroError(f"recursive macro expansion: '{name}'", source_loc)
-
-        # Check expansion depth
-        self._expansion_depth += 1
-        if self._expansion_depth > self.MAX_EXPANSION_DEPTH:
-            raise MacroError(
-                f"macro expansion depth exceeded ({self.MAX_EXPANSION_DEPTH} levels)",
-                source_loc
-            )
-
-        self._expanding.add(name)
-
-        try:
-            # Match arguments to parameters
-            bindings = self._match_params(macro, args, source_loc)
-
-            # Substitute parameters in body
-            expanded_tokens = self._substitute(macro.body_tokens, bindings)
-
-            # Process string operations (stringify!, string concatenation)
-            expanded_tokens = self._process_string_operations(expanded_tokens)
-
-            # Parse the expanded tokens as statements
-            expanded_source = self._join_tokens(expanded_tokens)
-
-            try:
-                # Wrap in a dummy function to parse as statements
-                wrapped = f"fn __macro_expand__() {{ {expanded_source} }}"
-                program = parse(wrapped, f"<macro:{name}>")
-
-                # Extract the statements from the function body
-                if program.items and isinstance(program.items[0], ast.FunctionDecl):
-                    func = program.items[0]
-                    # Recursively expand any nested macro invocations
-                    expanded_stmts = self._expand_statements(func.body.statements)
-                    # Override source_loc on expanded statements to point to invocation site
-                    for stmt in expanded_stmts:
-                        self._override_source_loc(stmt, source_loc)
-                    return expanded_stmts
-                return []
-            except Exception as e:
-                raise MacroError(
-                    f"error parsing expanded macro '{name}': {e}\n"
-                    f"Expanded source: {expanded_source}",
-                    source_loc
-                )
-        finally:
-            self._expanding.remove(name)
-            self._expansion_depth -= 1
+        return self._invoke_macro(name, args, source_loc, parse_as_statements)
 
     def _match_params(
         self,
