@@ -82,6 +82,13 @@ VALID_REGISTER_TRANSFERS = {
 }
 
 
+def _get_caps_or_none(register_name: str) -> dict:
+    """Get capabilities dict for a register, or None if unrestricted."""
+    if register_name in UNRESTRICTED_REGISTERS:
+        return None
+    return REGISTER_CAPABILITIES.get(register_name)
+
+
 def get_register_capabilities(register_name: str) -> dict:
     """
     Get the capabilities for a register.
@@ -92,42 +99,25 @@ def get_register_capabilities(register_name: str) -> dict:
     Returns:
         Dict with 'binary_ops', 'inc', 'dec' keys, or None for unrestricted
     """
-    if register_name in UNRESTRICTED_REGISTERS:
-        return None  # No restrictions
-    return REGISTER_CAPABILITIES.get(register_name)
+    return _get_caps_or_none(register_name)
 
 
 def can_register_do_binary_op(register_name: str, op: str) -> bool:
-    """
-    Check if a register supports a binary operator.
-
-    Args:
-        register_name: Name of the register
-        op: Binary operator (+, -, &, |, ^, <<, >>)
-
-    Returns:
-        True if the operation is supported
-    """
-    caps = get_register_capabilities(register_name)
-    if caps is None:
-        return True  # Unrestricted
-    return op in caps['binary_ops']
+    """Check if a register supports a binary operator (+, -, &, |, ^, <<, >>)."""
+    caps = _get_caps_or_none(register_name)
+    return caps is None or op in caps['binary_ops']
 
 
 def can_register_increment(register_name: str) -> bool:
     """Check if a register supports increment (++)."""
-    caps = get_register_capabilities(register_name)
-    if caps is None:
-        return True
-    return caps['inc']
+    caps = _get_caps_or_none(register_name)
+    return caps is None or caps['inc']
 
 
 def can_register_decrement(register_name: str) -> bool:
     """Check if a register supports decrement (--)."""
-    caps = get_register_capabilities(register_name)
-    if caps is None:
-        return True
-    return caps['dec']
+    caps = _get_caps_or_none(register_name)
+    return caps is None or caps['dec']
 
 
 def get_register_hint(register_name: str) -> str:

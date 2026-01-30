@@ -1,11 +1,34 @@
 """Type comparison and compatibility utilities for R65."""
 
-from typing import Optional
+from typing import Optional, Tuple
 from r65.compiler.hir import (
     TypeInfo, BasicTypeInfo, ArrayTypeInfo, SliceTypeInfo, PointerTypeInfo,
     FunctionTypeInfo, StructTypeInfo, EnumTypeInfo,
     NeverTypeInfo, RegisterTypeInfo
 )
+
+
+# Valid ranges for integer types
+TYPE_RANGES = {
+    'u8': (0, 255),
+    'i8': (-128, 127),
+    'u16': (0, 65535),
+    'i16': (-32768, 32767),
+}
+
+
+def get_type_range(type_name: str) -> Optional[Tuple[int, int]]:
+    """Get the valid (min, max) range for an integer type, or None if unknown."""
+    return TYPE_RANGES.get(type_name)
+
+
+def value_fits_type(value: int, type_name: str) -> bool:
+    """Check if an integer value fits within the range of a type."""
+    range_info = TYPE_RANGES.get(type_name)
+    if range_info is None:
+        return True  # Unknown type, assume it fits
+    min_val, max_val = range_info
+    return min_val <= value <= max_val
 
 
 class TypeUtils:

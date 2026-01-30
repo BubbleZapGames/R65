@@ -30,30 +30,26 @@ class TypeInference:
         If context provides a type, use it (if value fits).
         Otherwise, default to smallest type that fits.
         """
+        from r65.compiler.typeck.type_utils import value_fits_type
+
+        # If context provides a type, use it if value fits
         if context_type and isinstance(context_type, BasicTypeInfo):
-            # Check if value fits in context type
-            if context_type.name == 'u8' and 0 <= value <= 255:
-                return context_type
-            elif context_type.name == 'i8' and -128 <= value <= 127:
-                return context_type
-            elif context_type.name == 'u16' and 0 <= value <= 65535:
-                return context_type
-            elif context_type.name == 'i16' and -32768 <= value <= 32767:
+            if value_fits_type(value, context_type.name):
                 return context_type
 
         # Default inference: smallest type that fits the value
-        # Check u8 range first (0-255)
-        if 0 <= value <= 255:
-            return BasicTypeInfo('u8')
-        # Check i8 range for negative values (-128 to -1)
-        elif -128 <= value < 0:
-            return BasicTypeInfo('i8')
-        # Check u16 range (256-65535)
-        elif 0 <= value <= 65535:
-            return BasicTypeInfo('u16')
-        # Check i16 range for negative values (-32768 to -129)
-        elif -32768 <= value < -128:
-            return BasicTypeInfo('i16')
+        # Positive values prefer unsigned types (u8, u16)
+        # Negative values prefer signed types (i8, i16)
+        if value >= 0:
+            if value_fits_type(value, 'u8'):
+                return BasicTypeInfo('u8')
+            if value_fits_type(value, 'u16'):
+                return BasicTypeInfo('u16')
         else:
-            # Value too large - error will be caught later
-            return BasicTypeInfo('u16')
+            if value_fits_type(value, 'i8'):
+                return BasicTypeInfo('i8')
+            if value_fits_type(value, 'i16'):
+                return BasicTypeInfo('i16')
+
+        # Value too large - error will be caught later
+        return BasicTypeInfo('u16')

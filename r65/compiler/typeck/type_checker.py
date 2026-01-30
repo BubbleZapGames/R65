@@ -383,19 +383,14 @@ class TypeChecker:
         """
         # Check if this is a literal overflow case
         if isinstance(expr, HIRIntegerLiteral) and isinstance(expected_type, BasicTypeInfo):
+            from r65.compiler.typeck.type_utils import get_type_range
             value = expr.value
             type_name = expected_type.name
 
             # Get range for expected type
-            ranges = {
-                'u8': (0, 255),
-                'i8': (-128, 127),
-                'u16': (0, 65535),
-                'i16': (-32768, 32767),
-            }
-
-            if type_name in ranges:
-                min_val, max_val = ranges[type_name]
+            range_info = get_type_range(type_name)
+            if range_info is not None:
+                min_val, max_val = range_info
                 if value < min_val or value > max_val:
                     # This is a literal overflow!
                     if value > max_val:
