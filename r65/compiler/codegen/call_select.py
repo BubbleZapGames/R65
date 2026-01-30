@@ -290,6 +290,12 @@ class CallInstructionSelector(BaseSelector):
         for arg in sorted_other_args:
             arg_loc = self.parent._get_operand_location(arg.value)
 
+            # CRITICAL: Adjust stack-relative source locations for bytes already pushed
+            # by stack arguments. Register and variable-bound args loading from stack
+            # need this adjustment too.
+            if arg_loc.kind == LocationKind.STACK and stack_bytes_pushed > 0:
+                arg_loc = self.parent._offset_location(arg_loc, stack_bytes_pushed)
+
             if arg.mechanism == ArgumentMechanism.REGISTER:
                 self._emit_register_argument(arg, arg_loc)
 
