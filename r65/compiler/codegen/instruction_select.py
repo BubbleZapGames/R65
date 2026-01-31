@@ -501,14 +501,10 @@ class InstructionSelector:
                         size=scratch.size
                     )
 
-        # No scratch available - use a dedicated stack slot
-        # We use a high stack offset that won't conflict with vreg allocation
-        # The register allocator uses stack_base_offset (0x16), so we use an offset above that
-        temp_stack_offset = 0x15  # Just below the vreg stack area
-        return PhysicalLocation(
-            kind=LocationKind.STACK,
-            stack_offset=temp_stack_offset,
-            size=1
+        # No scratch available - require user to define scratch registers
+        raise InstructionSelectionError(
+            "No scratch register available for temporary storage. "
+            "Define a scratch register using: #[zeropage(addr, register)] static mut SCRATCH: u8;"
         )
 
     def _get_temp_address(self) -> Address:
@@ -1114,14 +1110,10 @@ class InstructionSelector:
                         size=size
                     )
 
-        # No scratch available - use a dedicated stack slot
-        # Use a high offset that won't conflict with vreg allocations
-        # Stack grows down, so use offset past normal vreg slots
-        temp_stack_offset = 0x15  # Reserved temp slot
-        return PhysicalLocation(
-            kind=LocationKind.STACK,
-            stack_offset=temp_stack_offset,
-            size=size
+        # No scratch available - require user to define scratch registers
+        raise InstructionSelectionError(
+            "No scratch register available for temporary storage. "
+            "Define a scratch register using: #[zeropage(addr, register)] static mut SCRATCH: u8;"
         )
 
     def _get_temp_address(self) -> Address | None:
