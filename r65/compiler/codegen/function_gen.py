@@ -478,8 +478,11 @@ class FunctionCodeGenerator:
             self._emit_interrupt_register_saves()
 
         # Allocate stack frame for functions with locals
+        # For interrupt handlers, always use TSC/SBC/TCS (explicit mode control)
+        # because the mode after register saves is unknown (depends on interrupted code)
         if frame_size > 0:
-            self._emit_frame_allocation(frame_size)
+            force_direct = mir_func.interrupt_attr is not None
+            self._emit_frame_allocation(frame_size, force_direct_stack=force_direct)
 
         # Handle DBR management for far functions with databank=inline
         if mir_func.is_far and mir_func.mode_attr and mir_func.bank_attr:
@@ -592,7 +595,7 @@ class FunctionCodeGenerator:
         self._emit_instr(Opcode.PHB, comment="Save Data Bank")
         self._emit_instr(Opcode.PHP, comment="Save processor status (last)")
 
-    def _emit_frame_allocation(self, frame_size: int):
+    def _emit_frame_allocation(self, frame_size: int, force_direct_stack: bool = False):
         """
         Emit stack frame allocation code.
 
@@ -612,18 +615,20 @@ class FunctionCodeGenerator:
 
         Args:
             frame_size: Number of bytes to allocate
+            force_direct_stack: If True, always use TSC/SBC/TCS approach (for interrupt
+                handlers where mode is unknown after register saves)
         """
         if frame_size <= 0:
             return
 
-        if frame_size <= 4:
+        if frame_size <= 4 and not force_direct_stack:
             # Use PHA for small frames - more efficient
             # PHA pushes junk (current A value) but that's fine since
             # locals will be written before being read
             for _ in range(frame_size):
                 self._emit_instr(Opcode.PHA, comment=f"Allocate frame ({frame_size} bytes)")
         else:
-            # Use TSC/SBC/TCS for larger frames
+            # Use TSC/SBC/TCS for larger frames or when mode is unknown
             self._emit_instr(Opcode.REP_IMMEDIATE, Immediate(M_FLAG), "16-bit A for frame setup")
             self._emit_instr(Opcode.TSC, comment="Get stack pointer")
             self._emit_instr(Opcode.SEC, comment="Set carry for subtraction")

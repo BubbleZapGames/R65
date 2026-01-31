@@ -1063,27 +1063,19 @@ class InstructionSelector:
         Args:
             instr: ReturnFromInterrupt instruction
         """
-        # 1. Deallocate stack frame
+        # 1. Deallocate stack frame using direct stack manipulation
+        # Always use TSC/CLC/ADC/TCS for interrupt handlers since the mode
+        # after the handler body is unknown, and we need explicit mode control
         frame_size = 0
         if self.reg_alloc:
             frame_size = self.reg_alloc.frame_size
 
         if frame_size > 0:
-            # Frame was allocated in 8-bit mode (1 byte per PHA), so we must
-            # ensure 8-bit mode before PLA to pop the correct number of bytes.
-            # The handler body may have left us in 16-bit mode.
-            if frame_size <= 4:
-                self._emit_immediate(Opcode.SEP_IMMEDIATE, 0x20, "8-bit A for frame dealloc")
-                for _ in range(frame_size):
-                    self._emit_implied(Opcode.PLA, f"Deallocate frame ({frame_size} bytes)")
-            else:
-                # For larger frames, use TSC/CLC/ADC/TCS
-                self._emit_immediate(Opcode.REP_IMMEDIATE, 0x20, "16-bit A for stack adjustment")
-                self._emit_implied(Opcode.TSC, "Get stack pointer")
-                self._emit_implied(Opcode.CLC)
-                self._emit_immediate(Opcode.ADC_IMMEDIATE, frame_size, f"Deallocate {frame_size} bytes")
-                self._emit_implied(Opcode.TCS, "Set stack pointer")
-                self._emit_immediate(Opcode.SEP_IMMEDIATE, 0x20, "Restore 8-bit A")
+            self._emit_immediate(Opcode.REP_IMMEDIATE, 0x20, "16-bit A for stack adjustment")
+            self._emit_implied(Opcode.TSC, "Get stack pointer")
+            self._emit_implied(Opcode.CLC)
+            self._emit_immediate(Opcode.ADC_IMMEDIATE, frame_size, f"Deallocate {frame_size} bytes")
+            self._emit_implied(Opcode.TCS, "Set stack pointer")
 
         # 2. Restore registers (reverse order of prologue: PHA PHX PHY PHD PHB PHP)
         # Pop order: PLP PLB PLD PLY PLX PLA
