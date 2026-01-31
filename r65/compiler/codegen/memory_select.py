@@ -621,17 +621,17 @@ class MemoryOperationSelector(BaseSelector):
         adjusted_offset = stack_offset + 1
         operand = StackOffset(adjusted_offset)
 
+        # The (d,S),Y addressing mode requires Y index register
+        # If no index provided, set Y to 0
+        if not index_register:
+            self._emit_instr(Opcode.LDY_IMMEDIATE, Immediate(0), "Set Y=0 for indirect access")
+            index_register = 'Y'
+
         # Select the appropriate opcode
         if mnemonic == 'LDA':
-            if index_register == 'Y':
-                opcode = Opcode.LDA_STACK_INDIRECT_Y
-            else:
-                raise InstructionSelectionError("Far pointer indirect without index not yet supported")
+            opcode = Opcode.LDA_STACK_INDIRECT_Y
         elif mnemonic == 'STA':
-            if index_register == 'Y':
-                opcode = Opcode.STA_STACK_INDIRECT_Y
-            else:
-                raise InstructionSelectionError("Far pointer indirect without index not yet supported")
+            opcode = Opcode.STA_STACK_INDIRECT_Y
         else:
             raise InstructionSelectionError(f"Indirect addressing not supported for: {mnemonic}")
 
