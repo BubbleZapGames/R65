@@ -510,9 +510,10 @@ class MemoryOperationSelector(BaseSelector):
                     break
 
         if scratch_addr is None:
-            # Fallback: use a known scratch location (typically reserved for temp ops)
-            # This assumes zeropage 0x00-0x01 is available as a temp pointer location
-            scratch_addr = 0x00
+            raise InstructionSelectionError(
+                f"No scratch register available for pointer spill. "
+                f"Define a 2-byte scratch register using: #[zeropage(addr, register)] static mut SCRATCH: u16;"
+            )
 
         scratch_loc = PhysicalLocation(
             kind=LocationKind.SCRATCH,
