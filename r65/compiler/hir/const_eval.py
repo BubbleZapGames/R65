@@ -7,6 +7,7 @@ Evaluates constant expressions at compile time (array sizes, enum values, etc.).
 from typing import Any, Union
 from r65.compiler.frontend import ast
 from r65.compiler.hir.errors import *
+from r65.compiler.errors import compiler_assert
 from r65.compiler.hir.unified_type_utils import get_unified_type_size
 from r65.compiler.hir.types import ArrayTypeInfo
 from r65.compiler.builtins.registry import BuiltinRegistry
@@ -257,7 +258,10 @@ class ConstEvaluator:
 
     def _eval_method_call(self, expr: ast.FunctionCall) -> int:
         """Evaluate method call in const expression (e.g., array.len())."""
-        assert isinstance(expr.func, ast.FieldAccess)
+        compiler_assert(
+            isinstance(expr.func, ast.FieldAccess),
+            f"_eval_method_call called with non-FieldAccess func: {type(expr.func).__name__}"
+        )
 
         method_name = expr.func.field
         receiver = expr.func.base

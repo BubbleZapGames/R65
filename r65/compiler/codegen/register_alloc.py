@@ -9,12 +9,13 @@ Maps MIR virtual registers to:
 Includes call-graph-aware scratch allocation to avoid conflicts with callees.
 """
 
-from typing import Dict, List, Optional, Set, TYPE_CHECKING
+from typing import Dict, List, Optional, Set, Tuple, TYPE_CHECKING
 from dataclasses import dataclass, field
 from enum import Enum
 from r65.compiler.mir.nodes import VirtualRegister, HardwareRegister, MIRFunction
 from r65.compiler.codegen.slot_allocator import StackSlotAllocator, SlotAllocation, PreassignedSlot
 from r65.compiler.codegen.type_utils import get_type_size
+from r65.compiler.errors import MemoryAllocationError
 
 if TYPE_CHECKING:
     from r65.compiler.analysis.scratch_analysis import ScratchUsageAnalyzer
@@ -113,16 +114,40 @@ class ScratchRegisterPool:
         """Initialize empty scratch pool."""
         self.scratches: List[ScratchRegister] = []
         self.allocated: Dict[int, VirtualRegister] = {}  # vreg.id → VirtualRegister
+        # Track used address ranges: list of (start, end, name) for overlap detection
+        self._used_ranges: List[Tuple[int, int, str]] = []
 
     def add_scratch(self, address: int, size: int, name: str):
         """
         Add a scratch register to the pool.
 
+        Validates that the new scratch register does not overlap with any
+        previously registered scratch registers.
+
         Args:
             address: Zero-page address
             size: Size in bytes
             name: Scratch register name
+
+        Raises:
+            MemoryAllocationError: If scratch register overlaps with existing one
         """
+        new_start = address
+        new_end = address + size
+
+        # Check for overlaps with existing scratch registers
+        for existing_start, existing_end, existing_name in self._used_ranges:
+            # Overlap occurs if: new_start < existing_end AND existing_start < new_end
+            if new_start < existing_end and existing_start < new_end:
+                raise MemoryAllocationError(
+                    f"scratch register '{name}' at ${address:04X}-${new_end-1:04X} "
+                    f"overlaps with existing scratch register '{existing_name}' "
+                    f"at ${existing_start:04X}-${existing_end-1:04X}"
+                )
+
+        # Register the address range
+        self._used_ranges.append((new_start, new_end, name))
+
         scratch = ScratchRegister(
             address=address,
             size=size,

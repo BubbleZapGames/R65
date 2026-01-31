@@ -203,7 +203,11 @@ class CallLowerer:
         if call_expr.method_name == 'len':
             # Get the receiver's type (must be ArrayTypeInfo, validated in type checker)
             receiver_type = call_expr.receiver.expr_type
-            assert isinstance(receiver_type, ArrayTypeInfo), "len() receiver must be array"
+            if not isinstance(receiver_type, ArrayTypeInfo):
+                raise MIRLoweringError(
+                    f"len() receiver must be an array type, got {type(receiver_type).__name__}",
+                    source_loc=call_expr.source_loc
+                )
 
             # Get array size - this is always a compile-time constant
             array_size = receiver_type.size
@@ -225,7 +229,11 @@ class CallLowerer:
 
         # Get rotation count from argument (already validated as constant 1-8 in type checker)
         count_arg = call_expr.args[0]
-        assert isinstance(count_arg, HIRIntegerLiteral), "Rotation count must be a constant"
+        if not isinstance(count_arg, HIRIntegerLiteral):
+            raise MIRLoweringError(
+                f"rotation count must be a constant integer literal, got {type(count_arg).__name__}",
+                source_loc=call_expr.source_loc
+            )
         count = count_arg.value
 
         # Determine direction

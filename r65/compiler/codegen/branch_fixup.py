@@ -35,6 +35,7 @@ from r65.compiler.codegen.asm_nodes import (
     AsmNode, Instruction, Label, Directive,
     Address, invert_branch,
 )
+from r65.compiler.errors import compiler_assert
 
 
 # ============================================================================
@@ -298,7 +299,10 @@ class BranchFixup:
             if i in long_indices:
                 # Expand this branch
                 branch_info = long_indices[i]
-                assert isinstance(node, Instruction)
+                compiler_assert(
+                    isinstance(node, Instruction),
+                    f"long_indices[{i}] references non-Instruction node: {type(node).__name__}"
+                )
                 expanded = self._expand_long_branch(node, branch_info)
                 result.extend(expanded)
                 self.branches_fixed += 1
