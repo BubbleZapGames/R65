@@ -172,6 +172,7 @@ class OptimizationStats:
     redundant_transfers_eliminated: int = 0
     redundant_stack_ops_eliminated: int = 0
     redundant_mode_changes_eliminated: int = 0
+    redundant_and_before_sep_eliminated: int = 0
 
     @property
     def total(self) -> int:
@@ -180,7 +181,8 @@ class OptimizationStats:
             self.dead_stores_eliminated +
             self.redundant_transfers_eliminated +
             self.redundant_stack_ops_eliminated +
-            self.redundant_mode_changes_eliminated
+            self.redundant_mode_changes_eliminated +
+            self.redundant_and_before_sep_eliminated
         )
 
 
@@ -223,6 +225,7 @@ class PeepholeOptimizer:
             nodes = self._eliminate_redundant_transfers(nodes)
             nodes = self._eliminate_redundant_stack_ops(nodes)
             nodes = self._eliminate_redundant_mode_changes(nodes)
+            nodes = self._eliminate_redundant_and_before_sep(nodes)
             changed = self.stats.total > prev_total
 
         return nodes
@@ -529,6 +532,59 @@ class PeepholeOptimizer:
                                 i = next_instr_idx + 1
                                 self.stats.redundant_mode_changes_eliminated += 1
                                 continue
+
+            optimized.append(node)
+            i += 1
+
+        return optimized
+
+    def _eliminate_redundant_and_before_sep(self, nodes: List['AsmNode']) -> List['AsmNode']:
+        """
+        Remove AND #$00FF when followed by SEP #$20.
+
+        In 8-bit accumulator mode, only the low byte is used, so masking
+        off the high byte before switching to 8-bit is redundant.
+
+        Pattern: AND #$00FF (or #$FF), SEP #$xx where xx & 0x20 != 0
+        """
+        from r65.compiler.codegen.asm_nodes import Instruction, Directive, Immediate
+
+        M_FLAG = 0x20
+        optimized = []
+        i = 0
+
+        while i < len(nodes):
+            node = nodes[i]
+
+            # Check for AND #$00FF or AND #$FF (immediate)
+            if isinstance(node, Instruction) and node.opcode == Opcode.AND_IMMEDIATE:
+                if isinstance(node.operand, Immediate) and node.operand.value in (0x00FF, 0xFF):
+                    # Look ahead for SEP with M flag, skipping directives
+                    next_instr_idx = i + 1
+                    directives_between = []
+
+                    while next_instr_idx < len(nodes):
+                        next_node = nodes[next_instr_idx]
+                        if isinstance(next_node, Directive):
+                            directives_between.append(next_node)
+                            next_instr_idx += 1
+                        elif isinstance(next_node, Instruction):
+                            break
+                        else:
+                            break
+
+                    if next_instr_idx < len(nodes):
+                        next_instr = nodes[next_instr_idx]
+
+                        if (isinstance(next_instr, Instruction) and
+                            next_instr.opcode == Opcode.SEP_IMMEDIATE and
+                            isinstance(next_instr.operand, Immediate) and
+                            next_instr.operand.value & M_FLAG):
+                            # Pattern matched - skip the AND, keep directives and SEP
+                            optimized.extend(directives_between)
+                            i = next_instr_idx  # Will emit SEP on next iteration
+                            self.stats.redundant_and_before_sep_eliminated += 1
+                            continue
 
             optimized.append(node)
             i += 1
