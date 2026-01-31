@@ -265,6 +265,36 @@ class CompareSelector(BaseSelector):
         """
         value_loc = self.parent._get_operand_location(instr.value)
 
+        # BIT instruction doesn't support stack-relative addressing
+        # If value is on stack, use alternative approach
+        if value_loc.kind == LocationKind.STACK:
+            # Load stack value to A
+            self._emit_load_store('LDA', value_loc)
+
+            # Try to get a scratch for true BIT instruction
+            temp_addr = self.parent._get_temp_address()
+            if temp_addr:
+                self._emit_instr(Opcode.STA_DP, temp_addr, "Store to temp for BIT")
+                self._emit_instr(Opcode.BIT_DP, temp_addr)
+            else:
+                # No scratch available - use AND-based approach
+                # For bit test, we want to set Z flag based on whether bits are set
+                # The value is already in A, so we just use BIT #immediate with A value
+                # However, BIT #imm tests A against immediate, which is what we want
+                # for Z flag tests (A AND imm == 0)
+                if instr.test_bit == 7:
+                    # Test bit 7: AND #$80, then check Z flag
+                    self._emit_instr(Opcode.AND_IMMEDIATE, Immediate(0x80), "Test bit 7")
+                elif instr.test_bit == 6:
+                    # Test bit 6: AND #$40, then check Z flag
+                    self._emit_instr(Opcode.AND_IMMEDIATE, Immediate(0x40), "Test bit 6")
+                else:
+                    # General Z flag test - value is already in A
+                    # BIT #imm equivalent: CMP #0 sets Z if A==0
+                    # But we want to preserve A... use ORA #0 to just set flags
+                    self._emit_instr(Opcode.ORA_IMMEDIATE, Immediate(0x00), "Set Z flag from A")
+            return
+
         # BIT instruction requires a memory operand
         opcode, operand = self.parent._get_opcode_for_location('BIT', value_loc)
         self._emit_instr(opcode, operand)

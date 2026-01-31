@@ -72,6 +72,9 @@ class FunctionCodeGenerator:
         if scratch_pool is None:
             scratch_pool = ScratchRegisterPool()  # Empty pool if not provided
 
+        # DEBUG: Check scratch pool contents
+        # print(f"DEBUG: generate_function({mir_func.name}), scratch_pool.scratches={len(scratch_pool.scratches) if scratch_pool.scratches else 0}")
+
         # Reset scratch pool for this function (each function gets fresh allocation)
         scratch_pool.reset()
 
@@ -331,6 +334,9 @@ class FunctionCodeGenerator:
         for static_var in mir_program.statics:
             if hasattr(static_var, 'storage_attr') and static_var.storage_attr:
                 storage_attr = static_var.storage_attr
+
+                # Debug: print register detection (comment out for production)
+                # print(f"DEBUG: static {static_var.name}, is_register={storage_attr.is_register}")
 
                 # Only use variables explicitly marked as registers
                 if storage_attr.is_register:
