@@ -190,6 +190,11 @@ class TypeConversionSelector(BaseSelector):
             else:
                 self._emit_load_store('LDA', src_loc, "Load low byte")
 
+        # CRITICAL: Switch to 8-bit mode before storing narrowed value.
+        # If we're in 16-bit mode (from previous 16-bit operations), STA would
+        # write 2 bytes instead of 1, potentially corrupting adjacent memory
+        # (including return addresses on the stack).
+        self.parent._ensure_m8_mode()
         self._emit_load_store('STA', dest_loc)
 
     # ========================================================================

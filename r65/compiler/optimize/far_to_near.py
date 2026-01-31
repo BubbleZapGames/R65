@@ -244,6 +244,7 @@ class FarToNearOptimizer:
         Updates:
         1. The function's is_far flag to False
         2. All Call instructions that call this function to is_far = False
+        3. Stack parameter offsets (reduced by 1 since return address shrinks from 3 to 2 bytes)
 
         Args:
             func_name: Name of the function to convert
@@ -252,6 +253,12 @@ class FarToNearOptimizer:
         # Update the function declaration
         func = self.func_map[func_name]
         func.is_far = False
+
+        # Adjust stack parameter offsets: far return address is 3 bytes, near is 2 bytes
+        # So all stack parameters shift down by 1 byte
+        if func.stack_param_offsets:
+            for param_idx in func.stack_param_offsets:
+                func.stack_param_offsets[param_idx] -= 1
 
         if self.verbose:
             print(f"  Converted function {func_name} from far to near")

@@ -387,16 +387,12 @@ class MIRBuilder:
                     bank_attr=None   # __init_start is always near, no DBR management
                 ))
 
-        # Generate interrupt handler entry wrapper if needed
+        # Generate interrupt handler mode setup if needed
+        # Note: Register saves (PHP, PHA, PHX, PHY, PHD, PHB) are emitted by codegen
+        # in emit_prologue BEFORE frame allocation. This is critical because stack
+        # frame allocation uses stack-relative addressing that would corrupt saved
+        # registers if the pushes came after frame allocation.
         if hir_func.interrupt_attr:
-            # Push all registers (automatic preservation for interrupts)
-            self.emit(Push(register=HardwareRegister('STATUS')))  # PHP
-            self.emit(Push(register=HardwareRegister('A')))       # PHA
-            self.emit(Push(register=HardwareRegister('X')))       # PHX
-            self.emit(Push(register=HardwareRegister('Y')))       # PHY
-            self.emit(Push(register=HardwareRegister('D')))       # PHD
-            self.emit(Push(register=HardwareRegister('DBR')))     # PHB
-
             # Set the handler's mode (interrupts can fire from any mode)
             # Force the handler's inferred mode using SEP/REP
             if hir_func.mode_attr and self.current_mode.is_fully_known():
@@ -427,17 +423,11 @@ class MIRBuilder:
         # This handles functions without explicit return statements
         if self.current_block and not self._block_has_terminator():
             # For interrupt handlers, emit ReturnFromInterrupt
+            # Note: Register restores (PLB, PLD, PLY, PLX, PLA, PLP) are emitted by
+            # codegen in select_return_from_interrupt AFTER frame deallocation.
+            # This ensures correct stack ordering since prologue pushes registers
+            # before allocating frame.
             if hir_func.interrupt_attr:
-                # Pop all registers (reverse order of pushes in prologue)
-                self.emit(Pull(register=HardwareRegister('DBR')))     # PLB
-                self.emit(Pull(register=HardwareRegister('D')))       # PLD
-                self.emit(Pull(register=HardwareRegister('Y')))       # PLY
-                self.emit(Pull(register=HardwareRegister('X')))       # PLX
-                # Ensure 8-bit mode before PLA - interrupt handlers always enter in m8 mode
-                # This prevents stack corruption when the handler body switches to m16
-                self.emit(SetMode(mask=0x20, is_set=True))  # SEP #$20
-                self.emit(Pull(register=HardwareRegister('A')))       # PLA
-                self.emit(Pull(register=HardwareRegister('STATUS')))  # PLP
                 self.emit(ReturnFromInterrupt())
             else:
                 # Regular function: add implicit Return with no values
@@ -639,20 +629,12 @@ class MIRBuilder:
 
         # Check if this is an interrupt handler
         if self.current_function.interrupt_attr:
-            # Interrupt handler exit sequence
-            # Restore all registers (reverse order of push)
-            self.emit(Pull(register=HardwareRegister('DBR')))     # PLB
-            self.emit(Pull(register=HardwareRegister('D')))       # PLD
-            self.emit(Pull(register=HardwareRegister('Y')))       # PLY
-            self.emit(Pull(register=HardwareRegister('X')))       # PLX
-            # Ensure 8-bit mode before PLA - interrupt handlers always enter in m8 mode
-            # This prevents stack corruption when the handler body switches to m16
-            self.emit(SetMode(mask=0x20, is_set=True))  # SEP #$20
-            self.emit(Pull(register=HardwareRegister('A')))       # PLA
-            self.emit(Pull(register=HardwareRegister('STATUS')))  # PLP (restores mode!)
-
             # Return from interrupt (RTI)
             # Note: Interrupt handlers shouldn't return values
+            # Register restores (PLB, PLD, PLY, PLX, PLA, PLP) are emitted by
+            # codegen in select_return_from_interrupt AFTER frame deallocation.
+            # This ensures correct stack ordering since prologue pushes registers
+            # before allocating frame.
             if return_values:
                 raise MIRLoweringError(f"Interrupt handler '{self.current_function.name}' cannot return values")
             self.emit(ReturnFromInterrupt())

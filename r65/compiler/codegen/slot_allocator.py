@@ -241,7 +241,12 @@ class StackSlotAllocator:
             allocated_ranges.append((assigned_slot, assigned_slot + size, vreg))
 
         # Frame size is the total local slots needed
-        frame_size = next_slot
+        # Ensure frame_size covers all allocated ranges (safety check)
+        max_end = 0
+        for (start, end, _) in allocated_ranges:
+            if end > max_end:
+                max_end = end
+        frame_size = max(next_slot, max_end)
 
         # Calculate slots saved
         total_without_reuse = sum(local_sizes.values())

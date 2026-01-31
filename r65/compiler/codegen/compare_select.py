@@ -121,12 +121,12 @@ class CompareSelector(BaseSelector):
         # Emit appropriate comparison instruction based on left operand
         self._emit_comparison(left_loc, right_operand, is_immediate)
 
-        # IMPORTANT: Restore m8 mode after 16-bit comparisons.
-        # Comparisons are typically followed by branches that jump to blocks
-        # which assume m8 mode. Without restoring, 8-bit operations in target
-        # blocks would execute in 16-bit mode, corrupting adjacent memory.
-        if needs_16bit:
-            self.parent._ensure_m8_mode()
+        # NOTE: We do NOT restore m8 mode after 16-bit comparisons.
+        # The branch instructions that follow don't depend on the M flag.
+        # Loop back-edges need to preserve the mode expected by the loop header.
+        # Code paths that need m8 (like function returns) explicitly switch modes.
+        # Previously this did `self.parent._ensure_m8_mode()` which broke loops
+        # where the loop body runs in m16 mode.
 
         # Pop register if we pushed it for temp storage
         if pushed_reg:

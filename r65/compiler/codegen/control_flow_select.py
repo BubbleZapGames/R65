@@ -953,24 +953,28 @@ class ControlFlowInstructionSelector(BaseSelector):
             bank_offset += 1
 
         current_mode = self.parent.emitter.get_accu_mode()
-        need_mode_switch = (current_mode != 16)
-
-        if need_mode_switch:
-            self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "16-bit A for far cleanup")
-            self.parent.emitter.emit_accu_mode(16)
-
-        # Load and store 16-bit address portion
-        self._emit_stack_relative(Opcode.LDA_STACK, ret_addr_offset, "Load return address")
         store_offset = total_cleanup + 1 + (1 if save_method == 'stack' else 0)
-        self._emit_stack_relative(Opcode.STA_STACK, store_offset, "Store past cleanup area")
 
-        # Switch to 8-bit for bank byte
-        self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "8-bit A for bank")
-        self.parent.emitter.emit_accu_mode(8)
+        # CRITICAL: Read bank byte FIRST before the 16-bit store can overwrite it.
+        # The 16-bit store at store_offset writes to bytes store_offset and store_offset+1.
+        # If bank_offset == store_offset+1, the bank would be overwritten before we read it.
+        # By reading bank first and storing it at store_offset+2, we avoid this race.
+        need_mode_switch = (current_mode != 8)
+        if need_mode_switch:
+            self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "8-bit A for bank")
+            self.parent.emitter.emit_accu_mode(8)
 
-        # Load and store bank byte
+        # Load and store bank byte first (to avoid overwrite by 16-bit store)
         self._emit_stack_relative(Opcode.LDA_STACK, bank_offset, "Load bank byte")
         self._emit_stack_relative(Opcode.STA_STACK, store_offset + 2, "Store bank past cleanup area")
+
+        # Now switch to 16-bit for address portion
+        self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "16-bit A for far cleanup")
+        self.parent.emitter.emit_accu_mode(16)
+
+        # Load and store 16-bit address portion (safe now that bank is already moved)
+        self._emit_stack_relative(Opcode.LDA_STACK, ret_addr_offset, "Load return address")
+        self._emit_stack_relative(Opcode.STA_STACK, store_offset, "Store past cleanup area")
 
         # Switch to 16-bit for SP adjustment
         self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "16-bit A for SP adjust")

@@ -1052,35 +1052,51 @@ class InstructionSelector:
         """
         Generate code for ReturnFromInterrupt instruction.
 
-        Deallocates the stack frame (if any) before emitting RTI.
-        Interrupt handlers cannot have stack parameters, so we only
-        need to handle frame deallocation.
+        Epilogue sequence for interrupt handlers:
+        1. Deallocate stack frame (if any)
+        2. Restore all registers (reverse order of prologue pushes)
+        3. RTI
+
+        The order is critical: prologue pushes registers THEN allocates frame,
+        so epilogue must deallocate frame THEN restore registers.
 
         Args:
             instr: ReturnFromInterrupt instruction
         """
-        # Deallocate stack frame before RTI
+        # 1. Deallocate stack frame
         frame_size = 0
         if self.reg_alloc:
             frame_size = self.reg_alloc.frame_size
 
         if frame_size > 0:
-            # In 8-bit mode (default for interrupt handlers), use PLA
-            # Each PLA deallocates 1 byte
+            # Frame was allocated in 8-bit mode (1 byte per PHA), so we must
+            # ensure 8-bit mode before PLA to pop the correct number of bytes.
+            # The handler body may have left us in 16-bit mode.
             if frame_size <= 4:
+                self._emit_immediate(Opcode.SEP_IMMEDIATE, 0x20, "8-bit A for frame dealloc")
                 for _ in range(frame_size):
                     self._emit_implied(Opcode.PLA, f"Deallocate frame ({frame_size} bytes)")
             else:
                 # For larger frames, use TSC/CLC/ADC/TCS
-                self._emit_implied(Opcode.REP_IMMEDIATE)
-                self.emitter.emit_operand(Immediate(0x20), "16-bit A for stack adjustment")
+                self._emit_immediate(Opcode.REP_IMMEDIATE, 0x20, "16-bit A for stack adjustment")
                 self._emit_implied(Opcode.TSC, "Get stack pointer")
                 self._emit_implied(Opcode.CLC)
-                self._emit_immediate(Opcode.ADC_IMMEDIATE, Immediate(frame_size), f"Deallocate {frame_size} bytes")
+                self._emit_immediate(Opcode.ADC_IMMEDIATE, frame_size, f"Deallocate {frame_size} bytes")
                 self._emit_implied(Opcode.TCS, "Set stack pointer")
-                self._emit_implied(Opcode.SEP_IMMEDIATE)
-                self.emitter.emit_operand(Immediate(0x20), "Restore 8-bit A")
+                self._emit_immediate(Opcode.SEP_IMMEDIATE, 0x20, "Restore 8-bit A")
 
+        # 2. Restore registers (reverse order of prologue: PHB PHD PHY PHX PHA PHP)
+        # Pop order: PLB PLD PLY PLX SEP PLA PLP
+        self._emit_implied(Opcode.PLB, "Restore Data Bank")
+        self._emit_implied(Opcode.PLD, "Restore Direct Page")
+        self._emit_implied(Opcode.PLY, "Restore Y")
+        self._emit_implied(Opcode.PLX, "Restore X")
+        # Ensure 8-bit mode before PLA - interrupt handlers save A in 8-bit mode
+        self._emit_immediate(Opcode.SEP_IMMEDIATE, 0x20, "8-bit A for PLA")
+        self._emit_implied(Opcode.PLA, "Restore A")
+        self._emit_implied(Opcode.PLP, "Restore processor status")
+
+        # 3. Return from interrupt
         self._emit_implied(Opcode.RTI)
 
     # ========================================================================

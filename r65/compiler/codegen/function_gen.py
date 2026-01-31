@@ -135,6 +135,11 @@ class FunctionCodeGenerator:
             if block_id != mir_func.entry_block_id:
                 self.emitter.emit_label(f"{mir_func.name}__L{block_id}")
 
+            # Emit mode switch at block entry if needed
+            # This ensures the block runs in the mode it was compiled for,
+            # regardless of what mode incoming edges are in (e.g., loop back-edges)
+            self._emit_block_entry_mode_switch(block, instr_selector)
+
             # Emit instructions in block
             for instr in block.instructions:
                 instr_selector.select_instruction(instr)
@@ -251,6 +256,47 @@ class FunctionCodeGenerator:
                 visit(block_id)
 
         return order
+
+    def _emit_block_entry_mode_switch(self, block, instr_selector):
+        """
+        Emit mode switch at block entry if the block's expected mode differs
+        from the current tracked mode.
+
+        This handles cases like loop back-edges where the predecessor block
+        may have switched modes (e.g., for a comparison) but the loop header
+        expects a different mode.
+
+        Args:
+            block: MIR basic block
+            instr_selector: InstructionSelector with mode tracking
+        """
+        from r65.compiler.typeck.processor_mode import ModeState
+
+        # Get block's expected entry mode
+        if not hasattr(block, 'entry_mode') or block.entry_mode is None:
+            return
+
+        block_entry_mode = block.entry_mode
+        if hasattr(block_entry_mode, 'm_mode'):
+            expected_m_mode = block_entry_mode.m_mode
+        else:
+            return
+
+        # Get current tracked mode from emitter
+        current_mode_bits = self.emitter.get_accu_mode()
+        current_is_m16 = (current_mode_bits == 16)
+        expected_is_m16 = (expected_m_mode == ModeState.M16)
+
+        # Emit mode switch if needed
+        if current_is_m16 != expected_is_m16:
+            if expected_is_m16:
+                self._emit_instr(Opcode.REP_IMMEDIATE, Immediate(M_FLAG),
+                               "Restore m16 mode for block")
+                self.emitter.emit_accu_mode(16)
+            else:
+                self._emit_instr(Opcode.SEP_IMMEDIATE, Immediate(M_FLAG),
+                               "Restore m8 mode for block")
+                self.emitter.emit_accu_mode(8)
 
     # ========================================================================
     # Register Allocation
@@ -424,6 +470,13 @@ class FunctionCodeGenerator:
         if mir_func.is_entry:
             self._emit_entry_setup(mir_func)
 
+        # For interrupt handlers, emit register saves BEFORE frame allocation
+        # This is critical: frame allocation uses stack-relative addressing that
+        # would corrupt saved registers if done before the pushes.
+        # Order: register saves -> frame allocation -> mode setup -> body
+        if mir_func.interrupt_attr:
+            self._emit_interrupt_register_saves()
+
         # Allocate stack frame for functions with locals
         if frame_size > 0:
             self._emit_frame_allocation(frame_size)
@@ -515,6 +568,32 @@ class FunctionCodeGenerator:
 
         # Emit REP to set up x16 mode (always) and m16 mode (if requested)
         self._emit_instr(Opcode.REP_IMMEDIATE, Immediate(rep_mask))
+
+    def _emit_interrupt_register_saves(self):
+        """
+        Emit register saves for interrupt handlers.
+
+        This must be called BEFORE frame allocation to ensure correct stack layout.
+        After this, the stack has the saved registers on top, and stack-relative
+        addressing for local variables will work correctly.
+
+        CRITICAL: NMI/IRQ can fire while CPU is in m16 mode (16-bit A). If we save
+        A while in m16 mode, PHA pushes 2 bytes. The epilogue would need to restore
+        in the same mode. To avoid complexity, we force m8 mode immediately after
+        saving the status, ensuring A is always saved/restored as 8-bit.
+
+        Order of pushes: PHP, SEP #$20, PHA, PHX, PHY, PHD, PHB
+        (Corresponding pops in epilogue: PLB, PLD, PLY, PLX, SEP, PLA, PLP)
+        """
+        self._emit_instr(Opcode.PHP, comment="Save processor status")
+        # Force 8-bit A mode immediately - this ensures PHA always pushes 1 byte
+        # The original mode is saved in the P register and will be restored by PLP
+        self._emit_instr(Opcode.SEP_IMMEDIATE, Immediate(M_FLAG), "Force 8-bit A for consistent save")
+        self._emit_instr(Opcode.PHA, comment="Save A (now guaranteed 8-bit)")
+        self._emit_instr(Opcode.PHX, comment="Save X")
+        self._emit_instr(Opcode.PHY, comment="Save Y")
+        self._emit_instr(Opcode.PHD, comment="Save Direct Page")
+        self._emit_instr(Opcode.PHB, comment="Save Data Bank")
 
     def _emit_frame_allocation(self, frame_size: int):
         """
