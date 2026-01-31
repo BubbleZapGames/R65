@@ -1085,16 +1085,15 @@ class InstructionSelector:
                 self._emit_implied(Opcode.TCS, "Set stack pointer")
                 self._emit_immediate(Opcode.SEP_IMMEDIATE, 0x20, "Restore 8-bit A")
 
-        # 2. Restore registers (reverse order of prologue: PHB PHD PHY PHX PHA PHP)
-        # Pop order: PLB PLD PLY PLX SEP PLA PLP
+        # 2. Restore registers (reverse order of prologue: PHA PHX PHY PHD PHB PHP)
+        # Pop order: PLP PLB PLD PLY PLX PLA
+        # CRITICAL: Restore P first so A is restored in its original mode
+        self._emit_implied(Opcode.PLP, "Restore processor status (first - restores mode)")
         self._emit_implied(Opcode.PLB, "Restore Data Bank")
         self._emit_implied(Opcode.PLD, "Restore Direct Page")
         self._emit_implied(Opcode.PLY, "Restore Y")
         self._emit_implied(Opcode.PLX, "Restore X")
-        # Ensure 8-bit mode before PLA - interrupt handlers save A in 8-bit mode
-        self._emit_immediate(Opcode.SEP_IMMEDIATE, 0x20, "8-bit A for PLA")
-        self._emit_implied(Opcode.PLA, "Restore A")
-        self._emit_implied(Opcode.PLP, "Restore processor status")
+        self._emit_implied(Opcode.PLA, "Restore A (in original mode)")
 
         # 3. Return from interrupt
         self._emit_implied(Opcode.RTI)

@@ -577,23 +577,20 @@ class FunctionCodeGenerator:
         After this, the stack has the saved registers on top, and stack-relative
         addressing for local variables will work correctly.
 
-        CRITICAL: NMI/IRQ can fire while CPU is in m16 mode (16-bit A). If we save
-        A while in m16 mode, PHA pushes 2 bytes. The epilogue would need to restore
-        in the same mode. To avoid complexity, we force m8 mode immediately after
-        saving the status, ensuring A is always saved/restored as 8-bit.
+        CRITICAL: Save P (processor status) LAST so we can restore it FIRST in the
+        epilogue. This ensures A is saved/restored in its original mode - if NMI
+        fires in m16 mode, PHA pushes 2 bytes, and after PLP restores m16 mode,
+        PLA will correctly pop 2 bytes.
 
-        Order of pushes: PHP, SEP #$20, PHA, PHX, PHY, PHD, PHB
-        (Corresponding pops in epilogue: PLB, PLD, PLY, PLX, SEP, PLA, PLP)
+        Order of pushes: PHA, PHX, PHY, PHD, PHB, PHP
+        (Corresponding pops in epilogue: PLP, PLB, PLD, PLY, PLX, PLA)
         """
-        self._emit_instr(Opcode.PHP, comment="Save processor status")
-        # Force 8-bit A mode immediately - this ensures PHA always pushes 1 byte
-        # The original mode is saved in the P register and will be restored by PLP
-        self._emit_instr(Opcode.SEP_IMMEDIATE, Immediate(M_FLAG), "Force 8-bit A for consistent save")
-        self._emit_instr(Opcode.PHA, comment="Save A (now guaranteed 8-bit)")
+        self._emit_instr(Opcode.PHA, comment="Save A (in current mode)")
         self._emit_instr(Opcode.PHX, comment="Save X")
         self._emit_instr(Opcode.PHY, comment="Save Y")
         self._emit_instr(Opcode.PHD, comment="Save Direct Page")
         self._emit_instr(Opcode.PHB, comment="Save Data Bank")
+        self._emit_instr(Opcode.PHP, comment="Save processor status (last)")
 
     def _emit_frame_allocation(self, frame_size: int):
         """
