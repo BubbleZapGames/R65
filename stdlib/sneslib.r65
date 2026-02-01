@@ -1382,6 +1382,7 @@ macro_rules! clear_nmi() {
 // Set DMA source address from a far pointer/label
 // Usage: dma_set_src!(0, my_graphics_data);
 macro_rules! dma_set_src($channel:literal, $ptr:expr) {
+    STATUS.A16 = false;  // Ensure 8-bit A (emits SEP #$20 only if needed)
     asm!(
         "LDA #<" + stringify!($ptr),
         "STA A1T" + stringify!($channel) + "L",
@@ -1396,6 +1397,7 @@ macro_rules! dma_set_src($channel:literal, $ptr:expr) {
 // Combines WRAM address setup (WMADDL/M/H) with DMA mode/BBAD configuration
 // Usage: dma_set_dest!(0, DMA_MODE_1REG_1WRITE, 0x7E2000);
 macro_rules! dma_set_dest($channel:literal, $mode:expr, $dest:expr) {
+    STATUS.A16 = false;  // Ensure 8-bit A (emits SEP #$20 only if needed)
     asm!(
         "LDA #<" + stringify!($dest),
         "STA WMADDL",
@@ -1413,6 +1415,7 @@ macro_rules! dma_set_dest($channel:literal, $mode:expr, $dest:expr) {
 // Set DMA destination for PPU registers (B-bus address) and transfer mode
 // Usage: dma_set_ppu_dest!(0, DMA_MODE_2REG_1WRITE, 0x18);
 macro_rules! dma_set_ppu_dest($channel:literal, $mode:expr, $bbad:expr) {
+    STATUS.A16 = false;  // Ensure 8-bit A (emits SEP #$20 only if needed)
     asm!(
         "LDA #" + stringify!($mode),
         "STA DMAP" + stringify!($channel),
@@ -1457,6 +1460,7 @@ macro_rules! dma_copy_vram($channel:literal, $src:expr, $dest:expr, $size:expr) 
 // DMA copy to CGRAM (palette)
 // Usage: dma_copy_cgram!(0, src_ptr, start_color, num_colors);
 macro_rules! dma_copy_cgram($channel:literal, $src:expr, $start:expr, $count:expr) {
+    STATUS.A16 = false;  // Ensure 8-bit A (emits SEP #$20 only if needed)
     asm!(
         "LDA #" + stringify!($start),
         "STA CGADD"

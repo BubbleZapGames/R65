@@ -160,8 +160,10 @@ class InstructionSelector:
             comment_parts = []
             if mask & M_FLAG:
                 comment_parts.append("M")
+                self.emitter.emit_accu_mode(8)  # Update tracked mode
             if mask & X_FLAG:
                 comment_parts.append("X")
+                self.emitter.emit_index_mode(8)  # Update tracked mode
             comment = f"Set {'+'.join(comment_parts)} flag{'s' if len(comment_parts) > 1 else ''} (8-bit mode)"
             self.emitter.emit_instr(Opcode.SEP_IMMEDIATE, Immediate(mask), comment=comment)
             self._pending_sep_mask = 0
@@ -171,8 +173,10 @@ class InstructionSelector:
             comment_parts = []
             if mask & M_FLAG:
                 comment_parts.append("M")
+                self.emitter.emit_accu_mode(16)  # Update tracked mode
             if mask & X_FLAG:
                 comment_parts.append("X")
+                self.emitter.emit_index_mode(16)  # Update tracked mode
             comment = f"Clear {'+'.join(comment_parts)} flag{'s' if len(comment_parts) > 1 else ''} (16-bit mode)"
             self.emitter.emit_instr(Opcode.REP_IMMEDIATE, Immediate(mask), comment=comment)
             self._pending_rep_mask = 0
@@ -1763,11 +1767,24 @@ class InstructionSelector:
         if not flag:
             raise unknown_value("STATUS flag", instr.flag_name)
 
-        # For A16/XY16, accumulate masks for combining
+        # For A16/XY16, conditionally emit SEP/REP based on tracked mode
         # Note: A16=true means "16-bit mode" which requires M flag=0 (REP clears)
         #       A16=false means "8-bit mode" which requires M flag=1 (SEP sets)
         if instr.flag_name in ('A16', 'XY16'):
             mask = M_FLAG if instr.flag_name == 'A16' else X_FLAG
+
+            # Get current tracked mode
+            if instr.flag_name == 'A16':
+                current_mode = self.emitter.get_accu_mode()
+            else:
+                current_mode = self.emitter.get_index_mode()
+
+            # Determine desired mode (true = 16-bit, false = 8-bit)
+            desired_mode = 16 if instr.value else 8
+
+            # Skip if already in the desired mode
+            if current_mode == desired_mode:
+                return
 
             if instr.value:
                 # A16/XY16 = true means 16-bit mode, use REP to clear the flag bit
