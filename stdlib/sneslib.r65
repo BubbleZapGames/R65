@@ -1411,7 +1411,7 @@ macro_rules! dma_set_dest($channel:literal, $mode:expr, $dest:expr) {
 }
 
 // Set DMA destination for PPU registers (B-bus address) and transfer mode
-// Usage: dma_set_ppu_dest!(0, DMA_MODE_2REG_1WRITE, $18);
+// Usage: dma_set_ppu_dest!(0, DMA_MODE_2REG_1WRITE, 0x18);
 macro_rules! dma_set_ppu_dest($channel:literal, $mode:expr, $bbad:expr) {
     asm!(
         "LDA #" + stringify!($mode),
@@ -1450,7 +1450,7 @@ macro_rules! dma_copy_vram($channel:literal, $src:expr, $dest:expr, $size:expr) 
     );
     dma_set_src!($channel, $src);
     dma_set_size!($channel, $size);
-    dma_set_ppu_dest!($channel, DMA_MODE_2REG_1WRITE, $18);
+    dma_set_ppu_dest!($channel, DMA_MODE_2REG_1WRITE, 0x18);
     dma_trigger!($channel);
 }
 
@@ -1466,7 +1466,7 @@ macro_rules! dma_copy_cgram($channel:literal, $src:expr, $start:expr, $count:exp
         "LDX #(" + stringify!($count) + " * 2)",
         "STX DAS" + stringify!($channel)
     );
-    dma_set_ppu_dest!($channel, DMA_MODE_1REG_2WRITE, $22);
+    dma_set_ppu_dest!($channel, DMA_MODE_1REG_2WRITE, 0x22);
     dma_trigger!($channel);
 }
 
@@ -1476,7 +1476,7 @@ macro_rules! dma_copy_oam($channel:literal, $src:expr, $size:expr) {
     OAMADD = 0;
     dma_set_src!($channel, $src);
     dma_set_size!($channel, $size);
-    dma_set_ppu_dest!($channel, DMA_MODE_1REG_1WRITE, $04);
+    dma_set_ppu_dest!($channel, DMA_MODE_1REG_1WRITE, 0x04);
     dma_trigger!($channel);
 }
 
@@ -1490,7 +1490,7 @@ macro_rules! dma_fill_vram($channel:literal, $dest:expr, $value_ptr:expr, $size:
     );
     dma_set_src!($channel, $value_ptr);
     dma_set_size!($channel, $size);
-    dma_set_ppu_dest!($channel, DMA_MODE_2REG_1WRITE | DMA_FIXED, $18);
+    dma_set_ppu_dest!($channel, DMA_MODE_2REG_1WRITE | DMA_FIXED, 0x18);
     dma_trigger!($channel);
 }
 
@@ -1504,7 +1504,7 @@ macro_rules! dma_copy_from_vram($channel:literal, $src:expr, $dest:expr, $size:e
     );
     dma_set_src!($channel, $dest);
     dma_set_size!($channel, $size);
-    dma_set_ppu_dest!($channel, DMA_MODE_2REG_1WRITE | DMA_DIRECTION_TO_CPU, $39);
+    dma_set_ppu_dest!($channel, DMA_MODE_2REG_1WRITE | DMA_DIRECTION_TO_CPU, 0x39);
     dma_trigger!($channel);
 }
 
@@ -1914,7 +1914,7 @@ macro_rules! dma_clear_vram($channel:literal, $zero_ptr:expr) {
     VMAIN = VMAIN_INCREMENT_HIGH;
     dma_set_src!($channel, $zero_ptr);
     asm!("STZ DAS" + stringify!($channel));  // 0 = 64KB
-    dma_set_ppu_dest!($channel, DMA_MODE_2REG_1WRITE | DMA_FIXED, $18);
+    dma_set_ppu_dest!($channel, DMA_MODE_2REG_1WRITE | DMA_FIXED, 0x18);
     dma_trigger!($channel);
 }
 
@@ -1923,8 +1923,8 @@ macro_rules! dma_clear_vram($channel:literal, $zero_ptr:expr) {
 macro_rules! dma_clear_cgram($channel:literal, $zero_ptr:expr) {
     CGADD = 0;
     dma_set_src!($channel, $zero_ptr);
-    dma_set_size!($channel, $0200);
-    dma_set_ppu_dest!($channel, DMA_MODE_1REG_2WRITE | DMA_FIXED, $22);
+    dma_set_size!($channel, 0x0200);
+    dma_set_ppu_dest!($channel, DMA_MODE_1REG_2WRITE | DMA_FIXED, 0x22);
     dma_trigger!($channel);
 }
 
