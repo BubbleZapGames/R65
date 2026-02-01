@@ -919,6 +919,13 @@ class InstructionSelector:
                 f"Shift by {count} >= {bit_width} bits = 0")
             return
 
+        # XBA optimization: shifting 16-bit value left by 8 is a byte swap + mask
+        # Much faster than 8 ASL instructions (~3 cycles vs ~16 cycles)
+        if is_u16 and count == 8:
+            self._emit_implied(Opcode.XBA, "Swap bytes (shift left 8)")
+            self._emit_immediate(Opcode.AND_IMMEDIATE, 0xFF00, "Clear low byte")
+            return
+
         self._emit_repeated_opcode(Opcode.ASL, count)
 
     def _emit_shift_right(self, right_operand, is_u16: bool):
@@ -929,6 +936,13 @@ class InstructionSelector:
         if count >= bit_width:
             self._emit_immediate(Opcode.LDA_IMMEDIATE, 0x00,
                 f"Shift by {count} >= {bit_width} bits = 0")
+            return
+
+        # XBA optimization: shifting 16-bit value right by 8 is a byte swap + mask
+        # Much faster than 8 LSR instructions (~3 cycles vs ~16 cycles)
+        if is_u16 and count == 8:
+            self._emit_implied(Opcode.XBA, "Swap bytes (shift right 8)")
+            self._emit_immediate(Opcode.AND_IMMEDIATE, 0x00FF, "Clear high byte")
             return
 
         self._emit_repeated_opcode(Opcode.LSR, count)
