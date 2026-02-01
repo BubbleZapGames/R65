@@ -329,3 +329,172 @@ class TestSneslibVramAddressing:
             0x7E0010: [0x00, 0x00, 0x00, 0x60]
         }))
         assert result.success, f"Failures: {result.failures}"
+
+
+class TestSneslibDmaMacros:
+    """Test DMA macro compilation and execution.
+
+    Note: The emulator doesn't execute actual DMA transfers, but we can verify
+    that the macros compile correctly and the setup code runs without errors.
+
+    DMA macros use WLA-DX assembler operators (#<, #>, #^) to extract addresses
+    from labels, which requires the data to have proper assembly labels.
+    """
+
+    @pytest.fixture
+    def e2e(self):
+        """Create E2ETest instance."""
+        return E2ETest()
+
+    def test_dma_trigger_compiles(self, e2e):
+        """Test dma_trigger! macro compiles and runs."""
+        source = f'''
+            include!("{SNESLIB_PATH}")
+
+            #[zeropage(0x10)]
+            static mut DONE: u8;
+
+            #[entry]
+            fn main() {{
+                // Just trigger DMA on channel 0 (no actual transfer configured)
+                dma_trigger!(0);
+                DONE = 0xAA;
+            }}
+        '''
+        result = e2e.run(source, ExpectedState(memory={
+            0x7E0010: 0xAA
+        }))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_dma_set_ppu_dest_compiles(self, e2e):
+        """Test dma_set_ppu_dest! macro compiles."""
+        source = f'''
+            include!("{SNESLIB_PATH}")
+
+            #[zeropage(0x10)]
+            static mut DONE: u8;
+
+            #[entry]
+            fn main() {{
+                // Set up VRAM destination mode
+                dma_set_ppu_dest!(0, DMA_MODE_2REG_1WRITE, 0x18);
+                // Set up CGRAM destination mode
+                dma_set_ppu_dest!(1, DMA_MODE_1REG_2WRITE, 0x22);
+                // Set up OAM destination mode
+                dma_set_ppu_dest!(2, DMA_MODE_1REG_1WRITE, 0x04);
+                DONE = 0xBB;
+            }}
+        '''
+        result = e2e.run(source, ExpectedState(memory={
+            0x7E0010: 0xBB
+        }))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_dma_set_size_compiles(self, e2e):
+        """Test dma_set_size! macro compiles with various sizes."""
+        source = f'''
+            include!("{SNESLIB_PATH}")
+
+            #[zeropage(0x10)]
+            static mut DONE: u8;
+
+            #[entry]
+            fn main() {{
+                // Test various transfer sizes
+                dma_set_size!(0, 0x100);   // 256 bytes
+                dma_set_size!(1, 0x1000);  // 4KB
+                dma_set_size!(2, 0x8000);  // 32KB
+                DONE = 0xCC;
+            }}
+        '''
+        result = e2e.run(source, ExpectedState(memory={
+            0x7E0010: 0xCC
+        }))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_dma_modes_with_flags(self, e2e):
+        """Test DMA mode constants and flag combinations."""
+        source = f'''
+            include!("{SNESLIB_PATH}")
+
+            #[zeropage(0x10)]
+            static mut DONE: u8;
+
+            #[entry]
+            fn main() {{
+                // Normal copy mode
+                dma_set_ppu_dest!(0, DMA_MODE_2REG_1WRITE, 0x18);
+                // Fixed source (for fills)
+                dma_set_ppu_dest!(1, DMA_MODE_2REG_1WRITE | DMA_FIXED, 0x18);
+                // Reverse direction (PPU to CPU)
+                dma_set_ppu_dest!(2, DMA_MODE_2REG_1WRITE | DMA_DIRECTION_TO_CPU, 0x39);
+                DONE = 0xDD;
+            }}
+        '''
+        result = e2e.run(source, ExpectedState(memory={
+            0x7E0010: 0xDD
+        }))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_vmain_setup_for_dma(self, e2e):
+        """Test VMAIN register setup used by DMA macros."""
+        source = f'''
+            include!("{SNESLIB_PATH}")
+
+            #[zeropage(0x10)]
+            static mut DONE: u8;
+
+            #[entry]
+            fn main() {{
+                // Set VMAIN for high byte increment (used before VRAM DMA)
+                VMAIN = VMAIN_INCREMENT_HIGH;
+                // Set VRAM address
+                VMADD = 0x1000;
+                DONE = 0xEE;
+            }}
+        '''
+        result = e2e.run(source, ExpectedState(memory={
+            0x7E0010: 0xEE
+        }))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_cgadd_setup_for_dma(self, e2e):
+        """Test CGRAM address setup used by DMA macros."""
+        source = f'''
+            include!("{SNESLIB_PATH}")
+
+            #[zeropage(0x10)]
+            static mut DONE: u8;
+
+            #[entry]
+            fn main() {{
+                // Set CGRAM start address (color index)
+                CGADD = 0;     // Start at color 0
+                CGADD = 128;   // Start at color 128
+                DONE = 0xFF;
+            }}
+        '''
+        result = e2e.run(source, ExpectedState(memory={
+            0x7E0010: 0xFF
+        }))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_oamadd_setup_for_dma(self, e2e):
+        """Test OAM address setup used by DMA macros."""
+        source = f'''
+            include!("{SNESLIB_PATH}")
+
+            #[zeropage(0x10)]
+            static mut DONE: u8;
+
+            #[entry]
+            fn main() {{
+                // Reset OAM address to start
+                OAMADD = 0;
+                DONE = 0x42;
+            }}
+        '''
+        result = e2e.run(source, ExpectedState(memory={
+            0x7E0010: 0x42
+        }))
+        assert result.success, f"Failures: {result.failures}"

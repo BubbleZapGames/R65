@@ -1425,8 +1425,8 @@ macro_rules! dma_set_ppu_dest($channel:literal, $mode:expr, $bbad:expr) {
 // Usage: dma_set_size!(0, 4096);
 macro_rules! dma_set_size($channel:literal, $size:expr) {
     asm!(
-        "LDA #" + stringify!($size),
-        "STA DAS" + stringify!($channel)
+        "LDX #" + stringify!($size),
+        "STX DAS" + stringify!($channel)
     );
 }
 
