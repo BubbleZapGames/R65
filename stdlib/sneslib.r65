@@ -1372,96 +1372,14 @@ macro_rules! clear_nmi() {
     A = RDNMI;
 }
 
-
 // ============================================================================
-// MACROS - DMA Setup
+// MACROS - DMA Helper Macros
 // ============================================================================
-
-// Trigger DMA transfer on a channel
-// Usage: dma_trigger!(0);  // Trigger channel 0
-macro_rules! dma_trigger($channel:expr) {
-    MDMAEN = 1 << $channel;
-}
-
-// Configure DMA for VRAM transfer and execute
-// Usage: dma_to_vram!(0);  // Channel 0
-macro_rules! dma_to_vram($channel:literal) {
-    VMAIN = VMAIN_INCREMENT_HIGH;
-    dma_set_ppu_dest!($channel, DMA_MODE_2REG_1WRITE, $18);
-    dma_trigger!($channel);
-}
-
-// Configure DMA for CGRAM transfer and execute
-// Usage: dma_to_cgram!(0);  // Channel 0
-macro_rules! dma_to_cgram($channel:literal) {
-    dma_set_ppu_dest!($channel, DMA_MODE_1REG_2WRITE, $22);
-    dma_trigger!($channel);
-}
-
-// Configure DMA for OAM transfer and execute
-// Usage: dma_to_oam!(0);  // Channel 0
-macro_rules! dma_to_oam($channel:literal) {
-    OAMADD = 0;
-    dma_set_ppu_dest!($channel, DMA_MODE_1REG_1WRITE, $04);
-    dma_trigger!($channel);
-}
-
-// Full DMA to VRAM macro
-// Usage: dma_vram!(0, src_ptr, dest_vram, size);
-macro_rules! dma_vram($channel:literal, $src:expr, $dest:expr, $size:expr) {
-    VMAIN = VMAIN_INCREMENT_HIGH;
-    asm!(
-        "LDX #" + stringify!($dest),
-        "STX VMADD"
-    );
-    dma_set_src!($channel, $src);
-    dma_set_size!($channel, $size);
-    dma_set_ppu_dest!($channel, DMA_MODE_2REG_1WRITE, $18);
-    dma_trigger!($channel);
-}
-
-// Full DMA to CGRAM macro
-// Usage: dma_cgram!(0, src_ptr, start_color, num_colors);
-macro_rules! dma_cgram($channel:literal, $src:expr, $start:expr, $count:expr) {
-    asm!(
-        "LDA #" + stringify!($start),
-        "STA CGADD"
-    );
-    dma_set_src!($channel, $src);
-    asm!(
-        "LDX #(" + stringify!($count) + " * 2)",
-        "STX DAS" + stringify!($channel)
-    );
-    dma_set_ppu_dest!($channel, DMA_MODE_1REG_2WRITE, $22);
-    dma_trigger!($channel);
-}
-
-// Full DMA to OAM macro
-// Usage: dma_oam!(0, src_ptr, size);
-macro_rules! dma_oam($channel:literal, $src:expr, $size:expr) {
-    OAMADD = 0;
-    dma_set_src!($channel, $src);
-    dma_set_size!($channel, $size);
-    dma_set_ppu_dest!($channel, DMA_MODE_1REG_1WRITE, $04);
-    dma_trigger!($channel);
-}
-
-
-// ============================================================================
-// MACROS - Far Pointer DMA Operations
-// ============================================================================
-// These macros use WLA-DX assembler operators to extract bank and address
-// from far pointers/labels, avoiding compiler codegen issues with pointer
-// expressions.
-//
-// WLA-DX operators:
-//   #< = low byte (bits 0-7)
-//   #> = high byte (bits 8-15)
-//   #^ = bank byte (bits 16-23)
+// Low-level helpers for custom DMA configurations.
+// Uses WLA-DX operators: #< (low byte), #> (high byte), #^ (bank byte)
 // ============================================================================
 
 // Set DMA source address from a far pointer/label
-// Uses assembler operators to extract address components at assemble time
 // Usage: dma_set_src!(0, my_graphics_data);
 macro_rules! dma_set_src($channel:literal, $ptr:expr) {
     asm!(
@@ -1472,127 +1390,6 @@ macro_rules! dma_set_src($channel:literal, $ptr:expr) {
         "LDA #^" + stringify!($ptr),
         "STA A1B" + stringify!($channel)
     );
-}
-
-// Set DMA destination for PPU registers (B-bus address) and transfer mode
-// Usage: dma_set_ppu_dest!(0, mode, bbad);
-//
-// Common modes:
-//   DMA_MODE_1REG_1WRITE = 1 reg, 1 write    (OAM)
-//   DMA_MODE_2REG_1WRITE = 2 regs, 1 write   (VRAM - L,H)
-//   DMA_MODE_1REG_2WRITE = 1 reg, 2 writes   (CGRAM - low,high byte)
-//   DMA_MODE_2REG_1WRITE | DMA_FIXED = 2 regs + fixed (VRAM fill)
-//   DMA_MODE_1REG_2WRITE | DMA_FIXED = 1 reg 2x + fixed (CGRAM fill)
-//   DMA_MODE_2REG_1WRITE | DMA_DIRECTION_TO_CPU = 2 regs, B->A (VRAM read)
-//
-// Common B-bus addresses (relative to $2100):
-//   $04 = OAMDATA
-//   $18 = VMDATAL
-//   $22 = CGDATA
-//   $39 = VMDATALREAD
-macro_rules! dma_set_ppu_dest($channel:literal, $mode:expr, $bbad:expr) {
-    asm!(
-        "LDA #" + stringify!($mode),
-        "STA DMAP" + stringify!($channel),
-        "LDA #" + stringify!($bbad),
-        "STA BBAD" + stringify!($channel)
-    );
-}
-
-// Set DMA transfer size
-// Usage: dma_set_size!(0, 4096);
-macro_rules! dma_set_size($channel:literal, $size:expr) {
-    asm!(
-        "LDA #" + stringify!($size),
-        "STA DAS" + stringify!($channel)
-    );
-}
-
-// Copy tile data to VRAM via DMA using a far pointer
-// Usage: copy_tiles_to_vram!(0, my_tiles, 0x0000, 4096);
-macro_rules! copy_tiles_to_vram($channel:literal, $src:expr, $vram_addr:expr, $size:expr) {
-    VMAIN = VMAIN_INCREMENT_HIGH;
-    asm!(
-        "LDX #" + stringify!($vram_addr),
-        "STX VMADD"
-    );
-    dma_set_src!($channel, $src);
-    dma_set_size!($channel, $size);
-    dma_set_ppu_dest!($channel, DMA_MODE_2REG_1WRITE, $18);
-    dma_trigger!($channel);
-}
-
-// Copy palette data to CGRAM via DMA using a far pointer
-// Usage: copy_palette!(0, my_palette, 0, 256);
-macro_rules! copy_palette($channel:literal, $src:expr, $start:expr, $count:expr) {
-    asm!(
-        "LDA #" + stringify!($start),
-        "STA CGADD"
-    );
-    dma_set_src!($channel, $src);
-    asm!(
-        "LDX #(" + stringify!($count) + " * 2)",
-        "STX DAS" + stringify!($channel)
-    );
-    dma_set_ppu_dest!($channel, DMA_MODE_1REG_2WRITE, $22);
-    dma_trigger!($channel);
-}
-
-// Copy OAM data via DMA using a far pointer
-// Usage: copy_oam!(0, my_oam_buffer, 544);
-macro_rules! copy_oam($channel:literal, $src:expr, $size:expr) {
-    OAMADD = 0;
-    dma_set_src!($channel, $src);
-    dma_set_size!($channel, $size);
-    dma_set_ppu_dest!($channel, DMA_MODE_1REG_1WRITE, $04);
-    dma_trigger!($channel);
-}
-
-// Fill VRAM with a constant value using DMA (fixed source mode)
-// Usage: fill_vram_const!(0, fill_value_addr, 0x0000, 0x10000);
-macro_rules! fill_vram_const($channel:literal, $value_addr:expr, $vram_addr:expr, $size:expr) {
-    VMAIN = VMAIN_INCREMENT_HIGH;
-    asm!(
-        "LDX #" + stringify!($vram_addr),
-        "STX VMADD"
-    );
-    dma_set_src!($channel, $value_addr);
-    dma_set_size!($channel, $size);
-    dma_set_ppu_dest!($channel, DMA_MODE_2REG_1WRITE | DMA_FIXED, $18);
-    dma_trigger!($channel);
-}
-
-
-// ============================================================================
-// MACROS - Advanced DMA Operations
-// ============================================================================
-
-// Fill VRAM with a value using DMA (fixed source address mode)
-// Usage: fill_vram!(0, dest_vram, value_ptr, size);
-macro_rules! fill_vram($channel:literal, $dest:expr, $value_ptr:expr, $size:expr) {
-    VMAIN = VMAIN_INCREMENT_HIGH;
-    asm!(
-        "LDX #" + stringify!($dest),
-        "STX VMADD"
-    );
-    dma_set_src!($channel, $value_ptr);
-    dma_set_size!($channel, $size);
-    dma_set_ppu_dest!($channel, DMA_MODE_2REG_1WRITE | DMA_FIXED, $18);
-    dma_trigger!($channel);
-}
-
-// Copy from VRAM to RAM using DMA (reverse direction)
-// Usage: copy_from_vram!(0, src_vram, dest_ptr, size);
-macro_rules! copy_from_vram($channel:literal, $src:expr, $dest:expr, $size:expr) {
-    VMAIN = VMAIN_INCREMENT_HIGH;
-    asm!(
-        "LDX #" + stringify!($src),
-        "STX VMADD"
-    );
-    dma_set_src!($channel, $dest);
-    dma_set_size!($channel, $size);
-    dma_set_ppu_dest!($channel, DMA_MODE_2REG_1WRITE | DMA_DIRECTION_TO_CPU, $39);
-    dma_trigger!($channel);
 }
 
 // Set DMA destination with 24-bit address (for WRAM transfers)
@@ -1613,9 +1410,107 @@ macro_rules! dma_set_dest($channel:literal, $mode:expr, $dest:expr) {
     );
 }
 
-// Copy memory using WRAM DMA (ROM to RAM or RAM to WRAM)
-// Usage: copy_mem!(0, dest_wram, src_ptr, size);
-macro_rules! copy_mem($channel:literal, $dest:expr, $src:expr, $size:expr) {
+// Set DMA destination for PPU registers (B-bus address) and transfer mode
+// Usage: dma_set_ppu_dest!(0, DMA_MODE_2REG_1WRITE, $18);
+macro_rules! dma_set_ppu_dest($channel:literal, $mode:expr, $bbad:expr) {
+    asm!(
+        "LDA #" + stringify!($mode),
+        "STA DMAP" + stringify!($channel),
+        "LDA #" + stringify!($bbad),
+        "STA BBAD" + stringify!($channel)
+    );
+}
+
+// Set DMA transfer size
+// Usage: dma_set_size!(0, 4096);
+macro_rules! dma_set_size($channel:literal, $size:expr) {
+    asm!(
+        "LDA #" + stringify!($size),
+        "STA DAS" + stringify!($channel)
+    );
+}
+
+// Trigger DMA transfer on a channel
+// Usage: dma_trigger!(0);  // Trigger channel 0
+macro_rules! dma_trigger($channel:expr) {
+    MDMAEN = 1 << $channel;
+}
+
+// ============================================================================
+// MACROS - DMA Operations
+// ============================================================================
+
+// DMA copy to VRAM
+// Usage: dma_copy_vram!(0, src_ptr, dest_vram, size);
+macro_rules! dma_copy_vram($channel:literal, $src:expr, $dest:expr, $size:expr) {
+    VMAIN = VMAIN_INCREMENT_HIGH;
+    asm!(
+        "LDX #" + stringify!($dest),
+        "STX VMADD"
+    );
+    dma_set_src!($channel, $src);
+    dma_set_size!($channel, $size);
+    dma_set_ppu_dest!($channel, DMA_MODE_2REG_1WRITE, $18);
+    dma_trigger!($channel);
+}
+
+// DMA copy to CGRAM (palette)
+// Usage: dma_copy_cgram!(0, src_ptr, start_color, num_colors);
+macro_rules! dma_copy_cgram($channel:literal, $src:expr, $start:expr, $count:expr) {
+    asm!(
+        "LDA #" + stringify!($start),
+        "STA CGADD"
+    );
+    dma_set_src!($channel, $src);
+    asm!(
+        "LDX #(" + stringify!($count) + " * 2)",
+        "STX DAS" + stringify!($channel)
+    );
+    dma_set_ppu_dest!($channel, DMA_MODE_1REG_2WRITE, $22);
+    dma_trigger!($channel);
+}
+
+// DMA copy to OAM (sprites)
+// Usage: dma_copy_oam!(0, src_ptr, size);
+macro_rules! dma_copy_oam($channel:literal, $src:expr, $size:expr) {
+    OAMADD = 0;
+    dma_set_src!($channel, $src);
+    dma_set_size!($channel, $size);
+    dma_set_ppu_dest!($channel, DMA_MODE_1REG_1WRITE, $04);
+    dma_trigger!($channel);
+}
+
+// DMA fill VRAM with a value (fixed source address mode)
+// Usage: dma_fill_vram!(0, dest_vram, value_ptr, size);
+macro_rules! dma_fill_vram($channel:literal, $dest:expr, $value_ptr:expr, $size:expr) {
+    VMAIN = VMAIN_INCREMENT_HIGH;
+    asm!(
+        "LDX #" + stringify!($dest),
+        "STX VMADD"
+    );
+    dma_set_src!($channel, $value_ptr);
+    dma_set_size!($channel, $size);
+    dma_set_ppu_dest!($channel, DMA_MODE_2REG_1WRITE | DMA_FIXED, $18);
+    dma_trigger!($channel);
+}
+
+// DMA copy from VRAM to RAM
+// Usage: dma_copy_from_vram!(0, src_vram, dest_ptr, size);
+macro_rules! dma_copy_from_vram($channel:literal, $src:expr, $dest:expr, $size:expr) {
+    VMAIN = VMAIN_INCREMENT_HIGH;
+    asm!(
+        "LDX #" + stringify!($src),
+        "STX VMADD"
+    );
+    dma_set_src!($channel, $dest);
+    dma_set_size!($channel, $size);
+    dma_set_ppu_dest!($channel, DMA_MODE_2REG_1WRITE | DMA_DIRECTION_TO_CPU, $39);
+    dma_trigger!($channel);
+}
+
+// DMA copy to WRAM (ROM to RAM or RAM to WRAM)
+// Usage: dma_copy_wram!(0, dest_wram, src_ptr, size);
+macro_rules! dma_copy_wram($channel:literal, $dest:expr, $src:expr, $size:expr) {
     dma_set_src!($channel, $src);
     dma_set_size!($channel, $size);
     dma_set_dest!($channel, DMA_MODE_1REG_1WRITE, $dest);
@@ -2011,10 +1906,10 @@ fn spc_end_transfer(exec_low @ A: u8, exec_high: u16) {
 // FAST DMA CLEAR FUNCTIONS
 // ============================================================================
 
-// Fast VRAM clear using DMA (much faster than loop)
+// DMA clear VRAM (clears all 64KB)
 // Requires a zero byte somewhere in ROM/RAM for the fill value
-// Usage: fast_clear_vram!(0, zero_byte_ptr);
-macro_rules! fast_clear_vram($channel:literal, $zero_ptr:expr) {
+// Usage: dma_clear_vram!(0, zero_byte_ptr);
+macro_rules! dma_clear_vram($channel:literal, $zero_ptr:expr) {
     VMADD = 0;
     VMAIN = VMAIN_INCREMENT_HIGH;
     dma_set_src!($channel, $zero_ptr);
@@ -2023,9 +1918,9 @@ macro_rules! fast_clear_vram($channel:literal, $zero_ptr:expr) {
     dma_trigger!($channel);
 }
 
-// Fast CGRAM clear using DMA
-// Usage: fast_clear_cgram!(0, zero_ptr);
-macro_rules! fast_clear_cgram($channel:literal, $zero_ptr:expr) {
+// DMA clear CGRAM (clears all 512 bytes)
+// Usage: dma_clear_cgram!(0, zero_ptr);
+macro_rules! dma_clear_cgram($channel:literal, $zero_ptr:expr) {
     CGADD = 0;
     dma_set_src!($channel, $zero_ptr);
     dma_set_size!($channel, $0200);
