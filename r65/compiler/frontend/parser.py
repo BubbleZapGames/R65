@@ -1370,15 +1370,18 @@ class ASTBuilder(Transformer):
             if hasattr(child, 'type'):
                 if child.type == 'IDENT':
                     name = child.value
-                elif child.type == 'STRING':
-                    value = child.value.strip('"')
             elif hasattr(child, 'data') and child.data == 'asm_value':
-                # asm_value: STRING | INTEGER
+                # asm_value: expr (expressions are already transformed)
                 val_child = child.children[0]
-                if hasattr(val_child, 'type') and val_child.type == 'STRING':
-                    value = val_child.value.strip('"')
-                elif hasattr(val_child, 'type') and val_child.type == 'INTEGER':
-                    value = self._parse_integer(val_child.value)
+                if isinstance(val_child, ast.StringLiteral):
+                    # String literal - extract the string value
+                    value = val_child.value
+                elif isinstance(val_child, ast.IntegerLiteral):
+                    # Integer literal - extract the integer value
+                    value = val_child.value
+                elif isinstance(val_child, ast.Expression):
+                    # Other expression - store for const evaluation in HIR
+                    value = val_child
 
         return name, value
 

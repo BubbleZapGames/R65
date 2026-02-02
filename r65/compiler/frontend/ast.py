@@ -517,14 +517,14 @@ class ForStmt(Statement):
 class AsmNamedArg:
     """Named argument for asm! format string."""
     name: str
-    value: Union[str, int]  # String literal or integer
+    value: Union[str, int, 'Expression']  # String literal, integer, or const expression
 
 
 @dataclass
 class AsmStmt(Statement):
     """Inline assembly statement with optional format string support."""
     instructions: List[str]
-    format_args: Optional[Dict[str, Union[str, int]]] = None  # Named args for format substitution
+    format_args: Optional[Dict[str, Union[str, int, 'Expression']]] = None  # Named args for format substitution
 
 
 # ============================================================================

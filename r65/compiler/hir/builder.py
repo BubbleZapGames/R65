@@ -1228,16 +1228,18 @@ class HIRBuilder:
         else:
             raise HIRError(f"Unknown statement type: {type(stmt).__name__}")
 
-    def _process_asm_format(self, instructions: List[str], format_args: Dict[str, Union[str, int]]) -> List[str]:
+    def _process_asm_format(self, instructions: List[str], format_args: Dict[str, Union[str, int, ast.Expression]]) -> List[str]:
         """
         Process format string substitution in asm! instructions.
 
         Replaces {name} placeholders with values from format_args.
         String values are inserted directly, integers are formatted as decimal.
+        Expressions are const-evaluated to integers.
 
         Example:
             asm!("LD{REG} #$01", REG="A")  -> "LDA #$01"
             asm!("LDA #{VAL}", VAL=42)     -> "LDA #42"
+            asm!("LDA #{LEN}", LEN=buffer.len())  -> "LDA #256" (if buffer is [u8; 256])
         """
         result = []
         # Pattern matches {identifier}
@@ -1251,9 +1253,20 @@ class HIRBuilder:
                 value = format_args[name]
                 if isinstance(value, str):
                     return value
-                else:
+                elif isinstance(value, int):
                     # Integer - format as decimal
                     return str(value)
+                elif isinstance(value, ast.Expression):
+                    # Expression - const-evaluate to integer
+                    try:
+                        evaluated = self.const_evaluator.eval(value)
+                        if not isinstance(evaluated, int):
+                            raise HIRError(f"asm! format argument '{name}' must evaluate to an integer, got {type(evaluated).__name__}")
+                        return str(evaluated)
+                    except HIRError as e:
+                        raise HIRError(f"Cannot const-evaluate asm! format argument '{name}': {e}")
+                else:
+                    raise HIRError(f"Invalid asm! format argument type for '{name}': {type(value).__name__}")
 
             processed = placeholder_pattern.sub(replace_placeholder, instruction)
             result.append(processed)

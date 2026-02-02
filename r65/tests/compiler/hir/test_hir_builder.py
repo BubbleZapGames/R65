@@ -17,7 +17,7 @@ from r65.compiler.hir import (
     HIRStructDecl, HIREnumDecl,
     HIRIntegerLiteral, HIRBooleanLiteral, HIRIdentifier, HIRRegister,
     HIRBinaryOp, HIRUnaryOp, HIRFunctionCall, HIRArrayIndex,
-    HIRLetStmt, HIRIfStmt, HIRWhileStmt, HIRReturnStmt,
+    HIRLetStmt, HIRIfStmt, HIRWhileStmt, HIRReturnStmt, HIRAsmStmt,
     HIRStringLiteral, HIRBlock, HIRAssignment,
     SymbolKind, BasicTypeInfo, ArrayTypeInfo, StructTypeInfo,
 )
@@ -1045,3 +1045,149 @@ fn add_one(val @ A: u8) -> u8 {
         with pytest.raises(Exception) as exc_info:
             build_hir(source)
         assert "does not accept named arguments" in str(exc_info.value)
+
+
+class TestAsmFormatSubstitution:
+    """Test asm! format string substitution."""
+
+    def test_string_substitution(self):
+        """Test string format argument substitution."""
+        source = '''
+fn test() {
+    asm!("LD{REG} #$01", REG="A");
+}
+'''
+        hir = build_hir(source)
+        func = hir.functions[0]
+        asm_stmt = func.body.statements[0]
+        assert isinstance(asm_stmt, HIRAsmStmt)
+        assert asm_stmt.instructions == ["LDA #$01"]
+
+    def test_integer_substitution(self):
+        """Test integer format argument substitution."""
+        source = '''
+fn test() {
+    asm!("LDA #{VAL}", VAL=42);
+}
+'''
+        hir = build_hir(source)
+        func = hir.functions[0]
+        asm_stmt = func.body.statements[0]
+        assert asm_stmt.instructions == ["LDA #42"]
+
+    def test_array_len_substitution(self):
+        """Test array.len() in format arguments."""
+        source = '''
+#[ram]
+static mut BUFFER: [u8; 256] = [0; 256];
+
+fn test() {
+    asm!("LDA #{LEN}", LEN=BUFFER.len());
+}
+'''
+        hir = build_hir(source)
+        func = hir.functions[0]
+        asm_stmt = func.body.statements[0]
+        assert asm_stmt.instructions == ["LDA #256"]
+
+    def test_const_variable_substitution(self):
+        """Test const variable in format arguments."""
+        source = '''
+const SIZE: u16 = 64;
+
+fn test() {
+    asm!("LDA #{SZ}", SZ=SIZE);
+}
+'''
+        hir = build_hir(source)
+        func = hir.functions[0]
+        asm_stmt = func.body.statements[0]
+        assert asm_stmt.instructions == ["LDA #64"]
+
+    def test_arithmetic_expression_substitution(self):
+        """Test arithmetic expression with array.len()."""
+        source = '''
+#[ram]
+static mut DATA: [u8; 16] = [0; 16];
+
+fn test() {
+    asm!("LDA #{VAL}", VAL=DATA.len() - 1);
+}
+'''
+        hir = build_hir(source)
+        func = hir.functions[0]
+        asm_stmt = func.body.statements[0]
+        assert asm_stmt.instructions == ["LDA #15"]
+
+    def test_multiple_substitutions(self):
+        """Test multiple format arguments in one asm! statement."""
+        source = '''
+#[ram]
+static mut BUF1: [u8; 100] = [0; 100];
+#[ram]
+static mut BUF2: [u8; 50] = [0; 50];
+
+fn test() {
+    asm!("LDA #{A}", "LDX #{B}", A=BUF1.len(), B=BUF2.len());
+}
+'''
+        hir = build_hir(source)
+        func = hir.functions[0]
+        asm_stmt = func.body.statements[0]
+        assert asm_stmt.instructions == ["LDA #100", "LDX #50"]
+
+    def test_register_in_format_arg_fails(self):
+        """Test that using a register in format argument fails gracefully."""
+        source = '''
+fn test() {
+    asm!("LDA #{VAL}", VAL=A);
+}
+'''
+        with pytest.raises(HIRError) as exc_info:
+            build_hir(source)
+        # Should fail because A is a register, not a const
+        assert "const" in str(exc_info.value).lower() or "register" in str(exc_info.value).lower()
+
+    def test_local_variable_in_format_arg_fails(self):
+        """Test that using a local variable in format argument fails gracefully."""
+        source = '''
+fn test() {
+    let x: u8 = 10;
+    asm!("LDA #{VAL}", VAL=x);
+}
+'''
+        with pytest.raises(HIRError) as exc_info:
+            build_hir(source)
+        # Should fail because local variables are not const-evaluable
+        assert "const" in str(exc_info.value).lower()
+
+    def test_static_mut_in_format_arg_fails(self):
+        """Test that using a mutable static in format argument fails gracefully."""
+        source = '''
+#[ram]
+static mut COUNTER: u8 = 0;
+
+fn test() {
+    asm!("LDA #{VAL}", VAL=COUNTER);
+}
+'''
+        with pytest.raises(HIRError) as exc_info:
+            build_hir(source)
+        # Should fail because mutable statics are not const-evaluable
+        assert "const" in str(exc_info.value).lower()
+
+    def test_function_call_in_format_arg_fails(self):
+        """Test that using a function call in format argument fails gracefully."""
+        source = '''
+fn get_value() -> u8 {
+    return 42;
+}
+
+fn test() {
+    asm!("LDA #{VAL}", VAL=get_value());
+}
+'''
+        with pytest.raises(HIRError) as exc_info:
+            build_hir(source)
+        # Should fail because function calls are not const-evaluable
+        assert "const" in str(exc_info.value).lower()

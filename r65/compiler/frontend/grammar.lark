@@ -255,7 +255,7 @@ for_stmt: LABEL_DEF? FOR IDENT IN expr DOTDOT expr block
 asm_stmt: ASM "!" "(" STRING ("," asm_arg)* ")" ";"
 asm_arg: STRING | asm_named_arg
 asm_named_arg: IDENT "=" asm_value
-asm_value: STRING | INTEGER
+asm_value: expr
 
 // Match expression
 match_expr: MATCH expr "{" match_arm ("," match_arm)* ","? "}"
