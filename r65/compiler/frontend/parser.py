@@ -1333,11 +1333,54 @@ class ASTBuilder(Transformer):
 
     @v_args(tree=True)
     def asm_stmt(self, tree):
-        """Inline assembly statement."""
-        # Keep only STRING tokens
-        items = self._filter_tokens(tree.children, keep_types={'STRING'})
-        instructions = [item.value.strip('"') for item in items]
-        return ast.AsmStmt(instructions=instructions, source_loc=self._make_source_loc(tree.meta))
+        """Inline assembly statement with optional format string support."""
+        instructions = []
+        format_args = {}
+
+        for child in tree.children:
+            if hasattr(child, 'type') and child.type == 'STRING':
+                # Plain string instruction
+                instructions.append(child.value.strip('"'))
+            elif hasattr(child, 'data'):
+                if child.data == 'asm_arg':
+                    # asm_arg can be STRING or asm_named_arg
+                    arg_child = child.children[0]
+                    if hasattr(arg_child, 'type') and arg_child.type == 'STRING':
+                        instructions.append(arg_child.value.strip('"'))
+                    elif hasattr(arg_child, 'data') and arg_child.data == 'asm_named_arg':
+                        # Named argument: IDENT = value
+                        name, value = self._parse_asm_named_arg(arg_child)
+                        format_args[name] = value
+                elif child.data == 'asm_named_arg':
+                    name, value = self._parse_asm_named_arg(child)
+                    format_args[name] = value
+
+        return ast.AsmStmt(
+            instructions=instructions,
+            format_args=format_args if format_args else None,
+            source_loc=self._make_source_loc(tree.meta)
+        )
+
+    def _parse_asm_named_arg(self, tree):
+        """Parse asm_named_arg: IDENT = asm_value"""
+        name = None
+        value = None
+
+        for child in tree.children:
+            if hasattr(child, 'type'):
+                if child.type == 'IDENT':
+                    name = child.value
+                elif child.type == 'STRING':
+                    value = child.value.strip('"')
+            elif hasattr(child, 'data') and child.data == 'asm_value':
+                # asm_value: STRING | INTEGER
+                val_child = child.children[0]
+                if hasattr(val_child, 'type') and val_child.type == 'STRING':
+                    value = val_child.value.strip('"')
+                elif hasattr(val_child, 'type') and val_child.type == 'INTEGER':
+                    value = self._parse_integer(val_child.value)
+
+        return name, value
 
     # ========================================================================
     # Expressions

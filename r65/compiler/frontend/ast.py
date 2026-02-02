@@ -4,7 +4,7 @@ Abstract Syntax Tree (AST) node definitions for R65.
 Each node represents a syntactic construct in the language.
 """
 from dataclasses import dataclass, field
-from typing import List, Optional, Union, TYPE_CHECKING
+from typing import Dict, List, Optional, Union, TYPE_CHECKING
 from enum import Enum
 
 if TYPE_CHECKING:
@@ -514,9 +514,17 @@ class ForStmt(Statement):
 
 
 @dataclass
+class AsmNamedArg:
+    """Named argument for asm! format string."""
+    name: str
+    value: Union[str, int]  # String literal or integer
+
+
+@dataclass
 class AsmStmt(Statement):
-    """Inline assembly statement."""
+    """Inline assembly statement with optional format string support."""
     instructions: List[str]
+    format_args: Optional[Dict[str, Union[str, int]]] = None  # Named args for format substitution
 
 
 # ============================================================================

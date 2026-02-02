@@ -550,6 +550,53 @@ fn log_debug(message: u8) {
 
 ---
 
+## Inline Assembly (`asm!`)
+
+The `asm!` statement embeds raw 65816 assembly instructions directly into R65 code.
+
+### Basic Syntax
+
+```rust
+asm!("instruction");
+asm!("instr1", "instr2", "instr3");  // Multiple instructions
+```
+
+### Format String Substitution
+
+Named parameters allow dynamic construction of assembly instructions at compile time:
+
+```rust
+asm!("LD{REG} #{VAL}", REG="A", VAL=42);  // Generates: LDA #42
+asm!("ST{REG} $2100", REG="X");           // Generates: STX $2100
+```
+
+- Placeholders use `{name}` syntax
+- Values must be **string literals** or **integer literals** (not identifiers or expressions)
+- Named arguments apply to all instructions in the statement
+
+### Use with `stringify!`
+
+Combine with `stringify!` in macros to generate register-specific instructions:
+
+```rust
+macro_rules! push($reg:reg) {
+    asm!("PH{R}", R=stringify!($reg));
+}
+
+push!(A);  // Generates: PHA
+push!(X);  // Generates: PHX
+```
+
+**Important**: Use `stringify!($param)` rather than `$param` directly, because format arguments only accept literals. Using `stringify!` converts any macro parameter (including identifiers) to a string literal.
+
+### Notes
+
+- **Compile-time only**: All substitution happens at compile time
+- **Verbatim output**: Resulting strings are emitted as-is to assembly
+- **Register clobbering**: Compiler assumes all registers may be modified
+
+---
+
 ## Scope and Visibility
 
 ### Global Scope
@@ -881,9 +928,8 @@ fn utility_function() {
 1. **`+` repetition** (one or more): `$($x:expr),+`
 2. **`?` repetition** (zero or one): `$($x:expr)?`
 3. **Additional separators**: `$($x:expr);*`
-4. **`stringify!`**: Convert tokens to string literal
-5. **`concat_idents!`**: Identifier concatenation
-6. **Scoped macros**: Limit visibility to file
+4. **`concat_idents!`**: Identifier concatenation
+5. **Scoped macros**: Limit visibility to file
 
 ### Not Planned
 
@@ -894,5 +940,5 @@ fn utility_function() {
 ---
 
 **STATUS**: Design Complete
-**Last Updated**: 2026-01-06
+**Last Updated**: 2026-02-02
 **Estimated Implementation**: 2-3 weeks

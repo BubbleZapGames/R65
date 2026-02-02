@@ -1381,12 +1381,13 @@ macro_rules! clear_nmi() {
 // Usage: dma_set_src!(0, my_graphics_data);
 macro_rules! dma_set_src($channel:literal, $ptr:expr) {
     asm!(
-        "LDA #<" + stringify!($ptr),
-        "STA A1T" + stringify!($channel) + "L",
-        "LDA #>" + stringify!($ptr),
-        "STA A1T" + stringify!($channel) + "H",
-        "LDA #^" + stringify!($ptr),
-        "STA A1B" + stringify!($channel)
+        "LDA #<{PTR}",
+        "STA A1T{CH}L",
+        "LDA #>{PTR}",
+        "STA A1T{CH}H",
+        "LDA #:{PTR}",
+        "STA A1B{CH}",
+        PTR=stringify!($ptr), CH=$channel
     );
 }
 
@@ -1395,16 +1396,17 @@ macro_rules! dma_set_src($channel:literal, $ptr:expr) {
 // Usage: dma_set_dest!(0, DMA_MODE_1REG_1WRITE, 0x7E2000);
 macro_rules! dma_set_dest($channel:literal, $mode:expr, $dest:expr) {
     asm!(
-        "LDA #<" + stringify!($dest),
+        "LDA #<{DEST}",
         "STA WMADDL",
-        "LDA #>" + stringify!($dest),
+        "LDA #>{DEST}",
         "STA WMADDM",
-        "LDA #^" + stringify!($dest),
+        "LDA #^{DEST}",
         "STA WMADDH",
-        "LDA #" + stringify!($mode),
-        "STA DMAP" + stringify!($channel),
+        "LDA #{MODE}",
+        "STA DMAP{CH}",
         "LDA #$80",
-        "STA BBAD" + stringify!($channel)
+        "STA BBAD{CH}",
+        DEST=$dest, MODE=stringify!($mode), CH=$channel
     );
 }
 
@@ -1413,10 +1415,11 @@ macro_rules! dma_set_dest($channel:literal, $mode:expr, $dest:expr) {
 macro_rules! dma_set_ppu_dest($channel:literal, $mode:expr, $bbad:expr) {
     STATUS.A16 = false;  // Ensure 8-bit A (emits SEP #$20 only if needed)
     asm!(
-        "LDA #" + stringify!($mode),
-        "STA DMAP" + stringify!($channel),
-        "LDA #" + stringify!($bbad),
-        "STA BBAD" + stringify!($channel)
+        "LDA #{MODE}",
+        "STA DMAP{CH}",
+        "LDA #{BBAD}",
+        "STA BBAD{CH}",
+        MODE=stringify!($mode), BBAD=$bbad, CH=$channel
     );
 }
 
@@ -1424,8 +1427,9 @@ macro_rules! dma_set_ppu_dest($channel:literal, $mode:expr, $bbad:expr) {
 // Usage: dma_set_size!(0, 4096);
 macro_rules! dma_set_size($channel:literal, $size:expr) {
     asm!(
-        "LDX #" + stringify!($size),
-        "STX DAS" + stringify!($channel)
+        "LDX #{SIZE}",
+        "STX DAS{CH}",
+        SIZE=$size, CH=$channel
     );
 }
 
@@ -1436,62 +1440,189 @@ macro_rules! dma_trigger($channel:expr) {
 }
 
 // ============================================================================
-// MACROS - DMA Operations
+// MACROS - DMA Operations (Const - Compile-time addresses)
+// ============================================================================
+// These macros use WLA-DX operators (#<, #>, #:) to extract address bytes
+// at assemble time. All parameters must be compile-time constants or labels.
+// For runtime/dynamic addresses, use the function versions below.
 // ============================================================================
 
-// DMA copy to VRAM
-// Usage: dma_copy_vram!(0, src_ptr, dest_vram, size);
-macro_rules! dma_copy_vram($channel:literal, $src:expr, $dest:expr, $size:expr) {
+// DMA copy to VRAM (const version - compile-time source address)
+// Usage: dma_copy_vram_const!(0, src_label, dest_vram, size);
+// Note: src should be a WLA-DX label (e.g., sprites1_gfx_data), not an R65 variable
+macro_rules! dma_copy_vram_const($channel:literal, $src:expr, $dest:expr, $size:expr) {
     STATUS.A16 = false;  // Ensure 8-bit A (emits SEP #$20 only if needed)
-    VMAIN = VMAIN_INCREMENT_HIGH;
     asm!(
-        "LDX #" + stringify!($dest),
-        "STX VMADD"
+        "LDA #$80",       // VMAIN_INCREMENT_HIGH
+        "STA $2115",      // Store to VMAIN
+        "LDX #{DEST}",
+        "STX VMADD",
+        DEST=$dest
     );
     dma_set_src!($channel, $src);
     dma_set_size!($channel, $size);
-    dma_set_ppu_dest!($channel, DMA_MODE_2REG_1WRITE, 0x18);
+    dma_set_ppu_dest!($channel, 1, 24);  // 1 = DMA_MODE_2REG_1WRITE, 24 = $18 (VMDATAL)
     dma_trigger!($channel);
 }
 
-// DMA copy to CGRAM (palette)
-// Usage: dma_copy_cgram!(0, src_ptr, start_color, num_colors);
-macro_rules! dma_copy_cgram($channel:literal, $src:expr, $start:expr, $count:expr) {
+// DMA copy to CGRAM (palette) - const version
+// Usage: dma_copy_cgram_const!(0, src_label, start_color, num_colors);
+macro_rules! dma_copy_cgram_const($channel:literal, $src:expr, $start:expr, $count:expr) {
     STATUS.A16 = false;  // Ensure 8-bit A (emits SEP #$20 only if needed)
     asm!(
-        "LDA #" + stringify!($start),
-        "STA CGADD"
+        "LDA #{START}",
+        "STA CGADD",
+        START=$start
     );
     dma_set_src!($channel, $src);
     asm!(
-        "LDX #(" + stringify!($count) + " * 2)",
-        "STX DAS" + stringify!($channel)
+        "LDX #({COUNT} * 2)",
+        "STX DAS{CH}",
+        COUNT=$count, CH=$channel
     );
-    dma_set_ppu_dest!($channel, DMA_MODE_1REG_2WRITE, 0x22);
+    dma_set_ppu_dest!($channel, 2, 34);  // 2 = DMA_MODE_1REG_2WRITE, 34 = $22 (CGDATA)
     dma_trigger!($channel);
 }
 
-// DMA copy to OAM (sprites)
-// Usage: dma_copy_oam!(0, src_ptr, size);
-macro_rules! dma_copy_oam($channel:literal, $src:expr, $size:expr) {
+// DMA copy to OAM (sprites) - const version
+// Usage: dma_copy_oam_const!(0, src_label, size);
+macro_rules! dma_copy_oam_const($channel:literal, $src:expr, $size:expr) {
     OAMADD = 0;
     dma_set_src!($channel, $src);
     dma_set_size!($channel, $size);
-    dma_set_ppu_dest!($channel, DMA_MODE_1REG_1WRITE, 0x04);
+    dma_set_ppu_dest!($channel, 0, 4);  // 0 = DMA_MODE_1REG_1WRITE, 4 = $04 (OAMDATA)
     dma_trigger!($channel);
 }
+
+// ============================================================================
+// FUNCTIONS - DMA Operations (Runtime - Dynamic addresses)
+// ============================================================================
+// These functions accept far pointers for runtime/dynamic source addresses.
+// For compile-time known addresses, prefer the const macros for efficiency.
+//
+// Note: Functions use () syntax, macros use !() syntax:
+//   dma_copy_vram_const!(...)  - macro for compile-time addresses
+//   dma_copy_vram(...)         - function for runtime addresses
+// ============================================================================
+
+// Lookup table for DMA channel trigger bits
+static dma_trigger_masks: [u8; 8] = [0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80];
+
+// DMA copy to VRAM (function version - far pointer)
+// Usage: dma_copy_vram(channel, &my_data as far *u8, vram_offset, size);
+// channel: DMA channel (0-7)
+// src: 24-bit far pointer to source data
+// vram_offset: destination VRAM word address
+// size: number of bytes to transfer
+//
+// Stack layout after JSL:
+//   S+4,5=size, S+6,7=vram_offset, S+8,9,10=src, S+11,12=channel
+far fn dma_copy_vram(channel: u16, src: far *u8, vram_offset: u16, size: u16) {
+    // Save channel for trigger lookup
+    Y = channel;
+
+    // Compute DMA register base offset (channel * 16)
+    X = channel << 4;
+
+    // VRAM setup
+    VMAIN = 0x80;
+    VMADD = vram_offset;
+
+    // DMA register writes - X-indexed addressing requires assembly
+    asm!(
+        "LDA #$01",  "STA $4300,X",  // DMAPn - 2 regs, increment
+        "LDA #$18",  "STA $4301,X",  // BBADn - VMDATAL
+        "LDA $08,S", "STA $4302,X",  // src lo
+        "LDA $09,S", "STA $4303,X",  // src hi
+        "LDA $0A,S", "STA $4304,X",  // src bank
+        "LDA $04,S", "STA $4305,X",  // size lo
+        "LDA $05,S", "STA $4306,X"   // size hi
+    );
+
+    // Trigger DMA
+    MDMAEN = dma_trigger_masks[Y];
+}
+
+// DMA copy to CGRAM (function version - far pointer)
+// Usage: dma_copy_cgram(channel, &palette_data as far *u8, start_color, num_bytes);
+// channel: DMA channel (0-7)
+// src: 24-bit far pointer to source data
+// start_color: starting color index (0-255)
+// num_bytes: number of bytes to transfer (colors * 2)
+//
+// Stack layout after JSL:
+//   S+4,5=num_bytes, S+6,7=start_color, S+8,9,10=src, S+11,12=channel
+far fn dma_copy_cgram(channel: u16, src: far *u8, start_color: u16, num_bytes: u16) {
+    // Save channel for trigger lookup
+    Y = channel;
+
+    // Compute DMA register base offset (channel * 16)
+    X = channel << 4;
+
+    // CGRAM setup
+    CGADD = start_color as u8;
+
+    // DMA register writes - X-indexed addressing requires assembly
+    asm!(
+        "LDA #$02",  "STA $4300,X",  // DMAPn - 1 reg, write twice
+        "LDA #$22",  "STA $4301,X",  // BBADn - CGDATA
+        "LDA $08,S", "STA $4302,X",  // src lo
+        "LDA $09,S", "STA $4303,X",  // src hi
+        "LDA $0A,S", "STA $4304,X",  // src bank
+        "LDA $04,S", "STA $4305,X",  // num_bytes lo
+        "LDA $05,S", "STA $4306,X"   // num_bytes hi
+    );
+
+    // Trigger DMA
+    MDMAEN = dma_trigger_masks[Y];
+}
+
+// DMA copy to OAM (function version - far pointer)
+// Usage: dma_copy_oam(channel, &oam_data as far *u8, size);
+// channel: DMA channel (0-7)
+// src: 24-bit far pointer to source data
+// size: number of bytes to transfer (usually 544)
+//
+// Stack layout after JSL:
+//   S+4,5=size, S+6,7,8=src, S+9,10=channel
+far fn dma_copy_oam(channel: u16, src: far *u8, size: u16) {
+    // Save channel for trigger lookup
+    Y = channel;
+
+    // Compute DMA register base offset (channel * 16)
+    X = channel << 4;
+
+    // OAM setup
+    OAMADD = 0;
+
+    // DMA register writes - X-indexed addressing requires assembly
+    asm!(
+        "LDA #$00",  "STA $4300,X",  // DMAPn - 1 reg, write once
+        "LDA #$04",  "STA $4301,X",  // BBADn - OAMDATA
+        "LDA $06,S", "STA $4302,X",  // src lo
+        "LDA $07,S", "STA $4303,X",  // src hi
+        "LDA $08,S", "STA $4304,X",  // src bank
+        "LDA $04,S", "STA $4305,X",  // size lo
+        "LDA $05,S", "STA $4306,X"   // size hi
+    );
+
+    // Trigger DMA
+    MDMAEN = dma_trigger_masks[Y];
+}
+
 
 // DMA fill VRAM with a value (fixed source address mode)
 // Usage: dma_fill_vram!(0, dest_vram, value_ptr, size);
 macro_rules! dma_fill_vram($channel:literal, $dest:expr, $value_ptr:expr, $size:expr) {
     VMAIN = VMAIN_INCREMENT_HIGH;
     asm!(
-        "LDX #" + stringify!($dest),
-        "STX VMADD"
+        "LDX #{DEST}",
+        "STX VMADD",
+        DEST=$dest
     );
     dma_set_src!($channel, $value_ptr);
     dma_set_size!($channel, $size);
-    dma_set_ppu_dest!($channel, DMA_MODE_2REG_1WRITE | DMA_FIXED, 0x18);
+    dma_set_ppu_dest!($channel, 9, 24);  // 9 = DMA_MODE_2REG_1WRITE | DMA_FIXED, 24 = $18
     dma_trigger!($channel);
 }
 
@@ -1500,12 +1631,13 @@ macro_rules! dma_fill_vram($channel:literal, $dest:expr, $value_ptr:expr, $size:
 macro_rules! dma_copy_from_vram($channel:literal, $src:expr, $dest:expr, $size:expr) {
     VMAIN = VMAIN_INCREMENT_HIGH;
     asm!(
-        "LDX #" + stringify!($src),
-        "STX VMADD"
+        "LDX #{SRC}",
+        "STX VMADD",
+        SRC=$src
     );
     dma_set_src!($channel, $dest);
     dma_set_size!($channel, $size);
-    dma_set_ppu_dest!($channel, DMA_MODE_2REG_1WRITE | DMA_DIRECTION_TO_CPU, 0x39);
+    dma_set_ppu_dest!($channel, 129, 57);  // 129 = DMA_MODE_2REG_1WRITE | DMA_DIRECTION_TO_CPU, 57 = $39
     dma_trigger!($channel);
 }
 
@@ -1514,7 +1646,7 @@ macro_rules! dma_copy_from_vram($channel:literal, $src:expr, $dest:expr, $size:e
 macro_rules! dma_copy_wram($channel:literal, $dest:expr, $src:expr, $size:expr) {
     dma_set_src!($channel, $src);
     dma_set_size!($channel, $size);
-    dma_set_dest!($channel, DMA_MODE_1REG_1WRITE, $dest);
+    dma_set_dest!($channel, 0, $dest);  // 0 = DMA_MODE_1REG_1WRITE
     dma_trigger!($channel);
 }
 
@@ -1884,8 +2016,8 @@ macro_rules! dma_clear_vram($channel:literal, $zero_ptr:expr) {
     VMADD = 0;
     VMAIN = VMAIN_INCREMENT_HIGH;
     dma_set_src!($channel, $zero_ptr);
-    asm!("STZ DAS" + stringify!($channel));  // 0 = 64KB
-    dma_set_ppu_dest!($channel, DMA_MODE_2REG_1WRITE | DMA_FIXED, 0x18);
+    asm!("STZ DAS{CH}", CH=$channel);  // 0 = 64KB
+    dma_set_ppu_dest!($channel, 9, 24);  // 9 = DMA_MODE_2REG_1WRITE | DMA_FIXED, 24 = $18
     dma_trigger!($channel);
 }
 
@@ -1894,8 +2026,8 @@ macro_rules! dma_clear_vram($channel:literal, $zero_ptr:expr) {
 macro_rules! dma_clear_cgram($channel:literal, $zero_ptr:expr) {
     CGADD = 0;
     dma_set_src!($channel, $zero_ptr);
-    dma_set_size!($channel, 0x0200);
-    dma_set_ppu_dest!($channel, DMA_MODE_1REG_2WRITE | DMA_FIXED, 0x22);
+    dma_set_size!($channel, 512);
+    dma_set_ppu_dest!($channel, 10, 34);  // 10 = DMA_MODE_1REG_2WRITE | DMA_FIXED, 34 = $22
     dma_trigger!($channel);
 }
 

@@ -6,7 +6,8 @@ Uses a two-pass algorithm:
 2. Second pass: Build HIR nodes with resolved references
 """
 
-from typing import List, Union, Optional
+import re
+from typing import List, Union, Optional, Dict
 from pathlib import Path
 from r65.compiler.frontend import ast
 
@@ -1218,10 +1219,46 @@ class HIRBuilder:
             return self._build_for(stmt)
 
         elif isinstance(stmt, ast.AsmStmt):
-            return hir.HIRAsmStmt(instructions=stmt.instructions, source_loc=stmt.source_loc)
+            instructions = stmt.instructions
+            # Process format string substitution if format_args provided
+            if stmt.format_args:
+                instructions = self._process_asm_format(instructions, stmt.format_args)
+            return hir.HIRAsmStmt(instructions=instructions, source_loc=stmt.source_loc)
 
         else:
             raise HIRError(f"Unknown statement type: {type(stmt).__name__}")
+
+    def _process_asm_format(self, instructions: List[str], format_args: Dict[str, Union[str, int]]) -> List[str]:
+        """
+        Process format string substitution in asm! instructions.
+
+        Replaces {name} placeholders with values from format_args.
+        String values are inserted directly, integers are formatted as decimal.
+
+        Example:
+            asm!("LD{REG} #$01", REG="A")  -> "LDA #$01"
+            asm!("LDA #{VAL}", VAL=42)     -> "LDA #42"
+        """
+        result = []
+        # Pattern matches {identifier}
+        placeholder_pattern = re.compile(r'\{([A-Za-z_][A-Za-z0-9_]*)\}')
+
+        for instruction in instructions:
+            def replace_placeholder(match):
+                name = match.group(1)
+                if name not in format_args:
+                    raise HIRError(f"Unknown format argument '{{{name}}}' in asm! statement")
+                value = format_args[name]
+                if isinstance(value, str):
+                    return value
+                else:
+                    # Integer - format as decimal
+                    return str(value)
+
+            processed = placeholder_pattern.sub(replace_placeholder, instruction)
+            result.append(processed)
+
+        return result
 
     def _build_let(self, let: ast.LetStmt) -> Union[hir.HIRLetStmt, hir.HIRTupleLetStmt]:
         """Build HIR let statement from AST."""
