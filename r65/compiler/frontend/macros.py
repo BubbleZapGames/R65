@@ -538,6 +538,9 @@ class MacroExpander:
             if msg.startswith('"') and msg.endswith('"'):
                 msg = msg[1:-1]
             raise MacroError(msg, source_loc)
+        # Handle built-in const_assert! macro
+        if name == "const_assert":
+            return self._expand_const_assert(args, source_loc)
         # Handle built-in stringify! macro
         if name == "stringify":
             return self._expand_stringify(args, source_loc)
@@ -679,6 +682,63 @@ class MacroExpander:
 
         return result
 
+    def _expand_const_assert(
+        self,
+        args: List[str],
+        source_loc: Optional[SourceLocation]
+    ) -> List[ast.Statement]:
+        """
+        Expand the built-in const_assert! macro.
+
+        const_assert!(condition, "message") checks condition at compile time.
+        If condition evaluates to false, compilation fails with the message.
+
+        Args:
+            args: List of argument strings (already comma-separated by parser)
+            source_loc: Source location of invocation
+
+        Returns:
+            List containing a ConstAssertStmt
+        """
+        if not args:
+            raise MacroError("const_assert! requires a condition", source_loc)
+
+        # First arg is the condition, second (optional) is the message
+        condition_str = args[0].strip()
+
+        if len(args) >= 2:
+            # Message provided
+            message = args[1].strip()
+            # Strip quotes if it's a string literal
+            if message.startswith('"') and message.endswith('"'):
+                message = message[1:-1]
+        else:
+            message = "const assertion failed"
+
+        # Parse condition as an expression
+        try:
+            wrapped = f"fn __const_assert__() {{ let __cond: bool = {condition_str}; }}"
+            program = parse(wrapped, "<const_assert>")
+
+            if program.items and isinstance(program.items[0], ast.FunctionDecl):
+                func = program.items[0]
+                if func.body.statements:
+                    let_stmt = func.body.statements[0]
+                    if isinstance(let_stmt, ast.LetStmt) and let_stmt.initializer:
+                        condition_expr = let_stmt.initializer
+                        # Create ConstAssertStmt
+                        return [ast.ConstAssertStmt(
+                            condition=condition_expr,
+                            message=message,
+                            source_loc=source_loc
+                        )]
+
+            raise MacroError(f"failed to parse const_assert! condition: {condition_str}", source_loc)
+        except MacroError:
+            raise
+        except Exception as e:
+            raise MacroError(f"error parsing const_assert! condition: {e}", source_loc)
+
     def _expand_stringify(
         self,
         args: List[str],
@@ -686,14 +746,14 @@ class MacroExpander:
     ) -> List[ast.Statement]:
         """
         Expand the built-in stringify! macro.
-        
+
         stringify!(arg1, arg2, ...) converts its arguments to a string literal.
         The arguments are concatenated with spaces between them.
-        
+
         Args:
             args: List of argument token strings
             source_loc: Source location of invocation
-            
+
         Returns:
             List containing a single statement with the string literal
         """
@@ -911,7 +971,7 @@ class MacroExpander:
         # Tokens that should not have space after them
         no_space_after = {'!', '(', '[', '{', '.', '::', '@', '#'}
         # Identifiers and keywords that may precede ! for macros/builtins
-        macro_like = {'cfg', 'stringify', 'include', 'include_bytes', 'asm', 'NOP', 'compile_error'}
+        macro_like = {'cfg', 'stringify', 'include', 'include_bytes', 'asm', 'NOP', 'compile_error', 'const_assert'}
 
         result = [tokens[0]]
 

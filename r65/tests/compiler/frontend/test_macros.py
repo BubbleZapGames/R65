@@ -1053,3 +1053,131 @@ class TestCompileErrorMacro:
             expand_macros(program)
 
         assert "Feature not enabled" in str(exc_info.value)
+
+
+class TestConstAssertMacro:
+    """Tests for the built-in const_assert! macro."""
+
+    def test_const_assert_passing(self):
+        """Test const_assert! with true condition passes."""
+        from r65.compiler.hir import HIRBuilder
+        source = '''
+        fn test() {
+            const_assert!(1 < 8, "Value must be less than 8");
+        }
+        '''
+        program = parse(source, "<test>")
+        expanded = expand_macros(program)
+        builder = HIRBuilder()
+        # Should not raise
+        hir = builder.build_program(expanded)
+        assert hir is not None
+
+    def test_const_assert_failing(self):
+        """Test const_assert! with false condition raises error."""
+        from r65.compiler.hir import HIRBuilder, HIRError
+        source = '''
+        fn test() {
+            const_assert!(10 < 8, "Value must be less than 8");
+        }
+        '''
+        program = parse(source, "<test>")
+        expanded = expand_macros(program)
+        builder = HIRBuilder()
+
+        with pytest.raises(HIRError) as exc_info:
+            builder.build_program(expanded)
+
+        assert "Value must be less than 8" in str(exc_info.value)
+
+    def test_const_assert_with_const_variable(self):
+        """Test const_assert! with const variable in condition."""
+        from r65.compiler.hir import HIRBuilder
+        source = '''
+        const MAX_CHANNEL: u8 = 8;
+
+        fn test() {
+            const_assert!(3 < MAX_CHANNEL, "Channel out of range");
+        }
+        '''
+        program = parse(source, "<test>")
+        expanded = expand_macros(program)
+        builder = HIRBuilder()
+        # Should not raise
+        hir = builder.build_program(expanded)
+        assert hir is not None
+
+    def test_const_assert_default_message(self):
+        """Test const_assert! without message uses default."""
+        from r65.compiler.hir import HIRBuilder, HIRError
+        source = '''
+        fn test() {
+            const_assert!(false);
+        }
+        '''
+        program = parse(source, "<test>")
+        expanded = expand_macros(program)
+        builder = HIRBuilder()
+
+        with pytest.raises(HIRError) as exc_info:
+            builder.build_program(expanded)
+
+        assert "const assertion failed" in str(exc_info.value)
+
+    def test_const_assert_in_user_macro(self):
+        """Test const_assert! used inside user-defined macro."""
+        from r65.compiler.hir import HIRBuilder, HIRError
+        source = '''
+        macro_rules! check_channel($ch:expr) {
+            const_assert!($ch < 8, "DMA channel must be 0-7");
+        }
+
+        fn test() {
+            check_channel!(9);
+        }
+        '''
+        program = parse(source, "<test>")
+        expanded = expand_macros(program)
+        builder = HIRBuilder()
+
+        with pytest.raises(HIRError) as exc_info:
+            builder.build_program(expanded)
+
+        assert "DMA channel must be 0-7" in str(exc_info.value)
+
+    def test_const_assert_valid_channel_in_macro(self):
+        """Test const_assert! passes with valid channel in macro."""
+        from r65.compiler.hir import HIRBuilder
+        source = '''
+        macro_rules! check_channel($ch:expr) {
+            const_assert!($ch < 8, "DMA channel must be 0-7");
+        }
+
+        fn test() {
+            check_channel!(0);
+            check_channel!(7);
+        }
+        '''
+        program = parse(source, "<test>")
+        expanded = expand_macros(program)
+        builder = HIRBuilder()
+        # Should not raise
+        hir = builder.build_program(expanded)
+        assert hir is not None
+
+    def test_const_assert_non_const_fails(self):
+        """Test const_assert! with non-const expression fails."""
+        from r65.compiler.hir import HIRBuilder, HIRError
+        source = '''
+        fn test() {
+            const_assert!(A < 8, "Register not allowed");
+        }
+        '''
+        program = parse(source, "<test>")
+        expanded = expand_macros(program)
+        builder = HIRBuilder()
+
+        with pytest.raises(HIRError) as exc_info:
+            builder.build_program(expanded)
+
+        assert "not const-evaluable" in str(exc_info.value).lower() or "register" in str(exc_info.value).lower()

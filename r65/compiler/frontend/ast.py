@@ -527,6 +527,13 @@ class AsmStmt(Statement):
     format_args: Optional[Dict[str, Union[str, int, 'Expression']]] = None  # Named args for format substitution
 
 
+@dataclass
+class ConstAssertStmt(Statement):
+    """Compile-time assertion statement (const_assert! macro)."""
+    condition: 'Expression'  # Const expression that must evaluate to true
+    message: str  # Error message if assertion fails
+
+
 # ============================================================================
 # Expressions
 # ============================================================================

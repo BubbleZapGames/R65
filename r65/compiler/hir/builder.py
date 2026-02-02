@@ -1225,6 +1225,31 @@ class HIRBuilder:
                 instructions = self._process_asm_format(instructions, stmt.format_args)
             return hir.HIRAsmStmt(instructions=instructions, source_loc=stmt.source_loc)
 
+        elif isinstance(stmt, ast.ConstAssertStmt):
+            # Evaluate the condition at compile time
+            try:
+                # Build the expression first to resolve identifiers
+                hir_condition = self._build_expression(stmt.condition)
+                # Now const-evaluate the original AST expression
+                result = self.const_evaluator.eval(stmt.condition)
+                if not isinstance(result, bool):
+                    # Try to treat non-zero as true, zero as false (C-style)
+                    if isinstance(result, int):
+                        result = result != 0
+                    else:
+                        raise HIRError(
+                            f"const_assert! condition must evaluate to bool, got {type(result).__name__}",
+                            stmt.source_loc
+                        )
+                if not result:
+                    raise HIRError(stmt.message, stmt.source_loc)
+                # Assertion passed - return a no-op (empty block)
+                return hir.HIRBlock(statements=[], source_loc=stmt.source_loc)
+            except HIRError:
+                raise
+            except Exception as e:
+                raise HIRError(f"const_assert! condition is not const-evaluable: {e}", stmt.source_loc)
+
         else:
             raise HIRError(f"Unknown statement type: {type(stmt).__name__}")
 
