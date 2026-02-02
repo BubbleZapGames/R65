@@ -113,6 +113,9 @@ class FunctionCodeGenerator:
         # Create instruction selector with current function context
         instr_selector = InstructionSelector(self.emitter, reg_alloc, self.mem_alloc, mir_func, func_gen=self)
 
+        # Initialize region-based spilling for this function
+        instr_selector.call_selector.initialize_regions_for_function()
+
         # Emit function header comment
         self.emit_function_header(mir_func)
 
@@ -130,6 +133,9 @@ class FunctionCodeGenerator:
 
         for block_id in block_order:
             block = mir_func.blocks[block_id]
+
+            # Initialize region tracking for this block (for optimized spilling)
+            instr_selector.call_selector.initialize_regions_for_block(block_id)
 
             # Emit block label (except entry block which uses function label)
             if block_id != mir_func.entry_block_id:

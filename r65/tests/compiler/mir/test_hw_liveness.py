@@ -243,3 +243,193 @@ class TestInstructionLevelHwLiveness:
         # X should be live after the call in block 1
         # because it's used in block 2
         assert analyzer.is_hw_reg_live_after('X', 1, 0) is True
+
+
+class TestClobberRegionAnalyzer:
+    """Tests for ClobberRegionAnalyzer - region-based spilling optimization."""
+
+    def test_single_call_creates_region(self):
+        """Test that a single clobbering call creates a region."""
+        from r65.compiler.mir.liveness import ClobberRegionAnalyzer
+
+        mir_func = MIRFunction(name="test", blocks={})
+
+        # Block: X = 0; call; use X; return
+        call_instr = Call(function="clobber", args=[], returns=[])
+        block = BasicBlock(block_id=0, instructions=[
+            Move(dest=make_hw_reg('X'), source=Immediate(0), type_info=BasicTypeInfo('u16')),
+            call_instr,
+            BinaryOp(dest=make_vreg(0), left=make_hw_reg('X'), right=Immediate(1),
+                     op='+', type_info=BasicTypeInfo('u16')),
+            Return(values=[])
+        ])
+        mir_func.blocks[0] = block
+
+        instr_liveness = InstructionLivenessAnalyzer(mir_func)
+        analyzer = ClobberRegionAnalyzer(instr_liveness)
+        regions = analyzer.analyze_block(0)
+
+        # Should have one region for X
+        assert len(regions['X']) == 1
+        region = regions['X'][0]
+        assert region.hw_reg == 'X'
+        assert region.save_before_idx == 1  # Before the call
+        assert region.restore_before_idx == 2  # Before the use
+        assert region.clobbering_calls == [1]  # The call at index 1
+
+    def test_multi_call_merged_region(self):
+        """Test that consecutive calls without intervening use create one region."""
+        from r65.compiler.mir.liveness import ClobberRegionAnalyzer
+
+        mir_func = MIRFunction(name="test", blocks={})
+
+        # Block: X = 0; call1; call2; use X; return
+        call1 = Call(function="clobber1", args=[], returns=[])
+        call2 = Call(function="clobber2", args=[], returns=[])
+        block = BasicBlock(block_id=0, instructions=[
+            Move(dest=make_hw_reg('X'), source=Immediate(0), type_info=BasicTypeInfo('u16')),
+            call1,  # idx 1
+            call2,  # idx 2
+            BinaryOp(dest=make_vreg(0), left=make_hw_reg('X'), right=Immediate(1),
+                     op='+', type_info=BasicTypeInfo('u16')),  # idx 3
+            Return(values=[])
+        ])
+        mir_func.blocks[0] = block
+
+        instr_liveness = InstructionLivenessAnalyzer(mir_func)
+        analyzer = ClobberRegionAnalyzer(instr_liveness)
+        regions = analyzer.analyze_block(0)
+
+        # Should have ONE region for X (merged)
+        assert len(regions['X']) == 1
+        region = regions['X'][0]
+        assert region.save_before_idx == 1  # Before first call
+        assert region.restore_before_idx == 3  # Before use
+        assert region.clobbering_calls == [1, 2]  # Both calls
+
+    def test_intervening_use_splits_regions(self):
+        """Test that a use between calls creates separate regions."""
+        from r65.compiler.mir.liveness import ClobberRegionAnalyzer
+
+        mir_func = MIRFunction(name="test", blocks={})
+
+        # Block: X = 0; call1; use X; call2; use X; return
+        call1 = Call(function="clobber1", args=[], returns=[])
+        call2 = Call(function="clobber2", args=[], returns=[])
+        block = BasicBlock(block_id=0, instructions=[
+            Move(dest=make_hw_reg('X'), source=Immediate(0), type_info=BasicTypeInfo('u16')),  # idx 0
+            call1,  # idx 1
+            BinaryOp(dest=make_vreg(0), left=make_hw_reg('X'), right=Immediate(1),
+                     op='+', type_info=BasicTypeInfo('u16')),  # idx 2 - use X
+            call2,  # idx 3
+            BinaryOp(dest=make_vreg(1), left=make_hw_reg('X'), right=Immediate(2),
+                     op='+', type_info=BasicTypeInfo('u16')),  # idx 4 - use X again
+            Return(values=[])
+        ])
+        mir_func.blocks[0] = block
+
+        instr_liveness = InstructionLivenessAnalyzer(mir_func)
+        analyzer = ClobberRegionAnalyzer(instr_liveness)
+        regions = analyzer.analyze_block(0)
+
+        # Should have TWO regions for X (split by intervening use)
+        assert len(regions['X']) == 2
+
+        region1 = regions['X'][0]
+        assert region1.save_before_idx == 1
+        assert region1.restore_before_idx == 2
+        assert region1.clobbering_calls == [1]
+
+        region2 = regions['X'][1]
+        assert region2.save_before_idx == 3
+        assert region2.restore_before_idx == 4
+        assert region2.clobbering_calls == [3]
+
+    def test_mixed_x_y_regions(self):
+        """Test that X and Y can have independent regions."""
+        from r65.compiler.mir.liveness import ClobberRegionAnalyzer
+
+        mir_func = MIRFunction(name="test", blocks={})
+
+        # Block: X = 0; Y = 1; call_both; call_y_only; use X; use Y; return
+        call_both = Call(function="clobber_both", args=[], returns=[])
+        call_y = Call(function="clobber_y", args=[], returns=[])
+        block = BasicBlock(block_id=0, instructions=[
+            Move(dest=make_hw_reg('X'), source=Immediate(0), type_info=BasicTypeInfo('u16')),  # idx 0
+            Move(dest=make_hw_reg('Y'), source=Immediate(1), type_info=BasicTypeInfo('u16')),  # idx 1
+            call_both,  # idx 2 - clobbers both
+            call_y,     # idx 3 - clobbers Y only (preserves X)
+            BinaryOp(dest=make_vreg(0), left=make_hw_reg('X'), right=Immediate(1),
+                     op='+', type_info=BasicTypeInfo('u16')),  # idx 4 - use X
+            BinaryOp(dest=make_vreg(1), left=make_hw_reg('Y'), right=Immediate(1),
+                     op='+', type_info=BasicTypeInfo('u16')),  # idx 5 - use Y
+            Return(values=[])
+        ])
+        mir_func.blocks[0] = block
+
+        instr_liveness = InstructionLivenessAnalyzer(mir_func)
+        analyzer = ClobberRegionAnalyzer(instr_liveness)
+
+        # Provide preserves map: call_y preserves X
+        preserves_map = {'clobber_y': {'X'}}
+        regions = analyzer.analyze_block(0, preserves_map)
+
+        # X region: only call_both clobbers X (call_y preserves it)
+        assert len(regions['X']) == 1
+        x_region = regions['X'][0]
+        assert x_region.clobbering_calls == [2]  # Only call_both
+        assert x_region.restore_before_idx == 4  # Before use X
+
+        # Y region: both calls clobber Y
+        assert len(regions['Y']) == 1
+        y_region = regions['Y'][0]
+        assert y_region.clobbering_calls == [2, 3]  # Both calls
+        assert y_region.restore_before_idx == 5  # Before use Y
+
+    def test_no_region_when_not_live_after(self):
+        """Test that no region is created if register isn't used after call."""
+        from r65.compiler.mir.liveness import ClobberRegionAnalyzer
+
+        mir_func = MIRFunction(name="test", blocks={})
+
+        # Block: X = 0; call; return (X not used after call)
+        call_instr = Call(function="clobber", args=[], returns=[])
+        block = BasicBlock(block_id=0, instructions=[
+            Move(dest=make_hw_reg('X'), source=Immediate(0), type_info=BasicTypeInfo('u16')),
+            call_instr,
+            Return(values=[])
+        ])
+        mir_func.blocks[0] = block
+
+        instr_liveness = InstructionLivenessAnalyzer(mir_func)
+        analyzer = ClobberRegionAnalyzer(instr_liveness)
+        regions = analyzer.analyze_block(0)
+
+        # Should have no regions for X (not live after call)
+        assert len(regions['X']) == 0
+
+    def test_no_region_when_callee_preserves(self):
+        """Test that no region is created if callee preserves the register."""
+        from r65.compiler.mir.liveness import ClobberRegionAnalyzer
+        from r65.compiler.hir.attributes import PreservesAttribute
+
+        mir_func = MIRFunction(name="test", blocks={})
+
+        # Block: X = 0; call (preserves X); use X; return
+        call_instr = Call(function="safe", args=[], returns=[],
+                         preserves_attr=PreservesAttribute(name='preserves', registers=['X']))
+        block = BasicBlock(block_id=0, instructions=[
+            Move(dest=make_hw_reg('X'), source=Immediate(0), type_info=BasicTypeInfo('u16')),
+            call_instr,
+            BinaryOp(dest=make_vreg(0), left=make_hw_reg('X'), right=Immediate(1),
+                     op='+', type_info=BasicTypeInfo('u16')),
+            Return(values=[])
+        ])
+        mir_func.blocks[0] = block
+
+        instr_liveness = InstructionLivenessAnalyzer(mir_func)
+        analyzer = ClobberRegionAnalyzer(instr_liveness)
+        regions = analyzer.analyze_block(0)
+
+        # Should have no regions for X (callee preserves it via preserves_attr)
+        assert len(regions['X']) == 0

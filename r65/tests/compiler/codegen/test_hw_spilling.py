@@ -199,6 +199,152 @@ class TestHardwareRegisterSpilling:
         assert 'clobbers_a' in result  # Function exists
 
 
+class TestRegionBasedSpilling:
+    """Tests for region-based spilling optimization (Phase 2)."""
+
+    def test_merged_spills_for_consecutive_calls(self):
+        """Test that consecutive calls share a single save/restore (merged region)."""
+        source = """
+        fn clobbers_xy() {
+            X = 999;
+            Y = 888;
+        }
+
+        fn clobbers_x() {
+            X = 777;
+        }
+
+        fn test_merged_spills() -> u16 {
+            X = 0;
+            Y = 1;
+            clobbers_xy();   // X, Y clobbered - save both here
+            clobbers_x();    // X clobbered - NO re-save
+            return X + Y;    // Restore both here
+        }
+        """
+        result = compile_string(source, "test.r65")
+
+        # Count PHX/PLX and PHY/PLY with "region" or "Spill" comments (spilling specific)
+        # Note: PHY/PLY may also be used for other purposes (e.g., temp storage for ops)
+        lines = result.split('\n')
+        in_func = False
+        phx_spill_count = 0
+        plx_spill_count = 0
+        phy_spill_count = 0
+        ply_spill_count = 0
+        for line in lines:
+            if 'test_merged_spills:' in line:
+                in_func = True
+            elif in_func and line.strip().startswith('RTS'):
+                break
+            elif in_func:
+                # Only count spills (look for "Spill" or "region" in comment)
+                if 'PHX' in line and ('Spill' in line or 'region' in line):
+                    phx_spill_count += 1
+                if 'PLX' in line and ('Reload' in line or 'region' in line):
+                    plx_spill_count += 1
+                if 'PHY' in line and ('Spill' in line or 'region' in line):
+                    phy_spill_count += 1
+                if 'PLY' in line and ('Reload' in line or 'region' in line):
+                    ply_spill_count += 1
+
+        # With region-based spilling: exactly 1 spill/reload per register
+        # (Per-call would have 2 spill/reload for X since clobbers_x is second)
+        assert phx_spill_count == 1, f"Expected 1 PHX spill (region-based), got {phx_spill_count}"
+        assert plx_spill_count == 1, f"Expected 1 PLX reload (region-based), got {plx_spill_count}"
+        assert phy_spill_count == 1, f"Expected 1 PHY spill (region-based), got {phy_spill_count}"
+        assert ply_spill_count == 1, f"Expected 1 PLY reload (region-based), got {ply_spill_count}"
+
+    def test_separate_regions_for_use_between_calls(self):
+        """Test that a use between calls creates separate regions."""
+        source = """
+        fn clobbers_x() {
+            X = 999;
+        }
+
+        fn test_separate_regions() -> u16 {
+            X = 0;
+            clobbers_x();    // Region 1: save X
+            let temp: u16 = X;    // Region 1: restore X (use ends region)
+            clobbers_x();    // Region 2: save X again (new region)
+            return X + temp; // Region 2: restore X
+        }
+        """
+        result = compile_string(source, "test.r65")
+
+        # Count PHX/PLX spills in test_separate_regions
+        lines = result.split('\n')
+        in_func = False
+        phx_spill_count = 0
+        plx_spill_count = 0
+        for line in lines:
+            if 'test_separate_regions:' in line:
+                in_func = True
+            elif in_func and line.strip().startswith('RTS'):
+                break
+            elif in_func:
+                # Count spills only (with region/Spill comments)
+                if 'PHX' in line and ('Spill' in line or 'region' in line):
+                    phx_spill_count += 1
+                if 'PLX' in line and ('Reload' in line or 'region' in line):
+                    plx_spill_count += 1
+
+        # Two separate regions = 2 save/restore pairs
+        assert phx_spill_count == 2, f"Expected 2 PHX spills (2 separate regions), got {phx_spill_count}"
+        assert plx_spill_count == 2, f"Expected 2 PLX reloads (2 separate regions), got {plx_spill_count}"
+
+    def test_partial_overlap_regions(self):
+        """Test mixed region overlap - X restored before Y."""
+        source = """
+        fn clobbers_xy() {
+            X = 999;
+            Y = 888;
+        }
+
+        fn clobbers_y() {
+            Y = 777;
+        }
+
+        fn test_partial_overlap() -> u16 {
+            X = 0;
+            Y = 1;
+            clobbers_xy();   // Both X, Y clobbered
+            clobbers_y();    // Only Y clobbered
+            return X + Y;
+        }
+        """
+        result = compile_string(source, "test.r65")
+
+        # Count push/pull spill operations (look for region/Spill comments)
+        lines = result.split('\n')
+        in_func = False
+        phx_spill_count = 0
+        plx_spill_count = 0
+        phy_spill_count = 0
+        ply_spill_count = 0
+        for line in lines:
+            if 'test_partial_overlap:' in line:
+                in_func = True
+            elif in_func and line.strip().startswith('RTS'):
+                break
+            elif in_func:
+                if 'PHX' in line and ('Spill' in line or 'region' in line):
+                    phx_spill_count += 1
+                if 'PLX' in line and ('Reload' in line or 'region' in line):
+                    plx_spill_count += 1
+                if 'PHY' in line and ('Spill' in line or 'region' in line):
+                    phy_spill_count += 1
+                if 'PLY' in line and ('Reload' in line or 'region' in line):
+                    ply_spill_count += 1
+
+        # X: one region (only first call clobbers it)
+        # Y: one region (both calls clobber it, merged)
+        assert phx_spill_count == 1, f"Expected 1 PHX spill, got {phx_spill_count}"
+        assert plx_spill_count == 1, f"Expected 1 PLX reload, got {plx_spill_count}"
+        assert phy_spill_count == 1, f"Expected 1 PHY spill, got {phy_spill_count}"
+        assert ply_spill_count == 1, f"Expected 1 PLY reload, got {ply_spill_count}"
+
+
 class TestSpillReloadOrder:
     """Tests for correct spill/reload ordering."""
 

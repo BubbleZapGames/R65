@@ -771,3 +771,190 @@ class InstructionLivenessAnalyzer:
                 result.add(vreg)
 
         return result
+
+
+@dataclass
+class ClobberRegion:
+    """
+    A region where a hardware register needs to be spilled once.
+
+    A clobber region is a maximal sequence of instructions where:
+    1. The register is live at the start (defined before, used after)
+    2. Contains one or more clobbering calls (calls that don't preserve the register)
+    3. The register is not used until after the region ends
+
+    This allows saving once before the first clobber and restoring once
+    before the first use, rather than spilling around each individual call.
+    """
+    hw_reg: str                    # 'X' or 'Y'
+    save_before_idx: int           # Instruction index to insert save before
+    restore_before_idx: int        # Instruction index to insert restore before
+    clobbering_calls: List[int] = field(default_factory=list)  # Indices of calls in this region
+
+
+class ClobberRegionAnalyzer:
+    """
+    Analyzes clobber regions for hardware registers within basic blocks.
+
+    A clobber region groups consecutive clobbering calls (without intervening
+    uses of the register) so that we can save once before the first clobber
+    and restore once before the first use.
+
+    This is Phase 2 optimization - V1 keeps regions within single basic blocks.
+    """
+
+    def __init__(self, instr_liveness: InstructionLivenessAnalyzer):
+        """
+        Initialize clobber region analyzer.
+
+        Args:
+            instr_liveness: Instruction-level liveness analyzer
+        """
+        self.instr_liveness = instr_liveness
+        self.func = instr_liveness.func
+        self.block_analyzer = instr_liveness.block_analyzer
+        self.liveness = instr_liveness.liveness
+
+    def analyze_block(self, block_id: int, preserves_map: Dict[str, Set[str]] = None
+                     ) -> Dict[str, List[ClobberRegion]]:
+        """
+        Analyze clobber regions for a single basic block.
+
+        Args:
+            block_id: Block ID to analyze
+            preserves_map: Map from function name to set of preserved registers.
+                          If None, assumes all calls clobber all registers.
+
+        Returns:
+            Dictionary mapping register name ('X', 'Y') to list of ClobberRegions
+        """
+        if preserves_map is None:
+            preserves_map = {}
+
+        block = self.func.blocks.get(block_id)
+        if not block:
+            return {'X': [], 'Y': []}
+
+        regions: Dict[str, List[ClobberRegion]] = {'X': [], 'Y': []}
+
+        for hw_reg in ('X', 'Y'):
+            regions[hw_reg] = self._analyze_register_regions(
+                block, block_id, hw_reg, preserves_map
+            )
+
+        return regions
+
+    def _analyze_register_regions(self, block: BasicBlock, block_id: int,
+                                   hw_reg: str, preserves_map: Dict[str, Set[str]]
+                                  ) -> List[ClobberRegion]:
+        """
+        Analyze clobber regions for a single register in a block.
+
+        Algorithm:
+        1. Find all clobbering calls where the register is live across
+        2. Group consecutive clobbers (without intervening uses) into regions
+        3. For each region, record save point (before first clobber) and
+           restore point (before first use after last clobber)
+
+        Args:
+            block: Basic block to analyze
+            block_id: Block ID
+            hw_reg: Hardware register name ('X' or 'Y')
+            preserves_map: Map from function name to preserved registers
+
+        Returns:
+            List of ClobberRegions for this register
+        """
+        regions: List[ClobberRegion] = []
+
+        # Track state for building regions
+        current_region: Optional[ClobberRegion] = None
+
+        # Scan instructions to find clobbering calls and uses
+        for instr_idx, instr in enumerate(block.instructions):
+            # Check if this instruction uses the hw register
+            uses = self.block_analyzer._get_uses(instr)
+            is_use = any(
+                isinstance(u, HardwareRegister) and u.name == hw_reg
+                for u in uses
+            )
+
+            # Check if this instruction defines the hw register
+            defs = self.block_analyzer._get_defs(instr)
+            is_def = any(
+                isinstance(d, HardwareRegister) and d.name == hw_reg
+                for d in defs
+            )
+
+            # If we have a current region and hit a use, close the region
+            if current_region is not None and is_use:
+                # Restore point is before this use
+                current_region.restore_before_idx = instr_idx
+                regions.append(current_region)
+                current_region = None
+
+            # Check if this is a clobbering call
+            if isinstance(instr, Call):
+                # Get callee's preserved registers
+                preserved: Set[str] = set()
+                if isinstance(instr.function, str):
+                    preserved = preserves_map.get(instr.function, set())
+                # Also check the preserves attribute on the call instruction
+                if instr.preserves_attr:
+                    preserved = preserved | set(instr.preserves_attr.registers)
+
+                # Check if this call clobbers the register
+                if hw_reg not in preserved:
+                    # Check if register is live after this call
+                    if self.instr_liveness.is_hw_reg_live_after(hw_reg, block_id, instr_idx):
+                        # This is a clobbering call where register is live across
+
+                        if current_region is None:
+                            # Start a new region - save before this call
+                            current_region = ClobberRegion(
+                                hw_reg=hw_reg,
+                                save_before_idx=instr_idx,
+                                restore_before_idx=-1,  # Will be set when region closes
+                                clobbering_calls=[instr_idx]
+                            )
+                        else:
+                            # Extend current region
+                            current_region.clobbering_calls.append(instr_idx)
+
+            # If register is redefined, close any open region without restore
+            # (the old value is dead, new value starts fresh)
+            if is_def and current_region is not None:
+                # This is unusual - register redefined while live across call
+                # Close the region before this definition
+                current_region.restore_before_idx = instr_idx
+                regions.append(current_region)
+                current_region = None
+
+        # Handle region that extends to end of block
+        if current_region is not None:
+            # Register is live out of block - restore at end of block
+            current_region.restore_before_idx = len(block.instructions)
+            regions.append(current_region)
+
+        return regions
+
+    def analyze_function(self, preserves_map: Dict[str, Set[str]] = None
+                        ) -> Dict[int, Dict[str, List[ClobberRegion]]]:
+        """
+        Analyze clobber regions for all blocks in a function.
+
+        Args:
+            preserves_map: Map from function name to set of preserved registers
+
+        Returns:
+            Dictionary mapping block_id to register regions
+        """
+        if preserves_map is None:
+            preserves_map = {}
+
+        result: Dict[int, Dict[str, List[ClobberRegion]]] = {}
+
+        for block_id in self.func.blocks:
+            result[block_id] = self.analyze_block(block_id, preserves_map)
+
+        return result
