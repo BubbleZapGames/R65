@@ -22,6 +22,9 @@ class LivenessInfo:
     Liveness information for a basic block.
 
     Tracks which variables are live at entry and exit of the block.
+    Also tracks hardware register (X, Y) liveness for direct usage.
+    Note: A register is NOT tracked here - it's only tracked via vreg bindings
+    because A is constantly used for intermediate calculations.
     """
     live_in: Set[VirtualRegister] = field(default_factory=set)
     live_out: Set[VirtualRegister] = field(default_factory=set)
@@ -31,6 +34,12 @@ class LivenessInfo:
 
     # Variables defined (written) in this block
     define: Set[VirtualRegister] = field(default_factory=set)
+
+    # Hardware register tracking (X and Y only, not A)
+    hw_use: Set[str] = field(default_factory=set)  # {'X', 'Y'}
+    hw_define: Set[str] = field(default_factory=set)
+    hw_live_in: Set[str] = field(default_factory=set)
+    hw_live_out: Set[str] = field(default_factory=set)
 
 
 class LivenessAnalyzer:
@@ -56,6 +65,8 @@ class LivenessAnalyzer:
         """
         Perform liveness analysis on the function.
 
+        Analyzes both VirtualRegister and HardwareRegister (X and Y) liveness.
+
         Returns:
             Dictionary mapping block IDs to liveness information
         """
@@ -80,18 +91,23 @@ class LivenessAnalyzer:
 
                 # Save old live_in for convergence check
                 old_live_in = info.live_in.copy()
+                old_hw_live_in = info.hw_live_in.copy()
 
                 # live_out = union of successors' live_in
                 info.live_out = set()
+                info.hw_live_out = set()
                 for succ_id in self._get_successors(block):
                     if succ_id in self.liveness:
-                        info.live_out.update(self.liveness[succ_id].live_in)
+                        succ_info = self.liveness[succ_id]
+                        info.live_out.update(succ_info.live_in)
+                        info.hw_live_out.update(succ_info.hw_live_in)
 
                 # live_in = use ∪ (live_out - define)
                 info.live_in = info.use | (info.live_out - info.define)
+                info.hw_live_in = info.hw_use | (info.hw_live_out - info.hw_define)
 
                 # Check for convergence
-                if info.live_in != old_live_in:
+                if info.live_in != old_live_in or info.hw_live_in != old_hw_live_in:
                     changed = True
 
         if iterations >= max_iterations:
@@ -102,6 +118,8 @@ class LivenessAnalyzer:
     def _compute_use_def(self, block: BasicBlock):
         """
         Compute use and define sets for a basic block.
+
+        Handles both VirtualRegister and HardwareRegister (X and Y only).
 
         Args:
             block: Basic block to analyze
@@ -116,22 +134,33 @@ class LivenessAnalyzer:
                     # If not yet defined in this block, it's used
                     if var not in info.define:
                         info.use.add(var)
+                elif isinstance(var, HardwareRegister) and var.name in ('X', 'Y'):
+                    # Track X/Y hardware register usage (not A)
+                    if var.name not in info.hw_define:
+                        info.hw_use.add(var.name)
 
             # Get variables defined by this instruction
             defs = self._get_defs(instr)
             for var in defs:
                 if isinstance(var, VirtualRegister):
                     info.define.add(var)
+                elif isinstance(var, HardwareRegister) and var.name in ('X', 'Y'):
+                    # Track X/Y hardware register definitions (not A)
+                    info.hw_define.add(var.name)
 
     def _get_uses(self, instr: MIRInstruction) -> List:
         """
         Get variables used (read) by an instruction.
 
+        Returns both VirtualRegister and HardwareRegister instances.
+        Note: HardwareRegister tracking is only for X and Y; A is not tracked
+        for direct usage because it's constantly used for intermediate calculations.
+
         Args:
             instr: Instruction to analyze
 
         Returns:
-            List of used variables
+            List of used variables (VirtualRegister or HardwareRegister)
         """
         uses = []
 
@@ -144,41 +173,63 @@ class LivenessAnalyzer:
             # Store uses both source value and destination address
             if isinstance(instr.source, VirtualRegister):
                 uses.append(instr.source)
+            elif isinstance(instr.source, HardwareRegister):
+                uses.append(instr.source)
 
         elif isinstance(instr, Move):
             if isinstance(instr.source, VirtualRegister):
+                uses.append(instr.source)
+            elif isinstance(instr.source, HardwareRegister):
                 uses.append(instr.source)
 
         elif isinstance(instr, BinaryOp):
             if isinstance(instr.left, VirtualRegister):
                 uses.append(instr.left)
+            elif isinstance(instr.left, HardwareRegister):
+                uses.append(instr.left)
             if isinstance(instr.right, VirtualRegister):
+                uses.append(instr.right)
+            elif isinstance(instr.right, HardwareRegister):
                 uses.append(instr.right)
 
         elif isinstance(instr, UnaryOp):
             if isinstance(instr.operand, VirtualRegister):
                 uses.append(instr.operand)
+            elif isinstance(instr.operand, HardwareRegister):
+                uses.append(instr.operand)
 
         elif isinstance(instr, Compare):
             if isinstance(instr.left, VirtualRegister):
                 uses.append(instr.left)
+            elif isinstance(instr.left, HardwareRegister):
+                uses.append(instr.left)
             if isinstance(instr.right, VirtualRegister):
+                uses.append(instr.right)
+            elif isinstance(instr.right, HardwareRegister):
                 uses.append(instr.right)
 
         elif isinstance(instr, BitTest):
             if isinstance(instr.value, VirtualRegister):
                 uses.append(instr.value)
+            elif isinstance(instr.value, HardwareRegister):
+                uses.append(instr.value)
 
         elif isinstance(instr, Rotate):
             if isinstance(instr.source, VirtualRegister):
+                uses.append(instr.source)
+            elif isinstance(instr.source, HardwareRegister):
                 uses.append(instr.source)
 
         elif isinstance(instr, TypeConvert):
             if isinstance(instr.source, VirtualRegister):
                 uses.append(instr.source)
+            elif isinstance(instr.source, HardwareRegister):
+                uses.append(instr.source)
 
         elif isinstance(instr, ToBool):
             if isinstance(instr.source, VirtualRegister):
+                uses.append(instr.source)
+            elif isinstance(instr.source, HardwareRegister):
                 uses.append(instr.source)
 
         elif isinstance(instr, LoadIndirect):
@@ -192,17 +243,23 @@ class LivenessAnalyzer:
                 uses.append(instr.pointer)
             if isinstance(instr.source, VirtualRegister):
                 uses.append(instr.source)
+            elif isinstance(instr.source, HardwareRegister):
+                uses.append(instr.source)
 
         elif isinstance(instr, Call):
             # Call uses all argument registers
             for arg in instr.args:
                 if isinstance(arg.value, VirtualRegister):
                     uses.append(arg.value)
+                elif isinstance(arg.value, HardwareRegister):
+                    uses.append(arg.value)
 
         elif isinstance(instr, Return):
             # Return uses all return value registers
             for val in instr.values:
                 if isinstance(val, VirtualRegister):
+                    uses.append(val)
+                elif isinstance(val, HardwareRegister):
                     uses.append(val)
 
         return uses
@@ -211,40 +268,58 @@ class LivenessAnalyzer:
         """
         Get variables defined (written) by an instruction.
 
+        Returns both VirtualRegister and HardwareRegister instances.
+        Note: HardwareRegister tracking is only for X and Y; A is not tracked
+        for direct usage because it's constantly used for intermediate calculations.
+
         Args:
             instr: Instruction to analyze
 
         Returns:
-            List of defined variables
+            List of defined variables (VirtualRegister or HardwareRegister)
         """
         defs = []
 
         if isinstance(instr, Load):
             if isinstance(instr.dest, VirtualRegister):
                 defs.append(instr.dest)
+            elif isinstance(instr.dest, HardwareRegister):
+                defs.append(instr.dest)
 
         elif isinstance(instr, Move):
             if isinstance(instr.dest, VirtualRegister):
+                defs.append(instr.dest)
+            elif isinstance(instr.dest, HardwareRegister):
                 defs.append(instr.dest)
 
         elif isinstance(instr, BinaryOp):
             if isinstance(instr.dest, VirtualRegister):
                 defs.append(instr.dest)
+            elif isinstance(instr.dest, HardwareRegister):
+                defs.append(instr.dest)
 
         elif isinstance(instr, UnaryOp):
             if isinstance(instr.dest, VirtualRegister):
+                defs.append(instr.dest)
+            elif isinstance(instr.dest, HardwareRegister):
                 defs.append(instr.dest)
 
         elif isinstance(instr, Rotate):
             if isinstance(instr.dest, VirtualRegister):
                 defs.append(instr.dest)
+            elif isinstance(instr.dest, HardwareRegister):
+                defs.append(instr.dest)
 
         elif isinstance(instr, TypeConvert):
             if isinstance(instr.dest, VirtualRegister):
                 defs.append(instr.dest)
+            elif isinstance(instr.dest, HardwareRegister):
+                defs.append(instr.dest)
 
         elif isinstance(instr, ToBool):
             if isinstance(instr.dest, VirtualRegister):
+                defs.append(instr.dest)
+            elif isinstance(instr.dest, HardwareRegister):
                 defs.append(instr.dest)
 
         elif isinstance(instr, LoadIndirect):
@@ -421,6 +496,10 @@ class InstructionLivenessAnalyzer:
         # Key: (block_id, instr_idx), Value: set of live vregs after instruction
         self._live_after_cache: Dict[Tuple[int, int], Set[VirtualRegister]] = {}
 
+        # Cache for hardware register instruction-level liveness
+        # Key: (block_id, instr_idx), Value: set of live hw reg names ('X', 'Y')
+        self._hw_live_after_cache: Dict[Tuple[int, int], Set[str]] = {}
+
         # Cache for calls each vreg is live across
         self._live_across_calls_cache: Dict[int, List[Call]] = {}
 
@@ -498,6 +577,72 @@ class InstructionLivenessAnalyzer:
         # Cache and return
         self._live_after_cache[cache_key] = live
         return live
+
+    def _get_hw_live_after(self, block_id: int, instr_idx: int) -> Set[str]:
+        """
+        Get the set of hardware registers (X, Y) live after an instruction.
+
+        Uses backward scan within the block.
+
+        Args:
+            block_id: Block ID
+            instr_idx: Instruction index within the block
+
+        Returns:
+            Set of hardware register names ('X', 'Y') that are live after
+        """
+        cache_key = (block_id, instr_idx)
+        if cache_key in self._hw_live_after_cache:
+            return self._hw_live_after_cache[cache_key]
+
+        block = self.func.blocks.get(block_id)
+        if not block:
+            return set()
+
+        info = self.liveness.get(block_id)
+        if not info:
+            return set()
+
+        # Start with hw_live_out and work backward
+        live = info.hw_live_out.copy()
+
+        # Process instructions in reverse from end to instr_idx
+        for i in range(len(block.instructions) - 1, instr_idx, -1):
+            instr = block.instructions[i]
+            # Remove definitions (they become live before, not after)
+            for d in self.block_analyzer._get_defs(instr):
+                if isinstance(d, HardwareRegister) and d.name in ('X', 'Y'):
+                    live.discard(d.name)
+            # Add uses (they must be live before this instruction)
+            for u in self.block_analyzer._get_uses(instr):
+                if isinstance(u, HardwareRegister) and u.name in ('X', 'Y'):
+                    live.add(u.name)
+
+        # Cache and return
+        self._hw_live_after_cache[cache_key] = live
+        return live
+
+    def is_hw_reg_live_after(self, hw_reg: str, block_id: int, instr_idx: int) -> bool:
+        """
+        Check if a hardware register (X/Y) is live after an instruction.
+
+        This tracks DIRECT hardware register usage (e.g., X = 0; clobbers_x(); X + 1).
+        Note: A register is NOT tracked here - it's only tracked via vreg bindings
+        because A is constantly used for intermediate calculations.
+
+        Args:
+            hw_reg: Hardware register name ('X' or 'Y')
+            block_id: Block ID containing the instruction
+            instr_idx: Index of instruction within the block
+
+        Returns:
+            True if hw_reg is live after the instruction
+        """
+        if hw_reg not in ('X', 'Y'):
+            return False
+
+        hw_live_after = self._get_hw_live_after(block_id, instr_idx)
+        return hw_reg in hw_live_after
 
     def is_live_across_any_call(self, vreg: VirtualRegister) -> bool:
         """

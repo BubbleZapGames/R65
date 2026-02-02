@@ -25,13 +25,15 @@ class VirtualRegisterAllocator:
     def __init__(self):
         self.next_id = 0
 
-    def alloc(self, type_info: Any, hint: Optional[str] = None) -> VirtualRegister:
+    def alloc(self, type_info: Any, hint: Optional[str] = None,
+              register_hint: Optional[str] = None) -> VirtualRegister:
         """
         Allocate a new virtual register.
 
         Args:
             type_info: TypeInfo for size tracking
             hint: Optional name hint for debugging
+            register_hint: Optional hardware register hint ('X', 'Y') for loop variables
 
         Returns:
             New VirtualRegister with unique ID
@@ -39,7 +41,8 @@ class VirtualRegisterAllocator:
         vreg = VirtualRegister(
             id=self.next_id,
             type_info=type_info,
-            hint=hint
+            hint=hint,
+            register_hint=register_hint
         )
         self.next_id += 1
         return vreg

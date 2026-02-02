@@ -49,6 +49,9 @@ class Symbol:
     # For types (structs, enums, type aliases)
     type_info: Optional[Any] = None  # Will be TypeInfo
 
+    # For loop variables: hint about which hardware register to use ('X', 'Y')
+    register_hint: Optional[str] = None
+
 
 class ScopeKind(Enum):
     """Types of scopes."""

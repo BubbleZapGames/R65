@@ -555,25 +555,36 @@ class MIRBuilder:
                     ))
                 else:
                     # Allocate virtual register (will map to scratch later)
+                    # Get register hint if this is a loop variable
+                    register_hint = getattr(stmt.symbol, 'register_hint', None)
+
                     if isinstance(init_value, VirtualRegister):
                         # Reuse the virtual register from initializer
+                        # Propagate register hint to the reused vreg
+                        if register_hint and not init_value.register_hint:
+                            init_value.register_hint = register_hint
                         self.symbol_to_vreg[id(stmt.symbol)] = init_value
                     elif isinstance(init_value, HardwareRegister):
                         # MUST copy from hardware register - it can be clobbered later!
                         # Cannot just alias the symbol to the hw register.
-                        vreg = self.current_function.vreg_allocator.alloc(stmt.var_type, stmt.name)
+                        vreg = self.current_function.vreg_allocator.alloc(
+                            stmt.var_type, stmt.name, register_hint=register_hint)
                         self.symbol_to_vreg[id(stmt.symbol)] = vreg
                         self.emit(Move(dest=vreg, source=init_value, type_info=stmt.var_type))
                     else:
                         # Allocate new virtual register for immediate
-                        vreg = self.current_function.vreg_allocator.alloc(stmt.var_type, stmt.name)
+                        vreg = self.current_function.vreg_allocator.alloc(
+                            stmt.var_type, stmt.name, register_hint=register_hint)
                         self.symbol_to_vreg[id(stmt.symbol)] = vreg
                         self.emit(Move(dest=vreg, source=init_value, type_info=stmt.var_type))
             else:
                 # Uninitialized variable - just allocate storage
                 if not self.has_explicit_location(stmt.symbol):
                     # Allocate virtual register for later use
-                    vreg = self.current_function.vreg_allocator.alloc(stmt.var_type, stmt.name)
+                    # Get register hint if this is a loop variable
+                    register_hint = getattr(stmt.symbol, 'register_hint', None)
+                    vreg = self.current_function.vreg_allocator.alloc(
+                        stmt.var_type, stmt.name, register_hint=register_hint)
                     self.symbol_to_vreg[id(stmt.symbol)] = vreg
 
     def lower_tuple_let_statement(self, stmt: HIRTupleLetStmt):

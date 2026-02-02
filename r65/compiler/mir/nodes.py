@@ -26,6 +26,7 @@ class VirtualRegister:
     id: int
     type_info: Any  # TypeInfo from HIR
     hint: Optional[str] = None  # Optional name hint for debugging
+    register_hint: Optional[str] = None  # Optional hardware register hint ('X', 'Y') for loop variables
 
     def __repr__(self):
         if self.hint:

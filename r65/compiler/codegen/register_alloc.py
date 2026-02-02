@@ -362,8 +362,10 @@ class RegisterAllocator:
 
         Strategy:
         1. Check for explicit hardware register binding
-        2. Try scratch register (respecting call graph constraints)
-        3. Spill to stack if no scratch available (using slot reuse if available)
+        2. Check for hw-coalesceable (can stay in hardware register)
+        3. Try register hint (for loop variables assigned to X/Y)
+        4. Try scratch register (respecting call graph constraints)
+        5. Spill to stack if no scratch available (using slot reuse if available)
 
         Args:
             vreg: Virtual register to allocate
@@ -399,6 +401,23 @@ class RegisterAllocator:
                 )
                 self.allocations[vreg.id] = location
                 return location
+
+        # Check for register hint (loop variables)
+        if vreg.register_hint in ('X', 'Y'):
+            hw_reg = vreg.register_hint
+            hw_alloc = self.hw_allocs.get(hw_reg)
+            if hw_alloc and hw_alloc.allocated_vreg is None:
+                # Register is free - allocate vreg to it
+                location = PhysicalLocation(
+                    kind=LocationKind.HARDWARE,
+                    hw_register=hw_reg,
+                    size=self._get_vreg_size(vreg)
+                )
+                self.allocations[vreg.id] = location
+                hw_alloc.allocated_vreg = vreg
+                hw_alloc.is_bound = False  # Not explicitly bound, just hinted
+                return location
+            # Hint couldn't be satisfied (register occupied) - fall through
 
         # Determine if this vreg lives across any call
         live_across_call = False

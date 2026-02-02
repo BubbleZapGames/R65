@@ -25,7 +25,7 @@ from r65.compiler.codegen.base_selector import BaseSelector
 
 class SpillInfo(NamedTuple):
     """Information about a hardware register that needs spilling."""
-    vreg: VirtualRegister  # The virtual register allocated to the hw reg
+    vreg: Optional[VirtualRegister]  # The virtual register allocated to the hw reg, or None for direct hw reg usage
     hw_reg: str            # Hardware register name ('A', 'X', 'Y')
     # Stack spill location will be managed via push/pull
 
@@ -210,8 +210,12 @@ class CallInstructionSelector(BaseSelector):
         Compute which hardware registers need spilling around a call.
 
         A hardware register needs spilling if:
-        1. It has an allocated vreg that is live after this call
-        2. The callee does not preserve it (via #[preserves()])
+        1. It has an allocated vreg that is live after this call, OR
+        2. (For X/Y only) It is directly used and live after this call
+        AND the callee does not preserve it (via #[preserves()])
+
+        Note: A register direct usage is NOT tracked - only via vreg bindings.
+        This is because A is constantly used for intermediate calculations.
 
         Args:
             instr: The Call instruction
@@ -239,21 +243,33 @@ class CallInstructionSelector(BaseSelector):
             # Check if this hw register has an allocated vreg
             hw_alloc = reg_alloc.get_hw_alloc(reg_name)
             vreg = hw_alloc.allocated_vreg
-            if vreg is None:
+
+            # Case 1: Vreg allocated to this hw register
+            if vreg is not None:
+                # Check if the vreg is live after this call
+                # Use instruction liveness if available
+                if reg_alloc.instr_liveness:
+                    pos = reg_alloc.instr_liveness.get_instruction_position(instr)
+                    if pos:
+                        block_id, instr_idx = pos
+                        if reg_alloc.instr_liveness.is_live_after(vreg, block_id, instr_idx):
+                            spills.append(SpillInfo(vreg=vreg, hw_reg=reg_name))
+                else:
+                    # Conservative: assume live if we have an allocation
+                    if hw_alloc.is_bound:
+                        spills.append(SpillInfo(vreg=vreg, hw_reg=reg_name))
+                # Already handled this register
                 continue
 
-            # Check if the vreg is live after this call
-            # Use instruction liveness if available
-            if reg_alloc.instr_liveness:
+            # Case 2: Direct hardware register usage (X and Y only, not A)
+            # A is not tracked because it's constantly used for intermediate calculations
+            if reg_name in ('X', 'Y') and reg_alloc.instr_liveness:
                 pos = reg_alloc.instr_liveness.get_instruction_position(instr)
                 if pos:
                     block_id, instr_idx = pos
-                    if reg_alloc.instr_liveness.is_live_after(vreg, block_id, instr_idx):
-                        spills.append(SpillInfo(vreg=vreg, hw_reg=reg_name))
-            else:
-                # Conservative: assume live if we have an allocation
-                if hw_alloc.is_bound:
-                    spills.append(SpillInfo(vreg=vreg, hw_reg=reg_name))
+                    if reg_alloc.instr_liveness.is_hw_reg_live_after(reg_name, block_id, instr_idx):
+                        # Direct HW reg usage - need to spill
+                        spills.append(SpillInfo(vreg=None, hw_reg=reg_name))
 
         return spills
 

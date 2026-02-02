@@ -46,6 +46,7 @@ class HIRBuilder:
         self.current_bank = 0  # Current ROM bank for declarations (set by #[bank(n)])
         self.auto_bank_mode = False  # True when in #[bank(auto)] mode (NOT default for backward compatibility)
         self._pending_snesrom_config = None  # Store snesrom config when parsed as attribute
+        self.loop_depth = 0  # Track for loop nesting depth for register hints
 
     def _process_snesrom_attribute(self, attr: ast.Attribute):
         """Process snesrom attribute that was mistakenly attached to a function."""
@@ -1434,8 +1435,24 @@ class HIRBuilder:
                 i = i + 1;
             }
         }
+
+        Loop variables are given register hints based on nesting depth:
+        - Depth 1 (outermost): X register
+        - Depth 2 (first nested): Y register
+        - Depth 3+: no hint (use scratch/stack)
         """
         src_loc = for_stmt.source_loc
+
+        # Increment loop depth
+        self.loop_depth += 1
+
+        # Assign register hint based on depth
+        if self.loop_depth == 1:
+            register_hint = 'X'  # Outer loop uses X
+        elif self.loop_depth == 2:
+            register_hint = 'Y'  # Inner loop uses Y
+        else:
+            register_hint = None  # 3+ nesting: use scratch/stack
 
         # Enter a new scope for the for-loop block
         self.symbol_table.enter_scope(ScopeKind.BLOCK)
@@ -1455,7 +1472,8 @@ class HIRBuilder:
             definition=for_stmt,
             scope_id=self.symbol_table.current_scope_id,
             var_type=loop_var_type,
-            is_mutable=True
+            is_mutable=True,
+            register_hint=register_hint  # Pass register hint
         )
         self.symbol_table.declare(for_stmt.variable, loop_var_symbol)
 
@@ -1527,6 +1545,9 @@ class HIRBuilder:
 
         # Exit the for-loop scope
         self.symbol_table.exit_scope()
+
+        # Decrement loop depth
+        self.loop_depth -= 1
 
         # Return block containing let and while
         return hir.HIRBlock(
