@@ -1150,8 +1150,7 @@ macro_rules! screen_off() {
 // Set VRAM address for writing
 // Usage: set_vram_addr!(0x0000);
 macro_rules! set_vram_addr($addr:expr) {
-    X = $addr;
-    VMADD = X;
+    VMADD = $addr as u16;
 }
 
 // Set VRAM increment mode
@@ -1163,8 +1162,7 @@ macro_rules! set_vram_inc($mode:expr) {
 // Write word to VRAM
 // Usage: write_vram!(0x1234);
 macro_rules! write_vram($data:expr) {
-    X = $data;
-    VMDATA = X;
+    VMDATA = $data as u16;
 }
 
 // ============================================================================
@@ -1209,8 +1207,7 @@ macro_rules! set_backdrop($color:expr) {
 // Set OAM address
 // Usage: set_oam_addr!(0);
 macro_rules! set_oam_addr($addr:expr) {
-    X = $addr;
-    OAMADD = X;
+    OAMADD = $addr as u16;
 }
 
 // Write sprite entry to OAM (4 bytes)
@@ -1313,7 +1310,6 @@ macro_rules! set_bg4_vscroll($scroll:expr) {
     BG4VOFS = B;
 }
 
-
 // ============================================================================
 // MACROS - Screen Layers
 // ============================================================================
@@ -1340,7 +1336,6 @@ macro_rules! set_obj_sel($size:expr, $base:expr, $gap:expr) {
     OBSEL = $size | ($base & 0x07) | (($gap & 0x03) << 3);
 }
 
-
 // ============================================================================
 // MACROS - Interrupt Control
 // ============================================================================
@@ -1360,7 +1355,7 @@ macro_rules! disable_nmi() {
 // Enable auto-joypad read
 // Usage: enable_autojoy!();
 macro_rules! enable_autojoy() {
-    NMITIMEN = NMITIMEN | AUTOJOY_ENABLE;
+    NMITIMEN |= AUTOJOY_ENABLE;
 }
 
 // Set all interrupt flags at once
@@ -1523,7 +1518,6 @@ macro_rules! dma_copy_wram($channel:literal, $dest:expr, $src:expr, $size:expr) 
     dma_trigger!($channel);
 }
 
-
 // ============================================================================
 // MACROS - HDMA Setup
 // ============================================================================
@@ -1539,7 +1533,6 @@ macro_rules! enable_hdma($channels:expr) {
 macro_rules! disable_hdma() {
     HDMAEN = 0;
 }
-
 
 // ============================================================================
 // MACROS - Mode 7
@@ -1618,18 +1611,6 @@ macro_rules! set_window2($left:expr, $right:expr) {
     WH3 = $right;
 }
 
-
-// ============================================================================
-// MACROS - Mosaic
-// ============================================================================
-
-// Set mosaic size and enable for specified BGs
-// Usage: set_mosaic!(4, SCREEN_BG1);  // 5x5 pixel blocks on BG1
-macro_rules! set_mosaic($size:expr, $bgs:expr) {
-    MOSAIC = (($size & 0x0F) << 4) | ($bgs & 0x0F);
-}
-
-
 // ============================================================================
 // MACROS - IRQ Timers
 // ============================================================================
@@ -1646,7 +1627,6 @@ macro_rules! set_virq($pos:expr) {
     VTIME = $pos as u16;
 }
 
-
 // ============================================================================
 // HELPER FUNCTIONS - Loops and Complex Operations
 // ============================================================================
@@ -1654,8 +1634,7 @@ macro_rules! set_virq($pos:expr) {
 // Wait for VBlank (polling loop)
 fn wait_vblank() {
     loop {
-        A = HVBJOY;
-        if A & 0x80 != 0 {
+        if HVBJOY & 0x80 != 0 {
             break;
         }
     }
@@ -1665,8 +1644,7 @@ fn wait_vblank() {
 fn wait_nmi() {
     A = RDNMI;
     loop {
-        A = RDNMI;
-        if A & 0x80 != 0 {
+        if RDNMI & 0x80 != 0 {
             break;
         }
     }
@@ -1675,8 +1653,7 @@ fn wait_nmi() {
 // Wait for auto-joypad read to complete
 fn wait_autojoy() {
     loop {
-        A = HVBJOY;
-        if A & 0x01 == 0 {
+        if HVBJOY & 0x01 == 0 {
             break;
         }
     }
@@ -1830,18 +1807,6 @@ far fn set_pixelize(level: u8, bgs: u16) {
         MOSAIC = val;
     }
 }
-
-// Set scroll for a specific layer (1-4)
-// Usage: set_scroll!(1, x_scroll, y_scroll);  // Set BG1 scroll
-macro_rules! set_scroll($layer:literal, $scroll_x:expr, $scroll_y:expr) {
-    A = $scroll_x as u16;
-    asm!("STA BG" + stringify!($layer) + "HOFS");
-    asm!("STZ BG" + stringify!($layer) + "HOFS");
-    A = $scroll_y as u16;
-    asm!("STA BG" + stringify!($layer) + "VOFS");
-    asm!("STZ BG" + stringify!($layer) + "VOFS");
-}
-
 
 // ============================================================================
 // SPC700 TRANSFER FUNCTIONS
