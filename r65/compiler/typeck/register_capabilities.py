@@ -73,6 +73,9 @@ VALID_REGISTER_TRANSFERS = {
     ('X', 'S'), ('S', 'X'),
     # B <-> A: XBA swaps them (special case, but direct)
     ('A', 'B'), ('B', 'A'),
+    # B <-> X/Y: via XBA + AND #$00FF + TAX/TAY (zero-extended)
+    ('B', 'X'), ('X', 'B'),
+    ('B', 'Y'), ('Y', 'B'),
     # STATUS <-> A: PHP+PLA / PHA+PLP (requires m8 mode)
     ('STATUS', 'A'), ('A', 'STATUS'),
     # A <-> DBR: PHA+PLB / PHB+PLA (requires m8 mode)

@@ -160,12 +160,102 @@ class TypeConversionSelector(BaseSelector):
         """
         Emit narrowing conversion (16-bit to 8-bit).
 
-        Truncates to low byte only.
+        Truncates to low byte only. For hardware register destinations (X, Y),
+        uses AND #$00FF pattern to ensure clean 16-bit value with zeroed high byte.
 
         Args:
             src_operand: Source operand
             dest_loc: Destination location
         """
+        # Check if destination is a hardware register that needs special handling
+        if dest_loc.kind == LocationKind.HARDWARE and dest_loc.hw_register in ('X', 'Y'):
+            # X/Y = value as u8: zero-extend to ensure clean 16-bit value
+            # Pattern: REP #$20, load value, AND #$00FF, TAX/TAY, SEP #$20
+            self.parent._ensure_m16_mode()
+
+            if isinstance(src_operand, MIRImmediate):
+                # Immediate value - just mask it
+                value = src_operand.value & 0xFF
+                self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(value), "Load masked immediate")
+            elif isinstance(src_operand, HardwareRegister):
+                if src_operand.name == 'X':
+                    self._emit_instr(Opcode.TXA, comment="Load X for narrowing")
+                elif src_operand.name == 'Y':
+                    self._emit_instr(Opcode.TYA, comment="Load Y for narrowing")
+                elif src_operand.name == 'A':
+                    pass  # Already in A
+                elif src_operand.name == 'B':
+                    self.parent._access_b_value_in_a()
+                    self.parent._ensure_m16_mode()  # _access_b_value_in_a switches to m8
+                # Mask to low byte
+                self._emit_instr(Opcode.AND_IMMEDIATE, Immediate(0x00FF), "Zero-extend to 16-bit")
+            else:
+                src_loc = self.parent._get_operand_location(src_operand)
+                if src_loc.kind == LocationKind.HARDWARE:
+                    if src_loc.hw_register == 'X':
+                        self._emit_instr(Opcode.TXA, comment="Load X for narrowing")
+                    elif src_loc.hw_register == 'Y':
+                        self._emit_instr(Opcode.TYA, comment="Load Y for narrowing")
+                    elif src_loc.hw_register == 'A':
+                        pass
+                    elif src_loc.hw_register == 'B':
+                        self.parent._access_b_value_in_a()
+                        self.parent._ensure_m16_mode()
+                    self._emit_instr(Opcode.AND_IMMEDIATE, Immediate(0x00FF), "Zero-extend to 16-bit")
+                else:
+                    self._emit_load_store('LDA', src_loc)
+                    self._emit_instr(Opcode.AND_IMMEDIATE, Immediate(0x00FF), "Zero-extend to 16-bit")
+
+            # Transfer to destination register
+            if dest_loc.hw_register == 'X':
+                self._emit_instr(Opcode.TAX, comment="Transfer to X")
+            else:
+                self._emit_instr(Opcode.TAY, comment="Transfer to Y")
+
+            self.parent._ensure_m8_mode()
+            return
+
+        # Check if destination is A register
+        if dest_loc.kind == LocationKind.HARDWARE and dest_loc.hw_register == 'A':
+            # A = value as u8: just load the low byte, switch to 8-bit mode
+            if isinstance(src_operand, MIRImmediate):
+                value = src_operand.value & 0xFF
+                self.parent._ensure_m8_mode()
+                self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(value))
+            elif isinstance(src_operand, HardwareRegister):
+                if src_operand.name == 'X':
+                    # In 16-bit mode, TXA would copy both bytes including B
+                    # Use AND #$00FF pattern to ensure only low byte
+                    self.parent._ensure_m16_mode()
+                    self._emit_instr(Opcode.TXA, comment="Load X for narrowing")
+                    self._emit_instr(Opcode.AND_IMMEDIATE, Immediate(0x00FF), "Mask to low byte")
+                    self.parent._ensure_m8_mode()
+                elif src_operand.name == 'Y':
+                    self.parent._ensure_m16_mode()
+                    self._emit_instr(Opcode.TYA, comment="Load Y for narrowing")
+                    self._emit_instr(Opcode.AND_IMMEDIATE, Immediate(0x00FF), "Mask to low byte")
+                    self.parent._ensure_m8_mode()
+                elif src_operand.name == 'A':
+                    # A = A as u8: just switch to 8-bit mode (truncate)
+                    self.parent._ensure_m8_mode()
+                elif src_operand.name == 'B':
+                    # A = B as u8: B is already 8-bit
+                    self.parent._access_b_value_in_a()
+            else:
+                src_loc = self.parent._get_operand_location(src_operand)
+                self.parent._ensure_m8_mode()
+                if src_loc.kind == LocationKind.HARDWARE:
+                    if src_loc.hw_register == 'X':
+                        self._emit_instr(Opcode.TXA, comment="Narrow X to u8")
+                    elif src_loc.hw_register == 'Y':
+                        self._emit_instr(Opcode.TYA, comment="Narrow Y to u8")
+                    elif src_loc.hw_register == 'B':
+                        self.parent._access_b_value_in_a()
+                else:
+                    self._emit_load_store('LDA', src_loc, "Load low byte")
+            return
+
+        # Default case: memory destination
         if isinstance(src_operand, MIRImmediate):
             value = src_operand.value & 0xFF
             self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(value))

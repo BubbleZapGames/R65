@@ -23,54 +23,59 @@ The 65816 accumulator has two modes:
 
 ### XBA Instruction
 
-**XBA** (Exchange B and A) swaps the two bytes of the accumulator:
+**XBA** (Exchange B and A) swaps the two bytes of the 16-bit accumulator (C register):
 
 ```asm
 ; Before XBA:
-; A = $34, B = $12
+; A = $34, B = $12 (C = $1234)
 
 XBA
 
 ; After XBA:
-; A = $12, B = $34
+; A = $12, B = $34 (C = $3412)
 ```
 
 **Cost**: 3 cycles (no memory access required)
 
 **Use case**: Efficiently access both bytes of 16-bit value without memory operations
 
+### TAX/TXA Behavior with Mixed Modes
+
+When accumulator is 8-bit (m8) and index registers are 16-bit (x16), transfer instructions behave based on the **destination register size**:
+
+```asm
+; m8/x16 mode (8-bit A, 16-bit X/Y)
+; C register = $HHLL where A=$LL, B=$HH
+
+TAX     ; Transfers full 16-bit C ($HHLL) to X
+        ; X now contains both A and B bytes!
+
+TXA     ; Transfers full 16-bit X to C
+        ; Both A and B are overwritten!
+```
+
+**Important**: TAX/TXA always transfer 16 bits when X is 16-bit, regardless of the M flag. This means:
+- `X = A` copies both A and B (the hidden high byte) to X
+- `A = X` overwrites both A and B with X's value
+
+To transfer only the low byte with zero-extension, use explicit casts (`X = A as u8`).
+
 ---
 
 ## Language Integration
 
-### Mode Restriction
+### Automatic Mode Switching
 
-**B register is ONLY available in m8 mode** (default, when function does not have a `@ A: u16` parameter)
+**B register access automatically switches to 8-bit mode** if not already in 8-bit mode.
 
 ```rust
-// OK: m8 mode (default - no @ A: u16 parameter)
-fn process(value @ B: u8) -> u8 {
-    return B;
-}
-
-// ERROR: m16 mode (inferred from @ A: u16 parameter)
-fn process16(value @ A: u16) {
-    B = 0x12;  // Compile error! B not available in m16 mode
+fn process(value @ A: u16) {
+    BG1VOFS = A;   // 16-bit store
+    BG1VOFS = B;   // Auto SEP #$20, then XBA to access B
 }
 ```
 
-**Error message**:
-```
-error: B register only available in m8 mode
-  --> test.r65:2:5
-   |
-2  |     B = 0x12;
-   |     ^ B requires m8 mode
-   |
-   = note: function has m16 mode due to @ A: u16 parameter
-```
-
-**Rationale**: In m16 mode, the accumulator is a single 16-bit register. The concept of "high byte" and "low byte" as separate entities doesn't apply.
+The compiler ensures XBA operations occur in 8-bit mode for correct B register semantics.
 
 ---
 
@@ -283,6 +288,62 @@ error: B register not allowed in preserves attribute
 ```
 
 **Rationale**: B and A are two halves of the same hardware register. Preserving B without preserving A is meaningless.
+
+---
+
+## Register Transfers
+
+### Direct Transfers (No Cast)
+
+Direct register-to-register assignments use native transfer instructions:
+
+| Source | Code | Generated Assembly | Notes |
+|--------|------|-------------------|-------|
+| `X = A` | TAX | `TAX` | Transfers full 16-bit C to X (includes B!) |
+| `A = X` | TXA | `TXA` | Overwrites both A and B with X |
+| `Y = A` | TAY | `TAY` | Transfers full 16-bit C to Y (includes B!) |
+| `A = Y` | TYA | `TYA` | Overwrites both A and B with Y |
+
+**Warning**: In m8/x16 mode, `TAX` transfers BOTH bytes of the accumulator (A and B) to X. The B register value becomes the high byte of X!
+
+### Casted Transfers (Zero-Extended)
+
+When casting to `u8`, the compiler uses the `AND #$00FF` pattern to ensure clean 16-bit values:
+
+```rust
+X = A as u8;  // Zero-extend A to 16-bit, put in X
+A = X as u8;  // Take low byte of X, zero-extend to A
+Y = A as u8;  // Same pattern
+```
+
+**Generated Assembly for `X = A as u8`**:
+```asm
+REP #$20        ; 16-bit mode
+AND #$00FF      ; Clear high byte (B) in 16-bit C
+TAX             ; Transfer clean 16-bit value to X
+SEP #$20        ; Back to 8-bit mode
+```
+
+### B Register Transfers
+
+B is always 8-bit, so transfers to/from 16-bit X/Y require zero-extension:
+
+| Transfer | Generated Assembly |
+|----------|-------------------|
+| `X = B` | `XBA; REP; AND #$00FF; TAX; SEP; XBA` |
+| `B = X` | `PHA; REP; TXA; SEP; XBA; PLA` |
+| `Y = B` | `XBA; REP; AND #$00FF; TAY; SEP; XBA` |
+| `B = Y` | `PHA; REP; TYA; SEP; XBA; PLA` |
+
+**Example `X = B`**:
+```asm
+XBA             ; Get B value into A position
+REP #$20        ; 16-bit mode
+AND #$00FF      ; Zero-extend to clean 16-bit
+TAX             ; Transfer to X
+SEP #$20        ; Back to 8-bit mode
+XBA             ; Restore A/B positions
+```
 
 ---
 
@@ -511,5 +572,5 @@ R65's B register support reflects the **hardware-first design principle**:
 
 ---
 
-*Last Updated: 2026-01-03*
-*Status: Design Complete, Implementation Pending*
+*Last Updated: 2026-02-01*
+*Status: Implemented*

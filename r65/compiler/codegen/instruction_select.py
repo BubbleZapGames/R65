@@ -1318,6 +1318,7 @@ class InstructionSelector:
                 self._emit_implied(Opcode.PLB, "Pull to DBR")
                 return
         # Special handling for B register
+        # B is always 8-bit, so transfers to/from 16-bit X/Y need zero-extension
         if src_reg == 'B' or dest_reg == 'B':
             if src_reg == 'B' and dest_reg == 'A':
                 # B to A: If we're swapped, A already has B's value
@@ -1327,18 +1328,31 @@ class InstructionSelector:
                 # A to B: XBA swaps them
                 self._emit_xba("Transfer A to B")
                 return
-            elif src_reg == 'B':
-                # B to X/Y: B -> A -> X/Y
-                self._access_b_value_in_a()
-                self._emit_register_transfer('A', dest_reg)
-                self._ensure_xba_state_normal("Restore A")
+            elif src_reg == 'B' and dest_reg in ('X', 'Y'):
+                # B to X/Y: Get B value, zero-extend to 16-bit, transfer to X/Y
+                # Pattern: XBA (get B in A), REP #$20, AND #$00FF, TAX/TAY, SEP #$20
+                self._access_b_value_in_a()  # XBA to get B in A (switches to m8)
+                self._ensure_m16_mode()
+                self._emit_immediate(Opcode.AND_IMMEDIATE, 0x00FF, "Zero-extend B to 16-bit")
+                if dest_reg == 'X':
+                    self._emit_implied(Opcode.TAX, "Transfer to X")
+                else:
+                    self._emit_implied(Opcode.TAY, "Transfer to Y")
+                self._ensure_m8_mode()
+                self._ensure_xba_state_normal("Restore A/B")
                 return
-            elif dest_reg == 'B':
-                # X/Y to B: X/Y -> A -> B
-                # Save current A
+            elif dest_reg == 'B' and src_reg in ('X', 'Y'):
+                # X/Y to B: Transfer low byte of X/Y to B
+                # Pattern: Save A, REP #$20, TXA/TYA, AND #$00FF, SEP #$20, XBA, Restore A
                 self._emit_implied(Opcode.PHA, "Save A")
-                self._emit_register_transfer(src_reg, 'A')
-                self._emit_xba("Move to B")
+                self._ensure_m16_mode()
+                if src_reg == 'X':
+                    self._emit_implied(Opcode.TXA, "Transfer X to A")
+                else:
+                    self._emit_implied(Opcode.TYA, "Transfer Y to A")
+                self._emit_immediate(Opcode.AND_IMMEDIATE, 0x00FF, "Mask to low byte")
+                self._ensure_m8_mode()
+                self._emit_implied(Opcode.XBA, "Move to B")
                 self._emit_implied(Opcode.PLA, "Restore A")
                 self._invalidate_xba_state()  # State unknown after PLA
                 return
