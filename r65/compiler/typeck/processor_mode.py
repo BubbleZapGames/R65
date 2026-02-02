@@ -110,12 +110,9 @@ class ProcessorMode:
         elif reg_name == 'Y':
             return self.get_y_type()
         elif reg_name == 'B':
-            # B register only available in m8 mode
-            if self.m_mode == ModeState.M8:
-                return BasicTypeInfo("u8")
-            else:
-                # B not available in m16 mode
-                return None
+            # B register is always u8 - it's the high byte of the 16-bit accumulator
+            # Programmer is responsible for ensuring proper mode via STATUS.A16 = false
+            return BasicTypeInfo("u8")
         elif reg_name == 'STATUS':
             return BasicTypeInfo("u8")
         elif reg_name == 'D':
