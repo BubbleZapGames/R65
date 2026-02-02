@@ -1,0 +1,30 @@
+// Q10.6 Fixed-Point Type Library
+// 16-bit signed: 10 integer bits (-512 to +511), 6 fractional bits (1/64 precision)
+//
+// Example usage:
+//
+//   include!("lib/q10_type.r65")
+//
+//   static mut velocity_q10: i16;    // Q10.6 velocity
+//
+//   fn update() {
+//       // Create fixed-point values
+//       let player_x_q10 : i16 = q10_from_int!(100);   // 100.0
+//       velocity_q10 = q10_from!(0, 32);     // 0.5 (32/64)
+//
+//       // Extract integer for screen position
+//       let screen_x: i16 = q10_to_int!(player_x_q10);  // 100
+//
+//       // Extract fractional part (0-63)
+//       let frac: i16 = q10_to_frac!(player_x_q10);     // 0
+//   }
+
+const Q10_ONE: i16 = 64;
+const Q10_HALF: i16 = 32;
+const Q10_FRAC_MASK: i16 = 0x3F;
+const Q10_1_64TH: u8 = 1;
+
+macro_rules! q10_from_int($n:expr) { $n << 6 }
+macro_rules! q10_from($n:expr, $f:expr) { ($n << 6) | ($f & Q10_FRAC_MASK) }
+macro_rules! q10_to_int($q:expr) { $q >> 6 }
+macro_rules! q10_to_frac($q:expr) { $q & Q10_FRAC_MASK }
