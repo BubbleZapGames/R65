@@ -191,9 +191,12 @@ class ProgramCodeGenerator:
         # Get structured nodes from emitter
         nodes = self.emitter.get_nodes()
 
+        # Collect volatile register names and addresses (from #[hw] attributes) for peephole optimizer
+        volatile_names, volatile_addresses = self._collect_volatile_registers(mir_program)
+
         # Apply node-based peephole optimizations (only if opt_level >= 1)
         if opt_level >= 1:
-            optimized_nodes, num_optimizations = optimize_nodes(nodes)
+            optimized_nodes, num_optimizations = optimize_nodes(nodes, volatile_names, volatile_addresses)
             if num_optimizations > 0:
                 print(f"Peephole optimizer: {num_optimizations} optimization(s) applied")
         else:
@@ -226,6 +229,34 @@ class ProgramCodeGenerator:
     # ========================================================================
     # Helper Methods
     # ========================================================================
+
+    def _collect_volatile_registers(self, mir_program: MIRProgram) -> tuple:
+        """
+        Collect volatile register names and addresses from #[hw] statics.
+
+        Variables with #[hw] attribute are volatile - stores to them have
+        side effects (I/O operations) and must never be eliminated by the
+        peephole optimizer, even if the value appears to be overwritten.
+
+        Args:
+            mir_program: MIR program containing static declarations
+
+        Returns:
+            Tuple of (set of names, set of addresses) for volatile registers
+        """
+        from r65.compiler.hir.attributes import StorageKind
+
+        volatile_names = set()
+        volatile_addresses = set()
+
+        for static in mir_program.statics:
+            if hasattr(static, 'storage_attr') and static.storage_attr:
+                if static.storage_attr.storage_kind == StorageKind.HW:
+                    volatile_names.add(static.name)
+                    if static.storage_attr.address is not None:
+                        volatile_addresses.add(static.storage_attr.address)
+
+        return volatile_names, volatile_addresses
 
     def _organize_functions_by_bank(self, functions: List[MIRFunction]) -> Dict[int, List[MIRFunction]]:
         """

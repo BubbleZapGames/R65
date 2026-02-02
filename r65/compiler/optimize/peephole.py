@@ -198,8 +198,19 @@ class PeepholeOptimizer:
     Applies multiple optimization passes to eliminate redundant operations.
     """
 
-    def __init__(self):
+    def __init__(self, volatile_names: Set[str] = None, volatile_addresses: Set[int] = None):
+        """
+        Initialize peephole optimizer.
+
+        Args:
+            volatile_names: Set of variable names that are volatile (from #[hw] attributes).
+                           Stores to these locations will not be eliminated.
+            volatile_addresses: Set of hardware register addresses (from #[hw] attributes).
+                               Stores to these addresses will not be eliminated.
+        """
         self.stats = OptimizationStats()
+        self.volatile_names = volatile_names or set()
+        self.volatile_addresses = volatile_addresses or set()
 
     @property
     def optimizations_applied(self) -> int:
@@ -312,6 +323,13 @@ class PeepholeOptimizer:
                 i += 1
                 continue
 
+            # Skip hardware registers - stores have side effects (I/O)
+            # SNES hardware ranges: $2100-$213F (PPU), $4200-$437F (CPU I/O)
+            if self._is_hardware_register(store_operand):
+                optimized.append(node)
+                i += 1
+                continue
+
             # Look ahead to see if there's another store to same address
             # before the value is read
             is_dead = self._is_dead_store(nodes, i, store_operand)
@@ -330,6 +348,45 @@ class PeepholeOptimizer:
         """Check if opcode uses indexed addressing."""
         name = opcode.name
         return '_X' in name or '_Y' in name
+
+    def _is_hardware_register(self, operand) -> bool:
+        """
+        Check if operand is a hardware register (volatile).
+
+        Hardware register writes have side effects (I/O operations) and
+        must never be eliminated, even if the value is overwritten later.
+
+        Checks volatile register names and addresses from #[hw] attributes.
+        """
+        from r65.compiler.codegen.asm_nodes import Address
+
+        if operand is None:
+            return False
+
+        # Extract the actual value from Address objects
+        value = operand
+        if isinstance(operand, Address):
+            value = operand.value
+
+        # Check if this is a known volatile register name (from #[hw] attribute)
+        if isinstance(value, str):
+            val = value.strip()
+            if val in self.volatile_names:
+                return True
+            # Also check for hex address format against known volatile addresses
+            if val.startswith('$'):
+                try:
+                    addr = int(val[1:], 16)
+                    if addr in self.volatile_addresses:
+                        return True
+                except ValueError:
+                    pass
+        elif isinstance(value, int):
+            # Check if address is in known volatile addresses
+            if value in self.volatile_addresses:
+                return True
+
+        return False
 
     def _is_dead_store(self, nodes: List['AsmNode'], store_idx: int, store_operand) -> bool:
         """Check if a store is dead (overwritten before read)."""
@@ -596,16 +653,21 @@ class PeepholeOptimizer:
 # Public API
 # ============================================================================
 
-def optimize_nodes(nodes: List['AsmNode']) -> Tuple[List['AsmNode'], int]:
+def optimize_nodes(nodes: List['AsmNode'], volatile_names: Set[str] = None,
+                   volatile_addresses: Set[int] = None) -> Tuple[List['AsmNode'], int]:
     """
     Apply peephole optimizations to AsmNode list.
 
     Args:
         nodes: List of AsmNode objects
+        volatile_names: Set of variable names that are volatile (from #[hw] attributes).
+                       Stores to these locations will not be eliminated.
+        volatile_addresses: Set of hardware register addresses (from #[hw] attributes).
+                           Stores to these addresses will not be eliminated.
 
     Returns:
         Tuple of (optimized nodes, number of optimizations applied)
     """
-    optimizer = PeepholeOptimizer()
+    optimizer = PeepholeOptimizer(volatile_names, volatile_addresses)
     optimized = optimizer.optimize(nodes)
     return optimized, optimizer.optimizations_applied
