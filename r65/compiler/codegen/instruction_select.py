@@ -355,14 +355,21 @@ class InstructionSelector:
 
     def _emit_xba(self, comment: str = None):
         """Emit XBA instruction with state tracking."""
+        # XBA swaps bytes within 16-bit C, but to use B as an 8-bit register
+        # for subsequent operations, we need to be in 8-bit mode
+        self._ensure_m8_mode()
         self.xba_manager.emit_xba(comment)
 
     def _ensure_xba_state_normal(self, comment: str = None):
         """Ensure A and B are in normal positions (A=A, B=B)."""
+        # XBA requires 8-bit mode for B register operations
+        self._ensure_m8_mode()
         self.xba_manager.ensure_normal(comment)
 
     def _ensure_xba_state_swapped(self, comment: str = None):
         """Ensure A and B are swapped (A=B, B=A)."""
+        # XBA requires 8-bit mode for B register operations
+        self._ensure_m8_mode()
         self.xba_manager.ensure_swapped(comment)
 
     def _mark_a_modified(self):
@@ -375,10 +382,14 @@ class InstructionSelector:
 
     def _access_b_value_in_a(self):
         """Make B register value available in A for reading."""
+        # B register access requires 8-bit mode (XBA swaps bytes within 16-bit C)
+        self._ensure_m8_mode()
         self.xba_manager.access_b_value_in_a()
 
     def _store_to_b_from_a(self):
         """Store current A value into B register."""
+        # B register access requires 8-bit mode (XBA swaps bytes within 16-bit C)
+        self._ensure_m8_mode()
         self.xba_manager.store_to_b_from_a()
 
     # ========================================================================
