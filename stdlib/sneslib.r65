@@ -1150,7 +1150,8 @@ macro_rules! screen_off() {
 // Set VRAM address for writing
 // Usage: set_vram_addr!(0x0000);
 macro_rules! set_vram_addr($addr:expr) {
-    VMADD = $addr as u16;
+    X = $addr;
+    VMADD = X;
 }
 
 // Set VRAM increment mode
@@ -1162,7 +1163,8 @@ macro_rules! set_vram_inc($mode:expr) {
 // Write word to VRAM
 // Usage: write_vram!(0x1234);
 macro_rules! write_vram($data:expr) {
-    VMDATA = $data as u16;
+    X = $data;
+    VMDATA = X;
 }
 
 // ============================================================================
@@ -1207,7 +1209,8 @@ macro_rules! set_backdrop($color:expr) {
 // Set OAM address
 // Usage: set_oam_addr!(0);
 macro_rules! set_oam_addr($addr:expr) {
-    OAMADD = $addr as u16;
+    X = $addr;
+    OAMADD = X;
 }
 
 // Write sprite entry to OAM (4 bytes)
@@ -1382,7 +1385,6 @@ macro_rules! clear_nmi() {
 // Set DMA source address from a far pointer/label
 // Usage: dma_set_src!(0, my_graphics_data);
 macro_rules! dma_set_src($channel:literal, $ptr:expr) {
-    STATUS.A16 = false;  // Ensure 8-bit A (emits SEP #$20 only if needed)
     asm!(
         "LDA #<" + stringify!($ptr),
         "STA A1T" + stringify!($channel) + "L",
@@ -1397,7 +1399,6 @@ macro_rules! dma_set_src($channel:literal, $ptr:expr) {
 // Combines WRAM address setup (WMADDL/M/H) with DMA mode/BBAD configuration
 // Usage: dma_set_dest!(0, DMA_MODE_1REG_1WRITE, 0x7E2000);
 macro_rules! dma_set_dest($channel:literal, $mode:expr, $dest:expr) {
-    STATUS.A16 = false;  // Ensure 8-bit A (emits SEP #$20 only if needed)
     asm!(
         "LDA #<" + stringify!($dest),
         "STA WMADDL",
@@ -1446,6 +1447,7 @@ macro_rules! dma_trigger($channel:expr) {
 // DMA copy to VRAM
 // Usage: dma_copy_vram!(0, src_ptr, dest_vram, size);
 macro_rules! dma_copy_vram($channel:literal, $src:expr, $dest:expr, $size:expr) {
+    STATUS.A16 = false;  // Ensure 8-bit A (emits SEP #$20 only if needed)
     VMAIN = VMAIN_INCREMENT_HIGH;
     asm!(
         "LDX #" + stringify!($dest),
