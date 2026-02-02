@@ -815,8 +815,8 @@ class ClobberRegionAnalyzer:
         self.block_analyzer = instr_liveness.block_analyzer
         self.liveness = instr_liveness.liveness
 
-    def analyze_block(self, block_id: int, preserves_map: Dict[str, Set[str]] = None
-                     ) -> Dict[str, List[ClobberRegion]]:
+    def analyze_block(self, block_id: int, preserves_map: Dict[str, Set[str]] = None,
+                     include_a: bool = False) -> Dict[str, List[ClobberRegion]]:
         """
         Analyze clobber regions for a single basic block.
 
@@ -824,20 +824,24 @@ class ClobberRegionAnalyzer:
             block_id: Block ID to analyze
             preserves_map: Map from function name to set of preserved registers.
                           If None, assumes all calls clobber all registers.
+            include_a: If True, also analyze A register regions
 
         Returns:
-            Dictionary mapping register name ('X', 'Y') to list of ClobberRegions
+            Dictionary mapping register name ('A', 'X', 'Y') to list of ClobberRegions
         """
         if preserves_map is None:
             preserves_map = {}
 
         block = self.func.blocks.get(block_id)
         if not block:
-            return {'X': [], 'Y': []}
+            return {'A': [], 'X': [], 'Y': []} if include_a else {'X': [], 'Y': []}
 
         regions: Dict[str, List[ClobberRegion]] = {'X': [], 'Y': []}
+        if include_a:
+            regions['A'] = []
 
-        for hw_reg in ('X', 'Y'):
+        regs_to_analyze = ('A', 'X', 'Y') if include_a else ('X', 'Y')
+        for hw_reg in regs_to_analyze:
             regions[hw_reg] = self._analyze_register_regions(
                 block, block_id, hw_reg, preserves_map
             )
@@ -938,13 +942,14 @@ class ClobberRegionAnalyzer:
 
         return regions
 
-    def analyze_function(self, preserves_map: Dict[str, Set[str]] = None
-                        ) -> Dict[int, Dict[str, List[ClobberRegion]]]:
+    def analyze_function(self, preserves_map: Dict[str, Set[str]] = None,
+                        include_a: bool = False) -> Dict[int, Dict[str, List[ClobberRegion]]]:
         """
         Analyze clobber regions for all blocks in a function.
 
         Args:
             preserves_map: Map from function name to set of preserved registers
+            include_a: If True, also analyze A register regions
 
         Returns:
             Dictionary mapping block_id to register regions
@@ -955,6 +960,6 @@ class ClobberRegionAnalyzer:
         result: Dict[int, Dict[str, List[ClobberRegion]]] = {}
 
         for block_id in self.func.blocks:
-            result[block_id] = self.analyze_block(block_id, preserves_map)
+            result[block_id] = self.analyze_block(block_id, preserves_map, include_a)
 
         return result

@@ -145,6 +145,8 @@ class CallInstructionSelector(BaseSelector):
         self._region_state = ActiveRegionState()
         # Pre-computed regions for current function: {block_id: {hw_reg: [ClobberRegion]}}
         self._function_regions: Optional[Dict[int, Dict[str, List]]] = None
+        # Whether A is bound to a vreg (uses region-based spilling if True)
+        self._a_bound_to_vreg: bool = False
 
     def initialize_regions_for_function(self):
         """
@@ -155,6 +157,7 @@ class CallInstructionSelector(BaseSelector):
         reg_alloc = self.parent.reg_alloc
         if not reg_alloc or not reg_alloc.instr_liveness:
             self._function_regions = None
+            self._a_bound_to_vreg = False
             return
 
         from r65.compiler.mir.liveness import ClobberRegionAnalyzer
@@ -162,8 +165,16 @@ class CallInstructionSelector(BaseSelector):
         # Build preserves map from function signatures in the current function
         preserves_map = self._build_preserves_map()
 
+        # Check if A is bound to a vreg (e.g., function parameter @ A)
+        # If so, include A in region-based spilling
+        a_alloc = reg_alloc.get_hw_alloc('A')
+        self._a_bound_to_vreg = a_alloc.allocated_vreg is not None
+
         analyzer = ClobberRegionAnalyzer(reg_alloc.instr_liveness)
-        self._function_regions = analyzer.analyze_function(preserves_map)
+        self._function_regions = analyzer.analyze_function(
+            preserves_map,
+            include_a=self._a_bound_to_vreg
+        )
 
     def initialize_regions_for_block(self, block_id: int):
         """
@@ -179,7 +190,8 @@ class CallInstructionSelector(BaseSelector):
             self._region_state = ActiveRegionState()
             return
 
-        regions = self._function_regions.get(block_id, {'X': [], 'Y': []})
+        default_regions = {'A': [], 'X': [], 'Y': []} if self._a_bound_to_vreg else {'X': [], 'Y': []}
+        regions = self._function_regions.get(block_id, default_regions)
         self._region_state.set_block_regions(block_id, regions)
 
     def _build_preserves_map(self) -> Dict[str, Set[str]]:
@@ -411,8 +423,16 @@ class CallInstructionSelector(BaseSelector):
             if reg_name in preserved:
                 continue
 
-            # For X/Y, use region-based spilling if available
-            if reg_name in ('X', 'Y') and instr_idx is not None and self._function_regions is not None:
+            # Check if region-based spilling is available for this register
+            # - X/Y always use region-based when available
+            # - A uses region-based only when bound to a vreg
+            use_region_based = (
+                instr_idx is not None and
+                self._function_regions is not None and
+                (reg_name in ('X', 'Y') or (reg_name == 'A' and self._a_bound_to_vreg))
+            )
+
+            if use_region_based:
                 # Check if this call is in a region for this register
                 region = self._region_state.get_region_for_call(reg_name, instr_idx)
 
@@ -426,7 +446,7 @@ class CallInstructionSelector(BaseSelector):
                     # Else: already in active region, no spill needed
                     continue
 
-            # For A register or when region analysis unavailable, use per-call analysis
+            # Fall back to per-call analysis for A (when not bound) or when no region
             hw_alloc = reg_alloc.get_hw_alloc(reg_name)
             vreg = hw_alloc.allocated_vreg
 
@@ -489,8 +509,9 @@ class CallInstructionSelector(BaseSelector):
 
         _, instr_idx = pos
 
-        # Check each active region for X/Y
-        for hw_reg in ('X', 'Y'):
+        # Check each active region for X/Y and A (when bound)
+        regs_to_check = ('A', 'X', 'Y') if self._a_bound_to_vreg else ('X', 'Y')
+        for hw_reg in regs_to_check:
             if self._region_state.is_region_active(hw_reg):
                 if self._region_state.is_last_call_in_region(hw_reg, instr_idx):
                     # Last call in region - need to reload
@@ -498,8 +519,9 @@ class CallInstructionSelector(BaseSelector):
                     # Clear active region
                     self._region_state.clear_active_region(hw_reg)
 
-        # A register uses per-call spilling - always reload if spilled
-        if self._region_state.pending_a_spill is not None:
+        # A register per-call spilling (only when NOT using region-based)
+        # This handles the case where A is used but not bound to a vreg
+        if not self._a_bound_to_vreg and self._region_state.pending_a_spill is not None:
             reloads.append(self._region_state.pending_a_spill)
 
         return reloads

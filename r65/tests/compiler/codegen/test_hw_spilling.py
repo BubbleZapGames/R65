@@ -477,96 +477,87 @@ class TestSpillReloadOrder:
 
 
 class Test16BitAccumulatorSpilling:
-    """Tests for 16-bit A register spilling with correct mode handling."""
+    """Tests for 16-bit A register handling with correct mode."""
 
-    def test_16bit_a_spill_correct_mode(self):
-        """Test that 16-bit A is spilled and reloaded in m16 mode."""
+    def test_16bit_a_saved_to_stack(self):
+        """Test that 16-bit A parameter is correctly saved and restored.
+
+        When a 16-bit A parameter is live across a clobbering call, the
+        slot allocator should allocate it to stack (not mark it coalesceable).
+        This is more efficient than spilling via PHA/PLA.
+        """
         source = """
         fn clobbers_a() {
             A = 999;
         }
 
-        fn test_16bit_a_spill(wide @ A: u16) -> u16 {
+        fn test_16bit_a(wide @ A: u16) -> u16 {
             // A is in m16 mode (16-bit) because of u16 parameter
-            clobbers_a();  // Spill 16-bit A
+            clobbers_a();  // A clobbered - value should be on stack
             return wide;   // Use wide after call
         }
         """
         result = compile_string(source, "test.r65")
 
-        # Find the test_16bit_a_spill function
+        # Find the test_16bit_a function
         lines = result.split('\n')
         in_func = False
-        pha_count = 0
-        pla_count = 0
-        pha_mode = None
-        pla_mode = None
+        has_sta_stack = False
+        has_lda_stack = False
         for line in lines:
-            if 'test_16bit_a_spill:' in line:
+            if 'test_16bit_a:' in line:
                 in_func = True
             elif in_func and (line.strip().startswith('RTS') or line.strip().startswith('RTL')):
                 break
             elif in_func:
-                # Look for PHA with m16 comment
-                if 'PHA' in line:
-                    pha_count += 1
-                    if 'm16' in line:
-                        pha_mode = 16
-                    elif 'm8' in line:
-                        pha_mode = 8
-                # Look for PLA with mode comment
-                if 'PLA' in line:
-                    pla_count += 1
-                    if 'm16' in line:
-                        pla_mode = 16
-                    elif 'm8' in line:
-                        pla_mode = 8
+                # Look for STA and LDA with stack-relative addressing
+                if 'STA $' in line and ',S' in line:
+                    has_sta_stack = True
+                if 'LDA $' in line and ',S' in line:
+                    has_lda_stack = True
 
-        # Should have PHA/PLA for spilling A
-        assert pha_count >= 1, f"Expected at least 1 PHA, got {pha_count}"
-        assert pla_count >= 1, f"Expected at least 1 PLA, got {pla_count}"
+        # Value should be saved to and loaded from stack
+        assert has_sta_stack, "Expected STA to stack for saving parameter"
+        assert has_lda_stack, "Expected LDA from stack for restoring parameter"
 
-        # If mode comments present, verify m16 mode
-        if pha_mode is not None:
-            assert pha_mode == 16, f"Expected PHA in m16 mode, got m{pha_mode}"
-        if pla_mode is not None:
-            assert pla_mode == 16, f"Expected PLA in m16 mode, got m{pla_mode}"
-
-    def test_16bit_a_spill_offset(self):
-        """Test that spill offset is 2 bytes for 16-bit A."""
-        # Test that PHA/PLA in m16 mode correctly pushes/pulls 2 bytes
-        # We verify this by checking that the mode switch comments show m16
+    def test_16bit_a_region_spill_multiple_calls(self):
+        """Test that 16-bit A uses region-based spilling for multiple calls."""
         source = """
         fn clobbers_a() {
             A = 999;
         }
 
-        fn test_spill_offset(wide @ A: u16) -> u16 {
-            clobbers_a();  // Spill 16-bit A (2 bytes)
+        fn test_region_spill(wide @ A: u16) -> u16 {
+            clobbers_a();  // A clobbered
+            clobbers_a();  // A clobbered again
+            clobbers_a();  // A clobbered third time
             return wide;
         }
         """
         result = compile_string(source, "test.r65")
 
-        # Verify m16 mode is used for both spill and reload
+        # The value should be saved once and loaded once (to/from stack)
+        # Not saved/loaded around each call
         lines = result.split('\n')
         in_func = False
-        pha_m16 = False
-        pla_m16 = False
+        param_save_count = 0
+        param_load_count = 0
         for line in lines:
-            if 'test_spill_offset:' in line:
+            if 'test_region_spill:' in line:
                 in_func = True
             elif in_func and (line.strip().startswith('RTS') or line.strip().startswith('RTL')):
                 break
             elif in_func:
-                if 'PHA' in line and 'm16' in line:
-                    pha_m16 = True
-                if 'PLA' in line and 'm16' in line:
-                    pla_m16 = True
+                # Count parameter save/load operations at low stack offset
+                # $01,S is the parameter location, not epilogue operations
+                if 'STA $01,S' in line or 'STA 1,S' in line:
+                    param_save_count += 1
+                if 'LDA $01,S' in line or 'LDA 1,S' in line:
+                    param_load_count += 1
 
-        # Both PHA and PLA should be in m16 mode for a 16-bit value
-        assert pha_m16, "Expected PHA in m16 mode for 16-bit A spill"
-        assert pla_m16, "Expected PLA in m16 mode for 16-bit A reload"
+        # Should have exactly 1 save (before calls) and 1 load (after calls)
+        assert param_save_count == 1, f"Expected 1 parameter save, got {param_save_count}"
+        assert param_load_count == 1, f"Expected 1 parameter load, got {param_load_count}"
 
     def test_mode_restored_before_a_reload(self):
         """Test that mode is restored to m16 before reloading 16-bit A."""

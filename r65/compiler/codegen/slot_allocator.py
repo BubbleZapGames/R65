@@ -15,7 +15,7 @@ consecutive slots and tracking the full range for interference checking.
 
 from typing import Dict, Set, List, Optional, Tuple, Any
 from dataclasses import dataclass, field
-from r65.compiler.mir.nodes import VirtualRegister, MIRFunction, Move, Return, HardwareRegister
+from r65.compiler.mir.nodes import VirtualRegister, MIRFunction, Move, Return, HardwareRegister, Call
 from r65.compiler.mir.liveness import LivenessAnalyzer
 from r65.compiler.hir.unified_type_utils import get_unified_type_size
 from r65.compiler.hir import HIRError
@@ -268,6 +268,7 @@ class StackSlotAllocator:
         A vreg is hw-coalesceable if:
         1. Its only definition is a Move from a hardware register
         2. Its only use is as a Return source (which goes back to a hw register)
+        3. There are NO calls between def and use that clobber the register
 
         These vregs don't need stack slots - they can stay in the register.
 
@@ -279,8 +280,14 @@ class StackSlotAllocator:
         vreg_defs: Dict[int, List] = {}
         vreg_uses: Dict[int, List] = {}
 
-        for block in self.func.blocks.values():
-            for instr in block.instructions:
+        # Track instruction positions for ordering checks
+        # Map: instruction -> (block_id, instr_idx)
+        instr_positions: Dict[Any, Tuple[int, int]] = {}
+
+        for block_id, block in self.func.blocks.items():
+            for instr_idx, instr in enumerate(block.instructions):
+                instr_positions[id(instr)] = (block_id, instr_idx)
+
                 if isinstance(instr, Move):
                     if isinstance(instr.dest, VirtualRegister):
                         vreg_id = instr.dest.id
@@ -319,12 +326,13 @@ class StackSlotAllocator:
             if len(defs) != 1:
                 continue
 
-            instr, hw_reg = defs[0]
+            def_instr, hw_reg = defs[0]
             if hw_reg is None:
                 continue
 
             uses = vreg_uses.get(vreg_id, [])
             if not uses:
+                # No uses - can be coalesceable (dead value)
                 for block in self.func.blocks.values():
                     for check_instr in block.instructions:
                         if isinstance(check_instr, Move) and isinstance(check_instr.dest, VirtualRegister):
@@ -337,6 +345,61 @@ class StackSlotAllocator:
             if not all_returns:
                 continue
 
+            # Check if there's a clobbering call between def and any use
+            def_pos = instr_positions.get(id(def_instr))
+            if def_pos is None:
+                continue
+
+            has_clobbering_call = False
+            def_block_id, def_idx = def_pos
+
+            # For simplicity, only check within the same block
+            # (cross-block analysis would require CFG traversal)
+            for use_instr in uses:
+                use_pos = instr_positions.get(id(use_instr))
+                if use_pos is None:
+                    continue
+
+                use_block_id, use_idx = use_pos
+
+                # Only handle same-block case for now
+                if use_block_id == def_block_id:
+                    block = self.func.blocks[def_block_id]
+                    # Check for calls between def and use
+                    for i in range(def_idx + 1, use_idx):
+                        instr = block.instructions[i]
+                        if isinstance(instr, Call):
+                            # Check if this call clobbers hw_reg
+                            preserved = set()
+                            if instr.preserves_attr:
+                                preserved = set(instr.preserves_attr.registers)
+                            if hw_reg not in preserved:
+                                has_clobbering_call = True
+                                break
+                    if has_clobbering_call:
+                        break
+                else:
+                    # Cross-block: conservatively assume there might be a clobbering call
+                    # Check all blocks for any call that clobbers this register
+                    for block in self.func.blocks.values():
+                        for instr in block.instructions:
+                            if isinstance(instr, Call):
+                                preserved = set()
+                                if instr.preserves_attr:
+                                    preserved = set(instr.preserves_attr.registers)
+                                if hw_reg not in preserved:
+                                    has_clobbering_call = True
+                                    break
+                        if has_clobbering_call:
+                            break
+                    if has_clobbering_call:
+                        break
+
+            if has_clobbering_call:
+                # Don't mark as coalesceable - needs stack allocation
+                continue
+
+            # Safe to coalesce
             for block in self.func.blocks.values():
                 for check_instr in block.instructions:
                     if isinstance(check_instr, Move) and isinstance(check_instr.dest, VirtualRegister):
