@@ -958,3 +958,98 @@ class TestTopLevelMacroInvocation:
             expand_macros(program)
 
         assert "recursive macro expansion" in str(exc_info.value)
+
+
+class TestCompileErrorMacro:
+    """Tests for the built-in compile_error! macro."""
+
+    def test_compile_error_in_statement_context(self):
+        """Test compile_error! raises error in statement context."""
+        source = '''
+        fn test() {
+            compile_error!("This feature is not implemented");
+        }
+        '''
+        program = parse(source, "<test>")
+
+        with pytest.raises(MacroError) as exc_info:
+            expand_macros(program)
+
+        assert "This feature is not implemented" in str(exc_info.value)
+
+    def test_compile_error_in_expression_context(self):
+        """Test compile_error! raises error in expression context."""
+        source = '''
+        fn test() {
+            let x: u8 = compile_error!("Cannot use this");
+        }
+        '''
+        program = parse(source, "<test>")
+
+        with pytest.raises(MacroError) as exc_info:
+            expand_macros(program)
+
+        assert "Cannot use this" in str(exc_info.value)
+
+    def test_compile_error_without_quotes(self):
+        """Test compile_error! with bare tokens (no quotes)."""
+        source = '''
+        fn test() {
+            compile_error!(missing feature X);
+        }
+        '''
+        program = parse(source, "<test>")
+
+        with pytest.raises(MacroError) as exc_info:
+            expand_macros(program)
+
+        assert "missing feature X" in str(exc_info.value)
+
+    def test_compile_error_no_arguments(self):
+        """Test compile_error! with no arguments uses default message."""
+        source = '''
+        fn test() {
+            compile_error!();
+        }
+        '''
+        program = parse(source, "<test>")
+
+        with pytest.raises(MacroError) as exc_info:
+            expand_macros(program)
+
+        assert "explicit compile error" in str(exc_info.value)
+
+    def test_compile_error_preserves_source_location(self):
+        """Test that compile_error! error has correct source location."""
+        source = '''
+        fn test() {
+            compile_error!("error here");
+        }
+        '''
+        program = parse(source, "<test>")
+
+        with pytest.raises(MacroError) as exc_info:
+            expand_macros(program)
+
+        # Error should have source location
+        error = exc_info.value
+        assert error.source_loc is not None
+        assert error.source_loc.line == 3  # Line 3 (1-indexed)
+
+    def test_compile_error_in_conditional_macro(self):
+        """Test compile_error! can be used inside user-defined macros."""
+        source = '''
+        macro_rules! require_feature($name:ident) {
+            compile_error!("Feature not enabled");
+        }
+
+        fn test() {
+            require_feature!(networking);
+        }
+        '''
+        program = parse(source, "<test>")
+
+        with pytest.raises(MacroError) as exc_info:
+            expand_macros(program)
+
+        assert "Feature not enabled" in str(exc_info.value)

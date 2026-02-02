@@ -294,6 +294,13 @@ class MacroExpander:
             return None
 
         if isinstance(expr, ast.MacroInvocation):
+            # Handle compile_error! - raises error at compile time
+            if expr.name == "compile_error":
+                msg = ' '.join(expr.args) if expr.args else "explicit compile error"
+                # Strip quotes if the message is a string literal
+                if msg.startswith('"') and msg.endswith('"'):
+                    msg = msg[1:-1]
+                raise MacroError(msg, expr.source_loc)
             # Handle stringify! specially
             if expr.name == "stringify":
                 return self._expand_stringify_expr(expr.args, expr.source_loc)
@@ -524,6 +531,13 @@ class MacroExpander:
         source_loc: Optional[SourceLocation]
     ) -> List[ast.Statement]:
         """Expand a statement-level macro invocation."""
+        # Handle built-in compile_error! macro - raises error at compile time
+        if name == "compile_error":
+            msg = ' '.join(args) if args else "explicit compile error"
+            # Strip quotes if the message is a string literal
+            if msg.startswith('"') and msg.endswith('"'):
+                msg = msg[1:-1]
+            raise MacroError(msg, source_loc)
         # Handle built-in stringify! macro
         if name == "stringify":
             return self._expand_stringify(args, source_loc)
@@ -897,7 +911,7 @@ class MacroExpander:
         # Tokens that should not have space after them
         no_space_after = {'!', '(', '[', '{', '.', '::', '@', '#'}
         # Identifiers and keywords that may precede ! for macros/builtins
-        macro_like = {'cfg', 'stringify', 'include', 'include_bytes', 'asm', 'NOP'}
+        macro_like = {'cfg', 'stringify', 'include', 'include_bytes', 'asm', 'NOP', 'compile_error'}
 
         result = [tokens[0]]
 
