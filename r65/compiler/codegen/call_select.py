@@ -36,6 +36,7 @@ class SpillInfo(NamedTuple):
     """Information about a hardware register that needs spilling."""
     vreg: Optional[VirtualRegister]  # The virtual register allocated to the hw reg, or None for direct hw reg usage
     hw_reg: str            # Hardware register name ('A', 'X', 'Y')
+    spill_mode: Optional[int] = None  # For A register: mode at spill time (8 or 16), None for X/Y
     # Stack spill location will be managed via push/pull
 
 
@@ -61,6 +62,8 @@ class ActiveRegionState:
         # Current spill offset - bytes pushed onto stack for spilling
         # Used to adjust stack-relative accesses while spills are active
         self.spill_offset: int = 0
+        # Track pending A spill info for reload (need to restore mode)
+        self.pending_a_spill: Optional[SpillInfo] = None
 
     def set_block_regions(self, block_id: int, regions: Dict[str, List['ClobberRegion']]):
         """Set pre-computed regions for a block."""
@@ -457,11 +460,10 @@ class CallInstructionSelector(BaseSelector):
         """
         Compute which hardware registers need reloading after this call.
 
-        Uses region-based analysis: only returns registers where this call
+        Uses region-based analysis for X/Y: only returns registers where this call
         is the LAST clobbering call in the region.
 
-        Falls back to returning all spilled registers when region analysis
-        is unavailable (per-call spilling behavior).
+        For A register: uses per-call spilling - reload if it was spilled for this call.
 
         Args:
             instr: The Call instruction
@@ -473,16 +475,21 @@ class CallInstructionSelector(BaseSelector):
 
         reg_alloc = self.parent.reg_alloc
         if not reg_alloc or not reg_alloc.instr_liveness:
+            # If A was spilled, still need to reload it
+            if self._region_state.pending_a_spill is not None:
+                reloads.append(self._region_state.pending_a_spill)
             return reloads
 
         # Get instruction position
         pos = reg_alloc.instr_liveness.get_instruction_position(instr)
         if not pos:
+            if self._region_state.pending_a_spill is not None:
+                reloads.append(self._region_state.pending_a_spill)
             return reloads
 
         _, instr_idx = pos
 
-        # Check each active region
+        # Check each active region for X/Y
         for hw_reg in ('X', 'Y'):
             if self._region_state.is_region_active(hw_reg):
                 if self._region_state.is_last_call_in_region(hw_reg, instr_idx):
@@ -490,6 +497,10 @@ class CallInstructionSelector(BaseSelector):
                     reloads.append(SpillInfo(vreg=None, hw_reg=hw_reg))
                     # Clear active region
                     self._region_state.clear_active_region(hw_reg)
+
+        # A register uses per-call spilling - always reload if spilled
+        if self._region_state.pending_a_spill is not None:
+            reloads.append(self._region_state.pending_a_spill)
 
         return reloads
 
@@ -505,13 +516,27 @@ class CallInstructionSelector(BaseSelector):
             spills: List of registers to spill
         """
         for spill in spills:
-            self._emit_push(spill.hw_reg, f"Spill {spill.hw_reg} (region start)")
-            # Track stack growth: X/Y are 16-bit (2 bytes), A is 8-bit (1 byte)
-            if spill.hw_reg in ('X', 'Y'):
-                self._region_state.spill_offset += 2
+            if spill.hw_reg == 'A':
+                # A register size depends on current mode
+                current_mode = self.parent.emitter.get_accu_mode()
+                # Create spill info with mode recorded
+                spill_with_mode = SpillInfo(
+                    vreg=spill.vreg,
+                    hw_reg=spill.hw_reg,
+                    spill_mode=current_mode
+                )
+                self._emit_push('A', f"Spill A (m{current_mode})")
+                # Track stack growth based on actual mode
+                if current_mode == 16:
+                    self._region_state.spill_offset += 2
+                else:
+                    self._region_state.spill_offset += 1
+                # Save spill info for reload
+                self._region_state.pending_a_spill = spill_with_mode
             else:
-                # A register size depends on mode, but typically 1 byte in m8
-                self._region_state.spill_offset += 1
+                # X/Y are always 16-bit (2 bytes)
+                self._emit_push(spill.hw_reg, f"Spill {spill.hw_reg} (region start)")
+                self._region_state.spill_offset += 2
 
     def _emit_hw_reloads(self, spills: List[SpillInfo]):
         """
@@ -522,16 +547,51 @@ class CallInstructionSelector(BaseSelector):
 
         For region-based spilling, this is only called at region end.
 
+        For A register reloads, ensures we're in the same mode used when spilling,
+        since PHA/PLA push/pull different amounts based on m8 vs m16 mode.
+
         Args:
             spills: List of registers to reload (will be processed in reverse)
         """
+        from r65.compiler.codegen.constants import M_FLAG
+
         for spill in reversed(spills):
-            self._emit_pull(spill.hw_reg, f"Reload {spill.hw_reg} (region end)")
-            # Track stack shrinkage: X/Y are 16-bit (2 bytes), A is 8-bit (1 byte)
-            if spill.hw_reg in ('X', 'Y'):
-                self._region_state.spill_offset -= 2
+            if spill.hw_reg == 'A':
+                # Get the mode A was spilled in
+                pending = self._region_state.pending_a_spill
+                if pending and pending.spill_mode is not None:
+                    spill_mode = pending.spill_mode
+                    current_mode = self.parent.emitter.get_accu_mode()
+
+                    # Switch to spill mode if different
+                    if current_mode != spill_mode:
+                        if spill_mode == 16:
+                            self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG,
+                                                 "Switch to m16 for A reload")
+                            self.parent.emitter.emit_accu_mode(16)
+                        else:
+                            self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG,
+                                                 "Switch to m8 for A reload")
+                            self.parent.emitter.emit_accu_mode(8)
+
+                    self._emit_pull('A', f"Reload A (m{spill_mode})")
+
+                    # Track stack shrinkage based on spill mode
+                    if spill_mode == 16:
+                        self._region_state.spill_offset -= 2
+                    else:
+                        self._region_state.spill_offset -= 1
+
+                    # Clear pending A spill
+                    self._region_state.pending_a_spill = None
+                else:
+                    # Fallback: no mode info, assume m8
+                    self._emit_pull('A', "Reload A (region end)")
+                    self._region_state.spill_offset -= 1
             else:
-                self._region_state.spill_offset -= 1
+                # X/Y are always 16-bit (2 bytes)
+                self._emit_pull(spill.hw_reg, f"Reload {spill.hw_reg} (region end)")
+                self._region_state.spill_offset -= 2
 
     def get_current_spill_offset(self) -> int:
         """

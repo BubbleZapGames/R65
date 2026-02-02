@@ -400,6 +400,9 @@ class RegisterAllocator:
                     size=self._get_vreg_size(vreg)
                 )
                 self.allocations[vreg.id] = location
+                # Track the allocation so spill logic can detect it
+                self.hw_allocs[hw_reg].allocated_vreg = vreg
+                self.hw_allocs[hw_reg].is_bound = False
                 return location
 
         # Check for register hint (loop variables)
