@@ -1380,6 +1380,7 @@ macro_rules! clear_nmi() {
 // Set DMA source address from a far pointer/label
 // Usage: dma_set_src!(0, my_graphics_data);
 macro_rules! dma_set_src($channel:literal, $ptr:expr) {
+    const_assert!($channel < 8, "DMA channel must be 0-7");
     asm!(
         "LDA #<{PTR}",
         "STA A1T{CH}L",
@@ -1395,6 +1396,7 @@ macro_rules! dma_set_src($channel:literal, $ptr:expr) {
 // Combines WRAM address setup (WMADDL/M/H) with DMA mode/BBAD configuration
 // Usage: dma_set_dest!(0, DMA_MODE_1REG_1WRITE, 0x7E2000);
 macro_rules! dma_set_dest($channel:literal, $mode:expr, $dest:expr) {
+    const_assert!($channel < 8, "DMA channel must be 0-7");
     asm!(
         "LDA #<{DEST}",
         "STA WMADDL",
@@ -1413,6 +1415,7 @@ macro_rules! dma_set_dest($channel:literal, $mode:expr, $dest:expr) {
 // Set DMA destination for PPU registers (B-bus address) and transfer mode
 // Usage: dma_set_ppu_dest!(0, DMA_MODE_2REG_1WRITE, 0x18);
 macro_rules! dma_set_ppu_dest($channel:literal, $mode:expr, $bbad:expr) {
+    const_assert!($channel < 8, "DMA channel must be 0-7");
     STATUS.A16 = false;  // Ensure 8-bit A (emits SEP #$20 only if needed)
     asm!(
         "LDA #{MODE}",
@@ -1426,6 +1429,7 @@ macro_rules! dma_set_ppu_dest($channel:literal, $mode:expr, $bbad:expr) {
 // Set DMA transfer size
 // Usage: dma_set_size!(0, 4096);
 macro_rules! dma_set_size($channel:literal, $size:expr) {
+    const_assert!($channel < 8, "DMA channel must be 0-7");
     asm!(
         "LDX #{SIZE}",
         "STX DAS{CH}",
@@ -1436,6 +1440,7 @@ macro_rules! dma_set_size($channel:literal, $size:expr) {
 // Trigger DMA transfer on a channel
 // Usage: dma_trigger!(0);  // Trigger channel 0
 macro_rules! dma_trigger($channel:expr) {
+    const_assert!($channel < 8, "DMA channel must be 0-7");
     MDMAEN = 1 << $channel;
 }
 
