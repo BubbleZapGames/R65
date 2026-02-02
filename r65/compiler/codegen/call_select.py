@@ -45,6 +45,10 @@ class ActiveRegionState:
 
     For each hardware register (X, Y), tracks whether we're currently inside
     a clobber region (have saved but not yet restored).
+
+    Also tracks the current "spill offset" - the number of bytes pushed onto
+    the stack for spilling. This is used to adjust stack-relative accesses
+    to local variables while spills are active.
     """
 
     def __init__(self):
@@ -54,6 +58,9 @@ class ActiveRegionState:
         self.block_regions: Dict[int, Dict[str, List['ClobberRegion']]] = {}
         # Current block ID
         self.current_block_id: Optional[int] = None
+        # Current spill offset - bytes pushed onto stack for spilling
+        # Used to adjust stack-relative accesses while spills are active
+        self.spill_offset: int = 0
 
     def set_block_regions(self, block_id: int, regions: Dict[str, List['ClobberRegion']]):
         """Set pre-computed regions for a block."""
@@ -61,6 +68,8 @@ class ActiveRegionState:
         self.current_block_id = block_id
         # Clear active regions when entering new block
         self.active_regions.clear()
+        # Reset spill offset for new block
+        self.spill_offset = 0
 
     def get_region_for_call(self, hw_reg: str, call_idx: int) -> Optional['ClobberRegion']:
         """
@@ -489,18 +498,27 @@ class CallInstructionSelector(BaseSelector):
         Emit push instructions to spill hardware registers.
 
         For region-based spilling, this is only called at region start.
+        Updates the spill offset to track stack growth for adjusting
+        stack-relative accesses.
 
         Args:
             spills: List of registers to spill
         """
         for spill in spills:
             self._emit_push(spill.hw_reg, f"Spill {spill.hw_reg} (region start)")
+            # Track stack growth: X/Y are 16-bit (2 bytes), A is 8-bit (1 byte)
+            if spill.hw_reg in ('X', 'Y'):
+                self._region_state.spill_offset += 2
+            else:
+                # A register size depends on mode, but typically 1 byte in m8
+                self._region_state.spill_offset += 1
 
     def _emit_hw_reloads(self, spills: List[SpillInfo]):
         """
         Emit pull instructions to reload spilled hardware registers.
 
         Must be called in reverse order of spills due to stack behavior (LIFO).
+        Updates the spill offset to track stack shrinkage.
 
         For region-based spilling, this is only called at region end.
 
@@ -509,6 +527,20 @@ class CallInstructionSelector(BaseSelector):
         """
         for spill in reversed(spills):
             self._emit_pull(spill.hw_reg, f"Reload {spill.hw_reg} (region end)")
+            # Track stack shrinkage: X/Y are 16-bit (2 bytes), A is 8-bit (1 byte)
+            if spill.hw_reg in ('X', 'Y'):
+                self._region_state.spill_offset -= 2
+            else:
+                self._region_state.spill_offset -= 1
+
+    def get_current_spill_offset(self) -> int:
+        """
+        Get the current spill offset for adjusting stack-relative accesses.
+
+        Returns:
+            Number of bytes currently pushed for spilling
+        """
+        return self._region_state.spill_offset
 
     # ========================================================================
     # Argument Setup

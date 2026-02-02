@@ -345,6 +345,50 @@ class TestRegionBasedSpilling:
         assert ply_spill_count == 1, f"Expected 1 PLY reload, got {ply_spill_count}"
 
 
+class TestStackOffsetAdjustment:
+    """Tests for stack offset adjustment during spilling."""
+
+    def test_local_access_during_spill_region(self):
+        """Test that local variable access is correct while spills are active."""
+        source = """
+        #[hw(0x2100)]
+        static mut BRIGHTNESS: u8;
+
+        fn clobbers_xy() {
+            X = 999;
+            Y = 888;
+        }
+
+        fn test_local_during_spill() -> u16 {
+            let local: u8 = 42;
+            X = 0;
+            Y = 1;
+            clobbers_xy();   // Spills X, Y (+4 bytes on stack)
+            BRIGHTNESS = local;  // Access local while spilled
+            clobbers_xy();
+            return X + Y;
+        }
+        """
+        result = compile_string(source, "test.r65")
+
+        # Find the local access between the calls
+        lines = result.split('\n')
+        in_func = False
+        found_adjusted_access = False
+        for line in lines:
+            if 'test_local_during_spill:' in line:
+                in_func = True
+            elif in_func and line.strip().startswith('RTS'):
+                break
+            elif in_func:
+                # The local is at offset 1, but with PHX+PHY it should be $05,S
+                # (1 + 4 bytes for X and Y spills)
+                if 'LDA $05,S' in line or 'LDA 5,S' in line:
+                    found_adjusted_access = True
+
+        assert found_adjusted_access, "Expected LDA $05,S for adjusted local access during spill"
+
+
 class TestSpillReloadOrder:
     """Tests for correct spill/reload ordering."""
 

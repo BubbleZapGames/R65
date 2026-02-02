@@ -250,6 +250,9 @@ class InstructionSelector:
         scratch/zeropage locations must use absolute addressing instead of DP
         because D no longer points to page 0.
 
+        Stack-relative locations are adjusted by the current spill offset when
+        hardware registers are spilled for region-based optimization.
+
         Args:
             mnemonic: Base instruction mnemonic (e.g., 'LDA', 'STA')
             location: Physical memory location
@@ -257,6 +260,17 @@ class InstructionSelector:
         Returns:
             Tuple of (Opcode variant, Operand)
         """
+        # Adjust stack-relative locations for current spill offset
+        # When X/Y are spilled, stack grows and local variable offsets need adjustment
+        if location.kind == LocationKind.STACK:
+            spill_offset = self.call_selector.get_current_spill_offset()
+            if spill_offset > 0:
+                location = PhysicalLocation(
+                    kind=LocationKind.STACK,
+                    stack_offset=location.stack_offset + spill_offset,
+                    size=location.size
+                )
+
         # When D = S, DP addressing is unavailable - force absolute addressing
         # for both scratch registers and zeropage memory locations
         if (self.current_function and
