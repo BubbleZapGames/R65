@@ -57,7 +57,7 @@ far fn mul16(multA @ A: u8, multB: u16) -> u16 {
 // Returns: low byte and high byte
 // Cycles: ~150-300 depending on operands
 #[cfg(not(snes))]
-far fn mul8(multA @ A: u8, multB: u16) -> (u8, u8) {
+far fn mul8(multA @ A: u8, multB @ X: u16) -> (u8, u8) {
     // Store multiplicand for shifting
     let mut _mul_temp : u8 = multA;
 
@@ -75,7 +75,7 @@ far fn mul8(multA @ A: u8, multB: u16) -> (u8, u8) {
         // Test lowest bit of multiplier
         multA = multB;
         multA = multA & 0x01;
-        if A != 0 {
+        if multA != 0 {
             // Add multiplicand to result (with carry to high byte)
             asm!("CLC");
             multA = _mul_result_lo;
@@ -88,12 +88,12 @@ far fn mul8(multA @ A: u8, multB: u16) -> (u8, u8) {
 
         // Shift multiplicand left (double it)
         multA = _mul_temp;
-        multA = A << 1;
+        multA = multA << 1;
         _mul_temp = multA;
 
         // Shift multiplier right (halve it)
         multA = multB;
-        multA = A >> 1;
+        multA = multA >> 1;
         multB = multA;
     }
 
@@ -132,7 +132,7 @@ far fn mul16(multA @ A: u8, multB: u16) -> u16 {
             _mul_result_lo = multA;
             multA = _mul_result_hi;
             asm!("ADC #$00");  // Add carry
-            _mul_result_hi = A;
+            _mul_result_hi = multA;
         }
 
         // Shift multiplicand left (double it)
@@ -147,7 +147,7 @@ far fn mul16(multA @ A: u8, multB: u16) -> u16 {
     }
 
     // Return 16-bit result
-    return A;
+    return _mul_result_lo;
 }
 
 
@@ -161,7 +161,7 @@ far fn mul16(multA @ A: u8, multB: u16) -> u16 {
 #[cfg(snes)]
 far fn div16(dividend @ A: u16, divisor: u8) -> u16 {
     // Write 16-bit dividend
-    WRDIVL = A;
+    WRDIVL = dividend;
 
     // Switch to 8-bit for hardware register writes
     STATUS.A16 = false;  // SEP #$20 - switch to 8-bit
@@ -181,9 +181,9 @@ far fn div16(dividend @ A: u16, divisor: u8) -> u16 {
 // Extends dividend to 16-bit with zero high byte
 // Returns: 8-bit quotient
 #[cfg(snes)]
-far fn div8(dividend @ A: u8, divisor: u8) -> u8 {
+far fn div8(dividend @ A: u8, divisor @ X: u16) -> u8 {
     // Write dividend with zero high byte
-    WRDIVL = A;
+    WRDIVL = dividend;
     WRDIVH = 0;
 
     // Write divisor
@@ -193,15 +193,15 @@ far fn div8(dividend @ A: u8, divisor: u8) -> u8 {
     NOP(8);
 
     // Read low byte of quotient only
-	return RDDIVL;
+    return RDDIVL;
 }
 
 // Hardware 8/8 -> 8 modulo
 // Performs division and returns remainder
 #[cfg(snes)]
-far fn mod8(dividend @ A: u8, divisor: u8) -> u8 {
+far fn mod8(dividend @ A: u8, divisor @ X: u16) -> u8 {
     // Write dividend with zero high byte
-    WRDIVL = A;
+    WRDIVL = dividend;
     WRDIVH = 0;
 
     // Write divisor
@@ -219,52 +219,52 @@ far fn mod8(dividend @ A: u8, divisor: u8) -> u8 {
 // Returns: quotient
 // Cycles: ~200-400
 #[cfg(not(snes))]
-far fn div8(dividend @ A: u8, divisor: u8) -> u8 {
+far fn div8(dividend @ A: u8, divisor @ X: u16) -> u8 {
     // Handle division by zero - return 0xFF (max value)
-    if X == 0 {
-        A = 0xFF;
-        return A;
+    if divisor == 0 {
+        dividend = 0xFF;
+        return dividend;
     }
 
-    let mut _dividend: u8 = A;
+    let mut _dividend: u8 = dividend;
     let mut _quotient: u8 = 0;
     let mut _remainder: u8 = 0;
     let mut _count: u8 = 8;
 
     loop {
         // Shift remainder left, bringing in high bit of dividend
-        A = _remainder;
-        A = A << 1;
-        _remainder = A;
+        dividend = _remainder;
+        dividend = dividend << 1;
+        _remainder = dividend;
 
         // Get high bit of dividend into remainder
-        A = _dividend;
-        A = A & 0x80;
-        if A != 0 {
-            A = _remainder;
-            A = A | 0x01;
-            _remainder = A;
+        dividend = _dividend;
+        dividend = dividend & 0x80;
+        if dividend != 0 {
+            dividend = _remainder;
+            dividend = dividend | 0x01;
+            _remainder = dividend;
         }
 
         // Shift dividend left
-        A = _dividend;
-        A = A << 1;
-        _dividend = A;
+        dividend = _dividend;
+        dividend = dividend << 1;
+        _dividend = dividend;
 
         // Shift quotient left
-        A = _quotient;
-        A = A << 1;
-        _quotient = A;
+        dividend = _quotient;
+        dividend = dividend << 1;
+        _quotient = dividend;
 
         // Try to subtract divisor from remainder
-        A = _remainder;
-        if A >= divisor {
-            A = A - divisor;
-            _remainder = A;
+        dividend = _remainder;
+        if dividend >= divisor {
+            dividend = dividend - divisor;
+            _remainder = dividend;
             // Set low bit of quotient
-            A = _quotient;
-            A = A | 0x01;
-            _quotient = A;
+            dividend = _quotient;
+            dividend = dividend | 0x01;
+            _quotient = dividend;
         }
 
         _count--;
@@ -273,8 +273,8 @@ far fn div8(dividend @ A: u8, divisor: u8) -> u8 {
         }
     }
 
-    A = _quotient;
-    return A;
+    dividend = _quotient;
+    return dividend;
 }
 
 // Software 8/8 -> 8 modulo
@@ -282,39 +282,39 @@ far fn div8(dividend @ A: u8, divisor: u8) -> u8 {
 #[cfg(not(snes))]
 far fn mod_shift(dividend @ A: u8, divisor: u8) -> u8 {
     // Handle division by zero - return original dividend
-    if X == 0 {
-        return A;
+    if divisor == 0 {
+        return dividend;
     }
 
-    let mut _dividend: u8 = A;
+    let mut _dividend: u8 = dividend;
     let mut _remainder: u8 = 0;
     let mut _count: u8 = 8;
 
     loop {
         // Shift remainder left, bringing in high bit of dividend
-        A = _remainder;
-        A = A << 1;
-        _remainder = A;
+        dividend = _remainder;
+        dividend = dividend << 1;
+        _remainder = dividend;
 
         // Get high bit of dividend into remainder
-        A = _dividend;
-        A = A & 0x80;
-        if A != 0 {
-            A = _remainder;
-            A = A | 0x01;
-            _remainder = A;
+        dividend = _dividend;
+        dividend = dividend & 0x80;
+        if dividend != 0 {
+            dividend = _remainder;
+            dividend = dividend | 0x01;
+            _remainder = dividend;
         }
 
         // Shift dividend left
-        A = _dividend;
-        A = A << 1;
-        _dividend = A;
+        dividend = _dividend;
+        dividend = dividend << 1;
+        _dividend = dividend;
 
         // Try to subtract divisor from remainder
-        A = _remainder;
-        if A >= divisor {
-            A = A - divisor;
-            _remainder = A;
+        dividend = _remainder;
+        if dividend >= divisor {
+            dividend = dividend - divisor;
+            _remainder = dividend;
         }
 
         _count--;
@@ -323,8 +323,8 @@ far fn mod_shift(dividend @ A: u8, divisor: u8) -> u8 {
         }
     }
 
-    A = _remainder;
-    return A;
+    dividend = _remainder;
+    return dividend;
 }
 
 // Variable shift functions
@@ -334,135 +334,135 @@ far fn mod_shift(dividend @ A: u8, divisor: u8) -> u8 {
 // Cycles: ~10 + 4*amount
 far fn shl8(value @ A: u8, amount @ X: u16) -> u8 {
     // Handle zero shift
-    if X == 0 {
-        return A;
+    if amount == 0 {
+        return value;
     }
 
     // Clamp to 8 (shifting by 8+ always gives 0)
-    if X >= 8 {
-        A = 0;
-        return A;
+    if amount >= 8 {
+        value = 0;
+        return value;
     }
 
-    // Loop: shift left X times
+    // Loop: shift left amount times
     loop {
-        A = A << 1;
-        X--;
-        if X == 0 {
+        value = value << 1;
+        amount--;
+        if amount == 0 {
             break;
         }
     }
 
-    return A;
+    return value;
 }
 
 // Variable right shift (logical): value >> amount
 // Cycles: ~10 + 4*amount
 far fn shr8(value @ A: u8, amount @ X: u16) -> u8 {
     // Handle zero shift
-    if X == 0 {
-        return A;
+    if amount == 0 {
+        return value;
     }
 
     // Clamp to 8
-    if X >= 8 {
-        A = 0;
-        return A;
+    if amount >= 8 {
+        value = 0;
+        return value;
     }
 
-    // Loop: shift right X times
+    // Loop: shift right amount times
     loop {
-        A = A >> 1;
-        X--;
-        if X == 0 {
+        value = value >> 1;
+        amount--;
+        if amount == 0 {
             break;
         }
     }
 
-    return A;
+    return value;
 }
 
 // Variable arithmetic right shift (preserves sign): value >>> amount
 // For signed values - shifts in sign bit instead of zero
 // Cycles: ~10 + 6*amount
 far fn shri8(value @ A: u8, amount @ X: u16) -> u8 {
-    if X == 0 {
-        return A;
+    if amount == 0 {
+        return value;
     }
 
     // For 8+ shifts, result is 0x00 (positive) or 0xFF (negative)
-    if X >= 8 {
+    if amount >= 8 {
         // Check sign bit
-        if A & 0x80 != 0 {
-            A = 0xFF;
+        if value & 0x80 != 0 {
+            value = 0xFF;
         } else {
-            A = 0;
+            value = 0;
         }
-        return A;
+        return value;
     }
 
-    // Loop: arithmetic shift right X times
+    // Loop: arithmetic shift right amount times
     loop {
         // Check sign bit before shift
-        if A & 0x80 != 0 {
+        if value & 0x80 != 0 {
             // Negative: shift right, then set sign bit
-            A = A >> 1;
-            A = A | 0x80;
+            value = value >> 1;
+            value = value | 0x80;
         } else {
             // Positive: normal logical shift
-            A = A >> 1;
+            value = value >> 1;
         }
-        X--;
-        if X == 0 {
+        amount--;
+        if amount == 0 {
             break;
         }
     }
 
-    return A;
+    return value;
 }
 
 // 16-bit variable right shift (logical)
 // Cycles: ~15 + 6*amount
 far fn shr16(value @ A: u16, amount @ X: u16) -> u16 {
-    if X == 0 {
-        return A;
+    if amount == 0 {
+        return value;
     }
 
-    if X >= 16 {
-        A = 0;
-        return A;
+    if amount >= 16 {
+        value = 0;
+        return value;
     }
 
     loop {
-        A = A >> 1;
-        X--;
-        if X == 0 {
+        value = value >> 1;
+        amount--;
+        if amount == 0 {
             break;
         }
     }
 
-    return A;
+    return value;
 }
 // 16-bit variable left shift
 // Cycles: ~15 + 6*amount
 far fn shl16(value @ A: u16, amount @ X: u16) -> u16 {
-    if X == 0 {
-        return A;
+    if amount == 0 {
+        return value;
     }
 
-    if X >= 16 {
-        A = 0;
-        return A;
+    if amount >= 16 {
+        value = 0;
+        return value;
     }
 
     loop {
-        A = A << 1;
-        X--;
-        if X == 0 {
+        value = value << 1;
+        amount--;
+        if amount == 0 {
             break;
         }
     }
 
-    return A;
+    return value;
 }
 
