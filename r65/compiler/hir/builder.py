@@ -429,6 +429,9 @@ class HIRBuilder:
             hir_param = self._build_parameter(param)
             hir_params.append(hir_param)
 
+        # Validate no duplicate register bindings
+        self._validate_no_duplicate_register_bindings(hir_params, func.name)
+
         # Process body
         hir_body = self._build_block(func.body)
 
@@ -822,6 +825,32 @@ class HIRBuilder:
                 f"has type {type_name}, but {register_name} only supports: {', '.join(allowed)}",
                 hint=hint
             )
+
+    def _validate_no_duplicate_register_bindings(
+        self,
+        params: list,
+        func_name: str
+    ) -> None:
+        """
+        Validate that no register is bound to multiple parameters.
+
+        Example of invalid code:
+            fn bad(a @ A: u8, b @ A: u8) { }  // Error: A bound twice
+        """
+        register_bindings: dict[str, str] = {}  # register_name -> param_name
+
+        for param in params:
+            if param.binding and isinstance(param.binding, hir.RegisterBinding):
+                reg_name = param.binding.register_name
+                if reg_name in register_bindings:
+                    first_param = register_bindings[reg_name]
+                    raise HIRError(
+                        f"Register {reg_name} is bound to multiple parameters in function '{func_name}': "
+                        f"'{first_param}' and '{param.name}'",
+                        hint=f"Each hardware register can only be bound to one parameter per function.\n"
+                             f"Consider using stack parameters for additional values."
+                    )
+                register_bindings[reg_name] = param.name
 
     def _validate_static_storage(
         self,
