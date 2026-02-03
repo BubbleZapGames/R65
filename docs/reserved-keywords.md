@@ -33,17 +33,10 @@ These are treated as keywords because they map to special hardware instructions:
 
 | Keyword | Purpose |
 |---------|---------|
-| `SEP` | Set processor status bits (65816) |
-| `REP` | Reset processor status bits (65816) |
 | `mvn` | Block move forward (65816) |
 | `mvp` | Block move backward (65816) |
 | `wai` | Wait for interrupt |
 | `stp` | Stop processor |
-| `mul` | General multiplication |
-| `div` | General division |
-| `mod` | Modulo operation |
-| `shl` | Variable left shift |
-| `shr` | Variable right shift |
 
 ## Reserved Rust Keywords (20)
 
@@ -128,42 +121,6 @@ Reserved by Rust for future use - we reserve them for compatibility:
    - R65 code won't break if we add new features
    - The language remains familiar to Rust programmers
    - Migration from Rust is easier
-
-## Examples
-
-### Valid Code
-```rust
-// Keywords used correctly
-fn calculate(value: u8) -> u8 {
-    let mut result = value;
-    if result > 10 {
-        result = 10;
-    }
-    return result;
-}
-
-// 'implementation' is NOT a keyword
-let implementation = 42;
-
-// 'Impl' and 'IMPL' are NOT keywords (case-sensitive)
-struct Impl { }
-const IMPL: u8 = 5;
-```
-
-### Invalid Code
-```rust
-// ERROR: 'impl' is a reserved keyword
-let impl = 42;
-
-// ERROR: 'trait' is a reserved keyword
-fn trait() { }
-
-// ERROR: 'unsafe' is a reserved keyword
-struct unsafe { }
-
-// ERROR: 'match' is a reserved keyword
-let match = 10;
-```
 
 ## Rationale
 
