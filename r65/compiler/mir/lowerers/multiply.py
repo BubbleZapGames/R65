@@ -3,6 +3,24 @@ Shared multiplication helpers for MIR lowering.
 
 Provides shift-and-add multiplication for struct array indexing optimization.
 Used by both expression.py and assignment.py lowerers.
+
+LIMITATION - Large Struct Array Indexing:
+    For structs larger than 16 bytes, array indexing uses the SNES hardware
+    multiplier (8x8=16 bit) via mul16(). This limits VARIABLE indices to 0-255.
+
+    | Struct Size  | Index Type | Max Index | Method              |
+    |--------------|------------|-----------|---------------------|
+    | 1-16 bytes   | any        | 65535     | Shift-and-add       |
+    | 17-255 bytes | constant   | 65535     | Compile-time calc   |
+    | 17-255 bytes | variable   | 255       | mul16() hardware    |
+
+    Constant indices work correctly for any value because the multiplication
+    is computed at compile time. Variable indices > 255 will silently use
+    only the low 8 bits, producing incorrect results.
+
+    To support larger arrays of large structs with variable indexing:
+    - Restructure to use smaller structs (≤16 bytes)
+    - Use manual pointer arithmetic with a software 16x8 multiply
 """
 
 from typing import TYPE_CHECKING, Callable
@@ -292,10 +310,16 @@ def compute_array_field_offset(
         # Validate that runtime multiplication is available
         _check_runtime_mul_available(ctx, struct_size)
 
+        # WARNING: mul16 uses the SNES 8x8 hardware multiplier, so only the
+        # low 8 bits of the index are used. Variable indices > 255 will
+        # produce incorrect results. Constant indices are handled earlier
+        # in the pipeline with compile-time multiplication, so they work
+        # correctly for any index value.
+        #
         # mul16 signature: mul16(multA @ A: u8, multB: u16) -> u16
         # Since multiplication is commutative (a*b = b*a), we pass:
         #   A = struct_size (u8 constant, 17-255)
-        #   stack = index (u16 variable)
+        #   stack = index (u16 variable, but only low 8 bits used)
         # This computes: struct_size * index = index * struct_size
         from r65.compiler.hir.types import BasicTypeInfo
         u8_type = BasicTypeInfo('u8')
