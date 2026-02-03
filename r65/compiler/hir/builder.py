@@ -614,12 +614,14 @@ class HIRBuilder:
 
     def _infer_entry_mode_and_validate(self, params: List[hir.HIRParameter], func_name: str, source_loc) -> 'ModeState':
         """
-        Infer entry mode from function parameters and validate X/Y are u16.
+        Infer entry mode from function parameters.
 
         Rules:
         - If any parameter is bound to A with type u16/i16 -> m16 entry
         - Otherwise -> m8 entry (default)
-        - X/Y parameters must be u16/i16 (compiler error if u8/i8)
+
+        Note: Register type validation (X/Y must be u16, etc.) is handled by
+        _validate_register_binding_type() during parameter building.
 
         Args:
             params: List of HIR function parameters
@@ -642,18 +644,6 @@ class HIRBuilder:
                     if param.param_type and isinstance(param.param_type, BasicTypeInfo):
                         if param.param_type.name in ('u16', 'i16'):
                             entry_mode = ModeState.M16
-
-                elif reg_name in ("X", "Y"):
-                    # Validate X/Y parameters are 16-bit
-                    if param.param_type and isinstance(param.param_type, BasicTypeInfo):
-                        if param.param_type.name in ('u8', 'i8'):
-                            raise HIRError(
-                                f"Function '{func_name}': Parameter '{param.name}' bound to {reg_name} "
-                                f"has type {param.param_type.name}, but X/Y registers are always 16-bit (u16).\n"
-                                f"  In R65, index registers X and Y are always 16-bit.\n"
-                                f"  Change the parameter type to u16: {param.name} @ {reg_name}: u16",
-                                source_loc=source_loc
-                            )
 
         return entry_mode
 
@@ -726,6 +716,15 @@ class HIRBuilder:
                 else:
                     raise HIRError(f"Parameter binding must be register or static variable, got {var_symbol.kind.value}")
 
+        # Validate register binding types
+        if binding and isinstance(binding, hir.RegisterBinding):
+            self._validate_register_binding_type(
+                binding.register_name,
+                param_type,
+                param.name,
+                "parameter"
+            )
+
         # Declare parameter in function scope
         param_symbol = Symbol(
             name=param.name,
@@ -743,6 +742,86 @@ class HIRBuilder:
             binding=binding,
             symbol=param_symbol
         )
+
+    def _validate_register_binding_type(
+        self,
+        register_name: str,
+        bound_type: Optional[TypeInfo],
+        name: str,
+        context: str  # "parameter" or "variable"
+    ) -> None:
+        """
+        Validate that a register binding type matches the register's supported types.
+
+        Register type rules:
+        - A: u8, i8, u16, i16 (accumulator, supports both 8-bit and 16-bit modes)
+        - B: u8, i8 (high byte of accumulator, 8-bit only in m8 mode)
+        - X: u16, i16 (index register, always 16-bit in R65)
+        - Y: u16, i16 (index register, always 16-bit in R65)
+        - D: u16 (direct page register, 16-bit)
+        - S: u16 (stack pointer, 16-bit)
+        - DBR: u8 (data bank register, 8-bit)
+        - PBR: u8 (program bank register, 8-bit, read-only)
+        """
+        if bound_type is None:
+            return
+
+        if not isinstance(bound_type, BasicTypeInfo):
+            raise HIRError(
+                f"{context.capitalize()} '{name}' bound to register {register_name} "
+                f"must have a primitive type, got {bound_type}"
+            )
+
+        type_name = bound_type.name
+
+        # Define allowed types for each register
+        register_allowed_types = {
+            'A': ('u8', 'i8', 'u16', 'i16'),
+            'B': ('u8', 'i8'),
+            'X': ('u16', 'i16'),
+            'Y': ('u16', 'i16'),
+            'D': ('u16',),
+            'S': ('u16',),
+            'DBR': ('u8',),
+            'PBR': ('u8',),
+        }
+
+        allowed = register_allowed_types.get(register_name)
+        if allowed is None:
+            raise HIRError(
+                f"{context.capitalize()} '{name}' bound to unknown register '{register_name}'"
+            )
+
+        if type_name not in allowed:
+            # Provide helpful error messages based on register
+            if register_name in ('X', 'Y'):
+                hint = (
+                    f"In R65, index registers X and Y are always 16-bit.\n"
+                    f"  Change the {context} type to u16: {name} @ {register_name}: u16"
+                )
+            elif register_name == 'B':
+                hint = (
+                    f"The B register is the high byte of accumulator A in 8-bit mode.\n"
+                    f"  Change the {context} type to u8 or i8: {name} @ B: u8"
+                )
+            elif register_name in ('D', 'S'):
+                hint = (
+                    f"The {register_name} register is always 16-bit.\n"
+                    f"  Change the {context} type to u16: {name} @ {register_name}: u16"
+                )
+            elif register_name in ('DBR', 'PBR'):
+                hint = (
+                    f"The {register_name} register is an 8-bit bank register.\n"
+                    f"  Change the {context} type to u8: {name} @ {register_name}: u8"
+                )
+            else:
+                hint = f"Allowed types for {register_name}: {', '.join(allowed)}"
+
+            raise HIRError(
+                f"{context.capitalize()} '{name}' bound to {register_name} register "
+                f"has type {type_name}, but {register_name} only supports: {', '.join(allowed)}",
+                hint=hint
+            )
 
     def _validate_static_storage(
         self,
@@ -1329,6 +1408,15 @@ class HIRBuilder:
                     variable_name=let.binding,
                     variable_symbol=var_symbol
                 )
+
+        # Validate register binding types (only if type is explicitly specified)
+        if binding and isinstance(binding, hir.RegisterLetBinding) and var_type:
+            self._validate_register_binding_type(
+                binding.register_name,
+                var_type,
+                let.name,
+                "variable"
+            )
 
         # Declare local variable in current scope
         local_symbol = Symbol(

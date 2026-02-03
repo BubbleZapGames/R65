@@ -123,6 +123,33 @@ class TypeChecker:
     # Helper Methods
     # ========================================================================
 
+    # Register type validation - maps register names to allowed types
+    _REGISTER_ALLOWED_TYPES = {
+        'A': ('u8', 'i8', 'u16', 'i16'),
+        'B': ('u8', 'i8'),
+        'X': ('u16', 'i16'),
+        'Y': ('u16', 'i16'),
+        'D': ('u16',),
+        'S': ('u16',),
+        'DBR': ('u8',),
+        'PBR': ('u8',),
+        'STATUS': ('u8',),
+    }
+
+    def _is_valid_register_type(self, register_name: str, type_name: str) -> bool:
+        """
+        Check if a type is valid for a given register.
+
+        Args:
+            register_name: Name of the register (A, B, X, Y, D, S, DBR, PBR, STATUS)
+            type_name: Name of the type (u8, i8, u16, i16)
+
+        Returns:
+            True if the type is valid for the register
+        """
+        allowed = self._REGISTER_ALLOWED_TYPES.get(register_name, ())
+        return type_name in allowed
+
     def _lookup_function_decl(self, func_name: str, source_loc=None) -> HIRFunctionDecl:
         """
         Look up function declaration by name.
@@ -754,30 +781,30 @@ class TypeChecker:
             var_type = stmt.var_type
         elif isinstance(stmt.binding, RegisterLetBinding):
             # For register bindings without explicit type:
-            # 1. If there's an initializer, infer type from it
-            # 2. Otherwise, infer from processor mode
+            # 1. Get the register's canonical type (e.g., u16 for X/Y, u8 for DBR)
+            # 2. Use that as context when type-checking the initializer
+            # This ensures literals get the correct type for the register
+            reg_name = stmt.binding.register_name
+            register_type = TypeInference.infer_register_alias_type(reg_name, mode)
+
             if stmt.initializer:
-                # Infer type from initializer expression first
-                init_type = self.check_expression(stmt.initializer, context_type=None)
+                # Infer type from initializer with register type as context
+                # This allows `let x @ X = 100;` to work - literal 100 infers as u16
+                init_type = self.check_expression(stmt.initializer, context_type=register_type)
                 # Handle tuple: use first element type
                 if isinstance(init_type, TupleTypeInfo):
                     init_type = init_type.element_types[0]
-                # Validate the initializer type is valid for register A (u8/i8/u16/i16)
-                if isinstance(init_type, BasicTypeInfo) and init_type.name in ('u8', 'i8', 'u16', 'i16'):
+                # Validate the inferred type is valid for the register
+                if isinstance(init_type, BasicTypeInfo) and self._is_valid_register_type(reg_name, init_type.name):
                     var_type = init_type
                     inferred_from_initializer = True  # Already type-checked
                 else:
-                    # Fall back to mode-based type
-                    var_type = TypeInference.infer_register_alias_type(
-                        stmt.binding.register_name,
-                        mode
-                    )
+                    # Initializer type doesn't match register - use register's type
+                    # and let the type check below report the error
+                    var_type = register_type
             else:
-                # No initializer, infer from register type based on mode
-                var_type = TypeInference.infer_register_alias_type(
-                    stmt.binding.register_name,
-                    mode
-                )
+                # No initializer, use register type based on mode
+                var_type = register_type
             if var_type is None:
                 raise TypeCheckError(
                     f"Cannot determine type of register {stmt.binding.register_name} in unknown mode",
