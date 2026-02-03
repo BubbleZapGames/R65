@@ -141,6 +141,10 @@ class TypeConversionSelector(BaseSelector):
         self._emit_label("++")
 
         # Store high byte
+        # CRITICAL: Switch to 8-bit mode before storing high byte.
+        # If we're in 16-bit mode, STA would write 2 bytes instead of 1,
+        # corrupting adjacent memory (including other stack slots).
+        self.parent._ensure_m8_mode()
         dest_high = self.parent._offset_location(dest_loc, 1)
         self._emit_load_store('STA', dest_high)
 
@@ -149,6 +153,10 @@ class TypeConversionSelector(BaseSelector):
         self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(0x00), "Zero-extend high byte")
 
         # Store high byte
+        # CRITICAL: Switch to 8-bit mode before storing high byte.
+        # If we're in 16-bit mode, STA would write 2 bytes instead of 1,
+        # corrupting adjacent memory (including other stack slots).
+        self.parent._ensure_m8_mode()
         dest_high = self.parent._offset_location(dest_loc, 1)
         self._emit_load_store('STA', dest_high)
 
