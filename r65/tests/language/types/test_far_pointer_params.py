@@ -43,16 +43,17 @@ class TestFarPointerStackParamDetection:
         func = mir.functions[0]
         assert func.has_far_ptr_stack_params is False
 
-    def test_register_bound_far_pointer_not_detected(self):
-        """Register-bound far pointer should not set stack param flag."""
+    def test_register_bound_far_pointer_rejected(self):
+        """Far pointers cannot be bound to registers (they're 24-bit, registers are 8/16-bit)."""
+        from r65.compiler.errors import HIRError
         source = """
                         fn process(far *data @ A: u8) {
             }
         """
-        mir = build_mir(source)
-        func = mir.functions[0]
-        # Register-bound params don't go on stack
-        assert func.has_far_ptr_stack_params is False
+        with pytest.raises(HIRError) as exc_info:
+            build_mir(source)
+        # Far pointer is not a primitive type, so it can't be bound to a register
+        assert "must have a primitive type" in str(exc_info.value)
 
     def test_multiple_far_pointer_params(self):
         """Multiple far pointer stack params should all be tracked."""

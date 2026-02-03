@@ -160,14 +160,14 @@ class TestModeInference:
         from r65.compiler.hir.errors import HIRError
         with pytest.raises(HIRError) as exc_info:
             build_hir("fn test(idx @ X: u8) { }")
-        assert "X/Y registers are always 16-bit" in str(exc_info.value)
+        assert "X only supports: u16, i16" in str(exc_info.value)
 
     def test_y_parameter_u8_rejected(self):
         """Test that u8 @ Y parameter is rejected (Y is always 16-bit)."""
         from r65.compiler.hir.errors import HIRError
         with pytest.raises(HIRError) as exc_info:
             build_hir("fn test(idx @ Y: u8) { }")
-        assert "X/Y registers are always 16-bit" in str(exc_info.value)
+        assert "Y only supports: u16, i16" in str(exc_info.value)
 
     def test_exit_mode_u8_return_is_m8(self):
         """Test that u8 return type results in m8 exit mode."""
