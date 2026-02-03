@@ -1250,6 +1250,10 @@ class CallInstructionSelector(BaseSelector):
             self._emit_load_immediate('A', arg0.value.value)
         elif arg0_loc.kind == LocationKind.HARDWARE and arg0_loc.hw_register == 'A':
             pass  # Already in A
+        elif arg0_loc.kind == LocationKind.HARDWARE and arg0_loc.hw_register == 'X':
+            self._emit_implied(Opcode.TXA)  # Transfer X to A
+        elif arg0_loc.kind == LocationKind.HARDWARE and arg0_loc.hw_register == 'Y':
+            self._emit_implied(Opcode.TYA)  # Transfer Y to A
         else:
             self.parent._emit_load('LDA', arg0_loc)
 
@@ -1260,6 +1264,15 @@ class CallInstructionSelector(BaseSelector):
             self._emit_load_immediate('X', arg1.value.value)
         elif arg1_loc.kind == LocationKind.HARDWARE and arg1_loc.hw_register == 'X':
             pass  # Already in X
+        elif arg1_loc.kind == LocationKind.HARDWARE and arg1_loc.hw_register == 'A':
+            self._emit_implied(Opcode.TAX)  # Transfer A to X
+        elif arg1_loc.kind == LocationKind.HARDWARE and arg1_loc.hw_register == 'Y':
+            # Y to X requires going through A (no direct TYX on 65816)
+            # Save A, TYA, TAX, restore A
+            self._emit_implied(Opcode.PHA)
+            self._emit_implied(Opcode.TYA)
+            self._emit_implied(Opcode.TAX)
+            self._emit_implied(Opcode.PLA)
         else:
             self.parent._emit_load('LDX', arg1_loc)
 

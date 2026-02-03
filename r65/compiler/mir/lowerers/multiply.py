@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Callable
 
 from r65.compiler.mir.nodes import (
     VirtualRegister, Immediate, BinaryOp, Call, Argument,
+    ArgumentMechanism, HardwareRegister,
 )
 
 if TYPE_CHECKING:
@@ -79,8 +80,10 @@ def emit_shift_and_add_multiply(
         emit(Call(
             function='mul',
             args=[
-                Argument(value=operand, type_info=type_info),
-                Argument(value=Immediate(multiplier), type_info=type_info),
+                Argument(value=operand, mechanism=ArgumentMechanism.REGISTER,
+                         location=HardwareRegister('A'), param_type=type_info),
+                Argument(value=Immediate(multiplier), mechanism=ArgumentMechanism.REGISTER,
+                         location=HardwareRegister('X'), param_type=type_info),
             ],
             returns=[result],
             builtin_name='mul'
@@ -271,8 +274,10 @@ def compute_array_field_offset(
         emit(Call(
             function='mul',
             args=[
-                Argument(value=index_operand, type_info=type_info),
-                Argument(value=Immediate(struct_size), type_info=type_info),
+                Argument(value=index_operand, mechanism=ArgumentMechanism.REGISTER,
+                         location=HardwareRegister('A'), param_type=type_info),
+                Argument(value=Immediate(struct_size), mechanism=ArgumentMechanism.REGISTER,
+                         location=HardwareRegister('X'), param_type=type_info),
             ],
             returns=[scaled_index],
             builtin_name='mul'
