@@ -11,9 +11,28 @@ from r65.compiler.mir.nodes import (
     VirtualRegister, Immediate, BinaryOp, Call, Argument,
     ArgumentMechanism, HardwareRegister,
 )
+from r65.compiler.errors import MIRLoweringError
 
 if TYPE_CHECKING:
     from r65.compiler.mir.context import LoweringContext
+
+
+def _check_runtime_mul_available(ctx: 'LoweringContext', struct_size: int):
+    """
+    Check if runtime multiplication is available.
+
+    Raises a helpful error if mul16 is needed but math.r65
+    hasn't been included.
+    """
+    # Check if mul16 is defined in function declarations
+    if 'mul16' not in ctx.function_decls:
+        raise MIRLoweringError(
+            f"Array indexing on structs larger than 16 bytes (this struct is {struct_size} bytes) "
+            f"requires runtime multiplication.\n"
+            f"\n"
+            f"Add this to your source file:\n"
+            f"    include!(\"lib/math.r65\")"
+        )
 
 
 def emit_shift_and_add_multiply(
@@ -269,18 +288,32 @@ def compute_array_field_offset(
             index_operand, struct_size, type_info, ctx, emit
         )
     else:
-        # Large struct sizes: use mul() runtime function
+        # Large struct sizes: use mul16() runtime function from math.r65
+        # Validate that runtime multiplication is available
+        _check_runtime_mul_available(ctx, struct_size)
+
+        # mul16 signature: mul16(multA @ A: u8, multB: u16) -> u16
+        # Since multiplication is commutative (a*b = b*a), we pass:
+        #   A = struct_size (u8 constant, 17-255)
+        #   stack = index (u16 variable)
+        # This computes: struct_size * index = index * struct_size
+        from r65.compiler.hir.types import BasicTypeInfo
+        u8_type = BasicTypeInfo('u8')
+        u16_type = BasicTypeInfo('u16')
+
         scaled_index = ctx.alloc_vreg(type_info, "scaled_index")
         emit(Call(
-            function='mul',
+            function='mul16',
             args=[
-                Argument(value=index_operand, mechanism=ArgumentMechanism.REGISTER,
-                         location=HardwareRegister('A'), param_type=type_info),
+                # First arg: struct_size in A (u8)
                 Argument(value=Immediate(struct_size), mechanism=ArgumentMechanism.REGISTER,
-                         location=HardwareRegister('X'), param_type=type_info),
+                         location=HardwareRegister('A'), param_type=u8_type),
+                # Second arg: index on stack (u16)
+                Argument(value=index_operand, mechanism=ArgumentMechanism.STACK,
+                         location=None, param_type=u16_type),
             ],
             returns=[scaled_index],
-            builtin_name='mul'
+            is_far=True  # mul16 is a far function
         ))
 
     # Add field offset if non-zero
