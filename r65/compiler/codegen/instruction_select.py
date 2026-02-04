@@ -284,7 +284,7 @@ class InstructionSelector:
                     index_register=location.index_register
                 )
                 return self._resolver.resolve_and_get_opcode(mnemonic, abs_location)
-            elif location.kind == LocationKind.MEMORY and location.memory_addr < 0x100:
+            elif location.kind == LocationKind.MEMORY and location.memory_addr is not None and location.memory_addr < 0x100:
                 # Zeropage memory location - force absolute addressing
                 # by using a resolver that treats it as non-DP
                 from r65.compiler.codegen.location_resolver import ResolvedLocation, AddressingMode
