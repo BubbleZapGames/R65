@@ -65,13 +65,50 @@ class TestFunctionTypes:
         assert static.var_type.is_far is True
 
 
-class TestFunctionHIR:
-    """Tests for function HIR generation."""
+class TestMultiReturnFunctions:
+    """Tests for functions returning multiple values."""
 
-    def test_function_hir(self):
-        """Test functions generate proper HIR."""
-        hir_prog = build_hir("""
-            fn helper() -> u8 { return A; }
-            fn main() { let x: u8 = helper(); }
+    def test_parse_tuple_return_type(self):
+        """Test parsing function with tuple return type."""
+        func = parse_function("fn get_pair() -> (u8, u8) { return A, X; }")
+        assert isinstance(func.return_type, ast.TupleType)
+        assert len(func.return_type.element_types) == 2
+        assert func.return_type.element_types[0].name == "u8"
+        assert func.return_type.element_types[1].name == "u8"
+
+    def test_parse_triple_return_type(self):
+        """Test parsing function with three return values."""
+        func = parse_function("fn get_triple() -> (u8, u8, u8) { return A, X, Y; }")
+        assert isinstance(func.return_type, ast.TupleType)
+        assert len(func.return_type.element_types) == 3
+
+    def test_parse_multi_return_statement(self):
+        """Test parsing return statement with multiple values."""
+        func = parse_function("fn get_pair() -> (u8, u8) { return A, X; }")
+        ret_stmt = func.body.statements[0]
+        assert isinstance(ret_stmt, ast.ReturnStmt)
+        assert len(ret_stmt.values) == 2
+
+    def test_parse_multi_assignment(self):
+        """Test parsing multi-assignment from function call."""
+        func = parse_function("""
+            fn test() {
+                let mut a: u8;
+                let mut b: u8;
+                a, b = get_pair();
+            }
         """)
-        assert len(hir_prog.functions) == 2
+        # The multi-assignment should be in the body
+        stmts = func.body.statements
+        assert len(stmts) == 3
+
+    def test_hir_tuple_return_type(self):
+        """Test HIR building for tuple return type."""
+        hir_prog = build_hir("""
+            fn get_pair() -> (u8, u8) { return A, X; }
+        """)
+        func = hir_prog.functions[0]
+        from r65.compiler.hir.types import TupleTypeInfo
+        assert isinstance(func.return_type, TupleTypeInfo)
+        assert len(func.return_type.element_types) == 2
+
