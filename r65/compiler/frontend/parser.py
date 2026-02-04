@@ -1909,16 +1909,21 @@ class ASTBuilder(Transformer):
 class Parser:
     """Parser for R65 source code."""
 
+    # Cache compiled Lark parser - grammar is static so this is shared across instances
+    _lark_cache = None
+
     def __init__(self):
         """Initialize the parser."""
-        self.lark = Lark(
-            GRAMMAR,
-            parser='lalr',  # LALR is much faster than Earley
-            lexer='contextual',  # Contextual lexer for LALR
-            start='start',
-            keep_all_tokens=True,
-            propagate_positions=True  # Enable source location tracking
-        )
+        if Parser._lark_cache is None:
+            Parser._lark_cache = Lark(
+                GRAMMAR,
+                parser='lalr',  # LALR is much faster than Earley
+                lexer='contextual',  # Contextual lexer for LALR
+                start='start',
+                keep_all_tokens=True,
+                propagate_positions=True  # Enable source location tracking
+            )
+        self.lark = Parser._lark_cache
 
     def parse(self, source: str, filename: str = "<input>",
               included_from=None) -> ast.Program:
