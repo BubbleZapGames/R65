@@ -20,6 +20,9 @@ with open(GRAMMAR_PATH) as f:
 class Lexer:
     """Lexical analyzer for R65 source code using Lark."""
 
+    # Cache compiled Lark parser - grammar is static so this is shared across instances
+    _lark_cache = None
+
     # Map Lark token types to our TokenType enum
     TOKEN_TYPE_MAP = {
         # Keywords (explicit terminals in grammar)
@@ -163,7 +166,9 @@ class Lexer:
         """
         self.source = source
         self.filename = filename
-        self.lark = Lark(GRAMMAR, parser='earley', lexer='dynamic', ambiguity='resolve')
+        if Lexer._lark_cache is None:
+            Lexer._lark_cache = Lark(GRAMMAR, parser='earley', lexer='dynamic', ambiguity='resolve')
+        self.lark = Lexer._lark_cache
         self.tokens: List[Token] = []
 
     def _parse_integer(self, value: str, line: int, column: int) -> int:
