@@ -637,6 +637,8 @@ class HIRBuilder:
         from r65.compiler.typeck.processor_mode import ModeState
 
         entry_mode = ModeState.M8  # Default
+        a_param = None  # Track the A register parameter if 16-bit
+        b_param = None  # Track any B register parameter
 
         for param in params:
             if isinstance(param.binding, hir.RegisterBinding):
@@ -647,6 +649,24 @@ class HIRBuilder:
                     if param.param_type and isinstance(param.param_type, BasicTypeInfo):
                         if param.param_type.name in ('u16', 'i16'):
                             entry_mode = ModeState.M16
+                            a_param = param
+                elif reg_name == "B":
+                    b_param = param
+
+        # Validate: B register parameter is incompatible with 16-bit A parameter
+        if entry_mode == ModeState.M16 and b_param is not None:
+            a_type_name = a_param.param_type.name if a_param else 'u16'
+            raise HIRError(
+                f"Function '{func_name}' has a B register parameter '{b_param.name}' "
+                f"but also has a 16-bit A parameter (@ A: {a_type_name}), which puts the "
+                f"CPU in m16 mode where the B register does not exist",
+                hint=(
+                    f"In m16 mode, the accumulator is 16 bits wide and there is no "
+                    f"separate B register.\n"
+                    f"  Either remove the B parameter or change A to 8-bit: @ A: u8"
+                ),
+                source_loc=source_loc,
+            )
 
         return entry_mode
 

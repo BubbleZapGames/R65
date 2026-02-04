@@ -353,6 +353,38 @@ fn narrow_mode(value @ A: u8) {
         from r65.compiler.typeck.processor_mode import ModeState
         assert func.entry_m_mode == ModeState.M8
 
+    def test_b_param_rejected_with_u16_a(self):
+        """Test that B register parameter is rejected when A is 16-bit."""
+        source = """
+fn bad(multA @ A: u16, multB @ B: u8) {
+}
+"""
+        with pytest.raises(HIRError) as excinfo:
+            build_hir(source)
+        assert "B register" in str(excinfo.value)
+        assert "m16" in str(excinfo.value) or "16-bit" in str(excinfo.value)
+
+    def test_b_param_rejected_with_i16_a(self):
+        """Test that B register parameter is rejected when A is i16."""
+        source = """
+fn bad(val @ A: i16, extra @ B: i8) {
+}
+"""
+        with pytest.raises(HIRError) as excinfo:
+            build_hir(source)
+        assert "B register" in str(excinfo.value)
+
+    def test_b_param_allowed_with_u8_a(self):
+        """Test that B register parameter is allowed when A is 8-bit (m8 mode)."""
+        source = """
+fn ok(low @ A: u8, high @ B: u8) {
+}
+"""
+        hir = build_hir(source)
+        func = hir.declarations[0]
+        from r65.compiler.typeck.processor_mode import ModeState
+        assert func.entry_m_mode == ModeState.M8
+
 
 class TestPreservesAttribute:
     """Test #[preserves(...)] attribute processing."""
