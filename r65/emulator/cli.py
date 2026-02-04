@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 from .cpu import CPU65816, StopExecution, WaitForInterrupt
-from .memory import Memory, detect_mapping
+from .memory import SNESMemory, detect_mapping
 from .trace import TraceLogger, CompactTraceLogger, NullTraceLogger
 from .disasm import disassemble
 
@@ -120,6 +120,13 @@ Examples:
     )
 
     parser.add_argument(
+        "--profile", "-p",
+        choices=["snes"],
+        default="snes",
+        help="Hardware profile (default: snes)"
+    )
+
+    parser.add_argument(
         "--quiet", "-q",
         action="store_true",
         help="Suppress non-trace output"
@@ -184,7 +191,7 @@ Examples:
         mapping = args.mapping
 
     # Create memory and CPU
-    memory = Memory(rom_data, mapping)
+    memory = SNESMemory(rom_data, mapping)
     cpu = CPU65816(memory)
 
     # Disassembly mode
@@ -200,7 +207,7 @@ Examples:
         for _ in range(args.disasm_count):
             text, size = disassemble(memory, bank, addr, m_flag, x_flag)
             # Show hex bytes
-            hex_bytes = " ".join(f"{memory.read(bank, (addr + i) & 0xFFFF):02X}"
+            hex_bytes = " ".join(f"{memory.read((bank << 16) | ((addr + i) & 0xFFFF)):02X}"
                                 for i in range(size))
             print(f"${bank:02X}:{addr:04X}  {hex_bytes:<12s}  {text}")
             addr = (addr + size) & 0xFFFF
@@ -323,7 +330,7 @@ def run_rom(rom_data: bytes, mapping: str = "lorom",
     Returns:
         CPU65816 instance after execution
     """
-    memory = Memory(rom_data, mapping)
+    memory = SNESMemory(rom_data, mapping)
     cpu = CPU65816(memory)
     cpu.reset()
     cpu.enable_auto_nmi(True)  # Enable vblank timing

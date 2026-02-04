@@ -120,7 +120,7 @@ def direct_indirect(cpu: 'CPU65816') -> Tuple[int, int, int]:
     """Direct Page Indirect: ($nn)"""
     offset = cpu.fetch_byte()
     ptr_addr = (cpu.D + offset) & 0xFFFF
-    addr = cpu.memory.read16(0, ptr_addr)
+    addr = cpu.memory.read16(ptr_addr)
     extra = 1 if (cpu.D & 0xFF) != 0 else 0
     return (cpu.DBR, addr, extra)
 
@@ -129,8 +129,8 @@ def direct_indirect_long(cpu: 'CPU65816') -> Tuple[int, int, int]:
     """Direct Page Indirect Long: [$nn]"""
     offset = cpu.fetch_byte()
     ptr_addr = (cpu.D + offset) & 0xFFFF
-    addr = cpu.memory.read16(0, ptr_addr)
-    bank = cpu.memory.read(0, (ptr_addr + 2) & 0xFFFF)
+    addr = cpu.memory.read16(ptr_addr)
+    bank = cpu.memory.read((ptr_addr + 2) & 0xFFFF)
     extra = 1 if (cpu.D & 0xFF) != 0 else 0
     return (bank, addr, extra)
 
@@ -140,7 +140,7 @@ def direct_x_indirect(cpu: 'CPU65816') -> Tuple[int, int, int]:
     offset = cpu.fetch_byte()
     x = cpu.X & cpu.idx_mask
     ptr_addr = (cpu.D + offset + x) & 0xFFFF
-    addr = cpu.memory.read16(0, ptr_addr)
+    addr = cpu.memory.read16(ptr_addr)
     extra = 1 if (cpu.D & 0xFF) != 0 else 0
     return (cpu.DBR, addr, extra)
 
@@ -149,7 +149,7 @@ def direct_indirect_y(cpu: 'CPU65816') -> Tuple[int, int, int]:
     """Direct Page Indirect Indexed Y: ($nn),Y"""
     offset = cpu.fetch_byte()
     ptr_addr = (cpu.D + offset) & 0xFFFF
-    base = cpu.memory.read16(0, ptr_addr)
+    base = cpu.memory.read16(ptr_addr)
     y = cpu.Y & cpu.idx_mask
     addr = (base + y) & 0xFFFF
     extra = 1 if (cpu.D & 0xFF) != 0 else 0
@@ -162,8 +162,8 @@ def direct_indirect_long_y(cpu: 'CPU65816') -> Tuple[int, int, int]:
     """Direct Page Indirect Long Indexed Y: [$nn],Y"""
     offset = cpu.fetch_byte()
     ptr_addr = (cpu.D + offset) & 0xFFFF
-    base = cpu.memory.read16(0, ptr_addr)
-    bank = cpu.memory.read(0, (ptr_addr + 2) & 0xFFFF)
+    base = cpu.memory.read16(ptr_addr)
+    bank = cpu.memory.read((ptr_addr + 2) & 0xFFFF)
     y = cpu.Y & cpu.idx_mask
     full = (bank << 16) | base
     full = (full + y) & 0xFFFFFF
@@ -182,7 +182,7 @@ def stack_relative_indirect_y(cpu: 'CPU65816') -> Tuple[int, int, int]:
     """Stack Relative Indirect Indexed Y: ($nn,S),Y"""
     offset = cpu.fetch_byte()
     ptr_addr = (cpu.SP + offset) & 0xFFFF
-    base = cpu.memory.read16(0, ptr_addr)
+    base = cpu.memory.read16(ptr_addr)
     y = cpu.Y & cpu.idx_mask
     addr = (base + y) & 0xFFFF
     return (cpu.DBR, addr, 0)
@@ -191,15 +191,15 @@ def stack_relative_indirect_y(cpu: 'CPU65816') -> Tuple[int, int, int]:
 def absolute_indirect(cpu: 'CPU65816') -> Tuple[int, int, int]:
     """Absolute Indirect: ($nnnn) - used by JMP"""
     ptr = cpu.fetch_word()
-    addr = cpu.memory.read16(0, ptr)
+    addr = cpu.memory.read16(ptr)
     return (cpu.PBR, addr, 0)
 
 
 def absolute_indirect_long(cpu: 'CPU65816') -> Tuple[int, int, int]:
     """Absolute Indirect Long: [$nnnn] - used by JMP"""
     ptr = cpu.fetch_word()
-    addr = cpu.memory.read16(0, ptr)
-    bank = cpu.memory.read(0, (ptr + 2) & 0xFFFF)
+    addr = cpu.memory.read16(ptr)
+    bank = cpu.memory.read((ptr + 2) & 0xFFFF)
     return (bank, addr, 0)
 
 
@@ -208,7 +208,7 @@ def absolute_indexed_indirect(cpu: 'CPU65816') -> Tuple[int, int, int]:
     base = cpu.fetch_word()
     x = cpu.X & cpu.idx_mask
     ptr = (base + x) & 0xFFFF
-    addr = cpu.memory.read16(cpu.PBR, ptr)
+    addr = cpu.memory.read16((cpu.PBR << 16) | ptr)
     return (cpu.PBR, addr, 0)
 
 

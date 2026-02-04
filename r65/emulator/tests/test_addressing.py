@@ -217,8 +217,8 @@ class TestIndirectAddressing:
         cpu.D = 0x0000
         cpu.DBR = 0x7E
         # Set up pointer at $0010
-        cpu.memory.write(0, 0x0010, 0x00)  # Low byte
-        cpu.memory.write(0, 0x0011, 0x30)  # High byte -> $3000
+        cpu.memory.write(0x0010, 0x00)  # Low byte
+        cpu.memory.write(0x0011, 0x30)  # High byte -> $3000
         cpu.PC = 0x8000
 
         bank, address, extra = addr.direct_indirect(cpu)
@@ -231,9 +231,9 @@ class TestIndirectAddressing:
         cpu.memory.rom[0] = 0x10
         cpu.D = 0x0000
         # Set up 24-bit pointer at $0010
-        cpu.memory.write(0, 0x0010, 0x00)  # Low
-        cpu.memory.write(0, 0x0011, 0x30)  # High
-        cpu.memory.write(0, 0x0012, 0x7E)  # Bank
+        cpu.memory.write(0x0010, 0x00)  # Low
+        cpu.memory.write(0x0011, 0x30)  # High
+        cpu.memory.write(0x0012, 0x7E)  # Bank
         cpu.PC = 0x8000
 
         bank, address, extra = addr.direct_indirect_long(cpu)
@@ -248,8 +248,8 @@ class TestIndirectAddressing:
         cpu.X = 0x0004
         cpu.DBR = 0x00
         # Pointer at $0014
-        cpu.memory.write(0, 0x0014, 0x00)
-        cpu.memory.write(0, 0x0015, 0x30)
+        cpu.memory.write(0x0014, 0x00)
+        cpu.memory.write(0x0015, 0x30)
         cpu.PC = 0x8000
 
         bank, address, extra = addr.direct_x_indirect(cpu)
@@ -263,8 +263,8 @@ class TestIndirectAddressing:
         cpu.Y = 0x0004
         cpu.DBR = 0x00
         # Pointer at $0010 -> $3000
-        cpu.memory.write(0, 0x0010, 0x00)
-        cpu.memory.write(0, 0x0011, 0x30)
+        cpu.memory.write(0x0010, 0x00)
+        cpu.memory.write(0x0011, 0x30)
         cpu.PC = 0x8000
 
         bank, address, extra = addr.direct_indirect_y(cpu)
@@ -293,8 +293,8 @@ class TestStackRelativeAddressing:
         cpu.Y = 0x0002
         cpu.DBR = 0x7E
         # Pointer at SP+5 = $1FF5
-        cpu.memory.write(0, 0x1FF5, 0x00)
-        cpu.memory.write(0, 0x1FF6, 0x30)  # -> $3000
+        cpu.memory.write(0x1FF5, 0x00)
+        cpu.memory.write(0x1FF6, 0x30)  # -> $3000
         cpu.PC = 0x8000
 
         bank, address, extra = addr.stack_relative_indirect_y(cpu)
@@ -354,8 +354,8 @@ class TestJumpAddressing:
         cpu.memory.rom[0] = 0x00
         cpu.memory.rom[1] = 0x10  # Pointer at $1000
         # Pointer in bank 0
-        cpu.memory.write(0, 0x1000, 0x00)
-        cpu.memory.write(0, 0x1001, 0x90)  # -> $9000
+        cpu.memory.write(0x1000, 0x00)
+        cpu.memory.write(0x1001, 0x90)  # -> $9000
         cpu.PC = 0x8000
 
         bank, address, extra = addr.absolute_indirect(cpu)
@@ -367,9 +367,9 @@ class TestJumpAddressing:
         """Absolute indirect long for JMP [$nnnn]."""
         cpu.memory.rom[0] = 0x00
         cpu.memory.rom[1] = 0x10  # Pointer at $1000
-        cpu.memory.write(0, 0x1000, 0x00)
-        cpu.memory.write(0, 0x1001, 0x90)
-        cpu.memory.write(0, 0x1002, 0x7E)  # Bank
+        cpu.memory.write(0x1000, 0x00)
+        cpu.memory.write(0x1001, 0x90)
+        cpu.memory.write(0x1002, 0x7E)  # Bank
         cpu.PC = 0x8000
 
         bank, address, extra = addr.absolute_indirect_long(cpu)
@@ -384,8 +384,8 @@ class TestJumpAddressing:
         cpu.X = 0x0004
         cpu.PBR = 0x00
         # Pointer at $1004
-        cpu.memory.write(0, 0x1004, 0x00)
-        cpu.memory.write(0, 0x1005, 0x90)
+        cpu.memory.write(0x1004, 0x00)
+        cpu.memory.write(0x1005, 0x90)
         cpu.PC = 0x8000
 
         bank, address, extra = addr.absolute_indexed_indirect(cpu)

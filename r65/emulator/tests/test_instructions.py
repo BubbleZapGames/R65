@@ -36,7 +36,7 @@ class TestLoadInstructions:
     def test_lda_absolute(self, cpu_8bit, memory):
         """LDA $nnnn."""
         load_program(memory, bytes([0xAD, 0x00, 0x10]))  # LDA $1000
-        memory.write(0, 0x1000, 0x42)
+        memory.write(0x1000, 0x42)
         cpu_8bit.PC = 0x8000
         cpu_8bit.DBR = 0
 
@@ -48,7 +48,7 @@ class TestLoadInstructions:
     def test_lda_dp(self, cpu_8bit, memory):
         """LDA $nn (direct page)."""
         load_program(memory, bytes([0xA5, 0x10]))  # LDA $10
-        memory.write(0, 0x0010, 0x42)
+        memory.write(0x0010, 0x42)
         cpu_8bit.PC = 0x8000
         cpu_8bit.D = 0
 
@@ -88,7 +88,7 @@ class TestStoreInstructions:
 
         cycles = cpu_8bit.step()
 
-        assert memory.read(0, 0x1000) == 0x42
+        assert memory.read(0x1000) == 0x42
         assert cycles == 4
 
     def test_sta_dp(self, cpu_8bit, memory):
@@ -100,7 +100,7 @@ class TestStoreInstructions:
 
         cpu_8bit.step()
 
-        assert memory.read(0, 0x0010) == 0x42
+        assert memory.read(0x0010) == 0x42
 
     def test_stx_absolute(self, cpu_8bit, memory):
         """STX $nnnn."""
@@ -111,7 +111,7 @@ class TestStoreInstructions:
 
         cpu_8bit.step()
 
-        assert memory.read(0, 0x1000) == 0x42
+        assert memory.read(0x1000) == 0x42
 
     def test_sty_absolute(self, cpu_8bit, memory):
         """STY $nnnn."""
@@ -122,18 +122,18 @@ class TestStoreInstructions:
 
         cpu_8bit.step()
 
-        assert memory.read(0, 0x1000) == 0x42
+        assert memory.read(0x1000) == 0x42
 
     def test_stz_absolute(self, cpu_8bit, memory):
         """STZ $nnnn."""
         load_program(memory, bytes([0x9C, 0x00, 0x10]))  # STZ $1000
-        memory.write(0, 0x1000, 0xFF)  # Pre-fill
+        memory.write(0x1000, 0xFF)  # Pre-fill
         cpu_8bit.PC = 0x8000
         cpu_8bit.DBR = 0
 
         cpu_8bit.step()
 
-        assert memory.read(0, 0x1000) == 0x00
+        assert memory.read(0x1000) == 0x00
 
 
 class TestArithmeticInstructions:
@@ -531,16 +531,16 @@ class TestJumpInstructions:
         assert cpu_8bit.PC == 0x9000
         assert cycles == 6
         # Return address - 1 on stack
-        assert memory.read(0, 0x1FFF) == 0x80  # High byte
-        assert memory.read(0, 0x1FFE) == 0x02  # Low byte ($8003 - 1)
+        assert memory.read(0x1FFF) == 0x80  # High byte
+        assert memory.read(0x1FFE) == 0x02  # Low byte ($8003 - 1)
 
     def test_rts(self, cpu_8bit, memory):
         """RTS."""
         load_program(memory, bytes([0x60]))  # RTS
         # Push return address - 1
         cpu_8bit.SP = 0x1FFD
-        memory.write(0, 0x1FFE, 0xFF)  # Low byte ($8FFF)
-        memory.write(0, 0x1FFF, 0x8F)  # High byte
+        memory.write(0x1FFE, 0xFF)  # Low byte ($8FFF)
+        memory.write(0x1FFF, 0x8F)  # High byte
         cpu_8bit.PC = 0x8000
 
         cycles = cpu_8bit.step()
@@ -561,14 +561,14 @@ class TestStackInstructions:
 
         cpu_8bit.step()
 
-        assert memory.read(0, 0x1FFF) == 0x42
+        assert memory.read(0x1FFF) == 0x42
         assert cpu_8bit.SP == 0x1FFE
 
     def test_pla(self, cpu_8bit, memory):
         """PLA."""
         load_program(memory, bytes([0x68]))  # PLA
         cpu_8bit.SP = 0x1FFE
-        memory.write(0, 0x1FFF, 0x42)
+        memory.write(0x1FFF, 0x42)
         cpu_8bit.PC = 0x8000
 
         cpu_8bit.step()
@@ -585,13 +585,13 @@ class TestStackInstructions:
 
         cpu_8bit.step()
 
-        assert memory.read(0, 0x1FFF) == 0x42
+        assert memory.read(0x1FFF) == 0x42
 
     def test_plp(self, cpu_8bit, memory):
         """PLP."""
         load_program(memory, bytes([0x28]))  # PLP
         cpu_8bit.SP = 0x1FFE
-        memory.write(0, 0x1FFF, 0x42)
+        memory.write(0x1FFF, 0x42)
         cpu_8bit.PC = 0x8000
 
         cpu_8bit.step()
@@ -803,7 +803,7 @@ class TestIntegration:
             pass
 
         assert (cpu_8bit.A & 0xFF) == 0x42
-        assert memory.read(0, 0x10) == 0x42
+        assert memory.read(0x10) == 0x42
 
     def test_subroutine_call(self, cpu_8bit, memory):
         """Test JSR/RTS."""

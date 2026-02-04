@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Optional, TextIO, Tuple, List
 import sys
 
 from .cpu import CPU65816, StopExecution, WaitForInterrupt
-from .memory import Memory, detect_mapping
+from .memory import SNESMemory, detect_mapping
 from .disasm import disassemble, get_instruction_size, OPCODE_INFO
 
 if TYPE_CHECKING:
@@ -81,7 +81,7 @@ class CompareTraceLogger:
             'pc': cpu.PC,
             'pbr': cpu.PBR,
             'sp': cpu.SP,
-            'opcode': cpu.memory.read(cpu.PBR, cpu.PC),
+            'opcode': cpu.memory.read((cpu.PBR << 16) | cpu.PC),
         }
 
     def capture_post_state(self, cpu: CPU65816, pre: dict) -> NormalizedTrace:
@@ -171,8 +171,8 @@ class RomComparator:
         self.mapping = mapping
 
         # Create separate memory and CPU for each ROM
-        self.mem1 = Memory(rom1_data, mapping)
-        self.mem2 = Memory(rom2_data, mapping)
+        self.mem1 = SNESMemory(rom1_data, mapping)
+        self.mem2 = SNESMemory(rom2_data, mapping)
 
         self.cpu1 = CPU65816(self.mem1)
         self.cpu2 = CPU65816(self.mem2)

@@ -301,7 +301,8 @@ def disassemble(mem: 'Memory', bank: int, addr: int,
     Returns:
         (disassembly_string, instruction_size)
     """
-    opcode = mem.read(bank, addr)
+    ea = (bank << 16) | addr
+    opcode = mem.read(ea)
 
     if opcode not in OPCODE_INFO:
         return (f"???  ${opcode:02X}", 1)
@@ -312,7 +313,7 @@ def disassemble(mem: 'Memory', bank: int, addr: int,
     # Read operand bytes
     operand_bytes = []
     for i in range(1, size):
-        operand_bytes.append(mem.read(bank, (addr + i) & 0xFFFF))
+        operand_bytes.append(mem.read((bank << 16) | ((addr + i) & 0xFFFF)))
 
     # Format operand based on addressing mode
     operand = _format_operand(mode, operand_bytes, addr, size, flag_m, flag_x)

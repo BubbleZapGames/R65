@@ -13,6 +13,51 @@ class RomMapping(Enum):
 
 class Memory:
     """
+    Base memory class for 65816 systems.
+
+    All addresses are 24-bit (bank:offset combined as a single int).
+    Provides read16/read24/write16 helpers that delegate to subclass
+    read()/write() implementations.
+    """
+
+    def __init__(self, rom_data: bytes):
+        """
+        Initialize memory with ROM data.
+
+        Args:
+            rom_data: Raw ROM bytes
+        """
+        self.rom = bytearray(rom_data)
+
+    def read(self, addr: int) -> int:
+        """Read a byte from a 24-bit address."""
+        raise NotImplementedError
+
+    def write(self, addr: int, value: int):
+        """Write a byte to a 24-bit address."""
+        raise NotImplementedError
+
+    def read16(self, addr: int) -> int:
+        """Read a 16-bit value (little-endian). Wraps within the same bank."""
+        lo = self.read(addr)
+        hi = self.read((addr & 0xFF0000) | ((addr + 1) & 0xFFFF))
+        return lo | (hi << 8)
+
+    def read24(self, addr: int) -> int:
+        """Read a 24-bit value (little-endian). Wraps within the same bank."""
+        lo = self.read(addr)
+        mid = self.read((addr & 0xFF0000) | ((addr + 1) & 0xFFFF))
+        hi = self.read((addr & 0xFF0000) | ((addr + 2) & 0xFFFF))
+        return lo | (mid << 8) | (hi << 16)
+
+    def write16(self, addr: int, value: int):
+        """Write a 16-bit value (little-endian). Wraps within the same bank."""
+        self.write(addr, value & 0xFF)
+        self.write((addr & 0xFF0000) | ((addr + 1) & 0xFFFF), (value >> 8) & 0xFF)
+
+
+class SNESMemory(Memory):
+    """
     SNES memory map implementation supporting LoROM and HiROM.
 
     Memory regions:
@@ -55,7 +100,7 @@ class Memory:
             rom_data: Raw ROM bytes
             mapping: "lorom" or "hirom"
         """
-        self.rom = bytearray(rom_data)
+        super().__init__(rom_data)
         self.wram = bytearray(self.WRAM_SIZE)
         self.mapping = RomMapping(mapping.lower())
 
@@ -75,35 +120,35 @@ class Memory:
         # CPU reference for RDNMI ($4210) reads
         self._cpu = None
 
-    def read(self, bank: int, addr: int) -> int:
-        """Read a byte from the 24-bit address space."""
-        bank &= 0xFF
-        addr &= 0xFFFF
+    def read(self, addr: int) -> int:
+        """Read a byte from a 24-bit address."""
+        bank = (addr >> 16) & 0xFF
+        offset = addr & 0xFFFF
 
         # WRAM banks $7E-$7F
         if bank == 0x7E or bank == 0x7F:
-            offset = ((bank - 0x7E) << 16) | addr
-            if offset < self.WRAM_SIZE:
-                return self.wram[offset]
+            wram_offset = ((bank - 0x7E) << 16) | offset
+            if wram_offset < self.WRAM_SIZE:
+                return self.wram[wram_offset]
             return 0
 
         # Banks $00-$3F and $80-$BF
         if bank <= 0x3F or (0x80 <= bank <= 0xBF):
             # WRAM mirror at $0000-$1FFF
-            if addr < 0x2000:
-                return self.wram[addr]
+            if offset < 0x2000:
+                return self.wram[offset]
 
             # PPU registers $2100-$21FF (stub)
-            if 0x2100 <= addr <= 0x21FF:
-                return self._read_hw_reg(bank, addr)
+            if 0x2100 <= offset <= 0x21FF:
+                return self._read_hw_reg(bank, offset)
 
             # CPU registers $4200-$44FF (stub)
-            if 0x4200 <= addr <= 0x44FF:
-                return self._read_hw_reg(bank, addr)
+            if 0x4200 <= offset <= 0x44FF:
+                return self._read_hw_reg(bank, offset)
 
             # ROM area
-            if addr >= 0x8000:
-                return self._read_rom(bank, addr)
+            if offset >= 0x8000:
+                return self._read_rom(bank, offset)
 
             # Unmapped
             return 0
@@ -111,61 +156,47 @@ class Memory:
         # Banks $40-$7D (HiROM full banks, LoROM mirrors)
         if 0x40 <= bank <= 0x7D:
             if self.mapping == RomMapping.HIROM:
-                return self._read_rom(bank, addr)
+                return self._read_rom(bank, offset)
             else:
                 # LoROM: upper half is ROM
-                if addr >= 0x8000:
-                    return self._read_rom(bank, addr)
+                if offset >= 0x8000:
+                    return self._read_rom(bank, offset)
                 return 0
 
         # Banks $C0-$FF (ROM)
         if 0xC0 <= bank <= 0xFF:
-            return self._read_rom(bank, addr)
+            return self._read_rom(bank, offset)
 
         return 0
 
-    def read16(self, bank: int, addr: int) -> int:
-        """Read a 16-bit value (little-endian)."""
-        lo = self.read(bank, addr)
-        # Handle page wrap
-        hi = self.read(bank, (addr + 1) & 0xFFFF)
-        return lo | (hi << 8)
-
-    def read24(self, bank: int, addr: int) -> int:
-        """Read a 24-bit value (little-endian)."""
-        lo = self.read(bank, addr)
-        mid = self.read(bank, (addr + 1) & 0xFFFF)
-        hi = self.read(bank, (addr + 2) & 0xFFFF)
-        return lo | (mid << 8) | (hi << 16)
-
-    def write(self, bank: int, addr: int, value: int):
-        """Write a byte to the 24-bit address space."""
-        bank &= 0xFF
-        addr &= 0xFFFF
+    def write(self, addr: int, value: int):
+        """Write a byte to a 24-bit address."""
+        bank = (addr >> 16) & 0xFF
+        offset = addr & 0xFFFF
         value &= 0xFF
 
         # WRAM banks $7E-$7F
         if bank == 0x7E or bank == 0x7F:
-            offset = ((bank - 0x7E) << 16) | addr
-            if offset < self.WRAM_SIZE:
-                self.wram[offset] = value
+            wram_offset = ((bank - 0x7E) << 16) | offset
+            if wram_offset < self.WRAM_SIZE:
+                self.wram[wram_offset] = value
             return
 
         # Banks $00-$3F and $80-$BF
         if bank <= 0x3F or (0x80 <= bank <= 0xBF):
             # WRAM mirror at $0000-$1FFF
-            if addr < 0x2000:
-                self.wram[addr] = value
+            if offset < 0x2000:
+                self.wram[offset] = value
                 return
 
             # PPU registers $2100-$21FF (stub)
-            if 0x2100 <= addr <= 0x21FF:
-                self._write_hw_reg(bank, addr, value)
+            if 0x2100 <= offset <= 0x21FF:
+                self._write_hw_reg(bank, offset, value)
                 return
 
             # CPU registers $4200-$44FF (stub)
-            if 0x4200 <= addr <= 0x44FF:
-                self._write_hw_reg(bank, addr, value)
+            if 0x4200 <= offset <= 0x44FF:
+                self._write_hw_reg(bank, offset, value)
                 return
 
             # ROM area - ignore writes
@@ -173,11 +204,6 @@ class Memory:
 
         # ROM banks - ignore writes
         return
-
-    def write16(self, bank: int, addr: int, value: int):
-        """Write a 16-bit value (little-endian)."""
-        self.write(bank, addr, value & 0xFF)
-        self.write(bank, (addr + 1) & 0xFFFF, (value >> 8) & 0xFF)
 
     def _read_rom(self, bank: int, addr: int) -> int:
         """Read from ROM using appropriate mapping."""
@@ -299,20 +325,6 @@ class Memory:
         else:
             # Store other registers
             self._hw_regs[addr] = value
-
-    def get_reset_vector(self) -> int:
-        """Get the reset vector address from ROM."""
-        # Reset vector is at $00:FFFC (native mode) or $00:FFFC (emulation)
-        # For 65816 native mode, use bank 0
-        return self.read16(0x00, 0xFFFC)
-
-    def get_nmi_vector(self) -> int:
-        """Get the NMI vector address."""
-        return self.read16(0x00, 0xFFEA)
-
-    def get_irq_vector(self) -> int:
-        """Get the IRQ vector address."""
-        return self.read16(0x00, 0xFFEE)
 
 
 def detect_mapping(rom_data: bytes) -> str:

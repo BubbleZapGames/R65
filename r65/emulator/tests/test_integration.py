@@ -9,7 +9,7 @@ import os
 from pathlib import Path
 
 from r65.emulator.cpu import CPU65816, StopExecution, WaitForInterrupt
-from r65.emulator.memory import Memory
+from r65.emulator.memory import SNESMemory
 
 
 def compile_r65(source: str) -> bytes:
@@ -57,11 +57,11 @@ def compile_r65(source: str) -> bytes:
 
 def run_program(rom_data: bytes, max_instructions: int = 1000) -> CPU65816:
     """Run a ROM and return the CPU state."""
-    memory = Memory(rom_data, mapping="lorom")
+    memory = SNESMemory(rom_data, mapping="lorom")
     cpu = CPU65816(memory)
 
     # Start from reset vector
-    cpu.PC = memory.get_reset_vector()
+    cpu.PC = memory.read16(0xFFFC)
     cpu.PBR = 0x00
 
     instructions = 0
@@ -197,7 +197,7 @@ fn main() {
 
         assert (cpu.A & 0xFF) == 0x42
         # Verify memory was written
-        assert cpu.memory.read(0x00, 0x10) == 0x42
+        assert cpu.memory.read(0x10) == 0x42
 
     def test_subroutine_call(self, has_toolchain):
         """Test function call and return."""

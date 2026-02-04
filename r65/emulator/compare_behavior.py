@@ -13,7 +13,7 @@ from enum import Enum
 import sys
 
 from .cpu import CPU65816, StopExecution, WaitForInterrupt
-from .memory import Memory, detect_mapping
+from .memory import SNESMemory, detect_mapping
 from .disasm import disassemble, OPCODE_INFO
 
 if TYPE_CHECKING:
@@ -60,7 +60,7 @@ class BehaviorEvent:
         return str(self.event_type)
 
 
-class InstrumentedMemory(Memory):
+class InstrumentedMemory(SNESMemory):
     """Memory that logs writes for behavioral comparison."""
 
     def __init__(self, rom_data: bytes, mapping: str = "lorom"):
@@ -85,52 +85,52 @@ class InstrumentedMemory(Memory):
             0x4207, 0x4208, 0x4209, 0x420A, 0x420B, 0x420C, 0x420D,
         }
 
-    def write(self, bank: int, addr: int, value: int):
+    def write(self, addr: int, value: int):
         """Override write to log behavioral events."""
-        bank &= 0xFF
-        addr &= 0xFFFF
+        bank = (addr >> 16) & 0xFF
+        offset = addr & 0xFFFF
         value &= 0xFF
 
         if self.log_enabled:
             # Check if this is a HW register write
-            if (bank <= 0x3F or 0x80 <= bank <= 0xBF) and 0x2100 <= addr <= 0x44FF:
-                if addr in self.hw_registers:
+            if (bank <= 0x3F or 0x80 <= bank <= 0xBF) and 0x2100 <= offset <= 0x44FF:
+                if offset in self.hw_registers:
                     event = BehaviorEvent(
                         event_type=EventType.HW_WRITE,
                         instruction_num=self.instruction_num,
-                        address=addr,
+                        address=offset,
                         bank=bank,
                         value=value
                     )
                     self.write_log.append(event)
 
             # Check if this is WRAM write (game state)
-            elif self._is_wram_write(bank, addr):
-                if self._should_log_address(bank, addr):
+            elif self._is_wram_write(bank, offset):
+                if self._should_log_address(bank, offset):
                     event = BehaviorEvent(
                         event_type=EventType.MEMORY_WRITE,
                         instruction_num=self.instruction_num,
-                        address=addr,
+                        address=offset,
                         bank=bank,
                         value=value
                     )
                     self.write_log.append(event)
 
         # Do the actual write
-        super().write(bank, addr, value)
+        super().write(addr, value)
 
-    def write16(self, bank: int, addr: int, value: int):
+    def write16(self, addr: int, value: int):
         """Override 16-bit write to log as single event."""
-        bank &= 0xFF
-        addr &= 0xFFFF
+        bank = (addr >> 16) & 0xFF
+        offset = addr & 0xFFFF
         value &= 0xFFFF
 
-        if self.log_enabled and self._is_wram_write(bank, addr):
-            if self._should_log_address(bank, addr):
+        if self.log_enabled and self._is_wram_write(bank, offset):
+            if self._should_log_address(bank, offset):
                 event = BehaviorEvent(
                     event_type=EventType.MEMORY_WRITE,
                     instruction_num=self.instruction_num,
-                    address=addr,
+                    address=offset,
                     bank=bank,
                     value=value,
                     size=2
@@ -138,7 +138,7 @@ class InstrumentedMemory(Memory):
                 self.write_log.append(event)
 
         # Do the actual write
-        super().write16(bank, addr, value)
+        super().write16(addr, value)
 
     def _is_wram_write(self, bank: int, addr: int) -> bool:
         """Check if address is WRAM."""

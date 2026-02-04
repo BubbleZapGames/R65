@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Union
 
 from r65.emulator.cpu import CPU65816, StopExecution, WaitForInterrupt
-from r65.emulator.memory import Memory
+from r65.emulator.memory import SNESMemory
 
 
 class CompilationError(Exception):
@@ -167,10 +167,10 @@ class E2ETest:
         Returns:
             CPU65816 instance after execution
         """
-        memory = Memory(rom_data, mapping="lorom")
+        memory = SNESMemory(rom_data, mapping="lorom")
         cpu = CPU65816(memory)
 
-        cpu.PC = memory.get_reset_vector()
+        cpu.PC = memory.read16(0xFFFC)
         cpu.PBR = 0x00
 
         instructions = 0
@@ -235,14 +235,15 @@ class E2ETest:
             if isinstance(expected_val, list):
                 # Array of values
                 for i, val in enumerate(expected_val):
-                    actual = cpu.memory.read(addr >> 16, (addr + i) & 0xFFFF)
+                    ea = (addr & 0xFF0000) | ((addr + i) & 0xFFFF)
+                    actual = cpu.memory.read(ea)
                     if actual != val:
                         failures.append(
-                            f"Memory 0x{addr + i:06X}: expected 0x{val:02X}, got 0x{actual:02X}"
+                            f"Memory 0x{ea:06X}: expected 0x{val:02X}, got 0x{actual:02X}"
                         )
             else:
                 # Single value
-                actual = cpu.memory.read(addr >> 16, addr & 0xFFFF)
+                actual = cpu.memory.read(addr)
                 if actual != expected_val:
                     failures.append(
                         f"Memory 0x{addr:06X}: expected 0x{expected_val:02X}, got 0x{actual:02X}"

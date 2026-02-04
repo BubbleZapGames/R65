@@ -173,12 +173,12 @@ class TestStackOperations:
         cpu.push_byte(0x42)
 
         assert cpu.SP == 0x1FFE
-        assert cpu.memory.read(0, 0x1FFF) == 0x42
+        assert cpu.memory.read(0x1FFF) == 0x42
 
     def test_pull_byte(self, cpu):
         """Pull byte should read from stack and increment SP."""
         cpu.SP = 0x1FFE
-        cpu.memory.write(0, 0x1FFF, 0x42)
+        cpu.memory.write(0x1FFF, 0x42)
 
         value = cpu.pull_byte()
 
@@ -192,15 +192,15 @@ class TestStackOperations:
 
         assert cpu.SP == 0x1FFD
         # High byte at higher address
-        assert cpu.memory.read(0, 0x1FFF) == 0x12
+        assert cpu.memory.read(0x1FFF) == 0x12
         # Low byte at lower address
-        assert cpu.memory.read(0, 0x1FFE) == 0x34
+        assert cpu.memory.read(0x1FFE) == 0x34
 
     def test_pull_word(self, cpu):
         """Pull word should pull low byte first, then high byte."""
         cpu.SP = 0x1FFD
-        cpu.memory.write(0, 0x1FFE, 0x34)  # Low byte
-        cpu.memory.write(0, 0x1FFF, 0x12)  # High byte
+        cpu.memory.write(0x1FFE, 0x34)  # Low byte
+        cpu.memory.write(0x1FFF, 0x12)  # High byte
 
         value = cpu.pull_word()
 

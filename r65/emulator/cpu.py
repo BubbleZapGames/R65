@@ -73,6 +73,13 @@ class CPU65816:
         P:   8-bit processor status (NVMXDIZC)
     """
 
+    # Interrupt vector addresses
+    RESET_VECTOR = 0xFFFC
+    NMI_VECTOR = 0xFFEA       # Native mode
+    NMI_VECTOR_EMU = 0xFFFA   # Emulation mode
+    IRQ_VECTOR = 0xFFEE       # Native mode
+    IRQ_VECTOR_EMU = 0xFFFE   # Emulation mode
+
     def __init__(self, memory: 'Memory'):
         self.memory = memory
         # Set back-reference for RDNMI reads
@@ -136,7 +143,7 @@ class CPU65816:
         self.nmi_pending = False
 
         # Load reset vector
-        self.PC = self.memory.get_reset_vector()
+        self.PC = self.memory.read16(self.RESET_VECTOR)
 
     def get_state(self) -> CPUState:
         """Get current CPU state snapshot."""
@@ -281,7 +288,7 @@ class CPU65816:
 
     def fetch_byte(self) -> int:
         """Fetch byte at PC and increment PC."""
-        value = self.memory.read(self.PBR, self.PC)
+        value = self.memory.read((self.PBR << 16) | self.PC)
         self.PC = (self.PC + 1) & 0xFFFF
         return value
 
@@ -300,7 +307,7 @@ class CPU65816:
 
     def push_byte(self, value: int):
         """Push byte onto stack."""
-        self.memory.write(0, self.SP, value & 0xFF)
+        self.memory.write(self.SP, value & 0xFF)
         if self.emulation_mode:
             # In emulation mode, stack wraps within page 1
             self.SP = 0x0100 | ((self.SP - 1) & 0xFF)
@@ -318,7 +325,7 @@ class CPU65816:
             self.SP = 0x0100 | ((self.SP + 1) & 0xFF)
         else:
             self.SP = (self.SP + 1) & 0xFFFF
-        return self.memory.read(0, self.SP)
+        return self.memory.read(self.SP)
 
     def pull_word(self) -> int:
         """Pull 16-bit word from stack (low byte first)."""
@@ -422,7 +429,7 @@ class CPU65816:
         self.flag_i = True
         self.flag_d = False
         self.PBR = 0
-        self.PC = self.memory.get_nmi_vector()
+        self.PC = self.memory.read16(self.NMI_VECTOR)
 
     def trigger_irq(self):
         """Trigger IRQ interrupt (if enabled)."""
@@ -442,7 +449,7 @@ class CPU65816:
         self.flag_i = True
         self.flag_d = False
         self.PBR = 0
-        self.PC = self.memory.get_irq_vector()
+        self.PC = self.memory.read16(self.IRQ_VECTOR)
 
     # ==================== TIMING CONFIGURATION ====================
 
@@ -506,38 +513,41 @@ class CPU65816:
     def _load(self, addr_fn, op8, op16, cycles8: int, use_m: bool = True) -> int:
         """Generic memory load (LDA/LDX/LDY with addressing mode)."""
         bank, address, extra = addr_fn(self)
+        ea = (bank << 16) | address
         flag = self.flag_m if use_m else self.flag_x
         if flag:
-            op8(self, self.memory.read(bank, address))
+            op8(self, self.memory.read(ea))
             return cycles8 + extra
         else:
-            op16(self, self.memory.read16(bank, address))
+            op16(self, self.memory.read16(ea))
             return cycles8 + 1 + extra
 
     def _store(self, addr_fn, reg_fn, cycles8: int, use_m: bool = True, no_extra: bool = False) -> int:
         """Generic memory store (STA/STX/STY)."""
         bank, address, extra = addr_fn(self)
+        ea = (bank << 16) | address
         if no_extra:
             extra = 0
         flag = self.flag_m if use_m else self.flag_x
         value = reg_fn()
         if flag:
-            self.memory.write(bank, address, value & 0xFF)
+            self.memory.write(ea, value & 0xFF)
             return cycles8 + extra
         else:
-            self.memory.write16(bank, address, value & 0xFFFF)
+            self.memory.write16(ea, value & 0xFFFF)
             return cycles8 + 1 + extra
 
     def _store_zero(self, addr_fn, cycles8: int, no_extra: bool = False) -> int:
         """Generic STZ instruction."""
         bank, address, extra = addr_fn(self)
+        ea = (bank << 16) | address
         if no_extra:
             extra = 0
         if self.flag_m:
-            self.memory.write(bank, address, 0)
+            self.memory.write(ea, 0)
             return cycles8 + extra
         else:
-            self.memory.write16(bank, address, 0)
+            self.memory.write16(ea, 0)
             return cycles8 + 1 + extra
 
     def _alu_imm(self, op8, op16) -> int:
@@ -553,11 +563,12 @@ class CPU65816:
     def _alu(self, addr_fn, op8, op16, cycles8: int) -> int:
         """Generic memory ALU (ADC/SBC/AND/ORA/EOR/CMP with addressing mode)."""
         bank, address, extra = addr_fn(self)
+        ea = (bank << 16) | address
         if self.flag_m:
-            op8(self, self.memory.read(bank, address))
+            op8(self, self.memory.read(ea))
             return cycles8 + extra
         else:
-            op16(self, self.memory.read16(bank, address))
+            op16(self, self.memory.read16(ea))
             return cycles8 + 1 + extra
 
     def _cmp_idx_imm(self, reg_fn, op8, op16) -> int:
@@ -573,11 +584,12 @@ class CPU65816:
     def _cmp_idx(self, addr_fn, reg_fn, op8, op16, cycles8: int) -> int:
         """Generic memory index compare (CPX/CPY with addressing mode)."""
         bank, address, extra = addr_fn(self)
+        ea = (bank << 16) | address
         if self.flag_x:
-            op8(self, reg_fn() & 0xFF, self.memory.read(bank, address))
+            op8(self, reg_fn() & 0xFF, self.memory.read(ea))
             return cycles8 + extra
         else:
-            op16(self, reg_fn(), self.memory.read16(bank, address))
+            op16(self, reg_fn(), self.memory.read16(ea))
             return cycles8 + 1 + extra
 
     def _bit_imm(self) -> int:
@@ -593,11 +605,12 @@ class CPU65816:
     def _bit(self, addr_fn, cycles8: int) -> int:
         """Generic BIT with addressing mode (sets N/V from value)."""
         bank, address, extra = addr_fn(self)
+        ea = (bank << 16) | address
         if self.flag_m:
-            ops.bit8(self, self.memory.read(bank, address), set_nv=True)
+            ops.bit8(self, self.memory.read(ea), set_nv=True)
             return cycles8 + extra
         else:
-            ops.bit16(self, self.memory.read16(bank, address), set_nv=True)
+            ops.bit16(self, self.memory.read16(ea), set_nv=True)
             return cycles8 + 1 + extra
 
     def _rmw_acc(self, op8, op16) -> int:
@@ -613,43 +626,46 @@ class CPU65816:
     def _rmw(self, addr_fn, op8, op16, cycles8: int) -> int:
         """Generic memory RMW (ASL/LSR/ROL/ROR/INC/DEC with addressing mode)."""
         bank, address, extra = addr_fn(self)
+        ea = (bank << 16) | address
         if self.flag_m:
-            value = self.memory.read(bank, address)
+            value = self.memory.read(ea)
             result = op8(self, value)
-            self.memory.write(bank, address, result)
+            self.memory.write(ea, result)
             return cycles8 + extra
         else:
-            value = self.memory.read16(bank, address)
+            value = self.memory.read16(ea)
             result = op16(self, value)
-            self.memory.write16(bank, address, result)
+            self.memory.write16(ea, result)
             return cycles8 + 2 + extra
 
     def _tsb(self, addr_fn, cycles8: int) -> int:
         """Test and Set Bits."""
         bank, address, extra = addr_fn(self)
+        ea = (bank << 16) | address
         if self.flag_m:
-            value = self.memory.read(bank, address)
+            value = self.memory.read(ea)
             self.flag_z = (self.A & value) == 0
-            self.memory.write(bank, address, value | (self.A & 0xFF))
+            self.memory.write(ea, value | (self.A & 0xFF))
             return cycles8 + extra
         else:
-            value = self.memory.read16(bank, address)
+            value = self.memory.read16(ea)
             self.flag_z = (self.A & value) == 0
-            self.memory.write16(bank, address, value | self.A)
+            self.memory.write16(ea, value | self.A)
             return cycles8 + 2 + extra
 
     def _trb(self, addr_fn, cycles8: int) -> int:
         """Test and Reset Bits."""
         bank, address, extra = addr_fn(self)
+        ea = (bank << 16) | address
         if self.flag_m:
-            value = self.memory.read(bank, address)
+            value = self.memory.read(ea)
             self.flag_z = (self.A & value) == 0
-            self.memory.write(bank, address, value & ~(self.A & 0xFF))
+            self.memory.write(ea, value & ~(self.A & 0xFF))
             return cycles8 + extra
         else:
-            value = self.memory.read16(bank, address)
+            value = self.memory.read16(ea)
             self.flag_z = (self.A & value) == 0
-            self.memory.write16(bank, address, value & ~self.A)
+            self.memory.write16(ea, value & ~self.A)
             return cycles8 + 2 + extra
 
     def _branch(self, condition: bool) -> int:
@@ -850,7 +866,8 @@ class CPU65816:
 
     def _pei(self) -> int:
         bank, address, extra = addr.direct(self)
-        value = self.memory.read16(bank, address)
+        ea = (bank << 16) | address
+        value = self.memory.read16(ea)
         self.push_word(value)
         return 6 + extra
 
@@ -1089,7 +1106,7 @@ class CPU65816:
             self.push_byte(self.P | 0x10)
             self.flag_i = True
             self.flag_d = False
-            self.PC = self.memory.read16(0, 0xFFFE)
+            self.PC = self.memory.read16(0xFFFE)
             return 7
         else:
             self.push_byte(self.PBR)
@@ -1098,7 +1115,7 @@ class CPU65816:
             self.flag_i = True
             self.flag_d = False
             self.PBR = 0
-            self.PC = self.memory.read16(0, 0xFFE6)
+            self.PC = self.memory.read16(0xFFE6)
             return 8
 
     def _cop(self) -> int:
@@ -1108,7 +1125,7 @@ class CPU65816:
             self.push_byte(self.P)
             self.flag_i = True
             self.flag_d = False
-            self.PC = self.memory.read16(0, 0xFFF4)
+            self.PC = self.memory.read16(0xFFF4)
             return 7
         else:
             self.push_byte(self.PBR)
@@ -1117,14 +1134,14 @@ class CPU65816:
             self.flag_i = True
             self.flag_d = False
             self.PBR = 0
-            self.PC = self.memory.read16(0, 0xFFE4)
+            self.PC = self.memory.read16(0xFFE4)
             return 8
 
     def _mvn(self) -> int:
         dest_bank, src_bank, _ = addr.block_move(self)
         self.DBR = dest_bank
-        src = self.memory.read(src_bank, self.X)
-        self.memory.write(dest_bank, self.Y, src)
+        src = self.memory.read((src_bank << 16) | self.X)
+        self.memory.write((dest_bank << 16) | self.Y, src)
         self.X = (self.X + 1) & self.idx_mask
         self.Y = (self.Y + 1) & self.idx_mask
         self.A = (self.A - 1) & 0xFFFF
@@ -1135,8 +1152,8 @@ class CPU65816:
     def _mvp(self) -> int:
         dest_bank, src_bank, _ = addr.block_move(self)
         self.DBR = dest_bank
-        src = self.memory.read(src_bank, self.X)
-        self.memory.write(dest_bank, self.Y, src)
+        src = self.memory.read((src_bank << 16) | self.X)
+        self.memory.write((dest_bank << 16) | self.Y, src)
         self.X = (self.X - 1) & self.idx_mask
         self.Y = (self.Y - 1) & self.idx_mask
         self.A = (self.A - 1) & 0xFFFF

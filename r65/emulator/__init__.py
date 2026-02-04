@@ -5,12 +5,12 @@ A headless 65816 CPU emulator for testing R65-compiled code with execution trace
 """
 
 from .cpu import CPU65816
-from .memory import Memory
+from .memory import Memory, SNESMemory
 from .trace import TraceLogger
 from .disasm import disassemble
 from .compare import RomComparator, NormalizedTrace, Divergence, CompareTraceLogger
 
 __all__ = [
-    'CPU65816', 'Memory', 'TraceLogger', 'disassemble',
+    'CPU65816', 'Memory', 'SNESMemory', 'TraceLogger', 'disassemble',
     'RomComparator', 'NormalizedTrace', 'Divergence', 'CompareTraceLogger'
 ]

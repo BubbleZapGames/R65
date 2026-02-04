@@ -4,7 +4,7 @@ Pytest fixtures for emulator tests.
 
 import pytest
 from r65.emulator.cpu import CPU65816
-from r65.emulator.memory import Memory
+from r65.emulator.memory import Memory, SNESMemory
 
 
 @pytest.fixture
@@ -14,9 +14,9 @@ def empty_rom() -> bytes:
 
 
 @pytest.fixture
-def memory(empty_rom) -> Memory:
+def memory(empty_rom) -> SNESMemory:
     """Memory instance with empty ROM."""
-    return Memory(empty_rom)
+    return SNESMemory(empty_rom)
 
 
 @pytest.fixture
@@ -62,7 +62,7 @@ def cpu_emulation(memory) -> CPU65816:
     return cpu
 
 
-def load_program(memory: Memory, program: bytes, start: int = 0x8000) -> None:
+def load_program(memory: SNESMemory, program: bytes, start: int = 0x8000) -> None:
     """Load a program into ROM at the specified address."""
     # Calculate offset into ROM based on LoROM mapping
     # In LoROM, $8000-$FFFF maps to ROM

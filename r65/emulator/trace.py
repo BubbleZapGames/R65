@@ -136,7 +136,7 @@ class TraceLogger:
             ascii_part = ""
             for j in range(16):
                 if i + j < length:
-                    byte = cpu.memory.read(bank, (addr + j) & 0xFFFF)
+                    byte = cpu.memory.read((bank << 16) | ((addr + j) & 0xFFFF))
                     hex_part += f"{byte:02X} "
                     ascii_part += chr(byte) if 0x20 <= byte <= 0x7E else "."
                 else:
