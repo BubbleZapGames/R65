@@ -4,7 +4,6 @@ R65 is a Rust-inspired programming language for the 6502/65816 processor family,
 
 ```rust
 #[entry]
-#[mode(m8, x8)]
 fn main() -> ! {
     INIDISP = 0x0F;  // Screen on, full brightness
     loop {
@@ -31,20 +30,13 @@ cd R65
 pip install -e .
 ```
 
-### Create a Project
+### Create a Project and Build
 
 ```bash
 r65x init --platform snes my_game
 cd my_game
-```
-
-### Compile and Build
-
-```bash
-r65c main.r65 -o main.asm    # Compile R65 to assembly
 make                          # Assemble and link (requires WLA-DX)
 ```
-
 ---
 
 # R65 Language Guide
@@ -77,7 +69,7 @@ Use `#[ram]` for general-purpose variables:
 #[ram]
 static mut SCORE: u16 = 0;
 
-#[ram]
+#[lowram]
 static mut ENEMIES: [Enemy; 8];  // Array of 8 enemies
 ```
 
@@ -126,14 +118,14 @@ static SINE_TABLE: [u8; 256] = [0, 3, 6, 9, /* ... */];
 All 65816 registers are available as global variables:
 
 ```rust
-A = 0x42;        // Accumulator
-X = 10;          // X index
-Y = 20;          // Y index
-STATUS;          // Processor flags (read-only access to flags)
+A = 0x42;        // Accumulator (u8 default, u16 with @ A: u16 parameter)
+X = 10;          // X index (always u16)
+Y = 20;          // Y index (always u16)
+STATUS;          // Processor flags
 D = 0x0000;      // Direct page base
 DBR = 0x7E;      // Data bank
-// PBR            // Program bank (read-only)
-// S              // Stack pointer
+PBR              // Program bank (read-only)
+S                // Stack pointer
 ```
 
 ### Register Aliasing
@@ -165,22 +157,17 @@ let result = add(10, 20);  // result = 30
 Pass values directly in registers for maximum speed:
 
 ```rust
-fn multiply(value @ A: u8, count @ X: u8) -> u8 {
-    // value is already in A, count in X
+fn fill(*buffer @ X: u8, value @ A: u8, count @ Y: u16) {
+    // buffer ptr in X, value in A, count in Y
     // No stack overhead!
-    let result @ A = 0;
-    loop {
-        if count == 0 { break; }
-        result = result + value;
+    while count > 0 {
         count--;
+        buffer[count] = value;
     }
-    return result;  // Returns A
 }
 
-// Call with values already in registers - zero overhead!
-let x @ A = 5;
-let y @ X = 3;
-let product = multiply(x, y);
+// Call - value goes straight into registers
+fill(&BUFFER, 0, 256);
 ```
 
 ### Register Preservation
@@ -199,31 +186,36 @@ fn safe_function(input @ A: u8) -> u8 {
 
 ## Processor Modes
 
-The 65816 has 8-bit and 16-bit modes. R65 tracks these at compile time:
+The 65816 has 8-bit and 16-bit accumulator modes. R65 infers the mode automatically from parameter types:
 
 ```rust
-#[mode(m8, x8)]   // 8-bit accumulator and index registers
+// 8-bit accumulator (default)
 fn process_byte(value @ A: u8) -> u8 {
     return value + 1;
 }
 
-#[mode(m16, x16)] // 16-bit mode
+// 16-bit accumulator (inferred from u16 @ A)
 fn process_word(value @ A: u16) -> u16 {
     return value + 1;
 }
 ```
 
-### Mode Transitions
+X and Y index registers are always 16-bit in R65.
+
+### Data Bank Management
+
+For far functions that access data in their own bank:
 
 ```rust
-#[mode(m16, x16, transition=inline)]
-fn safe_16bit() {
-    // Callable from any mode - compiler handles transition
+#[bank(1)]
+#[mode(databank=inline)]
+far fn graphics_routine() {
+    // Compiler saves/restores DBR and sets it to this function's bank
 }
 
-#[mode(m8, x8)]
-fn caller() {
-    safe_16bit();  // Works! Compiler inserts PHP/REP.../PLP
+#[mode(databank=caller)]
+far fn batch_function() {
+    // Caller is responsible for setting DBR
 }
 ```
 
@@ -309,6 +301,17 @@ static mut MESSAGE: [u8; 16] = "Hello, SNES!\0";
 
 **Note:** No bounds checking - you're responsible for valid indices.
 
+## Enums
+
+C-style enums with explicit or auto-increment values:
+
+```rust
+enum Direction { North = 0, East, South, West }
+
+let dir = Direction::North;
+let value: u8 = dir as u8;
+```
+
 ## Pointers
 
 ```rust
@@ -339,10 +342,12 @@ let diff = a - b;
 let masked = value & 0x0F;
 let shifted = value << 2;     // Constant shift only
 
-// Slow (use functions - makes cost visible)
+// Slow (use functions from math.r65 - makes cost visible)
+include!("lib/math.r65")
+
 let product = mul8(a, b);     // 8-bit multiply
 let quotient = div16(a, b);   // 16-bit divide
-let dynamic_shift = shl(value, amount);  // Variable shift
+let dynamic_shift = shl8(value, amount);  // Variable shift
 ```
 
 ## Interrupts
@@ -397,6 +402,35 @@ fn disable_interrupts() {
 }
 ```
 
+## Macros
+
+Simplified `macro_rules!` with repetition support:
+
+```rust
+macro_rules! inc_twice($reg:reg) {
+    $reg++;
+    $reg++;
+}
+
+inc_twice!(X);  // Expands to: X++; X++;
+```
+
+## Conditional Compilation
+
+Use `#[cfg]` to conditionally compile for different targets:
+
+```rust
+#[cfg(snes)]
+far fn mul16(a @ A: u8, b: u16) -> u16 {
+    // Hardware multiplier implementation
+}
+
+#[cfg(not(snes))]
+far fn mul16(a @ A: u8, b: u16) -> u16 {
+    // Software fallback
+}
+```
+
 ---
 
 # Project Structure
@@ -420,7 +454,7 @@ include!("player.r65")
 include!("enemies.r65")
 
 #[entry]
-fn main() -> ! { /* ... */ }
+fn main() { /* ... */ }
 ```
 
 ---
@@ -432,9 +466,17 @@ fn main() -> ! { /* ... */ }
 ```bash
 r65c source.r65 -o output.asm   # Compile to assembly
 r65c source.r65 -v              # Verbose output
-r65c source.r65 --dump-ast      # Debug: show AST
-r65c source.r65 --dump-mir      # Debug: show MIR
+r65c source.r65 --dbg           # Output debugging file 
+r65c source.r65 --cfg snes      # Compile with SNES cfg flag
+r65x init --platform snes game  # Create new project
 ```
+
+## Standard Library
+
+| Module | Description |
+|--------|-------------|
+| `stdlib/sneslib.r65` | SNES hardware registers and DMA macros |
+| `stdlib/math.r65` | Multiply, divide, modulo, variable shift |
 
 ## Documentation
 
@@ -447,6 +489,8 @@ r65c source.r65 --dump-mir      # Debug: show MIR
 | [docs/operators.md](docs/operators.md) | Operator semantics and cost |
 | [docs/control-flow.md](docs/control-flow.md) | Loops, branches, labels |
 | [docs/code-generation.md](docs/code-generation.md) | How R65 compiles to assembly |
+| [docs/macros.md](docs/macros.md) | Macro system |
+| [docs/struct-array-indexing.md](docs/struct-array-indexing.md) | Struct array indexing strategies |
 
 ## External References
 
@@ -458,13 +502,15 @@ r65c source.r65 --dump-mir      # Debug: show MIR
 
 # Status
 
-R65 is under active development. Core compiler passes are implemented:
+R65 is under active development. The core compiler pipeline is functional:
 
-- ✅ Lexer, Parser, AST
-- ✅ Type System with mode tracking
-- ✅ MIR and code generation
-- 🚧 Full pipeline integration
-- ⏳ Standard library
+- Lexer, parser, AST
+- HIR with type resolution and const evaluation
+- Type checking with mode tracking
+- MIR with CFG-based optimization
+- Code generation targeting WLA-DX assembly
+- Standard library (sneslib, math, extended types)
+- End-to-end test suite with 65816 emulator validation
 
 ---
 
