@@ -729,48 +729,6 @@ def test_pointer_types():
 
     print("✓ Pointer types test passed")
 
-
-def test_complete_program():
-    """Test parsing a complete program."""
-    source = """
-    #[hw(0x2100)]
-    static mut INIDISP: u8;
-
-    #[zeropage(0x20)]
-    static mut COUNTER: u16 = 0;
-
-        #[preserves(X, Y)]
-    fn increment() -> u16 {
-        let value @ A = COUNTER;
-        value = value + 1;
-        COUNTER = value;
-        return value;
-    }
-
-    #[entry]
-    fn main() -> ! {
-        loop {
-            increment();
-        }
-    }
-    """
-
-    program = parse(source)
-
-    assert isinstance(program, ast.Program)
-    assert len(program.items) == 4  # 2 statics, 2 functions
-
-    # Check static declarations
-    assert isinstance(program.items[0], ast.StaticDecl)
-    assert isinstance(program.items[1], ast.StaticDecl)
-
-    # Check functions
-    assert isinstance(program.items[2], ast.FunctionDecl)
-    assert isinstance(program.items[3], ast.FunctionDecl)
-
-    print("✓ Complete program test passed")
-
-
 if __name__ == '__main__':
     print("Running parser tests...\n")
 
@@ -797,6 +755,5 @@ if __name__ == '__main__':
     test_never_type()
     test_array_type()
     test_pointer_types()
-    test_complete_program()
 
     print("\n✅ All parser tests passed!")

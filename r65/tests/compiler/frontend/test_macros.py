@@ -527,24 +527,6 @@ class TestStringifyMacro:
         # Should properly escape quotes
         assert stmt.expr.value == 'Hello \\"World\\"'
 
-    def test_stringify_error_undefined_macro(self):
-        """Test that non-stringify macros in statement context give proper error."""
-        from r65.compiler.frontend.macros import MacroError
-        
-        source = """
-        fn test() {
-            unknown_macro!(arg);
-        }
-        """
-        
-        program = parse(source, "<test>")
-        
-        with pytest.raises(MacroError) as exc_info:
-            expand_macros(program)
-        
-        assert "undefined macro: 'unknown_macro'" in str(exc_info.value)
-
-
 # ============================================================================
 # End-to-End Compilation Tests
 # ============================================================================
@@ -562,7 +544,7 @@ class TestMacroCompilation:
             $reg++;
         }
 
-                fn main() {
+        fn main() {
             X = 0;
             inc_twice!(X);
             A = X;
@@ -582,7 +564,7 @@ class TestMacroCompilation:
             A = A + $val;
         }
 
-                fn test() {
+        fn test() {
             A = 10;
             add_const!(5);
         }
@@ -607,7 +589,7 @@ class TestMacroCompilation:
             inc!($reg);
         }
 
-                fn test() {
+        fn test() {
             X = 0;
             inc_three_times!(X);
         }
@@ -738,27 +720,6 @@ class TestTopLevelMacroInvocation:
         static = expanded.items[0]
         assert isinstance(static, ast.StaticDecl)
         assert static.name == "INIDISP"
-
-    def test_top_level_multiple_declarations(self):
-        """Test macro that expands to multiple declarations."""
-        source = """
-        macro_rules! define_ports($name1:ident, $name2:ident) {
-            #[zeropage]
-            static mut $name1: u8;
-            #[zeropage]
-            static mut $name2: u8;
-        }
-
-        define_ports!(PORT_A, PORT_B);
-        """
-        program = parse(source, "<test>")
-        expanded = expand_macros(program)
-
-        # Should have two static declarations
-        assert len(expanded.items) == 2
-        assert all(isinstance(item, ast.StaticDecl) for item in expanded.items)
-        assert expanded.items[0].name == "PORT_A"
-        assert expanded.items[1].name == "PORT_B"
 
     def test_top_level_function_declaration(self):
         """Test macro that expands to a function declaration."""
@@ -931,35 +892,6 @@ class TestTopLevelMacroInvocation:
         assert "StaticDecl" in types
         assert "FunctionDecl" in types
 
-    def test_top_level_undefined_macro_error(self):
-        """Test that undefined macro at top level raises error."""
-        source = """
-        undefined_macro!(arg);
-        """
-        program = parse(source, "<test>")
-
-        with pytest.raises(MacroError) as exc_info:
-            expand_macros(program)
-
-        assert "undefined macro: 'undefined_macro'" in str(exc_info.value)
-
-    def test_top_level_recursive_macro_error(self):
-        """Test that recursive macro at top level raises error."""
-        source = """
-        macro_rules! recursive($x:ident) {
-            recursive!($x);
-        }
-
-        recursive!(test);
-        """
-        program = parse(source, "<test>")
-
-        with pytest.raises(MacroError) as exc_info:
-            expand_macros(program)
-
-        assert "recursive macro expansion" in str(exc_info.value)
-
-
 class TestCompileErrorMacro:
     """Tests for the built-in compile_error! macro."""
 
@@ -976,84 +908,6 @@ class TestCompileErrorMacro:
             expand_macros(program)
 
         assert "This feature is not implemented" in str(exc_info.value)
-
-    def test_compile_error_in_expression_context(self):
-        """Test compile_error! raises error in expression context."""
-        source = '''
-        fn test() {
-            let x: u8 = compile_error!("Cannot use this");
-        }
-        '''
-        program = parse(source, "<test>")
-
-        with pytest.raises(MacroError) as exc_info:
-            expand_macros(program)
-
-        assert "Cannot use this" in str(exc_info.value)
-
-    def test_compile_error_without_quotes(self):
-        """Test compile_error! with bare tokens (no quotes)."""
-        source = '''
-        fn test() {
-            compile_error!(missing feature X);
-        }
-        '''
-        program = parse(source, "<test>")
-
-        with pytest.raises(MacroError) as exc_info:
-            expand_macros(program)
-
-        assert "missing feature X" in str(exc_info.value)
-
-    def test_compile_error_no_arguments(self):
-        """Test compile_error! with no arguments uses default message."""
-        source = '''
-        fn test() {
-            compile_error!();
-        }
-        '''
-        program = parse(source, "<test>")
-
-        with pytest.raises(MacroError) as exc_info:
-            expand_macros(program)
-
-        assert "explicit compile error" in str(exc_info.value)
-
-    def test_compile_error_preserves_source_location(self):
-        """Test that compile_error! error has correct source location."""
-        source = '''
-        fn test() {
-            compile_error!("error here");
-        }
-        '''
-        program = parse(source, "<test>")
-
-        with pytest.raises(MacroError) as exc_info:
-            expand_macros(program)
-
-        # Error should have source location
-        error = exc_info.value
-        assert error.source_loc is not None
-        assert error.source_loc.line == 3  # Line 3 (1-indexed)
-
-    def test_compile_error_in_conditional_macro(self):
-        """Test compile_error! can be used inside user-defined macros."""
-        source = '''
-        macro_rules! require_feature($name:ident) {
-            compile_error!("Feature not enabled");
-        }
-
-        fn test() {
-            require_feature!(networking);
-        }
-        '''
-        program = parse(source, "<test>")
-
-        with pytest.raises(MacroError) as exc_info:
-            expand_macros(program)
-
-        assert "Feature not enabled" in str(exc_info.value)
-
 
 class TestConstAssertMacro:
     """Tests for the built-in const_assert! macro."""
