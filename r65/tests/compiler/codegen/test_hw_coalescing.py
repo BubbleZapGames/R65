@@ -224,10 +224,10 @@ class TestHwCoalescingCodeGen:
         func_section = asm_output[identity_start:identity_start + 200]
         lines = [l.strip() for l in func_section.split('\n') if l.strip()]
 
-        # Should NOT have PHA (frame allocation)
-        has_pha = any('PHA' in line for line in lines[:10])
-        assert not has_pha, \
-            f"Identity function should not allocate frame (no PHA)\nOutput:\n{func_section}"
+        # Should NOT have PHB (frame allocation)
+        has_phb = any('PHB' in line for line in lines[:10])
+        assert not has_phb, \
+            f"Identity function should not allocate frame (no PHB)\nOutput:\n{func_section}"
 
         # Should have RTL
         has_rtl = any('RTL' in line for line in lines)
@@ -278,40 +278,17 @@ class TestHwCoalescingCodeGen:
 
         func_section = asm_output[func_start:func_start + 300]
 
-        # Should have frame allocation (PHA) since vreg_a is used in BinaryOp
-        has_pha = 'PHA' in func_section
-        assert has_pha, \
+        # Should have frame allocation (PHB) since vreg_a is used in BinaryOp
+        has_phb = 'PHB' in func_section
+        assert has_phb, \
             f"Function with locals should allocate frame\nOutput:\n{func_section}"
 
 
 class TestBRegisterReturns:
-    """Test that B register returns skip XBA frame cleanup optimization."""
+    """Test that PLB frame cleanup doesn't clobber any return registers."""
 
-    def _has_xba_frame_cleanup(self, asm_section: str) -> bool:
-        """
-        Check if the assembly uses XBA for frame cleanup.
-
-        The XBA frame cleanup pattern is:
-            XBA  ; Save A in B
-            PLA  ; Deallocate frame
-            XBA  ; Restore A from B
-
-        This is different from XBA used for B register access/operations.
-        """
-        lines = [l.strip() for l in asm_section.split('\n')]
-        for i, line in enumerate(lines):
-            if 'XBA' in line and 'Save A in B' in line:
-                return True
-            # Also check for pattern: XBA followed by PLA followed by XBA
-            if line.startswith('XBA') and i + 2 < len(lines):
-                if 'PLA' in lines[i + 1] and lines[i + 2].startswith('XBA'):
-                    return True
-        return False
-
-    def test_return_b_skips_xba_frame_cleanup(self):
-        """Test that returning B uses TSC/ADC/TCS instead of XBA for cleanup."""
-        # Create a function that returns B and has a frame
-        # Frame cleanup should NOT use XBA (would clobber B return value)
+    def test_return_b_uses_plb_frame_cleanup(self):
+        """Test that returning B uses PLB for frame cleanup (doesn't clobber B)."""
         vreg_alloc = VirtualRegisterAllocator()
         vreg_a = vreg_alloc.alloc(BasicTypeInfo('u8'), "a")
 
@@ -362,19 +339,18 @@ class TestBRegisterReturns:
 
         func_section = asm_output[func_start:func_start + 500]
 
-        # Should NOT have XBA frame cleanup pattern (would clobber B return value)
-        has_xba_cleanup = self._has_xba_frame_cleanup(func_section)
-        assert not has_xba_cleanup, \
-            f"Function returning B should NOT use XBA for frame cleanup\nOutput:\n{func_section}"
+        # Should use PLB for frame cleanup (doesn't clobber A, X, Y, or B)
+        has_plb = 'PLB' in func_section
+        assert has_plb, \
+            f"Function returning B should use PLB for frame cleanup\nOutput:\n{func_section}"
 
-        # Should have TSC/TCS for frame cleanup
-        has_tsc = 'TSC' in func_section
-        has_tcs = 'TCS' in func_section
-        assert has_tsc and has_tcs, \
-            f"Function returning B should use TSC/TCS for cleanup\nOutput:\n{func_section}"
+        # Should NOT need XBA workaround or TSC/TCS for small frame
+        has_xba = 'XBA' in func_section and 'Save A in B' in func_section
+        assert not has_xba, \
+            f"Function returning B should NOT use XBA workaround\nOutput:\n{func_section}"
 
-    def test_return_a_uses_xba_frame_cleanup(self):
-        """Test that returning A (not B) uses XBA frame cleanup optimization."""
+    def test_return_a_uses_plb_frame_cleanup(self):
+        """Test that returning A uses PLB for frame cleanup (doesn't clobber A)."""
         vreg_alloc = VirtualRegisterAllocator()
         vreg_a = vreg_alloc.alloc(BasicTypeInfo('u8'), "a")
 
@@ -416,18 +392,18 @@ class TestBRegisterReturns:
 
         func_section = asm_output[func_start:func_start + 400]
 
-        # Should have XBA frame cleanup optimization (B is free)
-        has_xba_cleanup = self._has_xba_frame_cleanup(func_section)
-        assert has_xba_cleanup, \
-            f"Function returning A should use XBA for frame cleanup\nOutput:\n{func_section}"
+        # Should use PLB for frame cleanup (doesn't clobber A)
+        has_plb = 'PLB' in func_section
+        assert has_plb, \
+            f"Function returning A should use PLB for frame cleanup\nOutput:\n{func_section}"
 
-        # Should NOT have TSC/TCS (using XBA/PLA instead)
+        # Should NOT need TSC/TCS for small frame
         has_tsc = 'TSC' in func_section
         assert not has_tsc, \
-            f"Function returning A should NOT use TSC/TCS\nOutput:\n{func_section}"
+            f"Function returning A should NOT use TSC/TCS for small frame\nOutput:\n{func_section}"
 
-    def test_return_a_and_b_skips_xba_frame_cleanup(self):
-        """Test that returning both A and B skips XBA frame cleanup."""
+    def test_return_a_and_b_uses_plb_frame_cleanup(self):
+        """Test that returning both A and B uses PLB for frame cleanup."""
         vreg_alloc = VirtualRegisterAllocator()
         vreg_a = vreg_alloc.alloc(BasicTypeInfo('u8'), "a")
 
@@ -469,16 +445,15 @@ class TestBRegisterReturns:
 
         func_section = asm_output[func_start:func_start + 500]
 
-        # Should NOT have XBA frame cleanup (would clobber B return value)
-        has_xba_cleanup = self._has_xba_frame_cleanup(func_section)
-        assert not has_xba_cleanup, \
-            f"Function returning A,B should NOT use XBA for frame cleanup\nOutput:\n{func_section}"
+        # Should use PLB for frame cleanup (doesn't clobber A, X, Y, or B)
+        has_plb = 'PLB' in func_section
+        assert has_plb, \
+            f"Function returning A,B should use PLB for frame cleanup\nOutput:\n{func_section}"
 
-        # Should have TSC/TCS for frame cleanup
+        # Should NOT need TSC/TCS for small frame
         has_tsc = 'TSC' in func_section
-        has_tcs = 'TCS' in func_section
-        assert has_tsc and has_tcs, \
-            f"Function returning A,B should use TSC/TCS for cleanup\nOutput:\n{func_section}"
+        assert not has_tsc, \
+            f"Function returning A,B should NOT use TSC/TCS for small frame\nOutput:\n{func_section}"
 
 
 def test_hw_coalescing_summary():

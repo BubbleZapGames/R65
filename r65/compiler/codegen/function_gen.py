@@ -605,19 +605,21 @@ class FunctionCodeGenerator:
         """
         Emit stack frame allocation code.
 
-        For small frames (1-4 bytes), uses PHA instructions which is more efficient.
+        For small frames (1-4 bytes), uses PHB instructions which is more efficient.
+        PHB always pushes exactly 1 byte regardless of accumulator mode, and using
+        PLB for deallocation avoids clobbering the accumulator.
         For larger frames, uses TSC/SBC/TCS to subtract from stack pointer.
 
-        PHA approach (8-bit mode, 3 cycles per PHA):
-        - 1 byte:  PHA (3 cycles)
-        - 2 bytes: PHA PHA (6 cycles)
-        - 3 bytes: PHA PHA PHA (9 cycles)
-        - 4 bytes: PHA PHA PHA PHA (12 cycles)
+        PHB approach (3 cycles per PHB):
+        - 1 byte:  PHB (3 cycles)
+        - 2 bytes: PHB PHB (6 cycles)
+        - 3 bytes: PHB PHB PHB (9 cycles)
+        - 4 bytes: PHB PHB PHB PHB (12 cycles)
 
         TSC/SBC/TCS approach (15 cycles total):
         - REP #$20 (3) + TSC (2) + SEC (2) + SBC #imm (3) + TCS (2) + SEP #$20 (3)
 
-        Break-even is at 5 bytes, so PHA wins for 1-4 bytes.
+        Break-even is at 5 bytes, so PHB wins for 1-4 bytes.
 
         Args:
             frame_size: Number of bytes to allocate
@@ -628,11 +630,13 @@ class FunctionCodeGenerator:
             return
 
         if frame_size <= 4 and not force_direct_stack:
-            # Use PHA for small frames - more efficient
-            # PHA pushes junk (current A value) but that's fine since
-            # locals will be written before being read
+            # Use PHB for small frames - more efficient
+            # PHB pushes DBR (junk for our purposes) but that's fine since
+            # locals will be written before being read.
+            # PHB is always 1 byte regardless of accumulator mode, and
+            # PLB for deallocation won't clobber the accumulator.
             for _ in range(frame_size):
-                self._emit_instr(Opcode.PHA, comment=f"Allocate frame ({frame_size} bytes)")
+                self._emit_instr(Opcode.PHB, comment=f"Allocate frame ({frame_size} bytes)")
         else:
             # Use TSC/SBC/TCS for larger frames or when mode is unknown
             self._emit_instr(Opcode.REP_IMMEDIATE, Immediate(M_FLAG), "16-bit A for frame setup")
@@ -646,7 +650,9 @@ class FunctionCodeGenerator:
         """
         Emit stack frame deallocation code.
 
-        For small frames (1-4 bytes), uses PLA instructions.
+        For small frames (1-4 bytes), uses PLB instructions.
+        PLB always pulls exactly 1 byte regardless of accumulator mode and
+        does not clobber the accumulator (only affects DBR).
         For larger frames, uses TSC/ADC/TCS to add to stack pointer.
 
         Args:
@@ -656,9 +662,9 @@ class FunctionCodeGenerator:
             return
 
         if frame_size <= 4:
-            # Use PLA for small frames
+            # Use PLB for small frames - doesn't clobber A
             for _ in range(frame_size):
-                self._emit_instr(Opcode.PLA, comment=f"Deallocate frame ({frame_size} bytes)")
+                self._emit_instr(Opcode.PLB, comment=f"Deallocate frame ({frame_size} bytes)")
         else:
             # Use TSC/ADC/TCS for larger frames
             self._emit_instr(Opcode.REP_IMMEDIATE, Immediate(M_FLAG), "16-bit A for frame cleanup")

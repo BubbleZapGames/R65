@@ -393,6 +393,12 @@ class MoveOperationSelector(BaseSelector):
                     self.parent._mark_a_modified()
             else:
                 self._emit_load_store(STORE_MNEMONICS[src_reg], dest_loc)
+        elif src_reg == 'B':
+            # B register: use XBA to swap B into A, store, then XBA to restore
+            # XBA preserves both values (just swaps), so A is restored afterward
+            self._emit_instr(Opcode.XBA, comment="Swap B into A for store")
+            self._emit_load_store('STA', dest_loc)
+            self._emit_instr(Opcode.XBA, comment="Restore A and B")
         else:
             raise InstructionSelectionError(
                 f"Cannot move {'16-bit ' if is_u16 else ''}value from register {src_reg} to memory")

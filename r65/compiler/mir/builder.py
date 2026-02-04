@@ -309,14 +309,21 @@ class MIRBuilder:
                 if hw_reg.name == 'A':
                     process_register_param(param, hw_reg)
 
-        # Second pass: process X/Y register parameters (may clobber A via TXA/TYA)
+        # Second pass: process B register parameters (accessed via XBA, so A must be saved first)
+        for param in hir_func.parameters:
+            if isinstance(param.binding, RegisterBinding):
+                hw_reg = HardwareRegister(param.binding.register_name)
+                if hw_reg.name == 'B':
+                    process_register_param(param, hw_reg)
+
+        # Third pass: process X/Y register parameters (may clobber A via TXA/TYA)
         for param in hir_func.parameters:
             if isinstance(param.binding, RegisterBinding):
                 hw_reg = HardwareRegister(param.binding.register_name)
                 if hw_reg.name in ('X', 'Y'):
                     process_register_param(param, hw_reg)
 
-        # Third pass: process non-register parameters
+        # Fourth pass: process non-register parameters
         for idx, param in enumerate(hir_func.parameters):
             if isinstance(param.binding, RegisterBinding):
                 pass  # Already processed above

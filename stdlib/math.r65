@@ -16,7 +16,7 @@
 
 // Hardware 8x8 -> 8 unsigned multiply (widening)
 #[cfg(snes)]
-far fn mul8(multA @ A: u8, multB @ X: u16) -> (u8, u8) {
+far fn mul8(multA @ A: u8, multB @ B: u8) -> (u8, u8) {
     // Write multiplicand
     WRMPYA = multA;
 

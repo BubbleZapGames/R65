@@ -848,7 +848,7 @@ class ControlFlowInstructionSelector(BaseSelector):
         because we need to handle 3 bytes instead of 2.
 
         IMPORTANT: Must preserve return values. Strategy:
-        - Small frames (1-4 bytes), no stack params: Use PLX/PLY (not PLA) to pop frame
+        - Small frames (1-4 bytes), no stack params: Use PLB to pop frame (doesn't clobber A/X/Y)
         - Large frames (>4 bytes): Transfer A to free register, do TSC/ADC/TCS, transfer back
         - No free registers: Save A to stack, adjust SP with offset accounting, restore
 
@@ -866,63 +866,16 @@ class ControlFlowInstructionSelector(BaseSelector):
         if stack_param_bytes == 0 and frame_size > 0:
             current_mode = self.parent.emitter.get_accu_mode()
 
-            # Optimization: For small frames (1-4 bytes) in m8 mode, use PLA
-            # which is much more efficient than TSC/ADC/TCS.
-            # In m8 mode, PLA pulls 1 byte. In m16 mode, PLA pulls 2 bytes.
-            #
-            # IMPORTANT: The XBA optimization below temporarily stores A in B.
-            # This is safe ONLY if B is not a return value. When B returns are
-            # implemented, this check must be updated to skip XBA if B is returned.
-            if frame_size <= 4 and current_mode == 8:
-                # Check if B is being returned (XBA would clobber it)
-                returns_b = self._function_returns_b()
+            # Optimization: For small frames (1-4 bytes), use PLB which is much
+            # more efficient than TSC/ADC/TCS. PLB always pulls exactly 1 byte
+            # regardless of accumulator mode and does not clobber A, X, or Y
+            # (only affects DBR which is acceptable at frame deallocation).
+            if frame_size <= 4:
+                for _ in range(frame_size):
+                    self._emit_implied(Opcode.PLB, f"Deallocate frame ({frame_size} bytes)")
+                return
 
-                if return_count == 0:
-                    # A is not a return value - just use PLA directly
-                    for _ in range(frame_size):
-                        self._emit_implied(Opcode.PLA, f"Deallocate frame ({frame_size} bytes)")
-                elif not returns_b:
-                    # A has return value, B is free - use XBA to save A in B register
-                    # XBA swaps A (low byte) with B (high byte of 16-bit accumulator)
-                    self._emit_implied(Opcode.XBA, "Save A in B")
-                    for _ in range(frame_size):
-                        self._emit_implied(Opcode.PLA, f"Deallocate frame ({frame_size} bytes)")
-                    self._emit_implied(Opcode.XBA, "Restore A from B")
-                else:
-                    # B is a return value - can't use XBA, fall through to TSC/ADC/TCS
-                    pass
-                if return_count == 0 or not returns_b:
-                    return
-
-            # Optimization: For small even frames in m16 mode, use PLX/PLY
-            # In x16 mode (always used), PLX/PLY pull 2 bytes each.
-            # This is efficient and doesn't touch A (preserves 16-bit return value).
-            if frame_size <= 4 and current_mode == 16 and frame_size % 2 == 0:
-                pulls_needed = frame_size // 2
-                if return_count == 0:
-                    # A is not a return value - use PLA (2 bytes each in m16)
-                    for _ in range(pulls_needed):
-                        self._emit_implied(Opcode.PLA, f"Deallocate frame ({frame_size} bytes)")
-                elif return_count == 1:
-                    # A has return value, X is free - use PLX (doesn't touch A)
-                    for _ in range(pulls_needed):
-                        self._emit_implied(Opcode.PLX, f"Deallocate frame ({frame_size} bytes)")
-                elif return_count == 2:
-                    # A and X have return values, Y is free - use PLY
-                    for _ in range(pulls_needed):
-                        self._emit_implied(Opcode.PLY, f"Deallocate frame ({frame_size} bytes)")
-                else:
-                    # All registers have return values - use TSC/ADC/TCS below
-                    pass
-                if return_count < 3:
-                    return
-
-            # For larger frames or odd m16 frames, use TSC/ADC/TCS approach
-            # NOTE: We can't use PLX/PLY for odd frame sizes in m16 mode because
-            # they pull 2 bytes each, but the frame may have odd byte count.
-            #
-            # IMPORTANT: Must restore to original mode before TXA/TYA to preserve
-            # full register width (16-bit return values need m16 TXA).
+            # For larger frames, use TSC/ADC/TCS approach.
             # Use helper for TSC/ADC/TCS with A preservation
             self._emit_sp_adjust_preserving_a(frame_size, return_count, current_mode)
             return
