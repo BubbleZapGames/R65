@@ -167,7 +167,7 @@ class Lexer:
         self.source = source
         self.filename = filename
         if Lexer._lark_cache is None:
-            Lexer._lark_cache = Lark(GRAMMAR, parser='earley', lexer='dynamic', ambiguity='resolve')
+            Lexer._lark_cache = Lark(GRAMMAR, parser='lalr', lexer='contextual')
         self.lark = Lexer._lark_cache
         self.tokens: List[Token] = []
 
