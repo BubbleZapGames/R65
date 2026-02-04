@@ -130,6 +130,15 @@ class AssignmentLowerer:
         # Lower value
         value = self.builder.lower_expression(expr.value)
 
+        # When a tuple-returning function is used in a single-target assignment,
+        # lower_function_call returns None (it skips vreg allocation for tuple returns).
+        # The first element of the tuple is in the A register.
+        if value is None:
+            from r65.compiler.hir.types import TupleTypeInfo
+            value_type = getattr(expr.value, 'expr_type', None)
+            if isinstance(value_type, TupleTypeInfo):
+                value = HardwareRegister('A')
+
         # Lower target
         if isinstance(expr.target, HIRIdentifier):
             return self._lower_identifier_assignment(expr, value)
