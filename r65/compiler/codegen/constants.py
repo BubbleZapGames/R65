@@ -143,3 +143,40 @@ def calculate_rom_size(bank_count: int, is_hirom: bool = False) -> tuple:
     romsize_value = min(romsize_value, 0x0D)
 
     return (rom_banks, romsize_value)
+
+
+# =============================================================================
+# Return Register Ordering
+# =============================================================================
+
+def get_return_registers(return_type, entry_m_mode=None):
+    """
+    Get the return register order based on return type and mode.
+
+    For (u8, u8) tuples in m8 mode, uses B as the second return register
+    instead of X, which avoids TAX and allows more direct value flow.
+
+    Args:
+        return_type: The function's return type (TupleTypeInfo or other)
+        entry_m_mode: The function's entry M mode (ModeState.M8/M16 or None)
+
+    Returns:
+        List of register names in order: ['A', 'B', 'X', 'Y'] or ['A', 'X', 'Y']
+    """
+    from r65.compiler.hir.types import TupleTypeInfo, BasicTypeInfo
+    from r65.compiler.typeck.processor_mode import ModeState
+
+    if (isinstance(return_type, TupleTypeInfo)
+            and len(return_type.element_types) >= 2
+            and _is_8bit_type(return_type.element_types[1])
+            and entry_m_mode != ModeState.M16):
+        return ['A', 'B', 'X', 'Y']
+    return ['A', 'X', 'Y']
+
+
+def _is_8bit_type(type_info) -> bool:
+    """Check if a type is an 8-bit type (u8 or i8)."""
+    from r65.compiler.hir.types import BasicTypeInfo
+    if isinstance(type_info, BasicTypeInfo):
+        return type_info.name in ('u8', 'i8', 'bool')
+    return False

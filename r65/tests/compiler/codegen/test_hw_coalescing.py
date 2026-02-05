@@ -66,8 +66,13 @@ class TestHwCoalescingSlotAllocator:
         assert allocation.total_slots == 0, \
             "Identity function should need 0 stack slots"
 
-    def test_vreg_with_computation_not_coalesceable(self):
-        """Test that vreg used in computation is not hw-coalesceable."""
+    def test_vreg_with_adjacent_computation_coalesceable(self):
+        """Test that vreg used in immediately-following computation IS hw-coalesceable.
+
+        When vreg_a is defined by Move from A and used in the very next instruction
+        (BinaryOp), there are no intervening instructions that could clobber A,
+        so the vreg can safely stay in A.
+        """
         # Create: far fn add_one(a @ A: u8) -> u8 { return a + 1; }
         vreg_alloc = VirtualRegisterAllocator()
         vreg_a = vreg_alloc.alloc(BasicTypeInfo('u8'), "a")
@@ -81,7 +86,7 @@ class TestHwCoalescingSlotAllocator:
                 source=HardwareRegister('A'),
                 type_info=BasicTypeInfo('u8')
             ),
-            # a + 1 -> result
+            # a + 1 -> result (uses vreg_a immediately, no clobber between def and use)
             BinaryOp(
                 dest=vreg_result,
                 left=vreg_a,
@@ -107,9 +112,11 @@ class TestHwCoalescingSlotAllocator:
         allocator = StackSlotAllocator(func)
         allocation = allocator.allocate()
 
-        # vreg_a is used in BinaryOp, not just Return - not coalesceable
-        assert vreg_a not in allocation.hw_coalesceable, \
-            "Vreg used in computation should not be hw-coalesceable"
+        # vreg_a is used in BinaryOp immediately after def - no intervening clobbers,
+        # so it IS coalesceable with the extended clobber analysis
+        assert vreg_a in allocation.hw_coalesceable, \
+            "Vreg used in adjacent computation should be hw-coalesceable (no clobber)"
+        assert allocation.hw_coalesceable[vreg_a] == 'A'
 
     def test_multiple_uses_not_coalesceable(self):
         """Test that vreg with multiple uses is not hw-coalesceable."""
@@ -349,8 +356,13 @@ class TestBRegisterReturns:
         assert not has_xba, \
             f"Function returning B should NOT use XBA workaround\nOutput:\n{func_section}"
 
-    def test_return_a_uses_plb_frame_cleanup(self):
-        """Test that returning A uses PLB for frame cleanup (doesn't clobber A)."""
+    def test_return_a_no_frame_with_coalescence(self):
+        """Test that returning A with coalesceable vreg needs no frame at all.
+
+        When vreg_a is defined from A and used in the immediately-following
+        BinaryOp, it coalesces to A, eliminating the need for stack storage.
+        With no stack slots needed, no frame is allocated (no PHB/PLB).
+        """
         vreg_alloc = VirtualRegisterAllocator()
         vreg_a = vreg_alloc.alloc(BasicTypeInfo('u8'), "a")
 
@@ -392,18 +404,21 @@ class TestBRegisterReturns:
 
         func_section = asm_output[func_start:func_start + 400]
 
-        # Should use PLB for frame cleanup (doesn't clobber A)
-        has_plb = 'PLB' in func_section
-        assert has_plb, \
-            f"Function returning A should use PLB for frame cleanup\nOutput:\n{func_section}"
+        # vreg_a coalesces to A, so no frame needed at all
+        has_phb = 'PHB' in func_section
+        assert not has_phb, \
+            f"Function with coalesceable vreg should not allocate frame\nOutput:\n{func_section}"
 
-        # Should NOT need TSC/TCS for small frame
-        has_tsc = 'TSC' in func_section
-        assert not has_tsc, \
-            f"Function returning A should NOT use TSC/TCS for small frame\nOutput:\n{func_section}"
+        # Should have RTL (far function)
+        has_rtl = 'RTL' in func_section
+        assert has_rtl, f"Far function should have RTL\nOutput:\n{func_section}"
 
-    def test_return_a_and_b_uses_plb_frame_cleanup(self):
-        """Test that returning both A and B uses PLB for frame cleanup."""
+    def test_return_a_and_b_no_frame_with_coalescence(self):
+        """Test that returning both A and B with coalesceable vreg needs no frame.
+
+        Same as test_return_a_no_frame_with_coalescence but with both A and B
+        in the return values. The vreg still coalesces, so no frame is needed.
+        """
         vreg_alloc = VirtualRegisterAllocator()
         vreg_a = vreg_alloc.alloc(BasicTypeInfo('u8'), "a")
 
@@ -445,15 +460,14 @@ class TestBRegisterReturns:
 
         func_section = asm_output[func_start:func_start + 500]
 
-        # Should use PLB for frame cleanup (doesn't clobber A, X, Y, or B)
-        has_plb = 'PLB' in func_section
-        assert has_plb, \
-            f"Function returning A,B should use PLB for frame cleanup\nOutput:\n{func_section}"
+        # vreg_a coalesces to A, so no frame needed at all
+        has_phb = 'PHB' in func_section
+        assert not has_phb, \
+            f"Function with coalesceable vreg should not allocate frame\nOutput:\n{func_section}"
 
-        # Should NOT need TSC/TCS for small frame
-        has_tsc = 'TSC' in func_section
-        assert not has_tsc, \
-            f"Function returning A,B should NOT use TSC/TCS for small frame\nOutput:\n{func_section}"
+        # Should have RTL (far function)
+        has_rtl = 'RTL' in func_section
+        assert has_rtl, f"Far function should have RTL\nOutput:\n{func_section}"
 
 
 def test_hw_coalescing_summary():

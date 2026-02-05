@@ -363,22 +363,41 @@ class ControlFlowInstructionSelector(BaseSelector):
         'D': Opcode.PLD, 'DBR': Opcode.PLB, 'B': Opcode.PLB,
     }
 
+    def _get_return_register_order(self):
+        """
+        Get the return register order for the current function.
+
+        Uses B as second return register for (u8, u8) tuples in m8 mode.
+
+        Returns:
+            List of register names, e.g. ['A', 'B', 'X', 'Y'] or ['A', 'X', 'Y']
+        """
+        from r65.compiler.codegen.constants import get_return_registers
+
+        if not self.current_function:
+            return ['A', 'X', 'Y']
+        return get_return_registers(
+            self.current_function.return_type,
+            self.current_function.entry_m_mode
+        )
+
     def _emit_return_values(self, instr: Return):
         """Load return values into appropriate registers.
 
-        Values are loaded in reverse order (Y, X, A) so that transfers
+        Values are loaded in reverse order so that transfers
         through A (needed for stack-relative X/Y loads) don't clobber
-        the final A value.
+        the final A value. B is handled via XBA.
         """
         if not instr.values:
             return
 
-        return_registers = ['A', 'X', 'Y']
+        return_registers = self._get_return_register_order()
         if len(instr.values) > len(return_registers):
             raise InstructionSelectionError(
                 f"Too many return values (max {len(return_registers)})")
 
         # Process in reverse order to avoid clobbering A
+        # Reverse order: Y first, then X, then B (XBA to store), then A last
         for i in range(len(instr.values) - 1, -1, -1):
             value = instr.values[i]
             target_reg = return_registers[i]
@@ -386,6 +405,17 @@ class ControlFlowInstructionSelector(BaseSelector):
 
             if value_loc.kind == LocationKind.HARDWARE and value_loc.hw_register == target_reg:
                 pass  # Already in correct register
+            elif target_reg == 'B':
+                # B return: load value into A, then XBA to store in B
+                if value_loc.kind == LocationKind.HARDWARE and value_loc.hw_register == 'A':
+                    # Value already in A, just XBA
+                    self.parent._store_to_b_from_a()
+                elif value_loc.kind == LocationKind.HARDWARE:
+                    self.parent._emit_register_transfer(value_loc.hw_register, 'A')
+                    self.parent._store_to_b_from_a()
+                else:
+                    self.parent._emit_load('LDA', value_loc)
+                    self.parent._store_to_b_from_a()
             elif value_loc.kind == LocationKind.HARDWARE:
                 self.parent._emit_register_transfer(value_loc.hw_register, target_reg)
             elif target_reg in ('X', 'Y') and value_loc.kind == LocationKind.STACK:
@@ -397,7 +427,7 @@ class ControlFlowInstructionSelector(BaseSelector):
                     self._emit_implied(Opcode.TAY, "Transfer to Y (no LDY sr,S)")
             else:
                 # Use parent's _emit_load method with appropriate mnemonic
-                load_mnem = {'A': 'LDA', 'X': 'LDX', 'Y': 'LDY'}[target_reg]
+                load_mnem = {'A': 'LDA', 'X': 'LDX', 'Y': 'LDY'}.get(target_reg, 'LDA')
                 self.parent._emit_load(load_mnem, value_loc)
 
     def _emit_preserved_register_restores(self):
@@ -524,20 +554,29 @@ class ControlFlowInstructionSelector(BaseSelector):
         """
         Check if the current function returns a value in the B register.
 
-        B register returns are possible in m8 mode for functions like:
-        - return B;
-        - return A, B;
-        - return B, X;
+        B register returns happen in two cases:
+        1. Explicit: return B; / return A, B;  (HardwareRegister('B') in Return values)
+        2. Implicit: function return type uses B ordering (u8, u8 tuple in m8 mode)
 
         Returns:
             True if B is used as a return register, False otherwise
         """
-        # Check all blocks for Return instructions that include B
         if not self.current_function:
             return False
 
-        from r65.compiler.mir.nodes import Return, HardwareRegister
+        # Check if the return register ordering includes B
+        return_registers = self._get_return_register_order()
+        if 'B' in return_registers:
+            # Check if the function actually has enough return values to use B
+            from r65.compiler.mir.nodes import Return, HardwareRegister
+            for block in self.current_function.blocks.values():
+                for instr in block.instructions:
+                    if isinstance(instr, Return) and len(instr.values) >= 2:
+                        # B is at index 1 in the register order, and we have >= 2 values
+                        return True
 
+        # Also check for explicit B register returns
+        from r65.compiler.mir.nodes import Return, HardwareRegister
         for block in self.current_function.blocks.values():
             for instr in block.instructions:
                 if isinstance(instr, Return):
@@ -582,10 +621,21 @@ class ControlFlowInstructionSelector(BaseSelector):
         return_count = self._get_return_register_count()
         is_far = self.current_function and self.current_function.is_far
 
-        if is_far:
-            self._emit_far_stack_cleanup(frame_size, stack_param_bytes, return_count)
+        # When B is a return register, it doesn't consume an X/Y slot.
+        # Adjust return_count for stack cleanup purposes: B is part of
+        # the accumulator, so X/Y are still free for address manipulation.
+        # For cleanup, what matters is how many of A/X/Y are occupied.
+        returns_b = self._function_returns_b()
+        if returns_b and return_count >= 2:
+            # B replaces what would have been X, so one fewer X/Y slot used
+            effective_return_count = return_count - 1
         else:
-            self._emit_near_stack_cleanup(frame_size, stack_param_bytes, return_count)
+            effective_return_count = return_count
+
+        if is_far:
+            self._emit_far_stack_cleanup(frame_size, stack_param_bytes, effective_return_count)
+        else:
+            self._emit_near_stack_cleanup(frame_size, stack_param_bytes, effective_return_count)
 
     def _emit_near_stack_cleanup(self, frame_size: int, stack_param_bytes: int, return_count: int):
         """

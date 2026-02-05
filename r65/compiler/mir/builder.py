@@ -600,20 +600,21 @@ class MIRBuilder:
 
         Example: let (a, b) = func_returning_tuple();
 
-        Return values are in A, X, Y registers (in order).
-        We capture the values we need and ignore the rest.
+        Return values are in registers determined by callee's return type.
+        For (u8, u8) tuples in m8 mode, uses A, B, X, Y order.
+        Otherwise uses A, X, Y order.
         """
         # Evaluate the initializer (typically a function call)
         # This returns the first value; other values are in registers
         init_value = self.lower_expression(stmt.initializer)
 
-        # Return registers in order: A, X, Y
-        return_registers = ['A', 'X', 'Y']
+        # Determine return register order from callee's return type
+        return_registers = self._get_callee_return_registers(stmt.initializer)
 
         # Capture each binding from the corresponding return register
         for i, (name, symbol, var_type) in enumerate(zip(stmt.names, stmt.symbols, stmt.var_types)):
             if i >= len(return_registers):
-                # Can't capture more than 3 return values
+                # Can't capture more than available return registers
                 break
 
             reg_name = return_registers[i]
@@ -1341,6 +1342,38 @@ class MIRBuilder:
             symbol=symbol,
             is_volatile=False
         )
+
+    def _get_callee_return_registers(self, expr) -> list:
+        """
+        Determine the return register order for a callee expression.
+
+        Looks up the callee's return type and entry mode to determine
+        if B register should be used for (u8, u8) tuple returns.
+
+        Args:
+            expr: The initializer expression (typically HIRFunctionCall)
+
+        Returns:
+            List of register names in order, e.g. ['A', 'B', 'X', 'Y']
+        """
+        from r65.compiler.codegen.constants import get_return_registers
+
+        if isinstance(expr, HIRFunctionCall):
+            # Look up the callee function declaration
+            func_name = None
+            if isinstance(expr.func, HIRIdentifier):
+                func_name = expr.func.name
+            elif isinstance(expr.func, HIRFunctionAddress):
+                func_name = expr.function_name
+
+            if func_name and func_name in self.function_decls:
+                func_decl = self.function_decls[func_name]
+                return get_return_registers(
+                    func_decl.return_type,
+                    func_decl.entry_m_mode
+                )
+
+        return ['A', 'X', 'Y']
 
     def _get_type_size(self, type_info) -> int:
         """Get size in bytes for a type. Delegates to TypeSizeCalculator."""

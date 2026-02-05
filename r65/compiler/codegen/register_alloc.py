@@ -311,6 +311,7 @@ class RegisterAllocator:
         # Hardware register tracking
         self.hw_allocs: Dict[str, HardwareRegAllocation] = {
             'A': HardwareRegAllocation('A', size=1),  # Size depends on mode
+            'B': HardwareRegAllocation('B', size=1),  # High byte of accumulator (m8 only)
             'X': HardwareRegAllocation('X', size=2),  # Always 16-bit
             'Y': HardwareRegAllocation('Y', size=2),  # Always 16-bit
         }

@@ -1108,16 +1108,37 @@ class CallInstructionSelector(BaseSelector):
     # Return Value Collection
     # ========================================================================
 
+    def _get_callee_return_registers(self, instr: Call):
+        """
+        Get the return register order for a callee based on its return type.
+
+        Args:
+            instr: Call instruction with callee info
+
+        Returns:
+            List of register names in order
+        """
+        from r65.compiler.codegen.constants import get_return_registers
+
+        # Try to get callee's return type and mode from the Call instruction
+        callee_return_type = getattr(instr, 'callee_return_type', None)
+        callee_entry_mode = instr.callee_entry_m_mode if hasattr(instr, 'callee_entry_m_mode') else None
+
+        if callee_return_type is not None:
+            return get_return_registers(callee_return_type, callee_entry_mode)
+        return ['A', 'X', 'Y']
+
     def _emit_return_value_collection(self, instr: Call):
         """
         Collect return values from registers.
 
-        Return values come back in A, X, Y (in order).
+        Return values come back in A, B, X, Y (in order) depending on
+        the callee's return register ordering.
         """
         if not instr.returns:
             return
 
-        return_registers = ['A', 'X', 'Y']
+        return_registers = self._get_callee_return_registers(instr)
 
         for i, return_vreg in enumerate(instr.returns):
             if i >= len(return_registers):
@@ -1128,6 +1149,18 @@ class CallInstructionSelector(BaseSelector):
 
             if dest_loc.kind == LocationKind.HARDWARE and dest_loc.hw_register == source_reg:
                 pass  # Already in correct location
+            elif source_reg == 'B':
+                # B return: XBA to access B value in A, store, then XBA back
+                self.parent._access_b_value_in_a()
+                if dest_loc.kind == LocationKind.HARDWARE:
+                    if dest_loc.hw_register != 'A':
+                        self._emit_return_register_transfer('A', dest_loc.hw_register)
+                        self.parent._ensure_xba_state_normal()
+                    # If dest is A, the value is already there after XBA - just
+                    # need to NOT swap back since we want A to hold the value
+                else:
+                    self.parent._emit_store('STA', dest_loc)
+                    self.parent._ensure_xba_state_normal()
             elif dest_loc.kind == LocationKind.HARDWARE:
                 self._emit_return_register_transfer(source_reg, dest_loc.hw_register)
             else:

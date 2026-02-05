@@ -542,10 +542,9 @@ class AssignmentLowerer:
 
         Handles: (A, X) = func() where func returns a tuple.
 
-        For tuple returns, values are placed in registers in order:
-        - First element -> A register
-        - Second element -> X register
-        - Third element -> Y register (if applicable)
+        For tuple returns, values are placed in registers in order.
+        For (u8, u8) tuples in m8 mode, uses A, B, X, Y order.
+        Otherwise uses A, X, Y order.
 
         Args:
             expr: HIR multi-assignment expression
@@ -554,11 +553,11 @@ class AssignmentLowerer:
             HardwareRegister of the first element (A)
         """
         # Lower the value expression (function call returning tuple)
-        # This will execute the call and leave results in A, X, (Y)
+        # This will execute the call and leave results in registers
         self.builder.lower_expression(expr.value)
 
-        # Map tuple index to return register
-        return_registers = ['A', 'X', 'Y']
+        # Determine return register order from callee's return type
+        return_registers = self.builder._get_callee_return_registers(expr.value)
 
         # Get the tuple type from the expression
         value_type = expr.value.expr_type

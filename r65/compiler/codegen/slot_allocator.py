@@ -15,7 +15,11 @@ consecutive slots and tracking the full range for interference checking.
 
 from typing import Dict, Set, List, Optional, Tuple, Any
 from dataclasses import dataclass, field
-from r65.compiler.mir.nodes import VirtualRegister, MIRFunction, Move, Return, HardwareRegister, Call
+from r65.compiler.mir.nodes import (
+    VirtualRegister, MIRFunction, Move, Return, HardwareRegister, Call,
+    Store, Load, BinaryOp, UnaryOp, TypeConvert, Compare, BitTest, Rotate,
+    ToBool, LoadIndirect, StoreIndirect, StatusFlagRead, InlineAsm,
+)
 from r65.compiler.mir.liveness import LivenessAnalyzer
 from r65.compiler.hir.unified_type_utils import get_unified_type_size
 from r65.compiler.hir import HIRError
@@ -267,16 +271,22 @@ class StackSlotAllocator:
 
         A vreg is hw-coalesceable if:
         1. Its only definition is a Move from a hardware register
-        2. Its only use is as a Return source (which goes back to a hw register)
-        3. There are NO calls between def and use that clobber the register
+        2. All uses are in the same block as the def
+        3. The hardware register is not clobbered between def and last use
 
-        These vregs don't need stack slots - they can stay in the register.
+        For the return-only case, clobber checking is limited to Calls.
+        For non-return uses, full clobber analysis checks all instruction types
+        that route through the hardware register during codegen.
+
+        Uses a two-pass approach for A/B interdependency:
+        - Pass 1: Find coalesceable vregs where no instruction clobbers the register
+        - Pass 2: Re-check remaining candidates, treating Pass 1 coalesceable
+          Move instructions as no-ops (lets A coalesce when only "clobber" was
+          a B param save that is itself coalesceable)
 
         Returns:
             Dict mapping vreg to the hardware register name it should stay in
         """
-        coalesceable: Dict[VirtualRegister, str] = {}
-
         vreg_defs: Dict[int, List] = {}
         vreg_uses: Dict[int, List] = {}
 
@@ -322,92 +332,315 @@ class StackSlotAllocator:
                                 vreg_uses[var.id] = []
                             vreg_uses[var.id].append(instr)
 
+        # Build candidate list: (vreg_id, def_instr, hw_reg, uses)
+        candidates = []
         for vreg_id, defs in vreg_defs.items():
             if len(defs) != 1:
                 continue
-
             def_instr, hw_reg = defs[0]
             if hw_reg is None:
                 continue
-
             uses = vreg_uses.get(vreg_id, [])
-            if not uses:
-                # No uses - can be coalesceable (dead value)
-                for block in self.func.blocks.values():
-                    for check_instr in block.instructions:
-                        if isinstance(check_instr, Move) and isinstance(check_instr.dest, VirtualRegister):
-                            if check_instr.dest.id == vreg_id:
-                                coalesceable[check_instr.dest] = hw_reg
-                                break
-                continue
+            candidates.append((vreg_id, def_instr, hw_reg, uses))
 
-            all_returns = all(isinstance(use, Return) for use in uses)
-            if not all_returns:
-                continue
+        # Two-pass coalescence
+        coalesceable: Dict[VirtualRegister, str] = {}
+        noop_instrs: Set[int] = set()  # instruction ids treated as no-ops
 
-            # Check if there's a clobbering call between def and any use
-            def_pos = instr_positions.get(id(def_instr))
-            if def_pos is None:
-                continue
-
-            has_clobbering_call = False
-            def_block_id, def_idx = def_pos
-
-            # For simplicity, only check within the same block
-            # (cross-block analysis would require CFG traversal)
-            for use_instr in uses:
-                use_pos = instr_positions.get(id(use_instr))
-                if use_pos is None:
+        for pass_num in range(2):
+            remaining = []
+            for vreg_id, def_instr, hw_reg, uses in candidates:
+                if not uses:
+                    # No uses - can be coalesceable (dead value)
+                    self._mark_coalesceable(vreg_id, hw_reg, coalesceable)
                     continue
 
-                use_block_id, use_idx = use_pos
+                def_pos = instr_positions.get(id(def_instr))
+                if def_pos is None:
+                    remaining.append((vreg_id, def_instr, hw_reg, uses))
+                    continue
 
-                # Only handle same-block case for now
-                if use_block_id == def_block_id:
-                    block = self.func.blocks[def_block_id]
-                    # Check for calls between def and use
-                    for i in range(def_idx + 1, use_idx):
-                        instr = block.instructions[i]
+                all_returns = all(isinstance(use, Return) for use in uses)
+
+                if all_returns:
+                    # Original path: only check for clobbering calls
+                    if self._is_return_path_safe(hw_reg, def_pos, uses, instr_positions, noop_instrs):
+                        self._mark_coalesceable(vreg_id, hw_reg, coalesceable)
+                        noop_instrs.add(id(def_instr))
+                    else:
+                        remaining.append((vreg_id, def_instr, hw_reg, uses))
+                else:
+                    # Extended path: full clobber analysis
+                    if self._is_hw_unclobbered_in_range(
+                        hw_reg, vreg_id, def_instr, uses, instr_positions, noop_instrs
+                    ):
+                        self._mark_coalesceable(vreg_id, hw_reg, coalesceable)
+                        noop_instrs.add(id(def_instr))
+                    else:
+                        remaining.append((vreg_id, def_instr, hw_reg, uses))
+
+            candidates = remaining
+
+        return coalesceable
+
+    def _mark_coalesceable(
+        self, vreg_id: int, hw_reg: str, coalesceable: Dict[VirtualRegister, str]
+    ):
+        """Mark a vreg as hw-coalesceable by finding its def instruction."""
+        for block in self.func.blocks.values():
+            for instr in block.instructions:
+                if isinstance(instr, Move) and isinstance(instr.dest, VirtualRegister):
+                    if instr.dest.id == vreg_id:
+                        coalesceable[instr.dest] = hw_reg
+                        return
+
+    def _is_return_path_safe(
+        self,
+        hw_reg: str,
+        def_pos: Tuple[int, int],
+        uses: List,
+        instr_positions: Dict[Any, Tuple[int, int]],
+        noop_instrs: Set[int],
+    ) -> bool:
+        """Check if a return-only coalescence is safe (no clobbering calls)."""
+        def_block_id, def_idx = def_pos
+
+        for use_instr in uses:
+            use_pos = instr_positions.get(id(use_instr))
+            if use_pos is None:
+                continue
+
+            use_block_id, use_idx = use_pos
+
+            if use_block_id == def_block_id:
+                block = self.func.blocks[def_block_id]
+                for i in range(def_idx + 1, use_idx):
+                    instr = block.instructions[i]
+                    if id(instr) in noop_instrs:
+                        continue
+                    if isinstance(instr, Call):
+                        preserved = set()
+                        if instr.preserves_attr:
+                            preserved = set(instr.preserves_attr.registers)
+                        if hw_reg not in preserved:
+                            return False
+            else:
+                # Cross-block: conservatively check for any clobbering call
+                for block in self.func.blocks.values():
+                    for instr in block.instructions:
+                        if id(instr) in noop_instrs:
+                            continue
                         if isinstance(instr, Call):
-                            # Check if this call clobbers hw_reg
                             preserved = set()
                             if instr.preserves_attr:
                                 preserved = set(instr.preserves_attr.registers)
                             if hw_reg not in preserved:
-                                has_clobbering_call = True
-                                break
-                    if has_clobbering_call:
-                        break
-                else:
-                    # Cross-block: conservatively assume there might be a clobbering call
-                    # Check all blocks for any call that clobbers this register
-                    for block in self.func.blocks.values():
-                        for instr in block.instructions:
-                            if isinstance(instr, Call):
-                                preserved = set()
-                                if instr.preserves_attr:
-                                    preserved = set(instr.preserves_attr.registers)
-                                if hw_reg not in preserved:
-                                    has_clobbering_call = True
-                                    break
-                        if has_clobbering_call:
-                            break
-                    if has_clobbering_call:
-                        break
+                                return False
+        return True
 
-            if has_clobbering_call:
-                # Don't mark as coalesceable - needs stack allocation
-                continue
+    def _is_hw_unclobbered_in_range(
+        self,
+        hw_reg: str,
+        vreg_id: int,
+        def_instr: Any,
+        uses: List,
+        instr_positions: Dict[Any, Tuple[int, int]],
+        noop_instrs: Set[int],
+    ) -> bool:
+        """
+        Check if a hardware register is unclobbered between def and all uses.
 
-            # Safe to coalesce
-            for block in self.func.blocks.values():
-                for check_instr in block.instructions:
-                    if isinstance(check_instr, Move) and isinstance(check_instr.dest, VirtualRegister):
-                        if check_instr.dest.id == vreg_id:
-                            coalesceable[check_instr.dest] = hw_reg
-                            break
+        All uses must be in the same block as the def. Scans instructions
+        between def_idx and max(use_idx) for anything that clobbers the
+        hardware register.
 
-        return coalesceable
+        Args:
+            hw_reg: Hardware register name ('A', 'B', 'X', 'Y')
+            vreg_id: The vreg ID being checked
+            def_instr: The Move instruction that defines the vreg
+            uses: List of instructions that use the vreg
+            instr_positions: Map from instruction id to (block_id, instr_idx)
+            noop_instrs: Set of instruction ids to skip (from previous pass)
+
+        Returns:
+            True if the register is not clobbered in the range
+        """
+        def_pos = instr_positions.get(id(def_instr))
+        if def_pos is None:
+            return False
+
+        def_block_id, def_idx = def_pos
+
+        # All uses must be in the same block
+        max_use_idx = def_idx
+        for use_instr in uses:
+            use_pos = instr_positions.get(id(use_instr))
+            if use_pos is None:
+                return False
+            use_block_id, use_idx = use_pos
+            if use_block_id != def_block_id:
+                return False  # Cross-block: bail conservatively
+            max_use_idx = max(max_use_idx, use_idx)
+
+        # Scan instructions between def and last use for clobbers
+        block = self.func.blocks[def_block_id]
+        for i in range(def_idx + 1, max_use_idx):
+            instr = block.instructions[i]
+            if self._instruction_clobbers_register(instr, hw_reg, vreg_id, noop_instrs):
+                return False
+
+        return True
+
+    def _instruction_clobbers_register(
+        self,
+        instr: Any,
+        hw_reg: str,
+        vreg_id: int,
+        noop_instrs: Set[int],
+    ) -> bool:
+        """
+        Check if an instruction clobbers a specific hardware register.
+
+        During codegen, most operations route through the A register.
+        Store instructions that read from a vreg do NOT clobber A if
+        the value being stored comes from the vreg itself (which IS A
+        when coalesceable). We check the vreg_id to handle this.
+
+        Args:
+            instr: MIR instruction to check
+            hw_reg: Hardware register to check ('A', 'B', 'X', 'Y')
+            vreg_id: The vreg being checked for coalescence
+            noop_instrs: Instructions to skip (coalesceable from previous pass)
+
+        Returns:
+            True if the instruction clobbers hw_reg
+        """
+        # Skip instructions that are themselves coalesceable (no-ops)
+        if id(instr) in noop_instrs:
+            return False
+
+        # Calls clobber all registers not in preserves
+        if isinstance(instr, Call):
+            preserved = set()
+            if instr.preserves_attr:
+                preserved = set(instr.preserves_attr.registers)
+            return hw_reg not in preserved
+
+        # InlineAsm: conservatively assume it clobbers everything
+        if isinstance(instr, InlineAsm):
+            return True
+
+        if hw_reg == 'A':
+            return self._clobbers_a(instr, vreg_id)
+        elif hw_reg == 'B':
+            return self._clobbers_b(instr, vreg_id)
+        elif hw_reg in ('X', 'Y'):
+            return self._clobbers_xy(instr, hw_reg, vreg_id)
+
+        return False
+
+    def _clobbers_a(self, instr: Any, vreg_id: int) -> bool:
+        """
+        Check if an instruction clobbers the A register.
+
+        During codegen, most operations route values through A:
+        - Move to vreg: LDA source; STA dest (clobbers A)
+        - BinaryOp: LDA left; ADC right; STA dest (clobbers A)
+        - Store from vreg: LDA vreg_slot; STA dest (clobbers A)
+        - Load to vreg: LDA source; STA vreg_slot (clobbers A)
+        - Move from B: XBA (clobbers A)
+
+        The key exception: Store from OUR vreg doesn't clobber A,
+        because our vreg IS A (it's coalesceable). The codegen will
+        emit STA directly without needing to load first.
+        """
+        if isinstance(instr, Store):
+            # Store uses A to transfer values. If the source is our vreg,
+            # codegen will use STA directly (A already has the value).
+            # If source is a different vreg or hw register, it clobbers A.
+            if isinstance(instr.source, VirtualRegister) and instr.source.id == vreg_id:
+                return False  # STA from our vreg = STA from A (no clobber)
+            if isinstance(instr.source, HardwareRegister) and instr.source.name == 'A':
+                return False  # STA from A (already in A)
+            return True  # Needs LDA from somewhere else
+
+        if isinstance(instr, Move):
+            # Move to vreg (other than ours): LDA + STA clobbers A
+            if isinstance(instr.dest, VirtualRegister) and instr.dest.id != vreg_id:
+                return True
+            # Move to hw register from vreg/immediate: codegen loads through A
+            if isinstance(instr.dest, HardwareRegister):
+                if instr.dest.name in ('X', 'Y'):
+                    # LDX/LDY don't clobber A (unless source is stack-relative for X/Y)
+                    # But Move to X/Y from vreg goes LDA vreg; TAX (clobbers A)
+                    if isinstance(instr.source, VirtualRegister):
+                        return True
+                    return False  # LDX #imm or LDX addr don't clobber A
+                if instr.dest.name == 'B':
+                    return True  # XBA clobbers A
+                if instr.dest.name == 'A':
+                    return True  # Overwrites A
+            # Move from B: XBA clobbers A
+            if isinstance(instr.source, HardwareRegister) and instr.source.name == 'B':
+                return True
+            return False
+
+        if isinstance(instr, (BinaryOp, UnaryOp, TypeConvert, Compare, BitTest, Rotate, ToBool)):
+            # All arithmetic/comparison ops route through A
+            return True
+
+        if isinstance(instr, Load):
+            # LDA into vreg clobbers A
+            return True
+
+        if isinstance(instr, (LoadIndirect, StoreIndirect)):
+            # Indirect operations use A
+            return True
+
+        if isinstance(instr, StatusFlagRead):
+            # PHP; PLA; AND - clobbers A
+            return True
+
+        return False
+
+    def _clobbers_b(self, instr: Any, vreg_id: int) -> bool:
+        """
+        Check if an instruction clobbers the B register.
+
+        B is the high byte of the 16-bit accumulator. It's only modified by:
+        - XBA instruction (swaps A and B)
+        - Move to/from B register in MIR
+        - Calls that don't preserve B
+        """
+        if isinstance(instr, Move):
+            # Move to B: XBA to store, clobbers B
+            if isinstance(instr.dest, HardwareRegister) and instr.dest.name == 'B':
+                return True
+            # Move from B: XBA to access, but XBA swaps - clobbers B
+            if isinstance(instr.source, HardwareRegister) and instr.source.name == 'B':
+                return True
+            return False
+
+        # Most other instructions don't touch B
+        # (BinaryOp, Store, Load etc. only use A, not B)
+        return False
+
+    def _clobbers_xy(self, instr: Any, hw_reg: str, vreg_id: int) -> bool:
+        """
+        Check if an instruction clobbers X or Y register.
+
+        X/Y are only modified by:
+        - Move to X/Y (LDX, LDY, TAX, TAY, TXY, TYX)
+        - Calls that don't preserve X/Y
+        """
+        if isinstance(instr, Move):
+            if isinstance(instr.dest, HardwareRegister) and instr.dest.name == hw_reg:
+                return True
+            return False
+
+        # Other instructions don't typically clobber X/Y
+        # (they may use X/Y for indexing but don't modify them)
+        return False
 
     def _collect_virtual_registers(self, exclude: Set[VirtualRegister] = None) -> List[VirtualRegister]:
         """Collect all virtual registers, optionally excluding some."""
