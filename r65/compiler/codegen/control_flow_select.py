@@ -403,7 +403,22 @@ class ControlFlowInstructionSelector(BaseSelector):
             target_reg = return_registers[i]
             value_loc = self.parent._get_operand_location(value)
 
-            if value_loc.kind == LocationKind.HARDWARE and value_loc.hw_register == target_reg:
+            if value_loc.kind == LocationKind.RETURN_SINKABLE:
+                # Deferred load: emit the load directly into the target register
+                src_loc = self.parent._get_operand_location(value_loc.source_location)
+                if target_reg == 'B':
+                    self.parent._emit_load('LDA', src_loc)
+                    self.parent._store_to_b_from_a()
+                elif target_reg in ('X', 'Y'):
+                    self.parent._emit_load('LDA', src_loc)
+                    if target_reg == 'X':
+                        self._emit_implied(Opcode.TAX)
+                    else:
+                        self._emit_implied(Opcode.TAY)
+                else:  # 'A'
+                    self.parent._emit_load('LDA', src_loc)
+                continue
+            elif value_loc.kind == LocationKind.HARDWARE and value_loc.hw_register == target_reg:
                 pass  # Already in correct register
             elif target_reg == 'B':
                 # B return: load value into A, then XBA to store in B

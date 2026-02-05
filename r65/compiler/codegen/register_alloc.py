@@ -9,7 +9,7 @@ Maps MIR virtual registers to:
 Includes call-graph-aware scratch allocation to avoid conflicts with callees.
 """
 
-from typing import Dict, List, Optional, Set, Tuple, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, Set, Tuple, TYPE_CHECKING
 from dataclasses import dataclass, field
 from enum import Enum
 from r65.compiler.mir.nodes import VirtualRegister, HardwareRegister, MIRFunction
@@ -29,6 +29,7 @@ class LocationKind(Enum):
     STACK = "stack"            # Stack slot
     MEMORY = "memory"          # Static memory location
     IMMEDIATE = "immediate"    # Immediate value (constant)
+    RETURN_SINKABLE = "return_sinkable"  # Load deferred to return site
 
 
 @dataclass
@@ -60,6 +61,9 @@ class PhysicalLocation:
 
     # For indexed addressing: 'X' or 'Y'
     index_register: Optional[str] = None
+
+    # For RETURN_SINKABLE: the MIR MemoryLocation to load from at return site
+    source_location: Optional[Any] = None
 
     # Size in bytes
     size: int = 1
@@ -404,6 +408,18 @@ class RegisterAllocator:
                 # Track the allocation so spill logic can detect it
                 self.hw_allocs[hw_reg].allocated_vreg = vreg
                 self.hw_allocs[hw_reg].is_bound = False
+                return location
+
+        # Check if this vreg is return-sinkable (load deferred to return site)
+        if self.slot_allocation and self.slot_allocation.return_sinkable:
+            mem_source = self.slot_allocation.return_sinkable.get(vreg)
+            if mem_source is not None:
+                location = PhysicalLocation(
+                    kind=LocationKind.RETURN_SINKABLE,
+                    source_location=mem_source,
+                    size=self._get_vreg_size(vreg)
+                )
+                self.allocations[vreg.id] = location
                 return location
 
         # Check for register hint (loop variables)

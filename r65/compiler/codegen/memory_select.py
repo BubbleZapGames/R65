@@ -55,7 +55,15 @@ class MemoryOperationSelector(BaseSelector):
         Args:
             instr: Load instruction
         """
-        dest_loc = self.parent._get_operand_location(instr.dest)
+        # Check if dest is return-sinkable: load deferred to return site
+        from r65.compiler.mir.nodes import VirtualRegister
+        if isinstance(instr.dest, VirtualRegister):
+            dest_loc = self.parent._get_operand_location(instr.dest)
+            if dest_loc.kind == LocationKind.RETURN_SINKABLE:
+                return  # No-op: load deferred to return site
+        else:
+            dest_loc = self.parent._get_operand_location(instr.dest)
+
         src_loc = self.parent._get_operand_location(instr.source)
 
         is_u16 = self.parent._is_16bit(instr.type_info)

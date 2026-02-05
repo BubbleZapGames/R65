@@ -57,6 +57,10 @@ class SlotAllocation:
     # Hardware-coalesceable vregs (don't need stack slots)
     hw_coalesceable: Dict[VirtualRegister, str] = None
 
+    # Return-sinkable vregs: Load from MemoryLocation used only in Return
+    # These don't need stack slots; the load is emitted at the return site
+    return_sinkable: Dict[VirtualRegister, Any] = None
+
     # Stack parameters: vreg -> final offset (after frame adjustment)
     param_offsets: Dict[VirtualRegister, int] = None
 
@@ -66,6 +70,8 @@ class SlotAllocation:
     def __post_init__(self):
         if self.hw_coalesceable is None:
             self.hw_coalesceable = {}
+        if self.return_sinkable is None:
+            self.return_sinkable = {}
         if self.param_offsets is None:
             self.param_offsets = {}
         if self.param_sizes is None:
@@ -151,8 +157,11 @@ class StackSlotAllocator:
         # Identify vregs that can stay in hardware registers
         hw_coalesceable = self._find_hw_coalesceable_vregs()
 
-        # Collect local vregs (excluding hw-coalesceable and preassigned params)
-        exclude_vregs = set(hw_coalesceable.keys())
+        # Identify return-sinkable vregs (Load from MemoryLocation, only used in Return)
+        return_sinkable = self._find_return_sinkable_vregs()
+
+        # Collect local vregs (excluding hw-coalesceable, return-sinkable, and preassigned params)
+        exclude_vregs = set(hw_coalesceable.keys()) | set(return_sinkable.keys())
         for slot in self.preassigned:
             exclude_vregs.add(slot.vreg)
 
@@ -183,6 +192,7 @@ class StackSlotAllocator:
             variables_count=len(local_vregs),
             slots_saved=slots_saved,
             hw_coalesceable=hw_coalesceable,
+            return_sinkable=return_sinkable,
             param_offsets=param_offsets,
             param_sizes=param_sizes
         )
@@ -382,6 +392,87 @@ class StackSlotAllocator:
             candidates = remaining
 
         return coalesceable
+
+    def _find_return_sinkable_vregs(self) -> Dict[VirtualRegister, 'MemoryLocation']:
+        """
+        Find vregs whose loads can be sunk to the return site.
+
+        A vreg is return-sinkable if:
+        1. Its only definition is a Load from a MemoryLocation
+        2. All uses are in Return instructions
+        3. All defs and uses are in the same block
+
+        These vregs don't need stack slots; the load is emitted directly
+        into the target return register at the return site.
+
+        Returns:
+            Dict mapping vreg to the MemoryLocation source of the Load
+        """
+        from r65.compiler.mir.nodes import MemoryLocation
+
+        # Build def/use maps for Load instructions with vreg destinations
+        vreg_load_defs: Dict[int, List] = {}  # vreg_id -> [(Load instr, block_id)]
+        vreg_uses: Dict[int, List] = {}  # vreg_id -> [(instr, block_id)]
+
+        for block_id, block in self.func.blocks.items():
+            for instr in block.instructions:
+                if isinstance(instr, Load):
+                    if isinstance(instr.dest, VirtualRegister):
+                        vreg_id = instr.dest.id
+                        if vreg_id not in vreg_load_defs:
+                            vreg_load_defs[vreg_id] = []
+                        vreg_load_defs[vreg_id].append((instr, block_id))
+
+                # Track uses in Return instructions
+                if isinstance(instr, Return):
+                    if instr.values:
+                        for val in instr.values:
+                            if isinstance(val, VirtualRegister):
+                                vreg_id = val.id
+                                if vreg_id not in vreg_uses:
+                                    vreg_uses[vreg_id] = []
+                                vreg_uses[vreg_id].append((instr, block_id))
+                else:
+                    # Track uses in non-Return instructions
+                    uses = self.liveness_analyzer._get_uses(instr)
+                    for var in uses:
+                        if isinstance(var, VirtualRegister):
+                            if var.id not in vreg_uses:
+                                vreg_uses[var.id] = []
+                            vreg_uses[var.id].append((instr, block_id))
+
+        sinkable: Dict[VirtualRegister, MemoryLocation] = {}
+
+        for vreg_id, load_defs in vreg_load_defs.items():
+            # Must have exactly one Load definition
+            if len(load_defs) != 1:
+                continue
+
+            load_instr, def_block_id = load_defs[0]
+            source = load_instr.source
+
+            # Source must be a MemoryLocation
+            if not isinstance(source, MemoryLocation):
+                continue
+
+            uses = vreg_uses.get(vreg_id, [])
+            if not uses:
+                continue  # Dead value - not useful to sink
+
+            # All uses must be Return instructions in the same block
+            all_returns_same_block = True
+            for use_instr, use_block_id in uses:
+                if not isinstance(use_instr, Return):
+                    all_returns_same_block = False
+                    break
+                if use_block_id != def_block_id:
+                    all_returns_same_block = False
+                    break
+
+            if all_returns_same_block:
+                sinkable[load_instr.dest] = source
+
+        return sinkable
 
     def _mark_coalesceable(
         self, vreg_id: int, hw_reg: str, coalesceable: Dict[VirtualRegister, str]

@@ -13,10 +13,11 @@ from r65.compiler.mir.nodes import (
     MIRProgram,
     MIRFunction,
     BasicBlock,
-    Move, Return, BinaryOp,
+    Move, Return, BinaryOp, Load,
     VirtualRegister,
     Immediate,
     HardwareRegister,
+    MemoryLocation,
 )
 from r65.compiler.hir.attributes import BankAttribute
 from r65.compiler.hir.types import BasicTypeInfo
@@ -468,6 +469,150 @@ class TestBRegisterReturns:
         # Should have RTL (far function)
         has_rtl = 'RTL' in func_section
         assert has_rtl, f"Far function should have RTL\nOutput:\n{func_section}"
+
+
+class TestReturnSinkable:
+    """Test return-sinkable vreg detection and optimization."""
+
+    def _make_hw_symbol(self, name, address):
+        """Create a minimal symbol object for hw memory locations."""
+        class FakeSymbol:
+            def __init__(self, name, addr):
+                self.name = name
+                self.address = addr
+        return FakeSymbol(name, address)
+
+    def test_load_return_sinkable(self):
+        """Test that Load from MemoryLocation used only in Return is sinkable."""
+        vreg_alloc = VirtualRegisterAllocator()
+        vreg_low = vreg_alloc.alloc(BasicTypeInfo('u8'), "low")
+        vreg_high = vreg_alloc.alloc(BasicTypeInfo('u8'), "high")
+
+        sym_low = self._make_hw_symbol("RDMPYL", 0x4216)
+        sym_high = self._make_hw_symbol("RDMPYH", 0x4217)
+
+        entry_block = BasicBlock(block_id=0)
+        entry_block.instructions = [
+            Load(
+                dest=vreg_low,
+                source=MemoryLocation(
+                    storage_type='hw', address=0x4216,
+                    symbol=sym_low, is_volatile=True
+                ),
+                type_info=BasicTypeInfo('u8')
+            ),
+            Load(
+                dest=vreg_high,
+                source=MemoryLocation(
+                    storage_type='hw', address=0x4217,
+                    symbol=sym_high, is_volatile=True
+                ),
+                type_info=BasicTypeInfo('u8')
+            ),
+            Return(values=[vreg_low, vreg_high])
+        ]
+
+        func = MIRFunction(
+            name="mul8_return",
+            parameters=[],
+            return_type=BasicTypeInfo('u8'),
+            blocks={0: entry_block},
+            entry_block_id=0,
+            is_far=True,
+            vreg_allocator=vreg_alloc
+        )
+
+        allocator = StackSlotAllocator(func)
+        allocation = allocator.allocate()
+
+        # Both vregs should be return-sinkable
+        assert vreg_low in allocation.return_sinkable, \
+            "Load from hw used only in Return should be return-sinkable"
+        assert vreg_high in allocation.return_sinkable, \
+            "Load from hw used only in Return should be return-sinkable"
+        assert allocation.return_sinkable[vreg_low].address == 0x4216
+        assert allocation.return_sinkable[vreg_high].address == 0x4217
+        assert allocation.total_slots == 0, \
+            "Return-sinkable vregs should not need stack slots"
+
+    def test_load_with_non_return_use_not_sinkable(self):
+        """Test that Load used in non-Return instruction is not sinkable."""
+        vreg_alloc = VirtualRegisterAllocator()
+        vreg_val = vreg_alloc.alloc(BasicTypeInfo('u8'), "val")
+        vreg_result = vreg_alloc.alloc(BasicTypeInfo('u8'), "result")
+
+        sym = self._make_hw_symbol("RDMPYL", 0x4216)
+
+        entry_block = BasicBlock(block_id=0)
+        entry_block.instructions = [
+            Load(
+                dest=vreg_val,
+                source=MemoryLocation(
+                    storage_type='hw', address=0x4216,
+                    symbol=sym, is_volatile=True
+                ),
+                type_info=BasicTypeInfo('u8')
+            ),
+            # vreg_val used in BinaryOp, not just Return
+            BinaryOp(
+                dest=vreg_result,
+                left=vreg_val,
+                op='+',
+                right=Immediate(1),
+                type_info=BasicTypeInfo('u8')
+            ),
+            Return(values=[vreg_result])
+        ]
+
+        func = MIRFunction(
+            name="not_sinkable",
+            parameters=[],
+            return_type=BasicTypeInfo('u8'),
+            blocks={0: entry_block},
+            entry_block_id=0,
+            is_far=True,
+            vreg_allocator=vreg_alloc
+        )
+
+        allocator = StackSlotAllocator(func)
+        allocation = allocator.allocate()
+
+        assert vreg_val not in allocation.return_sinkable, \
+            "Load used in non-Return instruction should NOT be return-sinkable"
+
+    def test_load_from_move_not_sinkable(self):
+        """Test that Move (not Load) is not detected as return-sinkable."""
+        vreg_alloc = VirtualRegisterAllocator()
+        vreg_a = vreg_alloc.alloc(BasicTypeInfo('u8'), "a")
+
+        entry_block = BasicBlock(block_id=0)
+        entry_block.instructions = [
+            Move(
+                dest=vreg_a,
+                source=HardwareRegister('A'),
+                type_info=BasicTypeInfo('u8')
+            ),
+            Return(values=[vreg_a])
+        ]
+
+        func = MIRFunction(
+            name="move_not_load",
+            parameters=[],
+            return_type=BasicTypeInfo('u8'),
+            blocks={0: entry_block},
+            entry_block_id=0,
+            is_far=True,
+            vreg_allocator=vreg_alloc
+        )
+
+        allocator = StackSlotAllocator(func)
+        allocation = allocator.allocate()
+
+        # Move from HardwareRegister should be hw-coalesceable, not return-sinkable
+        assert vreg_a not in allocation.return_sinkable, \
+            "Move instructions should not be return-sinkable (handled by hw-coalescence)"
+        assert vreg_a in allocation.hw_coalesceable, \
+            "Move from HW register should be hw-coalesceable"
 
 
 def test_hw_coalescing_summary():
