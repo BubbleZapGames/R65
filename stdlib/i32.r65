@@ -248,7 +248,7 @@ impl far I32 {
     // ========================================================================
 
     // Copy another I32 into self
-    far fn copy(far *self, far *src: I32) {
+    far fn copy(far *self, src: far *I32) {
         A = src.lo;
         self.lo = A;
         A = src.hi;
@@ -329,7 +329,7 @@ impl far I32 {
 
     // Add: self += other (with overflow wrapping)
     // Two's complement addition is identical to unsigned
-    far fn add(far *self, far *other: I32) {
+    far fn add(far *self, other: far *I32) {
         // Add low words with carry clear
         STATUS.Carry = false;
         A = self.lo;
@@ -344,7 +344,7 @@ impl far I32 {
 
     // Subtract: self -= other (with underflow wrapping)
     // Two's complement subtraction is identical to unsigned
-    far fn sub(far *self, far *other: I32) {
+    far fn sub(far *self, other: far *I32) {
         // Subtract low words with borrow clear (SEC for SBC)
         STATUS.Carry = true;
         A = self.lo;
@@ -359,7 +359,7 @@ impl far I32 {
 
     // Multiply: self *= other (32x32 -> 32, lower 32 bits only)
     // Signed multiplication: track signs, multiply magnitudes, fix sign
-    far fn mul(far *self, far *other: I32) {
+    far fn mul(far *self, other: far *I32) {
         let mut negate_result: bool = false;
         let mut self_lo: u16;
         let mut temp_lo: u16;
@@ -442,7 +442,7 @@ impl far I32 {
 
     // Divide: self /= other (rounds toward zero, returns MIN_I32 if other == 0)
     // Signed division: track signs, divide magnitudes, fix sign
-    far fn div(far *self, far *other: I32) {
+    far fn div(far *self, other: far *I32) {
         let mut remainder_lo: u16;
         let mut remainder_hi: u16;
         let mut dividend_lo: u16;
@@ -600,7 +600,7 @@ impl far I32 {
 
     // Modulo: self %= other (remainder has same sign as dividend)
     // Unchanged if other == 0
-    far fn mod(far *self, far *other: I32) {
+    far fn mod(far *self, other: far *I32) {
         let mut dividend_lo: u16;
         let mut dividend_hi: u16;
         let mut divisor_lo: u16;
@@ -745,7 +745,7 @@ impl far I32 {
     //   ge: STATUS.Carry == true
     //   gt: STATUS.Carry == true && STATUS.Zero == false
     //   le: STATUS.Carry == false || STATUS.Zero == true
-    far fn cmp(far *self, far *other: I32) -> u8 {
+    far fn cmp(far *self, other: far *I32) -> u8 {
         let mut self_sign: u16;
         let mut other_sign: u16;
 

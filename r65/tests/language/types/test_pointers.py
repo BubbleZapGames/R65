@@ -73,7 +73,7 @@ class TestPointerOperations:
 
     def test_address_of(self):
         """Test address-of operator &."""
-        func = parse_function("fn test() { let *p: u8 = &value; }")
+        func = parse_function("fn test() { let p: *u8 = &value; }")
         let_stmt = func.body.statements[0]
         assert isinstance(let_stmt.initializer, ast.AddressOf)
         # The type should be a pointer type
@@ -88,11 +88,11 @@ class TestPointerOperations:
 
 
 class TestPointerStatics:
-    """Tests for pointer static declarations with new syntax."""
+    """Tests for pointer static declarations with canonical name: *T syntax."""
 
     def test_pointer_static(self):
-        """Test pointer in static declaration with *name: type syntax."""
-        static = parse_static("#[zeropage] static mut *PTR: u8;")
+        """Test pointer in static declaration with name: *type syntax."""
+        static = parse_static("#[zeropage] static mut PTR: *u8;")
         assert isinstance(static.var_type, ast.PointerType)
         assert static.var_type.is_far is False
         assert static.name == "PTR"
@@ -119,11 +119,11 @@ class TestPointerStatics:
 
 
 class TestPointerParameters:
-    """Tests for pointer function parameters."""
+    """Tests for pointer function parameters with canonical name: *T syntax."""
 
     def test_pointer_param(self):
-        """Test pointer parameter with *name: type syntax."""
-        func = parse_function("fn copy(*src: u8, *dst: u8) { }")
+        """Test pointer parameter with name: *type syntax."""
+        func = parse_function("fn copy(src: *u8, dst: *u8) { }")
         assert len(func.params) == 2
         assert func.params[0].name == "src"
         assert isinstance(func.params[0].param_type, ast.PointerType)
@@ -132,14 +132,14 @@ class TestPointerParameters:
 
     def test_far_pointer_param(self):
         """Test far pointer parameter."""
-        func = parse_function("fn read(far *data: u8) { }")
+        func = parse_function("fn read(data: far *u8) { }")
         assert func.params[0].name == "data"
         assert isinstance(func.params[0].param_type, ast.PointerType)
         assert func.params[0].param_type.is_far is True
 
     def test_slice_pointer_param(self):
         """Test pointer to slice parameter (unsized array)."""
-        func = parse_function("fn process(far *data: [u8]) { }")
+        func = parse_function("fn process(data: far *[u8]) { }")
         assert func.params[0].name == "data"
         assert isinstance(func.params[0].param_type, ast.PointerType)
         assert func.params[0].param_type.is_far is True
@@ -147,12 +147,12 @@ class TestPointerParameters:
 
 
 class TestPointerStructFields:
-    """Tests for pointer struct fields."""
+    """Tests for pointer struct fields with canonical name: *T syntax."""
 
     def test_pointer_field(self):
-        """Test pointer field with *name: type syntax."""
+        """Test pointer field with name: *type syntax."""
         from r65.tests.language.common import parse_struct
-        struct = parse_struct("struct Node { *next: Node, data: u8, }")
+        struct = parse_struct("struct Node { next: *Node, data: u8, }")
         assert len(struct.fields) == 2
         assert struct.fields[0].name == "next"
         assert isinstance(struct.fields[0].field_type, ast.PointerType)
@@ -161,18 +161,18 @@ class TestPointerStructFields:
     def test_far_pointer_field(self):
         """Test far pointer field."""
         from r65.tests.language.common import parse_struct
-        struct = parse_struct("struct FarRef { far *data: u8, }")
+        struct = parse_struct("struct FarRef { data: far *u8, }")
         assert struct.fields[0].name == "data"
         assert isinstance(struct.fields[0].field_type, ast.PointerType)
         assert struct.fields[0].field_type.is_far is True
 
 
 class TestPointerLet:
-    """Tests for pointer let statements."""
+    """Tests for pointer let statements with canonical name: *T syntax."""
 
     def test_pointer_let(self):
-        """Test pointer let with *name: type syntax."""
-        func = parse_function("fn test() { let *ptr: u8 = 0x2000; }")
+        """Test pointer let with name: *type syntax."""
+        func = parse_function("fn test() { let ptr: *u8 = 0x2000; }")
         let_stmt = func.body.statements[0]
         assert let_stmt.name == "ptr"
         assert isinstance(let_stmt.var_type, ast.PointerType)
@@ -180,7 +180,7 @@ class TestPointerLet:
 
     def test_far_pointer_let(self):
         """Test far pointer let."""
-        func = parse_function("fn test() { let far *ptr: u8 = addr; }")
+        func = parse_function("fn test() { let ptr: far *u8 = addr; }")
         let_stmt = func.body.statements[0]
         assert let_stmt.name == "ptr"
         assert isinstance(let_stmt.var_type, ast.PointerType)
@@ -188,7 +188,7 @@ class TestPointerLet:
 
     def test_mut_pointer_let(self):
         """Test mutable pointer let."""
-        func = parse_function("fn test() { let mut *ptr: u8 = 0x2000; }")
+        func = parse_function("fn test() { let mut ptr: *u8 = 0x2000; }")
         let_stmt = func.body.statements[0]
         assert let_stmt.is_mut is True
         assert let_stmt.name == "ptr"
@@ -221,8 +221,73 @@ class TestPointerHIR:
     def test_pointer_hir(self):
         """Test pointer types generate proper HIR."""
         hir_prog = build_hir("""
-            #[zeropage] static mut *PTR: u8;
+            #[zeropage] static mut PTR: *u8;
             fn test() { let v: u8 = *PTR; }
         """)
         assert len(hir_prog.statics) >= 1
         assert len(hir_prog.functions) >= 1
+
+
+class TestPatternSideForm:
+    """Tests verifying that the pattern-side form (*name: T) still parses.
+
+    Both forms are valid in R65:
+    - Type-side (canonical): name: *T
+    - Pattern-side: *name: T
+
+    These tests ensure backwards compatibility for the pattern-side form.
+    """
+
+    def test_pattern_side_static(self):
+        """Pattern-side *name: T in static declarations."""
+        static = parse_static("#[zeropage] static mut *PTR: u8;")
+        assert isinstance(static.var_type, ast.PointerType)
+        assert static.name == "PTR"
+
+    def test_pattern_side_param(self):
+        """Pattern-side *name: T in function parameters."""
+        func = parse_function("fn copy(*src: u8, *dst: u8) { }")
+        assert len(func.params) == 2
+        assert isinstance(func.params[0].param_type, ast.PointerType)
+        assert isinstance(func.params[1].param_type, ast.PointerType)
+
+    def test_pattern_side_far_param(self):
+        """Pattern-side far *name: T in function parameters."""
+        func = parse_function("fn read(far *data: u8) { }")
+        assert isinstance(func.params[0].param_type, ast.PointerType)
+        assert func.params[0].param_type.is_far is True
+
+    def test_pattern_side_let(self):
+        """Pattern-side let *name: T in let statements."""
+        func = parse_function("fn test() { let *ptr: u8 = 0x2000; }")
+        let_stmt = func.body.statements[0]
+        assert let_stmt.name == "ptr"
+        assert isinstance(let_stmt.var_type, ast.PointerType)
+
+    def test_pattern_side_far_let(self):
+        """Pattern-side let far *name: T in let statements."""
+        func = parse_function("fn test() { let far *ptr: u8 = addr; }")
+        let_stmt = func.body.statements[0]
+        assert isinstance(let_stmt.var_type, ast.PointerType)
+        assert let_stmt.var_type.is_far is True
+
+    def test_pattern_side_struct_field(self):
+        """Pattern-side *name: T in struct fields."""
+        from r65.tests.language.common import parse_struct
+        struct = parse_struct("struct Node { *next: Node, data: u8, }")
+        assert isinstance(struct.fields[0].field_type, ast.PointerType)
+        assert struct.fields[0].name == "next"
+
+    def test_pattern_side_far_struct_field(self):
+        """Pattern-side far *name: T in struct fields."""
+        from r65.tests.language.common import parse_struct
+        struct = parse_struct("struct FarRef { far *data: u8, }")
+        assert isinstance(struct.fields[0].field_type, ast.PointerType)
+        assert struct.fields[0].field_type.is_far is True
+
+    def test_pattern_side_mut_let(self):
+        """Pattern-side let mut *name: T in let statements."""
+        func = parse_function("fn test() { let mut *ptr: u8 = 0x2000; }")
+        let_stmt = func.body.statements[0]
+        assert let_stmt.is_mut is True
+        assert isinstance(let_stmt.var_type, ast.PointerType)

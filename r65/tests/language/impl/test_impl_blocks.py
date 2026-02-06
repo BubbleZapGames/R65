@@ -201,7 +201,7 @@ class TestMethodCalls:
                 }
             }
             #[zeropage]
-            static mut *PLAYER_PTR: Player;
+            static mut PLAYER_PTR: *Player;
 
                         fn test() -> u8 {
                 return PLAYER_PTR.get_x();

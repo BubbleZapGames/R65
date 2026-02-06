@@ -51,9 +51,9 @@ class TestAggregateParameterRestriction:
         }
 
         #[zeropage(0x10)]
-        static mut *PTR: Player;
+        static mut PTR: *Player;
 
-                fn good_func(*player @ PTR: Player) {
+                fn good_func(player @ PTR: *Player) {
             // Just verify the function signature is accepted
             A = 0;
         }
@@ -66,9 +66,9 @@ class TestAggregateParameterRestriction:
         """Passing an array by pointer should be allowed (type check passes)."""
         source = """
         #[zeropage(0x10)]
-        static mut *PTR: [u8];
+        static mut PTR: *[u8];
 
-                fn good_func(*data @ PTR: [u8]) {
+                fn good_func(data @ PTR: *[u8]) {
             // Just verify the function signature is accepted
             A = 0;
         }

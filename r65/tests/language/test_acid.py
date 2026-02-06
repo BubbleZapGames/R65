@@ -118,9 +118,9 @@ static SINE_TABLE: [u8; 256] = [0; 256];  // Immutable = ROM
 #[ram] static mut HANDLER_TABLE: [Handler; 4];
 
 // Pointer types
-#[zeropage(0x10)] static mut *DATA_PTR: u8;
+#[zeropage(0x10)] static mut DATA_PTR: *u8;
 #[zeropage(0x12)] static mut FAR_PTR: far *u8;  // Far pointer type
-#[zeropage(0x15)] static mut *STRUCT_PTR: Entity;
+#[zeropage(0x15)] static mut STRUCT_PTR: *Entity;
 
 // -----------------------------------------------------------------------------
 // Entry Point

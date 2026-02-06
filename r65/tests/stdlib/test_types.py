@@ -120,7 +120,7 @@ class TestU32ImplBlock:
         """U32 methods are mangled to U32__method."""
         source = U32_HEADER + """
             impl far U32 {
-                                far fn add(far *self, far *other: U32) {
+                                far fn add(far *self, other: far *U32) {
                     STATUS.Carry = false;
                     A = self.lo;
                     A = A + other.lo;
@@ -184,7 +184,7 @@ class TestU32ConversionMethods:
         """copy method copies another U32."""
         source = U32_HEADER + """
             impl far U32 {
-                                far fn copy(far *self, far *src: U32) {
+                                far fn copy(far *self, src: far *U32) {
                     A = src.lo;
                     self.lo = A;
                     A = src.hi;
@@ -211,7 +211,7 @@ class TestU32ArithmeticMethods:
         """add method performs 32-bit addition."""
         source = U32_HEADER + """
             impl far U32 {
-                                far fn add(far *self, far *other: U32) {
+                                far fn add(far *self, other: far *U32) {
                     STATUS.Carry = false;
                     A = self.lo;
                     A = A + other.lo;
@@ -237,7 +237,7 @@ class TestU32ArithmeticMethods:
         """sub method performs 32-bit subtraction."""
         source = U32_HEADER + """
             impl far U32 {
-                                far fn sub(far *self, far *other: U32) {
+                                far fn sub(far *self, other: far *U32) {
                     STATUS.Carry = true;
                     A = self.lo;
                     A = A - other.lo;
@@ -263,7 +263,7 @@ class TestU32ArithmeticMethods:
         """div method handles division by zero."""
         source = U32_HEADER + """
             impl far U32 {
-                                far fn div(far *self, far *other: U32) {
+                                far fn div(far *self, other: far *U32) {
                     A = other.lo;
                     if A == 0 as u16 {
                         A = other.hi;
@@ -297,7 +297,7 @@ class TestU32ComparisonMethod:
         """cmp method returns u8 (STATUS)."""
         source = U32_HEADER + """
             impl far U32 {
-                                far fn cmp(far *self, far *other: U32) -> u8 {
+                                far fn cmp(far *self, other: far *U32) -> u8 {
                     A = self.hi;
                     if A != other.hi {
                         A = self.hi;
@@ -448,14 +448,14 @@ class TestU32Macros:
         """u32_add macro expands to copy and add."""
         source = U32_HEADER + """
             impl far U32 {
-                                far fn copy(far *self, far *src: U32) {
+                                far fn copy(far *self, src: far *U32) {
                     A = src.lo;
                     self.lo = A;
                     A = src.hi;
                     self.hi = A;
                 }
 
-                                far fn add(far *self, far *other: U32) {
+                                far fn add(far *self, other: far *U32) {
                     STATUS.Carry = false;
                     A = self.lo;
                     A = A + other.lo;
@@ -488,14 +488,14 @@ class TestU32Macros:
         """u32_sub macro expands to copy and sub."""
         source = U32_HEADER + """
             impl far U32 {
-                                far fn copy(far *self, far *src: U32) {
+                                far fn copy(far *self, src: far *U32) {
                     A = src.lo;
                     self.lo = A;
                     A = src.hi;
                     self.hi = A;
                 }
 
-                                far fn sub(far *self, far *other: U32) {
+                                far fn sub(far *self, other: far *U32) {
                     STATUS.Carry = true;
                     A = self.lo;
                     A = A - other.lo;
@@ -537,7 +537,7 @@ class TestU32MethodChaining:
                     self.hi = 0;
                 }
 
-                                far fn add(far *self, far *other: U32) {
+                                far fn add(far *self, other: far *U32) {
                     STATUS.Carry = false;
                     A = self.lo;
                     A = A + other.lo;
@@ -597,7 +597,7 @@ class TestU32Errors:
         """Passing wrong type to U32 method fails."""
         source = U32_HEADER + """
             impl far U32 {
-                                far fn add(far *self, far *other: U32) {
+                                far fn add(far *self, other: far *U32) {
                     A = self.lo;
                 }
             }
@@ -693,7 +693,7 @@ class TestI32ImplBlock:
         """I32 methods are mangled to I32__method."""
         source = I32_HEADER + """
             impl far I32 {
-                                far fn add(far *self, far *other: I32) {
+                                far fn add(far *self, other: far *I32) {
                     STATUS.Carry = false;
                     A = self.lo;
                     A = A + other.lo;
@@ -785,7 +785,7 @@ class TestI32ConversionMethods:
         """copy method copies another I32."""
         source = I32_HEADER + """
             impl far I32 {
-                                far fn copy(far *self, far *src: I32) {
+                                far fn copy(far *self, src: far *I32) {
                     A = src.lo;
                     self.lo = A;
                     A = src.hi;
@@ -907,7 +907,7 @@ class TestI32ArithmeticMethods:
         """add method performs 32-bit signed addition."""
         source = I32_HEADER + """
             impl far I32 {
-                                far fn add(far *self, far *other: I32) {
+                                far fn add(far *self, other: far *I32) {
                     STATUS.Carry = false;
                     A = self.lo;
                     A = A + other.lo;
@@ -933,7 +933,7 @@ class TestI32ArithmeticMethods:
         """sub method performs 32-bit signed subtraction."""
         source = I32_HEADER + """
             impl far I32 {
-                                far fn sub(far *self, far *other: I32) {
+                                far fn sub(far *self, other: far *I32) {
                     STATUS.Carry = true;
                     A = self.lo;
                     A = A - other.lo;
@@ -959,7 +959,7 @@ class TestI32ArithmeticMethods:
         """div method handles division by zero."""
         source = I32_HEADER + """
             impl far I32 {
-                                far fn div(far *self, far *other: I32) {
+                                far fn div(far *self, other: far *I32) {
                     A = other.lo;
                     if A == 0 as u16 {
                         A = other.hi;
@@ -994,7 +994,7 @@ class TestI32ComparisonMethod:
         """cmp method returns u8 (STATUS)."""
         source = I32_HEADER + """
             impl far I32 {
-                                far fn cmp(far *self, far *other: I32) -> u8 {
+                                far fn cmp(far *self, other: far *I32) -> u8 {
                     let mut self_sign: u16;
                     let mut other_sign: u16;
 
@@ -1042,7 +1042,7 @@ class TestI32ComparisonMethod:
         """cmp handles comparison when signs differ."""
         source = I32_HEADER + """
             impl far I32 {
-                                far fn cmp(far *self, far *other: I32) -> u8 {
+                                far fn cmp(far *self, other: far *I32) -> u8 {
                     let mut self_sign: u16;
                     let mut other_sign: u16;
 
@@ -1217,14 +1217,14 @@ class TestI32Macros:
         """i32_add macro expands to copy and add."""
         source = I32_HEADER + """
             impl far I32 {
-                                far fn copy(far *self, far *src: I32) {
+                                far fn copy(far *self, src: far *I32) {
                     A = src.lo;
                     self.lo = A;
                     A = src.hi;
                     self.hi = A;
                 }
 
-                                far fn add(far *self, far *other: I32) {
+                                far fn add(far *self, other: far *I32) {
                     STATUS.Carry = false;
                     A = self.lo;
                     A = A + other.lo;
@@ -1257,7 +1257,7 @@ class TestI32Macros:
         """i32_neg macro expands to copy and neg."""
         source = I32_HEADER + """
             impl far I32 {
-                                far fn copy(far *self, far *src: I32) {
+                                far fn copy(far *self, src: far *I32) {
                     A = src.lo;
                     self.lo = A;
                     A = src.hi;
@@ -1301,7 +1301,7 @@ class TestI32Macros:
         """i32_abs macro expands to copy and abs."""
         source = I32_HEADER + """
             impl far I32 {
-                                far fn copy(far *self, far *src: I32) {
+                                far fn copy(far *self, src: far *I32) {
                     A = src.lo;
                     self.lo = A;
                     A = src.hi;
@@ -1365,7 +1365,7 @@ class TestI32MethodChaining:
                     }
                 }
 
-                                far fn add(far *self, far *other: I32) {
+                                far fn add(far *self, other: far *I32) {
                     STATUS.Carry = false;
                     A = self.lo;
                     A = A + other.lo;
@@ -1425,7 +1425,7 @@ class TestI32Errors:
         """Passing wrong type to I32 method fails."""
         source = I32_HEADER + """
             impl far I32 {
-                                far fn add(far *self, far *other: I32) {
+                                far fn add(far *self, other: far *I32) {
                     A = self.lo;
                 }
             }
@@ -1468,7 +1468,7 @@ class TestI32Errors:
             struct U32 { lo: u16, hi: u16 }
 
             impl far I32 {
-                                far fn add(far *self, far *other: I32) {
+                                far fn add(far *self, other: far *I32) {
                     A = self.lo;
                 }
             }
@@ -1526,7 +1526,7 @@ class TestI32SignedSpecific:
                     }
                 }
 
-                                far fn sub(far *self, far *other: I32) {
+                                far fn sub(far *self, other: far *I32) {
                     STATUS.Carry = true;
                     A = self.lo;
                     A = A - other.lo;

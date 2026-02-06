@@ -247,7 +247,7 @@ class ASTBuilder(Transformer):
         raise ParseError(
             f"safe pointers are not supported in R65",
             source_loc=source_loc,
-            hint=f"use '*{name_str}: type' instead of '&{name_str}: type' for pointer parameters"
+            hint=f"use '{name_str}: *type' instead of '&{name_str}: type' for pointer parameters"
         )
 
     def binding(self, items):
@@ -349,7 +349,7 @@ class ASTBuilder(Transformer):
         raise ParseError(
             f"safe pointers are not supported in R65",
             source_loc=source_loc,
-            hint=f"use 'static {mut_str}*{name_str}: type' instead of 'static {mut_str}&{name_str}: type'"
+            hint=f"use 'static {mut_str}{name_str}: *type' instead of 'static {mut_str}&{name_str}: type'"
         )
 
     def const_decl(self, items):
@@ -418,7 +418,7 @@ class ASTBuilder(Transformer):
         raise ParseError(
             f"safe pointers are not supported in R65",
             source_loc=source_loc,
-            hint=f"use '*{name_str}: type' instead of '&{name_str}: type' for struct fields"
+            hint=f"use '{name_str}: *type' instead of '&{name_str}: type' for struct fields"
         )
 
     def enum_decl(self, items):
@@ -1175,7 +1175,7 @@ class ASTBuilder(Transformer):
         raise ParseError(
             f"safe pointers are not supported in R65",
             source_loc=source_loc,
-            hint=f"use 'let *{name_str}: type' instead of 'let &{name_str}: type' for pointer variables"
+            hint=f"use 'let {name_str}: *type' instead of 'let &{name_str}: type' for pointer variables"
         )
 
     def safe_ptr_pattern(self, items):

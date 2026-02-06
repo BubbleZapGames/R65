@@ -235,7 +235,7 @@ impl far U32 {
     // ========================================================================
 
     // Copy another U32 into self
-    far fn copy(far *self, far *src: U32) {
+    far fn copy(far *self, src: far *U32) {
         A = src.lo;
         self.lo = A;
         A = src.hi;
@@ -258,7 +258,7 @@ impl far U32 {
     // ========================================================================
 
     // Add: self += other (with overflow wrapping)
-    far fn add(far *self, far *other: U32) {
+    far fn add(far *self, other: far *U32) {
         // Add low words with carry clear
         STATUS.Carry = false;
         A = self.lo;
@@ -272,7 +272,7 @@ impl far U32 {
     }
 
     // Subtract: self -= other (with underflow wrapping)
-    far fn sub(far *self, far *other: U32) {
+    far fn sub(far *self, other: far *U32) {
         // Subtract low words with borrow clear (SEC for SBC)
         STATUS.Carry = true;
         A = self.lo;
@@ -286,7 +286,7 @@ impl far U32 {
     }
 
     // Multiply: self *= other (32x32 -> 32, lower 32 bits only)
-    far fn mul(far *self, far *other: U32) {
+    far fn mul(far *self, other: far *U32) {
         let mut self_lo: u16;
         let mut temp_lo: u16;
         let mut temp_hi: u16;
@@ -329,7 +329,7 @@ impl far U32 {
     }
 
     // Divide: self /= other (returns 0xFFFFFFFF if other == 0)
-    far fn div(far *self, far *other: U32) {
+    far fn div(far *self, other: far *U32) {
         let mut remainder_lo: u16;
         let mut remainder_hi: u16;
         let mut dividend_lo: u16;
@@ -431,7 +431,7 @@ impl far U32 {
     }
 
     // Modulo: self %= other (unchanged if other == 0)
-    far fn mod(far *self, far *other: U32) {
+    far fn mod(far *self, other: far *U32) {
         let mut dividend_lo: u16;
         let mut dividend_hi: u16;
         let mut bit_count: u8;
@@ -523,7 +523,7 @@ impl far U32 {
     //   ge: STATUS.Carry == true
     //   gt: STATUS.Carry == true && STATUS.Zero == false
     //   le: STATUS.Carry == false || STATUS.Zero == true
-    far fn cmp(far *self, far *other: U32) -> u8 {
+    far fn cmp(far *self, other: far *U32) -> u8 {
         // Compare high words first
         A = self.hi;
         if A != other.hi {
