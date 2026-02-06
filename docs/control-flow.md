@@ -1075,7 +1075,7 @@ fn process(value @ A: u8) -> u8 {
 ### Register Aliasing in Loops
 
 ```rust
-fn sum_array(*arr: u8) -> u8 {
+fn sum_array(arr: *u8) -> u8 {
     let total @ A = 0;
     let index @ X = 0;
 
@@ -1205,7 +1205,7 @@ fn wait_ready(timeout @ X: u8) -> bool {
 ### Memory Copy with Count
 
 ```rust
-fn copy_memory(*src: u8, *dst: u8, count @ X: u8) {
+fn copy_memory(src: *u8, dst: *u8, count @ X: u8) {
     if count == 0 {
         return;
     }

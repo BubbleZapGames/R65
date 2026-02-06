@@ -79,7 +79,7 @@ let w: u8 = Player::WIDTH;      // 16
 let h: u8 = Bullet::HEIGHT;     // 4
 
 // ERROR: Cannot access associated constant through trait pointer
-let *obj: Drawable = &player;
+let obj: *Drawable = &player;
 let w: u8 = obj.WIDTH;          // Compile error!
 ```
 
@@ -248,7 +248,7 @@ impl Drawable for Large { /* ... */ }  // 101 bytes with trait
 The `type_id()` method is available on any trait pointer and returns the underlying `__type_id` field:
 
 ```rust
-let *obj: Drawable = &player;
+let obj: *Drawable = &player;
 let id: u8 = obj.type_id();     // Returns Player's TypeId (e.g., 1)
 ```
 
@@ -270,13 +270,13 @@ Bullet::TYPE_ID     // e.g., 3
 Use `type_id()` comparison to safely downcast from trait pointer to concrete type:
 
 ```rust
-fn handle_collision(*obj: Drawable) {
+fn handle_collision(obj: *Drawable) {
     if obj.type_id() == Player::TYPE_ID {
         // Safe to downcast - we know it's a Player
-        let *player: Player = obj as *Player;
+        let player: *Player = obj as *Player;
         player.health = player.health - 10;
     } else if obj.type_id() == Enemy::TYPE_ID {
-        let *enemy: Enemy = obj as *Enemy;
+        let enemy: *Enemy = obj as *Enemy;
         enemy.damage = enemy.damage + 1;
     }
 }
@@ -288,7 +288,7 @@ Casting without checking `type_id()` is allowed but unsafe:
 
 ```rust
 // Dangerous - only do this if you're certain of the type
-let *player: Player = obj as *Player;
+let player: *Player = obj as *Player;
 ```
 
 If the cast is wrong, subsequent field accesses will read garbage or corrupt memory.
@@ -296,7 +296,7 @@ If the cast is wrong, subsequent field accesses will read garbage or corrupt mem
 ### Pattern: Type Switch
 
 ```rust
-fn process_entity(*e: Entity) {
+fn process_entity(e: *Entity) {
     let id: u8 = e.type_id();
 
     if id == Player::TYPE_ID {
@@ -343,10 +343,10 @@ far *Renderable     // 3-byte pointer to any Renderable
 let player = Player { x: 10, y: 20, health: 100 };
 
 // Cast concrete type to trait pointer
-let *drawable: Drawable = &player as *Drawable;
+let drawable: *Drawable = &player as *Drawable;
 
 // Direct assignment (type inferred from context)
-let *d: Drawable = &player;
+let d: *Drawable = &player;
 ```
 
 ### Null Trait Pointers
@@ -358,14 +358,14 @@ if ptr != 0 as *Drawable {
 }
 
 // Initialize to null
-let *target: Damageable = 0 as *Damageable;
+let target: *Damageable = 0 as *Damageable;
 ```
 
 ### Trait Pointers in Function Signatures
 
 ```rust
 // Parameter
-fn render(*obj: Drawable, x @ X: u16, y @ Y: u16) {
+fn render(obj: *Drawable, x @ X: u16, y @ Y: u16) {
     obj.draw(X, Y);
 }
 
@@ -375,7 +375,7 @@ fn find_enemy() -> *Drawable {
 }
 
 // Far trait parameter
-fn render_cross_bank(far *obj: Renderable) {
+fn render_cross_bank(obj: far *Renderable) {
     obj.render();
 }
 ```
@@ -391,11 +391,11 @@ static mut ENTITIES: [*Drawable; 32];
 struct Projectile {
     x: u8,
     y: u8,
-    *target: Damageable    // 2-byte near trait pointer
+    target: *Damageable    // 2-byte near trait pointer
 }
 
 struct CrossBankRef {
-    far *renderer: Renderable  // 3-byte far trait pointer
+    renderer: far *Renderable  // 3-byte far trait pointer
 }
 ```
 
@@ -434,8 +434,8 @@ static mut DRAW_LIST: [*Drawable; 4] = [
 
 ```rust
 struct GameState {
-    *active_entity: Drawable,
-    *collision_target: Damageable
+    active_entity: *Drawable,
+    collision_target: *Damageable
 }
 
 #[ram]
@@ -479,7 +479,7 @@ DRAW_LIST_init:
 ### Calling Methods
 
 ```rust
-let *obj: Drawable = &player as *Drawable;
+let obj: *Drawable = &player as *Drawable;
 
 // Method call - dispatches via jump table
 obj.draw(X, Y);
@@ -584,14 +584,14 @@ static mut ENTITIES: [*Entity; 32];
 
 fn update_all() {
     for i in 0..32 {
-        let *e: Entity = ENTITIES[i];
+        let e: *Entity = ENTITIES[i];
         if e != 0 as *Entity {
             e.update();
         }
     }
 }
 
-fn add_entity(*e: Entity) {
+fn add_entity(e: *Entity) {
     for i in 0..32 {
         if ENTITIES[i] == 0 as *Entity {
             ENTITIES[i] = e;
@@ -646,10 +646,10 @@ trait Component {
 struct GameObject {
     x: u8,
     y: u8,
-    *component: Component
+    component: *Component
 }
 
-fn update_object(*obj: GameObject) {
+fn update_object(obj: *GameObject) {
     if obj.component != 0 as *Component {
         obj.component.update();
     }
@@ -902,7 +902,7 @@ fn game_update() {
 
     // Draw all entities via trait dispatch
     for i in 0..16 {
-        let *d: Drawable = DRAW_LIST[i];
+        let d: *Drawable = DRAW_LIST[i];
         if d != 0 as *Drawable {
             d.draw(X, Y);
         }

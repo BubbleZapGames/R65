@@ -1178,12 +1178,12 @@ struct Player {
     score: u16,
 }
 
-fn take_damage(*p: Player, damage: u8) {
-    (*p).health -= damage;
+fn take_damage(p: *Player, damage: u8) {
+    p.health -= damage;
 }
 
-fn add_score(*p: Player, points: u16) {
-    (*p).score += points;
+fn add_score(p: *Player, points: u16) {
+    p.score += points;
 }
 ```
 

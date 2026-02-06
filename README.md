@@ -316,16 +316,16 @@ let value: u8 = dir as u8;
 
 ```rust
 // Near pointer (16-bit, current bank)
-let *ptr: u8 = 0x2000;
+let ptr: *u8 = 0x2000;
 *ptr = 42;           // Write through pointer
 let val = ptr[Y];    // Indexed access
 
 // Far pointer (24-bit, any bank)
-let far *rom_ptr: u8 = 0x01_8000;
+let rom_ptr: far *u8 = 0x01_8000;
 
 // Zero-page pointer (fastest indirect access)
 #[zeropage(0x40)]
-static mut *DATA_PTR: u8;
+static mut DATA_PTR: *u8;
 
 DATA_PTR = &BUFFER[0];
 DATA_PTR[Y] = value;  // LDA/STA ($40),Y - very fast!

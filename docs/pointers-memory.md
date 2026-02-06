@@ -1,35 +1,16 @@
-# Pointer Operations and Memory Model Design
+# Pointer Operations and Memory Model
 
 ## Overview
 
-R65 provides explicit pointer types that directly reflect the 65816's segmented memory architecture and addressing modes.
-
-**Design Principles**:
-- Hardware transparency: Expose 16-bit and 24-bit address spaces
-- Zero-cost abstractions: Pointers map directly to addressing modes
-- Explicit bank management: Programmer controls DBR
-- No safety guarantees: All pointer operations are unchecked
-
----
+R65 provides explicit pointer types that directly reflect the 65816's segmented memory architecture. Pointers map to hardware addressing modes with no abstraction cost. There are no safety guarantees — no bounds checking, no null checks, no lifetime tracking.
 
 ## 65816 Memory Architecture
 
-### Address Space
+24-bit address space: 256 banks of 64KB each (16MB total).
 
-24-bit address space organized into 256 banks of 64KB each (16MB total):
+**Key Registers**: PBR (execution bank, read-only), DBR (default data bank), D (direct page base).
 
-```
-$00:0000 - $FF:FFFF  (16MB addressable)
-```
-
-### Key Registers
-
-- **PBR** (Program Bank Register): Current execution bank (read-only)
-- **DBR** (Data Bank Register): Default bank for data access
-- **D** (Direct Page): Base address for zero-page (relocatable)
-
-### Typical SNES Memory Map
-
+**SNES Memory Map**:
 ```
 $00:0000 - $00:1FFF  Low RAM (8KB)
 $00:2000 - $00:7FFF  Hardware registers
@@ -38,50 +19,55 @@ $7E:0000 - $7F:FFFF  Work RAM (128KB)
 $80:0000 - $FF:FFFF  ROM (upper/mirrored)
 ```
 
----
-
 ## Pointer Types
 
-Pointers use `*` prefix on the variable/parameter name, with optional `far`/`near` modifiers.
+### Near Pointer: `name: *T`
 
-### Near Pointer: `*name: T`
-
-**Size**: 2 bytes (16-bit)
-**Range**: 64KB within current DBR
-**Speed**: Fast (5-6 cycles for indirect)
+**Size**: 2 bytes (16-bit) — **Range**: 64KB within current DBR
 
 ```rust
 let ptr: *u8 = 0x2000;
 let value = *ptr;  // Uses DBR for bank
 ```
 
-**Assembly**: `LDA ($nn)` - uses DBR implicitly
+**Assembly**: `LDA ($zp)` (indirect), `LDA ($zp),Y` (indirect indexed)
 
-**Use for**: Data within current bank, zero-page pointers, fast indirect addressing
+### Far Pointer: `name: far *T`
 
----
-
-### Far Pointer: `far *name: T`
-
-**Size**: 3 bytes (24-bit)
-**Range**: Full 16MB
-**Speed**: Slow (requires DBR manipulation)
+**Size**: 3 bytes (24-bit) — **Range**: Full 16MB
 
 ```rust
-let far ptr: *u8 = 0x01_2000;  // Bank 1, offset 0x2000
-let value = *ptr;  // Must manage DBR
+let ptr: far *u8 = 0x01_2000;  // Bank 1, offset 0x2000
+let value = *ptr;
 ```
 
-**Assembly**: Requires PHB/PLB to change DBR
+**Assembly**: `LDA [$zp]` (indirect long), `LDA [$zp],Y` (indirect long indexed)
 
-**Use for**: Cross-bank access, ROM in different banks
+### Pointer to Slice: `name: *[T]`
 
----
+Unsized array pointer — points to a contiguous sequence of `T` with no known length. Used for passing arrays of any size. A `*[T; N]` (pointer to fixed-size array) is implicitly coercible to `*[T]`.
+
+```rust
+fn write_message(msg: *[u8]) {
+    X = 0;
+    loop {
+        A = msg[X];
+        if A == 0 { break; }
+        X++;
+    }
+}
+```
+
+### Function Pointers
+
+```rust
+fn(u8) -> u8          // Near function pointer (2 bytes, JSR/RTS)
+far fn(u8) -> u8      // Far function pointer (3 bytes, JSL/RTL)
+```
 
 ### Null Pointers
 
-**Value**: `0x0000` (near) or `0x00_0000` (far)
-**Semantics**: No automatic null checks - dereferencing is **undefined behavior**
+**Value**: `0x0000` (near) or `0x00_0000` (far). No automatic null checks — dereferencing null is UB.
 
 ```rust
 let ptr: *u8 = 0x0000;
@@ -90,7 +76,67 @@ if ptr as u16 != 0 {  // Manual check required
 }
 ```
 
----
+## Declaring Pointers
+
+R65 has two syntax forms for pointer declarations. Both parse and both are used in practice:
+
+| Form | Syntax | Star position |
+|------|--------|---------------|
+| Type-side (canonical) | `name: *T` | In the type |
+| Pattern-side | `*name: T` | Before the name |
+
+The type-side form (`name: *T`, `name: far *T`) is the canonical style. The pattern-side form (`*name: T`) is also valid and commonly used for pointer output parameters.
+
+### Local Variables
+
+```rust
+let ptr: *u8 = 0x2000;                 // Near pointer
+let ptr: far *u8 = 0x01_2000;          // Far pointer
+let mut ptr: *u8;                       // Mutable, uninitialized
+let *ptr: u8 = 0x210D as *u8;          // Pattern-side form (also valid)
+```
+
+### Static Variables
+
+```rust
+#[zeropage(0x42)]
+static mut PTR: *u8;                    // Near pointer in zero-page (fastest)
+
+#[zeropage]
+static mut FAR_PTR: *u16;              // Pattern-side form also valid: *FAR_PTR: u16
+
+#[ram]
+static mut BUFFER_PTR: far *u8;        // Far pointer in RAM
+```
+
+### Function Parameters
+
+```rust
+fn read(src: *u8) { }                  // Near pointer param
+fn copy(dst: *u8, src: far *u8) { }    // Mixed near/far
+fn print(msg: *[u8]) { }              // Pointer to unsized array
+fn mul(a: u16, *result: u16) { }       // Pointer output param (pattern-side)
+```
+
+### Struct Fields
+
+```rust
+struct Node {
+    data: u8,
+    next: *Node,       // Near pointer to same type
+}
+```
+
+### Method Self Parameter
+
+In `impl` blocks, `self` is always a pointer:
+
+```rust
+impl far Entity {
+    far fn update(far *self) { }                   // Far self pointer
+    far fn copy(far *self, far *src: Entity) { }   // Self + pointer param
+}
+```
 
 ## Pointer Operations
 
@@ -103,19 +149,15 @@ static mut TEMP: u8;
 #[ram]
 static mut BUFFER: [u8; 256];
 
-let zp_ptr: *u8 = &TEMP;        // Near pointer - zeropage is bank 0
-let far ram_ptr: *u8 = &BUFFER;  // Far pointer - ram is bank $7E
+let zp_ptr: *u8 = &TEMP;              // Near — zeropage is bank 0
+let ram_ptr: far *u8 = &BUFFER;       // Far — RAM is bank $7E
 ```
 
-**Automatic type inference**: The compiler infers near or far based on storage:
+The compiler infers near or far based on storage class:
 - `#[zeropage]`, `#[lowram]`, `#[hw]` → near pointer (16-bit, bank 0)
 - `#[ram]`, immutable statics (ROM) → far pointer (24-bit, includes bank)
 
-**Restrictions**:
-- Cannot take address of register aliases (`&A` is error)
-- Only works on lvalues (variables, array elements, fields)
-
----
+Cannot take address of register aliases (`&A` is an error). Only works on lvalues.
 
 ### Dereference: `*`
 
@@ -130,31 +172,34 @@ let value = *ptr;        // Read
 #[zeropage(0x42)]
 static mut PTR: *u8;
 
-*PTR = 5;  // LDA #$05, STA ($42) - very fast!
+*PTR = 5;  // LDA #$05, STA ($42) — very fast!
 ```
 
----
+### Auto-Dereference for Field Access
+
+Pointer-to-struct supports direct field access with `.`, like C's `->` operator:
+
+```rust
+struct Player { x: u8, y: u8, health: u16 }
+
+#[zeropage]
+static mut PLAYER_PTR: *Player;
+
+PLAYER_PTR.x = 10;      // Auto-deref: equivalent to (*PLAYER_PTR).x = 10
+let hp = PLAYER_PTR.health;
+```
 
 ### Indexing: `ptr[index]`
 
-Equivalent to `*(ptr + index)`
+Equivalent to `*(ptr + index)`. Best performance with zero-page pointer + Y register:
 
-```rust
-let ptr: *u8 = 0x2000;
-let value = ptr[10];      // Constant offset
-let value = ptr[index];   // Variable offset
-let value @ A = ptr[Y];   // Register Y indexing
-```
-
-**Best performance with zero-page + Y**:
 ```rust
 #[zeropage(0x42)]
 static mut PTR: *u8;
 
-PTR[Y] = value;  // STA ($42),Y - indirect indexed
+let value = PTR[Y];   // LDA ($42),Y — indirect indexed
+PTR[Y] = value;       // STA ($42),Y
 ```
-
----
 
 ### Pointer Arithmetic
 
@@ -163,218 +208,105 @@ let ptr: *u8 = 0x2000;
 let ptr2: *u8 = ptr + 10;      // Add offset
 let ptr3: *u8 = ptr - 5;       // Subtract offset
 ptr += 100;                    // Compound assignment
-
 let diff: u16 = ptr2 - ptr;    // Pointer difference
 ```
 
-**Type scaling**: Automatically scales by `sizeof(T)`
+**Type scaling**: Automatically scales by `sizeof(T)`:
 ```rust
 let ptr: *u16 = 0x2000;
 let ptr2: *u16 = ptr + 1;  // Advances by 2 bytes (sizeof(u16))
 ```
 
-**Wrapping**:
-- Near pointers wrap at 64KB (same bank)
-- Far pointers wrap at 16MB
-
----
+Near pointers wrap at 64KB; far pointers wrap at 16MB.
 
 ### Pointer Casting
 
 ```rust
-// Between near and far
+// Near to far
 let near_ptr: *u8 = 0x2000;
-let far_ptr = near_ptr as far *u8;  // Adds DBR
+let far_ptr = near_ptr as far *u8;  // Extends with DBR
 
-// To/from integers
+// Integer to pointer
 let addr: u16 = 0x2000;
-let ptr: *u8 = &addr as *u8;
+let ptr = addr as *u8;
 
 // Between pointer types
 let u8_ptr: *u8 = 0x2000;
 let u16_ptr = u8_ptr as *u16;  // Reinterpret
 ```
 
----
+### Pointer Comparison
+
+```rust
+let ptr1: *u8 = 0x2000;
+let ptr2: *u8 = 0x2100;
+
+if ptr1 < ptr2 { }        // Address comparison
+if ptr1 == ptr2 { }       // Equality
+if ptr1 as u16 != 0 { }   // Null check
+```
+
+### Slice Coercion
+
+A `*[T; N]` (pointer to fixed-size array) can be assigned to `*[T]` (pointer to unsized slice):
+
+```rust
+static TABLE: [u8; 256] = [0; 256];
+
+fn process(data: *[u8]) { }
+
+process(&TABLE);  // *[u8; 256] coerces to *[u8]
+```
 
 ## Addressing Modes
 
-### Direct Page (Zero-Page)
+How pointers map to 65816 instructions:
 
-**Speed**: 3-4 cycles (fastest)
+| Mode | R65 Syntax | Assembly | Cycles | Use |
+|------|-----------|----------|--------|-----|
+| DP Indirect | `*PTR` | `LDA ($zp)` | 5-6 | Near zeropage pointer deref |
+| DP Indirect Indexed | `PTR[Y]` | `LDA ($zp),Y` | 5-6 | Near zeropage pointer + Y |
+| DP Indirect Long | `*FAR_PTR` | `LDA [$zp]` | 6-7 | Far zeropage pointer deref |
+| DP Indirect Long Indexed | `FAR_PTR[Y]` | `LDA [$zp],Y` | 6-7 | Far zeropage pointer + Y |
+| Stack Relative Indirect | *(internal)* | `LDA (d,S),Y` | 7-8 | Stack pointer parameter |
 
-```rust
-#[zeropage(0x20)]
-static mut TEMP: u8;
-
-TEMP = 42;  // STA $20
-```
-
-**With D register**: Access is at `D + offset`
-
----
-
-### Absolute
-
-**Speed**: 4-5 cycles
-
-```rust
-#[ram(0x7E2000)]
-static mut BUFFER: u8;
-
-BUFFER = 42;  // STA $2000 (uses DBR)
-```
-
----
-
-### Indexed (X, Y)
-
-**Speed**: 4-5 cycles
-
-```rust
-let index @ X = 10;
-let value = ARRAY[index];  // LDA ARRAY,X
-```
-
----
-
-### Indirect
-
-**Speed**: 5-6 cycles
-
-```rust
-#[zeropage(0x42)]
-static mut PTR: *u8;
-
-let value = *PTR;  // LDA ($42)
-```
-
----
-
-### Indirect Indexed
-
-**Speed**: 5-6 cycles
-
-```rust
-#[zeropage(0x42)]
-static mut PTR: *u8;
-
-let value = PTR[Y];  // LDA ($42),Y
-```
-
----
+All indirect addressing modes require the pointer to be in zero-page or on the stack. Pointers in RAM cannot be used for indirect addressing without first loading into zero-page.
 
 ## Memory Storage Classes
 
-### `#[zeropage]` - Direct Page
+Storage class is determined by mutability and attributes:
 
-**Size**: 256 bytes
-**Speed**: Fastest (3-4 cycles)
-**Best for**: Frequently accessed variables, pointers, counters
+| Storage | Attribute | Range | Speed | Best For |
+|---------|-----------|-------|-------|----------|
+| Direct Page | `#[zeropage]` | `$0000-$00FF` | 3-4 cycles | Pointers, counters, temps |
+| Low RAM | `#[lowram]` | `$0000-$1FFF` | 4-5 cycles | Frequently accessed data |
+| Main RAM | `#[ram]` | `$7E2000-$7FFFFF` | 4-5 cycles | Arrays, buffers, game state |
+| Hardware | `#[hw(addr)]` | I/O addresses | 4-6 cycles | Hardware registers |
+| ROM | *(immutable static)* | Bank-dependent | 4-5 cycles | Graphics, tables, constants |
+| Stack | *(automatic)* | `S` register area | 5-10 cycles | Locals, parameters |
 
 ```rust
 #[zeropage(0x20)]
-static mut TEMP: u8;
+static mut TEMP: u8;                    // Explicit zeropage address
 
-#[zeropage]  // Compiler allocates
-static mut FLAGS: u8;
-```
+#[zeropage]
+static mut FLAGS: u8;                   // Auto-allocated zeropage
 
----
-
-### `#[ram]` - General RAM
-
-**Size**: Large (up to 128KB on SNES)
-**Speed**: Moderate (4-5 cycles)
-**Best for**: Arrays, buffers, game state
-
-```rust
 #[ram]
-static mut BUFFER: [u8; 4096];
+static mut BUFFER: [u8; 4096];         // Main RAM, auto-allocated
 
-#[ram(0x7E2000)]  // Explicit address
-static mut DATA: u16;
+static SINE_TABLE: [u8; 256] = [0; 256];  // Immutable = ROM (no attribute)
 ```
 
----
+## Safety
 
-### Immutable Statics - ROM
+R65 provides **no memory safety guarantees**. The programmer is responsible for:
 
-**Mutability**: Read-only (writes are compile error)
-**Best for**: Graphics, levels, constants, sound data
-
-Immutable statics (without `mut`) are automatically placed in ROM:
-
-```rust
-static GRAPHICS: [u8; 4096] = include_bytes!("gfx.bin");
-
-static SINE_TABLE: [u8; 256] = [0, 3, 6, 9, /* ... */];
-
-GRAPHICS[0] = 1;  // ERROR: cannot write to immutable static
-```
-
----
-
-## Stack
-
-**Location**: Controlled by S register (typically `$0100-$01FF`)
-**Usage**: Stack parameters, local variables, function calls
-
-```rust
-fn process(a: u8, b: u8) {  // Stack parameters
-    let local: u8 = a + b;  // Stack-allocated
-}
-```
-
----
-
-## Memory Safety (Lack Thereof)
-
-### No Bounds Checking
-
-```rust
-let buffer: [u8; 256];
-let index: u16 = 300;
-let value = buffer[index];  // UB: no check!
-```
-
-### Null Dereference
-
-```rust
-let ptr: *u8 = 0x0000;
-let value = *ptr;  // UB: no check!
-```
-
-### Wild Pointers
-
-```rust
-let ptr: *u8;       // Uninitialized
-let value = *ptr;   // UB: garbage address
-```
-
-### Type Punning
-
-```rust
-let u8_ptr: *u8 = 0x2000;
-let u16_ptr = u8_ptr as *u16;
-*u16_ptr = 0x1234;  // Allowed
-```
-
----
-
-## Alignment
-
-**No alignment requirements** - 65816 allows unaligned access with no penalty:
-
-```rust
-struct Player {
-    x: u8,       // Offset 0
-    y: u8,       // Offset 1
-    health: u16  // Offset 2 (unaligned - OK!)
-}
-```
-
----
+- **Bounds checking**: Array and pointer indexing is unchecked. Out-of-bounds is UB.
+- **Null safety**: Null dereference is UB. Check manually with `ptr as u16 != 0`.
+- **Initialization**: Uninitialized pointers contain garbage. SNES RAM is unpredictable at power-on.
+- **Type safety**: Pointer casts (`as *T`) reinterpret memory with no validation.
+- **Lifetime**: No tracking of pointer validity. Dangling pointers are the programmer's problem.
 
 ## Examples
 
@@ -408,7 +340,7 @@ fn memset(dst: *u8, value @ A: u8, count @ X: u8) {
 }
 ```
 
-### Linked List
+### Linked List Traversal
 
 ```rust
 struct Node {
@@ -420,7 +352,7 @@ fn traverse(head: *Node) {
     let mut current: *Node = head;
     loop {
         if current as u16 == 0 { break; }
-        process(current.data);
+        process(current.data);       // Auto-deref field access
         current = current.next;
     }
 }
@@ -436,55 +368,33 @@ fn get_sin(angle @ A: u8) -> u8 {
 }
 ```
 
----
-
-## Pointer Comparison
+### DMA Transfer (Far Pointers)
 
 ```rust
-let ptr1: *u8 = 0x2000;
-let ptr2: *u8 = 0x2100;
-
-if ptr1 < ptr2 { }        // Address comparison
-if ptr1 == ptr2 { }       // Equality
-if ptr as u16 != 0 { }    // Null check
+far fn dma_copy_vram(channel: u16, src: far *u8, vram_offset: u16, size: u16) {
+    // Set up DMA registers and transfer from ROM/RAM to VRAM
+}
 ```
 
----
+## Unsupported
+
+- **Reference pointers**: `&name: T` is a compile error (no borrow checker)
+- **Sized pointer types**: `*[u8:30]` is not allowed
+- **Const pointers**: No `const *T` vs `mut *T` distinction
+- **Smart pointers**: No RAII wrappers
 
 ## Type Sizes
 
 ```
-Near pointers (name: *T):      2 bytes
-Far pointers (far name: *T):   3 bytes
+Near pointer   (*T):       2 bytes (16-bit address)
+Far pointer    (far *T):   3 bytes (24-bit address)
+Near fn ptr    (fn()):     2 bytes
+Far fn ptr     (far fn()): 3 bytes
 ```
 
-Pointers are just addresses - no metadata, no bounds, no ownership.
+Pointers are just addresses — no metadata, no bounds, no ownership.
 
 ---
 
-## Safe pointers not supported
-
-The following pointer declarations are compile errors:
-
-```rust
-// Size declaration in pointer type - NOT allowed
-static mut ptr: *[u8:30];      // ERROR
-
-// Safe/reference pointers - NOT allowed
-static mut ptr: *[u8:30];      // ERROR: Size in pointer type not allowed
-static mut ptr: &u8;           // ERROR: Safe/reference pointers not supported
-```
-
----
-
-## Future Enhancements
-
-- **Const pointers**: `const *name: T` vs `mut *name: T`
-- **Slice types**: Fat pointers with length `{ ptr: *T, len: u16 }`
-- **Smart pointers**: RAII wrappers for hardware resources
-
----
-
-**STATUS**: Design Complete
-**Last Updated**: 2025-12-31
-**Next Steps**: Implement pointer types in type system, codegen for addressing modes
+**STATUS**: Implemented
+**Last Updated**: 2026-02-05

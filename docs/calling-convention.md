@@ -697,15 +697,15 @@ BUFFER1 = BUFFER2;
 
 ```rust
 // Pass struct by pointer
-fn process_player(*player: Player) {
-    (*player).health = (*player).health - 1;
+fn process_player(player: *Player) {
+    player.health = player.health - 1;
 }
 
 // Write result to pre-allocated memory
-fn init_player(*dest: Player) {
-    (*dest).x = 0;
-    (*dest).y = 0;
-    (*dest).health = 100;
+fn init_player(dest: *Player) {
+    dest.x = 0;
+    dest.y = 0;
+    dest.health = 100;
 }
 
 // Return pointer to static/global data

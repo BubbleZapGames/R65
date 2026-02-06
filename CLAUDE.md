@@ -282,16 +282,16 @@ Vectors: `nmi`, `irq`, `brk`, `cop`, `abort`. Default `preserve=true`.
 
 ### Pointer Types
 
-Pointers use `*` prefix with optional `far`/`near`:
+Pointers use `*` in the type with optional `far`/`near`:
 
 ```rust
-let *ptr: u8 = 0x2000;            // Near (16-bit, current DBR)
-let far *far_ptr: u8 = addr;      // Far (24-bit)
+let ptr: *u8 = 0x2000;            // Near (16-bit, current DBR)
+let far_ptr: far *u8 = addr;      // Far (24-bit)
 *ptr = 5;                          // Dereference
 ptr[Y] = 5;                        // Indexed
 
 #[zeropage(0x42)]
-static mut *PTR: u8;               // Zero-page pointer (fastest)
+static mut PTR: *u8;               // Zero-page pointer (fastest)
 ```
 
 *(See [docs/pointers-memory.md](docs/pointers-memory.md) for complete pointer documentation)*
