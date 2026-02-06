@@ -50,44 +50,44 @@ class TestMatrixMultiplication:
             #[zeropage(0x18)]
             static mut RESULT: [u8; 4] = [0, 0, 0, 0];
 
-            // 2x2 Matrix multiplication: RESULT = MAT_A * MAT_B
-            // Uses global arrays directly (avoiding pointer params for now)
+            // 2x2 Matrix multiplication: result = mat_a * mat_b
+            // Passes matrices as *[u8] pointer parameters
             //
             // Matrices stored as flat u8 arrays in row-major order:
             //   [[a, b], [c, d]] -> [a, b, c, d]
             //
             // Result:
-            //   RESULT[0] = A00*B00 + A01*B10
-            //   RESULT[1] = A00*B01 + A01*B11
-            //   RESULT[2] = A10*B00 + A11*B10
-            //   RESULT[3] = A10*B01 + A11*B11
-                        fn multiply_matrix() {{
-                // RESULT[0] = MAT_A[0]*MAT_B[0] + MAT_A[1]*MAT_B[2]
+            //   result[0] = A00*B00 + A01*B10
+            //   result[1] = A00*B01 + A01*B11
+            //   result[2] = A10*B00 + A11*B10
+            //   result[3] = A10*B01 + A11*B11
+            fn multiply_matrix(mat_a: *[u8], mat_b: *[u8], result: *[u8]) {{
+                // result[0] = mat_a[0]*mat_b[0] + mat_a[1]*mat_b[2]
                 // mul8 returns (low, high) - we only need low byte
                 let mut TEMP : u8;
-                TEMP = mul8(MAT_A[0], MAT_B[0]);
-                A = mul8(MAT_A[1], MAT_B[2]);
-                RESULT[0] = A + TEMP;
+                TEMP = mul8(mat_a[0], mat_b[0]);
+                A = mul8(mat_a[1], mat_b[2]);
+                result[0] = A + TEMP;
 
-                // RESULT[1] = MAT_A[0]*MAT_B[1] + MAT_A[1]*MAT_B[3]
-                TEMP = mul8(MAT_A[0], MAT_B[1]);
-                A = mul8(MAT_A[1], MAT_B[3]);
-                RESULT[1] = A + TEMP;
+                // result[1] = mat_a[0]*mat_b[1] + mat_a[1]*mat_b[3]
+                TEMP = mul8(mat_a[0], mat_b[1]);
+                A = mul8(mat_a[1], mat_b[3]);
+                result[1] = A + TEMP;
 
-                // RESULT[2] = MAT_A[2]*MAT_B[0] + MAT_A[3]*MAT_B[2]
-                TEMP = mul8(MAT_A[2], MAT_B[0]);
-                A = mul8(MAT_A[3], MAT_B[2]);
-                RESULT[2] = A + TEMP;
+                // result[2] = mat_a[2]*mat_b[0] + mat_a[3]*mat_b[2]
+                TEMP = mul8(mat_a[2], mat_b[0]);
+                A = mul8(mat_a[3], mat_b[2]);
+                result[2] = A + TEMP;
 
-                // RESULT[3] = MAT_A[2]*MAT_B[1] + MAT_A[3]*MAT_B[3]
-                TEMP = mul8(MAT_A[2], MAT_B[1]);
-                A = mul8(MAT_A[3], MAT_B[3]);
-                RESULT[3] = A + TEMP;
+                // result[3] = mat_a[2]*mat_b[1] + mat_a[3]*mat_b[3]
+                TEMP = mul8(mat_a[2], mat_b[1]);
+                A = mul8(mat_a[3], mat_b[3]);
+                result[3] = A + TEMP;
             }}
 
-                        #[entry]
+            #[entry]
             fn main() {{
-                multiply_matrix();
+                multiply_matrix(&MAT_A, &MAT_B, &RESULT);
             }}
         '''
 

@@ -1733,8 +1733,8 @@ class InstructionSelector:
 
         self.emitter.emit_instr(Opcode.MVN, BlockMove(0x00, dest_bank))
 
-        # Restore 8-bit mode if needed (depends on context)
-        self._emit_immediate(Opcode.SEP_IMMEDIATE, MX_FLAGS, "Restore 8-bit mode")
+        # Restore 8-bit A mode only; X/Y must remain 16-bit (x16 convention)
+        self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "Restore 8-bit A")
 
     # ========================================================================
     # Inline Assembly

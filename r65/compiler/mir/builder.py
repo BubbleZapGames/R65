@@ -1643,11 +1643,14 @@ class MIRBuilder:
         )
         self._rom_data_sections.append(rom_data)
 
-        # Store ROM label in symbol for code generation to use
-        if hasattr(static_decl.symbol, 'rom_label'):
-            static_decl.symbol.rom_label = label
-        else:
-            setattr(static_decl.symbol, 'rom_label', label)
+        # Store ROM label in symbol for code generation to use (ROM statics only).
+        # For RAM/zeropage statics, the rom_label is only for initialization -
+        # address-of should use the runtime address, not the ROM data label.
+        if skip_copy:
+            if hasattr(static_decl.symbol, 'rom_label'):
+                static_decl.symbol.rom_label = label
+            else:
+                setattr(static_decl.symbol, 'rom_label', label)
 
         # Emit block copy instruction (unless this is ROM storage)
         if not skip_copy:
@@ -1768,11 +1771,14 @@ class MIRBuilder:
         )
         self._rom_data_sections.append(rom_data)
 
-        # Store ROM label in symbol for code generation to use
-        if hasattr(static_decl.symbol, 'rom_label'):
-            static_decl.symbol.rom_label = label
-        else:
-            setattr(static_decl.symbol, 'rom_label', label)
+        # Store ROM label in symbol for code generation to use (ROM statics only).
+        # For RAM/zeropage statics, the rom_label is only for initialization -
+        # address-of should use the runtime address, not the ROM data label.
+        if skip_copy:
+            if hasattr(static_decl.symbol, 'rom_label'):
+                static_decl.symbol.rom_label = label
+            else:
+                setattr(static_decl.symbol, 'rom_label', label)
 
         # Emit block copy instruction (unless this is ROM storage)
         if not skip_copy:
@@ -1868,11 +1874,14 @@ class MIRBuilder:
         )
         self._rom_data_sections.append(rom_data)
 
-        # Store ROM label in symbol for code generation to use
-        if hasattr(static_decl.symbol, 'rom_label'):
-            static_decl.symbol.rom_label = label
-        else:
-            setattr(static_decl.symbol, 'rom_label', label)
+        # Store ROM label in symbol for code generation to use (ROM statics only).
+        # For RAM/zeropage statics, the rom_label is only for initialization -
+        # address-of should use the runtime address, not the ROM data label.
+        if skip_copy:
+            if hasattr(static_decl.symbol, 'rom_label'):
+                static_decl.symbol.rom_label = label
+            else:
+                setattr(static_decl.symbol, 'rom_label', label)
 
         # Emit block copy instruction (unless this is ROM storage)
         if not skip_copy:
