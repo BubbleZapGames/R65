@@ -28,30 +28,34 @@ except ImportError:
 
 # Import HIR types for isinstance checks  
 try:
-    from r65.compiler.hir.types import BasicTypeInfo, ArrayTypeInfo, StructTypeInfo
+    from r65.compiler.hir.types import BasicTypeInfo, ArrayTypeInfo, StructTypeInfo, FunctionTypeInfo
     from r65.compiler.hir.nodes import HIRStructDecl
 except ImportError:
-    BasicTypeInfo = ArrayTypeInfo = StructTypeInfo = HIRStructDecl = None
+    BasicTypeInfo = ArrayTypeInfo = StructTypeInfo = FunctionTypeInfo = HIRStructDecl = None
 
 
 def get_unified_type_size(type_obj: Any, symbol_table=None) -> int:
     """
     Get size of a type in bytes, supporting both AST and HIR type objects.
-    
+
     This is the unified interface that should be used throughout the compiler
     to eliminate duplication of type size logic.
-    
+
     Args:
         type_obj: AST type node, HIR type object, or type name string
         symbol_table: Symbol table for resolving struct definitions (for AST types)
-        
+
     Returns:
         Size in bytes
-        
+
     Raises:
         HIRError: If type cannot be resolved or is unsupported
     """
-    
+
+    # None guard (matches codegen behavior)
+    if type_obj is None:
+        return 1
+
     # Handle basic type names (strings)
     if isinstance(type_obj, str):
         if type_obj in TYPE_SIZES:
@@ -140,22 +144,23 @@ def get_unified_type_size(type_obj: Any, symbol_table=None) -> int:
             return 3
         return 2
     
+    # Handle FunctionTypeInfo (function pointers)
+    if FunctionTypeInfo and isinstance(type_obj, FunctionTypeInfo):
+        return 3 if type_obj.is_far else 2
+
     # Check for pointer type names (fallback for string representations)
     type_name_str = str(type_obj)
     if type_name_str.startswith('far *'):
         return 3  # 24-bit far pointer
     elif type_name_str.startswith('*'):
         return 2  # 16-bit near pointer
-    
-    # Handle other types (delegate to codegen if available, otherwise use defaults)
-    try:
-        from r65.compiler.codegen.type_utils import get_type_size
-        return get_type_size(type_obj)
-    except ImportError:
-        # Fallback implementation for basic cases
-        if hasattr(type_obj, 'is_far'):
-            return 3 if type_obj.is_far else 2
-        return 1  # Default to 1 byte if unknown
+    elif type_name_str.startswith('far fn('):
+        return 3  # 24-bit far function pointer
+    elif type_name_str.startswith('fn('):
+        return 2  # 16-bit near function pointer
+
+    # Default to 1 byte if unknown
+    return 1
 
 
 def _get_struct_size(struct_obj: Any) -> int:

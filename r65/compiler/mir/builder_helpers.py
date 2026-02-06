@@ -11,7 +11,7 @@ from r65.compiler.mir.nodes import (
     Compare, Move, Call
 )
 from r65.compiler.errors import MIRLoweringError
-from r65.compiler.codegen.type_utils import get_type_size
+from r65.compiler.hir.unified_type_utils import get_unified_type_size
 
 if TYPE_CHECKING:
     from r65.compiler.mir.builder import MIRBuilder
@@ -51,7 +51,10 @@ class TypeSizeCalculator:
     @classmethod
     def _calculate_size(cls, type_info) -> int:
         """Calculate size of a type."""
-        return get_type_size(type_info)
+        try:
+            return get_unified_type_size(type_info)
+        except Exception:
+            return 1
 
     @classmethod
     def clear_cache(cls):
