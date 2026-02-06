@@ -584,12 +584,34 @@ class FunctionInliner:
         call_block.instructions.append(Jump(target=inlined_entry_id))
         call_block.successors = [inlined_entry_id]
 
-        # Set up parameter bindings at the start of inlined code
-        param_setup_instrs = self._create_param_bindings(call, callee, cloner)
+        # Set up parameter bindings for inlined code.
+        # Returns two lists: register_instrs (set up hw regs) and stack_instrs
+        # (bind stack params to vregs).
+        register_instrs, stack_instrs = self._create_param_bindings(call, callee, cloner)
 
-        # Insert param setup at the beginning of inlined entry block
+        # Insert instructions in the correct order at the inlined entry block:
+        #   1. register_instrs: Load argument values into hardware registers
+        #      (e.g., LDA #33 for val @ A)
+        #   2. reg_save instructions from callee: Move(dest=vreg, source=HardwareRegister)
+        #      (e.g., save A to saved_val_vreg before anything clobbers A)
+        #   3. stack_instrs: Bind stack param arguments to callee vregs
+        #      (e.g., Move(dest=ptr_vreg, source=Immediate(addr)) — may clobber A in codegen)
+        #   4. Rest of callee body
         inlined_entry = cloned_blocks[inlined_entry_id]
-        inlined_entry.instructions = param_setup_instrs + inlined_entry.instructions
+        reg_save_count = 0
+        for instr in inlined_entry.instructions:
+            if (isinstance(instr, Move) and
+                isinstance(instr.source, HardwareRegister) and
+                isinstance(instr.dest, VirtualRegister)):
+                reg_save_count += 1
+            else:
+                break
+        inlined_entry.instructions = (
+            register_instrs +
+            inlined_entry.instructions[:reg_save_count] +
+            stack_instrs +
+            inlined_entry.instructions[reg_save_count:]
+        )
         inlined_entry.predecessors.append(block_id)
 
         # Create result vreg if call has return values
@@ -667,21 +689,32 @@ class FunctionInliner:
         """
         Create instructions to bind call arguments to callee parameters.
 
+        Returns two lists:
+        - register_instrs: Move arg value into hardware register (must run first)
+        - stack_instrs: Move arg value into callee vreg (must run after reg saves)
+
         Args:
             call: The Call instruction
             callee: Function being inlined
             cloner: Block cloner for vreg remapping
 
         Returns:
-            List of Move instructions for parameter binding
+            Tuple of (register_instrs, stack_instrs)
         """
-        instructions = []
+        register_instrs = []
+        stack_instrs = []
 
         for i, (arg, param) in enumerate(zip(call.args, callee.parameters)):
             if isinstance(param.binding, RegisterBinding):
-                # Register parameter: argument should already be in register
-                # For inlining, we need to move from argument to inlined code
-                pass  # Register aliasing handled by the call lowering already
+                # Register parameter: the call lowering would have set up the
+                # hardware register. After inlining, we must emit this setup
+                # explicitly since the Call instruction is removed.
+                hw_reg = HardwareRegister(param.binding.register_name)
+                register_instrs.append(Move(
+                    dest=hw_reg,
+                    source=arg.value,
+                    type_info=param.param_type
+                ))
 
             elif isinstance(param.binding, VariableBinding):
                 # Variable-bound: caller already stored to the variable
@@ -696,10 +729,10 @@ class FunctionInliner:
                     # Get the remapped vreg
                     inlined_vreg = cloner._remap_vreg(callee_vreg)
                     # Move argument value to inlined vreg
-                    instructions.append(Move(
+                    stack_instrs.append(Move(
                         dest=inlined_vreg,
                         source=arg.value,
                         type_info=param.param_type
                     ))
 
-        return instructions
+        return register_instrs, stack_instrs

@@ -694,15 +694,36 @@ class ControlFlowInstructionSelector(BaseSelector):
 
         # Emit cleanup sequence (no frame case):
         # PLX/PLY - pop return address (2 bytes)
+        # (save A return value if needed)
         # REP #$20 - switch to m16 for 16-bit SP arithmetic
-        # TSC - transfer SP to A
+        # TSC - transfer SP to A  (clobbers A!)
         # CLC
         # ADC #N - add cleanup bytes
         # TCS - transfer back to SP
         # SEP #$20 - restore m8 mode
+        # (restore A return value if needed)
         # PHX/PHY - push return address back
 
         self._emit_implied(pull_op, f"Pop return address into {addr_reg}")
+
+        # Save A return value before TSC clobbers it.
+        # addr_reg already holds the return address (X or Y).
+        # Find a free register for A's return value.
+        a_save_method = None  # 'X', 'Y', or 'stack'
+        if return_count >= 1:
+            if addr_reg == 'X' and return_count <= 1:
+                a_save_method = 'Y'  # X has ret addr, Y is free
+            elif addr_reg == 'Y' and return_count <= 1:
+                a_save_method = 'X'  # Y has ret addr, X is free (A-only return)
+            else:
+                a_save_method = 'stack'
+
+        if a_save_method == 'Y':
+            self._emit_implied(Opcode.TAY, "Save return value A in Y")
+        elif a_save_method == 'X':
+            self._emit_implied(Opcode.TAX, "Save return value A in X")
+        elif a_save_method == 'stack':
+            self._emit_implied(Opcode.PHA, "Save return value A")
 
         # Check current mode - if already m16, skip mode switches
         current_mode = self.parent.emitter.get_accu_mode()
@@ -720,6 +741,14 @@ class ControlFlowInstructionSelector(BaseSelector):
         if need_mode_switch:
             self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "Restore 8-bit A")
             self.parent.emitter.emit_accu_mode(8)
+
+        # Restore A return value
+        if a_save_method == 'Y':
+            self._emit_implied(Opcode.TYA, "Restore return value A from Y")
+        elif a_save_method == 'X':
+            self._emit_implied(Opcode.TXA, "Restore return value A from X")
+        elif a_save_method == 'stack':
+            self._emit_implied(Opcode.PLA, "Restore return value A")
 
         self._emit_implied(push_op, "Push return address back")
 
@@ -742,13 +771,28 @@ class ControlFlowInstructionSelector(BaseSelector):
         # Return address is at S+frame_size+1 (2 bytes for near)
         ret_addr_offset = frame_size + 1
 
-        # Determine how to preserve A during cleanup (same logic as far cleanup)
+        # Determine how to preserve A during cleanup
+        # Must not use a register that was just restored by #[preserves(...)],
+        # since the restore (PLX/PLY) happened in the epilogue before this cleanup.
+        preserved = set()
+        if self.current_function and self.current_function.preserves_attr:
+            preserved = set(self.current_function.preserves_attr.registers)
+
         save_method = None  # 'X', 'Y', or 'stack'
         if return_count >= 1:
             if return_count == 1:
-                save_method = 'X'
+                # A is the return value; pick X or Y for temp, avoiding preserved regs
+                if 'X' not in preserved:
+                    save_method = 'X'
+                elif 'Y' not in preserved:
+                    save_method = 'Y'
+                else:
+                    save_method = 'stack'
             elif return_count == 2:
-                save_method = 'Y'
+                if 'Y' not in preserved:
+                    save_method = 'Y'
+                else:
+                    save_method = 'stack'
             else:
                 save_method = 'stack'
 
@@ -951,12 +995,25 @@ class ControlFlowInstructionSelector(BaseSelector):
         bank_offset = frame_size + 3
 
         # Determine how to preserve A during cleanup
+        # Must not use a register that was just restored by #[preserves(...)].
+        preserved = set()
+        if self.current_function and self.current_function.preserves_attr:
+            preserved = set(self.current_function.preserves_attr.registers)
+
         save_method = None  # 'X', 'Y', or 'stack'
         if return_count >= 1:
             if return_count == 1:
-                save_method = 'X'
+                if 'X' not in preserved:
+                    save_method = 'X'
+                elif 'Y' not in preserved:
+                    save_method = 'Y'
+                else:
+                    save_method = 'stack'
             elif return_count == 2:
-                save_method = 'Y'
+                if 'Y' not in preserved:
+                    save_method = 'Y'
+                else:
+                    save_method = 'stack'
             else:
                 save_method = 'stack'
 

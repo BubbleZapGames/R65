@@ -152,6 +152,13 @@ class ExpressionLowerer:
             right = right_memloc
         else:
             # Normal path: lower expression (may generate Load instruction)
+            if left_uses_a:
+                # Lowering the right operand may emit instructions that clobber A
+                # (e.g., TypeConvert for zero-extension). Save A to a vreg first
+                # so we don't lose the left operand value.
+                save_vreg = self.ctx.alloc_vreg(expr.left.expr_type, "save_left")
+                self.emit(Move(dest=save_vreg, source=left, type_info=expr.left.expr_type))
+                left = save_vreg
             right = self.builder.lower_expression(expr.right)
 
         result = self.ctx.alloc_vreg(expr.expr_type, f"{expr.op}_result")

@@ -37,7 +37,6 @@ far fn mul8(multA @ A: u8, multB @ B: u8) -> (u8, u8) {
 #[cfg(snes)]
 far fn mul16(multA @ A: u8, multB: u16) -> u16 {
     // Write multiplicand in 8-bit mode
-    STATUS.A16 = false;  // SEP #$20 - switch to 8-bit
     WRMPYA = multA;
 
     // Write multiplier (starts multiplication)
@@ -57,7 +56,7 @@ far fn mul16(multA @ A: u8, multB: u16) -> u16 {
 // Returns: low byte and high byte
 // Cycles: ~150-300 depending on operands
 #[cfg(not(snes))]
-far fn mul8(multA @ A: u8, multB @ X: u16) -> (u8, u8) {
+far fn mul8(multA @ A: u8, multB @ B: u8) -> (u8, u8) {
     // Store multiplicand for shifting
     let mut _mul_temp : u8 = multA;
 

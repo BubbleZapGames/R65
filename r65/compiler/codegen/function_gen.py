@@ -131,6 +131,10 @@ class FunctionCodeGenerator:
         # Generate basic blocks
         block_order = self._compute_block_order(mir_func)
 
+        # Track codegen exit modes per block to detect mode mismatches
+        # between runtime predecessors (which may differ from emission order)
+        codegen_exit_modes = {}
+
         for block_id in block_order:
             block = mir_func.blocks[block_id]
 
@@ -141,14 +145,38 @@ class FunctionCodeGenerator:
             if block_id != mir_func.entry_block_id:
                 self.emitter.emit_label(f"{mir_func.name}__L{block_id}")
 
+            # Determine if we need to force a mode switch at block entry.
+            # This is needed when:
+            # 1. A predecessor hasn't been emitted yet (back-edge from loop)
+            #    - We can't know what mode it will exit in, so force the switch
+            # 2. An emitted predecessor exits in a different mode than expected
+            #    - The codegen may have switched modes for u16 ops without
+            #      switching back (by design, to avoid redundant SEP/REP)
+            force_mode = False
+            if block.entry_mode is not None:
+                from r65.compiler.typeck.processor_mode import ModeState
+                expected_is_m16 = (block.entry_mode.m_mode == ModeState.M16)
+                for pred_id in block.predecessors:
+                    if pred_id not in codegen_exit_modes:
+                        # Back-edge: predecessor not yet emitted
+                        force_mode = True
+                        break
+                    pred_is_m16 = (codegen_exit_modes[pred_id] == 16)
+                    if pred_is_m16 != expected_is_m16:
+                        # Emitted predecessor exits in wrong mode
+                        force_mode = True
+                        break
+
             # Emit mode switch at block entry if needed
-            # This ensures the block runs in the mode it was compiled for,
-            # regardless of what mode incoming edges are in (e.g., loop back-edges)
-            self._emit_block_entry_mode_switch(block, instr_selector)
+            self._emit_block_entry_mode_switch(block, instr_selector,
+                                               force=force_mode)
 
             # Emit instructions in block
             for instr in block.instructions:
                 instr_selector.select_instruction(instr)
+
+            # Record this block's codegen exit mode
+            codegen_exit_modes[block_id] = self.emitter.get_accu_mode()
 
         # Emit epilogue (if needed)
         # Note: Epilogue is emitted BEFORE the Return instruction in each block
@@ -263,18 +291,24 @@ class FunctionCodeGenerator:
 
         return order
 
-    def _emit_block_entry_mode_switch(self, block, instr_selector):
+    def _emit_block_entry_mode_switch(self, block, instr_selector, force=False):
         """
         Emit mode switch at block entry if the block's expected mode differs
         from the current tracked mode.
 
         This handles cases like loop back-edges where the predecessor block
-        may have switched modes (e.g., for a comparison) but the loop header
+        may have switched modes (e.g., for u16 operations) but the loop header
         expects a different mode.
+
+        When force=True, always emit the mode switch even if the emitter's
+        tracked mode appears correct. This is needed for loop headers and
+        blocks with predecessors that exit in different modes, because the
+        emitter tracks emission-order mode (not runtime execution order).
 
         Args:
             block: MIR basic block
             instr_selector: InstructionSelector with mode tracking
+            force: If True, always emit mode switch regardless of tracked mode
         """
         from r65.compiler.typeck.processor_mode import ModeState
 
@@ -293,8 +327,8 @@ class FunctionCodeGenerator:
         current_is_m16 = (current_mode_bits == 16)
         expected_is_m16 = (expected_m_mode == ModeState.M16)
 
-        # Emit mode switch if needed
-        if current_is_m16 != expected_is_m16:
+        # Emit mode switch if needed (or forced for back-edge targets)
+        if force or current_is_m16 != expected_is_m16:
             if expected_is_m16:
                 self._emit_instr(Opcode.REP_IMMEDIATE, Immediate(M_FLAG),
                                "Restore m16 mode for block")
@@ -483,12 +517,31 @@ class FunctionCodeGenerator:
         if mir_func.interrupt_attr:
             self._emit_interrupt_register_saves()
 
-        # Allocate stack frame for functions with locals
-        # For interrupt handlers, always use TSC/SBC/TCS (explicit mode control)
-        # because the mode after register saves is unknown (depends on interrupted code)
+        # Allocate stack frame for functions with locals.
+        # For large frames (>4 bytes), TSC/SBC/TCS is used which clobbers A.
+        # If A holds a register parameter, we must save it first.
         if frame_size > 0:
             force_direct = mir_func.interrupt_attr is not None
-            self._emit_frame_allocation(frame_size, force_direct_stack=force_direct)
+            # Check if A holds a register parameter that would be clobbered
+            # by TSC/SBC/TCS frame allocation (frames > 4 bytes).
+            a_has_param = False
+            if frame_size > 4 and not force_direct:
+                from r65.compiler.hir import RegisterBinding
+                for param in mir_func.parameters:
+                    if (isinstance(param.binding, RegisterBinding) and
+                        param.binding.register_name == 'A'):
+                        a_has_param = True
+                        break
+
+            if a_has_param:
+                # Save A in Y before frame allocation, restore after.
+                # Y is safe: x16 mode means TAY/TYA transfer full 16-bit C accumulator,
+                # preserving the 8-bit A value in the low byte.
+                self._emit_instr(Opcode.TAY, comment="Save A param before frame alloc")
+                self._emit_frame_allocation(frame_size, force_direct_stack=force_direct)
+                self._emit_instr(Opcode.TYA, comment="Restore A param after frame alloc")
+            else:
+                self._emit_frame_allocation(frame_size, force_direct_stack=force_direct)
 
         # Handle DBR management for far functions with databank=inline
         if mir_func.is_far and mir_func.mode_attr and mir_func.bank_attr:

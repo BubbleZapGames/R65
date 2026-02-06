@@ -131,11 +131,14 @@ class CallLowerer:
             if isinstance(func_type, FunctionTypeInfo):
                 return_type = func_type.return_type
 
+        is_tuple_return = False
         if return_type:
             # Skip vreg allocation for tuple returns - lower_multi_assignment handles
             # tuple destructuring directly from A, X, Y registers
             from r65.compiler.hir.types import TupleTypeInfo
-            if not isinstance(return_type, TupleTypeInfo):
+            if isinstance(return_type, TupleTypeInfo):
+                is_tuple_return = True
+            else:
                 call_name = func_decl.name if func_decl else "indirect_call"
                 result_vreg = self.ctx.alloc_vreg(
                     return_type,
@@ -155,7 +158,9 @@ class CallLowerer:
                 bank_attr=None,
                 builtin_name=call_expr.builtin_name
             ))
-            return returns[0] if returns else None
+            if returns:
+                return returns[0]
+            return HardwareRegister('A') if is_tuple_return else None
 
         # For indirect calls, skip mode transition handling (we don't have mode info)
         if is_indirect_call:
@@ -173,13 +178,18 @@ class CallLowerer:
                 bank_attr=None,  # No bank attribute for indirect calls
                 builtin_name=call_expr.builtin_name
             ))
-            return returns[0] if returns else None
+            if returns:
+                return returns[0]
+            return HardwareRegister('A') if is_tuple_return else None
 
         # Direct call - handle mode transitions using helper
         self._emit_call_with_mode_transition(func_decl, args, returns, call_expr.builtin_name)
 
-        # Return result (or None for void functions)
-        return returns[0] if returns else None
+        # Return result (or None for void functions).
+        # For tuple returns, the first element is always in A.
+        if returns:
+            return returns[0]
+        return HardwareRegister('A') if is_tuple_return else None
 
     # ========================================================================
     # Method Call Lowering

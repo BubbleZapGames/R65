@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Union
 from r65.compiler.hir import (
     HIRAssignment, HIRMultiAssignment, HIRBinaryOp, HIRRegister, HIRIdentifier,
     HIRFieldAccess, HIRArrayIndex, HIRDereference, HIRStatusFlagAccess, HIRBooleanLiteral,
-    HIRTypeCast,
+    HIRTypeCast, HIRIntegerLiteral,
 )
 from r65.compiler.hir.types import TupleTypeInfo
 from r65.compiler.mir.nodes import (
@@ -86,9 +86,17 @@ class AssignmentLowerer:
                 # Direct hardware register op: A = A + TEMP becomes BinaryOp(dest=A, left=A, right=memloc)
                 hw_reg = HardwareRegister(expr.target.name)
 
-                # CRITICAL: For A = A op MEMORY, we must NOT emit a Load instruction
-                # that would clobber A. Check if right operand is a memory location
-                # and use it directly instead of going through lower_expression.
+                # CRITICAL: For reg = reg op EXPR, lowering EXPR must NOT emit
+                # instructions that clobber the target register.
+                #
+                # Safe right operands (emit no A-clobbering instructions):
+                # - HIRIdentifier with explicit memory location → MemoryLocation
+                # - HIRIntegerLiteral → Immediate
+                # - HIRIdentifier/HIRRegister mapped to vreg → existing vreg reference
+                #
+                # Unsafe right operands (emit TypeConvert/Load that clobber A):
+                # - HIRTypeCast, complex expressions
+                # For unsafe cases, fall through to the normal path which uses vregs.
                 right = None
                 if isinstance(binary_op.right, HIRIdentifier):
                     symbol = binary_op.right.symbol
@@ -99,17 +107,24 @@ class AssignmentLowerer:
                         right = self.builder.get_memory_location(symbol)
 
                 if right is None:
-                    # Fall back to lower_expression for other cases (immediates, etc.)
-                    right = self.builder.lower_expression(binary_op.right)
+                    # Try lowering - safe for immediates, vregs, hw regs
+                    # but NOT for TypeCast which emits A-clobbering TypeConvert
+                    if not isinstance(binary_op.right, HIRTypeCast):
+                        right = self.builder.lower_expression(binary_op.right)
 
-                self.emit(BinaryOp(
-                    dest=hw_reg,
-                    left=hw_reg,
-                    op=binary_op.op,
-                    right=right,
-                    type_info=expr.expr_type
-                ))
-                return hw_reg
+                if right is not None:
+                    self.emit(BinaryOp(
+                        dest=hw_reg,
+                        left=hw_reg,
+                        op=binary_op.op,
+                        right=right,
+                        type_info=expr.expr_type
+                    ))
+                    return hw_reg
+
+                # Right operand is a TypeCast or other complex expression that
+                # may clobber A during lowering. Fall through to the normal
+                # assignment path which uses vregs for both operands.
 
         # OPTIMIZATION: Direct memory-to-register load for X/Y registers
         # Avoid going through a virtual register (which gets allocated to stack)
