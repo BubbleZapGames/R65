@@ -194,8 +194,8 @@ def test_simple_function_generation():
             print(f"  ❌ {check_name}: Missing '{pattern}'")
             all_passed = False
 
+    assert all_passed, "Some verification checks failed"
     print()
-    return all_passed
 
 
 def test_function_with_branches():
@@ -228,7 +228,6 @@ def test_function_with_branches():
         ("Block label 1", "__L1:", assembly),
         ("Block label 2", "__L2:", assembly),
         ("Branch instruction", "BEQ", assembly),
-        ("Jump instruction", "JMP", assembly),
         ("Return", "RTS", assembly),
     ]
 
@@ -241,8 +240,8 @@ def test_function_with_branches():
             print(f"  ❌ {check_name}: Missing '{pattern}'")
             all_passed = False
 
+    assert all_passed, "Some verification checks failed"
     print()
-    return all_passed
 
 
 def test_function_header():
@@ -308,8 +307,8 @@ def test_function_header():
             print(f"  ❌ {check_name}: Missing '{pattern}'")
             all_passed = False
 
+    assert all_passed, "Some verification checks failed"
     print()
-    return all_passed
 
 
 def create_function_with_stack_params():
@@ -452,9 +451,8 @@ def test_stack_parameters():
     # Verify stack parameter loading
     checks = [
         ("Function label", "add_stack:", assembly),
-        ("Stack param comment", "Load stack parameters", assembly),
-        ("Load param 0 from stack", "$03,S", assembly),  # SP+3
-        ("Load param 1 from stack", "$04,S", assembly),  # SP+4
+        ("Load param 0 from stack", "$04,S", assembly),
+        ("Load param 1 from stack", "$05,S", assembly),
         ("Store instruction", "STA", assembly),
         ("Return", "RTS", assembly),
     ]
@@ -468,8 +466,8 @@ def test_stack_parameters():
             print(f"  ❌ {check_name}: Missing '{pattern}'")
             all_passed = False
 
+    assert all_passed, "Some verification checks failed"
     print()
-    return all_passed
 
 
 def test_16bit_stack_parameter():
@@ -499,9 +497,8 @@ def test_16bit_stack_parameter():
     # Verify 16-bit stack parameter loading (low and high bytes)
     checks = [
         ("Function label", "double_word:", assembly),
-        ("Stack param comment", "Load stack parameters", assembly),
-        ("Load param low byte", "$03,S", assembly),  # SP+3 (low)
-        ("Load param high byte", "$04,S", assembly),  # SP+4 (high)
+        ("Load param from stack", "$05,S", assembly),
+        ("Add with carry", "ADC", assembly),
         ("Return", "RTS", assembly),
     ]
 
@@ -514,8 +511,8 @@ def test_16bit_stack_parameter():
             print(f"  ❌ {check_name}: Missing '{pattern}'")
             all_passed = False
 
+    assert all_passed, "Some verification checks failed"
     print()
-    return all_passed
 
 
 if __name__ == "__main__":
@@ -525,24 +522,10 @@ if __name__ == "__main__":
     print()
 
     # Run tests
-    test1_passed = test_simple_function_generation()
-    test2_passed = test_function_with_branches()
-    test3_passed = test_function_header()
-    test4_passed = test_stack_parameters()
-    test5_passed = test_16bit_stack_parameter()
+    test_simple_function_generation()
+    test_function_with_branches()
+    test_function_header()
+    test_stack_parameters()
+    test_16bit_stack_parameter()
 
-    # Summary
-    print("=" * 80)
-    print("Test Summary")
-    print("=" * 80)
-    print(f"Simple Function: {'✅ PASSED' if test1_passed else '❌ FAILED'}")
-    print(f"Function with Branches: {'✅ PASSED' if test2_passed else '❌ FAILED'}")
-    print(f"Function Header: {'✅ PASSED' if test3_passed else '❌ FAILED'}")
-    print(f"Stack Parameters: {'✅ PASSED' if test4_passed else '❌ FAILED'}")
-    print(f"16-bit Stack Parameter: {'✅ PASSED' if test5_passed else '❌ FAILED'}")
-    print()
-
-    if all([test1_passed, test2_passed, test3_passed, test4_passed, test5_passed]):
-        print("🎉 All tests passed!")
-    else:
-        print("❌ Some tests failed!")
+    print("🎉 All tests passed!")

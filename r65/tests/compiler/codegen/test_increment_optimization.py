@@ -43,7 +43,6 @@ def test_x_increment():
     assert 'ADC' not in asm, f"X++ should not use ADC, got: {asm}"
 
     print("✓ X increment (INX) test passed")
-    return True
 
 
 def test_y_increment():
@@ -71,7 +70,6 @@ def test_y_increment():
     assert 'TYA' not in asm, f"Y++ should not use TYA, got: {asm}"
 
     print("✓ Y increment (INY) test passed")
-    return True
 
 
 def test_a_increment():
@@ -98,7 +96,6 @@ def test_a_increment():
     assert 'INC A' in asm or 'INC\tA' in asm, f"A++ should generate INC A, got: {asm}"
 
     print("✓ A increment (INC A) test passed")
-    return True
 
 
 def test_x_decrement():
@@ -126,7 +123,6 @@ def test_x_decrement():
     assert 'TXA' not in asm, f"X-- should not use TXA, got: {asm}"
 
     print("✓ X decrement (DEX) test passed")
-    return True
 
 
 def test_y_decrement():
@@ -153,7 +149,6 @@ def test_y_decrement():
     assert 'DEY' in asm, f"Y-- should generate DEY, got: {asm}"
 
     print("✓ Y decrement (DEY) test passed")
-    return True
 
 
 def test_a_decrement():
@@ -180,7 +175,6 @@ def test_a_decrement():
     assert 'DEC A' in asm or 'DEC\tA' in asm, f"A-- should generate DEC A, got: {asm}"
 
     print("✓ A decrement (DEC A) test passed")
-    return True
 
 
 if __name__ == '__main__':

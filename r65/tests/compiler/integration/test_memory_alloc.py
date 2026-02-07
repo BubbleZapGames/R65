@@ -209,7 +209,8 @@ fn main() -> ! {
     else:
         print("❌ Some assembly directives missing!")
 
-    return all_passed and assembly_passed
+    assert all_passed, "Some allocation checks failed"
+    assert assembly_passed, "Some assembly directives missing"
 
 
 def test_address_conflict():
@@ -253,16 +254,12 @@ fn main() -> ! {
         codegen = ProgramCodeGenerator()
         assembly = codegen.generate(mir_program)
 
-        print("❌ FAILED: Expected exception for address conflict!")
-        return False
+        assert False, "Expected exception for address conflict!"
 
     except Exception as e:
-        if "already allocated" in str(e) or "conflict" in str(e).lower():
-            print(f"✅ Correctly detected address conflict: {e}")
-            return True
-        else:
-            print(f"❌ Unexpected exception: {e}")
-            return False
+        assert "already allocated" in str(e) or "conflict" in str(e).lower(), \
+            f"Unexpected exception: {e}"
+        print(f"Correctly detected address conflict: {e}")
 
 
 def test_auto_allocation_order():
@@ -325,21 +322,18 @@ fn main() -> ! {
             explicit_alloc = alloc
             break
 
-    if explicit_alloc is None or explicit_alloc.address != 0x30:
-        print(f"❌ EXPLICIT not at correct address")
-        return False
+    assert explicit_alloc is not None and explicit_alloc.address == 0x30, \
+        "EXPLICIT not at correct address"
 
     # Verify auto allocations don't overlap with explicit
     for alloc in zp_allocs:
         if alloc.symbol.name in ("AUTO1", "AUTO2"):
             # Check that auto allocation doesn't overlap with explicit (0x30-0x31)
-            if alloc.address == 0x30 or alloc.address == 0x31:
-                print(f"❌ {alloc.symbol.name} overlaps with explicit allocation!")
-                return False
+            assert alloc.address != 0x30 and alloc.address != 0x31, \
+                f"{alloc.symbol.name} overlaps with explicit allocation!"
 
     print()
-    print("✅ Auto-allocation correctly avoids explicit allocations!")
-    return True
+    print("Auto-allocation correctly avoids explicit allocations!")
 
 
 if __name__ == "__main__":
@@ -349,21 +343,8 @@ if __name__ == "__main__":
     print()
 
     # Run tests
-    test1_passed = test_memory_allocation()
-    test2_passed = test_address_conflict()
-    test3_passed = test_auto_allocation_order()
+    test_memory_allocation()
+    test_address_conflict()
+    test_auto_allocation_order()
 
-    # Summary
-    print()
-    print("=" * 80)
-    print("Test Summary")
-    print("=" * 80)
-    print(f"Memory Allocation Test: {'✅ PASSED' if test1_passed else '❌ FAILED'}")
-    print(f"Address Conflict Test: {'✅ PASSED' if test2_passed else '❌ FAILED'}")
-    print(f"Auto-Allocation Order Test: {'✅ PASSED' if test3_passed else '❌ FAILED'}")
-    print()
-
-    if test1_passed and test2_passed and test3_passed:
-        print("🎉 All tests passed!")
-    else:
-        print("❌ Some tests failed!")
+    print("🎉 All tests passed!")

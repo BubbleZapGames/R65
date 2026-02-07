@@ -69,7 +69,6 @@ def test_memory_operations():
     emitter.clear()
     print()
 
-    return True
 
 
 def test_arithmetic_operations():
@@ -165,7 +164,6 @@ def test_arithmetic_operations():
     emitter.clear()
     print()
 
-    return True
 
 
 def test_control_flow():
@@ -213,7 +211,6 @@ def test_control_flow():
     emitter.clear()
     print()
 
-    return True
 
 
 def test_mode_control():
@@ -245,7 +242,6 @@ def test_mode_control():
     emitter.clear()
     print()
 
-    return True
 
 
 def test_register_save_restore():
@@ -287,7 +283,6 @@ def test_register_save_restore():
     emitter.clear()
     print()
 
-    return True
 
 
 def test_16bit_operations():
@@ -337,7 +332,6 @@ def test_16bit_operations():
     emitter.clear()
     print()
 
-    return True
 
 
 if __name__ == "__main__":
@@ -347,26 +341,11 @@ if __name__ == "__main__":
     print()
 
     # Run tests
-    test1_passed = test_memory_operations()
-    test2_passed = test_arithmetic_operations()
-    test3_passed = test_control_flow()
-    test4_passed = test_mode_control()
-    test5_passed = test_register_save_restore()
-    test6_passed = test_16bit_operations()
+    test_memory_operations()
+    test_arithmetic_operations()
+    test_control_flow()
+    test_mode_control()
+    test_register_save_restore()
+    test_16bit_operations()
 
-    # Summary
-    print("=" * 80)
-    print("Test Summary")
-    print("=" * 80)
-    print(f"Memory Operations: {'✅ PASSED' if test1_passed else '❌ FAILED'}")
-    print(f"Arithmetic Operations: {'✅ PASSED' if test2_passed else '❌ FAILED'}")
-    print(f"Control Flow: {'✅ PASSED' if test3_passed else '❌ FAILED'}")
-    print(f"Mode Control: {'✅ PASSED' if test4_passed else '❌ FAILED'}")
-    print(f"Register Save/Restore: {'✅ PASSED' if test5_passed else '❌ FAILED'}")
-    print(f"16-bit Operations: {'✅ PASSED' if test6_passed else '❌ FAILED'}")
-    print()
-
-    if all([test1_passed, test2_passed, test3_passed, test4_passed, test5_passed, test6_passed]):
-        print("🎉 All tests passed!")
-    else:
-        print("❌ Some tests failed!")
+    print("🎉 All tests passed!")

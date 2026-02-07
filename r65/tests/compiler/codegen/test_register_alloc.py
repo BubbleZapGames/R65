@@ -74,7 +74,6 @@ def test_scratch_pool():
         print(f"  ❌ %3 (u8) → FAILED (should have reused freed scratch)")
 
     print()
-    return True
 
 
 def test_register_allocator():
@@ -126,7 +125,6 @@ def test_register_allocator():
     print(f"  Stack frame size: {allocator.get_stack_frame_size()} bytes")
 
     print()
-    return True
 
 
 def test_vreg_size_detection():
@@ -167,7 +165,6 @@ def test_vreg_size_detection():
         print(f"  ❌ u16 should use 2-byte scratch")
 
     print()
-    return True
 
 
 def test_bulk_allocation():
@@ -212,7 +209,6 @@ def test_bulk_allocation():
         print(f"  ❌ Expected 1 scratch and 4 stack")
 
     print()
-    return True
 
 
 if __name__ == "__main__":
@@ -222,22 +218,9 @@ if __name__ == "__main__":
     print()
 
     # Run tests
-    test1_passed = test_scratch_pool()
-    test2_passed = test_register_allocator()
-    test3_passed = test_vreg_size_detection()
-    test4_passed = test_bulk_allocation()
+    test_scratch_pool()
+    test_register_allocator()
+    test_vreg_size_detection()
+    test_bulk_allocation()
 
-    # Summary
-    print("=" * 80)
-    print("Test Summary")
-    print("=" * 80)
-    print(f"Scratch Pool Test: {'✅ PASSED' if test1_passed else '❌ FAILED'}")
-    print(f"Register Allocator Test: {'✅ PASSED' if test2_passed else '❌ FAILED'}")
-    print(f"Size Detection Test: {'✅ PASSED' if test3_passed else '❌ FAILED'}")
-    print(f"Bulk Allocation Test: {'✅ PASSED' if test4_passed else '❌ FAILED'}")
-    print()
-
-    if test1_passed and test2_passed and test3_passed and test4_passed:
-        print("🎉 All tests passed!")
-    else:
-        print("❌ Some tests failed!")
+    print("🎉 All tests passed!")

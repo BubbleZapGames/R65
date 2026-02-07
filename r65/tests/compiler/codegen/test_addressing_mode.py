@@ -69,7 +69,6 @@ def test_direct_page_vs_absolute():
         print(f"  {status} ${addr:06X} → {mode.value:15} {operand}")
 
     print()
-    return True
 
 
 def test_indexed_addressing():
@@ -124,7 +123,6 @@ def test_indexed_addressing():
     print(f"  {status} $7E0000,X → {mode.value:15} {operand}")
 
     print()
-    return True
 
 
 def test_indirect_addressing():
@@ -159,7 +157,6 @@ def test_indirect_addressing():
     print(f"  {status} ($50),Y → {mode.value:15} {operand}")
 
     print()
-    return True
 
 
 def test_immediate_mode():
@@ -202,7 +199,6 @@ def test_immediate_mode():
         print(f"  {status} #{value:04X} → {operand}")
 
     print()
-    return True
 
 
 def test_optimization_helpers():
@@ -278,7 +274,6 @@ def test_optimization_helpers():
         print(f"  {status} {mode.value:15} → {size} bytes")
 
     print()
-    return True
 
 
 def test_format_helpers():
@@ -311,7 +306,6 @@ def test_format_helpers():
     print(f"  ✅ 16-bit: {operand}")
 
     print()
-    return True
 
 
 if __name__ == "__main__":
@@ -321,26 +315,11 @@ if __name__ == "__main__":
     print()
 
     # Run tests
-    test1_passed = test_direct_page_vs_absolute()
-    test2_passed = test_indexed_addressing()
-    test3_passed = test_indirect_addressing()
-    test4_passed = test_immediate_mode()
-    test5_passed = test_optimization_helpers()
-    test6_passed = test_format_helpers()
+    test_direct_page_vs_absolute()
+    test_indexed_addressing()
+    test_indirect_addressing()
+    test_immediate_mode()
+    test_optimization_helpers()
+    test_format_helpers()
 
-    # Summary
-    print("=" * 80)
-    print("Test Summary")
-    print("=" * 80)
-    print(f"Direct Page vs Absolute: {'✅ PASSED' if test1_passed else '❌ FAILED'}")
-    print(f"Indexed Addressing: {'✅ PASSED' if test2_passed else '❌ FAILED'}")
-    print(f"Indirect Addressing: {'✅ PASSED' if test3_passed else '❌ FAILED'}")
-    print(f"Immediate Mode: {'✅ PASSED' if test4_passed else '❌ FAILED'}")
-    print(f"Optimization Helpers: {'✅ PASSED' if test5_passed else '❌ FAILED'}")
-    print(f"Format Helpers: {'✅ PASSED' if test6_passed else '❌ FAILED'}")
-    print()
-
-    if all([test1_passed, test2_passed, test3_passed, test4_passed, test5_passed, test6_passed]):
-        print("🎉 All tests passed!")
-    else:
-        print("❌ Some tests failed!")
+    print("🎉 All tests passed!")
