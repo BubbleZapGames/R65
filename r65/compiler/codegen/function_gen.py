@@ -110,6 +110,10 @@ class FunctionCodeGenerator:
         reg_alloc.frame_size = frame_size
         reg_alloc.has_frame_allocation = frame_size > 0
 
+        # Store stack usage on MIR function for stack depth analysis
+        mir_func.codegen_frame_size = frame_size
+        mir_func.codegen_prologue_bytes = prologue_bytes
+
         # Create instruction selector with current function context
         instr_selector = InstructionSelector(self.emitter, reg_alloc, self.mem_alloc, mir_func, func_gen=self)
 

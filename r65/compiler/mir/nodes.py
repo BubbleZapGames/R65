@@ -833,6 +833,10 @@ class MIRFunction:
     # Maps parameter index to allocated virtual register
     param_to_vreg: Dict[int, 'VirtualRegister'] = field(default_factory=dict)
 
+    # Codegen-populated stack usage (for stack depth analysis)
+    codegen_frame_size: int = 0           # Local variable frame bytes (from slot allocator)
+    codegen_prologue_bytes: int = 0       # Bytes pushed by prologue (preserves, DBR, etc.)
+
     def __repr__(self):
         return f"MIRFunction({self.name}, {len(self.blocks)} blocks)"
 

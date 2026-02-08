@@ -179,6 +179,9 @@ class ProgramCodeGenerator:
                     scratch_analyzer=scratch_analyzer
                 )
 
+        # Stack depth analysis (post-codegen, uses codegen_frame_size/codegen_prologue_bytes)
+        self._analyze_stack_depth(mir_program)
+
         # Phase 7: ROM data sections (for array literal initialization)
         self._emit_rom_data_sections(mir_program)
 
@@ -229,6 +232,26 @@ class ProgramCodeGenerator:
     # ========================================================================
     # Helper Methods
     # ========================================================================
+
+    def _analyze_stack_depth(self, mir_program: MIRProgram):
+        """
+        Run stack depth analysis and collect warnings.
+
+        Uses codegen-populated frame_size and prologue_bytes on each
+        MIRFunction to compute worst-case stack depth across all call
+        paths from entry points and interrupt handlers.
+        """
+        from r65.compiler.analysis.stack_depth import StackDepthAnalyzer
+
+        analyzer = StackDepthAnalyzer(
+            mir_program,
+            self.allocator.stack_lower,
+            self.allocator.stack_upper,
+        )
+        warnings = analyzer.analyze()
+        for w in warnings:
+            print(w)
+        self.warnings.extend(warnings)
 
     def _collect_volatile_registers(self, mir_program: MIRProgram) -> tuple:
         """
