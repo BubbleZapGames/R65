@@ -126,7 +126,7 @@ class MatchLowerer:
         # 1. Range is not too large (< 256 entries for 8-bit index)
         # 2. Density is good (>= 50% coverage)
         # 3. We have at least 3 patterns (otherwise linear is fine)
-        MAX_JUMP_TABLE_SIZE = 256
+        MAX_JUMP_TABLE_SIZE = 128
         MIN_DENSITY = 0.5
         MIN_PATTERNS = 3
 

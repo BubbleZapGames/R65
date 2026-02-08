@@ -9,6 +9,7 @@ from r65.compiler.mir.nodes import Jump, JumpTable, CondBranch, Return
 from r65.compiler.codegen.register_alloc import LocationKind
 from r65.compiler.errors import InstructionSelectionError
 from r65.compiler.codegen.opcodes import Opcode
+from r65.compiler.codegen.asm_nodes import Address
 from r65.compiler.codegen.base_selector import BaseSelector
 
 
@@ -47,12 +48,20 @@ class ControlFlowInstructionSelector(BaseSelector):
 
     def select_jump_table(self, instr: JumpTable):
         """
-        Generate code for JumpTable instruction (optimized pattern matching).
+        Generate code for JumpTable instruction using 65816 JMP (addr,X).
 
-        Generates efficient jump table for dense integer pattern matching:
-        1. Compute index = scrutinee - base_value
-        2. Bounds check (0 <= index < table_size)
-        3. Indirect jump through jump table
+        Emits a true O(1) indexed jump table:
+        1. Load scrutinee into A
+        2. Subtract base_value (SEC; SBC #base; BCC default)
+        3. Bounds check (CMP #size; BCS default)
+        4. ASL A (index *= 2 for word-sized entries)
+        5. TAX (move to X for indexed addressing)
+        6. JMP (table_label,X) (indirect indexed jump)
+        7. Emit table data inline (.DW target_label for each entry)
+
+        The table is emitted inline after the JMP instruction, in the same
+        program bank, satisfying the JMP (addr,X) constraint that reads
+        from PBR:addr+X.
 
         Args:
             instr: JumpTable instruction
@@ -66,26 +75,33 @@ class ControlFlowInstructionSelector(BaseSelector):
         else:
             self.parent._emit_load('LDA', scrutinee_loc)
 
+        default_label = self._block_label(instr.default_target)
+
         # Subtract base_value to compute index
         if instr.base_value != 0:
             self._emit_implied(Opcode.SEC)
             self._emit_immediate(Opcode.SBC_IMMEDIATE, instr.base_value, "Compute index = scrutinee - base")
-            self._emit_branch(Opcode.BMI, self._block_label(instr.default_target), "Out of bounds (< min)")
+            self._emit_branch(Opcode.BCC, default_label, "Out of bounds (< base)")
 
         # Check if index >= table_size - out of bounds
         self._emit_immediate(Opcode.CMP_IMMEDIATE, table_size, "Check upper bound")
-        self._emit_branch(Opcode.BCS, self._block_label(instr.default_target), "Out of bounds (>= size)")
+        self._emit_branch(Opcode.BCS, default_label, "Out of bounds (>= size)")
 
-        # Generate comparison chain with optimized jump targets
-        for i, target_block in enumerate(instr.targets):
-            if i == table_size - 1:
-                self._emit_jump(Opcode.BRA, self._block_label(target_block))
-            else:
-                self._emit_immediate(Opcode.CMP_IMMEDIATE, i)
-                self._emit_branch(Opcode.BEQ, self._block_label(target_block))
+        # ASL A - multiply index by 2 for word-sized table entries
+        self._emit_implied(Opcode.ASL, "Index *= 2 for word table")
 
-        # Fallback
-        self._emit_jump(Opcode.BRA, self._block_label(instr.default_target))
+        # TAX - move to X for indexed addressing
+        self._emit_implied(Opcode.TAX)
+
+        # JMP (table_label,X) - indirect indexed jump through table
+        table_label = self.parent._get_unique_label()
+        self.emitter.emit_instr(Opcode.JMP_INDIRECT_X, Address(table_label), "Jump table dispatch")
+
+        # Emit jump table data inline (same bank as code)
+        self.emitter.emit_label(table_label)
+        for target_block_id in instr.targets:
+            target_label = self._block_label(target_block_id)
+            self.emitter.emit_directive(f"    .DW {target_label}")
 
     # ========================================================================
     # Conditional Branch
