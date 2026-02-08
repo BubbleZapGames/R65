@@ -67,6 +67,9 @@ class SlotAllocation:
     # Param sizes
     param_sizes: Dict[VirtualRegister, int] = None
 
+    # Maximum live frame bytes at any call site (for frame-aware stack depth)
+    max_live_frame_bytes_at_calls: int = 0
+
     def __post_init__(self):
         if self.hw_coalesceable is None:
             self.hw_coalesceable = {}
@@ -124,7 +127,8 @@ class StackSlotAllocator:
         self,
         mir_func: MIRFunction,
         preassigned: Optional[List[PreassignedSlot]] = None,
-        prologue_stack_bytes: int = 0
+        prologue_stack_bytes: int = 0,
+        instr_liveness: Optional[Any] = None
     ):
         """
         Initialize unified slot allocator.
@@ -133,11 +137,13 @@ class StackSlotAllocator:
             mir_func: MIR function to allocate slots for
             preassigned: Stack parameters with their base offsets
             prologue_stack_bytes: Bytes pushed by prologue (return addr + saved regs)
+            instr_liveness: Optional InstructionLivenessAnalyzer for call-liveness analysis
         """
         self.func = mir_func
         self.preassigned = preassigned or []
         self.prologue_stack_bytes = prologue_stack_bytes
         self.liveness_analyzer = LivenessAnalyzer(mir_func)
+        self.instr_liveness = instr_liveness
 
         # Build vreg lookup for preassigned
         self._preassigned_vregs: Dict[int, PreassignedSlot] = {
@@ -172,8 +178,18 @@ class StackSlotAllocator:
         for vreg in local_vregs:
             local_sizes[vreg] = self._get_vreg_size(vreg)
 
-        # Allocate locals with liveness-based reuse
-        local_slots, frame_size, slots_saved = self._allocate_locals(local_vregs, local_sizes)
+        # Determine which locals are live at any call site (for frame partitioning)
+        call_spanning_vregs = self._find_call_spanning_vregs(local_vregs) if self.instr_liveness else set()
+
+        # Allocate locals with liveness-based reuse, partitioned by call-liveness
+        local_slots, frame_size, slots_saved = self._allocate_locals(
+            local_vregs, local_sizes, call_spanning_vregs
+        )
+
+        # Compute max live frame bytes at calls
+        max_live = self._compute_max_live_frame_bytes_at_calls(
+            local_slots, local_sizes
+        )
 
         # Compute final param offsets (adjusted for frame allocation)
         param_offsets: Dict[VirtualRegister, int] = {}
@@ -194,20 +210,29 @@ class StackSlotAllocator:
             hw_coalesceable=hw_coalesceable,
             return_sinkable=return_sinkable,
             param_offsets=param_offsets,
-            param_sizes=param_sizes
+            param_sizes=param_sizes,
+            max_live_frame_bytes_at_calls=max_live
         )
 
     def _allocate_locals(
         self,
         local_vregs: List[VirtualRegister],
-        local_sizes: Dict[VirtualRegister, int]
+        local_sizes: Dict[VirtualRegister, int],
+        call_spanning_vregs: Optional[Set[VirtualRegister]] = None
     ) -> Tuple[Dict[VirtualRegister, int], int, int]:
         """
         Allocate local variables with liveness-based reuse.
 
+        When call_spanning_vregs is provided, locals are partitioned:
+        - Call-spanning locals (live at any call) -> allocated at low slot numbers
+          (bottom of frame, closest to SP). These survive partial frame deallocation.
+        - Pre-call-dead locals (dead before all calls) -> allocated at high slot numbers
+          (top of frame). These can be reclaimed before calls.
+
         Args:
             local_vregs: Local variables to allocate
             local_sizes: Size of each local
+            call_spanning_vregs: Set of vregs live at any call site (optional)
 
         Returns:
             (slot_mapping, frame_size, slots_saved)
@@ -220,8 +245,18 @@ class StackSlotAllocator:
         allocated_ranges: List[Tuple[int, int, VirtualRegister]] = []
         next_slot = 0
 
-        # Sort by size descending for better packing
-        sorted_vregs = sorted(local_vregs, key=lambda v: -local_sizes[v])
+        # Partition and sort: call-spanning first (low slots), then pre-call-dead (high slots)
+        # Within each partition, sort by size descending for better packing
+        if call_spanning_vregs:
+            spanning = [v for v in local_vregs if v in call_spanning_vregs]
+            non_spanning = [v for v in local_vregs if v not in call_spanning_vregs]
+            sorted_vregs = (
+                sorted(spanning, key=lambda v: -local_sizes[v]) +
+                sorted(non_spanning, key=lambda v: -local_sizes[v])
+            )
+        else:
+            # Sort by size descending for better packing
+            sorted_vregs = sorted(local_vregs, key=lambda v: -local_sizes[v])
 
         for vreg in sorted_vregs:
             size = local_sizes[vreg]
@@ -267,6 +302,90 @@ class StackSlotAllocator:
         slots_saved = total_without_reuse - frame_size
 
         return allocation, frame_size, slots_saved
+
+    def _find_call_spanning_vregs(
+        self,
+        local_vregs: List[VirtualRegister]
+    ) -> Set[VirtualRegister]:
+        """
+        Find local vregs that are live at any Call instruction.
+
+        Args:
+            local_vregs: Local variables to check
+
+        Returns:
+            Set of vregs that are live at at least one call site
+        """
+        if not self.instr_liveness:
+            return set()
+
+        local_set = set(local_vregs)
+        spanning: Set[VirtualRegister] = set()
+
+        for block_id, block in self.func.blocks.items():
+            for instr_idx, instr in enumerate(block.instructions):
+                if isinstance(instr, Call):
+                    for vreg in local_set:
+                        if vreg in spanning:
+                            continue
+                        # Live "at" the call = live just before it executes
+                        # is_live_after at instr_idx-1 means live entering instr_idx
+                        if instr_idx > 0:
+                            if self.instr_liveness.is_live_after(vreg, block_id, instr_idx - 1):
+                                spanning.add(vreg)
+                        else:
+                            # First instruction in block: check block live_in
+                            info = self.instr_liveness.liveness.get(block_id)
+                            if info and vreg in info.live_in:
+                                spanning.add(vreg)
+
+        return spanning
+
+    def _compute_max_live_frame_bytes_at_calls(
+        self,
+        local_slots: Dict[VirtualRegister, int],
+        local_sizes: Dict[VirtualRegister, int]
+    ) -> int:
+        """
+        Compute the maximum total bytes of locals live at any Call instruction.
+
+        This metric determines how much of the frame must be kept during calls.
+        The reclaimable portion is frame_size - max_live_frame_bytes_at_calls.
+
+        Args:
+            local_slots: Mapping of vreg to slot offset
+            local_sizes: Mapping of vreg to size in bytes
+
+        Returns:
+            Maximum live frame bytes at any call site (0 if no calls)
+        """
+        if not self.instr_liveness or not local_slots:
+            return 0
+
+        max_live = 0
+
+        for block_id, block in self.func.blocks.items():
+            for instr_idx, instr in enumerate(block.instructions):
+                if not isinstance(instr, Call):
+                    continue
+
+                # Sum sizes of locals live at this call
+                live_bytes = 0
+                for vreg, slot in local_slots.items():
+                    size = local_sizes.get(vreg, 1)
+                    # Check if live just before the call
+                    if instr_idx > 0:
+                        if self.instr_liveness.is_live_after(vreg, block_id, instr_idx - 1):
+                            live_bytes += size
+                    else:
+                        info = self.instr_liveness.liveness.get(block_id)
+                        if info and vreg in info.live_in:
+                            live_bytes += size
+
+                if live_bytes > max_live:
+                    max_live = live_bytes
+
+        return max_live
 
     def _get_vreg_size(self, vreg: VirtualRegister) -> int:
         """Get size of virtual register in bytes."""

@@ -323,3 +323,116 @@ class TestLeafVsNonLeaf:
                         stack_lower=0x0100,
                         stack_upper=0x0100 + expected - 2)
         assert any("W003" in w for w in warnings)
+
+
+class TestFrameAwareStackDepth:
+    """Frame-aware stack depth: uses max_live_frame_bytes_at_calls."""
+
+    def test_all_dead_at_calls(self):
+        """When 0 bytes are live at calls, frame is excluded from depth."""
+        # Inner leaf function
+        inner = _make_func("inner", frame_size=0, prologue_bytes=0)
+        # Outer function with large frame, all dead before calls
+        outer = _make_func("outer", calls=["inner"],
+                           frame_size=100, prologue_bytes=0)
+        outer.codegen_max_live_frame_bytes_at_calls = 0
+        outer.codegen_frame_dead_before_calls = True
+
+        main = _make_func("main", is_entry=True, calls=["outer"],
+                          frame_size=0, prologue_bytes=0)
+        # Without frame-aware: main(6) + call outer(2 + 100 + 6) + call inner(2 + 0) = 116
+        # With frame-aware: main(6) + call outer(2 + 0 + 6) + call inner(2 + 0) = 16
+        # Stack of 20 should NOT overflow with frame-aware
+        warnings = _run([main, outer, inner],
+                        stack_lower=0x0100, stack_upper=0x0113)
+        # stack = 20, depth = 16 — fits
+        assert not any("W003" in w for w in warnings)
+
+    def test_partial_live_at_calls(self):
+        """Partial live bytes: only live portion counted in depth."""
+        inner = _make_func("inner", frame_size=0, prologue_bytes=0)
+        outer = _make_func("outer", calls=["inner"],
+                           frame_size=20, prologue_bytes=0)
+        outer.codegen_max_live_frame_bytes_at_calls = 5
+        outer.codegen_frame_dead_before_calls = True
+
+        main = _make_func("main", is_entry=True, calls=["outer"],
+                          frame_size=0, prologue_bytes=0)
+        # main (non-leaf): 0+0+6 = 6
+        # call outer (non-leaf): 2 + 5 + 0 + 6 = 13 (uses max_live=5 not frame=20)
+        # call inner (leaf): 2 + 0 + 0 = 2
+        # total = 6 + 13 + 2 = 21
+        warnings = _run([main, outer, inner],
+                        stack_lower=0x0100, stack_upper=0x0114)
+        # stack = 21, depth = 21 — fits
+        assert not any("W003" in w for w in warnings)
+
+        # One byte less — overflows
+        warnings = _run([main, outer, inner],
+                        stack_lower=0x0100, stack_upper=0x0113)
+        # stack = 20, depth = 21 — overflows
+        assert any("W003" in w for w in warnings)
+
+    def test_all_live_at_calls(self):
+        """All live: full frame counted (no savings)."""
+        inner = _make_func("inner", frame_size=0, prologue_bytes=0)
+        outer = _make_func("outer", calls=["inner"],
+                           frame_size=10, prologue_bytes=0)
+        # max_live == frame_size => not dead_before_calls
+        outer.codegen_max_live_frame_bytes_at_calls = 10
+        outer.codegen_frame_dead_before_calls = False
+
+        main = _make_func("main", is_entry=True, calls=["outer"],
+                          frame_size=0, prologue_bytes=0)
+        # main (non-leaf): 6
+        # call outer (non-leaf): 2 + 10 + 6 = 18
+        # call inner (leaf): 2 + 0 = 2
+        # total = 26
+        warnings = _run([main, outer, inner],
+                        stack_lower=0x0100, stack_upper=0x0119)
+        # stack = 26, depth = 26 — fits
+        assert not any("W003" in w for w in warnings)
+
+        warnings = _run([main, outer, inner],
+                        stack_lower=0x0100, stack_upper=0x0118)
+        # stack = 25, depth = 26 — overflows
+        assert any("W003" in w for w in warnings)
+
+    def test_stack_params_prevent_optimization(self):
+        """Functions with stack params use full frame regardless."""
+        inner = _make_func("inner", frame_size=0, prologue_bytes=0)
+        # Even though max_live < frame, stack params prevent optimization
+        outer = _make_func("outer", calls=["inner"],
+                           frame_size=20, prologue_bytes=0)
+        outer.codegen_max_live_frame_bytes_at_calls = 5
+        # NOT marked as dead_before_calls due to stack params
+        outer.codegen_frame_dead_before_calls = False
+
+        main = _make_func("main", is_entry=True, calls=["outer"],
+                          frame_size=0, prologue_bytes=0)
+        # Full frame counted: main(6) + call outer(2+20+6) + call inner(2+0) = 36
+        warnings = _run([main, outer, inner],
+                        stack_lower=0x0100, stack_upper=0x0123)
+        # stack = 36, depth = 36 — fits
+        assert not any("W003" in w for w in warnings)
+
+        warnings = _run([main, outer, inner],
+                        stack_lower=0x0100, stack_upper=0x0122)
+        # stack = 35, depth = 36 — overflows
+        assert any("W003" in w for w in warnings)
+
+    def test_leaf_ignores_frame_liveness(self):
+        """Leaf functions don't have calls, so frame-aware is irrelevant."""
+        leaf = _make_func("leaf", frame_size=10, prologue_bytes=0)
+        leaf.codegen_max_live_frame_bytes_at_calls = 0
+        # Not marked as dead (no calls to reclaim for)
+        leaf.codegen_frame_dead_before_calls = False
+
+        main = _make_func("main", is_entry=True, calls=["leaf"],
+                          frame_size=0, prologue_bytes=0)
+        # main (non-leaf): 6, call leaf (leaf): 2+10+0 = 12
+        # total = 18
+        warnings = _run([main, leaf],
+                        stack_lower=0x0100, stack_upper=0x0111)
+        # stack = 18, depth = 18 — fits
+        assert not any("W003" in w for w in warnings)

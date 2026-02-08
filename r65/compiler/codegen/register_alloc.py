@@ -649,7 +649,8 @@ class RegisterAllocator:
             self.slot_allocator = StackSlotAllocator(
                 self.mir_func,
                 preassigned=preassigned,
-                prologue_stack_bytes=self.prologue_stack_bytes
+                prologue_stack_bytes=self.prologue_stack_bytes,
+                instr_liveness=self.instr_liveness
             )
             self.slot_allocation = self.slot_allocator.allocate()
 

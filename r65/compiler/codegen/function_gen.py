@@ -114,6 +114,17 @@ class FunctionCodeGenerator:
         mir_func.codegen_frame_size = frame_size
         mir_func.codegen_prologue_bytes = prologue_bytes
 
+        # Store frame-aware liveness metric for stack depth analysis
+        if reg_alloc.slot_allocation:
+            max_live = reg_alloc.slot_allocation.max_live_frame_bytes_at_calls
+            mir_func.codegen_max_live_frame_bytes_at_calls = max_live
+            # Determine if partial frame dealloc is possible:
+            # - Frame has reclaimable bytes (max_live < frame_size)
+            # - No stack parameters (would shift param offsets)
+            has_stack_params = bool(reg_alloc.slot_allocation.param_offsets)
+            if frame_size > 0 and max_live < frame_size and not has_stack_params:
+                mir_func.codegen_frame_dead_before_calls = True
+
         # Create instruction selector with current function context
         instr_selector = InstructionSelector(self.emitter, reg_alloc, self.mem_alloc, mir_func, func_gen=self)
 

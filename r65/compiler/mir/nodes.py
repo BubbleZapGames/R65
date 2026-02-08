@@ -836,6 +836,8 @@ class MIRFunction:
     # Codegen-populated stack usage (for stack depth analysis)
     codegen_frame_size: int = 0           # Local variable frame bytes (from slot allocator)
     codegen_prologue_bytes: int = 0       # Bytes pushed by prologue (preserves, DBR, etc.)
+    codegen_max_live_frame_bytes_at_calls: int = 0  # Max live locals at any call site
+    codegen_frame_dead_before_calls: bool = False    # True if frame was partially deallocated
 
     def __repr__(self):
         return f"MIRFunction({self.name}, {len(self.blocks)} blocks)"

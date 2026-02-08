@@ -139,10 +139,18 @@ class StackDepthAnalyzer:
         Bytes this function adds to the stack (excluding the return address
         pushed by its caller, which is accounted for at the call edge).
 
+        When partial frame deallocation is active (codegen_frame_dead_before_calls),
+        only the live portion of the frame is counted for non-leaf functions,
+        since the dead portion is reclaimed before calls.
+
         Spill slots are only needed for non-leaf functions (region-based
         spilling saves registers around call sites).
         """
-        cost = func.codegen_prologue_bytes + func.codegen_frame_size
+        cost = func.codegen_prologue_bytes
+        if func.codegen_frame_dead_before_calls and self.graph.get_callees(func.name):
+            cost += func.codegen_max_live_frame_bytes_at_calls
+        else:
+            cost += func.codegen_frame_size
         if self.graph.get_callees(func.name):
             cost += MAX_SPILL_BYTES
         return cost
