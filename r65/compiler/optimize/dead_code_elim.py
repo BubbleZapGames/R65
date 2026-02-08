@@ -12,7 +12,7 @@ from r65.compiler.mir.nodes import (
     Jump, CondBranch, Return, ReturnFromInterrupt, Call,
     LoadIndirect, StoreIndirect, Rotate, BitTest, JumpTable,
     Push, Pull, SaveRegister, RestoreRegister, InlineAsm, SetMode,
-    MemoryFill, BlockCopy
+    MemoryFill, BlockCopy, LookupTable
 )
 
 
@@ -263,6 +263,8 @@ class DeadCodeEliminator:
             add_if_vreg(instr.value)
         elif isinstance(instr, JumpTable):
             add_if_vreg(instr.scrutinee)
+        elif isinstance(instr, LookupTable):
+            add_if_vreg(instr.scrutinee)
         elif isinstance(instr, RestoreRegister):
             add_if_vreg(instr.save_location)
         # Jump, ReturnFromInterrupt, Push, Pull, SaveRegister,
@@ -282,7 +284,7 @@ class DeadCodeEliminator:
         """
         dest = None
 
-        if isinstance(instr, (Move, Load, LoadIndirect, BinaryOp, UnaryOp, TypeConvert, ToBool, Rotate)):
+        if isinstance(instr, (Move, Load, LoadIndirect, BinaryOp, UnaryOp, TypeConvert, ToBool, Rotate, LookupTable)):
             dest = instr.dest
         elif isinstance(instr, SaveRegister):
             dest = instr.save_location

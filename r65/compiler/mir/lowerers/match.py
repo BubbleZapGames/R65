@@ -15,8 +15,9 @@ from r65.compiler.hir import (
 )
 from r65.compiler.mir.nodes import (
     VirtualRegister, HardwareRegister, Immediate,
-    Move, Compare, Jump, CondBranch, JumpTable,
+    Move, Compare, Jump, CondBranch, JumpTable, LookupTable,
 )
+from r65.compiler.hir.hir_const_eval import try_eval_const_int
 from r65.compiler.errors import MIRLoweringError
 
 if TYPE_CHECKING:
@@ -75,6 +76,10 @@ class MatchLowerer:
         use_jump_table, min_val, max_val, value_to_arm = self._analyze_for_jump_table(expr)
 
         if use_jump_table:
+            lut_info = self._analyze_for_lut(expr, min_val, max_val, value_to_arm)
+            if lut_info is not None:
+                lut_values, default_value = lut_info
+                return self._lower_with_lut(expr, min_val, max_val, value_to_arm, lut_values, default_value)
             return self._lower_with_jump_table(expr, min_val, max_val, value_to_arm)
         else:
             return self._lower_with_branches(expr)
@@ -143,6 +148,98 @@ class MatchLowerer:
             value_to_arm[value] = arm_index
 
         return (True, min_val, max_val, value_to_arm)
+
+    # ========================================================================
+    # LookupTable Analysis and Lowering
+    # ========================================================================
+
+    def _analyze_for_lut(self, expr: HIRMatchExpression, min_val: int, max_val: int, value_to_arm: dict):
+        """
+        Analyze whether a jump-table-eligible match can use a LookupTable.
+
+        Returns (values_list, default_value) if all arm bodies are compile-time
+        constant integers and result type is u8 or u16. Returns None otherwise.
+        """
+        from r65.compiler.codegen.type_utils import get_type_size
+
+        # Check result type is u8 or u16
+        result_type = expr.expr_type
+        try:
+            result_size = get_type_size(result_type)
+        except Exception:
+            return None
+        if result_size not in (1, 2):
+            return None
+
+        # Evaluate each arm body as a constant
+        arm_constants = {}  # arm_index -> constant value
+        default_value = None
+
+        for i, arm in enumerate(expr.arms):
+            if isinstance(arm.pattern, (HIRWildcardPattern, HIRIdentifierPattern)):
+                # Default arm — must also be constant
+                val = try_eval_const_int(arm.body)
+                if val is None:
+                    return None
+                default_value = val
+                arm_constants[i] = val
+            else:
+                val = try_eval_const_int(arm.body)
+                if val is None:
+                    return None
+                arm_constants[i] = val
+
+        if default_value is None:
+            # No default arm — use 0 as default
+            default_value = 0
+
+        # Build values array
+        range_size = max_val - min_val + 1
+        values = []
+        for offset in range(range_size):
+            value = min_val + offset
+            if value in value_to_arm:
+                arm_index = value_to_arm[value]
+                values.append(arm_constants[arm_index])
+            else:
+                values.append(default_value)
+
+        return (values, default_value)
+
+    def _lower_with_lut(self, expr: HIRMatchExpression, min_val: int, max_val: int,
+                        value_to_arm: dict, lut_values: list, default_value: int) -> VirtualRegister:
+        """
+        Lower match expression using a LookupTable (inline ROM table).
+
+        No arm blocks needed — the entire match resolves to a single table read.
+        """
+        # Lower scrutinee
+        scrutinee_vreg = self.builder.lower_expression(expr.scrutinee)
+
+        # Allocate result register
+        result_vreg = self.ctx.alloc_vreg(expr.expr_type, "match_result")
+
+        # Create merge block
+        merge_block = self.ctx.new_block()
+
+        # Emit LookupTable instruction
+        self.emit(LookupTable(
+            dest=result_vreg,
+            scrutinee=scrutinee_vreg,
+            base_value=min_val,
+            values=lut_values,
+            default_value=default_value,
+            merge_target=merge_block.block_id,
+            type_info=expr.expr_type,
+        ))
+
+        # Add CFG edge to merge block
+        self.ctx.add_cfg_edge(self.ctx.current_block, merge_block)
+
+        # Set current block to merge
+        self.ctx.set_current_block(merge_block)
+
+        return result_vreg
 
     # ========================================================================
     # Branch-Based Lowering

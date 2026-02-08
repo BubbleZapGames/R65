@@ -534,6 +534,25 @@ class JumpTable(MIRInstruction):
 
 
 @dataclass
+class LookupTable(MIRInstruction):
+    """
+    Value lookup table for pure constant match expressions.
+    Loads result = table[scrutinee - base_value] via indexed ROM read.
+    Block terminator — branches to merge_target after lookup.
+    """
+    dest: VirtualRegister                           # Result register
+    scrutinee: Union[VirtualRegister, HardwareRegister]  # Value to index into table
+    base_value: int                                 # Minimum value in the range
+    values: List[int]                               # Result values indexed by (scrutinee - base_value)
+    default_value: int                              # Result for out-of-bounds
+    merge_target: int                               # Block ID to branch to after lookup
+    type_info: Any                                  # Result type info
+
+    def __repr__(self):
+        return f"LookupTable {self.dest} = table[{self.scrutinee} - {self.base_value}] (size={len(self.values)}, default={self.default_value}) -> Block {self.merge_target}"
+
+
+@dataclass
 class Return(MIRInstruction):
     """
     Return from function with values.

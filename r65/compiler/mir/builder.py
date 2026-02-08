@@ -25,7 +25,7 @@ from r65.compiler.mir.nodes import (
     MIRInstruction, MIRProgram, MIRFunction, BasicBlock,
     VirtualRegister, HardwareRegister, Immediate, FunctionPointer, MemoryLocation,
     Load, Store, LoadIndirect, StoreIndirect, Move, TypeConvert, BinaryOp, UnaryOp, Compare, BitTest,
-    Jump, CondBranch, JumpTable, Return, ReturnFromInterrupt, Call, Argument, ArgumentMechanism,
+    Jump, CondBranch, JumpTable, LookupTable, Return, ReturnFromInterrupt, Call, Argument, ArgumentMechanism,
     StatusFlagRead,
     SetMode, SaveRegister, RestoreRegister,
     Push, Pull,

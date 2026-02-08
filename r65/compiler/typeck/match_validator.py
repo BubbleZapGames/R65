@@ -28,7 +28,7 @@ class MatchValidator:
         """
         self.check_expression = check_expression_fn
 
-    def check_match_expression(self, expr: HIRMatchExpression) -> TypeInfo:
+    def check_match_expression(self, expr: HIRMatchExpression, context_type=None) -> TypeInfo:
         """Type check match expression."""
         # Check scrutinee type
         scrutinee_type = self.check_expression(expr.scrutinee)
@@ -37,14 +37,24 @@ class MatchValidator:
         arm_types = []
         has_wildcard = False
 
+        # Determine the expected arm type: use context_type if provided,
+        # otherwise infer from the first arm (done after the loop).
+        expected_type = context_type
+
         for arm in expr.arms:
             # Check pattern matches scrutinee type and check for wildcard/identifier
             if self._check_pattern(arm.pattern, scrutinee_type):
                 has_wildcard = True
 
-            # Check arm body
-            body_type = self.check_expression(arm.body)
+            # Check arm body with expected type context so integer literals
+            # are inferred correctly (e.g., `0` as u16 when let binding is u16)
+            body_type = self.check_expression(arm.body, expected_type)
             arm_types.append(body_type)
+
+            # After checking the first arm, use its type as the expected type
+            # for remaining arms (if no external context was provided)
+            if expected_type is None:
+                expected_type = body_type
 
         # All arms must return compatible types
         if not arm_types:

@@ -5,7 +5,7 @@ Handles control flow instruction generation including conditional branches
 with proper signed/unsigned comparison handling.
 """
 
-from r65.compiler.mir.nodes import Jump, JumpTable, CondBranch, Return
+from r65.compiler.mir.nodes import Jump, JumpTable, LookupTable, CondBranch, Return
 from r65.compiler.codegen.register_alloc import LocationKind
 from r65.compiler.errors import InstructionSelectionError
 from r65.compiler.codegen.opcodes import Opcode
@@ -102,6 +102,85 @@ class ControlFlowInstructionSelector(BaseSelector):
         for target_block_id in instr.targets:
             target_label = self._block_label(target_block_id)
             self.emitter.emit_directive(f"    .DW {target_label}")
+
+    def select_lookup_table(self, instr: LookupTable):
+        """
+        Generate code for LookupTable instruction.
+
+        Emits an inline ROM table lookup:
+        - u8 result: LDA table,X with .DB entries (no ASL, no mode switch)
+        - u16 result: LDA table,X with .DW entries (ASL, REP/SEP mode switch)
+        """
+        from r65.compiler.codegen.type_utils import get_type_size
+        from r65.compiler.codegen.constants import M_FLAG
+
+        result_size = get_type_size(instr.type_info)
+        is_u16 = (result_size == 2)
+
+        table_size = len(instr.values)
+        scrutinee_loc = self.parent._get_operand_location(instr.scrutinee)
+
+        # Load scrutinee into A (always 8-bit at this point)
+        if not (scrutinee_loc.kind == LocationKind.HARDWARE and scrutinee_loc.hw_register == 'A'):
+            self.parent._emit_load('LDA', scrutinee_loc)
+
+        default_label = self.parent._get_unique_label()
+        merge_label = self.parent._get_unique_label()
+        table_label = self.parent._get_unique_label()
+
+        # Base adjustment (8-bit, before any mode switch)
+        if instr.base_value != 0:
+            self._emit_implied(Opcode.SEC)
+            self._emit_immediate(Opcode.SBC_IMMEDIATE, instr.base_value, "Compute index = scrutinee - base")
+            self._emit_branch(Opcode.BCC, default_label, "Out of bounds (< base)")
+
+        # Upper bounds check (8-bit)
+        self._emit_immediate(Opcode.CMP_IMMEDIATE, table_size, "Check upper bound")
+        self._emit_branch(Opcode.BCS, default_label, "Out of bounds (>= size)")
+
+        # u16: ASL to double index for word entries
+        if is_u16:
+            self._emit_implied(Opcode.ASL, "Index *= 2 for word table")
+
+        self._emit_implied(Opcode.TAX)
+
+        # u16: switch to m16 for 16-bit load
+        if is_u16:
+            self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "m16 for LUT word load")
+            self.parent.emitter.emit_accu_mode(16)
+
+        self.emitter.emit_instr(Opcode.LDA_ABSOLUTE_X, Address(table_label), "LUT lookup")
+        self._emit_jump(Opcode.BRA, merge_label)
+
+        # Default path
+        self.emitter.emit_label(default_label)
+        if is_u16:
+            self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "m16 for default")
+            self.parent.emitter.emit_accu_mode(16)
+        self._emit_immediate(Opcode.LDA_IMMEDIATE, instr.default_value, "Default value")
+
+        # Merge — store result
+        self.emitter.emit_label(merge_label)
+        dest_loc = self.parent._get_operand_location(instr.dest)
+        if not (dest_loc.kind == LocationKind.HARDWARE and dest_loc.hw_register == 'A'):
+            self.parent._emit_store('STA', dest_loc)
+
+        # u16: restore m8
+        if is_u16:
+            self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "Restore m8")
+            self.parent.emitter.emit_accu_mode(8)
+
+        # Block terminator: branch to merge block
+        self._emit_jump(Opcode.BRA, self._block_label(instr.merge_target))
+
+        # Inline table data (unreachable — after BRA)
+        self.emitter.emit_label(table_label)
+        if is_u16:
+            for val in instr.values:
+                self.emitter.emit_directive(f"    .DW ${val:04X}")
+        else:
+            for val in instr.values:
+                self.emitter.emit_directive(f"    .DB ${val:02X}")
 
     # ========================================================================
     # Conditional Branch

@@ -14,7 +14,7 @@ from copy import deepcopy
 from r65.compiler.mir.nodes import (
     MIRProgram, MIRFunction, BasicBlock,
     MIRInstruction, VirtualRegister, HardwareRegister, Immediate,
-    Move, Jump, Return, Call, CondBranch, JumpTable,
+    Move, Jump, Return, Call, CondBranch, JumpTable, LookupTable,
     Load, Store, LoadIndirect, StoreIndirect,
     BinaryOp, UnaryOp, Compare, TypeConvert, ToBool,
     InlineAsm, ReturnFromInterrupt,
@@ -354,6 +354,11 @@ class BlockCloner:
             cloned.scrutinee = self._remap_operand(cloned.scrutinee)
             cloned.targets = [self._remap_block_id(t) for t in cloned.targets]
             cloned.default_target = self._remap_block_id(cloned.default_target)
+
+        elif isinstance(cloned, LookupTable):
+            cloned.dest = self._remap_operand(cloned.dest)
+            cloned.scrutinee = self._remap_operand(cloned.scrutinee)
+            cloned.merge_target = self._remap_block_id(cloned.merge_target)
 
         elif isinstance(cloned, Call):
             # Remap arguments

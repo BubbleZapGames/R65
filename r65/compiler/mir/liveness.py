@@ -11,7 +11,7 @@ from r65.compiler.mir.nodes import (
     MIRInstruction, VirtualRegister, HardwareRegister,
     BasicBlock, MIRFunction,
     Load, Store, Move, BinaryOp, UnaryOp, Compare, BitTest, Rotate,
-    Call, Return, Jump, CondBranch, TypeConvert, ToBool,
+    Call, Return, Jump, CondBranch, JumpTable, LookupTable, TypeConvert, ToBool,
     LoadIndirect, StoreIndirect, StatusFlagRead
 )
 
@@ -246,6 +246,12 @@ class LivenessAnalyzer:
             elif isinstance(instr.source, HardwareRegister):
                 uses.append(instr.source)
 
+        elif isinstance(instr, LookupTable):
+            if isinstance(instr.scrutinee, VirtualRegister):
+                uses.append(instr.scrutinee)
+            elif isinstance(instr.scrutinee, HardwareRegister):
+                uses.append(instr.scrutinee)
+
         elif isinstance(instr, Call):
             # Call uses all argument registers
             for arg in instr.args:
@@ -327,6 +333,10 @@ class LivenessAnalyzer:
             if isinstance(instr.dest, VirtualRegister):
                 defs.append(instr.dest)
 
+        elif isinstance(instr, LookupTable):
+            if isinstance(instr.dest, VirtualRegister):
+                defs.append(instr.dest)
+
         elif isinstance(instr, Call):
             # Call defines all return value registers
             for ret in instr.returns:
@@ -357,6 +367,13 @@ class LivenessAnalyzer:
             elif isinstance(last, CondBranch):
                 successors.append(last.true_target)
                 successors.append(last.false_target)
+
+            elif isinstance(last, JumpTable):
+                successors.extend(last.targets)
+                successors.append(last.default_target)
+
+            elif isinstance(last, LookupTable):
+                successors.append(last.merge_target)
 
             elif isinstance(last, Return):
                 # No successors for return

@@ -1,0 +1,297 @@
+"""Tests for match expression lowering to MIR.
+
+Tests that the match lowerer correctly chooses between:
+- LookupTable for dense pure-constant match expressions (inline ROM table)
+- JumpTable for dense non-constant match expressions (JMP (addr,X))
+- Branch chain (CondBranch) for sparse or small matches
+"""
+
+import pytest
+from r65.compiler.frontend import Parser
+from r65.compiler.hir import HIRBuilder
+from r65.compiler.typeck.type_checker import TypeChecker
+from r65.compiler.mir.builder import MIRBuilder
+from r65.compiler.mir.nodes import JumpTable, LookupTable, CondBranch
+
+
+def build_mir(source: str) -> 'MIRProgram':
+    """Helper to build MIR from source code."""
+    parser = Parser()
+    ast = parser.parse(source)
+    hir_builder = HIRBuilder()
+    hir_prog = hir_builder.build_program(ast)
+    type_checker = TypeChecker(hir_prog)
+    type_checker.check()
+    mir_builder = MIRBuilder()
+    return mir_builder.build_program(hir_prog)
+
+
+def get_function_instructions(mir_prog, func_name: str) -> list:
+    """Get all instructions from a function's blocks."""
+    for func in mir_prog.functions:
+        if func.name == func_name:
+            instrs = []
+            for block in func.blocks.values():
+                instrs.extend(block.instructions)
+            return instrs
+    return []
+
+
+def has_jump_table(instrs) -> bool:
+    """Check if instruction list contains a JumpTable node."""
+    return any(isinstance(i, JumpTable) for i in instrs)
+
+
+def has_lookup_table(instrs) -> bool:
+    """Check if instruction list contains a LookupTable node."""
+    return any(isinstance(i, LookupTable) for i in instrs)
+
+
+def has_table_optimization(instrs) -> bool:
+    """Check if instruction list uses any table optimization (JumpTable or LookupTable)."""
+    return any(isinstance(i, (JumpTable, LookupTable)) for i in instrs)
+
+
+def count_cond_branches(instrs) -> int:
+    """Count CondBranch instructions."""
+    return sum(1 for i in instrs if isinstance(i, CondBranch))
+
+
+def get_jump_table(instrs) -> JumpTable:
+    """Get the first JumpTable instruction, or None."""
+    for i in instrs:
+        if isinstance(i, JumpTable):
+            return i
+    return None
+
+
+def get_lookup_table(instrs) -> LookupTable:
+    """Get the first LookupTable instruction, or None."""
+    for i in instrs:
+        if isinstance(i, LookupTable):
+            return i
+    return None
+
+
+class TestJumpTableSelection:
+    """Tests that the analyzer picks table optimization vs branch chain correctly."""
+
+    def test_dense_3_patterns_uses_table_optimization(self):
+        """3+ dense consecutive patterns should emit a table optimization node."""
+        source = """
+        fn classify(val @ A: u8) -> u8 {
+            let result: u8 = match val {
+                0 => 10,
+                1 => 20,
+                2 => 30,
+                _ => 0
+            };
+            return result;
+        }
+        """
+        mir = build_mir(source)
+        instrs = get_function_instructions(mir, "classify")
+
+        assert has_table_optimization(instrs), "Dense 3-pattern match should use table optimization"
+        assert count_cond_branches(instrs) == 0, "Table path should have no CondBranch"
+
+    def test_only_2_patterns_no_jump_table(self):
+        """2 patterns (below MIN_PATTERNS=3) should use branch chain."""
+        source = """
+        fn classify(val @ A: u8) -> u8 {
+            let result: u8 = match val {
+                0 => 10,
+                1 => 20,
+                _ => 0
+            };
+            return result;
+        }
+        """
+        mir = build_mir(source)
+        instrs = get_function_instructions(mir, "classify")
+
+        assert not has_table_optimization(instrs), "2-pattern match should NOT use table optimization"
+        assert count_cond_branches(instrs) >= 2, "Should use CondBranch chain"
+
+    def test_sparse_patterns_no_jump_table(self):
+        """Sparse patterns (density < 50%) should use branch chain."""
+        source = """
+        fn classify(val @ A: u8) -> u8 {
+            let result: u8 = match val {
+                0 => 10,
+                50 => 20,
+                100 => 30,
+                _ => 0
+            };
+            return result;
+        }
+        """
+        mir = build_mir(source)
+        instrs = get_function_instructions(mir, "classify")
+
+        assert not has_table_optimization(instrs), "Sparse match should NOT use table optimization"
+        assert count_cond_branches(instrs) >= 3, "Should use CondBranch chain"
+
+
+class TestJumpTableProperties:
+    """Tests for JumpTable node properties when non-constant arms force JumpTable."""
+
+    def test_non_constant_arm_uses_jump_table(self):
+        """Match with a non-constant arm body should use JumpTable, not LookupTable."""
+        source = """
+        #[ram]
+        static mut VALS: [u8; 3] = [10, 20, 30];
+
+        fn classify(val @ A: u8) -> u8 {
+            let result: u8 = match val {
+                0 => VALS[0],
+                1 => VALS[1],
+                2 => VALS[2],
+                _ => 0
+            };
+            return result;
+        }
+        """
+        mir = build_mir(source)
+        instrs = get_function_instructions(mir, "classify")
+
+        assert has_jump_table(instrs), "Non-constant arm should use JumpTable"
+        assert not has_lookup_table(instrs), "Non-constant arm should NOT use LookupTable"
+
+    def test_gap_filled_with_default(self):
+        """A gap in the range should be filled with the default value."""
+        source = """
+        fn classify(val @ A: u8) -> u8 {
+            let result: u8 = match val {
+                0 => 10,
+                1 => 20,
+                3 => 40,
+                _ => 0
+            };
+            return result;
+        }
+        """
+        mir = build_mir(source)
+        instrs = get_function_instructions(mir, "classify")
+
+        # 3 patterns in range 0..3 → range_size=4, density=3/4=75% ≥ 50%
+        # All constant → LookupTable
+        lut = get_lookup_table(instrs)
+        assert lut is not None, "3 patterns with 75% density and constants should use LookupTable"
+        assert len(lut.values) == 4, f"Range 0..3 should have 4 entries, got {len(lut.values)}"
+        # The gap at index 2 should have the default value
+        assert lut.values[2] == lut.default_value, \
+            "Gap entry should have the default value"
+
+
+class TestLookupTableSelection:
+    """Tests that pure constant matches use LookupTable optimization."""
+
+    def test_pure_constant_match_uses_lookup_table(self):
+        """Match with all-constant arms emits LookupTable (not JumpTable)."""
+        source = """
+        fn classify(val @ A: u8) -> u8 {
+            let result: u8 = match val {
+                0 => 10,
+                1 => 20,
+                2 => 30,
+                _ => 0
+            };
+            return result;
+        }
+        """
+        mir = build_mir(source)
+        instrs = get_function_instructions(mir, "classify")
+
+        assert has_lookup_table(instrs), "Pure constant match should emit LookupTable"
+        assert not has_jump_table(instrs), "Pure constant match should NOT emit JumpTable"
+
+    def test_lookup_table_properties(self):
+        """LookupTable has correct values, default_value, and base_value."""
+        source = """
+        fn classify(val @ A: u8) -> u8 {
+            let result: u8 = match val {
+                0 => 10,
+                1 => 20,
+                2 => 30,
+                _ => 0
+            };
+            return result;
+        }
+        """
+        mir = build_mir(source)
+        instrs = get_function_instructions(mir, "classify")
+
+        lut = get_lookup_table(instrs)
+        assert lut is not None
+        assert lut.base_value == 0
+        assert lut.values == [10, 20, 30]
+        assert lut.default_value == 0
+
+    def test_non_zero_base_lookup_table(self):
+        """LookupTable with non-zero base has correct base_value."""
+        source = """
+        fn classify(val @ A: u8) -> u8 {
+            let result: u8 = match val {
+                5 => 10,
+                6 => 20,
+                7 => 30,
+                _ => 0
+            };
+            return result;
+        }
+        """
+        mir = build_mir(source)
+        instrs = get_function_instructions(mir, "classify")
+
+        lut = get_lookup_table(instrs)
+        assert lut is not None, "Should emit LookupTable for dense constants"
+        assert lut.base_value == 5, f"Expected base_value=5, got {lut.base_value}"
+        assert lut.values == [10, 20, 30]
+        assert len(lut.values) == 3
+
+    def test_enum_constant_bodies_use_lookup_table(self):
+        """Enum match with constant bodies should use LookupTable."""
+        source = """
+        enum Dir { North = 0, East = 1, South = 2, West = 3 }
+
+        fn dir_cost(d @ A: u8) -> u8 {
+            let result: u8 = match d {
+                Dir::North => 1,
+                Dir::East => 2,
+                Dir::South => 3,
+                Dir::West => 4,
+                _ => 0
+            };
+            return result;
+        }
+        """
+        mir = build_mir(source)
+        instrs = get_function_instructions(mir, "dir_cost")
+
+        lut = get_lookup_table(instrs)
+        assert lut is not None, "Dense enum with constant bodies should emit LookupTable"
+        assert lut.base_value == 0
+        assert lut.values == [1, 2, 3, 4]
+        assert lut.default_value == 0
+
+    def test_non_constant_arm_falls_back_to_jump_table(self):
+        """One non-constant arm body forces fallback to JumpTable."""
+        source = """
+        fn identity(x @ A: u8) -> u8 { return x; }
+
+        fn classify(val @ A: u8) -> u8 {
+            let result: u8 = match val {
+                0 => 10,
+                1 => identity(20),
+                2 => 30,
+                _ => 0
+            };
+            return result;
+        }
+        """
+        mir = build_mir(source)
+        instrs = get_function_instructions(mir, "classify")
+
+        assert has_jump_table(instrs), "Non-constant arm should force JumpTable"
+        assert not has_lookup_table(instrs), "Non-constant arm should NOT use LookupTable"

@@ -12,7 +12,7 @@ if TYPE_CHECKING:
 from r65.compiler.mir.nodes import (
     MIRFunction, MIRInstruction,
     Load, Store, LoadIndirect, StoreIndirect,
-    Move, Return, Jump, JumpTable, CondBranch, Call,
+    Move, Return, Jump, JumpTable, LookupTable, CondBranch, Call,
     BinaryOp, UnaryOp, Compare, BitTest, Rotate, SetMode, TypeConvert, ToBool,
     Push, Pull, SaveRegister, RestoreRegister, ReturnFromInterrupt,
     StatusFlagTest, StatusFlagSet, StatusFlagRead,
@@ -601,6 +601,8 @@ class InstructionSelector:
             self.control_flow_selector.select_jump(instr)
         elif isinstance(instr, JumpTable):
             self.control_flow_selector.select_jump_table(instr)
+        elif isinstance(instr, LookupTable):
+            self.control_flow_selector.select_lookup_table(instr)
         elif isinstance(instr, CondBranch):
             self.control_flow_selector.select_cond_branch(instr)
         elif isinstance(instr, Return):

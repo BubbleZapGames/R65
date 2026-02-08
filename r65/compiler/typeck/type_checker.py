@@ -1081,7 +1081,7 @@ class TypeChecker:
             return self.struct_validator.check_struct_literal(expr)
 
         elif isinstance(expr, HIRMatchExpression):
-            return self.match_validator.check_match_expression(expr)
+            return self.match_validator.check_match_expression(expr, context_type)
 
         else:
             raise TypeCheckError(
