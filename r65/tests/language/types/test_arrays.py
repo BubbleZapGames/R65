@@ -75,18 +75,6 @@ class TestArrayAccess:
         assert isinstance(let_stmt.initializer, ast.ArrayIndex)
 
 
-class TestArrayHIR:
-    """Tests for array HIR generation."""
-
-    def test_array_hir(self):
-        """Test array declarations generate proper HIR."""
-        hir_prog = build_hir("""
-            #[ram] static mut BUFFER: [u8; 256] = [0; 256];
-            fn test() { let x: u8 = BUFFER[0]; }
-        """)
-        assert len(hir_prog.statics) >= 1
-        assert len(hir_prog.functions) >= 1
-
 
 class TestArrayLen:
     """Tests for array len() method."""

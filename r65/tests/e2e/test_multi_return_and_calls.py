@@ -208,3 +208,93 @@ class TestMixedParams:
             }
         ''', ExpectedState(A=11, X=0x42))
         assert result.success, f"Failures: {result.failures}"
+
+
+class TestVariableBoundParams:
+    """Test variable-bound parameter passing (param @ STATIC_VAR)."""
+
+    @pytest.fixture
+    def e2e(self):
+        return E2ETest()
+
+    def test_variable_bound_basic(self, e2e):
+        """Test basic variable-bound parameter: fn process(temp @ TEMP: u8)."""
+        result = e2e.run('''
+            #[zeropage(0x10)]
+            static mut TEMP: u8;
+            #[zeropage(0x11)]
+            static mut RESULT: u8;
+
+            fn process(temp @ TEMP: u8) -> u8 {
+                A = temp + 5;
+                return A;
+            }
+
+            #[entry]
+            fn main() {
+                RESULT = process(10);
+            }
+        ''', ExpectedState(memory={
+            0x7E0011: 15,
+        }))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_variable_bound_with_register(self, e2e):
+        """Test mixing variable-bound and register params."""
+        result = e2e.run('''
+            #[zeropage(0x10)]
+            static mut TEMP: u8;
+            #[zeropage(0x11)]
+            static mut RESULT: u8;
+
+            fn compute(val @ TEMP: u8, factor @ A: u8) -> u8 {
+                A = factor + val;
+                return A;
+            }
+
+            #[entry]
+            fn main() {
+                RESULT = compute(10, 25);
+            }
+        ''', ExpectedState(memory={
+            0x7E0011: 35,
+        }))
+        assert result.success, f"Failures: {result.failures}"
+
+
+class TestBRegister:
+    """Test B register parameter passing and (A,B) tuple returns."""
+
+    @pytest.fixture
+    def e2e(self):
+        return E2ETest()
+
+    def test_b_parameter_and_return(self, e2e):
+        """Test B param passing and (u8,u8) return via A,B registers.
+
+        Uses --cfg snes (always set by e2e framework) for XBA support.
+        Verifies that B parameter is received correctly and can be
+        returned alongside A in a (u8, u8) tuple.
+        """
+        result = e2e.run('''
+            #[zeropage(0x10)]
+            static mut LO: u8;
+            #[zeropage(0x11)]
+            static mut HI: u8;
+
+            fn add_and_keep(lo @ A: u8, hi @ B: u8) -> (u8, u8) {
+                A = lo + 1;
+                return A, B;
+            }
+
+            #[entry]
+            fn main() {
+                let (a_val, b_val) = add_and_keep(0x10, 0x55);
+                LO = a_val;
+                HI = b_val;
+            }
+        ''', ExpectedState(memory={
+            0x7E0010: 0x11,
+            0x7E0011: 0x55,
+        }))
+        assert result.success, f"Failures: {result.failures}"

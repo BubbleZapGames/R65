@@ -240,6 +240,42 @@ class TestTypeCasts:
         }))
         assert result.success, f"Failures: {result.failures}"
 
+    def test_sign_extension_negative(self, e2e):
+        """Test i8 -> i16 sign extension of negative value: -5 (0xFB) -> 0xFFFB."""
+        result = e2e.run('''
+            #[zeropage(0x10)]
+            static mut RESULT: i16;
+
+            #[entry]
+            fn main() {
+                A = 0xFB;
+                let signed: i8 = A as i8;
+                let wide @ A : i16 = signed as i16;
+                RESULT = A;
+            }
+        ''', ExpectedState(memory={
+            0x7E0010: [0xFB, 0xFF],
+        }))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_sign_extension_positive(self, e2e):
+        """Test i8 -> i16 sign extension of positive value: +5 -> 0x0005."""
+        result = e2e.run('''
+            #[zeropage(0x10)]
+            static mut RESULT: i16;
+
+            #[entry]
+            fn main() {
+                A = 5;
+                let signed: i8 = A as i8;
+                let wide @ A : i16 = signed as i16;
+                RESULT = A;
+            }
+        ''', ExpectedState(memory={
+            0x7E0010: [0x05, 0x00],
+        }))
+        assert result.success, f"Failures: {result.failures}"
+
 
 class TestMathPipeline:
     """Test combining multiple math operations."""

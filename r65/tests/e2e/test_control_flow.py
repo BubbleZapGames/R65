@@ -276,3 +276,168 @@ class TestUnsignedComparisons:
             0x7E0012: 1,
         }))
         assert result.success, f"Failures: {result.failures}"
+
+
+class TestMatchExpression:
+    """Test match expression compilation and runtime."""
+
+    @pytest.fixture
+    def e2e(self):
+        return E2ETest()
+
+    def test_match_basic(self, e2e):
+        """Test match expression with multiple arms and wildcard."""
+        result = e2e.run('''
+            #[zeropage(0x10)]
+            static mut R1: u8;
+            #[zeropage(0x11)]
+            static mut R2: u8;
+            #[zeropage(0x12)]
+            static mut R3: u8;
+
+            fn classify(val @ A: u8) -> u8 {
+                let result: u8 = match val {
+                    0 => 10,
+                    1 => 20,
+                    _ => 30
+                };
+                return result;
+            }
+
+            #[entry]
+            fn main() {
+                R1 = classify(0);
+                R2 = classify(1);
+                R3 = classify(99);
+            }
+        ''', ExpectedState(memory={
+            0x7E0010: 10,
+            0x7E0011: 20,
+            0x7E0012: 30,
+        }))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_match_as_initializer(self, e2e):
+        """Test match used as let-binding initializer."""
+        result = e2e.run('''
+            #[zeropage(0x10)]
+            static mut RESULT: u8;
+
+            #[entry]
+            fn main() {
+                A = 2;
+                let val: u8 = match A {
+                    0 => 100,
+                    1 => 200,
+                    2 => 42,
+                    _ => 0
+                };
+                RESULT = val;
+            }
+        ''', ExpectedState(memory={
+            0x7E0010: 42,
+        }))
+        assert result.success, f"Failures: {result.failures}"
+
+
+class TestForLoops:
+    """Test for loop compilation and runtime."""
+
+    @pytest.fixture
+    def e2e(self):
+        return E2ETest()
+
+    def test_for_loop_sum(self, e2e):
+        """Test for loop summing: for i in 0..10 { SUM += 1; }."""
+        result = e2e.run('''
+            #[zeropage(0x10)]
+            static mut SUM: u8;
+
+            #[entry]
+            fn main() {
+                SUM = 0;
+                for i in 0..10 {
+                    SUM = SUM + 1;
+                }
+            }
+        ''', ExpectedState(memory={
+            0x7E0010: 10,
+        }))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_for_loop_array_fill(self, e2e):
+        """Test for loop filling array: for i in 0..8 { BUF[i] = i as u8; }."""
+        result = e2e.run('''
+            #[zeropage(0x10)]
+            static mut BUF: [u8; 8] = [0; 8];
+
+            #[entry]
+            fn main() {
+                for i in 0..8 {
+                    BUF[i] = i as u8;
+                }
+            }
+        ''', ExpectedState(memory={
+            0x7E0010: [0, 1, 2, 3, 4, 5, 6, 7],
+        }))
+        assert result.success, f"Failures: {result.failures}"
+
+
+class TestShortCircuit:
+    """Test short-circuit evaluation of && and ||."""
+
+    @pytest.fixture
+    def e2e(self):
+        return E2ETest()
+
+    def test_and_short_circuit(self, e2e):
+        """Test && skips right side when left is false."""
+        result = e2e.run('''
+            #[zeropage(0x10)]
+            static mut FLAG: u8;
+            #[zeropage(0x11)]
+            static mut FALSE_VAL: u8;
+
+            fn side_effect() -> u8 {
+                FLAG = 1;
+                return 1;
+            }
+
+            #[entry]
+            fn main() {
+                FLAG = 0;
+                FALSE_VAL = 0;
+                if FALSE_VAL != 0 && side_effect() != 0 {
+                    FLAG = 99;
+                }
+            }
+        ''', ExpectedState(memory={
+            0x7E0010: 0,
+        }))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_or_short_circuit(self, e2e):
+        """Test || skips right side when left is true."""
+        result = e2e.run('''
+            #[zeropage(0x10)]
+            static mut FLAG: u8;
+            #[zeropage(0x11)]
+            static mut TRUE_VAL: u8;
+
+            fn side_effect() -> u8 {
+                FLAG = 1;
+                return 1;
+            }
+
+            #[entry]
+            fn main() {
+                FLAG = 0;
+                TRUE_VAL = 1;
+                if TRUE_VAL != 0 || side_effect() != 0 {
+                    A = 1;
+                }
+            }
+        ''', ExpectedState(memory={
+            0x7E0010: 0,
+        }))
+        assert result.success, f"Failures: {result.failures}"

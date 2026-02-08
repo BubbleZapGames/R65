@@ -334,15 +334,10 @@ class MatchLowerer:
         Branch to match_block if matches, no_match_block otherwise.
         """
         if isinstance(pattern, HIRLiteralPattern):
-            # Compare scrutinee with literal value
-            literal_vreg = self.ctx.alloc_vreg(
-                scrutinee_type,
-                f"literal_{pattern.value}"
-            )
-            self.emit(Move(dest=literal_vreg, source=Immediate(pattern.value), type_info=scrutinee_type))
-
-            # Emit comparison and conditional branch
-            self.emit(Compare(left=scrutinee_vreg, right=literal_vreg, comparison="==", type_info=scrutinee_type))
+            # Compare scrutinee directly with immediate value.
+            # Using Immediate avoids allocating a vreg (whose Move would
+            # clobber A via LDA+STA before the comparison reads it).
+            self.emit(Compare(left=scrutinee_vreg, right=Immediate(pattern.value), comparison="==", type_info=scrutinee_type))
             self.emit(CondBranch(
                 condition=None,
                 true_target=match_block.block_id,
@@ -354,15 +349,8 @@ class MatchLowerer:
             self.ctx.add_cfg_edge(self.ctx.current_block, no_match_block)
 
         elif isinstance(pattern, HIREnumPattern):
-            # Compare scrutinee with enum variant value
-            variant_vreg = self.ctx.alloc_vreg(
-                scrutinee_type,
-                f"{pattern.enum_name}_{pattern.variant_name}"
-            )
-            self.emit(Move(dest=variant_vreg, source=Immediate(pattern.variant_value), type_info=scrutinee_type))
-
-            # Emit comparison and conditional branch
-            self.emit(Compare(left=scrutinee_vreg, right=variant_vreg, comparison="==", type_info=scrutinee_type))
+            # Compare scrutinee directly with enum variant value (immediate).
+            self.emit(Compare(left=scrutinee_vreg, right=Immediate(pattern.variant_value), comparison="==", type_info=scrutinee_type))
             self.emit(CondBranch(
                 condition=None,
                 true_target=match_block.block_id,

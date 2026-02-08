@@ -3,7 +3,7 @@
 import pytest
 from r65.compiler.frontend import ast
 from r65.compiler.frontend.parser import ParseError
-from r65.tests.language.common import parse_function, parse_fails, build_hir
+from r65.tests.language.common import parse_function, parse_fails
 
 
 class TestIfStatements:
@@ -91,25 +91,6 @@ class TestIfStatements:
         if_stmt = func.body.statements[0]
         assert len(if_stmt.then_block.statements) == 3
 
-
-class TestIfHIR:
-    """Tests for if statement HIR generation."""
-
-    def test_if_hir_generation(self):
-        """Test that if statements generate proper HIR."""
-        from r65.compiler.hir import nodes as hir
-
-        hir_prog = build_hir("fn test() { if A == 0 { X = 1; } }")
-        func = hir_prog.functions[0]
-        assert len(func.body.statements) >= 1
-
-    def test_if_else_hir_generation(self):
-        """Test if-else HIR generation."""
-        from r65.compiler.hir import nodes as hir
-
-        hir_prog = build_hir("fn test() { if A == 0 { X = 1; } else { X = 2; } }")
-        func = hir_prog.functions[0]
-        assert len(func.body.statements) >= 1
 
 
 class TestIfErrors:

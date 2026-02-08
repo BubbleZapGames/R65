@@ -154,6 +154,9 @@ class MIRBuilder:
         self._rom_data_counter = 0
         self._rom_data_sections = []
 
+        # Clear type size cache to prevent stale id()-based entries
+        TypeSizeCalculator.clear_cache()
+
         # Store reference to HIR program for symbol table lookups
         self._hir_program = hir_program
 

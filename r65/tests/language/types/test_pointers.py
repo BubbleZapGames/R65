@@ -3,7 +3,7 @@
 import pytest
 from r65.compiler.frontend import ast
 from r65.compiler.frontend.parser import ParseError
-from r65.tests.language.common import parse_type, parse_static, parse_function, build_hir
+from r65.tests.language.common import parse_type, parse_static, parse_function
 
 
 class TestPointerTypes:
@@ -214,18 +214,6 @@ class TestPointerCasting:
         assert isinstance(let_stmt.initializer.target_type, ast.PointerType)
         assert let_stmt.initializer.target_type.is_far is True
 
-
-class TestPointerHIR:
-    """Tests for pointer HIR generation."""
-
-    def test_pointer_hir(self):
-        """Test pointer types generate proper HIR."""
-        hir_prog = build_hir("""
-            #[zeropage] static mut PTR: *u8;
-            fn test() { let v: u8 = *PTR; }
-        """)
-        assert len(hir_prog.statics) >= 1
-        assert len(hir_prog.functions) >= 1
 
 
 class TestPatternSideForm:

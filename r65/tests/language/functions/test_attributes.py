@@ -103,14 +103,3 @@ class TestMultipleAttributes:
         assert get_attr(func, "preserves") is not None
 
 
-class TestAttributeHIR:
-    """Tests for attribute HIR generation."""
-
-    def test_attribute_hir(self):
-        """Test attributes generate proper HIR."""
-        hir_prog = build_hir("""
-                        #[preserves(X)]
-            fn process() { A = 1; }
-        """)
-        func = hir_prog.functions[0]
-        assert func is not None

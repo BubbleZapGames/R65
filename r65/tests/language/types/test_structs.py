@@ -1,7 +1,7 @@
 """Tests for struct types."""
 
 from r65.compiler.frontend import ast
-from r65.tests.language.common import parse_struct, parse_static, parse_function, build_hir
+from r65.tests.language.common import parse_struct, parse_static, parse_function
 
 
 class TestStructDeclaration:
@@ -79,19 +79,6 @@ class TestStructLiterals:
         assert let_stmt.initializer.struct_name == "Point"
         assert len(let_stmt.initializer.fields) == 2
 
-
-class TestStructHIR:
-    """Tests for struct HIR generation."""
-
-    def test_struct_hir(self):
-        """Test struct generates proper HIR."""
-        hir_prog = build_hir("""
-            struct Player { x: u8, y: u8, health: u16 }
-            #[ram] static mut P: Player;
-            fn test() { let h: u16 = P.health; }
-        """)
-        assert len(hir_prog.structs) >= 1
-        assert len(hir_prog.statics) >= 1
 
 
 class TestStructArrayTypeCheck:

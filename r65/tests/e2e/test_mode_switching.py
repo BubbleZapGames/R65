@@ -834,3 +834,31 @@ class TestCrossModeFunctionCalls:
             }
         ))
         assert result.success, f"Failures: {result.failures}"
+
+
+class TestPreservesRegisters:
+    """Test #[preserves(X, Y)] attribute saves/restores registers across calls."""
+
+    @pytest.fixture
+    def e2e(self):
+        return E2ETest()
+
+    def test_preserves_x_and_y(self, e2e):
+        """Test that #[preserves(X, Y)] saves and restores both X and Y."""
+        result = e2e.run('''
+            #[preserves(X, Y)]
+            fn clobber(val @ A: u8) -> u8 {
+                X = 999;
+                Y = 888;
+                A = val + 1;
+                return A;
+            }
+
+            #[entry]
+            fn main() {
+                X = 0x1234;
+                Y = 0x5678;
+                A = clobber(41);
+            }
+        ''', ExpectedState(A=42, X=0x1234, Y=0x5678))
+        assert result.success, f"Failures: {result.failures}"

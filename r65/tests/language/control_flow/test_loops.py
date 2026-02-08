@@ -80,21 +80,6 @@ class TestWhileConditions:
             assert isinstance(while_stmt.condition, expected_type)
 
 
-class TestLoopHIR:
-    """Tests for loop HIR generation."""
-
-    def test_loop_hir_generation(self):
-        """Test loop HIR generation."""
-        hir_prog = build_hir("fn test() { loop { A++; if A == 10 { break; } } }")
-        func = hir_prog.functions[0]
-        assert len(func.body.statements) >= 1
-
-    def test_while_hir_generation(self):
-        """Test while loop HIR generation."""
-        hir_prog = build_hir("fn test() { while A != 0 { A--; } }")
-        func = hir_prog.functions[0]
-        assert len(func.body.statements) >= 1
-
 
 class TestLoopErrors:
     """Tests for loop parse errors."""

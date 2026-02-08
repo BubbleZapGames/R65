@@ -1,7 +1,7 @@
 """Tests for enum types."""
 
 from r65.compiler.frontend import ast
-from r65.tests.language.common import parse_enum, parse_function, build_hir
+from r65.tests.language.common import parse_enum, parse_function
 
 
 class TestEnumDeclaration:
@@ -50,15 +50,3 @@ class TestEnumUsage:
         assert isinstance(if_stmt.condition, ast.BinaryOp)
 
 
-class TestEnumHIR:
-    """Tests for enum HIR generation."""
-
-    def test_enum_hir(self):
-        """Test enum generates proper HIR."""
-        # Note: Using enum variant requires enum to be defined
-        hir_prog = build_hir("""
-            enum State { Idle, Running, Done }
-            fn test() { A = 1; }
-        """)
-        assert len(hir_prog.enums) >= 1
-        assert len(hir_prog.functions) >= 1

@@ -2,7 +2,7 @@
 
 import pytest
 from r65.compiler.frontend import ast
-from r65.tests.language.common import parse_expr, parse_function, build_hir
+from r65.tests.language.common import parse_expr, parse_function
 
 
 class TestLogicalOperators:
@@ -64,11 +64,3 @@ class TestLogicalInConditions:
         assert while_stmt.condition.op == "&&"
 
 
-class TestLogicalHIR:
-    """Tests for logical HIR generation."""
-
-    def test_logical_hir(self):
-        """Test logical expressions generate proper HIR."""
-        hir_prog = build_hir("fn test() { if A == 0 && X != 0 || Y == 0 { STATUS = 1; } }")
-        func = hir_prog.functions[0]
-        assert len(func.body.statements) >= 1

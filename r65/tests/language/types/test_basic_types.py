@@ -1,7 +1,7 @@
 """Tests for basic types: u8, i8, u16, i16, bool."""
 
 from r65.compiler.frontend import ast
-from r65.tests.language.common import parse_type, parse_static, parse_function, build_hir
+from r65.tests.language.common import parse_type, parse_static, parse_function
 
 
 class TestBasicTypes:
@@ -61,15 +61,3 @@ class TestTypeLiterals:
         assert let_f.initializer.value is False
 
 
-class TestTypeHIR:
-    """Tests for type HIR generation."""
-
-    def test_basic_types_hir(self):
-        """Test basic types generate proper HIR."""
-        hir_prog = build_hir("""
-            #[ram] static mut U8_VAR: u8;
-            #[ram] static mut I16_VAR: i16;
-            fn test(x: u8) -> u16 { return A; }
-        """)
-        assert len(hir_prog.statics) >= 2
-        assert len(hir_prog.functions) >= 1

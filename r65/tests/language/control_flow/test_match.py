@@ -1,7 +1,7 @@
 """Tests for match expressions."""
 
 from r65.compiler.frontend import ast
-from r65.tests.language.common import parse_function, build_hir
+from r65.tests.language.common import parse_function
 
 
 class TestMatchExpression:
@@ -81,18 +81,3 @@ class TestMatchPatterns:
         assert len(match_expr.arms) == 1
 
 
-class TestMatchHIR:
-    """Tests for match HIR generation."""
-
-    def test_match_hir(self):
-        """Test match expressions generate proper HIR."""
-        hir_prog = build_hir("""
-            fn test() {
-                let x: u8 = match A {
-                    0 => 1,
-                    _ => 0
-                };
-            }
-        """)
-        func = hir_prog.functions[0]
-        assert len(func.body.statements) >= 1

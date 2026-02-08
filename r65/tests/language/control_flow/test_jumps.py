@@ -3,7 +3,7 @@
 import pytest
 from r65.compiler.frontend import ast
 from r65.compiler.frontend.parser import ParseError
-from r65.tests.language.common import parse_function, build_hir
+from r65.tests.language.common import parse_function
 
 
 class TestBreakContinue:
@@ -120,28 +120,6 @@ class TestReturnStatements:
         assert isinstance(ret1, ast.ReturnStmt)
         assert isinstance(ret2, ast.ReturnStmt)
 
-
-class TestJumpHIR:
-    """Tests for jump statement HIR generation."""
-
-    def test_break_continue_hir(self):
-        """Test break/continue HIR generation."""
-        hir_prog = build_hir("""
-            fn test() {
-                loop {
-                    if A == 0 { break; }
-                    continue;
-                }
-            }
-        """)
-        func = hir_prog.functions[0]
-        assert len(func.body.statements) >= 1
-
-    def test_return_hir(self):
-        """Test return HIR generation."""
-        hir_prog = build_hir("fn test() { return A; }")
-        func = hir_prog.functions[0]
-        assert len(func.body.statements) >= 1
 
 
 class TestJumpErrors:

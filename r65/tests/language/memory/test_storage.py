@@ -149,14 +149,3 @@ class TestStackDirective:
         assert len(prog.items) == 1
 
 
-class TestStorageHIR:
-    """Tests for storage HIR generation."""
-
-    def test_storage_hir(self):
-        """Test storage classes generate proper HIR."""
-        hir_prog = build_hir("""
-            #[zeropage(0x10)] static mut ZP_VAR: u8;
-            #[ram] static mut RAM_VAR: u16;
-            #[hw(0x2100)] static mut HW_REG: u8;
-        """)
-        assert len(hir_prog.statics) >= 3

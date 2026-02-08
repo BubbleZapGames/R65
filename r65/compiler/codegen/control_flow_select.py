@@ -667,6 +667,19 @@ class ControlFlowInstructionSelector(BaseSelector):
 
         total_cleanup = frame_size + stack_param_bytes
 
+        # Special case: frame-only cleanup (no stack params).
+        # No return address relocation needed - just deallocate the frame.
+        # Uses PLB which doesn't clobber any registers (safe for B tuple returns
+        # and when all of A/X/Y are occupied by return values or preserved regs).
+        if stack_param_bytes == 0 and frame_size > 0:
+            if frame_size <= 4:
+                for _ in range(frame_size):
+                    self._emit_implied(Opcode.PLB, f"Deallocate frame ({frame_size} bytes)")
+                return
+            current_mode = self.parent.emitter.get_accu_mode()
+            self._emit_sp_adjust_preserving_a(frame_size, return_count, current_mode)
+            return
+
         # Determine which register to use for return address
         # A is most commonly used for return, so prefer X, then Y
         if return_count <= 1:

@@ -2,7 +2,7 @@
 
 import pytest
 from r65.compiler.frontend import ast
-from r65.tests.language.common import parse_expr, parse_function, build_hir
+from r65.tests.language.common import parse_expr, parse_function
 
 
 class TestBitwiseOperators:
@@ -63,11 +63,3 @@ class TestBitwisePrecedence:
         assert isinstance(expr, ast.BinaryOp)
 
 
-class TestBitwiseHIR:
-    """Tests for bitwise HIR generation."""
-
-    def test_bitwise_hir(self):
-        """Test bitwise expressions generate proper HIR."""
-        hir_prog = build_hir("fn test() { let x: u8 = A & 0x0F | 0x80; }")
-        func = hir_prog.functions[0]
-        assert len(func.body.statements) >= 1

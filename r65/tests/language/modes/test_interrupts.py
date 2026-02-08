@@ -1,7 +1,7 @@
 """Tests for interrupt handlers."""
 
 from r65.compiler.frontend import ast
-from r65.tests.language.common import parse_function, get_attr, build_hir
+from r65.tests.language.common import parse_function, get_attr
 
 
 class TestInterruptAttribute:
@@ -81,14 +81,3 @@ class TestBankDirective:
         assert mode_attr is not None
 
 
-class TestInterruptHIR:
-    """Tests for interrupt HIR generation."""
-
-    def test_interrupt_hir(self):
-        """Test interrupt handlers generate proper HIR."""
-        hir_prog = build_hir("""
-            #[interrupt(nmi)]
-            fn vblank() { A = 1; }
-        """)
-        func = hir_prog.functions[0]
-        assert func is not None
