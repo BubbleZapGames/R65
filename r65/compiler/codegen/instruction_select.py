@@ -702,13 +702,21 @@ class InstructionSelector:
         op = instr.op
         is_u16 = self._is_16bit(instr.type_info)
 
+        # POINTER ARITHMETIC SCALING: ptr++ on *u16 should add sizeof(u16)=2.
+        # Scale immediate operands by pointee element size for pointer types.
+        right_operand = instr.right
+        if op in ('+', '-') and isinstance(instr.right, MIRImmediate):
+            elem_size = self._get_pointer_element_size(instr.type_info)
+            if elem_size > 1:
+                right_operand = MIRImmediate(instr.right.value * elem_size)
+
         # OPTIMIZATION: Detect register increment/decrement patterns
         # reg = reg + 1  →  INX/INY/INC A
         # reg = reg - 1  →  DEX/DEY/DEC A
         # Check this BEFORE getting operand locations
         if (op in ('+', '-') and
-            isinstance(instr.right, MIRImmediate) and
-            instr.right.value == 1 and
+            isinstance(right_operand, MIRImmediate) and
+            right_operand.value == 1 and
             isinstance(instr.left, HardwareRegister) and
             isinstance(instr.dest, HardwareRegister) and
             instr.left.name == instr.dest.name):
@@ -737,13 +745,36 @@ class InstructionSelector:
                     self._emit_implied(Opcode.DEC, "A--")
                     return
 
+        # FAR POINTER ARITHMETIC: 3-byte pointers need special handling.
+        # The low 2 bytes (address within bank) are updated with 16-bit
+        # arithmetic to correctly propagate carry. The bank byte is copied
+        # unchanged from the source operand.
+        if self._is_far_pointer(instr.type_info) and op in ('+', '-'):
+            left_loc = self._get_operand_location(instr.left)
+            dest_loc = self._get_operand_location(instr.dest)
+            # 16-bit add/sub on low 2 bytes (handles page-crossing carry)
+            self._ensure_m16_mode()
+            self._emit_load('LDA', left_loc)
+            if op == '+':
+                self._emit_add(right_operand, True)  # 16-bit add (scaled)
+            else:
+                self._emit_sub(right_operand, True)  # 16-bit sub (scaled)
+            self._emit_store('STA', dest_loc)
+            # Copy bank byte unchanged from source to dest
+            self._ensure_m8_mode()
+            src_bank = self._offset_location(left_loc, 2)
+            dest_bank = self._offset_location(dest_loc, 2)
+            self._emit_load('LDA', src_bank)
+            self._emit_store('STA', dest_bank)
+            return
+
         # Get operand locations
         left_loc = self._get_operand_location(instr.left)
         dest_loc = self._get_operand_location(instr.dest)
 
         # Check if immediate value exceeds 8-bit range
         has_large_immediate = (
-            isinstance(instr.right, MIRImmediate) and instr.right.value > 0xFF
+            isinstance(right_operand, MIRImmediate) and right_operand.value > 0xFF
         )
 
         # Check if operation involves X or Y registers (always 16-bit in x16 mode)
@@ -809,25 +840,25 @@ class InstructionSelector:
                 # Load left operand from memory/stack into A
                 self._emit_load('LDA', left_loc)
 
-        # Perform operation
+        # Perform operation (use right_operand which may be scaled for pointer arithmetic)
         if op == '+':
-            self._emit_add(instr.right, is_u16)
+            self._emit_add(right_operand, is_u16)
         elif op == '-':
-            self._emit_sub(instr.right, is_u16)
+            self._emit_sub(right_operand, is_u16)
         elif op == '&':
-            self._emit_and(instr.right, is_u16)
+            self._emit_and(right_operand, is_u16)
         elif op == '|':
-            self._emit_or(instr.right, is_u16)
+            self._emit_or(right_operand, is_u16)
         elif op == '^':
-            self._emit_xor(instr.right, is_u16)
+            self._emit_xor(right_operand, is_u16)
         elif op == '<<':
-            self._emit_shift_left(instr.right, is_u16)
+            self._emit_shift_left(right_operand, is_u16)
         elif op == '>>':
-            self._emit_shift_right(instr.right, is_u16)
+            self._emit_shift_right(right_operand, is_u16)
         elif op == '*':
-            self._emit_multiply(instr.right, is_u16)
+            self._emit_multiply(right_operand, is_u16)
         elif op == '/':
-            self._emit_divide(instr.right, is_u16)
+            self._emit_divide(right_operand, is_u16)
         else:
             raise unsupported_operation("binary operation", op)
 
@@ -1099,11 +1130,13 @@ class InstructionSelector:
 
         Epilogue sequence for interrupt handlers:
         1. Deallocate stack frame (if any)
-        2. Restore all registers (reverse order of prologue pushes)
-        3. RTI
+        2. Restore scratch register WRAM contents (reverse of prologue saves)
+        3. Restore all CPU registers (reverse order of prologue pushes)
+        4. RTI
 
-        The order is critical: prologue pushes registers THEN allocates frame,
-        so epilogue must deallocate frame THEN restore registers.
+        The order is critical: prologue pushes CPU regs, then scratches, then
+        allocates frame. Epilogue must deallocate frame, restore scratches,
+        then restore CPU regs.
 
         Args:
             instr: ReturnFromInterrupt instruction
@@ -1122,18 +1155,60 @@ class InstructionSelector:
             self._emit_immediate(Opcode.ADC_IMMEDIATE, frame_size, f"Deallocate {frame_size} bytes")
             self._emit_implied(Opcode.TCS, "Set stack pointer")
 
-        # 2. Restore registers (reverse order of prologue: PHA PHX PHY PHD PHB PHP)
-        # Pop order: PLP PLB PLD PLY PLX PLA
-        # CRITICAL: Restore P first so A is restored in its original mode
-        self._emit_implied(Opcode.PLP, "Restore processor status (first - restores mode)")
+        # 2. Restore scratch register WRAM contents (reverse order of prologue saves)
+        self._emit_interrupt_scratch_restores()
+
+        # 3. Restore CPU registers (reverse order of prologue: PHP [REP] PHA PHX PHY PHD PHB)
+        # Pop order: PLB PLD PLY PLX [REP #$20] PLA PLP
+        # CRITICAL: PLA must be in m16 mode to restore the full 16-bit A (including
+        # the hidden high byte). PLP comes LAST to restore the original processor mode.
         self._emit_implied(Opcode.PLB, "Restore Data Bank")
         self._emit_implied(Opcode.PLD, "Restore Direct Page")
         self._emit_implied(Opcode.PLY, "Restore Y")
         self._emit_implied(Opcode.PLX, "Restore X")
-        self._emit_implied(Opcode.PLA, "Restore A (in original mode)")
+        self._emit_immediate(Opcode.REP_IMMEDIATE, 0x20, "Force 16-bit A for full restore")
+        self._emit_implied(Opcode.PLA, "Restore A (full 16-bit, includes hidden high byte)")
+        self._emit_implied(Opcode.PLP, "Restore processor status (restores original mode)")
 
-        # 3. Return from interrupt
+        # 4. Return from interrupt
         self._emit_implied(Opcode.RTI)
+
+    def _emit_interrupt_scratch_restores(self):
+        """
+        Restore scratch register WRAM contents from the stack for interrupt handlers.
+
+        This is the reverse of _emit_interrupt_scratch_saves() in function_gen.py.
+        Scratches are restored in reverse order since they were pushed to a LIFO stack.
+
+        Uses absolute addressing (not DP) because D's value is unknown — it was
+        saved by the prologue but not yet restored at this point in the epilogue.
+
+        After frame deallocation, the mode state is unknown (may be m8 or m16
+        depending on whether frame dealloc was needed). We ensure m8 for 1-byte
+        scratches and switch modes explicitly for 2-byte scratches.
+        """
+        if not self.reg_alloc or not self.reg_alloc.scratch_pool:
+            return
+
+        scratches = self.reg_alloc.scratch_pool.scratches
+        if not scratches:
+            return
+
+        # Ensure m8 mode for PLA/STA of 1-byte scratches
+        self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "8-bit A for scratch restores")
+
+        # Restore in reverse order (LIFO)
+        for scratch in reversed(scratches):
+            if scratch.size == 1:
+                # 1-byte scratch: PLA / STA abs (already in m8)
+                self._emit_implied(Opcode.PLA, f"Restore scratch {scratch.name}")
+                self.emitter.emit_instr(Opcode.STA_ABSOLUTE, Address(scratch.address))
+            elif scratch.size == 2:
+                # 2-byte scratch: REP #$20 / PLA / STA abs / SEP #$20
+                self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "16-bit A for 2-byte scratch restore")
+                self._emit_implied(Opcode.PLA, f"Restore scratch {scratch.name}")
+                self.emitter.emit_instr(Opcode.STA_ABSOLUTE, Address(scratch.address))
+                self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "Restore 8-bit A")
 
     # ========================================================================
     # Helper Methods
@@ -1572,6 +1647,28 @@ class InstructionSelector:
         else:
             raise InstructionSelectionError(f"Cannot offset location kind: {location.kind}")
 
+    def _is_far_pointer(self, type_info) -> bool:
+        """Check if type is a far pointer (24-bit / 3 bytes)."""
+        if hasattr(type_info, 'pointee_type'):
+            return getattr(type_info, 'is_far', False)
+        from r65.compiler.hir.types import FunctionTypeInfo
+        if isinstance(type_info, FunctionTypeInfo):
+            return type_info.is_far
+        return False
+
+    def _get_pointer_element_size(self, type_info) -> int:
+        """Get the pointee element size for pointer types, or 0 for non-pointers.
+
+        Used to scale pointer arithmetic: ptr++ on *u16 should add 2, not 1.
+        """
+        if hasattr(type_info, 'pointee_type') and type_info.pointee_type is not None:
+            from r65.compiler.hir.unified_type_utils import get_unified_type_size
+            try:
+                return get_unified_type_size(type_info.pointee_type)
+            except Exception:
+                return 0
+        return 0
+
     def _is_16bit(self, type_info) -> bool:
         """
         Check if type is 16-bit.
@@ -1749,14 +1846,33 @@ class InstructionSelector:
         Emits raw assembly instructions verbatim. The compiler assumes all
         registers may be clobbered after inline assembly.
 
+        Tracks REP/SEP instructions that change the accumulator mode so the
+        compiler's mode tracker stays in sync with actual CPU state.
+
         Args:
             instr: InlineAsm instruction containing list of assembly strings
         """
+        import re
         for asm_instr in instr.instructions:
             # Emit each assembly instruction as a raw line
             # The instruction string may contain operands, e.g., "LDA #$42"
             # Use raw emission since this is user-provided assembly
             self.emitter.emit_raw(asm_instr)
+            # Track REP/SEP mode changes to keep mode tracker in sync
+            stripped = asm_instr.strip().upper()
+            if stripped.startswith(('REP', 'SEP')) and '#' in stripped:
+                # Parse immediate value (e.g., "#$20", "#$30")
+                match = re.search(r'#\$([0-9A-Fa-f]+)', stripped)
+                if match:
+                    val = int(match.group(1), 16)
+                else:
+                    match = re.search(r'#(\d+)', stripped)
+                    val = int(match.group(1)) if match else None
+                if val is not None and val & 0x20:  # M flag (bit 5)
+                    if stripped.startswith('REP'):
+                        self.emitter.set_accu_mode_tracking(16)
+                    else:
+                        self.emitter.set_accu_mode_tracking(8)
 
     # ========================================================================
     # STATUS Flag Operations

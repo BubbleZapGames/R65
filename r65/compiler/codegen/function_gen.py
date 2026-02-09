@@ -80,7 +80,7 @@ class FunctionCodeGenerator:
 
         # Calculate prologue bytes BEFORE creating register allocator
         # This allows stack params to be allocated at their passed locations
-        prologue_bytes = self._get_prologue_stack_bytes(mir_func)
+        prologue_bytes = self._get_prologue_stack_bytes(mir_func, scratch_pool)
 
         # NOTE: We no longer need to add A register parameter save bytes.
         # Stack params are accessed directly at their passed locations without
@@ -528,9 +528,10 @@ class FunctionCodeGenerator:
         # For interrupt handlers, emit register saves BEFORE frame allocation
         # This is critical: frame allocation uses stack-relative addressing that
         # would corrupt saved registers if done before the pushes.
-        # Order: register saves -> frame allocation -> mode setup -> body
+        # Order: register saves -> scratch saves -> frame allocation -> mode setup -> body
         if mir_func.interrupt_attr:
             self._emit_interrupt_register_saves()
+            self._emit_interrupt_scratch_saves(reg_alloc.scratch_pool)
 
         # Allocate stack frame for functions with locals.
         # For large frames (>4 bytes), TSC/SBC/TCS is used which clobbers A.
@@ -654,20 +655,62 @@ class FunctionCodeGenerator:
         After this, the stack has the saved registers on top, and stack-relative
         addressing for local variables will work correctly.
 
-        CRITICAL: Save P (processor status) LAST so we can restore it FIRST in the
-        epilogue. This ensures A is saved/restored in its original mode - if NMI
-        fires in m16 mode, PHA pushes 2 bytes, and after PLP restores m16 mode,
-        PLA will correctly pop 2 bytes.
+        CRITICAL: The 65816 has a hidden high byte of A (the "B accumulator") that
+        is NOT preserved by PHA in m8 mode (PHA only pushes the low byte). If the
+        handler body switches to m16 and performs 16-bit operations, the high byte
+        gets clobbered. When the interrupted code later uses REP #$20, the corrupted
+        high byte causes wrong results.
 
-        Order of pushes: PHA, PHX, PHY, PHD, PHB, PHP
-        (Corresponding pops in epilogue: PLP, PLB, PLD, PLY, PLX, PLA)
+        Fix: Push PHP FIRST (saves mode), then REP #$20 (force m16), then PHA
+        (pushes full 16-bit A). This always saves both bytes of A regardless of
+        what mode the CPU was in when the interrupt fired.
+
+        Order of pushes: PHP, [REP #$20], PHA(16-bit), PHX, PHY, PHD, PHB
+        (Corresponding pops in epilogue: PLB, PLD, PLY, PLX, [REP #$20], PLA(16-bit), PLP)
         """
-        self._emit_instr(Opcode.PHA, comment="Save A (in current mode)")
+        self._emit_instr(Opcode.PHP, comment="Save processor status (first - before mode change)")
+        self._emit_instr(Opcode.REP_IMMEDIATE, Immediate(M_FLAG), "Force 16-bit A to save full accumulator")
+        self._emit_instr(Opcode.PHA, comment="Save A (full 16-bit, includes hidden high byte)")
         self._emit_instr(Opcode.PHX, comment="Save X")
         self._emit_instr(Opcode.PHY, comment="Save Y")
         self._emit_instr(Opcode.PHD, comment="Save Direct Page")
         self._emit_instr(Opcode.PHB, comment="Save Data Bank")
-        self._emit_instr(Opcode.PHP, comment="Save processor status (last)")
+        self._emit_instr(Opcode.SEP_IMMEDIATE, Immediate(M_FLAG), "Restore 8-bit A for handler body")
+
+    def _emit_interrupt_scratch_saves(self, scratch_pool: ScratchRegisterPool):
+        """
+        Save scratch register WRAM contents to the stack for interrupt handlers.
+
+        When an NMI fires mid-execution, the interrupted code may be using
+        scratch registers for local variables. The interrupt handler also uses
+        these scratch registers for its own temporaries. Without saving/restoring,
+        the interrupted code's values get corrupted.
+
+        Uses absolute addressing (not DP) because D's value is unknown when an
+        interrupt fires — the interrupted code may have set D = S for far pointer
+        stack params, making DP addressing read from the wrong location.
+
+        Called after _emit_interrupt_register_saves() which leaves us in m8 mode.
+
+        Args:
+            scratch_pool: Pool of scratch registers to save
+        """
+        if not scratch_pool or not scratch_pool.scratches:
+            return
+
+        for scratch in scratch_pool.scratches:
+            if scratch.size == 1:
+                # 1-byte scratch: LDA abs / PHA (already in m8)
+                self._emit_instr(Opcode.LDA_ABSOLUTE, Address(scratch.address),
+                                f"Save scratch {scratch.name}")
+                self._emit_instr(Opcode.PHA)
+            elif scratch.size == 2:
+                # 2-byte scratch: REP #$20 / LDA abs / PHA / SEP #$20
+                self._emit_instr(Opcode.REP_IMMEDIATE, Immediate(M_FLAG), "16-bit A for 2-byte scratch save")
+                self._emit_instr(Opcode.LDA_ABSOLUTE, Address(scratch.address),
+                                f"Save scratch {scratch.name}")
+                self._emit_instr(Opcode.PHA)
+                self._emit_instr(Opcode.SEP_IMMEDIATE, Immediate(M_FLAG), "Restore 8-bit A")
 
     def _emit_frame_allocation(self, frame_size: int, force_direct_stack: bool = False):
         """
@@ -718,10 +761,9 @@ class FunctionCodeGenerator:
         """
         Emit stack frame deallocation code.
 
-        For small frames (1-4 bytes), uses PLB instructions.
-        PLB always pulls exactly 1 byte regardless of accumulator mode and
-        does not clobber the accumulator (only affects DBR).
-        For larger frames, uses TSC/ADC/TCS to add to stack pointer.
+        Uses TSC/ADC/TCS to add to stack pointer. We avoid PLB because frame
+        bytes get overwritten by local variables during function execution,
+        and PLB would load those garbage bytes into DBR.
 
         Args:
             frame_size: Number of bytes to deallocate
@@ -729,20 +771,16 @@ class FunctionCodeGenerator:
         if frame_size <= 0:
             return
 
-        if frame_size <= 4:
-            # Use PLB for small frames - doesn't clobber A
-            for _ in range(frame_size):
-                self._emit_instr(Opcode.PLB, comment=f"Deallocate frame ({frame_size} bytes)")
-        else:
-            # Use TSC/ADC/TCS for larger frames
-            self._emit_instr(Opcode.REP_IMMEDIATE, Immediate(M_FLAG), "16-bit A for frame cleanup")
-            self._emit_instr(Opcode.TSC, comment="Get stack pointer")
-            self._emit_instr(Opcode.CLC, comment="Clear carry for addition")
-            self._emit_instr(Opcode.ADC_IMMEDIATE, Immediate(frame_size), f"Deallocate {frame_size} bytes")
-            self._emit_instr(Opcode.TCS, comment="Update stack pointer")
-            self._emit_instr(Opcode.SEP_IMMEDIATE, Immediate(M_FLAG), "Restore 8-bit A")
+        # Always use TSC/ADC/TCS - PLB would corrupt DBR with overwritten frame data
+        self._emit_instr(Opcode.REP_IMMEDIATE, Immediate(M_FLAG), "16-bit A for frame cleanup")
+        self._emit_instr(Opcode.TSC, comment="Get stack pointer")
+        self._emit_instr(Opcode.CLC, comment="Clear carry for addition")
+        self._emit_instr(Opcode.ADC_IMMEDIATE, Immediate(frame_size), f"Deallocate {frame_size} bytes")
+        self._emit_instr(Opcode.TCS, comment="Update stack pointer")
+        self._emit_instr(Opcode.SEP_IMMEDIATE, Immediate(M_FLAG), "Restore 8-bit A")
 
-    def _get_prologue_stack_bytes(self, mir_func: MIRFunction) -> int:
+    def _get_prologue_stack_bytes(self, mir_func: MIRFunction,
+                                   scratch_pool: ScratchRegisterPool = None) -> int:
         """
         Calculate bytes pushed by prologue that affect stack parameter offsets.
 
@@ -757,6 +795,7 @@ class FunctionCodeGenerator:
 
         Args:
             mir_func: MIR function
+            scratch_pool: Optional scratch register pool (for interrupt scratch saves)
 
         Returns:
             Number of bytes pushed by prologue
@@ -773,6 +812,12 @@ class FunctionCodeGenerator:
 
         # Note: Mode transitions no longer push PHP in the simplified system
         # REP/SEP for mode changes don't push anything
+
+        # Interrupt handler scratch register saves
+        # Each scratch register's WRAM contents are pushed to the stack
+        if mir_func.interrupt_attr and scratch_pool and scratch_pool.scratches:
+            for scratch in scratch_pool.scratches:
+                bytes_pushed += scratch.size
 
         # Register preservation pushes
         if mir_func.preserves_attr:
@@ -862,8 +907,10 @@ class FunctionCodeGenerator:
         Prologue pushes: STATUS, A, X, Y, D, DBR
         Epilogue pops:   DBR, D, Y, X, A, STATUS
 
-        For interrupt handlers, we must ensure A is in the correct mode before
-        popping (8-bit mode for interrupt handlers, since that's the default entry mode).
+        Note: Interrupt handlers use select_return_from_interrupt() instead of
+        this method. Their register save/restore is handled separately because
+        they always save/restore the full 16-bit A (via REP #$20 before PHA/PLA).
+
         PLA is mode-sensitive: it pulls 1 byte in m8 mode, 2 bytes in m16 mode.
         """
         if not mir_func.preserves_attr:
@@ -874,13 +921,6 @@ class FunctionCodeGenerator:
 
         for reg in pop_order:
             if reg in preserved_regs:
-                # For A register in interrupt handlers, ensure we're in 8-bit mode
-                # since interrupt handlers always enter in m8 mode (default).
-                # This prevents stack corruption when the handler body switches to m16.
-                if reg == 'A' and mir_func.interrupt_attr:
-                    self._emit_instr(Opcode.SEP_IMMEDIATE, Immediate(M_FLAG),
-                                    "Ensure 8-bit mode for PLA")
-
                 pull_opcode = RegisterMappings.PULL_OPCODES.get(reg)
                 if pull_opcode:
                     self._emit_instr(pull_opcode, comment=f"Restore {reg}")
