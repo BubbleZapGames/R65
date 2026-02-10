@@ -667,6 +667,12 @@ class ConstEvaluator:
         elif isinstance(stmt, ast.Block):
             return self._transpile_block(stmt, indent)
 
+        elif isinstance(stmt, ast.AsmStmt):
+            raise HIRError("Inline assembly (asm!) cannot be used in const fn")
+
+        elif isinstance(stmt, ast.ConstAssertStmt):
+            raise HIRError("const_assert! is not supported in const fn")
+
         else:
             raise HIRError(f"Unsupported statement in const fn: {type(stmt).__name__}")
 
@@ -799,6 +805,33 @@ class ConstEvaluator:
             raise HIRError(
                 f"Cannot access hardware register '{expr.name}' in const fn"
             )
+
+        elif isinstance(expr, ast.StringLiteral):
+            raise HIRError("String literals are not supported in const fn")
+
+        elif isinstance(expr, ast.ArrayIndex):
+            raise HIRError("Array indexing is not supported in const fn")
+
+        elif isinstance(expr, ast.FieldAccess):
+            raise HIRError("Struct field access is not supported in const fn")
+
+        elif isinstance(expr, ast.Dereference):
+            raise HIRError("Pointer dereference is not supported in const fn")
+
+        elif isinstance(expr, ast.AddressOf):
+            raise HIRError("Address-of operator is not supported in const fn")
+
+        elif isinstance(expr, (ast.ArrayLiteralExpr, ast.ArrayFillExpr)):
+            raise HIRError("Array expressions are not supported in const fn")
+
+        elif isinstance(expr, ast.StructLiteralExpr):
+            raise HIRError("Struct literals are not supported in const fn")
+
+        elif isinstance(expr, ast.MultiAssignment):
+            raise HIRError("Multiple assignment is not supported in const fn")
+
+        elif isinstance(expr, ast.IncludeBytesExpr):
+            raise HIRError("include_bytes! is not supported in const fn")
 
         else:
             raise HIRError(f"Unsupported expression in const fn: {type(expr).__name__}")

@@ -490,6 +490,32 @@ class TestConstFnErrors:
         with pytest.raises(HIRError, match="Cannot access hardware register 'A'"):
             build_hir(source)
 
+    def test_asm_in_const_fn(self):
+        """Inline assembly in const fn should error."""
+        with pytest.raises(HIRError, match="Inline assembly.*cannot be used in const fn"):
+            build_hir("""
+            const fn bad() -> u8 { asm!("NOP"); return 0; }
+            """)
+
+    def test_unsupported_expressions_in_const_fn(self):
+        """Unsupported expression types give meaningful error messages."""
+        with pytest.raises(HIRError, match="Array indexing is not supported in const fn"):
+            build_hir("""
+            #[ram]
+            static mut BUF: [u8; 4] = [0; 4];
+            const fn bad() -> u8 { return BUF[0]; }
+            """)
+        with pytest.raises(HIRError, match="Pointer dereference is not supported in const fn"):
+            build_hir("""
+            const fn bad(p: *u8) -> u8 { return *p; }
+            """)
+        with pytest.raises(HIRError, match="Address-of operator is not supported in const fn"):
+            build_hir("""
+            #[ram]
+            static mut VAL: u8 = 0;
+            const fn bad() -> u16 { return &VAL as u16; }
+            """)
+
     def test_infinite_loop_caught(self):
         """Infinite loops (while, loop, nested) are caught by iteration limit."""
         with pytest.raises(HIRError, match="exceeded maximum iteration limit"):
