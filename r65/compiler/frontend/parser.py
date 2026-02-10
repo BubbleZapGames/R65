@@ -1592,6 +1592,14 @@ class ASTBuilder(Transformer):
         # items[0] is pattern, items[1] is body expression
         return ast.MatchArm(pattern=items[0], body=items[1])
 
+    def pattern_range(self, items):
+        """Range pattern (e.g., 0..5 or 0..=5)."""
+        items = self._filter_tokens(items, keep_types={'INTEGER', 'DOTDOT', 'DOTDOTEQ'})
+        start_val = self._parse_integer(items[0].value)
+        inclusive = items[1].type == 'DOTDOTEQ'
+        end_val = self._parse_integer(items[2].value)
+        return ast.RangePattern(start=start_val, end=end_val, inclusive=inclusive)
+
     def pattern_literal(self, items):
         """Literal pattern."""
         items = self._filter_tokens(items, keep_types={'INTEGER', 'BOOLEAN'})

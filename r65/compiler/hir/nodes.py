@@ -633,6 +633,14 @@ class HIRIdentifierPattern(HIRPattern):
 
 
 @dataclass
+class HIRRangePattern(HIRPattern):
+    """Range pattern (e.g., 0..5 or 0..=5)."""
+    start: int = 0
+    end: int = 0
+    inclusive: bool = True
+
+
+@dataclass
 class HIROrPattern(HIRPattern):
     """Or pattern (p1 | p2 | ...)."""
     patterns: List[HIRPattern] = field(default_factory=list)

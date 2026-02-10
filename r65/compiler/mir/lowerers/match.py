@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Union, Dict, Optional, Tuple
 from r65.compiler.hir import (
     HIRMatchExpression,
     HIRLiteralPattern, HIREnumPattern, HIRWildcardPattern,
-    HIRIdentifierPattern, HIROrPattern,
+    HIRIdentifierPattern, HIRRangePattern, HIROrPattern,
 )
 from r65.compiler.mir.nodes import (
     VirtualRegister, HardwareRegister, Immediate,
@@ -110,6 +110,10 @@ class MatchLowerer:
             elif isinstance(arm.pattern, HIREnumPattern):
                 # Enum patterns map to integer values
                 pattern_values.append((arm.pattern.variant_value, i))
+            elif isinstance(arm.pattern, HIRRangePattern):
+                upper = arm.pattern.end + 1 if arm.pattern.inclusive else arm.pattern.end
+                for v in range(arm.pattern.start, upper):
+                    pattern_values.append((v, i))
             elif isinstance(arm.pattern, HIRWildcardPattern) or isinstance(arm.pattern, HIRIdentifierPattern):
                 has_catchall = True
                 # Keep track but don't add to pattern_values
@@ -468,6 +472,46 @@ class MatchLowerer:
             # Binding happens in the arm block
             self.emit(Jump(target=match_block.block_id))
             self.ctx.add_cfg_edge(self.ctx.current_block, match_block)
+
+        elif isinstance(pattern, HIRRangePattern):
+            upper = pattern.end if pattern.inclusive else pattern.end - 1
+            if pattern.start == upper:
+                # Single-value range: optimize to equality check
+                self.emit(Compare(left=scrutinee_vreg, right=Immediate(pattern.start), comparison="==", type_info=scrutinee_type))
+                self.emit(CondBranch(
+                    condition=None,
+                    true_target=match_block.block_id,
+                    false_target=no_match_block.block_id,
+                    comparison="=="
+                ))
+                self.ctx.add_cfg_edge(self.ctx.current_block, match_block)
+                self.ctx.add_cfg_edge(self.ctx.current_block, no_match_block)
+            else:
+                # Two comparisons: scrutinee >= start AND scrutinee <= upper
+                in_range_block = self.ctx.new_block()
+
+                # Check: scrutinee >= start
+                self.emit(Compare(left=scrutinee_vreg, right=Immediate(pattern.start), comparison=">=", type_info=scrutinee_type))
+                self.emit(CondBranch(
+                    condition=None,
+                    true_target=in_range_block.block_id,
+                    false_target=no_match_block.block_id,
+                    comparison=">="
+                ))
+                self.ctx.add_cfg_edge(self.ctx.current_block, in_range_block)
+                self.ctx.add_cfg_edge(self.ctx.current_block, no_match_block)
+
+                # Check: scrutinee <= upper
+                self.ctx.set_current_block(in_range_block)
+                self.emit(Compare(left=scrutinee_vreg, right=Immediate(upper), comparison="<=", type_info=scrutinee_type))
+                self.emit(CondBranch(
+                    condition=None,
+                    true_target=match_block.block_id,
+                    false_target=no_match_block.block_id,
+                    comparison="<="
+                ))
+                self.ctx.add_cfg_edge(in_range_block, match_block)
+                self.ctx.add_cfg_edge(in_range_block, no_match_block)
 
         elif isinstance(pattern, HIROrPattern):
             # Or pattern: try each sub-pattern, jump to match_block if any matches

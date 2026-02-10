@@ -421,6 +421,13 @@ class ExpressionBuilder:
             self.symbol_table.declare(pattern.name, symbol)
             return hir.HIRIdentifierPattern(name=pattern.name, symbol=symbol)
 
+        elif isinstance(pattern, ast.RangePattern):
+            return hir.HIRRangePattern(
+                start=pattern.start,
+                end=pattern.end,
+                inclusive=pattern.inclusive
+            )
+
         elif isinstance(pattern, ast.OrPattern):
             patterns = [self._build_pattern(p) for p in pattern.patterns]
             return hir.HIROrPattern(patterns=patterns)

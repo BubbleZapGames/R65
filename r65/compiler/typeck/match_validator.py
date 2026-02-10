@@ -8,8 +8,8 @@ and exhaustiveness analysis.
 from typing import Callable
 from r65.compiler.hir import (
     HIRMatchExpression, HIRLiteralPattern, HIREnumPattern,
-    HIRWildcardPattern, HIRIdentifierPattern, HIROrPattern,
-    BasicTypeInfo
+    HIRWildcardPattern, HIRIdentifierPattern, HIRRangePattern,
+    HIROrPattern, BasicTypeInfo
 )
 from r65.compiler.hir.types import TypeInfo, EnumTypeInfo
 from r65.compiler.typeck.errors import TypeCheckError
@@ -97,6 +97,10 @@ class MatchValidator:
                 covered_values.add(pattern.value)
             elif isinstance(pattern, HIREnumPattern):
                 covered_variants.add(pattern.variant_name)
+            elif isinstance(pattern, HIRRangePattern):
+                end = pattern.end + 1 if pattern.inclusive else pattern.end
+                for v in range(pattern.start, end):
+                    covered_values.add(v)
             elif isinstance(pattern, HIROrPattern):
                 for subpat in pattern.patterns:
                     collect_patterns(subpat)
@@ -168,6 +172,19 @@ class MatchValidator:
             # Set the symbol's type to the scrutinee type
             pattern.symbol.var_type = scrutinee_type
             return True
+
+        elif isinstance(pattern, HIRRangePattern):
+            # Range pattern only matches integer types
+            if scrutinee_type.name not in ('u8', 'i8', 'u16', 'i16'):
+                raise TypeCheckError(f"Cannot use range pattern against {scrutinee_type}")
+            # Validate range is non-empty
+            if pattern.inclusive:
+                if pattern.start > pattern.end:
+                    raise TypeCheckError("Empty range pattern")
+            else:
+                if pattern.start >= pattern.end:
+                    raise TypeCheckError("Empty range pattern")
+            return False
 
         elif isinstance(pattern, HIROrPattern):
             # Or pattern: check all sub-patterns

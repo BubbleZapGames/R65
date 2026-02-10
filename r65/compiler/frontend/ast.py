@@ -739,6 +739,14 @@ class IdentifierPattern(Pattern):
 
 
 @dataclass
+class RangePattern(Pattern):
+    """Range pattern (e.g., 0..5 or 0..=5)."""
+    start: int
+    end: int
+    inclusive: bool  # True for ..=, False for ..
+
+
+@dataclass
 class OrPattern(Pattern):
     """Or pattern (pattern1 | pattern2 | ...)."""
     patterns: List[Pattern]

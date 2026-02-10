@@ -270,10 +270,14 @@ match_arm: pattern "=>" expr
 
 pattern_or: pattern_primary ("|" pattern_primary)*
 
-?pattern_primary: pattern_literal
+?pattern_primary: pattern_range
+                | pattern_literal
                 | pattern_enum
                 | pattern_wildcard
                 | pattern_ident
+
+pattern_range: INTEGER DOTDOTEQ INTEGER
+             | INTEGER DOTDOT INTEGER
 
 pattern_literal: INTEGER | BOOLEAN
 pattern_enum: IDENT "::" IDENT
@@ -511,6 +515,7 @@ OR.10: "||"
 RARROW.10: "->"
 PLUSPLUS.10: "++"
 MINUSMINUS.10: "--"
+DOTDOTEQ.11: "..="
 DOTDOT.10: ".."
 
 // Compound assignment operators (must come before single-char operators)
