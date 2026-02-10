@@ -206,15 +206,17 @@ class ExpressionBuilder:
                 if BuiltinRegistry.is_builtin(func_name):
                     builtin = BuiltinRegistry.get_builtin(func_name)
 
-                    # Special handling for size_of - try const evaluation first
-                    if builtin and builtin.kind.value == "type_info" and func_name == "size_of":
+                    # Special handling for type_info builtins - const evaluate at HIR build time
+                    if builtin and builtin.kind.value == "type_info" and func_name in ("size_of", "offset_of"):
                         try:
                             # Try to evaluate at compile time using const evaluator
                             const_value = self.const_evaluator.eval(expr)
                             if isinstance(const_value, int):
                                 return hir.HIRIntegerLiteral(value=const_value, source_loc=src_loc)
                         except HIRError:
-                            # If const evaluation fails, fall back to runtime call
+                            if func_name == "offset_of":
+                                raise  # offset_of is const-only, propagate errors
+                            # size_of: if const evaluation fails, fall back to runtime call
                             pass
 
                     # Mark this as a built-in function call

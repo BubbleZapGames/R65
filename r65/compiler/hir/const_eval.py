@@ -234,7 +234,11 @@ class ConstEvaluator:
         # Handle size_of specifically
         if func_name == "size_of":
             return self._eval_size_of(expr)
-        
+
+        # Handle offset_of specifically
+        if func_name == "offset_of":
+            return self._eval_offset_of(expr)
+
         # Handle cfg! specifically - requires cfg evaluator to be passed
         if func_name == "cfg":
             if not hasattr(self, 'cfg_evaluator') or self.cfg_evaluator is None:
@@ -255,6 +259,49 @@ class ConstEvaluator:
         except Exception as e:
             # If type not yet available (e.g., struct declared later), defer evaluation
             raise HIRError(f"Cannot evaluate size_of at this time: {e}")
+
+    def _eval_offset_of(self, expr: ast.FunctionCall) -> int:
+        """Evaluate offset_of builtin function: offset_of(StructName, field_name)."""
+        if len(expr.args) != 2:
+            raise HIRError("offset_of expects exactly 2 arguments: offset_of(StructType, field)")
+
+        # First arg: struct type name (must be an identifier)
+        struct_arg = expr.args[0]
+        if not isinstance(struct_arg, ast.Identifier):
+            raise HIRError("offset_of first argument must be a struct type name")
+
+        struct_name = struct_arg.name
+        symbol = self.symbol_table.lookup(struct_name)
+        if symbol is None:
+            raise HIRError(f"Undefined struct in offset_of: {struct_name}")
+
+        struct_def = symbol.definition
+        if struct_def is None or not hasattr(struct_def, 'fields'):
+            raise HIRError(f"'{struct_name}' is not a struct type")
+
+        # Second arg: field name (must be an identifier)
+        field_arg = expr.args[1]
+        if not isinstance(field_arg, ast.Identifier):
+            raise HIRError("offset_of second argument must be a field name")
+
+        field_name = field_arg.name
+
+        # Check if this is an HIR struct (has pre-computed offsets)
+        from r65.compiler.hir.nodes import HIRStructDecl
+        if isinstance(struct_def, HIRStructDecl):
+            for field in struct_def.fields:
+                if field.name == field_name:
+                    return field.offset
+            raise HIRError(f"Struct '{struct_name}' has no field '{field_name}'")
+
+        # AST struct: compute offset by summing field sizes
+        offset = 0
+        for field in struct_def.fields:
+            if field.name == field_name:
+                return offset
+            offset += get_unified_type_size(field.field_type, self.symbol_table)
+
+        raise HIRError(f"Struct '{struct_name}' has no field '{field_name}'")
 
     def _eval_method_call(self, expr: ast.FunctionCall) -> int:
         """Evaluate method call in const expression (e.g., array.len())."""

@@ -454,3 +454,37 @@ class TestStackArgumentDrift:
         ''', ExpectedState(A=10))  # 7 + 3 = 10
 
         assert result.success, f"Failures: {result.failures}"
+
+
+class TestOffsetOf:
+    """Test offset_of() built-in function end-to-end."""
+
+    @pytest.fixture
+    def e2e(self):
+        return E2ETest()
+
+    def test_offset_of_struct_field(self, e2e):
+        """Test offset_of returns correct byte offset for struct field."""
+        result = e2e.run('''
+            struct Player { x: u8, y: u8, health: u16 }
+
+            #[entry]
+            fn main() {
+                A = offset_of(Player, health);
+            }
+        ''', ExpectedState(A=2))
+
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_offset_of_first_field(self, e2e):
+        """Test offset_of first field is 0."""
+        result = e2e.run('''
+            struct Player { x: u8, y: u8, health: u16 }
+
+            #[entry]
+            fn main() {
+                A = offset_of(Player, x);
+            }
+        ''', ExpectedState(A=0))
+
+        assert result.success, f"Failures: {result.failures}"

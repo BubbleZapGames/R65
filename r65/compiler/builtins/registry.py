@@ -161,13 +161,20 @@ class BuiltinRegistry:
             instruction='ROR'
         ),
 
-        # Type information (1 parameter: type name, const evaluation only, returns value)
+        # Type information (const evaluation only, returns value)
         'size_of': BuiltinSignature(
             name='size_of',
             kind=BuiltinKind.TYPE_INFO,
             param_count=1,
             returns_value=True,
             description='Get size of type in bytes (const evaluation only)'
+        ),
+        'offset_of': BuiltinSignature(
+            name='offset_of',
+            kind=BuiltinKind.TYPE_INFO,
+            param_count=2,
+            returns_value=True,
+            description='Get byte offset of struct field'
         ),
         
         # Conditional compilation (1 parameter: cfg identifier/key-value, const evaluation only, returns boolean)
