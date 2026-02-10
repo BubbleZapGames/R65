@@ -347,15 +347,17 @@ class TestBRegisterReturns:
 
         func_section = asm_output[func_start:func_start + 500]
 
-        # Should use PLB for frame cleanup (doesn't clobber A, X, Y, or B)
-        has_plb = 'PLB' in func_section
-        assert has_plb, \
-            f"Function returning B should use PLB for frame cleanup\nOutput:\n{func_section}"
+        # Should use PLA for frame cleanup (preserves B in accumulator high byte)
+        # PLB would corrupt DBR with overwritten frame data, and TSC/ADC/TCS
+        # would destroy B. PLA only clobbers A low byte, preserving B.
+        has_pla = 'PLA' in func_section
+        assert has_pla, \
+            f"Function returning B should use PLA for frame cleanup\nOutput:\n{func_section}"
 
-        # Should NOT need XBA workaround or TSC/TCS for small frame
-        has_xba = 'XBA' in func_section and 'Save A in B' in func_section
-        assert not has_xba, \
-            f"Function returning B should NOT use XBA workaround\nOutput:\n{func_section}"
+        # Should NOT use TSC/TCS for small frame (would destroy B)
+        has_tsc = 'TSC' in func_section
+        assert not has_tsc, \
+            f"Function returning B should NOT use TSC/TCS (destroys B)\nOutput:\n{func_section}"
 
     def test_return_a_no_frame_with_coalescence(self):
         """Test that returning A with coalesceable vreg needs no frame at all.

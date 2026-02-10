@@ -1931,14 +1931,14 @@ fn is_pal() -> bool {
 }
 
 // Set pixelization/mosaic effect (user-friendly version)
-// level: 0 = off, 1-16 = min to max pixelization
+// level: 0 = off, 1 = min pixelization, 16 = max pixelization
 // bgs: which backgrounds to apply mosaic to (use SCREEN_BG1, etc.)
 // Usage: set_pixelize(4, SCREEN_BG1 | SCREEN_BG2);
 far fn set_pixelize(level: u8, bgs: u16) {
     if level == 0 {
         MOSAIC = 0;
     } else {
-        let val: u8 = level - 1;
+        let val: u8 = 16 - level;
         val = val << 4;
         val = val | (bgs as u8);
         MOSAIC = val;

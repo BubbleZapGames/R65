@@ -436,8 +436,19 @@ class ControlFlowInstructionSelector(BaseSelector):
 
         # Check current tracked mode vs required exit mode
         current_mode_bits = self.parent.emitter.get_accu_mode()
-        current_is_m16 = (current_mode_bits == 16)
         exit_is_m16 = (exit_mode == ModeState.M16)
+
+        if current_mode_bits is None:
+            # Mode unknown (e.g., after inline asm) - unconditionally restore
+            if exit_is_m16:
+                self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "Restore m16 for return (mode unknown after asm!)")
+                self.parent.emitter.emit_accu_mode(16)
+            else:
+                self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "Restore m8 for return (mode unknown after asm!)")
+                self.parent.emitter.emit_accu_mode(8)
+            return
+
+        current_is_m16 = (current_mode_bits == 16)
 
         if current_is_m16 == exit_is_m16:
             return  # Already in correct mode
@@ -731,23 +742,22 @@ class ControlFlowInstructionSelector(BaseSelector):
         return_count = self._get_return_register_count()
         is_far = self.current_function and self.current_function.is_far
 
-        # When B is a return register, it doesn't consume an X/Y slot.
+        # When B is a return register, it doesn't consume an A/X/Y slot.
         # Adjust return_count for stack cleanup purposes: B is part of
-        # the accumulator, so X/Y are still free for address manipulation.
+        # the accumulator high byte, so A/X/Y are still free for address manipulation.
         # For cleanup, what matters is how many of A/X/Y are occupied.
         returns_b = self._function_returns_b()
-        if returns_b and return_count >= 2:
-            # B replaces what would have been X, so one fewer X/Y slot used
+        if returns_b:
             effective_return_count = return_count - 1
         else:
             effective_return_count = return_count
 
         if is_far:
-            self._emit_far_stack_cleanup(frame_size, stack_param_bytes, effective_return_count)
+            self._emit_far_stack_cleanup(frame_size, stack_param_bytes, effective_return_count, returns_b)
         else:
-            self._emit_near_stack_cleanup(frame_size, stack_param_bytes, effective_return_count)
+            self._emit_near_stack_cleanup(frame_size, stack_param_bytes, effective_return_count, returns_b)
 
-    def _emit_near_stack_cleanup(self, frame_size: int, stack_param_bytes: int, return_count: int):
+    def _emit_near_stack_cleanup(self, frame_size: int, stack_param_bytes: int, return_count: int, returns_b: bool = False):
         """
         Emit stack cleanup for near functions (2-byte return address).
 
@@ -757,6 +767,7 @@ class ControlFlowInstructionSelector(BaseSelector):
             frame_size: Number of bytes allocated for stack frame (0 if no frame)
             stack_param_bytes: Number of parameter bytes to clean
             return_count: Number of registers used for return (0-3)
+            returns_b: True if function returns a value in B register
         """
         from r65.compiler.codegen.constants import M_FLAG
 
@@ -764,12 +775,12 @@ class ControlFlowInstructionSelector(BaseSelector):
 
         # Special case: frame-only cleanup (no stack params).
         # No return address relocation needed - just deallocate the frame.
-        # Uses PLB which doesn't clobber any registers (safe for B tuple returns
-        # and when all of A/X/Y are occupied by return values or preserved regs).
+        # For small frames, use PLA-based deallocation which preserves B, X, Y,
+        # and DBR (PLB would corrupt DBR, TSC/ADC/TCS would clobber B and
+        # require saving A to a register which could clobber preserved regs).
         if stack_param_bytes == 0 and frame_size > 0:
             if frame_size <= 4:
-                for _ in range(frame_size):
-                    self._emit_implied(Opcode.PLB, f"Deallocate frame ({frame_size} bytes)")
+                self._emit_pla_frame_dealloc(frame_size, return_count)
                 return
             current_mode = self.parent.emitter.get_accu_mode()
             self._emit_sp_adjust_preserving_a(frame_size, return_count, current_mode)
@@ -1057,22 +1068,60 @@ class ControlFlowInstructionSelector(BaseSelector):
         elif restore_op is not None:
             self._emit_implied(restore_op, f"Restore return value A from {'X' if restore_op == Opcode.TXA else 'Y'}")
 
-    def _emit_far_stack_cleanup(self, frame_size: int, stack_param_bytes: int, return_count: int):
+    def _emit_pla_frame_dealloc(self, frame_size: int, return_count: int):
+        """
+        Deallocate a small stack frame using PLA instructions.
+
+        PLA pops 1 byte per call (in m8 mode), clobbering A's low byte but
+        preserving B (accumulator high byte), X, Y, and DBR. This makes it
+        safe for B returns (TSC/ADC/TCS would destroy B) and for functions
+        with preserved registers (TAX/TAY would clobber them).
+
+        When A is a return value (return_count >= 1), we save A into the
+        top frame byte via STA frame_size,S. After all PLAs, the last PLA
+        naturally restores A from that byte.
+
+        Args:
+            frame_size: Number of bytes to deallocate (should be <= 4)
+            return_count: Number of A/X/Y registers used for return (0-3),
+                         NOT counting B
+        """
+        from r65.compiler.codegen.constants import M_FLAG
+
+        current_mode = self.parent.emitter.get_accu_mode()
+
+        # Need m8 mode for 1-byte-per-PLA deallocation
+        if current_mode != 8:
+            self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "m8 for frame dealloc")
+            self.parent.emitter.emit_accu_mode(8)
+
+        # If A is a return value, save it into the top frame byte.
+        # After all PLAs pop through the frame, the last PLA restores A.
+        if return_count >= 1:
+            self._emit_stack_relative(Opcode.STA_STACK, frame_size,
+                                      "Save A return to top of frame")
+
+        # PLA pops 1 byte each, deallocating the frame
+        for _ in range(frame_size):
+            self._emit_implied(Opcode.PLA, f"Deallocate frame ({frame_size} bytes)")
+
+        # Restore mode if we changed it
+        if current_mode != 8:
+            self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "Restore m16")
+            self.parent.emitter.emit_accu_mode(16)
+
+    def _emit_far_stack_cleanup(self, frame_size: int, stack_param_bytes: int, return_count: int, returns_b: bool = False):
         """
         Emit stack cleanup for far functions (3-byte return address).
 
         Far functions have bank byte + address on stack. More complex
         because we need to handle 3 bytes instead of 2.
 
-        IMPORTANT: Must preserve return values. Strategy:
-        - Small frames (1-4 bytes), no stack params: Use PLB to pop frame (doesn't clobber A/X/Y)
-        - Large frames (>4 bytes): Transfer A to free register, do TSC/ADC/TCS, transfer back
-        - No free registers: Save A to stack, adjust SP with offset accounting, restore
-
         Args:
             frame_size: Number of bytes allocated for stack frame (0 if no frame)
             stack_param_bytes: Number of parameter bytes to clean
             return_count: Number of registers used for return (0-3)
+            returns_b: True if function returns a value in B register
         """
         from r65.compiler.codegen.constants import M_FLAG
 
@@ -1080,20 +1129,14 @@ class ControlFlowInstructionSelector(BaseSelector):
 
         # Special case: frame-only cleanup (no stack params)
         # When there are no stack params, we don't need to move the return address.
+        # For small frames, use PLA-based deallocation which preserves B, X, Y,
+        # and DBR (PLB would corrupt DBR, TSC/ADC/TCS would clobber B and
+        # require saving A to a register which could clobber preserved regs).
         if stack_param_bytes == 0 and frame_size > 0:
-            current_mode = self.parent.emitter.get_accu_mode()
-
-            # Optimization: For small frames (1-4 bytes), use PLB which is much
-            # more efficient than TSC/ADC/TCS. PLB always pulls exactly 1 byte
-            # regardless of accumulator mode and does not clobber A, X, or Y
-            # (only affects DBR which is acceptable at frame deallocation).
             if frame_size <= 4:
-                for _ in range(frame_size):
-                    self._emit_implied(Opcode.PLB, f"Deallocate frame ({frame_size} bytes)")
+                self._emit_pla_frame_dealloc(frame_size, return_count)
                 return
-
-            # For larger frames, use TSC/ADC/TCS approach.
-            # Use helper for TSC/ADC/TCS with A preservation
+            current_mode = self.parent.emitter.get_accu_mode()
             self._emit_sp_adjust_preserving_a(frame_size, return_count, current_mode)
             return
 

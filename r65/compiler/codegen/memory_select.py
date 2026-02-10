@@ -787,9 +787,8 @@ class MemoryOperationSelector(BaseSelector):
         """
         Emit 16-bit indirect load (two 8-bit operations).
 
-        The 65816's indirect addressing instructions always operate on 8 bits,
-        even in 16-bit accumulator mode. For 16-bit values, we perform two
-        8-bit loads at consecutive addresses.
+        For 16-bit values, we perform two 8-bit loads at consecutive addresses.
+        Must be in m8 mode since indirect addressing is affected by the M flag.
 
         Strategy: Use Y register to access high byte at offset +1
         - LDY #0 (if not already indexed)
@@ -805,6 +804,9 @@ class MemoryOperationSelector(BaseSelector):
             is_far: True for far pointer (24-bit)
             index_register: Optional index register (only 'Y' supported)
         """
+        # Byte-by-byte operations require 8-bit accumulator mode
+        self._ensure_m8_mode()
+
         # Get opcode for indirect access - always use Y-indexed for 16-bit
         opcode_load, operand = self._get_indirect_opcode('LDA', ptr_loc, is_far, 'Y')
 
@@ -831,8 +833,8 @@ class MemoryOperationSelector(BaseSelector):
         """
         Emit 16-bit indirect store (two 8-bit operations).
 
-        The 65816's indirect addressing instructions always operate on 8 bits.
         For 16-bit values, we perform two 8-bit stores at consecutive addresses.
+        Must be in m8 mode since indirect addressing is affected by the M flag.
 
         Args:
             ptr_loc: Physical location of pointer
@@ -841,6 +843,9 @@ class MemoryOperationSelector(BaseSelector):
             is_far: True for far pointer (24-bit)
             index_register: Optional index register (only 'Y' supported)
         """
+        # Byte-by-byte operations require 8-bit accumulator mode
+        self._ensure_m8_mode()
+
         # Get opcode for indirect access - always use Y-indexed for 16-bit
         opcode_store, operand = self._get_indirect_opcode('STA', ptr_loc, is_far, 'Y')
 
@@ -876,12 +881,16 @@ class MemoryOperationSelector(BaseSelector):
         Emit 16-bit indirect load through stack-relative pointer.
 
         Uses (d,S),Y addressing mode for near pointers on the stack.
+        Must be in m8 mode since indirect addressing is affected by the M flag.
 
         Args:
             ptr_loc: Physical location of pointer (on stack)
             dest_loc: Destination location for loaded value
             index_register: Optional index register (only 'Y' supported)
         """
+        # Byte-by-byte operations require 8-bit accumulator mode
+        self._ensure_m8_mode()
+
         opcode_load, operand = self._get_stack_indirect_opcode('LDA', ptr_loc, False, 'Y')
 
         if index_register == 'Y':
@@ -906,6 +915,7 @@ class MemoryOperationSelector(BaseSelector):
         Emit 16-bit indirect store through stack-relative pointer.
 
         Uses (d,S),Y addressing mode for near pointers on the stack.
+        Must be in m8 mode since indirect addressing is affected by the M flag.
 
         Args:
             ptr_loc: Physical location of pointer (on stack)
@@ -913,6 +923,9 @@ class MemoryOperationSelector(BaseSelector):
             source: MIR source operand (for immediate value extraction)
             index_register: Optional index register (only 'Y' supported)
         """
+        # Byte-by-byte operations require 8-bit accumulator mode
+        self._ensure_m8_mode()
+
         opcode_store, operand = self._get_stack_indirect_opcode('STA', ptr_loc, False, 'Y')
 
         if index_register == 'Y':
@@ -943,12 +956,24 @@ class MemoryOperationSelector(BaseSelector):
     def _emit_16bit_far_ptr_load_via_dbr(self, ptr_loc, dest_loc, index_register: str = None):
         """
         Emit 16-bit indirect load through far pointer on stack using DBR manipulation.
+        Must be in m8 mode since indirect addressing is affected by the M flag.
+
+        Stores each loaded byte directly to dest rather than using PHA/PLA,
+        which avoids stack offset corruption and DBR mis-restore.
+        Stack-relative STA and zeropage STA don't use DBR, so storing while
+        DBR is set to the far pointer's bank is safe.
 
         Args:
             ptr_loc: Physical location of pointer (on stack)
             dest_loc: Destination location for loaded value
             index_register: Optional index register (only 'Y' supported)
         """
+        from dataclasses import replace
+        from r65.compiler.codegen.register_alloc import LocationKind
+
+        # Byte-by-byte operations require 8-bit accumulator mode
+        self._ensure_m8_mode()
+
         stack_offset = ptr_loc.stack_offset
 
         # Save current DBR
@@ -960,43 +985,41 @@ class MemoryOperationSelector(BaseSelector):
         self._emit_instr(Opcode.PHA, None, "Push bank")
         self._emit_instr(Opcode.PLB, None, "Set DBR to ptr bank")
 
-        # Adjusted offset due to PHB
+        # Adjusted pointer offset due to PHB (+1 byte on stack)
         adjusted_offset = stack_offset + 1
         operand = StackOffset(adjusted_offset)
+
+        # Adjust dest_loc for PHB stack shift if it's stack-relative
+        if dest_loc.kind == LocationKind.STACK:
+            adj_dest = replace(dest_loc, stack_offset=dest_loc.stack_offset + 1)
+            adj_dest_high = self.parent._offset_location(adj_dest, 1)
+        else:
+            adj_dest = dest_loc
+            adj_dest_high = self.parent._offset_location(dest_loc, 1)
 
         if index_register == 'Y':
             pass  # Caller set up Y
         else:
             self._emit_instr(Opcode.LDY_IMMEDIATE, Immediate(0), "Set Y=0 for indirect")
 
-        # Load and store low byte
+        # Load low byte through far pointer and store directly to dest
         self._emit_instr(Opcode.LDA_STACK_INDIRECT_Y, operand, "Load low byte through far pointer")
-        # Need to save A temporarily since we need to restore DBR before storing
-        self._emit_instr(Opcode.PHA, None, "Save low byte")
+        self._emit_load_store('STA', adj_dest)
 
         # Increment Y for high byte
         self._emit_instr(Opcode.INY, None, "Increment for high byte")
 
-        # Load high byte
+        # Load high byte through far pointer and store directly to dest+1
         self._emit_instr(Opcode.LDA_STACK_INDIRECT_Y, operand, "Load high byte through far pointer")
-        # Save high byte
-        self._emit_instr(Opcode.PHA, None, "Save high byte")
+        self._emit_load_store('STA', adj_dest_high)
 
-        # Restore DBR (skip 2 pushed bytes)
-        # Need to pull past our saved bytes first
+        # Restore DBR - PLB correctly pops the PHB-saved value
         self._emit_instr(Opcode.PLB, None, "Restore DBR")
-
-        # Now pull our saved bytes and store them
-        # High byte is on top after PLB
-        dest_high = self.parent._offset_location(dest_loc, 1)
-        self._emit_instr(Opcode.PLA, None, "Restore high byte")
-        self._emit_load_store('STA', dest_high)
-        self._emit_instr(Opcode.PLA, None, "Restore low byte")
-        self._emit_load_store('STA', dest_loc)
 
     def _emit_16bit_far_ptr_store_via_dbr(self, ptr_loc, src_loc, source, index_register: str = None):
         """
         Emit 16-bit indirect store through far pointer on stack using DBR manipulation.
+        Must be in m8 mode since indirect addressing is affected by the M flag.
 
         Args:
             ptr_loc: Physical location of pointer (on stack)
@@ -1004,6 +1027,9 @@ class MemoryOperationSelector(BaseSelector):
             source: MIR source operand (for immediate value extraction)
             index_register: Optional index register (only 'Y' supported)
         """
+        # Byte-by-byte operations require 8-bit accumulator mode
+        self._ensure_m8_mode()
+
         stack_offset = ptr_loc.stack_offset
 
         # Save current DBR
@@ -1052,12 +1078,16 @@ class MemoryOperationSelector(BaseSelector):
         Emit 16-bit indirect load through far pointer using [dp],Y when D = S.
 
         Much more efficient than the DBR manipulation approach.
+        Must be in m8 mode since indirect addressing is affected by the M flag.
 
         Args:
             ptr_loc: Physical location of pointer (on stack)
             dest_loc: Destination location for loaded value
             index_register: Optional index register (only 'Y' supported)
         """
+        # Byte-by-byte operations require 8-bit accumulator mode
+        self._ensure_m8_mode()
+
         # When D = S, stack offset is DP offset
         stack_offset = ptr_loc.stack_offset
         operand = Address(stack_offset)
@@ -1084,6 +1114,7 @@ class MemoryOperationSelector(BaseSelector):
         Emit 16-bit indirect store through far pointer using [dp],Y when D = S.
 
         Much more efficient than the DBR manipulation approach.
+        Must be in m8 mode since indirect addressing is affected by the M flag.
 
         Args:
             ptr_loc: Physical location of pointer (on stack)
@@ -1091,6 +1122,9 @@ class MemoryOperationSelector(BaseSelector):
             source: MIR source operand (for immediate value extraction)
             index_register: Optional index register (only 'Y' supported)
         """
+        # Byte-by-byte operations require 8-bit accumulator mode
+        self._ensure_m8_mode()
+
         # When D = S, stack offset is DP offset
         stack_offset = ptr_loc.stack_offset
         operand = Address(stack_offset)

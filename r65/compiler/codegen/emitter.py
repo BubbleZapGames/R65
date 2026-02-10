@@ -330,8 +330,20 @@ class AssemblyEmitter:
         self.nodes.append(Directive(".INDEX", [str(bits)]))
         self._current_index_mode = bits
 
-    def get_accu_mode(self) -> int:
-        """Get current tracked accumulator mode (8 or 16)."""
+    def set_accu_mode_tracking(self, bits: 'int | None'):
+        """Update tracked accumulator mode without emitting .ACCU directive.
+
+        Used when inline asm changes mode via REP/SEP - WLA-DX auto-tracks
+        those instructions so no .ACCU directive is needed, but the compiler's
+        internal tracker must stay in sync.
+
+        Args:
+            bits: 8 for m8, 16 for m16, None if mode is unknown
+        """
+        self._current_accu_mode = bits
+
+    def get_accu_mode(self) -> 'int | None':
+        """Get current tracked accumulator mode (8, 16, or None if unknown)."""
         return self._current_accu_mode
 
     def get_index_mode(self) -> int:
