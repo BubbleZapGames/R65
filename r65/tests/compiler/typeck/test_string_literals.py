@@ -246,6 +246,32 @@ static mut MSG: [u8; 4] = "A\x4";
             type_check(source)
         assert "Invalid hex escape" in str(excinfo.value)
 
+    def test_string_exceeds_bank_size(self):
+        """Test error when string literal exceeds ROM bank size."""
+        from r65.compiler.codegen.bank_size import LOROM_BANK_SIZE
+        # Build a string just over the bank size limit using hex escapes
+        big_string = '\\x41' * (LOROM_BANK_SIZE + 1)
+        source = f'''
+#[ram]
+static mut BIG: [u8; {LOROM_BANK_SIZE + 1}] = "{big_string}";
+'''
+        with pytest.raises(TypeCheckError) as excinfo:
+            type_check(source)
+        assert "exceeds maximum bank size" in str(excinfo.value)
+
+    def test_inline_string_exceeds_bank_size(self):
+        """Test error when inline string literal exceeds ROM bank size."""
+        from r65.compiler.codegen.bank_size import LOROM_BANK_SIZE
+        big_string = '\\x41' * (LOROM_BANK_SIZE + 1)
+        source = f'''
+fn test() {{
+    let ptr: *u8 = "{big_string}";
+}}
+'''
+        with pytest.raises(TypeCheckError) as excinfo:
+            type_check(source)
+        assert "exceeds maximum bank size" in str(excinfo.value)
+
 
 class TestInlineStringLiterals:
     """Inline string literal tests (string as *u8 pointer)."""

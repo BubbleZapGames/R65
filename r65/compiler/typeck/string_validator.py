@@ -9,6 +9,7 @@ from typing import Optional, List
 from r65.compiler.hir import HIRStringLiteral, BasicTypeInfo
 from r65.compiler.hir.types import ArrayTypeInfo, PointerTypeInfo, TypeInfo
 from r65.compiler.typeck.errors import TypeCheckError
+from r65.compiler.codegen.bank_size import LOROM_BANK_SIZE
 
 
 class StringValidator:
@@ -157,5 +158,13 @@ class StringValidator:
                     )
                 result.append(code_point)
                 i += 1
+
+        # Validate that the string fits in a single ROM bank (LoROM = 32KB)
+        if len(result) > LOROM_BANK_SIZE:
+            raise TypeCheckError(
+                f"String literal ({len(result)} bytes) exceeds maximum bank size "
+                f"({LOROM_BANK_SIZE} bytes / {LOROM_BANK_SIZE // 1024}KB)",
+                source_loc=source_loc
+            )
 
         return result
