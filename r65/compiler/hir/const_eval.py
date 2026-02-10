@@ -422,6 +422,13 @@ class ConstEvaluator:
             raise HIRError(f"Division by zero in const fn '{func_name}'")
         except RecursionError:
             raise HIRError(f"Infinite recursion in const fn '{func_name}'")
+        except RuntimeError as e:
+            if "exceeded maximum iteration limit" in str(e):
+                raise HIRError(
+                    f"const fn '{func_name}' exceeded maximum iteration limit "
+                    f"({ConstEvaluator.MAX_CONST_FN_ITERATIONS} iterations)"
+                )
+            raise HIRError(f"Error evaluating const fn '{func_name}': {e}")
         except Exception as e:
             raise HIRError(f"Error evaluating const fn '{func_name}': {e}")
         finally:
@@ -456,9 +463,10 @@ class ConstEvaluator:
         else:
             fn_source = f"def _const_fn_(**_ns_):\n"
 
-        # Add namespace unpacking at the top
+        # Add namespace unpacking and loop counter at the top
         fn_source += "    _u8 = _ns_['_u8']; _u16 = _ns_['_u16']; _i8 = _ns_['_i8']; _i16 = _ns_['_i16']; _bool = _ns_['_bool']\n"
         fn_source += "    _idiv = _ns_['_idiv']; _imod = _ns_['_imod']\n"
+        fn_source += "    _loop_count_ = 0\n"
 
         fn_source += "\n".join(body_lines) + "\n"
 
@@ -515,12 +523,23 @@ class ConstEvaluator:
 
         return ns
 
+    MAX_CONST_FN_ITERATIONS = 10_000
+
     def _transpile_block(self, block, indent=1):
         """Transpile an AST Block to Python source lines."""
         lines = []
         for stmt in block.statements:
             lines.extend(self._transpile_stmt(stmt, indent))
         return lines
+
+    @staticmethod
+    def _loop_guard_lines(prefix):
+        """Return Python lines that increment and check the shared loop counter."""
+        return [
+            f"{prefix}_loop_count_ += 1",
+            f"{prefix}if _loop_count_ > {ConstEvaluator.MAX_CONST_FN_ITERATIONS}:"
+            f" raise RuntimeError('exceeded maximum iteration limit')",
+        ]
 
     def _transpile_stmt(self, stmt, indent):
         """Transpile a single AST statement to Python source lines."""
@@ -568,18 +587,24 @@ class ConstEvaluator:
             lines = []
             cond = self._transpile_expr(stmt.condition)
             lines.append(f"{prefix}while {cond}:")
+            inner = "    " * (indent + 1)
+            guard = self._loop_guard_lines(inner)
             body_lines = self._transpile_block(stmt.body, indent + 1)
             if not body_lines:
-                body_lines = [f"{'    ' * (indent + 1)}pass"]
+                body_lines = [f"{inner}pass"]
+            lines.extend(guard)
             lines.extend(body_lines)
             return lines
 
         elif isinstance(stmt, ast.LoopStmt):
             lines = []
             lines.append(f"{prefix}while True:")
+            inner = "    " * (indent + 1)
+            guard = self._loop_guard_lines(inner)
             body_lines = self._transpile_block(stmt.body, indent + 1)
             if not body_lines:
-                body_lines = [f"{'    ' * (indent + 1)}pass"]
+                body_lines = [f"{inner}pass"]
+            lines.extend(guard)
             lines.extend(body_lines)
             return lines
 
@@ -588,9 +613,12 @@ class ConstEvaluator:
             start = self._transpile_expr(stmt.start)
             end = self._transpile_expr(stmt.end)
             lines.append(f"{prefix}for {stmt.variable} in range({start}, {end}):")
+            inner = "    " * (indent + 1)
+            guard = self._loop_guard_lines(inner)
             body_lines = self._transpile_block(stmt.body, indent + 1)
             if not body_lines:
-                body_lines = [f"{'    ' * (indent + 1)}pass"]
+                body_lines = [f"{inner}pass"]
+            lines.extend(guard)
             lines.extend(body_lines)
             return lines
 

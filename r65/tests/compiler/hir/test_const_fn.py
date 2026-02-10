@@ -11,6 +11,7 @@ from r65.compiler.hir import (
     HIRFunctionDecl, HIRConstDecl, HIRIntegerLiteral, HIRBooleanLiteral,
     HIRFunctionCall,
 )
+from r65.compiler.typeck import TypeChecker
 
 
 def build_hir(source: str) -> HIRProgram:
@@ -440,6 +441,45 @@ class TestConstFnErrors:
         with pytest.raises(HIRError, match="Cannot access hardware register 'X'"):
             build_hir(source)
 
+    def test_infinite_while_loop(self):
+        """Const fn with infinite while loop should error."""
+        source = """
+        const fn hang() -> u8 {
+            while true { }
+            return 0;
+        }
+        const VAL: u8 = hang();
+        """
+        with pytest.raises(HIRError, match="exceeded maximum iteration limit"):
+            build_hir(source)
+
+    def test_infinite_loop(self):
+        """Const fn with infinite loop should error."""
+        source = """
+        const fn hang() -> u8 {
+            loop { }
+            return 0;
+        }
+        const VAL: u8 = hang();
+        """
+        with pytest.raises(HIRError, match="exceeded maximum iteration limit"):
+            build_hir(source)
+
+    def test_nested_infinite_loops(self):
+        """Nested infinite loops share a single counter and get caught."""
+        source = """
+        const fn hang() -> u8 {
+            let mut x: u8 = 0;
+            while true {
+                while true { x = x + 1; }
+            }
+            return x;
+        }
+        const VAL: u8 = hang();
+        """
+        with pytest.raises(HIRError, match="exceeded maximum iteration limit"):
+            build_hir(source)
+
 
 class TestConstFnImplMethod:
     """Test const fn on impl methods."""
@@ -456,3 +496,90 @@ class TestConstFnImplMethod:
         method = impl_decl.methods[0]
         assert method.is_const is True
         assert method.name == "bar"
+
+
+def build_and_typecheck(source: str) -> HIRProgram:
+    """Helper to parse, build HIR, and type check."""
+    parser = Parser()
+    ast_prog = parser.parse(source)
+    builder = HIRBuilder()
+    hir = builder.build_program(ast_prog)
+    tc = TypeChecker(hir)
+    tc.check()
+    return hir
+
+
+class TestConstFnUnrestrictedOperators:
+    """Test that const fn bodies allow full multiply, divide, modulo, and shift."""
+
+    def test_arbitrary_multiply(self):
+        """Const fn can multiply by any value, not just 1/2/4/8."""
+        source = """
+        const fn multiply(a: u8, b: u8) -> u16 {
+            return (a as u16) * (b as u16);
+        }
+        const RESULT: u16 = multiply(7, 9);
+        """
+        hir = build_and_typecheck(source)
+        decl = [d for d in hir.declarations if isinstance(d, HIRConstDecl)][0]
+        assert decl.evaluated_value == 63
+
+    def test_multiply_by_non_power_of_two(self):
+        """Const fn can multiply by 3, 5, 7, etc."""
+        source = """
+        const fn triple(x: u8) -> u16 {
+            return (x as u16) * 3;
+        }
+        const RESULT: u16 = triple(10);
+        """
+        hir = build_and_typecheck(source)
+        decl = [d for d in hir.declarations if isinstance(d, HIRConstDecl)][0]
+        assert decl.evaluated_value == 30
+
+    def test_arbitrary_divide(self):
+        """Const fn can divide by any value, not just 1/2/4/8."""
+        source = """
+        const fn divide(a: u16, b: u16) -> u16 {
+            return a / b;
+        }
+        const RESULT: u16 = divide(100, 7);
+        """
+        hir = build_and_typecheck(source)
+        decl = [d for d in hir.declarations if isinstance(d, HIRConstDecl)][0]
+        assert decl.evaluated_value == 14
+
+    def test_modulo(self):
+        """Const fn can use modulo with any operands."""
+        source = """
+        const fn modulo(a: u16, b: u16) -> u16 {
+            return a % b;
+        }
+        const RESULT: u16 = modulo(100, 7);
+        """
+        hir = build_and_typecheck(source)
+        decl = [d for d in hir.declarations if isinstance(d, HIRConstDecl)][0]
+        assert decl.evaluated_value == 2
+
+    def test_variable_shift(self):
+        """Const fn can shift by variable amounts."""
+        source = """
+        const fn shift_left(val: u16, amt: u16) -> u16 {
+            return val << amt;
+        }
+        const RESULT: u16 = shift_left(1, 10);
+        """
+        hir = build_and_typecheck(source)
+        decl = [d for d in hir.declarations if isinstance(d, HIRConstDecl)][0]
+        assert decl.evaluated_value == 1024
+
+    def test_complex_math(self):
+        """Const fn with complex arithmetic using unrestricted operators."""
+        source = """
+        const fn tile_addr(row: u8, col: u8, stride: u8) -> u16 {
+            return (row as u16) * (stride as u16) + (col as u16);
+        }
+        const ADDR: u16 = tile_addr(5, 3, 64);
+        """
+        hir = build_and_typecheck(source)
+        decl = [d for d in hir.declarations if isinstance(d, HIRConstDecl)][0]
+        assert decl.evaluated_value == 323  # 5*64 + 3

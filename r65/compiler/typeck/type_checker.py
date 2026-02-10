@@ -1091,8 +1091,9 @@ class TypeChecker:
 
     def check_binary_op(self, expr: HIRBinaryOp, context_type: Optional[TypeInfo] = None) -> TypeInfo:
         """Type check binary operation."""
-        # Validate operator restrictions
-        OperatorValidator.validate_binary_op(expr)
+        # Validate operator restrictions (skip for const fn - evaluated at compile time)
+        if not (self.current_function and self.current_function.is_const):
+            OperatorValidator.validate_binary_op(expr)
 
         # For shift ops and arithmetic, propagate context type to left operand
         # This allows `const X: u16 = 0 << 2` to infer 0 as u16
