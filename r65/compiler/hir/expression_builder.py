@@ -222,6 +222,20 @@ class ExpressionBuilder:
                     # Mark this as a built-in function call
                     builtin_name = func_name
 
+            # Try to const-fold calls to const fn with all-const arguments
+            if isinstance(expr.func, ast.Identifier) and not builtin_name:
+                symbol = self.symbol_table.lookup(expr.func.name)
+                if (symbol and symbol.kind == SymbolKind.FUNCTION and
+                        hasattr(symbol.definition, 'is_const') and symbol.definition.is_const):
+                    try:
+                        const_value = self.const_evaluator.eval(expr)
+                        if isinstance(const_value, bool):
+                            return hir.HIRBooleanLiteral(value=const_value, source_loc=src_loc)
+                        elif isinstance(const_value, int):
+                            return hir.HIRIntegerLiteral(value=const_value, source_loc=src_loc)
+                    except HIRError:
+                        pass  # Args not all const — fall through to runtime call
+
             # Build func expression
             # For built-ins, create a dummy symbol to avoid "undefined identifier" errors
             if builtin_name:

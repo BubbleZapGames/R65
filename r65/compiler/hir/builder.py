@@ -480,9 +480,14 @@ class HIRBuilder:
         # Infer exit mode from return type
         exit_m_mode = self._infer_exit_mode(ret_type)
 
+        # Eagerly validate const fn body at definition time
+        if func.is_const:
+            self.const_evaluator.validate_const_fn(func, func.name)
+
         return hir.HIRFunctionDecl(
             name=func.name,
             is_far=func.is_far,
+            is_const=func.is_const,
             parameters=hir_params,
             return_type=ret_type,
             body=hir_body,
@@ -1276,9 +1281,14 @@ class HIRBuilder:
         # Infer exit mode from return type
         exit_m_mode = self._infer_exit_mode(ret_type)
 
+        # Eagerly validate const fn body at definition time
+        if method.is_const:
+            self.const_evaluator.validate_const_fn(method, mangled_name)
+
         return hir.HIRFunctionDecl(
             name=mangled_name,
             is_far=method.is_far,
+            is_const=method.is_const,
             parameters=hir_params,
             return_type=ret_type,
             body=hir_body,

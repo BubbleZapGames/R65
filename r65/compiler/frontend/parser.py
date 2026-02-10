@@ -141,10 +141,16 @@ class ASTBuilder(Transformer):
     @v_args(tree=True)
     def function_decl(self, tree):
         """Function declaration."""
-        items = self._filter_tokens(tree.children)
+        items = self._filter_tokens(tree.children, keep_types={'IDENT', 'MUT', 'FAR', 'CONST', 'INTEGER', 'STRING', 'BOOLEAN', 'REGISTER'})
 
         # Collect attributes
         attrs, idx = self._collect_attributes(items, 0)
+
+        # Check for const
+        is_const = False
+        if idx < len(items) and isinstance(items[idx], LarkToken) and items[idx].type == 'CONST':
+            is_const = True
+            idx += 1
 
         # Check for far
         is_far = False
@@ -177,6 +183,7 @@ class ASTBuilder(Transformer):
             params=params,
             return_type=return_type,
             body=body,
+            is_const=is_const,
             source_loc=self._make_source_loc(tree.meta)
         )
 
@@ -473,10 +480,16 @@ class ASTBuilder(Transformer):
     @v_args(tree=True)
     def impl_method(self, tree):
         """Method declaration in impl block."""
-        items = self._filter_tokens(tree.children, keep_types={'IDENT', 'FAR'})
+        items = self._filter_tokens(tree.children, keep_types={'IDENT', 'FAR', 'CONST'})
 
         # Collect attributes
         attrs, idx = self._collect_attributes(items, 0)
+
+        # Check for const
+        is_const = False
+        if idx < len(items) and isinstance(items[idx], LarkToken) and items[idx].type == 'CONST':
+            is_const = True
+            idx += 1
 
         # Check for far fn
         is_far = False
@@ -519,6 +532,7 @@ class ASTBuilder(Transformer):
             params=params,
             return_type=return_type,
             body=body,
+            is_const=is_const,
             source_loc=self._make_source_loc(tree.meta)
         )
 

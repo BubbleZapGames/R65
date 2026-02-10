@@ -188,6 +188,7 @@ class FunctionDecl(Declaration):
     params: List[Parameter]
     return_type: Optional[Union[Type, NeverType]]
     body: 'Block'
+    is_const: bool = False
 
 
 @dataclass
@@ -253,6 +254,7 @@ class ImplMethod(ASTNode):
     params: List[Parameter]  # Parameters after self
     return_type: Optional[Union[Type, NeverType]]
     body: 'Block'
+    is_const: bool = False
 
 
 @dataclass

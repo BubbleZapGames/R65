@@ -20,6 +20,8 @@ class ConstEvaluator:
     def __init__(self, symbol_table: Any, cfg_evaluator: Any = None):
         self.symbol_table = symbol_table
         self.cfg_evaluator = cfg_evaluator
+        self._compiled_const_fns = {}  # Cache: func_name -> compiled Python callable
+        self._const_fn_depth = 0       # Recursion depth counter (max 64)
 
     def is_constant(self, expr: ast.Expression) -> bool:
         """
@@ -65,6 +67,16 @@ class ConstEvaluator:
             if symbol.const_value is None:
                 raise HIRError(f"Const '{expr.name}' has no evaluated value")
 
+            return symbol.const_value
+
+        elif isinstance(expr, ast.EnumVariantExpr):
+            # Resolve enum variant to its integer value
+            qualified = f"{expr.enum_name}::{expr.variant_name}"
+            symbol = self.symbol_table.lookup(qualified)
+            if symbol is None:
+                raise HIRError(f"Undefined enum variant in const expression: {qualified}")
+            if symbol.const_value is None:
+                raise HIRError(f"Enum variant '{qualified}' has no evaluated value")
             return symbol.const_value
 
         elif isinstance(expr, ast.BinaryOp):
@@ -220,17 +232,29 @@ class ConstEvaluator:
 
         if not func_name:
             raise HIRError("Only direct function calls allowed in const expressions")
-        
+
+        # Check if this is a const fn (user-defined)
+        from r65.compiler.hir.symbol_table import SymbolKind
+        symbol = self.symbol_table.lookup(func_name)
+        if symbol and symbol.kind in (SymbolKind.FUNCTION, SymbolKind.METHOD):
+            func_def = symbol.definition
+            if func_def and hasattr(func_def, 'is_const') and func_def.is_const:
+                # Evaluate arguments
+                arg_values = [self.eval(arg) for arg in expr.args]
+                return self._eval_const_fn_call(func_def, arg_values, func_name)
+            elif func_def and not BuiltinRegistry.is_builtin(func_name):
+                raise HIRError(f"Function '{func_name}' is not a const fn and cannot be called in const expressions")
+
         # Check if this is a built-in function
         if not BuiltinRegistry.is_builtin(func_name):
-            raise HIRError(f"Function '{func_name}' is not a built-in const function")
-        
+            raise HIRError(f"Function '{func_name}' is not a const fn or built-in const function")
+
         builtin = BuiltinRegistry.get_builtin(func_name)
-        
+
         # Only allow type info built-ins in const expressions
         if builtin.kind.value != "type_info":
             raise HIRError(f"Built-in '{func_name}' is not allowed in const expressions")
-        
+
         # Handle size_of specifically
         if func_name == "size_of":
             return self._eval_size_of(expr)
@@ -244,7 +268,7 @@ class ConstEvaluator:
             if not hasattr(self, 'cfg_evaluator') or self.cfg_evaluator is None:
                 raise HIRError("cfg! function requires cfg configuration to be provided")
             return self._eval_cfg(expr)
-        
+
         raise HIRError(f"Unsupported const built-in function: {func_name}")
 
     def _eval_size_of(self, expr: ast.FunctionCall) -> int:
@@ -353,3 +377,365 @@ class ConstEvaluator:
             return value != 0
         else:
             raise HIRError(f"Expected boolean in const expression, got {type(value).__name__}")
+
+    # =========================================================================
+    # Const fn evaluation via Python transpilation
+    # =========================================================================
+
+    def _eval_const_fn_call(self, func_def, arg_values, func_name):
+        """Evaluate a const fn call by transpiling to Python and executing."""
+        # Validate argument count
+        expected = len(func_def.params)
+        actual = len(arg_values)
+        if actual != expected:
+            raise HIRError(
+                f"const fn '{func_name}' expects {expected} argument(s), got {actual}"
+            )
+
+        # Guard against deep recursion
+        if self._const_fn_depth > 64:
+            raise HIRError(
+                f"const fn recursion depth exceeded (max 64) in '{func_name}'"
+            )
+
+        # Compile function if not cached
+        if func_name not in self._compiled_const_fns:
+            self._compiled_const_fns[func_name] = self._compile_const_fn(func_def, func_name)
+
+        compiled_fn = self._compiled_const_fns[func_name]
+
+        # Build execution namespace with helpers and other const fns
+        namespace = self._build_const_fn_namespace()
+
+        # Call the compiled function
+        self._const_fn_depth += 1
+        try:
+            result = compiled_fn(*arg_values, **namespace)
+            if result is None:
+                raise HIRError(
+                    f"const fn '{func_name}' did not return a value"
+                )
+            return result
+        except HIRError:
+            raise
+        except ZeroDivisionError:
+            raise HIRError(f"Division by zero in const fn '{func_name}'")
+        except RecursionError:
+            raise HIRError(f"Infinite recursion in const fn '{func_name}'")
+        except Exception as e:
+            raise HIRError(f"Error evaluating const fn '{func_name}': {e}")
+        finally:
+            self._const_fn_depth -= 1
+
+    def validate_const_fn(self, func_def, func_name):
+        """Eagerly validate a const fn body at definition time.
+
+        Attempts to compile (transpile) the const fn body so that errors
+        like calling non-const functions or accessing runtime variables
+        are caught even if the const fn is never called in a const context.
+        """
+        if func_name not in self._compiled_const_fns:
+            self._compiled_const_fns[func_name] = self._compile_const_fn(func_def, func_name)
+
+    def _compile_const_fn(self, func_def, func_name):
+        """Transpile a const fn AST body to a Python callable."""
+        # Get parameter names
+        param_names = [p.name for p in func_def.params]
+
+        # Transpile body to Python source
+        body_lines = self._transpile_block(func_def.body, indent=1)
+
+        if not body_lines:
+            body_lines = ["    pass"]
+
+        # Build the Python function source
+        # Use **_ns_ to receive namespace helpers without polluting positional args
+        params_str = ", ".join(param_names)
+        if params_str:
+            fn_source = f"def _const_fn_({params_str}, **_ns_):\n"
+        else:
+            fn_source = f"def _const_fn_(**_ns_):\n"
+
+        # Add namespace unpacking at the top
+        fn_source += "    _u8 = _ns_['_u8']; _u16 = _ns_['_u16']; _i8 = _ns_['_i8']; _i16 = _ns_['_i16']; _bool = _ns_['_bool']\n"
+        fn_source += "    _idiv = _ns_['_idiv']; _imod = _ns_['_imod']\n"
+
+        fn_source += "\n".join(body_lines) + "\n"
+
+        # Compile and exec
+        try:
+            code = compile(fn_source, f"<const fn {func_name}>", "exec")
+            local_ns = {}
+            exec(code, {}, local_ns)
+            return local_ns['_const_fn_']
+        except SyntaxError as e:
+            raise HIRError(
+                f"Failed to compile const fn '{func_name}': {e}"
+            )
+
+    def _build_const_fn_namespace(self):
+        """Build the namespace dict passed to compiled const fns."""
+        def _u8(v):
+            return int(v) & 0xFF
+
+        def _u16(v):
+            return int(v) & 0xFFFF
+
+        def _i8(v):
+            val = int(v) & 0xFF
+            return val if val < 128 else val - 256
+
+        def _i16(v):
+            val = int(v) & 0xFFFF
+            return val if val < 32768 else val - 65536
+
+        def _bool(v):
+            if isinstance(v, bool):
+                return v
+            return int(v) != 0
+
+        def _idiv(a, b):
+            if b == 0:
+                raise ZeroDivisionError("division by zero")
+            return int(a) // int(b)
+
+        def _imod(a, b):
+            if b == 0:
+                raise ZeroDivisionError("modulo by zero")
+            return int(a) % int(b)
+
+        ns = {
+            '_u8': _u8, '_u16': _u16, '_i8': _i8, '_i16': _i16, '_bool': _bool,
+            '_idiv': _idiv, '_imod': _imod,
+        }
+
+        # Add all compiled const fns to namespace so they can call each other
+        for name, fn in self._compiled_const_fns.items():
+            ns[name] = fn
+
+        return ns
+
+    def _transpile_block(self, block, indent=1):
+        """Transpile an AST Block to Python source lines."""
+        lines = []
+        for stmt in block.statements:
+            lines.extend(self._transpile_stmt(stmt, indent))
+        return lines
+
+    def _transpile_stmt(self, stmt, indent):
+        """Transpile a single AST statement to Python source lines."""
+        prefix = "    " * indent
+
+        if isinstance(stmt, ast.LetStmt):
+            if stmt.initializer is not None:
+                val = self._transpile_expr(stmt.initializer)
+                return [f"{prefix}{stmt.name} = {val}"]
+            else:
+                return [f"{prefix}{stmt.name} = 0"]
+
+        elif isinstance(stmt, ast.ReturnStmt):
+            if stmt.values:
+                val = self._transpile_expr(stmt.values[0])
+                return [f"{prefix}return {val}"]
+            else:
+                return [f"{prefix}return"]
+
+        elif isinstance(stmt, ast.IfStmt):
+            lines = []
+            cond = self._transpile_expr(stmt.condition)
+            lines.append(f"{prefix}if {cond}:")
+            body_lines = self._transpile_block(stmt.then_block, indent + 1)
+            if not body_lines:
+                body_lines = [f"{'    ' * (indent + 1)}pass"]
+            lines.extend(body_lines)
+            if stmt.else_block:
+                if isinstance(stmt.else_block, ast.IfStmt):
+                    # else if chain
+                    else_lines = self._transpile_stmt(stmt.else_block, indent)
+                    # Change 'if' to 'elif' for the first line
+                    if else_lines:
+                        else_lines[0] = else_lines[0].replace(f"{prefix}if ", f"{prefix}elif ", 1)
+                    lines.extend(else_lines)
+                elif isinstance(stmt.else_block, ast.Block):
+                    lines.append(f"{prefix}else:")
+                    else_body = self._transpile_block(stmt.else_block, indent + 1)
+                    if not else_body:
+                        else_body = [f"{'    ' * (indent + 1)}pass"]
+                    lines.extend(else_body)
+            return lines
+
+        elif isinstance(stmt, ast.WhileStmt):
+            lines = []
+            cond = self._transpile_expr(stmt.condition)
+            lines.append(f"{prefix}while {cond}:")
+            body_lines = self._transpile_block(stmt.body, indent + 1)
+            if not body_lines:
+                body_lines = [f"{'    ' * (indent + 1)}pass"]
+            lines.extend(body_lines)
+            return lines
+
+        elif isinstance(stmt, ast.LoopStmt):
+            lines = []
+            lines.append(f"{prefix}while True:")
+            body_lines = self._transpile_block(stmt.body, indent + 1)
+            if not body_lines:
+                body_lines = [f"{'    ' * (indent + 1)}pass"]
+            lines.extend(body_lines)
+            return lines
+
+        elif isinstance(stmt, ast.ForStmt):
+            lines = []
+            start = self._transpile_expr(stmt.start)
+            end = self._transpile_expr(stmt.end)
+            lines.append(f"{prefix}for {stmt.variable} in range({start}, {end}):")
+            body_lines = self._transpile_block(stmt.body, indent + 1)
+            if not body_lines:
+                body_lines = [f"{'    ' * (indent + 1)}pass"]
+            lines.extend(body_lines)
+            return lines
+
+        elif isinstance(stmt, ast.BreakStmt):
+            return [f"{prefix}break"]
+
+        elif isinstance(stmt, ast.ContinueStmt):
+            return [f"{prefix}continue"]
+
+        elif isinstance(stmt, ast.ExprStmt):
+            expr_str = self._transpile_expr(stmt.expr)
+            return [f"{prefix}{expr_str}"]
+
+        elif isinstance(stmt, ast.Block):
+            return self._transpile_block(stmt, indent)
+
+        else:
+            raise HIRError(f"Unsupported statement in const fn: {type(stmt).__name__}")
+
+    def _transpile_expr(self, expr):
+        """Transpile an AST expression to a Python expression string."""
+        if isinstance(expr, ast.IntegerLiteral):
+            return str(expr.value)
+
+        elif isinstance(expr, ast.BooleanLiteral):
+            return "True" if expr.value else "False"
+
+        elif isinstance(expr, ast.Identifier):
+            # Check if it's a const or enum variant
+            from r65.compiler.hir.symbol_table import SymbolKind
+            symbol = self.symbol_table.lookup(expr.name)
+            if symbol:
+                if symbol.kind == SymbolKind.CONST and symbol.const_value is not None:
+                    return repr(symbol.const_value)
+                elif symbol.kind == SymbolKind.IMPL_CONST and symbol.const_value is not None:
+                    return repr(symbol.const_value)
+                elif symbol.kind == SymbolKind.REGISTER:
+                    raise HIRError(
+                        f"Cannot access hardware register '{expr.name}' in const fn"
+                    )
+                elif symbol.kind == SymbolKind.STATIC_VAR:
+                    raise HIRError(
+                        f"Cannot access runtime variable '{expr.name}' in const fn"
+                    )
+            # Otherwise it's a local variable or parameter reference
+            return expr.name
+
+        elif isinstance(expr, ast.EnumVariantExpr):
+            qualified = f"{expr.enum_name}::{expr.variant_name}"
+            symbol = self.symbol_table.lookup(qualified)
+            if symbol and symbol.const_value is not None:
+                return str(symbol.const_value)
+            raise HIRError(f"Cannot resolve enum variant '{qualified}' in const fn")
+
+        elif isinstance(expr, ast.BinaryOp):
+            left = self._transpile_expr(expr.left)
+            right = self._transpile_expr(expr.right)
+            op = expr.op
+            if op == '&&':
+                return f"(bool({left}) and bool({right}))"
+            elif op == '||':
+                return f"(bool({left}) or bool({right}))"
+            elif op == '/':
+                return f"_ns_['_idiv']({left}, {right})"
+            elif op == '%':
+                return f"_ns_['_imod']({left}, {right})"
+            else:
+                return f"({left} {op} {right})"
+
+        elif isinstance(expr, ast.UnaryOp):
+            operand = self._transpile_expr(expr.operand)
+            if expr.op == '!':
+                return f"(not {operand})"
+            elif expr.op == '~':
+                return f"(~{operand})"
+            elif expr.op == '-':
+                return f"(-{operand})"
+            else:
+                raise HIRError(f"Unsupported unary op in const fn: {expr.op}")
+
+        elif isinstance(expr, ast.TypeCast):
+            inner = self._transpile_expr(expr.expr)
+            if isinstance(expr.target_type, ast.BasicType):
+                type_name = expr.target_type.name
+                if type_name in ('u8', 'u16', 'i8', 'i16'):
+                    return f"_ns_['_{type_name}']({inner})"
+                elif type_name == 'bool':
+                    return f"_ns_['_bool']({inner})"
+            raise HIRError(f"Unsupported cast in const fn: {expr.target_type}")
+
+        elif isinstance(expr, ast.FunctionCall):
+            if isinstance(expr.func, ast.Identifier):
+                func_name = expr.func.name
+                # Check for builtins that can be resolved at transpile time
+                if func_name == 'size_of' and BuiltinRegistry.is_builtin(func_name):
+                    try:
+                        val = self._eval_size_of(expr)
+                        return str(val)
+                    except HIRError:
+                        pass
+                elif func_name == 'offset_of' and BuiltinRegistry.is_builtin(func_name):
+                    try:
+                        val = self._eval_offset_of(expr)
+                        return str(val)
+                    except HIRError:
+                        pass
+
+                # Check if it's a const fn call
+                from r65.compiler.hir.symbol_table import SymbolKind
+                symbol = self.symbol_table.lookup(func_name)
+                if symbol and symbol.kind in (SymbolKind.FUNCTION, SymbolKind.METHOD):
+                    func_def = symbol.definition
+                    if func_def and hasattr(func_def, 'is_const') and func_def.is_const:
+                        # Compile it if needed, so it's in namespace
+                        if func_name not in self._compiled_const_fns:
+                            self._compiled_const_fns[func_name] = self._compile_const_fn(func_def, func_name)
+                        args_str = ", ".join(self._transpile_expr(a) for a in expr.args)
+                        return f"_ns_['{func_name}']({args_str}, **_ns_)"
+                    else:
+                        raise HIRError(
+                            f"Cannot call '{func_name}' from const fn: "
+                            f"'{func_name}' is not a const fn"
+                        )
+
+            raise HIRError(f"Unsupported function call in const fn: {expr}")
+
+        elif isinstance(expr, ast.Assignment):
+            target = self._transpile_expr(expr.target)
+            value = self._transpile_expr(expr.value)
+            return f"{target} = {value}"
+
+        elif isinstance(expr, ast.CompoundAssignment):
+            target = self._transpile_expr(expr.target)
+            value = self._transpile_expr(expr.value)
+            op = expr.operator
+            if op == '/':
+                return f"{target} = _ns_['_idiv']({target}, {value})"
+            elif op == '%':
+                return f"{target} = _ns_['_imod']({target}, {value})"
+            return f"{target} {op}= {value}"
+
+        elif isinstance(expr, ast.Register):
+            raise HIRError(
+                f"Cannot access hardware register '{expr.name}' in const fn"
+            )
+
+        else:
+            raise HIRError(f"Unsupported expression in const fn: {type(expr).__name__}")

@@ -97,12 +97,22 @@ inc_twice!(X);  // Expands to: X++; X++;
 
 ### Const Evaluation
 
-Compile-time evaluation of constant expressions (arithmetic, bitwise, logical, casts). Usable in array sizes and attribute parameters. **No const functions**.
+Compile-time evaluation of constant expressions (arithmetic, bitwise, logical, casts). Usable in array sizes and attribute parameters.
 
 ```rust
 const TILE_SIZE: u8 = 8;
 const MASK: u8 = 0x80 | 0x40;
 static BUFFER: [u8; TILE_SIZE * 2] = [0; TILE_SIZE * 2];
+```
+
+**Const functions**: `const fn` enables user-defined compile-time computation. Supports arithmetic, control flow (`if`/`else`, `while`, `for`), local variables, type casts, and calling other const fns. Cannot access hardware registers or runtime variables. Calls with all-const arguments are folded to literals; calls with runtime arguments emit a normal function call.
+
+```rust
+const fn tile_offset(x: u8, y: u8) -> u16 {
+    return (y as u16) * 32 + (x as u16);
+}
+const PLAYER_TILE: u16 = tile_offset(5, 3);
+static BUFFER: [u8; tile_offset(0, 8)] = [0; tile_offset(0, 8)];
 ```
 
 ### Enums and Structs

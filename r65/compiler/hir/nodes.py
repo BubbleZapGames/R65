@@ -168,6 +168,7 @@ class HIRFunctionDecl(HIRDeclaration):
     """Function declaration."""
     name: str = ""
     is_far: bool = False
+    is_const: bool = False
     parameters: List[HIRParameter] = field(default_factory=list)
     return_type: Optional[Any] = None  # Will be TypeInfo or None
     body: Optional['HIRBlock'] = None
