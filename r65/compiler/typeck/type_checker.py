@@ -664,7 +664,8 @@ class TypeChecker:
             )
 
         # Validate that return type is not an aggregate type (arrays/structs cannot be returned by value)
-        if func.return_type:
+        # Const fns are exempt — they execute at compile time, no hardware registers involved
+        if func.return_type and not func.is_const:
             self._check_no_aggregate_type(
                 func.return_type,
                 f"Function '{func.name}' return type",

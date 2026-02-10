@@ -9,7 +9,8 @@ import pytest
 from r65.compiler.frontend import Parser
 from r65.compiler.hir import (
     HIRBuilder, HIRError, HIRProgram,
-    HIRFunctionDecl, HIRConstDecl, HIRIntegerLiteral, HIRBooleanLiteral,
+    HIRFunctionDecl, HIRConstDecl, HIRStaticDecl,
+    HIRIntegerLiteral, HIRBooleanLiteral, HIRArrayLiteralExpr,
     HIRFunctionCall,
 )
 from r65.compiler.typeck import TypeChecker
@@ -364,7 +365,7 @@ class TestConstFnErrors:
 
     def test_unsupported_expressions(self):
         """Unsupported expression types give meaningful error messages."""
-        with pytest.raises(HIRError, match="Array indexing is not supported in const fn"):
+        with pytest.raises(HIRError, match="Cannot access runtime variable 'BUF'"):
             build_hir("""
             #[ram]
             static mut BUF: [u8; 4] = [0; 4];
@@ -402,3 +403,118 @@ class TestConstFnErrors:
             }
             const VAL: u8 = hang();
             """)
+
+
+class TestConstFnArrays:
+    """Test const fn with array support."""
+
+    def test_array_fill_and_return(self):
+        """Const fn can create, fill, and return an array."""
+        source = """
+        const fn make_table() -> [u8; 4] {
+            let mut t: [u8; 4] = [0; 4];
+            t[0] = 10;
+            t[1] = 20;
+            t[2] = 30;
+            t[3] = 40;
+            return t;
+        }
+        const TABLE: [u8; 4] = make_table();
+        """
+        hir = build_hir(source)
+        decl = [d for d in hir.declarations if isinstance(d, HIRConstDecl) and d.name == 'TABLE'][0]
+        assert decl.evaluated_value == [10, 20, 30, 40]
+
+    def test_array_literal_return(self):
+        """Const fn can return an array literal directly."""
+        source = """
+        const fn palette() -> [u8; 3] {
+            return [0xFF, 0x80, 0x00];
+        }
+        const PAL: [u8; 3] = palette();
+        """
+        hir = build_hir(source)
+        decl = [d for d in hir.declarations if isinstance(d, HIRConstDecl) and d.name == 'PAL'][0]
+        assert decl.evaluated_value == [0xFF, 0x80, 0x00]
+
+    def test_array_index_read(self):
+        """Const fn can read array elements by index."""
+        source = """
+        const fn first_element() -> u8 {
+            let arr: [u8; 3] = [10, 20, 30];
+            return arr[1];
+        }
+        const VAL: u8 = first_element();
+        """
+        hir = build_hir(source)
+        decl = [d for d in hir.declarations if isinstance(d, HIRConstDecl) and d.name == 'VAL'][0]
+        assert decl.evaluated_value == 20
+
+    def test_array_loop_mutation(self):
+        """Const fn can mutate array in a loop."""
+        source = """
+        const fn squares() -> [u8; 5] {
+            let mut t: [u8; 5] = [0; 5];
+            for i in 0..5 {
+                t[i] = (i as u8) * (i as u8);
+            }
+            return t;
+        }
+        const SQ: [u8; 5] = squares();
+        """
+        hir = build_hir(source)
+        decl = [d for d in hir.declarations if isinstance(d, HIRConstDecl) and d.name == 'SQ'][0]
+        assert decl.evaluated_value == [0, 1, 4, 9, 16]
+
+    def test_recursive_fibonacci_table(self):
+        """Const fn fibonacci with recursive calls to generate table."""
+        source = """
+        const fn fibonacci(n: u8) -> u8 {
+            if n <= 1 { return n; }
+            let mut a: u8 = 0;
+            let mut b: u8 = 1;
+            for i in 2..n+1 {
+                let tmp: u8 = b;
+                b = a + b;
+                a = tmp;
+            }
+            return b;
+        }
+        const fn generate_fib_table() -> [u8; 12] {
+            let mut table: [u8; 12] = [0; 12];
+            let mut i: u8 = 0;
+            while i < 12 {
+                table[i] = fibonacci(i);
+                i = i + 1;
+            }
+            return table;
+        }
+        const FIB_TABLE: [u8; 12] = generate_fib_table();
+        """
+        hir = build_hir(source)
+        decl = [d for d in hir.declarations if isinstance(d, HIRConstDecl) and d.name == 'FIB_TABLE'][0]
+        assert decl.evaluated_value == [0, 1, 1, 2, 3, 5, 8, 13, 21, 34, 55, 89]
+
+    def test_array_const_fn_as_static_initializer(self):
+        """Const fn returning array used as static initializer folds to HIRArrayLiteralExpr."""
+        source = """
+        const fn make_data() -> [u8; 3] {
+            return [1, 2, 3];
+        }
+        static DATA: [u8; 3] = make_data();
+        """
+        hir = build_hir(source)
+        static_decl = [d for d in hir.declarations if isinstance(d, HIRStaticDecl) and d.name == 'DATA'][0]
+        assert isinstance(static_decl.initializer, HIRArrayLiteralExpr)
+        assert len(static_decl.initializer.elements) == 3
+        assert [e.value for e in static_decl.initializer.elements] == [1, 2, 3]
+
+    def test_array_return_type_checked(self):
+        """Const fn with array return type passes type checking."""
+        source = """
+        const fn make_table() -> [u8; 4] {
+            return [1, 2, 3, 4];
+        }
+        const TABLE: [u8; 4] = make_table();
+        """
+        build_and_typecheck(source)

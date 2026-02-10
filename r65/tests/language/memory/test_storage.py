@@ -101,13 +101,13 @@ class TestImplicitRom:
 
 
 class TestConstTypeRestrictions:
-    """Tests for const type restrictions (only primitives allowed)."""
+    """Tests for const type restrictions (primitives and arrays allowed, structs rejected)."""
 
-    def test_const_array_rejected(self):
-        """Const cannot have array type."""
-        with pytest.raises(HIRError) as exc_info:
-            build_hir("const TABLE: [u8; 3] = [1, 2, 3];")
-        assert "cannot have array type" in str(exc_info.value)
+    def test_const_array_allowed(self):
+        """Const can have array type (evaluated at compile time)."""
+        hir_prog = build_hir("const TABLE: [u8; 3] = [1, 2, 3];")
+        assert len(hir_prog.constants) == 1
+        assert hir_prog.constants[0].evaluated_value == [1, 2, 3]
 
     def test_const_struct_rejected(self):
         """Const cannot have struct type."""

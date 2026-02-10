@@ -278,12 +278,8 @@ class HIRBuilder:
             # Resolve type
             const_type = self.type_resolver.resolve_type(decl.const_type)
 
-            # Validate: const only supports primitive types (no arrays or structs)
-            if isinstance(const_type, ArrayTypeInfo):
-                raise HIRError(
-                    f"const '{decl.name}' cannot have array type",
-                    hint="use 'static' for array constants (immutable statics are ROM)"
-                )
+            # Validate: const only supports primitive types and arrays (no structs)
+            # Arrays are allowed when initialized by const fn (compile-time evaluated)
             if isinstance(const_type, StructTypeInfo):
                 raise HIRError(
                     f"const '{decl.name}' cannot have struct type",

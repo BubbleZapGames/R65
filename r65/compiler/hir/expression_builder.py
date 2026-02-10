@@ -233,6 +233,12 @@ class ExpressionBuilder:
                             return hir.HIRBooleanLiteral(value=const_value, source_loc=src_loc)
                         elif isinstance(const_value, int):
                             return hir.HIRIntegerLiteral(value=const_value, source_loc=src_loc)
+                        elif isinstance(const_value, list):
+                            elements = [
+                                hir.HIRIntegerLiteral(value=v, source_loc=src_loc)
+                                for v in const_value
+                            ]
+                            return hir.HIRArrayLiteralExpr(elements=elements, source_loc=src_loc)
                     except HIRError:
                         pass  # Args not all const — fall through to runtime call
 

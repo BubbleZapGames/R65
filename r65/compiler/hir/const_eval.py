@@ -21,6 +21,7 @@ class ConstEvaluator:
         self.symbol_table = symbol_table
         self.cfg_evaluator = cfg_evaluator
         self._compiled_const_fns = {}  # Cache: func_name -> compiled Python callable
+        self._compiling_const_fns = set()  # Names currently being compiled (for recursion)
         self._const_fn_depth = 0       # Recursion depth counter (max 64)
 
     def is_constant(self, expr: ast.Expression) -> bool:
@@ -35,7 +36,7 @@ class ConstEvaluator:
         except HIRError:
             return False
 
-    def eval(self, expr: ast.Expression) -> Union[int, bool, str]:
+    def eval(self, expr: ast.Expression) -> Union[int, bool, str, list]:
         """
         Evaluate a constant expression.
 
@@ -93,6 +94,14 @@ class ConstEvaluator:
 
         elif isinstance(expr, ast.MatchExpression):
             return self._eval_match_expr(expr)
+
+        elif isinstance(expr, ast.ArrayLiteralExpr):
+            return [self.eval(e) for e in expr.elements]
+
+        elif isinstance(expr, ast.ArrayFillExpr):
+            value = self.eval(expr.value)
+            count = self.eval(expr.count)
+            return [value] * count
 
         else:
             raise HIRError(f"Non-constant expression: {type(expr).__name__}")
@@ -478,6 +487,15 @@ class ConstEvaluator:
 
     def _compile_const_fn(self, func_def, func_name):
         """Transpile a const fn AST body to a Python callable."""
+        # Track that we're compiling this function (for recursive calls)
+        self._compiling_const_fns.add(func_name)
+        try:
+            return self._compile_const_fn_inner(func_def, func_name)
+        finally:
+            self._compiling_const_fns.discard(func_name)
+
+    def _compile_const_fn_inner(self, func_def, func_name):
+        """Inner implementation of const fn compilation."""
         # Get parameter names
         param_names = [p.name for p in func_def.params]
 
@@ -770,8 +788,8 @@ class ConstEvaluator:
                 if symbol and symbol.kind in (SymbolKind.FUNCTION, SymbolKind.METHOD):
                     func_def = symbol.definition
                     if func_def and hasattr(func_def, 'is_const') and func_def.is_const:
-                        # Compile it if needed, so it's in namespace
-                        if func_name not in self._compiled_const_fns:
+                        # Compile it if needed (skip if currently being compiled — recursive)
+                        if func_name not in self._compiled_const_fns and func_name not in self._compiling_const_fns:
                             self._compiled_const_fns[func_name] = self._compile_const_fn(func_def, func_name)
                         args_str = ", ".join(self._transpile_expr(a) for a in expr.args)
                         return f"_ns_['{func_name}']({args_str}, **_ns_)"
@@ -810,7 +828,9 @@ class ConstEvaluator:
             raise HIRError("String literals are not supported in const fn")
 
         elif isinstance(expr, ast.ArrayIndex):
-            raise HIRError("Array indexing is not supported in const fn")
+            array = self._transpile_expr(expr.array)
+            index = self._transpile_expr(expr.index)
+            return f"{array}[{index}]"
 
         elif isinstance(expr, ast.FieldAccess):
             raise HIRError("Struct field access is not supported in const fn")
@@ -821,8 +841,14 @@ class ConstEvaluator:
         elif isinstance(expr, ast.AddressOf):
             raise HIRError("Address-of operator is not supported in const fn")
 
-        elif isinstance(expr, (ast.ArrayLiteralExpr, ast.ArrayFillExpr)):
-            raise HIRError("Array expressions are not supported in const fn")
+        elif isinstance(expr, ast.ArrayLiteralExpr):
+            elements = ", ".join(self._transpile_expr(e) for e in expr.elements)
+            return f"[{elements}]"
+
+        elif isinstance(expr, ast.ArrayFillExpr):
+            value = self._transpile_expr(expr.value)
+            count = self._transpile_expr(expr.count)
+            return f"[{value}] * {count}"
 
         elif isinstance(expr, ast.StructLiteralExpr):
             raise HIRError("Struct literals are not supported in const fn")

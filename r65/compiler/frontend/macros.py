@@ -203,7 +203,8 @@ class MacroExpander:
             params=func.params,
             return_type=func.return_type,
             body=new_body,
-            source_loc=func.source_loc
+            source_loc=func.source_loc,
+            is_const=func.is_const
         )
 
     def _expand_block(self, block: ast.Block) -> ast.Block:
