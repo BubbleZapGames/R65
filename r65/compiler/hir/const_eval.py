@@ -91,6 +91,9 @@ class ConstEvaluator:
         elif isinstance(expr, ast.FunctionCall):
             return self._eval_function_call(expr)
 
+        elif isinstance(expr, ast.MatchExpression):
+            return self._eval_match_expr(expr)
+
         else:
             raise HIRError(f"Non-constant expression: {type(expr).__name__}")
 
@@ -377,6 +380,35 @@ class ConstEvaluator:
             return value != 0
         else:
             raise HIRError(f"Expected boolean in const expression, got {type(value).__name__}")
+
+    def _eval_match_expr(self, expr: ast.MatchExpression) -> Union[int, bool]:
+        """Evaluate a match expression in const context."""
+        scrutinee = self.eval(expr.scrutinee)
+
+        for arm in expr.arms:
+            if self._pattern_matches(arm.pattern, scrutinee):
+                return self.eval(arm.body)
+
+        raise HIRError("Non-exhaustive match in const expression")
+
+    def _pattern_matches(self, pattern, value) -> bool:
+        """Check if a pattern matches a value."""
+        if isinstance(pattern, ast.WildcardPattern):
+            return True
+        elif isinstance(pattern, ast.IdentifierPattern):
+            return True  # Always matches (binding not needed in const eval)
+        elif isinstance(pattern, ast.LiteralPattern):
+            return value == pattern.value
+        elif isinstance(pattern, ast.EnumPattern):
+            qualified = f"{pattern.enum_name}::{pattern.variant_name}"
+            symbol = self.symbol_table.lookup(qualified)
+            if symbol and symbol.const_value is not None:
+                return value == symbol.const_value
+            raise HIRError(f"Cannot resolve enum variant '{qualified}' in const match")
+        elif isinstance(pattern, ast.OrPattern):
+            return any(self._pattern_matches(sub, value) for sub in pattern.patterns)
+        else:
+            raise HIRError(f"Unsupported pattern in const match: {type(pattern).__name__}")
 
     # =========================================================================
     # Const fn evaluation via Python transpilation
@@ -760,6 +792,9 @@ class ConstEvaluator:
                 return f"{target} = _ns_['_imod']({target}, {value})"
             return f"{target} {op}= {value}"
 
+        elif isinstance(expr, ast.MatchExpression):
+            return self._transpile_match_expr(expr)
+
         elif isinstance(expr, ast.Register):
             raise HIRError(
                 f"Cannot access hardware register '{expr.name}' in const fn"
@@ -767,3 +802,78 @@ class ConstEvaluator:
 
         else:
             raise HIRError(f"Unsupported expression in const fn: {type(expr).__name__}")
+
+    def _transpile_match_expr(self, expr):
+        """Transpile a match expression to a Python lambda with chained ternaries.
+
+        match x { 0 => a, 1 | 2 => b, name => c, _ => d }
+        becomes:
+        (lambda _m_: (a) if _m_ == 0 else (b) if _m_ == 1 or _m_ == 2
+         else (lambda name: (c))(_m_) else (d))(scrutinee)
+        """
+        scrutinee = self._transpile_expr(expr.scrutinee)
+
+        if not expr.arms:
+            raise HIRError("Empty match expression in const fn")
+
+        # Build list of (condition_or_None, body_str) for each arm
+        parts = []
+        for arm in expr.arms:
+            body_str = self._transpile_expr(arm.body)
+            pattern = arm.pattern
+
+            if isinstance(pattern, ast.WildcardPattern):
+                parts.append((None, body_str))
+            elif isinstance(pattern, ast.IdentifierPattern):
+                # Bind scrutinee to variable name via nested lambda
+                parts.append((None, f"(lambda {pattern.name}: {body_str})(_m_)"))
+            elif isinstance(pattern, ast.LiteralPattern):
+                parts.append((f"_m_ == {repr(pattern.value)}", body_str))
+            elif isinstance(pattern, ast.EnumPattern):
+                cond = self._transpile_enum_pattern(pattern)
+                parts.append((cond, body_str))
+            elif isinstance(pattern, ast.OrPattern):
+                or_conds = []
+                for sub in pattern.patterns:
+                    if isinstance(sub, ast.LiteralPattern):
+                        or_conds.append(f"_m_ == {repr(sub.value)}")
+                    elif isinstance(sub, ast.EnumPattern):
+                        or_conds.append(self._transpile_enum_pattern(sub))
+                    else:
+                        raise HIRError(
+                            f"Unsupported sub-pattern in or-pattern in const fn: "
+                            f"{type(sub).__name__}"
+                        )
+                parts.append((" or ".join(or_conds), body_str))
+            else:
+                raise HIRError(
+                    f"Unsupported pattern in const fn match: {type(pattern).__name__}"
+                )
+
+        # Build ternary chain from right to left
+        result = None
+        for condition, body in reversed(parts):
+            if result is None:
+                # Last arm
+                if condition is None:
+                    result = body
+                else:
+                    result = f"({body} if {condition} else None)"
+            else:
+                if condition is None:
+                    # Unconditional catch-all before end — takes priority
+                    result = body
+                else:
+                    result = f"({body} if {condition} else {result})"
+
+        return f"(lambda _m_: {result})({scrutinee})"
+
+    def _transpile_enum_pattern(self, pattern):
+        """Transpile an enum pattern to a Python comparison string."""
+        qualified = f"{pattern.enum_name}::{pattern.variant_name}"
+        symbol = self.symbol_table.lookup(qualified)
+        if symbol and symbol.const_value is not None:
+            return f"_m_ == {symbol.const_value}"
+        raise HIRError(
+            f"Cannot resolve enum variant '{qualified}' in const fn match"
+        )

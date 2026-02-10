@@ -253,6 +253,102 @@ class TestConstFnEvaluation:
         assert decls['MASK3'].evaluated_value == 8
         assert decls['MASK7'].evaluated_value == 128
 
+    def test_match_literal_patterns(self):
+        """Const fn with match expression using literal patterns."""
+        source = """
+        const fn describe(n: u8) -> u8 {
+            return match n {
+                0 => 10,
+                1 => 20,
+                2 => 30,
+                _ => 255,
+            };
+        }
+        const A0: u8 = describe(0);
+        const A1: u8 = describe(1);
+        const A2: u8 = describe(2);
+        const A3: u8 = describe(99);
+        """
+        hir = build_hir(source)
+        decls = {d.name: d for d in hir.declarations if isinstance(d, HIRConstDecl)}
+        assert decls['A0'].evaluated_value == 10
+        assert decls['A1'].evaluated_value == 20
+        assert decls['A2'].evaluated_value == 30
+        assert decls['A3'].evaluated_value == 255
+
+    def test_match_enum_patterns(self):
+        """Const fn with match on enum variants."""
+        source = """
+        enum Dir { Up = 0, Down = 1, Left = 2, Right = 3 }
+        const fn opposite(d: u8) -> u8 {
+            return match d {
+                Dir::Up => Dir::Down as u8,
+                Dir::Down => Dir::Up as u8,
+                Dir::Left => Dir::Right as u8,
+                Dir::Right => Dir::Left as u8,
+                _ => 255,
+            };
+        }
+        const OPP: u8 = opposite(Dir::Up as u8);
+        const OPP2: u8 = opposite(Dir::Left as u8);
+        """
+        hir = build_hir(source)
+        decls = {d.name: d for d in hir.declarations if isinstance(d, HIRConstDecl)}
+        assert decls['OPP'].evaluated_value == 1   # Down
+        assert decls['OPP2'].evaluated_value == 3   # Right
+
+    def test_match_or_patterns(self):
+        """Const fn with or-patterns in match arms."""
+        source = """
+        const fn classify(n: u8) -> u8 {
+            return match n {
+                0 | 1 => 0,
+                2 | 3 | 4 => 1,
+                _ => 2,
+            };
+        }
+        const C0: u8 = classify(1);
+        const C1: u8 = classify(3);
+        const C2: u8 = classify(10);
+        """
+        hir = build_hir(source)
+        decls = {d.name: d for d in hir.declarations if isinstance(d, HIRConstDecl)}
+        assert decls['C0'].evaluated_value == 0
+        assert decls['C1'].evaluated_value == 1
+        assert decls['C2'].evaluated_value == 2
+
+    def test_match_identifier_pattern(self):
+        """Const fn with identifier pattern binding in match."""
+        source = """
+        const fn transform(n: u8) -> u8 {
+            return match n {
+                0 => 100,
+                x => x * 2,
+            };
+        }
+        const T0: u8 = transform(0);
+        const T5: u8 = transform(5);
+        """
+        hir = build_hir(source)
+        decls = {d.name: d for d in hir.declarations if isinstance(d, HIRConstDecl)}
+        assert decls['T0'].evaluated_value == 100
+        assert decls['T5'].evaluated_value == 10
+
+    def test_match_in_const_declaration(self):
+        """Match expression used directly in const declaration (not inside const fn)."""
+        source = """
+        const MODE: u8 = 2;
+        const RESULT: u8 = match MODE {
+            0 => 10,
+            1 => 20,
+            2 => 30,
+            _ => 0,
+        };
+        """
+        hir = build_hir(source)
+        decls = {d.name: d for d in hir.declarations if isinstance(d, HIRConstDecl)}
+        assert decls['RESULT'].evaluated_value == 30
+
     def test_unrestricted_operators(self):
         """Const fn bypasses runtime operator restrictions (*, /, %, <<, >> with any operands)."""
         source = """

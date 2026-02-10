@@ -337,7 +337,6 @@ Hardware-aware operators with restrictions for expensive operations:
 - ❌ Advanced enums (data-carrying variants)
 - ❌ Closures, async/await
 - ❌ Procedural macros
-- ❌ Pattern matching
 - ❌ String types, dynamic collections
 - ❌ Module system (`mod`, `pub`)
 - ❌ Methods and `impl` blocks
