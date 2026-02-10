@@ -212,18 +212,6 @@ if x < 10 {
 
 ---
 
-### If-Let (Future Enhancement)
-
-Not in initial version, but consider for pattern matching:
-```rust
-// Future syntax:
-if let Some(value) = optional {
-    use(value);
-}
-```
-
----
-
 ## Loop Constructs
 
 ### Infinite Loop: `loop`
@@ -844,12 +832,11 @@ let x = if condition {
 };
 ```
 
-### If-Else as Expression (Future Enhancement)
+### If-Else as Expression
 
-Consider allowing if-else to return values:
+If-else can be used as an expression when both branches are present:
 ```rust
-// Possible future syntax:
-let category = if x < 10 {
+let category: u8 = if x < 10 {
     0
 } else if x < 20 {
     1
@@ -857,6 +844,8 @@ let category = if x < 10 {
     2
 };
 ```
+
+Both branches must return the same type. The `else` branch is required when using if as an expression.
 
 ---
 
@@ -1249,21 +1238,220 @@ fn binary_search(target @ A: u8) -> u8 {
 
 ---
 
-## Future Enhancements
+## Match Expressions
 
-### Match/Switch Statements
+### Basic Match
+
+**Syntax**:
+```rust
+match scrutinee {
+    pattern1 => expression1,
+    pattern2 => expression2,
+    _ => default_expression,
+}
+```
+
+**Semantics**:
+- Evaluates `scrutinee` once, then tests each arm's pattern in order
+- Executes the first matching arm's expression
+- All arms must return the same type
+- Match must be **exhaustive**: every possible value must be covered (use `_` wildcard for remaining values)
+- Trailing comma after the last arm is optional
+
+**Supported scrutinee types**: `u8`, `i8`, `u16`, `i16`, `bool`, enums
+
+### Pattern Types
+
+#### Literal Patterns
+
+Match against integer or boolean constants:
 
 ```rust
-// Possible future syntax:
-match state {
-    GameState::Menu => update_menu(),
-    GameState::Playing => update_game(),
-    GameState::Paused => update_pause(),
-    _ => { }
+let result: u8 = match tile_id {
+    0 => 10,
+    1 => 20,
+    2 => 30,
+    _ => 0,
+};
+```
+
+#### Enum Patterns
+
+Match against enum variants:
+
+```rust
+enum GameState { Menu = 0, Playing, Paused, GameOver }
+
+let cost: u8 = match state {
+    GameState::Menu => 0,
+    GameState::Playing => 1,
+    GameState::Paused => 0,
+    GameState::GameOver => 0,
+};
+```
+
+When all enum variants are covered, no wildcard `_` arm is needed.
+
+#### Range Patterns
+
+Match against a contiguous range of integer values:
+
+```rust
+let category: u8 = match tile_id {
+    0..=15 => 1,      // inclusive: matches 0, 1, ..., 15
+    16..32 => 2,       // exclusive: matches 16, 17, ..., 31
+    32..=47 => 3,
+    _ => 0,
+};
+```
+
+- `start..=end` — **inclusive** range (matches start through end)
+- `start..end` — **exclusive** range (matches start through end−1)
+- Both endpoints must be integer literals
+- Empty ranges are a compile error (`5..5`, `5..=3`)
+- Range patterns only match integer scrutinee types (`u8`, `i8`, `u16`, `i16`)
+
+#### Or Patterns
+
+Combine multiple patterns with `|`:
+
+```rust
+let result: u8 = match input {
+    0 | 1 | 2 => 10,
+    3 | 4 | 5 => 20,
+    _ => 0,
+};
+```
+
+Range patterns can appear inside OR patterns:
+
+```rust
+let zone: u8 = match tile_id {
+    0..=3 | 10..=13 => 1,    // two ranges in one arm
+    4..=9 => 2,
+    _ => 0,
+};
+```
+
+#### Wildcard Pattern
+
+`_` matches any value (catch-all):
+
+```rust
+let result: u8 = match val {
+    0 => 100,
+    _ => 0,       // matches everything else
+};
+```
+
+#### Identifier Pattern
+
+Binds the matched value to a variable:
+
+```rust
+let result: u8 = match val {
+    0 => 100,
+    other => other + 1,   // 'other' holds the matched value
+};
+```
+
+### Exhaustiveness
+
+Match expressions must cover all possible values. The compiler enforces this:
+
+- **bool**: must cover both `true` and `false` (or use `_`)
+- **enum**: must cover all variants (or use `_`)
+- **integer types**: must include a `_` or identifier pattern (too many values to enumerate)
+
+```rust
+// OK: all bool values covered
+let x: u8 = match flag {
+    true => 1,
+    false => 0,
+};
+
+// ERROR: non-exhaustive - missing 'false'
+let x: u8 = match flag {
+    true => 1,
+};
+
+// OK: wildcard covers remaining integer values
+let x: u8 = match val {
+    0 => 10,
+    _ => 0,
+};
+```
+
+### Match as Expression
+
+Match is an expression — it produces a value that can be used in `let` bindings, return statements, or anywhere an expression is expected:
+
+```rust
+let category: u8 = match tile_id {
+    0..=15 => 0,
+    16..=31 => 1,
+    _ => 2,
+};
+
+return match state {
+    GameState::Playing => 1,
+    _ => 0,
+};
+```
+
+### Optimization
+
+The compiler automatically selects the best code generation strategy:
+
+- **Lookup table**: When patterns form a dense range and all arm bodies are compile-time constants, the compiler emits an inline ROM table for O(1) lookup
+- **Jump table**: When patterns are dense but bodies aren't constant, emits an indexed jump table (JMP (addr,X)) for O(1) dispatch
+- **Branch chain**: For sparse patterns or few arms, emits a sequential comparison chain
+
+Range patterns participate in these optimizations — `0..=2 => 10, 3..=5 => 20` expands to individual values for density analysis and can trigger table optimizations.
+
+**Assembly Mapping** (branch chain):
+```rust
+match val {
+    0 => handle_zero(),
+    1 => handle_one(),
+    _ => handle_other(),
 }
 
-// Could compile to jump table for dense enum values
+// CMP #0
+// BNE _check_1
+// JSR handle_zero
+// JMP _merge
+// _check_1:
+// CMP #1
+// BNE _default
+// JSR handle_one
+// JMP _merge
+// _default:
+// JSR handle_other
+// _merge:
 ```
+
+**Assembly Mapping** (range pattern branch chain):
+```rust
+match val {
+    0..=15 => handle_low(),
+    _ => handle_high(),
+}
+
+// CMP #0
+// BCC _default        ; val < 0? (unsigned: can't happen for u8, but generated)
+// CMP #16
+// BCS _default        ; val >= 16? → default
+// JSR handle_low
+// JMP _merge
+// _default:
+// JSR handle_high
+// _merge:
+```
+
+---
+
+## Future Enhancements
 
 ### Iterator-Based For Loops
 
@@ -1274,15 +1462,6 @@ for item in array {
 }
 
 // Note: Range-based for loops (for i in 0..10) are already implemented
-```
-
-### If-Let Pattern Matching
-
-```rust
-// Possible future syntax:
-if let Some(value) = optional {
-    use_value(value);
-}
 ```
 
 ---
@@ -1316,6 +1495,5 @@ Could influence code layout for better cache behavior (though less relevant for 
 
 ---
 
-**STATUS**: Design Complete
-**Last Updated**: 2025-12-31
-**Next Steps**: Implement in parser, HIR, and MIR phases
+**STATUS**: Implementation Complete
+**Last Updated**: 2026-02-10
