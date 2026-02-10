@@ -5,7 +5,7 @@ Handles memory access instruction generation including direct and indirect
 addressing modes for the 65816 processor.
 """
 
-from r65.compiler.mir.nodes import Load, Store, LoadIndirect, StoreIndirect, Immediate as MIRImmediate, FunctionPointer
+from r65.compiler.mir.nodes import Load, Store, LoadIndirect, StoreIndirect, Immediate as MIRImmediate, FunctionPointer, LabelRef
 from r65.compiler.codegen.register_alloc import LocationKind
 from r65.compiler.errors import InstructionSelectionError
 from r65.compiler.codegen.opcodes import Opcode, STORE_MNEMONICS
@@ -127,6 +127,11 @@ class MemoryOperationSelector(BaseSelector):
         # SPECIAL CASE: Handle function pointers
         if isinstance(instr.source, FunctionPointer):
             self._store_function_pointer(instr.source, dest_loc, instr.type_info)
+            return
+
+        # SPECIAL CASE: Handle label references (string literals, etc.)
+        if isinstance(instr.source, LabelRef):
+            self._store_label_ref(instr.source, dest_loc)
             return
 
         # Normal case: memory-to-memory or register-to-memory store
@@ -283,6 +288,17 @@ class MemoryOperationSelector(BaseSelector):
             dest_high = self.parent._offset_location(dest_loc, 1)
             self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(f">{func_name}"), "Load function address high byte")
             self._emit_load_store('STA', dest_high)
+
+    def _store_label_ref(self, label_ref: LabelRef, dest_loc):
+        """Store a label reference address (near pointer) directly to memory."""
+        label = label_ref.label_name
+        # Near pointer: 2 bytes (low, high) — same pattern as near function pointers
+        self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(f"<{label}"), "Load label address low byte")
+        self._emit_load_store('STA', dest_loc)
+
+        dest_high = self.parent._offset_location(dest_loc, 1)
+        self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(f">{label}"), "Load label address high byte")
+        self._emit_load_store('STA', dest_high)
 
     # ========================================================================
     # Indirect Memory Operations

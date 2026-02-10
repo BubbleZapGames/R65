@@ -247,6 +247,98 @@ static mut MSG: [u8; 4] = "A\x4";
         assert "Invalid hex escape" in str(excinfo.value)
 
 
+class TestInlineStringLiterals:
+    """Inline string literal tests (string as *u8 pointer)."""
+
+    def test_inline_string_literal_with_explicit_type(self):
+        """Test inline string literal assigned to *u8 variable."""
+        source = '''
+fn test() {
+    let ptr: *u8 = "Hello";
+}
+'''
+        hir, mir = compile_to_mir(source)
+        # Should generate a ROM data section for the string
+        assert len(mir.rom_data_sections) >= 1
+        rom = mir.rom_data_sections[0]
+        assert rom.data == [72, 101, 108, 108, 111]  # "Hello"
+        assert rom.label.startswith("__str_")
+
+    def test_inline_string_literal_escape_sequences(self):
+        """Test escape sequences work in inline string literals."""
+        source = r'''
+fn test() {
+    let ptr: *u8 = "A\nB\x00";
+}
+'''
+        hir, mir = compile_to_mir(source)
+        rom = mir.rom_data_sections[0]
+        assert rom.data == [0x41, 0x0A, 0x42, 0x00]
+
+    def test_inline_string_as_function_arg(self):
+        """Test string literal as function argument types as *u8."""
+        source = '''
+fn print_msg(msg: *u8) {}
+fn test() {
+    print_msg("Hello");
+}
+'''
+        hir, mir = compile_to_mir(source)
+        assert len(mir.rom_data_sections) >= 1
+        rom = mir.rom_data_sections[0]
+        assert rom.data == [72, 101, 108, 108, 111]
+
+    def test_inline_string_mir_label_ref(self):
+        """Test that MIR uses LabelRef for inline string literals."""
+        from r65.compiler.mir.nodes import Move, LabelRef
+        source = '''
+fn test() {
+    let ptr: *u8 = "Hi";
+}
+'''
+        hir, mir = compile_to_mir(source)
+        # Find the Move instruction with LabelRef source
+        found = False
+        for func in mir.functions:
+            for block in func.blocks.values():
+                for instr in block.instructions:
+                    if isinstance(instr, Move) and isinstance(instr.source, LabelRef):
+                        assert instr.source.label_name.startswith("__str_")
+                        found = True
+        assert found, "Expected Move with LabelRef source in MIR"
+
+    def test_multiple_inline_strings_unique_labels(self):
+        """Test that multiple inline strings get unique labels."""
+        source = '''
+fn test() {
+    let a: *u8 = "Hello";
+    let b: *u8 = "World";
+}
+'''
+        hir, mir = compile_to_mir(source)
+        assert len(mir.rom_data_sections) >= 2
+        labels = [s.label for s in mir.rom_data_sections]
+        assert len(set(labels)) == len(labels), "Labels should be unique"
+
+    def test_inline_string_type_is_pointer_u8(self):
+        """Test that inline string literal has *u8 type."""
+        from r65.compiler.hir.types import PointerTypeInfo, BasicTypeInfo
+        source = '''
+fn test() {
+    let ptr: *u8 = "test";
+}
+'''
+        hir = type_check(source)
+        # Find the string literal in the let statement
+        func = hir.declarations[0]
+        let_stmt = func.body.statements[0]
+        string_expr = let_stmt.initializer
+        assert isinstance(string_expr.expr_type, PointerTypeInfo)
+        assert not string_expr.expr_type.is_far
+        assert isinstance(string_expr.expr_type.pointee_type, BasicTypeInfo)
+        assert string_expr.expr_type.pointee_type.name == 'u8'
+
+
 class TestExtendedASCII:
     """Extended ASCII (0x80-0xFF) support."""
 

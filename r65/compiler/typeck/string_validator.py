@@ -7,7 +7,7 @@ including escape sequence processing and Extended ASCII validation.
 
 from typing import Optional, List
 from r65.compiler.hir import HIRStringLiteral, BasicTypeInfo
-from r65.compiler.hir.types import ArrayTypeInfo, TypeInfo
+from r65.compiler.hir.types import ArrayTypeInfo, PointerTypeInfo, TypeInfo
 from r65.compiler.typeck.errors import TypeCheckError
 
 
@@ -30,13 +30,26 @@ class StringValidator:
         Returns:
             ArrayTypeInfo with u8 element type
         """
-        # Validate context: string literals only allowed in u8 array context
+        # Check for inline string literal context (no context or *u8 pointer context)
+        # Inline string literals evaluate to *u8 (near pointer to ROM data)
+        is_inline = False
         if context_type is None:
-            raise TypeCheckError(
-                "String literals are only allowed as static array initializers",
-                source_loc=expr.source_loc
-            )
+            is_inline = True
+        elif isinstance(context_type, PointerTypeInfo):
+            if (not context_type.is_far and
+                isinstance(context_type.pointee_type, BasicTypeInfo) and
+                context_type.pointee_type.name == 'u8'):
+                is_inline = True
 
+        if is_inline:
+            # Process escape sequences and validate characters
+            byte_values = StringValidator.process_string_to_bytes(expr.value, expr.source_loc)
+            expr.processed_bytes = byte_values
+            ptr_type = PointerTypeInfo(is_far=False, pointee_type=BasicTypeInfo('u8'))
+            expr.expr_type = ptr_type
+            return ptr_type
+
+        # Validate context: string literals in array context
         if not isinstance(context_type, ArrayTypeInfo):
             raise TypeCheckError(
                 f"String literal cannot be assigned to non-array type '{context_type}'",

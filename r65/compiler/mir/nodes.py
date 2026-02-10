@@ -86,6 +86,20 @@ class FunctionPointer:
 
 
 @dataclass
+class LabelRef:
+    """
+    Reference to a ROM label address (string literals, etc.).
+
+    Used when loading the address of compiler-generated ROM data
+    (e.g., inline string literals) into a pointer variable.
+    """
+    label_name: str
+
+    def __repr__(self):
+        return f"&{self.label_name}"
+
+
+@dataclass
 class MemoryLocation:
     """
     Memory location with storage type and address.

@@ -23,7 +23,7 @@ from r65.compiler.hir.attributes import StorageKind
 
 from r65.compiler.mir.nodes import (
     MIRInstruction, MIRProgram, MIRFunction, BasicBlock,
-    VirtualRegister, HardwareRegister, Immediate, FunctionPointer, MemoryLocation,
+    VirtualRegister, HardwareRegister, Immediate, FunctionPointer, LabelRef, MemoryLocation,
     Load, Store, LoadIndirect, StoreIndirect, Move, TypeConvert, BinaryOp, UnaryOp, Compare, BitTest,
     Jump, CondBranch, JumpTable, LookupTable, Return, ReturnFromInterrupt, Call, Argument, ArgumentMechanism,
     StatusFlagRead,
@@ -780,6 +780,9 @@ class MIRBuilder:
         elif isinstance(expr, HIRMatchExpression):
             return self.match_lowerer.lower_match_expression(expr)
 
+        elif isinstance(expr, HIRStringLiteral):
+            return self._lower_inline_string_literal(expr)
+
         else:
             # Unsupported expression type (placeholder)
             # Allocate placeholder virtual register
@@ -806,6 +809,29 @@ class MIRBuilder:
             bit_mask=expr.bit_mask
         ))
         return result
+
+    def _lower_inline_string_literal(self, expr: HIRStringLiteral) -> VirtualRegister:
+        """
+        Lower an inline string literal to a *u8 pointer to ROM data.
+
+        Generates a ROM data section for the string bytes and emits
+        a LabelRef move to load the label address into a vreg.
+        """
+        # Generate unique label
+        label = f"__str_{self._rom_data_counter}"
+        self._rom_data_counter += 1
+
+        # Create ROM data section from processed bytes
+        rom_data = ROMDataRef(label=label, data=list(expr.processed_bytes), element_size=1)
+        self._rom_data_sections.append(rom_data)
+
+        # Allocate vreg for the pointer
+        vreg = self.current_function.vreg_allocator.alloc(expr.expr_type, f"str_ptr")
+
+        # Emit move from label reference to vreg
+        self.emit(Move(dest=vreg, source=LabelRef(label_name=label), type_info=expr.expr_type))
+
+        return vreg
 
     # ========================================================================
     # Expression Lowering (delegated to ExpressionLowerer)

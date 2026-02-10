@@ -5,7 +5,7 @@ Handles Move instruction generation including register transfers,
 immediate loads, function pointers, and memory-to-memory moves.
 """
 
-from r65.compiler.mir.nodes import Move, Immediate as MIRImmediate, FunctionPointer
+from r65.compiler.mir.nodes import Move, Immediate as MIRImmediate, FunctionPointer, LabelRef
 from r65.compiler.codegen.register_alloc import LocationKind
 from r65.compiler.errors import InstructionSelectionError
 from r65.compiler.codegen.opcodes import Opcode, STORE_MNEMONICS, LOAD_MNEMONICS
@@ -59,6 +59,11 @@ class MoveOperationSelector(BaseSelector):
         # Handle function pointers
         if isinstance(src_operand, FunctionPointer):
             self._move_function_pointer(src_operand, dest_loc, instr.type_info)
+            return
+
+        # Handle label references (string literals, etc.)
+        if isinstance(src_operand, LabelRef):
+            self._emit_near_function_pointer(src_operand.label_name, dest_loc)
             return
 
         # Handle immediate values (including symbolic addresses)
