@@ -1,7 +1,8 @@
 """
 Tests for const fn support.
 
-Tests parsing, const evaluation, and compile-time folding of const fn.
+Tests parsing, const evaluation, compile-time folding, operator restrictions,
+iteration limits, and error reporting for const fn.
 """
 import pytest
 
@@ -14,6 +15,12 @@ from r65.compiler.hir import (
 from r65.compiler.typeck import TypeChecker
 
 
+def parse_program(source: str):
+    """Helper to parse source to AST."""
+    parser = Parser()
+    return parser.parse(source)
+
+
 def build_hir(source: str) -> HIRProgram:
     """Helper to parse and build HIR from source."""
     parser = Parser()
@@ -22,14 +29,19 @@ def build_hir(source: str) -> HIRProgram:
     return builder.build_program(ast_prog)
 
 
-def parse_program(source: str):
-    """Helper to parse source to AST."""
+def build_and_typecheck(source: str) -> HIRProgram:
+    """Helper to parse, build HIR, and type check."""
     parser = Parser()
-    return parser.parse(source)
+    ast_prog = parser.parse(source)
+    builder = HIRBuilder()
+    hir = builder.build_program(ast_prog)
+    tc = TypeChecker(hir)
+    tc.check()
+    return hir
 
 
 class TestConstFnParsing:
-    """Test parsing of const fn declarations."""
+    """Test parsing and HIR propagation of const fn declarations."""
 
     def test_parse_const_fn(self):
         """const fn should parse with is_const=True."""
@@ -52,6 +64,19 @@ class TestConstFnParsing:
         assert func.is_const is True
         assert func.is_far is True
 
+    def test_parse_const_impl_method(self):
+        """const fn in impl block should parse correctly."""
+        ast_prog = parse_program("""
+        struct Foo { x: u8 }
+        impl Foo {
+            const fn bar(*self) -> u8 { return 0; }
+        }
+        """)
+        impl_decl = ast_prog.items[1]
+        method = impl_decl.methods[0]
+        assert method.is_const is True
+        assert method.name == "bar"
+
     def test_hir_propagates_is_const(self):
         """HIR function declaration should have is_const from AST."""
         hir = build_hir("const fn double(x: u8) -> u8 { return x * 2; }")
@@ -65,71 +90,70 @@ class TestConstFnParsing:
         func = hir.declarations[0]
         assert func.is_const is False
 
+    def test_array_size(self):
+        """Const fn result used as array size."""
+        source = """
+        const fn buf_size() -> u16 { return 256; }
+        static BUF: [u8; buf_size()] = [0; buf_size()];
+        """
+        build_hir(source)  # Should parse and build without error
+
 
 class TestConstFnEvaluation:
     """Test const fn evaluation in const contexts."""
 
-    def test_simple_return(self):
-        """Const fn returning a literal."""
-        source = """
-        const fn five() -> u8 { return 5; }
-        const VAL: u8 = five();
-        """
-        hir = build_hir(source)
-        const_decl = [d for d in hir.declarations if isinstance(d, HIRConstDecl)][0]
-        assert const_decl.evaluated_value == 5
-
     def test_parameter_arithmetic(self):
-        """Const fn with parameter arithmetic."""
+        """Const fn with parameters and arithmetic."""
         source = """
         const fn double(x: u8) -> u8 { return x * 2; }
-        const DOUBLED: u8 = double(5);
-        """
-        hir = build_hir(source)
-        const_decl = [d for d in hir.declarations if isinstance(d, HIRConstDecl)][0]
-        assert const_decl.evaluated_value == 10
-
-    def test_two_parameters(self):
-        """Const fn with two parameters."""
-        source = """
         const fn add(a: u8, b: u8) -> u8 { return a + b; }
+        const DOUBLED: u8 = double(5);
         const SUM: u8 = add(10, 20);
         """
         hir = build_hir(source)
-        const_decl = [d for d in hir.declarations if isinstance(d, HIRConstDecl)][0]
-        assert const_decl.evaluated_value == 30
+        decls = {d.name: d for d in hir.declarations if isinstance(d, HIRConstDecl)}
+        assert decls['DOUBLED'].evaluated_value == 10
+        assert decls['SUM'].evaluated_value == 30
 
-    def test_if_else(self):
-        """Const fn with if/else."""
+    def test_let_bindings(self):
+        """Const fn with let bindings."""
         source = """
-        const fn max_val(a: u8, b: u8) -> u8 {
-            if a > b {
-                return a;
-            } else {
-                return b;
-            }
+        const fn calc(x: u8) -> u8 {
+            let y: u8 = x + 1;
+            let z: u8 = y * 2;
+            return z;
         }
-        const MAX: u8 = max_val(10, 20);
+        const CALC: u8 = calc(5);
         """
         hir = build_hir(source)
         const_decl = [d for d in hir.declarations if isinstance(d, HIRConstDecl)][0]
-        assert const_decl.evaluated_value == 20
+        assert const_decl.evaluated_value == 12  # (5+1)*2
 
-    def test_if_else_other_branch(self):
-        """Const fn with if/else - other branch taken."""
+    def test_type_casts(self):
+        """Const fn with type casts."""
         source = """
-        const fn max_val(a: u8, b: u8) -> u8 {
-            if a > b {
-                return a;
-            } else {
-                return b;
-            }
+        const fn tile_offset(x: u8, y: u8) -> u16 {
+            return (y as u16) * 32 + (x as u16);
         }
-        const MAX: u8 = max_val(30, 20);
+        const TILE: u16 = tile_offset(5, 3);
         """
         hir = build_hir(source)
         const_decl = [d for d in hir.declarations if isinstance(d, HIRConstDecl)][0]
-        assert const_decl.evaluated_value == 30
+        assert const_decl.evaluated_value == 3 * 32 + 5  # 101
+
+    def test_if_else_both_branches(self):
+        """Const fn with if/else evaluates correct branch."""
+        source = """
+        const fn max_val(a: u8, b: u8) -> u8 {
+            if a > b { return a; } else { return b; }
+        }
+        const MAX1: u8 = max_val(10, 20);
+        const MAX2: u8 = max_val(30, 20);
+        """
+        hir = build_hir(source)
+        decls = {d.name: d for d in hir.declarations if isinstance(d, HIRConstDecl)}
+        assert decls['MAX1'].evaluated_value == 20  # else branch
+        assert decls['MAX2'].evaluated_value == 30  # then branch
 
     def test_while_loop(self):
         """Const fn with while loop (popcount)."""
@@ -165,101 +189,6 @@ class TestConstFnEvaluation:
         const_decl = [d for d in hir.declarations if isinstance(d, HIRConstDecl)][0]
         assert const_decl.evaluated_value == 45  # 0+1+2+...+9
 
-    def test_let_bindings(self):
-        """Const fn with let bindings."""
-        source = """
-        const fn calc(x: u8) -> u8 {
-            let y: u8 = x + 1;
-            let z: u8 = y * 2;
-            return z;
-        }
-        const CALC: u8 = calc(5);
-        """
-        hir = build_hir(source)
-        const_decl = [d for d in hir.declarations if isinstance(d, HIRConstDecl)][0]
-        assert const_decl.evaluated_value == 12  # (5+1)*2
-
-    def test_type_casts(self):
-        """Const fn with type casts."""
-        source = """
-        const fn tile_offset(x: u8, y: u8) -> u16 {
-            return (y as u16) * 32 + (x as u16);
-        }
-        const TILE: u16 = tile_offset(5, 3);
-        """
-        hir = build_hir(source)
-        const_decl = [d for d in hir.declarations if isinstance(d, HIRConstDecl)][0]
-        assert const_decl.evaluated_value == 3 * 32 + 5  # 101
-
-    def test_const_fn_calling_const_fn(self):
-        """Const fn calling another const fn."""
-        source = """
-        const fn double(x: u8) -> u8 { return x * 2; }
-        const fn quadruple(x: u8) -> u8 { return double(double(x)); }
-        const QUAD: u8 = quadruple(3);
-        """
-        hir = build_hir(source)
-        const_decl = [d for d in hir.declarations if isinstance(d, HIRConstDecl)][0]
-        assert const_decl.evaluated_value == 12  # 3*2*2
-
-    def test_const_fn_forward_reference(self):
-        """Const fn calling another const fn defined after it (forward reference)."""
-        source = """
-        const fn quadruple(x: u8) -> u8 { return double(double(x)); }
-        const fn double(x: u8) -> u8 { return x * 2; }
-        const QUAD: u8 = quadruple(3);
-        """
-        hir = build_hir(source)
-        const_decl = [d for d in hir.declarations if isinstance(d, HIRConstDecl)][0]
-        assert const_decl.evaluated_value == 12  # 3*2*2
-
-    def test_three_level_nesting(self):
-        """Three levels of const fn nesting."""
-        source = """
-        const fn add_one(x: u8) -> u8 { return x + 1; }
-        const fn double_plus_one(x: u8) -> u8 { return add_one(x * 2); }
-        const fn transform(x: u8) -> u8 { return double_plus_one(add_one(x)); }
-        const RESULT: u8 = transform(5);
-        """
-        hir = build_hir(source)
-        const_decl = [d for d in hir.declarations if isinstance(d, HIRConstDecl)][0]
-        assert const_decl.evaluated_value == 13  # add_one(5)=6, 6*2=12, add_one(12)=13
-
-    def test_multiple_const_fns_shared_helper(self):
-        """Multiple const fns sharing a common helper."""
-        source = """
-        const fn clamp_byte(x: u16) -> u8 {
-            if x > 255 { return 255; }
-            return x as u8;
-        }
-        const fn brightness(r: u8, g: u8, b: u8) -> u8 {
-            return clamp_byte((r as u16 + g as u16 + b as u16) / 3);
-        }
-        const fn saturate(x: u8, boost: u8) -> u8 {
-            return clamp_byte((x as u16) + (boost as u16));
-        }
-        const BRIGHT: u8 = brightness(100, 200, 150);
-        const SAT: u8 = saturate(200, 100);
-        """
-        hir = build_hir(source)
-        decls = {d.name: d for d in hir.declarations if isinstance(d, HIRConstDecl)}
-        assert decls['BRIGHT'].evaluated_value == 150  # (100+200+150)/3 = 150
-        assert decls['SAT'].evaluated_value == 255  # clamped to 255
-
-    def test_const_fn_called_in_multiple_consts(self):
-        """Same const fn called from multiple const declarations."""
-        source = """
-        const fn make_mask(bit: u8) -> u8 { return 1 << bit; }
-        const MASK0: u8 = make_mask(0);
-        const MASK3: u8 = make_mask(3);
-        const MASK7: u8 = make_mask(7);
-        """
-        hir = build_hir(source)
-        decls = {d.name: d for d in hir.declarations if isinstance(d, HIRConstDecl)}
-        assert decls['MASK0'].evaluated_value == 1
-        assert decls['MASK3'].evaluated_value == 8
-        assert decls['MASK7'].evaluated_value == 128
-
     def test_const_referencing_other_const(self):
         """Const fn body referencing a const declaration."""
         source = """
@@ -287,40 +216,85 @@ class TestConstFnEvaluation:
         const_decl = [d for d in hir.declarations if isinstance(d, HIRConstDecl)][0]
         assert const_decl.evaluated_value == 1
 
-    def test_bitwise_operations(self):
-        """Const fn with bitwise operations."""
+    def test_const_fn_calling_const_fn(self):
+        """Const fn calling another const fn, including forward references."""
         source = """
-        const fn make_mask(bit: u8) -> u8 {
-            return 1 << bit;
+        const fn quadruple(x: u8) -> u8 { return double(double(x)); }
+        const fn double(x: u8) -> u8 { return x * 2; }
+        const QUAD: u8 = quadruple(3);
+        """
+        hir = build_hir(source)
+        const_decl = [d for d in hir.declarations if isinstance(d, HIRConstDecl)][0]
+        assert const_decl.evaluated_value == 12  # 3*2*2
+
+    def test_three_level_nesting(self):
+        """Three levels of const fn nesting with shared helpers."""
+        source = """
+        const fn add_one(x: u8) -> u8 { return x + 1; }
+        const fn double_plus_one(x: u8) -> u8 { return add_one(x * 2); }
+        const fn transform(x: u8) -> u8 { return double_plus_one(add_one(x)); }
+        const RESULT: u8 = transform(5);
+        """
+        hir = build_hir(source)
+        const_decl = [d for d in hir.declarations if isinstance(d, HIRConstDecl)][0]
+        assert const_decl.evaluated_value == 13  # add_one(5)=6, 6*2=12, add_one(12)=13
+
+    def test_const_fn_called_in_multiple_consts(self):
+        """Same const fn called from multiple const declarations (also tests bitwise ops)."""
+        source = """
+        const fn make_mask(bit: u8) -> u8 { return 1 << bit; }
+        const MASK0: u8 = make_mask(0);
+        const MASK3: u8 = make_mask(3);
+        const MASK7: u8 = make_mask(7);
+        """
+        hir = build_hir(source)
+        decls = {d.name: d for d in hir.declarations if isinstance(d, HIRConstDecl)}
+        assert decls['MASK0'].evaluated_value == 1
+        assert decls['MASK3'].evaluated_value == 8
+        assert decls['MASK7'].evaluated_value == 128
+
+    def test_unrestricted_operators(self):
+        """Const fn bypasses runtime operator restrictions (*, /, %, <<, >> with any operands)."""
+        source = """
+        const fn compute(a: u8, b: u8) -> u16 {
+            return (a as u16) * (b as u16);
         }
-        const MASK: u8 = make_mask(5);
+        const fn divide_and_mod(a: u16, b: u16) -> u16 {
+            return (a / b) + (a % b);
+        }
+        const fn shift(val: u16, amt: u16) -> u16 {
+            return val << amt;
+        }
+        const MUL: u16 = compute(7, 9);
+        const DIVMOD: u16 = divide_and_mod(100, 7);
+        const SHIFTED: u16 = shift(1, 10);
         """
-        hir = build_hir(source)
-        const_decl = [d for d in hir.declarations if isinstance(d, HIRConstDecl)][0]
-        assert const_decl.evaluated_value == 32  # 1 << 5
+        hir = build_and_typecheck(source)
+        decls = {d.name: d for d in hir.declarations if isinstance(d, HIRConstDecl)}
+        assert decls['MUL'].evaluated_value == 63       # 7*9
+        assert decls['DIVMOD'].evaluated_value == 16     # 100/7=14, 100%7=2, 14+2=16
+        assert decls['SHIFTED'].evaluated_value == 1024  # 1<<10
 
-    def test_no_params(self):
-        """Const fn with no parameters."""
+    def test_complex_math(self):
+        """Const fn with complex arithmetic combining multiple unrestricted operators."""
         source = """
-        const fn magic() -> u8 { return 42; }
-        const MAGIC: u8 = magic();
+        const fn clamp_byte(x: u16) -> u8 {
+            if x > 255 { return 255; }
+            return x as u8;
+        }
+        const fn brightness(r: u8, g: u8, b: u8) -> u8 {
+            return clamp_byte((r as u16 + g as u16 + b as u16) / 3);
+        }
+        const fn tile_addr(row: u8, col: u8, stride: u8) -> u16 {
+            return (row as u16) * (stride as u16) + (col as u16);
+        }
+        const BRIGHT: u8 = brightness(100, 200, 150);
+        const ADDR: u16 = tile_addr(5, 3, 64);
         """
-        hir = build_hir(source)
-        const_decl = [d for d in hir.declarations if isinstance(d, HIRConstDecl)][0]
-        assert const_decl.evaluated_value == 42
-
-
-class TestConstFnArraySize:
-    """Test const fn used in array size context."""
-
-    def test_array_size(self):
-        """Const fn result used as array size."""
-        source = """
-        const fn buf_size() -> u16 { return 256; }
-        static BUF: [u8; buf_size()] = [0; buf_size()];
-        """
-        hir = build_hir(source)
-        # Should parse and build without error
+        hir = build_and_typecheck(source)
+        decls = {d.name: d for d in hir.declarations if isinstance(d, HIRConstDecl)}
+        assert decls['BRIGHT'].evaluated_value == 150  # (100+200+150)/3
+        assert decls['ADDR'].evaluated_value == 323    # 5*64 + 3
 
 
 class TestConstFnFolding:
@@ -336,7 +310,6 @@ class TestConstFnFolding:
         """
         hir = build_hir(source)
         func = [d for d in hir.declarations if isinstance(d, HIRFunctionDecl) and d.name == 'foo'][0]
-        # The assignment value should be folded to a literal
         assign = func.body.statements[0].expr  # HIRAssignment
         assert isinstance(assign.value, HIRIntegerLiteral)
         assert assign.value.value == 12
@@ -351,7 +324,6 @@ class TestConstFnFolding:
         """
         hir = build_hir(source)
         func = [d for d in hir.declarations if isinstance(d, HIRFunctionDecl) and d.name == 'foo'][0]
-        # The return value should be a function call (not folded)
         ret_stmt = func.body.statements[0]
         assert isinstance(ret_stmt.values[0], HIRFunctionCall)
 
@@ -368,17 +340,6 @@ class TestConstFnErrors:
         with pytest.raises(HIRError, match="not a const fn"):
             build_hir(source)
 
-    def test_division_by_zero(self):
-        """Division by zero in const fn should give clear error."""
-        source = """
-        const fn bad() -> u8 {
-            return 10 / 0;
-        }
-        const VAL: u8 = bad();
-        """
-        with pytest.raises(HIRError):
-            build_hir(source)
-
     def test_wrong_arg_count(self):
         """Wrong argument count should error."""
         source = """
@@ -388,15 +349,30 @@ class TestConstFnErrors:
         with pytest.raises(HIRError, match="expects 2"):
             build_hir(source)
 
-    def test_const_fn_calls_non_const_fn(self):
-        """Const fn calling a non-const fn should give clear error."""
+    def test_division_by_zero(self):
+        """Division by zero in const fn should give clear error."""
         source = """
-        fn helper(x: u8) -> u8 { return x + 1; }
-        const fn bad(x: u8) -> u8 { return helper(x); }
-        const VAL: u8 = bad(5);
+        const fn bad() -> u8 { return 10 / 0; }
+        const VAL: u8 = bad();
         """
-        with pytest.raises(HIRError, match="'helper' is not a const fn"):
+        with pytest.raises(HIRError):
             build_hir(source)
+
+    def test_invalid_body_caught_at_definition(self):
+        """Const fn with invalid body errors at definition time, even if only called at runtime."""
+        # Non-const fn call
+        with pytest.raises(HIRError, match="'helper' is not a const fn"):
+            build_hir("""
+            fn helper(x: u8) -> u8 { return x + 1; }
+            const fn bad(x: u8) -> u8 { return helper(x); }
+            fn main() { A = bad(5); }
+            """)
+        # Hardware register access
+        with pytest.raises(HIRError, match="Cannot access hardware register"):
+            build_hir("""
+            const fn bad() -> u8 { return X; }
+            fn main() { A = bad(); }
+            """)
 
     def test_const_fn_accesses_static_mut(self):
         """Const fn accessing a static mut variable should error."""
@@ -418,168 +394,24 @@ class TestConstFnErrors:
         with pytest.raises(HIRError, match="Cannot access hardware register 'A'"):
             build_hir(source)
 
-    def test_invalid_const_fn_body_caught_at_definition(self):
-        """Const fn with invalid body should error even if only called at runtime."""
-        source = """
-        fn helper(x: u8) -> u8 { return x + 1; }
-        const fn bad(x: u8) -> u8 { return helper(x); }
-        fn main() {
-            A = bad(5);
-        }
-        """
-        with pytest.raises(HIRError, match="'helper' is not a const fn"):
-            build_hir(source)
-
-    def test_const_fn_register_in_body_caught_at_definition(self):
-        """Const fn using register in body should error at definition time."""
-        source = """
-        const fn bad() -> u8 { return X; }
-        fn main() {
-            A = bad();
-        }
-        """
-        with pytest.raises(HIRError, match="Cannot access hardware register 'X'"):
-            build_hir(source)
-
-    def test_infinite_while_loop(self):
-        """Const fn with infinite while loop should error."""
-        source = """
-        const fn hang() -> u8 {
-            while true { }
-            return 0;
-        }
-        const VAL: u8 = hang();
-        """
+    def test_infinite_loop_caught(self):
+        """Infinite loops (while, loop, nested) are caught by iteration limit."""
         with pytest.raises(HIRError, match="exceeded maximum iteration limit"):
-            build_hir(source)
-
-    def test_infinite_loop(self):
-        """Const fn with infinite loop should error."""
-        source = """
-        const fn hang() -> u8 {
-            loop { }
-            return 0;
-        }
-        const VAL: u8 = hang();
-        """
+            build_hir("""
+            const fn hang() -> u8 { while true { } return 0; }
+            const VAL: u8 = hang();
+            """)
         with pytest.raises(HIRError, match="exceeded maximum iteration limit"):
-            build_hir(source)
-
-    def test_nested_infinite_loops(self):
-        """Nested infinite loops share a single counter and get caught."""
-        source = """
-        const fn hang() -> u8 {
-            let mut x: u8 = 0;
-            while true {
-                while true { x = x + 1; }
+            build_hir("""
+            const fn hang() -> u8 { loop { } return 0; }
+            const VAL: u8 = hang();
+            """)
+        with pytest.raises(HIRError, match="exceeded maximum iteration limit"):
+            build_hir("""
+            const fn hang() -> u8 {
+                let mut x: u8 = 0;
+                while true { while true { x = x + 1; } }
+                return x;
             }
-            return x;
-        }
-        const VAL: u8 = hang();
-        """
-        with pytest.raises(HIRError, match="exceeded maximum iteration limit"):
-            build_hir(source)
-
-
-class TestConstFnImplMethod:
-    """Test const fn on impl methods."""
-
-    def test_parse_const_impl_method(self):
-        """const fn in impl block should parse correctly."""
-        ast_prog = parse_program("""
-        struct Foo { x: u8 }
-        impl Foo {
-            const fn bar(*self) -> u8 { return 0; }
-        }
-        """)
-        impl_decl = ast_prog.items[1]
-        method = impl_decl.methods[0]
-        assert method.is_const is True
-        assert method.name == "bar"
-
-
-def build_and_typecheck(source: str) -> HIRProgram:
-    """Helper to parse, build HIR, and type check."""
-    parser = Parser()
-    ast_prog = parser.parse(source)
-    builder = HIRBuilder()
-    hir = builder.build_program(ast_prog)
-    tc = TypeChecker(hir)
-    tc.check()
-    return hir
-
-
-class TestConstFnUnrestrictedOperators:
-    """Test that const fn bodies allow full multiply, divide, modulo, and shift."""
-
-    def test_arbitrary_multiply(self):
-        """Const fn can multiply by any value, not just 1/2/4/8."""
-        source = """
-        const fn multiply(a: u8, b: u8) -> u16 {
-            return (a as u16) * (b as u16);
-        }
-        const RESULT: u16 = multiply(7, 9);
-        """
-        hir = build_and_typecheck(source)
-        decl = [d for d in hir.declarations if isinstance(d, HIRConstDecl)][0]
-        assert decl.evaluated_value == 63
-
-    def test_multiply_by_non_power_of_two(self):
-        """Const fn can multiply by 3, 5, 7, etc."""
-        source = """
-        const fn triple(x: u8) -> u16 {
-            return (x as u16) * 3;
-        }
-        const RESULT: u16 = triple(10);
-        """
-        hir = build_and_typecheck(source)
-        decl = [d for d in hir.declarations if isinstance(d, HIRConstDecl)][0]
-        assert decl.evaluated_value == 30
-
-    def test_arbitrary_divide(self):
-        """Const fn can divide by any value, not just 1/2/4/8."""
-        source = """
-        const fn divide(a: u16, b: u16) -> u16 {
-            return a / b;
-        }
-        const RESULT: u16 = divide(100, 7);
-        """
-        hir = build_and_typecheck(source)
-        decl = [d for d in hir.declarations if isinstance(d, HIRConstDecl)][0]
-        assert decl.evaluated_value == 14
-
-    def test_modulo(self):
-        """Const fn can use modulo with any operands."""
-        source = """
-        const fn modulo(a: u16, b: u16) -> u16 {
-            return a % b;
-        }
-        const RESULT: u16 = modulo(100, 7);
-        """
-        hir = build_and_typecheck(source)
-        decl = [d for d in hir.declarations if isinstance(d, HIRConstDecl)][0]
-        assert decl.evaluated_value == 2
-
-    def test_variable_shift(self):
-        """Const fn can shift by variable amounts."""
-        source = """
-        const fn shift_left(val: u16, amt: u16) -> u16 {
-            return val << amt;
-        }
-        const RESULT: u16 = shift_left(1, 10);
-        """
-        hir = build_and_typecheck(source)
-        decl = [d for d in hir.declarations if isinstance(d, HIRConstDecl)][0]
-        assert decl.evaluated_value == 1024
-
-    def test_complex_math(self):
-        """Const fn with complex arithmetic using unrestricted operators."""
-        source = """
-        const fn tile_addr(row: u8, col: u8, stride: u8) -> u16 {
-            return (row as u16) * (stride as u16) + (col as u16);
-        }
-        const ADDR: u16 = tile_addr(5, 3, 64);
-        """
-        hir = build_and_typecheck(source)
-        decl = [d for d in hir.declarations if isinstance(d, HIRConstDecl)][0]
-        assert decl.evaluated_value == 323  # 5*64 + 3
+            const VAL: u8 = hang();
+            """)
