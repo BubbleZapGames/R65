@@ -8,10 +8,14 @@ class TestMissingSemicolons:
     """Tests for missing semicolon errors."""
 
     def test_missing_semicolons(self):
-        """Test statements without semicolons fail."""
+        """Test statements without semicolons fail.
+
+        Note: 'fn test() { A = 10 }' is now valid — it's a trailing
+        expression (Rust-style implicit return). Only true statements
+        (let, return, break, continue) still require semicolons.
+        """
         cases = [
             "fn test() { let x = 10 }",
-            "fn test() { A = 10 }",
             "fn test() { return A }",
             "fn test() { loop { break } }",
             "fn test() { loop { continue } }",

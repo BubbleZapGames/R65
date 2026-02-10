@@ -79,6 +79,8 @@ from r65.compiler.hir.nodes import (
     HIROrPattern,
     HIRMatchArm,
     HIRMatchExpression,
+    HIRBlockExpression,
+    HIRIfExpression,
 
     # Bindings
     ParameterBinding,
@@ -167,6 +169,8 @@ __all__ = [
     'HIROrPattern',
     'HIRMatchArm',
     'HIRMatchExpression',
+    'HIRBlockExpression',
+    'HIRIfExpression',
 
     # Bindings
     'ParameterBinding',

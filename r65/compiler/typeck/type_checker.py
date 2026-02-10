@@ -16,6 +16,7 @@ from r65.compiler.hir import (
     HIRLetStmt, HIRTupleLetStmt, HIRExprStmt, HIRReturnStmt, HIRIfStmt, HIRWhileStmt, HIRBlock,
     HIRStaticDecl, HIRConstDecl, HIRTypeAlias,
     HIRMatchExpression, HIRPattern, HIRLiteralPattern, HIREnumPattern, HIRWildcardPattern, HIRIdentifierPattern, HIROrPattern,
+    HIRBlockExpression, HIRIfExpression,
     BasicTypeInfo, TypeInfo, SymbolKind, NeverTypeInfo, TupleTypeInfo,
     RegisterLetBinding, ArrayTypeInfo, StructTypeInfo, EnumTypeInfo,
     HIRError,
@@ -1084,6 +1085,12 @@ class TypeChecker:
         elif isinstance(expr, HIRMatchExpression):
             return self.match_validator.check_match_expression(expr, context_type)
 
+        elif isinstance(expr, HIRBlockExpression):
+            return self.check_block_expression(expr, context_type)
+
+        elif isinstance(expr, HIRIfExpression):
+            return self.check_if_expression(expr, context_type)
+
         else:
             raise TypeCheckError(
                 f"Unknown expression type: {type(expr).__name__}",
@@ -1564,6 +1571,48 @@ class TypeChecker:
         # The type of the expression is the tuple type
         expr.expr_type = value_type
         return value_type
+
+    def check_block_expression(self, expr: HIRBlockExpression, context_type: Optional[TypeInfo] = None) -> TypeInfo:
+        """Type check a block expression.
+
+        Checks all statements in the block, then checks the final expression.
+        The block's type is the type of the final expression.
+        """
+        # Check all statements
+        for stmt in expr.statements:
+            self.check_statement(stmt)
+
+        # Check final expression - propagate context type for inference
+        final_type = self.check_expression(expr.final_expr, context_type)
+        expr.expr_type = final_type
+        return final_type
+
+    def check_if_expression(self, expr: HIRIfExpression, context_type: Optional[TypeInfo] = None) -> TypeInfo:
+        """Type check an if expression.
+
+        Both branches must produce the same type.
+        """
+        # Check condition is boolean
+        cond_type = self.check_expression(expr.condition)
+        self._require_boolean_type(cond_type, "If expression condition", expr.condition.source_loc)
+
+        # Check then branch
+        then_type = self.check_expression(expr.then_block, context_type)
+
+        # Check else branch (always present for if expressions)
+        else_type = self.check_expression(expr.else_block, context_type or then_type)
+
+        # Both branches must have the same type
+        if not TypeUtils.types_compatible(then_type, else_type):
+            raise TypeCheckError(
+                f"if expression branches have different types: "
+                f"then branch is {then_type}, else branch is {else_type}",
+                source_loc=expr.source_loc,
+                hint="both branches of an if expression must produce the same type"
+            )
+
+        expr.expr_type = then_type
+        return then_type
 
     def _check_tuple_register_order(self, expr: HIRMultiAssignment):
         """

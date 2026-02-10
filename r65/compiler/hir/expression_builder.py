@@ -36,6 +36,8 @@ class ExpressionBuilder:
         self.cfg_evaluator = cfg_evaluator
         self.source_dir = source_dir
         self.include_paths = include_paths
+        # Callback to build statements (set by HIRBuilder after construction)
+        self.statement_builder = None
 
     def build_expression(self, expr: ast.Expression) -> hir.HIRExpression:
         """Build HIR expression from AST."""
@@ -347,6 +349,12 @@ class ExpressionBuilder:
             # Build match expression
             return self._build_match_expression(expr)
 
+        elif isinstance(expr, ast.BlockExpression):
+            return self._build_block_expression(expr)
+
+        elif isinstance(expr, ast.IfExpression):
+            return self._build_if_expression(expr)
+
         else:
             raise HIRError(f"Unknown expression type: {type(expr).__name__}")
 
@@ -472,6 +480,54 @@ class ExpressionBuilder:
             struct_name=expr.struct_name,
             struct_decl=struct_decl if isinstance(struct_decl, hir.HIRStructDecl) else None,
             fields=hir_fields
+        )
+
+    def _build_block_expression(self, expr: ast.BlockExpression) -> hir.HIRBlockExpression:
+        """Build HIR block expression from AST.
+
+        Enters a new scope for the block, builds all statements,
+        then builds the final expression.
+        """
+        scope_id = self.symbol_table.enter_scope(ScopeKind.BLOCK)
+
+        # Build statements
+        hir_stmts = []
+        for stmt in expr.statements:
+            if self.statement_builder is None:
+                raise HIRError("Statement builder not configured for block expressions")
+            hir_stmt = self.statement_builder(stmt)
+            hir_stmts.append(hir_stmt)
+
+        # Build final expression
+        final_expr = self.build_expression(expr.final_expr)
+
+        self.symbol_table.exit_scope()
+
+        return hir.HIRBlockExpression(
+            statements=hir_stmts,
+            final_expr=final_expr,
+            scope_id=scope_id,
+            source_loc=expr.source_loc
+        )
+
+    def _build_if_expression(self, expr: ast.IfExpression) -> hir.HIRIfExpression:
+        """Build HIR if expression from AST.
+
+        Requires both then and else branches (parser validates this).
+        """
+        condition = self.build_expression(expr.condition)
+        then_block = self._build_block_expression(expr.then_block)
+
+        if isinstance(expr.else_block, ast.IfExpression):
+            else_block = self._build_if_expression(expr.else_block)
+        else:
+            else_block = self._build_block_expression(expr.else_block)
+
+        return hir.HIRIfExpression(
+            condition=condition,
+            then_block=then_block,
+            else_block=else_block,
+            source_loc=expr.source_loc
         )
 
     def _resolve_include_bytes_path(self, path: str) -> Optional[Path]:

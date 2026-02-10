@@ -47,8 +47,12 @@ snesrom_arg: IDENT "=" (STRING | INTEGER)  -> snesrom_named_arg
 // Dummy rule to tell Lark that these terminals are valid (never actually matched in valid code)
 _reserved_keyword: KEYWORD
 
-// Function declaration
-function_decl: attribute* CONST? FAR? FN IDENT "(" param_list? ")" return_type? block
+// Function declaration (function_body allows trailing expression for implicit returns)
+function_decl: attribute* CONST? FAR? FN IDENT "(" param_list? ")" return_type? function_body
+
+// Function body: block with optional trailing expression (Rust-style implicit returns)
+function_body: "{" statement* "}"
+             | "{" statement* expr "}"  -> function_body_trailing
 
 param_list: param ("," param)* ","?
 // Supports pointer parameters: [far|near] *name: type
@@ -92,7 +96,7 @@ impl_decl: IMPL FAR? IDENT "{" impl_item* "}"
 
 // Method declaration in impl block
 // fn name(*self, ...) or fn name(far *self, ...) for explicit far self
-impl_method: attribute* CONST? FAR? FN IDENT "(" impl_param_list? ")" return_type? block
+impl_method: attribute* CONST? FAR? FN IDENT "(" impl_param_list? ")" return_type? function_body
 
 // Parameters for impl methods - self parameter comes first
 impl_param_list: self_param ("," param)* ","?
@@ -363,8 +367,16 @@ arg_list: expr ("," expr)* ","?
         | REGISTER                              -> register_ref
         | "(" expr ")"                          -> paren
         | match_expr
+        | if_expr
+        | block_expr
         | array_fill_expr
         | array_literal_expr
+
+// Block expression: { statements; final_expr } in expression context
+block_expr: "{" statement* expr "}"
+
+// If expression: if cond { expr } else { expr } (else required)
+if_expr: IF expr block_expr (ELSE (if_expr | block_expr))
 
 // Array expressions
 array_fill_expr: "[" expr ";" expr "]"          // [value; count] - e.g., [0; 256]

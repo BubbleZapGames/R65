@@ -752,6 +752,25 @@ class MatchArm(ASTNode):
 
 
 @dataclass
+class BlockExpression(Expression):
+    """Block expression: { stmt*; expr } - a block whose last item is its value."""
+    statements: List[Statement]
+    final_expr: Expression
+
+
+@dataclass
+class IfExpression(Expression):
+    """If expression: if cond { expr } else { expr } - produces a value.
+
+    Both branches must be present (else is required for expressions).
+    Each branch is either a BlockExpression or a nested IfExpression (else-if).
+    """
+    condition: Expression
+    then_block: BlockExpression
+    else_block: Union[BlockExpression, 'IfExpression']
+
+
+@dataclass
 class MatchExpression(Expression):
     """Match expression."""
     scrutinee: Expression  # Expression being matched

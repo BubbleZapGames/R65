@@ -648,6 +648,26 @@ class HIRMatchArm(HIRNode):
 
 
 @dataclass
+class HIRBlockExpression(HIRExpression):
+    """Block expression: { stmt*; expr } - a block whose last item is its value."""
+    statements: List[HIRStatement] = field(default_factory=list)
+    final_expr: Optional[HIRExpression] = None
+    scope_id: Optional[int] = None
+
+
+@dataclass
+class HIRIfExpression(HIRExpression):
+    """If expression: if cond { expr } else { expr } - produces a value.
+
+    Both branches must be present (else is required for expressions).
+    Each branch is either a HIRBlockExpression or a nested HIRIfExpression.
+    """
+    condition: Optional[HIRExpression] = None
+    then_block: Optional['HIRBlockExpression'] = None
+    else_block: Optional[Union['HIRBlockExpression', 'HIRIfExpression']] = None
+
+
+@dataclass
 class HIRMatchExpression(HIRExpression):
     """Match expression."""
     scrutinee: Optional[HIRExpression] = None  # Expression being matched

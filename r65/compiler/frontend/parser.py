@@ -1067,6 +1067,31 @@ class ASTBuilder(Transformer):
     # Statements
     # ========================================================================
 
+    def function_body(self, items):
+        """Function body: same as block."""
+        statements = [item for item in items if not isinstance(item, LarkToken)]
+        return ast.Block(statements=statements)
+
+    @v_args(tree=True)
+    def function_body_trailing(self, tree):
+        """Function body with trailing expression (Rust-style implicit return).
+
+        Wraps the trailing expression in an ExprStmt so the HIR builder's
+        _add_implicit_return converts it to a return statement.
+        """
+        items = self._filter_tokens(tree.children)
+        if not items:
+            return ast.Block(statements=[])
+        # Last item is the trailing expression, rest are statements
+        trailing_expr = items[-1]
+        statements = list(items[:-1])
+        # Wrap trailing expression as an ExprStmt
+        statements.append(ast.ExprStmt(
+            expr=trailing_expr,
+            source_loc=trailing_expr.source_loc
+        ))
+        return ast.Block(statements=statements)
+
     def block(self, items):
         """Block statement."""
         # Filter out brace tokens, keep only statement nodes
@@ -1518,6 +1543,48 @@ class ASTBuilder(Transformer):
         scrutinee = items[0]
         arms = items[1:]
         return ast.MatchExpression(scrutinee=scrutinee, arms=arms)
+
+    @v_args(tree=True)
+    def block_expr(self, tree):
+        """Block expression: { statements; final_expr }
+
+        The grammar rule is: block_expr: "{" statement* expr "}"
+        After filtering, the last item is the final expression, everything before
+        is statements.
+        """
+        items = self._filter_tokens(tree.children)
+        if not items:
+            raise ParseError("Empty block expression", self._make_source_loc(tree.meta))
+        final_expr = items[-1]
+        statements = list(items[:-1])
+        return ast.BlockExpression(
+            statements=statements,
+            final_expr=final_expr,
+            source_loc=self._make_source_loc(tree.meta)
+        )
+
+    @v_args(tree=True)
+    def if_expr(self, tree):
+        """If expression: if cond { expr } else { expr }
+
+        The grammar rule is: if_expr: IF expr block_expr (ELSE (if_expr | block_expr))
+        After filtering tokens: [condition, then_block_expr, else_block_or_if_expr]
+        """
+        items = self._filter_tokens(tree.children)
+        condition = items[0]
+        then_block = items[1]
+        else_block = items[2] if len(items) > 2 else None
+        if else_block is None:
+            raise ParseError(
+                "if expression requires an else branch",
+                self._make_source_loc(tree.meta)
+            )
+        return ast.IfExpression(
+            condition=condition,
+            then_block=then_block,
+            else_block=else_block,
+            source_loc=self._make_source_loc(tree.meta)
+        )
 
     def match_arm(self, items):
         """Match arm."""

@@ -95,6 +95,21 @@ class ConstEvaluator:
         elif isinstance(expr, ast.MatchExpression):
             return self._eval_match_expr(expr)
 
+        elif isinstance(expr, ast.BlockExpression):
+            # Const eval: block expression with no statements, just final expr
+            if expr.statements:
+                raise HIRError(f"Block expression with statements is not const-evaluable")
+            return self.eval(expr.final_expr)
+
+        elif isinstance(expr, ast.IfExpression):
+            cond = self.eval(expr.condition)
+            if not isinstance(cond, bool):
+                cond = bool(cond)
+            if cond:
+                return self.eval(expr.then_block)
+            else:
+                return self.eval(expr.else_block)
+
         elif isinstance(expr, ast.ArrayLiteralExpr):
             return [self.eval(e) for e in expr.elements]
 
@@ -816,6 +831,12 @@ class ConstEvaluator:
                 return f"{target} = _ns_['_imod']({target}, {value})"
             return f"{target} {op}= {value}"
 
+        elif isinstance(expr, ast.BlockExpression):
+            return self._transpile_block_expr(expr)
+
+        elif isinstance(expr, ast.IfExpression):
+            return self._transpile_if_expr(expr)
+
         elif isinstance(expr, ast.MatchExpression):
             return self._transpile_match_expr(expr)
 
@@ -861,6 +882,25 @@ class ConstEvaluator:
 
         else:
             raise HIRError(f"Unsupported expression in const fn: {type(expr).__name__}")
+
+    def _transpile_block_expr(self, expr):
+        """Transpile a block expression to a Python expression.
+
+        If no statements, just transpile the final expression.
+        Block expressions with statements cannot be transpiled to a single
+        Python expression, so they raise an error in const fn context.
+        """
+        if not expr.statements:
+            return self._transpile_expr(expr.final_expr)
+
+        raise HIRError("Block expressions with statements are not supported in const fn")
+
+    def _transpile_if_expr(self, expr):
+        """Transpile an if expression to a Python ternary expression."""
+        cond = self._transpile_expr(expr.condition)
+        then_val = self._transpile_expr(expr.then_block)
+        else_val = self._transpile_expr(expr.else_block)
+        return f"(({then_val}) if ({cond}) else ({else_val}))"
 
     def _transpile_match_expr(self, expr):
         """Transpile a match expression to a Python lambda with chained ternaries.

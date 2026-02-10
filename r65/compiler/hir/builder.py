@@ -51,6 +51,8 @@ class HIRBuilder:
             self.symbol_table, self.const_evaluator, self.type_resolver,
             self.cfg_evaluator, self.source_dir, self.include_paths
         )
+        # Wire up statement builder callback for block expressions
+        self.expression_builder.statement_builder = self._build_statement
         self.loop_depth = 0  # Track for loop nesting depth for register hints
 
     def _process_snesrom_attribute(self, attr: ast.Attribute):
@@ -1851,6 +1853,16 @@ class HIRBuilder:
         # Check if last statement is already a return
         if isinstance(last_stmt, hir.HIRReturnStmt):
             return
+
+        # Trailing return expression: if the last statement is an ExprStmt
+        # and the function has a return type, convert to return
+        if isinstance(last_stmt, hir.HIRExprStmt) and return_type is not None:
+            if not isinstance(return_type, ast.NeverType):
+                hir_body.statements[-1] = hir.HIRReturnStmt(
+                    values=[last_stmt.expr],
+                    source_loc=last_stmt.source_loc
+                )
+                return
 
         # Add implicit return A (unless return type is !)
         if return_type is None or not isinstance(return_type, ast.NeverType):

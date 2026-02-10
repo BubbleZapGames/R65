@@ -15,6 +15,7 @@ from r65.compiler.hir import (
     HIRFunctionCall, HIRMethodCall, HIRArrayIndex, HIRFieldAccess, HIRDereference, HIRAddressOf, HIRMultiAssignment,
     HIRArrayFillExpr, HIRArrayLiteralExpr, HIRStringLiteral, HIRStructLiteralExpr,
     HIRMatchExpression, HIRPattern, HIRLiteralPattern, HIREnumPattern, HIRWildcardPattern, HIRIdentifierPattern, HIROrPattern,
+    HIRBlockExpression, HIRIfExpression,
     RegisterLetBinding, VariableLetBinding,
     RegisterBinding, VariableBinding,
     SymbolKind,
@@ -780,6 +781,12 @@ class MIRBuilder:
         elif isinstance(expr, HIRMatchExpression):
             return self.match_lowerer.lower_match_expression(expr)
 
+        elif isinstance(expr, HIRBlockExpression):
+            return self._lower_block_expression(expr)
+
+        elif isinstance(expr, HIRIfExpression):
+            return self._lower_if_expression(expr)
+
         elif isinstance(expr, HIRStringLiteral):
             return self._lower_inline_string_literal(expr)
 
@@ -832,6 +839,86 @@ class MIRBuilder:
         self.emit(Move(dest=vreg, source=LabelRef(label_name=label), type_info=expr.expr_type))
 
         return vreg
+
+    def _lower_block_expression(self, expr: HIRBlockExpression) -> Union[VirtualRegister, HardwareRegister, Immediate]:
+        """
+        Lower block expression: { stmts; final_expr }
+
+        Lowers all statements sequentially, then lowers the final expression
+        and returns its result.
+        """
+        # Lower all statements
+        for stmt in expr.statements:
+            if self._block_has_terminator():
+                break
+            self.lower_statement(stmt)
+
+        # Lower final expression and return its result
+        return self.lower_expression(expr.final_expr)
+
+    def _lower_if_expression(self, expr: HIRIfExpression) -> Union[VirtualRegister, HardwareRegister, Immediate]:
+        r"""
+        Lower if expression to conditional branches with a result value.
+
+        Creates CFG:
+            current_block
+                |
+            [condition check]
+                |
+            CondBranch
+            /        \
+        then_block   else_block
+            |          |
+        result=X   result=Y
+            \        /
+            merge_block
+
+        Returns a virtual register holding the result.
+        """
+        # Try to evaluate condition at compile time
+        const_result = self._try_eval_const_condition(expr.condition)
+
+        if const_result is True:
+            # Condition is always true - only evaluate then branch
+            return self.lower_expression(expr.then_block)
+
+        if const_result is False:
+            # Condition is always false - only evaluate else branch
+            return self.lower_expression(expr.else_block)
+
+        # Non-constant condition - generate full control flow
+        # Allocate result register
+        result_vreg = self.current_function.vreg_allocator.alloc(expr.expr_type, "if_result")
+
+        # Create blocks
+        then_block = self.cfg_builder.new_block()
+        else_block = self.cfg_builder.new_block()
+        merge_block = self.cfg_builder.new_block()
+
+        # Lower condition with short-circuit evaluation
+        self.cond_lowerer.lower_condition(expr.condition, then_block.block_id, else_block.block_id)
+
+        # Lower then branch
+        self.current_block = then_block
+        then_result = self.lower_expression(expr.then_block)
+        # Move result to result_vreg (must be done before jump, in the then block)
+        if not self._block_has_terminator():
+            self.emit(Move(dest=result_vreg, source=then_result, type_info=expr.expr_type))
+            self.emit(Jump(target=merge_block.block_id))
+            self.cfg_builder.add_edge(then_block, merge_block)
+
+        # Lower else branch
+        self.current_block = else_block
+        else_result = self.lower_expression(expr.else_block)
+        if not self._block_has_terminator():
+            self.emit(Move(dest=result_vreg, source=else_result, type_info=expr.expr_type))
+            self.emit(Jump(target=merge_block.block_id))
+            self.cfg_builder.add_edge(else_block, merge_block)
+
+        # Continue at merge block
+        self.current_block = merge_block
+
+        return result_vreg
 
     # ========================================================================
     # Expression Lowering (delegated to ExpressionLowerer)
@@ -1242,6 +1329,14 @@ class MIRBuilder:
                 count_in_expr(expr.operand)
             elif isinstance(expr, HIRAddressOf):
                 count_in_expr(expr.operand)
+            elif isinstance(expr, HIRBlockExpression):
+                for s in expr.statements:
+                    count_in_stmt(s)
+                count_in_expr(expr.final_expr)
+            elif isinstance(expr, HIRIfExpression):
+                count_in_expr(expr.condition)
+                count_in_expr(expr.then_block)
+                count_in_expr(expr.else_block)
 
         def count_in_stmt(stmt):
             """Recursively count parameter uses in a statement."""

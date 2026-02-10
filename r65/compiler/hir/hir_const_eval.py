@@ -69,6 +69,22 @@ def try_eval_const_int(expr, symbol_table: 'SymbolTable' = None) -> Optional[int
             return None
         return _eval_binary_int(expr.op, left, right)
 
+    # Block expression: evaluate statements (must be no-ops for const), then final expr
+    from r65.compiler.hir.nodes import HIRBlockExpression, HIRIfExpression
+    if isinstance(expr, HIRBlockExpression):
+        # For const eval, block statements must be empty (we can't evaluate arbitrary stmts)
+        if expr.statements:
+            return None
+        return try_eval_const_int(expr.final_expr, symbol_table)
+
+    if isinstance(expr, HIRIfExpression):
+        cond = try_eval_const_bool(expr.condition, symbol_table)
+        if cond is True:
+            return try_eval_const_int(expr.then_block, symbol_table)
+        elif cond is False:
+            return try_eval_const_int(expr.else_block, symbol_table)
+        return None
+
     return None
 
 
@@ -127,6 +143,20 @@ def try_eval_const_bool(expr, symbol_table: 'SymbolTable' = None) -> Optional[bo
 
     elif isinstance(expr, HIRBinaryOp):
         return _eval_binary_bool(expr, symbol_table)
+
+    from r65.compiler.hir.nodes import HIRBlockExpression, HIRIfExpression
+    if isinstance(expr, HIRBlockExpression):
+        if expr.statements:
+            return None
+        return try_eval_const_bool(expr.final_expr, symbol_table)
+
+    if isinstance(expr, HIRIfExpression):
+        cond = try_eval_const_bool(expr.condition, symbol_table)
+        if cond is True:
+            return try_eval_const_bool(expr.then_block, symbol_table)
+        elif cond is False:
+            return try_eval_const_bool(expr.else_block, symbol_table)
+        return None
 
     return None
 
