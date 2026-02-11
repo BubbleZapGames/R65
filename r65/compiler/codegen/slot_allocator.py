@@ -478,6 +478,29 @@ class StackSlotAllocator:
                                 vreg_uses[var.id] = []
                             vreg_uses[var.id].append(instr)
 
+                elif isinstance(instr, Call):
+                    # Call with exactly 1 return vreg: the return value is in A.
+                    # Track as defined-in-A for coalescence (e.g., result = func()).
+                    # A Call clobbers all registers, so no other vreg can be live
+                    # in A after the Call — no all_uses_consume_a filter needed.
+                    if len(instr.returns) == 1:
+                        ret_vreg = instr.returns[0]
+                        if isinstance(ret_vreg, VirtualRegister):
+                            vreg_id = ret_vreg.id
+                            if vreg_id not in vreg_defs:
+                                dest_size = self._get_vreg_size(ret_vreg)
+                                if dest_size <= 2:
+                                    vreg_defs[vreg_id] = []
+                                    vreg_defs[vreg_id].append((instr, 'A'))
+                    # Track uses of arguments (fall through to else branch won't
+                    # happen since we matched Call, so handle uses here)
+                    uses = self.liveness_analyzer._get_uses(instr)
+                    for var in uses:
+                        if isinstance(var, VirtualRegister):
+                            if var.id not in vreg_uses:
+                                vreg_uses[var.id] = []
+                            vreg_uses[var.id].append(instr)
+
                 elif isinstance(instr, Return):
                     if instr.values:
                         for val in instr.values:
@@ -652,7 +675,12 @@ class StackSlotAllocator:
         _def_types = (Move, BinaryOp)
         for block in self.func.blocks.values():
             for instr in block.instructions:
-                if isinstance(instr, _def_types) and isinstance(instr.dest, VirtualRegister):
+                if isinstance(instr, Call):
+                    if instr.returns and isinstance(instr.returns[0], VirtualRegister):
+                        if instr.returns[0].id == vreg_id:
+                            coalesceable[instr.returns[0]] = hw_reg
+                            return
+                elif isinstance(instr, _def_types) and isinstance(instr.dest, VirtualRegister):
                     if instr.dest.id == vreg_id:
                         coalesceable[instr.dest] = hw_reg
                         return
