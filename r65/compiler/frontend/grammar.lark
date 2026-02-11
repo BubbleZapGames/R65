@@ -502,9 +502,9 @@ TYPE_NAME.10: /bool\b/ | /u16\b/ | /i16\b/ | /u8\b/ | /i8\b/
 // Literals
 INTEGER: HEX_INTEGER | BIN_INTEGER | DEC_INTEGER
 // Allow zero digits after prefix - validation happens in lexer
-HEX_INTEGER: /0[xX][0-9a-fA-F_]*/
-BIN_INTEGER: /0[bB][01_]*/
-DEC_INTEGER: /[0-9][0-9_]*/
+HEX_INTEGER: /0[xX][0-9a-fA-F_]*(u16|i16|u8|i8)?/
+BIN_INTEGER: /0[bB][01_]*(u16|i16|u8|i8)?/
+DEC_INTEGER: /[0-9][0-9_]*(u16|i16|u8|i8)?/
 
 STRING: ESCAPED_STRING
 

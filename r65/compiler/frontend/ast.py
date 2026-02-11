@@ -546,6 +546,7 @@ class ConstAssertStmt(Statement):
 class IntegerLiteral(Expression):
     """Integer literal."""
     value: int
+    suffix: Optional[str] = None
 
 
 @dataclass

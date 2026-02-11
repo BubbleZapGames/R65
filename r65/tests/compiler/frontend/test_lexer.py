@@ -69,6 +69,29 @@ def test_integers():
     print("✓ Integer literals test passed")
 
 
+def test_integer_suffixes():
+    """Test integer literals with type suffixes."""
+    source = "255u8 1000u16 0xFFu8 0b1010i8 42"
+    tokens = tokenize(source)
+
+    assert tokens[0].type == TokenType.INTEGER
+    assert tokens[0].value == 255
+
+    assert tokens[1].type == TokenType.INTEGER
+    assert tokens[1].value == 1000
+
+    assert tokens[2].type == TokenType.INTEGER
+    assert tokens[2].value == 0xFF
+
+    assert tokens[3].type == TokenType.INTEGER
+    assert tokens[3].value == 0b1010
+
+    assert tokens[4].type == TokenType.INTEGER
+    assert tokens[4].value == 42
+
+    print("✓ Integer suffixes lexer test passed")
+
+
 def test_keywords():
     """Test keyword recognition."""
     source = "fn far let mut const static if else loop while break continue return"

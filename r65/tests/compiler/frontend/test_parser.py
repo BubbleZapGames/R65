@@ -831,6 +831,43 @@ def test_pointer_types():
 
     print("✓ Pointer types test passed")
 
+
+def test_integer_suffixes():
+    """Test parsing integer literals with type suffixes."""
+    source = """
+    fn main() {
+        let x = 255u8;
+        let y = 1000u16;
+        let z = 42;
+    }
+    """
+
+    program = parse(source)
+    func = program.items[0]
+    stmts = func.body.statements
+
+    # 255u8 - has suffix
+    let_x = stmts[0]
+    assert isinstance(let_x, ast.LetStmt)
+    assert isinstance(let_x.initializer, ast.IntegerLiteral)
+    assert let_x.initializer.value == 255
+    assert let_x.initializer.suffix == 'u8'
+
+    # 1000u16 - has suffix
+    let_y = stmts[1]
+    assert isinstance(let_y.initializer, ast.IntegerLiteral)
+    assert let_y.initializer.value == 1000
+    assert let_y.initializer.suffix == 'u16'
+
+    # 42 - no suffix
+    let_z = stmts[2]
+    assert isinstance(let_z.initializer, ast.IntegerLiteral)
+    assert let_z.initializer.value == 42
+    assert let_z.initializer.suffix is None
+
+    print("✓ Integer suffixes test passed")
+
+
 if __name__ == '__main__':
     print("Running parser tests...\n")
 
@@ -860,5 +897,6 @@ if __name__ == '__main__':
     test_never_type()
     test_array_type()
     test_pointer_types()
+    test_integer_suffixes()
 
     print("\n✅ All parser tests passed!")

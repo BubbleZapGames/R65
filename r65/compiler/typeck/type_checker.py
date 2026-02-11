@@ -901,8 +901,8 @@ class TypeChecker:
             # If type already set (e.g., from const evaluation), preserve it
             if expr.expr_type is not None:
                 return expr.expr_type
-            # Infer type from context or default
-            expr_type = TypeInference.infer_integer_literal_type(expr.value, context_type)
+            # Infer type from context, suffix, or default
+            expr_type = TypeInference.infer_integer_literal_type(expr.value, context_type, suffix=expr.suffix)
             expr.expr_type = expr_type
             return expr_type
 

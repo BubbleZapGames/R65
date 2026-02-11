@@ -23,14 +23,20 @@ class TypeInference:
         return mode.get_register_type(register_name)
 
     @staticmethod
-    def infer_integer_literal_type(value: int, context_type: Optional[TypeInfo]) -> TypeInfo:
+    def infer_integer_literal_type(value: int, context_type: Optional[TypeInfo], suffix: Optional[str] = None) -> TypeInfo:
         """
-        Infer type for integer literal from context.
+        Infer type for integer literal from context or suffix.
 
+        Priority: suffix > context > default inference.
+        If suffix is present, use it directly (validation catches overflow).
         If context provides a type, use it (if value fits).
         Otherwise, default to smallest type that fits.
         """
         from r65.compiler.typeck.type_utils import value_fits_type
+
+        # Suffix takes priority - the programmer explicitly specified the type
+        if suffix:
+            return BasicTypeInfo(suffix)
 
         # If context provides a type, use it if value fits
         if context_type and isinstance(context_type, BasicTypeInfo):

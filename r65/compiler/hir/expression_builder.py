@@ -45,7 +45,7 @@ class ExpressionBuilder:
         src_loc = expr.source_loc
 
         if isinstance(expr, ast.IntegerLiteral):
-            return hir.HIRIntegerLiteral(value=expr.value, source_loc=src_loc)
+            return hir.HIRIntegerLiteral(value=expr.value, suffix=expr.suffix, source_loc=src_loc)
 
         elif isinstance(expr, ast.BooleanLiteral):
             return hir.HIRBooleanLiteral(value=expr.value, source_loc=src_loc)

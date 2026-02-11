@@ -49,6 +49,15 @@ class ASTBuilder(Transformer):
             included_from=self.included_from
         )
 
+    _SUFFIXES = ('u16', 'i16', 'u8', 'i8')
+
+    def _strip_integer_suffix(self, raw: str):
+        """Strip type suffix from integer literal string. Returns (digits, suffix)."""
+        for s in self._SUFFIXES:
+            if raw.endswith(s):
+                return raw[:-len(s)], s
+        return raw, None
+
     def _parse_integer(self, value: str) -> int:
         """Parse an integer literal."""
         clean_value = value.replace('_', '')
@@ -1439,8 +1448,10 @@ class ASTBuilder(Transformer):
     def integer(self, tree):
         """Integer literal."""
         items = tree.children
-        value = self._parse_integer(items[0].value)
-        return ast.IntegerLiteral(value=value, source_loc=self._make_source_loc(tree.meta))
+        raw = items[0].value
+        digits, suffix = self._strip_integer_suffix(raw)
+        value = self._parse_integer(digits)
+        return ast.IntegerLiteral(value=value, suffix=suffix, source_loc=self._make_source_loc(tree.meta))
 
     @v_args(tree=True)
     def boolean(self, tree):

@@ -383,6 +383,7 @@ class HIRAsmStmt(HIRStatement):
 class HIRIntegerLiteral(HIRExpression):
     """Integer literal."""
     value: int = 0
+    suffix: Optional[str] = None
 
 
 @dataclass
