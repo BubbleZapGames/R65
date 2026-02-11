@@ -128,7 +128,8 @@ class StackSlotAllocator:
         mir_func: MIRFunction,
         preassigned: Optional[List[PreassignedSlot]] = None,
         prologue_stack_bytes: int = 0,
-        instr_liveness: Optional[Any] = None
+        instr_liveness: Optional[Any] = None,
+        pre_allocated_vregs: Optional[Set[VirtualRegister]] = None
     ):
         """
         Initialize unified slot allocator.
@@ -138,12 +139,15 @@ class StackSlotAllocator:
             preassigned: Stack parameters with their base offsets
             prologue_stack_bytes: Bytes pushed by prologue (return addr + saved regs)
             instr_liveness: Optional InstructionLivenessAnalyzer for call-liveness analysis
+            pre_allocated_vregs: Vregs already allocated externally (e.g. scratch params),
+                excluded from local slot allocation
         """
         self.func = mir_func
         self.preassigned = preassigned or []
         self.prologue_stack_bytes = prologue_stack_bytes
         self.liveness_analyzer = LivenessAnalyzer(mir_func)
         self.instr_liveness = instr_liveness
+        self.pre_allocated_vregs = pre_allocated_vregs or set()
 
         # Build vreg lookup for preassigned
         self._preassigned_vregs: Dict[int, PreassignedSlot] = {
@@ -166,8 +170,9 @@ class StackSlotAllocator:
         # Identify return-sinkable vregs (Load from MemoryLocation, only used in Return)
         return_sinkable = self._find_return_sinkable_vregs()
 
-        # Collect local vregs (excluding hw-coalesceable, return-sinkable, and preassigned params)
-        exclude_vregs = set(hw_coalesceable.keys()) | set(return_sinkable.keys())
+        # Collect local vregs (excluding hw-coalesceable, return-sinkable, preassigned params,
+        # and externally pre-allocated vregs like scratch params)
+        exclude_vregs = set(hw_coalesceable.keys()) | set(return_sinkable.keys()) | self.pre_allocated_vregs
         for slot in self.preassigned:
             exclude_vregs.add(slot.vreg)
 

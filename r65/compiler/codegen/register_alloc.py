@@ -616,12 +616,24 @@ class RegisterAllocator:
             # Build preassigned slots for stack parameters
             preassigned = self._build_preassigned_params()
 
+            # Collect vregs already allocated externally (e.g. scratch params)
+            # so the slot allocator doesn't reserve stack frame space for them
+            pre_allocated_vregs = set()
+            for vreg_id, loc in self.allocations.items():
+                if loc.kind == LocationKind.SCRATCH:
+                    # Find the VirtualRegister object for this id
+                    for v in vregs:
+                        if v.id == vreg_id:
+                            pre_allocated_vregs.add(v)
+                            break
+
             # Create unified allocator that handles params + locals together
             self.slot_allocator = StackSlotAllocator(
                 self.mir_func,
                 preassigned=preassigned,
                 prologue_stack_bytes=self.prologue_stack_bytes,
-                instr_liveness=self.instr_liveness
+                instr_liveness=self.instr_liveness,
+                pre_allocated_vregs=pre_allocated_vregs
             )
             self.slot_allocation = self.slot_allocator.allocate()
 
