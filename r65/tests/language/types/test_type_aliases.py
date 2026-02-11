@@ -298,6 +298,101 @@ class TestTypeAliasUsage:
         assert isinstance(static.var_type, hir_types.BasicTypeInfo)
         assert static.var_type.name == "u16"
 
+    def test_pointer_to_struct_alias_as_param(self):
+        """Pointer-to-struct alias used as function parameter resolves correctly."""
+        source = """
+            struct Sprite { x: u8, y: u8 }
+            type SpritePtr = *Sprite;
+            fn move_sprite(ptr: SpritePtr) { }
+        """
+        hir_prog = build_hir(source)
+        func = hir_prog.functions[0]
+        param = func.parameters[0]
+        assert isinstance(param.param_type, hir_types.PointerTypeInfo)
+        assert not param.param_type.is_far
+        assert isinstance(param.param_type.pointee_type, hir_types.StructTypeInfo)
+        assert param.param_type.pointee_type.name == "Sprite"
+
+    def test_fn_pointer_alias_as_param(self):
+        """Function pointer alias used as function parameter resolves correctly."""
+        source = """
+            type Callback = fn(u8) -> u8;
+            fn apply(cb: Callback) { }
+        """
+        hir_prog = build_hir(source)
+        func = hir_prog.functions[0]
+        param = func.parameters[0]
+        assert isinstance(param.param_type, hir_types.FunctionTypeInfo)
+        assert not param.param_type.is_far
+        assert len(param.param_type.param_types) == 1
+        assert param.param_type.param_types[0].name == "u8"
+        assert param.param_type.return_type.name == "u8"
+
+    def test_far_fn_pointer_alias_as_param(self):
+        """Far function pointer alias used as function parameter resolves correctly."""
+        source = """
+            type FarCallback = far fn() -> u8;
+            fn apply(cb: FarCallback) { }
+        """
+        hir_prog = build_hir(source)
+        func = hir_prog.functions[0]
+        param = func.parameters[0]
+        assert isinstance(param.param_type, hir_types.FunctionTypeInfo)
+        assert param.param_type.is_far
+        assert len(param.param_type.param_types) == 0
+        assert param.param_type.return_type.name == "u8"
+
+
+# =============================================================================
+# HIR resolution tests for pointer/fn-pointer aliases
+# =============================================================================
+
+class TestTypeAliasPointerResolution:
+    """Tests for pointer and function pointer type alias resolution in HIR."""
+
+    def test_pointer_to_struct_resolves(self):
+        """type SpritePtr = *Sprite; resolves to PointerTypeInfo(StructTypeInfo)."""
+        source = """
+            struct Sprite { x: u8, y: u8 }
+            type SpritePtr = *Sprite;
+        """
+        hir_prog = build_hir(source)
+        alias = _get_type_aliases(hir_prog)[0]
+        assert isinstance(alias.aliased_type, hir_types.PointerTypeInfo)
+        assert not alias.aliased_type.is_far
+        assert isinstance(alias.aliased_type.pointee_type, hir_types.StructTypeInfo)
+        assert alias.aliased_type.pointee_type.name == "Sprite"
+
+    def test_far_pointer_to_struct_resolves(self):
+        """type FarSpritePtr = far *Sprite; resolves with is_far=True."""
+        source = """
+            struct Sprite { x: u8, y: u8 }
+            type FarSpritePtr = far *Sprite;
+        """
+        hir_prog = build_hir(source)
+        alias = _get_type_aliases(hir_prog)[0]
+        assert isinstance(alias.aliased_type, hir_types.PointerTypeInfo)
+        assert alias.aliased_type.is_far
+        assert isinstance(alias.aliased_type.pointee_type, hir_types.StructTypeInfo)
+
+    def test_fn_pointer_with_multiple_params_resolves(self):
+        """type BinOp = fn(u8, u8) -> u8; resolves with two param types."""
+        hir_prog = build_hir("type BinOp = fn(u8, u8) -> u8;")
+        alias = _get_type_aliases(hir_prog)[0]
+        assert isinstance(alias.aliased_type, hir_types.FunctionTypeInfo)
+        assert len(alias.aliased_type.param_types) == 2
+        assert alias.aliased_type.param_types[0].name == "u8"
+        assert alias.aliased_type.param_types[1].name == "u8"
+        assert alias.aliased_type.return_type.name == "u8"
+
+    def test_fn_pointer_no_return_resolves(self):
+        """type Action = fn(u8); resolves with no return type."""
+        hir_prog = build_hir("type Action = fn(u8);")
+        alias = _get_type_aliases(hir_prog)[0]
+        assert isinstance(alias.aliased_type, hir_types.FunctionTypeInfo)
+        assert len(alias.aliased_type.param_types) == 1
+        assert alias.aliased_type.return_type is None
+
 
 # =============================================================================
 # Error cases
