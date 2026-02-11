@@ -43,7 +43,8 @@ class ProgramCodeGenerator:
         self.debug_info: Optional[DebugInfoCollector] = None
 
     def generate(self, mir_program: MIRProgram, output_file: Optional[str] = None,
-                 opt_level: int = 1, debug: bool = False) -> str:
+                 opt_level: int = 1, debug: bool = False,
+                 disable_scratch_params: bool = False) -> str:
         """
         Generate WLA-DX assembly from MIR program.
 
@@ -160,6 +161,11 @@ class ProgramCodeGenerator:
 
         # Create scratch pool once for all functions
         scratch_pool = self.func_gen.func_gen._create_scratch_pool(mir_program)
+
+        # Run scratch parameter promotion analysis (before generating functions)
+        if not disable_scratch_params:
+            from r65.compiler.analysis.scratch_params import analyze_scratch_params
+            analyze_scratch_params(mir_program, scratch_pool)
 
         # Generate code for each bank
         for bank_num in sorted(functions_by_bank.keys()):

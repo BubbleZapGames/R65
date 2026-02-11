@@ -8,7 +8,7 @@ from typing import List, Set, Optional
 from r65.compiler.mir.nodes import MIRFunction
 from r65.compiler.codegen.emitter import AssemblyEmitter
 from r65.compiler.codegen.instruction_select import InstructionSelector
-from r65.compiler.codegen.register_alloc import ScratchRegisterPool, RegisterAllocator
+from r65.compiler.codegen.register_alloc import ScratchRegisterPool, RegisterAllocator, PhysicalLocation, LocationKind
 from r65.compiler.codegen.memory_alloc import MemoryAllocator
 from r65.compiler.codegen.instruction_select_helpers import RegisterMappings
 from r65.compiler.codegen.type_utils import get_type_size
@@ -73,6 +73,14 @@ class FunctionCodeGenerator:
         # Reset scratch pool for this function (each function gets fresh allocation)
         scratch_pool.reset()
 
+        # Mark scratch registers occupied by scratch-promoted parameters
+        # These must be reserved before normal allocation so other vregs don't use them
+        for param_idx, scratch_addr in mir_func.scratch_param_addrs.items():
+            for scratch in scratch_pool.scratches:
+                if scratch.address == scratch_addr:
+                    scratch.is_free = False
+                    break
+
         # Calculate prologue bytes BEFORE creating register allocator
         # This allows stack params to be allocated at their passed locations
         prologue_bytes = self._get_prologue_stack_bytes(mir_func, scratch_pool)
@@ -91,6 +99,19 @@ class FunctionCodeGenerator:
             prologue_stack_bytes=prologue_bytes,
             instr_liveness=instr_liveness
         )
+
+        # Pre-allocate scratch-promoted parameter vregs to their scratch locations
+        # This must happen before allocate_all so the slot allocator sees them as pre-allocated
+        for param_idx, scratch_addr in mir_func.scratch_param_addrs.items():
+            vreg = mir_func.param_to_vreg.get(param_idx)
+            if vreg:
+                vreg_size = get_type_size(vreg.type_info)
+                location = PhysicalLocation(
+                    kind=LocationKind.SCRATCH,
+                    scratch_addr=scratch_addr,
+                    size=vreg_size
+                )
+                reg_alloc.allocations[vreg.id] = location
 
         # Allocate all virtual registers in function
         self._allocate_function_registers(mir_func, reg_alloc)

@@ -621,7 +621,8 @@ class ControlFlowInstructionSelector(BaseSelector):
         """
         Calculate total bytes of stack parameters for current function.
 
-        Stack parameters are those with no binding (binding is None).
+        Stack parameters are those with no binding (binding is None)
+        and not promoted to scratch parameters.
         Register-bound parameters have RegisterBinding, variable-bound
         have VariableBinding.
 
@@ -633,10 +634,12 @@ class ControlFlowInstructionSelector(BaseSelector):
         if not self.current_function:
             return 0
 
+        scratch_addrs = self.current_function.scratch_param_addrs
         total_bytes = 0
-        for param in self.current_function.parameters:
+        for i, param in enumerate(self.current_function.parameters):
             # Stack parameters have no binding (binding is None)
-            if param.binding is None:
+            # and are not promoted to scratch
+            if param.binding is None and i not in scratch_addrs:
                 total_bytes += get_type_size(param.param_type)
 
         return total_bytes

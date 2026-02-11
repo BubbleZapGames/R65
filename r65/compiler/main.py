@@ -123,7 +123,8 @@ def dump_mir(source: str, filename: str):
 
 def compile_source(source: str, filename: str, output_file: str = None,
                    verbose: bool = False, quiet: bool = False, cfg_options: list[str] = None,
-                   include_paths: list[str] = None, opt_level: int = 1, debug: bool = False):
+                   include_paths: list[str] = None, opt_level: int = 1, debug: bool = False,
+                   disable_scratch_params: bool = False):
     """Compile R65 source to WLA-DX assembly.
 
     Args:
@@ -209,7 +210,8 @@ def compile_source(source: str, filename: str, output_file: str = None,
         if verbose:
             log(f"  [8/8] Generating assembly...")
         codegen = ProgramCodeGenerator()
-        assembly = codegen.generate(mir_program, output_file=output_file, opt_level=opt_level, debug=debug)
+        assembly = codegen.generate(mir_program, output_file=output_file, opt_level=opt_level, debug=debug,
+                                    disable_scratch_params=disable_scratch_params)
 
         # Print codegen warnings (always printed, not gated by quiet mode)
         if codegen.warnings:
@@ -390,6 +392,12 @@ examples:
                        metavar='PATH',
                        help='Add directory to include search path (can be used multiple times)')
 
+    # Code generation options
+    parser.add_argument('--disable-scratch-parameters',
+                       action='store_true',
+                       dest='disable_scratch_params',
+                       help='Disable automatic promotion of stack parameters to scratch registers')
+
     # Conditional compilation options
     cfg_group = parser.add_argument_group('conditional compilation options')
 
@@ -475,7 +483,8 @@ examples:
         # Normal compilation
         compile_source(source, filename, args.output, args.verbose, args.quiet,
                        args.cfg_options, args.include_paths, opt_level=args.opt_level,
-                       debug=args.generate_debug)
+                       debug=args.generate_debug,
+                       disable_scratch_params=args.disable_scratch_params)
 
     except (LexerError, ParseError, PreprocessorError, MacroError, HIRError, TypeCheckError) as e:
         # These are already handled in dump/compile functions

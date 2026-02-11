@@ -672,6 +672,7 @@ class CallInstructionSelector(BaseSelector):
 
         # Separate stack arguments from others and reverse them
         # Stack params must be pushed right-to-left (last param first) per calling convention
+        # Scratch params are NOT stack args - they use direct store like variable-bound params
         stack_args = [arg for arg in instr.args if arg.mechanism == ArgumentMechanism.STACK]
         other_args = [arg for arg in instr.args if arg.mechanism != ArgumentMechanism.STACK]
 
@@ -711,23 +712,28 @@ class CallInstructionSelector(BaseSelector):
             elif arg.mechanism == ArgumentMechanism.VARIABLE:
                 self._emit_variable_argument(arg, arg_loc)
 
+            elif arg.mechanism == ArgumentMechanism.SCRATCH_PARAM:
+                self._emit_scratch_param_argument(arg, arg_loc)
+
         return stack_bytes_pushed
 
     def _arg_sort_key(self, arg):
         """Sort key for argument processing order."""
         if arg.mechanism == ArgumentMechanism.STACK:
             return 0  # Stack first
+        elif arg.mechanism == ArgumentMechanism.SCRATCH_PARAM:
+            return 1  # Scratch params second (STA to DP, clobbers A)
         elif arg.mechanism == ArgumentMechanism.VARIABLE:
-            return 1  # Variable-bound second
+            return 2  # Variable-bound third
         elif arg.mechanism == ArgumentMechanism.REGISTER:
             target_reg = arg.location.name if hasattr(arg.location, 'name') else str(arg.location)
             if target_reg == 'B':
-                return 2  # B third (clobbers A)
+                return 3  # B fourth (clobbers A)
             elif target_reg in ['X', 'Y']:
-                return 3  # X, Y fourth
+                return 4  # X, Y fifth
             elif target_reg == 'A':
-                return 4  # A last (to avoid being clobbered)
-        return 5
+                return 5  # A last (to avoid being clobbered)
+        return 6
 
     def _emit_stack_argument(self, arg, arg_loc):
         """Emit stack argument (push onto stack).
@@ -919,6 +925,71 @@ class CallInstructionSelector(BaseSelector):
         # Store to variable location
         var_loc = self.parent._get_operand_location(arg.location)
         self.parent._emit_store('STA', var_loc)
+
+    def _emit_scratch_param_argument(self, arg, arg_loc):
+        """
+        Emit scratch parameter argument (store to zero-page scratch address).
+
+        Similar to variable-bound, but stores to a specific DP address
+        assigned by the scratch parameter analysis pass.
+        """
+        from r65.compiler.codegen.type_utils import get_type_size
+        from r65.compiler.codegen.constants import M_FLAG
+        from r65.compiler.codegen.asm_nodes import Address
+
+        scratch_addr = arg.scratch_addr
+        param_size = 1
+        if arg.param_type is not None:
+            param_size = get_type_size(arg.param_type)
+        elif hasattr(arg.value, 'type_info') and arg.value.type_info:
+            param_size = get_type_size(arg.value.type_info)
+
+        if param_size == 2:
+            # 16-bit value: need m16 mode for single STA
+            if arg_loc.kind == LocationKind.HARDWARE and arg_loc.hw_register == 'A':
+                # Already in A, check mode
+                current_mode = self.parent.emitter.get_accu_mode()
+                if current_mode != 16:
+                    self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "16-bit A for scratch param")
+                    self.parent.emitter.emit_accu_mode(16)
+                self.emitter.emit_instr(Opcode.STA_DP, Address(scratch_addr),
+                                       f"Scratch param ${scratch_addr:02X}")
+                self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "Restore 8-bit A")
+                self.parent.emitter.emit_accu_mode(8)
+            elif isinstance(arg.value, MIRImmediate):
+                self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "16-bit A for scratch param")
+                self.parent.emitter.emit_accu_mode(16)
+                self._emit_load_immediate('A', arg.value.value)
+                self.emitter.emit_instr(Opcode.STA_DP, Address(scratch_addr),
+                                       f"Scratch param ${scratch_addr:02X}")
+                self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "Restore 8-bit A")
+                self.parent.emitter.emit_accu_mode(8)
+            else:
+                self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "16-bit A for scratch param")
+                self.parent.emitter.emit_accu_mode(16)
+                self.parent._emit_load('LDA', arg_loc)
+                self.emitter.emit_instr(Opcode.STA_DP, Address(scratch_addr),
+                                       f"Scratch param ${scratch_addr:02X}")
+                self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "Restore 8-bit A")
+                self.parent.emitter.emit_accu_mode(8)
+        else:
+            # 8-bit value: standard LDA/STA in m8
+            self._ensure_m8_mode("8-bit A for scratch param")
+
+            if arg_loc.kind == LocationKind.HARDWARE and arg_loc.hw_register == 'A':
+                pass  # Already in A
+            elif arg_loc.kind == LocationKind.HARDWARE:
+                if arg_loc.hw_register == 'X':
+                    self._emit_transfer('X', 'A')
+                elif arg_loc.hw_register == 'Y':
+                    self._emit_transfer('Y', 'A')
+            elif isinstance(arg.value, MIRImmediate):
+                self._emit_load_immediate('A', arg.value.value)
+            else:
+                self.parent._emit_load('LDA', arg_loc)
+
+            self.emitter.emit_instr(Opcode.STA_DP, Address(scratch_addr),
+                                   f"Scratch param ${scratch_addr:02X}")
 
     # ========================================================================
     # DBR Management

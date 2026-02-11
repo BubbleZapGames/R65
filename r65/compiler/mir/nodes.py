@@ -603,6 +603,7 @@ class ArgumentMechanism(Enum):
     STACK = "stack"          # Pushed on stack
     REGISTER = "register"    # Passed in hardware register
     VARIABLE = "variable"    # Passed via memory location
+    SCRATCH_PARAM = "scratch_param"  # Passed via scratch (zero-page) register
 
 
 @dataclass
@@ -614,12 +615,15 @@ class Argument:
     mechanism: ArgumentMechanism
     location: Optional[Union[HardwareRegister, Any]] = None  # Register or Symbol for VARIABLE
     param_type: Optional[Any] = None  # Parameter type from function signature (for correct stack push size)
+    scratch_addr: Optional[int] = None  # Zero-page address for SCRATCH_PARAM mechanism
 
     def __repr__(self):
         if self.mechanism == ArgumentMechanism.STACK:
             return f"{self.value}:STACK"
         elif self.mechanism == ArgumentMechanism.REGISTER:
             return f"{self.value}:REG({self.location})"
+        elif self.mechanism == ArgumentMechanism.SCRATCH_PARAM:
+            return f"{self.value}:SCRATCH(${self.scratch_addr:04X})"
         else:  # VARIABLE
             return f"{self.value}:VAR({self.location})"
 
@@ -865,6 +869,10 @@ class MIRFunction:
     stack_param_offsets: Dict[int, int] = field(default_factory=dict)
     # Maps parameter index to allocated virtual register
     param_to_vreg: Dict[int, 'VirtualRegister'] = field(default_factory=dict)
+
+    # Scratch parameter tracking (populated by analyze_scratch_params pre-pass)
+    # Maps parameter index to scratch zero-page address for promoted stack params
+    scratch_param_addrs: Dict[int, int] = field(default_factory=dict)
 
     # Codegen-populated stack usage (for stack depth analysis)
     codegen_frame_size: int = 0           # Local variable frame bytes (from slot allocator)
