@@ -332,7 +332,7 @@ Hardware-aware operators with restrictions for expensive operations:
 ## What's Omitted
 
 - ❌ Lifetimes and borrowing
-- ❌ Traits and generics
+- ❌ Generics
 - ❌ Error handling types (`Result`, `Option`, `panic!()`)
 - ❌ Advanced enums (data-carrying variants)
 - ❌ Closures, async/await
