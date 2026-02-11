@@ -907,6 +907,15 @@ class ClobberRegionAnalyzer:
                 for d in defs
             )
 
+            # For Call instructions, also check if the call returns a value
+            # in hw_reg. A call that defines a register via its return value
+            # is NOT a clobber — it's a definition. Without this check, the
+            # region analyzer would spill/restore the register around the call,
+            # clobbering the return value.
+            if isinstance(instr, Call) and not is_def:
+                if self._call_returns_in_hw_reg(instr, hw_reg):
+                    is_def = True
+
             # If we have a current region and hit a use, close the region
             if current_region is not None and is_use:
                 # Restore point is before this use
@@ -914,8 +923,8 @@ class ClobberRegionAnalyzer:
                 regions.append(current_region)
                 current_region = None
 
-            # Check if this is a clobbering call
-            if isinstance(instr, Call):
+            # Check if this is a clobbering call (skip if call defines hw_reg)
+            if isinstance(instr, Call) and not is_def:
                 # Get callee's preserved registers
                 preserved: Set[str] = set()
                 if isinstance(instr.function, str):
@@ -958,6 +967,44 @@ class ClobberRegionAnalyzer:
             regions.append(current_region)
 
         return regions
+
+    @staticmethod
+    def _call_returns_in_hw_reg(instr: Call, hw_reg: str) -> bool:
+        """
+        Check if a Call instruction returns a value in a specific hardware register.
+
+        Uses the callee's return type and mode to determine the return register
+        ordering, then checks if hw_reg is among the registers set by the callee.
+
+        Note: The Call MIR node's `returns` list may be empty even for multi-return
+        functions (return values are captured by separate Move instructions after
+        the call). So we determine the return count from callee_return_type instead.
+
+        Args:
+            instr: Call instruction
+            hw_reg: Hardware register name ('A', 'X', 'Y')
+
+        Returns:
+            True if the call returns a value in hw_reg
+        """
+        from r65.compiler.codegen.constants import get_return_registers
+
+        callee_return_type = getattr(instr, 'callee_return_type', None)
+        if callee_return_type is None:
+            return False
+
+        callee_entry_mode = getattr(instr, 'callee_entry_m_mode', None)
+        return_regs = get_return_registers(callee_return_type, callee_entry_mode)
+
+        # Determine how many registers the callee actually sets from its return type
+        from r65.compiler.hir.types import TupleTypeInfo
+        if isinstance(callee_return_type, TupleTypeInfo):
+            num_returns = len(callee_return_type.element_types)
+        else:
+            # Non-tuple: single return value in A
+            num_returns = 1
+
+        return hw_reg in return_regs[:num_returns]
 
     def analyze_function(self, preserves_map: Dict[str, Set[str]] = None,
                         include_a: bool = False) -> Dict[int, Dict[str, List[ClobberRegion]]]:

@@ -418,9 +418,30 @@ class CallInstructionSelector(BaseSelector):
             if pos:
                 _, instr_idx = pos
 
+        # Determine which registers receive return values from this call.
+        # A call that defines a register via return should never be spilled —
+        # spilling would save garbage and PLX/PLY would clobber the return value.
+        # Note: instr.returns may be empty (return values captured by separate Move
+        # instructions), so we determine the count from callee_return_type.
+        return_regs = self._get_callee_return_registers(instr)
+        callee_return_type = getattr(instr, 'callee_return_type', None)
+        if callee_return_type is not None:
+            from r65.compiler.hir.types import TupleTypeInfo
+            if isinstance(callee_return_type, TupleTypeInfo):
+                num_returns = len(callee_return_type.element_types)
+            else:
+                num_returns = 1
+        else:
+            num_returns = len(instr.returns)
+        call_return_set = set(return_regs[:num_returns])
+
         for reg_name in ['A', 'X', 'Y']:
             # Skip if callee preserves this register
             if reg_name in preserved:
+                continue
+
+            # Skip if this call returns a value in this register
+            if reg_name in call_return_set:
                 continue
 
             # Check if region-based spilling is available for this register
