@@ -154,4 +154,19 @@ class TestMatchPatterns:
         assert pat.end == 15
         assert pat.inclusive is True
 
+    def test_constant_in_match_parses_as_identifier(self):
+        """Constants in match arms parse as IdentifierPattern at AST level."""
+        func = parse_function("""
+            fn test() {
+                let x: u8 = match A {
+                    MY_CONST => 1,
+                    _ => 0
+                };
+            }
+        """)
+        match_expr = func.body.statements[0].initializer
+        pat = match_expr.arms[0].pattern
+        assert isinstance(pat, ast.IdentifierPattern)
+        assert pat.name == "MY_CONST"
+
 

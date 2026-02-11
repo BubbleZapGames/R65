@@ -19,6 +19,7 @@ from r65.compiler.hir import (
     HIRBinaryOp, HIRUnaryOp, HIRFunctionCall, HIRArrayIndex,
     HIRLetStmt, HIRIfStmt, HIRWhileStmt, HIRBreakStmt, HIRReturnStmt, HIRAsmStmt,
     HIRStringLiteral, HIRBlock, HIRAssignment, HIRLoopExpression,
+    HIRMatchExpression, HIRLiteralPattern, HIRIdentifierPattern, HIROrPattern,
     SymbolKind, BasicTypeInfo, ArrayTypeInfo, StructTypeInfo,
 )
 from r65.compiler.hir.attributes import (
@@ -1316,3 +1317,81 @@ fn test() {
             build_hir(source)
         # Should fail because function calls are not const-evaluable
         assert "const" in str(exc_info.value).lower()
+
+
+class TestConstantMatchPatterns:
+    """Test that named constants in match arms resolve to literal patterns."""
+
+    def test_const_in_match_resolves_to_literal(self):
+        """A const identifier in a match arm becomes HIRLiteralPattern."""
+        source = """
+const PLAYER: u8 = 1;
+const ENEMY: u8 = 2;
+
+fn classify(id @ A: u8) -> u8 {
+    let result: u8 = match id {
+        PLAYER => 10,
+        ENEMY => 20,
+        _ => 0
+    };
+    return result;
+}
+"""
+        hir = build_hir(source)
+        func = hir.functions[0]
+        let_stmt = func.body.statements[0]
+        match_expr = let_stmt.initializer
+        assert isinstance(match_expr, HIRMatchExpression)
+
+        # PLAYER arm should resolve to literal 1
+        pat0 = match_expr.arms[0].pattern
+        assert isinstance(pat0, HIRLiteralPattern)
+        assert pat0.value == 1
+
+        # ENEMY arm should resolve to literal 2
+        pat1 = match_expr.arms[1].pattern
+        assert isinstance(pat1, HIRLiteralPattern)
+        assert pat1.value == 2
+
+    def test_non_const_identifier_stays_as_binding(self):
+        """A non-constant identifier in a match arm creates a binding."""
+        source = """
+fn test(val @ A: u8) -> u8 {
+    let result: u8 = match val {
+        x => x
+    };
+    return result;
+}
+"""
+        hir = build_hir(source)
+        func = hir.functions[0]
+        let_stmt = func.body.statements[0]
+        match_expr = let_stmt.initializer
+        pat = match_expr.arms[0].pattern
+        assert isinstance(pat, HIRIdentifierPattern)
+        assert pat.name == "x"
+
+    def test_const_in_or_pattern(self):
+        """Constants in OR patterns resolve both arms to literals."""
+        source = """
+const A_VAL: u8 = 5;
+const B_VAL: u8 = 10;
+
+fn test(val @ A: u8) -> u8 {
+    let result: u8 = match val {
+        A_VAL | B_VAL => 1,
+        _ => 0
+    };
+    return result;
+}
+"""
+        hir = build_hir(source)
+        func = hir.functions[0]
+        let_stmt = func.body.statements[0]
+        match_expr = let_stmt.initializer
+        pat = match_expr.arms[0].pattern
+        assert isinstance(pat, HIROrPattern)
+        assert isinstance(pat.patterns[0], HIRLiteralPattern)
+        assert pat.patterns[0].value == 5
+        assert isinstance(pat.patterns[1], HIRLiteralPattern)
+        assert pat.patterns[1].value == 10

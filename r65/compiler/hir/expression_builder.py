@@ -412,8 +412,13 @@ class ExpressionBuilder:
             return hir.HIRWildcardPattern()
 
         elif isinstance(pattern, ast.IdentifierPattern):
-            # Create a new binding in current scope
-            # Determine type from scrutinee during type checking
+            # Check if identifier refers to a constant
+            existing = self.symbol_table.lookup(pattern.name)
+            if existing and existing.kind == SymbolKind.CONST and existing.const_value is not None:
+                # Resolve constant to literal pattern
+                return hir.HIRLiteralPattern(value=existing.const_value)
+
+            # Not a constant — create a new binding in current scope
             symbol = Symbol(
                 name=pattern.name,
                 kind=SymbolKind.LOCAL_VAR,

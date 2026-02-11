@@ -339,6 +339,47 @@ class TestMatchExpression:
         }))
         assert result.success, f"Failures: {result.failures}"
 
+    def test_match_with_constants(self, e2e):
+        """Test match expression using named constants as patterns."""
+        result = e2e.run('''
+            const PLAYER: u8 = 1;
+            const ENEMY: u8 = 2;
+            const ITEM: u8 = 3;
+
+            #[zeropage(0x10)]
+            static mut R1: u8;
+            #[zeropage(0x11)]
+            static mut R2: u8;
+            #[zeropage(0x12)]
+            static mut R3: u8;
+            #[zeropage(0x13)]
+            static mut R4: u8;
+
+            fn classify(id @ A: u8) -> u8 {
+                let result: u8 = match id {
+                    PLAYER => 10,
+                    ENEMY => 20,
+                    ITEM => 30,
+                    _ => 0
+                };
+                return result;
+            }
+
+            #[entry]
+            fn main() {
+                R1 = classify(1);
+                R2 = classify(2);
+                R3 = classify(3);
+                R4 = classify(99);
+            }
+        ''', ExpectedState(memory={
+            0x7E0010: 10,
+            0x7E0011: 20,
+            0x7E0012: 30,
+            0x7E0013: 0,
+        }))
+        assert result.success, f"Failures: {result.failures}"
+
 
 class TestForLoops:
     """Test for loop compilation and runtime."""
