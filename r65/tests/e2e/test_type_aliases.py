@@ -83,79 +83,66 @@ class TestPointerTypeAliases:
 
 
 class TestFunctionPointerTypeAliases:
-    """Test type aliases for function pointer types.
-
-    Note: Indirect calls through function pointers have a pre-existing
-    trampoline bug, so these tests verify compilation and address storage
-    rather than indirect calling.
-    """
+    """Test type aliases for function pointer types with indirect calls."""
 
     @pytest.fixture
     def e2e(self):
         return E2ETest()
 
-    def test_fn_pointer_alias_stores_address(self, e2e):
-        """type Callback = fn(u8) -> u8; — compiles and stores fn address."""
+    def test_fn_pointer_alias_call(self, e2e):
+        """type Callback = fn() -> u8; — call through alias-typed fn pointer."""
         result = e2e.run('''
             #[zeropage(0x02, register)]
             static mut SCRATCH0: u8;
             #[zeropage(0x04, register)]
             static mut SCRATCH1: u16;
 
-            type Callback = fn(u8) -> u8;
+            type Callback = fn() -> u8;
 
             #[zeropage(0x10)]
             static mut CB: Callback;
 
-            #[zeropage(0x12)]
-            static mut KEEP: u8;
-
-            fn double(val @ A: u8) -> u8 {
-                KEEP = val;
-                A = KEEP + KEEP;
-                return A;
+            fn get_answer() -> u8 {
+                // asm! prevents inlining (keeps fn alive for DCE)
+                asm!("NOP");
+                return 42;
             }
 
             #[entry]
             fn main() {
-                // Store function address through alias-typed variable
-                CB = double;
-                // Direct call (keeps fn alive for DCE, verifies alias compiled)
-                A = double(21);
+                A = get_answer();
+                CB = get_answer;
+                A = CB();
             }
         ''', ExpectedState(A=42))
         assert result.success, f"Failures: {result.failures}"
 
-    def test_fn_pointer_alias_as_param_type(self, e2e):
-        """type Transform = fn(u8) -> u8; — used in function parameter."""
+    def test_fn_pointer_alias_param(self, e2e):
+        """type Transform = fn() -> u8; — fn pointer passed as parameter."""
         result = e2e.run('''
             #[zeropage(0x02, register)]
             static mut SCRATCH0: u8;
             #[zeropage(0x04, register)]
             static mut SCRATCH1: u16;
 
-            type Transform = fn(u8) -> u8;
+            type Transform = fn() -> u8;
 
-            #[zeropage(0x10)]
-            static mut KEEP: u8;
-
-            fn add_ten(val @ A: u8) -> u8 {
-                KEEP = val;
-                A = KEEP + 10;
-                return A;
+            fn get_value() -> u8 {
+                // asm! prevents inlining (keeps fn alive for DCE)
+                asm!("NOP");
+                return 99;
             }
 
-            // Function accepting alias-typed fn pointer compiles correctly
-            fn apply(cb: Transform, val @ A: u8) -> u8 {
-                return cb(val);
+            fn apply(cb: Transform) -> u8 {
+                return cb();
             }
 
             #[entry]
             fn main() {
-                // Direct call to verify the function works
-                A = add_ten(5);
+                A = get_value();
+                A = apply(get_value);
             }
-        ''', ExpectedState(A=15))
+        ''', ExpectedState(A=99))
         assert result.success, f"Failures: {result.failures}"
 
 

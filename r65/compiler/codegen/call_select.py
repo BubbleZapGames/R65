@@ -342,7 +342,7 @@ class CallInstructionSelector(BaseSelector):
         self._emit_entry_mode_switch(instr)
 
         # Step 3: Make the call
-        self._emit_call_instruction(instr)
+        self._emit_call_instruction(instr, stack_bytes_pushed)
 
         # Invalidate XBA state after call (function may have modified A/B)
         self.parent._invalidate_xba_state()
@@ -1013,7 +1013,7 @@ class CallInstructionSelector(BaseSelector):
     # Call Emission
     # ========================================================================
 
-    def _emit_call_instruction(self, instr: Call):
+    def _emit_call_instruction(self, instr: Call, stack_bytes_pushed: int = 0):
         """
         Emit the actual call instruction.
 
@@ -1021,10 +1021,11 @@ class CallInstructionSelector(BaseSelector):
 
         Args:
             instr: Call instruction
+            stack_bytes_pushed: Bytes pushed for stack arguments (shifts fn ptr location)
         """
         if isinstance(instr.function, VirtualRegister):
             # Indirect call through function pointer
-            self._emit_indirect_call_trampoline(instr.function, instr.is_far)
+            self._emit_indirect_call_trampoline(instr.function, instr.is_far, stack_bytes_pushed)
         elif isinstance(instr.function, str):
             # Direct call
             if instr.is_far:
@@ -1034,25 +1035,46 @@ class CallInstructionSelector(BaseSelector):
         else:
             raise InstructionSelectionError(f"Unknown function type in Call: {type(instr.function)}")
 
-    def _emit_indirect_call_trampoline(self, func_ptr_vreg: VirtualRegister, is_far: bool):
+    def _emit_indirect_call_trampoline(self, func_ptr_vreg: VirtualRegister, is_far: bool,
+                                       stack_bytes_pushed: int = 0):
         """
         Generate trampoline for indirect function call through function pointer.
 
+        The 65816 RTS/RTL instructions pop an address and add 1 before jumping.
+        For a proper call, we need TWO addresses on the stack:
+        1. The return address-1 (so the callee's RTS/RTL returns here)
+        2. The target address-1 (so our RTS/RTL jumps to the callee)
+
         Near trampoline (16-bit address):
+            ; Push return address (compile-time label, already -1)
+            LDA #>(__ret_label - 1)
+            PHA
+            LDA #<(__ret_label - 1)
+            PHA
+            ; Push target address from function pointer
             LDA func_ptr+1  ; High byte
             PHA
             LDA func_ptr    ; Low byte
             PHA
-            RTS             ; Jumps to address on stack
+            ; Subtract 1 from target (RTS adds 1)
+            SEC / SBC chain on $01,S and $02,S
+            RTS             ; → callee, callee's RTS → __ret_label
+        __ret_label:
 
         Far trampoline (24-bit address):
-            LDA func_ptr+2  ; Bank byte
+            ; Push return address (compile-time, 3 bytes, already -1)
+            LDA #:(__ret_label - 1)
             PHA
-            LDA func_ptr+1  ; High byte
+            LDA #>(__ret_label - 1)
             PHA
-            LDA func_ptr    ; Low byte
+            LDA #<(__ret_label - 1)
             PHA
-            RTL             ; Long return
+            ; Push target address (3 bytes)
+            LDA func_ptr+2, +1, +0 with PHA drift
+            ; Subtract 1 from target
+            SEC / SBC chain on $01,S..$03,S
+            RTL             ; → callee, callee's RTL → __ret_label
+        __ret_label:
 
         Note: For stack-relative locations, each PHA changes the stack pointer,
         so subsequent loads need their offsets adjusted by +1 for each previous PHA.
@@ -1060,49 +1082,131 @@ class CallInstructionSelector(BaseSelector):
         Args:
             func_ptr_vreg: VirtualRegister holding the function pointer
             is_far: True for far call (24-bit), False for near call (16-bit)
+            stack_bytes_pushed: Bytes pushed for stack arguments before trampoline
         """
+        from r65.compiler.codegen.asm_nodes import StackOffset, Immediate
+
+        ret_label = self.parent._get_unique_label()
+
+        # Trampoline must run in m8 mode: each PHA pushes exactly 1 byte,
+        # and RTS/RTL pops a fixed 2/3 byte address regardless of m flag.
+        self._ensure_m8_mode("8-bit A for trampoline")
+
         ptr_loc = self.parent._get_operand_location(func_ptr_vreg)
         is_stack = ptr_loc.kind == LocationKind.STACK
 
+        # Adjust ptr_loc for stack arguments pushed before the trampoline
+        if is_stack and stack_bytes_pushed > 0:
+            ptr_loc = self.parent._offset_location(ptr_loc, stack_bytes_pushed)
+
+        # Track how many bytes we've pushed (for stack-relative drift)
+        pha_count = 0
+
         if is_far:
-            # Far call trampoline (24-bit address)
-            # Each PHA shifts subsequent stack-relative offsets by +1
-            bank_loc = self.parent._offset_location(ptr_loc, 2)
-            self.parent._emit_load('LDA', bank_loc, "Load bank byte")
-            self._emit_push('A', "Push bank")
+            # === Far call trampoline (24-bit address) ===
 
-            # After 1 PHA, stack offsets need +1 adjustment
-            if is_stack:
-                high_loc = self.parent._offset_location(ptr_loc, 1 + 1)  # +1 for PHA
-            else:
-                high_loc = self.parent._offset_location(ptr_loc, 1)
-            self.parent._emit_load('LDA', high_loc, "Load high byte")
-            self._emit_push('A', "Push high")
+            # Step 1: Push return address - 1 (3 bytes: bank, high, low)
+            self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(f":({ret_label} - 1)"),
+                             "Return address bank")
+            self._emit_push('A', "Push return bank")
+            pha_count += 1
+            self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(f">({ret_label} - 1)"),
+                             "Return address high")
+            self._emit_push('A', "Push return high")
+            pha_count += 1
+            self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(f"<({ret_label} - 1)"),
+                             "Return address low")
+            self._emit_push('A', "Push return low")
+            pha_count += 1
 
-            # After 2 PHAs, stack offsets need +2 adjustment
-            if is_stack:
-                low_loc = self.parent._offset_location(ptr_loc, 0 + 2)  # +2 for 2 PHAs
+            # Step 2: Push target address (3 bytes from function pointer)
+            bank_offset = 2 + (pha_count if is_stack else 0)
+            bank_loc = self.parent._offset_location(ptr_loc, bank_offset)
+            self.parent._emit_load('LDA', bank_loc, "Load target bank byte")
+            self._emit_push('A', "Push target bank")
+            pha_count += 1
+
+            high_offset = 1 + (pha_count if is_stack else 0)
+            high_loc = self.parent._offset_location(ptr_loc, high_offset)
+            self.parent._emit_load('LDA', high_loc, "Load target high byte")
+            self._emit_push('A', "Push target high")
+            pha_count += 1
+
+            low_offset = 0 + (pha_count if is_stack else 0)
+            if low_offset > 0:
+                low_loc = self.parent._offset_location(ptr_loc, low_offset)
             else:
                 low_loc = ptr_loc
-            self.parent._emit_load('LDA', low_loc, "Load low byte")
-            self._emit_push('A', "Push low")
+            self.parent._emit_load('LDA', low_loc, "Load target low byte")
+            self._emit_push('A', "Push target low")
+
+            # Step 3: Subtract 1 from target address (top 3 bytes on stack)
+            self._emit_trampoline_address_adjust(3)
 
             self._emit_implied(Opcode.RTL, "Indirect far call via trampoline")
-        else:
-            # Near call trampoline (16-bit address)
-            high_loc = self.parent._offset_location(ptr_loc, 1)
-            self.parent._emit_load('LDA', high_loc, "Load high byte")
-            self._emit_push('A', "Push high")
 
-            # After 1 PHA, stack offsets need +1 adjustment
-            if is_stack:
-                low_loc = self.parent._offset_location(ptr_loc, 0 + 1)  # +1 for PHA
+            # Step 4: Return label (callee's RTL returns here)
+            self.emitter.emit_label(ret_label)
+        else:
+            # === Near call trampoline (16-bit address) ===
+
+            # Step 1: Push return address - 1 (2 bytes: high, low)
+            self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(f">({ret_label} - 1)"),
+                             "Return address high")
+            self._emit_push('A', "Push return high")
+            pha_count += 1
+            self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(f"<({ret_label} - 1)"),
+                             "Return address low")
+            self._emit_push('A', "Push return low")
+            pha_count += 1
+
+            # Step 2: Push target address (2 bytes from function pointer)
+            high_offset = 1 + (pha_count if is_stack else 0)
+            high_loc = self.parent._offset_location(ptr_loc, high_offset)
+            self.parent._emit_load('LDA', high_loc, "Load target high byte")
+            self._emit_push('A', "Push target high")
+            pha_count += 1
+
+            low_offset = 0 + (pha_count if is_stack else 0)
+            if low_offset > 0:
+                low_loc = self.parent._offset_location(ptr_loc, low_offset)
             else:
                 low_loc = ptr_loc
-            self.parent._emit_load('LDA', low_loc, "Load low byte")
-            self._emit_push('A', "Push low")
+            self.parent._emit_load('LDA', low_loc, "Load target low byte")
+            self._emit_push('A', "Push target low")
+
+            # Step 3: Subtract 1 from target address (top 2 bytes on stack)
+            self._emit_trampoline_address_adjust(2)
 
             self._emit_implied(Opcode.RTS, "Indirect near call via trampoline")
+
+            # Step 4: Return label (callee's RTS returns here)
+            self.emitter.emit_label(ret_label)
+
+    def _emit_trampoline_address_adjust(self, byte_count: int):
+        """
+        Subtract 1 from address bytes pushed on stack for RTS/RTL trampoline.
+
+        RTS pops 2 bytes and adds 1 before jumping. RTL pops 3 bytes and adds 1.
+        So we must push (target_address - 1) for the CPU to jump to the right place.
+
+        Uses SEC/SBC chain with carry propagation to handle byte-boundary wrapping.
+        Stack layout after PHAs: [$01,S=low, $02,S=high, $03,S=bank (if far)]
+
+        Args:
+            byte_count: Number of address bytes on stack (2 for near, 3 for far)
+        """
+        from r65.compiler.codegen.asm_nodes import StackOffset
+
+        self._emit_implied(Opcode.SEC, "Subtract 1 from trampoline address")
+
+        for i in range(byte_count):
+            stack_pos = i + 1  # $01,S for low, $02,S for high, $03,S for bank
+            subtract_val = 1 if i == 0 else 0  # Only subtract 1 from low byte; propagate borrow
+
+            self._emit_instr(Opcode.LDA_STACK, StackOffset(stack_pos))
+            self._emit_immediate(Opcode.SBC_IMMEDIATE, subtract_val)
+            self._emit_instr(Opcode.STA_STACK, StackOffset(stack_pos))
 
     # ========================================================================
     # Return Value Collection
