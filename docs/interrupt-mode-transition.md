@@ -30,39 +30,23 @@ fn nmi_handler() {
 
 ### 2. Entry Wrapper Generation
 
-MIR builder generates entry wrapper for interrupt handlers:
+Code generation emits register saves for interrupt handlers:
 
-```python
-if hir_func.interrupt_attr:
-    # 1. Push all registers (automatic preservation)
-    self.emit(Push(register=HardwareRegister('STATUS')))  # PHP
-    self.emit(Push(register=HardwareRegister('A')))       # PHA
-    self.emit(Push(register=HardwareRegister('X')))       # PHX
-    self.emit(Push(register=HardwareRegister('Y')))       # PHY
-    self.emit(Push(register=HardwareRegister('D')))       # PHD
-    self.emit(Push(register=HardwareRegister('DBR')))     # PHB
-
-    # 2. Force default m8/x16 mode for handler body
-    self.emit(SetMode(mask=0x20, is_set=True))   # SEP #$20 - m8 mode
 ```
+Push order: PHP, REP #$20, PHA (16-bit), PHX, PHY, PHD, PHB, SEP #$20
+```
+
+**Critical detail**: The 65816 has a hidden high byte of A (the "B accumulator") that is NOT preserved by PHA in m8 mode. The entry wrapper pushes PHP first, then forces 16-bit A with `REP #$20` before `PHA` to save the full 16-bit accumulator.
 
 ### 3. Exit Wrapper Generation
 
-Modified return statement lowering for interrupt handlers:
+Register restores in reverse order:
 
-```python
-if self.current_function.interrupt_attr:
-    # Restore all registers (reverse order of push)
-    self.emit(Pull(register=HardwareRegister('DBR')))     # PLB
-    self.emit(Pull(register=HardwareRegister('D')))       # PLD
-    self.emit(Pull(register=HardwareRegister('Y')))       # PLY
-    self.emit(Pull(register=HardwareRegister('X')))       # PLX
-    self.emit(Pull(register=HardwareRegister('A')))       # PLA
-    self.emit(Pull(register=HardwareRegister('STATUS')))  # PLP (restores mode!)
-
-    # Return from interrupt
-    self.emit(ReturnFromInterrupt())  # RTI
 ```
+Pop order: PLB, PLD, PLY, PLX, REP #$20, PLA (16-bit), PLP, RTI
+```
+
+PLP restores the original processor status including mode bits.
 
 ### 4. New MIR Instructions
 
@@ -96,42 +80,46 @@ fn nmi_handler() {
 
 **Note:** Interrupt handlers automatically run in m8/x16 mode. The compiler generates all necessary mode management code.
 
-### Generated MIR
+### Generated Assembly Structure
 
 ```
-Block 0:
-   0: PHP  ; Push STATUS        ─┐
-   1: PHA  ; Push A              │
-   2: PHX  ; Push X              │
-   3: PHY  ; Push Y              │ Entry wrapper
-   4: PHD  ; Push D              │ (6 pushes + mode set)
-   5: PHB  ; Push DBR           ─┤
-   6: SEP #$20                   ─┘ Force m8 mode (x16 is default)
+Entry wrapper:
+   PHP              ; Save STATUS first
+   REP #$20         ; Force 16-bit A
+   PHA              ; Save full 16-bit A (includes hidden high byte)
+   PHX              ; Save X
+   PHY              ; Save Y
+   PHD              ; Save D
+   PHB              ; Save DBR
+   SEP #$20         ; Restore 8-bit A for handler body
 
-   7: A = Move #66 : u8         ─┐
-   8: Store A -> FLAG : u8      ─┘ Handler body
+Handler body:
+   LDA #$42         ; User code
+   STA FLAG
 
-   9: PLB  ; Pull DBR           ─┐
-  10: PLD  ; Pull D              │
-  11: PLY  ; Pull Y              │
-  12: PLX  ; Pull X              │ Exit wrapper
-  13: PLA  ; Pull A              │ (6 pulls + RTI)
-  14: PLP  ; Pull STATUS        ─┤ Restores original mode!
-  15: RTI                        ─┘ Return from interrupt
+Exit wrapper:
+   PLB              ; Restore DBR
+   PLD              ; Restore D
+   PLY              ; Restore Y
+   PLX              ; Restore X
+   REP #$20         ; 16-bit A for full restore
+   PLA              ; Restore full 16-bit A
+   PLP              ; Restore STATUS (restores original mode!)
+   RTI              ; Return from interrupt
 ```
 
 ### WLA-DX Assembly Output
 
 ```asm
 nmi_handler:
-    PHP                     ; Save STATUS (including mode bits)
-    PHA                     ; Save A
+    PHP                     ; Save STATUS first (before mode change)
+    REP #$20                ; Force 16-bit A to save full accumulator
+    PHA                     ; Save A (full 16-bit, includes hidden high byte)
     PHX                     ; Save X
     PHY                     ; Save Y
     PHD                     ; Save D
     PHB                     ; Save DBR (data bank)
-
-    SEP #$20                ; Force m8 mode for handler (x16 is default)
+    SEP #$20                ; Restore 8-bit A for handler body
 
     LDA #$42                ; Handler code
     STA FLAG
@@ -140,7 +128,8 @@ nmi_handler:
     PLD                     ; Restore D
     PLY                     ; Restore Y
     PLX                     ; Restore X
-    PLA                     ; Restore A
+    REP #$20                ; 16-bit A for restoring full accumulator
+    PLA                     ; Restore A (full 16-bit)
     PLP                     ; Restore STATUS (restores original mode!)
     RTI                     ; Return from interrupt
 ```
@@ -158,8 +147,10 @@ Interrupt fires → NMI vector
     ↓
 nmi_handler entry:
     PHP             ; Save STATUS (m16 saved on stack)
-    ...             ; Save other registers
-    SEP #$20        ; Force m8 mode (x16 is always the default)
+    REP #$20        ; Force 16-bit A to save full accumulator
+    PHA, PHX, PHY   ; Save registers (A saved as 16-bit)
+    PHD, PHB        ; Save D and DBR
+    SEP #$20        ; Force m8 mode for handler body
     ↓
 Handler body runs in m8/x16 mode
     ↓
@@ -193,7 +184,7 @@ fn nmi_handler() {
     // No manual saves/restores!
 }
 
-// Compiler automatically wraps with PHP/PHA/PHX/PHY/PHD/PHB...PLB/PLD/PLY/PLX/PLA/PLP/RTI
+// Compiler wraps with PHP/REP/PHA/PHX/PHY/PHD/PHB/SEP...PLB/PLD/PLY/PLX/REP/PLA/PLP/RTI
 ```
 
 ### 4. **Known Mode Established** ✅

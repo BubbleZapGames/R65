@@ -24,7 +24,7 @@ The 65816 has two types of control flow instructions:
 
 ### Unconditional Jumps (full address space)
 - **Instructions**: JMP (absolute), JMP (indirect), BRA (relative), BRL (long)
-- **Range**: Full 64KB (JMP) or 16MB (BRL) or ±32KB (BRA)
+- **Range**: Full 64KB (JMP), ±127 bytes (BRA), ±32KB (BRL)
 - **Performance**: 3-4 cycles
 - **Use**: Long jumps, function calls, far branches
 
@@ -308,51 +308,6 @@ while index < 10 {
     index += 1;
 }
 ```
-
----
-
-### Loop-While (Do-While)
-
-**Syntax**:
-```rust
-loop {
-    // body
-} while condition;
-```
-
-**Semantics**:
-- Body executes **at least once**
-- Condition checked **after** each iteration
-- Useful for "do-while" patterns
-
-**Assembly Mapping**:
-```rust
-loop {
-    process();
-    count -= 1;
-} while count > 0;
-
-// loop_start:
-// JSR process
-// DEC count
-// BNE loop_start   // Repeat if count != 0
-```
-
-**Examples**:
-```rust
-// Read until null terminator
-loop {
-    let byte = *ptr;
-    ptr += 1;
-} while byte != 0;
-
-// Wait for button press and release
-loop {
-    wait_frame();
-} while (JOYPAD & BUTTON_A) == 0;
-```
-
-**Note**: This is distinct from `while` because body always executes at least once.
 
 ---
 
@@ -847,13 +802,26 @@ let category: u8 = if x < 10 {
 
 Both branches must return the same type. The `else` branch is required when using if as an expression.
 
+### Block Expressions
+
+A block `{ ... }` can be used as an expression. The last expression in the block (without a semicolon) is the block's value:
+
+```rust
+let result: u8 = {
+    let temp: u8 = compute();
+    temp + 1
+};
+```
+
+Block expressions are useful for complex initializations that need intermediate variables.
+
 ---
 
 ## Optimization Opportunities
 
-### Condition Inversion
+### Condition Inversion (Default Strategy)
 
-Compiler can invert conditions to reduce jumps:
+The compiler uses inverted conditions as its default code generation strategy for all conditional branches:
 
 ```rust
 // Source:
@@ -901,46 +869,6 @@ if DEBUG {
 }
 ```
 
-### Loop Unrolling
-
-```rust
-// Compiler may unroll small constant loops:
-let mut i = 0;
-while i < 4 {
-    buffer[i] = 0;
-    i += 1;
-}
-
-// May compile to:
-// buffer[0] = 0;
-// buffer[1] = 0;
-// buffer[2] = 0;
-// buffer[3] = 0;
-```
-
-### Tail Call Optimization
-
-```rust
-fn recursive_countdown(n @ A: u8) {
-    if n == 0 {
-        return;
-    }
-    process(n);
-    recursive_countdown(n - 1);  // Tail call
-}
-
-// Can optimize to loop instead of recursion:
-// recursive_countdown:
-// loop_start:
-// LDA n
-// BEQ done
-// JSR process
-// DEC A
-// JMP loop_start
-// done:
-// RTS
-```
-
 ---
 
 ## Assembly Label Generation
@@ -950,15 +878,16 @@ The compiler generates labels systematically:
 ### Label Naming Convention
 
 ```
-function_name__block_type_N
+function_name__L{block_id}
 ```
 
 Examples:
-- `main__if_1_end`
-- `update__loop_1_start`
-- `update__loop_1_end`
-- `process__if_2_else`
-- `process__while_3_start`
+- `main__L0`, `main__L1`, `main__L2`
+- `update__L0`, `update__L1`
+
+Block IDs are sequential integers assigned during MIR CFG construction. There are no descriptive suffixes like `_if` or `_loop` — all blocks use the same `__L{id}` format.
+
+Additionally, comparison helpers use `__SCMP{N}` labels (globally unique counter).
 
 ### Label Scoping
 
@@ -966,11 +895,11 @@ Labels are function-scoped to avoid conflicts:
 
 ```rust
 fn foo() {
-    loop { break; }  // foo__loop_1_start, foo__loop_1_end
+    loop { break; }  // foo__L0, foo__L1, foo__L2
 }
 
 fn bar() {
-    loop { break; }  // bar__loop_1_start, bar__loop_1_end
+    loop { break; }  // bar__L0, bar__L1, bar__L2
 }
 ```
 
@@ -1108,39 +1037,13 @@ fn also_invalid() {
 }
 ```
 
-### Unreachable Code Warning
+### Unreachable Code
 
-```rust
-fn has_dead_code() {
-    return;
-    process();  // WARNING: unreachable code
-}
-
-fn infinite() -> ! {
-    loop { }
-    process();  // WARNING: unreachable code
-}
-```
+Unreachable code after `return` or infinite loops is silently removed by dead code elimination. No warning is currently emitted.
 
 ### Missing Return
 
-```rust
-fn missing_return() -> u8 {
-    if condition {
-        return 42;
-    }
-    // ERROR: not all code paths return a value
-}
-
-fn valid_return() -> u8 {
-    if condition {
-        return 42;
-    } else {
-        return 0;
-    }
-    // OK: all paths return
-}
-```
+The compiler does not currently validate that all code paths return a value. Functions with missing returns on some paths will compile but may produce incorrect results.
 
 ---
 
@@ -1407,7 +1310,7 @@ The compiler automatically selects the best code generation strategy:
 - **Jump table**: When patterns are dense but bodies aren't constant, emits an indexed jump table (JMP (addr,X)) for O(1) dispatch
 - **Branch chain**: For sparse patterns or few arms, emits a sequential comparison chain
 
-Range patterns participate in these optimizations — `0..=2 => 10, 3..=5 => 20` expands to individual values for density analysis and can trigger table optimizations.
+Range patterns expand to individual values for density analysis and can trigger table optimizations. However, or-patterns (`a | b`) currently cause a fallback to branch chains — they skip table optimization.
 
 **Assembly Mapping** (branch chain):
 ```rust
@@ -1497,3 +1400,4 @@ Could influence code layout for better cache behavior (though less relevant for 
 
 **STATUS**: Implementation Complete
 **Last Updated**: 2026-02-10
+**Not Yet Implemented**: Unreachable code warnings, missing return path validation

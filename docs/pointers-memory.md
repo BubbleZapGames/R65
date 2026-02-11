@@ -127,17 +127,6 @@ struct Node {
 }
 ```
 
-### Method Self Parameter
-
-In `impl` blocks, `self` is always a pointer:
-
-```rust
-impl far Entity {
-    far fn update(far *self) { }                   // Far self pointer
-    far fn copy(far *self, far *src: Entity) { }   // Self + pointer param
-}
-```
-
 ## Pointer Operations
 
 ### Address-Of: `&`
@@ -151,11 +140,15 @@ static mut BUFFER: [u8; 256];
 
 let zp_ptr: *u8 = &TEMP;              // Near — zeropage is bank 0
 let ram_ptr: far *u8 = &BUFFER;       // Far — RAM is bank $7E
+
+static ROM_TABLE: [u8; 16] = [0; 16];
+let rom_ptr: *u8 = &ROM_TABLE;        // Near — ROM in bank 0
 ```
 
 The compiler infers near or far based on storage class:
 - `#[zeropage]`, `#[lowram]`, `#[hw]` → near pointer (16-bit, bank 0)
-- `#[ram]`, immutable statics (ROM) → far pointer (24-bit, includes bank)
+- Immutable statics (ROM) in bank 0 → near pointer (16-bit)
+- `#[ram]` → far pointer (24-bit, bank $7E)
 
 Cannot take address of register aliases (`&A` is an error). Only works on lvalues.
 

@@ -6,8 +6,8 @@ R65's type system is designed around the 65816's unique characteristic: register
 
 **Design Principles**:
 - Static mode tracking - know mode at every program point
-- Mode-dependent register types - A/X/Y change size based on mode
-- Explicit mode management - programmer controls mode transitions
+- Mode-dependent register types - A changes size based on mode
+- Automatic mode inference - mode determined from function parameters
 - Compile-time mode validation - catch mode errors early
 
 ---
@@ -22,6 +22,7 @@ i8   // Signed 8-bit    (-128 to 127)
 u16  // Unsigned 16-bit (0 to 65535)
 i16  // Signed 16-bit   (-32768 to 32767)
 bool // Boolean (0 or not 0, stored as u8)
+void // No value (used internally for functions with no return)
 ```
 
 **Size and Alignment**:
@@ -62,7 +63,7 @@ S: u16       // Always 16-bit (Stack Pointer)
 **Type at Compile Time**: Determined by current mode annotation
 
 **Special Case: B Register**
-- **Only available in m8 mode** (default) - compiler error if used in m16 mode (when function has `@ A: u16` parameter)
+- **Only meaningful in m8 mode** (default) — in m16 mode, B is part of the 16-bit A register
 - B is the **hidden high byte** of the 16-bit accumulator
 - Accessed via XBA (Exchange B and A) instruction
 - Cannot appear in `#[preserves(...)]` attribute (compile error)
@@ -135,6 +136,43 @@ far fn(params) -> return_type    // Far function (JSL/RTL)
 
 **Calling Convention**: Encoded in type
 
+#### Tuples (Multiple Return Values)
+
+```rust
+(u8, u8)       // Two u8 values (returned in A, B in m8 mode)
+(u8, u16)      // Mixed sizes (returned in A, X)
+```
+
+Tuple types are used for multiple return values. They cannot be stored in variables — only destructured at call sites:
+```rust
+let (a, b) = get_pair();
+```
+
+#### Never Type
+
+```rust
+-> !           // Function never returns
+```
+
+Used for functions that loop forever or halt the processor. The compiler omits `RTS`/`RTL` and emits `WAI` as a safety fallback.
+
+#### Slices (Unsized Arrays)
+
+```rust
+[T]            // Unsized array (only valid as pointee: *[T] or far *[T])
+```
+
+Pointer-to-slice (`*[T]`) is compatible with pointer-to-array (`*[T; N]`), enabling generic array parameters.
+
+#### Type Aliases
+
+```rust
+type Word = u16;
+type Callback = fn(u8) -> u8;
+```
+
+Type aliases create alternate names for existing types. They are fully transparent to the type checker.
+
 ---
 
 ## Processor Modes
@@ -184,31 +222,49 @@ fn example16(val @ A: u16) {
 
 ### Assignment Type Checking
 
-**Rule**: Both sides must have identical types (no implicit conversions)
+**Rule**: Integer types are compatible with each other for assignment. Explicit casts are recommended but not required for integer-to-integer assignment:
 
 ```rust
 let a: u8 = 10;
 let b: u16 = 20;
 
-a = b;  // ERROR: type mismatch (u8 vs u16)
-b = a;  // ERROR: type mismatch (u16 vs u8)
-
-b = a as u16;  // OK: explicit cast
+b = a;          // OK: integer types are compatible
+a = b;          // OK: truncates (programmer's responsibility)
+b = a as u16;   // Preferred: explicit cast makes intent clear
 ```
+
+**Non-integer types** require exact type matches (pointers, structs, enums).
+
+### Implicit Integer Promotion in Expressions
+
+When binary operations have mixed-size integer operands, the compiler automatically inserts a widening cast:
+
+```rust
+let a: u8 = 10;
+let b: u16 = 1000;
+let c: u16 = a + b;  // a is implicitly promoted to u16
+```
+
+This applies to arithmetic, bitwise, and comparison operators.
 
 ### Register Alias Type Checking
 
-**Rule**: Alias type must match current register type
+**Rule**: Alias type must match current register type (determined by function's mode)
 
 ```rust
+// m8 mode (default)
 fn example() {
     let value @ A: u8 = 10;   // OK: A is u8 in m8 mode
     let value @ A: u16 = 10;  // ERROR: A is u8, not u16
+}
 
-    REP(0x20);  // Switch to m16
-    let value @ A: u16 = 1000;  // OK: A is now u16
+// m16 mode (inferred from parameter)
+fn example16(input @ A: u16) {
+    let value @ A: u16 = 1000;  // OK: A is u16 in m16 mode
 }
 ```
+
+**Note**: Mode is fixed per function based on parameter types. Manual `REP`/`SEP` instructions (via `asm!()`) do not change the compiler's mode tracking.
 
 ### Function Call Type Checking
 
@@ -240,6 +296,38 @@ p1 = p3;  // ERROR: *u8 vs far *u8
 p1 = p2 as *u8;      // OK: explicit cast
 p1 = p3 as *u8;      // OK: explicit cast (drops bank)
 ```
+
+### Explicit Cast Rules (`as`)
+
+The `as` keyword performs explicit type conversions:
+
+| Cast | Behavior |
+|------|----------|
+| `u8 as u16` | Zero-extend |
+| `i8 as i16` | Sign-extend |
+| `u16 as u8` | Truncate (keep low byte) |
+| `u8 as i8` | Reinterpret bits |
+| `bool as u8` | `false` → 0, `true` → 1 |
+| `u8 as bool` | 0 → `false`, non-zero → `true` |
+| `*T as *U` | Pointer reinterpret |
+| `*T as u16` | Pointer to integer |
+| `u16 as *T` | Integer to pointer |
+| `far *T as u16` | Far pointer truncated to 16-bit |
+| `Enum as u8/u16` | Enum to underlying integer |
+
+### Pointer Auto-Dereference
+
+Struct field access through pointers is automatically dereferenced:
+
+```rust
+#[zeropage]
+static mut PTR: *Player;
+
+PTR.x = 10;    // Auto-dereferences: (*PTR).x = 10
+let v = PTR.y; // Auto-dereferences: let v = (*PTR).y
+```
+
+No explicit `(*ptr).field` syntax is required.
 
 ---
 
@@ -293,6 +381,5 @@ fn example16(input @ A: u16) {
 
 ---
 
-**STATUS**: Design Complete
-**Last Updated**: 2025-12-31
-**Next Steps**: Implement in type checker and mode analyzer
+**STATUS**: Implemented
+**Last Updated**: 2026-02-10

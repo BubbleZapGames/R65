@@ -6,7 +6,7 @@ R65 provides operators and functions that clearly distinguish between hardware-s
 
 **Design Philosophy**:
 - **Operators (`+`, `-`, `*`, `/`, etc.)** = Hardware instructions or simple instruction sequences (2-10 cycles)
-- **Functions (`mul8()`/`mul16()`, `div8()`/`div16()`, `shl()`, etc.)** = Software subroutines (20-200+ cycles)
+- **Functions (`mul()`/`div()`/`mod()`, `shl()`, `shr()`, etc.)** = Software subroutines (20-200+ cycles)
 
 All operations are **unchecked** - overflow, underflow, and division by zero are undefined behavior (matching hardware philosophy of no runtime checks).
 
@@ -69,10 +69,11 @@ let x = a & 0x0F;    // Bitwise AND (2-4 cycles)
 
 ### Slow Operations (use functions)
 ```rust
-let x = mul(a, b);   // General multiply: JSR __mul (20-100+ cycles)
-let x = div(a, b);   // General divide: JSR __div (50-200+ cycles)
-let x = mod(a, b);   // Modulo: JSR __mod (50-200+ cycles)
-let x = shl(a, n);   // Variable shift: loop (6-50+ cycles)
+let x = mul(a, b);    // General multiply: JSR __mul (20-100+ cycles)
+let x = div(a, b);    // General divide: JSR __div (50-200+ cycles)
+let x = mod(a, b);    // Modulo: JSR __mod (50-200+ cycles)
+let x = shl(a, n);    // Variable shift: loop (6-50+ cycles)
+let x = shr(a, n);    // Variable shift: loop (6-50+ cycles)
 ```
 
 ---
@@ -84,9 +85,9 @@ let x = shl(a, n);   // Variable shift: loop (6-50+ cycles)
 **Syntax**: `a + b`
 
 **Type Rules**:
-- Both operands must be the same type
-- Result type matches operand type
-- No implicit type promotion
+- Both operands should be the same type
+- Mixed-size integer operands trigger implicit promotion (u8 + u16 → u16)
+- Result type matches the wider operand type
 
 **Behavior**:
 - Wrapping on overflow (no checks)
@@ -171,7 +172,7 @@ let x = a * 8;   // ASL, ASL, ASL (shift left 3)
 
 // These are ERRORS:
 let x = a * 3;   // ERROR: Use mul(a, 3)
-let x = a * 16;  // ERROR: Use mul(a, 16) or a << 4
+let x = a * 16;  // ERROR: Use a << 4
 let x = a * b;   // ERROR: Use mul(a, b) for variable multiply
 ```
 
@@ -187,167 +188,132 @@ let x = a * b;   // ERROR: Use mul(a, b) for variable multiply
 - Left operand: any integer type
 - Right operand: **must be compile-time constant** 1, 2, 4, or 8
 - Result type matches left operand type
-- Signed vs unsigned matters: `i8 / 2` vs `u8 / 2`
 
 **Behavior**:
 - Compiler error if divisor is not 1, 2, 4, or 8
-- Unsigned: implemented using logical shifts (LSR)
-- Signed: more complex (check sign, adjust, shift)
-- Truncates toward zero for signed integers
+- Implemented using logical shifts (LSR) for both signed and unsigned
+- **Note**: Signed division does not currently round toward zero — it uses the same LSR as unsigned
 
 **Assembly Mapping**:
 ```rust
-// Unsigned division
 let x: u8 = a / 1;   // No-op
 let x: u8 = a / 2;   // LSR (shift right 1)
 let x: u8 = a / 4;   // LSR, LSR (shift right 2)
 let x: u8 = a / 8;   // LSR, LSR, LSR (shift right 3)
 
-// Signed division (more complex)
-let x: i8 = a / 2;
-// Check sign bit
-// CMP #$80
-// BCC positive
-// INC A          // Adjust for negative (round toward zero)
-// positive:
-// LSR            // Shift right
-
 // These are ERRORS:
 let x = a / 3;   // ERROR: Use div(a, 3)
-let x = a / 16;  // ERROR: Use div(a, 16) or a >> 4
+let x = a / 16;  // ERROR: Use a >> 4
 let x = a / b;   // ERROR: Use div(a, b) for variable division
 ```
 
-**Performance**: 2-8 cycles (unsigned faster than signed)
+**Performance**: 2-6 cycles
 
 ---
 
-## Multiplication Functions: `mul8()` / `mul16()`
+## Multiplication Function: `mul()`
 
-**Syntax**: `mul8(a, b)` or `mul16(a, b)`
+**Syntax**: `mul(a, b)`
 
 **Type Rules**:
-- `mul8()`: Both operands must be 8-bit (`u8` or `i8`)
-- `mul16()`: Both operands must be 16-bit (`u16` or `i16`)
+- Both operands must be the same integer type
 - Result type matches operand type (truncated)
 
 **Behavior**:
 - Full multiplication with subroutine call
-- Result truncated to operand size:
-  - `mul8(a: u8, b: u8)` → `u8` (high byte discarded)
-  - `mul16(a: u16, b: u16)` → `u16` (high word discarded)
+- Result truncated to operand size (high byte/word discarded)
 - Wrapping on overflow (no checks)
+- With `--cfg snes`, 8-bit multiplication uses the SNES hardware multiplier (faster)
 
 **Assembly Mapping**:
 ```rust
-let x: u8 = mul8(a, b);
+let x: u8 = mul(a, b);
 // LDA a
 // LDX b
 // JSR __mul_u8
 // (result in A)
 
-let x: u16 = mul16(a, b);
+let x: u16 = mul(a, b);
 // [Load a, b into appropriate registers/memory]
 // JSR __mul_u16
 // (result in A or memory)
 ```
 
-**Optimizations**:
-- Compiler may detect constant powers of 2 and use shifts
-- `mul8(a, 8)` → `a << 3` (but explicit `a * 8` is preferred)
-- Small constants may use repeated addition or lookup tables
-
-**Performance**: 20-100+ cycles (varies by implementation)
+**Performance**: 20-100+ cycles (varies by implementation; hardware mul faster on SNES)
 
 **Examples**:
 ```rust
-let area: u8 = mul8(width, height);
-let scaled: u8 = mul8(value, 3);      // Not a power of 2
-let offset: u16 = mul16(y, 256);      // Could optimize to shift
+let area: u8 = mul(width, height);
+let scaled: u8 = mul(value, 3);       // Not a power of 2
+let offset: u16 = mul(y as u16, 256 as u16);
 ```
 
 ---
 
-## Division Functions: `div8()` / `div16()`
+## Division Function: `div()`
 
-**Syntax**: `div8(a, b)` or `div16(a, b)`
+**Syntax**: `div(a, b)`
 
 **Type Rules**:
-- `div8()`: Both operands must be 8-bit (`u8` or `i8`)
-- `div16()`: Both operands must be 16-bit (`u16` or `i16`)
+- Both operands must be the same integer type
 - Result type matches operand type
-- Signed vs unsigned matters: `div8(i8, i8)` vs `div8(u8, u8)`
 
 **Behavior**:
 - Full division with subroutine call
 - Division by zero is **undefined behavior** (no check)
-- Truncates toward zero for signed integers
 
 **Assembly Mapping**:
 ```rust
-let x: u8 = div8(a, b);
+let x: u8 = div(a, b);
 // LDA a
 // LDX b
 // JSR __div_u8
 // (result in A)
-
-let x: i8 = div8(a, b);
-// [Handle sign complexities]
-// JSR __div_i8
 ```
-
-**Optimizations**:
-- Compiler may detect constant powers of 2 and suggest `a / n` instead
-- Warning: `div8(a, 8)` → "Use a / 8 for better performance"
 
 **Performance**: 50-200+ cycles
 
 **Examples**:
 ```rust
-let avg: u8 = div8(sum, count);
-let tiles: u8 = div8(pixels, 7);      // Not a power of 2
+let avg: u8 = div(sum, count);
+let tiles: u8 = div(pixels, 7);       // Not a power of 2
 ```
 
 ---
 
-## Modulo Functions: `mod8()` / `mod16()`
+## Modulo Function: `mod()`
 
-**Syntax**: `mod8(a, b)` or `mod16(a, b)`
+**Syntax**: `mod(a, b)`
 
 **Type Rules**:
-- `mod8()`: Both operands must be 8-bit (`u8` or `i8`)
-- `mod16()`: Both operands must be 16-bit (`u16` or `i16`)
+- Both operands must be the same integer type
 - Result type matches operand type
-- Signed vs unsigned matters
 
 **Behavior**:
 - Returns remainder after division
 - Modulo by zero is **undefined behavior** (no check)
-- Sign of result matches dividend for signed types
 
 **Assembly Mapping**:
 ```rust
-let x: u8 = mod8(a, b);
+let x: u8 = mod(a, b);
 // LDA a
 // LDX b
 // JSR __mod_u8
 // (result in A)
 ```
 
-**Optimizations**:
-- Powers of 2: `mod8(a, 256)` → `a & 0xFF`
-- Compiler suggests: "Use a & 0x07 instead of mod8(a, 8)"
-
 **Performance**: 50-200+ cycles (often implemented with division)
 
 **Examples**:
 ```rust
-let remainder: u8 = mod8(distance, tile_size);
-let wrapped: u16 = mod16(index, buffer_size);
+let remainder: u8 = mod(distance, tile_size);
+let wrapped: u16 = mod(index, buffer_size);
 
 // Prefer this for power of 2:
-let wrapped = index & 0xFF;  // Same as mod8(index, 256)
+let wrapped = index & 0xFF;  // Same as mod(index, 256)
 ```
+
+**Note**: The `%` operator is parsed but **not supported at code generation** — use the `mod()` function instead.
 
 ---
 
@@ -470,26 +436,20 @@ let x = a << n;   // ERROR: Use shl(a, n) for variable shifts
 - Result type matches left operand
 
 **Behavior**:
-- **Unsigned types** (`u8`, `u16`): Logical shift (fill with 0)
-- **Signed types** (`i8`, `i16`): Arithmetic shift (fill with sign bit)
+- Uses logical shift (LSR) for both signed and unsigned types (fills with 0)
+- **Note**: Arithmetic right shift (sign-preserving) is not currently implemented
 - Shift by ≥ bit width is **undefined behavior**
 
 **Assembly Mapping**:
 ```rust
-// Unsigned (logical shift)
 let x: u8 = a >> 1;   // LSR
 let x: u8 = a >> 2;   // LSR, LSR
-
-// Signed (arithmetic shift - more complex)
-let x: i8 = a >> 1;
-// CMP #$80        // Test sign
-// ROR             // Rotate with carry
 
 // ERROR: variable shift
 let x = a >> n;   // ERROR: Use shr(a, n) for variable shifts
 ```
 
-**Performance**: 2-4 cycles per shift (signed slightly slower)
+**Performance**: 2 cycles per shift
 
 ---
 
@@ -830,11 +790,13 @@ a <<= n;  // a = a << n (n must be constant)
 a >>= n;  // a = a >> n (n must be constant)
 ```
 
-**Not allowed** (use explicit assignment):
+**Restricted** (inherit base operator restrictions):
 ```rust
-a *= b;   // ERROR: Use a = mul(a, b)
-a /= b;   // ERROR: Use a = div(a, b)
-a %= b;   // ERROR: Use a = mod(a, b)
+a *= 2;   // OK: desugars to a = a * 2 (power of 2)
+a *= b;   // ERROR: desugars to a = a * b (variable multiply not allowed)
+a /= 4;   // OK: desugars to a = a / 4 (power of 2)
+a /= b;   // ERROR: desugars to a = a / b (variable divide not allowed)
+a %= b;   // ERROR: % operator not supported at codegen — use a = mod(a, b)
 ```
 
 **Optimization**: Direct memory operations when beneficial:
@@ -848,29 +810,24 @@ FLAGS |= 0x80;    // LDA FLAGS, ORA #$80, STA FLAGS
 
 ## Type Compatibility
 
-### Same-Type Requirement
+### Implicit Integer Promotion
 
-**All binary operators require both operands to be the same type.**
-
-```rust
-let a: u8 = 10;
-let b: u16 = 20;
-let c = a + b;        // ERROR: type mismatch
-let c = mul(a, b);    // ERROR: type mismatch
-```
-
-### Explicit Casting Required
+When binary operators have mixed-size integer operands, the smaller type is implicitly promoted to match the larger:
 
 ```rust
 let a: u8 = 10;
 let b: u16 = 20;
-let c: u16 = (a as u16) + b;     // OK
-let c: u16 = mul(a as u16, b);   // OK
+let c: u16 = a + b;  // OK: a implicitly promoted to u16
 ```
 
-### No Integer Promotion
+Explicit casts can also be used:
+```rust
+let c: u16 = (a as u16) + b;     // Explicit cast (same result)
+```
 
-Unlike C, there is **no automatic integer promotion**:
+### Same-Size Wrapping
+
+When both operands are the same size, results wrap within that size:
 
 ```rust
 let x: u8 = 250;
@@ -920,7 +877,7 @@ let x = 10 / 0;        // ERROR: constant division by zero (compile-time)
 Standard C/Rust precedence (highest to lowest):
 
 1. **Unary**: `!`, `~`, `-` (unary)
-2. **Multiplicative**: `*` (restricted), function calls: `mul8()`/`mul16()`, `div8()`/`div16()`, `mod8()`/`mod16()`
+2. **Multiplicative**: `*` (restricted), `/` (restricted), function calls: `mul()`, `div()`, `mod()`
 3. **Additive**: `+`, `-`
 4. **Shift**: `<<`, `>>` (constant only), `shl()`, `shr()`
 5. **Comparison**: `<`, `<=`, `>`, `>=`
@@ -955,11 +912,13 @@ a += 1, a -= 1            // 2-6 cycles (INC/DEC)
 
 ### Slow Operations (20-200+ cycles)
 ```rust
-mul(a, b)                 // 20-100+ cycles
-div(a, b)                 // 50-200+ cycles
-mod(a, b)                 // 50-200+ cycles
-shl(a, n), shr(a, n)      // 8 + (6 × n) cycles
-a < b (signed)            // 8-15 cycles or subroutine
+mul(a, b)                  // 20-100+ cycles
+div(a, b)                  // 50-200+ cycles
+mod(a, b)                  // 50-200+ cycles
+shl(a, n), shr(a, n)       // 8 + (6 × n) cycles
+rotate_left(a, n)           // Similar to shifts
+rotate_right(a, n)          // Similar to shifts
+a < b (signed)              // 8-15 cycles or subroutine
 ```
 
 ---
@@ -967,13 +926,13 @@ a < b (signed)            // 8-15 cycles or subroutine
 ## Optimization Guidelines
 
 1. **Use operators for constants**: `a * 8` instead of `mul(a, 8)`
-2. **Prefer shifts**: `a << 3` faster than `mul(a, 8)`
+2. **Prefer shifts**: `a << 3` is equivalent to `a * 8`
 3. **Use AND for power-of-2 modulo**: `a & 0xFF` instead of `mod(a, 256)`
 4. **Avoid division in loops**: Pre-compute or use lookup tables
 5. **Favor 8-bit operations**: Faster than 16-bit in m8 mode
 6. **Use INC/DEC for ±1**: `a += 1` optimizes to INC
 7. **Constant folding**: Let compiler optimize `5 + 3` to `8`
-8. **Strength reduction**: Compiler may optimize `mul(a, 2)` to `a << 1`
+8. **Strength reduction**: Compiler may optimize `mul(a, 2)` to `a << 1` (use `a * 2` for this directly)
 
 ---
 
@@ -1086,150 +1045,14 @@ let x = a * b;
 
 ### Type Mismatches
 ```rust
-let x = (a: u8) + (b: u16);
-// ERROR: Cannot add u8 and u16
-// HELP: Cast to same type: (a as u16) + b
-
-let x = mul8(a: u8, b: u16);
-// ERROR: mul8() requires both operands to be 8-bit
-// HELP: Use mul16() with casts: mul16(a as u16, b)
+let x = mul(a: u8, b: u16);
+// ERROR: mul() requires both operands to be the same type
+// HELP: Cast to same type: mul(a as u16, b)
 ```
 
 ---
 
-## Compound Assignment Operators
-
-### Overview
-
-R65 supports compound assignment operators that combine a binary operation with assignment. These are **syntactic sugar** that desugar during HIR lowering:
-
-```rust
-x += 5;  // Desugars to: x = x + 5
-```
-
-**No performance difference** - compound assignments compile to the same code as manual expansion.
-
-### Supported Operators
-
-| Operator | Example | Desugars To | Category |
-|----------|---------|-------------|----------|
-| `+=` | `x += 5` | `x = x + 5` | Arithmetic |
-| `-=` | `x -= 3` | `x = x - 3` | Arithmetic |
-| `*=` | `x *= 2` | `x = x * 2` | Arithmetic |
-| `/=` | `x /= 4` | `x = x / 4` | Arithmetic |
-| `%=` | `x %= 8` | `x = x % 8` | Arithmetic |
-| `&=` | `x &= 0x0F` | `x = x & 0x0F` | Bitwise |
-| `\|=` | `x \|= 0x80` | `x = x \| 0x80` | Bitwise |
-| `^=` | `x ^= 0xFF` | `x = x ^ 0xFF` | Bitwise |
-| `<<=` | `x <<= 2` | `x = x << 2` | Shift |
-| `>>=` | `x >>= 1` | `x = x >> 1` | Shift |
-
-### Semantics
-
-**Left-hand side evaluated once:**
-```rust
-array[get_index()] += 5;
-// get_index() called only ONCE
-// Equivalent to:
-let temp_idx = get_index();
-array[temp_idx] = array[temp_idx] + 5;
-```
-
-**Type checking:** Same rules as the underlying binary operation
-- Left and right types must be compatible
-- Result type must match left-hand side type
-- Same restrictions (e.g., `*=` requires constant power-of-2 or uses `mul8()`/`mul16()`)
-
-### Examples
-
-#### Variables
-```rust
-#[zeropage]
-static mut COUNTER: u8 = 0;
-
-fn increment() {
-    COUNTER += 1;  // Clearer than COUNTER = COUNTER + 1
-}
-```
-
-#### Registers
-```rust
-fn process_value(input @ A: u8) {
-    A += 10;        // Add 10 to accumulator
-    A &= 0x0F;      // Mask low nibble
-    A <<= 2;        // Shift left 2 bits
-}
-```
-
-#### Array Elements
-```rust
-#[ram]
-static mut BUFFER: [u8; 256] = [0; 256];
-
-fn update_buffer(index: u8, delta: u8) {
-    BUFFER[index] += delta;
-}
-```
-
-#### Struct Fields
-```rust
-struct Player {
-    health: u8,
-    score: u16,
-}
-
-fn take_damage(p: *Player, damage: u8) {
-    p.health -= damage;
-}
-
-fn add_score(p: *Player, points: u16) {
-    p.score += points;
-}
-```
-
-### Assembly Output
-
-Compound assignments compile to the same code as manual expansion:
-
-```rust
-// Source
-A += 5;
-
-// Assembly (same as A = A + 5)
-CLC
-ADC #$05
-```
-
-```rust
-// Source
-COUNTER += 1;
-
-// Assembly (same as COUNTER = COUNTER + 1)
-LDA COUNTER
-CLC
-ADC #$01
-STA COUNTER
-```
-
-### Operator Restrictions Apply
-
-Compound assignments inherit restrictions from their underlying operators:
-
-```rust
-// OK: Constant power-of-2 multiplication
-x *= 8;  // Uses shifts
-
-// ERROR: Variable multiplication requires mul8()/mul16()
-x *= y;  // Compiler error
-
-// OK: Constant shift
-x <<= 3;
-
-// ERROR: Variable shift requires shl()
-x <<= n;  // Compiler error
-```
-
-### Increment/Decrement Operators
+## Increment/Decrement Operators
 
 R65 supports increment (`++`) and decrement (`--`) operators as statement-only syntax:
 
@@ -1315,6 +1138,6 @@ let overflow = STATUS & OVERFLOW_FLAG;
 
 ---
 
-**STATUS**: Design Complete
-**Last Updated**: 2026-01-02
-**Next Steps**: Implement in compiler frontend (lexer/parser) and MIR
+**STATUS**: Implemented
+**Last Updated**: 2026-02-10
+**Not Yet Implemented**: `%` operator at codegen (use `mod()` function), signed arithmetic right shift (uses logical shift for both)

@@ -846,24 +846,31 @@ fn caller() {
 
 ---
 
-### Manual Preservation
+### Automatic Preservation
 
-Programmer must manually save/restore:
+The compiler **automatically generates** save/restore code for registers listed in `#[preserves(...)]`:
 
 ```rust
 #[preserves(X, Y)]
-fn manual_preserve(input @ A: u8) -> u8 {
-    let saved_x = X;  // Save X to local variable or memory
-
-    X = 20;           // Temporarily modify X
-    // ... use X ...
-
-    X = saved_x;      // Restore X before return
+fn auto_preserve(input @ A: u8) -> u8 {
+    X = 20;           // Freely modify X
+    Y = 30;           // Freely modify Y
     return A;
 }
 ```
 
-**Compiler validates** but doesn't generate save/restore
+**Generated**:
+```asm
+auto_preserve:
+    PHX                ; Auto-save X
+    PHY                ; Auto-save Y
+    ; ... function body ...
+    PLY                ; Auto-restore Y
+    PLX                ; Auto-restore X
+    RTS
+```
+
+The compiler inserts push/pull instructions at function entry/exit (and before every return path)
 
 ---
 
@@ -1368,6 +1375,5 @@ The cleanup uses PLX/PHX to preserve the return address while adjusting SP.
 
 ---
 
-**STATUS**: Design Complete
-**Last Updated**: 2025-12-31
-**Next Steps**: Implement calling convention code generation in backend
+**STATUS**: Implemented
+**Last Updated**: 2026-02-10

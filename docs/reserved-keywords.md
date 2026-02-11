@@ -2,7 +2,7 @@
 
 R65 reserves all Rust keywords to maintain compatibility and prevent future conflicts. This document lists all reserved keywords organized by category.
 
-## Currently Implemented Keywords (18)
+## Currently Implemented Keywords (22)
 
 These keywords are actively used in R65:
 
@@ -17,6 +17,9 @@ These keywords are actively used in R65:
 | `else` | Conditional alternative |
 | `loop` | Infinite loop |
 | `while` | Conditional loop |
+| `for` | For loop (`for i in 0..n`) |
+| `in` | For loop range |
+| `match` | Pattern matching |
 | `break` | Exit loop |
 | `continue` | Skip to next iteration |
 | `return` | Return from function |
@@ -26,8 +29,9 @@ These keywords are actively used in R65:
 | `include` | File inclusion |
 | `asm` | Inline assembly |
 | `as` | Type casting |
+| `macro_rules` | Macro definition |
 
-## Built-in Functions (11)
+## Built-in Functions (4)
 
 These are treated as keywords because they map to special hardware instructions:
 
@@ -38,7 +42,7 @@ These are treated as keywords because they map to special hardware instructions:
 | `wai` | Wait for interrupt |
 | `stp` | Stop processor |
 
-## Reserved Rust Keywords (20)
+## Reserved Rust Keywords (17)
 
 Currently unused but reserved for future implementation:
 
@@ -46,9 +50,6 @@ Currently unused but reserved for future implementation:
 |---------|-------------|----------------|
 | `impl` | Trait/method implementation | Reserved for future methods |
 | `trait` | Trait definition | Reserved for future traits |
-| `for` | For loop | Reserved for future iteration |
-| `in` | For loop iterator | Reserved for future iteration |
-| `match` | Pattern matching | Reserved for future pattern matching |
 | `where` | Generic constraints | Reserved for future generics |
 | `use` | Import items | Reserved (we use `include!` instead) |
 | `pub` | Public visibility | Reserved (no module system currently) |
@@ -93,10 +94,10 @@ Reserved by Rust for future use - we reserve them for compatibility:
 
 ## Total Count
 
-**62 reserved keywords** in total:
-- 18 currently implemented
-- 11 built-in functions
-- 20 reserved Rust keywords
+**57 reserved keywords** in total:
+- 22 currently implemented
+- 4 built-in functions
+- 17 reserved Rust keywords
 - 13 strict reserved keywords
 - 1 special modifier (`far`)
 
@@ -149,9 +150,10 @@ However, we still reserve them to maintain maximum compatibility with Rust synta
 
 | Register | Type | Description |
 |----------|------|-------------|
-| `A` | u8/u16 | Accumulator |
-| `X` | u8/u16 | X index register |
-| `Y` | u8/u16 | Y index register |
+| `A` | u8/u16 | Accumulator (u8 in m8, u16 in m16) |
+| `B` | u8 | High byte of accumulator (m8 mode only) |
+| `X` | u16 | X index register (always 16-bit) |
+| `Y` | u16 | Y index register (always 16-bit) |
 | `D` | u16 | Direct Page register |
 | `S` | u16 | Stack Pointer |
 | `DBR` | u8 | Data Bank Register |

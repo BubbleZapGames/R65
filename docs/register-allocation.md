@@ -5,13 +5,29 @@
 R65's register allocation is designed for **reverse engineering and replicating hand-written assembly**, not automatic optimization. The strategy prioritizes **explicit programmer control** and **predictable code generation** over clever compiler heuristics.
 
 **Design Principles**:
-- Explicit register control - programmer specifies all register usage
+- Explicit register control - programmer specifies hardware register usage via aliases
 - Predictable output - same source always generates same assembly
 - Match assembly patterns - replicate hand-written code idioms
-- Minimal automatic allocation - compiler uses designated scratch space only
+- Automatic allocation of temporaries - compiler manages virtual registers
 - Trust the programmer - minimal compiler interference
 
 **Philosophy**: The compiler is a **translator**, not an optimizer. It follows programmer directives to generate assembly that matches the mental model.
+
+### Implementation Overview
+
+The actual register allocation pipeline is more sophisticated than a simple scratch pool:
+
+1. **MIR Generation**: All values are assigned **virtual registers** (VReg) by `VirtualRegisterAllocator`
+2. **Slot Allocation**: `slot_allocator.py` determines physical locations for each VReg:
+   - **HW-coalesceable VRegs**: Values that can stay in their hardware register (A, X, Y, B) without spilling — detected by analyzing whether the HW register is clobbered between definition and last use
+   - **Stack slots**: Non-coalesceable values are allocated to stack positions
+   - **Scratch registers**: `#[zeropage(addr, register)]` locations are available as call-graph-aware scratch space
+3. **Register Allocation**: `register_alloc.py` maps VRegs to physical locations (HW registers or stack offsets)
+4. **Code Generation**: Instruction selectors emit loads/stores based on physical locations
+
+**HW Coalescence** uses a two-pass approach:
+- **Pass 1**: Find VRegs where the HW register is unclobbered between def and last use
+- **Pass 2**: Re-check remaining candidates treating Pass 1 coalesceable Moves as no-ops (enables cascading coalescence, e.g., A can coalesce when its only "clobber" was a coalesceable B parameter save)
 
 ---
 
@@ -825,6 +841,5 @@ Variable needs allocation
 
 ---
 
-**STATUS**: Design Complete
-**Last Updated**: 2025-12-31
-**Next Steps**: Implement scratch register tracking in MIR, validation in type checker
+**STATUS**: Implemented (doc describes design philosophy; actual implementation uses virtual registers, HW coalescence, and slot allocation — see `slot_allocator.py` and `register_alloc.py`)
+**Last Updated**: 2026-02-10

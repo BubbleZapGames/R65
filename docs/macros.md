@@ -8,8 +8,8 @@ R65 provides a simplified macro system inspired by Rust's `macro_rules!` but des
 - **Simple pattern matching**: One pattern per macro (no multiple arms)
 - **Basic repetition**: Comma-separated repetition only (`$(...),*`)
 - **No hygiene**: Like C macros, generated names can collide (programmer's responsibility)
-- **Token-based**: Operates on token streams, not AST nodes
-- **Compile-time only**: All expansion happens before parsing
+- **AST-based**: Operates on parsed AST nodes (expansion happens after parsing)
+- **Compile-time only**: All expansion happens before HIR lowering
 
 ---
 
@@ -543,10 +543,32 @@ fn log_debug(message: u8) {
 
 #### Usage Notes
 
-- **Statement context only**: Currently supported only as a statement (`stringify!(...);`)
+- **Both statement and expression contexts**: Can be used as a standalone statement or within expressions
 - **No evaluation**: Arguments are treated as literal tokens, not evaluated
-- **Token-based**: Operates on the token level, like all R65 macros
 - **Escaping**: Automatically handles special characters for safe string literals
+
+---
+
+### `compile_error!` - Emit Compile-Time Error
+
+Causes compilation to fail with a custom error message:
+
+```rust
+compile_error!("This platform is not supported");
+```
+
+Useful in macros for guarding against invalid usage.
+
+### `const_assert!` - Compile-Time Assertion
+
+Evaluates a constant expression and emits a compile error if it is false:
+
+```rust
+const_assert!(BUFFER_SIZE <= 256);
+const_assert!(TILE_WIDTH * TILE_HEIGHT == 64);
+```
+
+Both arguments must be compile-time constants.
 
 ---
 
@@ -672,18 +694,11 @@ note: macro 'foo' defined here
 
 ### Debugging Macro Expansion
 
-Use `--dump-macros` flag to see expanded code:
+Use `--dump-ast` to see the AST after macro expansion, or `--dump-hir` to see the final lowered representation:
 
 ```bash
-r65c game.r65 --dump-macros
-```
-
-Output shows before/after expansion:
-
-```
-=== Macro Expansion ===
-Before: inc_twice!(X)
-After:  X++; X++;
+r65c game.r65 --dump-ast
+r65c game.r65 --dump-hir
 ```
 
 ---
@@ -753,10 +768,12 @@ fn maybe_log() {
 ### Compiler Pipeline Integration
 
 ```
-Source → Lexer → [Macro Collection] → [Macro Expansion] → Parser → AST → ...
-                       ↓                      ↓
-              MacroDefinition table    Token stream rewriting
+Source → Lexer → Parser → AST → [Macro Collection] → [Macro Expansion] → HIR → ...
+                                        ↓                      ↓
+                               MacroDefinition table    AST node rewriting
 ```
+
+**Note**: Macros are expanded **after** parsing at the AST level, not before parsing at the token level.
 
 ### Data Structures
 
@@ -782,12 +799,13 @@ class MacroExpander:
 
 ### Expansion Algorithm
 
-1. **Collect**: First pass collects all `macro_rules!` definitions
-2. **Match**: For each invocation, match arguments against parameters
-3. **Capture**: Extract token sequences for each parameter
-4. **Substitute**: Replace `$param` with captured tokens
-5. **Recurse**: Re-scan result for nested macro invocations
-6. **Limit**: Track depth, error if > 64
+1. **Parse**: Source is fully parsed into AST (macros are parsed as AST nodes)
+2. **Collect**: First pass collects all `macro_rules!` definitions from AST
+3. **Match**: For each invocation, match arguments against parameters
+4. **Capture**: Extract AST subtrees for each parameter
+5. **Substitute**: Replace `$param` with captured AST nodes
+6. **Recurse**: Re-scan result for nested macro invocations
+7. **Limit**: Track depth, error if > 64
 
 ### Performance Considerations
 
@@ -939,6 +957,5 @@ fn utility_function() {
 
 ---
 
-**STATUS**: Design Complete
-**Last Updated**: 2026-02-02
-**Estimated Implementation**: 2-3 weeks
+**STATUS**: Implemented
+**Last Updated**: 2026-02-10

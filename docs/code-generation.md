@@ -91,13 +91,21 @@ Addressing Mode Selection → Assembly Emission → WLA-DX Assembly (.asm)
 ; ============================================================================
 ; Interrupt Vectors
 ; ============================================================================
-.BANK 0 SLOT 0
-.ORG $FFE0
+.SNESNATIVEVECTOR
+COP __empty_handler
+BRK __empty_handler
+ABORT __empty_handler
+NMI nmi_handler
+IRQ irq_handler
+.ENDNATIVEVECTOR
 
-.DW 0, 0, 0, 0                  ; Unused vectors
-.DW nmi_handler                 ; NMI
-.DW reset_handler               ; RESET
-.DW irq_handler                 ; IRQ/BRK
+.SNESEMUVECTOR
+COP __empty_handler
+ABORT __empty_handler
+NMI __empty_handler
+RESET reset_handler
+IRQBRK __empty_handler
+.ENDEMUVECTOR
 ```
 
 ---
@@ -578,19 +586,32 @@ decompress_graphics:
 
 ### Interrupt Vector Table
 
-Generated at the end of the program:
+Generated using WLA-DX SNES vector directives:
 ```asm
 ; ============================================================================
-; Interrupt Vectors
+; Interrupt Vectors (Native Mode)
 ; ============================================================================
-.BANK 0 SLOT 0
-.ORG $FFE0
+.SNESNATIVEVECTOR
+COP __empty_handler
+BRK __empty_handler
+ABORT __empty_handler
+NMI nmi_handler
+IRQ irq_handler
+.ENDNATIVEVECTOR
 
-.DW 0, 0, 0, 0                  ; Unused vectors
-.DW nmi_handler                 ; NMI
-.DW reset_handler               ; RESET
-.DW irq_handler                 ; IRQ/BRK
+; ============================================================================
+; Interrupt Vectors (Emulation Mode)
+; ============================================================================
+.SNESEMUVECTOR
+COP __empty_handler
+ABORT __empty_handler
+NMI __empty_handler
+RESET reset_handler
+IRQBRK __empty_handler
+.ENDEMUVECTOR
 ```
+
+Unused vectors point to `__empty_handler` (a stub that just executes `RTI`).
 
 ---
 
