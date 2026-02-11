@@ -15,40 +15,57 @@ from r65.compiler.hir.builder import HIRBuilder
 
 # The acid test source - a complete R65 program using all features
 ACID_TEST_SOURCE = """
-// =============================================================================
 // R65 Acid Test - Comprehensive Language Feature Test
-// =============================================================================
 
 #[snesrom(name="R65 ACID TEST", version=0x01)]
 
-// -----------------------------------------------------------------------------
-// Constants
-// -----------------------------------------------------------------------------
+// --- Constants ---
 const SCREEN_WIDTH: u16 = 256;
 const SCREEN_HEIGHT: u16 = 224;
 const MAX_ENTITIES: u8 = 8;
 const TILE_SIZE: u8 = 8;
 const PLAYER_SPEED: u8 = 2;
 
-// -----------------------------------------------------------------------------
-// Type Aliases
-// -----------------------------------------------------------------------------
+// --- Const Functions ---
+const fn tile_offset(x: u8, y: u8) -> u16 {
+    return (y as u16) * 32 + (x as u16);
+}
+
+const fn clamp_offset(x: u8, y: u8) -> u16 {
+    if x > 31 { return tile_offset(31, y); }
+    if y > 27 { return tile_offset(x, 27); }
+    return tile_offset(x, y);
+}
+
+const fn direction_dx(dir: u8) -> i8 {
+    return match dir {
+        0 => 0, 1 => 0, 2 => -1, 3 => 1, _ => 0
+    };
+}
+
+const fn make_shift_table() -> [u16; 8] {
+    let mut t: [u16; 8] = [0; 8];
+    let mut i: u8 = 0;
+    while i < 8 {
+        t[i] = 1 << (i as u16);
+        i = i + 1;
+    }
+    return t;
+}
+
+// --- Type Aliases ---
 type Callback = fn(u8) -> u8;
 type FarCallback = far fn() -> u8;
+type Word = u16;
+type Byte = u8;
+type Ptr = *u8;
 
-// -----------------------------------------------------------------------------
-// Enums
-// -----------------------------------------------------------------------------
+// --- Enums ---
 enum State { Idle = 0, Running, Jumping, Falling, Dead }
 enum Direction { Up = 0, Down, Left, Right }
 
-// -----------------------------------------------------------------------------
-// Structs
-// -----------------------------------------------------------------------------
-struct Point {
-    x: u16,
-    y: u16
-}
+// --- Structs ---
+struct Point { x: u16, y: u16 }
 
 struct Entity {
     pos: Point,
@@ -66,29 +83,25 @@ struct GameState {
     paused: bool
 }
 
-// Struct with array field
-struct Palette {
-    colors: [u8; 16],
-    count: u8
-}
+struct Palette { colors: [u8; 16], count: u8 }
+struct Handler { callback: fn(u8) -> u8, priority: u8 }
 
-// Struct for dispatch table
-struct Handler {
-    callback: fn(u8) -> u8,
-    priority: u8
-}
+// --- Derived Constants (after struct defs for offset_of) ---
+const PLAYER_TILE: u16 = tile_offset(5, 3);
+const CLAMPED: u16 = clamp_offset(50, 10);
+const DIR_DX: i8 = direction_dx(3);
+const POINT_Y_OFFSET: u8 = offset_of(Point, y);
 
-// -----------------------------------------------------------------------------
-// Hardware Registers
-// -----------------------------------------------------------------------------
+static SHIFT_TABLE: [u16; 8] = make_shift_table();
+static SINE_TABLE: [u8; 256] = [0; 256];
+
+// --- Hardware Registers ---
 #[hw(0x2100)] static mut INIDISP: u8;
 #[hw(0x2101)] static mut OBSEL: u8;
 #[hw(0x4200)] static mut NMITIMEN: u8;
 #[hw(0x4212)] static mut HVBJOY: u8;
 
-// -----------------------------------------------------------------------------
-// Memory Declarations
-// -----------------------------------------------------------------------------
+// --- Memory ---
 #[stack(0x1F00, 0x1FFF)]
 
 #[zeropage(0x00)] static mut FRAME_COUNTER: u16;
@@ -104,64 +117,45 @@ struct Handler {
 #[ram] static mut TILE_BUFFER: [u8; 1024] = [0; 1024];
 #[ram] static mut MESSAGE: [u8; 32] = "Game Over!\\0";
 
-static SINE_TABLE: [u8; 256] = [0; 256];  // Immutable = ROM
-
-// -----------------------------------------------------------------------------
-// Function Pointers and Pointer Types
-// -----------------------------------------------------------------------------
+// --- Function Pointers and Pointer Types ---
 #[ram] static mut UPDATE_HANDLER: fn(u8);
-
-// Array of function pointers (dispatch table)
 #[ram] static mut STATE_HANDLERS: [fn(u8) -> u8; 4];
-
-// Array of handlers with function pointer fields
 #[ram] static mut HANDLER_TABLE: [Handler; 4];
-
-// Pointer types
 #[zeropage(0x10)] static mut DATA_PTR: *u8;
-#[zeropage(0x12)] static mut FAR_PTR: far *u8;  // Far pointer type
+#[zeropage(0x12)] static mut FAR_PTR: far *u8;
 #[zeropage(0x15)] static mut STRUCT_PTR: *Entity;
+#[ram] static mut CURRENT_PALETTE: Palette;
+#[ram] static mut MSG_PTR: *u8;
 
-// -----------------------------------------------------------------------------
-// Entry Point
-// -----------------------------------------------------------------------------
+// --- Entry Point ---
 #[entry]
 fn main() {
-    // Initialize hardware
-    INIDISP = 0x80;  // Force blank
-    NMITIMEN = 0x00; // Disable interrupts during init
+    INIDISP = 0x80;
+    NMITIMEN = 0x00;
 
-    // Initialize game state
     GAME.frame_count = 0;
     GAME.player_score = 0;
     GAME.level = 1;
     GAME.paused = false;
 
-    // Initialize player
     init_player();
-
-    // Initialize enemies
     let i @ X = 0;
     while i < MAX_ENTITIES {
         init_entity(i);
         i = i + 1;
     }
 
-    // Enable display
     INIDISP = 0x0F;
-    NMITIMEN = 0x81;  // Enable NMI
+    NMITIMEN = 0x81;
 
-    // Main loop
     loop {
         wait_vblank();
         update_game();
-        render_frame();
+        draw_entity(PLAYER.pos.x, PLAYER.pos.y, 0);
     }
 }
 
-// -----------------------------------------------------------------------------
-// Initialization Functions
-// -----------------------------------------------------------------------------
+// --- Initialization ---
 fn init_player() {
     PLAYER.pos.x = SCREEN_WIDTH / 2;
     PLAYER.pos.y = SCREEN_HEIGHT / 2;
@@ -179,77 +173,48 @@ fn init_entity(index @ X: u16) {
     ENEMIES[X].health = 0;
 }
 
-// -----------------------------------------------------------------------------
-// Game Logic
-// -----------------------------------------------------------------------------
+// --- Game Logic ---
 fn update_game() {
-    if GAME.paused {
-        return;
-    }
-
+    if GAME.paused { return; }
     GAME.frame_count = GAME.frame_count + 1;
-
-    // Read input
     read_input();
 
-    // Update player
-    update_player();
+    // Player movement
+    if BUTTONS & 0x0100 != 0 {
+        PLAYER.velocity_x = PLAYER_SPEED as i8;
+        PLAYER.state = State::Running as u8;
+    } else if BUTTONS & 0x0200 != 0 {
+        PLAYER.velocity_x = -(PLAYER_SPEED as i8);
+    } else {
+        PLAYER.velocity_x = 0;
+    }
+    let new_x: u16 = (PLAYER.pos.x as i16 + PLAYER.velocity_x as i16) as u16;
+    if new_x < SCREEN_WIDTH { PLAYER.pos.x = new_x; }
 
     // Update enemies
     let i @ X = 0;
     loop {
         if i >= MAX_ENTITIES { break; }
-        if ENEMIES[X].state != State::Dead as u8 {
-            update_enemy(i);
-        }
+        if ENEMIES[X].state != State::Dead as u8 { update_enemy(i); }
         i = i + 1;
     }
 
-    // Check collisions
-    check_collisions();
-}
-
-fn update_player() {
-    // Handle movement based on input
-    if BUTTONS & 0x0100 != 0 {  // Right
-        PLAYER.velocity_x = PLAYER_SPEED as i8;
-        PLAYER.state = State::Running as u8;
-    } else if BUTTONS & 0x0200 != 0 {  // Left
-        PLAYER.velocity_x = -(PLAYER_SPEED as i8);
-        PLAYER.state = State::Running as u8;
-    } else {
-        PLAYER.velocity_x = 0;
-        if PLAYER.state == State::Running as u8 {
-            PLAYER.state = State::Idle as u8;
+    // Check collisions (for loop)
+    X = 0;
+    for j in 0..MAX_ENTITIES {
+        if ENEMIES[X].state != State::Dead as u8 {
+            if check_collision(X) { handle_collision(X); }
         }
-    }
-
-    // Apply velocity
-    let new_x: u16 = (PLAYER.pos.x as i16 + PLAYER.velocity_x as i16) as u16;
-
-    // Clamp to screen bounds
-    if new_x < SCREEN_WIDTH {
-        PLAYER.pos.x = new_x;
-    }
-
-    // Handle jumping
-    if BUTTONS_PRESSED & 0x0080 != 0 && PLAYER.state != State::Jumping as u8 {
-        PLAYER.velocity_y = -8;
-        PLAYER.state = State::Jumping as u8;
+        X++;
     }
 }
 
 fn update_enemy(index @ X: u16) {
-    // Simple enemy AI using match
     let state: u8 = ENEMIES[X].state;
     let behavior: u8 = match state {
-        0 => 0,  // Idle - do nothing
-        1 => 1,  // Running - chase player
-        _ => 2   // Default - wander
+        0 => 0, 1 => 1, _ => 2
     };
-
     if behavior == 1 {
-        // Chase player
         if ENEMIES[X].pos.x < PLAYER.pos.x {
             ENEMIES[X].pos.x = ENEMIES[X].pos.x + 1;
         } else if ENEMIES[X].pos.x > PLAYER.pos.x {
@@ -258,352 +223,199 @@ fn update_enemy(index @ X: u16) {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Collision Detection
-// -----------------------------------------------------------------------------
-fn check_collisions() {
-    let i @ X = 0;
-    while i < MAX_ENTITIES {
-        if ENEMIES[X].state != State::Dead as u8 {
-            if check_entity_collision(i) {
-                handle_collision(i);
-            }
-        }
-        i = i + 1;
-    }
-}
-
-fn check_entity_collision(index @ X: u16) -> bool {
+fn check_collision(index @ X: u16) -> bool {
     let dx: i16 = PLAYER.pos.x as i16 - ENEMIES[X].pos.x as i16;
     let dy: i16 = PLAYER.pos.y as i16 - ENEMIES[X].pos.y as i16;
-
-    // Simple bounding box check
     if dx < 0 { dx = -dx; }
     if dy < 0 { dy = -dy; }
-
     return dx < TILE_SIZE as i16 && dy < TILE_SIZE as i16;
 }
 
 fn handle_collision(enemy_index @ X: u16) {
-    // Damage player
     if PLAYER.health > 10 {
         PLAYER.health = PLAYER.health - 10;
     } else {
         PLAYER.health = 0;
         PLAYER.state = State::Dead as u8;
     }
-
-    // Add score
     GAME.player_score = GAME.player_score + 100;
 }
 
-// -----------------------------------------------------------------------------
-// Input Handling
-// -----------------------------------------------------------------------------
 fn read_input() {
-    // Store previous buttons for edge detection
     let prev: u16 = BUTTONS;
-
-    // Read new button state (simplified)
     BUTTONS = 0;
-
-    // Detect newly pressed buttons
     BUTTONS_PRESSED = BUTTONS & ~prev;
 }
 
-// -----------------------------------------------------------------------------
-// Rendering
-// -----------------------------------------------------------------------------
-fn render_frame() {
-    // Draw player
-    draw_entity(PLAYER.pos.x, PLAYER.pos.y, 0);
-
-    // Draw enemies
-    let i @ X = 0;
-    while i < MAX_ENTITIES {
-        if ENEMIES[X].state != State::Dead as u8 {
-            draw_entity(ENEMIES[X].pos.x, ENEMIES[X].pos.y, 1);
-        }
-        i = i + 1;
-    }
-}
-
-fn draw_entity(x: u16, y: u16, tile @ A: u8) {
-    // Simplified sprite drawing
-    let screen_x: u8 = x as u8;
-    let screen_y: u8 = y as u8;
-
-    // Would write to OAM here
-    A = tile;
-    X = screen_x;
-    Y = screen_y;
-}
-
-// -----------------------------------------------------------------------------
-// Utility Functions
-// -----------------------------------------------------------------------------
+// --- Utility ---
 fn wait_vblank() {
-    // Wait for vblank
     loop {
         let status: u8 = HVBJOY;
         if status & 0x80 != 0 { break; }
     }
 }
 
+fn draw_entity(x: u16, y: u16, tile @ A: u8) {
+    let screen_x: u8 = x as u8;
+    A = tile;
+    X = screen_x;
+    Y = y;
+}
+
 #[preserves(X, Y)]
 fn multiply(a @ A: u8, b: u8) -> u8 {
     let result: u8 = 0;
     let count @ X = b;
-
     while count > 0 {
         result = result + A;
         count = count - 1;
     }
-
     return result;
 }
 
-// -----------------------------------------------------------------------------
-// Far Functions (Cross-Bank)
-// -----------------------------------------------------------------------------
+// --- Cross-Bank Functions ---
 #[bank(1)]
-far fn load_level_data() {
-    // Load level data from ROM bank 1
-    A = 0;
-}
+far fn load_level_data() { A = 0; }
 
 #[bank(2)]
 #[mode(databank=inline)]
-far fn play_sound(sound_id @ A: u8) {
-    // Play sound from audio bank
-    X = sound_id;
-}
+far fn play_sound(sound_id @ A: u8) { X = sound_id; }
 
-// -----------------------------------------------------------------------------
-// Interrupt Handlers
-// -----------------------------------------------------------------------------
+// --- Interrupt Handlers ---
 #[interrupt(nmi)]
 fn vblank_handler() {
     FRAME_COUNTER = FRAME_COUNTER + 1;
-
-    // Acknowledge NMI by reading RDNMI
     asm!("LDA $4210");
 }
 
 #[interrupt(irq)]
-fn irq_handler() {
-    // Handle IRQ
-    asm!("RTI");
-}
+fn irq_handler() { asm!("RTI"); }
 
-// -----------------------------------------------------------------------------
-// Inline Assembly
-// -----------------------------------------------------------------------------
-fn enable_interrupts() {
-    asm!("CLI");
-}
-
-fn disable_interrupts() {
-    asm!("SEI");
-}
-
-fn halt() {
-    asm!("WAI");
-}
-
-// -----------------------------------------------------------------------------
-// Mode Control
-// -----------------------------------------------------------------------------
-fn set_16bit_mode() {
-    STATUS.A16 = false;
-    STATUS.XY16 = false;
-}
-
-fn set_8bit_mode() {
-    STATUS.A16 = true;
-    STATUS.XY16 = true;
-}
-
-fn swap_accum_bytes() {
-    xba();
-}
-
-// -----------------------------------------------------------------------------
-// Macros
-// -----------------------------------------------------------------------------
-macro_rules! inc_twice($reg:reg) {
-    $reg++;
-    $reg++;
-}
-
-macro_rules! set_value($dest:reg, $val:expr) {
-    $dest = $val;
-}
-
-macro_rules! repeat_inc($($reg:reg),*) {
-    $($reg++;)*
-}
+// --- Macros ---
+macro_rules! inc_twice($reg:reg) { $reg++; $reg++; }
+macro_rules! set_value($dest:reg, $val:expr) { $dest = $val; }
+macro_rules! repeat_inc($($reg:reg),*) { $($reg++;)* }
 
 fn test_macros() {
-    // Simple macro invocation
     inc_twice!(X);
-
-    // Macro with expression argument
     set_value!(A, 42);
-
-    // Macro with repetition
     repeat_inc!(X, Y);
 }
 
-// -----------------------------------------------------------------------------
-// Compound Assignment and Increment/Decrement
-// -----------------------------------------------------------------------------
-fn test_compound_ops() {
+// --- Hardware Operations (asm, mode, block move, cop) ---
+fn test_hardware_ops() {
+    asm!("CLI");
+    asm!("SEI");
+    asm!("WAI");
+    STATUS.A16 = false;
+    STATUS.A16 = true;
+    xba();
+    A = 255;
+    X = 0x1000;
+    Y = 0x2000;
+    mvn(0x00, 0x7E);
+    cop(0x00);
+}
+
+// --- Operators (compound assign, NOT, shifts, inc/dec) ---
+fn test_operators() {
     let mut value: u8 = 10;
     value += 5;
     value -= 2;
     value &= 0x0F;
     value |= 0x80;
     value ^= 0x01;
-
     let mut shift_val: u16 = 1;
     shift_val <<= 4;
     shift_val >>= 2;
-
-    // Increment/decrement
     let mut counter: u8 = 0;
     counter++;
-    counter++;
     counter--;
-}
-
-// -----------------------------------------------------------------------------
-// Bitwise and Logical NOT
-// -----------------------------------------------------------------------------
-fn test_not_operators() {
-    let mask: u8 = 0x0F;
-    let inverted: u8 = ~mask;  // Bitwise NOT
-
+    let inverted: u8 = ~value;
     let flag: bool = true;
-    let negated: bool = !flag;  // Logical NOT
-
-    // Complex boolean with NOT
-    if !GAME.paused && PLAYER.health > 0 {
-        A = 1;
-    }
+    let negated: bool = !flag;
+    if !GAME.paused && PLAYER.health > 0 { A = 1; }
+    let shifted: u8 = value << 4;
+    let tile_off: u16 = (A as u16) << 4;
 }
 
-// -----------------------------------------------------------------------------
-// Shift Operators
-// -----------------------------------------------------------------------------
-fn test_shifts() {
-    let val: u8 = 1;
-    let shifted_left: u8 = val << 4;   // 0x10
-    let shifted_right: u8 = val >> 1;  // 0x00
-
-    // Shift in expressions
-    let tile_offset: u16 = (A as u16) << 4;
-}
-
-// -----------------------------------------------------------------------------
-// Pointer Operations
-// -----------------------------------------------------------------------------
+// --- Pointer Operations ---
 fn test_pointers() {
-    // Dereference pointer
     let byte: u8 = *DATA_PTR;
     *DATA_PTR = 42;
-
-    // Indexed pointer access
     let indexed: u8 = DATA_PTR[Y];
     DATA_PTR[X] = 0xFF;
-
-    // Pointer to struct
     STRUCT_PTR = &PLAYER;
 }
 
-// -----------------------------------------------------------------------------
-// Function Pointer Dispatch
-// -----------------------------------------------------------------------------
-fn dummy_handler(input @ A: u8) -> u8 {
-    return A;
-}
+// --- Function Pointer Dispatch ---
+fn dummy_handler(input @ A: u8) -> u8 { return A; }
 
-fn init_handlers() {
-    // Initialize array of function pointers
+fn test_dispatch(input @ A: u8) -> u8 {
     STATE_HANDLERS[0] = dummy_handler;
     STATE_HANDLERS[1] = dummy_handler;
-
-    // Initialize struct with function pointer
     HANDLER_TABLE[0].callback = dummy_handler;
     HANDLER_TABLE[0].priority = 10;
-}
-
-fn dispatch_handler(state @ X: u16, input @ A: u8) -> u8 {
-    // Call through function pointer array
     let handler: fn(u8) -> u8 = STATE_HANDLERS[X];
     return handler(input);
 }
 
-// -----------------------------------------------------------------------------
-// Multiple Return Values (via comma-separated syntax)
-// -----------------------------------------------------------------------------
-fn get_position() {
-    // Multiple values returned via registers
+// --- Multiple Return Values ---
+fn test_returns() {
     return PLAYER.pos.x, PLAYER.pos.y;
 }
 
-fn get_registers() {
-    // Return all three registers
-    return A, X, Y;
-}
-
-// -----------------------------------------------------------------------------
-// Complex Array Indexing
-// -----------------------------------------------------------------------------
-fn test_complex_indexing() {
-    let base: u8 = 4;
-    let offset: u8 = 2;
-
-    // Array index with expression
-    let val: u8 = SINE_TABLE[base + offset];
-
-    // Chained access with computed index
+// --- Indexing and Struct Array Fields ---
+fn test_indexing() {
+    let val: u8 = SINE_TABLE[4 + 2];
     ENEMIES[X + 1].health = 50;
-}
-
-// -----------------------------------------------------------------------------
-// Struct with Array Field
-// -----------------------------------------------------------------------------
-#[ram] static mut CURRENT_PALETTE: Palette;
-
-fn init_palette() {
     CURRENT_PALETTE.count = 8;
     CURRENT_PALETTE.colors[0] = 0x00;
-    CURRENT_PALETTE.colors[1] = 0x15;
-
-    // Access array in struct with index
     let color @ A = CURRENT_PALETTE.colors[X];
 }
 
-// -----------------------------------------------------------------------------
-// Block Move Operations
-// -----------------------------------------------------------------------------
-fn test_block_move() {
-    // Setup for block move
-    A = 255;        // count - 1
-    X = 0x1000;     // src_addr
-    Y = 0x2000;     // dest_addr
-    mvn(0x00, 0x7E);  // Move forward
-
-    A = 127;
-    mvp(0x7E, 0x00);  // Move backward
+// --- Block Expressions and If Expressions ---
+fn test_expressions() {
+    let val: u8 = {
+        let temp: u8 = 5;
+        temp + 1
+    };
+    let sign: u8 = if PLAYER.velocity_x > 0 { 1 } else { 0 };
+    let category: u8 = if PLAYER.health > 75 { 3 }
+        else if PLAYER.health > 25 { 1 }
+        else { 0 };
 }
 
-// -----------------------------------------------------------------------------
-// Software Interrupt
-// -----------------------------------------------------------------------------
-fn trigger_cop() {
-    cop(0x00);  // COP with signature byte
+fn trailing_return_fn() -> u8 {
+    let x: u8 = 42;
+    x
+}
+
+// --- Range Patterns and Dense Match ---
+fn test_match_patterns(val @ A: u8) -> u8 {
+    let tier: u8 = match val {
+        0..5 => 0, 5..10 => 1, 10..20 => 2, _ => 3
+    };
+    let priority: u8 = match val {
+        0..=3 => 0, 4..=7 => 1, 8..=15 => 2, _ => 3
+    };
+    // Dense constant match (LookupTable optimization)
+    return match val {
+        0 => 0, 1 => 1, 2 => 1, 3 => 2, 4 => 2, 5 => 2, _ => 0
+    };
+}
+
+// --- String Literals, offset_of ---
+fn test_new_features() {
+    let greeting: *u8 = "Hello SNES!\\0";
+    MSG_PTR = "Game Over\\0";
+    let off: u8 = offset_of(GameState, player_score);
+    A = offset_of(Point, y);
+}
+
+// --- Never Return Type ---
+fn game_loop() -> ! {
+    loop { wait_vblank(); update_game(); }
 }
 """
 
@@ -611,26 +423,15 @@ fn trigger_cop() {
 class TestAcidTest:
     """Acid test for comprehensive language feature coverage."""
 
-    def test_acid_test_parses(self):
-        """Test that the complete acid test program parses successfully."""
+    def test_acid_test_parses_and_structure(self):
+        """Test that the acid test parses and contains expected declarations."""
         program = parse(ACID_TEST_SOURCE)
         assert isinstance(program, ast.Program)
         assert len(program.items) > 0
 
-    def test_acid_test_structure(self):
-        """Test the acid test contains expected declarations."""
-        program = parse(ACID_TEST_SOURCE)
-
-        # Count declaration types
         counts = {
-            'const': 0,
-            'type_alias': 0,
-            'enum': 0,
-            'struct': 0,
-            'static': 0,
-            'function': 0,
-            'stack': 0,
-            'macro': 0,
+            'const': 0, 'type_alias': 0, 'enum': 0, 'struct': 0,
+            'static': 0, 'function': 0, 'stack': 0, 'macro': 0,
         }
 
         for item in program.items:
@@ -651,24 +452,23 @@ class TestAcidTest:
             elif isinstance(item, ast.MacroDecl):
                 counts['macro'] += 1
 
-        # Verify we have multiple of each type
-        assert counts['const'] >= 5, f"Expected at least 5 constants, got {counts['const']}"
+        assert counts['const'] >= 8, f"Expected at least 8 constants, got {counts['const']}"
+        assert counts['type_alias'] >= 5, f"Expected at least 5 type aliases, got {counts['type_alias']}"
         assert counts['enum'] >= 2, f"Expected at least 2 enums, got {counts['enum']}"
         assert counts['struct'] >= 5, f"Expected at least 5 structs, got {counts['struct']}"
-        assert counts['static'] >= 15, f"Expected at least 15 statics, got {counts['static']}"
-        assert counts['function'] >= 25, f"Expected at least 25 functions, got {counts['function']}"
+        assert counts['static'] >= 16, f"Expected at least 16 statics, got {counts['static']}"
+        assert counts['function'] >= 28, f"Expected at least 28 functions, got {counts['function']}"
         assert counts['macro'] >= 3, f"Expected at least 3 macros, got {counts['macro']}"
 
     def test_acid_test_builds_hir(self):
         """Test that the acid test builds HIR successfully."""
         program = parse(ACID_TEST_SOURCE)
-        program = expand_macros(program)  # Expand macros before HIR
+        program = expand_macros(program)
         builder = HIRBuilder()
         hir_program = builder.build_program(program)
 
-        # Verify HIR structure
-        assert len(hir_program.functions) >= 25
-        assert len(hir_program.statics) >= 15
+        assert len(hir_program.functions) >= 28
+        assert len(hir_program.statics) >= 16
         assert len(hir_program.structs) >= 5
         assert len(hir_program.enums) >= 2
 
@@ -686,7 +486,7 @@ class TestAcidTest:
             'hw_attr': False,
             'zeropage_attr': False,
             'ram_attr': False,
-            'immutable_static': False,  # ROM is implicit via immutable statics
+            'immutable_static': False,
             'far_function': False,
             'match_expr': False,
             'register_param': False,
@@ -699,6 +499,14 @@ class TestAcidTest:
             'multiple_return': False,
             'macro_decl': False,
             'macro_invocation': False,
+            'const_fn': False,
+            'block_expr': False,
+            'if_expr': False,
+            'range_pattern': False,
+            'string_literal_ptr': False,
+            'never_return_type': False,
+            'for_loop': False,
+            'type_alias': False,
         }
 
         for item in program.items:
@@ -706,6 +514,8 @@ class TestAcidTest:
                 features_found['bank_directive'] = True
             elif isinstance(item, ast.SnesRomDirective):
                 features_found['snesrom_directive'] = True
+            elif isinstance(item, ast.TypeAlias):
+                features_found['type_alias'] = True
             elif isinstance(item, ast.FunctionDecl):
                 for attr in item.attributes:
                     if attr.name == 'entry':
@@ -719,13 +529,15 @@ class TestAcidTest:
 
                 if item.is_far:
                     features_found['far_function'] = True
+                if item.is_const:
+                    features_found['const_fn'] = True
+                if isinstance(item.return_type, ast.NeverType):
+                    features_found['never_return_type'] = True
 
-                # Check for register parameters
                 for param in item.params:
                     if param.binding is not None:
                         features_found['register_param'] = True
 
-                # Check function body for features
                 self._check_statements(item.body.statements, features_found)
 
             elif isinstance(item, ast.StaticDecl):
@@ -736,12 +548,8 @@ class TestAcidTest:
                         features_found['zeropage_attr'] = True
                     elif attr.name == 'ram':
                         features_found['ram_attr'] = True
-
-                # Check for immutable static (ROM)
                 if not item.is_mut:
                     features_found['immutable_static'] = True
-
-                # Check for array of function pointers
                 if isinstance(item.var_type, ast.ArrayType):
                     if isinstance(item.var_type.element_type, ast.FunctionType):
                         features_found['fn_ptr_array'] = True
@@ -749,7 +557,6 @@ class TestAcidTest:
             elif isinstance(item, ast.MacroDecl):
                 features_found['macro_decl'] = True
 
-        # Verify all features found
         for feature, found in features_found.items():
             assert found, f"Feature '{feature}' not found in acid test"
 
@@ -759,14 +566,12 @@ class TestAcidTest:
             if isinstance(stmt, ast.MacroInvocationStmtInner):
                 features_found['macro_invocation'] = True
             elif isinstance(stmt, ast.ExprStmt) and isinstance(stmt.expr, ast.MacroInvocation):
-                # Macro invocations are now parsed as ExprStmt(MacroInvocation(...))
                 features_found['macro_invocation'] = True
             elif isinstance(stmt, ast.LetStmt):
                 if stmt.binding is not None:
                     features_found['register_alias'] = True
                 if isinstance(stmt.initializer, ast.MatchExpression):
                     features_found['match_expr'] = True
-                # Check initializer for expressions
                 if stmt.initializer:
                     self._check_expression(stmt.initializer, features_found)
             elif isinstance(stmt, ast.ExprStmt):
@@ -786,6 +591,9 @@ class TestAcidTest:
                 self._check_statements(stmt.body.statements, features_found)
             elif isinstance(stmt, ast.LoopStmt):
                 self._check_statements(stmt.body.statements, features_found)
+            elif isinstance(stmt, ast.ForStmt):
+                features_found['for_loop'] = True
+                self._check_statements(stmt.body.statements, features_found)
 
     def _check_expression(self, expr, features_found):
         """Check expression for features."""
@@ -803,3 +611,18 @@ class TestAcidTest:
             self._check_expression(expr.right, features_found)
         elif isinstance(expr, ast.Assignment):
             self._check_expression(expr.value, features_found)
+        elif isinstance(expr, ast.BlockExpression):
+            features_found['block_expr'] = True
+        elif isinstance(expr, ast.IfExpression):
+            features_found['if_expr'] = True
+        elif isinstance(expr, ast.StringLiteral):
+            features_found['string_literal_ptr'] = True
+        elif isinstance(expr, ast.MatchExpression):
+            features_found['match_expr'] = True
+            for arm in expr.arms:
+                if isinstance(arm.pattern, ast.RangePattern):
+                    features_found['range_pattern'] = True
+                elif isinstance(arm.pattern, ast.OrPattern):
+                    for sub in arm.pattern.patterns:
+                        if isinstance(sub, ast.RangePattern):
+                            features_found['range_pattern'] = True
