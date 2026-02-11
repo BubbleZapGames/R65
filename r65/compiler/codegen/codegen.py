@@ -5,11 +5,8 @@ Main code generation orchestrator that transforms a complete MIR program
 into WLA-DX assembly output.
 """
 
-from typing import Optional, Dict, List, TYPE_CHECKING
+from typing import Optional, Dict, List
 from r65.compiler.mir import MIRProgram, MIRFunction
-
-if TYPE_CHECKING:
-    from r65.compiler.analysis.scratch_analysis import ScratchUsageAnalyzer
 from r65.compiler.codegen.emitter import AssemblyEmitter
 from r65.compiler.codegen.memory_alloc import MemoryAllocator
 from r65.compiler.codegen.symbol_gen import SymbolDefinitionGenerator
@@ -164,9 +161,6 @@ class ProgramCodeGenerator:
         # Create scratch pool once for all functions
         scratch_pool = self.func_gen.func_gen._create_scratch_pool(mir_program)
 
-        # Create scratch usage analyzer for call-graph-aware allocation
-        scratch_analyzer = self._create_scratch_analyzer(mir_program, scratch_pool)
-
         # Generate code for each bank
         for bank_num in sorted(functions_by_bank.keys()):
             bank_functions = functions_by_bank[bank_num]
@@ -180,8 +174,7 @@ class ProgramCodeGenerator:
             for mir_func in bank_functions:
                 self.func_gen.func_gen.generate_function(
                     mir_func,
-                    scratch_pool=scratch_pool,
-                    scratch_analyzer=scratch_analyzer
+                    scratch_pool=scratch_pool
                 )
 
         # Stack depth analysis (post-codegen, uses codegen_frame_size/codegen_prologue_bytes)
@@ -317,28 +310,6 @@ class ProgramCodeGenerator:
             by_bank[bank_num].append(func)
 
         return by_bank
-
-    def _create_scratch_analyzer(self, mir_program: MIRProgram, scratch_pool) -> 'ScratchUsageAnalyzer':
-        """
-        Create scratch usage analyzer for call-graph-aware allocation.
-
-        Args:
-            mir_program: MIR program
-            scratch_pool: Scratch register pool
-
-        Returns:
-            ScratchUsageAnalyzer instance
-        """
-        from r65.compiler.analysis.scratch_analysis import ScratchUsageAnalyzer
-
-        # Collect scratch addresses from pool
-        scratch_addresses = {s.address for s in scratch_pool.scratches}
-
-        # Create and run analyzer
-        analyzer = ScratchUsageAnalyzer(mir_program, scratch_addresses)
-        analyzer.analyze()
-
-        return analyzer
 
     def _emit_interrupt_vectors(self, mir_program: MIRProgram):
         """

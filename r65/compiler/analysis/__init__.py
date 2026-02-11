@@ -11,10 +11,6 @@ from r65.compiler.analysis.call_graph import (
     RecursionChecker,
     RecursionError
 )
-from r65.compiler.analysis.scratch_analysis import (
-    ScratchUsageAnalyzer,
-    ScratchUsageInfo
-)
 from r65.compiler.analysis.stack_depth import StackDepthAnalyzer
 
 __all__ = [
@@ -22,7 +18,5 @@ __all__ = [
     'CallGraphAnalyzer',
     'RecursionChecker',
     'RecursionError',
-    'ScratchUsageAnalyzer',
-    'ScratchUsageInfo',
     'StackDepthAnalyzer'
 ]

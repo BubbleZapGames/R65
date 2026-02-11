@@ -6,7 +6,8 @@ Maps MIR virtual registers to:
 2. Scratch registers (designated zero-page locations)
 3. Stack slots (when scratch pool exhausted)
 
-Includes call-graph-aware scratch allocation to avoid conflicts with callees.
+Variables live across calls always spill to stack (scratches are not
+callee-saved, so any callee could clobber them).
 """
 
 from typing import Any, Dict, List, Optional, Set, Tuple, TYPE_CHECKING
@@ -18,7 +19,6 @@ from r65.compiler.codegen.type_utils import get_type_size
 from r65.compiler.errors import MemoryAllocationError
 
 if TYPE_CHECKING:
-    from r65.compiler.analysis.scratch_analysis import ScratchUsageAnalyzer
     from r65.compiler.mir.liveness import InstructionLivenessAnalyzer
 
 
@@ -291,7 +291,6 @@ class RegisterAllocator:
                  scratch_pool: Optional[ScratchRegisterPool] = None,
                  mir_func: Optional[MIRFunction] = None,
                  prologue_stack_bytes: int = 0,
-                 scratch_analyzer: Optional['ScratchUsageAnalyzer'] = None,
                  instr_liveness: Optional['InstructionLivenessAnalyzer'] = None):
         """
         Initialize register allocator.
@@ -300,13 +299,11 @@ class RegisterAllocator:
             scratch_pool: Pool of scratch registers (or None for empty pool)
             mir_func: MIR function for liveness analysis (enables slot reuse)
             prologue_stack_bytes: Bytes pushed by prologue (affects stack param offsets)
-            scratch_analyzer: Call-graph scratch usage analyzer (for call-aware allocation)
             instr_liveness: Instruction-level liveness analyzer (for precise liveness)
         """
         self.scratch_pool = scratch_pool or ScratchRegisterPool()
         self.mir_func = mir_func
         self.prologue_stack_bytes = prologue_stack_bytes
-        self.scratch_analyzer = scratch_analyzer
         self.instr_liveness = instr_liveness
         self.slot_allocator: Optional[StackSlotAllocator] = None
         self.slot_allocation: Optional[SlotAllocation] = None
@@ -441,16 +438,14 @@ class RegisterAllocator:
 
         # Determine if this vreg lives across any call
         live_across_call = False
-        live_across_indirect_call = False
         if self.instr_liveness:
             live_across_call = self.instr_liveness.is_live_across_any_call(vreg)
-            if live_across_call:
-                live_across_indirect_call = self.instr_liveness.is_live_across_indirect_call(vreg)
 
-        # Try scratch register (call-graph aware)
-        scratch_loc = self._try_scratch(vreg, live_across_call, live_across_indirect_call)
-        if scratch_loc:
-            return scratch_loc
+        # Try scratch register (not allowed if live across a call)
+        if not live_across_call:
+            scratch_loc = self._try_scratch(vreg)
+            if scratch_loc:
+                return scratch_loc
 
         # Spill to stack using slot allocation if available
         if self.slot_allocation:
@@ -481,43 +476,25 @@ class RegisterAllocator:
         self.allocations[vreg.id] = location
         return location
 
-    def _try_scratch(self, vreg: VirtualRegister, live_across_call: bool,
-                     live_across_indirect_call: bool = False) -> Optional[PhysicalLocation]:
+    def _try_scratch(self, vreg: VirtualRegister) -> Optional[PhysicalLocation]:
         """
         Try to allocate a scratch register for a vreg.
 
-        If live_across_call is True, only use scratches that callees don't use.
-        If live_across_indirect_call is True, also avoid scratches used by any
-        function whose address is taken (conservative for function pointers).
+        Only called for vregs that are NOT live across any call (scratches
+        are not callee-saved so any call could clobber them).
 
         Args:
             vreg: Virtual register to allocate
-            live_across_call: True if vreg lives across a call
-            live_across_indirect_call: True if vreg lives across an indirect call
 
         Returns:
             PhysicalLocation if scratch allocated, None otherwise
         """
         vreg_size = self._get_vreg_size(vreg)
 
-        # Get available scratches based on call graph
-        available_addrs: Optional[Set[int]] = None
-        if live_across_call and self.scratch_analyzer and self.mir_func:
-            available_addrs = self.scratch_analyzer.get_available_scratches(
-                self.mir_func.name,
-                live_across_call=True,
-                live_across_indirect_call=live_across_indirect_call
-            )
-
-        # Try to find a compatible scratch
         for scratch in self.scratch_pool.scratches:
             if not scratch.is_free:
                 continue
             if scratch.size < vreg_size:
-                continue
-
-            # Check call graph constraint
-            if available_addrs is not None and scratch.address not in available_addrs:
                 continue
 
             # Allocate this scratch
@@ -530,12 +507,6 @@ class RegisterAllocator:
                 size=vreg_size
             )
             self.allocations[vreg.id] = location
-
-            # Register usage with scratch analyzer for propagation
-            if self.scratch_analyzer and self.mir_func:
-                self.scratch_analyzer.register_scratch_usage(
-                    self.mir_func.name, scratch.address)
-
             return location
 
         return None

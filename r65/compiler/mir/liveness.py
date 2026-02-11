@@ -678,26 +678,6 @@ class InstructionLivenessAnalyzer:
         calls = self.get_calls_vreg_is_live_across(vreg)
         return len(calls) > 0
 
-    def is_live_across_indirect_call(self, vreg: VirtualRegister) -> bool:
-        """
-        Check if a virtual register is live across any indirect Call.
-
-        An indirect call is a call through a function pointer, where
-        we don't know statically which function will be called.
-
-        Args:
-            vreg: Virtual register to check
-
-        Returns:
-            True if vreg is live across at least one indirect call
-        """
-        calls = self.get_calls_vreg_is_live_across(vreg)
-        for call in calls:
-            # Indirect call: function is a VirtualRegister, not a string
-            if not isinstance(call.function, str):
-                return True
-        return False
-
     def get_calls_vreg_is_live_across(self, vreg: VirtualRegister) -> List[Call]:
         """
         Get all Call instructions where a vreg is live across.
