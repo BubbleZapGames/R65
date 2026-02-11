@@ -22,7 +22,6 @@ i8   // Signed 8-bit    (-128 to 127)
 u16  // Unsigned 16-bit (0 to 65535)
 i16  // Signed 16-bit   (-32768 to 32767)
 bool // Boolean (0 or not 0, stored as u8)
-void // No value (used internally for functions with no return)
 ```
 
 **Size and Alignment**:
