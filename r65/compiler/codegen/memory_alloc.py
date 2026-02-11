@@ -57,6 +57,9 @@ class MemoryAllocator:
         # Allocations: symbol name → AllocationInfo
         self.allocations: Dict[str, AllocationInfo] = {}
 
+        # Warnings collected during allocation
+        self.warnings: list[str] = []
+
         # Address usage tracking (for conflict detection)
         # Single tracking for all of low RAM ($0000-$1FFF)
         self.lowram_used: Set[int] = set()  # Individual bytes
@@ -136,6 +139,16 @@ class MemoryAllocator:
                     f"Zero-page address ${address:02X} for '{symbol.name}' "
                     f"out of range ($00-$FF)"
                 )
+
+            # Warn if explicit address overlaps with stack region
+            if self.stack_lower is not None:
+                alloc_end = address + size - 1
+                if address <= self.stack_upper and alloc_end >= self.stack_lower:
+                    self.warnings.append(
+                        f"W006: Zero-page variable '{symbol.name}' at "
+                        f"${address:04X}-${alloc_end:04X} overlaps with "
+                        f"stack region ${self.stack_lower:04X}-${self.stack_upper:04X}"
+                    )
         else:
             # Auto-allocate - find next available address that fits
             address = self._find_zeropage_fit(size)
@@ -251,6 +264,16 @@ class MemoryAllocator:
                     f"Low RAM address ${address:04X} for '{symbol.name}' "
                     f"out of range (${self.lowram_start:04X}-${self.lowram_end:04X})"
                 )
+
+            # Warn if explicit address overlaps with stack region
+            if self.stack_lower is not None:
+                alloc_end = address + size - 1
+                if address <= self.stack_upper and alloc_end >= self.stack_lower:
+                    self.warnings.append(
+                        f"W006: Low RAM variable '{symbol.name}' at "
+                        f"${address:04X}-${alloc_end:04X} overlaps with "
+                        f"stack region ${self.stack_lower:04X}-${self.stack_upper:04X}"
+                    )
         else:
             # Auto-allocate - find next available address (starts at $0100)
             address = self._find_lowram_fit(size)

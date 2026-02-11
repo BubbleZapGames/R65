@@ -148,6 +148,11 @@ class ProgramCodeGenerator:
 
         self.allocator.allocate_all(mir_program.statics)
 
+        # Collect memory allocation warnings
+        for w in self.allocator.warnings:
+            print(w)
+        self.warnings.extend(self.allocator.warnings)
+
         # Phase 2: Symbol definitions
         symbol_gen = SymbolDefinitionGenerator(self.emitter, self.allocator)
         symbol_gen.emit_all_definitions(mir_program.constants)
