@@ -383,6 +383,104 @@ class TestForLoops:
         assert result.success, f"Failures: {result.failures}"
 
 
+class TestInclusiveForLoops:
+    """Test inclusive for loop (..) compilation and runtime."""
+
+    @pytest.fixture
+    def e2e(self):
+        return E2ETest()
+
+    def test_inclusive_for_loop_count(self, e2e):
+        """Test inclusive for loop: for i in 0..=3 iterates 4 times."""
+        result = e2e.run('''
+            #[zeropage(0x10)]
+            static mut COUNTER: u8;
+
+            #[entry]
+            fn main() {
+                COUNTER = 0;
+                for i in 0..=3 {
+                    COUNTER = COUNTER + 1;
+                }
+            }
+        ''', ExpectedState(memory={
+            0x7E0010: 4,
+        }))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_inclusive_for_loop_sum(self, e2e):
+        """Test inclusive for loop sum: 0+1+2+3+4+5 = 15."""
+        result = e2e.run('''
+            #[zeropage(0x10)]
+            static mut SUM: u8;
+
+            #[entry]
+            fn main() {
+                SUM = 0;
+                for i in 0..=5 {
+                    SUM = SUM + i as u8;
+                }
+            }
+        ''', ExpectedState(memory={
+            0x7E0010: 15,
+        }))
+        assert result.success, f"Failures: {result.failures}"
+
+
+class TestLoopExpression:
+    """Test loop expression with break values."""
+
+    @pytest.fixture
+    def e2e(self):
+        return E2ETest()
+
+    def test_loop_break_value(self, e2e):
+        """Test loop expression: let x = loop { break 42; };"""
+        result = e2e.run('''
+            #[zeropage(0x10)]
+            static mut RESULT: u8;
+
+            #[entry]
+            fn main() {
+                let x: u8 = loop {
+                    break 42;
+                };
+                RESULT = x;
+            }
+        ''', ExpectedState(memory={
+            0x7E0010: 42,
+        }))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_loop_conditional_break(self, e2e):
+        """Test loop expression with conditional break values."""
+        result = e2e.run('''
+            #[zeropage(0x10)]
+            static mut RESULT: u8;
+            #[zeropage(0x11)]
+            static mut COUNTER: u8;
+
+            #[entry]
+            fn main() {
+                COUNTER = 0;
+                let x: u8 = loop {
+                    COUNTER = COUNTER + 1;
+                    if COUNTER == 3 {
+                        break 30;
+                    }
+                    if COUNTER == 5 {
+                        break 50;
+                    }
+                };
+                RESULT = x;
+            }
+        ''', ExpectedState(memory={
+            0x7E0010: 30,
+            0x7E0011: 3,
+        }))
+        assert result.success, f"Failures: {result.failures}"
+
+
 class TestShortCircuit:
     """Test short-circuit evaluation of && and ||."""
 

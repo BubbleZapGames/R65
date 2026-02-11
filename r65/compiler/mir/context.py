@@ -6,7 +6,7 @@ modular lowerer classes.
 """
 
 from dataclasses import dataclass, field
-from typing import Optional, Dict, List, Tuple, TYPE_CHECKING
+from typing import Any, Optional, Dict, List, Tuple, TYPE_CHECKING
 
 from r65.compiler.mir.nodes import (
     MIRFunction, BasicBlock, MIRInstruction,
@@ -59,8 +59,8 @@ class LoweringContext:
     # Control Flow State
     # ========================================================================
 
-    # Loop stack for break/continue: (continue_target_block_id, break_target_block_id)
-    loop_stack: List[Tuple[int, int]] = field(default_factory=list)
+    # Loop stack for break/continue: (continue_target, break_target, label, result_vreg_or_None)
+    loop_stack: List[Tuple[int, int, Optional[str], Any]] = field(default_factory=list)
 
     # ========================================================================
     # Program State
@@ -85,16 +85,16 @@ class LoweringContext:
         """Add a hardware register alias for a symbol."""
         self.current_function.alias_tracker.add_alias(symbol, hw_reg)
 
-    def push_loop(self, continue_target: int, break_target: int):
+    def push_loop(self, continue_target: int, break_target: int, label: Optional[str] = None, result_vreg=None):
         """Push loop targets onto the stack."""
-        self.loop_stack.append((continue_target, break_target))
+        self.loop_stack.append((continue_target, break_target, label, result_vreg))
 
-    def pop_loop(self) -> Tuple[int, int]:
+    def pop_loop(self):
         """Pop loop targets from the stack."""
         return self.loop_stack.pop()
 
-    def get_loop_targets(self) -> Tuple[int, int]:
-        """Get current loop's (continue_target, break_target)."""
+    def get_loop_targets(self):
+        """Get current loop's (continue_target, break_target, label, result_vreg)."""
         if not self.loop_stack:
             raise RuntimeError("No active loop for break/continue")
         return self.loop_stack[-1]

@@ -472,8 +472,9 @@ class ReturnStmt(Statement):
 
 @dataclass
 class BreakStmt(Statement):
-    """Break statement with optional label."""
+    """Break statement with optional label and optional value (for loop expressions)."""
     label: Optional[str] = None  # Target label for labeled break
+    value: Optional[Expression] = None  # Break value for loop expressions
 
 
 @dataclass
@@ -507,12 +508,13 @@ class WhileStmt(Statement):
 
 @dataclass
 class ForStmt(Statement):
-    """For loop statement: for i in start..end { body }"""
+    """For loop statement: for i in start..end { body } or start..=end (inclusive)"""
     variable: str           # Loop variable name
     start: Expression       # Start expression (inclusive)
-    end: Expression         # End expression (exclusive)
+    end: Expression         # End expression (exclusive for .., inclusive for ..=)
     body: Block
     label: Optional[str] = None  # Loop label for break/continue
+    inclusive: bool = False  # True for ..=, False for ..
 
 
 @dataclass
@@ -776,6 +778,13 @@ class IfExpression(Expression):
     condition: Expression
     then_block: BlockExpression
     else_block: Union[BlockExpression, 'IfExpression']
+
+
+@dataclass
+class LoopExpression(Expression):
+    """Loop expression: loop { ... break val; ... } - produces a value via break."""
+    body: Block
+    label: Optional[str] = None
 
 
 @dataclass

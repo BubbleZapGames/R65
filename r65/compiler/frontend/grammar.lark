@@ -245,6 +245,7 @@ expr_stmt: expr ";"
 return_stmt: RETURN (return_tuple | expr)?  ";"
 return_tuple: expr ("," expr)+
 break_stmt: BREAK LABEL_REF? ";"
+          | BREAK LABEL_REF? expr ";"
 continue_stmt: CONTINUE LABEL_REF? ";"
 increment_stmt: lvalue PLUSPLUS ";"
 decrement_stmt: lvalue MINUSMINUS ";"
@@ -254,7 +255,7 @@ else_clause: if_stmt | block
 
 loop_stmt: LABEL_DEF? LOOP block
 while_stmt: LABEL_DEF? WHILE expr block
-for_stmt: LABEL_DEF? FOR IDENT IN expr DOTDOT expr block
+for_stmt: LABEL_DEF? FOR IDENT IN expr (DOTDOT | DOTDOTEQ) expr block
 
 asm_stmt: ASM "!" "(" STRING ("," asm_arg)* ")" ";"
 asm_arg: STRING | asm_named_arg
@@ -393,11 +394,16 @@ struct_literal_expr: IDENT "{" struct_field_init ("," struct_field_init)* ","? "
 struct_field_init: IDENT ":" initializer_expr
 
 // Initializer expression - used after = in let/static declarations
-// Allows struct literals which would be ambiguous in general expression context
+// Allows struct literals and loop expressions which would be ambiguous in general expression context
 // Uses ? to inline - the parser will return the struct_literal_expr or expr directly
 ?initializer_expr: struct_literal_expr
                  | initializer_array_literal
+                 | loop_expr
                  | expr
+
+// Loop expression: loop { ... break value; ... } - produces a value via break
+// Only allowed in initializer context to avoid grammar ambiguity with loop_stmt
+loop_expr: LABEL_DEF? LOOP block
 
 // Array literal in initializer context - allows struct literals as elements
 initializer_array_literal: "[" initializer_expr ("," initializer_expr)* ","? "]"

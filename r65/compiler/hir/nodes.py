@@ -341,8 +341,9 @@ class HIRReturnStmt(HIRStatement):
 
 @dataclass
 class HIRBreakStmt(HIRStatement):
-    """Break statement with optional label target."""
+    """Break statement with optional label target and optional value (for loop expressions)."""
     label: Optional[str] = None  # Target label for labeled break
+    value: Optional[HIRExpression] = None  # Break value for loop expressions
 
 
 @dataclass
@@ -673,6 +674,13 @@ class HIRIfExpression(HIRExpression):
     condition: Optional[HIRExpression] = None
     then_block: Optional['HIRBlockExpression'] = None
     else_block: Optional[Union['HIRBlockExpression', 'HIRIfExpression']] = None
+
+
+@dataclass
+class HIRLoopExpression(HIRExpression):
+    """Loop expression: loop { ... break val; ... } - produces a value via break."""
+    body: Optional[HIRBlock] = None
+    label: Optional[str] = None
 
 
 @dataclass

@@ -1343,7 +1343,8 @@ class HIRBuilder:
             return hir.HIRReturnStmt(values=values, source_loc=stmt.source_loc)
 
         elif isinstance(stmt, ast.BreakStmt):
-            return hir.HIRBreakStmt(label=stmt.label, source_loc=stmt.source_loc)
+            value = self._build_expression(stmt.value) if stmt.value else None
+            return hir.HIRBreakStmt(label=stmt.label, value=value, source_loc=stmt.source_loc)
 
         elif isinstance(stmt, ast.ContinueStmt):
             return hir.HIRContinueStmt(label=stmt.label, source_loc=stmt.source_loc)
@@ -1573,6 +1574,16 @@ class HIRBuilder:
             source_loc=loop.source_loc
         )
 
+    def _build_loop_expression(self, loop: ast.LoopExpression) -> hir.HIRLoopExpression:
+        """Build HIR loop expression from AST."""
+        body = self._build_block(loop.body)
+
+        return hir.HIRLoopExpression(
+            body=body,
+            label=loop.label,
+            source_loc=loop.source_loc
+        )
+
     def _build_for(self, for_stmt: ast.ForStmt) -> hir.HIRBlock:
         """Desugar for loop to while loop.
 
@@ -1613,7 +1624,7 @@ class HIRBuilder:
 
         # Determine loop variable type from range bounds
         # Try to const-evaluate both bounds to pick appropriate type
-        loop_var_type = self._infer_for_loop_type(for_stmt.start, for_stmt.end, src_loc)
+        loop_var_type = self._infer_for_loop_type(for_stmt.start, for_stmt.end, src_loc, for_stmt.inclusive)
 
         # Create symbol for loop variable (mutable, type inferred from range)
         loop_var_symbol = Symbol(
@@ -1638,14 +1649,14 @@ class HIRBuilder:
             source_loc=src_loc
         )
 
-        # Create condition: i < end
+        # Create condition: i < end (exclusive) or i <= end (inclusive)
         loop_var_ref = hir.HIRIdentifier(
             name=for_stmt.variable,
             symbol=loop_var_symbol,
             source_loc=src_loc
         )
         condition = hir.HIRBinaryOp(
-            op='<',
+            op='<=' if for_stmt.inclusive else '<',
             left=loop_var_ref,
             right=end_expr,
             source_loc=src_loc
@@ -1705,7 +1716,7 @@ class HIRBuilder:
             source_loc=src_loc
         )
 
-    def _infer_for_loop_type(self, start: ast.Expression, end: ast.Expression, src_loc) -> TypeInfo:
+    def _infer_for_loop_type(self, start: ast.Expression, end: ast.Expression, src_loc, inclusive: bool = False) -> TypeInfo:
         """Infer the appropriate type for a for loop variable based on range bounds.
 
         Examines both start and end values to determine the smallest type that
@@ -1714,8 +1725,9 @@ class HIRBuilder:
 
         Args:
             start: Start expression of the range
-            end: End expression of the range (exclusive)
+            end: End expression of the range (exclusive for .., inclusive for ..=)
             src_loc: Source location for error reporting
+            inclusive: True for ..= ranges, False for .. ranges
 
         Returns:
             TypeInfo for the loop variable (u8, i8, u16, or i16)
@@ -1729,8 +1741,10 @@ class HIRBuilder:
             return BasicTypeInfo('u16')
 
         # Determine the range of values
-        min_val = min(start_val, end_val - 1) if end_val > start_val else start_val
-        max_val = max(start_val, end_val - 1) if end_val > start_val else start_val
+        # For exclusive (..), max value is end_val - 1; for inclusive (..=), it's end_val
+        effective_end = end_val if inclusive else end_val - 1
+        min_val = min(start_val, effective_end) if effective_end >= start_val else start_val
+        max_val = max(start_val, effective_end) if effective_end >= start_val else start_val
 
         # Check if values fit in each type (prefer unsigned, smallest first)
         if min_val >= 0:

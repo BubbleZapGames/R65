@@ -13,10 +13,10 @@ from r65.compiler.hir import (
     HIRStructFieldInit, HIRStructLiteralExpr,
     HIRTypeCast, HIRFunctionCall,
     HIRMethodCall, HIRArrayIndex, HIRFieldAccess, HIRDereference, HIRAddressOf, HIRAssignment, HIRMultiAssignment,
-    HIRLetStmt, HIRTupleLetStmt, HIRExprStmt, HIRReturnStmt, HIRIfStmt, HIRWhileStmt, HIRBlock,
+    HIRLetStmt, HIRTupleLetStmt, HIRExprStmt, HIRReturnStmt, HIRIfStmt, HIRWhileStmt, HIRBreakStmt, HIRBlock,
     HIRStaticDecl, HIRConstDecl, HIRTypeAlias,
     HIRMatchExpression, HIRPattern, HIRLiteralPattern, HIREnumPattern, HIRWildcardPattern, HIRIdentifierPattern, HIROrPattern,
-    HIRBlockExpression, HIRIfExpression,
+    HIRBlockExpression, HIRIfExpression, HIRLoopExpression,
     BasicTypeInfo, TypeInfo, SymbolKind, NeverTypeInfo, TupleTypeInfo,
     RegisterLetBinding, ArrayTypeInfo, StructTypeInfo, EnumTypeInfo,
     HIRError,
@@ -751,6 +751,10 @@ class TypeChecker:
                 else:
                     self.check_block(stmt.else_block)
 
+        elif isinstance(stmt, HIRBreakStmt):
+            if stmt.value is not None:
+                self.check_expression(stmt.value)
+
         elif isinstance(stmt, HIRWhileStmt):
             if stmt.condition:
                 cond_type = self.check_expression(stmt.condition)
@@ -1090,6 +1094,9 @@ class TypeChecker:
 
         elif isinstance(expr, HIRIfExpression):
             return self.check_if_expression(expr, context_type)
+
+        elif isinstance(expr, HIRLoopExpression):
+            return self.check_loop_expression(expr, context_type)
 
         else:
             raise TypeCheckError(
@@ -1613,6 +1620,73 @@ class TypeChecker:
 
         expr.expr_type = then_type
         return then_type
+
+    def check_loop_expression(self, expr: HIRLoopExpression, context_type: Optional[TypeInfo] = None) -> TypeInfo:
+        """Type check a loop expression.
+
+        Finds all break statements in the loop body (not nested loops),
+        verifies they all have values, and that all value types are compatible.
+        """
+        # Check all statements in the body
+        for stmt in expr.body.statements:
+            self.check_statement(stmt)
+
+        # Collect break value types from direct break statements
+        break_types = []
+        self._collect_break_types(expr.body, break_types, expr.label)
+
+        if not break_types:
+            raise TypeCheckError(
+                "loop expression must have at least one break with a value",
+                source_loc=expr.source_loc
+            )
+
+        # All break types must be compatible
+        result_type = break_types[0]
+        for i, bt in enumerate(break_types[1:], 1):
+            if not TypeUtils.types_compatible(result_type, bt):
+                raise TypeCheckError(
+                    f"loop expression break values have different types: "
+                    f"{result_type} vs {bt}",
+                    source_loc=expr.source_loc,
+                    hint="all break values in a loop expression must produce the same type"
+                )
+
+        expr.expr_type = result_type
+        return result_type
+
+    def _collect_break_types(self, block: HIRBlock, break_types: list, loop_label: Optional[str]):
+        """Collect types of break values from a block, skipping nested loops."""
+        for stmt in block.statements:
+            if isinstance(stmt, HIRBreakStmt):
+                # Only collect breaks targeting this loop (no label or matching label)
+                if stmt.label is None or stmt.label == loop_label:
+                    if stmt.value is not None:
+                        break_types.append(stmt.value.expr_type)
+                    else:
+                        raise TypeCheckError(
+                            "break in loop expression must have a value",
+                            source_loc=stmt.source_loc
+                        )
+            elif isinstance(stmt, HIRIfStmt):
+                self._collect_break_types(stmt.then_block, break_types, loop_label)
+                if stmt.else_block:
+                    if isinstance(stmt.else_block, HIRIfStmt):
+                        self._collect_break_types_from_if(stmt.else_block, break_types, loop_label)
+                    else:
+                        self._collect_break_types(stmt.else_block, break_types, loop_label)
+            elif isinstance(stmt, HIRBlock):
+                self._collect_break_types(stmt, break_types, loop_label)
+            # Skip nested loops (HIRWhileStmt) - their breaks belong to them
+
+    def _collect_break_types_from_if(self, stmt: HIRIfStmt, break_types: list, loop_label: Optional[str]):
+        """Collect break types from an if statement chain."""
+        self._collect_break_types(stmt.then_block, break_types, loop_label)
+        if stmt.else_block:
+            if isinstance(stmt.else_block, HIRIfStmt):
+                self._collect_break_types_from_if(stmt.else_block, break_types, loop_label)
+            else:
+                self._collect_break_types(stmt.else_block, break_types, loop_label)
 
     def _check_tuple_register_order(self, expr: HIRMultiAssignment):
         """

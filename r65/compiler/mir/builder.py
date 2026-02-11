@@ -15,7 +15,7 @@ from r65.compiler.hir import (
     HIRFunctionCall, HIRMethodCall, HIRArrayIndex, HIRFieldAccess, HIRDereference, HIRAddressOf, HIRMultiAssignment,
     HIRArrayFillExpr, HIRArrayLiteralExpr, HIRStringLiteral, HIRStructLiteralExpr,
     HIRMatchExpression, HIRPattern, HIRLiteralPattern, HIREnumPattern, HIRWildcardPattern, HIRIdentifierPattern, HIROrPattern,
-    HIRBlockExpression, HIRIfExpression,
+    HIRBlockExpression, HIRIfExpression, HIRLoopExpression,
     RegisterLetBinding, VariableLetBinding,
     RegisterBinding, VariableBinding,
     SymbolKind,
@@ -787,6 +787,9 @@ class MIRBuilder:
         elif isinstance(expr, HIRIfExpression):
             return self._lower_if_expression(expr)
 
+        elif isinstance(expr, HIRLoopExpression):
+            return self._lower_loop_expression(expr)
+
         elif isinstance(expr, HIRStringLiteral):
             return self._lower_inline_string_literal(expr)
 
@@ -917,6 +920,46 @@ class MIRBuilder:
 
         # Continue at merge block
         self.current_block = merge_block
+
+        return result_vreg
+
+    def _lower_loop_expression(self, expr: HIRLoopExpression) -> VirtualRegister:
+        """
+        Lower loop expression to MIR.
+
+        Similar to lower_while_statement but allocates a result vreg
+        that break statements write to before jumping to exit.
+        """
+        # Allocate result register
+        result_vreg = self.current_function.vreg_allocator.alloc(expr.expr_type, "loop_result")
+
+        # Create header and exit blocks (same as infinite loop)
+        header_block = self.cfg_builder.new_block()
+        body_block = self.cfg_builder.new_block()
+        exit_block = self.cfg_builder.new_block()
+
+        # Jump to header
+        self.emit(Jump(target=header_block.block_id))
+        self.cfg_builder.add_edge(self.current_block, header_block)
+
+        # Header: jump to body (infinite loop)
+        self.current_block = header_block
+        self.emit(Jump(target=body_block.block_id))
+        self.cfg_builder.add_edge(header_block, body_block)
+
+        # Body: track loop context with result vreg
+        self.current_block = body_block
+        self.loop_stack.append((header_block.block_id, exit_block.block_id, expr.label, result_vreg))
+        self.lower_block(expr.body)
+        self.loop_stack.pop()
+
+        # Jump back to header (unless body ends with break/return)
+        if not self._block_has_terminator():
+            self.emit(Jump(target=header_block.block_id))
+            self.cfg_builder.add_edge(body_block, header_block)
+
+        # Continue at exit block
+        self.current_block = exit_block
 
         return result_vreg
 
@@ -1083,8 +1126,8 @@ class MIRBuilder:
 
         # Body: track loop context for break/continue
         self.current_block = body_block
-        # Push loop context: (continue_target=header, break_target=exit, label)
-        self.loop_stack.append((header_block.block_id, exit_block.block_id, stmt.label))
+        # Push loop context: (continue_target=header, break_target=exit, label, result_vreg)
+        self.loop_stack.append((header_block.block_id, exit_block.block_id, stmt.label, None))
         self.lower_block(stmt.body)
         self.loop_stack.pop()
 
@@ -1103,7 +1146,7 @@ class MIRBuilder:
         If label is None, returns the innermost loop.
         If label is specified, searches the stack for matching label.
 
-        Returns: (continue_target, break_target, label)
+        Returns: (continue_target, break_target, label, result_vreg_or_None)
         """
         if not self.loop_stack:
             raise MIRLoweringError("Break/continue statement outside of loop")
@@ -1125,8 +1168,15 @@ class MIRBuilder:
 
         Jumps to the exit block of the target loop.
         If labeled, jumps to the exit block of the labeled loop.
+        If break has a value (loop expression), emit Move to result vreg before jump.
         """
-        continue_target, break_target, _ = self._find_loop_target(stmt.label)
+        continue_target, break_target, _, result_vreg = self._find_loop_target(stmt.label)
+
+        # If break has value and loop has result vreg, emit Move
+        if stmt.value is not None and result_vreg is not None:
+            val = self.lower_expression(stmt.value)
+            self.emit(Move(dest=result_vreg, source=val, type_info=stmt.value.expr_type))
+
         self.emit(Jump(target=break_target))
 
         # Add CFG edge
@@ -1140,7 +1190,7 @@ class MIRBuilder:
         Jumps to the header block of the target loop.
         If labeled, jumps to the header block of the labeled loop.
         """
-        continue_target, break_target, _ = self._find_loop_target(stmt.label)
+        continue_target, break_target, _, _ = self._find_loop_target(stmt.label)
         self.emit(Jump(target=continue_target))
 
         # Add CFG edge

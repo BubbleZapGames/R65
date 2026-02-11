@@ -17,8 +17,8 @@ from r65.compiler.hir import (
     HIRStructDecl, HIREnumDecl,
     HIRIntegerLiteral, HIRBooleanLiteral, HIRIdentifier, HIRRegister,
     HIRBinaryOp, HIRUnaryOp, HIRFunctionCall, HIRArrayIndex,
-    HIRLetStmt, HIRIfStmt, HIRWhileStmt, HIRReturnStmt, HIRAsmStmt,
-    HIRStringLiteral, HIRBlock, HIRAssignment,
+    HIRLetStmt, HIRIfStmt, HIRWhileStmt, HIRBreakStmt, HIRReturnStmt, HIRAsmStmt,
+    HIRStringLiteral, HIRBlock, HIRAssignment, HIRLoopExpression,
     SymbolKind, BasicTypeInfo, ArrayTypeInfo, StructTypeInfo,
 )
 from r65.compiler.hir.attributes import (
@@ -853,6 +853,99 @@ fn test() {
         assert isinstance(inner_block, HIRBlock)
         inner_let = inner_block.statements[0]
         assert inner_let.name == "j"
+
+
+class TestInclusiveForLoop:
+    """Test inclusive for loop (..=) desugaring."""
+
+    def test_inclusive_for_loop_uses_le(self):
+        """Test inclusive for loop desugars to <= comparison."""
+        source = """
+fn test() {
+    for i in 0..=10 {
+        A = i;
+    }
+}
+"""
+        hir = build_hir(source)
+        func = hir.declarations[0]
+        block = func.body.statements[0]
+        while_stmt = block.statements[1]
+        # Condition should be i <= end (inclusive)
+        assert isinstance(while_stmt.condition, HIRBinaryOp)
+        assert while_stmt.condition.op == '<='
+
+    def test_exclusive_for_loop_uses_lt(self):
+        """Test exclusive for loop still uses < comparison."""
+        source = """
+fn test() {
+    for i in 0..10 {
+        A = i;
+    }
+}
+"""
+        hir = build_hir(source)
+        func = hir.declarations[0]
+        block = func.body.statements[0]
+        while_stmt = block.statements[1]
+        assert isinstance(while_stmt.condition, HIRBinaryOp)
+        assert while_stmt.condition.op == '<'
+
+
+class TestLoopExpression:
+    """Test loop expression building."""
+
+    def test_loop_expression_in_let(self):
+        """Test loop expression in let initializer builds HIRLoopExpression."""
+        source = """
+fn test() {
+    let x: u8 = loop {
+        break 42;
+    };
+}
+"""
+        hir = build_hir(source)
+        func = hir.declarations[0]
+        let_stmt = func.body.statements[0]
+        assert isinstance(let_stmt, HIRLetStmt)
+        assert isinstance(let_stmt.initializer, HIRLoopExpression)
+        assert let_stmt.initializer.body is not None
+
+    def test_break_with_value_builds_hir(self):
+        """Test break with value builds HIRBreakStmt with value."""
+        source = """
+fn test() {
+    let x: u8 = loop {
+        break 42;
+    };
+}
+"""
+        hir = build_hir(source)
+        func = hir.declarations[0]
+        let_stmt = func.body.statements[0]
+        loop_expr = let_stmt.initializer
+        break_stmt = loop_expr.body.statements[0]
+        assert isinstance(break_stmt, HIRBreakStmt)
+        assert isinstance(break_stmt.value, HIRIntegerLiteral)
+        assert break_stmt.value.value == 42
+
+    def test_break_without_value_in_loop_stmt(self):
+        """Test break without value in regular loop statement."""
+        source = """
+fn test() {
+    loop {
+        break;
+    }
+}
+"""
+        hir = build_hir(source)
+        func = hir.declarations[0]
+        # loop desugars to while(true)
+        while_stmt = func.body.statements[0]
+        assert isinstance(while_stmt, HIRWhileStmt)
+        break_stmt = while_stmt.body.statements[0]
+        assert isinstance(break_stmt, HIRBreakStmt)
+        assert break_stmt.value is None
 
 
 class TestAutoInlineDetection:

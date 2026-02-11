@@ -1253,13 +1253,16 @@ class ASTBuilder(Transformer):
 
     @v_args(tree=True)
     def break_stmt(self, tree):
-        """Break statement with optional label."""
+        """Break statement with optional label and optional value."""
         label = None
+        value = None
         for item in tree.children:
             if isinstance(item, LarkToken) and item.type == 'LABEL_REF':
                 # Strip leading quote: 'outer -> outer
                 label = item.value[1:]
-        return ast.BreakStmt(label=label, source_loc=self._make_source_loc(tree.meta))
+            elif isinstance(item, ast.Expression):
+                value = item
+        return ast.BreakStmt(label=label, value=value, source_loc=self._make_source_loc(tree.meta))
 
     @v_args(tree=True)
     def continue_stmt(self, tree):
@@ -1344,15 +1347,18 @@ class ASTBuilder(Transformer):
 
     @v_args(tree=True)
     def for_stmt(self, tree):
-        """For loop statement: for i in start..end { body }"""
+        """For loop statement: for i in start..end { body } or start..=end"""
         label = self._extract_label(tree.children)
         variable = None
         exprs = []
         body = None
+        inclusive = False
 
         for item in tree.children:
             if isinstance(item, LarkToken) and item.type == 'IDENT':
                 variable = item.value
+            elif isinstance(item, LarkToken) and item.type == 'DOTDOTEQ':
+                inclusive = True
             elif isinstance(item, ast.Block):
                 body = item
             elif isinstance(item, ast.Expression):
@@ -1367,6 +1373,7 @@ class ASTBuilder(Transformer):
             end=exprs[1],
             body=body,
             label=label,
+            inclusive=inclusive,
             source_loc=self._make_source_loc(tree.meta)
         )
 
@@ -1583,6 +1590,18 @@ class ASTBuilder(Transformer):
             condition=condition,
             then_block=then_block,
             else_block=else_block,
+            source_loc=self._make_source_loc(tree.meta)
+        )
+
+    @v_args(tree=True)
+    def loop_expr(self, tree):
+        """Loop expression: loop { ... break value; ... }"""
+        label = self._extract_label(tree.children)
+        items = self._filter_tokens(tree.children)
+        body = items[0]
+        return ast.LoopExpression(
+            body=body,
+            label=label,
             source_loc=self._make_source_loc(tree.meta)
         )
 

@@ -340,6 +340,108 @@ def test_labeled_for_loop():
     print("✓ Labeled for loop test passed")
 
 
+def test_inclusive_for_loop():
+    """Test parsing inclusive for loop with ..= syntax."""
+    source = """
+    fn test() {
+        for i in 0..=10 {
+            A = i;
+        }
+    }
+    """
+
+    program = parse(source)
+    func = program.items[0]
+
+    for_stmt = func.body.statements[0]
+    assert isinstance(for_stmt, ast.ForStmt)
+    assert for_stmt.variable == 'i'
+    assert for_stmt.start.value == 0
+    assert for_stmt.end.value == 10
+    assert for_stmt.inclusive == True
+
+    # Exclusive range should have inclusive=False
+    source2 = """
+    fn test() {
+        for i in 0..10 {
+            A = i;
+        }
+    }
+    """
+    program2 = parse(source2)
+    func2 = program2.items[0]
+    for_stmt2 = func2.body.statements[0]
+    assert for_stmt2.inclusive == False
+
+    print("✓ Inclusive for loop test passed")
+
+
+def test_break_with_value():
+    """Test parsing break statement with a value expression."""
+    source = """
+    fn test() {
+        loop {
+            break 42;
+        }
+    }
+    """
+
+    program = parse(source)
+    func = program.items[0]
+
+    loop_stmt = func.body.statements[0]
+    assert isinstance(loop_stmt, ast.LoopStmt)
+    break_stmt = loop_stmt.body.statements[0]
+    assert isinstance(break_stmt, ast.BreakStmt)
+    assert isinstance(break_stmt.value, ast.IntegerLiteral)
+    assert break_stmt.value.value == 42
+    assert break_stmt.label is None
+
+    # Break without value should have value=None
+    source2 = """
+    fn test() {
+        loop {
+            break;
+        }
+    }
+    """
+    program2 = parse(source2)
+    func2 = program2.items[0]
+    loop2 = func2.body.statements[0]
+    break2 = loop2.body.statements[0]
+    assert isinstance(break2, ast.BreakStmt)
+    assert break2.value is None
+
+    print("✓ Break with value test passed")
+
+
+def test_loop_expression():
+    """Test parsing loop expression in initializer context."""
+    source = """
+    fn test() {
+        let x: u8 = loop {
+            break 42;
+        };
+    }
+    """
+
+    program = parse(source)
+    func = program.items[0]
+
+    let_stmt = func.body.statements[0]
+    assert isinstance(let_stmt, ast.LetStmt)
+    assert let_stmt.name == 'x'
+    assert isinstance(let_stmt.initializer, ast.LoopExpression)
+    assert isinstance(let_stmt.initializer.body, ast.Block)
+
+    # Body should contain a break with value
+    break_stmt = let_stmt.initializer.body.statements[0]
+    assert isinstance(break_stmt, ast.BreakStmt)
+    assert break_stmt.value.value == 42
+
+    print("✓ Loop expression test passed")
+
+
 def test_binary_operations():
     """Test parsing binary operations."""
     source = """
@@ -744,6 +846,9 @@ if __name__ == '__main__':
     test_for_loop()
     test_labeled_loops()
     test_labeled_for_loop()
+    test_inclusive_for_loop()
+    test_break_with_value()
+    test_loop_expression()
     test_binary_operations()
     test_function_call()
     test_array_and_field_access()

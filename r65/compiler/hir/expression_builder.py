@@ -355,6 +355,9 @@ class ExpressionBuilder:
         elif isinstance(expr, ast.IfExpression):
             return self._build_if_expression(expr)
 
+        elif isinstance(expr, ast.LoopExpression):
+            return self._build_loop_expression(expr)
+
         else:
             raise HIRError(f"Unknown expression type: {type(expr).__name__}")
 
@@ -534,6 +537,30 @@ class ExpressionBuilder:
             condition=condition,
             then_block=then_block,
             else_block=else_block,
+            source_loc=expr.source_loc
+        )
+
+    def _build_loop_expression(self, expr: ast.LoopExpression) -> hir.HIRLoopExpression:
+        """Build HIR loop expression from AST.
+
+        The body is a block that should contain break statements with values.
+        """
+        # Build body statements
+        hir_stmts = []
+        for stmt in expr.body.statements:
+            if self.statement_builder is None:
+                raise HIRError("Statement builder not configured for loop expressions")
+            hir_stmt = self.statement_builder(stmt)
+            hir_stmts.append(hir_stmt)
+
+        body = hir.HIRBlock(
+            statements=hir_stmts,
+            source_loc=expr.body.source_loc
+        )
+
+        return hir.HIRLoopExpression(
+            body=body,
+            label=expr.label,
             source_loc=expr.source_loc
         )
 

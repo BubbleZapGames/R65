@@ -280,9 +280,21 @@ class MacroExpander:
                     end=self._expand_expression(stmt.end),
                     body=self._expand_block(stmt.body),
                     label=getattr(stmt, 'label', None),
+                    inclusive=getattr(stmt, 'inclusive', False),
                     source_loc=stmt.source_loc
                 )
                 result.append(new_stmt)
+            elif isinstance(stmt, ast.BreakStmt):
+                if stmt.value is not None:
+                    new_value = self._expand_expression(stmt.value)
+                    new_stmt = ast.BreakStmt(
+                        label=stmt.label,
+                        value=new_value,
+                        source_loc=stmt.source_loc
+                    )
+                    result.append(new_stmt)
+                else:
+                    result.append(stmt)
             else:
                 # Keep other statements as-is
                 result.append(stmt)
@@ -413,6 +425,13 @@ class MacroExpander:
             return ast.MatchExpression(
                 scrutinee=self._expand_expression(expr.scrutinee),
                 arms=new_arms,
+                source_loc=expr.source_loc
+            )
+
+        elif isinstance(expr, ast.LoopExpression):
+            return ast.LoopExpression(
+                body=self._expand_block(expr.body),
+                label=getattr(expr, 'label', None),
                 source_loc=expr.source_loc
             )
 
@@ -1041,6 +1060,12 @@ class MacroExpander:
         elif isinstance(node, ast.LoopStmt):
             if node.body:
                 self._override_source_loc(node.body, source_loc)
+        elif isinstance(node, ast.LoopExpression):
+            if node.body:
+                self._override_source_loc(node.body, source_loc)
+        elif isinstance(node, ast.BreakStmt):
+            if node.value:
+                self._override_source_loc(node.value, source_loc)
         elif isinstance(node, ast.ForStmt):
             if node.start:
                 self._override_source_loc(node.start, source_loc)
