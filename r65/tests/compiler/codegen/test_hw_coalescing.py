@@ -241,8 +241,12 @@ class TestHwCoalescingCodeGen:
         has_rtl = any('RTL' in line for line in lines)
         assert has_rtl, "Far function should have RTL"
 
-    def test_function_with_locals_has_frame(self):
-        """Test that function with real locals allocates frame."""
+    def test_function_with_coalesceable_locals_no_frame(self):
+        """Test that function where all locals coalesce to A needs no frame.
+
+        Move vreg_a <- A coalesces to A, BinaryOp vreg_temp = vreg_a + 1
+        also coalesces (only used in Return), so no stack frame is needed.
+        """
         vreg_alloc = VirtualRegisterAllocator()
         vreg_a = vreg_alloc.alloc(BasicTypeInfo('u8'), "a")
         vreg_temp = vreg_alloc.alloc(BasicTypeInfo('u8'), "temp")
@@ -254,7 +258,6 @@ class TestHwCoalescingCodeGen:
                 source=HardwareRegister('A'),
                 type_info=BasicTypeInfo('u8')
             ),
-            # Use vreg_a in computation
             BinaryOp(
                 dest=vreg_temp,
                 left=vreg_a,
@@ -280,35 +283,36 @@ class TestHwCoalescingCodeGen:
         codegen = ProgramCodeGenerator()
         asm_output = codegen.generate(program)
 
-        # Find the function section
         func_start = asm_output.find('add_one:')
         assert func_start != -1, "add_one function not found"
 
         func_section = asm_output[func_start:func_start + 300]
 
-        # Should have frame allocation (PHB) since vreg_a is used in BinaryOp
+        # Both vregs coalesce to A, so no frame needed
         has_phb = 'PHB' in func_section
-        assert has_phb, \
-            f"Function with locals should allocate frame\nOutput:\n{func_section}"
+        assert not has_phb, \
+            f"Function with coalesceable locals should not allocate frame\nOutput:\n{func_section}"
 
 
 class TestBRegisterReturns:
     """Test that PLB frame cleanup doesn't clobber any return registers."""
 
-    def test_return_b_uses_plb_frame_cleanup(self):
-        """Test that returning B uses PLB for frame cleanup (doesn't clobber B)."""
+    def test_return_b_no_frame_with_coalescence(self):
+        """Test that returning B with coalesceable vreg needs no frame.
+
+        vreg_a coalesces to A (defined from A, used in adjacent BinaryOp),
+        so no stack frame is allocated. B is preserved trivially.
+        """
         vreg_alloc = VirtualRegisterAllocator()
         vreg_a = vreg_alloc.alloc(BasicTypeInfo('u8'), "a")
 
         entry_block = BasicBlock(block_id=0)
         entry_block.instructions = [
-            # Save parameter to create a frame
             Move(
                 dest=vreg_a,
                 source=HardwareRegister('A'),
                 type_info=BasicTypeInfo('u8')
             ),
-            # Use vreg in a computation (forces frame allocation)
             BinaryOp(
                 dest=vreg_a,
                 left=vreg_a,
@@ -316,13 +320,11 @@ class TestBRegisterReturns:
                 right=Immediate(1),
                 type_info=BasicTypeInfo('u8')
             ),
-            # Move result to B and return B
             Move(
                 dest=HardwareRegister('B'),
                 source=vreg_a,
                 type_info=BasicTypeInfo('u8')
             ),
-            # Return B register directly
             Return(values=[HardwareRegister('B')])
         ]
 
@@ -341,23 +343,20 @@ class TestBRegisterReturns:
         codegen = ProgramCodeGenerator()
         asm_output = codegen.generate(program)
 
-        # Find the function section
         func_start = asm_output.find('return_b:')
         assert func_start != -1, "return_b function not found"
 
         func_section = asm_output[func_start:func_start + 500]
 
-        # Should use PLA for frame cleanup (preserves B in accumulator high byte)
-        # PLB would corrupt DBR with overwritten frame data, and TSC/ADC/TCS
-        # would destroy B. PLA only clobbers A low byte, preserving B.
-        has_pla = 'PLA' in func_section
-        assert has_pla, \
-            f"Function returning B should use PLA for frame cleanup\nOutput:\n{func_section}"
+        # vreg_a coalesces to A, so no frame needed
+        has_phb = 'PHB' in func_section
+        assert not has_phb, \
+            f"Function with coalesceable vreg should not allocate frame\nOutput:\n{func_section}"
 
-        # Should NOT use TSC/TCS for small frame (would destroy B)
+        # Should NOT use TSC/TCS (no frame to deallocate)
         has_tsc = 'TSC' in func_section
         assert not has_tsc, \
-            f"Function returning B should NOT use TSC/TCS (destroys B)\nOutput:\n{func_section}"
+            f"Function with no frame should not use TSC/TCS\nOutput:\n{func_section}"
 
     def test_return_a_no_frame_with_coalescence(self):
         """Test that returning A with coalesceable vreg needs no frame at all.

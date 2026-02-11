@@ -449,6 +449,35 @@ class StackSlotAllocator:
                             vreg_uses[vreg_id] = []
                         vreg_uses[vreg_id].append(instr)
 
+                elif isinstance(instr, (BinaryOp,)):
+                    # BinaryOp implicitly produces its result in A.
+                    # Track dest vreg as defined-in-A for coalescence,
+                    # but only if no prior def exists. This avoids double-counting
+                    # vregs first loaded from A (Move vreg <- A) then modified
+                    # in-place (BinaryOp vreg = vreg + 1) — the Move def already
+                    # enables coalescence for those.
+                    # NOTE: Only BinaryOp is included here because its codegen
+                    # handles HARDWARE A dest (skips STA). Other ALU types
+                    # (UnaryOp, TypeConvert, Rotate, ToBool) do byte-by-byte
+                    # STA which fails for HARDWARE A destinations.
+                    if isinstance(instr.dest, VirtualRegister):
+                        vreg_id = instr.dest.id
+                        if vreg_id not in vreg_defs:
+                            dest_size = self._get_vreg_size(instr.dest)
+                            # Skip far pointer results (3 bytes) — codegen stores
+                            # them byte-by-byte, A holds only a partial value
+                            if dest_size <= 2:
+                                vreg_defs[vreg_id] = []
+                                vreg_defs[vreg_id].append((instr, 'A'))
+
+                    # Track operand uses
+                    uses = self.liveness_analyzer._get_uses(instr)
+                    for var in uses:
+                        if isinstance(var, VirtualRegister):
+                            if var.id not in vreg_uses:
+                                vreg_uses[var.id] = []
+                            vreg_uses[var.id].append(instr)
+
                 elif isinstance(instr, Return):
                     if instr.values:
                         for val in instr.values:
@@ -467,6 +496,10 @@ class StackSlotAllocator:
                             vreg_uses[var.id].append(instr)
 
         # Build candidate list: (vreg_id, def_instr, hw_reg, uses)
+        # For ALU-def vregs (BinaryOp/UnaryOp/etc.), restrict to cases where
+        # all uses are Return or Move-to-A. This prevents conflicts when another
+        # vreg is also live in A (the ALU op would clobber it).
+        _alu_def_types = (BinaryOp,)
         candidates = []
         for vreg_id, defs in vreg_defs.items():
             if len(defs) != 1:
@@ -475,6 +508,20 @@ class StackSlotAllocator:
             if hw_reg is None:
                 continue
             uses = vreg_uses.get(vreg_id, [])
+
+            # ALU-def vregs: only safe if the value is consumed directly by
+            # Move-to-A or Return. Using it as a BinaryOp operand could conflict
+            # with another vreg that's also in A.
+            if isinstance(def_instr, _alu_def_types):
+                all_uses_consume_a = all(
+                    isinstance(use, Return) or
+                    (isinstance(use, Move) and isinstance(use.dest, HardwareRegister)
+                     and use.dest.name == 'A')
+                    for use in uses
+                )
+                if not all_uses_consume_a:
+                    continue
+
             candidates.append((vreg_id, def_instr, hw_reg, uses))
 
         # Two-pass coalescence
@@ -602,9 +649,10 @@ class StackSlotAllocator:
         self, vreg_id: int, hw_reg: str, coalesceable: Dict[VirtualRegister, str]
     ):
         """Mark a vreg as hw-coalesceable by finding its def instruction."""
+        _def_types = (Move, BinaryOp)
         for block in self.func.blocks.values():
             for instr in block.instructions:
-                if isinstance(instr, Move) and isinstance(instr.dest, VirtualRegister):
+                if isinstance(instr, _def_types) and isinstance(instr.dest, VirtualRegister):
                     if instr.dest.id == vreg_id:
                         coalesceable[instr.dest] = hw_reg
                         return
@@ -801,7 +849,13 @@ class StackSlotAllocator:
             return False
 
         if isinstance(instr, (BinaryOp, UnaryOp, TypeConvert, Compare, BitTest, Rotate, ToBool)):
-            # All arithmetic/comparison ops route through A
+            # ALU ops route through A, clobbering it — UNLESS the dest is our vreg,
+            # in which case the op re-defines our vreg and leaves its new value in A
+            # (analogous to Store exception: our vreg's value stays in A).
+            if (isinstance(instr, (BinaryOp,)) and
+                hasattr(instr, 'dest') and isinstance(instr.dest, VirtualRegister) and
+                instr.dest.id == vreg_id):
+                return False
             return True
 
         if isinstance(instr, Load):
