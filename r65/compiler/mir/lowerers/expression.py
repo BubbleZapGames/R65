@@ -385,6 +385,7 @@ class ExpressionLowerer:
         element_size = self.builder._get_type_size(element_type)
 
         index_operand = self.builder.lower_expression(expr.index)
+        index_type = expr.index.expr_type  # Type of the index (u8 or u16)
 
         if not isinstance(expr.array, HIRIdentifier):
             raise MIRLoweringError(
@@ -407,7 +408,7 @@ class ExpressionLowerer:
             )
         else:
             return self._lower_variable_index(
-                result, array_symbol, index_operand, element_size, element_type
+                result, array_symbol, index_operand, element_size, element_type, index_type
             )
 
     def _lower_pointer_index(self, expr: HIRArrayIndex, index_operand, element_size, element_type, ptr_type: PointerTypeInfo) -> VirtualRegister:
@@ -473,17 +474,21 @@ class ExpressionLowerer:
         self.emit(Load(dest=result, source=elem_memloc, type_info=element_type))
         return result
 
-    def _lower_variable_index(self, result, array_symbol, index_operand, element_size, element_type):
+    def _lower_variable_index(self, result, array_symbol, index_operand, element_size, element_type, index_type=None):
         """Lower variable array index with indexed addressing."""
+        # Use the index type (not element type) for offset computation and X register load.
+        # The index type determines the bit width: u16 indices must load as 16-bit
+        # to avoid truncation when index >= 256.
+        offset_type = index_type if index_type is not None else element_type
         offset_operand = index_operand
 
         # Multiply index by element_size if > 1
         if element_size > 1:
-            offset_operand = self._compute_index_offset(index_operand, element_size, element_type)
+            offset_operand = self._compute_index_offset(index_operand, element_size, offset_type)
 
         # Move offset to X register for indexed addressing
         x_reg = HardwareRegister('X')
-        self.emit(Move(dest=x_reg, source=offset_operand, type_info=element_type))
+        self.emit(Move(dest=x_reg, source=offset_operand, type_info=offset_type))
 
         # Create indexed memory location
         base_memloc = self.builder.get_memory_location(array_symbol)

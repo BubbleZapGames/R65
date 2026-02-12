@@ -371,12 +371,13 @@ class AssignmentLowerer:
 
         # Lower index expression for array indexing
         index_operand = self.builder.lower_expression(array_index.index)
+        index_type = array_index.index.expr_type  # Type of the index (u8 or u16)
 
         # Calculate offset and create memory location
         if isinstance(index_operand, Immediate):
             return self._lower_constant_index_assignment(value, base_symbol, index_operand.value, element_size, element_type)
         else:
-            return self._lower_variable_index_assignment(value, base_symbol, index_operand, element_size, element_type)
+            return self._lower_variable_index_assignment(value, base_symbol, index_operand, element_size, element_type, index_type)
 
     def _lower_pointer_index_assignment(self, expr: HIRAssignment, value, pointer_type):
         """Lower assignment through indexed pointer (ptr[i] = x)."""
@@ -431,13 +432,17 @@ class AssignmentLowerer:
         self.emit(Store(source=value, dest=elem_memloc, type_info=element_type))
         return value
 
-    def _lower_variable_index_assignment(self, value, array_symbol, index_operand, element_size, element_type):
+    def _lower_variable_index_assignment(self, value, array_symbol, index_operand, element_size, element_type, index_type=None):
         """Lower variable array index assignment with indexed addressing."""
+        # Use the index type (not element type) for offset computation and X register load.
+        # The index type determines the bit width: u16 indices must load as 16-bit
+        # to avoid truncation when index >= 256.
+        offset_type = index_type if index_type is not None else element_type
         offset_operand = index_operand
 
         # If element size > 1, multiply index by element_size
         if element_size > 1:
-            offset_vreg = self.ctx.alloc_vreg(element_type, "array_offset")
+            offset_vreg = self.ctx.alloc_vreg(offset_type, "array_offset")
             # Check if element_size is power of 2 - use shift instead of multiply
             if element_size & (element_size - 1) == 0:  # Is power of 2
                 # Calculate shift amount: log2(element_size)
@@ -453,7 +458,7 @@ class AssignmentLowerer:
                     left=index_operand,
                     right=shift_immediate,
                     op='<<',
-                    type_info=element_type
+                    type_info=offset_type
                 ))
             else:
                 # Non-power-of-2: use multiplication
@@ -463,13 +468,13 @@ class AssignmentLowerer:
                     left=index_operand,
                     right=size_immediate,
                     op='*',
-                    type_info=element_type
+                    type_info=offset_type
                 ))
             offset_operand = offset_vreg
 
         # Move offset to X register for indexed addressing
         x_reg = HardwareRegister('X')
-        self.emit(Move(dest=x_reg, source=offset_operand, type_info=element_type))
+        self.emit(Move(dest=x_reg, source=offset_operand, type_info=offset_type))
 
         # Create indexed memory location with X register
         base_memloc = self.builder.get_memory_location(array_symbol)
