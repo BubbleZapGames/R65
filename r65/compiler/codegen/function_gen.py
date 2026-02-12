@@ -829,10 +829,10 @@ class FunctionCodeGenerator:
         # REP/SEP for mode changes don't push anything
 
         # Interrupt handler scratch register saves
-        # Each scratch register's WRAM contents are pushed to the stack
-        if mir_func.interrupt_attr and scratch_pool and scratch_pool.scratches:
-            for scratch in scratch_pool.scratches:
-                bytes_pushed += scratch.size
+        # These are pushed BEFORE frame allocation, so they do NOT affect
+        # local variable stack offsets (locals live within the frame, closest to SP).
+        # They only affect parameter offsets, but interrupt handlers have no parameters.
+        # Do NOT include them in prologue_stack_bytes.
 
         # Register preservation pushes
         if mir_func.preserves_attr:
