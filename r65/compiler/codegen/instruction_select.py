@@ -1285,18 +1285,29 @@ class InstructionSelector:
             if right_loc.kind == LocationKind.HARDWARE:
                 # Hardware register - must store to temp location first
                 # (65816 can't use hardware registers as operands for these ops)
-                if right_loc.hw_register == 'B':
-                    # B register requires XBA to access - can use stack or scratch
-                    temp_loc = self._get_temp_location()
-                    self._access_b_value_in_a()
-                    self._emit_store('STA', temp_loc, "Store B to temp")
-                    self._ensure_xba_state_normal("Restore A")
-                    self._emit_op(operation, temp_loc)
-                elif right_loc.hw_register == 'A':
-                    # A can use stack-relative addressing
-                    temp_loc = self._get_temp_location()
-                    self._emit_store('STA', temp_loc, "Store A to temp")
-                    self._emit_op(operation, temp_loc)
+                if right_loc.hw_register in ['A', 'B']:
+                    # A/B - try scratch first, fall back to push/pop
+                    temp_addr = self._get_temp_address()
+                    if temp_addr:
+                        if right_loc.hw_register == 'B':
+                            self._access_b_value_in_a()
+                            self.emitter.emit_instr(Opcode.STA_DP, temp_addr, "Store B to temp")
+                            self._ensure_xba_state_normal("Restore A")
+                        else:
+                            self.emitter.emit_instr(Opcode.STA_DP, temp_addr, "Store A to temp")
+                        temp_loc = PhysicalLocation(kind=LocationKind.SCRATCH, scratch_addr=temp_addr.value, size=1)
+                        self._emit_op(operation, temp_loc)
+                    else:
+                        # No scratch available - use push/pop pattern
+                        if right_loc.hw_register == 'B':
+                            self._access_b_value_in_a()
+                            self._emit_implied(Opcode.PHA, "Push B (via A) for temp")
+                            self._ensure_xba_state_normal("Restore A")
+                        else:
+                            self._emit_implied(Opcode.PHA, "Push A for temp")
+                        temp_loc = PhysicalLocation(kind=LocationKind.STACK, stack_offset=1, size=1)
+                        self._emit_op(operation, temp_loc)
+                        self._emit_implied(Opcode.PLA, "Restore A")
                 elif right_loc.hw_register in ['X', 'Y']:
                     # X/Y don't support stack-relative for STX/STY
                     # Try scratch first, fall back to push/pop

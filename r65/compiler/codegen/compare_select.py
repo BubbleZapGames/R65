@@ -134,6 +134,8 @@ class CompareSelector(BaseSelector):
                 self._emit_instr(Opcode.PLX, comment="Restore X")
             elif pushed_reg == 'Y':
                 self._emit_instr(Opcode.PLY, comment="Restore Y")
+            elif pushed_reg == 'A':
+                self._emit_instr(Opcode.PLA, comment="Restore A")
 
     def _is_16bit_type(self, type_info) -> bool:
         """Check if the type is a 16-bit type (u16 or i16)."""
@@ -181,15 +183,27 @@ class CompareSelector(BaseSelector):
             and needs_pop indicates if PLX/PLY is needed after comparison
         """
         if right_loc.hw_register in ['A', 'B']:
-            # A and B can use stack-relative via STA
-            temp_loc = self.parent._get_temp_location()
-            if right_loc.hw_register == 'B':
-                self.parent._access_b_value_in_a()
-                self.parent._emit_store('STA', temp_loc, "Store B to temp")
-                self.parent._ensure_xba_state_normal("Restore A")
+            # A and B - try scratch, fall back to push
+            temp_addr = self.parent._get_temp_address()
+            if temp_addr:
+                if right_loc.hw_register == 'B':
+                    self.parent._access_b_value_in_a()
+                    self._emit_instr(Opcode.STA_DP, temp_addr, "Store B to temp")
+                    self.parent._ensure_xba_state_normal("Restore A")
+                else:
+                    self._emit_instr(Opcode.STA_DP, temp_addr, "Store A to temp")
+                return temp_addr, False
             else:
-                self.parent._emit_store('STA', temp_loc, "Store A to temp")
-            return temp_loc, False
+                # No scratch available - use push/pop pattern
+                from r65.compiler.codegen.register_alloc import PhysicalLocation
+                if right_loc.hw_register == 'B':
+                    self.parent._access_b_value_in_a()
+                    self._emit_instr(Opcode.PHA, comment="Push B (via A) for temp")
+                    self.parent._ensure_xba_state_normal("Restore A")
+                else:
+                    self._emit_instr(Opcode.PHA, comment="Push A for temp")
+                temp_loc = PhysicalLocation(kind=LocationKind.STACK, stack_offset=1, size=1)
+                return temp_loc, 'A'
 
         # X and Y need special handling - try scratch, fall back to push
         temp_addr = self.parent._get_temp_address()
