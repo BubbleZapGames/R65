@@ -4,7 +4,7 @@ import pytest
 from r65.compiler.frontend import parse
 from r65.compiler.hir import HIRBuilder
 from r65.compiler.typeck import TypeChecker
-from r65.compiler.errors import TypeCheckError, ParseError
+from r65.compiler.errors import TypeCheckError, ParseError, HIRError
 
 
 def build_and_check(source: str):
@@ -235,6 +235,29 @@ class TestTraitHIR:
         # Check dispatch symbol exists
         dispatch = hir.symbol_table.lookup("Drawable.draw.Player")
         assert dispatch is not None
+
+
+    def test_trait_method_register_binding_error(self):
+        """Trait method params cannot have register bindings."""
+        source = """
+            trait Foo {
+                fn bar(*self, x @ A: u8);
+            }
+        """
+        with pytest.raises(HIRError, match="cannot have a register binding"):
+            build_and_check(source)
+
+    def test_trait_method_variable_binding_error(self):
+        """Trait method params cannot have variable bindings."""
+        source = """
+            #[zeropage]
+            static mut TEMP: u8;
+            trait Foo {
+                fn bar(*self, x @ TEMP: u8);
+            }
+        """
+        with pytest.raises(HIRError, match="cannot have a register binding"):
+            build_and_check(source)
 
 
 class TestTraitTypeChecking:

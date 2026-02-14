@@ -1322,6 +1322,12 @@ class HIRBuilder:
             # Build parameter types
             hir_params = []
             for param in method.params:
+                if param.binding is not None:
+                    raise HIRError(
+                        f"Trait method '{method.name}' parameter '{param.name}' "
+                        f"cannot have a register binding — trait methods use stack-passing for dynamic dispatch",
+                        source_loc=method.source_loc
+                    )
                 param_type = self.type_resolver.resolve_type(param.param_type)
                 hir_param = hir.HIRParameter(
                     name=param.name,
