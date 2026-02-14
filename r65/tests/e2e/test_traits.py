@@ -89,12 +89,17 @@ class TestTraitDispatch:
         assert result.success, f"Failures: {result.failures}"
 
     def test_trait_type_id_in_struct(self, e2e):
-        """TypeId byte is correctly stored at offset 0 of struct."""
+        """TypeId byte is correctly stored at offset 0 and readable via type_id()."""
         result = e2e.run('''
             #[zeropage(0x10, register)]
             static mut SCRATCH0: u8;
             #[zeropage(0x12, register)]
             static mut SCRATCH1: u16;
+
+            #[lowram]
+            static mut PLAYER_TID: u8;
+            #[lowram]
+            static mut ENEMY_TID: u8;
 
             struct Player { x: u8, y: u8 }
             struct Enemy { x: u8, y: u8 }
@@ -115,13 +120,20 @@ class TestTraitDispatch:
 
             #[entry]
             fn main() {
+                let p: *Drawable = &PLAYER;
+                let e: *Drawable = &ENEMY;
+                PLAYER_TID = p.type_id();
+                ENEMY_TID = e.type_id();
             }
         ''', ExpectedState(
             memory={
+                # type_id() results
+                0x7E0200: 1,  # Player TypeId
+                0x7E0201: 2,  # Enemy TypeId
                 # PLAYER: TypeId=1, x=0xAA, y=0xBB
-                0x7E0200: 1, 0x7E0201: 0xAA, 0x7E0202: 0xBB,
+                0x7E0202: 1, 0x7E0203: 0xAA, 0x7E0204: 0xBB,
                 # ENEMY: TypeId=2, x=0xCC, y=0xDD
-                0x7E0203: 2, 0x7E0204: 0xCC, 0x7E0205: 0xDD,
+                0x7E0205: 2, 0x7E0206: 0xCC, 0x7E0207: 0xDD,
             }
         ))
         assert result.success, f"Failures: {result.failures}"
@@ -161,3 +173,4 @@ class TestTraitDispatch:
             memory={0x7E0200: 77}
         ))
         assert result.success, f"Failures: {result.failures}"
+

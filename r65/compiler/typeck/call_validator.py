@@ -296,6 +296,21 @@ class CallValidator:
         trait_type = receiver_type.pointee_type  # TraitTypeInfo
         trait_name = trait_type.name
 
+        # Built-in type_id() method on trait pointers
+        if method_name == 'type_id':
+            if len(expr.args) != 0:
+                raise TypeCheckError(
+                    f"type_id() takes no arguments, got {len(expr.args)}",
+                    source_loc=expr.source_loc
+                )
+            expr.expr_type = BasicTypeInfo('u8')
+            field_access = expr.func
+            expr.method_call_info = {
+                'is_type_id': True,
+                'self_arg': field_access.base,
+            }
+            return expr.expr_type
+
         # Look up trait definition from symbol table
         trait_symbol = self.symbol_table.lookup(trait_name)
         if not trait_symbol or trait_symbol.kind != SymbolKind.TRAIT:

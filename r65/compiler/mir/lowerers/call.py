@@ -15,7 +15,7 @@ from r65.compiler.hir import (
 from r65.compiler.mir.nodes import (
     VirtualRegister, HardwareRegister, Immediate,
     Move, Store, Call, Argument, ArgumentMechanism, Rotate,
-    SetMode, Push, Pull, TraitDispatch,
+    SetMode, Push, Pull, TraitDispatch, LoadIndirect,
 )
 from r65.compiler.hir.types import ArrayTypeInfo, BasicTypeInfo
 from r65.compiler.typeck.processor_mode import ProcessorMode, ModeState
@@ -82,6 +82,8 @@ class CallLowerer:
         """
         # Check if this is a method call (set by type checker)
         if call_expr.method_call_info:
+            if call_expr.method_call_info.get('is_type_id'):
+                return self._lower_type_id_call(call_expr)
             if call_expr.method_call_info.get('is_trait_dispatch'):
                 return self._lower_trait_dispatch_call(call_expr)
             return self._lower_method_call(call_expr)
@@ -344,6 +346,24 @@ class CallLowerer:
         self._emit_call_with_mode_transition(func_decl, args, returns, None)
 
         return returns[0] if returns else None
+
+    def _lower_type_id_call(self, call_expr: HIRFunctionCall) -> VirtualRegister:
+        """Lower type_id() call on trait pointer — loads TypeId byte at offset 0."""
+        method_info = call_expr.method_call_info
+        self_arg = method_info['self_arg']
+        self_vreg = self.builder.lower_expression(self_arg)
+
+        result = self.builder.current_function.vreg_allocator.alloc(
+            BasicTypeInfo('u8'), 'type_id'
+        )
+        self.emit(LoadIndirect(
+            dest=result,
+            pointer=self_vreg,
+            is_far=False,
+            type_info=BasicTypeInfo('u8'),
+            offset=0,
+        ))
+        return result
 
     def _lower_trait_dispatch_call(self, call_expr: HIRFunctionCall) -> Union[VirtualRegister, HardwareRegister, None]:
         """
