@@ -310,6 +310,9 @@ class StaticInitLowerer:
     def _extract_struct_literal_bytes(self, struct_expr: HIRStructLiteralExpr) -> List[int]:
         """
         Extract constant bytes from a struct literal expression.
+
+        For structs implementing traits, the __type_id field at offset 0 is
+        auto-initialized with the struct's TypeId value from the symbol table.
         """
         from r65.compiler.frontend import ast
 
@@ -362,6 +365,14 @@ class StaticInitLowerer:
             # Store as little-endian bytes at the field's offset
             for i in range(field_size):
                 data_bytes[offset + i] = (value >> (i * 8)) & 0xFF
+
+        # Auto-initialize __type_id for structs implementing traits
+        if '__type_id' in field_info:
+            type_id_sym = self.builder._hir_program.symbol_table.lookup(
+                f"{struct_expr.struct_name}::TYPE_ID"
+            )
+            if type_id_sym:
+                data_bytes[0] = type_id_sym.const_value & 0xFF
 
         return data_bytes
 
@@ -492,6 +503,14 @@ class StaticInitLowerer:
             # Store as little-endian bytes at the field's offset
             for i in range(field_size):
                 data_bytes[offset + i] = (value >> (i * 8)) & 0xFF
+
+        # Auto-initialize __type_id for structs implementing traits
+        if '__type_id' in field_info:
+            type_id_sym = self.builder._hir_program.symbol_table.lookup(
+                f"{struct_expr.struct_name}::TYPE_ID"
+            )
+            if type_id_sym:
+                data_bytes[0] = type_id_sym.const_value & 0xFF
 
         # Create ROM data reference using variable name
         label = f"__{static_decl.name}_data"

@@ -54,6 +54,11 @@ class HIRBuilder:
         # Wire up statement builder callback for block expressions
         self.expression_builder.statement_builder = self._build_statement
         self.loop_depth = 0  # Track for loop nesting depth for register hints
+        # Trait dispatch tracking
+        self._next_type_id = 1  # TypeId 0 is reserved (invalid/error)
+        self._struct_type_ids: Dict[str, int] = {}  # struct_name -> type_id
+        self._trait_impls: Dict[str, List[str]] = {}  # trait_name -> [struct_name, ...] ordered by TypeId
+        self._struct_trait_kind: Dict[str, str] = {}  # struct_name -> 'near' or 'far'
 
     def _process_snesrom_attribute(self, attr: ast.Attribute):
         """Process snesrom attribute that was mistakenly attached to a function."""
@@ -192,11 +197,15 @@ class HIRBuilder:
         if snesrom_config is None and self._pending_snesrom_config is not None:
             snesrom_config = self._pending_snesrom_config
 
+        # Build trait dispatch info for codegen
+        trait_dispatch_info = self._build_trait_dispatch_info()
+
         return hir.HIRProgram(
             declarations=hir_decls,
             symbol_table=self.symbol_table,
             stack_attr=stack_attr,
-            snesrom_config=snesrom_config
+            snesrom_config=snesrom_config,
+            trait_dispatch_info=trait_dispatch_info
         )
 
     def _should_include_declaration(self, decl: ast.Declaration) -> bool:
@@ -352,6 +361,16 @@ class HIRBuilder:
             )
             self.symbol_table.declare(decl.name, symbol)
 
+        elif isinstance(decl, ast.TraitDecl):
+            # Create trait symbol
+            symbol = Symbol(
+                name=decl.name,
+                kind=SymbolKind.TRAIT,
+                definition=decl,
+                scope_id=0
+            )
+            self.symbol_table.declare(decl.name, symbol)
+
         elif isinstance(decl, ast.IncludeStmt):
             # Include statements are handled by preprocessing (not in this phase)
             pass
@@ -378,6 +397,8 @@ class HIRBuilder:
             return self._build_enum(decl)
         elif isinstance(decl, ast.TypeAlias):
             return self._build_type_alias(decl)
+        elif isinstance(decl, ast.TraitDecl):
+            return self._build_trait(decl)
         elif isinstance(decl, ast.ImplDecl):
             return self._build_impl(decl)
         else:
@@ -987,7 +1008,19 @@ class HIRBuilder:
         """Build HIR struct declaration from AST."""
         # Build fields with offsets
         hir_fields = []
-        current_offset = 0
+        has_type_id = struct.name in self._struct_type_ids
+
+        if has_type_id:
+            # Insert synthetic __type_id: u8 field at offset 0
+            type_id_field = hir.HIRStructField(
+                name='__type_id',
+                field_type=BasicTypeInfo(name='u8'),
+                offset=0
+            )
+            hir_fields.append(type_id_field)
+            current_offset = 1  # User fields start after TypeId byte
+        else:
+            current_offset = 0
 
         for field in struct.fields:
             field_type = self.type_resolver.resolve_type(field.field_type)
@@ -1097,6 +1130,11 @@ class HIRBuilder:
                 source_loc=impl.source_loc
             )
 
+        # Handle trait impl validation and registration
+        if impl.trait_name is not None:
+            self._declare_trait_impl(impl)
+            return
+
         # Declare associated constants with qualified names: StructName::CONSTANT
         for const in impl.constants:
             qualified_name = f"{impl.struct_name}::{const.name}"
@@ -1144,6 +1182,189 @@ class HIRBuilder:
             )
             self.symbol_table.declare(method_key, method_info_symbol)
 
+    def _declare_trait_impl(self, impl: ast.ImplDecl):
+        """First pass: declare trait implementation methods and validate against trait definition."""
+        trait_symbol = self.symbol_table.lookup(impl.trait_name)
+        if not trait_symbol:
+            raise HIRError(
+                f"impl block for undefined trait: {impl.trait_name}",
+                source_loc=impl.source_loc
+            )
+        if trait_symbol.kind != SymbolKind.TRAIT:
+            raise HIRError(
+                f"'{impl.trait_name}' is not a trait",
+                source_loc=impl.source_loc
+            )
+
+        trait_ast = trait_symbol.definition  # ast.TraitDecl
+
+        # Determine if trait methods are far or near
+        trait_is_far = any(m.is_far for m in trait_ast.methods) if trait_ast.methods else False
+
+        # Validate near/far consistency for this struct
+        kind = 'far' if trait_is_far else 'near'
+        if impl.struct_name in self._struct_trait_kind:
+            existing_kind = self._struct_trait_kind[impl.struct_name]
+            if existing_kind != kind:
+                raise HIRError(
+                    f"struct '{impl.struct_name}' cannot implement both near and far traits",
+                    source_loc=impl.source_loc,
+                    hint=f"previously implemented a {existing_kind} trait"
+                )
+        self._struct_trait_kind[impl.struct_name] = kind
+
+        # Validate all trait methods are implemented
+        trait_method_names = {m.name for m in trait_ast.methods}
+        impl_method_names = {m.name for m in impl.methods}
+        missing = trait_method_names - impl_method_names
+        if missing:
+            raise HIRError(
+                f"impl '{impl.trait_name}' for '{impl.struct_name}' is missing methods: {', '.join(sorted(missing))}",
+                source_loc=impl.source_loc
+            )
+
+        # Validate all trait constants are provided
+        trait_const_names = {c.name for c in trait_ast.constants}
+        impl_const_names = {c.name for c in impl.constants}
+        missing_consts = trait_const_names - impl_const_names
+        if missing_consts:
+            raise HIRError(
+                f"impl '{impl.trait_name}' for '{impl.struct_name}' is missing constants: {', '.join(sorted(missing_consts))}",
+                source_loc=impl.source_loc
+            )
+
+        # Assign TypeId if struct doesn't have one yet
+        if impl.struct_name not in self._struct_type_ids:
+            type_id = self._next_type_id
+            self._next_type_id += 1
+            self._struct_type_ids[impl.struct_name] = type_id
+
+            # Register StructName::TYPE_ID as an associated constant
+            type_id_name = f"{impl.struct_name}::TYPE_ID"
+            type_id_symbol = Symbol(
+                name=type_id_name,
+                kind=SymbolKind.IMPL_CONST,
+                definition=None,
+                scope_id=0,
+                var_type=BasicTypeInfo(name='u8'),
+                const_value=type_id
+            )
+            self.symbol_table.declare(type_id_name, type_id_symbol)
+
+        # Register trait impl tracking
+        if impl.trait_name not in self._trait_impls:
+            self._trait_impls[impl.trait_name] = []
+        self._trait_impls[impl.trait_name].append(impl.struct_name)
+
+        # Declare associated constants with qualified names
+        for const in impl.constants:
+            qualified_name = f"{impl.struct_name}::{const.name}"
+            const_type = self.type_resolver.resolve_type(const.const_type)
+            const_value = self.const_evaluator.eval(const.value)
+
+            symbol = Symbol(
+                name=qualified_name,
+                kind=SymbolKind.IMPL_CONST,
+                definition=const,
+                scope_id=0,
+                var_type=const_type,
+                const_value=const_value
+            )
+            self.symbol_table.declare(qualified_name, symbol)
+
+        # Declare methods with mangled names (same pattern as regular impl)
+        for method in impl.methods:
+            mangled_name = f"{impl.struct_name}__{method.name}"
+
+            symbol = Symbol(
+                name=mangled_name,
+                kind=SymbolKind.METHOD,
+                definition=method,
+                scope_id=0
+            )
+            self.symbol_table.declare(mangled_name, symbol)
+
+            # Register method lookup for struct.method
+            method_key = f"{impl.struct_name}.{method.name}"
+            # Check if already registered (from a non-trait impl)
+            existing = self.symbol_table.lookup(method_key)
+            if existing is None:
+                method_info_symbol = Symbol(
+                    name=method_key,
+                    kind=SymbolKind.METHOD,
+                    definition=method,
+                    scope_id=0,
+                    type_info={
+                        'struct_name': impl.struct_name,
+                        'mangled_name': mangled_name,
+                        'impl_is_far': trait_is_far,
+                        'method_self_is_far': method.self_is_far,
+                        'trait_name': impl.trait_name
+                    }
+                )
+                self.symbol_table.declare(method_key, method_info_symbol)
+
+            # Register trait dispatch lookup: TraitName.method.StructName -> mangled_name
+            dispatch_key = f"{impl.trait_name}.{method.name}.{impl.struct_name}"
+            dispatch_symbol = Symbol(
+                name=dispatch_key,
+                kind=SymbolKind.METHOD,
+                definition=method,
+                scope_id=0,
+                type_info={'mangled_name': mangled_name}
+            )
+            self.symbol_table.declare(dispatch_key, dispatch_symbol)
+
+    def _build_trait(self, trait: ast.TraitDecl) -> hir.HIRTraitDecl:
+        """Build HIR trait declaration from AST."""
+        hir_methods = []
+        for method in trait.methods:
+            # Build parameter types
+            hir_params = []
+            for param in method.params:
+                param_type = self.type_resolver.resolve_type(param.param_type)
+                hir_param = hir.HIRParameter(
+                    name=param.name,
+                    param_type=param_type
+                )
+                hir_params.append(hir_param)
+
+            ret_type = None
+            if method.return_type:
+                ret_type = self.type_resolver.resolve_type(method.return_type)
+
+            hir_method = hir.HIRTraitMethod(
+                is_far=method.is_far,
+                name=method.name,
+                self_is_far=method.self_is_far,
+                params=hir_params,
+                return_type=ret_type
+            )
+            hir_methods.append(hir_method)
+
+        hir_constants = []
+        for const in trait.constants:
+            const_type = self.type_resolver.resolve_type(const.const_type)
+            hir_const = hir.HIRTraitConst(
+                name=const.name,
+                const_type=const_type
+            )
+            hir_constants.append(hir_const)
+
+        trait_symbol = self.symbol_table.lookup(trait.name)
+
+        hir_trait = hir.HIRTraitDecl(
+            name=trait.name,
+            methods=hir_methods,
+            constants=hir_constants,
+            symbol=trait_symbol
+        )
+
+        # Update symbol to point to HIR definition
+        trait_symbol.definition = hir_trait
+
+        return hir_trait
+
     def _build_impl(self, impl: ast.ImplDecl) -> hir.HIRImplDecl:
         """Build HIR impl block from AST."""
         # Build associated constants
@@ -1175,6 +1396,7 @@ class HIRBuilder:
             is_far=impl.is_far,
             methods=hir_methods,
             constants=hir_constants,
+            trait_name=impl.trait_name,
             source_loc=impl.source_loc
         )
 
@@ -1884,6 +2106,49 @@ class HIRBuilder:
             hir_body.statements.append(
                 hir.HIRReturnStmt(values=[hir.HIRRegister(name='A', symbol=a_symbol)])
             )
+
+    def _build_trait_dispatch_info(self) -> Optional[dict]:
+        """Build trait dispatch info for codegen (jump tables)."""
+        if not self._trait_impls:
+            return None
+
+        info = {}
+        for trait_name, struct_names in self._trait_impls.items():
+            trait_symbol = self.symbol_table.lookup(trait_name)
+            trait_def = trait_symbol.definition  # HIRTraitDecl or ast.TraitDecl
+
+            # Get method names from trait definition
+            method_names = [m.name for m in trait_def.methods]
+
+            # Determine if trait is far
+            is_far = any(m.is_far for m in trait_def.methods) if trait_def.methods else False
+
+            # Build implementor list sorted by TypeId
+            implementors = []
+            for struct_name in struct_names:
+                type_id = self._struct_type_ids[struct_name]
+                mangled_names = []
+                for method_name in method_names:
+                    dispatch_key = f"{trait_name}.{method_name}.{struct_name}"
+                    dispatch_sym = self.symbol_table.lookup(dispatch_key)
+                    mangled_names.append(dispatch_sym.type_info['mangled_name'])
+
+                implementors.append({
+                    'struct': struct_name,
+                    'type_id': type_id,
+                    'mangled': mangled_names
+                })
+
+            # Sort by type_id for correct table indexing
+            implementors.sort(key=lambda x: x['type_id'])
+
+            info[trait_name] = {
+                'is_far': is_far,
+                'methods': method_names,
+                'implementors': implementors
+            }
+
+        return info
 
     def _get_type_size(self, type_info) -> int:
         """Get size of a type in bytes. Delegates to unified_type_utils."""

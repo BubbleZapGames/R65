@@ -661,6 +661,28 @@ class Call(MIRInstruction):
         return f"Call {self.function}({args_str})"
 
 
+@dataclass
+class TraitDispatch(MIRInstruction):
+    """
+    Trait method dispatch via jump table.
+
+    At runtime: loads TypeId from self_ptr offset 0, indexes into jump table,
+    jumps to concrete method implementation.
+    """
+    trait_name: str = ""
+    method_name: str = ""
+    method_index: int = 0
+    self_ptr: Union[VirtualRegister, None] = None  # Pointer to trait object
+    args: List[Argument] = field(default_factory=list)
+    returns: List[VirtualRegister] = field(default_factory=list)
+    is_far: bool = False
+    callee_return_type: Optional[Any] = None
+
+    def __repr__(self):
+        args_str = ', '.join(str(arg) for arg in self.args)
+        return f"TraitDispatch {self.trait_name}::{self.method_name}({args_str})"
+
+
 # ============================================================================
 # Special Instructions
 # ============================================================================
@@ -905,6 +927,7 @@ class MIRProgram:
     stack_attr: Optional[Any] = None    # StackAttribute from #[stack(...)]
     snesrom_config: Optional[Any] = None  # SnesRomConfig from #[snesrom(...)]
     rom_data_sections: List['ROMDataRef'] = field(default_factory=list)  # Array literal data
+    trait_dispatch_info: Optional[dict] = None  # Trait dispatch tables from HIR
 
     def __repr__(self):
         return f"MIRProgram({len(self.functions)} functions, {len(self.statics)} statics)"

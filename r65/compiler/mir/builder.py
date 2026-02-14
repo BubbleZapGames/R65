@@ -209,7 +209,8 @@ class MIRBuilder:
             symbol_table=hir_program.symbol_table,
             stack_attr=hir_program.stack_attr,
             snesrom_config=hir_program.snesrom_config,
-            rom_data_sections=self._rom_data_sections
+            rom_data_sections=self._rom_data_sections,
+            trait_dispatch_info=hir_program.trait_dispatch_info
         )
 
     def lower_function(self, hir_func: HIRFunctionDecl) -> MIRFunction:

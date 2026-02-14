@@ -18,7 +18,7 @@ The optimization is safe when:
 from typing import Dict, Set, List, Optional, Tuple
 from dataclasses import dataclass, field
 
-from r65.compiler.mir.nodes import MIRProgram, MIRFunction, Call, BasicBlock
+from r65.compiler.mir.nodes import MIRProgram, MIRFunction, Call, TraitDispatch, BasicBlock
 
 
 @dataclass

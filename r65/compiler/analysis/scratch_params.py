@@ -14,7 +14,7 @@ A stack parameter is promoted if:
 from typing import Dict, Set, List, Optional
 from r65.compiler.mir.nodes import (
     MIRProgram, MIRFunction, Call, Argument, ArgumentMechanism,
-    FunctionPointer, Move, VirtualRegister
+    FunctionPointer, Move, VirtualRegister, TraitDispatch,
 )
 from r65.compiler.codegen.register_alloc import ScratchRegisterPool
 from r65.compiler.codegen.type_utils import get_type_size
@@ -92,10 +92,18 @@ def _find_address_taken_functions(mir_program: MIRProgram) -> Set[str]:
                 if isinstance(instr, Move) and isinstance(instr.source, FunctionPointer):
                     address_taken.add(instr.source.function_name)
                 # Check Call args (function pointer passed as argument)
-                if isinstance(instr, Call):
+                if isinstance(instr, (Call, TraitDispatch)):
                     for arg in instr.args:
                         if isinstance(arg.value, FunctionPointer):
                             address_taken.add(arg.value.function_name)
+
+    # Trait method implementations are called indirectly through dispatch tables,
+    # so they cannot have scratch-promoted parameters
+    if hasattr(mir_program, 'trait_dispatch_info') and mir_program.trait_dispatch_info:
+        for trait_info in mir_program.trait_dispatch_info.values():
+            for impl in trait_info.get('implementors', []):
+                for mangled_name in impl.get('mangled', []):
+                    address_taken.add(mangled_name)
 
     return address_taken
 
@@ -204,7 +212,11 @@ def _update_call_sites(func: MIRFunction, promotions: Dict[str, Dict[int, int]])
     """
     for block in func.blocks.values():
         for instr in block.instructions:
-            if not isinstance(instr, Call):
+            if not isinstance(instr, (Call, TraitDispatch)):
+                continue
+
+            # TraitDispatch doesn't have a static callee — skip
+            if isinstance(instr, TraitDispatch):
                 continue
 
             # Only direct calls (not indirect through function pointer)

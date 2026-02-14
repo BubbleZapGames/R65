@@ -75,6 +75,7 @@ class HIRProgram(HIRNode):
     symbol_table: Any = None  # Will be SymbolTable
     stack_attr: Any = None  # StackAttribute from #[stack(...)]
     snesrom_config: Optional[SnesRomConfig] = None  # SNES ROM header config from #[snesrom(...)]
+    trait_dispatch_info: Optional[dict] = None  # Trait dispatch tables for codegen
 
     def get_declarations_by_type(self, decl_type: type) -> List[HIRDeclaration]:
         """Filter declarations by type."""
@@ -104,6 +105,11 @@ class HIRProgram(HIRNode):
     def enums(self) -> List['HIREnumDecl']:
         """Get all enum declarations."""
         return self.get_declarations_by_type(HIREnumDecl)
+
+    @property
+    def traits(self) -> List['HIRTraitDecl']:
+        """Get all trait declarations."""
+        return self.get_declarations_by_type(HIRTraitDecl)
 
 
 # =============================================================================
@@ -273,6 +279,38 @@ class HIRTypeAlias(HIRDeclaration):
 
 
 @dataclass
+class HIRTraitMethod(HIRNode):
+    """Method signature in a trait declaration."""
+    is_far: bool = False
+    name: str = ""
+    self_is_far: bool = False
+    params: List['HIRParameter'] = field(default_factory=list)
+    return_type: Optional[Any] = None  # Will be TypeInfo
+
+
+@dataclass
+class HIRTraitConst(HIRNode):
+    """Associated constant declaration in a trait."""
+    name: str = ""
+    const_type: Any = None  # Will be TypeInfo
+
+
+@dataclass
+class HIRTraitDecl(HIRDeclaration):
+    """Trait declaration.
+
+    Defines method signatures and associated constants that implementing structs must provide.
+    Used for TypeId-based dynamic dispatch via jump tables.
+    """
+    name: str = ""
+    methods: List[HIRTraitMethod] = field(default_factory=list)
+    constants: List[HIRTraitConst] = field(default_factory=list)
+
+    # Symbol reference
+    symbol: Optional[Any] = None  # Will be Symbol
+
+
+@dataclass
 class HIRImplDecl(HIRDeclaration):
     """Impl block declaration.
 
@@ -283,6 +321,7 @@ class HIRImplDecl(HIRDeclaration):
     is_far: bool = False  # True for `impl far StructName`
     methods: List['HIRFunctionDecl'] = field(default_factory=list)
     constants: List['HIRConstDecl'] = field(default_factory=list)
+    trait_name: Optional[str] = None  # Set for trait impls
 
 
 # =============================================================================

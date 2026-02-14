@@ -6,7 +6,7 @@ Entry points (marked with #[entry]) and interrupt handlers are always kept.
 """
 
 from typing import Set, List
-from r65.compiler.mir.nodes import MIRProgram, MIRFunction, Call
+from r65.compiler.mir.nodes import MIRProgram, MIRFunction, Call, TraitDispatch
 
 
 class DeadFunctionEliminator:
@@ -52,6 +52,13 @@ class DeadFunctionEliminator:
         # If no entry points exist, skip optimization (likely a unit test)
         if not roots:
             return 0
+
+        # Mark all trait implementor methods as reachable (called via jump tables)
+        if hasattr(mir_program, 'trait_dispatch_info') and mir_program.trait_dispatch_info:
+            for trait_info in mir_program.trait_dispatch_info.values():
+                for impl_info in trait_info.get('implementors', []):
+                    for mangled_name in impl_info.get('mangled', []):
+                        roots.add(mangled_name)
 
         # Build call graph
         call_graph = self._build_call_graph(mir_program.functions)
@@ -132,6 +139,11 @@ class DeadFunctionEliminator:
                         # Indirect calls through function pointers - can't determine
                         # statically, so we can't eliminate any function that might
                         # be called through a pointer. For now, we only handle direct calls.
+                    elif isinstance(instr, TraitDispatch):
+                        # Trait dispatch calls all implementor methods via jump table.
+                        # Mark the dispatch wrapper and all implementors as called.
+                        dispatch_name = f"{instr.trait_name}__{instr.method_name}__dispatch"
+                        called_functions.add(dispatch_name)
 
             call_graph[func.name] = called_functions
 

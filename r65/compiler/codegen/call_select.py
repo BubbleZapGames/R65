@@ -15,7 +15,7 @@ redundant push/pull operations.
 """
 
 from typing import List, Set, Dict, NamedTuple, Optional, TYPE_CHECKING
-from r65.compiler.mir.nodes import Call, VirtualRegister, ArgumentMechanism, Immediate as MIRImmediate
+from r65.compiler.mir.nodes import Call, TraitDispatch, VirtualRegister, ArgumentMechanism, Immediate as MIRImmediate
 
 if TYPE_CHECKING:
     from r65.compiler.mir.liveness import ClobberRegion
@@ -378,6 +378,209 @@ class CallInstructionSelector(BaseSelector):
                 self._emit_d_equals_s_restore()  # PHD + TSC + TCD
             else:
                 self._emit_d_push_only()  # Just PHD (for epilogue)
+
+    # ========================================================================
+    # Trait Dispatch
+    # ========================================================================
+
+    def select_trait_dispatch(self, instr: TraitDispatch):
+        """
+        Generate code for TraitDispatch instruction.
+
+        Emits argument setup, then JSR to the dispatch wrapper function.
+        The dispatch wrapper (generated separately) loads TypeId and jumps
+        to the concrete implementation via a jump table.
+
+        Args:
+            instr: TraitDispatch instruction
+        """
+        # Trait dispatch is treated like a regular call to the dispatch wrapper.
+        # The wrapper function is generated in codegen.py and handles the
+        # TypeId lookup and jump table dispatch.
+        dispatch_name = f"{instr.trait_name}__{instr.method_name}__dispatch"
+
+        # Compute hw register spills (no preserves_attr for trait dispatch)
+        spills = self._compute_trait_dispatch_spills(instr)
+        self._emit_hw_spills(spills)
+
+        # Set up arguments (same mechanism as regular calls)
+        stack_bytes_pushed = self._emit_trait_dispatch_args(instr)
+
+        # Emit the call to the dispatch wrapper
+        if instr.is_far:
+            self._emit_address(Opcode.JSL, dispatch_name)
+        else:
+            self._emit_address(Opcode.JSR, dispatch_name)
+
+        # Invalidate XBA state after dispatch
+        self.parent._invalidate_xba_state()
+
+        # Collect return values (reuse existing helper - works with any instr
+        # that has .returns and callee_return_type)
+        self._emit_return_value_collection(instr)
+
+        # Reload spilled registers
+        reloads = self._compute_trait_dispatch_reloads(instr)
+        self._emit_hw_reloads(reloads)
+
+    def _compute_trait_dispatch_spills(self, instr: TraitDispatch) -> List[SpillInfo]:
+        """Compute hw register spills for trait dispatch (no preserves)."""
+        spills: List[SpillInfo] = []
+        reg_alloc = self.parent.reg_alloc
+        if not reg_alloc:
+            return spills
+
+        instr_idx = None
+        if reg_alloc.instr_liveness:
+            pos = reg_alloc.instr_liveness.get_instruction_position(instr)
+            if pos:
+                _, instr_idx = pos
+
+        # Determine return registers
+        return_regs = self._get_callee_return_registers(instr)
+        callee_return_type = getattr(instr, 'callee_return_type', None)
+        if callee_return_type is not None:
+            from r65.compiler.hir.types import TupleTypeInfo
+            if isinstance(callee_return_type, TupleTypeInfo):
+                num_returns = len(callee_return_type.element_types)
+            else:
+                num_returns = 1
+        else:
+            num_returns = len(instr.returns)
+        call_return_set = set(return_regs[:num_returns])
+
+        for reg_name in ['A', 'X', 'Y']:
+            if reg_name in call_return_set:
+                continue
+
+            use_region_based = (
+                instr_idx is not None and
+                self._function_regions is not None and
+                (reg_name in ('X', 'Y') or (reg_name == 'A' and self._a_bound_to_vreg))
+            )
+
+            if use_region_based:
+                region = self._region_state.get_region_for_call(reg_name, instr_idx)
+                if region is not None:
+                    if self._region_state.is_first_call_in_region(reg_name, instr_idx):
+                        spills.append(SpillInfo(vreg=None, hw_reg=reg_name))
+                        self._region_state.mark_region_active(reg_name, region)
+                    continue
+
+            hw_alloc = reg_alloc.get_hw_alloc(reg_name)
+            vreg = hw_alloc.allocated_vreg
+
+            if vreg is not None:
+                if reg_alloc.instr_liveness:
+                    pos = reg_alloc.instr_liveness.get_instruction_position(instr)
+                    if pos:
+                        block_id, idx = pos
+                        if reg_alloc.instr_liveness.is_live_after(vreg, block_id, idx):
+                            spills.append(SpillInfo(vreg=vreg, hw_reg=reg_name))
+                else:
+                    if hw_alloc.is_bound:
+                        spills.append(SpillInfo(vreg=vreg, hw_reg=reg_name))
+                continue
+
+            if reg_name in ('X', 'Y') and reg_alloc.instr_liveness and self._function_regions is None:
+                pos = reg_alloc.instr_liveness.get_instruction_position(instr)
+                if pos:
+                    block_id, idx = pos
+                    if reg_alloc.instr_liveness.is_hw_reg_live_after(reg_name, block_id, idx):
+                        spills.append(SpillInfo(vreg=None, hw_reg=reg_name))
+
+        return spills
+
+    def _compute_trait_dispatch_reloads(self, instr: TraitDispatch) -> List[SpillInfo]:
+        """Compute hw register reloads after trait dispatch."""
+        reloads: List[SpillInfo] = []
+        reg_alloc = self.parent.reg_alloc
+        if not reg_alloc:
+            return reloads
+
+        # Skip return registers — they hold the call result, not the spilled value
+        return_regs = self._get_callee_return_registers(instr)
+        callee_return_type = getattr(instr, 'callee_return_type', None)
+        if callee_return_type is not None:
+            from r65.compiler.hir.types import TupleTypeInfo
+            if isinstance(callee_return_type, TupleTypeInfo):
+                num_returns = len(callee_return_type.element_types)
+            else:
+                num_returns = 1
+        else:
+            num_returns = len(instr.returns)
+        call_return_set = set(return_regs[:num_returns])
+
+        instr_idx = None
+        if reg_alloc.instr_liveness:
+            pos = reg_alloc.instr_liveness.get_instruction_position(instr)
+            if pos:
+                _, instr_idx = pos
+
+        for reg_name in ['A', 'X', 'Y']:
+            if reg_name in call_return_set:
+                continue
+
+            use_region_based = (
+                instr_idx is not None and
+                self._function_regions is not None and
+                (reg_name in ('X', 'Y') or (reg_name == 'A' and self._a_bound_to_vreg))
+            )
+
+            if use_region_based:
+                region = self._region_state.get_region_for_call(reg_name, instr_idx)
+                if region is not None:
+                    if self._region_state.is_last_call_in_region(reg_name, instr_idx):
+                        reloads.append(SpillInfo(vreg=None, hw_reg=reg_name))
+                        self._region_state.mark_region_inactive(reg_name)
+                    continue
+
+            hw_alloc = reg_alloc.get_hw_alloc(reg_name)
+            vreg = hw_alloc.allocated_vreg
+            if vreg is not None:
+                if reg_alloc.instr_liveness:
+                    pos = reg_alloc.instr_liveness.get_instruction_position(instr)
+                    if pos:
+                        block_id, idx = pos
+                        if reg_alloc.instr_liveness.is_live_after(vreg, block_id, idx):
+                            reloads.append(SpillInfo(vreg=vreg, hw_reg=reg_name))
+                else:
+                    if hw_alloc.is_bound:
+                        reloads.append(SpillInfo(vreg=vreg, hw_reg=reg_name))
+                continue
+
+            if reg_name in ('X', 'Y') and reg_alloc.instr_liveness and self._function_regions is None:
+                pos = reg_alloc.instr_liveness.get_instruction_position(instr)
+                if pos:
+                    block_id, idx = pos
+                    if reg_alloc.instr_liveness.is_hw_reg_live_after(reg_name, block_id, idx):
+                        reloads.append(SpillInfo(vreg=None, hw_reg=reg_name))
+
+        return reloads
+
+    def _emit_trait_dispatch_args(self, instr: TraitDispatch) -> int:
+        """Emit argument setup for trait dispatch (all stack-passed)."""
+        from r65.compiler.codegen.type_utils import get_type_size
+
+        stack_bytes_pushed = 0
+        stack_args = [arg for arg in instr.args if arg.mechanism == ArgumentMechanism.STACK]
+
+        # Push stack arguments in reverse order (last param first)
+        for arg in reversed(stack_args):
+            arg_loc = self.parent._get_operand_location(arg.value)
+
+            if arg_loc.kind == LocationKind.STACK and stack_bytes_pushed > 0:
+                arg_loc = self.parent._offset_location(arg_loc, stack_bytes_pushed)
+
+            self._emit_stack_argument(arg, arg_loc)
+            arg_size = 1
+            if arg.param_type is not None:
+                arg_size = get_type_size(arg.param_type)
+            elif hasattr(arg.value, 'type_info') and arg.value.type_info:
+                arg_size = get_type_size(arg.value.type_info)
+            stack_bytes_pushed += arg_size
+
+        return stack_bytes_pushed
 
     # ========================================================================
     # Hardware Register Spill/Reload (Region-Based)

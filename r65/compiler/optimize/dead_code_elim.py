@@ -12,7 +12,7 @@ from r65.compiler.mir.nodes import (
     Jump, CondBranch, Return, ReturnFromInterrupt, Call,
     LoadIndirect, StoreIndirect, Rotate, BitTest, JumpTable,
     Push, Pull, SaveRegister, RestoreRegister, InlineAsm, SetMode,
-    MemoryFill, BlockCopy, LookupTable
+    MemoryFill, BlockCopy, LookupTable, TraitDispatch,
 )
 
 
@@ -251,11 +251,14 @@ class DeadCodeEliminator:
         elif isinstance(instr, Return):
             for val in instr.values:
                 add_if_vreg(val)
-        elif isinstance(instr, Call):
+        elif isinstance(instr, (Call, TraitDispatch)):
             for arg in instr.args:
                 add_if_vreg(arg.value)
+            # TraitDispatch uses self_ptr
+            if isinstance(instr, TraitDispatch) and isinstance(instr.self_ptr, VirtualRegister):
+                read.add(instr.self_ptr.id)
             # Indirect call through vreg
-            if isinstance(instr.function, VirtualRegister):
+            if isinstance(instr, Call) and isinstance(instr.function, VirtualRegister):
                 read.add(instr.function.id)
         elif isinstance(instr, Rotate):
             add_if_vreg(instr.source)
@@ -288,7 +291,7 @@ class DeadCodeEliminator:
             dest = instr.dest
         elif isinstance(instr, SaveRegister):
             dest = instr.save_location
-        elif isinstance(instr, Call):
+        elif isinstance(instr, (Call, TraitDispatch)):
             # Calls can have multiple return registers
             # For simplicity, we don't eliminate call results (they may have side effects)
             return None

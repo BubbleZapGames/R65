@@ -19,6 +19,7 @@ from r65.compiler.mir.nodes import (
     VirtualRegister, MIRFunction, Move, Return, HardwareRegister, Call,
     Store, Load, BinaryOp, UnaryOp, TypeConvert, Compare, BitTest, Rotate,
     ToBool, LoadIndirect, StoreIndirect, StatusFlagRead, InlineAsm,
+    TraitDispatch,
 )
 from r65.compiler.mir.liveness import LivenessAnalyzer
 from r65.compiler.hir.unified_type_utils import get_unified_type_size
@@ -329,7 +330,7 @@ class StackSlotAllocator:
 
         for block_id, block in self.func.blocks.items():
             for instr_idx, instr in enumerate(block.instructions):
-                if isinstance(instr, Call):
+                if isinstance(instr, (Call, TraitDispatch)):
                     for vreg in local_set:
                         if vreg in spanning:
                             continue
@@ -371,7 +372,7 @@ class StackSlotAllocator:
 
         for block_id, block in self.func.blocks.items():
             for instr_idx, instr in enumerate(block.instructions):
-                if not isinstance(instr, Call):
+                if not isinstance(instr, (Call, TraitDispatch)):
                     continue
 
                 # Sum sizes of locals live at this call
@@ -478,7 +479,7 @@ class StackSlotAllocator:
                                 vreg_uses[var.id] = []
                             vreg_uses[var.id].append(instr)
 
-                elif isinstance(instr, Call):
+                elif isinstance(instr, (Call, TraitDispatch)):
                     # Call with exactly 1 return vreg: the return value is in A.
                     # Track as defined-in-A for coalescence (e.g., result = func()).
                     # A Call clobbers all registers, so no other vreg can be live
@@ -675,7 +676,7 @@ class StackSlotAllocator:
         _def_types = (Move, BinaryOp)
         for block in self.func.blocks.values():
             for instr in block.instructions:
-                if isinstance(instr, Call):
+                if isinstance(instr, (Call, TraitDispatch)):
                     if instr.returns and isinstance(instr.returns[0], VirtualRegister):
                         if instr.returns[0].id == vreg_id:
                             coalesceable[instr.returns[0]] = hw_reg
@@ -709,9 +710,9 @@ class StackSlotAllocator:
                     instr = block.instructions[i]
                     if id(instr) in noop_instrs:
                         continue
-                    if isinstance(instr, Call):
+                    if isinstance(instr, (Call, TraitDispatch)):
                         preserved = set()
-                        if instr.preserves_attr:
+                        if getattr(instr, 'preserves_attr', None):
                             preserved = set(instr.preserves_attr.registers)
                         if hw_reg not in preserved:
                             return False
@@ -721,9 +722,9 @@ class StackSlotAllocator:
                     for instr in block.instructions:
                         if id(instr) in noop_instrs:
                             continue
-                        if isinstance(instr, Call):
+                        if isinstance(instr, (Call, TraitDispatch)):
                             preserved = set()
-                            if instr.preserves_attr:
+                            if getattr(instr, 'preserves_attr', None):
                                 preserved = set(instr.preserves_attr.registers)
                             if hw_reg not in preserved:
                                 return False
@@ -811,9 +812,9 @@ class StackSlotAllocator:
             return False
 
         # Calls clobber all registers not in preserves
-        if isinstance(instr, Call):
+        if isinstance(instr, (Call, TraitDispatch)):
             preserved = set()
-            if instr.preserves_attr:
+            if getattr(instr, 'preserves_attr', None):
                 preserved = set(instr.preserves_attr.registers)
             return hw_reg not in preserved
 

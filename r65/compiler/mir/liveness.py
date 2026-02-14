@@ -12,7 +12,7 @@ from r65.compiler.mir.nodes import (
     BasicBlock, MIRFunction,
     Load, Store, Move, BinaryOp, UnaryOp, Compare, BitTest, Rotate,
     Call, Return, Jump, CondBranch, JumpTable, LookupTable, TypeConvert, ToBool,
-    LoadIndirect, StoreIndirect, StatusFlagRead
+    LoadIndirect, StoreIndirect, StatusFlagRead, TraitDispatch,
 )
 
 
@@ -252,13 +252,16 @@ class LivenessAnalyzer:
             elif isinstance(instr.scrutinee, HardwareRegister):
                 uses.append(instr.scrutinee)
 
-        elif isinstance(instr, Call):
-            # Call uses all argument registers
+        elif isinstance(instr, (Call, TraitDispatch)):
+            # Call/TraitDispatch uses all argument registers
             for arg in instr.args:
                 if isinstance(arg.value, VirtualRegister):
                     uses.append(arg.value)
                 elif isinstance(arg.value, HardwareRegister):
                     uses.append(arg.value)
+            # TraitDispatch also uses self_ptr
+            if isinstance(instr, TraitDispatch) and isinstance(instr.self_ptr, VirtualRegister):
+                uses.append(instr.self_ptr)
 
         elif isinstance(instr, Return):
             # Return uses all return value registers
@@ -337,8 +340,8 @@ class LivenessAnalyzer:
             if isinstance(instr.dest, VirtualRegister):
                 defs.append(instr.dest)
 
-        elif isinstance(instr, Call):
-            # Call defines all return value registers
+        elif isinstance(instr, (Call, TraitDispatch)):
+            # Call/TraitDispatch defines all return value registers
             for ret in instr.returns:
                 if isinstance(ret, VirtualRegister):
                     defs.append(ret)
@@ -721,8 +724,8 @@ class InstructionLivenessAnalyzer:
                 if vreg in defs:
                     vreg_defined = True
 
-                # Check if this is a Call and vreg is live after it
-                if isinstance(instr, Call) and vreg_defined:
+                # Check if this is a Call/TraitDispatch and vreg is live after it
+                if isinstance(instr, (Call, TraitDispatch)) and vreg_defined:
                     # Check if vreg is live after this call
                     if self.is_live_after(vreg, block_id, instr_idx):
                         calls.append(instr)
@@ -887,12 +890,12 @@ class ClobberRegionAnalyzer:
                 for d in defs
             )
 
-            # For Call instructions, also check if the call returns a value
+            # For Call/TraitDispatch instructions, also check if the call returns a value
             # in hw_reg. A call that defines a register via its return value
             # is NOT a clobber — it's a definition. Without this check, the
             # region analyzer would spill/restore the register around the call,
             # clobbering the return value.
-            if isinstance(instr, Call) and not is_def:
+            if isinstance(instr, (Call, TraitDispatch)) and not is_def:
                 if self._call_returns_in_hw_reg(instr, hw_reg):
                     is_def = True
 
@@ -904,13 +907,13 @@ class ClobberRegionAnalyzer:
                 current_region = None
 
             # Check if this is a clobbering call (skip if call defines hw_reg)
-            if isinstance(instr, Call) and not is_def:
+            if isinstance(instr, (Call, TraitDispatch)) and not is_def:
                 # Get callee's preserved registers
                 preserved: Set[str] = set()
-                if isinstance(instr.function, str):
+                if isinstance(instr, Call) and isinstance(instr.function, str):
                     preserved = preserves_map.get(instr.function, set())
                 # Also check the preserves attribute on the call instruction
-                if instr.preserves_attr:
+                if hasattr(instr, 'preserves_attr') and instr.preserves_attr:
                     preserved = preserved | set(instr.preserves_attr.registers)
 
                 # Check if this call clobbers the register

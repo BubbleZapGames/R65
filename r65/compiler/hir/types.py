@@ -95,6 +95,16 @@ class EnumTypeInfo(TypeInfo):
 
 
 @dataclass
+class TraitTypeInfo(TypeInfo):
+    """Trait type reference (used as pointee type in trait pointers like *Drawable)."""
+    name: str
+    definition: Optional[Any] = None  # Will be HIRTraitDecl (resolved during HIR)
+
+    def __str__(self):
+        return self.name
+
+
+@dataclass
 class NeverTypeInfo(TypeInfo):
     """Never type: ! (function never returns)."""
 
@@ -193,7 +203,7 @@ class TypeResolver:
             raise HIRError(f"Unknown type node: {type(ast_type).__name__}")
 
     def resolve_named_type(self, name: str) -> TypeInfo:
-        """Resolve a named type (struct, enum, or type alias) by name."""
+        """Resolve a named type (struct, enum, trait, or type alias) by name."""
         symbol = self.symbol_table.lookup(name)
 
         if symbol is None:
@@ -203,6 +213,8 @@ class TypeResolver:
             return StructTypeInfo(name=name, definition=symbol.definition)
         elif symbol.kind.value == "enum":
             return EnumTypeInfo(name=name, definition=symbol.definition)
+        elif symbol.kind.value == "trait":
+            return TraitTypeInfo(name=name, definition=symbol.definition)
         elif symbol.kind.value == "type_alias":
             # Type aliases are resolved to their underlying type
             return symbol.type_info

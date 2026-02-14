@@ -15,7 +15,7 @@ from r65.compiler.hir import (
 from r65.compiler.mir.nodes import (
     VirtualRegister, HardwareRegister, Immediate,
     Move, Store, Call, Argument, ArgumentMechanism, Rotate,
-    SetMode, Push, Pull,
+    SetMode, Push, Pull, TraitDispatch,
 )
 from r65.compiler.hir.types import ArrayTypeInfo, BasicTypeInfo
 from r65.compiler.typeck.processor_mode import ProcessorMode, ModeState
@@ -82,6 +82,8 @@ class CallLowerer:
         """
         # Check if this is a method call (set by type checker)
         if call_expr.method_call_info:
+            if call_expr.method_call_info.get('is_trait_dispatch'):
+                return self._lower_trait_dispatch_call(call_expr)
             return self._lower_method_call(call_expr)
 
         # Get function symbol and declaration
@@ -340,6 +342,98 @@ class CallLowerer:
 
         # Emit call with mode transition handling
         self._emit_call_with_mode_transition(func_decl, args, returns, None)
+
+        return returns[0] if returns else None
+
+    def _lower_trait_dispatch_call(self, call_expr: HIRFunctionCall) -> Union[VirtualRegister, HardwareRegister, None]:
+        """
+        Lower trait method dispatch call.
+
+        Trait dispatch calls are method calls on trait pointers (e.g., drawable.draw())
+        that resolve at runtime via TypeId-indexed jump tables.
+
+        method_call_info contains:
+        - trait_name: Name of the trait (e.g., "Drawable")
+        - method_name: Method being called (e.g., "draw")
+        - method_index: Index of method in trait's method list
+        - self_arg: The trait pointer expression
+        - trait_is_far: Whether the trait method is far
+
+        Args:
+            call_expr: HIR function call with is_trait_dispatch set
+
+        Returns:
+            VirtualRegister holding return value, or None for void
+        """
+        method_info = call_expr.method_call_info
+        trait_name = method_info['trait_name']
+        method_name = method_info['method_name']
+        method_index = method_info['method_index']
+        self_arg = method_info['self_arg']
+        trait_is_far = method_info['trait_is_far']
+
+        # Lower self argument (trait pointer)
+        self_vreg = self.builder.lower_expression(self_arg)
+
+        # Build argument list: self pointer as first arg (stack-passed), then user args
+        from r65.compiler.hir.types import PointerTypeInfo
+        args = []
+        self_ptr_type = self_arg.expr_type if hasattr(self_arg, 'expr_type') else PointerTypeInfo(pointee_type=BasicTypeInfo('u8'))
+        args.append(Argument(
+            value=self_vreg,
+            mechanism=ArgumentMechanism.STACK,
+            location=None,
+            param_type=self_ptr_type
+        ))
+
+        # Lower remaining arguments (trait methods can have params beyond self)
+        # Look up trait definition for param types
+        trait_symbol = self.builder._hir_program.symbol_table.lookup(trait_name)
+        trait_def = trait_symbol.definition if trait_symbol else None
+        trait_method = None
+        if trait_def:
+            for m in trait_def.methods:
+                if m.name == method_name:
+                    trait_method = m
+                    break
+
+        for i, arg_expr in enumerate(call_expr.args):
+            arg_vreg = self.builder.lower_expression(arg_expr)
+            param_type = None
+            if trait_method and i < len(trait_method.params):
+                param_type = trait_method.params[i].param_type
+            args.append(Argument(
+                value=arg_vreg,
+                mechanism=ArgumentMechanism.STACK,
+                location=None,
+                param_type=param_type
+            ))
+
+        # Allocate return value register
+        returns = []
+        return_type = call_expr.expr_type if hasattr(call_expr, 'expr_type') else None
+        if return_type:
+            from r65.compiler.hir.types import TupleTypeInfo
+            if isinstance(return_type, TupleTypeInfo):
+                pass  # Tuple returns handled by caller
+            elif return_type != BasicTypeInfo('void'):
+                result_vreg = self.ctx.alloc_vreg(
+                    return_type,
+                    f"trait_dispatch_{trait_name}_{method_name}_result"
+                )
+                returns.append(result_vreg)
+
+        # Emit TraitDispatch MIR node
+        self.emit(TraitDispatch(
+            trait_name=trait_name,
+            method_name=method_name,
+            method_index=method_index,
+            self_ptr=self_vreg,
+            args=args,
+            returns=returns,
+            is_far=trait_is_far,
+            callee_return_type=return_type
+        ))
 
         return returns[0] if returns else None
 

@@ -17,7 +17,7 @@ from r65.compiler.mir.nodes import (
     Move, Jump, Return, Call, CondBranch, JumpTable, LookupTable,
     Load, Store, LoadIndirect, StoreIndirect,
     BinaryOp, UnaryOp, Compare, TypeConvert, ToBool,
-    InlineAsm, ReturnFromInterrupt,
+    InlineAsm, ReturnFromInterrupt, TraitDispatch,
     Argument, ArgumentMechanism,
 )
 from r65.compiler.hir import RegisterBinding, VariableBinding

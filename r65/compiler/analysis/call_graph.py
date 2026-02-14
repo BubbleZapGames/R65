@@ -7,7 +7,7 @@ to check for unsafe use of zero-page or register parameters.
 
 from typing import Dict, List, Set, Optional
 from dataclasses import dataclass, field
-from r65.compiler.mir.nodes import MIRProgram, MIRFunction, Call
+from r65.compiler.mir.nodes import MIRProgram, MIRFunction, Call, TraitDispatch
 from r65.compiler.errors import get_diagnostics
 
 
@@ -99,6 +99,9 @@ class CallGraphAnalyzer:
                         # Indirect call via function pointer - track caller for warnings
                         # The caller might be calling any function whose address is taken
                         self.graph.indirect_callers.add(func.name)
+                elif isinstance(instr, TraitDispatch):
+                    # Trait dispatch is an indirect call — track as indirect caller
+                    self.graph.indirect_callers.add(func.name)
 
     def find_cycles(self) -> List[List[str]]:
         """

@@ -59,9 +59,12 @@ class StructValidator:
             )
 
         # Build expected fields map from struct definition
+        # Skip synthetic __type_id field — it's auto-initialized by the compiler
         expected_fields = {}
         if isinstance(struct_def, HIRStructDecl):
             for field in struct_def.fields:
+                if field.name == '__type_id':
+                    continue
                 expected_fields[field.name] = field.field_type
         else:
             # AST struct definition - resolve types

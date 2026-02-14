@@ -80,6 +80,9 @@ class TypeChecker:
         # Maps local variables bound to registers (e.g., let x @ X = 10)
         self._register_aliases: dict[int, str] = {}
 
+        # Set symbol table on TypeUtils for trait impl checking
+        TypeUtils._symbol_table = self.symbol_table
+
     @property
     def match_validator(self) -> MatchValidator:
         """Lazy initialization of match validator."""
@@ -845,7 +848,7 @@ class TypeChecker:
             else:
                 self._check_type_match(
                     var_type, init_type, stmt.initializer,
-                    "let binding", stmt.source_loc
+                    "let binding", stmt.source_loc, use_compatible=True
                 )
 
     def check_tuple_let_statement(self, stmt: HIRTupleLetStmt):
@@ -1416,8 +1419,8 @@ class TypeChecker:
                 break
 
         if field is None:
-            # Get available field names for hint
-            available_fields = [f.name for f in struct_def.fields]
+            # Get available field names for hint (exclude synthetic __type_id)
+            available_fields = [f.name for f in struct_def.fields if not f.name.startswith('__')]
             hint = f"available fields: {', '.join(available_fields)}" if available_fields else None
             raise TypeCheckError(
                 f"struct '{base_type.name}' has no field '{expr.field_name}'",

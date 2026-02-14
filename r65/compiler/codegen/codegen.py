@@ -183,6 +183,9 @@ class ProgramCodeGenerator:
                     scratch_pool=scratch_pool
                 )
 
+        # Phase 6.5: Trait dispatch tables (jump tables and wrapper functions)
+        self._emit_trait_dispatch_tables(mir_program)
+
         # Stack depth analysis (post-codegen, uses codegen_frame_size/codegen_prologue_bytes)
         self._analyze_stack_depth(mir_program)
 
@@ -236,6 +239,139 @@ class ProgramCodeGenerator:
     # ========================================================================
     # Helper Methods
     # ========================================================================
+
+    def _emit_trait_dispatch_tables(self, mir_program: MIRProgram):
+        """
+        Emit trait dispatch wrapper functions and jump tables.
+
+        For each trait method, generates:
+        1. A dispatch wrapper function that loads TypeId from self_ptr and
+           indexes into a jump table
+        2. A jump table with word-size entries pointing to concrete implementations
+
+        Near dispatch wrapper:
+            TraitName__method__dispatch:
+              LDY #$0000
+              LDA ($03,S),Y        ; Load TypeId from *self_ptr (offset 0)
+              REP #$20
+              AND #$00FF           ; Zero-extend to 16-bit
+              ASL A                ; x2 for word table
+              TAX
+              SEP #$20
+              JMP (TraitName__method__table,X)
+
+        Far dispatch uses JML trampolines instead of a jump table.
+        """
+        if not hasattr(mir_program, 'trait_dispatch_info') or not mir_program.trait_dispatch_info:
+            return
+
+        self.emitter.emit_section_header("Trait Dispatch Tables")
+
+        for trait_name, trait_info in mir_program.trait_dispatch_info.items():
+            is_far = trait_info.get('is_far', False)
+            methods = trait_info.get('methods', [])
+            implementors = trait_info.get('implementors', [])
+
+            if not implementors:
+                continue
+
+            # Get max TypeId to size the table
+            max_type_id = max(impl['type_id'] for impl in implementors)
+
+            for method_idx, method_name in enumerate(methods):
+                dispatch_label = f"{trait_name}__{method_name}__dispatch"
+                table_label = f"{trait_name}__{method_name}__table"
+
+                if is_far:
+                    self._emit_far_dispatch(
+                        dispatch_label, trait_name, method_name,
+                        method_idx, implementors, max_type_id
+                    )
+                else:
+                    self._emit_near_dispatch(
+                        dispatch_label, table_label, trait_name, method_name,
+                        method_idx, implementors, max_type_id
+                    )
+
+        # Emit _trait_error handler (STP to halt processor on invalid TypeId)
+        self.emitter.emit_label("_trait_error")
+        self.emitter.emit_raw("    STP")
+        self.emitter.emit_blank_line()
+
+    def _emit_near_dispatch(self, dispatch_label, table_label, trait_name, method_name,
+                            method_idx, implementors, max_type_id):
+        """Emit near dispatch wrapper and jump table for a trait method."""
+        # Dispatch wrapper function
+        self.emitter.emit_label(dispatch_label)
+
+        # Self pointer is on stack at S+3 (after 2-byte return address from JSR)
+        # LDA (sr,S),Y with Y=0 loads byte from address pointed to by stack value
+        self.emitter.emit_raw("    LDY #$0000")
+        self.emitter.emit_raw("    LDA ($03,S),Y")          # Load TypeId byte from *self_ptr
+
+        # Zero-extend to 16-bit and compute table index
+        self.emitter.emit_raw("    REP #$20")               # Switch to m16
+        self.emitter.emit_raw("    AND #$00FF")              # Zero-extend
+        self.emitter.emit_raw("    ASL A")                   # x2 for word table entries
+        self.emitter.emit_raw("    TAX")
+        self.emitter.emit_raw("    SEP #$20")                # Back to m8
+        self.emitter.emit_raw(f"    JMP ({table_label},X)")
+        self.emitter.emit_blank_line()
+
+        # Jump table
+        self.emitter.emit_label(table_label)
+
+        # Build table: entry for each TypeId from 0 to max_type_id
+        # TypeId 0 is invalid (unused), points to error handler
+        type_id_to_impl = {}
+        for impl in implementors:
+            type_id_to_impl[impl['type_id']] = impl['mangled'][method_idx]
+
+        for tid in range(max_type_id + 1):
+            if tid in type_id_to_impl:
+                self.emitter.emit_raw(f"    .dw {type_id_to_impl[tid]}")
+            else:
+                self.emitter.emit_raw("    .dw _trait_error")
+
+        self.emitter.emit_blank_line()
+
+    def _emit_far_dispatch(self, dispatch_label, trait_name, method_name,
+                           method_idx, implementors, max_type_id):
+        """Emit far dispatch trampoline for a trait method."""
+        # For far dispatch, we use JML trampolines (4 bytes each)
+        # The dispatch wrapper computes TypeId * 4 and jumps into the trampoline table
+        trampoline_label = f"{trait_name}__{method_name}__trampoline"
+
+        self.emitter.emit_label(dispatch_label)
+
+        # Self pointer is on stack at S+4 (after 3-byte return address from JSL)
+        self.emitter.emit_raw("    LDY #$0000")
+        self.emitter.emit_raw("    LDA ($04,S),Y")          # Load TypeId byte from *self_ptr
+
+        # Compute trampoline offset: TypeId * 4 (each JML is 4 bytes)
+        self.emitter.emit_raw("    REP #$20")               # Switch to m16
+        self.emitter.emit_raw("    AND #$00FF")              # Zero-extend
+        self.emitter.emit_raw("    ASL A")                   # x2
+        self.emitter.emit_raw("    ASL A")                   # x4
+        self.emitter.emit_raw("    TAX")
+        self.emitter.emit_raw("    SEP #$20")                # Back to m8
+        self.emitter.emit_raw(f"    JMP {trampoline_label},X")
+        self.emitter.emit_blank_line()
+
+        # Trampoline table: JML instructions
+        self.emitter.emit_label(trampoline_label)
+
+        type_id_to_impl = {}
+        for impl in implementors:
+            type_id_to_impl[impl['type_id']] = impl['mangled'][method_idx]
+
+        for tid in range(max_type_id + 1):
+            if tid in type_id_to_impl:
+                self.emitter.emit_raw(f"    JML {type_id_to_impl[tid]}")
+            else:
+                self.emitter.emit_raw("    JML _trait_error")
+
+        self.emitter.emit_blank_line()
 
     def _analyze_stack_depth(self, mir_program: MIRProgram):
         """

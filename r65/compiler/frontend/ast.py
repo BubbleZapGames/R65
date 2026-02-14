@@ -239,6 +239,48 @@ class EnumDecl(Declaration):
 
 
 @dataclass
+class TraitMethod(ASTNode):
+    """Method signature in a trait declaration (no body).
+
+    Example:
+        fn draw(*self);
+        far fn render(far *self, offset @ X: u16);
+    """
+    is_far: bool
+    name: str
+    self_is_far: bool  # True if self param is `far *self`
+    params: List[Parameter]  # Parameters after self
+    return_type: Optional[Union[Type, NeverType]]
+
+
+@dataclass
+class TraitConst(ASTNode):
+    """Associated constant declaration in a trait (no value — implementors provide it).
+
+    Example:
+        const WIDTH: u8;
+    """
+    name: str
+    const_type: Type
+
+
+@dataclass
+class TraitDecl(Declaration):
+    """Trait declaration.
+
+    Example:
+        trait Drawable {
+            const WIDTH: u8;
+            fn draw(*self);
+            fn get_x(*self) -> u8;
+        }
+    """
+    name: str
+    methods: List[TraitMethod]
+    constants: List[TraitConst]
+
+
+@dataclass
 class ImplMethod(ASTNode):
     """Method declaration in an impl block.
 
@@ -283,11 +325,16 @@ class ImplDecl(Declaration):
         impl far Player {
             fn update(far *self) { ... }
         }
+
+        impl Drawable for Player {
+            fn draw(*self) { ... }
+        }
     """
     struct_name: str
     is_far: bool  # True for `impl far StructName`
     methods: List[ImplMethod]
     constants: List[ImplConst]
+    trait_name: Optional[str] = None  # Set for `impl TraitName for StructName`
 
 
 @dataclass

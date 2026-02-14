@@ -71,13 +71,13 @@ class ConstEvaluator:
             return symbol.const_value
 
         elif isinstance(expr, ast.EnumVariantExpr):
-            # Resolve enum variant to its integer value
+            # Resolve enum variant or associated constant to its integer value
             qualified = f"{expr.enum_name}::{expr.variant_name}"
             symbol = self.symbol_table.lookup(qualified)
             if symbol is None:
                 raise HIRError(f"Undefined enum variant in const expression: {qualified}")
             if symbol.const_value is None:
-                raise HIRError(f"Enum variant '{qualified}' has no evaluated value")
+                raise HIRError(f"'{qualified}' has no evaluated value")
             return symbol.const_value
 
         elif isinstance(expr, ast.BinaryOp):

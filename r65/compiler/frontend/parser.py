@@ -580,6 +580,129 @@ class ASTBuilder(Transformer):
         value = items[2]
         return ast.ImplConst(name=name, const_type=const_type, value=value)
 
+    @v_args(tree=True)
+    def impl_trait_decl(self, tree):
+        """Trait impl declaration: impl TraitName for StructName { methods and constants }"""
+        items = self._filter_tokens(tree.children, keep_types={'IDENT'})
+
+        idx = 0
+
+        # Trait name (first IDENT)
+        trait_name = items[idx].value if isinstance(items[idx], LarkToken) else items[idx]
+        idx += 1
+
+        # Struct name (second IDENT, after FOR which is filtered out)
+        struct_name = items[idx].value if isinstance(items[idx], LarkToken) else items[idx]
+        idx += 1
+
+        # Collect methods and constants from remaining items
+        methods = []
+        constants = []
+        for item in items[idx:]:
+            if isinstance(item, ast.ImplMethod):
+                methods.append(item)
+            elif isinstance(item, ast.ImplConst):
+                constants.append(item)
+
+        return ast.ImplDecl(
+            struct_name=struct_name,
+            is_far=False,
+            methods=methods,
+            constants=constants,
+            trait_name=trait_name,
+            source_loc=self._make_source_loc(tree.meta)
+        )
+
+    @v_args(tree=True)
+    def trait_decl(self, tree):
+        """Trait declaration: trait TraitName { methods and constants }"""
+        items = self._filter_tokens(tree.children, keep_types={'IDENT', 'FAR'})
+
+        idx = 0
+
+        # Trait name
+        name = items[idx].value if isinstance(items[idx], LarkToken) else items[idx]
+        idx += 1
+
+        # Collect methods and constants
+        methods = []
+        constants = []
+        for item in items[idx:]:
+            if isinstance(item, ast.TraitMethod):
+                methods.append(item)
+            elif isinstance(item, ast.TraitConst):
+                constants.append(item)
+
+        return ast.TraitDecl(
+            name=name,
+            methods=methods,
+            constants=constants,
+            source_loc=self._make_source_loc(tree.meta)
+        )
+
+    @v_args(tree=True)
+    def trait_method(self, tree):
+        """Method signature in trait declaration (no body)."""
+        items = self._filter_tokens(tree.children, keep_types={'IDENT', 'FAR'})
+
+        idx = 0
+
+        # Check for far fn
+        is_far = False
+        if idx < len(items) and isinstance(items[idx], LarkToken) and items[idx].type == 'FAR':
+            is_far = True
+            idx += 1
+
+        # Method name
+        name = items[idx].value if isinstance(items[idx], LarkToken) else items[idx]
+        idx += 1
+
+        # Parameters (from trait_param_list)
+        self_is_far = False
+        params = []
+        if idx < len(items):
+            param_result = items[idx]
+            if isinstance(param_result, tuple) and param_result[0] == 'impl_params':
+                self_is_far = param_result[1]
+                params = param_result[2]
+                idx += 1
+            elif isinstance(param_result, list):
+                params = param_result
+                idx += 1
+
+        # Return type (optional)
+        return_type = None
+        if idx < len(items):
+            return_type = items[idx]
+            idx += 1
+
+        return ast.TraitMethod(
+            is_far=is_far,
+            name=name,
+            self_is_far=self_is_far,
+            params=params,
+            return_type=return_type,
+            source_loc=self._make_source_loc(tree.meta)
+        )
+
+    def trait_param_list(self, items):
+        """Parameter list for trait methods - self parameter required."""
+        # Reuse impl_param_list logic
+        if items and isinstance(items[0], tuple) and items[0][0] == 'self_param':
+            self_is_far = items[0][1]
+            params = [item for item in items[1:] if isinstance(item, ast.Parameter)]
+            return ('impl_params', self_is_far, params)
+        else:
+            params = [item for item in items if isinstance(item, ast.Parameter)]
+            return params
+
+    def trait_const(self, items):
+        """Associated constant declaration in trait: const NAME: type;"""
+        items = self._filter_tokens(items)
+        name = items[0].value if isinstance(items[0], LarkToken) else items[0]
+        const_type = items[1]
+        return ast.TraitConst(name=name, const_type=const_type)
+
     def type_alias(self, items):
         """Type alias."""
         items = self._filter_tokens(items)

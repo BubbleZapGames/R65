@@ -13,7 +13,7 @@ from r65.compiler.hir import (
     SymbolKind, BasicTypeInfo, StructTypeInfo, NeverTypeInfo,
     HIRError,
 )
-from r65.compiler.hir.types import TypeInfo, FunctionTypeInfo, ArrayTypeInfo, PointerTypeInfo
+from r65.compiler.hir.types import TypeInfo, FunctionTypeInfo, ArrayTypeInfo, PointerTypeInfo, TraitTypeInfo
 from r65.compiler.typeck.errors import TypeCheckError
 from r65.compiler.typeck.type_utils import TypeUtils
 from r65.compiler.typeck.processor_mode import ProcessorMode
@@ -182,6 +182,9 @@ class CallValidator:
                 struct_name = receiver_type.pointee_type.name
                 receiver_is_pointer = True
                 pointer_is_far = receiver_type.is_far
+            elif isinstance(receiver_type.pointee_type, TraitTypeInfo):
+                # Trait pointer dispatch: *Drawable.method(args)
+                return self._try_trait_method_call(expr, receiver_type, method_name)
 
         if not struct_name:
             return None
@@ -288,6 +291,84 @@ class CallValidator:
 
         return expr.expr_type
 
+    def _try_trait_method_call(self, expr: HIRFunctionCall, receiver_type: PointerTypeInfo, method_name: str) -> Optional[TypeInfo]:
+        """Handle method call on trait pointer (dynamic dispatch)."""
+        trait_type = receiver_type.pointee_type  # TraitTypeInfo
+        trait_name = trait_type.name
+
+        # Look up trait definition from symbol table
+        trait_symbol = self.symbol_table.lookup(trait_name)
+        if not trait_symbol or trait_symbol.kind != SymbolKind.TRAIT:
+            raise TypeCheckError(
+                f"'{trait_name}' is not a trait",
+                source_loc=expr.source_loc
+            )
+
+        trait_def = trait_symbol.definition
+        if not trait_def:
+            raise TypeCheckError(
+                f"trait '{trait_name}' has no definition",
+                source_loc=expr.source_loc
+            )
+
+        # Find the method in the trait's method list
+        method_index = None
+        trait_method = None
+        for i, m in enumerate(trait_def.methods):
+            if m.name == method_name:
+                method_index = i
+                trait_method = m
+                break
+
+        if trait_method is None:
+            raise TypeCheckError(
+                f"trait '{trait_name}' has no method '{method_name}'",
+                source_loc=expr.source_loc,
+                hint=f"available methods: {', '.join(m.name for m in trait_def.methods)}"
+            )
+
+        # Validate argument count (excluding self)
+        expected_args = len(trait_method.params)
+        if len(expr.args) != expected_args:
+            raise TypeCheckError(
+                f"trait method '{trait_name}::{method_name}' expects {expected_args} argument(s), got {len(expr.args)}",
+                source_loc=expr.source_loc
+            )
+
+        # Type check arguments against trait method params
+        for i, (arg, param) in enumerate(zip(expr.args, trait_method.params)):
+            arg_type = self.check_expression(arg)
+            if not TypeUtils.types_compatible(arg_type, param.param_type):
+                raise TypeCheckError(
+                    f"argument {i+1} to '{method_name}' has wrong type: expected {param.param_type}, got {arg_type}",
+                    source_loc=arg.source_loc if hasattr(arg, 'source_loc') else expr.source_loc
+                )
+
+        # Build self argument (the trait pointer itself)
+        field_access = expr.func
+        self_arg = field_access.base
+
+        # Determine if trait methods are far
+        trait_is_far = trait_method.is_far
+
+        # Store dispatch info for codegen
+        expr.method_call_info = {
+            'is_trait_dispatch': True,
+            'trait_name': trait_name,
+            'method_name': method_name,
+            'method_index': method_index,
+            'self_arg': self_arg,
+            'trait_is_far': trait_is_far
+        }
+
+        # Set return type from trait method definition
+        if trait_method.return_type:
+            expr.expr_type = trait_method.return_type
+        else:
+            expr.expr_type = BasicTypeInfo('void')
+
+        return expr.expr_type
+
     def _check_builtin_call(self, expr: HIRFunctionCall) -> TypeInfo:
         """Type check built-in function call."""
         from r65.compiler.builtins import BuiltinRegistry
@@ -336,6 +417,22 @@ class CallValidator:
         """Type check method call (e.g., value.rotate_left(3) or array.len())."""
         # Type check receiver
         receiver_type = self.check_expression(expr.receiver)
+
+        # Handle type_id() on trait pointers
+        if expr.method_name == 'type_id':
+            if isinstance(receiver_type, PointerTypeInfo) and isinstance(receiver_type.pointee_type, TraitTypeInfo):
+                if len(expr.args) != 0:
+                    raise TypeCheckError(
+                        f"type_id() takes no arguments, got {len(expr.args)}",
+                        source_loc=expr.source_loc
+                    )
+                expr.expr_type = BasicTypeInfo('u8')
+                return expr.expr_type
+            else:
+                raise TypeCheckError(
+                    f"type_id() can only be called on trait pointers, found {receiver_type}",
+                    source_loc=expr.source_loc
+                )
 
         # Handle len() method on arrays
         if expr.method_name == 'len':

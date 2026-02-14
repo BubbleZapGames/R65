@@ -15,6 +15,7 @@ start: item*
      | struct_decl
      | enum_decl
      | impl_decl
+     | trait_decl
      | type_alias
      | include_stmt
      | stack_directive
@@ -86,10 +87,19 @@ struct_field: (FAR | NEAR)? STAR? IDENT ":" type_expr ","?
 enum_decl: ENUM IDENT "{" enum_variant ("," enum_variant)* ","? "}"
 enum_variant: var_name ("=" expr)?
 
+// Trait declaration
+trait_decl: TRAIT IDENT "{" trait_item* "}"
+?trait_item: trait_method | trait_const
+trait_method: FAR? FN IDENT "(" trait_param_list ")" return_type? ";"
+trait_param_list: self_param ("," param)* ","?
+trait_const: CONST IDENT ":" type_expr ";"
+
 // Impl block declaration
 // impl StructName { ... } for near *self
 // impl far StructName { ... } for far *self
+// impl TraitName for StructName { ... } for trait implementation
 impl_decl: IMPL FAR? IDENT "{" impl_item* "}"
+          | IMPL IDENT FOR IDENT "{" impl_item* "}"  -> impl_trait_decl
 
 ?impl_item: impl_method
           | impl_const
@@ -143,7 +153,7 @@ macro_repetition: DOLLAR "(" macro_body_content+ ")" "," "*"    -> macro_rep_com
 macro_token: IDENT | REGISTER | TYPE_NAME | INTEGER | STRING | BOOLEAN
            | KEYWORD | INCLUDE | INCLUDE_BYTES | CONST | STATIC | LET | MUT
            | FN | FAR | NEAR | IF | ELSE | LOOP | WHILE | MATCH | RETURN
-           | BREAK | CONTINUE | ASM | STRUCT | ENUM | TYPE | AS
+           | BREAK | CONTINUE | ASM | STRUCT | ENUM | TYPE | AS | TRAIT | FOR
            | "(" | ")" | "[" | "]" | ";" | ":" | "," | "." | "#"
            | "+" | "-" | "*" | "/" | "%" | "&" | "|" | "^" | "~" | "!"
            | "=" | "<" | ">" | "@" | "->" | "==" | "!=" | "<=" | ">="
@@ -164,7 +174,7 @@ macro_args: macro_arg ("," macro_arg)*
 macro_arg: macro_arg_token+
 
 macro_arg_token: IDENT | REGISTER | TYPE_NAME | INTEGER | STRING | BOOLEAN
-               | KEYWORD | MACRO_VAR
+               | KEYWORD | MACRO_VAR | TRAIT | FOR
                | "(" macro_arg_token* ")"    // Nested parens
                | "[" macro_arg_token* "]"    // Nested brackets
                | "{" macro_arg_token* "}"    // Nested braces
@@ -458,6 +468,7 @@ NEAR.10: /near\b/
 LET.10: /let\b/
 MUT.10: /mut\b/
 ASM.10: /asm\b/
+TRAIT.10: /trait\b/
 IMPL.10: /impl\b/
 SELF.10: /self\b/
 FAR.10: /far\b/
@@ -490,7 +501,7 @@ FRAGMENT_TYPE.10: /expr\b/ | /ident\b/ | /literal\b/ | /ty\b/ | /reg\b/ | /tt\b/
 // Note: 'macro' removed - now a first-class keyword
 // Note: 'for' and 'in' removed - now first-class keywords for for loops
 // Note: 'impl' and 'self' removed - now first-class keywords for impl blocks
-KEYWORD.10: /abstract\b/ | /override\b/ | /unsized\b/ | /virtual\b/ | /typeof\b/ | /unsafe\b/ | /extern\b/ | /become\b/ | /async\b/ | /await\b/ | /where\b/ | /super\b/ | /trait\b/ | /yield\b/ | /crate\b/ | /final\b/ | /move\b/ | /priv\b/ | /Self\b/ | /box\b/ | /dyn\b/ | /pub\b/ | /ref\b/ | /try\b/ | /use\b/ | /do\b/
+KEYWORD.10: /abstract\b/ | /override\b/ | /unsized\b/ | /virtual\b/ | /typeof\b/ | /unsafe\b/ | /extern\b/ | /become\b/ | /async\b/ | /await\b/ | /where\b/ | /super\b/ | /yield\b/ | /crate\b/ | /final\b/ | /move\b/ | /priv\b/ | /Self\b/ | /box\b/ | /dyn\b/ | /pub\b/ | /ref\b/ | /try\b/ | /use\b/ | /do\b/
 
 // Booleans
 BOOLEAN.10: /true\b/ | /false\b/

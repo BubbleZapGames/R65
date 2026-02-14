@@ -26,6 +26,7 @@ class SymbolKind(Enum):
     BUILTIN_FUNC = "builtin_func"  # Built-in functions (SEP, REP, etc.)
     METHOD = "method"  # Method in impl block (desugars to function)
     IMPL_CONST = "impl_const"  # Associated constant in impl block
+    TRAIT = "trait"  # Trait declaration
 
 
 @dataclass

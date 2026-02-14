@@ -16,7 +16,7 @@ from r65.compiler.mir.nodes import (
     BinaryOp, UnaryOp, Compare, BitTest, Rotate, SetMode, TypeConvert, ToBool,
     Push, Pull, SaveRegister, RestoreRegister, ReturnFromInterrupt,
     StatusFlagTest, StatusFlagSet, StatusFlagRead,
-    MemoryFill, BlockCopy, InlineAsm,
+    MemoryFill, BlockCopy, InlineAsm, TraitDispatch,
     VirtualRegister, HardwareRegister, Immediate as MIRImmediate, MemoryLocation
 )
 from r65.compiler.codegen.emitter import AssemblyEmitter
@@ -609,6 +609,8 @@ class InstructionSelector:
             self.control_flow_selector.select_return(instr)
         elif isinstance(instr, Call):
             self.call_selector.select_call(instr)
+        elif isinstance(instr, TraitDispatch):
+            self.call_selector.select_trait_dispatch(instr)
         elif isinstance(instr, SetMode):
             self.select_set_mode(instr)
         elif isinstance(instr, SaveRegister):

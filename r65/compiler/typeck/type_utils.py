@@ -6,6 +6,7 @@ from r65.compiler.hir import (
     FunctionTypeInfo, StructTypeInfo, EnumTypeInfo,
     NeverTypeInfo, RegisterTypeInfo
 )
+from r65.compiler.hir.types import TraitTypeInfo
 
 
 # Valid ranges for integer types
@@ -122,13 +123,19 @@ class TypeUtils:
         if TypeUtils.types_equal(t1, t2):
             return True
 
-        # Pointer compatibility: allow array-to-slice coercion (same far/near)
+        # Pointer compatibility: allow array-to-slice coercion and struct-to-trait coercion
         if isinstance(t1, PointerTypeInfo) and isinstance(t2, PointerTypeInfo):
             # far/near must match - no implicit coercion between them
             if t1.is_far == t2.is_far:
                 # Pointee types must be compatible (allows [T; N] -> [T])
                 if TypeUtils._pointee_types_compatible(t1.pointee_type, t2.pointee_type):
                     return True
+                # *Struct -> *Trait coercion: if struct implements the trait
+                # t1 = expected (*Trait), t2 = actual (*Struct)
+                if isinstance(t1.pointee_type, TraitTypeInfo) and isinstance(t2.pointee_type, StructTypeInfo):
+                    if TypeUtils._struct_implements_trait(t2.pointee_type.name, t1.pointee_type.name):
+                        return True
+                # *Trait -> *Trait is already handled by types_equal (name equality)
 
         # Integer type compatibility for comparisons
         # Allow comparing different-size integers (e.g., u16 vs u8)
@@ -146,6 +153,30 @@ class TypeUtils:
             return True
 
         return False
+
+    @staticmethod
+    def _struct_implements_trait(struct_name: str, trait_name: str) -> bool:
+        """Check if a struct implements a trait by looking for dispatch symbols.
+
+        This uses a naming convention check: the HIR builder registers
+        'TraitName.method_name.StructName' dispatch symbols for each trait impl.
+        We only need to check if any such symbol exists.
+        """
+        # We can't easily access the symbol table from a static method,
+        # so we use a class variable that gets set by the type checker.
+        if TypeUtils._symbol_table is not None:
+            # Check if the trait dispatch symbol exists for any method
+            trait_symbol = TypeUtils._symbol_table.lookup(trait_name)
+            if trait_symbol and hasattr(trait_symbol.definition, 'methods'):
+                trait_def = trait_symbol.definition
+                if trait_def.methods:
+                    first_method = trait_def.methods[0].name
+                    dispatch_key = f"{trait_name}.{first_method}.{struct_name}"
+                    return TypeUtils._symbol_table.lookup(dispatch_key) is not None
+        return False
+
+    # Class variable to hold symbol table reference for trait impl checking
+    _symbol_table = None
 
     @staticmethod
     def is_boolean_type(t: TypeInfo) -> bool:
