@@ -219,11 +219,6 @@ class TestTraitDispatch:
     def test_collides_direct_loop(self, e2e):
         """Pairwise AABB collision via trait dispatch with type_id check and cast."""
         result = e2e.run('''
-            #[zeropage(0x10, register)]
-            static mut SCRATCH0: u8;
-            #[zeropage(0x12, register)]
-            static mut SCRATCH1: u16;
-
             #[lowram]
             static mut RESULT: [u8; 3] = [0, 0, 0];
 

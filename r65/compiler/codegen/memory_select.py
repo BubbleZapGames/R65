@@ -378,14 +378,21 @@ class MemoryOperationSelector(BaseSelector):
                           (offset > 0 or needs_y_for_stack))
         if will_clobber_y and self._has_y_self():
             y_self_save_addr = self._save_y_self()
-            # If PHY was used (no scratch), adjust stack offset by 2
-            if y_self_save_addr is None and ptr_loc.kind == LocationKind.STACK:
+            # If PHY was used (no scratch), adjust stack offsets by 2
+            if y_self_save_addr is None:
                 from r65.compiler.codegen.register_alloc import PhysicalLocation
-                ptr_loc = PhysicalLocation(
-                    kind=LocationKind.STACK,
-                    stack_offset=ptr_loc.stack_offset + 2,
-                    size=ptr_loc.size
-                )
+                if ptr_loc.kind == LocationKind.STACK:
+                    ptr_loc = PhysicalLocation(
+                        kind=LocationKind.STACK,
+                        stack_offset=ptr_loc.stack_offset + 2,
+                        size=ptr_loc.size
+                    )
+                if dest_loc.kind == LocationKind.STACK:
+                    dest_loc = PhysicalLocation(
+                        kind=LocationKind.STACK,
+                        stack_offset=dest_loc.stack_offset + 2,
+                        size=dest_loc.size
+                    )
 
         if instr.index_register:
             # Index register already set by MIR lowerer (e.g., for ptr[i] access)
@@ -489,14 +496,21 @@ class MemoryOperationSelector(BaseSelector):
                             (offset > 0 or needs_y_for_stack))
         if will_clobber_y_s and self._has_y_self():
             y_self_save_addr_s = self._save_y_self()
-            # If PHY was used (no scratch), adjust stack offset by 2
-            if y_self_save_addr_s is None and ptr_loc.kind == LocationKind.STACK:
+            # If PHY was used (no scratch), adjust stack offsets by 2
+            if y_self_save_addr_s is None:
                 from r65.compiler.codegen.register_alloc import PhysicalLocation
-                ptr_loc = PhysicalLocation(
-                    kind=LocationKind.STACK,
-                    stack_offset=ptr_loc.stack_offset + 2,
-                    size=ptr_loc.size
-                )
+                if ptr_loc.kind == LocationKind.STACK:
+                    ptr_loc = PhysicalLocation(
+                        kind=LocationKind.STACK,
+                        stack_offset=ptr_loc.stack_offset + 2,
+                        size=ptr_loc.size
+                    )
+                if src_loc.kind == LocationKind.STACK:
+                    src_loc = PhysicalLocation(
+                        kind=LocationKind.STACK,
+                        stack_offset=src_loc.stack_offset + 2,
+                        size=src_loc.size
+                    )
 
         if instr.index_register:
             # Index register already set by MIR lowerer (e.g., for ptr[i] access)
