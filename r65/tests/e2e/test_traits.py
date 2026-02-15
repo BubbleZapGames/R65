@@ -321,62 +321,81 @@ class TestTraitDispatch:
         assert result.success, f"Failures: {result.failures}"
 
     def test_collides_direct_loop(self, e2e):
-        """Direct collision check without loops - verifies collides method works."""
+        """Pairwise AABB collision via trait dispatch with .len() loop bounds."""
         result = e2e.run('''
-            #[zeropage(0x0, register)]
-            static mut RESULT: [u8; 3] = [0,0,0];
+            #[zeropage(0x10, register)]
+            static mut SCRATCH0: u8;
+            #[zeropage(0x12, register)]
+            static mut SCRATCH1: u16;
+
+            #[lowram]
+            static mut RESULT: [u8; 3] = [0, 0, 0];
 
             struct Rect { x: u8, y: u8, w: u8, h: u8 }
 
             trait Collidable {
-                fn collides(*self, rect: *Rect) -> u8;
+               fn collides(*self, other: *dyn Collidable) -> u8;
             }
 
-            impl Collidable for Rect {
-                fn collides(*self, rect: *Rect) -> u8 {
-                    if self.x < *rect.x + *rect.w {
-                        if *rect.x < self.x + self.w {
-                            if self.y < *rect.y + *rect.h {
-                                if rect.y < self.y + self.h {
-                                    return 1;
-                                }
+            fn collides_with_rect(*self, b: *Rect) -> u8 {
+                if self.x < b.x + b.w {
+                    if b.x < self.x + self.w {
+                        if self.y < b.y + b.h {
+                            if b.y < self.y + selr.h {
+                                return 1;
                             }
                         }
+                    }
+                }
+                return 0;
+            }
+
+
+            impl Collidable for Rect {
+                fn collides(*self, other: *dyn Collidable) -> u8 {
+                    if other.type_id() == Rect::TYPE_ID {
+                        return collides_with_rect(self, other as *Rect);
                     }
                     return 0;
                 }
             }
 
+            // R0: [10,30) x [10,30) - overlaps R1
             #[lowram]
-            static mut rects: [Rect; 3] = [
-              // overlaps R1
-              Rect { x: 10, y: 10, w: 20, h: 20 },
-              // no overlap with R0
-              Rect { x: 25, y: 15, w: 15, h: 10 },
-              // overlaps R0
-              Rect { x: 50, y: 50, w: 10, h: 10 },
+            static mut rects : [Rect; 8] = [
+                Rect { x: 10, y: 10, w: 20, h: 20 },
+                Rect { x: 25, y: 15, w: 15, h: 10 },
+                Rect { x: 50, y: 50, w: 10, h: 10 }
             ];
 
+            #[lowram]
+            static mut rects: [*dyn Collidable; 3];
 
             #[entry]
             fn main() {
+                let p0: *dyn Collidable = &rects[0];
+                let p1: *dyn Collidable = &rects[1];
+                let p2: *dyn Collidable = &rects[2];
+                rects[0] = p0;
+                rects[1] = p1;
+                rects[2] = p2;
+
+                // Trait dispatch loop
                 for i in 0..rects.len() {
-                    let r = &rects[i]
-                    for j + 1 in i..rects.len() {
-                        let collides: u8 = r.collides(&rects[j])
-                        if collides != 0 {
-                             RESULT[i] = 1;
-                             break;
+                    let pi: *dyn Collidable = rects[i];
+                    for j in i+1..rects.len() {
+                        let pj: *dyn Collidable = rects[j];
+                        if pi.collides(pj) != 0 {
+                            RESULT[i] = 1;
+                            break;
                         }
                     }
                 }
             }
         ''', ExpectedState(
             memory={
-                0x0: 1,
-                0x1: 0,
-                0x2: 0, 
+                0x7E0200: [1, 0, 0],  # trait dispatch: R0 overlaps R1, R1/R2 no further overlaps
             }
-        ))
+        ), max_instructions=100000)
         assert result.success, f"Failures: {result.failures}"
 
