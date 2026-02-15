@@ -82,9 +82,10 @@ class SliceType(Type):
 
 @dataclass
 class PointerType(Type):
-    """Pointer type: *T (near) or far *T"""
+    """Pointer type: *T (near) or far *T, with optional dyn for trait pointers"""
     is_far: bool
     pointee_type: Type
+    is_dyn: bool = False
 
 
 @dataclass

@@ -92,7 +92,7 @@ class TypeUtils:
                 return False
             return TypeUtils.types_equal(t1.return_type, t2.return_type)
 
-        elif isinstance(t1, (StructTypeInfo, EnumTypeInfo)):
+        elif isinstance(t1, (StructTypeInfo, EnumTypeInfo, TraitTypeInfo)):
             return t1.name == t2.name
 
         elif isinstance(t1, NeverTypeInfo):

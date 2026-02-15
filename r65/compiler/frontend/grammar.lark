@@ -153,7 +153,7 @@ macro_repetition: DOLLAR "(" macro_body_content+ ")" "," "*"    -> macro_rep_com
 macro_token: IDENT | REGISTER | TYPE_NAME | INTEGER | STRING | BOOLEAN
            | KEYWORD | INCLUDE | INCLUDE_BYTES | CONST | STATIC | LET | MUT
            | FN | FAR | NEAR | IF | ELSE | LOOP | WHILE | MATCH | RETURN
-           | BREAK | CONTINUE | ASM | STRUCT | ENUM | TYPE | AS | TRAIT | FOR
+           | BREAK | CONTINUE | ASM | STRUCT | ENUM | TYPE | AS | TRAIT | FOR | DYN
            | "(" | ")" | "[" | "]" | ";" | ":" | "," | "." | "#"
            | "+" | "-" | "*" | "/" | "%" | "&" | "|" | "^" | "~" | "!"
            | "=" | "<" | ">" | "@" | "->" | "==" | "!=" | "<=" | ">="
@@ -174,7 +174,7 @@ macro_args: macro_arg ("," macro_arg)*
 macro_arg: macro_arg_token+
 
 macro_arg_token: IDENT | REGISTER | TYPE_NAME | INTEGER | STRING | BOOLEAN
-               | KEYWORD | MACRO_VAR | TRAIT | FOR
+               | KEYWORD | MACRO_VAR | TRAIT | FOR | DYN
                | "(" macro_arg_token* ")"    // Nested parens
                | "[" macro_arg_token* "]"    // Nested brackets
                | "{" macro_arg_token* "}"    // Nested braces
@@ -430,7 +430,8 @@ type_array: "[" type_expr ";" expr "]"
 // Unsized array type for pointers: [T] (no size specified)
 type_slice: "[" type_expr "]"
 // Pointer type for casting: *type (implied near) or far *type or near *type
-type_pointer: (FAR | NEAR)? STAR type_expr
+// With optional dyn keyword for trait pointers: *dyn Trait or far *dyn Trait
+type_pointer: (FAR | NEAR)? STAR DYN? type_expr
 type_fn: FAR? FN "(" type_list? ")" ("->" type_expr)?
 
 // Tuple type for multiple return values: (u8, u8)
@@ -471,6 +472,7 @@ ASM.10: /asm\b/
 TRAIT.10: /trait\b/
 IMPL.10: /impl\b/
 SELF.10: /self\b/
+DYN.10: /dyn\b/
 FAR.10: /far\b/
 FN.10: /fn\b/
 IF.10: /if\b/
@@ -501,7 +503,7 @@ FRAGMENT_TYPE.10: /expr\b/ | /ident\b/ | /literal\b/ | /ty\b/ | /reg\b/ | /tt\b/
 // Note: 'macro' removed - now a first-class keyword
 // Note: 'for' and 'in' removed - now first-class keywords for for loops
 // Note: 'impl' and 'self' removed - now first-class keywords for impl blocks
-KEYWORD.10: /abstract\b/ | /override\b/ | /unsized\b/ | /virtual\b/ | /typeof\b/ | /unsafe\b/ | /extern\b/ | /become\b/ | /async\b/ | /await\b/ | /where\b/ | /super\b/ | /yield\b/ | /crate\b/ | /final\b/ | /move\b/ | /priv\b/ | /Self\b/ | /box\b/ | /dyn\b/ | /pub\b/ | /ref\b/ | /try\b/ | /use\b/ | /do\b/
+KEYWORD.10: /abstract\b/ | /override\b/ | /unsized\b/ | /virtual\b/ | /typeof\b/ | /unsafe\b/ | /extern\b/ | /become\b/ | /async\b/ | /await\b/ | /where\b/ | /super\b/ | /yield\b/ | /crate\b/ | /final\b/ | /move\b/ | /priv\b/ | /Self\b/ | /box\b/ | /pub\b/ | /ref\b/ | /try\b/ | /use\b/ | /do\b/
 
 // Booleans
 BOOLEAN.10: /true\b/ | /false\b/

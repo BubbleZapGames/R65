@@ -55,9 +55,10 @@ class PointerTypeInfo(TypeInfo):
     pointee_type: TypeInfo
 
     def __str__(self):
+        dyn_str = "dyn " if isinstance(self.pointee_type, TraitTypeInfo) else ""
         if self.is_far:
-            return f"far *{self.pointee_type}"
-        return f"*{self.pointee_type}"
+            return f"far *{dyn_str}{self.pointee_type}"
+        return f"*{dyn_str}{self.pointee_type}"
 
 
 @dataclass
@@ -179,6 +180,16 @@ class TypeResolver:
                 raise HIRError(
                     f"pointer cannot point to sized array type [{pointee.element_type}; {pointee.size}]",
                     hint=f"use unsized array type [{pointee.element_type}] instead"
+                )
+
+            # Validate dyn keyword usage
+            if isinstance(pointee, TraitTypeInfo) and not ast_type.is_dyn:
+                raise HIRError(
+                    f"trait pointer requires 'dyn' keyword: use '*dyn {pointee.name}' instead of '*{pointee.name}'"
+                )
+            if ast_type.is_dyn and not isinstance(pointee, TraitTypeInfo):
+                raise HIRError(
+                    f"'dyn' can only be used with trait types, but '{pointee.name}' is not a trait"
                 )
 
             return PointerTypeInfo(is_far=ast_type.is_far, pointee_type=pointee)

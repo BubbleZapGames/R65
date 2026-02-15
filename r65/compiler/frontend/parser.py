@@ -2090,11 +2090,13 @@ class ASTBuilder(Transformer):
         return ast.SliceType(element_type=element_type)
 
     def type_pointer(self, items):
-        """Pointer type: *type (implied near) or far *type or near *type."""
-        items = self._filter_tokens(items, keep_types={'FAR', 'NEAR', 'TYPE_NAME'})
+        """Pointer type: *type (implied near) or far *type or near *type.
+        With optional dyn keyword for trait pointers: *dyn Trait or far *dyn Trait."""
+        items = self._filter_tokens(items, keep_types={'FAR', 'NEAR', 'DYN', 'TYPE_NAME'})
 
         idx = 0
         is_far = False
+        is_dyn = False
 
         # Check for far/near modifier
         if idx < len(items) and isinstance(items[idx], LarkToken):
@@ -2105,9 +2107,14 @@ class ASTBuilder(Transformer):
                 is_far = False  # Explicit near
                 idx += 1
 
+        # Check for dyn keyword
+        if idx < len(items) and isinstance(items[idx], LarkToken) and items[idx].type == 'DYN':
+            is_dyn = True
+            idx += 1
+
         # The pointee type is the remaining item
         pointee_type = items[idx] if idx < len(items) else items[-1]
-        return ast.PointerType(is_far=is_far, pointee_type=pointee_type)
+        return ast.PointerType(is_far=is_far, pointee_type=pointee_type, is_dyn=is_dyn)
 
     def type_fn(self, items):
         """Function type."""

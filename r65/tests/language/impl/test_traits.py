@@ -272,7 +272,7 @@ class TestTraitTypeChecking:
             #[zeropage]
             static mut PLAYER: Player;
             fn test() {
-                let p: *Drawable = &PLAYER;
+                let p: *dyn Drawable = &PLAYER;
             }
         """
         build_and_check(source)  # Should not raise
@@ -287,7 +287,7 @@ class TestTraitTypeChecking:
             #[zeropage]
             static mut ENEMY: Enemy;
             fn test() {
-                let p: *Drawable = &ENEMY;
+                let p: *dyn Drawable = &ENEMY;
             }
         """
         with pytest.raises(TypeCheckError):
@@ -302,7 +302,7 @@ class TestTraitTypeChecking:
             #[zeropage]
             static mut PLAYER: Player;
             fn test() {
-                let p: *Drawable = &PLAYER;
+                let p: *dyn Drawable = &PLAYER;
                 p.draw();
             }
         """
@@ -317,7 +317,7 @@ class TestTraitTypeChecking:
             #[zeropage]
             static mut PLAYER: Player;
             fn test() {
-                let p: *Drawable = &PLAYER;
+                let p: *dyn Drawable = &PLAYER;
                 p.update();
             }
         """
@@ -364,7 +364,7 @@ class TestTraitMIR:
             #[zeropage]
             static mut PLAYER: Player;
             fn test() {
-                let p: *Drawable = &PLAYER;
+                let p: *dyn Drawable = &PLAYER;
                 p.draw();
             }
         """
@@ -409,7 +409,7 @@ class TestTraitMIR:
             #[zeropage]
             static mut PLAYER: Player;
             fn test() {
-                let p: *Drawable = &PLAYER;
+                let p: *dyn Drawable = &PLAYER;
                 p.draw();
             }
         """
@@ -472,7 +472,7 @@ class TestTraitCodeGen:
             static mut PLAYER: Player;
             #[entry]
             fn main() {
-                let p: *Drawable = &PLAYER;
+                let p: *dyn Drawable = &PLAYER;
                 p.draw();
             }
         """
@@ -505,14 +505,14 @@ class TestTraitCodeGen:
             static mut PLAYER: Player;
             #[entry]
             fn main() {
-                let p: *Drawable = &PLAYER;
+                let p: *dyn Drawable = &PLAYER;
                 p.draw();
             }
         """
         asm = compile_to_asm(source)
 
-        # Dispatch wrapper should load from stack-relative indirect: LDA ($03,S),Y
-        assert "LDA ($03,S),Y" in asm
+        # Dispatch wrapper should load TypeId via Y-pointer: LDA $0000,Y
+        assert "LDA $0000,Y" in asm
 
     def test_main_calls_dispatch(self):
         """Main function calls dispatch wrapper via JSR."""
@@ -528,10 +528,108 @@ class TestTraitCodeGen:
             static mut PLAYER: Player;
             #[entry]
             fn main() {
-                let p: *Drawable = &PLAYER;
+                let p: *dyn Drawable = &PLAYER;
                 p.draw();
             }
         """
         asm = compile_to_asm(source)
 
         assert "JSR Drawable__draw__dispatch" in asm
+
+
+class TestDynSyntax:
+    """Tests for *dyn TraitName syntax validation."""
+
+    def test_dyn_trait_pointer_parses(self):
+        """*dyn TraitName parses correctly."""
+        source = """
+            struct Player { x: u8 }
+            trait Drawable { fn draw(*self); }
+            impl Drawable for Player { fn draw(*self) { } }
+            #[zeropage]
+            static mut PLAYER: Player;
+            fn test() {
+                let p: *dyn Drawable = &PLAYER;
+            }
+        """
+        build_and_check(source)  # Should not raise
+
+    def test_trait_pointer_without_dyn_errors(self):
+        """*TraitName (without dyn) gives error with hint."""
+        source = """
+            struct Player { x: u8 }
+            trait Drawable { fn draw(*self); }
+            impl Drawable for Player { fn draw(*self) { } }
+            #[zeropage]
+            static mut PLAYER: Player;
+            fn test() {
+                let p: *Drawable = &PLAYER;
+            }
+        """
+        with pytest.raises(HIRError, match=r"trait pointer requires 'dyn' keyword.*\*dyn Drawable"):
+            build_and_check(source)
+
+    def test_dyn_on_non_trait_errors(self):
+        """*dyn StructName gives error."""
+        source = """
+            struct Player { x: u8 }
+            fn test() {
+                let p: *dyn Player = 0;
+            }
+        """
+        with pytest.raises(HIRError, match="'dyn' can only be used with trait types"):
+            build_and_check(source)
+
+    def test_dyn_on_basic_type_errors(self):
+        """*dyn u8 gives error."""
+        source = """
+            fn test() {
+                let p: *dyn u8 = 0;
+            }
+        """
+        with pytest.raises(HIRError, match="'dyn' can only be used with trait types"):
+            build_and_check(source)
+
+    def test_far_dyn_trait_pointer_parses(self):
+        """far *dyn TraitName parses and resolves to correct type."""
+        source = """
+            struct Player { x: u8 }
+            trait Drawable { fn draw(*self); }
+            impl Drawable for Player { fn draw(*self) { } }
+        """
+        # Just verify the type resolves - far *dyn requires a far pointer value
+        # which would need far address-of (&far), so we just test parsing + HIR
+        program = parse(source + """
+            #[lowram]
+            static mut PTRS: [far *dyn Drawable; 2];
+        """, "test.r65")
+        hir_builder = HIRBuilder(source_file="test.r65")
+        hir_prog = hir_builder.build_program(program)
+        type_checker = TypeChecker(hir_prog)
+        type_checker.check()  # Should not raise
+
+    def test_array_of_dyn_trait_pointers(self):
+        """[*dyn Drawable; 4] array type works."""
+        source = """
+            struct Player { x: u8 }
+            trait Drawable { fn draw(*self); }
+            impl Drawable for Player { fn draw(*self) { } }
+            #[lowram]
+            static mut PTRS: [*dyn Drawable; 4];
+        """
+        build_and_check(source)  # Should not raise
+
+    def test_type_alias_dyn_trait_pointer(self):
+        """type Dp = *dyn Drawable; works."""
+        source = """
+            struct Player { x: u8 }
+            trait Drawable { fn draw(*self); }
+            impl Drawable for Player { fn draw(*self) { } }
+            type DrawablePtr = *dyn Drawable;
+            #[zeropage]
+            static mut PLAYER: Player;
+            fn test() {
+                let p: DrawablePtr = &PLAYER;
+            }
+        """
+        build_and_check(source)  # Should not raise
