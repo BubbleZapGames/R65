@@ -80,6 +80,7 @@ class StructTypeInfo(TypeInfo):
     """Struct type reference."""
     name: str
     definition: Optional[Any] = None  # Will be HIRStructDecl (resolved during HIR)
+    symbol: Optional[Any] = None  # Symbol table entry (for accessing current definition)
 
     def __str__(self):
         return self.name
@@ -221,7 +222,7 @@ class TypeResolver:
             raise HIRError(f"Undefined type: {name}")
 
         if symbol.kind.value == "struct":
-            return StructTypeInfo(name=name, definition=symbol.definition)
+            return StructTypeInfo(name=name, definition=symbol.definition, symbol=symbol)
         elif symbol.kind.value == "enum":
             return EnumTypeInfo(name=name, definition=symbol.definition)
         elif symbol.kind.value == "trait":

@@ -261,10 +261,11 @@ class MoveOperationSelector(BaseSelector):
             is_far_ptr = False
             if instr.type_info and isinstance(instr.type_info, PointerTypeInfo):
                 is_far_ptr = instr.type_info.is_far
-            self._emit_variable_address(symbol, dest_loc, is_u16, is_far_ptr)
+            offset = getattr(src_operand, 'symbol_offset', 0) or 0
+            self._emit_variable_address(symbol, dest_loc, is_u16, is_far_ptr, offset)
 
-    def _emit_variable_address(self, symbol, dest_loc, is_u16: bool, is_far_ptr: bool = False):
-        """Emit code to store a variable's address."""
+    def _emit_variable_address(self, symbol, dest_loc, is_u16: bool, is_far_ptr: bool = False, offset: int = 0):
+        """Emit code to store a variable's address, with optional byte offset for array indexing."""
         alloc = self.parent.mem_alloc.get_allocation(symbol)
         if not alloc:
             raise InstructionSelectionError(f"No allocation for symbol: {symbol.name}")
@@ -272,9 +273,9 @@ class MoveOperationSelector(BaseSelector):
         # For ROM data, use the label name instead of numeric address
         # ROM data has a rom_label attribute set during MIR building
         if hasattr(symbol, 'rom_label') and symbol.rom_label:
-            addr_ref = symbol.rom_label
+            addr_ref = f"{symbol.rom_label} + {offset}" if offset else symbol.rom_label
         else:
-            addr_ref = f"${alloc.address:04X}"
+            addr_ref = f"${alloc.address + offset:04X}"
 
         if is_far_ptr:
             # 24-bit far pointer: low, high, bank

@@ -321,7 +321,7 @@ class TestTraitDispatch:
         assert result.success, f"Failures: {result.failures}"
 
     def test_collides_direct_loop(self, e2e):
-        """Pairwise AABB collision via trait dispatch with .len() loop bounds."""
+        """Pairwise AABB collision via trait dispatch with type_id check and cast."""
         result = e2e.run('''
             #[zeropage(0x10, register)]
             static mut SCRATCH0: u8;
@@ -334,14 +334,14 @@ class TestTraitDispatch:
             struct Rect { x: u8, y: u8, w: u8, h: u8 }
 
             trait Collidable {
-               fn collides(*self, other: *dyn Collidable) -> u8;
+                fn collides(*self, other: *dyn Collidable) -> u8;
             }
 
-            fn collides_with_rect(*self, b: *Rect) -> u8 {
-                if self.x < b.x + b.w {
-                    if b.x < self.x + self.w {
-                        if self.y < b.y + b.h {
-                            if b.y < self.y + selr.h {
+            fn collides_with_rect(a: *Rect, b: *Rect) -> u8 {
+                if a.x < b.x + b.w {
+                    if b.x < a.x + a.w {
+                        if a.y < b.y + b.h {
+                            if b.y < a.y + a.h {
                                 return 1;
                             }
                         }
@@ -350,41 +350,39 @@ class TestTraitDispatch:
                 return 0;
             }
 
-
             impl Collidable for Rect {
                 fn collides(*self, other: *dyn Collidable) -> u8 {
                     if other.type_id() == Rect::TYPE_ID {
-                        return collides_with_rect(self, other as *Rect);
+                        let me: *Rect = self as *Rect;
+                        return collides_with_rect(me, other as *Rect);
                     }
                     return 0;
                 }
             }
 
-            // R0: [10,30) x [10,30) - overlaps R1
             #[lowram]
-            static mut rects : [Rect; 8] = [
+            static mut rects: [Rect; 3] = [
                 Rect { x: 10, y: 10, w: 20, h: 20 },
                 Rect { x: 25, y: 15, w: 15, h: 10 },
                 Rect { x: 50, y: 50, w: 10, h: 10 }
             ];
 
             #[lowram]
-            static mut rects: [*dyn Collidable; 3];
+            static mut ptrs: [*dyn Collidable; 3];
 
             #[entry]
             fn main() {
                 let p0: *dyn Collidable = &rects[0];
                 let p1: *dyn Collidable = &rects[1];
                 let p2: *dyn Collidable = &rects[2];
-                rects[0] = p0;
-                rects[1] = p1;
-                rects[2] = p2;
+                ptrs[0] = p0;
+                ptrs[1] = p1;
+                ptrs[2] = p2;
 
-                // Trait dispatch loop
-                for i in 0..rects.len() {
-                    let pi: *dyn Collidable = rects[i];
-                    for j in i+1..rects.len() {
-                        let pj: *dyn Collidable = rects[j];
+                for i in 0..ptrs.len() {
+                    let pi: *dyn Collidable = ptrs[i];
+                    for j in i+1..ptrs.len() {
+                        let pj: *dyn Collidable = ptrs[j];
                         if pi.collides(pj) != 0 {
                             RESULT[i] = 1;
                             break;
@@ -394,7 +392,7 @@ class TestTraitDispatch:
             }
         ''', ExpectedState(
             memory={
-                0x7E0200: [1, 0, 0],  # trait dispatch: R0 overlaps R1, R1/R2 no further overlaps
+                0x7E0200: [1, 0, 0],
             }
         ), max_instructions=100000)
         assert result.success, f"Failures: {result.failures}"

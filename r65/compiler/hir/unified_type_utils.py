@@ -129,6 +129,12 @@ def get_unified_type_size(type_obj: Any, symbol_table=None) -> int:
         return _get_struct_size(type_obj)
 
     # Handle StructTypeInfo with definition (name reference to struct)
+    # Prefer symbol's current definition (updated in Pass 2 with TypeId field)
+    # over the stale snapshot captured during Pass 1 type resolution
+    if hasattr(type_obj, 'symbol') and type_obj.symbol is not None:
+        current_def = type_obj.symbol.definition
+        if current_def is not None and hasattr(current_def, 'fields'):
+            return _get_struct_size(current_def)
     if hasattr(type_obj, 'definition') and type_obj.definition is not None:
         if hasattr(type_obj.definition, 'fields'):
             return _get_struct_size(type_obj.definition)

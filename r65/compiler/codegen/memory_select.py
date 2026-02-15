@@ -43,6 +43,36 @@ class MemoryOperationSelector(BaseSelector):
         self.parent._ensure_m8_mode()
 
     # ========================================================================
+    # Y-Self Save/Restore for Trait Methods
+    # ========================================================================
+
+    def _has_y_self(self) -> bool:
+        """Check if current function has self bound to Y register (trait method)."""
+        func = self.parent.current_function
+        return (func is not None and
+                getattr(func, 'is_trait_method', False) and
+                getattr(func, 'self_y_vreg', None) is not None)
+
+    def _save_y_self(self) -> 'Address | None':
+        """Save Y (self) to scratch DP before clobbering Y for indirect access.
+        Returns the temp address used, or None if PHY was used instead."""
+        temp_addr = self.parent._get_temp_address()
+        if temp_addr:
+            self._emit_instr(Opcode.STY_DP, temp_addr, "Save Y (self) for indirect access")
+            return temp_addr
+        else:
+            # Fallback: push Y to stack (adjusts stack offsets by 2)
+            self._emit_instr(Opcode.PHY, comment="Save Y (self) for indirect access")
+            return None
+
+    def _restore_y_self(self, temp_addr):
+        """Restore Y (self) after indirect access."""
+        if temp_addr is not None:
+            self._emit_instr(Opcode.LDY_DP, temp_addr, "Restore Y (self)")
+        else:
+            self._emit_instr(Opcode.PLY, comment="Restore Y (self)")
+
+    # ========================================================================
     # Direct Memory Operations
     # ========================================================================
 
@@ -342,6 +372,21 @@ class MemoryOperationSelector(BaseSelector):
         offset = getattr(instr, 'offset', 0)
         needs_y_for_stack = ptr_loc.kind == LocationKind.STACK and instr.index_register is None
 
+        # In trait methods, Y holds self. Save it before clobbering for indirect access.
+        y_self_save_addr = None
+        will_clobber_y = (not instr.index_register and
+                          (offset > 0 or needs_y_for_stack))
+        if will_clobber_y and self._has_y_self():
+            y_self_save_addr = self._save_y_self()
+            # If PHY was used (no scratch), adjust stack offset by 2
+            if y_self_save_addr is None and ptr_loc.kind == LocationKind.STACK:
+                from r65.compiler.codegen.register_alloc import PhysicalLocation
+                ptr_loc = PhysicalLocation(
+                    kind=LocationKind.STACK,
+                    stack_offset=ptr_loc.stack_offset + 2,
+                    size=ptr_loc.size
+                )
+
         if instr.index_register:
             # Index register already set by MIR lowerer (e.g., for ptr[i] access)
             # The index value is already in the register, don't overwrite it
@@ -364,30 +409,29 @@ class MemoryOperationSelector(BaseSelector):
                 if instr.is_far:
                     current_func = self.parent.current_function
                     if current_func and current_func.has_far_ptr_stack_params:
-                        # D = S is set up: use efficient [dp],Y addressing
                         self._emit_16bit_far_ptr_load_via_d_equals_s(ptr_loc, dest_loc, instr_index)
                     else:
-                        # Fallback: use DBR manipulation
                         self._emit_16bit_far_ptr_load_via_dbr(ptr_loc, dest_loc, instr_index)
                 else:
                     self._emit_16bit_stack_indirect_load(ptr_loc, dest_loc, instr_index)
             else:
                 self._emit_16bit_indirect_load(ptr_loc, dest_loc, instr.is_far, instr_index)
+            if will_clobber_y and self._has_y_self():
+                self._restore_y_self(y_self_save_addr)
             return
 
         # Handle 8-bit indirect loads
         # Handle stack-located pointers
         if ptr_loc.kind == LocationKind.STACK:
             if instr.is_far:
-                # Far pointer on stack: choose approach based on prologue setup
                 current_func = self.parent.current_function
                 if current_func and current_func.has_far_ptr_stack_params:
-                    # D = S is set up: use efficient [dp],Y addressing
                     self._emit_far_ptr_access_via_d_equals_s('LDA', ptr_loc, instr_index)
                 else:
-                    # Fallback: use DBR manipulation
                     self._emit_far_ptr_access_via_dbr('LDA', ptr_loc, instr_index)
                 self._emit_load_store('STA', dest_loc)
+                if will_clobber_y and self._has_y_self():
+                    self._restore_y_self(y_self_save_addr)
                 return
             else:
                 opcode, operand = self._get_stack_indirect_opcode(
@@ -400,6 +444,8 @@ class MemoryOperationSelector(BaseSelector):
 
         self._emit_instr(opcode, operand, "Load through pointer")
         self._emit_load_store('STA', dest_loc)
+        if will_clobber_y and self._has_y_self():
+            self._restore_y_self(y_self_save_addr)
 
     def select_store_indirect(self, instr: StoreIndirect):
         """
@@ -437,6 +483,21 @@ class MemoryOperationSelector(BaseSelector):
         offset = getattr(instr, 'offset', 0)
         needs_y_for_stack = ptr_loc.kind == LocationKind.STACK and instr.index_register is None
 
+        # In trait methods, Y holds self. Save it before clobbering for indirect access.
+        y_self_save_addr_s = None
+        will_clobber_y_s = (not instr.index_register and
+                            (offset > 0 or needs_y_for_stack))
+        if will_clobber_y_s and self._has_y_self():
+            y_self_save_addr_s = self._save_y_self()
+            # If PHY was used (no scratch), adjust stack offset by 2
+            if y_self_save_addr_s is None and ptr_loc.kind == LocationKind.STACK:
+                from r65.compiler.codegen.register_alloc import PhysicalLocation
+                ptr_loc = PhysicalLocation(
+                    kind=LocationKind.STACK,
+                    stack_offset=ptr_loc.stack_offset + 2,
+                    size=ptr_loc.size
+                )
+
         if instr.index_register:
             # Index register already set by MIR lowerer (e.g., for ptr[i] access)
             # The index value is already in the register, don't overwrite it
@@ -459,15 +520,15 @@ class MemoryOperationSelector(BaseSelector):
                 if instr.is_far:
                     current_func = self.parent.current_function
                     if current_func and current_func.has_far_ptr_stack_params:
-                        # D = S is set up: use efficient [dp],Y addressing
                         self._emit_16bit_far_ptr_store_via_d_equals_s(ptr_loc, src_loc, instr.source, instr_index)
                     else:
-                        # Fallback: use DBR manipulation
                         self._emit_16bit_far_ptr_store_via_dbr(ptr_loc, src_loc, instr.source, instr_index)
                 else:
                     self._emit_16bit_stack_indirect_store(ptr_loc, src_loc, instr.source, instr_index)
             else:
                 self._emit_16bit_indirect_store(ptr_loc, src_loc, instr.source, instr.is_far, instr_index)
+            if will_clobber_y_s and self._has_y_self():
+                self._restore_y_self(y_self_save_addr_s)
             return
 
         # Handle 8-bit indirect stores
@@ -497,6 +558,8 @@ class MemoryOperationSelector(BaseSelector):
                     'STA', ptr_loc, instr.is_far, instr_index
                 )
                 self._emit_instr(opcode, operand, "Store through stack pointer")
+            if will_clobber_y_s and self._has_y_self():
+                self._restore_y_self(y_self_save_addr_s)
             return
 
         opcode, operand = self._get_indirect_opcode('STA', ptr_loc, instr.is_far, instr_index)
@@ -511,6 +574,8 @@ class MemoryOperationSelector(BaseSelector):
             self._emit_load_store('LDA', src_loc)
 
         self._emit_instr(opcode, operand, "Store through pointer")
+        if will_clobber_y_s and self._has_y_self():
+            self._restore_y_self(y_self_save_addr_s)
 
     # ========================================================================
     # Y-Pointer (Trait Self) Addressing
