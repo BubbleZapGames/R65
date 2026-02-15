@@ -96,12 +96,37 @@ class CompareSelector(BaseSelector):
         """
         # Store type info for subsequent CondBranch (for signed/unsigned detection)
         self.parent.last_comparison_type = instr.type_info
+        self.parent._comparison_reversed = False
 
         # Check if this is a 16-bit comparison
         is_16bit = self._is_16bit_type(instr.type_info)
 
         left_loc = self.parent._get_operand_location(instr.left)
         right_operand, is_immediate, pushed_reg = self._prepare_right_operand(instr.right, is_16bit)
+
+        # Handle swapped comparison: right value is already in A, compare with left.
+        # This avoids push/pop which clobbers flags needed by CondBranch.
+        # CMP computes A - operand, so flags represent (right - left) = reversed.
+        if pushed_reg == 'SWAPPED':
+            if is_16bit:
+                self.parent._ensure_m16_mode()
+            else:
+                self.parent._ensure_m8_mode()
+            self._emit_cmp('CMP', left_loc, False)
+            self.parent._comparison_reversed = True
+            return
+
+        # If right operand was pushed to stack (PHX/PHY/PHA), all stack-relative
+        # offsets shift. Adjust the left operand if it's on the stack.
+        if pushed_reg and left_loc.kind == LocationKind.STACK:
+            from r65.compiler.codegen.register_alloc import PhysicalLocation
+            # X/Y pushes are 2 bytes (always 16-bit), A is 1 byte (m8)
+            push_size = 2 if pushed_reg in ('X', 'Y') else 1
+            left_loc = PhysicalLocation(
+                kind=LocationKind.STACK,
+                stack_offset=left_loc.stack_offset + push_size,
+                size=left_loc.size
+            )
 
         # Switch to appropriate mode for the comparison
         # Need 16-bit mode for any 16-bit comparison that uses the accumulator:
@@ -183,7 +208,7 @@ class CompareSelector(BaseSelector):
             and needs_pop indicates if PLX/PLY is needed after comparison
         """
         if right_loc.hw_register in ['A', 'B']:
-            # A and B - try scratch, fall back to push
+            # A and B - try scratch, fall back to swap
             temp_addr = self.parent._get_temp_address()
             if temp_addr:
                 if right_loc.hw_register == 'B':
@@ -194,18 +219,15 @@ class CompareSelector(BaseSelector):
                     self._emit_instr(Opcode.STA_DP, temp_addr, "Store A to temp")
                 return temp_addr, False
             else:
-                # No scratch available - use push/pop pattern
-                from r65.compiler.codegen.register_alloc import PhysicalLocation
+                # No scratch available - use swap approach: A already has the
+                # right value, reverse comparison direction. This avoids
+                # push/pop which clobbers CPU flags needed by CondBranch.
                 if right_loc.hw_register == 'B':
                     self.parent._access_b_value_in_a()
-                    self._emit_instr(Opcode.PHA, comment="Push B (via A) for temp")
-                    self.parent._ensure_xba_state_normal("Restore A")
-                else:
-                    self._emit_instr(Opcode.PHA, comment="Push A for temp")
-                temp_loc = PhysicalLocation(kind=LocationKind.STACK, stack_offset=1, size=1)
-                return temp_loc, 'A'
+                    # A now has B's value, comparison will be reversed
+                return None, 'SWAPPED'
 
-        # X and Y need special handling - try scratch, fall back to push
+        # X and Y need special handling - try scratch, fall back to swap
         temp_addr = self.parent._get_temp_address()
         if temp_addr:
             # Use scratch register
@@ -215,15 +237,14 @@ class CompareSelector(BaseSelector):
                 self._emit_instr(Opcode.STY_DP, temp_addr, "Store Y to temp")
             return temp_addr, False
         else:
-            # No scratch available - use push/pop pattern
-            from r65.compiler.codegen.register_alloc import PhysicalLocation
+            # No scratch available - use swap approach: transfer to A and
+            # reverse comparison direction. This avoids push/pop which
+            # clobbers CPU flags needed by the subsequent CondBranch.
             if right_loc.hw_register == 'X':
-                self._emit_instr(Opcode.PHX, comment="Push X for temp")
+                self._emit_instr(Opcode.TXA, comment="Transfer X to A for comparison")
             else:  # Y
-                self._emit_instr(Opcode.PHY, comment="Push Y for temp")
-            # Stack-relative location at offset 1
-            temp_loc = PhysicalLocation(kind=LocationKind.STACK, stack_offset=1, size=1)
-            return temp_loc, right_loc.hw_register  # Return register name for pop
+                self._emit_instr(Opcode.TYA, comment="Transfer Y to A for comparison")
+            return None, 'SWAPPED'
 
     def _emit_comparison(self, left_loc, right_operand, is_immediate: bool):
         """

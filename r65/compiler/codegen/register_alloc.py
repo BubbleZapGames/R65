@@ -424,17 +424,21 @@ class RegisterAllocator:
             hw_reg = vreg.register_hint
             hw_alloc = self.hw_allocs.get(hw_reg)
             if hw_alloc and hw_alloc.allocated_vreg is None:
-                # Register is free - allocate vreg to it
-                location = PhysicalLocation(
-                    kind=LocationKind.HARDWARE,
-                    hw_register=hw_reg,
-                    size=self._get_vreg_size(vreg)
-                )
-                self.allocations[vreg.id] = location
-                hw_alloc.allocated_vreg = vreg
-                hw_alloc.is_bound = False  # Not explicitly bound, just hinted
-                return location
-            # Hint couldn't be satisfied (register occupied) - fall through
+                # Don't honor hint if the register is explicitly written by
+                # other instructions (e.g., Move to X for array indexing).
+                # This prevents the loop counter from being silently clobbered.
+                if not self._has_explicit_hw_defs(hw_reg):
+                    # Register is free and not clobbered - allocate vreg to it
+                    location = PhysicalLocation(
+                        kind=LocationKind.HARDWARE,
+                        hw_register=hw_reg,
+                        size=self._get_vreg_size(vreg)
+                    )
+                    self.allocations[vreg.id] = location
+                    hw_alloc.allocated_vreg = vreg
+                    hw_alloc.is_bound = False  # Not explicitly bound, just hinted
+                    return location
+            # Hint couldn't be satisfied (register occupied or clobbered) - fall through
 
         # Determine if this vreg lives across any call
         live_across_call = False
@@ -475,6 +479,31 @@ class RegisterAllocator:
         )
         self.allocations[vreg.id] = location
         return location
+
+    def _has_explicit_hw_defs(self, hw_reg: str) -> bool:
+        """
+        Check if any instruction in the function explicitly writes to a hardware register.
+
+        This detects Move/Load/BinaryOp instructions with dest=HardwareRegister(hw_reg).
+        Used to prevent allocating loop counter vregs to registers that are explicitly
+        written by other instructions (e.g., array indexing uses Move to X).
+
+        Args:
+            hw_reg: Hardware register name ('X' or 'Y')
+
+        Returns:
+            True if any instruction explicitly defines the register
+        """
+        if not self.mir_func:
+            return False
+
+        from r65.compiler.mir.nodes import HardwareRegister
+        for block in self.mir_func.blocks.values():
+            for instr in block.instructions:
+                if hasattr(instr, 'dest') and isinstance(instr.dest, HardwareRegister):
+                    if instr.dest.name == hw_reg:
+                        return True
+        return False
 
     def _try_scratch(self, vreg: VirtualRegister) -> Optional[PhysicalLocation]:
         """

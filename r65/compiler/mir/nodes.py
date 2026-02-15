@@ -111,6 +111,7 @@ class MemoryLocation:
     symbol: Any  # Symbol from symbol table
     is_volatile: bool = False  # True for #[hw] variables
     index_register: Optional[str] = None  # 'X' or 'Y' for indexed addressing (e.g., LDA $20,X)
+    offset: int = 0  # Byte offset from base (for array/struct element access when address is None)
 
     def __repr__(self):
         if self.address is not None:
@@ -604,6 +605,7 @@ class ArgumentMechanism(Enum):
     REGISTER = "register"    # Passed in hardware register
     VARIABLE = "variable"    # Passed via memory location
     SCRATCH_PARAM = "scratch_param"  # Passed via scratch (zero-page) register
+    SELF_Y = "self_y"        # Self pointer passed in Y register, bank in DBR
 
 
 @dataclass
@@ -624,6 +626,8 @@ class Argument:
             return f"{self.value}:REG({self.location})"
         elif self.mechanism == ArgumentMechanism.SCRATCH_PARAM:
             return f"{self.value}:SCRATCH(${self.scratch_addr:04X})"
+        elif self.mechanism == ArgumentMechanism.SELF_Y:
+            return f"{self.value}:SELF_Y"
         else:  # VARIABLE
             return f"{self.value}:VAR({self.location})"
 
@@ -861,6 +865,7 @@ class MIRFunction:
     inline_attr: Optional[Any] = None       # InlineAttribute
     is_entry: bool = False
     is_far: bool = False
+    is_trait_method: bool = False  # True for trait impl methods (self passed in Y)
 
     # Inferred entry mode (M8 or M16, always X16)
     # Set based on A parameter type: u16 @ A -> M16, otherwise M8
@@ -891,6 +896,9 @@ class MIRFunction:
     stack_param_offsets: Dict[int, int] = field(default_factory=dict)
     # Maps parameter index to allocated virtual register
     param_to_vreg: Dict[int, 'VirtualRegister'] = field(default_factory=dict)
+
+    # Self pointer vreg for trait methods (passed in Y register)
+    self_y_vreg: Optional['VirtualRegister'] = None
 
     # Scratch parameter tracking (populated by analyze_scratch_params pre-pass)
     # Maps parameter index to scratch zero-page address for promoted stack params

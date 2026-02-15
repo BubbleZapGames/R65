@@ -242,6 +242,7 @@ class MIRBuilder:
             inline_attr=hir_func.inline_attr,
             is_entry=hir_func.is_entry,
             is_far=hir_func.is_far,
+            is_trait_method=hir_func.is_trait_method,
             entry_m_mode=hir_func.entry_m_mode,  # Inferred entry mode
             exit_m_mode=hir_func.exit_m_mode,    # Inferred exit mode
             source_loc=hir_func.source_loc,  # Propagate source location
@@ -340,6 +341,17 @@ class MIRBuilder:
                 # The bound variable already exists and has a memory allocation
                 # No setup needed here - lowering expressions handles the load
                 pass
+            elif hir_func.is_trait_method and idx == 0 and param.name == 'self':
+                # Trait method self parameter: passed in Y register, not on stack
+                # Allocate a vreg and emit Move from Y to self_vreg
+                param_vreg = self.current_function.vreg_allocator.alloc(
+                    param.param_type,
+                    f"param_self_y"
+                )
+                self.symbol_to_vreg[id(param.symbol)] = param_vreg
+                mir_func.self_y_vreg = param_vreg
+                # Emit move from Y to self_vreg (will be pre-allocated to Y in codegen)
+                self.emit(Move(dest=param_vreg, source=HardwareRegister('Y'), type_info=param.param_type))
             else:
                 # Stack parameter: allocate a virtual register for it
                 # The function prologue will load from stack into this vreg
@@ -1313,12 +1325,14 @@ class MIRBuilder:
                 is_volatile=base_memloc.is_volatile
             )
         else:
-            # Address not known - store offset for later resolution
+            # Address not known at MIR time (auto-allocated) -
+            # keep address=None and store offset for codegen resolution
             return MemoryLocation(
                 storage_type=base_memloc.storage_type,
-                address=offset,  # Just the offset
+                address=None,
                 symbol=symbol,
-                is_volatile=base_memloc.is_volatile
+                is_volatile=base_memloc.is_volatile,
+                offset=offset
             )
 
     def _count_param_usages(self, hir_func: HIRFunctionDecl) -> Dict[int, int]:

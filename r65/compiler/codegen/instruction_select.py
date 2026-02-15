@@ -116,6 +116,8 @@ class InstructionSelector:
 
         # Track type info from last Compare instruction for signed/unsigned branching
         self.last_comparison_type = None
+        # Track if comparison operands were swapped (for reversed flag interpretation)
+        self._comparison_reversed = False
 
         # Hardware register state tracker for optimization
         self.hw_tracker = HardwareRegisterTracker()
@@ -1544,7 +1546,7 @@ class InstructionSelector:
                 if alloc:
                     return PhysicalLocation(
                         kind=LocationKind.MEMORY,
-                        memory_addr=alloc.address,
+                        memory_addr=alloc.address + operand.offset,
                         size=alloc.size,
                         index_register=operand.index_register  # Pass indexed addressing info
                     )

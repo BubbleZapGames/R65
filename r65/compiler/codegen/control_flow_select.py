@@ -186,6 +186,13 @@ class ControlFlowInstructionSelector(BaseSelector):
     # Conditional Branch
     # ========================================================================
 
+    # Map for reversing comparison when operands are swapped
+    _REVERSED_COMPARISON = {
+        '==': '==', '!=': '!=',
+        '<': '>', '>': '<',
+        '<=': '>=', '>=': '<=',
+    }
+
     def select_cond_branch(self, instr: CondBranch):
         """
         Generate code for CondBranch instruction.
@@ -199,8 +206,16 @@ class ControlFlowInstructionSelector(BaseSelector):
         """
         is_signed = self._is_signed_comparison()
 
+        # If the preceding Compare swapped operands (right in A, CMP left),
+        # the flags represent (right - left) instead of (left - right).
+        # Reverse the comparison to compensate.
+        comparison = instr.comparison
+        if getattr(self.parent, '_comparison_reversed', False):
+            comparison = self._REVERSED_COMPARISON.get(comparison, comparison)
+            self.parent._comparison_reversed = False
+
         if instr.condition is None:
-            self._emit_flag_based_branch(instr, is_signed)
+            self._emit_flag_based_branch(instr, is_signed, comparison)
         else:
             self._emit_value_based_branch(instr)
 
@@ -212,9 +227,11 @@ class ControlFlowInstructionSelector(BaseSelector):
                 return self.last_comparison_type.name.startswith('i')
         return False
 
-    def _emit_flag_based_branch(self, instr: CondBranch, is_signed: bool):
+    def _emit_flag_based_branch(self, instr: CondBranch, is_signed: bool,
+                                comparison: str = None):
         """Emit branch based on CPU flags from preceding Compare."""
-        comparison = instr.comparison
+        if comparison is None:
+            comparison = instr.comparison
         true_target = self._block_label(instr.true_target)
         false_target = self._block_label(instr.false_target)
 
@@ -635,8 +652,12 @@ class ControlFlowInstructionSelector(BaseSelector):
             return 0
 
         scratch_addrs = self.current_function.scratch_param_addrs
+        is_trait_method = getattr(self.current_function, 'is_trait_method', False)
         total_bytes = 0
         for i, param in enumerate(self.current_function.parameters):
+            # Skip self parameter for trait methods (passed in Y, not on stack)
+            if is_trait_method and i == 0 and param.name == 'self':
+                continue
             # Stack parameters have no binding (binding is None)
             # and are not promoted to scratch
             if param.binding is None and i not in scratch_addrs:
