@@ -304,10 +304,9 @@ class ProgramCodeGenerator:
         # Dispatch wrapper function
         self.emitter.emit_label(dispatch_label)
 
-        # Self pointer is on stack at S+3 (after 2-byte return address from JSR)
-        # LDA (sr,S),Y with Y=0 loads byte from address pointed to by stack value
-        self.emitter.emit_raw("    LDY #$0000")
-        self.emitter.emit_raw("    LDA ($03,S),Y")          # Load TypeId byte from *self_ptr
+        # Self pointer is in Y register (DBR:Y addressing)
+        # Load TypeId from offset 0 of the trait object: LDA abs,Y with abs=0
+        self.emitter.emit_raw("    LDA $0000,Y")            # Load TypeId byte from DBR:Y+0
 
         # Zero-extend to 16-bit and compute table index
         self.emitter.emit_raw("    REP #$20")               # Switch to m16
@@ -344,9 +343,9 @@ class ProgramCodeGenerator:
 
         self.emitter.emit_label(dispatch_label)
 
-        # Self pointer is on stack at S+4 (after 3-byte return address from JSL)
-        self.emitter.emit_raw("    LDY #$0000")
-        self.emitter.emit_raw("    LDA ($04,S),Y")          # Load TypeId byte from *self_ptr
+        # Self pointer is in Y register, DBR set to object's bank by caller
+        # Load TypeId from offset 0: LDA abs,Y with abs=0
+        self.emitter.emit_raw("    LDA $0000,Y")            # Load TypeId byte from DBR:Y+0
 
         # Compute trampoline offset: TypeId * 4 (each JML is 4 bytes)
         self.emitter.emit_raw("    REP #$20")               # Switch to m16

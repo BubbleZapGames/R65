@@ -559,11 +559,21 @@ class CallInstructionSelector(BaseSelector):
         return reloads
 
     def _emit_trait_dispatch_args(self, instr: TraitDispatch) -> int:
-        """Emit argument setup for trait dispatch (all stack-passed)."""
+        """Emit argument setup for trait dispatch.
+
+        Self pointer is passed in Y (SELF_Y mechanism), other args are stack-passed.
+        Stack args are pushed first, then Y is loaded with self address last.
+        """
         from r65.compiler.codegen.type_utils import get_type_size
+        from r65.compiler.codegen.constants import M_FLAG
 
         stack_bytes_pushed = 0
         stack_args = [arg for arg in instr.args if arg.mechanism == ArgumentMechanism.STACK]
+        self_y_arg = None
+        for arg in instr.args:
+            if arg.mechanism == ArgumentMechanism.SELF_Y:
+                self_y_arg = arg
+                break
 
         # Push stack arguments in reverse order (last param first)
         for arg in reversed(stack_args):
@@ -580,7 +590,59 @@ class CallInstructionSelector(BaseSelector):
                 arg_size = get_type_size(arg.value.type_info)
             stack_bytes_pushed += arg_size
 
+        # Load Y with self pointer address (after stack args, before JSR/JSL)
+        if self_y_arg is not None:
+            self._load_y_with_self(self_y_arg, stack_bytes_pushed)
+
         return stack_bytes_pushed
+
+    def _load_y_with_self(self, arg: 'Argument', stack_bytes_pushed: int):
+        """Load Y register with the self pointer address for trait dispatch.
+
+        Handles different source locations:
+        - Scratch/DP: LDY dp_addr
+        - Stack: REP #$20; LDA d,S; TAY; SEP #$20 (no LDY d,S on 65816)
+        - Hardware (X): TXY
+        - Immediate: LDY #imm
+        - Memory: LDY abs_addr
+        """
+        from r65.compiler.codegen.constants import M_FLAG
+
+        arg_loc = self.parent._get_operand_location(arg.value)
+
+        # Adjust for stack args that were pushed
+        if arg_loc.kind == LocationKind.STACK and stack_bytes_pushed > 0:
+            arg_loc = self.parent._offset_location(arg_loc, stack_bytes_pushed)
+
+        if isinstance(arg.value, MIRImmediate):
+            # Immediate address
+            self.parent._emit_immediate(Opcode.LDY_IMMEDIATE, arg.value.value, "Load self ptr into Y")
+        elif arg_loc.kind == LocationKind.HARDWARE:
+            if arg_loc.hw_register == 'Y':
+                pass  # Already in Y
+            elif arg_loc.hw_register == 'X':
+                self.parent.emitter.emit_raw("    TXY")
+            elif arg_loc.hw_register == 'A':
+                self.parent.emitter.emit_raw("    TAY")
+            else:
+                raise InstructionSelectionError(f"Cannot load Y from hardware register {arg_loc.hw_register}")
+        elif arg_loc.kind == LocationKind.SCRATCH:
+            # Scratch (direct page) location — LDY dp
+            self.parent._emit_load('LDY', arg_loc, "Load self ptr into Y")
+        elif arg_loc.kind == LocationKind.STACK:
+            # Stack-relative: no LDY d,S exists on 65816
+            # Use: REP #$20; LDA d,S; TAY; SEP #$20
+            self.parent._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "16-bit A for stack self load")
+            self.parent.emitter.emit_accu_mode(16)
+            self.parent._emit_load('LDA', arg_loc, "Load self ptr from stack")
+            self.parent.emitter.emit_raw("    TAY")
+            self.parent._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "Restore 8-bit A")
+            self.parent.emitter.emit_accu_mode(8)
+        elif arg_loc.kind == LocationKind.MEMORY:
+            # Absolute memory location
+            self.parent._emit_load('LDY', arg_loc, "Load self ptr into Y")
+        else:
+            raise InstructionSelectionError(f"Cannot load Y from location kind {arg_loc.kind}")
 
     # ========================================================================
     # Hardware Register Spill/Reload (Region-Based)

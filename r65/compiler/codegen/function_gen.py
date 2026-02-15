@@ -113,6 +113,20 @@ class FunctionCodeGenerator:
                 )
                 reg_alloc.allocations[vreg.id] = location
 
+        # Pre-allocate self pointer vreg to Y register for trait methods
+        # Self is passed in Y by the caller/dispatch wrapper
+        if mir_func.is_trait_method and mir_func.self_y_vreg:
+            location = PhysicalLocation(
+                kind=LocationKind.HARDWARE,
+                hw_register='Y',
+                size=2  # Near pointer is always 16-bit
+            )
+            reg_alloc.allocations[mir_func.self_y_vreg.id] = location
+            # Also track in hw_allocs so spill logic knows Y is occupied
+            hw_alloc = reg_alloc.get_hw_alloc('Y')
+            hw_alloc.allocated_vreg = mir_func.self_y_vreg
+            hw_alloc.is_bound = True
+
         # Allocate all virtual registers in function
         self._allocate_function_registers(mir_func, reg_alloc)
 

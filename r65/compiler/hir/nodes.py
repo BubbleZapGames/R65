@@ -175,6 +175,7 @@ class HIRFunctionDecl(HIRDeclaration):
     name: str = ""
     is_far: bool = False
     is_const: bool = False
+    is_trait_method: bool = False  # True for trait impl methods (self passed in Y)
     parameters: List[HIRParameter] = field(default_factory=list)
     return_type: Optional[Any] = None  # Will be TypeInfo or None
     body: Optional['HIRBlock'] = None

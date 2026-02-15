@@ -311,6 +311,7 @@ class MemoryOperationSelector(BaseSelector):
         dest = *ptr  or  dest = *(ptr + offset)  (indirect addressing)
 
         For 65816:
+        - Y-located pointers use LDA abs,Y (absolute indexed Y, uses DBR for bank)
         - near pointers use (zp) or (zp),Y addressing modes
         - far pointers use [zp] or [zp],Y addressing modes
         - Stack-located near pointers use (d,S),Y addressing mode
@@ -322,6 +323,13 @@ class MemoryOperationSelector(BaseSelector):
         """
         ptr_loc = self.parent._get_operand_location(instr.pointer)
         dest_loc = self.parent._get_operand_location(instr.dest)
+
+        # Y-pointer optimization: pointer is in Y register (trait method self)
+        # Use LDA $offset,Y — effective address is DBR:(offset + Y)
+        if ptr_loc.kind == LocationKind.HARDWARE and ptr_loc.hw_register == 'Y':
+            offset = getattr(instr, 'offset', 0)
+            self._emit_y_pointer_load(offset, instr.type_info, dest_loc)
+            return
 
         # Spill hardware register pointers to scratch for indirect addressing
         if ptr_loc.kind == LocationKind.HARDWARE:
@@ -400,6 +408,7 @@ class MemoryOperationSelector(BaseSelector):
         *ptr = source  or  *(ptr + offset) = source  (indirect addressing)
 
         For 65816:
+        - Y-located pointers use STA abs,Y (absolute indexed Y, uses DBR for bank)
         - near pointers use (zp) or (zp),Y addressing modes
         - far pointers use [zp] or [zp],Y addressing modes
         - Field offset is loaded into Y for indexed indirect addressing
@@ -409,6 +418,13 @@ class MemoryOperationSelector(BaseSelector):
         """
         ptr_loc = self.parent._get_operand_location(instr.pointer)
         src_loc = self.parent._get_operand_location(instr.source)
+
+        # Y-pointer optimization: pointer is in Y register (trait method self)
+        # Use STA $offset,Y — effective address is DBR:(offset + Y)
+        if ptr_loc.kind == LocationKind.HARDWARE and ptr_loc.hw_register == 'Y':
+            offset = getattr(instr, 'offset', 0)
+            self._emit_y_pointer_store(offset, instr.type_info, src_loc, instr.source)
+            return
 
         # Spill hardware register pointers to scratch for indirect addressing
         if ptr_loc.kind == LocationKind.HARDWARE:
@@ -495,6 +511,86 @@ class MemoryOperationSelector(BaseSelector):
             self._emit_load_store('LDA', src_loc)
 
         self._emit_instr(opcode, operand, "Store through pointer")
+
+    # ========================================================================
+    # Y-Pointer (Trait Self) Addressing
+    # ========================================================================
+
+    def _emit_y_pointer_load(self, offset, type_info, dest_loc):
+        """Load through Y-pointer using LDA abs,Y addressing.
+
+        Effective address = DBR:(offset + Y). Used for trait method self field access
+        where Y holds the struct base address and DBR is set to the object's bank.
+
+        Args:
+            offset: Field byte offset from struct base
+            type_info: Type of the value being loaded
+            dest_loc: Destination physical location
+        """
+        is_u16 = self.parent._is_16bit(type_info)
+
+        if is_u16:
+            # 16-bit load: switch to m16, LDA abs,Y, store, switch back
+            self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "16-bit A for u16 field load")
+            self.parent.emitter.emit_accu_mode(16)
+            self.parent.emitter.emit_raw(f"    LDA ${offset:04X},Y")
+            # Store 16-bit value
+            if dest_loc.kind == LocationKind.HARDWARE and dest_loc.hw_register == 'A':
+                pass  # Already in A
+            else:
+                self._emit_load_store('STA', dest_loc)
+            self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "Restore 8-bit A")
+            self.parent.emitter.emit_accu_mode(8)
+        else:
+            # 8-bit load: LDA abs,Y directly
+            self.parent.emitter.emit_raw(f"    LDA ${offset:04X},Y")
+            if dest_loc.kind == LocationKind.HARDWARE and dest_loc.hw_register == 'A':
+                pass  # Already in A
+            else:
+                self._emit_load_store('STA', dest_loc)
+
+    def _emit_y_pointer_store(self, offset, type_info, src_loc, source):
+        """Store through Y-pointer using STA abs,Y addressing.
+
+        Effective address = DBR:(offset + Y). Used for trait method self field writes
+        where Y holds the struct base address and DBR is set to the object's bank.
+
+        Args:
+            offset: Field byte offset from struct base
+            type_info: Type of the value being stored
+            src_loc: Source physical location
+            source: MIR source operand (for immediate detection)
+        """
+
+        is_u16 = self.parent._is_16bit(type_info)
+
+        if is_u16:
+            # 16-bit store
+            self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "16-bit A for u16 field store")
+            self.parent.emitter.emit_accu_mode(16)
+            # Load source into A
+            if isinstance(source, MIRImmediate):
+                value = source.value & 0xFFFF
+                self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(value))
+            elif src_loc.kind == LocationKind.HARDWARE and src_loc.hw_register == 'A':
+                pass  # Already in A
+            else:
+                self._emit_load_store('LDA', src_loc)
+            self.parent.emitter.emit_raw(f"    STA ${offset:04X},Y")
+            self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "Restore 8-bit A")
+            self.parent.emitter.emit_accu_mode(8)
+        else:
+            # 8-bit store: load into A, STA abs,Y
+            if isinstance(source, MIRImmediate):
+                value = source.value & 0xFF
+                self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(value))
+            elif src_loc.kind == LocationKind.HARDWARE and src_loc.hw_register == 'A':
+                pass  # Already in A
+            else:
+                self._emit_load_store('LDA', src_loc)
+            self.parent.emitter.emit_raw(f"    STA ${offset:04X},Y")
+
+    # ========================================================================
 
     def _validate_pointer_location(self, ptr_loc):
         """Validate that pointer is in memory (not immediate or hardware register).

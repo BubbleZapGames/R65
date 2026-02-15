@@ -395,14 +395,15 @@ class CallLowerer:
         # Lower self argument (trait pointer)
         self_vreg = self.builder.lower_expression(self_arg)
 
-        # Build argument list: self pointer as first arg (stack-passed), then user args
+        # Build argument list: self pointer passed in Y register (DBR:Y addressing),
+        # then user args on stack
         from r65.compiler.hir.types import PointerTypeInfo
         args = []
         self_ptr_type = self_arg.expr_type if hasattr(self_arg, 'expr_type') else PointerTypeInfo(pointee_type=BasicTypeInfo('u8'))
         args.append(Argument(
             value=self_vreg,
-            mechanism=ArgumentMechanism.STACK,
-            location=None,
+            mechanism=ArgumentMechanism.SELF_Y,
+            location=HardwareRegister('Y'),
             param_type=self_ptr_type
         ))
 

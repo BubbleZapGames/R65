@@ -1515,6 +1515,7 @@ class HIRBuilder:
             name=mangled_name,
             is_far=method.is_far,
             is_const=method.is_const,
+            is_trait_method=bool(impl.trait_name),
             parameters=hir_params,
             return_type=ret_type,
             body=hir_body,
