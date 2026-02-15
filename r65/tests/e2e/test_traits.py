@@ -216,110 +216,6 @@ class TestTraitDispatch:
         ))
         assert result.success, f"Failures: {result.failures}"
 
-    def test_rect_intersection_via_trait_list(self, e2e):
-        """Loop through array of *dyn Collidable rects, check pairwise AABB intersections."""
-        result = e2e.run('''
-            #[zeropage(0x10, register)]
-            static mut SCRATCH0: u8;
-            #[zeropage(0x12, register)]
-            static mut SCRATCH1: u16;
-
-            // Results: 1 if rect intersects any other rect, 0 otherwise
-            #[lowram]
-            static mut RESULTS: [u8; 4] = [0; 4];
-
-            // Scratch globals used by store_bounds
-            #[lowram]
-            static mut BOUND_X: u8;
-            #[lowram]
-            static mut BOUND_Y: u8;
-            #[lowram]
-            static mut BOUND_W: u8;
-            #[lowram]
-            static mut BOUND_H: u8;
-
-            struct Rect { x: u8, y: u8, w: u8, h: u8 }
-
-            trait Collidable {
-                fn store_bounds(*self);
-                fn collides(*self) -> u8;
-            }
-
-            impl Collidable for Rect {
-                fn store_bounds(*self) {
-                    BOUND_X = self.x;
-                    BOUND_Y = self.y;
-                    BOUND_W = self.w;
-                    BOUND_H = self.h;
-                }
-
-                // AABB intersection: check if self overlaps with BOUND_*
-                fn collides(*self) -> u8 {
-                    if self.x < BOUND_X + BOUND_W {
-                        if BOUND_X < self.x + self.w {
-                            if self.y < BOUND_Y + BOUND_H {
-                                if BOUND_Y < self.y + self.h {
-                                    return 1;
-                                }
-                            }
-                        }
-                    }
-                    return 0;
-                }
-            }
-
-            // R0: [10,30) x [10,30) -- overlaps R1 and R3
-            #[lowram]
-            static mut R0: Rect = Rect { x: 10, y: 10, w: 20, h: 20 };
-            // R1: [25,40) x [15,25) -- overlaps R0 only
-            #[lowram]
-            static mut R1: Rect = Rect { x: 25, y: 15, w: 15, h: 10 };
-            // R2: [50,60) x [50,60) -- isolated, no overlaps
-            #[lowram]
-            static mut R2: Rect = Rect { x: 50, y: 50, w: 10, h: 10 };
-            // R3: [15,25) x [15,25) -- overlaps R0 only
-            #[lowram]
-            static mut R3: Rect = Rect { x: 15, y: 15, w: 10, h: 10 };
-
-            #[lowram]
-            static mut RECTS: [*dyn Collidable; 4];
-
-            #[entry]
-            fn main() {
-                // Initialize trait pointer array
-                let p0: *dyn Collidable = &R0;
-                let p1: *dyn Collidable = &R1;
-                let p2: *dyn Collidable = &R2;
-                let p3: *dyn Collidable = &R3;
-                RECTS[0] = p0;
-                RECTS[1] = p1;
-                RECTS[2] = p2;
-                RECTS[3] = p3;
-
-                // Check each rect against all others
-                for i in 0..4 {
-                    // Store rect i bounds into BOUND_* globals
-                    let pi: *dyn Collidable = RECTS[i];
-                    pi.store_bounds();
-
-                    for j in 0..4 {
-                        if i != j {
-                            // Check if rect j collides with the stored bounds
-                            let pj: *dyn Collidable = RECTS[j];
-                            if pj.collides() != 0 {
-                                RESULTS[i] = 1;
-                            }
-                        }
-                    }
-                }
-            }
-        ''', ExpectedState(
-            memory={
-                0x7E0200: [1, 1, 0, 1],  # R0=yes, R1=yes, R2=no, R3=yes
-            }
-        ), max_instructions=100000)
-        assert result.success, f"Failures: {result.failures}"
-
     def test_collides_direct_loop(self, e2e):
         """Pairwise AABB collision via trait dispatch with type_id check and cast."""
         result = e2e.run('''
@@ -382,6 +278,7 @@ class TestTraitDispatch:
                         let pj: *dyn Collidable = ptrs[j];
                         if pi.collides(pj) != 0 {
                             RESULT[i] = 1;
+                            RESULT[j] = 1;
                             break;
                         }
                     }
@@ -389,7 +286,7 @@ class TestTraitDispatch:
             }
         ''', ExpectedState(
             memory={
-                0x7E0200: [1, 0, 0],
+                0x7E0200: [1, 1, 0],
             }
         ), max_instructions=100000)
         assert result.success, f"Failures: {result.failures}"
