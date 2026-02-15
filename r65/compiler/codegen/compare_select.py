@@ -280,7 +280,7 @@ class CompareSelector(BaseSelector):
             # State is now SWAPPED (A=B, B=A)
         else:
             raise InstructionSelectionError(
-                f"Unsupported hardware register for comparison: {reg}")
+                f"Unsupported hardware register for comparison: {reg}", source_loc=self.parent._current_source_loc)
 
     # ========================================================================
     # Bit Test Instruction

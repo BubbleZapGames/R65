@@ -346,7 +346,7 @@ class ExpressionLowerer:
             ))
             return result
 
-        raise MIRLoweringError(f"Unsupported type cast: {source_type} to {target_type}")
+        raise MIRLoweringError(f"Unsupported type cast: {source_type} to {target_type}", source_loc=expr.source_loc)
 
     def _lower_to_bool(self, source_operand, source_type, target_type) -> VirtualRegister:
         """
@@ -389,7 +389,8 @@ class ExpressionLowerer:
 
         if not isinstance(expr.array, HIRIdentifier):
             raise MIRLoweringError(
-                f"Array indexing only supports identifiers, got: {type(expr.array)}"
+                f"Array indexing only supports identifiers, got: {type(expr.array)}",
+                source_loc=expr.source_loc
             )
 
         # Check if this is pointer indexing (ptr[index]) vs array indexing (array[index])
@@ -554,7 +555,7 @@ class ExpressionLowerer:
         """
         field_offset = expr.field_offset
         if field_offset is None:
-            raise MIRLoweringError(f"Field offset not computed for field: {expr.field_name}")
+            raise MIRLoweringError(f"Field offset not computed for field: {expr.field_name}", source_loc=expr.source_loc)
 
         result = self.ctx.alloc_vreg(expr.expr_type, f"field_{expr.field_name}")
 
@@ -576,7 +577,8 @@ class ExpressionLowerer:
 
         else:
             raise MIRLoweringError(
-                f"Field access only supports static structs and array indexing, got: {type(expr.base)}"
+                f"Field access only supports static structs and array indexing, got: {type(expr.base)}",
+                source_loc=expr.source_loc
             )
 
         return result
@@ -620,7 +622,8 @@ class ExpressionLowerer:
 
         if not isinstance(array_index_expr.array, HIRIdentifier):
             raise MIRLoweringError(
-                f"Array field access requires static array, got: {type(array_index_expr.array)}"
+                f"Array field access requires static array, got: {type(array_index_expr.array)}",
+                source_loc=expr.source_loc
             )
 
         array_symbol = array_index_expr.array.symbol
@@ -692,7 +695,7 @@ class ExpressionLowerer:
 
         pointer_type = expr.pointer.expr_type
         if not isinstance(pointer_type, PointerTypeInfo):
-            raise MIRLoweringError(f"Dereference of non-pointer type: {pointer_type}")
+            raise MIRLoweringError(f"Dereference of non-pointer type: {pointer_type}", source_loc=expr.source_loc)
 
         result = self.ctx.alloc_vreg(expr.expr_type, "deref_result")
 
@@ -728,7 +731,8 @@ class ExpressionLowerer:
 
         if not isinstance(expr.operand, HIRIdentifier):
             raise MIRLoweringError(
-                f"Address-of only supports static variables or array indexing, got: {type(expr.operand)}"
+                f"Address-of only supports static variables or array indexing, got: {type(expr.operand)}",
+                source_loc=expr.source_loc
             )
 
         symbol = expr.operand.symbol
@@ -764,7 +768,8 @@ class ExpressionLowerer:
         array_index = expr.operand
         if not isinstance(array_index.array, HIRIdentifier):
             raise MIRLoweringError(
-                f"Address-of array index requires static array, got: {type(array_index.array)}"
+                f"Address-of array index requires static array, got: {type(array_index.array)}",
+                source_loc=expr.source_loc
             )
 
         array_symbol = array_index.array.symbol

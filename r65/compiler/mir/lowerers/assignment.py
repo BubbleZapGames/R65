@@ -175,7 +175,7 @@ class AssignmentLowerer:
 
         else:
             # Unsupported target
-            raise MIRLoweringError(f"Unsupported assignment target: {type(expr.target)}")
+            raise MIRLoweringError(f"Unsupported assignment target: {type(expr.target)}", source_loc=expr.source_loc)
 
     # ========================================================================
     # Identifier Assignment
@@ -234,7 +234,7 @@ class AssignmentLowerer:
         field_access = expr.target
         field_offset = field_access.field_offset
         if field_offset is None:
-            raise MIRLoweringError(f"Field offset not computed for field: {field_access.field_name}")
+            raise MIRLoweringError(f"Field offset not computed for field: {field_access.field_name}", source_loc=expr.source_loc)
 
         # Handle auto-dereference case (self.field = value where self is a pointer)
         if getattr(field_access, 'auto_deref', False):
@@ -254,7 +254,8 @@ class AssignmentLowerer:
 
         else:
             raise MIRLoweringError(
-                f"Field access only supports static structs and array indexing, got: {type(field_access.base)}"
+                f"Field access only supports static structs and array indexing, got: {type(field_access.base)}",
+                source_loc=expr.source_loc
             )
 
         return value
@@ -297,7 +298,8 @@ class AssignmentLowerer:
 
         if not isinstance(array_index_expr.array, HIRIdentifier):
             raise MIRLoweringError(
-                f"Array field assignment requires static array, got: {type(array_index_expr.array)}"
+                f"Array field assignment requires static array, got: {type(array_index_expr.array)}",
+                source_loc=self.builder._current_source_loc
             )
 
         array_symbol = array_index_expr.array.symbol
@@ -360,7 +362,7 @@ class AssignmentLowerer:
 
         # Get the base (array or pointer)
         if not isinstance(array_index.array, HIRIdentifier):
-            raise MIRLoweringError(f"Array indexing only supports identifiers currently, got: {type(array_index.array)}")
+            raise MIRLoweringError(f"Array indexing only supports identifiers currently, got: {type(array_index.array)}", source_loc=expr.source_loc)
 
         base_symbol = array_index.array.symbol
         base_type = array_index.array.expr_type
@@ -403,7 +405,7 @@ class AssignmentLowerer:
                 self.emit(Move(dest=y_reg, source=index_operand, type_info=element_type))
                 index_register = 'Y'
             else:
-                raise MIRLoweringError(f"Pointer indexing requires X or Y register, got: {index_operand.name}")
+                raise MIRLoweringError(f"Pointer indexing requires X or Y register, got: {index_operand.name}", source_loc=expr.source_loc)
         else:
             # Move index value to Y register
             y_reg = HardwareRegister('Y')
@@ -502,7 +504,7 @@ class AssignmentLowerer:
         pointer_type = deref.pointer.expr_type
 
         if not isinstance(pointer_type, PointerTypeInfo):
-            raise MIRLoweringError(f"Dereference of non-pointer type: {pointer_type}")
+            raise MIRLoweringError(f"Dereference of non-pointer type: {pointer_type}", source_loc=expr.source_loc)
 
         # Lower the pointer expression to get the pointer value
         ptr_operand = self.builder.lower_expression(deref.pointer)
@@ -541,7 +543,8 @@ class AssignmentLowerer:
             # but handle the case where it's not for robustness
             raise MIRLoweringError(
                 f"STATUS flag assignment requires constant boolean value, "
-                f"got {type(value_expr).__name__}"
+                f"got {type(value_expr).__name__}",
+                source_loc=expr.source_loc
             )
 
         self.emit(StatusFlagSet(
@@ -582,11 +585,11 @@ class AssignmentLowerer:
         # Get the tuple type from the expression
         value_type = expr.value.expr_type
         if not isinstance(value_type, TupleTypeInfo):
-            raise MIRLoweringError(f"Multi-assignment requires tuple type, got: {value_type}")
+            raise MIRLoweringError(f"Multi-assignment requires tuple type, got: {value_type}", source_loc=expr.source_loc)
 
         num_elements = len(value_type.element_types)
         if num_elements > len(return_registers):
-            raise MIRLoweringError(f"Tuple has too many elements ({num_elements}), max supported is {len(return_registers)}")
+            raise MIRLoweringError(f"Tuple has too many elements ({num_elements}), max supported is {len(return_registers)}", source_loc=expr.source_loc)
 
         # Assign each target from the corresponding return register
         # Note: We need to be careful about order if targets overlap with source registers
@@ -625,7 +628,7 @@ class AssignmentLowerer:
                             self.ctx.symbol_to_vreg[symbol_id] = vreg
                         self.emit(Move(dest=vreg, source=source_reg, type_info=elem_type))
             else:
-                raise MIRLoweringError(f"Unsupported multi-assignment target: {type(target)}")
+                raise MIRLoweringError(f"Unsupported multi-assignment target: {type(target)}", source_loc=expr.source_loc)
 
         # Emit register-to-register moves with cycle detection
         # Handle cycles (e.g., (X, A) = func() where func returns in A, X) using temp register

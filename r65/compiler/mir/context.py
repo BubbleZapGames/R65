@@ -69,6 +69,9 @@ class LoweringContext:
     # Track if we generated __init_start() function
     has_init_start: bool = False
 
+    # Current source location for error reporting
+    current_source_loc: Any = None
+
     # ========================================================================
     # Convenience Methods
     # ========================================================================

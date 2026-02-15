@@ -525,4 +525,4 @@ class MatchLowerer:
                     self.ctx.set_current_block(next_subpat_block)
 
         else:
-            raise MIRLoweringError(f"Unknown pattern type in MIR lowering: {type(pattern).__name__}")
+            raise MIRLoweringError(f"Unknown pattern type in MIR lowering: {type(pattern).__name__}", source_loc=self.builder._current_source_loc)

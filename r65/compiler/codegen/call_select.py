@@ -625,7 +625,7 @@ class CallInstructionSelector(BaseSelector):
             elif arg_loc.hw_register == 'A':
                 self.parent.emitter.emit_raw("    TAY")
             else:
-                raise InstructionSelectionError(f"Cannot load Y from hardware register {arg_loc.hw_register}")
+                raise InstructionSelectionError(f"Cannot load Y from hardware register {arg_loc.hw_register}", source_loc=self.parent._current_source_loc)
         elif arg_loc.kind == LocationKind.SCRATCH:
             # Scratch (direct page) location — LDY dp
             self.parent._emit_load('LDY', arg_loc, "Load self ptr into Y")
@@ -642,7 +642,7 @@ class CallInstructionSelector(BaseSelector):
             # Absolute memory location
             self.parent._emit_load('LDY', arg_loc, "Load self ptr into Y")
         else:
-            raise InstructionSelectionError(f"Cannot load Y from location kind {arg_loc.kind}")
+            raise InstructionSelectionError(f"Cannot load Y from location kind {arg_loc.kind}", source_loc=self.parent._current_source_loc)
 
     # ========================================================================
     # Hardware Register Spill/Reload (Region-Based)
@@ -1051,7 +1051,7 @@ class CallInstructionSelector(BaseSelector):
             self._ensure_m8_mode("8-bit A for byte push")
 
             if arg_loc.kind == LocationKind.HARDWARE and arg_loc.hw_register == 'A':
-                raise InstructionSelectionError("Cannot push 24-bit value from A register")
+                raise InstructionSelectionError("Cannot push 24-bit value from A register", source_loc=self.parent._current_source_loc)
             else:
                 is_stack = arg_loc.kind == LocationKind.STACK
                 self._push_multibyte_value(arg_loc, source_size, 3, is_stack)
@@ -1170,7 +1170,8 @@ class CallInstructionSelector(BaseSelector):
             self._emit_implied(Opcode.TYX, f"Transfer Y to X")
         else:
             raise InstructionSelectionError(
-                f"Cannot transfer from {src_reg} to {target_reg}")
+                f"Cannot transfer from {src_reg} to {target_reg}",
+                source_loc=self.parent._current_source_loc)
 
     def _emit_variable_argument(self, arg, arg_loc):
         """Emit variable-bound argument (store to memory location)."""
@@ -1390,7 +1391,7 @@ class CallInstructionSelector(BaseSelector):
             else:
                 self._emit_address(Opcode.JSR, instr.function)
         else:
-            raise InstructionSelectionError(f"Unknown function type in Call: {type(instr.function)}")
+            raise InstructionSelectionError(f"Unknown function type in Call: {type(instr.function)}", source_loc=self.parent._current_source_loc)
 
     def _emit_indirect_call_trampoline(self, func_ptr_vreg: VirtualRegister, is_far: bool,
                                        stack_bytes_pushed: int = 0):
@@ -1603,7 +1604,7 @@ class CallInstructionSelector(BaseSelector):
 
         for i, return_vreg in enumerate(instr.returns):
             if i >= len(return_registers):
-                raise InstructionSelectionError(f"Too many return values (max {len(return_registers)})")
+                raise InstructionSelectionError(f"Too many return values (max {len(return_registers)})", source_loc=self.parent._current_source_loc)
 
             source_reg = return_registers[i]
             dest_loc = self.parent._get_operand_location(return_vreg)
@@ -1659,7 +1660,7 @@ class CallInstructionSelector(BaseSelector):
 
         builtin = BuiltinRegistry.get_builtin(instr.builtin_name)
         if not builtin:
-            raise unknown_value("built-in function", instr.builtin_name)
+            raise unknown_value("built-in function", instr.builtin_name, source_loc=self.parent._current_source_loc)
 
         if builtin.kind == BuiltinKind.PROCESSOR_CONTROL:
             self._emit_processor_control_builtin(instr, builtin)
@@ -1674,7 +1675,7 @@ class CallInstructionSelector(BaseSelector):
         """Emit processor control built-in (wai, stp, xba, NOP)."""
         opcode = BUILTIN_OPCODES.get(builtin.instruction)
         if not opcode:
-            raise unknown_value("processor control builtin", builtin.instruction)
+            raise unknown_value("processor control builtin", builtin.instruction, source_loc=self.parent._current_source_loc)
 
         if instr.builtin_name == 'NOP':
             count = 1  # Default
@@ -1683,7 +1684,7 @@ class CallInstructionSelector(BaseSelector):
                 if isinstance(arg.value, MIRImmediate):
                     count = arg.value.value
                 else:
-                    raise InstructionSelectionError("NOP() count must be a constant immediate value")
+                    raise InstructionSelectionError("NOP() count must be a constant immediate value", source_loc=self.parent._current_source_loc)
 
             for _ in range(count):
                 self._emit_implied(opcode)
@@ -1694,11 +1695,11 @@ class CallInstructionSelector(BaseSelector):
         """Emit software interrupt built-in (cop)."""
         if len(instr.args) != 1:
             raise InstructionSelectionError(
-                f"{instr.builtin_name}() expects 1 argument, got {len(instr.args)}")
+                f"{instr.builtin_name}() expects 1 argument, got {len(instr.args)}", source_loc=self.parent._current_source_loc)
 
         opcode = BUILTIN_OPCODES.get(builtin.instruction)
         if not opcode:
-            raise unknown_value("software interrupt builtin", builtin.instruction)
+            raise unknown_value("software interrupt builtin", builtin.instruction, source_loc=self.parent._current_source_loc)
 
         arg = instr.args[0]
 
@@ -1707,27 +1708,27 @@ class CallInstructionSelector(BaseSelector):
             self._emit_immediate(opcode, arg.value.value)
         else:
             raise InstructionSelectionError(
-                f"{instr.builtin_name}() requires a constant signature byte")
+                f"{instr.builtin_name}() requires a constant signature byte", source_loc=self.parent._current_source_loc)
 
     def _emit_block_move_builtin(self, instr: Call, builtin):
         """Emit block move built-in (mvn, mvp)."""
         if len(instr.args) != 2:
             raise InstructionSelectionError(
-                f"{instr.builtin_name}() expects 2 arguments, got {len(instr.args)}")
+                f"{instr.builtin_name}() expects 2 arguments, got {len(instr.args)}", source_loc=self.parent._current_source_loc)
 
         src_bank_arg = instr.args[0]
         dst_bank_arg = instr.args[1]
 
         if not isinstance(src_bank_arg.value, MIRImmediate) or not isinstance(dst_bank_arg.value, MIRImmediate):
             raise InstructionSelectionError(
-                f"{instr.builtin_name}() expects immediate bank numbers")
+                f"{instr.builtin_name}() expects immediate bank numbers", source_loc=self.parent._current_source_loc)
 
         src_bank = src_bank_arg.value.value
         dst_bank = dst_bank_arg.value.value
 
         opcode = BUILTIN_OPCODES.get(builtin.instruction)
         if not opcode:
-            raise unknown_value("block move builtin", builtin.instruction)
+            raise unknown_value("block move builtin", builtin.instruction, source_loc=self.parent._current_source_loc)
 
         self.emitter.emit_instr(opcode, BlockMove(src_bank, dst_bank))
 
@@ -1735,7 +1736,7 @@ class CallInstructionSelector(BaseSelector):
         """Emit runtime library built-in (mul, div, mod, shl, shr)."""
         if len(instr.args) != 2:
             raise InstructionSelectionError(
-                f"{instr.builtin_name}() expects 2 arguments, got {len(instr.args)}")
+                f"{instr.builtin_name}() expects 2 arguments, got {len(instr.args)}", source_loc=self.parent._current_source_loc)
 
         # Load first argument into A
         arg0 = instr.args[0]

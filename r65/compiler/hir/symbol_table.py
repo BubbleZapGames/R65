@@ -147,13 +147,13 @@ class SymbolTable:
         if current.parent_id is not None:
             self.current_scope_id = current.parent_id
         else:
-            raise HIRError("Cannot exit global scope")
+            raise HIRError("Cannot exit global scope", source_loc=None)
 
     def declare(self, name: str, symbol: Symbol):
         """Declare a symbol in the current scope."""
         current = self.scopes[self.current_scope_id]
         if name in current.symbols:
-            raise HIRError(f"Redefinition of '{name}' in current scope")
+            raise HIRError(f"Redefinition of '{name}' in current scope", source_loc=None)
         current.symbols[name] = symbol
 
     def lookup(self, name: str) -> Optional[Symbol]:

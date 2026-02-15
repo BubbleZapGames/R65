@@ -366,7 +366,7 @@ class ExpressionBuilder:
             return self._build_loop_expression(expr)
 
         else:
-            raise HIRError(f"Unknown expression type: {type(expr).__name__}")
+            raise HIRError(f"Unknown expression type: {type(expr).__name__}", source_loc=getattr(expr, 'source_loc', None))
 
     def _build_match_expression(self, expr: ast.MatchExpression) -> hir.HIRMatchExpression:
         """Build HIR match expression from AST."""
@@ -401,12 +401,12 @@ class ExpressionBuilder:
             # Resolve enum variant value
             enum_symbol = self.symbol_table.lookup(pattern.enum_name)
             if not enum_symbol or enum_symbol.kind != SymbolKind.ENUM:
-                raise HIRError(f"Undefined enum: {pattern.enum_name}")
+                raise HIRError(f"Undefined enum: {pattern.enum_name}", source_loc=getattr(pattern, 'source_loc', None))
 
             qualified_name = f"{pattern.enum_name}::{pattern.variant_name}"
             variant_symbol = self.symbol_table.lookup(qualified_name)
             if not variant_symbol or variant_symbol.kind != SymbolKind.ENUM_VARIANT:
-                raise HIRError(f"Undefined enum variant: {qualified_name}")
+                raise HIRError(f"Undefined enum variant: {qualified_name}", source_loc=getattr(pattern, 'source_loc', None))
 
             variant_value = variant_symbol.const_value
             return hir.HIREnumPattern(
@@ -448,7 +448,7 @@ class ExpressionBuilder:
             return hir.HIROrPattern(patterns=patterns)
 
         else:
-            raise HIRError(f"Unknown pattern type: {type(pattern).__name__}")
+            raise HIRError(f"Unknown pattern type: {type(pattern).__name__}", source_loc=getattr(pattern, 'source_loc', None))
 
     def _build_struct_literal(self, expr: ast.StructLiteralExpr) -> hir.HIRStructLiteralExpr:
         """Build HIR struct literal from AST."""
@@ -457,9 +457,9 @@ class ExpressionBuilder:
         # Lookup struct definition
         struct_symbol = self.symbol_table.lookup(expr.struct_name)
         if not struct_symbol:
-            raise HIRError(f"Undefined struct: {expr.struct_name}")
+            raise HIRError(f"Undefined struct: {expr.struct_name}", source_loc=expr.source_loc)
         if struct_symbol.kind != SymbolKind.STRUCT:
-            raise HIRError(f"{expr.struct_name} is not a struct")
+            raise HIRError(f"{expr.struct_name} is not a struct", source_loc=expr.source_loc)
 
         # Get the struct declaration to access field information
         struct_decl = struct_symbol.definition
@@ -485,7 +485,7 @@ class ExpressionBuilder:
         hir_fields = []
         for field_init in expr.fields:
             if field_init.name not in field_offsets:
-                raise HIRError(f"Unknown field: {expr.struct_name}.{field_init.name}")
+                raise HIRError(f"Unknown field: {expr.struct_name}.{field_init.name}", source_loc=expr.source_loc)
 
             value_expr = self.build_expression(field_init.value)
             hir_field = hir.HIRStructFieldInit(
@@ -516,7 +516,7 @@ class ExpressionBuilder:
         hir_stmts = []
         for stmt in expr.statements:
             if self.statement_builder is None:
-                raise HIRError("Statement builder not configured for block expressions")
+                raise HIRError("Statement builder not configured for block expressions", source_loc=expr.source_loc)
             hir_stmt = self.statement_builder(stmt)
             hir_stmts.append(hir_stmt)
 
@@ -561,7 +561,7 @@ class ExpressionBuilder:
         hir_stmts = []
         for stmt in expr.body.statements:
             if self.statement_builder is None:
-                raise HIRError("Statement builder not configured for loop expressions")
+                raise HIRError("Statement builder not configured for loop expressions", source_loc=expr.source_loc)
             hir_stmt = self.statement_builder(stmt)
             hir_stmts.append(hir_stmt)
 

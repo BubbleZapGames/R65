@@ -297,7 +297,7 @@ class ControlFlowInstructionSelector(BaseSelector):
             self._emit_less_equal_branch(true_target, false_target, is_signed)
         else:
             raise InstructionSelectionError(
-                f"Unsupported comparison type for flag-based branch: {comparison}")
+                f"Unsupported comparison type for flag-based branch: {comparison}", source_loc=self.parent._current_source_loc)
 
     def _emit_less_than_branch(self, true_target: str, false_target: str, is_signed: bool):
         """Emit branch for < comparison."""
@@ -517,7 +517,7 @@ class ControlFlowInstructionSelector(BaseSelector):
         return_registers = self._get_return_register_order()
         if len(instr.values) > len(return_registers):
             raise InstructionSelectionError(
-                f"Too many return values (max {len(return_registers)})")
+                f"Too many return values (max {len(return_registers)})", source_loc=self.parent._current_source_loc)
 
         # Process in reverse order to avoid clobbering A
         # Reverse order: Y first, then X, then B (XBA to store), then A last

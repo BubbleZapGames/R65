@@ -152,10 +152,10 @@ class MatchValidator:
             # Literal must match scrutinee type
             if isinstance(pattern.value, bool):
                 if scrutinee_type.name != 'bool':
-                    raise TypeCheckError(f"Cannot match bool literal against {scrutinee_type}")
+                    raise TypeCheckError(f"Cannot match bool literal against {scrutinee_type}", source_loc=pattern.source_loc)
             elif isinstance(pattern.value, int):
                 if scrutinee_type.name not in ('u8', 'i8', 'u16', 'i16'):
-                    raise TypeCheckError(f"Cannot match integer literal against {scrutinee_type}")
+                    raise TypeCheckError(f"Cannot match integer literal against {scrutinee_type}", source_loc=pattern.source_loc)
             return False
 
         elif isinstance(pattern, HIREnumPattern):
@@ -176,14 +176,14 @@ class MatchValidator:
         elif isinstance(pattern, HIRRangePattern):
             # Range pattern only matches integer types
             if scrutinee_type.name not in ('u8', 'i8', 'u16', 'i16'):
-                raise TypeCheckError(f"Cannot use range pattern against {scrutinee_type}")
+                raise TypeCheckError(f"Cannot use range pattern against {scrutinee_type}", source_loc=pattern.source_loc)
             # Validate range is non-empty
             if pattern.inclusive:
                 if pattern.start > pattern.end:
-                    raise TypeCheckError("Empty range pattern")
+                    raise TypeCheckError("Empty range pattern", source_loc=pattern.source_loc)
             else:
                 if pattern.start >= pattern.end:
-                    raise TypeCheckError("Empty range pattern")
+                    raise TypeCheckError("Empty range pattern", source_loc=pattern.source_loc)
             return False
 
         elif isinstance(pattern, HIROrPattern):
@@ -195,4 +195,4 @@ class MatchValidator:
             return is_catchall
 
         else:
-            raise TypeCheckError(f"Unknown pattern type: {type(pattern).__name__}")
+            raise TypeCheckError(f"Unknown pattern type: {type(pattern).__name__}", source_loc=getattr(pattern, 'source_loc', None))

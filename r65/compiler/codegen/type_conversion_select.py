@@ -77,7 +77,7 @@ class TypeConversionSelector(BaseSelector):
 
         # Case 3: Same size - should not happen (handled as Move in MIR builder)
         else:
-            raise InstructionSelectionError(f"Unexpected type conversion: {source_type} to {target_type}")
+            raise InstructionSelectionError(f"Unexpected type conversion: {source_type} to {target_type}", source_loc=self.parent._current_source_loc)
 
     # ========================================================================
     # Widening Conversion
@@ -347,7 +347,8 @@ class TypeConversionSelector(BaseSelector):
 
         else:
             raise InstructionSelectionError(
-                f"Unsupported pointer conversion: {source_type} to {target_type}"
+                f"Unsupported pointer conversion: {source_type} to {target_type}",
+                source_loc=self.parent._current_source_loc
             )
 
     def _emit_near_to_far_pointer(self, src_operand, dest_loc):

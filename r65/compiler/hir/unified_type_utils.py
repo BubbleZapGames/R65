@@ -60,7 +60,7 @@ def get_unified_type_size(type_obj: Any, symbol_table=None) -> int:
     if isinstance(type_obj, str):
         if type_obj in TYPE_SIZES:
             return TYPE_SIZES[type_obj]
-        raise HIRError(f"Unknown basic type: {type_obj}")
+        raise HIRError(f"Unknown basic type: {type_obj}", source_loc=None)
     
     # Handle HIR BasicTypeInfo (or similar with name attribute)
     if hasattr(type_obj, 'name') and not hasattr(type_obj, 'element_type'):
@@ -78,7 +78,7 @@ def get_unified_type_size(type_obj: Any, symbol_table=None) -> int:
         type_name = type_obj.name
         if type_name in TYPE_SIZES:
             return TYPE_SIZES[type_name]
-        raise HIRError(f"Unknown basic type: {type_name}")
+        raise HIRError(f"Unknown basic type: {type_name}", source_loc=None)
     
     # Handle AST Identifier (type names)
     if ast_types and isinstance(type_obj, ast_types.Identifier):
@@ -97,7 +97,7 @@ def get_unified_type_size(type_obj: Any, symbol_table=None) -> int:
                 elif symbol.kind.value == "enum":
                     return 1
         
-        raise HIRError(f"Cannot determine size of type: {type_name}")
+        raise HIRError(f"Cannot determine size of type: {type_name}", source_loc=getattr(type_obj, 'source_loc', None))
     
     # Handle Array types (both HIR and AST)
     if hasattr(type_obj, 'element_type') and hasattr(type_obj, 'size'):
@@ -111,14 +111,14 @@ def get_unified_type_size(type_obj: Any, symbol_table=None) -> int:
         if hasattr(type_obj, 'length') and type_obj.length:
             if hasattr(type_obj.length, 'value'):  # IntegerLiteral
                 return elem_size * type_obj.length.value
-        raise HIRError("Array type must have constant length for size calculation")
+        raise HIRError("Array type must have constant length for size calculation", source_loc=getattr(type_obj, 'source_loc', None))
     
     # Handle AST ArrayFillExpr ([u8; 10] syntax)
     if ast_types and isinstance(type_obj, ast_types.ArrayFillExpr):
         elem_size = get_unified_type_size(type_obj.value, symbol_table)
         if hasattr(type_obj, 'count') and hasattr(type_obj.count, 'value'):
             return elem_size * type_obj.count.value
-        raise HIRError("Array fill expression must have constant count")
+        raise HIRError("Array fill expression must have constant count", source_loc=getattr(type_obj, 'source_loc', None))
     
     # Handle Struct types (HIR StructTypeInfo or similar)
     if hasattr(type_obj, 'fields'):
@@ -176,7 +176,7 @@ def _get_struct_size(struct_obj: Any) -> int:
     Supports both HIR struct definitions and AST struct declarations.
     """
     if not hasattr(struct_obj, 'fields'):
-        raise HIRError("Struct type has no fields")
+        raise HIRError("Struct type has no fields", source_loc=None)
     
     total_size = 0
     for field in struct_obj.fields:

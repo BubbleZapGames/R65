@@ -116,7 +116,7 @@ class MemoryOperationSelector(BaseSelector):
                         self._emit_implied(Opcode.TAY, "Transfer to Y")
                     # Note: Do NOT switch back - mode will be restored when needed
                 else:
-                    raise InstructionSelectionError(f"Cannot load 16-bit into hardware register {dest_loc.hw_register}")
+                    raise InstructionSelectionError(f"Cannot load 16-bit into hardware register {dest_loc.hw_register}", source_loc=self.parent._current_source_loc)
             else:
                 self.parent._emit_16bit_mem_to_mem(src_loc, dest_loc)
         else:
@@ -260,7 +260,7 @@ class MemoryOperationSelector(BaseSelector):
             self._emit_load_store('STA', dest_loc)
             self.parent._ensure_xba_state_normal("Restore A register")
         elif reg not in STORE_MNEMONICS:
-            raise InstructionSelectionError(f"Cannot store from hardware register: {reg}")
+            raise InstructionSelectionError(f"Cannot store from hardware register: {reg}", source_loc=self.parent._current_source_loc)
         else:
             # Check for unsupported addressing modes for STX and STY
             need_transfer_to_a = False
@@ -679,10 +679,12 @@ class MemoryOperationSelector(BaseSelector):
         """
         if ptr_loc.kind == LocationKind.IMMEDIATE:
             raise InstructionSelectionError(
-                f"Pointer for indirect addressing must be in memory, got immediate value")
+                f"Pointer for indirect addressing must be in memory, got immediate value",
+                source_loc=self.parent._current_source_loc)
         if ptr_loc.kind == LocationKind.HARDWARE:
             raise InstructionSelectionError(
-                f"Pointer for indirect addressing must be in memory, got: {ptr_loc.hw_register}")
+                f"Pointer for indirect addressing must be in memory, got: {ptr_loc.hw_register}",
+                source_loc=self.parent._current_source_loc)
 
     def _spill_pointer_to_scratch(self, ptr_loc) -> 'PhysicalLocation':
         """Spill a hardware register pointer to a scratch location for indirect addressing.
@@ -711,7 +713,8 @@ class MemoryOperationSelector(BaseSelector):
         if scratch_addr is None:
             raise InstructionSelectionError(
                 f"No scratch register available for pointer spill. "
-                f"Define a 2-byte scratch register using: #[zeropage(addr, register)] static mut SCRATCH: u16;"
+                f"Define a 2-byte scratch register using: #[zeropage(addr, register)] static mut SCRATCH: u16;",
+                source_loc=self.parent._current_source_loc
             )
 
         scratch_loc = PhysicalLocation(
@@ -728,7 +731,7 @@ class MemoryOperationSelector(BaseSelector):
         elif ptr_loc.hw_register == 'A':
             self._emit_instr(Opcode.STA_DP, Address(scratch_addr), "Spill A pointer to scratch")
         else:
-            raise InstructionSelectionError(f"Cannot spill pointer from hardware register {ptr_loc.hw_register}")
+            raise InstructionSelectionError(f"Cannot spill pointer from hardware register {ptr_loc.hw_register}", source_loc=self.parent._current_source_loc)
 
         return scratch_loc
 
@@ -751,7 +754,7 @@ class MemoryOperationSelector(BaseSelector):
         elif ptr_loc.kind == LocationKind.MEMORY:
             addr_value = ptr_loc.memory_addr
         else:
-            raise InstructionSelectionError(f"Invalid pointer location for indirect addressing: {ptr_loc}")
+            raise InstructionSelectionError(f"Invalid pointer location for indirect addressing: {ptr_loc}", source_loc=self.parent._current_source_loc)
 
         operand = Address(addr_value)
 
@@ -775,7 +778,7 @@ class MemoryOperationSelector(BaseSelector):
                     return Opcode.STA_DP_INDIRECT_Y, operand
                 return Opcode.STA_DP_INDIRECT, operand
         else:
-            raise InstructionSelectionError(f"Indirect addressing not supported for: {mnemonic}")
+            raise InstructionSelectionError(f"Indirect addressing not supported for: {mnemonic}", source_loc=self.parent._current_source_loc)
 
     def _emit_far_ptr_access_via_dbr(self, mnemonic: str, ptr_loc, index_register: str = None):
         """
@@ -800,7 +803,8 @@ class MemoryOperationSelector(BaseSelector):
         """
         if index_register and index_register != 'Y':
             raise InstructionSelectionError(
-                f"Far pointer indirect only supports Y index register, got: {index_register}"
+                f"Far pointer indirect only supports Y index register, got: {index_register}",
+                source_loc=self.parent._current_source_loc
             )
 
         # Stack offset for the pointer (low byte location)
@@ -832,7 +836,7 @@ class MemoryOperationSelector(BaseSelector):
         elif mnemonic == 'STA':
             opcode = Opcode.STA_STACK_INDIRECT_Y
         else:
-            raise InstructionSelectionError(f"Indirect addressing not supported for: {mnemonic}")
+            raise InstructionSelectionError(f"Indirect addressing not supported for: {mnemonic}", source_loc=self.parent._current_source_loc)
 
         # Emit the actual memory access
         self._emit_instr(opcode, operand, f"{mnemonic} through far pointer")
@@ -863,7 +867,8 @@ class MemoryOperationSelector(BaseSelector):
         """
         if index_register and index_register != 'Y':
             raise InstructionSelectionError(
-                f"Far pointer indirect only supports Y index register, got: {index_register}"
+                f"Far pointer indirect only supports Y index register, got: {index_register}",
+                source_loc=self.parent._current_source_loc
             )
 
         # When D = S, the stack offset is the DP offset
@@ -881,7 +886,7 @@ class MemoryOperationSelector(BaseSelector):
             else:
                 opcode = Opcode.STA_DP_INDIRECT_LONG
         else:
-            raise InstructionSelectionError(f"Indirect addressing not supported for: {mnemonic}")
+            raise InstructionSelectionError(f"Indirect addressing not supported for: {mnemonic}", source_loc=self.parent._current_source_loc)
 
         # Emit the memory access using DP indirect long
         # The operand is the stack offset, which is now a DP offset since D = S
@@ -928,7 +933,8 @@ class MemoryOperationSelector(BaseSelector):
         scratch_addr = self._get_scratch_for_far_ptr()
         if scratch_addr is None:
             raise InstructionSelectionError(
-                "No 3-byte scratch register available for [dp],Y fallback"
+                "No 3-byte scratch register available for [dp],Y fallback",
+                source_loc=self.parent._current_source_loc
             )
 
         # Need to preserve Y if we're using it for indexing
@@ -968,7 +974,7 @@ class MemoryOperationSelector(BaseSelector):
                 return Opcode.STA_DP_INDIRECT_LONG_Y, operand
             return Opcode.STA_DP_INDIRECT_LONG, operand
         else:
-            raise InstructionSelectionError(f"Indirect addressing not supported for: {mnemonic}")
+            raise InstructionSelectionError(f"Indirect addressing not supported for: {mnemonic}", source_loc=self.parent._current_source_loc)
 
     # ========================================================================
     # 16-bit Indirect Memory Operations
@@ -1368,16 +1374,18 @@ class MemoryOperationSelector(BaseSelector):
         if is_far:
             # This should be handled by _emit_far_ptr_access_via_dbr
             raise InstructionSelectionError(
-                "Far pointer stack indirect should use _emit_far_ptr_access_via_dbr"
+                "Far pointer stack indirect should use _emit_far_ptr_access_via_dbr",
+                source_loc=self.parent._current_source_loc
             )
 
         if index_register and index_register != 'Y':
             raise InstructionSelectionError(
-                f"Stack indirect addressing only supports Y index register, got: {index_register}"
+                f"Stack indirect addressing only supports Y index register, got: {index_register}",
+                source_loc=self.parent._current_source_loc
             )
 
         if ptr_loc.kind != LocationKind.STACK:
-            raise InstructionSelectionError(f"Expected STACK location, got: {ptr_loc.kind}")
+            raise InstructionSelectionError(f"Expected STACK location, got: {ptr_loc.kind}", source_loc=self.parent._current_source_loc)
 
         # Stack offset for (d,S),Y addressing
         # ptr_loc.stack_offset is already the correct offset from S
@@ -1387,10 +1395,10 @@ class MemoryOperationSelector(BaseSelector):
         if mnemonic == 'LDA':
             if index_register == 'Y':
                 return Opcode.LDA_STACK_INDIRECT_Y, operand
-            raise InstructionSelectionError("Stack indirect without Y index not supported")
+            raise InstructionSelectionError("Stack indirect without Y index not supported", source_loc=self.parent._current_source_loc)
         elif mnemonic == 'STA':
             if index_register == 'Y':
                 return Opcode.STA_STACK_INDIRECT_Y, operand
-            raise InstructionSelectionError("Stack indirect without Y index not supported")
+            raise InstructionSelectionError("Stack indirect without Y index not supported", source_loc=self.parent._current_source_loc)
         else:
-            raise InstructionSelectionError(f"Stack indirect addressing not supported for: {mnemonic}")
+            raise InstructionSelectionError(f"Stack indirect addressing not supported for: {mnemonic}", source_loc=self.parent._current_source_loc)

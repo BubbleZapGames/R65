@@ -115,7 +115,7 @@ class MoveOperationSelector(BaseSelector):
             self.parent._mark_a_modified()
             # Note: Do NOT switch back - mode will be restored when needed
         else:
-            raise InstructionSelectionError(f"Cannot load immediate into register {hw_register}")
+            raise InstructionSelectionError(f"Cannot load immediate into register {hw_register}", source_loc=self.parent._current_source_loc)
 
     def _load_memory_to_hw_register(self, hw_register: str, src_loc, is_u16: bool = False,
                                       persist_16bit_mode: bool = False):
@@ -173,7 +173,7 @@ class MoveOperationSelector(BaseSelector):
             self._emit_load_store('LDA', src_loc)
             self._emit_instr(Opcode.XBA, comment="Load into B register")
         else:
-            raise InstructionSelectionError(f"Cannot load into register {hw_register}")
+            raise InstructionSelectionError(f"Cannot load into register {hw_register}", source_loc=self.parent._current_source_loc)
 
     # ========================================================================
     # Function Pointer Handling
@@ -268,7 +268,7 @@ class MoveOperationSelector(BaseSelector):
         """Emit code to store a variable's address, with optional byte offset for array indexing."""
         alloc = self.parent.mem_alloc.get_allocation(symbol)
         if not alloc:
-            raise InstructionSelectionError(f"No allocation for symbol: {symbol.name}")
+            raise InstructionSelectionError(f"No allocation for symbol: {symbol.name}", source_loc=self.parent._current_source_loc)
 
         # For ROM data, use the label name instead of numeric address
         # ROM data has a rom_label attribute set during MIR building
@@ -403,4 +403,4 @@ class MoveOperationSelector(BaseSelector):
             self._emit_instr(Opcode.XBA, comment="Restore A and B")
         else:
             raise InstructionSelectionError(
-                f"Cannot move {'16-bit ' if is_u16 else ''}value from register {src_reg} to memory")
+                f"Cannot move {'16-bit ' if is_u16 else ''}value from register {src_reg} to memory", source_loc=self.parent._current_source_loc)

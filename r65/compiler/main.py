@@ -22,7 +22,7 @@ from r65.compiler.hir.cfg import CfgEvaluator
 from r65.compiler.typeck import TypeChecker, TypeCheckError
 from r65.compiler.mir import MIRBuilder
 from r65.compiler.codegen import ProgramCodeGenerator
-from r65.compiler.errors import format_error
+from r65.compiler.errors import format_error, MIRError, CodegenError
 
 
 def read_source(filepath: str) -> tuple[str, str]:
@@ -245,7 +245,15 @@ def compile_source(source: str, filename: str, output_file: str = None,
         print(f"\n{formatted}", file=sys.stderr)
         sys.exit(1)
     except PreprocessorError as e:
-        print(f"\nPreprocessor error: {e}", file=sys.stderr)
+        hint = getattr(e, 'hint', None)
+        formatted = format_error(
+            e.message,
+            source_loc=e.source_loc,
+            source_text=source,
+            hint=hint,
+            error_type="preprocessor error"
+        )
+        print(f"\n{formatted}", file=sys.stderr)
         sys.exit(1)
     except MacroError as e:
         # Use format_error for macro errors with source context
@@ -283,8 +291,32 @@ def compile_source(source: str, filename: str, output_file: str = None,
         )
         print(f"\n{formatted}", file=sys.stderr)
         sys.exit(1)
+    except (MIRError, CodegenError) as e:
+        hint = getattr(e, 'hint', None)
+        error_type = "codegen error" if isinstance(e, CodegenError) else "MIR error"
+        formatted = format_error(
+            e.message,
+            source_loc=e.source_loc,
+            source_text=source,
+            hint=hint,
+            error_type=error_type
+        )
+        print(f"\n{formatted}", file=sys.stderr)
+        sys.exit(1)
     except Exception as e:
-        print(f"\nCompilation error: {e}", file=sys.stderr)
+        # Fallback: try to use format_error if exception has source_loc
+        source_loc = getattr(e, 'source_loc', None)
+        message = getattr(e, 'message', str(e))
+        if source_loc:
+            formatted = format_error(
+                message,
+                source_loc=source_loc,
+                source_text=source,
+                error_type="error"
+            )
+            print(f"\n{formatted}", file=sys.stderr)
+        else:
+            print(f"\nCompilation error: {e}", file=sys.stderr)
         if verbose:
             import traceback
             traceback.print_exc(file=sys.stderr)

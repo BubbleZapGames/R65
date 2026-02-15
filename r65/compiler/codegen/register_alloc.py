@@ -146,7 +146,8 @@ class ScratchRegisterPool:
                 raise MemoryAllocationError(
                     f"scratch register '{name}' at ${address:04X}-${new_end-1:04X} "
                     f"overlaps with existing scratch register '{existing_name}' "
-                    f"at ${existing_start:04X}-${existing_end-1:04X}"
+                    f"at ${existing_start:04X}-${existing_end-1:04X}",
+                    source_loc=None
                 )
 
         # Register the address range

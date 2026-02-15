@@ -49,7 +49,8 @@ def _check_runtime_mul_available(ctx: 'LoweringContext', struct_size: int):
             f"requires runtime multiplication.\n"
             f"\n"
             f"Add this to your source file:\n"
-            f"    include!(\"lib/math.r65\")"
+            f"    include!(\"lib/math.r65\")",
+            source_loc=ctx.current_source_loc
         )
 
 

@@ -108,7 +108,7 @@ class CallLowerer:
                 # Regular function call - look up HIR function declaration
                 func_decl = self.ctx.function_decls.get(func_symbol.name)
                 if not func_decl:
-                    raise MIRLoweringError(f"Function call to {func_symbol.name}: function not found in HIR")
+                    raise MIRLoweringError(f"Function call to {func_symbol.name}: function not found in HIR", source_loc=call_expr.source_loc)
                 func_ptr_vreg = None
         else:
             # Indirect call (function pointer)
@@ -256,7 +256,7 @@ class CallLowerer:
         elif call_expr.method_name == 'rotate_right':
             direction = 'right'
         else:
-            raise MIRLoweringError(f"Unknown method: {call_expr.method_name}")
+            raise MIRLoweringError(f"Unknown method: {call_expr.method_name}", source_loc=call_expr.source_loc)
 
         # Create result register
         result_vreg = self.ctx.alloc_vreg(call_expr.expr_type, "rotate_result")

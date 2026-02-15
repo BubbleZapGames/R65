@@ -535,7 +535,8 @@ class InstructionSelector:
         # No scratch available - require user to define scratch registers
         raise InstructionSelectionError(
             "No scratch register available for temporary storage. "
-            "Define a scratch register using: #[zeropage(addr, register)] static mut SCRATCH: u8;"
+            "Define a scratch register using: #[zeropage(addr, register)] static mut SCRATCH: u8;",
+            source_loc=self._current_source_loc
         )
 
     def _get_temp_address(self) -> Address:
@@ -638,7 +639,7 @@ class InstructionSelector:
         elif isinstance(instr, StatusFlagRead):
             self.select_status_flag_read(instr)
         else:
-            raise InstructionSelectionError(f"Unsupported MIR instruction: {type(instr).__name__}")
+            raise InstructionSelectionError(f"Unsupported MIR instruction: {type(instr).__name__}", source_loc=self._current_source_loc)
 
         # Advance instruction index for liveness tracking
         self._advance_instruction()
@@ -864,7 +865,7 @@ class InstructionSelector:
         elif op == '/':
             self._emit_divide(right_operand, is_u16)
         else:
-            raise unsupported_operation("binary operation", op)
+            raise unsupported_operation("binary operation", op, source_loc=self._current_source_loc)
 
         # Store result from A (if destination is not A)
         if dest_loc.kind == LocationKind.HARDWARE and dest_loc.hw_register == 'A':
@@ -924,7 +925,7 @@ class InstructionSelector:
             self._emit_immediate(Opcode.EOR_IMMEDIATE, mask, "Complement")
             self._emit_implied(Opcode.INC, "Add 1 for two's complement")
         else:
-            raise unsupported_operation("unary operation", op)
+            raise unsupported_operation("unary operation", op, source_loc=self._current_source_loc)
 
         # Store result
         self._emit_store('STA', dest_loc)
@@ -967,7 +968,7 @@ class InstructionSelector:
     def _require_immediate(self, operand, operation: str) -> int:
         """Validate operand is immediate and return its value."""
         if not isinstance(operand, MIRImmediate):
-            raise requires_constant(operation)
+            raise requires_constant(operation, source_loc=self._current_source_loc)
         return operand.value
 
     def _emit_repeated_opcode(self, opcode: Opcode, count: int):
@@ -1021,7 +1022,8 @@ class InstructionSelector:
         if shift_count is None:
             raise InstructionSelectionError(
                 f"Multiply operator only supports 1, 2, 4, 8 (got {value}). "
-                f"Use mul() for general multiplication.")
+                f"Use mul() for general multiplication.",
+                source_loc=self._current_source_loc)
 
         self._emit_repeated_opcode(Opcode.ASL, shift_count)
 
@@ -1033,7 +1035,8 @@ class InstructionSelector:
         if shift_count is None:
             raise InstructionSelectionError(
                 f"Divide operator only supports 1, 2, 4, 8 (got {value}). "
-                f"Use div() for general division.")
+                f"Use div() for general division.",
+                source_loc=self._current_source_loc)
 
         self._emit_repeated_opcode(Opcode.LSR, shift_count)
 
@@ -1080,7 +1083,7 @@ class InstructionSelector:
         if push_opcode:
             self._emit_implied(push_opcode)
         else:
-            raise InstructionSelectionError(f"Cannot push register: {reg_name}")
+            raise InstructionSelectionError(f"Cannot push register: {reg_name}", source_loc=self._current_source_loc)
 
     def select_restore_register(self, instr: RestoreRegister):
         """
@@ -1094,7 +1097,7 @@ class InstructionSelector:
         if pull_opcode:
             self._emit_implied(pull_opcode)
         else:
-            raise InstructionSelectionError(f"Cannot pull register: {reg_name}")
+            raise InstructionSelectionError(f"Cannot pull register: {reg_name}", source_loc=self._current_source_loc)
 
     # ========================================================================
     # Interrupt Handler Instructions
@@ -1112,7 +1115,7 @@ class InstructionSelector:
         if push_opcode:
             self._emit_implied(push_opcode)
         else:
-            raise InstructionSelectionError(f"Cannot push register: {reg}")
+            raise InstructionSelectionError(f"Cannot push register: {reg}", source_loc=self._current_source_loc)
 
     def select_pull(self, instr: Pull):
         """
@@ -1126,7 +1129,7 @@ class InstructionSelector:
         if pull_opcode:
             self._emit_implied(pull_opcode)
         else:
-            raise InstructionSelectionError(f"Cannot pull register: {reg}")
+            raise InstructionSelectionError(f"Cannot pull register: {reg}", source_loc=self._current_source_loc)
 
     def select_return_from_interrupt(self, instr: ReturnFromInterrupt):
         """
@@ -1244,7 +1247,8 @@ class InstructionSelector:
         # No scratch available - require user to define scratch registers
         raise InstructionSelectionError(
             "No scratch register available for temporary storage. "
-            "Define a scratch register using: #[zeropage(addr, register)] static mut SCRATCH: u8;"
+            "Define a scratch register using: #[zeropage(addr, register)] static mut SCRATCH: u8;",
+            source_loc=self._current_source_loc
         )
 
     def _get_temp_address(self) -> Address | None:
@@ -1333,7 +1337,7 @@ class InstructionSelector:
                         self._emit_op(operation, temp_loc)
                         self._emit_implied(pull_opcode, f"Restore {right_loc.hw_register}")
                 else:
-                    raise InstructionSelectionError(f"Cannot use hardware register in operation: {right_loc.hw_register}")
+                    raise InstructionSelectionError(f"Cannot use hardware register in operation: {right_loc.hw_register}", source_loc=self._current_source_loc)
             else:
                 # Memory location
                 self._emit_op(operation, right_loc)
@@ -1551,7 +1555,7 @@ class InstructionSelector:
                         index_register=operand.index_register  # Pass indexed addressing info
                     )
                 else:
-                    raise missing_allocation(operand.symbol.name)
+                    raise missing_allocation(operand.symbol.name, source_loc=self._current_source_loc)
         elif isinstance(operand, MIRImmediate):
             # Immediate value - return as immediate location
             return PhysicalLocation(
@@ -1560,7 +1564,7 @@ class InstructionSelector:
                 size=1  # Will be determined by context
             )
         else:
-            raise InstructionSelectionError(f"Unknown operand type: {type(operand)}")
+            raise InstructionSelectionError(f"Unknown operand type: {type(operand)}", source_loc=self._current_source_loc)
 
     def _format_operand(self, location: PhysicalLocation) -> str:
         """
@@ -1575,7 +1579,7 @@ class InstructionSelector:
         if location.kind == LocationKind.HARDWARE:
             # Hardware register - can't be used as memory operand
             # This shouldn't happen in normal code generation
-            raise InstructionSelectionError(f"Cannot use hardware register as memory operand: {location.hw_register}")
+            raise InstructionSelectionError(f"Cannot use hardware register as memory operand: {location.hw_register}", source_loc=self._current_source_loc)
         elif location.kind == LocationKind.SCRATCH:
             base = f"${location.scratch_addr:02X}"
             if location.index_register:
@@ -1593,7 +1597,7 @@ class InstructionSelector:
                     # Absolute
                     base = f"${location.memory_addr:04X}"
             else:
-                raise InstructionSelectionError("Memory location has neither address nor label")
+                raise InstructionSelectionError("Memory location has neither address nor label", source_loc=self._current_source_loc)
             # Add index register if present (e.g., "$20,X" or "LABEL,X")
             if location.index_register:
                 return f"{base},{location.index_register}"
@@ -1606,7 +1610,7 @@ class InstructionSelector:
             # Immediate value
             return f"#{location.immediate_value}"
         else:
-            raise InstructionSelectionError(f"Unknown location kind: {location.kind}")
+            raise InstructionSelectionError(f"Unknown location kind: {location.kind}", source_loc=self._current_source_loc)
 
     def _offset_location(self, location: PhysicalLocation, offset: int) -> PhysicalLocation:
         """
@@ -1643,7 +1647,8 @@ class InstructionSelector:
                 # Get all attributes for debugging
                 attrs = {k: v for k, v in vars(location).items() if not k.startswith('_')}
                 raise InstructionSelectionError(
-                    f"Cannot offset MEMORY location with no address or label. Location attrs: {attrs}"
+                    f"Cannot offset MEMORY location with no address or label. Location attrs: {attrs}",
+                    source_loc=self._current_source_loc
                 )
         elif location.kind == LocationKind.STACK:
             return PhysicalLocation(
@@ -1660,7 +1665,7 @@ class InstructionSelector:
                 size=1
             )
         else:
-            raise InstructionSelectionError(f"Cannot offset location kind: {location.kind}")
+            raise InstructionSelectionError(f"Cannot offset location kind: {location.kind}", source_loc=self._current_source_loc)
 
     def _is_far_pointer(self, type_info) -> bool:
         """Check if type is a far pointer (24-bit / 3 bytes)."""
@@ -1937,7 +1942,7 @@ class InstructionSelector:
 
         flag = get_status_flag(instr.flag_name)
         if not flag:
-            raise unknown_value("STATUS flag", instr.flag_name)
+            raise unknown_value("STATUS flag", instr.flag_name, source_loc=self._current_source_loc)
 
         # For A16/XY16, conditionally emit SEP/REP based on tracked mode
         # Note: A16=true means "16-bit mode" which requires M flag=0 (REP clears)

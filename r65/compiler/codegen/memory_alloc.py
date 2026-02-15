@@ -106,7 +106,7 @@ class MemoryAllocator:
             if all(i not in self.lowram_used for i in range(addr, addr + size)):
                 return addr
             addr += 1
-        raise MemoryAllocationError(f"Out of zero-page space (need {size} contiguous bytes)")
+        raise MemoryAllocationError(f"Out of zero-page space (need {size} contiguous bytes)", source_loc=None)
 
     def allocate_zeropage(self, symbol: Symbol, static_decl: HIRStaticDecl,
                          explicit_addr: Optional[int] = None) -> AllocationInfo:
@@ -137,7 +137,8 @@ class MemoryAllocator:
             if address < 0 or address + size - 1 > self.zeropage_end:
                 raise MemoryAllocationError(
                     f"Zero-page address ${address:02X} for '{symbol.name}' "
-                    f"out of range ($00-$FF)"
+                    f"out of range ($00-$FF)",
+                    source_loc=None
                 )
 
             # Warn if explicit address overlaps with stack region
@@ -189,11 +190,13 @@ class MemoryAllocator:
         if lower < self.lowram_start or upper > self.lowram_end:
             raise MemoryAllocationError(
                 f"Stack region ${lower:04X}-${upper:04X} must be within "
-                f"low RAM (${self.lowram_start:04X}-${self.lowram_end:04X})"
+                f"low RAM (${self.lowram_start:04X}-${self.lowram_end:04X})",
+                source_loc=None
             )
         if lower > upper:
             raise MemoryAllocationError(
-                f"Stack lower bound ${lower:04X} must be <= upper bound ${upper:04X}"
+                f"Stack lower bound ${lower:04X} must be <= upper bound ${upper:04X}",
+                source_loc=None
             )
 
         self.stack_lower = lower
@@ -230,7 +233,7 @@ class MemoryAllocator:
             if all(i not in self.lowram_used for i in range(addr, addr + size)):
                 return addr
             addr += 1
-        raise MemoryAllocationError(f"Out of low RAM space (need {size} contiguous bytes)")
+        raise MemoryAllocationError(f"Out of low RAM space (need {size} contiguous bytes)", source_loc=None)
 
     def allocate_lowram(self, symbol: Symbol, static_decl: HIRStaticDecl,
                         explicit_addr: Optional[int] = None) -> AllocationInfo:
@@ -262,7 +265,8 @@ class MemoryAllocator:
             if address < self.lowram_start or address + size - 1 > self.lowram_end:
                 raise MemoryAllocationError(
                     f"Low RAM address ${address:04X} for '{symbol.name}' "
-                    f"out of range (${self.lowram_start:04X}-${self.lowram_end:04X})"
+                    f"out of range (${self.lowram_start:04X}-${self.lowram_end:04X})",
+                    source_loc=None
                 )
 
             # Warn if explicit address overlaps with stack region
@@ -320,7 +324,7 @@ class MemoryAllocator:
         # Find first free address that doesn't conflict
         while True:
             if address + size - 1 > self.ram_end:
-                raise MemoryAllocationError(f"Out of RAM space (need {size} bytes)")
+                raise MemoryAllocationError(f"Out of RAM space (need {size} bytes)", source_loc=None)
 
             # Check if allocation would cross bank boundary at $7F0000
             if address < WRAM_BANK2_START and address + size - 1 >= WRAM_BANK2_START:
@@ -367,14 +371,16 @@ class MemoryAllocator:
             if address < self.ram_start or address + size - 1 > self.ram_end:
                 raise MemoryAllocationError(
                     f"RAM address ${address:06X} for '{symbol.name}' "
-                    f"out of range (${self.ram_start:06X}-${self.ram_end:06X})"
+                    f"out of range (${self.ram_start:06X}-${self.ram_end:06X})",
+                    source_loc=None
                 )
 
             # Check bank boundary crossing at $7F0000
             if address < WRAM_BANK2_START and address + size - 1 >= WRAM_BANK2_START:
                 raise MemoryAllocationError(
                     f"RAM allocation '{symbol.name}' at ${address:06X} ({size} bytes) "
-                    f"crosses bank boundary at $7F0000"
+                    f"crosses bank boundary at $7F0000",
+                    source_loc=None
                 )
         else:
             # Auto-allocate - find next available address that fits
@@ -525,10 +531,10 @@ class MemoryAllocator:
             self.allocate_ram(symbol, static_decl, explicit_addr)
         elif storage_kind == StorageKind.HW:
             if explicit_addr is None:
-                raise MemoryAllocationError(f"Hardware register '{symbol.name}' must have explicit address")
+                raise MemoryAllocationError(f"Hardware register '{symbol.name}' must have explicit address", source_loc=None)
             self.allocate_hw(symbol, static_decl, explicit_addr)
         else:
-            raise MemoryAllocationError(f"Unknown storage kind: {storage_kind}")
+            raise MemoryAllocationError(f"Unknown storage kind: {storage_kind}", source_loc=None)
 
     # ========================================================================
     # Query

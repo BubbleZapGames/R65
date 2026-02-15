@@ -161,11 +161,11 @@ class TypeResolver:
 
             # Evaluate size expression to constant
             if self.const_evaluator is None:
-                raise HIRError("Const evaluator required for array size evaluation")
+                raise HIRError("Const evaluator required for array size evaluation", source_loc=getattr(ast_type, 'source_loc', None))
 
             size = self.const_evaluator.eval(ast_type.size)
             if not isinstance(size, int) or size <= 0:
-                raise HIRError(f"Array size must be a positive integer, got {size}")
+                raise HIRError(f"Array size must be a positive integer, got {size}", source_loc=getattr(ast_type, 'source_loc', None))
 
             return ArrayTypeInfo(element_type=elem_type, size=size)
 
@@ -180,17 +180,20 @@ class TypeResolver:
             if isinstance(pointee, ArrayTypeInfo):
                 raise HIRError(
                     f"pointer cannot point to sized array type [{pointee.element_type}; {pointee.size}]",
+                    source_loc=getattr(ast_type, 'source_loc', None),
                     hint=f"use unsized array type [{pointee.element_type}] instead"
                 )
 
             # Validate dyn keyword usage
             if isinstance(pointee, TraitTypeInfo) and not ast_type.is_dyn:
                 raise HIRError(
-                    f"trait pointer requires 'dyn' keyword: use '*dyn {pointee.name}' instead of '*{pointee.name}'"
+                    f"trait pointer requires 'dyn' keyword: use '*dyn {pointee.name}' instead of '*{pointee.name}'",
+                    source_loc=getattr(ast_type, 'source_loc', None)
                 )
             if ast_type.is_dyn and not isinstance(pointee, TraitTypeInfo):
                 raise HIRError(
-                    f"'dyn' can only be used with trait types, but '{pointee.name}' is not a trait"
+                    f"'dyn' can only be used with trait types, but '{pointee.name}' is not a trait",
+                    source_loc=getattr(ast_type, 'source_loc', None)
                 )
 
             return PointerTypeInfo(is_far=ast_type.is_far, pointee_type=pointee)
@@ -212,14 +215,14 @@ class TypeResolver:
             return TupleTypeInfo(element_types=element_types)
 
         else:
-            raise HIRError(f"Unknown type node: {type(ast_type).__name__}")
+            raise HIRError(f"Unknown type node: {type(ast_type).__name__}", source_loc=getattr(ast_type, 'source_loc', None))
 
     def resolve_named_type(self, name: str) -> TypeInfo:
         """Resolve a named type (struct, enum, trait, or type alias) by name."""
         symbol = self.symbol_table.lookup(name)
 
         if symbol is None:
-            raise HIRError(f"Undefined type: {name}")
+            raise HIRError(f"Undefined type: {name}", source_loc=None)
 
         if symbol.kind.value == "struct":
             return StructTypeInfo(name=name, definition=symbol.definition, symbol=symbol)
@@ -231,4 +234,4 @@ class TypeResolver:
             # Type aliases are resolved to their underlying type
             return symbol.type_info
         else:
-            raise HIRError(f"'{name}' is not a type")
+            raise HIRError(f"'{name}' is not a type", source_loc=None)

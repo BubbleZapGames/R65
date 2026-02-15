@@ -111,9 +111,9 @@ class LocationResolver:
             return self._resolve_immediate(location)
         elif location.kind == LocationKind.HARDWARE:
             raise InstructionSelectionError(
-                f"Cannot resolve hardware register {location.hw_register} as memory operand")
+                f"Cannot resolve hardware register {location.hw_register} as memory operand", source_loc=None)
         else:
-            raise InstructionSelectionError(f"Unknown location kind: {location.kind}")
+            raise InstructionSelectionError(f"Unknown location kind: {location.kind}", source_loc=None)
 
     def _resolve_stack(self, location: PhysicalLocation) -> ResolvedLocation:
         """Resolve stack-relative location."""
@@ -221,15 +221,15 @@ class LocationResolver:
         """
         variants = OPCODE_VARIANTS.get(mnemonic)
         if not variants:
-            raise InstructionSelectionError(f"No opcode variants for mnemonic: {mnemonic}")
+            raise InstructionSelectionError(f"No opcode variants for mnemonic: {mnemonic}", source_loc=None)
 
         variant_key = _MODE_TO_VARIANT_KEY.get(resolved.mode)
         if not variant_key:
-            raise InstructionSelectionError(f"No variant key for mode: {resolved.mode}")
+            raise InstructionSelectionError(f"No variant key for mode: {resolved.mode}", source_loc=None)
 
         opcode = variants.get(variant_key)
         if not opcode:
-            raise unsupported_addressing_mode(mnemonic, variant_key.lower().replace('_', ' '))
+            raise unsupported_addressing_mode(mnemonic, variant_key.lower().replace('_', ' '), source_loc=None)
 
         return opcode
 
@@ -300,7 +300,7 @@ class LocationResolver:
                 size=1
             )
         else:
-            raise InstructionSelectionError(f"Cannot offset location kind: {location.kind}")
+            raise InstructionSelectionError(f"Cannot offset location kind: {location.kind}", source_loc=None)
 
     def is_direct_page(self, location: PhysicalLocation) -> bool:
         """Check if a location uses direct page addressing."""

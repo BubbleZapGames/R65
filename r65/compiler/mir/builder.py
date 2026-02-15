@@ -226,6 +226,7 @@ class MIRBuilder:
         # Reset source location to function's own location for entry code
         # This ensures prologue instructions get the function's source_loc
         self._current_source_loc = hir_func.source_loc
+        self.ctx.current_source_loc = hir_func.source_loc
 
         # Create MIR function structure
         mir_func = MIRFunction(
@@ -466,7 +467,7 @@ class MIRBuilder:
         mode_tracker = MIRModeTracker(mir_func)
         success = mode_tracker.analyze()
         if not success:
-            raise MIRLoweringError(f"Mode tracking failed for function '{mir_func.name}': mode conflicts detected")
+            raise MIRLoweringError(f"Mode tracking failed for function '{mir_func.name}': mode conflicts detected", source_loc=self._current_source_loc)
 
         return mir_func
 
@@ -497,6 +498,7 @@ class MIRBuilder:
         # Capture source location for debug info propagation
         if hasattr(stmt, 'source_loc') and stmt.source_loc is not None:
             self._current_source_loc = stmt.source_loc
+            self.ctx.current_source_loc = stmt.source_loc
 
         if isinstance(stmt, HIRLetStmt):
             self.lower_let_statement(stmt)
@@ -674,7 +676,7 @@ class MIRBuilder:
             # This ensures correct stack ordering since prologue pushes registers
             # before allocating frame.
             if return_values:
-                raise MIRLoweringError(f"Interrupt handler '{self.current_function.name}' cannot return values")
+                raise MIRLoweringError(f"Interrupt handler '{self.current_function.name}' cannot return values", source_loc=self._current_source_loc)
             self.emit(ReturnFromInterrupt())
         else:
             # Regular function return
@@ -693,6 +695,7 @@ class MIRBuilder:
         # Capture source location for debug info propagation
         if hasattr(expr, 'source_loc') and expr.source_loc is not None:
             self._current_source_loc = expr.source_loc
+            self.ctx.current_source_loc = expr.source_loc
 
         if isinstance(expr, HIRIntegerLiteral):
             # Integer literal → Immediate
@@ -1162,7 +1165,7 @@ class MIRBuilder:
         Returns: (continue_target, break_target, label, result_vreg_or_None)
         """
         if not self.loop_stack:
-            raise MIRLoweringError("Break/continue statement outside of loop")
+            raise MIRLoweringError("Break/continue statement outside of loop", source_loc=self._current_source_loc)
 
         if label is None:
             # Use innermost loop
@@ -1173,7 +1176,7 @@ class MIRBuilder:
             if loop_ctx[2] == label:
                 return loop_ctx
 
-        raise MIRLoweringError(f"Label '{label}' not found in enclosing loops")
+        raise MIRLoweringError(f"Label '{label}' not found in enclosing loops", source_loc=self._current_source_loc)
 
     def lower_break_statement(self, stmt: HIRBreakStmt):
         """

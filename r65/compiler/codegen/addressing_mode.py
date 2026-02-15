@@ -65,7 +65,7 @@ class AddressingModeSelector:
                 return (AddressingMode.ACCUMULATOR, "A")
             else:
                 # X, Y cannot be used as addressing mode operands
-                raise AddressingModeError(f"Cannot use {location.hw_register} as operand")
+                raise AddressingModeError(f"Cannot use {location.hw_register} as operand", source_loc=None)
 
         # Get effective address
         if location.kind == LocationKind.SCRATCH:
@@ -75,9 +75,9 @@ class AddressingModeSelector:
         elif location.kind == LocationKind.STACK:
             # Stack addressing requires special handling
             # For now, not supported
-            raise AddressingModeError("Stack addressing not yet implemented")
+            raise AddressingModeError("Stack addressing not yet implemented", source_loc=None)
         else:
-            raise AddressingModeError(f"Unknown location kind: {location.kind}")
+            raise AddressingModeError(f"Unknown location kind: {location.kind}", source_loc=None)
 
         # Select addressing mode based on address range and modifiers
         return self._select_mode(addr, index_register, is_indirect)
@@ -129,7 +129,7 @@ class AddressingModeSelector:
         # Indirect addressing
         if is_indirect:
             if not is_direct_page:
-                raise AddressingModeError("Indirect addressing requires zero-page pointer")
+                raise AddressingModeError("Indirect addressing requires zero-page pointer", source_loc=None)
 
             if index_register == 'Y':
                 # ($42),Y - indirect indexed
@@ -148,7 +148,7 @@ class AddressingModeSelector:
                     operand = f"${addr:06X},X"
                     return (AddressingMode.LONG_X, operand)
                 else:
-                    raise AddressingModeError("Long addressing only supports X indexing")
+                    raise AddressingModeError("Long addressing only supports X indexing", source_loc=None)
 
             elif is_absolute:
                 # Absolute indexed

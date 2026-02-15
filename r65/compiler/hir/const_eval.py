@@ -55,18 +55,18 @@ class ConstEvaluator:
         elif isinstance(expr, ast.Identifier):
             # Check for built-in type names (used in size_of contexts)
             if expr.name in ['u8', 'u16', 'i8', 'i16', 'bool']:
-                raise HIRError(f"Type name '{expr.name}' cannot be used as a value in const expression")
+                raise HIRError(f"Type name '{expr.name}' cannot be used as a value in const expression", source_loc=expr.source_loc)
             
             # Look up const variable
             symbol = self.symbol_table.lookup(expr.name)
             if symbol is None:
-                raise HIRError(f"Undefined identifier in const expression: {expr.name}")
+                raise HIRError(f"Undefined identifier in const expression: {expr.name}", source_loc=expr.source_loc)
 
             if symbol.kind.value != "const":
-                raise HIRError(f"Identifier '{expr.name}' is not a const in const expression")
+                raise HIRError(f"Identifier '{expr.name}' is not a const in const expression", source_loc=expr.source_loc)
 
             if symbol.const_value is None:
-                raise HIRError(f"Const '{expr.name}' has no evaluated value")
+                raise HIRError(f"Const '{expr.name}' has no evaluated value", source_loc=expr.source_loc)
 
             return symbol.const_value
 
@@ -75,9 +75,9 @@ class ConstEvaluator:
             qualified = f"{expr.enum_name}::{expr.variant_name}"
             symbol = self.symbol_table.lookup(qualified)
             if symbol is None:
-                raise HIRError(f"Undefined enum variant in const expression: {qualified}")
+                raise HIRError(f"Undefined enum variant in const expression: {qualified}", source_loc=expr.source_loc)
             if symbol.const_value is None:
-                raise HIRError(f"'{qualified}' has no evaluated value")
+                raise HIRError(f"'{qualified}' has no evaluated value", source_loc=expr.source_loc)
             return symbol.const_value
 
         elif isinstance(expr, ast.BinaryOp):
@@ -98,7 +98,7 @@ class ConstEvaluator:
         elif isinstance(expr, ast.BlockExpression):
             # Const eval: block expression with no statements, just final expr
             if expr.statements:
-                raise HIRError(f"Block expression with statements is not const-evaluable")
+                raise HIRError(f"Block expression with statements is not const-evaluable", source_loc=expr.source_loc)
             return self.eval(expr.final_expr)
 
         elif isinstance(expr, ast.IfExpression):
@@ -119,7 +119,7 @@ class ConstEvaluator:
             return [value] * count
 
         else:
-            raise HIRError(f"Non-constant expression: {type(expr).__name__}")
+            raise HIRError(f"Non-constant expression: {type(expr).__name__}", source_loc=getattr(expr, 'source_loc', None))
 
     def _eval_binary_op(self, expr: ast.BinaryOp) -> Union[int, bool, str]:
         """Evaluate binary operation."""
@@ -142,12 +142,12 @@ class ConstEvaluator:
         elif op == '/':
             right_val = self._ensure_int(right)
             if right_val == 0:
-                raise HIRError("Division by zero in const expression")
+                raise HIRError("Division by zero in const expression", source_loc=expr.source_loc)
             return self._ensure_int(left) // right_val
         elif op == '%':
             right_val = self._ensure_int(right)
             if right_val == 0:
-                raise HIRError("Modulo by zero in const expression")
+                raise HIRError("Modulo by zero in const expression", source_loc=expr.source_loc)
             return self._ensure_int(left) % right_val
 
         # Bitwise operators
@@ -192,7 +192,7 @@ class ConstEvaluator:
             return self._ensure_bool(left) or self._ensure_bool(right)
 
         else:
-            raise HIRError(f"Unsupported operator in const expression: {op}")
+            raise HIRError(f"Unsupported operator in const expression: {op}", source_loc=expr.source_loc)
 
     def _eval_unary_op(self, expr: ast.UnaryOp) -> Union[int, bool]:
         """Evaluate unary operation."""
@@ -206,7 +206,7 @@ class ConstEvaluator:
         elif op == '~':
             return ~self._ensure_int(operand)
         else:
-            raise HIRError(f"Unsupported unary operator in const expression: {op}")
+            raise HIRError(f"Unsupported unary operator in const expression: {op}", source_loc=expr.source_loc)
 
     def _eval_cast(self, expr: ast.TypeCast) -> Union[int, bool]:
         """Evaluate type cast."""
@@ -239,15 +239,15 @@ class ConstEvaluator:
                 elif isinstance(value, int):
                     return value != 0
                 else:
-                    raise HIRError(f"Cannot cast {type(value).__name__} to bool")
+                    raise HIRError(f"Cannot cast {type(value).__name__} to bool", source_loc=expr.source_loc)
 
             else:
-                raise HIRError(f"Cannot cast to {type_name} in const expression")
+                raise HIRError(f"Cannot cast to {type_name} in const expression", source_loc=expr.source_loc)
         else:
-            raise HIRError(f"Unsupported cast target in const expression: {type(target_type).__name__}")
+            raise HIRError(f"Unsupported cast target in const expression: {type(target_type).__name__}", source_loc=expr.source_loc)
         
         # This should never be reached due to the raises above
-        raise HIRError("Unexpected path in _eval_cast")
+        raise HIRError("Unexpected path in _eval_cast", source_loc=expr.source_loc)
 
     def _eval_function_call(self, expr: ast.FunctionCall) -> Union[int, bool, str]:
         """Evaluate function call in const expression."""
@@ -258,7 +258,7 @@ class ConstEvaluator:
         func_name = expr.func.name if isinstance(expr.func, ast.Identifier) else None
 
         if not func_name:
-            raise HIRError("Only direct function calls allowed in const expressions")
+            raise HIRError("Only direct function calls allowed in const expressions", source_loc=expr.source_loc)
 
         # Check if this is a const fn (user-defined)
         from r65.compiler.hir.symbol_table import SymbolKind
@@ -270,17 +270,17 @@ class ConstEvaluator:
                 arg_values = [self.eval(arg) for arg in expr.args]
                 return self._eval_const_fn_call(func_def, arg_values, func_name)
             elif func_def and not BuiltinRegistry.is_builtin(func_name):
-                raise HIRError(f"Function '{func_name}' is not a const fn and cannot be called in const expressions")
+                raise HIRError(f"Function '{func_name}' is not a const fn and cannot be called in const expressions", source_loc=expr.source_loc)
 
         # Check if this is a built-in function
         if not BuiltinRegistry.is_builtin(func_name):
-            raise HIRError(f"Function '{func_name}' is not a const fn or built-in const function")
+            raise HIRError(f"Function '{func_name}' is not a const fn or built-in const function", source_loc=expr.source_loc)
 
         builtin = BuiltinRegistry.get_builtin(func_name)
 
         # Only allow type info built-ins in const expressions
         if builtin.kind.value != "type_info":
-            raise HIRError(f"Built-in '{func_name}' is not allowed in const expressions")
+            raise HIRError(f"Built-in '{func_name}' is not allowed in const expressions", source_loc=expr.source_loc)
 
         # Handle size_of specifically
         if func_name == "size_of":
@@ -293,15 +293,15 @@ class ConstEvaluator:
         # Handle cfg! specifically - requires cfg evaluator to be passed
         if func_name == "cfg":
             if not hasattr(self, 'cfg_evaluator') or self.cfg_evaluator is None:
-                raise HIRError("cfg! function requires cfg configuration to be provided")
+                raise HIRError("cfg! function requires cfg configuration to be provided", source_loc=expr.source_loc)
             return self._eval_cfg(expr)
 
-        raise HIRError(f"Unsupported const built-in function: {func_name}")
+        raise HIRError(f"Unsupported const built-in function: {func_name}", source_loc=expr.source_loc)
 
     def _eval_size_of(self, expr: ast.FunctionCall) -> int:
         """Evaluate size_of builtin function using unified type utilities."""
         if len(expr.args) != 1:
-            raise HIRError("size_of expects exactly 1 argument")
+            raise HIRError("size_of expects exactly 1 argument", source_loc=expr.source_loc)
 
         arg = expr.args[0]
 
@@ -309,31 +309,31 @@ class ConstEvaluator:
             return get_unified_type_size(arg, self.symbol_table)
         except Exception as e:
             # If type not yet available (e.g., struct declared later), defer evaluation
-            raise HIRError(f"Cannot evaluate size_of at this time: {e}")
+            raise HIRError(f"Cannot evaluate size_of at this time: {e}", source_loc=expr.source_loc)
 
     def _eval_offset_of(self, expr: ast.FunctionCall) -> int:
         """Evaluate offset_of builtin function: offset_of(StructName, field_name)."""
         if len(expr.args) != 2:
-            raise HIRError("offset_of expects exactly 2 arguments: offset_of(StructType, field)")
+            raise HIRError("offset_of expects exactly 2 arguments: offset_of(StructType, field)", source_loc=expr.source_loc)
 
         # First arg: struct type name (must be an identifier)
         struct_arg = expr.args[0]
         if not isinstance(struct_arg, ast.Identifier):
-            raise HIRError("offset_of first argument must be a struct type name")
+            raise HIRError("offset_of first argument must be a struct type name", source_loc=expr.source_loc)
 
         struct_name = struct_arg.name
         symbol = self.symbol_table.lookup(struct_name)
         if symbol is None:
-            raise HIRError(f"Undefined struct in offset_of: {struct_name}")
+            raise HIRError(f"Undefined struct in offset_of: {struct_name}", source_loc=expr.source_loc)
 
         struct_def = symbol.definition
         if struct_def is None or not hasattr(struct_def, 'fields'):
-            raise HIRError(f"'{struct_name}' is not a struct type")
+            raise HIRError(f"'{struct_name}' is not a struct type", source_loc=expr.source_loc)
 
         # Second arg: field name (must be an identifier)
         field_arg = expr.args[1]
         if not isinstance(field_arg, ast.Identifier):
-            raise HIRError("offset_of second argument must be a field name")
+            raise HIRError("offset_of second argument must be a field name", source_loc=expr.source_loc)
 
         field_name = field_arg.name
 
@@ -343,7 +343,7 @@ class ConstEvaluator:
             for field in struct_def.fields:
                 if field.name == field_name:
                     return field.offset
-            raise HIRError(f"Struct '{struct_name}' has no field '{field_name}'")
+            raise HIRError(f"Struct '{struct_name}' has no field '{field_name}'", source_loc=expr.source_loc)
 
         # AST struct: compute offset by summing field sizes
         offset = 0
@@ -352,7 +352,7 @@ class ConstEvaluator:
                 return offset
             offset += get_unified_type_size(field.field_type, self.symbol_table)
 
-        raise HIRError(f"Struct '{struct_name}' has no field '{field_name}'")
+        raise HIRError(f"Struct '{struct_name}' has no field '{field_name}'", source_loc=expr.source_loc)
 
     def _eval_method_call(self, expr: ast.FunctionCall) -> int:
         """Evaluate method call in const expression (e.g., array.len())."""
@@ -366,23 +366,23 @@ class ConstEvaluator:
 
         # Only len() is supported as a const method
         if method_name != 'len':
-            raise HIRError(f"Method '{method_name}' is not allowed in const expressions")
+            raise HIRError(f"Method '{method_name}' is not allowed in const expressions", source_loc=expr.source_loc)
 
         # Validate no arguments
         if len(expr.args) != 0:
-            raise HIRError(f"len() takes no arguments, got {len(expr.args)}")
+            raise HIRError(f"len() takes no arguments, got {len(expr.args)}", source_loc=expr.source_loc)
 
         # Get the receiver's type - must be an identifier for const evaluation
         if not isinstance(receiver, ast.Identifier):
-            raise HIRError("len() receiver must be an identifier in const expressions")
+            raise HIRError("len() receiver must be an identifier in const expressions", source_loc=expr.source_loc)
 
         symbol = self.symbol_table.lookup(receiver.name)
         if symbol is None:
-            raise HIRError(f"Undefined identifier: {receiver.name}")
+            raise HIRError(f"Undefined identifier: {receiver.name}", source_loc=expr.source_loc)
 
         # Ensure it's an array type
         if symbol.var_type is None or not isinstance(symbol.var_type, ArrayTypeInfo):
-            raise HIRError(f"len() requires array type, '{receiver.name}' is not an array")
+            raise HIRError(f"len() requires array type, '{receiver.name}' is not an array", source_loc=expr.source_loc)
 
         # Return the array size
         return symbol.var_type.size
@@ -394,7 +394,7 @@ class ConstEvaluator:
         elif isinstance(value, int):
             return value
         else:
-            raise HIRError(f"Expected integer in const expression, got {type(value).__name__}")
+            raise HIRError(f"Expected integer in const expression, got {type(value).__name__}", source_loc=None)
 
     def _ensure_bool(self, value: Any) -> bool:
         """Ensure value is a boolean."""
@@ -403,7 +403,7 @@ class ConstEvaluator:
         elif isinstance(value, int):
             return value != 0
         else:
-            raise HIRError(f"Expected boolean in const expression, got {type(value).__name__}")
+            raise HIRError(f"Expected boolean in const expression, got {type(value).__name__}", source_loc=None)
 
     def _eval_match_expr(self, expr: ast.MatchExpression) -> Union[int, bool]:
         """Evaluate a match expression in const context."""
@@ -413,7 +413,7 @@ class ConstEvaluator:
             if self._pattern_matches(arm.pattern, scrutinee):
                 return self.eval(arm.body)
 
-        raise HIRError("Non-exhaustive match in const expression")
+        raise HIRError("Non-exhaustive match in const expression", source_loc=expr.source_loc)
 
     def _pattern_matches(self, pattern, value) -> bool:
         """Check if a pattern matches a value."""
@@ -428,11 +428,11 @@ class ConstEvaluator:
             symbol = self.symbol_table.lookup(qualified)
             if symbol and symbol.const_value is not None:
                 return value == symbol.const_value
-            raise HIRError(f"Cannot resolve enum variant '{qualified}' in const match")
+            raise HIRError(f"Cannot resolve enum variant '{qualified}' in const match", source_loc=getattr(pattern, 'source_loc', None))
         elif isinstance(pattern, ast.OrPattern):
             return any(self._pattern_matches(sub, value) for sub in pattern.patterns)
         else:
-            raise HIRError(f"Unsupported pattern in const match: {type(pattern).__name__}")
+            raise HIRError(f"Unsupported pattern in const match: {type(pattern).__name__}", source_loc=getattr(pattern, 'source_loc', None))
 
     # =========================================================================
     # Const fn evaluation via Python transpilation
@@ -445,13 +445,15 @@ class ConstEvaluator:
         actual = len(arg_values)
         if actual != expected:
             raise HIRError(
-                f"const fn '{func_name}' expects {expected} argument(s), got {actual}"
+                f"const fn '{func_name}' expects {expected} argument(s), got {actual}",
+                source_loc=getattr(func_def, 'source_loc', None)
             )
 
         # Guard against deep recursion
         if self._const_fn_depth > 64:
             raise HIRError(
-                f"const fn recursion depth exceeded (max 64) in '{func_name}'"
+                f"const fn recursion depth exceeded (max 64) in '{func_name}'",
+                source_loc=getattr(func_def, 'source_loc', None)
             )
 
         # Compile function if not cached
@@ -469,24 +471,26 @@ class ConstEvaluator:
             result = compiled_fn(*arg_values, **namespace)
             if result is None:
                 raise HIRError(
-                    f"const fn '{func_name}' did not return a value"
+                    f"const fn '{func_name}' did not return a value",
+                    source_loc=getattr(func_def, 'source_loc', None)
                 )
             return result
         except HIRError:
             raise
         except ZeroDivisionError:
-            raise HIRError(f"Division by zero in const fn '{func_name}'")
+            raise HIRError(f"Division by zero in const fn '{func_name}'", source_loc=getattr(func_def, 'source_loc', None))
         except RecursionError:
-            raise HIRError(f"Infinite recursion in const fn '{func_name}'")
+            raise HIRError(f"Infinite recursion in const fn '{func_name}'", source_loc=getattr(func_def, 'source_loc', None))
         except RuntimeError as e:
             if "exceeded maximum iteration limit" in str(e):
                 raise HIRError(
                     f"const fn '{func_name}' exceeded maximum iteration limit "
-                    f"({ConstEvaluator.MAX_CONST_FN_ITERATIONS} iterations)"
+                    f"({ConstEvaluator.MAX_CONST_FN_ITERATIONS} iterations)",
+                    source_loc=getattr(func_def, 'source_loc', None)
                 )
-            raise HIRError(f"Error evaluating const fn '{func_name}': {e}")
+            raise HIRError(f"Error evaluating const fn '{func_name}': {e}", source_loc=getattr(func_def, 'source_loc', None))
         except Exception as e:
-            raise HIRError(f"Error evaluating const fn '{func_name}': {e}")
+            raise HIRError(f"Error evaluating const fn '{func_name}': {e}", source_loc=getattr(func_def, 'source_loc', None))
         finally:
             self._const_fn_depth -= 1
 
@@ -543,7 +547,8 @@ class ConstEvaluator:
             return local_ns['_const_fn_']
         except SyntaxError as e:
             raise HIRError(
-                f"Failed to compile const fn '{func_name}': {e}"
+                f"Failed to compile const fn '{func_name}': {e}",
+                source_loc=getattr(func_def, 'source_loc', None)
             )
 
     def _build_const_fn_namespace(self):
@@ -701,13 +706,13 @@ class ConstEvaluator:
             return self._transpile_block(stmt, indent)
 
         elif isinstance(stmt, ast.AsmStmt):
-            raise HIRError("Inline assembly (asm!) cannot be used in const fn")
+            raise HIRError("Inline assembly (asm!) cannot be used in const fn", source_loc=getattr(stmt, 'source_loc', None))
 
         elif isinstance(stmt, ast.ConstAssertStmt):
-            raise HIRError("const_assert! is not supported in const fn")
+            raise HIRError("const_assert! is not supported in const fn", source_loc=getattr(stmt, 'source_loc', None))
 
         else:
-            raise HIRError(f"Unsupported statement in const fn: {type(stmt).__name__}")
+            raise HIRError(f"Unsupported statement in const fn: {type(stmt).__name__}", source_loc=getattr(stmt, 'source_loc', None))
 
     def _transpile_expr(self, expr):
         """Transpile an AST expression to a Python expression string."""
@@ -728,11 +733,13 @@ class ConstEvaluator:
                     return repr(symbol.const_value)
                 elif symbol.kind == SymbolKind.REGISTER:
                     raise HIRError(
-                        f"Cannot access hardware register '{expr.name}' in const fn"
+                        f"Cannot access hardware register '{expr.name}' in const fn",
+                        source_loc=expr.source_loc
                     )
                 elif symbol.kind == SymbolKind.STATIC_VAR:
                     raise HIRError(
-                        f"Cannot access runtime variable '{expr.name}' in const fn"
+                        f"Cannot access runtime variable '{expr.name}' in const fn",
+                        source_loc=expr.source_loc
                     )
             # Otherwise it's a local variable or parameter reference
             return expr.name
@@ -742,7 +749,7 @@ class ConstEvaluator:
             symbol = self.symbol_table.lookup(qualified)
             if symbol and symbol.const_value is not None:
                 return str(symbol.const_value)
-            raise HIRError(f"Cannot resolve enum variant '{qualified}' in const fn")
+            raise HIRError(f"Cannot resolve enum variant '{qualified}' in const fn", source_loc=expr.source_loc)
 
         elif isinstance(expr, ast.BinaryOp):
             left = self._transpile_expr(expr.left)
@@ -768,7 +775,7 @@ class ConstEvaluator:
             elif expr.op == '-':
                 return f"(-{operand})"
             else:
-                raise HIRError(f"Unsupported unary op in const fn: {expr.op}")
+                raise HIRError(f"Unsupported unary op in const fn: {expr.op}", source_loc=expr.source_loc)
 
         elif isinstance(expr, ast.TypeCast):
             inner = self._transpile_expr(expr.expr)
@@ -778,7 +785,7 @@ class ConstEvaluator:
                     return f"_ns_['_{type_name}']({inner})"
                 elif type_name == 'bool':
                     return f"_ns_['_bool']({inner})"
-            raise HIRError(f"Unsupported cast in const fn: {expr.target_type}")
+            raise HIRError(f"Unsupported cast in const fn: {expr.target_type}", source_loc=expr.source_loc)
 
         elif isinstance(expr, ast.FunctionCall):
             if isinstance(expr.func, ast.Identifier):
@@ -811,10 +818,11 @@ class ConstEvaluator:
                     else:
                         raise HIRError(
                             f"Cannot call '{func_name}' from const fn: "
-                            f"'{func_name}' is not a const fn"
+                            f"'{func_name}' is not a const fn",
+                            source_loc=expr.source_loc
                         )
 
-            raise HIRError(f"Unsupported function call in const fn: {expr}")
+            raise HIRError(f"Unsupported function call in const fn: {expr}", source_loc=expr.source_loc)
 
         elif isinstance(expr, ast.Assignment):
             target = self._transpile_expr(expr.target)
@@ -842,11 +850,12 @@ class ConstEvaluator:
 
         elif isinstance(expr, ast.Register):
             raise HIRError(
-                f"Cannot access hardware register '{expr.name}' in const fn"
+                f"Cannot access hardware register '{expr.name}' in const fn",
+                source_loc=expr.source_loc
             )
 
         elif isinstance(expr, ast.StringLiteral):
-            raise HIRError("String literals are not supported in const fn")
+            raise HIRError("String literals are not supported in const fn", source_loc=expr.source_loc)
 
         elif isinstance(expr, ast.ArrayIndex):
             array = self._transpile_expr(expr.array)
@@ -854,13 +863,13 @@ class ConstEvaluator:
             return f"{array}[{index}]"
 
         elif isinstance(expr, ast.FieldAccess):
-            raise HIRError("Struct field access is not supported in const fn")
+            raise HIRError("Struct field access is not supported in const fn", source_loc=expr.source_loc)
 
         elif isinstance(expr, ast.Dereference):
-            raise HIRError("Pointer dereference is not supported in const fn")
+            raise HIRError("Pointer dereference is not supported in const fn", source_loc=expr.source_loc)
 
         elif isinstance(expr, ast.AddressOf):
-            raise HIRError("Address-of operator is not supported in const fn")
+            raise HIRError("Address-of operator is not supported in const fn", source_loc=expr.source_loc)
 
         elif isinstance(expr, ast.ArrayLiteralExpr):
             elements = ", ".join(self._transpile_expr(e) for e in expr.elements)
@@ -872,16 +881,16 @@ class ConstEvaluator:
             return f"[{value}] * {count}"
 
         elif isinstance(expr, ast.StructLiteralExpr):
-            raise HIRError("Struct literals are not supported in const fn")
+            raise HIRError("Struct literals are not supported in const fn", source_loc=expr.source_loc)
 
         elif isinstance(expr, ast.MultiAssignment):
-            raise HIRError("Multiple assignment is not supported in const fn")
+            raise HIRError("Multiple assignment is not supported in const fn", source_loc=expr.source_loc)
 
         elif isinstance(expr, ast.IncludeBytesExpr):
-            raise HIRError("include_bytes! is not supported in const fn")
+            raise HIRError("include_bytes! is not supported in const fn", source_loc=expr.source_loc)
 
         else:
-            raise HIRError(f"Unsupported expression in const fn: {type(expr).__name__}")
+            raise HIRError(f"Unsupported expression in const fn: {type(expr).__name__}", source_loc=getattr(expr, 'source_loc', None))
 
     def _transpile_block_expr(self, expr):
         """Transpile a block expression to a Python expression.
@@ -893,7 +902,7 @@ class ConstEvaluator:
         if not expr.statements:
             return self._transpile_expr(expr.final_expr)
 
-        raise HIRError("Block expressions with statements are not supported in const fn")
+        raise HIRError("Block expressions with statements are not supported in const fn", source_loc=expr.source_loc)
 
     def _transpile_if_expr(self, expr):
         """Transpile an if expression to a Python ternary expression."""
@@ -913,7 +922,7 @@ class ConstEvaluator:
         scrutinee = self._transpile_expr(expr.scrutinee)
 
         if not expr.arms:
-            raise HIRError("Empty match expression in const fn")
+            raise HIRError("Empty match expression in const fn", source_loc=expr.source_loc)
 
         # Build list of (condition_or_None, body_str) for each arm
         parts = []
@@ -941,12 +950,14 @@ class ConstEvaluator:
                     else:
                         raise HIRError(
                             f"Unsupported sub-pattern in or-pattern in const fn: "
-                            f"{type(sub).__name__}"
+                            f"{type(sub).__name__}",
+                            source_loc=expr.source_loc
                         )
                 parts.append((" or ".join(or_conds), body_str))
             else:
                 raise HIRError(
-                    f"Unsupported pattern in const fn match: {type(pattern).__name__}"
+                    f"Unsupported pattern in const fn match: {type(pattern).__name__}",
+                    source_loc=expr.source_loc
                 )
 
         # Build ternary chain from right to left
@@ -974,5 +985,6 @@ class ConstEvaluator:
         if symbol and symbol.const_value is not None:
             return f"_m_ == {symbol.const_value}"
         raise HIRError(
-            f"Cannot resolve enum variant '{qualified}' in const fn match"
+            f"Cannot resolve enum variant '{qualified}' in const fn match",
+            source_loc=getattr(pattern, 'source_loc', None)
         )

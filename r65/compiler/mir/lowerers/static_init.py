@@ -178,7 +178,7 @@ class StaticInitLowerer:
             return initializer.name
         if isinstance(initializer, HIRFunctionAddress):
             return initializer.function_name
-        raise MIRLoweringError(f"Cannot extract function name from {type(initializer).__name__}")
+        raise MIRLoweringError(f"Cannot extract function name from {type(initializer).__name__}", source_loc=self.builder._current_source_loc)
 
     def _emit_array_fill_init(
         self,
@@ -324,7 +324,7 @@ class StaticInitLowerer:
                 struct_decl = symbol.definition
 
         if struct_decl is None:
-            raise MIRLoweringError(f"Cannot find struct definition for {struct_expr.struct_name}")
+            raise MIRLoweringError(f"Cannot find struct definition for {struct_expr.struct_name}", source_loc=self.builder._current_source_loc)
 
         # Calculate field offsets and sizes
         total_size = 0
@@ -347,7 +347,7 @@ class StaticInitLowerer:
                 current_offset += field_size
             total_size = current_offset
         else:
-            raise MIRLoweringError(f"Unexpected struct definition type: {type(struct_decl).__name__}")
+            raise MIRLoweringError(f"Unexpected struct definition type: {type(struct_decl).__name__}", source_loc=self.builder._current_source_loc)
 
         # Create byte array for struct data
         data_bytes = [0] * total_size
@@ -459,7 +459,7 @@ class StaticInitLowerer:
                 struct_decl = symbol.definition
 
         if struct_decl is None:
-            raise MIRLoweringError(f"Cannot find struct definition for {struct_expr.struct_name}")
+            raise MIRLoweringError(f"Cannot find struct definition for {struct_expr.struct_name}", source_loc=self.builder._current_source_loc)
 
         # Calculate total size of struct and field offsets
         # Handle both HIR and AST struct declarations
@@ -485,7 +485,7 @@ class StaticInitLowerer:
                 current_offset += field_size
             total_size = current_offset
         else:
-            raise MIRLoweringError(f"Unexpected struct definition type: {type(struct_decl).__name__}")
+            raise MIRLoweringError(f"Unexpected struct definition type: {type(struct_decl).__name__}", source_loc=self.builder._current_source_loc)
 
         # Create byte array for struct data
         data_bytes = [0] * total_size

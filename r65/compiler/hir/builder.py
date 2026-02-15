@@ -294,6 +294,7 @@ class HIRBuilder:
             if isinstance(const_type, StructTypeInfo):
                 raise HIRError(
                     f"const '{decl.name}' cannot have struct type",
+                    source_loc=decl.source_loc,
                     hint="use 'static' for struct constants (immutable statics are ROM)"
                 )
 
@@ -402,7 +403,7 @@ class HIRBuilder:
         elif isinstance(decl, ast.ImplDecl):
             return self._build_impl(decl)
         else:
-            raise HIRError(f"Unknown declaration type: {type(decl).__name__}")
+            raise HIRError(f"Unknown declaration type: {type(decl).__name__}", source_loc=getattr(decl, 'source_loc', None))
 
     def _build_function(self, func: ast.FunctionDecl) -> hir.HIRFunctionDecl:
         """Build HIR function from AST."""
@@ -478,7 +479,8 @@ class HIRBuilder:
             if not func.is_far:
                 raise HIRError(
                     f"Function '{func.name}' uses databank={mode_attr.databank.value} "
-                    f"but is not a far function. DBR management requires 'far fn'."
+                    f"but is not a far function. DBR management requires 'far fn'.",
+                    source_loc=func.source_loc
                 )
 
         # Detect STATUS flag return pattern for optimized branch generation at call sites
@@ -739,7 +741,7 @@ class HIRBuilder:
                 var_name = param.binding.name
                 var_symbol = self.symbol_table.lookup(var_name)
                 if not var_symbol:
-                    raise HIRError(f"Undefined variable: {var_name}")
+                    raise HIRError(f"Undefined variable: {var_name}", source_loc=getattr(param, 'source_loc', None))
                 if var_symbol.kind == SymbolKind.REGISTER:
                     # Register binding
                     binding = hir.RegisterBinding(register_name=var_name)
@@ -750,12 +752,12 @@ class HIRBuilder:
                         variable_symbol=var_symbol
                     )
                 else:
-                    raise HIRError(f"Parameter binding must be register or static variable, got {var_symbol.kind.value}")
+                    raise HIRError(f"Parameter binding must be register or static variable, got {var_symbol.kind.value}", source_loc=getattr(param, 'source_loc', None))
             elif isinstance(param.binding, str):
                 # Could be register or variable binding - resolve (legacy string support)
                 var_symbol = self.symbol_table.lookup(param.binding)
                 if not var_symbol:
-                    raise HIRError(f"Undefined variable: {param.binding}")
+                    raise HIRError(f"Undefined variable: {param.binding}", source_loc=getattr(param, 'source_loc', None))
                 if var_symbol.kind == SymbolKind.REGISTER:
                     # Register binding
                     binding = hir.RegisterBinding(register_name=param.binding)
@@ -766,7 +768,7 @@ class HIRBuilder:
                         variable_symbol=var_symbol
                     )
                 else:
-                    raise HIRError(f"Parameter binding must be register or static variable, got {var_symbol.kind.value}")
+                    raise HIRError(f"Parameter binding must be register or static variable, got {var_symbol.kind.value}", source_loc=getattr(param, 'source_loc', None))
 
         # Validate register binding types
         if binding and isinstance(binding, hir.RegisterBinding):
@@ -821,7 +823,8 @@ class HIRBuilder:
         if not isinstance(bound_type, BasicTypeInfo):
             raise HIRError(
                 f"{context.capitalize()} '{name}' bound to register {register_name} "
-                f"must have a primitive type, got {bound_type}"
+                f"must have a primitive type, got {bound_type}",
+                source_loc=None
             )
 
         type_name = bound_type.name
@@ -841,7 +844,8 @@ class HIRBuilder:
         allowed = register_allowed_types.get(register_name)
         if allowed is None:
             raise HIRError(
-                f"{context.capitalize()} '{name}' bound to unknown register '{register_name}'"
+                f"{context.capitalize()} '{name}' bound to unknown register '{register_name}'",
+                source_loc=None
             )
 
         if type_name not in allowed:
@@ -872,6 +876,7 @@ class HIRBuilder:
             raise HIRError(
                 f"{context.capitalize()} '{name}' bound to {register_name} register "
                 f"has type {type_name}, but {register_name} only supports: {', '.join(allowed)}",
+                source_loc=None,
                 hint=hint
             )
 
@@ -896,6 +901,7 @@ class HIRBuilder:
                     raise HIRError(
                         f"Register {reg_name} is bound to multiple parameters in function '{func_name}': "
                         f"'{first_param}' and '{param.name}'",
+                        source_loc=None,
                         hint=f"Each hardware register can only be bound to one parameter per function.\n"
                              f"Consider using stack parameters for additional values."
                     )
@@ -912,6 +918,7 @@ class HIRBuilder:
             if storage_attr is None:
                 raise HIRError(
                     f"mutable static '{static.name}' requires explicit storage attribute",
+                    source_loc=static.source_loc,
                     hint="add #[zeropage], #[lowram], #[ram], or #[hw(addr)]"
                 )
             return storage_attr
@@ -924,6 +931,7 @@ class HIRBuilder:
             # Any RAM-type storage on immutable is an error
             raise HIRError(
                 f"immutable static '{static.name}' cannot use #{storage_attr.storage_kind.value} storage",
+                source_loc=static.source_loc,
                 hint="add 'mut' to make mutable, or remove attribute for ROM"
             )
 
@@ -963,6 +971,7 @@ class HIRBuilder:
                 if not static.is_far:
                     raise HIRError(
                         f"ROM static '{static.name}' in auto-bank mode must be declared as 'far static'",
+                        source_loc=static.source_loc,
                         hint="use 'far static " + static.name + ": ...' or place in explicit bank with #[bank(n)]"
                     )
             else:
@@ -1623,7 +1632,7 @@ class HIRBuilder:
                 raise HIRError(f"const_assert! condition is not const-evaluable: {e}", stmt.source_loc)
 
         else:
-            raise HIRError(f"Unknown statement type: {type(stmt).__name__}")
+            raise HIRError(f"Unknown statement type: {type(stmt).__name__}", source_loc=getattr(stmt, 'source_loc', None))
 
     def _process_asm_format(self, instructions: List[str], format_args: Dict[str, Union[str, int, ast.Expression]]) -> List[str]:
         """
@@ -1646,7 +1655,7 @@ class HIRBuilder:
             def replace_placeholder(match):
                 name = match.group(1)
                 if name not in format_args:
-                    raise HIRError(f"Unknown format argument '{{{name}}}' in asm! statement")
+                    raise HIRError(f"Unknown format argument '{{{name}}}' in asm! statement", source_loc=None)
                 value = format_args[name]
                 if isinstance(value, str):
                     return value
@@ -1658,12 +1667,12 @@ class HIRBuilder:
                     try:
                         evaluated = self.const_evaluator.eval(value)
                         if not isinstance(evaluated, int):
-                            raise HIRError(f"asm! format argument '{name}' must evaluate to an integer, got {type(evaluated).__name__}")
+                            raise HIRError(f"asm! format argument '{name}' must evaluate to an integer, got {type(evaluated).__name__}", source_loc=None)
                         return str(evaluated)
                     except HIRError as e:
-                        raise HIRError(f"Cannot const-evaluate asm! format argument '{name}': {e}")
+                        raise HIRError(f"Cannot const-evaluate asm! format argument '{name}': {e}", source_loc=None)
                 else:
-                    raise HIRError(f"Invalid asm! format argument type for '{name}': {type(value).__name__}")
+                    raise HIRError(f"Invalid asm! format argument type for '{name}': {type(value).__name__}", source_loc=None)
 
             processed = placeholder_pattern.sub(replace_placeholder, instruction)
             result.append(processed)
@@ -1695,7 +1704,7 @@ class HIRBuilder:
                 # Variable binding
                 var_symbol = self.symbol_table.lookup(let.binding)
                 if not var_symbol:
-                    raise HIRError(f"Undefined variable: {let.binding}")
+                    raise HIRError(f"Undefined variable: {let.binding}", source_loc=let.source_loc)
                 binding = hir.VariableLetBinding(
                     variable_name=let.binding,
                     variable_symbol=var_symbol

@@ -184,7 +184,7 @@ class AttributeProcessor:
             elif attr.name == 'inline':
                 processed.append(self._process_inline(attr, context))
             else:
-                raise HIRError(f"Unknown attribute '{attr.name}'")
+                raise HIRError(f"Unknown attribute '{attr.name}'", source_loc=attr.source_loc)
 
         return processed
 
@@ -195,7 +195,7 @@ class AttributeProcessor:
         CPU mode (m8/m16, x8/x16) is automatically inferred from parameter types.
         """
         if context not in ['function']:
-            raise HIRError(f"#[mode] attribute only valid on functions")
+            raise HIRError(f"#[mode] attribute only valid on functions", source_loc=attr.source_loc)
 
         databank = DataBankMode.NONE
 
@@ -211,16 +211,18 @@ class AttributeProcessor:
                         f"  - u16 @ A parameter -> m16 entry mode\n"
                         f"  - otherwise -> m8 entry mode (default)\n"
                         f"  - X/Y registers are always u16 (x16 mode)\n"
-                        f"  Use #[mode(databank=...)] for data bank management only."
+                        f"  Use #[mode(databank=...)] for data bank management only.",
+                        source_loc=attr.source_loc
                     )
                 else:
-                    raise HIRError(f"Invalid mode value: {value_str}")
+                    raise HIRError(f"Invalid mode value: {value_str}", source_loc=attr.source_loc)
             elif arg.name == 'transition':
                 raise HIRError(
                     f"#[mode(transition=...)] is no longer supported.\n"
                     f"  Mode transitions are now handled automatically:\n"
                     f"  - Compiler inserts REP/SEP around 16-bit A operations\n"
-                    f"  - Call sites switch to callee's entry mode as needed"
+                    f"  - Call sites switch to callee's entry mode as needed",
+                    source_loc=attr.source_loc
                 )
             elif arg.name == 'databank':
                 value_str = self._get_arg_identifier(arg.value)
@@ -232,9 +234,9 @@ class AttributeProcessor:
                 elif value_str == 'caller':
                     databank = DataBankMode.CALLER
                 else:
-                    raise HIRError(f"Invalid databank value: {value_str}")
+                    raise HIRError(f"Invalid databank value: {value_str}", source_loc=attr.source_loc)
             else:
-                raise HIRError(f"Unknown argument to #[mode]: {arg.name}")
+                raise HIRError(f"Unknown argument to #[mode]: {arg.name}", source_loc=attr.source_loc)
 
         return ModeAttribute(
             name='mode',
@@ -244,14 +246,14 @@ class AttributeProcessor:
     def _process_preserves(self, attr: ast.Attribute, context: str) -> PreservesAttribute:
         """Process #[preserves(...)] attribute."""
         if context not in ['function']:
-            raise HIRError(f"#[preserves] attribute only valid on functions")
+            raise HIRError(f"#[preserves] attribute only valid on functions", source_loc=attr.source_loc)
 
         registers = []
         valid_registers = {'A', 'X', 'Y', 'STATUS', 'D', 'DBR', 'S'}
 
         for arg in attr.args:
             if arg.name is not None:
-                raise HIRError(f"#[preserves] does not accept named arguments")
+                raise HIRError(f"#[preserves] does not accept named arguments", source_loc=attr.source_loc)
 
             # Get register name
             if isinstance(arg.value, ast.Register):
@@ -259,20 +261,21 @@ class AttributeProcessor:
             elif isinstance(arg.value, ast.Identifier):
                 reg_name = arg.value.name
             else:
-                raise HIRError(f"#[preserves] expects register names")
+                raise HIRError(f"#[preserves] expects register names", source_loc=attr.source_loc)
 
             if reg_name == 'B':
                 raise HIRError(
                     f"B register not allowed in preserves attribute\n"
                     f"  B cannot be preserved separately from A\n"
-                    f"  B is the high byte of the A register"
+                    f"  B is the high byte of the A register",
+                    source_loc=attr.source_loc
                 )
 
             if reg_name not in valid_registers:
-                raise HIRError(f"Invalid register in #[preserves]: {reg_name}")
+                raise HIRError(f"Invalid register in #[preserves]: {reg_name}", source_loc=attr.source_loc)
 
             if reg_name == 'PBR':
-                raise HIRError(f"PBR cannot be in #[preserves] (it's read-only)")
+                raise HIRError(f"PBR cannot be in #[preserves] (it's read-only)", source_loc=attr.source_loc)
 
             registers.append(reg_name)
 
@@ -284,7 +287,7 @@ class AttributeProcessor:
     def _process_storage(self, attr: ast.Attribute, context: str) -> StorageAttribute:
         """Process #[zeropage], #[lowram], #[ram], #[hw] attributes."""
         if context not in ['static']:
-            raise HIRError(f"#{attr.name} attribute only valid on static variables")
+            raise HIRError(f"#{attr.name} attribute only valid on static variables", source_loc=attr.source_loc)
 
         # Map attribute name to storage kind
         storage_map = {
@@ -306,12 +309,12 @@ class AttributeProcessor:
                     # Flag-style: #[zeropage(0x10, register)]
                     is_register = True
                 elif address is not None:
-                    raise HIRError(f"#{attr.name} can only have one positional argument (address)")
+                    raise HIRError(f"#{attr.name} can only have one positional argument (address)", source_loc=attr.source_loc)
                 elif isinstance(arg.value, ast.IntegerLiteral):
                     # Address argument
                     address = arg.value.value
                 else:
-                    raise HIRError(f"#{attr.name} address must be an integer literal")
+                    raise HIRError(f"#{attr.name} address must be an integer literal", source_loc=attr.source_loc)
 
             elif arg.name == 'register':
                 # Handle register parameter: 'register' (keyword only)
@@ -325,10 +328,10 @@ class AttributeProcessor:
                 elif isinstance(arg.value, ast.Identifier) and arg.value.name == 'false':
                     is_register = False
                 else:
-                    raise HIRError(f"#{attr.name} register parameter must be boolean or omitted")
+                    raise HIRError(f"#{attr.name} register parameter must be boolean or omitted", source_loc=attr.source_loc)
 
             else:
-                raise HIRError(f"Unknown argument to #{attr.name}: {arg.name}")
+                raise HIRError(f"Unknown argument to #{attr.name}: {arg.name}", source_loc=attr.source_loc)
 
         return StorageAttribute(
             name=attr.name,
@@ -345,13 +348,14 @@ class AttributeProcessor:
             f"Place #[bank(n)] before function declarations to set the bank for "
             f"all following functions and ROM statics. Example:\n"
             f"  #[bank(1)]\n"
-            f"  far fn my_function() {{ }}"
+            f"  far fn my_function() {{ }}",
+            source_loc=attr.source_loc
         )
 
     def _process_interrupt(self, attr: ast.Attribute, context: str) -> InterruptAttribute:
         """Process #[interrupt(vector, preserve=...)] attribute."""
         if context not in ['function']:
-            raise HIRError(f"#[interrupt] attribute only valid on functions")
+            raise HIRError(f"#[interrupt] attribute only valid on functions", source_loc=attr.source_loc)
 
         vector = None
         preserve = True  # Default
@@ -359,7 +363,7 @@ class AttributeProcessor:
         for arg in attr.args:
             if arg.name is None:  # Positional argument (vector)
                 if vector is not None:
-                    raise HIRError(f"#[interrupt] can only have one positional argument (vector)")
+                    raise HIRError(f"#[interrupt] can only have one positional argument (vector)", source_loc=attr.source_loc)
 
                 value_str = self._get_arg_identifier(arg.value)
 
@@ -374,7 +378,7 @@ class AttributeProcessor:
                 elif value_str == 'abort':
                     vector = InterruptVector.ABORT
                 else:
-                    raise HIRError(f"Invalid interrupt vector: {value_str}")
+                    raise HIRError(f"Invalid interrupt vector: {value_str}", source_loc=attr.source_loc)
 
             elif arg.name == 'preserve':
                 if isinstance(arg.value, ast.BooleanLiteral):
@@ -386,14 +390,14 @@ class AttributeProcessor:
                     elif value_str == 'false':
                         preserve = False
                     else:
-                        raise HIRError(f"Invalid preserve value: {value_str}")
+                        raise HIRError(f"Invalid preserve value: {value_str}", source_loc=attr.source_loc)
                 else:
-                    raise HIRError(f"preserve must be a boolean")
+                    raise HIRError(f"preserve must be a boolean", source_loc=attr.source_loc)
             else:
-                raise HIRError(f"Unknown argument to #[interrupt]: {arg.name}")
+                raise HIRError(f"Unknown argument to #[interrupt]: {arg.name}", source_loc=attr.source_loc)
 
         if vector is None:
-            raise HIRError(f"#[interrupt] requires an interrupt vector")
+            raise HIRError(f"#[interrupt] requires an interrupt vector", source_loc=attr.source_loc)
 
         return InterruptAttribute(
             name='interrupt',
@@ -404,27 +408,27 @@ class AttributeProcessor:
     def _process_entry(self, attr: ast.Attribute, context: str) -> EntryAttribute:
         """Process #[entry] attribute."""
         if context not in ['function']:
-            raise HIRError(f"#[entry] attribute only valid on functions")
+            raise HIRError(f"#[entry] attribute only valid on functions", source_loc=attr.source_loc)
 
         if len(attr.args) > 0:
-            raise HIRError(f"#[entry] does not accept arguments")
+            raise HIRError(f"#[entry] does not accept arguments", source_loc=attr.source_loc)
 
         return EntryAttribute(name='entry')
 
     def _process_inline(self, attr: ast.Attribute, context: str) -> InlineAttribute:
         """Process #[inline], #[inline(always)], or #[inline(never)] attribute."""
         if context not in ['function']:
-            raise HIRError(f"#[inline] attribute only valid on functions")
+            raise HIRError(f"#[inline] attribute only valid on functions", source_loc=attr.source_loc)
 
         mode = InlineMode.ALWAYS  # Default for bare #[inline]
 
         if len(attr.args) > 1:
-            raise HIRError(f"#[inline] accepts at most one argument (always or never)")
+            raise HIRError(f"#[inline] accepts at most one argument (always or never)", source_loc=attr.source_loc)
 
         if len(attr.args) == 1:
             arg = attr.args[0]
             if arg.name is not None:
-                raise HIRError(f"#[inline] does not accept named arguments")
+                raise HIRError(f"#[inline] does not accept named arguments", source_loc=attr.source_loc)
 
             value_str = self._get_arg_identifier(arg.value)
 
@@ -433,42 +437,43 @@ class AttributeProcessor:
             elif value_str == 'never':
                 mode = InlineMode.NEVER
             else:
-                raise HIRError(f"Invalid #[inline] argument: {value_str}. Expected 'always' or 'never'")
+                raise HIRError(f"Invalid #[inline] argument: {value_str}. Expected 'always' or 'never'", source_loc=attr.source_loc)
 
         return InlineAttribute(name='inline', mode=mode)
 
     def _process_stack(self, attr: ast.Attribute, context: str) -> StackAttribute:
         """Process #[stack(lower, upper)] attribute."""
         if context not in ['static']:
-            raise HIRError(f"#[stack] attribute only valid on static declarations")
+            raise HIRError(f"#[stack] attribute only valid on static declarations", source_loc=attr.source_loc)
 
         lower = None
         upper = None
 
         for i, arg in enumerate(attr.args):
             if arg.name is not None:
-                raise HIRError(f"#[stack] only accepts positional arguments")
+                raise HIRError(f"#[stack] only accepts positional arguments", source_loc=attr.source_loc)
 
             if not isinstance(arg.value, ast.IntegerLiteral):
-                raise HIRError(f"#[stack] arguments must be integer literals")
+                raise HIRError(f"#[stack] arguments must be integer literals", source_loc=attr.source_loc)
 
             if i == 0:
                 lower = arg.value.value
             elif i == 1:
                 upper = arg.value.value
             else:
-                raise HIRError(f"#[stack] accepts exactly 2 arguments (lower, upper)")
+                raise HIRError(f"#[stack] accepts exactly 2 arguments (lower, upper)", source_loc=attr.source_loc)
 
         if lower is None or upper is None:
-            raise HIRError(f"#[stack] requires both lower and upper bounds: #[stack(lower, upper)]")
+            raise HIRError(f"#[stack] requires both lower and upper bounds: #[stack(lower, upper)]", source_loc=attr.source_loc)
 
         if lower > upper:
-            raise HIRError(f"Stack lower bound ${lower:04X} must be <= upper bound ${upper:04X}")
+            raise HIRError(f"Stack lower bound ${lower:04X} must be <= upper bound ${upper:04X}", source_loc=attr.source_loc)
 
         if lower < 0x0000 or upper > 0x1FFF:
             raise HIRError(
                 f"Stack region ${lower:04X}-${upper:04X} must be within "
-                f"low RAM ($0000-$1FFF)"
+                f"low RAM ($0000-$1FFF)",
+                source_loc=attr.source_loc
             )
 
         return StackAttribute(
@@ -480,11 +485,11 @@ class AttributeProcessor:
     def _process_cfg(self, attr: ast.Attribute, context: str) -> CfgAttribute:
         """Process #[cfg(condition)] attribute."""
         if len(attr.args) != 1:
-            raise HIRError(f"#[cfg] requires exactly one argument (the condition)")
+            raise HIRError(f"#[cfg] requires exactly one argument (the condition)", source_loc=attr.source_loc)
         
         condition_arg = attr.args[0]
         if not isinstance(condition_arg.value, CfgCondition):
-            raise HIRError(f"#[cfg] argument must be a condition expression")
+            raise HIRError(f"#[cfg] argument must be a condition expression", source_loc=attr.source_loc)
         
         return CfgAttribute(
             name='cfg',
@@ -496,4 +501,4 @@ class AttributeProcessor:
         if isinstance(value, ast.Identifier):
             return value.name
         else:
-            raise HIRError(f"Expected identifier, got {type(value).__name__}")
+            raise HIRError(f"Expected identifier, got {type(value).__name__}", source_loc=getattr(value, 'source_loc', None))

@@ -123,11 +123,11 @@ class MemoryLocationBuilder:
             MIRLoweringError: If symbol has no storage
         """
         if symbol is None:
-            raise MIRLoweringError("Cannot get memory location for None symbol")
+            raise MIRLoweringError("Cannot get memory location for None symbol", source_loc=self.builder._current_source_loc)
 
         definition = getattr(symbol, 'definition', None)
         if definition is None:
-            raise MIRLoweringError(f"Symbol '{symbol.name}' has no definition")
+            raise MIRLoweringError(f"Symbol '{symbol.name}' has no definition", source_loc=self.builder._current_source_loc)
 
         storage_attr = getattr(definition, 'storage_attr', None)
         var_type = getattr(definition, 'var_type', None)
