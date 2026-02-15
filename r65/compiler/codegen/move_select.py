@@ -278,29 +278,25 @@ class MoveOperationSelector(BaseSelector):
             addr_ref = f"${alloc.address + offset:04X}"
 
         if is_far_ptr:
-            # 24-bit far pointer: low, high, bank
-            self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(f"<{addr_ref}"),
+            # 24-bit far pointer: 16-bit address + bank byte
+            self.parent._ensure_m16_mode()
+            self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(addr_ref),
                             f"Load address of {symbol.name}")
             self._emit_load_store('STA', dest_loc)
-            # High byte
-            dest_high = self.parent._offset_location(dest_loc, 1)
-            self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(f">{addr_ref}"))
-            self._emit_load_store('STA', dest_high)
-            # Bank byte
+            # Bank byte (switch to m8)
+            self.parent._ensure_m8_mode()
             dest_bank = self.parent._offset_location(dest_loc, 2)
             self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(f":{addr_ref}"))
             self._emit_load_store('STA', dest_bank)
         elif is_u16:
-            # 16-bit near pointer: low, high
-            self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(f"<{addr_ref}"),
+            # 16-bit near pointer: single 16-bit load/store
+            self.parent._ensure_m16_mode()
+            self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(addr_ref),
                             f"Load address of {symbol.name}")
             self._emit_load_store('STA', dest_loc)
-            # High byte
-            dest_high = self.parent._offset_location(dest_loc, 1)
-            self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(f">{addr_ref}"))
-            self._emit_load_store('STA', dest_high)
         else:
             # 8-bit address (low byte only)
+            self.parent._ensure_m8_mode()
             self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(f"<{addr_ref}"),
                             f"Load address of {symbol.name}")
             self._emit_load_store('STA', dest_loc)

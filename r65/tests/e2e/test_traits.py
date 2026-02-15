@@ -372,12 +372,9 @@ class TestTraitDispatch:
 
             #[entry]
             fn main() {
-                let p0: *dyn Collidable = &rects[0];
-                let p1: *dyn Collidable = &rects[1];
-                let p2: *dyn Collidable = &rects[2];
-                ptrs[0] = p0;
-                ptrs[1] = p1;
-                ptrs[2] = p2;
+                ptrs[0] = &rects[0] as *dyn Collidable;
+                ptrs[1] = &rects[1] as *dyn Collidable;
+                ptrs[2] = &rects[2] as *dyn Collidable;
 
                 for i in 0..ptrs.len() {
                     let pi: *dyn Collidable = ptrs[i];
