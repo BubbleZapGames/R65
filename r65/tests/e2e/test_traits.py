@@ -320,47 +320,24 @@ class TestTraitDispatch:
         ), max_instructions=100000)
         assert result.success, f"Failures: {result.failures}"
 
-    def test_collides_direct_no_loop(self, e2e):
+    def test_collides_direct_loop(self, e2e):
         """Direct collision check without loops - verifies collides method works."""
         result = e2e.run('''
-            #[zeropage(0x10, register)]
-            static mut SCRATCH0: u8;
-            #[zeropage(0x12, register)]
-            static mut SCRATCH1: u16;
-
-            #[lowram]
-            static mut RESULT_HIT: u8 = 0;
-            #[lowram]
-            static mut RESULT_MISS: u8 = 0;
-
-            #[lowram]
-            static mut BOUND_X: u8;
-            #[lowram]
-            static mut BOUND_Y: u8;
-            #[lowram]
-            static mut BOUND_W: u8;
-            #[lowram]
-            static mut BOUND_H: u8;
+            #[zeropage(0x0, register)]
+            static mut RESULT: [u8; 3] = [0,0,0];
 
             struct Rect { x: u8, y: u8, w: u8, h: u8 }
 
             trait Collidable {
-                fn store_bounds(*self);
-                fn collides(*self) -> u8;
+                fn collides(*self, rect: *Rect) -> u8;
             }
 
             impl Collidable for Rect {
-                fn store_bounds(*self) {
-                    BOUND_X = self.x;
-                    BOUND_Y = self.y;
-                    BOUND_W = self.w;
-                    BOUND_H = self.h;
-                }
-                fn collides(*self) -> u8 {
-                    if self.x < BOUND_X + BOUND_W {
-                        if BOUND_X < self.x + self.w {
-                            if self.y < BOUND_Y + BOUND_H {
-                                if BOUND_Y < self.y + self.h {
+                fn collides(*self, rect: *Rect) -> u8 {
+                    if self.x < *rect.x + *rect.w {
+                        if *rect.x < self.x + self.w {
+                            if self.y < *rect.y + *rect.h {
+                                if rect.y < self.y + self.h {
                                     return 1;
                                 }
                             }
@@ -370,34 +347,35 @@ class TestTraitDispatch:
                 }
             }
 
-            // R0: [10,30) x [10,30) - overlaps R1
             #[lowram]
-            static mut R0: Rect = Rect { x: 10, y: 10, w: 20, h: 20 };
-            // R2: [50,60) x [50,60) - no overlap with R0
-            #[lowram]
-            static mut R2: Rect = Rect { x: 50, y: 50, w: 10, h: 10 };
-            // R1: [25,40) x [15,25) - overlaps R0
-            #[lowram]
-            static mut R1: Rect = Rect { x: 25, y: 15, w: 15, h: 10 };
+            static mut rects: [Rect; 3] = [
+              // overlaps R1
+              Rect { x: 10, y: 10, w: 20, h: 20 },
+              // no overlap with R0
+              Rect { x: 25, y: 15, w: 15, h: 10 },
+              // overlaps R0
+              Rect { x: 50, y: 50, w: 10, h: 10 },
+            ];
+
 
             #[entry]
             fn main() {
-                // Store R0's bounds
-                let p0: *dyn Collidable = &R0;
-                p0.store_bounds();
-
-                // R1 should collide with R0
-                let p1: *dyn Collidable = &R1;
-                RESULT_HIT = p1.collides();
-
-                // R2 should NOT collide with R0
-                let p2: *dyn Collidable = &R2;
-                RESULT_MISS = p2.collides();
+                for i in 0..rects.len() {
+                    let r = &rects[i]
+                    for j + 1 in i..rects.len() {
+                        let collides: u8 = r.collides(&rects[j])
+                        if collides != 0 {
+                             RESULT[i] = 1;
+                             break;
+                        }
+                    }
+                }
             }
         ''', ExpectedState(
             memory={
-                0x7E0200: 1,  # RESULT_HIT = 1 (R1 overlaps R0)
-                0x7E0201: 0,  # RESULT_MISS = 0 (R2 does not overlap R0)
+                0x0: 1,
+                0x1: 0,
+                0x2: 0, 
             }
         ))
         assert result.success, f"Failures: {result.failures}"
