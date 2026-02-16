@@ -288,11 +288,33 @@ class ExpressionBuilder:
             return hir.HIRBooleanLiteral(value=result, source_loc=src_loc)
 
         elif isinstance(expr, ast.ArrayIndex):
+            # Try const-folding: CONST_ARRAY[0] → literal
+            try:
+                const_value = self.const_evaluator.eval(expr)
+                if isinstance(const_value, bool):
+                    return hir.HIRBooleanLiteral(value=const_value, source_loc=src_loc)
+                elif isinstance(const_value, int):
+                    return hir.HIRIntegerLiteral(value=const_value, source_loc=src_loc)
+                # dict/list results: fall through (wrapping FieldAccess will resolve)
+            except HIRError:
+                pass
+
             array = self.build_expression(expr.array)
             index = self.build_expression(expr.index)
             return hir.HIRArrayIndex(array=array, index=index, original_ast=expr, source_loc=src_loc)
 
         elif isinstance(expr, ast.FieldAccess):
+            # Try const-folding: CONST_STRUCT.field → literal
+            try:
+                const_value = self.const_evaluator.eval(expr)
+                if isinstance(const_value, bool):
+                    return hir.HIRBooleanLiteral(value=const_value, source_loc=src_loc)
+                elif isinstance(const_value, int):
+                    return hir.HIRIntegerLiteral(value=const_value, source_loc=src_loc)
+                # dict/list results: fall through to normal handling
+            except HIRError:
+                pass
+
             base = self.build_expression(expr.base)
 
             # Check for STATUS.Flag pattern

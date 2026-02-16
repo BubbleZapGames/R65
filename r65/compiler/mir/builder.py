@@ -716,6 +716,16 @@ class MIRBuilder:
             from r65.compiler.hir.symbol_table import SymbolKind
             from r65.compiler.hir.types import FunctionTypeInfo
             if symbol.kind == SymbolKind.CONST and symbol.const_value is not None:
+                if isinstance(symbol.const_value, dict):
+                    raise MIRLoweringError(
+                        f"const struct '{symbol.name}' cannot be used as a value; "
+                        f"access individual fields (e.g., {symbol.name}.field_name)"
+                    )
+                if isinstance(symbol.const_value, list):
+                    raise MIRLoweringError(
+                        f"const array '{symbol.name}' cannot be used as a value; "
+                        f"access individual elements (e.g., {symbol.name}[index])"
+                    )
                 return Immediate(symbol.const_value)
 
             # Check if this is a function identifier (function pointer)

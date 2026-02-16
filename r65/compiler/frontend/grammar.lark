@@ -75,7 +75,7 @@ static_decl: attribute* (FAR | NEAR)? STATIC MUT? STAR? var_name ":" type_expr (
 var_name: IDENT | REGISTER
 
 // Const declaration
-const_decl: CONST IDENT ":" type_expr "=" expr ";"
+const_decl: CONST IDENT ":" type_expr "=" initializer_expr ";"
 
 // Struct declaration
 struct_decl: STRUCT IDENT "{" struct_field* "}"

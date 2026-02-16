@@ -101,7 +101,7 @@ class TestImplicitRom:
 
 
 class TestConstTypeRestrictions:
-    """Tests for const type restrictions (primitives and arrays allowed, structs rejected)."""
+    """Tests for const type restrictions."""
 
     def test_const_array_allowed(self):
         """Const can have array type (evaluated at compile time)."""
@@ -109,17 +109,85 @@ class TestConstTypeRestrictions:
         assert len(hir_prog.constants) == 1
         assert hir_prog.constants[0].evaluated_value == [1, 2, 3]
 
-    def test_const_struct_rejected(self):
-        """Const cannot have struct type."""
-        with pytest.raises(HIRError) as exc_info:
-            build_hir("struct Point { x: u8, y: u8 } const ORIGIN: Point = 0;")
-        assert "cannot have struct type" in str(exc_info.value)
+    def test_const_struct_allowed(self):
+        """Const can have struct type (evaluated to dict at compile time)."""
+        hir_prog = build_hir(
+            "struct Point { x: u8, y: u8 } "
+            "const ORIGIN: Point = Point { x: 0, y: 0 };"
+        )
+        assert len(hir_prog.constants) == 1
+        assert hir_prog.constants[0].evaluated_value == {'x': 0, 'y': 0}
 
     def test_const_primitive_allowed(self):
         """Const with primitive type should work."""
         hir_prog = build_hir("const MAX_VALUE: u8 = 255;")
         assert len(hir_prog.constants) == 1
         assert hir_prog.constants[0].evaluated_value == 255
+
+    def test_const_struct_field_access_folds(self):
+        """Const struct field access folds to integer literal at HIR level."""
+        from r65.compiler.hir.nodes import HIRIntegerLiteral
+        hir_prog = build_hir(
+            "struct Point { x: u8, y: u8 } "
+            "const ORIGIN: Point = Point { x: 10, y: 20 }; "
+            "fn test() { let val: u8 = ORIGIN.x; }"
+        )
+        func = hir_prog.functions[0]
+        let_stmt = func.body.statements[0]
+        assert isinstance(let_stmt.initializer, HIRIntegerLiteral)
+        assert let_stmt.initializer.value == 10
+
+    def test_const_array_of_structs(self):
+        """Const array of struct literals evaluates to list of dicts."""
+        hir_prog = build_hir(
+            "struct Rect { x: u8, y: u8, w: u8, h: u8 } "
+            "const RECTS: [Rect; 2] = [Rect { x: 0, y: 0, w: 8, h: 8 }, "
+            "Rect { x: 10, y: 20, w: 16, h: 16 }];"
+        )
+        assert len(hir_prog.constants) == 1
+        val = hir_prog.constants[0].evaluated_value
+        assert isinstance(val, list)
+        assert len(val) == 2
+        assert val[0] == {'x': 0, 'y': 0, 'w': 8, 'h': 8}
+        assert val[1] == {'x': 10, 'y': 20, 'w': 16, 'h': 16}
+
+    def test_const_array_of_structs_field_access_folds(self):
+        """CONST_ARRAY[0].field folds to integer literal."""
+        from r65.compiler.hir.nodes import HIRIntegerLiteral
+        hir_prog = build_hir(
+            "struct Rect { x: u8, y: u8, w: u8, h: u8 } "
+            "const RECTS: [Rect; 2] = [Rect { x: 0, y: 0, w: 8, h: 8 }, "
+            "Rect { x: 10, y: 20, w: 16, h: 16 }]; "
+            "fn test() { let val: u8 = RECTS[1].w; }"
+        )
+        func = hir_prog.functions[0]
+        let_stmt = func.body.statements[0]
+        assert isinstance(let_stmt.initializer, HIRIntegerLiteral)
+        assert let_stmt.initializer.value == 16
+
+    def test_const_nested_struct(self):
+        """Nested const struct field access folds correctly."""
+        hir_prog = build_hir(
+            "struct Vec2 { x: u8, y: u8 } "
+            "struct Sprite { pos: Vec2, tile: u8 } "
+            "const PLAYER: Sprite = Sprite { pos: Vec2 { x: 5, y: 10 }, tile: 42 }; "
+            "fn test() { let t: u8 = PLAYER.tile; }"
+        )
+        from r65.compiler.hir.nodes import HIRIntegerLiteral
+        func = hir_prog.functions[0]
+        let_stmt = func.body.statements[0]
+        assert isinstance(let_stmt.initializer, HIRIntegerLiteral)
+        assert let_stmt.initializer.value == 42
+
+    def test_const_struct_in_const_expr(self):
+        """Const struct field can be used in another const definition."""
+        hir_prog = build_hir(
+            "struct Config { width: u8, height: u8 } "
+            "const CFG: Config = Config { width: 32, height: 28 }; "
+            "const AREA: u16 = (CFG.width as u16) * (CFG.height as u16);"
+        )
+        consts = {c.name: c for c in hir_prog.constants}
+        assert consts['AREA'].evaluated_value == 32 * 28
 
 
 class TestHardware:

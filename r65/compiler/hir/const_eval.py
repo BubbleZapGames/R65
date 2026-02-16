@@ -118,6 +118,43 @@ class ConstEvaluator:
             count = self.eval(expr.count)
             return [value] * count
 
+        elif isinstance(expr, ast.StructLiteralExpr):
+            return {f.name: self.eval(f.value) for f in expr.fields}
+
+        elif isinstance(expr, ast.FieldAccess):
+            base_val = self.eval(expr.base)
+            if not isinstance(base_val, dict):
+                raise HIRError(
+                    f"Field access on non-struct value in const expression",
+                    source_loc=getattr(expr, 'source_loc', None)
+                )
+            if expr.field not in base_val:
+                raise HIRError(
+                    f"No field '{expr.field}' in const struct value",
+                    source_loc=getattr(expr, 'source_loc', None)
+                )
+            return base_val[expr.field]
+
+        elif isinstance(expr, ast.ArrayIndex):
+            array_val = self.eval(expr.array)
+            index_val = self.eval(expr.index)
+            if not isinstance(array_val, list):
+                raise HIRError(
+                    f"Index on non-array value in const expression",
+                    source_loc=getattr(expr, 'source_loc', None)
+                )
+            if not isinstance(index_val, int):
+                raise HIRError(
+                    f"Non-constant index in const expression",
+                    source_loc=getattr(expr, 'source_loc', None)
+                )
+            if index_val < 0 or index_val >= len(array_val):
+                raise HIRError(
+                    f"Index {index_val} out of bounds for const array of length {len(array_val)}",
+                    source_loc=getattr(expr, 'source_loc', None)
+                )
+            return array_val[index_val]
+
         else:
             raise HIRError(f"Non-constant expression: {type(expr).__name__}", source_loc=getattr(expr, 'source_loc', None))
 
@@ -863,7 +900,8 @@ class ConstEvaluator:
             return f"{array}[{index}]"
 
         elif isinstance(expr, ast.FieldAccess):
-            raise HIRError("Struct field access is not supported in const fn", source_loc=expr.source_loc)
+            base = self._transpile_expr(expr.base)
+            return f"{base}['{expr.field}']"
 
         elif isinstance(expr, ast.Dereference):
             raise HIRError("Pointer dereference is not supported in const fn", source_loc=expr.source_loc)
@@ -881,7 +919,8 @@ class ConstEvaluator:
             return f"[{value}] * {count}"
 
         elif isinstance(expr, ast.StructLiteralExpr):
-            raise HIRError("Struct literals are not supported in const fn", source_loc=expr.source_loc)
+            fields = ", ".join(f"'{f.name}': {self._transpile_expr(f.value)}" for f in expr.fields)
+            return f"{{{fields}}}"
 
         elif isinstance(expr, ast.MultiAssignment):
             raise HIRError("Multiple assignment is not supported in const fn", source_loc=expr.source_loc)
