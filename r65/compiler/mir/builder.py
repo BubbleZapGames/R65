@@ -80,6 +80,17 @@ class MIRBuilder:
         # Current HIR program being lowered (for symbol table lookups)
         self._hir_program: Optional[HIRProgram] = None
 
+        # Promoted aggregate locals: maps original symbol id -> synthetic static symbol
+        # Cleared per-function in lower_function()
+        self._promoted_locals: Dict[int, Any] = {}
+
+        # Counter for unique promoted local names (avoids collisions)
+        self._promoted_local_counter = 0
+
+        # Synthetic static declarations from promoted aggregate locals
+        # Appended to MIRProgram.statics at program build time
+        self._promoted_statics: List[Any] = []
+
         # Current source location for debug info propagation
         self._current_source_loc = None
 
@@ -200,9 +211,11 @@ class MIRBuilder:
                         mir_functions.append(mir_func)
 
         # Create MIR program (keep HIR declarations for statics, etc.)
+        # Include any synthetic statics from promoted aggregate locals
+        all_statics = list(hir_program.statics) + self._promoted_statics
         return MIRProgram(
             functions=mir_functions,
-            statics=hir_program.statics,
+            statics=all_statics,
             constants=hir_program.constants,
             structs=hir_program.structs,
             enums=hir_program.enums,
@@ -256,6 +269,7 @@ class MIRBuilder:
         self.cfg_builder = CFGBuilder(mir_func)
         self.symbol_to_vreg.clear()
         self.loop_stack.clear()
+        self._promoted_locals.clear()
 
         # Initialize current mode from function's inferred entry mode
         # entry_m_mode is set by HIR builder based on A parameter type
@@ -569,6 +583,14 @@ class MIRBuilder:
                     ))
 
         else:
+            # Check if this is an aggregate type (struct or array) that needs
+            # promotion to static storage — the 65816 lacks stack-indexed
+            # addressing modes needed for variable-index array access on stack
+            from r65.compiler.hir.types import ArrayTypeInfo, StructTypeInfo
+            if isinstance(stmt.var_type, (ArrayTypeInfo, StructTypeInfo)):
+                self._promote_aggregate_local(stmt)
+                return
+
             # Regular variable: allocate virtual register or use memory
             if stmt.initializer:
                 init_value = self.lower_expression(stmt.initializer)
@@ -614,6 +636,179 @@ class MIRBuilder:
                     vreg = self.current_function.vreg_allocator.alloc(
                         stmt.var_type, stmt.name, register_hint=register_hint)
                     self.symbol_to_vreg[id(stmt.symbol)] = vreg
+
+    def _promote_aggregate_local(self, stmt: HIRLetStmt):
+        """
+        Promote a local aggregate (struct/array) variable to static storage.
+
+        The 65816 lacks stack-indexed addressing modes needed for variable-index
+        array access on the stack. This silently promotes the local to an
+        auto-allocated lowram static variable, emitting inline initialization
+        code (rather than __init_start, since locals must re-initialize each call).
+
+        Args:
+            stmt: HIR let statement with aggregate type
+        """
+        from r65.compiler.hir.types import ArrayTypeInfo, StructTypeInfo
+        from r65.compiler.hir.attributes import StorageAttribute, StorageKind
+        from r65.compiler.hir.symbol_table import Symbol, SymbolKind
+
+        # Generate a unique static name
+        func_name = self.current_function.name
+        var_name = stmt.name
+        self._promoted_local_counter += 1
+        unique_name = f"__local_{func_name}_{var_name}_{self._promoted_local_counter}"
+
+        # Create a synthetic HIRStaticDecl
+        synthetic_decl = HIRStaticDecl(
+            name=unique_name,
+            is_mutable=True,
+            var_type=stmt.var_type,
+            initializer=None,  # Init handled inline below
+            storage_attr=StorageAttribute(
+                name='lowram',
+                storage_kind=StorageKind.LOWRAM,
+                address=None  # Auto-allocated
+            ),
+            bank_attr=None,
+            symbol=None  # Will be set below
+        )
+
+        # Create a synthetic Symbol
+        new_symbol = Symbol(
+            name=unique_name,
+            kind=SymbolKind.STATIC_VAR,
+            definition=synthetic_decl,
+            scope_id=0,  # Global scope for statics
+            var_type=stmt.var_type,
+            is_mutable=True
+        )
+        synthetic_decl.symbol = new_symbol
+
+        # Map original symbol to the new static symbol
+        self._promoted_locals[id(stmt.symbol)] = new_symbol
+
+        # Append the synthetic static to our tracking list
+        self._promoted_statics.append(synthetic_decl)
+
+        # Mark function as having promoted locals (for recursion checker)
+        self.current_function.has_promoted_locals = True
+
+        # Get memory location for the new static
+        mem_loc = self.get_memory_location(new_symbol)
+
+        # Handle initialization inline (runs each time the function is called)
+        if stmt.initializer is not None:
+            self._emit_aggregate_init(stmt, mem_loc, unique_name)
+
+    def _emit_aggregate_init(self, stmt: HIRLetStmt, mem_loc: MemoryLocation, label_prefix: str):
+        """
+        Emit inline initialization code for a promoted aggregate local.
+
+        Reuses patterns from StaticInitLowerer but emits directly into
+        the current function's block (not __init_start).
+        """
+        initializer = stmt.initializer
+
+        if isinstance(initializer, HIRArrayFillExpr):
+            # Array fill: [0; 16] → MemoryFill
+            from r65.compiler.hir.types import ArrayTypeInfo
+            array_type = stmt.var_type
+            if isinstance(array_type, ArrayTypeInfo):
+                element_size = self._get_type_size(array_type.element_type)
+            else:
+                element_size = 1
+            fill_value = self.static_init_lowerer._extract_constant_value(initializer.fill_value)
+            if fill_value is None:
+                fill_value = 0
+            self.emit(MemoryFill(
+                dest=mem_loc,
+                fill_value=fill_value,
+                count=initializer.count,
+                element_size=element_size
+            ))
+
+        elif isinstance(initializer, HIRArrayLiteralExpr):
+            # Array literal: [1, 2, 3] → ROMDataRef + BlockCopy
+            self._emit_inline_array_literal(stmt, mem_loc, initializer, label_prefix)
+
+        elif isinstance(initializer, HIRStringLiteral):
+            # String literal → ROMDataRef + BlockCopy
+            self._emit_inline_string_literal(stmt, mem_loc, initializer, label_prefix)
+
+        elif isinstance(initializer, HIRStructLiteralExpr):
+            # Struct literal → ROMDataRef + BlockCopy
+            self._emit_inline_struct_literal(stmt, mem_loc, initializer, label_prefix)
+
+        else:
+            # Scalar/other — shouldn't normally happen for aggregates
+            init_value = self.lower_expression(initializer)
+            self.emit(Store(
+                source=init_value,
+                dest=mem_loc,
+                type_info=stmt.var_type
+            ))
+
+    def _emit_inline_array_literal(self, stmt, mem_loc, literal_expr, label_prefix):
+        """Emit ROMDataRef + BlockCopy for an inline array literal initializer."""
+        from r65.compiler.hir.types import ArrayTypeInfo
+
+        array_type = stmt.var_type
+        if isinstance(array_type, ArrayTypeInfo):
+            element_size = self._get_type_size(array_type.element_type)
+        else:
+            element_size = 1
+
+        data_bytes = []
+        for elem in literal_expr.elements:
+            if isinstance(elem, HIRStructLiteralExpr):
+                struct_bytes = self.static_init_lowerer._extract_struct_literal_bytes(elem)
+                data_bytes.extend(struct_bytes)
+            else:
+                value = self.static_init_lowerer._extract_constant_value(elem)
+                if value is None:
+                    value = 0
+                if element_size == 1:
+                    data_bytes.append(value & 0xFF)
+                elif element_size == 2:
+                    data_bytes.append(value & 0xFF)
+                    data_bytes.append((value >> 8) & 0xFF)
+                else:
+                    for i in range(element_size):
+                        data_bytes.append((value >> (i * 8)) & 0xFF)
+
+        label = f"__{label_prefix}_data"
+        rom_data = ROMDataRef(label=label, data=data_bytes, element_size=element_size)
+        self._rom_data_sections.append(rom_data)
+        self.emit(BlockCopy(dest=mem_loc, rom_data=rom_data, count=len(data_bytes)))
+
+    def _emit_inline_string_literal(self, stmt, mem_loc, string_literal, label_prefix):
+        """Emit ROMDataRef + BlockCopy for an inline string literal initializer."""
+        from r65.compiler.hir.types import ArrayTypeInfo
+
+        array_type = stmt.var_type
+        if isinstance(array_type, ArrayTypeInfo):
+            array_size = array_type.size
+        else:
+            array_size = len(string_literal.processed_bytes)
+
+        data_bytes = list(string_literal.processed_bytes)
+        while len(data_bytes) < array_size:
+            data_bytes.append(0)
+
+        label = f"__{label_prefix}_data"
+        rom_data = ROMDataRef(label=label, data=data_bytes, element_size=1)
+        self._rom_data_sections.append(rom_data)
+        self.emit(BlockCopy(dest=mem_loc, rom_data=rom_data, count=len(data_bytes)))
+
+    def _emit_inline_struct_literal(self, stmt, mem_loc, struct_expr, label_prefix):
+        """Emit ROMDataRef + BlockCopy for an inline struct literal initializer."""
+        data_bytes = self.static_init_lowerer._extract_struct_literal_bytes(struct_expr)
+
+        label = f"__{label_prefix}_data"
+        rom_data = ROMDataRef(label=label, data=data_bytes, element_size=1)
+        self._rom_data_sections.append(rom_data)
+        self.emit(BlockCopy(dest=mem_loc, rom_data=rom_data, count=len(data_bytes)))
 
     def lower_tuple_let_statement(self, stmt: HIRTupleLetStmt):
         """
@@ -1324,17 +1519,22 @@ class MIRBuilder:
         Args:
             base_memloc: Base memory location
             offset: Byte offset from base
-            symbol: Symbol for reference
+            symbol: Symbol for reference (base_memloc.symbol used for allocation lookup)
 
         Returns:
             MemoryLocation at base + offset
         """
+        # Use the base's symbol for allocation resolution — this is critical for
+        # promoted aggregate locals where get_memory_location() already redirected
+        # to the synthetic static symbol
+        alloc_symbol = base_memloc.symbol
+
         if base_memloc.address is not None:
             # Address known - compute absolute address
             return MemoryLocation(
                 storage_type=base_memloc.storage_type,
                 address=base_memloc.address + offset,
-                symbol=symbol,
+                symbol=alloc_symbol,
                 is_volatile=base_memloc.is_volatile
             )
         else:
@@ -1343,7 +1543,7 @@ class MIRBuilder:
             return MemoryLocation(
                 storage_type=base_memloc.storage_type,
                 address=None,
-                symbol=symbol,
+                symbol=alloc_symbol,
                 is_volatile=base_memloc.is_volatile,
                 offset=offset
             )
@@ -1489,9 +1689,9 @@ class MIRBuilder:
             symbol: HIR Symbol
 
         Returns:
-            True if symbol has explicit location (static variable)
+            True if symbol has explicit location (static or promoted aggregate local)
         """
-        return symbol.kind == SymbolKind.STATIC_VAR
+        return symbol.kind == SymbolKind.STATIC_VAR or id(symbol) in self._promoted_locals
 
     def get_memory_location(self, symbol) -> MemoryLocation:
         """
@@ -1503,6 +1703,10 @@ class MIRBuilder:
         Returns:
             MemoryLocation
         """
+        # Check if this is a promoted aggregate local — redirect to synthetic static
+        if id(symbol) in self._promoted_locals:
+            return self.get_memory_location(self._promoted_locals[id(symbol)])
+
         # Handle variable-bound parameters
         if symbol.kind == SymbolKind.PARAMETER:
             # Find the HIR parameter in the current function's parameter list

@@ -242,6 +242,36 @@ class RecursionChecker:
                                         "zero-page", param.binding.variable_name
                                     )
 
+            # Check for promoted aggregate locals (static allocation is unsafe in recursion)
+            if func.has_promoted_locals:
+                self._raise_promoted_local_error(func_name, cycle)
+
+    def _raise_promoted_local_error(self, func_name: str, cycle: List[str]):
+        """
+        Raise a RecursionError for functions with promoted aggregate locals.
+
+        Promoted locals use static storage (only one copy exists), so recursive
+        calls would corrupt the caller's data.
+        """
+        if len(cycle) == 1:
+            msg = (
+                f"Function '{func_name}' is directly recursive but has local "
+                f"struct/array variables. Local aggregate variables are promoted "
+                f"to static storage and would be corrupted by recursive calls.\n\n"
+                f"Hint: Use static variables with explicit storage attributes, "
+                f"or restructure to avoid recursion."
+            )
+        else:
+            cycle_str = " -> ".join(cycle)
+            msg = (
+                f"Function '{func_name}' is part of a recursion cycle but has "
+                f"local struct/array variables. Local aggregate variables are "
+                f"promoted to static storage and would be corrupted by recursive "
+                f"calls.\n\n"
+                f"Recursion cycle: {cycle_str}"
+            )
+        raise RecursionError(msg)
+
     def _check_address_taken(self, graph: CallGraph):
         """
         Warn about functions with zero-page/register params that have address taken.
@@ -291,6 +321,18 @@ class RecursionChecker:
                                         hint="Indirect callers must set the zero-page variable "
                                              "before calling. Consider using stack parameters."
                                     )
+
+            # Warn about promoted aggregate locals
+            if func.has_promoted_locals:
+                diagnostics.warning(
+                    f"Function '{func_name}' has local struct/array variables "
+                    f"promoted to static storage, but its address is taken for "
+                    f"indirect calls. Concurrent or recursive indirect calls "
+                    f"would corrupt the static storage.",
+                    code="W003",
+                    hint="Consider using static variables with explicit storage "
+                         "attributes if the function may be called indirectly."
+                )
 
     def _raise_recursion_error(self, func_name: str, param_name: str,
                                cycle: List[str], param_type: str,

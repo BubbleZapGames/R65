@@ -904,6 +904,10 @@ class MIRFunction:
     # Maps parameter index to scratch zero-page address for promoted stack params
     scratch_param_addrs: Dict[int, int] = field(default_factory=dict)
 
+    # Promoted aggregate local tracking
+    # True if function has local struct/array variables promoted to static storage
+    has_promoted_locals: bool = False
+
     # Codegen-populated stack usage (for stack depth analysis)
     codegen_frame_size: int = 0           # Local variable frame bytes (from slot allocator)
     codegen_prologue_bytes: int = 0       # Bytes pushed by prologue (preserves, DBR, etc.)
