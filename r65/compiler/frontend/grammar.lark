@@ -153,7 +153,7 @@ macro_repetition: DOLLAR "(" macro_body_content+ ")" "," "*"    -> macro_rep_com
 macro_token: IDENT | REGISTER | TYPE_NAME | INTEGER | STRING | BOOLEAN
            | KEYWORD | INCLUDE | INCLUDE_BYTES | CONST | STATIC | LET | MUT
            | FN | FAR | NEAR | IF | ELSE | LOOP | WHILE | MATCH | RETURN
-           | BREAK | CONTINUE | ASM | STRUCT | ENUM | TYPE | AS | TRAIT | FOR | DYN
+           | BREAK | CONTINUE | ASM | STRUCT | ENUM | TYPE | AS | TRAIT | IMPL | SELF | FOR | IN | DYN
            | "(" | ")" | "[" | "]" | ";" | ":" | "," | "." | "#"
            | "+" | "-" | "*" | "/" | "%" | "&" | "|" | "^" | "~" | "!"
            | "=" | "<" | ">" | "@" | "->" | "==" | "!=" | "<=" | ">="
@@ -174,7 +174,9 @@ macro_args: macro_arg ("," macro_arg)*
 macro_arg: macro_arg_token+
 
 macro_arg_token: IDENT | REGISTER | TYPE_NAME | INTEGER | STRING | BOOLEAN
-               | KEYWORD | MACRO_VAR | TRAIT | FOR | DYN
+               | KEYWORD | MACRO_VAR | INCLUDE | INCLUDE_BYTES | CONST | STATIC | LET | MUT
+               | FN | FAR | NEAR | IF | ELSE | LOOP | WHILE | MATCH | RETURN
+               | BREAK | CONTINUE | ASM | STRUCT | ENUM | TYPE | AS | TRAIT | IMPL | SELF | FOR | IN | DYN
                | "(" macro_arg_token* ")"    // Nested parens
                | "[" macro_arg_token* "]"    // Nested brackets
                | "{" macro_arg_token* "}"    // Nested braces
@@ -583,10 +585,11 @@ HASH: "#"
 DOLLAR: "$"
 
 // Identifiers (lowest priority)
-// Use negative lookahead to exclude all keywords, registers, types, and booleans
-// Identifiers - lowest priority, with negative lookahead to exclude all keywords, registers, types, and booleans
+// Negative lookahead documents which words are NOT identifiers. Uses $ (not \b) because
+// the contextual lexer needs to match register names as IDENT in certain parser contexts
+// (e.g., asm_named_arg: IDENT "=" ...). Actual disambiguation is via terminal priorities.
 // Note: Builtin functions (mul, div, SEP, REP, etc.) are NOT excluded - they are valid identifiers
-IDENT.1: /(?!(include_bytes|macro_rules|continue|include|return|struct|static|break|const|while|enum|impl|self|loop|type|else|near|let|mut|asm|far|fn|if|as|abstract|override|unsized|virtual|typeof|unsafe|extern|become|async|await|match|where|super|trait|yield|crate|final|move|priv|Self|box|dyn|for|mod|pub|ref|try|use|in|do|expr|ident|literal|ty|reg|tt|STATUS|DBR|PBR|bool|u16|i16|u8|i8|true|false|[AXYDS])$)[a-zA-Z_][a-zA-Z0-9_]*/
+IDENT.1: /(?!(include_bytes|macro_rules|continue|include|return|struct|static|break|const|while|enum|impl|self|loop|type|else|near|let|mut|asm|far|fn|if|as|abstract|override|unsized|virtual|typeof|unsafe|extern|become|async|await|match|where|super|trait|yield|crate|final|move|priv|Self|box|dyn|for|mod|pub|ref|try|use|in|do|expr|ident|literal|ty|reg|tt|STATUS|DBR|PBR|bool|u16|i16|u8|i8|true|false|[ABXYDS])$)[a-zA-Z_][a-zA-Z0-9_]*/
 
 // Imports and ignores
 %import common.ESCAPED_STRING
