@@ -581,8 +581,8 @@ return a, b, c;      // Return three values
 **No explicit return**:
 ```rust
 fn get_status() -> u8 {
-    A = STATUS_REG;
-    // Implicitly returns A
+    A = STATUS_REG
+    // No semicolon; Returns A
 }
 ```
 
@@ -751,20 +751,8 @@ fn fatal_error() -> ! {
 **Assembly Mapping**:
 ```rust
 fn infinite() -> ! {
-    loop { }
+    // Emits: WAI
 }
-
-// infinite:
-// loop_start:
-// JMP loop_start
-// ; No RTS - loop never exits
-
-fn broken_never() -> ! {
-    // Oops - forgot the infinite loop!
-}
-
-// broken_never:
-// WAI             ; Safety fallback - halts CPU
 ```
 
 ---
@@ -1020,22 +1008,6 @@ fn sum_array(arr: *u8) -> u8 {
 ```
 
 ---
-
-## Error Conditions
-
-### Break/Continue Outside Loop
-
-```rust
-fn invalid() {
-    break;  // ERROR: break outside of loop
-}
-
-fn also_invalid() {
-    if true {
-        continue;  // ERROR: continue outside of loop
-    }
-}
-```
 
 ### Unreachable Code
 
@@ -1351,50 +1323,6 @@ match val {
 // JSR handle_high
 // _merge:
 ```
-
----
-
-## Future Enhancements
-
-### Iterator-Based For Loops
-
-```rust
-// Possible future syntax for iterating over collections:
-for item in array {
-    process(item);
-}
-
-// Note: Range-based for loops (for i in 0..10) are already implemented
-```
-
----
-
-## Implementation Notes
-
-### Control Flow Graph (CFG)
-
-The MIR phase builds a CFG for:
-- Dead code elimination
-- Reachability analysis
-- Register allocation across basic blocks
-- Optimization opportunities
-
-### Branch Prediction Hints (Future)
-
-Consider annotations for branch prediction:
-```rust
-#[likely]
-if common_case {
-    // ...
-}
-
-#[unlikely]
-if rare_error {
-    // ...
-}
-```
-
-Could influence code layout for better cache behavior (though less relevant for 65816).
 
 ---
 
