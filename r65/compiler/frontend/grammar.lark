@@ -151,9 +151,10 @@ macro_repetition: DOLLAR "(" macro_body_content+ ")" "," "*"    -> macro_rep_com
 
 // Any token that can appear in a macro body (excluding special macro syntax)
 macro_token: IDENT | REGISTER | TYPE_NAME | INTEGER | STRING | BOOLEAN
-           | KEYWORD | INCLUDE | INCLUDE_BYTES | CONST | STATIC | LET | MUT
+           | KEYWORD | INCLUDE | INCLUDE_BYTES | CONST | STATIC | LET | MUT | MACRO_RULES
            | FN | FAR | NEAR | IF | ELSE | LOOP | WHILE | MATCH | RETURN
            | BREAK | CONTINUE | ASM | STRUCT | ENUM | TYPE | AS | TRAIT | IMPL | SELF | FOR | IN | DYN
+           | CFG | CFG_NOT
            | "(" | ")" | "[" | "]" | ";" | ":" | "," | "." | "#"
            | "+" | "-" | "*" | "/" | "%" | "&" | "|" | "^" | "~" | "!"
            | "=" | "<" | ">" | "@" | "->" | "==" | "!=" | "<=" | ">="
@@ -174,15 +175,17 @@ macro_args: macro_arg ("," macro_arg)* ","?
 macro_arg: macro_arg_token+
 
 macro_arg_token: IDENT | REGISTER | TYPE_NAME | INTEGER | STRING | BOOLEAN
-               | KEYWORD | MACRO_VAR | INCLUDE | INCLUDE_BYTES | CONST | STATIC | LET | MUT
+               | KEYWORD | MACRO_VAR | INCLUDE | INCLUDE_BYTES | CONST | STATIC | LET | MUT | MACRO_RULES
                | FN | FAR | NEAR | IF | ELSE | LOOP | WHILE | MATCH | RETURN
                | BREAK | CONTINUE | ASM | STRUCT | ENUM | TYPE | AS | TRAIT | IMPL | SELF | FOR | IN | DYN
+               | CFG | CFG_NOT
                | "(" macro_arg_token* ")"    // Nested parens
                | "[" macro_arg_token* "]"    // Nested brackets
                | "{" macro_arg_token* "}"    // Nested braces
                | "+" | "-" | "*" | "/" | "%" | "&" | "|" | "^" | "~" | "!"
                | "=" | "<" | ">" | "@" | "->" | "==" | "!=" | "<=" | ">="
                | "&&" | "||" | "<<" | ">>" | "++" | "--" | ";" | ":" | "." | "#"
+               | "+=" | "-=" | "*=" | "/=" | "%=" | "&=" | "|=" | "^=" | "<<=" | ">>="
                | "::"
 
 // Attributes
