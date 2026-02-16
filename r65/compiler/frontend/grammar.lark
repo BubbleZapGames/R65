@@ -168,7 +168,7 @@ macro_invocation_stmt: IDENT "!" "(" macro_args? ")" ";"
 macro_invocation_stmt_inner: IDENT "!" "(" macro_args? ")" ";"
 
 // Macro arguments - comma-separated token trees
-macro_args: macro_arg ("," macro_arg)*
+macro_args: macro_arg ("," macro_arg)* ","?
 
 // A single macro argument - balanced tokens
 macro_arg: macro_arg_token+
