@@ -1039,11 +1039,15 @@ class TypeChecker:
 
         elif isinstance(expr, HIRArrayFillExpr):
             # Array fill: [value; count]
-            # Type check the fill value
             from r65.compiler.hir.types import ArrayTypeInfo
-            fill_type = self.check_expression(expr.fill_value)
-            # Create array type with the fill value type and count
-            array_type = ArrayTypeInfo(element_type=fill_type, size=expr.count)
+            # Get expected element type from context if available
+            expected_elem_type = None
+            if context_type and isinstance(context_type, ArrayTypeInfo):
+                expected_elem_type = context_type.element_type
+            fill_type = self.check_expression(expr.fill_value, expected_elem_type)
+            # If we have expected type, use it; otherwise use inferred type
+            final_elem_type = expected_elem_type if expected_elem_type else fill_type
+            array_type = ArrayTypeInfo(element_type=final_elem_type, size=expr.count)
             expr.expr_type = array_type
             return array_type
 
