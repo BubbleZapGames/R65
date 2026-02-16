@@ -30,6 +30,10 @@ These keywords are actively used in R65:
 | `asm` | Inline assembly |
 | `as` | Type casting |
 | `macro_rules` | Macro definition |
+| `impl` | Trait/method implementation | Struct methods |
+| `trait` | Trait definition | Abstract traits |
+| `self` | Current module/instance | Impl method parameter |
+| `dyn` | Trait object | Pointer to trait object |
 
 ## Built-in Functions (4)
 
@@ -48,21 +52,17 @@ Currently unused but reserved for future implementation:
 
 | Keyword | Rust Purpose | R65 STATUS |
 |---------|-------------|----------------|
-| `impl` | Trait/method implementation | Reserved for future methods |
-| `trait` | Trait definition | Reserved for future traits |
 | `where` | Generic constraints | Reserved for future generics |
 | `use` | Import items | Reserved (we use `include!` instead) |
 | `pub` | Public visibility | Reserved (no module system currently) |
 | `mod` | Module definition | Reserved (no module system currently) |
 | `crate` | Crate root | Reserved (no module system currently) |
-| `self` | Current module/instance | Reserved for future methods |
 | `Self` | Current type | Reserved for future methods |
 | `super` | Parent module | Reserved (no module system currently) |
 | `async` | Async function | Reserved (not planned for 65816) |
 | `await` | Await async value | Reserved (not planned for 65816) |
 | `move` | Move closure | Reserved (closures not planned) |
 | `ref` | Reference binding | Reserved (no lifetimes) |
-| `dyn` | Trait object | Reserved (no traits currently) |
 | `extern` | External linkage | Reserved for future FFI |
 | `unsafe` | Unsafe code block | Reserved (but **not used** - all R65 code has direct hardware access) |
 
@@ -91,6 +91,7 @@ Reserved by Rust for future use - we reserve them for compatibility:
 | Keyword | Purpose |
 |---------|---------|
 | `far` | Far function call (JSL/RTL) or far pointer type |
+| `near` | Near function call (JSR/RTS) or near pointer type |
 
 ## Total Count
 
@@ -99,7 +100,7 @@ Reserved by Rust for future use - we reserve them for compatibility:
 - 4 built-in functions
 - 17 reserved Rust keywords
 - 13 strict reserved keywords
-- 1 special modifier (`far`)
+- 2 special modifier (`far`, `near`)
 
 ## Important Notes
 
