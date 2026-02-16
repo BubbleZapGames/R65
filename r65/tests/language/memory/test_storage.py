@@ -3,7 +3,7 @@
 import pytest
 from r65.compiler.frontend import ast
 from r65.compiler.hir.errors import HIRError
-from r65.tests.language.common import parse_static, parse_program, get_attr, build_hir
+from r65.tests.language.common import parse_static, parse_program, get_attr, build_hir, build_hir_with_warnings
 
 
 class TestZeropage:
@@ -206,6 +206,26 @@ class TestHardware:
             #[hw(0x4212)] static mut HVBJOY: u8;
         """)
         assert len(prog.items) == 2
+
+    def test_hw_initializer_warning(self):
+        """Initializer on #[hw] static should warn and be stripped."""
+        hir_prog, warnings = build_hir_with_warnings(
+            "#[hw(0x2100)] static mut INIDISP: u8 = 0x0F;"
+        )
+        assert len(hir_prog.statics) == 1
+        static = hir_prog.statics[0]
+        assert static.initializer is None
+        assert len(warnings) == 1
+        assert "volatile hardware register" in warnings[0]
+        assert "initializer ignored" in warnings[0]
+
+    def test_hw_no_initializer_no_warning(self):
+        """#[hw] static without initializer should produce no warnings."""
+        hir_prog, warnings = build_hir_with_warnings(
+            "#[hw(0x2100)] static mut INIDISP: u8;"
+        )
+        assert len(hir_prog.statics) == 1
+        assert len(warnings) == 0
 
 
 class TestStackDirective:

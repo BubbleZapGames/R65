@@ -53,6 +53,7 @@ class HIRBuilder:
         )
         # Wire up statement builder callback for block expressions
         self.expression_builder.statement_builder = self._build_statement
+        self.warnings: list[str] = []  # Warnings collected during HIR building
         self.loop_depth = 0  # Track for loop nesting depth for register hints
         # Trait dispatch tracking
         self._next_type_id = 1  # TypeId 0 is reserved (invalid/error)
@@ -947,7 +948,12 @@ class HIRBuilder:
 
         # Build initializer if present
         initializer = None
-        if static.initializer:
+        if static.initializer and storage_attr and storage_attr.storage_kind == StorageKind.HW:
+            self.warnings.append(
+                f"volatile hardware register '{static.name}' cannot be initialized at startup; "
+                f"initializer ignored"
+            )
+        elif static.initializer:
             initializer = self._build_expression(static.initializer)
 
         # Get static symbol

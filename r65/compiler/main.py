@@ -178,6 +178,11 @@ def compile_source(source: str, filename: str, output_file: str = None,
         builder = HIRBuilder(source_file=filename, cfg_evaluator=cfg_evaluator, include_paths=include_paths)
         hir_program = builder.build_program(program)
 
+        # Print HIR warnings
+        if builder.warnings:
+            for warning in builder.warnings:
+                print(f"warning: {warning}", file=sys.stderr)
+
         # Type check
         if verbose:
             log(f"  [5/8] Type checking...")

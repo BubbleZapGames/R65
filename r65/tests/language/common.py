@@ -123,6 +123,14 @@ def build_hir(source: str) -> hir.HIRProgram:
     return builder.build_program(program)
 
 
+def build_hir_with_warnings(source: str) -> tuple[hir.HIRProgram, list[str]]:
+    """Parse source and build HIR, returning (program, warnings)."""
+    program = parse(source)
+    builder = HIRBuilder()
+    hir_program = builder.build_program(program)
+    return hir_program, builder.warnings
+
+
 def build_hir_function(source: str) -> hir.HIRFunctionDecl:
     """Parse and build HIR for a function, returning the HIR function."""
     hir_prog = build_hir(source)
