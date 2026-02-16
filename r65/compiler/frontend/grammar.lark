@@ -375,13 +375,13 @@ arg_list: expr ("," expr)* ","?
 ?primary: INTEGER                               -> integer
          | BOOLEAN                               -> boolean
          | STRING                                -> string_literal
-         | CFG_FUNCTION "(" expr ")"               -> cfg_function_call
-        | INCLUDE_BYTES "!" "(" STRING ")"      -> include_bytes_expr
-        | IDENT "!" "(" macro_args? ")"         -> macro_invocation_expr
-        | IDENT "::" IDENT                      -> enum_variant_expr
-        | IDENT                                 -> identifier
-        | SELF                                  -> self_identifier
-        | REGISTER                              -> register_ref
+         | CFG_FUNCTION "(" expr ")"             -> cfg_function_call
+         | INCLUDE_BYTES "!" "(" STRING ")"      -> include_bytes_expr
+         | IDENT "!" "(" macro_args? ")"         -> macro_invocation_expr
+         | IDENT "::" IDENT                      -> enum_variant_expr
+         | IDENT                                 -> identifier
+         | SELF                                  -> self_identifier
+         | REGISTER                              -> register_ref
         | "(" expr ")"                          -> paren
         | match_expr
         | if_expr
