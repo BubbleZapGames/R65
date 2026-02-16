@@ -84,6 +84,11 @@ class MIRBuilder:
         # Cleared per-function in lower_function()
         self._promoted_locals: Dict[int, Any] = {}
 
+        # Decomposed struct locals: maps original symbol id -> dict of field_name -> VirtualRegister
+        # Small flat structs are decomposed into per-field vregs instead of promoted to static storage
+        # Cleared per-function in lower_function()
+        self._decomposed_structs: Dict[int, Dict[str, VirtualRegister]] = {}
+
         # Counter for unique promoted local names (avoids collisions)
         self._promoted_local_counter = 0
 
@@ -270,6 +275,7 @@ class MIRBuilder:
         self.symbol_to_vreg.clear()
         self.loop_stack.clear()
         self._promoted_locals.clear()
+        self._decomposed_structs.clear()
 
         # Initialize current mode from function's inferred entry mode
         # entry_m_mode is set by HIR builder based on A parameter type
@@ -588,7 +594,10 @@ class MIRBuilder:
             # addressing modes needed for variable-index array access on stack
             from r65.compiler.hir.types import ArrayTypeInfo, StructTypeInfo
             if isinstance(stmt.var_type, (ArrayTypeInfo, StructTypeInfo)):
-                self._promote_aggregate_local(stmt)
+                if self._is_stack_eligible_struct(stmt):
+                    self._decompose_struct_local(stmt)
+                else:
+                    self._promote_aggregate_local(stmt)
                 return
 
             # Regular variable: allocate virtual register or use memory
@@ -810,6 +819,167 @@ class MIRBuilder:
         self._rom_data_sections.append(rom_data)
         self.emit(BlockCopy(dest=mem_loc, rom_data=rom_data, count=len(data_bytes)))
 
+    def _is_stack_eligible_struct(self, stmt: HIRLetStmt) -> bool:
+        """
+        Check if a local struct can be decomposed into per-field vregs.
+
+        Eligible structs are small, flat (all-scalar fields), and their address
+        is never taken. This allows them to be stack-allocated via vregs instead
+        of promoted to static storage, making them recursion-safe.
+
+        Args:
+            stmt: HIR let statement
+
+        Returns:
+            True if the struct can be decomposed into per-field vregs
+        """
+        from r65.compiler.hir.types import StructTypeInfo, BasicTypeInfo, PointerTypeInfo, EnumTypeInfo
+        if not isinstance(stmt.var_type, StructTypeInfo):
+            return False
+        struct_decl = stmt.var_type.definition
+        if struct_decl is None:
+            return False
+        # Check total size < 16 bytes
+        total_size = sum(self._get_type_size(f.field_type) for f in struct_decl.fields)
+        if total_size >= 16:
+            return False
+        # All fields must be scalar (no arrays, no nested structs)
+        for f in struct_decl.fields:
+            if not isinstance(f.field_type, (BasicTypeInfo, PointerTypeInfo, EnumTypeInfo)):
+                return False
+        # Check address-of is not taken in the function body
+        if self._symbol_address_taken(stmt.symbol):
+            return False
+        return True
+
+    def _symbol_address_taken(self, symbol) -> bool:
+        """
+        Check if the address of a symbol is taken anywhere in the current function body.
+
+        Walks the HIR function body looking for HIRAddressOf nodes whose operand
+        references this symbol.
+
+        Args:
+            symbol: The symbol to check
+
+        Returns:
+            True if &symbol appears in the function body
+        """
+        target_id = id(symbol)
+
+        def check_expr(expr) -> bool:
+            if expr is None:
+                return False
+            if isinstance(expr, HIRAddressOf):
+                if isinstance(expr.operand, HIRIdentifier) and id(expr.operand.symbol) == target_id:
+                    return True
+                return check_expr(expr.operand)
+            elif isinstance(expr, HIRBinaryOp):
+                return check_expr(expr.left) or check_expr(expr.right)
+            elif isinstance(expr, (HIRUnaryOp,)):
+                return check_expr(expr.operand)
+            elif isinstance(expr, HIRTypeCast):
+                return check_expr(expr.expr)
+            elif isinstance(expr, HIRAssignment):
+                return check_expr(expr.target) or check_expr(expr.value)
+            elif isinstance(expr, HIRFunctionCall):
+                return any(check_expr(a) for a in expr.args)
+            elif isinstance(expr, HIRMethodCall):
+                return check_expr(expr.receiver) or any(check_expr(a) for a in expr.args)
+            elif isinstance(expr, HIRArrayIndex):
+                return check_expr(expr.array) or check_expr(expr.index)
+            elif isinstance(expr, HIRFieldAccess):
+                return check_expr(expr.base)
+            elif isinstance(expr, HIRDereference):
+                return check_expr(expr.operand)
+            elif isinstance(expr, HIRBlockExpression):
+                for s in expr.statements:
+                    if check_stmt(s):
+                        return True
+                return check_expr(expr.final_expr)
+            elif isinstance(expr, HIRIfExpression):
+                return check_expr(expr.condition) or check_expr(expr.then_block) or check_expr(expr.else_block)
+            elif isinstance(expr, HIRStructLiteralExpr):
+                return any(check_expr(f.value) for f in expr.fields)
+            return False
+
+        def check_stmt(stmt) -> bool:
+            if stmt is None:
+                return False
+            if isinstance(stmt, HIRLetStmt):
+                return check_expr(stmt.initializer)
+            elif isinstance(stmt, HIRExprStmt):
+                return check_expr(stmt.expr)
+            elif isinstance(stmt, HIRReturnStmt):
+                return any(check_expr(v) for v in stmt.values)
+            elif isinstance(stmt, HIRIfStmt):
+                if check_expr(stmt.condition):
+                    return True
+                if check_block(stmt.then_block):
+                    return True
+                if stmt.else_block:
+                    if isinstance(stmt.else_block, HIRIfStmt):
+                        return check_stmt(stmt.else_block)
+                    else:
+                        return check_block(stmt.else_block)
+            elif isinstance(stmt, HIRWhileStmt):
+                return check_expr(stmt.condition) or check_block(stmt.body)
+            elif isinstance(stmt, HIRAssignment):
+                return check_expr(stmt.target) or check_expr(stmt.value)
+            elif isinstance(stmt, HIRMultiAssignment):
+                return check_expr(stmt.value)
+            elif isinstance(stmt, HIRBlock):
+                return check_block(stmt)
+            return False
+
+        def check_block(block) -> bool:
+            if block is None:
+                return False
+            for stmt in block.statements:
+                if check_stmt(stmt):
+                    return True
+            return False
+
+        # Walk the current function body
+        # We need to find the current function's HIR body
+        # Look through function_decls to find the matching function
+        func_name = self.current_function.name
+        if func_name in self.function_decls:
+            func_decl = self.function_decls[func_name]
+            if func_decl.body:
+                return check_block(func_decl.body)
+        return False
+
+    def _decompose_struct_local(self, stmt: HIRLetStmt):
+        """
+        Decompose a small flat struct into per-field virtual registers.
+
+        Instead of promoting to static storage, each field gets its own vreg.
+        This makes the struct recursion-safe and potentially faster (fields can
+        be register-allocated).
+
+        Args:
+            stmt: HIR let statement with eligible struct type
+        """
+        struct_decl = stmt.var_type.definition
+        field_vregs = {}
+
+        for f in struct_decl.fields:
+            vreg = self.current_function.vreg_allocator.alloc(
+                f.field_type, f"{stmt.name}__{f.name}"
+            )
+            field_vregs[f.name] = vreg
+
+        self._decomposed_structs[id(stmt.symbol)] = field_vregs
+
+        # Handle initializer
+        if stmt.initializer is not None and isinstance(stmt.initializer, HIRStructLiteralExpr):
+            for field_init in stmt.initializer.fields:
+                field_vreg = field_vregs.get(field_init.name)
+                if field_vreg is not None:
+                    init_value = self.lower_expression(field_init.value)
+                    self.emit(Move(dest=field_vreg, source=init_value, type_info=field_vreg.type_info))
+
     def lower_tuple_let_statement(self, stmt: HIRTupleLetStmt):
         """
         Lower tuple destructuring let binding.
@@ -930,6 +1100,14 @@ class MIRBuilder:
                 func_ptr = FunctionPointer(function_name=symbol.name)
                 self.emit(Move(dest=vreg, source=func_ptr, type_info=expr.expr_type))
                 return vreg
+
+            # Check if this is a decomposed struct (cannot be used as scalar)
+            if id(symbol) in self._decomposed_structs:
+                raise MIRLoweringError(
+                    f"Cannot use decomposed struct '{symbol.name}' as a scalar value; "
+                    f"access individual fields (e.g., {symbol.name}.field_name)",
+                    source_loc=expr.source_loc
+                )
 
             # Check if aliased to hardware register
             hw_reg = self.current_function.alias_tracker.get_alias(symbol)

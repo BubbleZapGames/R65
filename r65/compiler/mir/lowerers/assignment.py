@@ -242,8 +242,20 @@ class AssignmentLowerer:
             return value
 
         if isinstance(field_access.base, HIRIdentifier):
-            # Simple case: static_struct.field = value
             struct_symbol = field_access.base.symbol
+            # Check if this struct is decomposed into per-field vregs
+            field_vregs = self.builder._decomposed_structs.get(id(struct_symbol))
+            if field_vregs is not None:
+                field_vreg = field_vregs.get(field_access.field_name)
+                if field_vreg is None:
+                    raise MIRLoweringError(
+                        f"Unknown field '{field_access.field_name}' on decomposed struct",
+                        source_loc=expr.source_loc
+                    )
+                self.emit(Move(dest=field_vreg, source=value, type_info=expr.expr_type))
+                return value
+
+            # Simple case: static_struct.field = value
             base_memloc = self.builder.get_memory_location(struct_symbol)
             field_memloc = self.builder._create_offset_memloc(base_memloc, field_offset, struct_symbol)
             self.emit(Store(source=value, dest=field_memloc, type_info=expr.expr_type))

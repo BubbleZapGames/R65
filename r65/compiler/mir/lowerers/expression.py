@@ -565,8 +565,17 @@ class ExpressionLowerer:
             return result
 
         if isinstance(expr.base, HIRIdentifier):
-            # Simple case: static_struct.field
             struct_symbol = expr.base.symbol
+            # Check if this struct is decomposed into per-field vregs
+            field_vregs = self.builder._decomposed_structs.get(id(struct_symbol))
+            if field_vregs is not None:
+                field_vreg = field_vregs.get(expr.field_name)
+                if field_vreg is None:
+                    raise MIRLoweringError(f"Unknown field '{expr.field_name}' on decomposed struct", source_loc=expr.source_loc)
+                self.emit(Move(dest=result, source=field_vreg, type_info=expr.expr_type))
+                return result
+
+            # Simple case: static_struct.field
             base_memloc = self.builder.get_memory_location(struct_symbol)
             field_memloc = self.builder._create_offset_memloc(base_memloc, field_offset, struct_symbol)
             self.emit(Load(dest=result, source=field_memloc, type_info=expr.expr_type))
