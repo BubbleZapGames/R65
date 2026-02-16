@@ -286,3 +286,210 @@ class TestTraitDispatch:
         ), max_instructions=100000)
         assert result.success, f"Failures: {result.failures}"
 
+
+class TestFarTraitDispatch:
+    """Test trait dynamic dispatch with far functions (JSL/RTL)."""
+
+    @pytest.fixture
+    def e2e(self):
+        return E2ETest()
+
+    def test_far_trait_basic_dispatch(self, e2e):
+        """Far trait pointer dispatches to correct implementation via JML trampoline."""
+        result = e2e.run('''
+            #[zeropage(0x10, register)]
+            static mut SCRATCH0: u8;
+            #[zeropage(0x12, register)]
+            static mut SCRATCH1: u16;
+
+            #[lowram]
+            static mut RESULT: u8;
+
+            struct Player { x: u8, y: u8 }
+            struct Enemy { x: u8, y: u8 }
+
+            trait Drawable { far fn draw(*self); }
+
+            impl Drawable for Player {
+                far fn draw(*self) { RESULT = 42; }
+            }
+            impl Drawable for Enemy {
+                far fn draw(*self) { RESULT = 99; }
+            }
+
+            #[lowram]
+            static mut PLAYER: Player = Player { x: 10, y: 20 };
+
+            #[entry]
+            fn main() {
+                let p: *dyn Drawable = &PLAYER;
+                p.draw();
+            }
+        ''', ExpectedState(
+            memory={0x7E0200: 42}
+        ))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_far_trait_second_impl(self, e2e):
+        """Far dispatch to second implementor works correctly."""
+        result = e2e.run('''
+            #[zeropage(0x10, register)]
+            static mut SCRATCH0: u8;
+            #[zeropage(0x12, register)]
+            static mut SCRATCH1: u16;
+
+            #[lowram]
+            static mut RESULT: u8;
+
+            struct Player { x: u8 }
+            struct Enemy { x: u8 }
+
+            trait Drawable { far fn draw(*self); }
+
+            impl Drawable for Player {
+                far fn draw(*self) { RESULT = 42; }
+            }
+            impl Drawable for Enemy {
+                far fn draw(*self) { RESULT = 99; }
+            }
+
+            #[lowram]
+            static mut ENEMY: Enemy = Enemy { x: 5 };
+
+            #[entry]
+            fn main() {
+                let e: *dyn Drawable = &ENEMY;
+                e.draw();
+            }
+        ''', ExpectedState(
+            memory={0x7E0200: 99}
+        ))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_far_trait_method_reads_self_fields(self, e2e):
+        """Far trait method can read fields through self pointer."""
+        result = e2e.run('''
+            #[zeropage(0x10, register)]
+            static mut SCRATCH0: u8;
+            #[zeropage(0x12, register)]
+            static mut SCRATCH1: u16;
+
+            #[lowram]
+            static mut RESULT: u8;
+
+            struct Player { x: u8, y: u8 }
+
+            trait HasPosition {
+                far fn get_x(*self) -> u8;
+            }
+
+            impl HasPosition for Player {
+                far fn get_x(*self) -> u8 {
+                    return self.x;
+                }
+            }
+
+            #[lowram]
+            static mut PLAYER: Player = Player { x: 77, y: 88 };
+
+            #[entry]
+            fn main() {
+                let p: *dyn HasPosition = &PLAYER;
+                RESULT = p.get_x();
+            }
+        ''', ExpectedState(
+            memory={0x7E0200: 77}
+        ))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_far_trait_multiple_methods(self, e2e):
+        """Far trait with multiple methods dispatches each correctly."""
+        result = e2e.run('''
+            #[zeropage(0x10, register)]
+            static mut SCRATCH0: u8;
+            #[zeropage(0x12, register)]
+            static mut SCRATCH1: u16;
+
+            #[lowram]
+            static mut RESULT_X: u8;
+            #[lowram]
+            static mut RESULT_Y: u8;
+
+            struct Entity { x: u8, y: u8, hp: u8 }
+
+            trait Positionable {
+                far fn get_x(*self) -> u8;
+                far fn get_y(*self) -> u8;
+            }
+
+            impl Positionable for Entity {
+                far fn get_x(*self) -> u8 {
+                    return self.x;
+                }
+                far fn get_y(*self) -> u8 {
+                    return self.y;
+                }
+            }
+
+            #[lowram]
+            static mut ENT: Entity = Entity { x: 42, y: 99, hp: 200 };
+
+            #[entry]
+            fn main() {
+                let e: *dyn Positionable = &ENT;
+                RESULT_X = e.get_x();
+                RESULT_Y = e.get_y();
+            }
+        ''', ExpectedState(
+            memory={
+                0x7E0200: 42,   # RESULT_X = self.x
+                0x7E0201: 99,   # RESULT_Y = self.y
+            }
+        ))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_far_trait_type_id(self, e2e):
+        """TypeId works correctly with far traits."""
+        result = e2e.run('''
+            #[zeropage(0x10, register)]
+            static mut SCRATCH0: u8;
+            #[zeropage(0x12, register)]
+            static mut SCRATCH1: u16;
+
+            #[lowram]
+            static mut PLAYER_TID: u8;
+            #[lowram]
+            static mut ENEMY_TID: u8;
+
+            struct Player { x: u8 }
+            struct Enemy { x: u8 }
+
+            trait Drawable { far fn draw(*self); }
+
+            impl Drawable for Player {
+                far fn draw(*self) { }
+            }
+            impl Drawable for Enemy {
+                far fn draw(*self) { }
+            }
+
+            #[lowram]
+            static mut PLAYER: Player = Player { x: 0xAA };
+            #[lowram]
+            static mut ENEMY: Enemy = Enemy { x: 0xCC };
+
+            #[entry]
+            fn main() {
+                let p: *dyn Drawable = &PLAYER;
+                let e: *dyn Drawable = &ENEMY;
+                PLAYER_TID = p.type_id();
+                ENEMY_TID = e.type_id();
+            }
+        ''', ExpectedState(
+            memory={
+                0x7E0200: 1,  # Player TypeId
+                0x7E0201: 2,  # Enemy TypeId
+            }
+        ))
+        assert result.success, f"Failures: {result.failures}"
+

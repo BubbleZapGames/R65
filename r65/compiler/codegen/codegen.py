@@ -336,9 +336,22 @@ class ProgramCodeGenerator:
 
     def _emit_far_dispatch(self, dispatch_label, trait_name, method_name,
                            method_idx, implementors, max_type_id):
-        """Emit far dispatch trampoline for a trait method."""
-        # For far dispatch, we use JML trampolines (4 bytes each)
-        # The dispatch wrapper computes TypeId * 4 and jumps into the trampoline table
+        """Emit far dispatch using JMP (table,X) to JML trampolines.
+
+        Strategy: use indirect indexed JMP to a word table, where each entry
+        points to a JML stub that long-jumps to the concrete implementation.
+        The caller's JSL return address stays on the stack, so the RTL in the
+        concrete method returns directly to the original caller.
+
+        Layout:
+            dispatch:
+                LDA TypeId; ASL (x2 for word table); JMP (table,X)
+            table:
+                .dw jml_stub_0, jml_stub_1, ...
+            jml_stub_N:
+                JML ConcreteImpl_N
+        """
+        table_label = f"{trait_name}__{method_name}__table"
         trampoline_label = f"{trait_name}__{method_name}__trampoline"
 
         self.emitter.emit_label(dispatch_label)
@@ -347,24 +360,32 @@ class ProgramCodeGenerator:
         # Load TypeId from offset 0: LDA abs,Y with abs=0
         self.emitter.emit_raw("    LDA $0000,Y")            # Load TypeId byte from DBR:Y+0
 
-        # Compute trampoline offset: TypeId * 4 (each JML is 4 bytes)
+        # Compute table offset: TypeId * 2 (word table entries)
         self.emitter.emit_raw("    REP #$20")               # Switch to m16
         self.emitter.emit_raw("    AND #$00FF")              # Zero-extend
-        self.emitter.emit_raw("    ASL A")                   # x2
-        self.emitter.emit_raw("    ASL A")                   # x4
+        self.emitter.emit_raw("    ASL A")                   # x2 for word table
         self.emitter.emit_raw("    TAX")
         self.emitter.emit_raw("    SEP #$20")                # Back to m8
-        self.emitter.emit_raw(f"    JMP {trampoline_label},X")
+        self.emitter.emit_raw(f"    JMP ({table_label},X)")
         self.emitter.emit_blank_line()
 
-        # Trampoline table: JML instructions
-        self.emitter.emit_label(trampoline_label)
+        # Word table: addresses of JML stubs
+        self.emitter.emit_label(table_label)
 
         type_id_to_impl = {}
         for impl in implementors:
             type_id_to_impl[impl['type_id']] = impl['mangled'][method_idx]
 
         for tid in range(max_type_id + 1):
+            jml_label = f"{trampoline_label}_{tid}"
+            self.emitter.emit_raw(f"    .dw {jml_label}")
+
+        self.emitter.emit_blank_line()
+
+        # JML stubs: each is a long jump to the concrete implementation
+        for tid in range(max_type_id + 1):
+            jml_label = f"{trampoline_label}_{tid}"
+            self.emitter.emit_label(jml_label)
             if tid in type_id_to_impl:
                 self.emitter.emit_raw(f"    JML {type_id_to_impl[tid]}")
             else:
