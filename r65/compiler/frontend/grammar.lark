@@ -268,6 +268,8 @@ decrement_stmt: lvalue MINUSMINUS ";"
 if_stmt: IF expr block (ELSE else_clause)?
 else_clause: if_stmt | block
 
+// Note: identical to loop_expr but produces a different tree node;
+// loop_stmt is a statement, loop_expr is an initializer (see initializer_expr)
 loop_stmt: LABEL_DEF? LOOP block
 while_stmt: LABEL_DEF? WHILE expr block
 for_stmt: LABEL_DEF? FOR IDENT IN expr (DOTDOT | DOTDOTEQ) expr block
@@ -418,6 +420,7 @@ struct_field_init: IDENT ":" initializer_expr
 
 // Loop expression: loop { ... break value; ... } - produces a value via break
 // Only allowed in initializer context to avoid grammar ambiguity with loop_stmt
+// Note: identical syntax to loop_stmt but produces a different tree node
 loop_expr: LABEL_DEF? LOOP block
 
 // Array literal in initializer context - allows struct literals as elements
