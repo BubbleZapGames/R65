@@ -812,14 +812,23 @@ class HIRBuilder:
         if bound_type is None:
             return
 
-        if not isinstance(bound_type, BasicTypeInfo):
+        if isinstance(bound_type, PointerTypeInfo):
+            if bound_type.is_far:
+                raise HIRError(
+                    f"{context.capitalize()} '{name}' bound to register {register_name} "
+                    f"has type {bound_type}, but far pointers are 24-bit and cannot fit in any register",
+                    source_loc=None
+                )
+            # Near pointers are 16-bit, treat like u16 for register validation
+            type_name = 'u16'
+        elif not isinstance(bound_type, BasicTypeInfo):
             raise HIRError(
                 f"{context.capitalize()} '{name}' bound to register {register_name} "
                 f"must have a primitive type, got {bound_type}",
                 source_loc=None
             )
-
-        type_name = bound_type.name
+        else:
+            type_name = bound_type.name
 
         # Define allowed types for each register
         register_allowed_types = {

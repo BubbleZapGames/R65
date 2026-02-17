@@ -52,8 +52,34 @@ class TestFarPointerStackParamDetection:
         """
         with pytest.raises(HIRError) as exc_info:
             build_mir(source)
-        # Far pointer is not a primitive type, so it can't be bound to a register
-        assert "must have a primitive type" in str(exc_info.value)
+        assert "far pointers are 24-bit and cannot fit in any register" in str(exc_info.value)
+
+    def test_register_bound_near_pointer_x_accepted(self):
+        """Near pointers are 16-bit and can be bound to X register."""
+        source = """
+            fn process(buffer @ X: *u8) {
+            }
+        """
+        mir = build_mir(source)
+        assert len(mir.functions) == 1
+
+    def test_register_bound_near_pointer_y_accepted(self):
+        """Near pointers are 16-bit and can be bound to Y register."""
+        source = """
+            fn process(buffer @ Y: *u8) {
+            }
+        """
+        mir = build_mir(source)
+        assert len(mir.functions) == 1
+
+    def test_register_bound_near_pointer_a_accepted(self):
+        """Near pointers are 16-bit and can be bound to A register (implies m16)."""
+        source = """
+            fn process(ptr @ A: *u8) {
+            }
+        """
+        mir = build_mir(source)
+        assert len(mir.functions) == 1
 
     def test_multiple_far_pointer_params(self):
         """Multiple far pointer stack params should all be tracked."""
