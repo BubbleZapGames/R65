@@ -208,6 +208,248 @@ impl far I32 {
     // Arithmetic Methods (all modify self in-place)
     // ========================================================================
 
+    // Add a i16 value: self += value (sign-extends value to 32 bits)
+    far fn add_i16(far *self, value @ A: u16) {
+        // Sign-extend: if bit 15 set, hi = 0xFFFF; else hi = 0
+        let o_lo: u16 = A;
+        let mut o_hi: u16 = 0;
+        if (A & 0x8000) != 0 {
+            o_hi = 0xFFFF;
+        }
+        let s_lo: u16 = self.lo;
+        let r_lo: u16 = s_lo + o_lo;
+        let mut r_hi: u16 = self.hi + o_hi;
+        if r_lo < o_lo {
+            r_hi = r_hi + 1;
+        }
+        self.lo = r_lo;
+        self.hi = r_hi;
+    }
+
+    // Subtract a i16 value: self -= value (sign-extends value to 32 bits)
+    far fn sub_i16(far *self, value @ A: u16) {
+        // Sign-extend: if bit 15 set, hi = 0xFFFF; else hi = 0
+        let o_lo: u16 = A;
+        let mut o_hi: u16 = 0;
+        if (A & 0x8000) != 0 {
+            o_hi = 0xFFFF;
+        }
+        let s_lo: u16 = self.lo;
+        let s_hi: u16 = self.hi;
+        let r_lo: u16 = s_lo - o_lo;
+        let mut r_hi: u16 = s_hi - o_hi;
+        if s_lo < o_lo {
+            r_hi = r_hi - 1;
+        }
+        self.lo = r_lo;
+        self.hi = r_hi;
+    }
+
+    // Multiply by a i16 value: self *= value (sign-extends value to 32 bits)
+    far fn mul_i16(far *self, value @ A: u16) {
+        let mut negate_result: bool = false;
+
+        let s_hi: u16 = self.hi;
+        if (s_hi ^ A) & 0x8000 != 0 {
+            negate_result = true;
+        }
+
+        // Make self positive
+        if (s_hi & 0x8000) != 0 {
+            self.neg();
+        }
+
+        // Get absolute value of value
+        let mut mplier: u16 = A;
+        if (A & 0x8000) != 0 {
+            mplier = mplier ^ 0xFFFF;
+            mplier = mplier + 1;
+        }
+
+        let mut result_lo: u16 = 0;
+        let mut result_hi: u16 = 0;
+        let mut mcand_lo: u16 = self.lo;
+        let mut mcand_hi: u16 = self.hi;
+        let mut new_lo: u16 = 0;
+        let mut carry: bool = false;
+
+        loop {
+            if mplier == 0 {
+                break;
+            }
+            if (mplier & 1) != 0 {
+                new_lo = result_lo + mcand_lo;
+                carry = false;
+                if new_lo < result_lo {
+                    carry = true;
+                }
+                result_lo = new_lo;
+                result_hi = result_hi + mcand_hi;
+                if carry {
+                    result_hi = result_hi + 1;
+                }
+            }
+            _i32_shl1!(mcand_lo, mcand_hi);
+            mplier = mplier >> 1;
+        }
+
+        self.lo = result_lo;
+        self.hi = result_hi;
+
+        if negate_result {
+            self.neg();
+        }
+    }
+
+    // Divide by a i16 value: self /= value (rounds toward zero)
+    // Returns MIN_I32 if value == 0.
+    far fn div_i16(far *self, value @ A: u16) {
+        if A == 0 {
+            self.lo = 0;
+            self.hi = 0x8000;
+            return;
+        }
+
+        let mut negate_result: bool = false;
+
+        let s_hi: u16 = self.hi;
+        if (s_hi ^ A) & 0x8000 != 0 {
+            negate_result = true;
+        }
+
+        // Take absolute value of self
+        let mut dividend_lo: u16 = self.lo;
+        let mut dividend_hi: u16 = self.hi;
+        if (dividend_hi & 0x8000) != 0 {
+            _i32_negate!(dividend_lo, dividend_hi);
+        }
+
+        // Get absolute value of divisor (u16 only)
+        let mut divisor: u16 = A;
+        if (A & 0x8000) != 0 {
+            divisor = divisor ^ 0xFFFF;
+            divisor = divisor + 1;
+        }
+
+        let mut rem_lo: u16 = 0;
+        let mut rem_hi: u16 = 0;
+        let mut quot_lo: u16 = 0;
+        let mut quot_hi: u16 = 0;
+        let mut bit_count: u8 = 32;
+        let mut borrow: bool = false;
+
+        loop {
+            _i32_shl1!(rem_lo, rem_hi);
+            if (dividend_hi & 0x8000) != 0 {
+                rem_lo = rem_lo | 1;
+            }
+            _i32_shl1!(dividend_lo, dividend_hi);
+            _i32_shl1!(quot_lo, quot_hi);
+
+            // Divisor hi is always 0 (sign-magnitude fits in u16)
+            if rem_hi > 0 {
+                borrow = false;
+                if rem_lo < divisor {
+                    borrow = true;
+                }
+                rem_lo = rem_lo - divisor;
+                rem_hi = rem_hi - 1;
+                if borrow {
+                    rem_hi = rem_hi - 1;
+                }
+                quot_lo = quot_lo | 1;
+            } else if rem_lo >= divisor {
+                rem_lo = rem_lo - divisor;
+                quot_lo = quot_lo | 1;
+            }
+
+            bit_count--;
+            if bit_count == 0 {
+                break;
+            }
+        }
+
+        self.lo = quot_lo;
+        self.hi = quot_hi;
+
+        if negate_result {
+            self.neg();
+        }
+    }
+
+    // Modulo by a i16 value: self %= value (remainder has same sign as dividend)
+    // Unchanged if value == 0.
+    far fn mod_i16(far *self, value @ A: u16) {
+        if A == 0 {
+            return;
+        }
+
+        let mut negate_result: bool = false;
+
+        // Remainder has same sign as dividend
+        let s_hi: u16 = self.hi;
+        if (s_hi & 0x8000) != 0 {
+            negate_result = true;
+        }
+
+        // Take absolute value of dividend (self)
+        let mut dividend_lo: u16 = self.lo;
+        let mut dividend_hi: u16 = self.hi;
+        if (dividend_hi & 0x8000) != 0 {
+            _i32_negate!(dividend_lo, dividend_hi);
+        }
+
+        // Sign-extend divisor and take absolute value
+        let mut divisor_lo: u16 = A;
+        let mut divisor_hi: u16 = 0;
+        if (A & 0x8000) != 0 {
+            divisor_hi = 0xFFFF;
+            _i32_negate!(divisor_lo, divisor_hi);
+        }
+
+        let mut rem_lo: u16 = 0;
+        let mut rem_hi: u16 = 0;
+        let mut bit_count: u8 = 32;
+        let mut borrow: bool = false;
+
+        loop {
+            _i32_shl1!(rem_lo, rem_hi);
+            if (dividend_hi & 0x8000) != 0 {
+                rem_lo = rem_lo | 1;
+            }
+            _i32_shl1!(dividend_lo, dividend_hi);
+
+            if rem_hi > divisor_hi {
+                borrow = false;
+                if rem_lo < divisor_lo {
+                    borrow = true;
+                }
+                rem_lo = rem_lo - divisor_lo;
+                rem_hi = rem_hi - divisor_hi;
+                if borrow {
+                    rem_hi = rem_hi - 1;
+                }
+            } else if rem_hi == divisor_hi {
+                if rem_lo >= divisor_lo {
+                    rem_lo = rem_lo - divisor_lo;
+                    rem_hi = rem_hi - divisor_hi;
+                }
+            }
+
+            bit_count--;
+            if bit_count == 0 {
+                break;
+            }
+        }
+
+        self.lo = rem_lo;
+        self.hi = rem_hi;
+
+        if negate_result {
+            self.neg();
+        }
+    }
+
     // Add: self += other (with overflow wrapping)
     // Two's complement addition is identical to unsigned
     far fn add(far *self, other: far *I32) {
