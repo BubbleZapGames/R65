@@ -562,15 +562,12 @@ class FunctionCodeGenerator:
             self._emit_interrupt_register_saves()
             self._emit_interrupt_scratch_saves(reg_alloc.scratch_pool)
 
-        # Allocate stack frame for functions with locals.
-        # For large frames (>4 bytes), TSC/SBC/TCS is used which clobbers A.
-        # If A holds a register parameter, we must save it first.
-        if frame_size > 0:
+        # Check if A holds a register parameter that would be clobbered
+        # by TSC/SBC/TCS frame allocation (frames > 4 bytes).
+        a_has_param = False
+        if frame_size > 4:
             force_direct = mir_func.interrupt_attr is not None
-            # Check if A holds a register parameter that would be clobbered
-            # by TSC/SBC/TCS frame allocation (frames > 4 bytes).
-            a_has_param = False
-            if frame_size > 4 and not force_direct:
+            if not force_direct:
                 from r65.compiler.hir import RegisterBinding
                 for param in mir_func.parameters:
                     if (isinstance(param.binding, RegisterBinding) and
@@ -578,13 +575,18 @@ class FunctionCodeGenerator:
                         a_has_param = True
                         break
 
+        # Allocate stack frame for functions with locals.
+        # For large frames (>4 bytes), TSC/SBC/TCS is used which clobbers A.
+        # If A holds a register parameter, we must save it first.
+        if frame_size > 0:
+            force_direct = mir_func.interrupt_attr is not None
+
             if a_has_param:
-                # Save A in Y before frame allocation, restore after.
-                # Y is safe: x16 mode means TAY/TYA transfer full 16-bit C accumulator,
-                # preserving the 8-bit A value in the low byte.
+                # Save A in Y before frame allocation.
+                # TYA to restore is deferred to after ALL prologue code that
+                # clobbers A (mode setup, preserves, PHD/TSC/TCD).
                 self._emit_instr(Opcode.TAY, comment="Save A param before frame alloc")
                 self._emit_frame_allocation(frame_size, force_direct_stack=force_direct)
-                self._emit_instr(Opcode.TYA, comment="Restore A param after frame alloc")
             else:
                 self._emit_frame_allocation(frame_size, force_direct_stack=force_direct)
 
@@ -637,9 +639,14 @@ class FunctionCodeGenerator:
             self._emit_instr(Opcode.TSC, comment="Transfer Stack to A")
             self._emit_instr(Opcode.TCD, comment="Transfer A to Direct Page (D = S)")
 
-        # NOTE: Stack parameters are now accessed directly at their passed locations.
-        # No copying is needed, which means we also don't need to save/restore the
-        # A register parameter (the save was only needed because the copy used LDA).
+        # Restore A param from Y AFTER all prologue code that clobbers A.
+        # Frame allocation (TSC/SBC/TCS) and PHD/TSC/TCD both overwrite A,
+        # so TYA must be deferred to here. The current mode (set by mode setup
+        # above) ensures TYA transfers the correct width:
+        # - m8 functions: TYA transfers 8-bit (sufficient for u8 @ A)
+        # - m16 functions: TYA transfers full 16-bit (required for u16 @ A)
+        if frame_size > 0 and a_has_param:
+            self._emit_instr(Opcode.TYA, comment="Restore A param after frame alloc")
 
     def _emit_entry_setup(self, mir_func: MIRFunction):
         """

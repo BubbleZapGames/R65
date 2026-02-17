@@ -497,7 +497,7 @@ class TestU32ModU16:
         assert result.success, f"Failures: {result.failures}"
 
     def test_mod_u16_large_dividend(self, e2e):
-        """100007 % 7 = 1 (dividend exceeds u16)."""
+        """100007 % 7 = 5 (dividend exceeds u16)."""
         result = e2e.run(HEADER + f'''
             #[ram]
             static mut SRC: U32 = U32!(100007);
@@ -507,7 +507,7 @@ class TestU32ModU16:
                 V.hi = SRC.hi;
                 V.mod_u16(7);
             }}
-        ''', ExpectedState(memory={RESULT_SNES: u32_bytes(1)}),
+        ''', ExpectedState(memory={RESULT_SNES: u32_bytes(5)}),
                           max_instructions=100000)
         assert result.success, f"Failures: {result.failures}"
 
