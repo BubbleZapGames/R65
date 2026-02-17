@@ -579,12 +579,18 @@ class PeepholeOptimizer:
                             self.stats.redundant_mode_changes_eliminated += 1
                             continue
 
-                        # NOTE: We intentionally do NOT remove SEP→REP or REP→SEP pairs.
-                        # These do NOT cancel out: SEP #$20 sets M flag (m8) and REP #$20
-                        # clears M flag (m16). If the CPU is already in m8 before SEP, the
-                        # SEP is a no-op but the REP is the actual mode switch. Removing
-                        # both leaves the CPU in the wrong mode, causing the assembler to
-                        # generate 3-byte m16 instructions that the m8 CPU misinterprets.
+                        # Opposite pair with same operand (SEP #$V → REP #$V or vice versa):
+                        # The second instruction unconditionally determines the final mode,
+                        # so the first is redundant. Keep only the second.
+                        opposite = {Opcode.SEP_IMMEDIATE: Opcode.REP_IMMEDIATE,
+                                    Opcode.REP_IMMEDIATE: Opcode.SEP_IMMEDIATE}
+                        if (next_instr.opcode == opposite[node.opcode] and
+                            node.operand == next_instr.operand):
+                            # Skip first instruction and directives between;
+                            # next iteration will naturally append the second
+                            i = next_instr_idx
+                            self.stats.redundant_mode_changes_eliminated += 1
+                            continue
 
             optimized.append(node)
             i += 1
