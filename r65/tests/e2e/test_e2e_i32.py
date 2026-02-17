@@ -543,6 +543,74 @@ class TestI32Mod:
         assert result.success, f"Failures: {result.failures}"
 
 
+class TestI32ModI16:
+    """Test I32::mod_i16 scalar modulo."""
+
+    @pytest.fixture
+    def e2e(self):
+        return E2ETest()
+
+    def test_mod_i16_basic(self, e2e):
+        """1000 % 7 = 6."""
+        result = e2e.run(HEADER + '''
+            #[entry]
+            fn main() {
+                V.from_i16(1000 as i16);
+                V.mod_i16(7);
+            }
+        ''', ExpectedState(memory={RESULT_SNES: i32_bytes(6)}),
+                          max_instructions=200000)
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_mod_i16_negative_dividend(self, e2e):
+        """-1000 % 7 = -6 (remainder has sign of dividend)."""
+        result = e2e.run(HEADER + '''
+            #[entry]
+            fn main() {
+                V.from_i16(-1000 as i16);
+                V.mod_i16(7);
+            }
+        ''', ExpectedState(memory={RESULT_SNES: i32_bytes(-6)}),
+                          max_instructions=200000)
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_mod_i16_negative_divisor(self, e2e):
+        """1000 % -7 = 6 (remainder has sign of dividend, not divisor)."""
+        result = e2e.run(HEADER + '''
+            #[entry]
+            fn main() {
+                V.from_i16(1000 as i16);
+                V.mod_i16(-7 as i16);
+            }
+        ''', ExpectedState(memory={RESULT_SNES: i32_bytes(6)}),
+                          max_instructions=200000)
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_mod_i16_no_remainder(self, e2e):
+        """1000 % 10 = 0."""
+        result = e2e.run(HEADER + '''
+            #[entry]
+            fn main() {
+                V.from_i16(1000 as i16);
+                V.mod_i16(10);
+            }
+        ''', ExpectedState(memory={RESULT_SNES: i32_bytes(0)}),
+                          max_instructions=200000)
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_mod_i16_by_zero(self, e2e):
+        """1000 % 0 leaves self unchanged."""
+        result = e2e.run(HEADER + '''
+            #[entry]
+            fn main() {
+                V.from_i16(1000 as i16);
+                V.mod_i16(0);
+            }
+        ''', ExpectedState(memory={RESULT_SNES: i32_bytes(1000)}),
+                          max_instructions=200000)
+        assert result.success, f"Failures: {result.failures}"
+
+
 class TestI32Cmp:
     """Test I32::cmp signed comparison."""
 

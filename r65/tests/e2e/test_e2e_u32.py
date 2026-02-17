@@ -453,6 +453,77 @@ class TestU32Mod:
         assert result.success, f"Failures: {result.failures}"
 
 
+class TestU32ModU16:
+    """Test U32::mod_u16 scalar modulo."""
+
+    @pytest.fixture
+    def e2e(self):
+        return E2ETest()
+
+    def test_mod_u16_basic(self, e2e):
+        """1000 % 7 = 6."""
+        result = e2e.run(HEADER + '''
+            #[entry]
+            fn main() {
+                V.from_u16(1000);
+                V.mod_u16(7);
+            }
+        ''', ExpectedState(memory={RESULT_SNES: u32_bytes(6)}),
+                          max_instructions=100000)
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_mod_u16_no_remainder(self, e2e):
+        """1000 % 10 = 0."""
+        result = e2e.run(HEADER + '''
+            #[entry]
+            fn main() {
+                V.from_u16(1000);
+                V.mod_u16(10);
+            }
+        ''', ExpectedState(memory={RESULT_SNES: u32_bytes(0)}),
+                          max_instructions=100000)
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_mod_u16_smaller_than_divisor(self, e2e):
+        """3 % 5 = 3 (dividend < divisor)."""
+        result = e2e.run(HEADER + '''
+            #[entry]
+            fn main() {
+                V.from_u16(3);
+                V.mod_u16(5);
+            }
+        ''', ExpectedState(memory={RESULT_SNES: u32_bytes(3)}),
+                          max_instructions=100000)
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_mod_u16_large_dividend(self, e2e):
+        """100007 % 7 = 1 (dividend exceeds u16)."""
+        result = e2e.run(HEADER + f'''
+            #[ram]
+            static mut SRC: U32 = U32!(100007);
+            #[entry]
+            fn main() {{
+                V.lo = SRC.lo;
+                V.hi = SRC.hi;
+                V.mod_u16(7);
+            }}
+        ''', ExpectedState(memory={RESULT_SNES: u32_bytes(1)}),
+                          max_instructions=100000)
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_mod_u16_by_zero(self, e2e):
+        """1000 % 0 leaves self unchanged."""
+        result = e2e.run(HEADER + '''
+            #[entry]
+            fn main() {
+                V.from_u16(1000);
+                V.mod_u16(0);
+            }
+        ''', ExpectedState(memory={RESULT_SNES: u32_bytes(1000)}),
+                          max_instructions=100000)
+        assert result.success, f"Failures: {result.failures}"
+
+
 class TestU32Cmp:
     """Test U32::cmp comparison."""
 

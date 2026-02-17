@@ -165,11 +165,11 @@ impl far U32 {
 
     // Multiply by a u16 value: self *= value (zero-extends value to 32 bits)
     far fn mul_u16(far *self, value @ A: u16) {
+        let mut mplier: u16 = A;
         let mut result_lo: u16 = 0;
         let mut result_hi: u16 = 0;
         let mut mcand_lo: u16 = self.lo;
         let mut mcand_hi: u16 = self.hi;
-        let mut mplier: u16 = A;
         let mut new_lo: u16 = 0;
         let mut carry: bool = false;
 
@@ -205,6 +205,7 @@ impl far U32 {
             return;
         }
 
+        let divisor: u16 = A;
         let mut rem_lo: u16 = 0;
         let mut rem_hi: u16 = 0;
         let mut div_lo: u16 = self.lo;
@@ -213,7 +214,6 @@ impl far U32 {
         let mut quot_hi: u16 = 0;
         let mut bit_count: u8 = 32;
         let mut borrow: bool = false;
-        let divisor: u16 = A;
 
         loop {
             _u32_shl1!(rem_lo, rem_hi);
@@ -230,7 +230,6 @@ impl far U32 {
                     borrow = true;
                 }
                 rem_lo = rem_lo - divisor;
-                rem_hi = rem_hi - 1;
                 if borrow {
                     rem_hi = rem_hi - 1;
                 }
@@ -256,13 +255,13 @@ impl far U32 {
             return;
         }
 
+        let divisor: u16 = A;
         let mut rem_lo: u16 = 0;
         let mut rem_hi: u16 = 0;
         let mut div_lo: u16 = self.lo;
         let mut div_hi: u16 = self.hi;
         let mut bit_count: u8 = 32;
         let mut borrow: bool = false;
-        let divisor: u16 = A;
 
         loop {
             _u32_shl1!(rem_lo, rem_hi);
@@ -278,7 +277,6 @@ impl far U32 {
                     borrow = true;
                 }
                 rem_lo = rem_lo - divisor;
-                rem_hi = rem_hi - 1;
                 if borrow {
                     rem_hi = rem_hi - 1;
                 }

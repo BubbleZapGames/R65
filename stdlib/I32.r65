@@ -213,7 +213,7 @@ impl far I32 {
         // Sign-extend: if bit 15 set, hi = 0xFFFF; else hi = 0
         let o_lo: u16 = A;
         let mut o_hi: u16 = 0;
-        if (A & 0x8000) != 0 {
+        if (o_lo & 0x8000) != 0 {
             o_hi = 0xFFFF;
         }
         let s_lo: u16 = self.lo;
@@ -231,7 +231,7 @@ impl far I32 {
         // Sign-extend: if bit 15 set, hi = 0xFFFF; else hi = 0
         let o_lo: u16 = A;
         let mut o_hi: u16 = 0;
-        if (A & 0x8000) != 0 {
+        if (o_lo & 0x8000) != 0 {
             o_hi = 0xFFFF;
         }
         let s_lo: u16 = self.lo;
@@ -247,10 +247,11 @@ impl far I32 {
 
     // Multiply by a i16 value: self *= value (sign-extends value to 32 bits)
     far fn mul_i16(far *self, value @ A: u16) {
+        let mut mplier: u16 = A;
         let mut negate_result: bool = false;
 
         let s_hi: u16 = self.hi;
-        if (s_hi ^ A) & 0x8000 != 0 {
+        if (s_hi ^ mplier) & 0x8000 != 0 {
             negate_result = true;
         }
 
@@ -260,8 +261,7 @@ impl far I32 {
         }
 
         // Get absolute value of value
-        let mut mplier: u16 = A;
-        if (A & 0x8000) != 0 {
+        if (mplier & 0x8000) != 0 {
             mplier = mplier ^ 0xFFFF;
             mplier = mplier + 1;
         }
@@ -310,10 +310,11 @@ impl far I32 {
             return;
         }
 
+        let mut divisor: u16 = A;
         let mut negate_result: bool = false;
 
         let s_hi: u16 = self.hi;
-        if (s_hi ^ A) & 0x8000 != 0 {
+        if (s_hi ^ divisor) & 0x8000 != 0 {
             negate_result = true;
         }
 
@@ -325,8 +326,7 @@ impl far I32 {
         }
 
         // Get absolute value of divisor (u16 only)
-        let mut divisor: u16 = A;
-        if (A & 0x8000) != 0 {
+        if (divisor & 0x8000) != 0 {
             divisor = divisor ^ 0xFFFF;
             divisor = divisor + 1;
         }
@@ -353,7 +353,6 @@ impl far I32 {
                     borrow = true;
                 }
                 rem_lo = rem_lo - divisor;
-                rem_hi = rem_hi - 1;
                 if borrow {
                     rem_hi = rem_hi - 1;
                 }
@@ -380,7 +379,8 @@ impl far I32 {
     // Modulo by a i16 value: self %= value (remainder has same sign as dividend)
     // Unchanged if value == 0.
     far fn mod_i16(far *self, value @ A: u16) {
-        if A == 0 {
+        let mut divisor_lo: u16 = A;
+        if divisor_lo == 0 {
             return;
         }
 
@@ -400,9 +400,8 @@ impl far I32 {
         }
 
         // Sign-extend divisor and take absolute value
-        let mut divisor_lo: u16 = A;
         let mut divisor_hi: u16 = 0;
-        if (A & 0x8000) != 0 {
+        if (divisor_lo & 0x8000) != 0 {
             divisor_hi = 0xFFFF;
             _i32_negate!(divisor_lo, divisor_hi);
         }
