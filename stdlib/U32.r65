@@ -346,8 +346,8 @@ impl far U32 {
     // ========================================================================
 
     // Compare self with other.
-    // Returns: 1 if self > other, 0 if equal, 0xFF if self < other
-    far fn cmp(far *self, other: far *U32) -> u8 {
+    // Returns: 1 if self > other, 0 if equal, -1 if self < other
+    far fn cmp(far *self, other: far *U32) -> i8 {
         let s_hi: u16 = self.hi;
         let o_hi: u16 = other.hi;
         if s_hi > o_hi { A = 1; return A; }

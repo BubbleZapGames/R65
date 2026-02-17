@@ -248,14 +248,14 @@ fn test() { A_VAL.mod(B_PTR); }
 class TestI32ComparisonMethod:
     """I32 comparison method."""
 
-    def test_cmp_returns_u8(self):
+    def test_cmp_returns_i8(self):
         build_and_check(HEADER + """
 #[zeropage]
 static mut A_VAL: I32;
 #[zeropage]
 static mut B_PTR: far *I32;
 #[zeropage]
-static mut FLAGS: u8;
+static mut FLAGS: i8;
 fn test() { A = A_VAL.cmp(B_PTR); FLAGS = A; }
 """, cfg_features=["snes"])
 
