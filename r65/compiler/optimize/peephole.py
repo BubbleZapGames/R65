@@ -174,6 +174,8 @@ class OptimizationStats:
     redundant_mode_changes_eliminated: int = 0
     redundant_and_before_sep_eliminated: int = 0
     branch_over_branch_eliminated: int = 0
+    branch_to_next_eliminated: int = 0
+    tracked_loads_eliminated: int = 0
 
     @property
     def total(self) -> int:
@@ -184,7 +186,9 @@ class OptimizationStats:
             self.redundant_stack_ops_eliminated +
             self.redundant_mode_changes_eliminated +
             self.redundant_and_before_sep_eliminated +
-            self.branch_over_branch_eliminated
+            self.branch_over_branch_eliminated +
+            self.branch_to_next_eliminated +
+            self.tracked_loads_eliminated
         )
 
 
@@ -234,12 +238,14 @@ class PeepholeOptimizer:
         while changed:
             prev_total = self.stats.total
             nodes = self._eliminate_redundant_load_after_store(nodes)
+            nodes = self._eliminate_redundant_loads_tracked(nodes)
             nodes = self._eliminate_dead_stores(nodes)
             nodes = self._eliminate_redundant_transfers(nodes)
             nodes = self._eliminate_redundant_stack_ops(nodes)
             nodes = self._eliminate_redundant_mode_changes(nodes)
             nodes = self._eliminate_redundant_and_before_sep(nodes)
             nodes = self._eliminate_branch_over_branch(nodes)
+            nodes = self._eliminate_branch_to_next_label(nodes)
             changed = self.stats.total > prev_total
 
         return nodes
@@ -392,9 +398,17 @@ class PeepholeOptimizer:
         return False
 
     def _is_dead_store(self, nodes: List['AsmNode'], store_idx: int, store_operand) -> bool:
-        """Check if a store is dead (overwritten before read)."""
-        from r65.compiler.codegen.asm_nodes import Instruction, Label
-        import sys
+        """
+        Check if a store is dead (overwritten before read).
+
+        For stack-relative stores ($XX,S), extends analysis past unconditional
+        branches (BRA/BRL): if no instruction in the entire node list reads
+        from the stored address, the store is dead. This catches temporaries
+        whose only reader was eliminated by a prior pass.
+        """
+        from r65.compiler.codegen.asm_nodes import Instruction, Label, StackOffset
+
+        is_stack_relative = isinstance(store_operand, StackOffset)
 
         j = store_idx + 1
 
@@ -409,8 +423,14 @@ class PeepholeOptimizer:
                 j += 1
                 continue
 
-            # Control flow = stop analysis
+            # Control flow
             if next_node.opcode in CONTROL_FLOW_OPCODES:
+                # For stack-relative stores, check if branch target reads value
+                if is_stack_relative:
+                    if next_node.opcode in (Opcode.BRA, Opcode.BRL):
+                        if not self._any_instruction_reads(
+                            nodes, store_operand):
+                            return True
                 return False
 
             # Mode change = stop analysis (16-bit mode can read adjacent bytes)
@@ -434,6 +454,23 @@ class PeepholeOptimizer:
                 return False
 
             j += 1
+
+        return False
+
+    def _any_instruction_reads(self, nodes: List['AsmNode'],
+                              store_operand) -> bool:
+        """
+        Check if any instruction in the node list reads from store_operand.
+
+        Conservatively scans all nodes. This may miss optimization
+        opportunities when multiple functions use the same stack offset,
+        but is always safe (no false negatives).
+        """
+        from r65.compiler.codegen.asm_nodes import Instruction
+
+        for node in nodes:
+            if isinstance(node, Instruction) and self._reads_from_location(node, store_operand):
+                return True
 
         return False
 
@@ -727,6 +764,175 @@ class PeepholeOptimizer:
 
             optimized.append(node)
             i += 1
+
+        return optimized
+
+    def _eliminate_branch_to_next_label(self, nodes: List['AsmNode']) -> List['AsmNode']:
+        """
+        Eliminate BRA instructions that branch to the immediately following label.
+
+        Pattern: BRA label; label: -> label:
+        Skips directives/comments between the BRA and the label.
+        """
+        from r65.compiler.codegen.asm_nodes import Instruction, Label, Address
+
+        optimized = []
+        i = 0
+
+        while i < len(nodes):
+            node = nodes[i]
+
+            if (isinstance(node, Instruction) and
+                node.opcode == Opcode.BRA and
+                isinstance(node.operand, Address) and
+                isinstance(node.operand.value, str)):
+
+                target = node.operand.value
+
+                # Look ahead past directives/comments for the label
+                j = i + 1
+                while j < len(nodes) and not isinstance(nodes[j], (Instruction, Label)):
+                    j += 1
+
+                if (j < len(nodes) and
+                    isinstance(nodes[j], Label) and
+                    nodes[j].name == target):
+                    # BRA to next label — skip the BRA, keep directives/comments between
+                    for k in range(i + 1, j):
+                        optimized.append(nodes[k])
+                    # Label will be appended on next iteration
+                    i = j
+                    self.stats.branch_to_next_eliminated += 1
+                    continue
+
+            optimized.append(node)
+            i += 1
+
+        return optimized
+
+    def _eliminate_redundant_loads_tracked(self, nodes: List['AsmNode']) -> List['AsmNode']:
+        """
+        Eliminate redundant LDA instructions by tracking what A currently holds.
+
+        Tracks the last LDA as (opcode, operand). When a subsequent LDA has
+        the same opcode and operand, it's eliminated since A already holds
+        that value.
+
+        Only tracks deterministic addressing modes (immediate, DP, absolute,
+        stack-relative) — indexed and indirect loads depend on register values
+        that may change between loads.
+
+        State is cleared on: labels, mode changes, A-modifying instructions
+        (except trackable LDA which updates tracking), stack pointer changes
+        when tracking a stack-relative address, stores to the tracked address
+        by other registers (STX/STY), and indirect stores.
+        """
+        from r65.compiler.codegen.asm_nodes import Instruction, Label, StackOffset
+
+        # Only track LDA with deterministic addressing modes — the loaded
+        # value depends solely on the operand (and SP for stack-relative),
+        # not on X/Y register values or pointer contents
+        TRACKABLE_LDA_OPCODES = {
+            Opcode.LDA_IMMEDIATE,
+            Opcode.LDA_DP,
+            Opcode.LDA_ABSOLUTE,
+            Opcode.LDA_STACK,
+        }
+
+        # Opcodes that modify SP, invalidating stack-relative tracking
+        STACK_MODIFYING_OPCODES = {
+            Opcode.PHA, Opcode.PHX, Opcode.PHY, Opcode.PHP, Opcode.PHD, Opcode.PHB,
+            Opcode.PLA, Opcode.PLX, Opcode.PLY, Opcode.PLP, Opcode.PLD, Opcode.PLB,
+            Opcode.TCS,
+        }
+
+        # Indirect store opcodes that could alias any address
+        INDIRECT_STORE_OPCODES = {
+            Opcode.STA_DP_INDIRECT, Opcode.STA_DP_INDIRECT_X, Opcode.STA_DP_INDIRECT_Y,
+            Opcode.STA_DP_INDIRECT_LONG, Opcode.STA_DP_INDIRECT_LONG_Y,
+            Opcode.STA_STACK_INDIRECT_Y,
+        }
+
+        optimized = []
+        # Track last LDA: (opcode, operand) or None
+        known_a = None
+
+        for node in nodes:
+            if not isinstance(node, Instruction):
+                if isinstance(node, Label):
+                    # Label = unknown incoming state
+                    known_a = None
+                optimized.append(node)
+                continue
+
+            opcode = node.opcode
+
+            # Check for redundant LDA before any state updates
+            if opcode in LOAD_A_OPCODES:
+                if (known_a is not None and
+                    known_a[0] == opcode and
+                    known_a[1] == node.operand):
+                    # A already holds this value — skip the LDA
+                    self.stats.tracked_loads_eliminated += 1
+                    continue
+                # Update tracking only for deterministic addressing modes
+                if opcode in TRACKABLE_LDA_OPCODES:
+                    known_a = (opcode, node.operand)
+                else:
+                    # Non-deterministic load (indexed/indirect) — A changed
+                    # but we can't track the value
+                    known_a = None
+                optimized.append(node)
+                continue
+
+            # Mode changes (REP/SEP affecting M flag) change A width
+            if opcode in (Opcode.REP_IMMEDIATE, Opcode.SEP_IMMEDIATE):
+                from r65.compiler.codegen.asm_nodes import Immediate
+                if isinstance(node.operand, Immediate):
+                    val = node.operand.value
+                    if isinstance(val, int) and val & 0x20:
+                        known_a = None
+                optimized.append(node)
+                continue
+
+            # Instructions that modify A (but aren't LDA — those are handled above)
+            if opcode in MODIFIES_A_OPCODES:
+                known_a = None
+                optimized.append(node)
+                continue
+
+            # Stack pointer modifications invalidate stack-relative tracking
+            if opcode in STACK_MODIFYING_OPCODES:
+                if known_a is not None and isinstance(known_a[1], StackOffset):
+                    known_a = None
+                optimized.append(node)
+                continue
+
+            # STX/STY to the tracked address invalidates tracking
+            # (STA to same address is fine — writes A back)
+            if opcode in (STORE_X_OPCODES | STORE_Y_OPCODES):
+                if known_a is not None and node.operand == known_a[1]:
+                    known_a = None
+                optimized.append(node)
+                continue
+
+            # Indirect stores can alias any address
+            if opcode in INDIRECT_STORE_OPCODES:
+                known_a = None
+                optimized.append(node)
+                continue
+
+            # Control flow (branches/jumps/calls) — clear tracking
+            # Calls: callee may modify memory that A was loaded from
+            # Branches/jumps: target may have different A state
+            if opcode in CONTROL_FLOW_OPCODES:
+                known_a = None
+                optimized.append(node)
+                continue
+
+            # Other instructions (CMP, STA, TAX, TAY, CLC, SEC, etc.)
+            # don't modify A — tracking stays valid
+            optimized.append(node)
 
         return optimized
 
