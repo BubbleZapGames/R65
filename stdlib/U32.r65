@@ -19,6 +19,12 @@ struct U32 {
     hi: u16     // Offset 2-3: High 16 bits
 }
 
+// Initialize a U32 from a compile-time constant value.
+// Usage: static mut SCORE: U32 = U32!(100000);
+macro_rules! U32($value:expr) {
+    U32 { lo: (($value) & 0xFFFF) as u16, hi: ((($value) >> 16) & 0xFFFF) as u16 }
+}
+
 // ============================================================================
 // U32 Macros - Binary operations with destination (dest = a op b)
 // ============================================================================

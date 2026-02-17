@@ -70,6 +70,36 @@ HEADER2 = f'''
 '''
 
 
+class TestU32LiteralMacro:
+    """Test U32! literal initialization macro."""
+
+    @pytest.fixture
+    def e2e(self):
+        return E2ETest()
+
+    @pytest.mark.parametrize("value", [0, 1000, 65535, 65536, 100000, 0xFFFFFFFF])
+    def test_u32_literal(self, e2e, value):
+        """U32!(value) produces correct lo/hi bytes."""
+        source = f'''
+            include!("{SNESLIB_PATH}")
+            include!("{U32_PATH}")
+
+            #[ram]
+            static mut SRC: U32 = U32!({value});
+
+            #[zeropage({RESULT_ADDR})]
+            static mut V: U32;
+
+            #[entry]
+            fn main() {{
+                V.lo = SRC.lo;
+                V.hi = SRC.hi;
+            }}
+        '''
+        result = e2e.run(source, ExpectedState(memory={RESULT_SNES: u32_bytes(value)}))
+        assert result.success, f"U32!({value}): {result.failures}"
+
+
 class TestU32FromU16:
     """Test U32::from_u16 initialization."""
 

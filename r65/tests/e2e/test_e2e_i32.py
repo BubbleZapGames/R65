@@ -71,6 +71,36 @@ HEADER2 = f'''
 '''
 
 
+class TestI32LiteralMacro:
+    """Test I32! literal initialization macro."""
+
+    @pytest.fixture
+    def e2e(self):
+        return E2ETest()
+
+    @pytest.mark.parametrize("value", [0, 1000, 100000, -1, -42, -100000])
+    def test_i32_literal(self, e2e, value):
+        """I32!(value) produces correct two's complement bytes."""
+        source = f'''
+            include!("{SNESLIB_PATH}")
+            include!("{I32_PATH}")
+
+            #[ram]
+            static mut SRC: I32 = I32!({value});
+
+            #[zeropage({RESULT_ADDR})]
+            static mut V: I32;
+
+            #[entry]
+            fn main() {{
+                V.lo = SRC.lo;
+                V.hi = SRC.hi;
+            }}
+        '''
+        result = e2e.run(source, ExpectedState(memory={RESULT_SNES: i32_bytes(value)}))
+        assert result.success, f"I32!({value}): {result.failures}"
+
+
 class TestI32FromI16:
     """Test I32::from_i16 sign extension."""
 

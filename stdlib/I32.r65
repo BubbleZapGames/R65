@@ -20,6 +20,12 @@ struct I32 {
     hi: u16     // Offset 2-3: High 16 bits (bit 15 = sign bit)
 }
 
+// Initialize an I32 from a compile-time constant value.
+// Usage: static mut OFFSET: I32 = I32!(-42);
+macro_rules! I32($value:expr) {
+    I32 { lo: (($value) & 0xFFFF) as u16, hi: ((($value) >> 16) & 0xFFFF) as u16 }
+}
+
 // ============================================================================
 // I32 Macros - Binary operations with destination (dest = a op b)
 // ============================================================================
