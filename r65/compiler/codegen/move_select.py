@@ -278,15 +278,27 @@ class MoveOperationSelector(BaseSelector):
             addr_ref = f"${alloc.address + offset:04X}"
 
         if is_far_ptr:
-            # 24-bit far pointer: 16-bit address + bank byte
+            # 24-bit far pointer: 16-bit offset within bank + bank byte
             self.parent._ensure_m16_mode()
-            self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(addr_ref),
+            # Use only the 16-bit offset portion for the address load
+            if hasattr(symbol, 'rom_label') and symbol.rom_label:
+                addr_ref_16 = addr_ref  # WLA-DX handles label masking
+            else:
+                addr_ref_16 = f"${(alloc.address + offset) & 0xFFFF:04X}"
+            self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(addr_ref_16),
                             f"Load address of {symbol.name}")
             self._emit_load_store('STA', dest_loc)
             # Bank byte (switch to m8)
             self.parent._ensure_m8_mode()
             dest_bank = self.parent._offset_location(dest_loc, 2)
-            self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(f":{addr_ref}"))
+            # Compute bank byte directly for numeric addresses (WLA-DX : operator
+            # doesn't always work correctly for numeric constants)
+            if hasattr(symbol, 'rom_label') and symbol.rom_label:
+                bank_ref = f":{addr_ref}"
+            else:
+                bank_byte = (alloc.address + offset) >> 16
+                bank_ref = f"${bank_byte:02X}"
+            self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(bank_ref))
             self._emit_load_store('STA', dest_bank)
         elif is_u16:
             # 16-bit near pointer: single 16-bit load/store

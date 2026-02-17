@@ -187,6 +187,39 @@ class MacroExpander:
                     source_loc=item.source_loc
                 )
                 result.append(new_item)
+            elif isinstance(item, ast.ImplDecl):
+                # Expand macros inside impl method bodies
+                new_methods = []
+                for method in item.methods:
+                    new_body = self._expand_block(method.body)
+                    new_methods.append(ast.ImplMethod(
+                        attributes=method.attributes,
+                        is_far=method.is_far,
+                        name=method.name,
+                        self_is_far=method.self_is_far,
+                        params=method.params,
+                        return_type=method.return_type,
+                        body=new_body,
+                        source_loc=method.source_loc,
+                        is_const=method.is_const,
+                    ))
+                new_constants = []
+                for const in item.constants:
+                    new_value = self._expand_expression(const.value)
+                    new_constants.append(ast.ImplConst(
+                        name=const.name,
+                        const_type=const.const_type,
+                        value=new_value,
+                        source_loc=const.source_loc,
+                    ))
+                result.append(ast.ImplDecl(
+                    struct_name=item.struct_name,
+                    is_far=item.is_far,
+                    methods=new_methods,
+                    constants=new_constants,
+                    trait_name=item.trait_name,
+                    source_loc=item.source_loc,
+                ))
             else:
                 # Keep other declarations as-is
                 result.append(item)

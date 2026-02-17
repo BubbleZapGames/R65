@@ -519,6 +519,14 @@ class RegisterAllocator:
         Returns:
             PhysicalLocation if scratch allocated, None otherwise
         """
+        # In functions with far ptr stack params, the prologue does PHD/TSC/TCD
+        # which sets D=S. This makes DP addressing (e.g., STA $04) access S+4
+        # (within the stack frame) instead of physical zeropage address $0004.
+        # Scratch registers use DP addressing, so they cannot be used in these
+        # functions without corrupting the stack frame.
+        if self.mir_func and self.mir_func.has_far_ptr_stack_params:
+            return None
+
         vreg_size = self._get_vreg_size(vreg)
 
         for scratch in self.scratch_pool.scratches:

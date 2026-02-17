@@ -1782,7 +1782,7 @@ class MIRBuilder:
             elif isinstance(expr, HIRFieldAccess):
                 count_in_expr(expr.base)
             elif isinstance(expr, HIRDereference):
-                count_in_expr(expr.operand)
+                count_in_expr(expr.pointer)
             elif isinstance(expr, HIRAddressOf):
                 count_in_expr(expr.operand)
             elif isinstance(expr, HIRBlockExpression):

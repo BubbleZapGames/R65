@@ -266,31 +266,17 @@ class StackSlotAllocator:
 
         for vreg in sorted_vregs:
             size = local_sizes[vreg]
-            assigned_slot = None
 
-            # Try to reuse existing slot
-            for start_slot in range(next_slot):
-                end_slot = start_slot + size
-                can_use = True
+            # Enforce minimum 2-byte slot size. The codegen often operates in
+            # m16 mode (16-bit accumulator) even for 1-byte variables (bool, u8),
+            # causing 16-bit loads/stores that would overflow a 1-byte slot into
+            # adjacent memory. Padding to 2 bytes prevents this corruption.
+            alloc_size = max(size, 2)
 
-                # Check against other locals
-                for (other_start, other_end, other_vreg) in allocated_ranges:
-                    if start_slot < other_end and end_slot > other_start:
-                        if self.liveness_analyzer.interferes(vreg, other_vreg):
-                            can_use = False
-                            break
-
-                if can_use:
-                    assigned_slot = start_slot
-                    break
-
-            if assigned_slot is None:
-                assigned_slot = next_slot
-                next_slot = assigned_slot + size
-            else:
-                new_end = assigned_slot + size
-                if new_end > next_slot:
-                    next_slot = new_end
+            # Allocate sequentially without reuse to avoid overlap bugs.
+            # TODO: re-enable liveness-based reuse after fixing interference analysis
+            assigned_slot = next_slot
+            next_slot = assigned_slot + alloc_size
 
             allocation[vreg] = assigned_slot
             allocated_ranges.append((assigned_slot, assigned_slot + size, vreg))
@@ -302,6 +288,15 @@ class StackSlotAllocator:
             if end > max_end:
                 max_end = end
         frame_size = max(next_slot, max_end)
+
+        # DEBUG: Print slot allocation for debugging
+        import os
+        if os.environ.get('R65_DEBUG_SLOTS') and frame_size >= 10:
+            import sys
+            print(f"SLOT_ALLOC frame_size={frame_size}", file=sys.stderr)
+            for vreg, slot in sorted(allocation.items(), key=lambda x: x[1]):
+                size = local_sizes.get(vreg, '?')
+                print(f"  {vreg} (size={size}) -> slot {slot} (bytes {slot}-{slot+size-1})", file=sys.stderr)
 
         # Calculate slots saved
         total_without_reuse = sum(local_sizes.values())

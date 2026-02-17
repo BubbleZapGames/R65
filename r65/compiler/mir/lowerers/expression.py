@@ -216,8 +216,13 @@ class ExpressionLowerer:
             expr: HIR unary operation
 
         Returns:
-            VirtualRegister holding result
+            VirtualRegister holding result, or Immediate for constant expressions
         """
+        # Try constant folding first
+        const_result = self._try_eval_const_unary(expr)
+        if const_result is not None:
+            return Immediate(const_result)
+
         operand = self.builder.lower_expression(expr.operand)
 
         # Ensure operand is a register (not immediate)
@@ -236,6 +241,30 @@ class ExpressionLowerer:
         ))
 
         return result
+
+    def _try_eval_const_unary(self, expr: HIRUnaryOp) -> Optional[int]:
+        """Try to evaluate a unary operation at compile time with type masking."""
+        from r65.compiler.hir.hir_const_eval import try_eval_const_int, _get_type_mask
+        value = try_eval_const_int(expr.operand)
+        if value is None:
+            return None
+        if expr.op == '-':
+            result = -value
+        elif expr.op == '~':
+            result = ~value
+        elif expr.op == '!':
+            return 0 if value else 1
+        else:
+            return None
+        return result & _get_type_mask(expr.expr_type)
+
+    def _try_eval_const_cast(self, expr) -> Optional[int]:
+        """Try to evaluate a type cast at compile time with type masking."""
+        from r65.compiler.hir.hir_const_eval import try_eval_const_int, _get_type_mask
+        value = try_eval_const_int(expr.expr)
+        if value is None:
+            return None
+        return value & _get_type_mask(expr.target_type)
 
     # ========================================================================
     # Type Casts
@@ -257,6 +286,12 @@ class ExpressionLowerer:
         Returns:
             VirtualRegister holding converted value
         """
+        # Try constant folding: if the source expression is a compile-time constant,
+        # evaluate the cast at compile time and return an immediate.
+        const_result = self._try_eval_const_cast(expr)
+        if const_result is not None:
+            return Immediate(const_result)
+
         source_operand = self.builder.lower_expression(expr.expr)
         source_type = expr.expr.expr_type
         target_type = expr.target_type
@@ -738,9 +773,13 @@ class ExpressionLowerer:
         if isinstance(expr.operand, HIRArrayIndex):
             return self._lower_addressof_array_index(expr)
 
+        # Handle address-of field access: &var.field or &ptr.field
+        if isinstance(expr.operand, HIRFieldAccess):
+            return self._lower_addressof_field_access(expr)
+
         if not isinstance(expr.operand, HIRIdentifier):
             raise MIRLoweringError(
-                f"Address-of only supports static variables or array indexing, got: {type(expr.operand)}",
+                f"Address-of only supports static variables, array indexing, or field access, got: {type(expr.operand)}",
                 source_loc=expr.source_loc
             )
 
@@ -830,5 +869,58 @@ class ExpressionLowerer:
                 right=offset_vreg,
                 type_info=expr.expr_type
             ))
+
+        return result
+
+    def _lower_addressof_field_access(self, expr: HIRAddressOf) -> VirtualRegister:
+        """
+        Lower address-of field access: &var.field or &ptr.field
+
+        Computes: base_address + field_offset
+
+        For static variables: static_address + field_offset
+        For pointer auto-deref: pointer_value + field_offset
+        """
+        from r65.compiler.hir.types import BasicTypeInfo
+
+        field_access = expr.operand
+        field_offset = field_access.field_offset or 0
+
+        if field_access.auto_deref:
+            # &ptr.field — ptr is already a pointer, compute ptr + offset
+            base_vreg = self.builder.lower_expression(field_access.base)
+            result = self.ctx.alloc_vreg(expr.expr_type, f"addr_of_field_{field_access.field_name}")
+
+            if field_offset == 0:
+                self.emit(Move(dest=result, source=base_vreg, type_info=expr.expr_type))
+            else:
+                offset_imm = Immediate(field_offset)
+                self.emit(BinaryOp(
+                    dest=result,
+                    op='+',
+                    left=base_vreg,
+                    right=offset_imm,
+                    type_info=expr.expr_type
+                ))
+            return result
+
+        # &static_var.field — compute static address + offset
+        if not isinstance(field_access.base, HIRIdentifier):
+            raise MIRLoweringError(
+                f"Address-of field access requires static variable or pointer base, got: {type(field_access.base)}",
+                source_loc=expr.source_loc
+            )
+
+        symbol = field_access.base.symbol
+        self.builder.get_memory_location(symbol)
+
+        result = self.ctx.alloc_vreg(expr.expr_type, f"addr_of_{symbol.name}_{field_access.field_name}")
+
+        addr_immediate = Immediate(field_offset)
+        addr_immediate.symbol = symbol
+        addr_immediate.symbol_offset = field_offset
+
+        self.emit(Move(dest=result, source=addr_immediate, type_info=expr.expr_type))
+        result.symbol = symbol
 
         return result

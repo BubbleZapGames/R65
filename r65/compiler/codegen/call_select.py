@@ -326,16 +326,22 @@ class CallInstructionSelector(BaseSelector):
         # Step 0.5: Emit spills BEFORE argument setup (to avoid clobbering args)
         self._emit_hw_spills(spills)
 
-        # Step 1: Set up arguments
-        stack_bytes_pushed = self._emit_argument_setup(instr)
+        # Step 0.7: Restore D register BEFORE argument setup (for far pointer functions)
+        # CRITICAL: PLD must happen before pushing arguments. If PLD happens after,
+        # it pops 2 bytes from the top of the stack, consuming part of the just-pushed
+        # arguments instead of the saved D value.
+        # After PLD, S increases by 2, so all stack-relative source offsets during
+        # argument setup must be adjusted by -2.
+        pre_arg_stack_adj = 0
+        if needs_d_management:
+            self._emit_d_restore_before_call()
+            pre_arg_stack_adj = -2  # PLD popped 2 bytes, S increased by 2
+
+        # Step 1: Set up arguments (with stack offset adjustment if D was popped)
+        stack_bytes_pushed = self._emit_argument_setup(instr, pre_arg_stack_adj)
 
         # Step 2: Handle caller-managed DBR (databank=caller)
         needs_dbr_restore = self._emit_caller_dbr_setup(instr)
-
-        # Step 2.5: Restore D register before call (for far pointer functions)
-        # The called function may use zeropage, so D must be restored to original value
-        if needs_d_management:
-            self._emit_d_restore_before_call()
 
         # Step 2.6: Switch to callee's entry mode if needed
         # Callee's prologue expects to be in entry_m_mode
@@ -914,7 +920,7 @@ class CallInstructionSelector(BaseSelector):
     # Argument Setup
     # ========================================================================
 
-    def _emit_argument_setup(self, instr: Call) -> int:
+    def _emit_argument_setup(self, instr: Call, pre_arg_stack_adj: int = 0) -> int:
         """
         Set up call arguments in correct order.
 
@@ -927,6 +933,8 @@ class CallInstructionSelector(BaseSelector):
 
         Args:
             instr: Call instruction
+            pre_arg_stack_adj: Stack offset adjustment from operations before arg setup
+                (e.g., -2 when PLD was done before args, since S increased by 2)
 
         Returns:
             Number of bytes pushed on stack (for cleanup)
@@ -945,11 +953,14 @@ class CallInstructionSelector(BaseSelector):
         for arg in reversed(stack_args):
             arg_loc = self.parent._get_operand_location(arg.value)
 
-            # CRITICAL: Adjust stack-relative source locations for bytes already pushed
-            # by previous arguments. Each push shifts the stack pointer, so source
-            # locations that were computed relative to the original SP need adjustment.
-            if arg_loc.kind == LocationKind.STACK and stack_bytes_pushed > 0:
-                arg_loc = self.parent._offset_location(arg_loc, stack_bytes_pushed)
+            # CRITICAL: Adjust stack-relative source locations for:
+            # 1. pre_arg_stack_adj: PLD before args popped 2 bytes (S increased by 2,
+            #    so stack items are 2 bytes closer → subtract 2 from offset)
+            # 2. stack_bytes_pushed: bytes already pushed by previous args (S decreased,
+            #    so stack items are farther → add to offset)
+            total_adj = stack_bytes_pushed + pre_arg_stack_adj
+            if arg_loc.kind == LocationKind.STACK and total_adj != 0:
+                arg_loc = self.parent._offset_location(arg_loc, total_adj)
 
             self._emit_stack_argument(arg, arg_loc)
             # Track bytes pushed based on argument size - prefer param_type
@@ -965,11 +976,10 @@ class CallInstructionSelector(BaseSelector):
         for arg in sorted_other_args:
             arg_loc = self.parent._get_operand_location(arg.value)
 
-            # CRITICAL: Adjust stack-relative source locations for bytes already pushed
-            # by stack arguments. Register and variable-bound args loading from stack
-            # need this adjustment too.
-            if arg_loc.kind == LocationKind.STACK and stack_bytes_pushed > 0:
-                arg_loc = self.parent._offset_location(arg_loc, stack_bytes_pushed)
+            # CRITICAL: Adjust stack-relative source locations (same logic as above)
+            total_adj = stack_bytes_pushed + pre_arg_stack_adj
+            if arg_loc.kind == LocationKind.STACK and total_adj != 0:
+                arg_loc = self.parent._offset_location(arg_loc, total_adj)
 
             if arg.mechanism == ArgumentMechanism.REGISTER:
                 self._emit_register_argument(arg, arg_loc)
@@ -1104,10 +1114,22 @@ class CallInstructionSelector(BaseSelector):
 
     def _emit_register_argument(self, arg, arg_loc):
         """Emit register argument (move to specified register)."""
+        from r65.compiler.codegen.type_utils import get_type_size
+
         target_reg = arg.location.name if hasattr(arg.location, 'name') else str(arg.location)
 
         if arg_loc.kind == LocationKind.HARDWARE and arg_loc.hw_register == target_reg:
             return  # Already in correct register
+
+        # For A register with 16-bit param type, switch to m16 before loading.
+        # X/Y are always 16-bit regardless of M flag, but A depends on it.
+        if target_reg == 'A' and arg.param_type is not None:
+            if get_type_size(arg.param_type) == 2:
+                current_mode = self.emitter.get_accu_mode()
+                if current_mode == 8:
+                    self._emit_immediate(Opcode.REP_IMMEDIATE, 0x20,
+                                         "Switch to m16 for u16 @ A parameter")
+                    self.emitter.emit_accu_mode(16)
 
         if target_reg == 'B':
             self._emit_b_register_argument(arg, arg_loc)
