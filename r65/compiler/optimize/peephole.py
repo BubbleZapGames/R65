@@ -173,6 +173,7 @@ class OptimizationStats:
     redundant_stack_ops_eliminated: int = 0
     redundant_mode_changes_eliminated: int = 0
     redundant_and_before_sep_eliminated: int = 0
+    branch_over_branch_eliminated: int = 0
 
     @property
     def total(self) -> int:
@@ -182,7 +183,8 @@ class OptimizationStats:
             self.redundant_transfers_eliminated +
             self.redundant_stack_ops_eliminated +
             self.redundant_mode_changes_eliminated +
-            self.redundant_and_before_sep_eliminated
+            self.redundant_and_before_sep_eliminated +
+            self.branch_over_branch_eliminated
         )
 
 
@@ -237,6 +239,7 @@ class PeepholeOptimizer:
             nodes = self._eliminate_redundant_stack_ops(nodes)
             nodes = self._eliminate_redundant_mode_changes(nodes)
             nodes = self._eliminate_redundant_and_before_sep(nodes)
+            nodes = self._eliminate_branch_over_branch(nodes)
             changed = self.stats.total > prev_total
 
         return nodes
@@ -643,6 +646,83 @@ class PeepholeOptimizer:
                             optimized.extend(directives_between)
                             i = next_instr_idx  # Will emit SEP on next iteration
                             self.stats.redundant_and_before_sep_eliminated += 1
+                            continue
+
+            optimized.append(node)
+            i += 1
+
+        return optimized
+
+    def _eliminate_branch_over_branch(self, nodes: List['AsmNode']) -> List['AsmNode']:
+        """
+        Eliminate conditional branch over unconditional branch when the
+        conditional target is the immediately following label.
+
+        Pattern:
+            Bcc label_A       ; conditional branch
+            BRA label_B       ; unconditional branch
+            label_A:          ; conditional target is right here
+
+        Becomes:
+            B!cc label_B      ; inverted condition, target BRA's destination
+            label_A:          ; kept (may be targeted by other branches)
+        """
+        from r65.compiler.codegen.asm_nodes import Instruction, Label, Address
+        from r65.compiler.codegen.asm_nodes import invert_branch
+
+        CONDITIONAL_BRANCHES = BRANCH_OPCODES - {Opcode.BRA, Opcode.BRL}
+
+        optimized = []
+        i = 0
+
+        while i < len(nodes):
+            node = nodes[i]
+
+            if (isinstance(node, Instruction) and
+                node.opcode in CONDITIONAL_BRANCHES and
+                isinstance(node.operand, Address) and
+                isinstance(node.operand.value, str)):
+
+                cond_target = node.operand.value
+
+                # Look ahead for BRA, skipping directives/comments
+                j = i + 1
+                between = []
+                while j < len(nodes) and not isinstance(nodes[j], (Instruction, Label)):
+                    between.append(nodes[j])
+                    j += 1
+
+                if (j < len(nodes) and
+                    isinstance(nodes[j], Instruction) and
+                    nodes[j].opcode == Opcode.BRA and
+                    isinstance(nodes[j].operand, Address)):
+
+                    bra_node = nodes[j]
+                    bra_target = bra_node.operand
+
+                    # Look ahead past the BRA for the label, skipping directives/comments
+                    k = j + 1
+                    between2 = []
+                    while k < len(nodes) and not isinstance(nodes[k], (Instruction, Label)):
+                        between2.append(nodes[k])
+                        k += 1
+
+                    if (k < len(nodes) and
+                        isinstance(nodes[k], Label) and
+                        nodes[k].name == cond_target):
+
+                        inverted = invert_branch(node.opcode)
+                        if inverted is not None:
+                            # Emit inverted branch to BRA's target
+                            optimized.append(Instruction(
+                                inverted, bra_target, bra_node.comment,
+                                node.source_loc))
+                            # Keep directives/comments that were between
+                            optimized.extend(between)
+                            optimized.extend(between2)
+                            # Label will be appended on next iteration
+                            i = k
+                            self.stats.branch_over_branch_eliminated += 1
                             continue
 
             optimized.append(node)

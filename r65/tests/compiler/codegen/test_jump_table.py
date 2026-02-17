@@ -288,7 +288,7 @@ class TestBranchChainAssembly:
         assert ".DW" not in func_asm, "Sparse match should NOT emit .DW table"
         assert ".DB" not in func_asm, "Sparse match should NOT emit .DB table"
         assert "CMP" in func_asm, "Sparse match should use CMP comparisons"
-        assert "BEQ" in func_asm, "Sparse match should use BEQ branches"
+        assert "BEQ" in func_asm or "BNE" in func_asm, "Sparse match should use conditional branches"
 
     def test_two_arm_match_uses_branch_chain(self):
         """2-arm match (below MIN_PATTERNS=3) should use branch chain."""
