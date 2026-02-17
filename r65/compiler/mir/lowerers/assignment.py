@@ -399,6 +399,10 @@ class AssignmentLowerer:
 
         array_index = expr.target
         element_type = expr.expr_type
+        # Use the index type (not element type) for the Move to Y register.
+        # The index type determines the bit width: u16 indices must load as 16-bit
+        # to avoid truncation when index >= 256.
+        index_type = array_index.index.expr_type
 
         # Lower index expression
         index_operand = self.builder.lower_expression(array_index.index)
@@ -414,14 +418,14 @@ class AssignmentLowerer:
             elif index_operand.name == 'X':
                 # Move X to Y for indirect addressing
                 y_reg = HardwareRegister('Y')
-                self.emit(Move(dest=y_reg, source=index_operand, type_info=element_type))
+                self.emit(Move(dest=y_reg, source=index_operand, type_info=index_type))
                 index_register = 'Y'
             else:
                 raise MIRLoweringError(f"Pointer indexing requires X or Y register, got: {index_operand.name}", source_loc=expr.source_loc)
         else:
             # Move index value to Y register
             y_reg = HardwareRegister('Y')
-            self.emit(Move(dest=y_reg, source=index_operand, type_info=element_type))
+            self.emit(Move(dest=y_reg, source=index_operand, type_info=index_type))
             index_register = 'Y'
 
         # Emit StoreIndirect with index register

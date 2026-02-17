@@ -428,6 +428,8 @@ class MemoryOperationSelector(BaseSelector):
             return
 
         # Handle 8-bit indirect loads
+        self._ensure_m8_mode()
+
         # Handle stack-located pointers
         if ptr_loc.kind == LocationKind.STACK:
             if instr.is_far:
@@ -546,6 +548,8 @@ class MemoryOperationSelector(BaseSelector):
             return
 
         # Handle 8-bit indirect stores
+        self._ensure_m8_mode()
+
         # Handle stack-located pointers
         if ptr_loc.kind == LocationKind.STACK:
             # Load source value into A first
