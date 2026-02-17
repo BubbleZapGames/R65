@@ -217,21 +217,11 @@ class StaticInitLowerer:
         """
         Extract constant value from expression without emitting instructions.
 
-        Handles integer literals, casts of literals, and boolean literals.
+        Delegates to the HIR const evaluator which handles literals, casts,
+        binary/unary ops, const identifiers, and other compile-time expressions.
         """
-        if isinstance(expr, HIRIntegerLiteral):
-            return expr.value
-        elif isinstance(expr, HIRBooleanLiteral):
-            return 1 if expr.value else 0
-        elif isinstance(expr, HIREnumVariantExpr):
-            return expr.value
-        elif isinstance(expr, HIRTypeCast):
-            # Recursively extract from the inner expression
-            inner_value = self._extract_constant_value(expr.expr)
-            return inner_value
-        else:
-            # Not a constant expression
-            return None
+        from r65.compiler.hir.hir_const_eval import try_eval_const_int
+        return try_eval_const_int(expr, self.builder._hir_program.symbol_table)
 
     def _emit_array_literal_init(
         self,

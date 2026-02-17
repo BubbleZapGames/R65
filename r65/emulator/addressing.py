@@ -235,7 +235,7 @@ def relative_16(cpu: 'CPU65816') -> Tuple[int, int]:
 
 
 def block_move(cpu: 'CPU65816') -> Tuple[int, int, int]:
-    """Block move operands: #$ss,#$dd (dest, src banks)"""
+    """Block move operands: dest_bank, src_bank (65816 encoding order)."""
     dest_bank = cpu.fetch_byte()
     src_bank = cpu.fetch_byte()
-    return (src_bank, dest_bank, 0)
+    return (dest_bank, src_bank, 0)
