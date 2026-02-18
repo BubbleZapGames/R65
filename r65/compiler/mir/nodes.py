@@ -904,12 +904,6 @@ class MIRFunction:
     # Maps parameter index to scratch zero-page address for promoted stack params
     scratch_param_addrs: Dict[int, int] = field(default_factory=dict)
 
-    # Pull promotion tracking (populated by loop_register_promotion analysis)
-    # Maps param_idx → hw register name ('X' or 'Y') for PLY/PLX promotion
-    pull_promoted_params: Dict[int, str] = field(default_factory=dict)
-    # Maps param_idx → the loop-promoted replacement vreg (for pre-allocation)
-    pull_promoted_vregs: Dict[int, 'VirtualRegister'] = field(default_factory=dict)
-
     # Promoted aggregate local tracking
     # True if function has local struct/array variables promoted to static storage
     has_promoted_locals: bool = False

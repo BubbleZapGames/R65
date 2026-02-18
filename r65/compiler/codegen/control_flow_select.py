@@ -707,7 +707,6 @@ class ControlFlowInstructionSelector(BaseSelector):
             return 0
 
         scratch_addrs = self.current_function.scratch_param_addrs
-        pull_promoted = self.current_function.pull_promoted_params
         is_trait_method = getattr(self.current_function, 'is_trait_method', False)
         total_bytes = 0
         for i, param in enumerate(self.current_function.parameters):
@@ -715,8 +714,8 @@ class ControlFlowInstructionSelector(BaseSelector):
             if is_trait_method and i == 0 and param.name == 'self':
                 continue
             # Stack parameters have no binding (binding is None)
-            # and are not promoted to scratch or pull-promoted
-            if param.binding is None and i not in scratch_addrs and i not in pull_promoted:
+            # and are not promoted to scratch
+            if param.binding is None and i not in scratch_addrs:
                 total_bytes += get_type_size(param.param_type)
 
         return total_bytes
