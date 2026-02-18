@@ -163,15 +163,17 @@ class ProgramCodeGenerator:
         # Create scratch pool once for all functions
         scratch_pool = self.func_gen.func_gen._create_scratch_pool(mir_program)
 
-        # Run loop register promotion analysis (before scratch params)
-        if not disable_loop_promotion:
-            from r65.compiler.analysis.loop_register_promotion import analyze_loop_promotion
-            analyze_loop_promotion(mir_program)
-
-        # Run scratch parameter promotion analysis (before generating functions)
+        # Run scratch parameter promotion analysis (before loop promotion)
+        # Scratch promotion removes params from stack_param_offsets, so loop
+        # promotion only sees params that actually remain on the stack.
         if not disable_scratch_params:
             from r65.compiler.analysis.scratch_params import analyze_scratch_params
             analyze_scratch_params(mir_program, scratch_pool)
+
+        # Run loop register promotion analysis (after scratch params)
+        if not disable_loop_promotion:
+            from r65.compiler.analysis.loop_register_promotion import analyze_loop_promotion
+            analyze_loop_promotion(mir_program)
 
         # Generate code for each bank
         for bank_num in sorted(functions_by_bank.keys()):

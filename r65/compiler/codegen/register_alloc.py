@@ -693,11 +693,12 @@ class RegisterAllocator:
             # Build preassigned slots for stack parameters
             preassigned = self._build_preassigned_params()
 
-            # Collect vregs already allocated externally (e.g. scratch params)
-            # so the slot allocator doesn't reserve stack frame space for them
+            # Collect vregs already allocated externally (e.g. scratch params,
+            # pull-promoted hw regs) so the slot allocator doesn't reserve
+            # stack frame space for them
             pre_allocated_vregs = set()
             for vreg_id, loc in self.allocations.items():
-                if loc.kind == LocationKind.SCRATCH:
+                if loc.kind in (LocationKind.SCRATCH, LocationKind.HARDWARE):
                     # Find the VirtualRegister object for this id
                     for v in vregs:
                         if v.id == vreg_id:

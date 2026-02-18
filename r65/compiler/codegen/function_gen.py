@@ -113,6 +113,20 @@ class FunctionCodeGenerator:
                 )
                 reg_alloc.allocations[vreg.id] = location
 
+        # Pre-allocate pull-promoted parameter vregs to their hardware registers
+        # These are consumed by PLY/PLX in the prologue instead of stack-relative loads
+        for param_idx, hw_reg in mir_func.pull_promoted_params.items():
+            promoted_vreg = mir_func.pull_promoted_vregs[param_idx]
+            location = PhysicalLocation(
+                kind=LocationKind.HARDWARE,
+                hw_register=hw_reg,
+                size=2  # Always u16 (x16 mode)
+            )
+            reg_alloc.allocations[promoted_vreg.id] = location
+            hw_alloc = reg_alloc.get_hw_alloc(hw_reg)
+            hw_alloc.allocated_vreg = promoted_vreg
+            hw_alloc.is_bound = True
+
         # Pre-allocate self pointer vreg to Y register for trait methods
         # Self is passed in Y by the caller/dispatch wrapper
         if mir_func.is_trait_method and mir_func.self_y_vreg:
@@ -554,6 +568,12 @@ class FunctionCodeGenerator:
         if mir_func.is_entry:
             self._emit_entry_setup(mir_func)
 
+        # Emit pull promotion prologue (PLA/PLY/PLX/PHA) for stack params
+        # consumed directly from the stack. Must happen before frame allocation
+        # so that the stack is clean when the frame is set up.
+        if mir_func.pull_promoted_params:
+            self._emit_pull_promotion_prologue(mir_func)
+
         # For interrupt handlers, emit register saves BEFORE frame allocation
         # This is critical: frame allocation uses stack-relative addressing that
         # would corrupt saved registers if done before the pushes.
@@ -647,6 +667,42 @@ class FunctionCodeGenerator:
         # - m16 functions: TYA transfers full 16-bit (required for u16 @ A)
         if frame_size > 0 and a_has_param:
             self._emit_instr(Opcode.TYA, comment="Restore A param after frame alloc")
+
+    def _emit_pull_promotion_prologue(self, mir_func: MIRFunction):
+        """
+        Emit PLA/PLY/PLX/PHA prologue for pull-promoted stack parameters.
+
+        Pulls parameters directly from the stack into X/Y registers,
+        consuming them and leaving the stack clean (no epilogue cleanup needed).
+
+        Sequence:
+            REP #$20        ; m16 for 16-bit PLA/PHA
+            PLA              ; pull return address (2 bytes, near only)
+            PLY / PLX        ; pull param(s) into register(s)
+            PHA              ; push return address back
+            SEP #$20         ; restore m8
+
+        Pull order: sorted by param_idx ascending (lowest index = closest
+        to return address on stack, pulled first).
+
+        Args:
+            mir_func: MIR function with pull_promoted_params populated
+        """
+        # Sort by param_idx ascending for correct stack pull order
+        sorted_params = sorted(mir_func.pull_promoted_params.items(), key=lambda x: x[0])
+
+        pull_opcodes = {'X': Opcode.PLX, 'Y': Opcode.PLY}
+
+        self._emit_instr(Opcode.REP_IMMEDIATE, Immediate(M_FLAG), "m16 for pull promotion")
+        self._emit_instr(Opcode.PLA, comment="Pull return address")
+
+        for param_idx, hw_reg in sorted_params:
+            opcode = pull_opcodes[hw_reg]
+            param_name = mir_func.parameters[param_idx].name
+            self._emit_instr(opcode, comment=f"Pull {param_name} into {hw_reg}")
+
+        self._emit_instr(Opcode.PHA, comment="Push return address back")
+        self._emit_instr(Opcode.SEP_IMMEDIATE, Immediate(M_FLAG), "Restore m8")
 
     def _emit_entry_setup(self, mir_func: MIRFunction):
         """

@@ -152,6 +152,9 @@ def _analyze_function(func: MIRFunction) -> int:
     # Insert at the beginning of the entry block
     entry_block.instructions = moves_to_insert + entry_block.instructions
 
+    # Step 9: Check if pull promotion (PLA/PLY/PLX/PHA) is eligible
+    _check_pull_promotion(func, eligible, replacements)
+
     return len(replacements)
 
 
@@ -483,3 +486,103 @@ def _replace_in_instr(instr, replacements: Dict[int, VirtualRegister]):
         instr.scrutinee = _replace_vreg(instr.scrutinee, replacements)
     elif isinstance(instr, StatusFlagRead):
         instr.dest = _replace_vreg(instr.dest, replacements)
+
+
+def _check_pull_promotion(func: MIRFunction, eligible: List[Tuple[int, VirtualRegister]],
+                          replacements: Dict[int, VirtualRegister]):
+    """
+    Check if pull promotion (PLA/PLY/PLX/PHA) is eligible for this function.
+
+    Pull promotion replaces stack-relative parameter loading with direct
+    PLY/PLX instructions in the prologue, consuming params from the stack
+    and leaving it clean for a zero-cost epilogue.
+
+    Eligibility rules (all must hold):
+    - ALL remaining stack_param_offsets entries are loop-promoted with X/Y hint
+    - ALL remaining stack params are u16 (PLY/PLX always pull 2 bytes in x16)
+    - At most 2 pull params (only X and Y available)
+    - No @ A register parameter (PLA clobbers A)
+    - Not a far function (3-byte return address needs different handling)
+    - Not an interrupt handler
+    - Not an entry function
+
+    When eligible, populates func.pull_promoted_params and pull_promoted_vregs,
+    removes those params from stack_param_offsets, and deletes entry-block
+    Move instructions that loaded them.
+
+    Args:
+        func: MIR function to check
+        eligible: List of (param_idx, original_vreg) that were loop-promoted
+        replacements: Map of old_vreg_id -> new replacement vreg
+    """
+    from r65.compiler.hir import RegisterBinding
+
+    # Basic function-level exclusions
+    if func.is_far or func.interrupt_attr or func.is_entry:
+        return
+
+    # No @ A register parameter (PLA in prologue would clobber it)
+    for param in func.parameters:
+        if (isinstance(param.binding, RegisterBinding) and
+                param.binding.register_name == 'A'):
+            return
+
+    # Check if ALL remaining stack params are loop-promoted with X/Y hints
+    remaining_stack_params = set(func.stack_param_offsets.keys())
+    if not remaining_stack_params:
+        return  # Nothing to pull-promote
+
+    if len(remaining_stack_params) > 2:
+        return  # At most 2 pull params (X and Y)
+
+    # Build map of param_idx -> (replacement_vreg, register_hint) for eligible params
+    pull_candidates = {}
+    for param_idx, original_vreg in eligible:
+        if param_idx not in remaining_stack_params:
+            continue
+        if original_vreg.id not in replacements:
+            continue
+        new_vreg = replacements[original_vreg.id]
+        if new_vreg.register_hint not in ('X', 'Y'):
+            return  # All remaining stack params must have X/Y hints
+
+        # Must be u16 (PLY/PLX always pulls 2 bytes in x16 mode)
+        param_size = get_type_size(func.parameters[param_idx].param_type)
+        if param_size != 2:
+            return
+
+        pull_candidates[param_idx] = (new_vreg, new_vreg.register_hint)
+
+    # ALL remaining stack params must be covered
+    if set(pull_candidates.keys()) != remaining_stack_params:
+        return
+
+    # Check for duplicate register hints (can't pull both into Y)
+    used_regs = set()
+    for _, (_, hint) in pull_candidates.items():
+        if hint in used_regs:
+            return  # Two params want the same register
+        used_regs.add(hint)
+
+    # All checks passed — apply pull promotion
+    for param_idx, (new_vreg, hw_reg) in pull_candidates.items():
+        func.pull_promoted_params[param_idx] = hw_reg
+        func.pull_promoted_vregs[param_idx] = new_vreg
+
+    # Remove pull-promoted params from stack_param_offsets
+    for param_idx in pull_candidates:
+        del func.stack_param_offsets[param_idx]
+
+    # Delete entry-block Move instructions that loaded pull-promoted params
+    # These Moves copy from the original param vreg to the replacement vreg;
+    # the PLY/PLX prologue replaces them.
+    entry_block = func.blocks[func.entry_block_id]
+    pull_vreg_ids = {vreg.id for vreg, _ in pull_candidates.values()}
+    entry_block.instructions = [
+        instr for instr in entry_block.instructions
+        if not (isinstance(instr, Move) and
+                isinstance(instr.dest, VirtualRegister) and
+                instr.dest.id in pull_vreg_ids and
+                isinstance(instr.source, VirtualRegister) and
+                instr.source.id not in pull_vreg_ids)
+    ]
