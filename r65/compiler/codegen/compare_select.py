@@ -97,6 +97,10 @@ class CompareSelector(BaseSelector):
         # Store type info for subsequent CondBranch (for signed/unsigned detection)
         self.parent.last_comparison_type = instr.type_info
         self.parent._comparison_reversed = False
+        # Track whether the right operand is immediate 0 for branch optimization
+        self.parent._compare_rhs_is_zero = (
+            isinstance(instr.right, MIRImmediate) and instr.right.value == 0
+        )
 
         # Check if this is a 16-bit comparison
         is_16bit = self._is_16bit_type(instr.type_info)
@@ -161,6 +165,15 @@ class CompareSelector(BaseSelector):
                 self._emit_instr(Opcode.PLY, comment="Restore Y")
             elif pushed_reg == 'A':
                 self._emit_instr(Opcode.PLA, comment="Restore A")
+
+    def _is_signed_type(self) -> bool:
+        """Check if the current comparison type is signed (i8, i16)."""
+        type_info = self.parent.last_comparison_type
+        if type_info is not None:
+            from r65.compiler.hir import BasicTypeInfo
+            if isinstance(type_info, BasicTypeInfo):
+                return type_info.name.startswith('i')
+        return False
 
     def _is_16bit_type(self, type_info) -> bool:
         """Check if the type is a 16-bit type (u16 or i16)."""
@@ -260,6 +273,15 @@ class CompareSelector(BaseSelector):
         else:
             # Memory or virtual register - load to A and compare
             self._emit_load_store('LDA', left_loc)
+            # LDA sets N and Z flags. For unsigned comparisons against 0,
+            # CMP #0 is redundant since the branch codegen only needs Z
+            # (via _emit_zero_comparison_branch). For signed types, keep
+            # CMP #0 because the standard signed branch codegen (BVC/EOR)
+            # needs the V flag which LDA does not set.
+            if (is_immediate and isinstance(right_operand, Immediate)
+                    and right_operand.value == 0
+                    and not self._is_signed_type()):
+                return
             self._emit_cmp('CMP', right_operand, is_immediate)
 
     def _emit_hw_register_comparison(self, left_loc, right_operand, is_immediate: bool):

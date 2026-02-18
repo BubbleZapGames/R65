@@ -206,6 +206,10 @@ class ControlFlowInstructionSelector(BaseSelector):
         """
         is_signed = self._is_signed_comparison()
 
+        # Consume compare-against-zero flag before it goes stale
+        compare_rhs_zero = getattr(self.parent, '_compare_rhs_is_zero', False)
+        self.parent._compare_rhs_is_zero = False
+
         # If the preceding Compare swapped operands (right in A, CMP left),
         # the flags represent (right - left) instead of (left - right).
         # Reverse the comparison to compensate.
@@ -215,7 +219,7 @@ class ControlFlowInstructionSelector(BaseSelector):
             self.parent._comparison_reversed = False
 
         if instr.condition is None:
-            self._emit_flag_based_branch(instr, is_signed, comparison)
+            self._emit_flag_based_branch(instr, is_signed, comparison, compare_rhs_zero)
         else:
             self._emit_value_based_branch(instr)
 
@@ -228,12 +232,25 @@ class ControlFlowInstructionSelector(BaseSelector):
         return False
 
     def _emit_flag_based_branch(self, instr: CondBranch, is_signed: bool,
-                                comparison: str = None):
+                                comparison: str = None,
+                                compare_rhs_zero: bool = False):
         """Emit branch based on CPU flags from preceding Compare."""
         if comparison is None:
             comparison = instr.comparison
         true_target = self._block_label(instr.true_target)
         false_target = self._block_label(instr.false_target)
+
+        # Optimize comparisons against zero.
+        # When RHS is immediate 0, several simplifications apply:
+        # - Unsigned: x>0 is x!=0, x<=0 is x==0, x>=0 is always true, x<0 always false
+        # - Signed: no overflow possible (V=0) so N flag directly indicates sign,
+        #   avoiding the complex BVC/EOR N-XOR-V trick
+        if compare_rhs_zero and not is_signed and comparison in ('<', '<=', '>', '>='):
+            result = self._emit_zero_comparison_branch(
+                comparison, true_target, false_target
+            )
+            if result:
+                return
 
         # Handle BIT-based comparisons
         if comparison == 'bit7_set':
@@ -298,6 +315,44 @@ class ControlFlowInstructionSelector(BaseSelector):
         else:
             raise InstructionSelectionError(
                 f"Unsupported comparison type for flag-based branch: {comparison}", source_loc=self.parent._current_source_loc)
+
+    def _emit_zero_comparison_branch(self, comparison: str,
+                                     true_target: str, false_target: str) -> bool:
+        """
+        Emit optimized branches for unsigned comparisons against zero.
+
+        When the right operand is immediate 0 and the type is unsigned:
+        - x > 0 ≡ x != 0 (single BNE instead of BEQ+BCS)
+        - x <= 0 ≡ x == 0 (single BEQ instead of BEQ+BCC)
+        - x >= 0 is always true
+        - x < 0 is always false
+
+        Only Z flag is needed, which LDA sets correctly (allowing
+        CMP #0 elision in compare_select).
+
+        Returns:
+            True if optimization was applied, False otherwise.
+        """
+        if comparison == '>':
+            # x > 0 ≡ x != 0
+            self._emit_branch(Opcode.BNE, true_target, "Branch if != 0 (unsigned > 0)")
+            self._emit_jump(Opcode.BRA, false_target)
+            return True
+        elif comparison == '<=':
+            # x <= 0 ≡ x == 0
+            self._emit_branch(Opcode.BEQ, true_target, "Branch if == 0 (unsigned <= 0)")
+            self._emit_jump(Opcode.BRA, false_target)
+            return True
+        elif comparison == '>=':
+            # x >= 0 is always true for unsigned
+            self._emit_jump(Opcode.BRA, true_target)
+            return True
+        elif comparison == '<':
+            # x < 0 is always false for unsigned
+            self._emit_jump(Opcode.BRA, false_target)
+            return True
+
+        return False
 
     def _emit_less_than_branch(self, true_target: str, false_target: str, is_signed: bool):
         """Emit branch for < comparison."""
