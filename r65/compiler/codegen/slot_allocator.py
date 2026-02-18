@@ -528,17 +528,17 @@ class StackSlotAllocator:
                 continue
             uses = vreg_uses.get(vreg_id, [])
 
-            # ALU-def vregs: only safe if the value is consumed directly by
-            # Move-to-A or Return. Using it as a BinaryOp operand could conflict
-            # with another vreg that's also in A.
+            # ALU-def vregs: only safe if the value is consumed by Move or
+            # Return. All Move variants just read A (STA/TAX/TAY preserve A).
+            # Using it as a BinaryOp operand could conflict with another
+            # vreg that's also in A.
             if isinstance(def_instr, _alu_def_types):
-                all_uses_consume_a = all(
+                all_uses_safe = all(
                     isinstance(use, Return) or
-                    (isinstance(use, Move) and isinstance(use.dest, HardwareRegister)
-                     and use.dest.name == 'A')
+                    isinstance(use, Move)
                     for use in uses
                 )
-                if not all_uses_consume_a:
+                if not all_uses_safe:
                     continue
 
             candidates.append((vreg_id, def_instr, hw_reg, uses))
@@ -860,7 +860,10 @@ class StackSlotAllocator:
                 if instr.dest.name in ('X', 'Y'):
                     # LDX/LDY don't clobber A (unless source is stack-relative for X/Y)
                     # But Move to X/Y from vreg goes LDA vreg; TAX (clobbers A)
+                    # Unless source is our coalesceable vreg — then just TAX/TAY
                     if isinstance(instr.source, VirtualRegister):
+                        if instr.source.id == vreg_id:
+                            return False  # TAX/TAY from our vreg — A preserved
                         return True
                     return False  # LDX #imm or LDX addr don't clobber A
                 if instr.dest.name == 'B':

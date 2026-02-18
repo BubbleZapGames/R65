@@ -119,8 +119,12 @@ class TestHwCoalescingSlotAllocator:
             "Vreg used in adjacent computation should be hw-coalesceable (no clobber)"
         assert allocation.hw_coalesceable[vreg_a] == 'A'
 
-    def test_multiple_uses_not_coalesceable(self):
-        """Test that vreg with multiple uses is not hw-coalesceable."""
+    def test_multiple_move_uses_coalesceable(self):
+        """Test that vreg with Move-to-X + Return uses IS hw-coalesceable.
+
+        Both Move and Return just read A without clobbering it, so the
+        vreg can safely stay in the hardware register.
+        """
         vreg_alloc = VirtualRegisterAllocator()
         vreg_a = vreg_alloc.alloc(BasicTypeInfo('u8'), "a")
 
@@ -131,7 +135,7 @@ class TestHwCoalescingSlotAllocator:
                 source=HardwareRegister('A'),
                 type_info=BasicTypeInfo('u8')
             ),
-            # Use vreg_a in a move (not just return)
+            # Use vreg_a in a move to X (TAX, preserves A)
             Move(
                 dest=HardwareRegister('X'),
                 source=vreg_a,
@@ -153,9 +157,10 @@ class TestHwCoalescingSlotAllocator:
         allocator = StackSlotAllocator(func)
         allocation = allocator.allocate()
 
-        # vreg_a used in Move to X AND Return - not coalesceable
-        assert vreg_a not in allocation.hw_coalesceable, \
-            "Vreg with multiple uses should not be hw-coalesceable"
+        # vreg_a used in Move to X AND Return - both safe, coalesceable
+        assert vreg_a in allocation.hw_coalesceable, \
+            "Vreg with only Move/Return uses should be hw-coalesceable"
+        assert allocation.hw_coalesceable[vreg_a] == 'A'
 
     def test_vreg_from_immediate_not_coalesceable(self):
         """Test that vreg defined from immediate is not hw-coalesceable."""
