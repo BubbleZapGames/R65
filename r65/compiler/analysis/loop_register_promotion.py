@@ -129,6 +129,11 @@ def _analyze_function(func: MIRFunction) -> int:
     # Step 7: Replace all references to old vregs throughout the function
     _replace_vregs(func, replacements)
 
+    # Step 7b: Eliminate temporary copies created by compound assignments
+    # count-- generates: %T = %V - 1; %V = Move %T
+    # Collapse to:       %V = %V - 1  (enables DEY/DEX pattern matching)
+    _eliminate_temp_copies(func)
+
     # Step 8: Insert Move instructions at entry block start
     # After replacement, the original param vregs are only referenced in
     # the new Move instructions we're about to insert
@@ -347,6 +352,58 @@ def _find_loop_counters(func: MIRFunction, loop_blocks: Set[int]) -> Set[int]:
                             counters.add(instr.left.id)
 
     return counters
+
+
+def _eliminate_temp_copies(func: MIRFunction):
+    """
+    Eliminate temporary copies from compound assignments (e.g., count--).
+
+    MIR lowers `count--` as:
+        %T = %V - 1       (BinaryOp with temporary dest)
+        %V = Move %T       (copy back to original)
+
+    This collapses them into:
+        %V = %V - 1       (in-place, enables DEY/DEX pattern matching)
+
+    Only applied when %T has no other uses in the entire function.
+    """
+    # Collect all vreg uses across the entire function
+    all_vreg_uses: Dict[int, int] = {}  # vreg_id -> use count
+    for block in func.blocks.values():
+        for instr in block.instructions:
+            for vreg in _get_vregs_from_instr(instr):
+                all_vreg_uses[vreg.id] = all_vreg_uses.get(vreg.id, 0) + 1
+
+    for block in func.blocks.values():
+        instrs = block.instructions
+        i = 0
+        while i < len(instrs) - 1:
+            instr = instrs[i]
+            next_instr = instrs[i + 1]
+
+            # Pattern: BinaryOp(dest=%T, left=%V, op, right) followed by Move(dest=%V, source=%T)
+            if (isinstance(instr, BinaryOp) and
+                    isinstance(next_instr, Move) and
+                    isinstance(instr.dest, VirtualRegister) and
+                    isinstance(instr.left, VirtualRegister) and
+                    isinstance(next_instr.dest, VirtualRegister) and
+                    isinstance(next_instr.source, VirtualRegister) and
+                    instr.dest.id != instr.left.id and
+                    next_instr.source.id == instr.dest.id and
+                    next_instr.dest.id == instr.left.id):
+
+                temp_id = instr.dest.id
+                # %T appears exactly twice: as BinaryOp dest and Move source
+                if all_vreg_uses.get(temp_id, 0) == 2:
+                    # Collapse: BinaryOp dest=%V, left=%V (in-place)
+                    instr.dest = next_instr.dest  # %V
+                    # Delete the Move
+                    instrs.pop(i + 1)
+                    # Update use counts
+                    all_vreg_uses[temp_id] = 0
+                    continue  # Re-check same index in case of consecutive patterns
+
+            i += 1
 
 
 def _replace_vregs(func: MIRFunction, replacements: Dict[int, VirtualRegister]):

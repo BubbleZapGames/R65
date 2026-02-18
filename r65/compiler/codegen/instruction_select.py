@@ -750,6 +750,39 @@ class InstructionSelector:
                     self._emit_implied(Opcode.DEC, "A--")
                     return
 
+        # OPTIMIZATION: Same pattern for VirtualRegisters allocated to hardware registers
+        # After loop register promotion, operands are VirtualRegister (allocated to Y),
+        # not HardwareRegister. Check before mode switch logic to avoid REP/SEP.
+        if (op in ('+', '-') and
+            isinstance(right_operand, MIRImmediate) and right_operand.value == 1 and
+            isinstance(instr.dest, VirtualRegister) and
+            isinstance(instr.left, VirtualRegister) and
+            instr.dest.id == instr.left.id):
+            dest_loc = self._get_operand_location(instr.dest)
+            if dest_loc.kind == LocationKind.HARDWARE and dest_loc.hw_register in ('A', 'X', 'Y'):
+                from r65.compiler.codegen.opcodes import Opcode as Op
+                register = dest_loc.hw_register
+                if op == '+':
+                    if register == 'X':
+                        self._emit_implied(Op.INX, f"{register}++")
+                        return
+                    elif register == 'Y':
+                        self._emit_implied(Op.INY, f"{register}++")
+                        return
+                    elif register == 'A':
+                        self._emit_implied(Op.INC, "A++")
+                        return
+                else:  # op == '-'
+                    if register == 'X':
+                        self._emit_implied(Op.DEX, f"{register}--")
+                        return
+                    elif register == 'Y':
+                        self._emit_implied(Op.DEY, f"{register}--")
+                        return
+                    elif register == 'A':
+                        self._emit_implied(Op.DEC, "A--")
+                        return
+
         # FAR POINTER ARITHMETIC: 3-byte pointers need special handling.
         # The low 2 bytes (address within bank) are updated with 16-bit
         # arithmetic to correctly propagate carry. The bank byte is copied
