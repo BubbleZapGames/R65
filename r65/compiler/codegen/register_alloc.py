@@ -428,7 +428,7 @@ class RegisterAllocator:
                 # Don't honor hint if the register is explicitly written by
                 # other instructions (e.g., Move to X for array indexing).
                 # This prevents the loop counter from being silently clobbered.
-                if not self._has_explicit_hw_defs(hw_reg):
+                if not self._hint_conflicts_with_hw_defs(vreg, hw_reg):
                     # Register is free and not clobbered - allocate vreg to it
                     location = PhysicalLocation(
                         kind=LocationKind.HARDWARE,
@@ -504,6 +504,40 @@ class RegisterAllocator:
                 if hasattr(instr, 'dest') and isinstance(instr.dest, HardwareRegister):
                     if instr.dest.name == hw_reg:
                         return True
+        return False
+
+    def _hint_conflicts_with_hw_defs(self, vreg: VirtualRegister, hw_reg: str) -> bool:
+        """
+        Check if allocating vreg to hw_reg conflicts with explicit writes.
+
+        More precise than _has_explicit_hw_defs: only reports a conflict if
+        the vreg is actually live at a point where the hw register is written.
+
+        Args:
+            vreg: Virtual register with the hint
+            hw_reg: Hardware register name ('X' or 'Y')
+
+        Returns:
+            True if there is a conflict (hint should NOT be honored)
+        """
+        if not self.mir_func:
+            return False
+        if not self.instr_liveness:
+            return self._has_explicit_hw_defs(hw_reg)  # conservative fallback
+
+        from r65.compiler.mir.nodes import HardwareRegister
+        for block_id, block in self.mir_func.blocks.items():
+            for instr_idx, instr in enumerate(block.instructions):
+                if hasattr(instr, 'dest') and isinstance(instr.dest, HardwareRegister):
+                    if instr.dest.name == hw_reg:
+                        # Check if vreg is live at this write point
+                        if instr_idx > 0:
+                            if self.instr_liveness.is_live_after(vreg, block_id, instr_idx - 1):
+                                return True
+                        else:
+                            info = self.instr_liveness.liveness.get(block_id)
+                            if info and vreg in info.live_in:
+                                return True
         return False
 
     def _try_scratch(self, vreg: VirtualRegister) -> Optional[PhysicalLocation]:

@@ -13,7 +13,7 @@ from r65.compiler.mir.nodes import (
     MIRProgram,
     MIRFunction,
     BasicBlock,
-    Move, Return, BinaryOp, Load,
+    Move, Return, BinaryOp, Load, Store, Compare, Jump, CondBranch,
     VirtualRegister,
     Immediate,
     HardwareRegister,
@@ -619,6 +619,289 @@ class TestReturnSinkable:
             "Move instructions should not be return-sinkable (handled by hw-coalescence)"
         assert vreg_a in allocation.hw_coalesceable, \
             "Move from HW register should be hw-coalesceable"
+
+
+class TestCrossBlockCoalescence:
+    """Test cross-block hw coalescence and Compare exception."""
+
+    def test_cross_block_return_coalesceable(self):
+        """Test that def in block 0, Return in block 1 can coalesce.
+
+        Pattern: param in A, Compare+CondBranch, then Return in both branches.
+        Compare with our vreg as left operand preserves A.
+        """
+        vreg_alloc = VirtualRegisterAllocator()
+        vreg_a = vreg_alloc.alloc(BasicTypeInfo('u8'), "a")
+
+        # Block 0: def vreg_a from A, compare, branch
+        block0 = BasicBlock(block_id=0)
+        block0.instructions = [
+            Move(
+                dest=vreg_a,
+                source=HardwareRegister('A'),
+                type_info=BasicTypeInfo('u8')
+            ),
+            Compare(
+                left=vreg_a,
+                right=Immediate(0),
+                comparison='==',
+                type_info=BasicTypeInfo('u8')
+            ),
+            CondBranch(
+                condition=vreg_a,
+                true_target=1,
+                false_target=2,
+                comparison='=='
+            ),
+        ]
+        block0.successors = [1, 2]
+
+        # Block 1: return vreg_a (true branch)
+        block1 = BasicBlock(block_id=1)
+        block1.instructions = [
+            Return(values=[vreg_a])
+        ]
+        block1.predecessors = [0]
+
+        # Block 2: return vreg_a (false branch)
+        block2 = BasicBlock(block_id=2)
+        block2.instructions = [
+            Return(values=[vreg_a])
+        ]
+        block2.predecessors = [0]
+
+        func = MIRFunction(
+            name="cross_block_return",
+            parameters=[],
+            return_type=BasicTypeInfo('u8'),
+            blocks={0: block0, 1: block1, 2: block2},
+            entry_block_id=0,
+            is_far=True,
+            vreg_allocator=vreg_alloc
+        )
+
+        allocator = StackSlotAllocator(func)
+        allocation = allocator.allocate()
+
+        assert vreg_a in allocation.hw_coalesceable, \
+            "Cross-block def→Return should be coalesceable when no clobber exists"
+        assert allocation.hw_coalesceable[vreg_a] == 'A'
+
+    def test_cross_block_rejected_with_clobber(self):
+        """Test that cross-block coalescence is rejected when intermediate block clobbers."""
+        vreg_alloc = VirtualRegisterAllocator()
+        vreg_a = vreg_alloc.alloc(BasicTypeInfo('u8'), "a")
+        vreg_other = vreg_alloc.alloc(BasicTypeInfo('u8'), "other")
+
+        # Block 0: def vreg_a, jump to block 1
+        block0 = BasicBlock(block_id=0)
+        block0.instructions = [
+            Move(
+                dest=vreg_a,
+                source=HardwareRegister('A'),
+                type_info=BasicTypeInfo('u8')
+            ),
+            Jump(target=1),
+        ]
+        block0.successors = [1]
+
+        # Block 1: clobber A (load something else), then use vreg_a in return
+        block1 = BasicBlock(block_id=1)
+        block1.instructions = [
+            Move(
+                dest=vreg_other,
+                source=HardwareRegister('A'),
+                type_info=BasicTypeInfo('u8')
+            ),
+            Return(values=[vreg_a])
+        ]
+        block1.predecessors = [0]
+
+        func = MIRFunction(
+            name="cross_block_clobber",
+            parameters=[],
+            return_type=BasicTypeInfo('u8'),
+            blocks={0: block0, 1: block1},
+            entry_block_id=0,
+            is_far=True,
+            vreg_allocator=vreg_alloc
+        )
+
+        allocator = StackSlotAllocator(func)
+        allocation = allocator.allocate()
+
+        assert vreg_a not in allocation.hw_coalesceable, \
+            "Cross-block should NOT coalesce when use block has A clobber before the use"
+
+    def test_compare_with_our_vreg_does_not_block(self):
+        """Test that Compare with our vreg as left operand doesn't block coalescence."""
+        vreg_alloc = VirtualRegisterAllocator()
+        vreg_a = vreg_alloc.alloc(BasicTypeInfo('u8'), "a")
+
+        # Single block: def A, compare with self, return
+        block0 = BasicBlock(block_id=0)
+        block0.instructions = [
+            Move(
+                dest=vreg_a,
+                source=HardwareRegister('A'),
+                type_info=BasicTypeInfo('u8')
+            ),
+            Compare(
+                left=vreg_a,
+                right=Immediate(5),
+                comparison='!=',
+                type_info=BasicTypeInfo('u8')
+            ),
+            Return(values=[vreg_a])
+        ]
+
+        func = MIRFunction(
+            name="compare_no_block",
+            parameters=[],
+            return_type=BasicTypeInfo('u8'),
+            blocks={0: block0},
+            entry_block_id=0,
+            is_far=True,
+            vreg_allocator=vreg_alloc
+        )
+
+        allocator = StackSlotAllocator(func)
+        allocation = allocator.allocate()
+
+        assert vreg_a in allocation.hw_coalesceable, \
+            "Compare with our vreg as left operand should not block coalescence"
+
+    def test_compare_with_other_vreg_blocks(self):
+        """Test that Compare with different vreg as left operand DOES block coalescence."""
+        vreg_alloc = VirtualRegisterAllocator()
+        vreg_a = vreg_alloc.alloc(BasicTypeInfo('u8'), "a")
+        vreg_other = vreg_alloc.alloc(BasicTypeInfo('u8'), "other")
+
+        # Single block: def A, compare OTHER (loads into A, clobbers), return vreg_a
+        block0 = BasicBlock(block_id=0)
+        block0.instructions = [
+            Move(
+                dest=vreg_a,
+                source=HardwareRegister('A'),
+                type_info=BasicTypeInfo('u8')
+            ),
+            Compare(
+                left=vreg_other,
+                right=Immediate(5),
+                comparison='!=',
+                type_info=BasicTypeInfo('u8')
+            ),
+            Return(values=[vreg_a])
+        ]
+
+        func = MIRFunction(
+            name="compare_blocks",
+            parameters=[],
+            return_type=BasicTypeInfo('u8'),
+            blocks={0: block0},
+            entry_block_id=0,
+            is_far=True,
+            vreg_allocator=vreg_alloc
+        )
+
+        allocator = StackSlotAllocator(func)
+        allocation = allocator.allocate()
+
+        assert vreg_a not in allocation.hw_coalesceable, \
+            "Compare with different vreg as left operand should block coalescence"
+
+
+class TestNarrowerHintRejection:
+    """Test liveness-aware hint conflict checking."""
+
+    def test_hint_conflict_when_live(self):
+        """Test that hint is rejected when vreg is live at hw write point."""
+        from r65.compiler.codegen.register_alloc import RegisterAllocator
+        from r65.compiler.mir.liveness import InstructionLivenessAnalyzer
+
+        vreg_alloc = VirtualRegisterAllocator()
+        vreg_counter = vreg_alloc.alloc(BasicTypeInfo('u16'), "counter")
+        vreg_counter.register_hint = 'X'
+        vreg_idx = vreg_alloc.alloc(BasicTypeInfo('u16'), "idx")
+
+        # Block 0: define counter, Move idx→X (clobbers X while counter is live), use counter
+        block0 = BasicBlock(block_id=0)
+        block0.instructions = [
+            Move(
+                dest=vreg_counter,
+                source=Immediate(10),
+                type_info=BasicTypeInfo('u16')
+            ),
+            Move(
+                dest=HardwareRegister('X'),
+                source=vreg_idx,
+                type_info=BasicTypeInfo('u16')
+            ),
+            Return(values=[vreg_counter])
+        ]
+
+        func = MIRFunction(
+            name="hint_conflict",
+            parameters=[],
+            return_type=BasicTypeInfo('u16'),
+            blocks={0: block0},
+            entry_block_id=0,
+            is_far=True,
+            vreg_allocator=vreg_alloc
+        )
+
+        instr_liveness = InstructionLivenessAnalyzer(func)
+        allocator = RegisterAllocator(mir_func=func, instr_liveness=instr_liveness)
+
+        # Should detect conflict: X is written while counter is live
+        assert allocator._hint_conflicts_with_hw_defs(vreg_counter, 'X') is True
+
+    def test_hint_no_conflict_when_dead(self):
+        """Test that hint is accepted when vreg is dead at hw write point."""
+        from r65.compiler.codegen.register_alloc import RegisterAllocator
+        from r65.compiler.mir.liveness import InstructionLivenessAnalyzer
+
+        vreg_alloc = VirtualRegisterAllocator()
+        vreg_counter = vreg_alloc.alloc(BasicTypeInfo('u16'), "counter")
+        vreg_counter.register_hint = 'X'
+
+        # Block 0: define counter, use counter in return
+        # Block 1: Move something→X (counter is dead here)
+        block0 = BasicBlock(block_id=0)
+        block0.instructions = [
+            Move(
+                dest=vreg_counter,
+                source=Immediate(10),
+                type_info=BasicTypeInfo('u16')
+            ),
+            Return(values=[vreg_counter])
+        ]
+
+        block1 = BasicBlock(block_id=1)
+        block1.instructions = [
+            Move(
+                dest=HardwareRegister('X'),
+                source=Immediate(0),
+                type_info=BasicTypeInfo('u16')
+            ),
+            Return(values=[])
+        ]
+
+        func = MIRFunction(
+            name="hint_no_conflict",
+            parameters=[],
+            return_type=BasicTypeInfo('u16'),
+            blocks={0: block0, 1: block1},
+            entry_block_id=0,
+            is_far=True,
+            vreg_allocator=vreg_alloc
+        )
+
+        instr_liveness = InstructionLivenessAnalyzer(func)
+        allocator = RegisterAllocator(mir_func=func, instr_liveness=instr_liveness)
+
+        # Should NOT detect conflict: X write is in block where counter is dead
+        assert allocator._hint_conflicts_with_hw_defs(vreg_counter, 'X') is False
 
 
 def test_hw_coalescing_summary():

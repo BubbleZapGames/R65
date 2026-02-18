@@ -566,24 +566,13 @@ class StackSlotAllocator:
                     remaining.append((vreg_id, def_instr, hw_reg, uses))
                     continue
 
-                all_returns = all(isinstance(use, Return) for use in uses)
-
-                if all_returns:
-                    # Original path: only check for clobbering calls
-                    if self._is_return_path_safe(hw_reg, def_pos, uses, instr_positions, noop_instrs):
-                        self._mark_coalesceable(vreg_id, hw_reg, coalesceable)
-                        noop_instrs.add(id(def_instr))
-                    else:
-                        remaining.append((vreg_id, def_instr, hw_reg, uses))
+                if self._is_hw_unclobbered_in_range(
+                    hw_reg, vreg_id, def_instr, uses, instr_positions, noop_instrs
+                ):
+                    self._mark_coalesceable(vreg_id, hw_reg, coalesceable)
+                    noop_instrs.add(id(def_instr))
                 else:
-                    # Extended path: full clobber analysis
-                    if self._is_hw_unclobbered_in_range(
-                        hw_reg, vreg_id, def_instr, uses, instr_positions, noop_instrs
-                    ):
-                        self._mark_coalesceable(vreg_id, hw_reg, coalesceable)
-                        noop_instrs.add(id(def_instr))
-                    else:
-                        remaining.append((vreg_id, def_instr, hw_reg, uses))
+                    remaining.append((vreg_id, def_instr, hw_reg, uses))
 
             candidates = remaining
 
@@ -687,49 +676,17 @@ class StackSlotAllocator:
                         coalesceable[instr.dest] = hw_reg
                         return
 
-    def _is_return_path_safe(
-        self,
-        hw_reg: str,
-        def_pos: Tuple[int, int],
-        uses: List,
-        instr_positions: Dict[Any, Tuple[int, int]],
-        noop_instrs: Set[int],
-    ) -> bool:
-        """Check if a return-only coalescence is safe (no clobbering calls)."""
-        def_block_id, def_idx = def_pos
-
-        for use_instr in uses:
-            use_pos = instr_positions.get(id(use_instr))
-            if use_pos is None:
-                continue
-
-            use_block_id, use_idx = use_pos
-
-            if use_block_id == def_block_id:
-                block = self.func.blocks[def_block_id]
-                for i in range(def_idx + 1, use_idx):
-                    instr = block.instructions[i]
-                    if id(instr) in noop_instrs:
-                        continue
-                    if isinstance(instr, (Call, TraitDispatch)):
-                        preserved = set()
-                        if getattr(instr, 'preserves_attr', None):
-                            preserved = set(instr.preserves_attr.registers)
-                        if hw_reg not in preserved:
-                            return False
-            else:
-                # Cross-block: conservatively check for any clobbering call
-                for block in self.func.blocks.values():
-                    for instr in block.instructions:
-                        if id(instr) in noop_instrs:
-                            continue
-                        if isinstance(instr, (Call, TraitDispatch)):
-                            preserved = set()
-                            if getattr(instr, 'preserves_attr', None):
-                                preserved = set(instr.preserves_attr.registers)
-                            if hw_reg not in preserved:
-                                return False
-        return True
+    def _get_vreg_from_def(self, def_instr: Any, vreg_id: int) -> Optional[VirtualRegister]:
+        """Extract VirtualRegister object from its defining instruction."""
+        if isinstance(def_instr, (Call, TraitDispatch)):
+            if def_instr.returns:
+                for r in def_instr.returns:
+                    if isinstance(r, VirtualRegister) and r.id == vreg_id:
+                        return r
+        elif hasattr(def_instr, 'dest') and isinstance(def_instr.dest, VirtualRegister):
+            if def_instr.dest.id == vreg_id:
+                return def_instr.dest
+        return None
 
     def _is_hw_unclobbered_in_range(
         self,
@@ -743,14 +700,14 @@ class StackSlotAllocator:
         """
         Check if a hardware register is unclobbered between def and all uses.
 
-        All uses must be in the same block as the def. Scans instructions
-        between def_idx and max(use_idx) for anything that clobbers the
-        hardware register.
+        Supports both same-block and cross-block uses. For cross-block uses,
+        uses liveness analysis to identify which blocks the vreg is live in
+        and checks only those blocks for clobbers.
 
         Args:
             hw_reg: Hardware register name ('A', 'B', 'X', 'Y')
             vreg_id: The vreg ID being checked
-            def_instr: The Move instruction that defines the vreg
+            def_instr: The instruction that defines the vreg
             uses: List of instructions that use the vreg
             instr_positions: Map from instruction id to (block_id, instr_idx)
             noop_instrs: Set of instruction ids to skip (from previous pass)
@@ -764,24 +721,68 @@ class StackSlotAllocator:
 
         def_block_id, def_idx = def_pos
 
-        # All uses must be in the same block
-        max_use_idx = def_idx
+        # Classify uses into same-block and cross-block
+        same_block_max_idx = def_idx
+        cross_block_uses = []  # (block_id, instr_idx)
         for use_instr in uses:
             use_pos = instr_positions.get(id(use_instr))
             if use_pos is None:
                 return False
             use_block_id, use_idx = use_pos
-            if use_block_id != def_block_id:
-                return False  # Cross-block: bail conservatively
-            max_use_idx = max(max_use_idx, use_idx)
+            if use_block_id == def_block_id:
+                same_block_max_idx = max(same_block_max_idx, use_idx)
+            else:
+                cross_block_uses.append((use_block_id, use_idx))
 
-        # Scan instructions between def and last use for clobbers
+        # Determine scan range in def block
         block = self.func.blocks[def_block_id]
-        for i in range(def_idx + 1, max_use_idx):
-            instr = block.instructions[i]
-            if self._instruction_clobbers_register(instr, hw_reg, vreg_id, noop_instrs):
+        if cross_block_uses:
+            # Must survive to block exit — scan all instructions after def
+            scan_end = len(block.instructions)
+        else:
+            scan_end = same_block_max_idx
+
+        # Check def block
+        for i in range(def_idx + 1, scan_end):
+            if self._instruction_clobbers_register(block.instructions[i], hw_reg,
+                                                    vreg_id, noop_instrs):
                 return False
 
+        if not cross_block_uses:
+            return True
+
+        # Cross-block: get vreg object and its live blocks
+        vreg_obj = self._get_vreg_from_def(def_instr, vreg_id)
+        if not vreg_obj:
+            return False
+        live_ranges = self.liveness_analyzer.get_live_ranges()
+        live_blocks = live_ranges.get(vreg_obj, set())
+
+        # Build set of use block ids with max use index per block
+        use_block_max: Dict[int, int] = {}
+        for ub_id, u_idx in cross_block_uses:
+            use_block_max[ub_id] = max(use_block_max.get(ub_id, 0), u_idx)
+
+        # Check each live block (excluding def block, already checked)
+        for block_id in live_blocks:
+            if block_id == def_block_id:
+                continue
+            blk = self.func.blocks.get(block_id)
+            if not blk:
+                continue
+
+            if block_id in use_block_max:
+                # Use block: check from start to max use index
+                for i in range(0, use_block_max[block_id]):
+                    if self._instruction_clobbers_register(blk.instructions[i], hw_reg,
+                                                            vreg_id, noop_instrs):
+                        return False
+            else:
+                # Intermediate block (vreg is live but not used): check all instructions
+                for instr in blk.instructions:
+                    if self._instruction_clobbers_register(instr, hw_reg,
+                                                            vreg_id, noop_instrs):
+                        return False
         return True
 
     def _instruction_clobbers_register(
@@ -889,6 +890,11 @@ class StackSlotAllocator:
                 hasattr(instr, 'dest') and isinstance(instr.dest, VirtualRegister) and
                 instr.dest.id == vreg_id):
                 return False
+            # CMP preserves A on 65816 — it only sets flags. If the left operand
+            # is our vreg (already in A), no load is needed and A survives.
+            if isinstance(instr, Compare):
+                if isinstance(instr.left, VirtualRegister) and instr.left.id == vreg_id:
+                    return False
             return True
 
         if isinstance(instr, Load):
