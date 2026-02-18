@@ -525,11 +525,16 @@ class RegisterAllocator:
         if not self.instr_liveness:
             return self._has_explicit_hw_defs(hw_reg)  # conservative fallback
 
-        from r65.compiler.mir.nodes import HardwareRegister
+        from r65.compiler.mir.nodes import HardwareRegister, Move
         for block_id, block in self.mir_func.blocks.items():
             for instr_idx, instr in enumerate(block.instructions):
                 if hasattr(instr, 'dest') and isinstance(instr.dest, HardwareRegister):
                     if instr.dest.name == hw_reg:
+                        # Move from our vreg to the hw reg is a no-op if hint is honored
+                        if (isinstance(instr, Move) and
+                                isinstance(instr.source, VirtualRegister) and
+                                instr.source.id == vreg.id):
+                            continue
                         # Check if vreg is live at this write point
                         if instr_idx > 0:
                             if self.instr_liveness.is_live_after(vreg, block_id, instr_idx - 1):

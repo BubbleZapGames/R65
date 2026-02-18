@@ -44,7 +44,8 @@ class ProgramCodeGenerator:
 
     def generate(self, mir_program: MIRProgram, output_file: Optional[str] = None,
                  opt_level: int = 1, debug: bool = False,
-                 disable_scratch_params: bool = False) -> str:
+                 disable_scratch_params: bool = False,
+                 disable_loop_promotion: bool = False) -> str:
         """
         Generate WLA-DX assembly from MIR program.
 
@@ -161,6 +162,11 @@ class ProgramCodeGenerator:
 
         # Create scratch pool once for all functions
         scratch_pool = self.func_gen.func_gen._create_scratch_pool(mir_program)
+
+        # Run loop register promotion analysis (before scratch params)
+        if not disable_loop_promotion:
+            from r65.compiler.analysis.loop_register_promotion import analyze_loop_promotion
+            analyze_loop_promotion(mir_program)
 
         # Run scratch parameter promotion analysis (before generating functions)
         if not disable_scratch_params:
