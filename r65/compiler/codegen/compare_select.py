@@ -259,6 +259,23 @@ class CompareSelector(BaseSelector):
                 self._emit_instr(Opcode.TYA, comment="Transfer Y to A for comparison")
             return None, 'SWAPPED'
 
+    def _can_elide_cmp_zero(self, reg: str, right_operand, is_immediate: bool) -> bool:
+        """
+        Check if CMP/CPX/CPY #0 can be skipped because N/Z flags already
+        reflect the register's value from a prior instruction (LDA, DEX,
+        TXA, XBA, etc.).
+
+        Only safe for unsigned types — signed ordered comparisons need
+        the V flag which only CMP/CPX/CPY sets.
+        """
+        return (
+            is_immediate
+            and isinstance(right_operand, Immediate)
+            and right_operand.value == 0
+            and not self._is_signed_type()
+            and self.emitter.nz_valid_for == reg
+        )
+
     def _emit_comparison(self, left_loc, right_operand, is_immediate: bool):
         """
         Emit appropriate comparison instruction.
@@ -273,14 +290,10 @@ class CompareSelector(BaseSelector):
         else:
             # Memory or virtual register - load to A and compare
             self._emit_load_store('LDA', left_loc)
-            # LDA sets N and Z flags. For unsigned comparisons against 0,
-            # CMP #0 is redundant since the branch codegen only needs Z
-            # (via _emit_zero_comparison_branch). For signed types, keep
-            # CMP #0 because the standard signed branch codegen (BVC/EOR)
-            # needs the V flag which LDA does not set.
-            if (is_immediate and isinstance(right_operand, Immediate)
-                    and right_operand.value == 0
-                    and not self._is_signed_type()):
+            # LDA sets N/Z (tracked by emitter). For unsigned comparisons
+            # against 0, CMP #0 is redundant. For signed types, keep CMP
+            # because the standard signed branch codegen needs V flag.
+            if self._can_elide_cmp_zero('A', right_operand, is_immediate):
                 return
             self._emit_cmp('CMP', right_operand, is_immediate)
 
@@ -289,14 +302,22 @@ class CompareSelector(BaseSelector):
         reg = left_loc.hw_register
 
         if reg == 'X':
+            if self._can_elide_cmp_zero('X', right_operand, is_immediate):
+                return
             self._emit_cmp('CPX', right_operand, is_immediate)
         elif reg == 'Y':
+            if self._can_elide_cmp_zero('Y', right_operand, is_immediate):
+                return
             self._emit_cmp('CPY', right_operand, is_immediate)
         elif reg == 'A':
+            if self._can_elide_cmp_zero('A', right_operand, is_immediate):
+                return
             self._emit_cmp('CMP', right_operand, is_immediate)
         elif reg == 'B':
-            # B register - transfer to A and compare
+            # B register - XBA transfers B's value to A (sets N/Z)
             self.parent._access_b_value_in_a()
+            if self._can_elide_cmp_zero('A', right_operand, is_immediate):
+                return
             self._emit_cmp('CMP', right_operand, is_immediate)
             # Note: Don't restore A since this is just a comparison
             # State is now SWAPPED (A=B, B=A)

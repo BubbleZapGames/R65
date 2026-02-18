@@ -272,6 +272,9 @@ class AssemblyEmitter:
         # Track current processor modes for optimization
         self._current_accu_mode = 8  # Default m8 mode
         self._current_index_mode = 16  # Default x16 mode
+        # Track which register (if any) the N/Z flags currently reflect.
+        # Used to elide redundant CMP/CPX/CPY #0 when flags are already valid.
+        self.nz_valid_for: str | None = None  # 'A', 'X', 'Y', or None
 
     # ========================================================================
     # Low-Level Node Emission
@@ -293,10 +296,12 @@ class AssemblyEmitter:
             source_loc: Optional source location for debug info
         """
         self.nodes.append(Instruction(opcode, operand, comment, source_loc))
+        self._update_nz_tracking(opcode)
 
     def emit_raw(self, text: str):
         """Emit raw assembly text."""
         self.nodes.append(RawAsm(text))
+        self.nz_valid_for = None  # Unknown effect on flags
 
     def emit_directive(self, text: str):
         """
@@ -514,6 +519,7 @@ class AssemblyEmitter:
         # Strip trailing colon (emit_node adds it back)
         label_name = label.rstrip(':')
         self.nodes.append(Label(label_name, source_loc))
+        self.nz_valid_for = None  # Labels are merge points; flags ambiguous
 
     def emit_local_label(self, label: str):
         """
@@ -526,6 +532,74 @@ class AssemblyEmitter:
             __L1:
         """
         self.emit_label(label)
+
+    # ========================================================================
+    # N/Z Flag Tracking
+    # ========================================================================
+
+    # Mnemonics that always set N/Z for A (all addressing modes)
+    _NZ_A_MNEMONICS = frozenset({'LDA', 'AND', 'ORA', 'EOR', 'ADC', 'SBC'})
+    # Mnemonics that always set N/Z for X
+    _NZ_X_MNEMONICS = frozenset({'LDX'})
+    # Mnemonics that always set N/Z for Y
+    _NZ_Y_MNEMONICS = frozenset({'LDY'})
+    # Accumulator-form implied instructions that set N/Z for A
+    _NZ_A_OPCODES = frozenset({
+        Opcode.TXA, Opcode.TYA, Opcode.PLA, Opcode.XBA, Opcode.TSC,
+        Opcode.ASL, Opcode.LSR, Opcode.ROL, Opcode.ROR,  # Accumulator shifts
+        Opcode.INC, Opcode.DEC,  # Accumulator inc/dec
+    })
+    # Implied instructions that set N/Z for X
+    _NZ_X_OPCODES = frozenset({
+        Opcode.TAX, Opcode.PLX, Opcode.INX, Opcode.DEX, Opcode.TSX,
+    })
+    # Implied instructions that set N/Z for Y
+    _NZ_Y_OPCODES = frozenset({
+        Opcode.TAY, Opcode.PLY, Opcode.INY, Opcode.DEY,
+    })
+    # Instructions that do NOT affect N/Z flags (tracking preserved)
+    _NZ_PRESERVE_MNEMONICS = frozenset({
+        'STA', 'STX', 'STY', 'STZ',
+        'PHA', 'PHX', 'PHY', 'PHB', 'PHD', 'PHK',
+        'TXS', 'TCS', 'TCD',  # Transfers to S/SP/D don't affect N/Z
+        'NOP', 'WDM',
+        'BRA', 'BRL', 'BEQ', 'BNE', 'BCC', 'BCS', 'BMI', 'BPL', 'BVC', 'BVS',
+        'JMP',
+        'CLC', 'SEC', 'CLI', 'SEI', 'CLD', 'SED', 'CLV',
+        'REP', 'SEP',  # Only affect M/X bits (#$20/#$10) in compiler usage
+    })
+
+    def _update_nz_tracking(self, opcode: Opcode):
+        """
+        Update N/Z flag tracking after emitting an instruction.
+
+        Tracks which register (A, X, or Y) the processor N/Z flags currently
+        reflect. Used to elide redundant CMP/CPX/CPY #0 instructions when
+        the flags are already valid from a prior load, transfer, or ALU op.
+        """
+        mn = mnemonic(opcode)
+
+        # Check mnemonic-based sets first (covers all addressing modes)
+        if mn in self._NZ_A_MNEMONICS:
+            self.nz_valid_for = 'A'
+        elif mn in self._NZ_X_MNEMONICS:
+            self.nz_valid_for = 'X'
+        elif mn in self._NZ_Y_MNEMONICS:
+            self.nz_valid_for = 'Y'
+        # Check specific opcodes (implied/accumulator forms)
+        elif opcode in self._NZ_A_OPCODES:
+            self.nz_valid_for = 'A'
+        elif opcode in self._NZ_X_OPCODES:
+            self.nz_valid_for = 'X'
+        elif opcode in self._NZ_Y_OPCODES:
+            self.nz_valid_for = 'Y'
+        # Instructions that don't touch N/Z — preserve tracking
+        elif mn in self._NZ_PRESERVE_MNEMONICS:
+            pass
+        else:
+            # Everything else (CMP, CPX, CPY, BIT, PLP, JSR, JSL, RTI,
+            # memory-form INC/DEC/ASL/LSR/ROL/ROR, etc.) — clear tracking
+            self.nz_valid_for = None
 
     # ========================================================================
     # Symbol Definitions
