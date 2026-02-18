@@ -19,7 +19,7 @@ from r65.compiler.mir.nodes import (
     VirtualRegister, MIRFunction, Move, Return, HardwareRegister, Call,
     Store, Load, BinaryOp, UnaryOp, TypeConvert, Compare, BitTest, Rotate,
     ToBool, LoadIndirect, StoreIndirect, StatusFlagRead, InlineAsm,
-    TraitDispatch,
+    TraitDispatch, RestoreRegister,
 )
 from r65.compiler.mir.liveness import LivenessAnalyzer
 from r65.compiler.hir.unified_type_utils import get_unified_type_size
@@ -445,17 +445,13 @@ class StackSlotAllocator:
                             vreg_uses[vreg_id] = []
                         vreg_uses[vreg_id].append(instr)
 
-                elif isinstance(instr, (BinaryOp,)):
-                    # BinaryOp implicitly produces its result in A.
+                elif isinstance(instr, (BinaryOp, UnaryOp)):
+                    # BinaryOp/UnaryOp implicitly produce their result in A.
                     # Track dest vreg as defined-in-A for coalescence,
                     # but only if no prior def exists. This avoids double-counting
                     # vregs first loaded from A (Move vreg <- A) then modified
                     # in-place (BinaryOp vreg = vreg + 1) — the Move def already
                     # enables coalescence for those.
-                    # NOTE: Only BinaryOp is included here because its codegen
-                    # handles HARDWARE A dest (skips STA). Other ALU types
-                    # (UnaryOp, TypeConvert, Rotate, ToBool) do byte-by-byte
-                    # STA which fails for HARDWARE A destinations.
                     if isinstance(instr.dest, VirtualRegister):
                         vreg_id = instr.dest.id
                         if vreg_id not in vreg_defs:
@@ -518,7 +514,7 @@ class StackSlotAllocator:
         # For ALU-def vregs (BinaryOp/UnaryOp/etc.), restrict to cases where
         # all uses are Return or Move-to-A. This prevents conflicts when another
         # vreg is also live in A (the ALU op would clobber it).
-        _alu_def_types = (BinaryOp,)
+        _alu_def_types = (BinaryOp, UnaryOp)
         candidates = []
         for vreg_id, defs in vreg_defs.items():
             if len(defs) != 1:
@@ -528,14 +524,24 @@ class StackSlotAllocator:
                 continue
             uses = vreg_uses.get(vreg_id, [])
 
-            # ALU-def vregs: only safe if the value is consumed by Move or
-            # Return. All Move variants just read A (STA/TAX/TAY preserve A).
-            # Using it as a BinaryOp operand could conflict with another
-            # vreg that's also in A.
+            # ALU-def vregs: only safe if the value is consumed by Move,
+            # Return, Store (as value source), or as the LEFT operand of
+            # a BinaryOp (chained arithmetic).
+            # - Move variants just read A (STA/TAX/TAY preserve A).
+            # - Store from our vreg emits STA directly from A (preserves A).
+            # - BinaryOp-left reads A first (no clobber), then overwrites A
+            #   with the result — safe because the clobber analysis handles it
+            #   (the BinaryOp at max_use_idx is not scanned for clobbers).
             if isinstance(def_instr, _alu_def_types):
                 all_uses_safe = all(
                     isinstance(use, Return) or
-                    isinstance(use, Move)
+                    isinstance(use, Move) or
+                    (isinstance(use, Store) and
+                     isinstance(use.source, VirtualRegister) and
+                     use.source.id == vreg_id) or
+                    (isinstance(use, BinaryOp) and
+                     isinstance(use.left, VirtualRegister) and
+                     use.left.id == vreg_id)
                     for use in uses
                 )
                 if not all_uses_safe:
@@ -668,7 +674,7 @@ class StackSlotAllocator:
         self, vreg_id: int, hw_reg: str, coalesceable: Dict[VirtualRegister, str]
     ):
         """Mark a vreg as hw-coalesceable by finding its def instruction."""
-        _def_types = (Move, BinaryOp)
+        _def_types = (Move, BinaryOp, UnaryOp)
         for block in self.func.blocks.values():
             for instr in block.instructions:
                 if isinstance(instr, (Call, TraitDispatch)):
@@ -879,7 +885,7 @@ class StackSlotAllocator:
             # ALU ops route through A, clobbering it — UNLESS the dest is our vreg,
             # in which case the op re-defines our vreg and leaves its new value in A
             # (analogous to Store exception: our vreg's value stays in A).
-            if (isinstance(instr, (BinaryOp,)) and
+            if (isinstance(instr, (BinaryOp, UnaryOp)) and
                 hasattr(instr, 'dest') and isinstance(instr.dest, VirtualRegister) and
                 instr.dest.id == vreg_id):
                 return False
@@ -927,14 +933,31 @@ class StackSlotAllocator:
 
         X/Y are only modified by:
         - Move to X/Y (LDX, LDY, TAX, TAY, TXY, TYX)
-        - Calls that don't preserve X/Y
+        - BinaryOp with dest=HardwareRegister X/Y (INX, DEX, INY, DEY)
+        - RestoreRegister for X/Y (PLX, PLY)
+        - Calls that don't preserve X/Y (handled in caller)
         """
         if isinstance(instr, Move):
+            if isinstance(instr.dest, HardwareRegister) and instr.dest.name == hw_reg:
+                # Move to our register — unless source is our vreg (no-op)
+                if isinstance(instr.source, VirtualRegister) and instr.source.id == vreg_id:
+                    return False  # Value already in register
+                return True
+            return False
+
+        if isinstance(instr, BinaryOp):
+            # INX/DEX/INY/DEY patterns: BinaryOp dest=HardwareRegister
             if isinstance(instr.dest, HardwareRegister) and instr.dest.name == hw_reg:
                 return True
             return False
 
-        # Other instructions don't typically clobber X/Y
+        if isinstance(instr, RestoreRegister):
+            # PLX/PLY restores clobber the register
+            if instr.register.name == hw_reg:
+                return True
+            return False
+
+        # Other instructions don't modify X/Y
         # (they may use X/Y for indexing but don't modify them)
         return False
 

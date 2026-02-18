@@ -902,8 +902,13 @@ class InstructionSelector:
         else:
             self._ensure_m8_mode()
 
-        # Load operand
-        self._emit_load('LDA', operand_loc)
+        # Load operand into A (if not already there)
+        if operand_loc.kind == LocationKind.HARDWARE and operand_loc.hw_register == 'A':
+            pass  # Already in A
+        elif operand_loc.kind == LocationKind.HARDWARE:
+            self._emit_register_transfer(operand_loc.hw_register, 'A')
+        else:
+            self._emit_load('LDA', operand_loc)
 
         # Perform operation
         if op == '!':
@@ -927,8 +932,13 @@ class InstructionSelector:
         else:
             raise unsupported_operation("unary operation", op, source_loc=self._current_source_loc)
 
-        # Store result
-        self._emit_store('STA', dest_loc)
+        # Store result from A (if destination is not A)
+        if dest_loc.kind == LocationKind.HARDWARE and dest_loc.hw_register == 'A':
+            pass  # Result is already in A, no need to store
+        elif dest_loc.kind == LocationKind.HARDWARE:
+            self._emit_register_transfer('A', dest_loc.hw_register)
+        else:
+            self._emit_store('STA', dest_loc)
 
     # ========================================================================
     # Compare/BitTest/Rotate Operations (delegated)
