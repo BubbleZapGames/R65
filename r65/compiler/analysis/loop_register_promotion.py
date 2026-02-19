@@ -115,6 +115,13 @@ def _analyze_function(func: MIRFunction) -> int:
                     hint = 'Y'
                     used_hints.add('Y')
 
+        # Skip params that didn't get a register hint.
+        # A u8 param without a hint ends up in a frame slot.
+        # LDA frame_slot,S costs the same as LDA original_param,S.
+        # Promoting it just creates an unnecessary local + frame + copy.
+        if hint is None:
+            continue
+
         # Create new local vreg
         new_vreg = func.vreg_allocator.alloc(
             type_info=vreg.type_info,
@@ -122,6 +129,9 @@ def _analyze_function(func: MIRFunction) -> int:
             register_hint=hint,
         )
         replacements[vreg.id] = new_vreg
+
+        # Record the hw vreg mapping for pre-allocation in codegen
+        func.loop_promoted_hw_vregs[hint] = new_vreg
 
     if not replacements:
         return 0

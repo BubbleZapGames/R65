@@ -175,6 +175,9 @@ class ProgramCodeGenerator:
             from r65.compiler.analysis.loop_register_promotion import analyze_loop_promotion
             analyze_loop_promotion(mir_program)
 
+        # Compute max outgoing arg bytes for caller-owned outgoing args convention
+        self._compute_outgoing_arg_bytes(mir_program)
+
         # Generate code for each bank
         for bank_num in sorted(functions_by_bank.keys()):
             bank_functions = functions_by_bank[bank_num]
@@ -448,6 +451,34 @@ class ProgramCodeGenerator:
                         volatile_addresses.add(static.storage_attr.address)
 
         return volatile_names, volatile_addresses
+
+    def _compute_outgoing_arg_bytes(self, mir_program: MIRProgram):
+        """
+        Compute max outgoing stack argument bytes for each function.
+
+        For the caller-owned outgoing args convention, each function reserves
+        space at the bottom of its frame for the largest set of stack arguments
+        across all call sites. The caller writes args via STA d,S instead of PHA.
+        """
+        from r65.compiler.mir.nodes import Call, TraitDispatch, ArgumentMechanism
+        from r65.compiler.codegen.type_utils import get_type_size
+
+        for func in mir_program.functions:
+            max_bytes = 0
+            for block in func.blocks.values():
+                for instr in block.instructions:
+                    if isinstance(instr, (Call, TraitDispatch)):
+                        call_bytes = 0
+                        for arg in instr.args:
+                            if arg.mechanism == ArgumentMechanism.STACK:
+                                if arg.param_type is not None:
+                                    call_bytes += get_type_size(arg.param_type)
+                                elif hasattr(arg.value, 'type_info') and arg.value.type_info:
+                                    call_bytes += get_type_size(arg.value.type_info)
+                                else:
+                                    call_bytes += 1
+                        max_bytes = max(max_bytes, call_bytes)
+            func.max_outgoing_arg_bytes = max_bytes
 
     def _organize_functions_by_bank(self, functions: List[MIRFunction]) -> Dict[int, List[MIRFunction]]:
         """

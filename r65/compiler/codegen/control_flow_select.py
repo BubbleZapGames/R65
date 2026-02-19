@@ -691,34 +691,16 @@ class ControlFlowInstructionSelector(BaseSelector):
 
     def _get_stack_param_bytes(self) -> int:
         """
-        Calculate total bytes of stack parameters for current function.
+        Calculate total bytes of stack parameters for callee cleanup.
 
-        Stack parameters are those with no binding (binding is None)
-        and not promoted to scratch parameters.
-        Register-bound parameters have RegisterBinding, variable-bound
-        have VariableBinding.
+        With caller-owned outgoing args convention, the callee does NOT clean up
+        stack parameters — they live in the caller's outgoing area. The callee
+        only needs to deallocate its own frame (locals + own outgoing area).
 
         Returns:
-            Number of bytes passed via stack parameters
+            Always 0 (caller owns the parameter space)
         """
-        from r65.compiler.codegen.type_utils import get_type_size
-
-        if not self.current_function:
-            return 0
-
-        scratch_addrs = self.current_function.scratch_param_addrs
-        is_trait_method = getattr(self.current_function, 'is_trait_method', False)
-        total_bytes = 0
-        for i, param in enumerate(self.current_function.parameters):
-            # Skip self parameter for trait methods (passed in Y, not on stack)
-            if is_trait_method and i == 0 and param.name == 'self':
-                continue
-            # Stack parameters have no binding (binding is None)
-            # and are not promoted to scratch
-            if param.binding is None and i not in scratch_addrs:
-                total_bytes += get_type_size(param.param_type)
-
-        return total_bytes
+        return 0
 
     def _get_return_register_count(self) -> int:
         """

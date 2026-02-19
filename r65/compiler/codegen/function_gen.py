@@ -93,11 +93,14 @@ class FunctionCodeGenerator:
         from r65.compiler.mir.liveness import InstructionLivenessAnalyzer
         instr_liveness = InstructionLivenessAnalyzer(mir_func)
 
+        outgoing_arg_bytes = mir_func.max_outgoing_arg_bytes
+
         reg_alloc = RegisterAllocator(
             scratch_pool=scratch_pool,
             mir_func=mir_func,
             prologue_stack_bytes=prologue_bytes,
-            instr_liveness=instr_liveness
+            instr_liveness=instr_liveness,
+            outgoing_arg_bytes=outgoing_arg_bytes
         )
 
         # Pre-allocate scratch-promoted parameter vregs to their scratch locations
@@ -112,6 +115,21 @@ class FunctionCodeGenerator:
                     size=vreg_size
                 )
                 reg_alloc.allocations[vreg.id] = location
+
+        # Pre-allocate loop-promoted vregs to hardware registers
+        # These vregs were assigned X/Y hints by loop register promotion;
+        # pre-allocating them prevents the slot allocator from creating
+        # unnecessary frame slots.
+        for hw_reg, vreg in mir_func.loop_promoted_hw_vregs.items():
+            location = PhysicalLocation(
+                kind=LocationKind.HARDWARE,
+                hw_register=hw_reg,
+                size=2  # X/Y are always 16-bit
+            )
+            reg_alloc.allocations[vreg.id] = location
+            hw_alloc = reg_alloc.get_hw_alloc(hw_reg)
+            hw_alloc.allocated_vreg = vreg
+            hw_alloc.is_bound = True
 
         # Pre-allocate self pointer vreg to Y register for trait methods
         # Self is passed in Y by the caller/dispatch wrapper
@@ -133,7 +151,10 @@ class FunctionCodeGenerator:
         # Get frame size from allocator - all functions allocate frames for locals if needed
         # Note: The unified slot allocator already computes final param offsets
         # accounting for frame_size, so no post-hoc adjustment is needed.
-        frame_size = reg_alloc.get_stack_frame_size()
+        local_frame_size = reg_alloc.get_stack_frame_size()
+
+        # Total frame includes outgoing arg area at bottom
+        frame_size = local_frame_size + outgoing_arg_bytes
 
         # Update register allocator with frame info
         reg_alloc.frame_size = frame_size

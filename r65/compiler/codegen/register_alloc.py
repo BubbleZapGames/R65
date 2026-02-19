@@ -292,7 +292,8 @@ class RegisterAllocator:
                  scratch_pool: Optional[ScratchRegisterPool] = None,
                  mir_func: Optional[MIRFunction] = None,
                  prologue_stack_bytes: int = 0,
-                 instr_liveness: Optional['InstructionLivenessAnalyzer'] = None):
+                 instr_liveness: Optional['InstructionLivenessAnalyzer'] = None,
+                 outgoing_arg_bytes: int = 0):
         """
         Initialize register allocator.
 
@@ -301,11 +302,13 @@ class RegisterAllocator:
             mir_func: MIR function for liveness analysis (enables slot reuse)
             prologue_stack_bytes: Bytes pushed by prologue (affects stack param offsets)
             instr_liveness: Instruction-level liveness analyzer (for precise liveness)
+            outgoing_arg_bytes: Caller-owned outgoing argument area size
         """
         self.scratch_pool = scratch_pool or ScratchRegisterPool()
         self.mir_func = mir_func
         self.prologue_stack_bytes = prologue_stack_bytes
         self.instr_liveness = instr_liveness
+        self.outgoing_arg_bytes = outgoing_arg_bytes
         self.slot_allocator: Optional[StackSlotAllocator] = None
         self.slot_allocation: Optional[SlotAllocation] = None
         self.allocations: Dict[int, PhysicalLocation] = {}  # vreg.id → PhysicalLocation
@@ -458,7 +461,8 @@ class RegisterAllocator:
             slot_num = self.slot_allocation.register_to_slot.get(vreg)
             if slot_num is not None:
                 # Convert slot number to stack offset
-                stack_offset = self.stack_base_offset + slot_num
+                # Locals are shifted above the outgoing arg area
+                stack_offset = self.stack_base_offset + self.outgoing_arg_bytes + slot_num
                 location = PhysicalLocation(
                     kind=LocationKind.STACK,
                     stack_offset=stack_offset,
@@ -711,7 +715,8 @@ class RegisterAllocator:
                 preassigned=preassigned,
                 prologue_stack_bytes=self.prologue_stack_bytes,
                 instr_liveness=self.instr_liveness,
-                pre_allocated_vregs=pre_allocated_vregs
+                pre_allocated_vregs=pre_allocated_vregs,
+                outgoing_arg_bytes=self.outgoing_arg_bytes
             )
             self.slot_allocation = self.slot_allocator.allocate()
 

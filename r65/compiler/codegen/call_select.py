@@ -249,41 +249,39 @@ class CallInstructionSelector(BaseSelector):
             self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, comment)
             self.parent.emitter.emit_accu_mode(8)
 
-    def _push_multibyte_value(self, arg_loc, source_size: int, target_size: int, is_stack: bool):
+    def _store_multibyte_outgoing(self, arg, arg_loc, source_size: int, target_size: int, outgoing_offset: int):
         """
-        Push a multi-byte value to stack with zero-extension as needed.
+        Store a multi-byte value to outgoing area byte by byte.
 
-        Handles stack drift compensation for stack-based source locations.
-        Bytes are pushed high-to-low (bank first for 24-bit, high first for 16-bit).
+        Handles zero-extension when source is smaller than target.
+        Stores in little-endian order (low byte at lowest offset).
+        Must be called in m8 mode.
 
         Args:
+            arg: Argument being stored
             arg_loc: Source location
             source_size: Size of source value in bytes
             target_size: Size of target parameter in bytes
-            is_stack: True if arg_loc is on stack (needs drift compensation)
+            outgoing_offset: Base stack-relative offset for storage
         """
-        push_count = 0  # Track pushes for stack drift compensation
+        from r65.compiler.codegen.asm_nodes import StackOffset
 
-        # Push bytes from high to low
-        for byte_idx in range(target_size - 1, -1, -1):
+        for byte_idx in range(target_size):
             if byte_idx >= source_size:
-                # Zero-extend: push 0 for bytes beyond source size
+                # Zero-extend: store 0 for bytes beyond source size
                 byte_name = {2: "bank", 1: "high", 0: "low"}.get(byte_idx, f"byte{byte_idx}")
                 self._emit_load_immediate('A', 0, f"Zero-extend {byte_name} byte")
-                self._emit_push('A', f"Push {byte_name} byte (zero)")
             else:
-                # Load from source location
                 byte_name = {2: "bank", 1: "high", 0: "low"}.get(byte_idx, f"byte{byte_idx}")
-                offset = byte_idx
-                if is_stack:
-                    offset += push_count  # Compensate for stack drift
-                if offset > 0:
-                    loc = self.parent._offset_location(arg_loc, offset)
+                if byte_idx > 0:
+                    loc = self.parent._offset_location(arg_loc, byte_idx)
                 else:
                     loc = arg_loc
                 self.parent._emit_load('LDA', loc, f"Load {byte_name} byte")
-                self._emit_push('A', f"Push {byte_name} byte")
-            push_count += 1
+            self.emitter.emit_instr(
+                Opcode.STA_STACK, StackOffset(outgoing_offset + byte_idx),
+                f"Store {byte_name} byte to outgoing"
+            )
 
     # ========================================================================
     # Main Call Selection
@@ -361,17 +359,20 @@ class CallInstructionSelector(BaseSelector):
         if needs_dbr_restore:
             self._emit_pull('B', "Restore data bank (caller)")
 
-        # Step 5: Stack arguments are cleaned up by callee (not caller)
-        # The callee's epilogue handles stack parameter cleanup before RTS/RTL
-
-        # Step 6: Collect return values (in callee's exit mode)
+        # Step 5: Collect return values (in callee's exit mode)
         self._emit_return_value_collection(instr)
 
-        # Step 7: Restore mode after receiving return value
+        # Step 5.5: Caller cleanup of PHA-pushed args (if spill fallback was used)
+        # Done after return value collection so A/X/Y return values are safely
+        # stored in their virtual register destinations before we clobber A.
+        if stack_bytes_pushed > 0:
+            self._emit_caller_arg_cleanup(stack_bytes_pushed)
+
+        # Step 6: Restore mode after receiving return value
         # If callee exited in m16 (u16 return), switch back to m8
         self._emit_exit_mode_restore(instr)
 
-        # Step 7.5: Reload spilled hardware registers (region-based)
+        # Step 6.5: Reload spilled hardware registers (region-based)
         # Only reload registers where this is the last call in the region
         reloads = self._compute_hw_reloads(instr)
         self._emit_hw_reloads(reloads)
@@ -421,9 +422,12 @@ class CallInstructionSelector(BaseSelector):
         # Invalidate XBA state after dispatch
         self.parent._invalidate_xba_state()
 
-        # Collect return values (reuse existing helper - works with any instr
-        # that has .returns and callee_return_type)
+        # Collect return values
         self._emit_return_value_collection(instr)
+
+        # Caller cleanup of PHA-pushed args (if spill fallback was used)
+        if stack_bytes_pushed > 0:
+            self._emit_caller_arg_cleanup(stack_bytes_pushed)
 
         # Reload spilled registers
         reloads = self._compute_trait_dispatch_reloads(instr)
@@ -568,12 +572,10 @@ class CallInstructionSelector(BaseSelector):
         """Emit argument setup for trait dispatch.
 
         Self pointer is passed in Y (SELF_Y mechanism), other args are stack-passed.
-        Stack args are pushed first, then Y is loaded with self address last.
+        Uses STA to outgoing area when no spills active, PHA fallback when spills active.
         """
         from r65.compiler.codegen.type_utils import get_type_size
-        from r65.compiler.codegen.constants import M_FLAG
 
-        stack_bytes_pushed = 0
         stack_args = [arg for arg in instr.args if arg.mechanism == ArgumentMechanism.STACK]
         self_y_arg = None
         for arg in instr.args:
@@ -581,24 +583,39 @@ class CallInstructionSelector(BaseSelector):
                 self_y_arg = arg
                 break
 
-        # Push stack arguments in reverse order (last param first)
-        for arg in reversed(stack_args):
-            arg_loc = self.parent._get_operand_location(arg.value)
+        spill_offset = self.get_current_spill_offset()
+        stack_bytes_pushed = 0
 
-            if arg_loc.kind == LocationKind.STACK and stack_bytes_pushed > 0:
-                arg_loc = self.parent._offset_location(arg_loc, stack_bytes_pushed)
-
-            self._emit_stack_argument(arg, arg_loc)
-            arg_size = 1
-            if arg.param_type is not None:
-                arg_size = get_type_size(arg.param_type)
-            elif hasattr(arg.value, 'type_info') and arg.value.type_info:
-                arg_size = get_type_size(arg.value.type_info)
-            stack_bytes_pushed += arg_size
+        if spill_offset > 0 and stack_args:
+            # PHA mode: push in reverse order
+            for arg in reversed(stack_args):
+                arg_loc = self.parent._get_operand_location(arg.value)
+                arg_size = 1
+                if arg.param_type is not None:
+                    arg_size = get_type_size(arg.param_type)
+                elif hasattr(arg.value, 'type_info') and arg.value.type_info:
+                    arg_size = get_type_size(arg.value.type_info)
+                self._emit_pha_stack_argument(arg, arg_loc, arg_size)
+                stack_bytes_pushed += arg_size
+                self._region_state.spill_offset += arg_size
+        elif stack_args:
+            # STA mode: write to outgoing area
+            outgoing_offset = 1
+            for arg in stack_args:
+                arg_loc = self.parent._get_operand_location(arg.value)
+                self._emit_outgoing_stack_argument(arg, arg_loc, outgoing_offset)
+                arg_size = 1
+                if arg.param_type is not None:
+                    arg_size = get_type_size(arg.param_type)
+                elif hasattr(arg.value, 'type_info') and arg.value.type_info:
+                    arg_size = get_type_size(arg.value.type_info)
+                outgoing_offset += arg_size
 
         # Load Y with self pointer address (after stack args, before JSR/JSL)
+        # PHA bytes are already tracked in spill_offset (auto-adjusted by _emit_load),
+        # so don't pass stack_bytes_pushed as a manual adjustment — it would double-count.
         if self_y_arg is not None:
-            self._load_y_with_self(self_y_arg, stack_bytes_pushed)
+            self._load_y_with_self(self_y_arg, 0)
 
         return stack_bytes_pushed
 
@@ -924,8 +941,15 @@ class CallInstructionSelector(BaseSelector):
         """
         Set up call arguments in correct order.
 
+        Two modes:
+        - STA mode (no active spills): Write args to caller's outgoing area via STA d,S.
+          SP does not move. This is the fast path.
+        - PHA mode (active spills): Push args via PHA in reverse order. Required when
+          region spills (PHY/PHX) have pushed bytes between the frame and SP, because
+          the callee expects params at a fixed offset from the return address.
+
         Process in specific order to avoid clobbering:
-        1. Stack arguments (pushed in REVERSE order - last param first per calling convention)
+        1. Stack arguments (STA to outgoing area or PHA in reverse)
         2. Variable-bound arguments
         3. B register arguments (these clobber A via XBA)
         4. X and Y register arguments
@@ -937,49 +961,63 @@ class CallInstructionSelector(BaseSelector):
                 (e.g., -2 when PLD was done before args, since S increased by 2)
 
         Returns:
-            Number of bytes pushed on stack (for cleanup)
+            Number of bytes pushed (0 for STA mode, >0 for PHA mode)
         """
         from r65.compiler.codegen.type_utils import get_type_size
 
-        stack_bytes_pushed = 0
-
-        # Separate stack arguments from others and reverse them
-        # Stack params must be pushed right-to-left (last param first) per calling convention
-        # Scratch params are NOT stack args - they use direct store like variable-bound params
+        # Separate stack arguments from others
         stack_args = [arg for arg in instr.args if arg.mechanism == ArgumentMechanism.STACK]
         other_args = [arg for arg in instr.args if arg.mechanism != ArgumentMechanism.STACK]
 
-        # Push stack arguments in reverse order (last param first)
-        for arg in reversed(stack_args):
-            arg_loc = self.parent._get_operand_location(arg.value)
+        spill_offset = self.get_current_spill_offset()
+        stack_bytes_pushed = 0
 
-            # CRITICAL: Adjust stack-relative source locations for:
-            # 1. pre_arg_stack_adj: PLD before args popped 2 bytes (S increased by 2,
-            #    so stack items are 2 bytes closer → subtract 2 from offset)
-            # 2. stack_bytes_pushed: bytes already pushed by previous args (S decreased,
-            #    so stack items are farther → add to offset)
-            total_adj = stack_bytes_pushed + pre_arg_stack_adj
-            if arg_loc.kind == LocationKind.STACK and total_adj != 0:
-                arg_loc = self.parent._offset_location(arg_loc, total_adj)
+        if spill_offset > 0 and stack_args:
+            # PHA mode: region spills are active, push args so they're adjacent
+            # to the return address (below the spills).
+            # Push in REVERSE order so first param ends up closest to return addr.
+            for arg in reversed(stack_args):
+                arg_loc = self.parent._get_operand_location(arg.value)
 
-            self._emit_stack_argument(arg, arg_loc)
-            # Track bytes pushed based on argument size - prefer param_type
-            arg_size = 1
-            if arg.param_type is not None:
-                arg_size = get_type_size(arg.param_type)
-            elif hasattr(arg.value, 'type_info') and arg.value.type_info:
-                arg_size = get_type_size(arg.value.type_info)
-            stack_bytes_pushed += arg_size
+                if arg_loc.kind == LocationKind.STACK and pre_arg_stack_adj != 0:
+                    arg_loc = self.parent._offset_location(arg_loc, pre_arg_stack_adj)
+
+                arg_size = 1
+                if arg.param_type is not None:
+                    arg_size = get_type_size(arg.param_type)
+                elif hasattr(arg.value, 'type_info') and arg.value.type_info:
+                    arg_size = get_type_size(arg.value.type_info)
+
+                self._emit_pha_stack_argument(arg, arg_loc, arg_size)
+                stack_bytes_pushed += arg_size
+                # Update spill_offset so subsequent source reads auto-adjust
+                self._region_state.spill_offset += arg_size
+        elif stack_args:
+            # STA mode: no spills active, write to outgoing area
+            outgoing_offset = 1
+            for arg in stack_args:
+                arg_loc = self.parent._get_operand_location(arg.value)
+
+                if arg_loc.kind == LocationKind.STACK and pre_arg_stack_adj != 0:
+                    arg_loc = self.parent._offset_location(arg_loc, pre_arg_stack_adj)
+
+                self._emit_outgoing_stack_argument(arg, arg_loc, outgoing_offset)
+
+                arg_size = 1
+                if arg.param_type is not None:
+                    arg_size = get_type_size(arg.param_type)
+                elif hasattr(arg.value, 'type_info') and arg.value.type_info:
+                    arg_size = get_type_size(arg.value.type_info)
+                outgoing_offset += arg_size
 
         # Process other arguments (variable-bound and register) in sorted order
         sorted_other_args = sorted(other_args, key=self._arg_sort_key)
         for arg in sorted_other_args:
             arg_loc = self.parent._get_operand_location(arg.value)
 
-            # CRITICAL: Adjust stack-relative source locations (same logic as above)
-            total_adj = stack_bytes_pushed + pre_arg_stack_adj
-            if arg_loc.kind == LocationKind.STACK and total_adj != 0:
-                arg_loc = self.parent._offset_location(arg_loc, total_adj)
+            # Adjust stack-relative source locations for pre-arg changes only
+            if arg_loc.kind == LocationKind.STACK and pre_arg_stack_adj != 0:
+                arg_loc = self.parent._offset_location(arg_loc, pre_arg_stack_adj)
 
             if arg.mechanism == ArgumentMechanism.REGISTER:
                 self._emit_register_argument(arg, arg_loc)
@@ -1010,94 +1048,88 @@ class CallInstructionSelector(BaseSelector):
                 return 5  # A last (to avoid being clobbered)
         return 6
 
-    def _emit_stack_argument(self, arg, arg_loc):
-        """Emit stack argument (push onto stack).
+    def _emit_outgoing_stack_argument(self, arg, arg_loc, outgoing_offset: int):
+        """Emit stack argument via STA d,S into caller's outgoing area.
 
-        IMPORTANT: This method ensures correct accumulator mode for pushing.
-        For 8-bit arguments, we must be in m8 mode so PHA pushes 1 byte.
-        For 16-bit arguments loaded byte-by-byte, we use m8 mode.
-        For 16-bit arguments already in A, we use m16 mode (single PHA).
+        Writes the argument value to a fixed stack offset without moving SP.
+        Replaces PHA-based pushing with caller-owned outgoing args convention.
 
         IMPORTANT: When source value is smaller than parameter type, we must
         zero-extend. For example, an 8-bit loop variable passed to a u16
         parameter needs its high byte set to 0, not loaded from garbage memory.
+
+        Args:
+            arg: Argument being emitted
+            arg_loc: Physical location of the source value
+            outgoing_offset: Stack-relative offset in the outgoing area ($01 for first param)
         """
         from r65.compiler.codegen.type_utils import get_type_size
         from r65.compiler.codegen.constants import M_FLAG
+        from r65.compiler.codegen.asm_nodes import StackOffset
 
-        # Determine PARAMETER size (what we need to push)
+        # Adjust outgoing offset for current spill offset.
+        # When region spills are active (PHY/PHX pushed before call),
+        # SP has moved down and the outgoing area is shifted by the same amount.
+        # Source locations are auto-adjusted via _emit_load -> _get_opcode_for_location,
+        # but STA destinations use StackOffset directly and need manual adjustment.
+        spill_offset = self.get_current_spill_offset()
+        outgoing_offset += spill_offset
+
+        # Determine PARAMETER size (what we need to store)
         param_size = 1
         if arg.param_type is not None:
             param_size = get_type_size(arg.param_type)
         elif hasattr(arg.value, 'type_info') and arg.value.type_info:
             param_size = get_type_size(arg.value.type_info)
         elif isinstance(arg.value, MIRImmediate):
-            # Fallback: infer size from immediate value range
             value = arg.value.value
             if value > 0xFFFF or value < -32768:
-                param_size = 3  # 24-bit
+                param_size = 3
             elif value > 0xFF or value < -128:
-                param_size = 2  # 16-bit
-            # else: 8-bit (default)
+                param_size = 2
 
-        # Determine SOURCE size (what we're loading from)
-        # This is critical for proper zero-extension
-        source_size = param_size  # Default to param size
+        # Determine SOURCE size for zero-extension
+        source_size = param_size
         if hasattr(arg.value, 'type_info') and arg.value.type_info:
             source_size = get_type_size(arg.value.type_info)
         elif isinstance(arg.value, MIRImmediate):
-            # Immediates are already the right size (computed above)
             source_size = param_size
 
-        # Use param_size for how many bytes to push (arg_size variable for compatibility)
-        arg_size = param_size
-
-        # Track current mode for proper restoration
-        current_mode = self.parent.emitter.get_accu_mode()
-
-        if arg_size == 3:
-            # 24-bit value (far pointer): push all 3 bytes (bank, high, low order for stack)
-            # IMPORTANT: Must be in m8 mode so each PHA pushes exactly 1 byte
-            self._ensure_m8_mode("8-bit A for byte push")
-
+        if param_size == 3:
+            # 24-bit (far pointer): store byte by byte in m8
+            self._ensure_m8_mode("8-bit A for byte store")
             if arg_loc.kind == LocationKind.HARDWARE and arg_loc.hw_register == 'A':
-                raise InstructionSelectionError("Cannot push 24-bit value from A register", source_loc=self.parent._current_source_loc)
-            else:
-                is_stack = arg_loc.kind == LocationKind.STACK
-                self._push_multibyte_value(arg_loc, source_size, 3, is_stack)
+                raise InstructionSelectionError("Cannot store 24-bit value from A register", source_loc=self.parent._current_source_loc)
+            self._store_multibyte_outgoing(arg, arg_loc, source_size, 3, outgoing_offset)
 
-        elif arg_size == 2:
-            # 16-bit value: push both bytes (high first, then low)
-            if arg_loc.kind == LocationKind.HARDWARE and arg_loc.hw_register == 'A':
-                # Value is in A - use 16-bit push if in m16, otherwise handle specially
-                if current_mode == 16:
-                    self._emit_push('A', "Push 16-bit stack arg")
-                else:
-                    # In m8, need to switch to m16 for single 16-bit push
-                    self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "16-bit A for u16 push")
+        elif param_size == 2:
+            # 16-bit: prefer single m16 STA d,S when possible
+            if source_size < 2:
+                # Source smaller than param — zero-extend byte by byte
+                self._ensure_m8_mode("8-bit A for zero-ext store")
+                self._store_multibyte_outgoing(arg, arg_loc, source_size, 2, outgoing_offset)
+            elif arg_loc.kind == LocationKind.HARDWARE and arg_loc.hw_register == 'A':
+                # Value in A — ensure m16 for 16-bit store
+                current_mode = self.parent.emitter.get_accu_mode()
+                if current_mode != 16:
+                    self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "16-bit A for u16 outgoing arg")
                     self.parent.emitter.emit_accu_mode(16)
-                    self._emit_push('A', "Push 16-bit stack arg")
+                self.emitter.emit_instr(Opcode.STA_STACK, StackOffset(outgoing_offset), "Outgoing u16 arg")
             elif isinstance(arg.value, MIRImmediate):
-                # Immediate 16-bit value: push byte by byte in m8 mode
-                self._ensure_m8_mode("8-bit A for byte push")
-                value = arg.value.value
-                high_byte = (value >> 8) & 0xFF
-                low_byte = value & 0xFF
-                self._emit_load_immediate('A', high_byte)
-                self._emit_push('A', "Push high byte")
-                self._emit_load_immediate('A', low_byte)
-                self._emit_push('A', "Push low byte")
+                self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "16-bit A for u16 outgoing arg")
+                self.parent.emitter.emit_accu_mode(16)
+                self._emit_load_immediate('A', arg.value.value)
+                self.emitter.emit_instr(Opcode.STA_STACK, StackOffset(outgoing_offset), "Outgoing u16 arg")
             else:
-                # Memory locations: push byte by byte with zero-extension as needed
-                self._ensure_m8_mode("8-bit A for byte push")
-                is_stack = arg_loc.kind == LocationKind.STACK
-                self._push_multibyte_value(arg_loc, source_size, 2, is_stack)
+                # Memory/stack/scratch source: load in m16, store
+                self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "16-bit A for u16 outgoing arg")
+                self.parent.emitter.emit_accu_mode(16)
+                self.parent._emit_load('LDA', arg_loc)
+                self.emitter.emit_instr(Opcode.STA_STACK, StackOffset(outgoing_offset), "Outgoing u16 arg")
 
         else:
-            # 8-bit value: single push
-            # IMPORTANT: Must be in m8 mode so PHA pushes exactly 1 byte
-            self._ensure_m8_mode("8-bit A for u8 push")
-
+            # 8-bit: ensure m8, load value, store to outgoing offset
+            self._ensure_m8_mode("8-bit A for u8 outgoing arg")
             if arg_loc.kind == LocationKind.HARDWARE and arg_loc.hw_register == 'A':
                 pass  # Already in A
             elif arg_loc.kind == LocationKind.HARDWARE:
@@ -1109,8 +1141,135 @@ class CallInstructionSelector(BaseSelector):
                 self._emit_load_immediate('A', arg.value.value)
             else:
                 self.parent._emit_load('LDA', arg_loc)
+            self.emitter.emit_instr(Opcode.STA_STACK, StackOffset(outgoing_offset), "Outgoing u8 arg")
 
-            self._emit_push('A', "Push stack arg")
+    def _emit_pha_stack_argument(self, arg, arg_loc, param_size: int):
+        """Emit stack argument via PHA (fallback when region spills are active).
+
+        Pushes the argument value onto the stack. Used when region-based spills
+        (PHY/PHX) have pushed bytes between the frame and SP, making the outgoing
+        area inaccessible to the callee at fixed offsets.
+
+        Source locations are auto-adjusted for current spill_offset by _emit_load
+        -> _get_opcode_for_location. The caller updates spill_offset AFTER this
+        method returns (by the full param_size). For multi-byte pushes where
+        intermediate PHAs shift SP, we temporarily adjust spill_offset between
+        byte pushes to keep source reads correct.
+
+        Args:
+            arg: Argument being emitted
+            arg_loc: Physical location of the source value
+            param_size: Size of the parameter in bytes (1, 2, or 3)
+        """
+        from r65.compiler.codegen.constants import M_FLAG
+
+        if param_size == 1:
+            # 8-bit: load into A, PHA
+            self._ensure_m8_mode("8-bit A for u8 stack arg")
+            if arg_loc.kind == LocationKind.HARDWARE and arg_loc.hw_register == 'A':
+                pass
+            elif arg_loc.kind == LocationKind.HARDWARE:
+                if arg_loc.hw_register == 'X':
+                    self._emit_transfer('X', 'A')
+                elif arg_loc.hw_register == 'Y':
+                    self._emit_transfer('Y', 'A')
+            elif isinstance(arg.value, MIRImmediate):
+                self._emit_load_immediate('A', arg.value.value)
+            else:
+                self.parent._emit_load('LDA', arg_loc)
+            self._emit_push('A', "Push u8 arg")
+
+        elif param_size == 2:
+            # 16-bit: load into A (m16), PHA
+            source_size = param_size
+            if hasattr(arg.value, 'type_info') and arg.value.type_info:
+                from r65.compiler.codegen.type_utils import get_type_size
+                source_size = get_type_size(arg.value.type_info)
+
+            if source_size < 2:
+                # Zero-extend: push high byte (0) first, then low byte
+                self._ensure_m8_mode("8-bit A for zero-ext push")
+                self._emit_load_immediate('A', 0, "Zero high byte")
+                self._emit_push('A', "Push high byte (zero)")
+                # First PHA shifted SP by 1; adjust spill_offset so source reads are correct
+                self._region_state.spill_offset += 1
+                if isinstance(arg.value, MIRImmediate):
+                    self._emit_load_immediate('A', arg.value.value & 0xFF)
+                else:
+                    self.parent._emit_load('LDA', arg_loc)
+                self._emit_push('A', "Push low byte")
+                # Undo temporary adjustment (caller adds full param_size after return)
+                self._region_state.spill_offset -= 1
+            else:
+                self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "16-bit A for u16 stack arg")
+                self.parent.emitter.emit_accu_mode(16)
+                if arg_loc.kind == LocationKind.HARDWARE and arg_loc.hw_register == 'A':
+                    pass
+                elif isinstance(arg.value, MIRImmediate):
+                    self._emit_load_immediate('A', arg.value.value)
+                else:
+                    self.parent._emit_load('LDA', arg_loc)
+                self._emit_push('A', "Push u16 arg")
+
+        elif param_size == 3:
+            # 24-bit (far pointer): push byte by byte in m8, high byte first
+            source_size = param_size
+            if hasattr(arg.value, 'type_info') and arg.value.type_info:
+                from r65.compiler.codegen.type_utils import get_type_size
+                source_size = get_type_size(arg.value.type_info)
+
+            self._ensure_m8_mode("8-bit A for far ptr push")
+            bytes_pushed_so_far = 0
+            for byte_idx in range(2, -1, -1):  # bank, high, low
+                byte_name = {2: "bank", 1: "high", 0: "low"}[byte_idx]
+                if byte_idx >= source_size:
+                    self._emit_load_immediate('A', 0, f"Zero-extend {byte_name} byte")
+                else:
+                    if byte_idx > 0:
+                        loc = self.parent._offset_location(arg_loc, byte_idx)
+                    else:
+                        loc = arg_loc
+                    self.parent._emit_load('LDA', loc, f"Load {byte_name} byte")
+                self._emit_push('A', f"Push {byte_name} byte")
+                bytes_pushed_so_far += 1
+                # Temporarily adjust spill_offset for intermediate PHAs
+                if byte_idx > 0:  # Not the last byte
+                    self._region_state.spill_offset += 1
+            # Undo all temporary adjustments (caller adds full param_size after return)
+            self._region_state.spill_offset -= (bytes_pushed_so_far - 1)
+
+    def _emit_caller_arg_cleanup(self, stack_bytes_pushed: int):
+        """Emit caller-side cleanup of PHA-pushed arguments after call returns.
+
+        Uses PLX to pop 2 bytes at a time, preserving the return value in A.
+        X is safe to clobber here: it's either dead (callee clobbered it) or
+        its pre-call value is saved by region spilling and will be reloaded later.
+
+        For odd remaining bytes, saves A in X, pops with PLA, restores A.
+
+        Also updates spill_offset to reflect the removed bytes.
+
+        Args:
+            stack_bytes_pushed: Number of bytes that were PHA-pushed for args
+        """
+        if stack_bytes_pushed == 0:
+            return
+
+        remaining = stack_bytes_pushed
+        # PLX pops 2 bytes (X is always 16-bit), preserves A
+        while remaining >= 2:
+            self._emit_pull('X', "Pop pushed arg bytes")
+            remaining -= 2
+
+        if remaining == 1:
+            # Save A return value in X, pop 1 byte with PLA, restore A
+            self._ensure_m8_mode("8-bit A for 1-byte pop")
+            self.parent.emitter.emit_raw("    TAX  ; Save return A")
+            self._emit_pull('A', "Pop 1 pushed arg byte")
+            self.parent.emitter.emit_raw("    TXA  ; Restore return A")
+
+        # Reduce spill_offset to undo the PHA tracking
+        self._region_state.spill_offset -= stack_bytes_pushed
 
     def _emit_register_argument(self, arg, arg_loc):
         """Emit register argument (move to specified register)."""
