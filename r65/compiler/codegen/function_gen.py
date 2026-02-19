@@ -15,6 +15,7 @@ from r65.compiler.codegen.type_utils import get_type_size
 from r65.compiler.codegen.constants import DEFAULT_STACK_UPPER, M_FLAG, X_FLAG
 from r65.compiler.codegen.opcodes import Opcode
 from r65.compiler.codegen.asm_nodes import Immediate, Address, StackOffset
+from r65.compiler.codegen.abi import ABIInfo, StackFrameLayout
 
 
 class FunctionCodeGenerator:
@@ -81,9 +82,11 @@ class FunctionCodeGenerator:
                     scratch.is_free = False
                     break
 
-        # Calculate prologue bytes BEFORE creating register allocator
+        # Build ABI info and calculate prologue bytes BEFORE creating register allocator
         # This allows stack params to be allocated at their passed locations
-        prologue_bytes = self._get_prologue_stack_bytes(mir_func, scratch_pool)
+        abi_info = ABIInfo.from_mir_function(mir_func)
+        mir_func.abi_info = abi_info
+        prologue_bytes = abi_info.prologue_stack_bytes
 
         # NOTE: We no longer need to add A register parameter save bytes.
         # Stack params are accessed directly at their passed locations without
@@ -95,12 +98,20 @@ class FunctionCodeGenerator:
 
         outgoing_arg_bytes = mir_func.max_outgoing_arg_bytes
 
+        # Build preliminary layout (local_frame_size filled in after allocation)
+        layout = StackFrameLayout(
+            abi=abi_info,
+            local_frame_size=0,
+            outgoing_arg_bytes=outgoing_arg_bytes,
+        )
+
         reg_alloc = RegisterAllocator(
             scratch_pool=scratch_pool,
             mir_func=mir_func,
             prologue_stack_bytes=prologue_bytes,
             instr_liveness=instr_liveness,
-            outgoing_arg_bytes=outgoing_arg_bytes
+            outgoing_arg_bytes=outgoing_arg_bytes,
+            layout=layout,
         )
 
         # Pre-allocate scratch-promoted parameter vregs to their scratch locations
@@ -153,12 +164,13 @@ class FunctionCodeGenerator:
         # accounting for frame_size, so no post-hoc adjustment is needed.
         local_frame_size = reg_alloc.get_stack_frame_size()
 
-        # Total frame includes outgoing arg area at bottom
-        frame_size = local_frame_size + outgoing_arg_bytes
+        # Update layout with actual local frame size from allocation
+        layout.local_frame_size = local_frame_size
+        frame_size = layout.total_frame_size
 
         # Update register allocator with frame info
         reg_alloc.frame_size = frame_size
-        reg_alloc.has_frame_allocation = frame_size > 0
+        reg_alloc.has_frame_allocation = layout.has_frame
 
         # Store stack usage on MIR function for stack depth analysis
         mir_func.codegen_frame_size = frame_size
@@ -841,65 +853,18 @@ class FunctionCodeGenerator:
         """
         Calculate bytes pushed by prologue that affect stack parameter offsets.
 
-        The prologue may push registers for DBR management and register preservation.
-        These pushes change the stack pointer, so stack parameter offsets must be
-        adjusted accordingly.
-
-        In the simplified mode system:
-        - Mode transitions no longer push PHP (handled automatically)
-        - X/Y are always 16-bit (2 bytes when pushed)
-        - A is 1 byte in m8 mode, 2 bytes in m16 mode
+        Delegates to ABIInfo.prologue_stack_bytes for the actual computation.
+        Kept for backward compatibility with any callers outside generate_function().
 
         Args:
             mir_func: MIR function
-            scratch_pool: Optional scratch register pool (for interrupt scratch saves)
+            scratch_pool: Optional scratch register pool (unused, kept for API compat)
 
         Returns:
             Number of bytes pushed by prologue
         """
-        from r65.compiler.typeck.processor_mode import ModeState
-
-        bytes_pushed = 0
-
-        # DBR management: PHB pushes 1 byte
-        if mir_func.is_far and mir_func.mode_attr:
-            from r65.compiler.hir.attributes import DataBankMode
-            if mir_func.mode_attr.databank == DataBankMode.INLINE:
-                bytes_pushed += 1
-
-        # Note: Mode transitions no longer push PHP in the simplified system
-        # REP/SEP for mode changes don't push anything
-
-        # Interrupt handler scratch register saves
-        # These are pushed BEFORE frame allocation, so they do NOT affect
-        # local variable stack offsets (locals live within the frame, closest to SP).
-        # They only affect parameter offsets, but interrupt handlers have no parameters.
-        # Do NOT include them in prologue_stack_bytes.
-
-        # Register preservation pushes
-        if mir_func.preserves_attr:
-            for reg in mir_func.preserves_attr.registers:
-                if reg == 'STATUS':
-                    bytes_pushed += 1  # PHP pushes 1 byte
-                elif reg == 'A':
-                    # PHA pushes 1 or 2 bytes depending on M mode
-                    if mir_func.entry_m_mode == ModeState.M16:
-                        bytes_pushed += 2
-                    else:
-                        bytes_pushed += 1  # Default: m8
-                elif reg in ('X', 'Y'):
-                    # PHX/PHY always pushes 2 bytes (x16 always)
-                    bytes_pushed += 2
-                elif reg == 'D':
-                    bytes_pushed += 2  # Direct page is always 16-bit
-                elif reg == 'DBR':
-                    bytes_pushed += 1  # Data bank is always 8-bit
-
-        # Far pointer stack params: PHD pushes 2 bytes
-        if mir_func.has_far_ptr_stack_params:
-            bytes_pushed += 2
-
-        return bytes_pushed
+        abi = ABIInfo.from_mir_function(mir_func)
+        return abi.prologue_stack_bytes
 
     def _offset_location(self, location, offset: int):
         """Create new location offset from given location."""

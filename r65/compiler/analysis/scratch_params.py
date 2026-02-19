@@ -184,8 +184,9 @@ def _recompute_stack_offsets(func: MIRFunction):
     if not func.stack_param_offsets:
         return  # No remaining stack params
 
-    return_addr_size = 3 if func.is_far else 2
-    current_offset = return_addr_size + 1
+    from r65.compiler.codegen.abi import ABIInfo
+    abi = ABIInfo(is_far=func.is_far)
+    current_offset = abi.return_addr_size + 1
 
     # Get remaining stack param indices in order
     remaining_indices = sorted(func.stack_param_offsets.keys())

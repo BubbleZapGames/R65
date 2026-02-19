@@ -916,6 +916,9 @@ class MIRFunction:
     # True if function has local struct/array variables promoted to static storage
     has_promoted_locals: bool = False
 
+    # ABI info (populated at codegen time from ABIInfo.from_mir_function)
+    abi_info: Optional[Any] = None        # ABIInfo
+
     # Codegen-populated stack usage (for stack depth analysis)
     codegen_frame_size: int = 0           # Local variable frame bytes (from slot allocator)
     codegen_prologue_bytes: int = 0       # Bytes pushed by prologue (preserves, DBR, etc.)

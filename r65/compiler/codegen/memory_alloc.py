@@ -585,3 +585,35 @@ class MemoryAllocator:
             List of AllocationInfo objects
         """
         return [a for a in self.allocations.values() if a.storage_type == storage_type]
+
+    # ========================================================================
+    # Address Query Utilities
+    # ========================================================================
+
+    def get_bank(self, address: int) -> int:
+        """Return the bank byte for an address."""
+        if address <= 0x1FFF:
+            return 0x00  # Low RAM mirrors in bank 0
+        if 0x7E0000 <= address <= 0x7FFFFF:
+            return (address >> 16) & 0xFF  # $7E or $7F
+        return 0x00  # Default to bank 0
+
+    def is_direct_page(self, address: int) -> bool:
+        """True if address is in zeropage / direct page range."""
+        return 0 <= address <= self.zeropage_end
+
+    def get_addressing_mode(self, address: int, size: int = 1) -> str:
+        """Suggest optimal addressing mode for an address.
+
+        Args:
+            address: Memory address
+            size: Size of the access in bytes (unused, reserved for future)
+
+        Returns:
+            'direct' for DP addressing, 'absolute' for 16-bit, 'long' for 24-bit
+        """
+        if self.is_direct_page(address):
+            return 'direct'
+        if address <= 0xFFFF:
+            return 'absolute'
+        return 'long'

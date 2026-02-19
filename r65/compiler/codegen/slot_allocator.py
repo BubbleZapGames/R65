@@ -25,6 +25,10 @@ from r65.compiler.mir.liveness import LivenessAnalyzer
 from r65.compiler.hir.unified_type_utils import get_unified_type_size
 from r65.compiler.hir import HIRError
 
+from typing import TYPE_CHECKING as _TYPE_CHECKING
+if _TYPE_CHECKING:
+    from r65.compiler.codegen.abi import StackFrameLayout
+
 
 @dataclass
 class PreassignedSlot:
@@ -131,7 +135,8 @@ class StackSlotAllocator:
         prologue_stack_bytes: int = 0,
         instr_liveness: Optional[Any] = None,
         pre_allocated_vregs: Optional[Set[VirtualRegister]] = None,
-        outgoing_arg_bytes: int = 0
+        outgoing_arg_bytes: int = 0,
+        layout: Optional['StackFrameLayout'] = None
     ):
         """
         Initialize unified slot allocator.
@@ -144,6 +149,7 @@ class StackSlotAllocator:
             pre_allocated_vregs: Vregs already allocated externally (e.g. scratch params),
                 excluded from local slot allocation
             outgoing_arg_bytes: Caller-owned outgoing argument area size
+            layout: Optional StackFrameLayout for offset computation
         """
         self.func = mir_func
         self.preassigned = preassigned or []
@@ -152,6 +158,7 @@ class StackSlotAllocator:
         self.instr_liveness = instr_liveness
         self.pre_allocated_vregs = pre_allocated_vregs or set()
         self.outgoing_arg_bytes = outgoing_arg_bytes
+        self.layout = layout
 
         # Build vreg lookup for preassigned
         self._preassigned_vregs: Dict[int, PreassignedSlot] = {
@@ -205,10 +212,14 @@ class StackSlotAllocator:
         param_sizes: Dict[VirtualRegister, int] = {}
 
         for slot in self.preassigned:
-            # Final offset = base_offset + prologue_bytes + total_frame_size
-            # total_frame_size = local slots + outgoing arg area
-            total_frame_size = frame_size + self.outgoing_arg_bytes
-            final_offset = slot.base_offset + self.prologue_stack_bytes + total_frame_size
+            if self.layout is not None:
+                # Update layout with computed frame size, then use it
+                self.layout.local_frame_size = frame_size
+                final_offset = self.layout.param_offset(slot.base_offset)
+            else:
+                # Fallback: inline formula
+                total_frame_size = frame_size + self.outgoing_arg_bytes
+                final_offset = slot.base_offset + self.prologue_stack_bytes + total_frame_size
             param_offsets[slot.vreg] = final_offset
             param_sizes[slot.vreg] = slot.size
 

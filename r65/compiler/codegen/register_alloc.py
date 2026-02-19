@@ -16,6 +16,7 @@ from enum import Enum
 from r65.compiler.mir.nodes import VirtualRegister, HardwareRegister, MIRFunction
 from r65.compiler.codegen.slot_allocator import StackSlotAllocator, SlotAllocation, PreassignedSlot
 from r65.compiler.codegen.type_utils import get_type_size
+from r65.compiler.codegen.abi import StackFrameLayout
 from r65.compiler.errors import MemoryAllocationError
 
 if TYPE_CHECKING:
@@ -293,7 +294,8 @@ class RegisterAllocator:
                  mir_func: Optional[MIRFunction] = None,
                  prologue_stack_bytes: int = 0,
                  instr_liveness: Optional['InstructionLivenessAnalyzer'] = None,
-                 outgoing_arg_bytes: int = 0):
+                 outgoing_arg_bytes: int = 0,
+                 layout: Optional[StackFrameLayout] = None):
         """
         Initialize register allocator.
 
@@ -303,12 +305,15 @@ class RegisterAllocator:
             prologue_stack_bytes: Bytes pushed by prologue (affects stack param offsets)
             instr_liveness: Instruction-level liveness analyzer (for precise liveness)
             outgoing_arg_bytes: Caller-owned outgoing argument area size
+            layout: Optional StackFrameLayout (if provided, overrides prologue_stack_bytes
+                    and outgoing_arg_bytes for offset computations)
         """
         self.scratch_pool = scratch_pool or ScratchRegisterPool()
         self.mir_func = mir_func
         self.prologue_stack_bytes = prologue_stack_bytes
         self.instr_liveness = instr_liveness
         self.outgoing_arg_bytes = outgoing_arg_bytes
+        self.layout = layout
         self.slot_allocator: Optional[StackSlotAllocator] = None
         self.slot_allocation: Optional[SlotAllocation] = None
         self.allocations: Dict[int, PhysicalLocation] = {}  # vreg.id → PhysicalLocation
@@ -328,11 +333,10 @@ class RegisterAllocator:
         self.frame_size: int = 0
         self.has_frame_allocation: bool = False
 
-        # Calculate base offset for stack temporaries
-        # After frame allocation, locals start at S+1
-        # prologue_stack_bytes accounts for return address and preserved registers
-        # Entry functions have no return address or preserved registers, so offset is just 1
-        if mir_func and mir_func.is_entry:
+        # Calculate base offset for stack temporaries using layout if available
+        if layout is not None:
+            self.stack_base_offset = layout.stack_base_offset
+        elif mir_func and mir_func.is_entry:
             self.stack_base_offset = 1  # Entry functions have no prologue overhead
         else:
             self.stack_base_offset = self.prologue_stack_bytes + 1
@@ -461,8 +465,11 @@ class RegisterAllocator:
             slot_num = self.slot_allocation.register_to_slot.get(vreg)
             if slot_num is not None:
                 # Convert slot number to stack offset
-                # Locals are shifted above the outgoing arg area
-                stack_offset = self.stack_base_offset + self.outgoing_arg_bytes + slot_num
+                if self.layout is not None:
+                    stack_offset = self.layout.local_offset(slot_num)
+                else:
+                    # Fallback: inline formula (locals shifted above outgoing arg area)
+                    stack_offset = self.stack_base_offset + self.outgoing_arg_bytes + slot_num
                 location = PhysicalLocation(
                     kind=LocationKind.STACK,
                     stack_offset=stack_offset,
@@ -716,7 +723,8 @@ class RegisterAllocator:
                 prologue_stack_bytes=self.prologue_stack_bytes,
                 instr_liveness=self.instr_liveness,
                 pre_allocated_vregs=pre_allocated_vregs,
-                outgoing_arg_bytes=self.outgoing_arg_bytes
+                outgoing_arg_bytes=self.outgoing_arg_bytes,
+                layout=self.layout,
             )
             self.slot_allocation = self.slot_allocator.allocate()
 

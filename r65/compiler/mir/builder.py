@@ -398,9 +398,10 @@ class MIRBuilder:
         # Parameters with lower index are at lower stack offsets
         if stack_params:
             from r65.compiler.hir.types import PointerTypeInfo
+            from r65.compiler.codegen.abi import ABIInfo
 
-            return_addr_size = 3 if hir_func.is_far else 2
-            current_offset = return_addr_size + 1  # First param starts after return address
+            abi = ABIInfo(is_far=hir_func.is_far)
+            current_offset = abi.return_addr_size + 1  # First param starts after return address
 
             for idx, param, param_vreg in stack_params:
                 mir_func.stack_param_offsets[idx] = current_offset

@@ -30,6 +30,7 @@ from r65.compiler.codegen.errors import (
     unknown_value, argument_count_error, requires_constant
 )
 from r65.compiler.codegen.base_selector import BaseSelector
+from r65.compiler.codegen.abi import StackStateTracker
 
 
 class SpillInfo(NamedTuple):
@@ -59,9 +60,9 @@ class ActiveRegionState:
         self.block_regions: Dict[int, Dict[str, List['ClobberRegion']]] = {}
         # Current block ID
         self.current_block_id: Optional[int] = None
-        # Current spill offset - bytes pushed onto stack for spilling
+        # Stack state tracker - tracks bytes pushed onto stack for spilling
         # Used to adjust stack-relative accesses while spills are active
-        self.spill_offset: int = 0
+        self.stack_tracker: StackStateTracker = StackStateTracker()
         # Track pending A spill info for reload (need to restore mode)
         self.pending_a_spill: Optional[SpillInfo] = None
 
@@ -71,8 +72,8 @@ class ActiveRegionState:
         self.current_block_id = block_id
         # Clear active regions when entering new block
         self.active_regions.clear()
-        # Reset spill offset for new block
-        self.spill_offset = 0
+        # Reset stack tracker for new block
+        self.stack_tracker.reset()
 
     def get_region_for_call(self, hw_reg: str, call_idx: int) -> Optional['ClobberRegion']:
         """
@@ -597,7 +598,7 @@ class CallInstructionSelector(BaseSelector):
                     arg_size = get_type_size(arg.value.type_info)
                 self._emit_pha_stack_argument(arg, arg_loc, arg_size)
                 stack_bytes_pushed += arg_size
-                self._region_state.spill_offset += arg_size
+                self._region_state.stack_tracker.push(arg_size)
         elif stack_args:
             # STA mode: write to outgoing area
             outgoing_offset = 1
@@ -612,7 +613,7 @@ class CallInstructionSelector(BaseSelector):
                 outgoing_offset += arg_size
 
         # Load Y with self pointer address (after stack args, before JSR/JSL)
-        # PHA bytes are already tracked in spill_offset (auto-adjusted by _emit_load),
+        # PHA bytes are already tracked in stack_tracker (auto-adjusted by _emit_load),
         # so don't pass stack_bytes_pushed as a manual adjustment — it would double-count.
         if self_y_arg is not None:
             self._load_y_with_self(self_y_arg, 0)
@@ -858,16 +859,13 @@ class CallInstructionSelector(BaseSelector):
                 )
                 self._emit_push('A', f"Spill A (m{current_mode})")
                 # Track stack growth based on actual mode
-                if current_mode == 16:
-                    self._region_state.spill_offset += 2
-                else:
-                    self._region_state.spill_offset += 1
+                self._region_state.stack_tracker.push(2 if current_mode == 16 else 1)
                 # Save spill info for reload
                 self._region_state.pending_a_spill = spill_with_mode
             else:
                 # X/Y are always 16-bit (2 bytes)
                 self._emit_push(spill.hw_reg, f"Spill {spill.hw_reg} (region start)")
-                self._region_state.spill_offset += 2
+                self._region_state.stack_tracker.push(2)
 
     def _emit_hw_reloads(self, spills: List[SpillInfo]):
         """
@@ -908,21 +906,18 @@ class CallInstructionSelector(BaseSelector):
                     self._emit_pull('A', f"Reload A (m{spill_mode})")
 
                     # Track stack shrinkage based on spill mode
-                    if spill_mode == 16:
-                        self._region_state.spill_offset -= 2
-                    else:
-                        self._region_state.spill_offset -= 1
+                    self._region_state.stack_tracker.pop(2 if spill_mode == 16 else 1)
 
                     # Clear pending A spill
                     self._region_state.pending_a_spill = None
                 else:
                     # Fallback: no mode info, assume m8
                     self._emit_pull('A', "Reload A (region end)")
-                    self._region_state.spill_offset -= 1
+                    self._region_state.stack_tracker.pop(1)
             else:
                 # X/Y are always 16-bit (2 bytes)
                 self._emit_pull(spill.hw_reg, f"Reload {spill.hw_reg} (region end)")
-                self._region_state.spill_offset -= 2
+                self._region_state.stack_tracker.pop(2)
 
     def get_current_spill_offset(self) -> int:
         """
@@ -931,7 +926,7 @@ class CallInstructionSelector(BaseSelector):
         Returns:
             Number of bytes currently pushed for spilling
         """
-        return self._region_state.spill_offset
+        return self._region_state.stack_tracker.displacement
 
     # ========================================================================
     # Argument Setup
@@ -990,8 +985,8 @@ class CallInstructionSelector(BaseSelector):
 
                 self._emit_pha_stack_argument(arg, arg_loc, arg_size)
                 stack_bytes_pushed += arg_size
-                # Update spill_offset so subsequent source reads auto-adjust
-                self._region_state.spill_offset += arg_size
+                # Update stack tracker so subsequent source reads auto-adjust
+                self._region_state.stack_tracker.push(arg_size)
         elif stack_args:
             # STA mode: no spills active, write to outgoing area
             outgoing_offset = 1
@@ -1150,11 +1145,11 @@ class CallInstructionSelector(BaseSelector):
         (PHY/PHX) have pushed bytes between the frame and SP, making the outgoing
         area inaccessible to the callee at fixed offsets.
 
-        Source locations are auto-adjusted for current spill_offset by _emit_load
-        -> _get_opcode_for_location. The caller updates spill_offset AFTER this
-        method returns (by the full param_size). For multi-byte pushes where
-        intermediate PHAs shift SP, we temporarily adjust spill_offset between
-        byte pushes to keep source reads correct.
+        Source locations are auto-adjusted for current stack displacement by
+        _emit_load -> _get_opcode_for_location. The caller updates the tracker
+        AFTER this method returns (by the full param_size). For multi-byte pushes
+        where intermediate PHAs shift SP, we temporarily adjust the tracker
+        between byte pushes to keep source reads correct.
 
         Args:
             arg: Argument being emitted
@@ -1191,15 +1186,15 @@ class CallInstructionSelector(BaseSelector):
                 self._ensure_m8_mode("8-bit A for zero-ext push")
                 self._emit_load_immediate('A', 0, "Zero high byte")
                 self._emit_push('A', "Push high byte (zero)")
-                # First PHA shifted SP by 1; adjust spill_offset so source reads are correct
-                self._region_state.spill_offset += 1
+                # First PHA shifted SP by 1; adjust tracker so source reads are correct
+                self._region_state.stack_tracker.push(1)
                 if isinstance(arg.value, MIRImmediate):
                     self._emit_load_immediate('A', arg.value.value & 0xFF)
                 else:
                     self.parent._emit_load('LDA', arg_loc)
                 self._emit_push('A', "Push low byte")
                 # Undo temporary adjustment (caller adds full param_size after return)
-                self._region_state.spill_offset -= 1
+                self._region_state.stack_tracker.pop(1)
             else:
                 self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "16-bit A for u16 stack arg")
                 self.parent.emitter.emit_accu_mode(16)
@@ -1232,11 +1227,11 @@ class CallInstructionSelector(BaseSelector):
                     self.parent._emit_load('LDA', loc, f"Load {byte_name} byte")
                 self._emit_push('A', f"Push {byte_name} byte")
                 bytes_pushed_so_far += 1
-                # Temporarily adjust spill_offset for intermediate PHAs
+                # Temporarily adjust tracker for intermediate PHAs
                 if byte_idx > 0:  # Not the last byte
-                    self._region_state.spill_offset += 1
+                    self._region_state.stack_tracker.push(1)
             # Undo all temporary adjustments (caller adds full param_size after return)
-            self._region_state.spill_offset -= (bytes_pushed_so_far - 1)
+            self._region_state.stack_tracker.pop(bytes_pushed_so_far - 1)
 
     def _emit_caller_arg_cleanup(self, stack_bytes_pushed: int):
         """Emit caller-side cleanup of PHA-pushed arguments after call returns.
@@ -1247,7 +1242,7 @@ class CallInstructionSelector(BaseSelector):
 
         For odd remaining bytes, saves A in X, pops with PLA, restores A.
 
-        Also updates spill_offset to reflect the removed bytes.
+        Also updates the stack tracker to reflect the removed bytes.
 
         Args:
             stack_bytes_pushed: Number of bytes that were PHA-pushed for args
@@ -1268,8 +1263,8 @@ class CallInstructionSelector(BaseSelector):
             self._emit_pull('A', "Pop 1 pushed arg byte")
             self.parent.emitter.emit_raw("    TXA  ; Restore return A")
 
-        # Reduce spill_offset to undo the PHA tracking
-        self._region_state.spill_offset -= stack_bytes_pushed
+        # Reduce stack tracker to undo the PHA tracking
+        self._region_state.stack_tracker.pop(stack_bytes_pushed)
 
     def _emit_register_argument(self, arg, arg_loc):
         """Emit register argument (move to specified register)."""
