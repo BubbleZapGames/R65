@@ -1,13 +1,16 @@
 """
 End-to-end tests for I32 (32-bit signed integer) stdlib.
 
-Compiles R65 source through the full pipeline, executes on the emulator,
-and validates mathematical correctness of all I32 operations.
+Batched: multiple operations compiled into a single ROM per test class
+to reduce compile+assemble+link overhead from ~50 compilations to 4.
+
+Result slots use lowram addresses at $0200+ to avoid stack overlap
+(stack starts at $01FF and grows downward).
 """
 
 import pytest
 from pathlib import Path
-from r65.tests.e2e import E2ETest, ExpectedState
+from r65.tests.e2e import E2ETest
 
 STDLIB_DIR = Path(__file__).parent.parent.parent.parent / "stdlib"
 SNESLIB_PATH = STDLIB_DIR / "sneslib.r65"
@@ -26,10 +29,20 @@ def i32_bytes(value):
     ]
 
 
-RESULT_ADDR = 0x10
-RESULT_SNES = 0x7E0000 + RESULT_ADDR
+def read_i32(cpu, lowram_addr):
+    """Read 4 bytes (LE) from lowram via SNES address."""
+    snes = 0x7E0000 + lowram_addr
+    return [cpu.memory.read(snes + i) for i in range(4)]
 
-HEADER = f'''
+
+def read_u8(cpu, zp_addr):
+    """Read 1 byte from zeropage via SNES address."""
+    return cpu.memory.read(0x7E0000 + zp_addr)
+
+
+# ── Common header ────────────────────────────────────────────────────────────
+
+COMMON_HEADER = f'''
     include!("{SNESLIB_PATH}")
     include!("{I32_PATH}")
 
@@ -38,694 +51,417 @@ HEADER = f'''
     #[zeropage(0x04, register)]
     static mut SCRATCH1: u16;
 
-    #[zeropage({RESULT_ADDR})]
+    #[zeropage(0x10)]
     static mut V: I32;
-
     #[ram]
     static mut W: I32;
 '''
 
-HEADER2 = f'''
-    include!("{SNESLIB_PATH}")
-    include!("{I32_PATH}")
+# ── Fast operations batch 1: literals, from_i16, from_u16, neg, abs, is_neg ─
 
-    #[zeropage(0x02, register)]
-    static mut SCRATCH0: u8;
-    #[zeropage(0x04, register)]
-    static mut SCRATCH1: u16;
+FAST_SOURCE_1 = COMMON_HEADER + f'''
+    // ROM-initialized sources for literal tests
+    #[ram] static mut SRC_0: I32 = I32!(0);
+    #[ram] static mut SRC_1000: I32 = I32!(1000);
+    #[ram] static mut SRC_100000: I32 = I32!(100000);
+    #[ram] static mut SRC_NEG1: I32 = I32!(-1);
+    #[ram] static mut SRC_NEG42: I32 = I32!(-42);
+    #[ram] static mut SRC_NEG100000: I32 = I32!(-100000);
 
-    #[zeropage({RESULT_ADDR})]
-    static mut V: I32;
+    // Result slots: literals
+    #[lowram(0x0200)] static mut LIT0: I32;
+    #[lowram(0x0204)] static mut LIT1: I32;
+    #[lowram(0x0208)] static mut LIT2: I32;
+    #[lowram(0x020C)] static mut LIT3: I32;
+    #[lowram(0x0210)] static mut LIT4: I32;
+    #[lowram(0x0214)] static mut LIT5: I32;
 
-    #[zeropage(0x14)]
-    static mut R: u16;
+    // Result slots: from_i16
+    #[lowram(0x0218)] static mut FI0: I32;
+    #[lowram(0x021C)] static mut FI1: I32;
+    #[lowram(0x0220)] static mut FI2: I32;
+    #[lowram(0x0224)] static mut FI3: I32;
 
-    #[zeropage(0x16)]
-    static mut CMP_RESULT: u8;
+    // Result slots: from_u16
+    #[lowram(0x0228)] static mut FU0: I32;
 
-    #[zeropage(0x17)]
-    static mut BOOL_RESULT: u8;
+    // Result slots: neg
+    #[lowram(0x022C)] static mut NG0: I32;
+    #[lowram(0x0230)] static mut NG1: I32;
+    #[lowram(0x0234)] static mut NG2: I32;
 
-    #[ram]
-    static mut W: I32;
+    // Result slots: abs
+    #[lowram(0x0238)] static mut AB0: I32;
+    #[lowram(0x023C)] static mut AB1: I32;
+    #[lowram(0x0240)] static mut AB2: I32;
+
+    // Scalar: is_negative
+    #[zeropage(0x20)] static mut IS_NEG0: u8;
+    #[zeropage(0x21)] static mut IS_NEG1: u8;
+
+    #[entry]
+    fn main() {{
+        // === Literals ===
+        V.lo = SRC_0.lo; V.hi = SRC_0.hi;
+        LIT0.lo = V.lo; LIT0.hi = V.hi;
+
+        V.lo = SRC_1000.lo; V.hi = SRC_1000.hi;
+        LIT1.lo = V.lo; LIT1.hi = V.hi;
+
+        V.lo = SRC_100000.lo; V.hi = SRC_100000.hi;
+        LIT2.lo = V.lo; LIT2.hi = V.hi;
+
+        V.lo = SRC_NEG1.lo; V.hi = SRC_NEG1.hi;
+        LIT3.lo = V.lo; LIT3.hi = V.hi;
+
+        V.lo = SRC_NEG42.lo; V.hi = SRC_NEG42.hi;
+        LIT4.lo = V.lo; LIT4.hi = V.hi;
+
+        V.lo = SRC_NEG100000.lo; V.hi = SRC_NEG100000.hi;
+        LIT5.lo = V.lo; LIT5.hi = V.hi;
+
+        // === from_i16 ===
+        V.from_i16(1000 as i16);
+        FI0.lo = V.lo; FI0.hi = V.hi;
+
+        V.from_i16(-100 as i16);
+        FI1.lo = V.lo; FI1.hi = V.hi;
+
+        V.from_i16(0 as i16);
+        FI2.lo = V.lo; FI2.hi = V.hi;
+
+        V.from_i16(-1 as i16);
+        FI3.lo = V.lo; FI3.hi = V.hi;
+
+        // === from_u16 ===
+        V.from_u16(1000);
+        FU0.lo = V.lo; FU0.hi = V.hi;
+
+        // === neg ===
+        V.from_i16(100 as i16); V.neg();
+        NG0.lo = V.lo; NG0.hi = V.hi;
+
+        V.from_i16(-100 as i16); V.neg();
+        NG1.lo = V.lo; NG1.hi = V.hi;
+
+        V.from_i16(0 as i16); V.neg();
+        NG2.lo = V.lo; NG2.hi = V.hi;
+
+        // === abs ===
+        V.from_i16(100 as i16); V.abs();
+        AB0.lo = V.lo; AB0.hi = V.hi;
+
+        V.from_i16(-100 as i16); V.abs();
+        AB1.lo = V.lo; AB1.hi = V.hi;
+
+        V.from_i16(0 as i16); V.abs();
+        AB2.lo = V.lo; AB2.hi = V.hi;
+
+        // === is_negative ===
+        V.from_i16(100 as i16);
+        if V.is_negative() {{
+            IS_NEG0 = 1;
+        }} else {{
+            IS_NEG0 = 0;
+        }}
+
+        V.from_i16(-100 as i16);
+        if V.is_negative() {{
+            IS_NEG1 = 1;
+        }} else {{
+            IS_NEG1 = 0;
+        }}
+    }}
+'''
+
+# ── Fast operations batch 2: mul, add, sub, shl, sar, cmp ───────────────────
+
+FAST_SOURCE_2 = COMMON_HEADER + f'''
+    // Result slots: mul (first to avoid state interaction)
+    #[lowram(0x0200)] static mut MU0: I32;
+    #[lowram(0x0204)] static mut MU1: I32;
+    #[lowram(0x0208)] static mut MU2: I32;
+    #[lowram(0x020C)] static mut MU3: I32;
+
+    // Result slots: add
+    #[lowram(0x0210)] static mut AD0: I32;
+    #[lowram(0x0214)] static mut AD1: I32;
+    #[lowram(0x0218)] static mut AD2: I32;
+
+    // Result slots: sub
+    #[lowram(0x021C)] static mut SU0: I32;
+    #[lowram(0x0220)] static mut SU1: I32;
+
+    // Result slots: shl
+    #[lowram(0x0224)] static mut SL0: I32;
+
+    // Result slots: sar
+    #[lowram(0x0228)] static mut SA0: I32;
+    #[lowram(0x022C)] static mut SA1: I32;
+    #[lowram(0x0230)] static mut SA2: I32;
+
+    // Scalar: cmp
+    #[zeropage(0x20)] static mut CMP_EQ: u8;
+    #[zeropage(0x21)] static mut CMP_GT: u8;
+    #[zeropage(0x22)] static mut CMP_LT: u8;
+    #[zeropage(0x23)] static mut CMP_NEG: u8;
+
+    #[entry]
+    fn main() {{
+        // === mul (first to avoid state interaction) ===
+        V.from_i16(100 as i16); W.from_i16(200 as i16); V.mul(&W);
+        MU0.lo = V.lo; MU0.hi = V.hi;
+
+        V.from_i16(100 as i16); W.from_i16(-5 as i16); V.mul(&W);
+        MU1.lo = V.lo; MU1.hi = V.hi;
+
+        V.from_i16(-10 as i16); W.from_i16(-20 as i16); V.mul(&W);
+        MU2.lo = V.lo; MU2.hi = V.hi;
+
+        V.from_i16(100 as i16); W.from_i16(0 as i16); V.mul(&W);
+        MU3.lo = V.lo; MU3.hi = V.hi;
+
+        // === add ===
+        V.from_i16(100 as i16); W.from_i16(200 as i16); V.add(&W);
+        AD0.lo = V.lo; AD0.hi = V.hi;
+
+        V.from_i16(100 as i16); W.from_i16(-50 as i16); V.add(&W);
+        AD1.lo = V.lo; AD1.hi = V.hi;
+
+        V.from_i16(-100 as i16); W.from_i16(-200 as i16); V.add(&W);
+        AD2.lo = V.lo; AD2.hi = V.hi;
+
+        // === sub ===
+        V.from_i16(300 as i16); W.from_i16(100 as i16); V.sub(&W);
+        SU0.lo = V.lo; SU0.hi = V.hi;
+
+        V.from_i16(100 as i16); W.from_i16(200 as i16); V.sub(&W);
+        SU1.lo = V.lo; SU1.hi = V.hi;
+
+        // === shl ===
+        V.from_i16(1 as i16); V.shl(4);
+        SL0.lo = V.lo; SL0.hi = V.hi;
+
+        // === sar ===
+        V.from_i16(16 as i16); V.sar(2);
+        SA0.lo = V.lo; SA0.hi = V.hi;
+
+        V.from_i16(-16 as i16); V.sar(2);
+        SA1.lo = V.lo; SA1.hi = V.hi;
+
+        V.from_i16(-1 as i16); V.sar(1);
+        SA2.lo = V.lo; SA2.hi = V.hi;
+
+        // === cmp ===
+        V.from_i16(100 as i16); W.from_i16(100 as i16);
+        A = V.cmp(&W); CMP_EQ = A;
+
+        V.from_i16(100 as i16); W.from_i16(-100 as i16);
+        A = V.cmp(&W); CMP_GT = A;
+
+        V.from_i16(-100 as i16); W.from_i16(100 as i16);
+        A = V.cmp(&W); CMP_LT = A;
+
+        V.from_i16(-10 as i16); W.from_i16(-100 as i16);
+        A = V.cmp(&W); CMP_NEG = A;
+    }}
+'''
+
+# ── Slow operations source ──────────────────────────────────────────────────
+
+SLOW_SOURCE = COMMON_HEADER + f'''
+    // Result slots: div
+    #[lowram(0x0200)] static mut DV0: I32;
+    #[lowram(0x0204)] static mut DV1: I32;
+    #[lowram(0x0208)] static mut DV2: I32;
+    #[lowram(0x020C)] static mut DV3: I32;
+    #[lowram(0x0210)] static mut DV4: I32;
+    #[lowram(0x0214)] static mut DV5: I32;
+
+    // Result slots: mod
+    #[lowram(0x0218)] static mut MD0: I32;
+    #[lowram(0x021C)] static mut MD1: I32;
+    #[lowram(0x0220)] static mut MD2: I32;
+
+    // Result slots: mod_i16
+    #[lowram(0x0224)] static mut MI0: I32;
+    #[lowram(0x0228)] static mut MI1: I32;
+    #[lowram(0x022C)] static mut MI2: I32;
+    #[lowram(0x0230)] static mut MI3: I32;
+    #[lowram(0x0234)] static mut MI4: I32;
+
+    #[entry]
+    fn main() {{
+        // === div ===
+        V.from_i16(1000 as i16); W.from_i16(10 as i16); V.div(&W);
+        DV0.lo = V.lo; DV0.hi = V.hi;
+
+        V.from_i16(-1000 as i16); W.from_i16(10 as i16); V.div(&W);
+        DV1.lo = V.lo; DV1.hi = V.hi;
+
+        V.from_i16(1000 as i16); W.from_i16(-10 as i16); V.div(&W);
+        DV2.lo = V.lo; DV2.hi = V.hi;
+
+        V.from_i16(-1000 as i16); W.from_i16(-10 as i16); V.div(&W);
+        DV3.lo = V.lo; DV3.hi = V.hi;
+
+        V.from_i16(7 as i16); W.from_i16(2 as i16); V.div(&W);
+        DV4.lo = V.lo; DV4.hi = V.hi;
+
+        V.from_i16(1000 as i16); W.from_i16(0 as i16); V.div(&W);
+        DV5.lo = V.lo; DV5.hi = V.hi;
+
+        // === mod ===
+        V.from_i16(1000 as i16); W.from_i16(7 as i16); V.mod(&W);
+        MD0.lo = V.lo; MD0.hi = V.hi;
+
+        V.from_i16(-1000 as i16); W.from_i16(7 as i16); V.mod(&W);
+        MD1.lo = V.lo; MD1.hi = V.hi;
+
+        V.from_i16(1000 as i16); W.from_i16(10 as i16); V.mod(&W);
+        MD2.lo = V.lo; MD2.hi = V.hi;
+
+        // === mod_i16 ===
+        V.from_i16(1000 as i16); V.mod_i16(7);
+        MI0.lo = V.lo; MI0.hi = V.hi;
+
+        V.from_i16(-1000 as i16); V.mod_i16(7);
+        MI1.lo = V.lo; MI1.hi = V.hi;
+
+        V.from_i16(1000 as i16); V.mod_i16(-7 as i16);
+        MI2.lo = V.lo; MI2.hi = V.hi;
+
+        V.from_i16(1000 as i16); V.mod_i16(10);
+        MI3.lo = V.lo; MI3.hi = V.hi;
+
+        V.from_i16(1000 as i16); V.mod_i16(0);
+        MI4.lo = V.lo; MI4.hi = V.hi;
+    }}
 '''
 
 
-class TestI32LiteralMacro:
-    """Test I32! literal initialization macro."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
-
-    @pytest.mark.parametrize("value", [0, 1000, 100000, -1, -42, -100000])
-    def test_i32_literal(self, e2e, value):
-        """I32!(value) produces correct two's complement bytes."""
-        source = f'''
-            include!("{SNESLIB_PATH}")
-            include!("{I32_PATH}")
-
-            #[ram]
-            static mut SRC: I32 = I32!({value});
-
-            #[zeropage({RESULT_ADDR})]
-            static mut V: I32;
-
-            #[entry]
-            fn main() {{
-                V.lo = SRC.lo;
-                V.hi = SRC.hi;
-            }}
-        '''
-        result = e2e.run(source, ExpectedState(memory={RESULT_SNES: i32_bytes(value)}))
-        assert result.success, f"I32!({value}): {result.failures}"
-
-
-class TestI32FromI16:
-    """Test I32::from_i16 sign extension."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
-
-    def test_from_i16_positive(self, e2e):
-        """Positive i16: 1000 -> lo=1000, hi=0."""
-        result = e2e.run(HEADER + '''
-            #[entry]
-            fn main() { V.from_i16(1000 as i16); }
-        ''', ExpectedState(memory={RESULT_SNES: i32_bytes(1000)}))
-        assert result.success, f"Failures: {result.failures}"
-
-    def test_from_i16_negative(self, e2e):
-        """Negative i16: -100 -> sign extended to 0xFFFFFF9C."""
-        result = e2e.run(HEADER + '''
-            #[entry]
-            fn main() { V.from_i16(-100 as i16); }
-        ''', ExpectedState(memory={RESULT_SNES: i32_bytes(-100)}))
-        assert result.success, f"Failures: {result.failures}"
-
-    def test_from_i16_zero(self, e2e):
-        result = e2e.run(HEADER + '''
-            #[entry]
-            fn main() { V.from_i16(0 as i16); }
-        ''', ExpectedState(memory={RESULT_SNES: i32_bytes(0)}))
-        assert result.success, f"Failures: {result.failures}"
-
-    def test_from_i16_minus_one(self, e2e):
-        """-1 -> 0xFFFFFFFF."""
-        result = e2e.run(HEADER + '''
-            #[entry]
-            fn main() { V.from_i16(-1 as i16); }
-        ''', ExpectedState(memory={RESULT_SNES: i32_bytes(-1)}))
-        assert result.success, f"Failures: {result.failures}"
-
-
-class TestI32FromU16:
-    """Test I32::from_u16 zero extension."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
-
-    def test_from_u16_basic(self, e2e):
-        """1000 zero-extends to lo=1000, hi=0."""
-        result = e2e.run(HEADER + '''
-            #[entry]
-            fn main() { V.from_u16(1000); }
-        ''', ExpectedState(memory={RESULT_SNES: i32_bytes(1000)}))
-        assert result.success, f"Failures: {result.failures}"
-
-
-class TestI32Neg:
-    """Test I32::neg (two's complement negation)."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
-
-    def test_neg_positive(self, e2e):
-        """neg(100) = -100."""
-        result = e2e.run(HEADER + '''
-            #[entry]
-            fn main() {
-                V.from_i16(100 as i16);
-                V.neg();
-            }
-        ''', ExpectedState(memory={RESULT_SNES: i32_bytes(-100)}))
-        assert result.success, f"Failures: {result.failures}"
-
-    def test_neg_negative(self, e2e):
-        """neg(-100) = 100."""
-        result = e2e.run(HEADER + '''
-            #[entry]
-            fn main() {
-                V.from_i16(-100 as i16);
-                V.neg();
-            }
-        ''', ExpectedState(memory={RESULT_SNES: i32_bytes(100)}))
-        assert result.success, f"Failures: {result.failures}"
-
-    def test_neg_zero(self, e2e):
-        """neg(0) = 0."""
-        result = e2e.run(HEADER + '''
-            #[entry]
-            fn main() {
-                V.from_i16(0 as i16);
-                V.neg();
-            }
-        ''', ExpectedState(memory={RESULT_SNES: i32_bytes(0)}))
-        assert result.success, f"Failures: {result.failures}"
-
-
-class TestI32Abs:
-    """Test I32::abs."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
-
-    def test_abs_positive(self, e2e):
-        """abs(100) = 100 (unchanged)."""
-        result = e2e.run(HEADER + '''
-            #[entry]
-            fn main() {
-                V.from_i16(100 as i16);
-                V.abs();
-            }
-        ''', ExpectedState(memory={RESULT_SNES: i32_bytes(100)}))
-        assert result.success, f"Failures: {result.failures}"
-
-    def test_abs_negative(self, e2e):
-        """abs(-100) = 100."""
-        result = e2e.run(HEADER + '''
-            #[entry]
-            fn main() {
-                V.from_i16(-100 as i16);
-                V.abs();
-            }
-        ''', ExpectedState(memory={RESULT_SNES: i32_bytes(100)}))
-        assert result.success, f"Failures: {result.failures}"
-
-    def test_abs_zero(self, e2e):
-        """abs(0) = 0."""
-        result = e2e.run(HEADER + '''
-            #[entry]
-            fn main() {
-                V.from_i16(0 as i16);
-                V.abs();
-            }
-        ''', ExpectedState(memory={RESULT_SNES: i32_bytes(0)}))
-        assert result.success, f"Failures: {result.failures}"
-
-
-class TestI32IsNegative:
-    """Test I32::is_negative."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
-
-    def test_positive_is_not_negative(self, e2e):
-        result = e2e.run(HEADER2 + '''
-            #[entry]
-            fn main() {
-                V.from_i16(100 as i16);
-                if V.is_negative() {
-                    BOOL_RESULT = 1;
-                } else {
-                    BOOL_RESULT = 0;
-                }
-            }
-        ''', ExpectedState(memory={0x7E0017: 0}))
-        assert result.success, f"Failures: {result.failures}"
-
-    def test_negative_is_negative(self, e2e):
-        result = e2e.run(HEADER2 + '''
-            #[entry]
-            fn main() {
-                V.from_i16(-100 as i16);
-                if V.is_negative() {
-                    BOOL_RESULT = 1;
-                } else {
-                    BOOL_RESULT = 0;
-                }
-            }
-        ''', ExpectedState(memory={0x7E0017: 1}))
-        assert result.success, f"Failures: {result.failures}"
-
-
-class TestI32Add:
-    """Test I32::add arithmetic."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
-
-    def test_add_positive(self, e2e):
-        """100 + 200 = 300."""
-        result = e2e.run(HEADER + '''
-            #[entry]
-            fn main() {
-                V.from_i16(100 as i16);
-                W.from_i16(200 as i16);
-                V.add(&W);
-            }
-        ''', ExpectedState(memory={RESULT_SNES: i32_bytes(300)}))
-        assert result.success, f"Failures: {result.failures}"
-
-    def test_add_negative(self, e2e):
-        """100 + (-50) = 50."""
-        result = e2e.run(HEADER + '''
-            #[entry]
-            fn main() {
-                V.from_i16(100 as i16);
-                W.from_i16(-50 as i16);
-                V.add(&W);
-            }
-        ''', ExpectedState(memory={RESULT_SNES: i32_bytes(50)}))
-        assert result.success, f"Failures: {result.failures}"
-
-    def test_add_both_negative(self, e2e):
-        """-100 + (-200) = -300."""
-        result = e2e.run(HEADER + '''
-            #[entry]
-            fn main() {
-                V.from_i16(-100 as i16);
-                W.from_i16(-200 as i16);
-                V.add(&W);
-            }
-        ''', ExpectedState(memory={RESULT_SNES: i32_bytes(-300)}))
-        assert result.success, f"Failures: {result.failures}"
-
-
-class TestI32Sub:
-    """Test I32::sub arithmetic."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
-
-    def test_sub_basic(self, e2e):
-        """300 - 100 = 200."""
-        result = e2e.run(HEADER + '''
-            #[entry]
-            fn main() {
-                V.from_i16(300 as i16);
-                W.from_i16(100 as i16);
-                V.sub(&W);
-            }
-        ''', ExpectedState(memory={RESULT_SNES: i32_bytes(200)}))
-        assert result.success, f"Failures: {result.failures}"
-
-    def test_sub_to_negative(self, e2e):
-        """100 - 200 = -100."""
-        result = e2e.run(HEADER + '''
-            #[entry]
-            fn main() {
-                V.from_i16(100 as i16);
-                W.from_i16(200 as i16);
-                V.sub(&W);
-            }
-        ''', ExpectedState(memory={RESULT_SNES: i32_bytes(-100)}))
-        assert result.success, f"Failures: {result.failures}"
-
-
-class TestI32Mul:
-    """Test I32::mul arithmetic."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
-
-    def test_mul_positive(self, e2e):
-        """100 * 200 = 20000."""
-        result = e2e.run(HEADER + '''
-            #[entry]
-            fn main() {
-                V.from_i16(100 as i16);
-                W.from_i16(200 as i16);
-                V.mul(&W);
-            }
-        ''', ExpectedState(memory={RESULT_SNES: i32_bytes(20000)}),
-                          max_instructions=100000)
-        assert result.success, f"Failures: {result.failures}"
-
-    def test_mul_negative(self, e2e):
-        """100 * (-5) = -500."""
-        result = e2e.run(HEADER + '''
-            #[entry]
-            fn main() {
-                V.from_i16(100 as i16);
-                W.from_i16(-5 as i16);
-                V.mul(&W);
-            }
-        ''', ExpectedState(memory={RESULT_SNES: i32_bytes(-500)}),
-                          max_instructions=100000)
-        assert result.success, f"Failures: {result.failures}"
-
-    def test_mul_both_negative(self, e2e):
-        """(-10) * (-20) = 200."""
-        result = e2e.run(HEADER + '''
-            #[entry]
-            fn main() {
-                V.from_i16(-10 as i16);
-                W.from_i16(-20 as i16);
-                V.mul(&W);
-            }
-        ''', ExpectedState(memory={RESULT_SNES: i32_bytes(200)}),
-                          max_instructions=100000)
-        assert result.success, f"Failures: {result.failures}"
-
-    def test_mul_by_zero(self, e2e):
-        """100 * 0 = 0."""
-        result = e2e.run(HEADER + '''
-            #[entry]
-            fn main() {
-                V.from_i16(100 as i16);
-                W.from_i16(0 as i16);
-                V.mul(&W);
-            }
-        ''', ExpectedState(memory={RESULT_SNES: i32_bytes(0)}),
-                          max_instructions=100000)
-        assert result.success, f"Failures: {result.failures}"
-
-
-class TestI32Div:
-    """Test I32::div arithmetic."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
-
-    def test_div_exact(self, e2e):
-        """1000 / 10 = 100."""
-        result = e2e.run(HEADER + '''
-            #[entry]
-            fn main() {
-                V.from_i16(1000 as i16);
-                W.from_i16(10 as i16);
-                V.div(&W);
-            }
-        ''', ExpectedState(memory={RESULT_SNES: i32_bytes(100)}),
-                          max_instructions=200000)
-        assert result.success, f"Failures: {result.failures}"
-
-    def test_div_negative_dividend(self, e2e):
-        """-1000 / 10 = -100."""
-        result = e2e.run(HEADER + '''
-            #[entry]
-            fn main() {
-                V.from_i16(-1000 as i16);
-                W.from_i16(10 as i16);
-                V.div(&W);
-            }
-        ''', ExpectedState(memory={RESULT_SNES: i32_bytes(-100)}),
-                          max_instructions=200000)
-        assert result.success, f"Failures: {result.failures}"
-
-    def test_div_negative_divisor(self, e2e):
-        """1000 / (-10) = -100."""
-        result = e2e.run(HEADER + '''
-            #[entry]
-            fn main() {
-                V.from_i16(1000 as i16);
-                W.from_i16(-10 as i16);
-                V.div(&W);
-            }
-        ''', ExpectedState(memory={RESULT_SNES: i32_bytes(-100)}),
-                          max_instructions=200000)
-        assert result.success, f"Failures: {result.failures}"
-
-    def test_div_both_negative(self, e2e):
-        """-1000 / (-10) = 100."""
-        result = e2e.run(HEADER + '''
-            #[entry]
-            fn main() {
-                V.from_i16(-1000 as i16);
-                W.from_i16(-10 as i16);
-                V.div(&W);
-            }
-        ''', ExpectedState(memory={RESULT_SNES: i32_bytes(100)}),
-                          max_instructions=200000)
-        assert result.success, f"Failures: {result.failures}"
-
-    def test_div_truncation_toward_zero(self, e2e):
-        """7 / 2 = 3 (not 3.5, truncates toward zero)."""
-        result = e2e.run(HEADER + '''
-            #[entry]
-            fn main() {
-                V.from_i16(7 as i16);
-                W.from_i16(2 as i16);
-                V.div(&W);
-            }
-        ''', ExpectedState(memory={RESULT_SNES: i32_bytes(3)}),
-                          max_instructions=200000)
-        assert result.success, f"Failures: {result.failures}"
-
-    def test_div_by_zero(self, e2e):
-        """1000 / 0 = MIN_I32 (0x80000000) sentinel."""
-        result = e2e.run(HEADER + '''
-            #[entry]
-            fn main() {
-                V.from_i16(1000 as i16);
-                W.from_i16(0 as i16);
-                V.div(&W);
-            }
-        ''', ExpectedState(memory={RESULT_SNES: i32_bytes(-2147483648)}),
-                          max_instructions=200000)
-        assert result.success, f"Failures: {result.failures}"
-
-
-class TestI32Mod:
-    """Test I32::mod arithmetic."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
-
-    def test_mod_basic(self, e2e):
-        """1000 % 7 = 6."""
-        result = e2e.run(HEADER + '''
-            #[entry]
-            fn main() {
-                V.from_i16(1000 as i16);
-                W.from_i16(7 as i16);
-                V.mod(&W);
-            }
-        ''', ExpectedState(memory={RESULT_SNES: i32_bytes(6)}),
-                          max_instructions=200000)
-        assert result.success, f"Failures: {result.failures}"
-
-    def test_mod_negative_dividend(self, e2e):
-        """-1000 % 7 = -6 (remainder has sign of dividend)."""
-        result = e2e.run(HEADER + '''
-            #[entry]
-            fn main() {
-                V.from_i16(-1000 as i16);
-                W.from_i16(7 as i16);
-                V.mod(&W);
-            }
-        ''', ExpectedState(memory={RESULT_SNES: i32_bytes(-6)}),
-                          max_instructions=200000)
-        assert result.success, f"Failures: {result.failures}"
-
-    def test_mod_no_remainder(self, e2e):
-        """1000 % 10 = 0."""
-        result = e2e.run(HEADER + '''
-            #[entry]
-            fn main() {
-                V.from_i16(1000 as i16);
-                W.from_i16(10 as i16);
-                V.mod(&W);
-            }
-        ''', ExpectedState(memory={RESULT_SNES: i32_bytes(0)}),
-                          max_instructions=200000)
-        assert result.success, f"Failures: {result.failures}"
-
-
-class TestI32ModI16:
-    """Test I32::mod_i16 scalar modulo."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
-
-    def test_mod_i16_basic(self, e2e):
-        """1000 % 7 = 6."""
-        result = e2e.run(HEADER + '''
-            #[entry]
-            fn main() {
-                V.from_i16(1000 as i16);
-                V.mod_i16(7);
-            }
-        ''', ExpectedState(memory={RESULT_SNES: i32_bytes(6)}),
-                          max_instructions=200000)
-        assert result.success, f"Failures: {result.failures}"
-
-    def test_mod_i16_negative_dividend(self, e2e):
-        """-1000 % 7 = -6 (remainder has sign of dividend)."""
-        result = e2e.run(HEADER + '''
-            #[entry]
-            fn main() {
-                V.from_i16(-1000 as i16);
-                V.mod_i16(7);
-            }
-        ''', ExpectedState(memory={RESULT_SNES: i32_bytes(-6)}),
-                          max_instructions=200000)
-        assert result.success, f"Failures: {result.failures}"
-
-    def test_mod_i16_negative_divisor(self, e2e):
-        """1000 % -7 = 6 (remainder has sign of dividend, not divisor)."""
-        result = e2e.run(HEADER + '''
-            #[entry]
-            fn main() {
-                V.from_i16(1000 as i16);
-                V.mod_i16(-7 as i16);
-            }
-        ''', ExpectedState(memory={RESULT_SNES: i32_bytes(6)}),
-                          max_instructions=200000)
-        assert result.success, f"Failures: {result.failures}"
-
-    def test_mod_i16_no_remainder(self, e2e):
-        """1000 % 10 = 0."""
-        result = e2e.run(HEADER + '''
-            #[entry]
-            fn main() {
-                V.from_i16(1000 as i16);
-                V.mod_i16(10);
-            }
-        ''', ExpectedState(memory={RESULT_SNES: i32_bytes(0)}),
-                          max_instructions=200000)
-        assert result.success, f"Failures: {result.failures}"
-
-    def test_mod_i16_by_zero(self, e2e):
-        """1000 % 0 leaves self unchanged."""
-        result = e2e.run(HEADER + '''
-            #[entry]
-            fn main() {
-                V.from_i16(1000 as i16);
-                V.mod_i16(0);
-            }
-        ''', ExpectedState(memory={RESULT_SNES: i32_bytes(1000)}),
-                          max_instructions=200000)
-        assert result.success, f"Failures: {result.failures}"
-
-
-class TestI32Cmp:
-    """Test I32::cmp signed comparison."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
-
-    def test_cmp_equal(self, e2e):
-        """100 == 100 returns 0."""
-        result = e2e.run(HEADER2 + '''
-            #[entry]
-            fn main() {
-                V.from_i16(100 as i16);
-                W.from_i16(100 as i16);
-                A = V.cmp(&W);
-                CMP_RESULT = A;
-            }
-        ''', ExpectedState(memory={0x7E0016: 0}))
-        assert result.success, f"Failures: {result.failures}"
-
-    def test_cmp_greater(self, e2e):
-        """100 > -100 returns 1."""
-        result = e2e.run(HEADER2 + '''
-            #[entry]
-            fn main() {
-                V.from_i16(100 as i16);
-                W.from_i16(-100 as i16);
-                A = V.cmp(&W);
-                CMP_RESULT = A;
-            }
-        ''', ExpectedState(memory={0x7E0016: 1}))
-        assert result.success, f"Failures: {result.failures}"
-
-    def test_cmp_less(self, e2e):
-        """-100 < 100 returns 0xFF."""
-        result = e2e.run(HEADER2 + '''
-            #[entry]
-            fn main() {
-                V.from_i16(-100 as i16);
-                W.from_i16(100 as i16);
-                A = V.cmp(&W);
-                CMP_RESULT = A;
-            }
-        ''', ExpectedState(memory={0x7E0016: 0xFF}))
-        assert result.success, f"Failures: {result.failures}"
-
-    def test_cmp_both_negative(self, e2e):
-        """-10 > -100 returns 1."""
-        result = e2e.run(HEADER2 + '''
-            #[entry]
-            fn main() {
-                V.from_i16(-10 as i16);
-                W.from_i16(-100 as i16);
-                A = V.cmp(&W);
-                CMP_RESULT = A;
-            }
-        ''', ExpectedState(memory={0x7E0016: 1}))
-        assert result.success, f"Failures: {result.failures}"
-
-
-class TestI32Shl:
-    """Test I32::shl (shift left)."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
-
-    def test_shl_basic(self, e2e):
-        """1 << 4 = 16."""
-        result = e2e.run(HEADER + '''
-            #[entry]
-            fn main() {
-                V.from_i16(1 as i16);
-                V.shl(4);
-            }
-        ''', ExpectedState(memory={RESULT_SNES: i32_bytes(16)}))
-        assert result.success, f"Failures: {result.failures}"
-
-
-class TestI32Sar:
-    """Test I32::sar (arithmetic shift right, preserves sign)."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
-
-    def test_sar_positive(self, e2e):
-        """16 >> 2 = 4."""
-        result = e2e.run(HEADER + '''
-            #[entry]
-            fn main() {
-                V.from_i16(16 as i16);
-                V.sar(2);
-            }
-        ''', ExpectedState(memory={RESULT_SNES: i32_bytes(4)}))
-        assert result.success, f"Failures: {result.failures}"
-
-    def test_sar_negative_preserves_sign(self, e2e):
-        """-16 >> 2 = -4 (sign bit preserved)."""
-        result = e2e.run(HEADER + '''
-            #[entry]
-            fn main() {
-                V.from_i16(-16 as i16);
-                V.sar(2);
-            }
-        ''', ExpectedState(memory={RESULT_SNES: i32_bytes(-4)}))
-        assert result.success, f"Failures: {result.failures}"
-
-    def test_sar_minus_one(self, e2e):
-        """-1 >> 1 = -1 (all bits set, sign preserved)."""
-        result = e2e.run(HEADER + '''
-            #[entry]
-            fn main() {
-                V.from_i16(-1 as i16);
-                V.sar(1);
-            }
-        ''', ExpectedState(memory={RESULT_SNES: i32_bytes(-1)}))
-        assert result.success, f"Failures: {result.failures}"
+# ── Test classes ─────────────────────────────────────────────────────────────
+
+class TestI32FastOps1:
+    """Batched tests: literals, from_i16, from_u16, neg, abs, is_negative."""
+
+    @pytest.fixture(scope="class")
+    def cpu(self):
+        e2e = E2ETest()
+        rom = e2e.compile(FAST_SOURCE_1)
+        return e2e.execute(rom, max_instructions=200000)
+
+    def test_literal_macro(self, cpu):
+        """I32! literal initialization macro."""
+        assert read_i32(cpu, 0x0200) == i32_bytes(0), "I32!(0)"
+        assert read_i32(cpu, 0x0204) == i32_bytes(1000), "I32!(1000)"
+        assert read_i32(cpu, 0x0208) == i32_bytes(100000), "I32!(100000)"
+        assert read_i32(cpu, 0x020C) == i32_bytes(-1), "I32!(-1)"
+        assert read_i32(cpu, 0x0210) == i32_bytes(-42), "I32!(-42)"
+        assert read_i32(cpu, 0x0214) == i32_bytes(-100000), "I32!(-100000)"
+
+    def test_from_i16(self, cpu):
+        """from_i16 sign-extends i16 to I32."""
+        assert read_i32(cpu, 0x0218) == i32_bytes(1000), "from_i16(1000)"
+        assert read_i32(cpu, 0x021C) == i32_bytes(-100), "from_i16(-100)"
+        assert read_i32(cpu, 0x0220) == i32_bytes(0), "from_i16(0)"
+        assert read_i32(cpu, 0x0224) == i32_bytes(-1), "from_i16(-1)"
+
+    def test_from_u16(self, cpu):
+        """from_u16 zero-extends u16 to I32."""
+        assert read_i32(cpu, 0x0228) == i32_bytes(1000), "from_u16(1000)"
+
+    def test_neg(self, cpu):
+        """Two's complement negation."""
+        assert read_i32(cpu, 0x022C) == i32_bytes(-100), "neg(100)"
+        assert read_i32(cpu, 0x0230) == i32_bytes(100), "neg(-100)"
+        assert read_i32(cpu, 0x0234) == i32_bytes(0), "neg(0)"
+
+    def test_abs(self, cpu):
+        """Absolute value."""
+        assert read_i32(cpu, 0x0238) == i32_bytes(100), "abs(100)"
+        assert read_i32(cpu, 0x023C) == i32_bytes(100), "abs(-100)"
+        assert read_i32(cpu, 0x0240) == i32_bytes(0), "abs(0)"
+
+    def test_is_negative(self, cpu):
+        """is_negative returns correct boolean."""
+        assert read_u8(cpu, 0x20) == 0, "is_negative(100) -> false"
+        assert read_u8(cpu, 0x21) == 1, "is_negative(-100) -> true"
+
+
+class TestI32FastOps2:
+    """Batched tests: add, sub, mul, shl, sar, cmp."""
+
+    @pytest.fixture(scope="class")
+    def cpu(self):
+        e2e = E2ETest()
+        rom = e2e.compile(FAST_SOURCE_2)
+        return e2e.execute(rom, max_instructions=600000)
+
+    def test_mul(self, cpu):
+        """I32 multiplication with sign handling."""
+        assert read_i32(cpu, 0x0200) == i32_bytes(20000), "100*200"
+        assert read_i32(cpu, 0x0204) == i32_bytes(-500), "100*(-5)"
+        assert read_i32(cpu, 0x0208) == i32_bytes(200), "(-10)*(-20)"
+        assert read_i32(cpu, 0x020C) == i32_bytes(0), "100*0"
+
+    def test_add(self, cpu):
+        """I32 addition."""
+        assert read_i32(cpu, 0x0210) == i32_bytes(300), "100+200"
+        assert read_i32(cpu, 0x0214) == i32_bytes(50), "100+(-50)"
+        assert read_i32(cpu, 0x0218) == i32_bytes(-300), "-100+(-200)"
+
+    def test_sub(self, cpu):
+        """I32 subtraction."""
+        assert read_i32(cpu, 0x021C) == i32_bytes(200), "300-100"
+        assert read_i32(cpu, 0x0220) == i32_bytes(-100), "100-200"
+
+    def test_shl(self, cpu):
+        """I32 shift left."""
+        assert read_i32(cpu, 0x0224) == i32_bytes(16), "1<<4"
+
+    def test_sar(self, cpu):
+        """I32 arithmetic shift right (preserves sign)."""
+        assert read_i32(cpu, 0x0228) == i32_bytes(4), "16>>2"
+        assert read_i32(cpu, 0x022C) == i32_bytes(-4), "-16>>2 (sign preserved)"
+        assert read_i32(cpu, 0x0230) == i32_bytes(-1), "-1>>1 (all bits set)"
+
+    def test_cmp(self, cpu):
+        """I32 signed comparison returns 0/1/0xFF."""
+        assert read_u8(cpu, 0x20) == 0, "100 == 100 -> 0"
+        assert read_u8(cpu, 0x21) == 1, "100 > -100 -> 1"
+        assert read_u8(cpu, 0x22) == 0xFF, "-100 < 100 -> 0xFF"
+        assert read_u8(cpu, 0x23) == 1, "-10 > -100 -> 1"
+
+
+class TestI32SlowOps:
+    """Batched tests for slow I32 operations (div, mod)."""
+
+    @pytest.fixture(scope="class")
+    def cpu(self):
+        e2e = E2ETest()
+        rom = e2e.compile(SLOW_SOURCE)
+        return e2e.execute(rom, max_instructions=2000000)
+
+    def test_div(self, cpu):
+        """I32 division with sign handling."""
+        assert read_i32(cpu, 0x0200) == i32_bytes(100), "1000/10"
+        assert read_i32(cpu, 0x0204) == i32_bytes(-100), "-1000/10"
+        assert read_i32(cpu, 0x0208) == i32_bytes(-100), "1000/(-10)"
+        assert read_i32(cpu, 0x020C) == i32_bytes(100), "-1000/(-10)"
+        assert read_i32(cpu, 0x0210) == i32_bytes(3), "7/2 (truncation)"
+        assert read_i32(cpu, 0x0214) == i32_bytes(-2147483648), "1000/0 (MIN_I32)"
+
+    def test_mod(self, cpu):
+        """I32 modulo with sign handling."""
+        assert read_i32(cpu, 0x0218) == i32_bytes(6), "1000%7"
+        assert read_i32(cpu, 0x021C) == i32_bytes(-6), "-1000%7"
+        assert read_i32(cpu, 0x0220) == i32_bytes(0), "1000%10"
+
+    def test_mod_i16(self, cpu):
+        """I32 scalar modulo (mod_i16)."""
+        assert read_i32(cpu, 0x0224) == i32_bytes(6), "1000%i16(7)"
+        assert read_i32(cpu, 0x0228) == i32_bytes(-6), "-1000%i16(7)"
+        assert read_i32(cpu, 0x022C) == i32_bytes(6), "1000%i16(-7)"
+        assert read_i32(cpu, 0x0230) == i32_bytes(0), "1000%i16(10)"
+        assert read_i32(cpu, 0x0234) == i32_bytes(1000), "1000%i16(0) unchanged"
