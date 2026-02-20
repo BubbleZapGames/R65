@@ -4,6 +4,7 @@ ABI model abstraction for the R65 compiler.
 Defines selectable ABI policies that control calling convention decisions:
 - Default: Traditional stack-based parameters with TSC/SBC/TCS frame allocation
 - FixedStack: Zero-frame model with hw registers + scratch only, PHB-per-byte frames
+- Pascal: Apple IIGS/Pascal convention — all params on stack, callee cleanup, stack result space
 """
 
 import sys
@@ -14,6 +15,7 @@ from enum import Enum
 class ABIKind(Enum):
     DEFAULT = "Default"
     FIXED_STACK = "FixedStack"
+    PASCAL = "Pascal"
 
 
 class ABIModel(ABC):
@@ -200,6 +202,76 @@ class ABIModel(ABC):
 
         return stack_bytes_pushed
 
+    def emit_return_values(self, selector, instr):
+        """Emit return value loading for a Return instruction.
+
+        Concrete on the base class — Default and FixedStack share identical
+        register-based logic. Pascal overrides to write to stack result space.
+
+        Args:
+            selector: ControlFlowInstructionSelector instance
+            instr: Return MIR instruction
+        """
+        from r65.compiler.codegen.register_alloc import LocationKind
+        from r65.compiler.codegen.opcodes import Opcode
+        from r65.compiler.errors import InstructionSelectionError
+
+        if not instr.values:
+            return
+
+        return_registers = selector._get_return_register_order()
+        if len(instr.values) > len(return_registers):
+            raise InstructionSelectionError(
+                f"Too many return values (max {len(return_registers)})",
+                source_loc=selector.parent._current_source_loc)
+
+        # Process in reverse order to avoid clobbering A
+        # Reverse order: Y first, then X, then B (XBA to store), then A last
+        for i in range(len(instr.values) - 1, -1, -1):
+            value = instr.values[i]
+            target_reg = return_registers[i]
+            value_loc = selector.parent._get_operand_location(value)
+
+            if value_loc.kind == LocationKind.RETURN_SINKABLE:
+                # Deferred load: emit the load directly into the target register
+                src_loc = selector.parent._get_operand_location(value_loc.source_location)
+                if target_reg == 'B':
+                    selector.parent._emit_load('LDA', src_loc)
+                    selector.parent._store_to_b_from_a()
+                elif target_reg in ('X', 'Y'):
+                    selector.parent._emit_load('LDA', src_loc)
+                    if target_reg == 'X':
+                        selector._emit_implied(Opcode.TAX)
+                    else:
+                        selector._emit_implied(Opcode.TAY)
+                else:  # 'A'
+                    selector.parent._emit_load('LDA', src_loc)
+                continue
+            elif value_loc.kind == LocationKind.HARDWARE and value_loc.hw_register == target_reg:
+                pass  # Already in correct register
+            elif target_reg == 'B':
+                # B return: load value into A, then XBA to store in B
+                if value_loc.kind == LocationKind.HARDWARE and value_loc.hw_register == 'A':
+                    selector.parent._store_to_b_from_a()
+                elif value_loc.kind == LocationKind.HARDWARE:
+                    selector.parent._emit_register_transfer(value_loc.hw_register, 'A')
+                    selector.parent._store_to_b_from_a()
+                else:
+                    selector.parent._emit_load('LDA', value_loc)
+                    selector.parent._store_to_b_from_a()
+            elif value_loc.kind == LocationKind.HARDWARE:
+                selector.parent._emit_register_transfer(value_loc.hw_register, target_reg)
+            elif target_reg in ('X', 'Y') and value_loc.kind == LocationKind.STACK:
+                # Handle stack-relative addressing: LDX/LDY don't support sr,S mode
+                selector.parent._emit_load('LDA', value_loc)
+                if target_reg == 'X':
+                    selector._emit_implied(Opcode.TAX, "Transfer to X (no LDX sr,S)")
+                else:
+                    selector._emit_implied(Opcode.TAY, "Transfer to Y (no LDY sr,S)")
+            else:
+                load_mnem = {'A': 'LDA', 'X': 'LDX', 'Y': 'LDY'}.get(target_reg, 'LDA')
+                selector.parent._emit_load(load_mnem, value_loc)
+
     def __repr__(self):
         return f"ABIModel({self.kind.value})"
 
@@ -253,16 +325,160 @@ class ABIFixedStack(ABIModel):
         return sys.maxsize
 
 
+class ABIPascal(ABIModel):
+    """Pascal/Apple IIGS calling convention.
+
+    All parameters on stack (register bindings ignored), left-to-right push
+    order, callee cleans up parameter bytes, stack result space for return
+    values.
+
+    Caller pushes (in order):
+      1. Result space (N bytes, only if non-void return)
+      2. param0 (first param, pushed second, ends up deepest)
+      3. param1 ... paramN (last param closest to return addr)
+      4. JSR/JSL pushes return address
+
+    Callee cleanup: removes param bytes in epilogue but leaves result space
+    on stack for caller to pull.
+    """
+
+    def __init__(self):
+        super().__init__(ABIKind.PASCAL)
+
+    def run_param_analysis(self, mir_program, scratch_pool, disable_scratch_params: bool):
+        # No scratch promotion — all params stay on stack
+        pass
+
+    def compute_outgoing_args(self, mir_program, compute_fn):
+        # Pascal callers push via PHA (not STA to outgoing area)
+        # No outgoing arg area needed
+        for func in mir_program.functions:
+            func.max_outgoing_arg_bytes = 0
+
+    def emit_frame_alloc(self, emit_instr, frame_size: int, force_direct_stack: bool):
+        if frame_size <= 0:
+            return
+        if frame_size <= 4 and not force_direct_stack:
+            self._emit_phb_alloc(emit_instr, frame_size)
+        else:
+            self._emit_tsc_alloc(emit_instr, frame_size)
+
+    @property
+    def max_pla_dealloc_size(self) -> int:
+        return 4
+
+    def emit_call_args(self, selector, instr, pre_arg_stack_adj=0) -> int:
+        """Pascal caller: push result space, then all params L->R via PHA.
+
+        All arguments use PHA regardless of their original mechanism.
+        Returns total stack_bytes_pushed (result space + param bytes).
+        """
+        from r65.compiler.mir.nodes import ArgumentMechanism
+        from r65.compiler.codegen.register_alloc import LocationKind
+        from r65.compiler.codegen.type_utils import get_type_size
+
+        stack_bytes_pushed = 0
+
+        # Step 1: Push result space (if non-void return)
+        result_bytes = getattr(instr, 'pascal_result_bytes', 0)
+        if result_bytes > 0:
+            # Push zero bytes for result space
+            for _ in range(result_bytes):
+                selector._emit_push('A', "Result space (Pascal)")
+                # A contents don't matter — caller will overwrite later
+            stack_bytes_pushed += result_bytes
+            selector.region_state.stack_tracker.push(result_bytes)
+
+        # Step 2: Push all params left-to-right (param0 first, paramN last)
+        # In Pascal, ALL args are stack-pushed regardless of mechanism
+        all_args = list(instr.args)
+        for arg in all_args:
+            arg_loc = selector.parent._get_operand_location(arg.value)
+
+            if arg_loc.kind == LocationKind.STACK and pre_arg_stack_adj != 0:
+                arg_loc = selector.parent._offset_location(arg_loc, pre_arg_stack_adj)
+
+            arg_size = 1
+            if arg.param_type is not None:
+                arg_size = get_type_size(arg.param_type)
+            elif hasattr(arg.value, 'type_info') and arg.value.type_info:
+                arg_size = get_type_size(arg.value.type_info)
+
+            selector.emit_pha_stack_argument(arg, arg_loc, arg_size)
+            stack_bytes_pushed += arg_size
+            selector.region_state.stack_tracker.push(arg_size)
+
+        return stack_bytes_pushed
+
+    def emit_return_values(self, selector, instr):
+        """Pascal callee: write return value to stack result space.
+
+        The result space was pushed by the caller before params. At this point
+        (before epilogue/frame dealloc), the offset from SP to the result space is:
+          frame_size + prologue_bytes + return_addr_size + total_param_bytes + 1
+
+        Args:
+            selector: ControlFlowInstructionSelector instance
+            instr: Return MIR instruction
+        """
+        from r65.compiler.codegen.register_alloc import LocationKind
+        from r65.compiler.codegen.opcodes import Opcode
+        from r65.compiler.codegen.asm_nodes import StackOffset
+        from r65.compiler.codegen.constants import M_FLAG
+
+        func = selector.current_function
+        if not func or func.pascal_result_space_bytes == 0:
+            # Void function — no result to write
+            return
+
+        if not instr.values:
+            return
+
+        result_bytes = func.pascal_result_space_bytes
+        total_param_bytes = func.pascal_total_param_bytes
+
+        # Compute offset from SP to the start of result space
+        frame_size = 0
+        if selector.parent.reg_alloc and selector.parent.reg_alloc.has_frame_allocation:
+            frame_size = selector.parent.reg_alloc.frame_size
+        prologue_bytes = func.abi_info.prologue_stack_bytes if func.abi_info else 0
+        return_addr_size = 3 if func.is_far else 2
+
+        result_offset = frame_size + prologue_bytes + return_addr_size + total_param_bytes + 1
+
+        value = instr.values[0]
+        value_loc = selector.parent._get_operand_location(value)
+
+        if result_bytes == 1:
+            # 8-bit result: load into A, STA offset,S
+            if not (value_loc.kind == LocationKind.HARDWARE and value_loc.hw_register == 'A'):
+                selector.parent._emit_load('LDA', value_loc)
+            selector.emitter.emit_instr(Opcode.STA_STACK, StackOffset(result_offset),
+                                        "Store return value to Pascal result space")
+        elif result_bytes == 2:
+            # 16-bit result: ensure m16, load into A, STA offset,S
+            current_mode = selector.parent.emitter.get_accu_mode()
+            if current_mode != 16:
+                selector._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG,
+                                         "16-bit A for Pascal result store")
+                selector.parent.emitter.emit_accu_mode(16)
+            if not (value_loc.kind == LocationKind.HARDWARE and value_loc.hw_register == 'A'):
+                selector.parent._emit_load('LDA', value_loc)
+            selector.emitter.emit_instr(Opcode.STA_STACK, StackOffset(result_offset),
+                                        "Store return value to Pascal result space")
+
+
 # Singleton instances
 ABI_DEFAULT = ABIDefault()
 ABI_FIXED_STACK = ABIFixedStack()
+ABI_PASCAL = ABIPascal()
 
 
 def abi_model_from_string(name: str) -> ABIModel:
     """Create ABIModel from CLI string argument.
 
     Args:
-        name: "Default" or "FixedStack"
+        name: "Default", "FixedStack", or "Pascal"
 
     Returns:
         Corresponding ABIModel instance
@@ -274,5 +490,7 @@ def abi_model_from_string(name: str) -> ABIModel:
         return ABI_DEFAULT
     elif name == "FixedStack":
         return ABI_FIXED_STACK
+    elif name == "Pascal":
+        return ABI_PASCAL
     else:
-        raise ValueError(f"Unknown ABI model: {name!r}. Expected 'Default' or 'FixedStack'.")
+        raise ValueError(f"Unknown ABI model: {name!r}. Expected 'Default', 'FixedStack', or 'Pascal'.")

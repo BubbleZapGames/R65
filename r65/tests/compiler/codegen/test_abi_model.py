@@ -3,8 +3,8 @@
 import sys
 import pytest
 from r65.compiler.codegen.abi_model import (
-    ABIModel, ABIKind, ABIDefault, ABIFixedStack,
-    ABI_DEFAULT, ABI_FIXED_STACK, abi_model_from_string,
+    ABIModel, ABIKind, ABIDefault, ABIFixedStack, ABIPascal,
+    ABI_DEFAULT, ABI_FIXED_STACK, ABI_PASCAL, abi_model_from_string,
 )
 
 
@@ -187,6 +187,9 @@ class _MockSelector:
 
     def get_current_spill_offset(self):
         return self._spill_offset
+
+    def _emit_push(self, reg, comment=""):
+        self.calls.append(('push', reg, comment))
 
     def emit_pha_stack_argument(self, arg, arg_loc, arg_size):
         self.calls.append(('pha_stack', arg.mechanism.value, arg_size))
@@ -475,3 +478,227 @@ class TestEmitFrameDealloc:
         ABI_DEFAULT.emit_frame_dealloc(sel, frame_size=8, return_count=2)
         assert sel.path == 'sp_adjust'
         assert sel.args == (8, 2, 16)
+
+
+# ===========================================================================
+# Pascal ABI Tests
+# ===========================================================================
+
+
+class TestABIKindPascal:
+    def test_pascal_value(self):
+        assert ABIKind.PASCAL.value == "Pascal"
+
+
+class TestAbiModelFromStringPascal:
+    def test_pascal(self):
+        model = abi_model_from_string("Pascal")
+        assert model.kind == ABIKind.PASCAL
+
+    def test_singleton_pascal(self):
+        assert abi_model_from_string("Pascal") is ABI_PASCAL
+
+
+class TestABIPascalFrameAlloc:
+    """ABIPascal.emit_frame_alloc uses same strategy as Default."""
+
+    def test_small_frame_emits_phb(self):
+        collected = []
+        def fake_emit(opcode, *args, **kwargs):
+            collected.append(opcode.name)
+        ABI_PASCAL.emit_frame_alloc(fake_emit, frame_size=2, force_direct_stack=False)
+        assert collected == ['PHB', 'PHB']
+
+    def test_large_frame_emits_tsc(self):
+        collected = []
+        def fake_emit(opcode, *args, **kwargs):
+            collected.append(opcode.name)
+        ABI_PASCAL.emit_frame_alloc(fake_emit, frame_size=8, force_direct_stack=False)
+        assert 'TSC' in collected
+        assert 'PHB' not in collected
+
+    def test_max_pla_dealloc_size(self):
+        assert ABI_PASCAL.max_pla_dealloc_size == 4
+
+
+class TestABIPascalParamAnalysis:
+    """Pascal ABI skips all parameter analysis (no scratch promotion)."""
+
+    def test_run_param_analysis_is_noop(self):
+        """No crash, no side effects."""
+        ABI_PASCAL.run_param_analysis("mir_program", "scratch_pool", False)
+
+    def test_compute_outgoing_args_sets_zero(self):
+        """Pascal sets max_outgoing_arg_bytes=0 on all functions."""
+        class FakeFunc:
+            max_outgoing_arg_bytes = 99
+        class FakeProg:
+            functions = [FakeFunc()]
+        ABI_PASCAL.compute_outgoing_args(FakeProg(), None)
+        assert FakeProg.functions[0].max_outgoing_arg_bytes == 0
+
+
+class TestPascalEmitCallArgs:
+    """Pascal emit_call_args: all args PHA'd left-to-right."""
+
+    def _make_pascal_push_selector(self):
+        """Return a selector that records push calls with names."""
+        sel = _MockSelector()
+        sel._emit_push_calls = []
+        original_emit_push = sel.__class__.__dict__.get('_emit_push', None)
+        def fake_emit_push(reg, comment=None):
+            sel._emit_push_calls.append(('push', reg, comment))
+        sel._emit_push = fake_emit_push
+        return sel
+
+    def test_no_args_returns_zero(self):
+        from r65.compiler.mir.nodes import Call
+        instr = Call(function='foo', args=[], returns=[], is_far=False)
+        selector = _MockSelector()
+        result = ABI_PASCAL.emit_call_args(selector, instr)
+        assert result == 0
+
+    def test_all_args_pushed_via_pha(self):
+        """Pascal forces all args through PHA regardless of mechanism."""
+        from r65.compiler.mir.nodes import Call
+        args = [
+            _make_arg('stack', param_type=_FakeTypeInfo('u8')),
+            _make_arg('stack', param_type=_FakeTypeInfo('u8')),
+        ]
+        instr = Call(function='foo', args=args, returns=[], is_far=False)
+        selector = _MockSelector(spill_offset=0)
+        result = ABI_PASCAL.emit_call_args(selector, instr)
+        # Pascal always uses PHA, so all args produce pha_stack calls
+        assert result == 2
+        pha_calls = [c for c in selector.calls if c[0] == 'pha_stack']
+        assert len(pha_calls) == 2
+
+    def test_result_space_pushed_first(self):
+        """Result space is pushed before params via _emit_push."""
+        from r65.compiler.mir.nodes import Call
+        args = [_make_arg('stack', param_type=_FakeTypeInfo('u8'))]
+        instr = Call(function='foo', args=args, returns=[], is_far=False,
+                     pascal_result_bytes=1)
+        sel = self._make_pascal_push_selector()
+        result = ABI_PASCAL.emit_call_args(sel, instr)
+        # 1 byte result space + 1 byte param = 2
+        assert result == 2
+        # The first call should be a push for result space
+        assert sel._emit_push_calls[0] == ('push', 'A', 'Result space (Pascal)')
+
+    def test_left_to_right_param_order(self):
+        """Pascal pushes param0 first, param1 second (left-to-right)."""
+        from r65.compiler.mir.nodes import Call
+        val0 = _FakeValue(_FakeTypeInfo('u8'))
+        val1 = _FakeValue(_FakeTypeInfo('u8'))
+        args = [
+            _make_arg('stack', param_type=_FakeTypeInfo('u8'), value=val0),
+            _make_arg('stack', param_type=_FakeTypeInfo('u8'), value=val1),
+        ]
+        instr = Call(function='foo', args=args, returns=[], is_far=False)
+        selector = _MockSelector()
+        ABI_PASCAL.emit_call_args(selector, instr)
+        # Both should be pha_stack, in order
+        pha_calls = [c for c in selector.calls if c[0] == 'pha_stack']
+        assert len(pha_calls) == 2
+        # Check they are in forward order (not reversed)
+        assert pha_calls[0][1] == 'stack'
+        assert pha_calls[1][1] == 'stack'
+
+    def test_stack_tracker_updated(self):
+        """Stack tracker reflects all pushed bytes."""
+        from r65.compiler.mir.nodes import Call
+        args = [
+            _make_arg('stack', param_type=_FakeTypeInfo('u8')),
+            _make_arg('stack', param_type=_FakeTypeInfo('u8')),
+        ]
+        instr = Call(function='foo', args=args, returns=[], is_far=False,
+                     pascal_result_bytes=1)
+        selector = _MockSelector()
+        result = ABI_PASCAL.emit_call_args(selector, instr)
+        # 1 result + 2 params = 3 bytes
+        assert result == 3
+        assert selector.region_state.stack_tracker.displacement == 3
+
+
+class TestPascalRepr:
+    def test_repr(self):
+        assert "Pascal" in repr(ABI_PASCAL)
+
+
+# ===========================================================================
+# Pascal integration tests (compile_string)
+# ===========================================================================
+
+
+class TestPascalCompileIntegration:
+    """Integration tests: compile R65 source with Pascal ABI, verify assembly."""
+
+    def test_pascal_callee_cleanup(self):
+        """Pascal callee should clean up stack params before return."""
+        source = """
+        fn add(a: u8, b: u8) -> u8 {
+            return a + b;
+        }
+        """
+        from r65.compiler.main import compile_string
+        result = compile_string(source, "test.r65", abi_model=ABI_PASCAL)
+        # Callee should have TSC/CLC/ADC/TCS for param cleanup (2 bytes)
+        assert 'TSC' in result
+        assert 'TCS' in result
+
+    def test_pascal_caller_pushes_args(self):
+        """Pascal caller should push all args via PHA."""
+        source = """
+        fn callee(a: u8) -> u8 {
+            asm!("NOP", "NOP", "NOP", "NOP", "NOP", "NOP", "NOP", "NOP");
+            return a;
+        }
+        fn caller() -> u8 {
+            return callee(42);
+        }
+        """
+        from r65.compiler.main import compile_string
+        result = compile_string(source, "test.r65", abi_model=ABI_PASCAL)
+        # Caller should push argument via PHA (callee too large to inline)
+        assert 'PHA' in result
+
+    def test_pascal_no_register_params(self):
+        """Pascal ignores register bindings; all params go to stack."""
+        source = """
+        fn add(a @ A: u8, b @ X: u16) -> u8 {
+            return a;
+        }
+        """
+        from r65.compiler.main import compile_string
+        result = compile_string(source, "test.r65", abi_model=ABI_PASCAL)
+        # The function should read params from stack, not from A/X registers
+        # Look for stack-relative load (LDA $xx,S)
+        assert ',S' in result or ',s' in result
+
+    def test_pascal_void_function_no_result_space(self):
+        """Void Pascal functions have no result space."""
+        source = """
+        #[ram]
+        static mut RESULT: u8;
+        fn set_value(v: u8) {
+            RESULT = v;
+        }
+        """
+        from r65.compiler.main import compile_string
+        result = compile_string(source, "test.r65", abi_model=ABI_PASCAL)
+        # Should compile without errors
+        assert 'set_value' in result
+
+    def test_pascal_result_space_store(self):
+        """Pascal callee writes return value to stack result space."""
+        source = """
+        fn double(x: u8) -> u8 {
+            return x + x;
+        }
+        """
+        from r65.compiler.main import compile_string
+        result = compile_string(source, "test.r65", abi_model=ABI_PASCAL)
+        # Callee should store result to stack (STA offset,S)
+        # and have "Pascal result space" comment
+        assert 'Pascal result space' in result

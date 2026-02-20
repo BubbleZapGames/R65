@@ -61,7 +61,12 @@ class MIRBuilder:
     4. Allocate virtual registers
     """
 
-    def __init__(self):
+    def __init__(self, abi_kind=None):
+        # ABI kind for calling convention decisions during MIR lowering
+        # When Pascal, all parameters become stack parameters
+        from r65.compiler.codegen.abi_model import ABIKind
+        self.abi_kind = abi_kind or ABIKind.DEFAULT
+
         # Shared lowering context (mutable state)
         self.ctx = LoweringContext()
 
@@ -331,30 +336,45 @@ class MIRBuilder:
                     binding_type=param.param_type
                 )
 
-        # First pass: process A register parameters (save before X/Y clobber A)
-        for param in hir_func.parameters:
-            if isinstance(param.binding, RegisterBinding):
-                hw_reg = HardwareRegister(param.binding.register_name)
-                if hw_reg.name == 'A':
-                    process_register_param(param, hw_reg)
+        # Skip register parameter passes for Pascal ABI — all params go to stack
+        from r65.compiler.codegen.abi_model import ABIKind
+        if self.abi_kind != ABIKind.PASCAL:
+            # First pass: process A register parameters (save before X/Y clobber A)
+            for param in hir_func.parameters:
+                if isinstance(param.binding, RegisterBinding):
+                    hw_reg = HardwareRegister(param.binding.register_name)
+                    if hw_reg.name == 'A':
+                        process_register_param(param, hw_reg)
 
-        # Second pass: process B register parameters (accessed via XBA, so A must be saved first)
-        for param in hir_func.parameters:
-            if isinstance(param.binding, RegisterBinding):
-                hw_reg = HardwareRegister(param.binding.register_name)
-                if hw_reg.name == 'B':
-                    process_register_param(param, hw_reg)
+            # Second pass: process B register parameters (accessed via XBA, so A must be saved first)
+            for param in hir_func.parameters:
+                if isinstance(param.binding, RegisterBinding):
+                    hw_reg = HardwareRegister(param.binding.register_name)
+                    if hw_reg.name == 'B':
+                        process_register_param(param, hw_reg)
 
-        # Third pass: process X/Y register parameters (may clobber A via TXA/TYA)
-        for param in hir_func.parameters:
-            if isinstance(param.binding, RegisterBinding):
-                hw_reg = HardwareRegister(param.binding.register_name)
-                if hw_reg.name in ('X', 'Y'):
-                    process_register_param(param, hw_reg)
+            # Third pass: process X/Y register parameters (may clobber A via TXA/TYA)
+            for param in hir_func.parameters:
+                if isinstance(param.binding, RegisterBinding):
+                    hw_reg = HardwareRegister(param.binding.register_name)
+                    if hw_reg.name in ('X', 'Y'):
+                        process_register_param(param, hw_reg)
 
         # Fourth pass: process non-register parameters
+        # In Pascal ABI, ALL parameters go on the stack (register/variable bindings ignored)
+        from r65.compiler.codegen.abi_model import ABIKind
+        is_pascal = self.abi_kind == ABIKind.PASCAL
+
         for idx, param in enumerate(hir_func.parameters):
-            if isinstance(param.binding, RegisterBinding):
+            if is_pascal:
+                # Pascal ABI: all params are stack params
+                param_vreg = self.current_function.vreg_allocator.alloc(
+                    param.param_type,
+                    f"param_{param.name}"
+                )
+                self.symbol_to_vreg[id(param.symbol)] = param_vreg
+                stack_params.append((idx, param, param_vreg))
+            elif isinstance(param.binding, RegisterBinding):
                 pass  # Already processed above
             elif isinstance(param.binding, VariableBinding):
                 # Variable-bound parameter: treat it as an alias to the bound variable
@@ -387,34 +407,75 @@ class MIRBuilder:
 
         # Calculate stack parameter offsets for prologue generation
         # Stack-relative addressing: LDA offset,S
-        #
-        # Stack layout after JSR/JSL (caller pushes params right-to-left):
-        #     | param N             |  <- higher offset (pushed first)
-        #     | ...                 |
-        #     | param 0             |  <- SP + return_addr_size + 1 (pushed last)
-        #     | return addr (2-3b)  |  <- SP + 1
-        #     SP ->
-        #
-        # Parameters with lower index are at lower stack offsets
         if stack_params:
             from r65.compiler.hir.types import PointerTypeInfo
             from r65.compiler.codegen.abi import ABIInfo
 
             abi = ABIInfo(is_far=hir_func.is_far)
-            current_offset = abi.return_addr_size + 1  # First param starts after return address
 
-            for idx, param, param_vreg in stack_params:
-                mir_func.stack_param_offsets[idx] = current_offset
-                mir_func.param_to_vreg[idx] = param_vreg
+            if self.abi_kind == ABIKind.PASCAL:
+                # Pascal convention: left-to-right push order.
+                # Caller pushes: [result_space] [param0] [param1] ... [paramN] [JSR]
+                # So paramN is closest to return addr, param0 is deepest.
+                #
+                # Stack layout (from SP upward):
+                #     SP -> [return addr]
+                #           [paramN]          <- offset: ret_addr_size + 1
+                #           [param(N-1)]
+                #           ...
+                #           [param0]
+                #           [result_space]    <- if non-void return
+                #
+                # Compute total param bytes first
+                total_param_bytes = sum(
+                    self._get_type_size(p.param_type) for _, p, _ in stack_params
+                )
 
-                # Check if this is a far pointer parameter
-                if isinstance(param.param_type, PointerTypeInfo) and param.param_type.is_far:
-                    mir_func.has_far_ptr_stack_params = True
-                    mir_func.far_ptr_param_indices.add(idx)
+                # Assign offsets: paramN at base, working backwards to param0
+                current_offset = abi.return_addr_size + 1
+                for idx, param, param_vreg in reversed(stack_params):
+                    mir_func.stack_param_offsets[idx] = current_offset
+                    mir_func.param_to_vreg[idx] = param_vreg
 
-                # Advance offset by parameter size
-                param_size = self._get_type_size(param.param_type)
-                current_offset += param_size
+                    if isinstance(param.param_type, PointerTypeInfo) and param.param_type.is_far:
+                        mir_func.has_far_ptr_stack_params = True
+                        mir_func.far_ptr_param_indices.add(idx)
+
+                    param_size = self._get_type_size(param.param_type)
+                    current_offset += param_size
+
+                # Track total param bytes and result space for callee cleanup
+                mir_func.pascal_total_param_bytes = total_param_bytes
+                if hir_func.return_type:
+                    from r65.compiler.hir.types import BasicTypeInfo, NeverTypeInfo
+                    if (not isinstance(hir_func.return_type, NeverTypeInfo) and
+                        not (isinstance(hir_func.return_type, BasicTypeInfo) and
+                             hir_func.return_type.name == 'void')):
+                        mir_func.pascal_result_space_bytes = self._get_type_size(hir_func.return_type)
+            else:
+                # Default/FixedStack convention: right-to-left push order.
+                # Stack layout after JSR/JSL (caller pushes params right-to-left):
+                #     | param N             |  <- higher offset (pushed first)
+                #     | ...                 |
+                #     | param 0             |  <- SP + return_addr_size + 1 (pushed last)
+                #     | return addr (2-3b)  |  <- SP + 1
+                #     SP ->
+                #
+                # Parameters with lower index are at lower stack offsets
+                current_offset = abi.return_addr_size + 1  # First param starts after return address
+
+                for idx, param, param_vreg in stack_params:
+                    mir_func.stack_param_offsets[idx] = current_offset
+                    mir_func.param_to_vreg[idx] = param_vreg
+
+                    # Check if this is a far pointer parameter
+                    if isinstance(param.param_type, PointerTypeInfo) and param.param_type.is_far:
+                        mir_func.has_far_ptr_stack_params = True
+                        mir_func.far_ptr_param_indices.add(idx)
+
+                    # Advance offset by parameter size
+                    param_size = self._get_type_size(param.param_type)
+                    current_offset += param_size
 
             # Note: Far pointer stack params require x16 mode for [dp],Y addressing
             # In the simplified mode system, X/Y are always 16-bit (x16 mode),

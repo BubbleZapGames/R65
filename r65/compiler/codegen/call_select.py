@@ -20,6 +20,7 @@ from r65.compiler.mir.nodes import Call, TraitDispatch, VirtualRegister, Argumen
 if TYPE_CHECKING:
     from r65.compiler.mir.liveness import ClobberRegion
 from r65.compiler.codegen.register_alloc import LocationKind
+from r65.compiler.codegen.abi_model import ABIKind
 from r65.compiler.codegen.opcodes import (
     Opcode, TRANSFER_OPCODES, PUSH_OPCODES, PULL_OPCODES,
     LOAD_IMMEDIATE_OPCODES, STORE_MNEMONICS, BUILTIN_OPCODES
@@ -361,7 +362,20 @@ class CallInstructionSelector(BaseSelector):
             self._emit_pull('B', "Restore data bank (caller)")
 
         # Step 5: Collect return values (in callee's exit mode)
-        self._emit_return_value_collection(instr)
+        pascal_result_bytes = getattr(instr, 'pascal_result_bytes', 0)
+        if pascal_result_bytes > 0:
+            # Pascal: callee cleaned params, result space is at TOS.
+            # PLA the result from the stack instead of reading from registers.
+            self._emit_pascal_return_value_collection(instr, pascal_result_bytes)
+            # Callee cleaned params, we PLA'd result — all pushed bytes are gone.
+            self.region_state.stack_tracker.pop(stack_bytes_pushed)
+            stack_bytes_pushed = 0
+        elif pascal_result_bytes == 0 and stack_bytes_pushed > 0 and self.parent.abi_model.kind == ABIKind.PASCAL:
+            # Pascal void call: callee cleaned all params, nothing remains.
+            self.region_state.stack_tracker.pop(stack_bytes_pushed)
+            stack_bytes_pushed = 0
+        else:
+            self._emit_return_value_collection(instr)
 
         # Step 5.5: Caller cleanup of PHA-pushed args (if spill fallback was used)
         # Done after return value collection so A/X/Y return values are safely
@@ -1667,6 +1681,70 @@ class CallInstructionSelector(BaseSelector):
                 self._emit_return_register_transfer(source_reg, dest_loc.hw_register)
             else:
                 self._emit_return_store(source_reg, dest_loc)
+
+    def _emit_pascal_return_value_collection(self, instr: Call, result_bytes: int):
+        """Pull return value from stack result space (Pascal convention).
+
+        After a Pascal call, the callee has cleaned up params and written
+        the return value to the result space. The result space is now at TOS.
+        We PLA the result into the destination.
+
+        Args:
+            instr: Call instruction
+            result_bytes: Size of result space in bytes (1 or 2)
+        """
+        if not instr.returns:
+            # Void function but somehow has result bytes — just pop them
+            remaining = result_bytes
+            while remaining >= 2:
+                self._emit_pull('X', "Discard Pascal result space")
+                remaining -= 2
+            if remaining == 1:
+                self._ensure_m8_mode("8-bit for discard")
+                self._emit_pull('A', "Discard Pascal result space")
+            return
+
+        return_vreg = instr.returns[0]
+        dest_loc = self.parent._get_operand_location(return_vreg)
+
+        if result_bytes == 1:
+            self._ensure_m8_mode("8-bit for Pascal result pull")
+            self._emit_pull('A', "Pull Pascal result (u8)")
+            if dest_loc.kind == LocationKind.HARDWARE and dest_loc.hw_register == 'A':
+                pass  # Already in A
+            elif dest_loc.kind == LocationKind.HARDWARE:
+                if dest_loc.hw_register == 'X':
+                    self._emit_transfer('A', 'X')
+                elif dest_loc.hw_register == 'Y':
+                    self._emit_transfer('A', 'Y')
+            else:
+                self.parent._emit_store('STA', dest_loc)
+        elif result_bytes == 2:
+            from r65.compiler.codegen.constants import M_FLAG
+            self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "16-bit for Pascal result pull")
+            self.parent.emitter.emit_accu_mode(16)
+            self._emit_pull('A', "Pull Pascal result (u16)")
+            if dest_loc.kind == LocationKind.HARDWARE and dest_loc.hw_register == 'A':
+                pass  # Already in A
+            elif dest_loc.kind == LocationKind.HARDWARE:
+                if dest_loc.hw_register == 'X':
+                    self._emit_transfer('A', 'X')
+                elif dest_loc.hw_register == 'Y':
+                    self._emit_transfer('A', 'Y')
+            else:
+                self.parent._emit_store('STA', dest_loc)
+        elif result_bytes == 3:
+            # 24-bit result (far pointer): pull byte by byte in m8
+            self._ensure_m8_mode("8-bit for Pascal 3-byte result pull")
+            # Stack has: low, high, bank (low at TOS)
+            self._emit_pull('A', "Pull Pascal result low byte")
+            self.parent._emit_store('STA', dest_loc)
+            loc_hi = self.parent._offset_location(dest_loc, 1)
+            self._emit_pull('A', "Pull Pascal result high byte")
+            self.parent._emit_store('STA', loc_hi)
+            loc_bank = self.parent._offset_location(dest_loc, 2)
+            self._emit_pull('A', "Pull Pascal result bank byte")
+            self.parent._emit_store('STA', loc_bank)
 
     def _emit_return_register_transfer(self, source_reg: str, dest_reg: str):
         """Transfer return value between hardware registers."""

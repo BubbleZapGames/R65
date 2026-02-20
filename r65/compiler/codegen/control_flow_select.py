@@ -560,68 +560,8 @@ class ControlFlowInstructionSelector(BaseSelector):
         )
 
     def _emit_return_values(self, instr: Return):
-        """Load return values into appropriate registers.
-
-        Values are loaded in reverse order so that transfers
-        through A (needed for stack-relative X/Y loads) don't clobber
-        the final A value. B is handled via XBA.
-        """
-        if not instr.values:
-            return
-
-        return_registers = self._get_return_register_order()
-        if len(instr.values) > len(return_registers):
-            raise InstructionSelectionError(
-                f"Too many return values (max {len(return_registers)})", source_loc=self.parent._current_source_loc)
-
-        # Process in reverse order to avoid clobbering A
-        # Reverse order: Y first, then X, then B (XBA to store), then A last
-        for i in range(len(instr.values) - 1, -1, -1):
-            value = instr.values[i]
-            target_reg = return_registers[i]
-            value_loc = self.parent._get_operand_location(value)
-
-            if value_loc.kind == LocationKind.RETURN_SINKABLE:
-                # Deferred load: emit the load directly into the target register
-                src_loc = self.parent._get_operand_location(value_loc.source_location)
-                if target_reg == 'B':
-                    self.parent._emit_load('LDA', src_loc)
-                    self.parent._store_to_b_from_a()
-                elif target_reg in ('X', 'Y'):
-                    self.parent._emit_load('LDA', src_loc)
-                    if target_reg == 'X':
-                        self._emit_implied(Opcode.TAX)
-                    else:
-                        self._emit_implied(Opcode.TAY)
-                else:  # 'A'
-                    self.parent._emit_load('LDA', src_loc)
-                continue
-            elif value_loc.kind == LocationKind.HARDWARE and value_loc.hw_register == target_reg:
-                pass  # Already in correct register
-            elif target_reg == 'B':
-                # B return: load value into A, then XBA to store in B
-                if value_loc.kind == LocationKind.HARDWARE and value_loc.hw_register == 'A':
-                    # Value already in A, just XBA
-                    self.parent._store_to_b_from_a()
-                elif value_loc.kind == LocationKind.HARDWARE:
-                    self.parent._emit_register_transfer(value_loc.hw_register, 'A')
-                    self.parent._store_to_b_from_a()
-                else:
-                    self.parent._emit_load('LDA', value_loc)
-                    self.parent._store_to_b_from_a()
-            elif value_loc.kind == LocationKind.HARDWARE:
-                self.parent._emit_register_transfer(value_loc.hw_register, target_reg)
-            elif target_reg in ('X', 'Y') and value_loc.kind == LocationKind.STACK:
-                # Handle stack-relative addressing: LDX/LDY don't support sr,S mode
-                self.parent._emit_load('LDA', value_loc)
-                if target_reg == 'X':
-                    self._emit_implied(Opcode.TAX, "Transfer to X (no LDX sr,S)")
-                else:
-                    self._emit_implied(Opcode.TAY, "Transfer to Y (no LDY sr,S)")
-            else:
-                # Use parent's _emit_load method with appropriate mnemonic
-                load_mnem = {'A': 'LDA', 'X': 'LDX', 'Y': 'LDY'}.get(target_reg, 'LDA')
-                self.parent._emit_load(load_mnem, value_loc)
+        """Emit return values. Delegates to ABIModel.emit_return_values."""
+        self.parent.abi_model.emit_return_values(self, instr)
 
     def _emit_preserved_register_restores(self):
         """Restore preserved registers in reverse order."""
@@ -693,13 +633,20 @@ class ControlFlowInstructionSelector(BaseSelector):
         """
         Calculate total bytes of stack parameters for callee cleanup.
 
-        With caller-owned outgoing args convention, the callee does NOT clean up
-        stack parameters — they live in the caller's outgoing area. The callee
-        only needs to deallocate its own frame (locals + own outgoing area).
+        With caller-owned outgoing args convention (Default ABI), the callee does
+        NOT clean up stack parameters — they live in the caller's outgoing area.
+
+        With Pascal ABI, the callee DOES clean up stack parameters (but NOT
+        result space — that stays on stack for the caller to pull).
 
         Returns:
-            Always 0 (caller owns the parameter space)
+            0 for Default ABI, total_param_bytes for Pascal ABI
         """
+        from r65.compiler.codegen.abi_model import ABIKind
+        if (self.parent.abi_model and
+            self.parent.abi_model.kind == ABIKind.PASCAL and
+            self.current_function):
+            return self.current_function.pascal_total_param_bytes
         return 0
 
     def _get_return_register_count(self) -> int:

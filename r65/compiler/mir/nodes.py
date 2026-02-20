@@ -657,6 +657,9 @@ class Call(MIRInstruction):
     # Callee's preserved registers (for caller-save optimization)
     preserves_attr: Optional[Any] = None  # PreservesAttribute from callee
 
+    # Pascal ABI: result space bytes caller must push (0 for void)
+    pascal_result_bytes: int = 0
+
     def __repr__(self):
         args_str = ', '.join(str(arg) for arg in self.args)
         if self.returns:
@@ -915,6 +918,11 @@ class MIRFunction:
     # Caller-owned outgoing argument area size (max across all call sites)
     # Computed before codegen; included in frame allocation
     max_outgoing_arg_bytes: int = 0
+
+    # Pascal ABI: total parameter bytes for callee cleanup
+    pascal_total_param_bytes: int = 0
+    # Pascal ABI: result space bytes (size of return value pushed by caller)
+    pascal_result_space_bytes: int = 0
 
     # Promoted aggregate local tracking
     # True if function has local struct/array variables promoted to static storage

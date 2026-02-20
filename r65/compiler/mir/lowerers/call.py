@@ -511,6 +511,17 @@ class CallLowerer:
             returns: Virtual registers for return values
             builtin_name: Name of built-in function if this is a built-in call
         """
+        # Compute Pascal result space bytes if needed
+        pascal_result_bytes = 0
+        from r65.compiler.codegen.abi_model import ABIKind
+        if self.builder.abi_kind == ABIKind.PASCAL and func_decl.return_type:
+            from r65.compiler.hir.types import BasicTypeInfo, NeverTypeInfo
+            if (not isinstance(func_decl.return_type, NeverTypeInfo) and
+                not (isinstance(func_decl.return_type, BasicTypeInfo) and
+                     func_decl.return_type.name == 'void')):
+                from r65.compiler.codegen.type_utils import get_type_size
+                pascal_result_bytes = get_type_size(func_decl.return_type)
+
         self.emit(Call(
             function=func_decl.name,
             args=args,
@@ -522,7 +533,8 @@ class CallLowerer:
             callee_entry_m_mode=func_decl.entry_m_mode,
             callee_exit_m_mode=func_decl.exit_m_mode,
             callee_return_type=func_decl.return_type,
-            preserves_attr=func_decl.preserves_attr
+            preserves_attr=func_decl.preserves_attr,
+            pascal_result_bytes=pascal_result_bytes,
         ))
 
     # ========================================================================
@@ -584,6 +596,11 @@ class CallLowerer:
         Returns:
             (mechanism, location) tuple
         """
+        # Pascal ABI: all params go on stack regardless of binding
+        from r65.compiler.codegen.abi_model import ABIKind
+        if self.builder.abi_kind == ABIKind.PASCAL:
+            return ArgumentMechanism.STACK, None
+
         if isinstance(param.binding, RegisterBinding):
             # Register alias parameter
             # Note: Don't emit Move here - let Call instruction handler set up arguments
