@@ -152,3 +152,59 @@ class TestFixedStackDefaultUnchanged:
         """
         result = compile_string(source, "test.r65", abi_model=None)
         assert "identity:" in result
+
+
+class TestFixedStackRecursionRejection:
+    """Test that FixedStack rejects recursive functions."""
+
+    def test_direct_recursion_rejected(self):
+        """Direct recursion should be a compile error under FixedStack.
+
+        Uses stack params so the existing RecursionChecker (which only
+        rejects register/zeropage params) passes, and the FixedStack
+        check catches the recursion.
+        """
+        source = """
+        fn countdown(n: u8) -> u8 {
+            if n == 0 { return 0; }
+            return countdown(n - 1);
+        }
+        """
+        with pytest.raises(CodegenError, match="does not support recursive"):
+            compile_string(source, "test.r65", abi_model=ABI_FIXED_STACK)
+
+    def test_mutual_recursion_rejected(self):
+        """Mutual recursion should be a compile error under FixedStack."""
+        source = """
+        fn is_even(n: u8) -> u8 {
+            if n == 0 { return 1; }
+            return is_odd(n - 1);
+        }
+        fn is_odd(n: u8) -> u8 {
+            if n == 0 { return 0; }
+            return is_even(n - 1);
+        }
+        """
+        with pytest.raises(CodegenError, match="does not support recursive"):
+            compile_string(source, "test.r65", abi_model=ABI_FIXED_STACK)
+
+    def test_non_recursive_allowed(self):
+        """Non-recursive functions should compile fine under FixedStack."""
+        source = """
+        fn helper(x @ A: u8) -> u8 { return x + 1; }
+        fn caller(x @ A: u8) -> u8 { return helper(x); }
+        """
+        result = compile_string(source, "test.r65", abi_model=ABI_FIXED_STACK)
+        assert "helper:" in result
+        assert "caller:" in result
+
+    def test_default_abi_allows_recursion(self):
+        """Default ABI should allow recursive functions with stack params."""
+        source = """
+        fn countdown(n: u8) -> u8 {
+            if n == 0 { return 0; }
+            return countdown(n - 1);
+        }
+        """
+        result = compile_string(source, "test.r65")
+        assert "countdown:" in result

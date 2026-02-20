@@ -32,6 +32,9 @@ def promote_all_stack_params(mir_program: MIRProgram, scratch_pool: ScratchRegis
         mir_program: MIR program to analyze (mutated in place)
         scratch_pool: Pool of available scratch registers
     """
+    # Step 0: Reject recursive functions — DP scratch params are non-reentrant
+    _reject_recursive_functions(mir_program)
+
     # Step 1: Find functions whose address is taken
     address_taken = _find_address_taken_functions(mir_program)
 
@@ -100,6 +103,48 @@ def promote_all_stack_params(mir_program: MIRProgram, scratch_pool: ScratchRegis
         if total_scratch > 0:
             parts.append(f"{total_scratch} to scratch")
         print(f"FixedStack parameter promotion: {total} parameter(s) promoted ({', '.join(parts)})")
+
+
+def _reject_recursive_functions(mir_program: MIRProgram):
+    """Detect recursive functions and raise an error.
+
+    FixedStack ABI promotes parameters to DP scratch registers which are
+    global, not per-invocation. Recursive calls would overwrite the
+    caller's scratch values, producing incorrect code.
+
+    Detects both direct recursion (A calls A) and mutual recursion
+    (A calls B, B calls A).
+    """
+    from r65.compiler.analysis.call_graph import CallGraphAnalyzer
+
+    analyzer = CallGraphAnalyzer(mir_program)
+    analyzer.analyze()
+    cycles = analyzer.find_cycles()
+
+    if not cycles:
+        return
+
+    # Report the first cycle found
+    cycle = cycles[0]
+    func_by_name = {f.name: f for f in mir_program.functions}
+    func = func_by_name.get(cycle[0])
+    source_loc = func.source_loc if func else None
+
+    if len(cycle) == 1:
+        raise CodegenError(
+            f"FixedStack ABI does not support recursive functions. "
+            f"Function '{cycle[0]}' calls itself. "
+            f"Use '--abi Default' instead.",
+            source_loc=source_loc,
+        )
+    else:
+        chain = " -> ".join(cycle + [cycle[0]])
+        raise CodegenError(
+            f"FixedStack ABI does not support recursive functions. "
+            f"Mutual recursion detected: {chain}. "
+            f"Use '--abi Default' instead.",
+            source_loc=source_loc,
+        )
 
 
 def _find_address_taken_functions(mir_program: MIRProgram) -> Set[str]:
