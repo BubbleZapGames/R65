@@ -522,6 +522,78 @@ class TestLoopExpression:
         assert result.success, f"Failures: {result.failures}"
 
 
+class TestRecursion:
+    """Test recursive function calls with stack parameters.
+
+    Uses tail-recursive (accumulator) style to avoid the known BinaryOp + call
+    result bug where `n + f(x)` clobbers the call result in A before the add.
+    """
+
+    @pytest.fixture
+    def e2e(self):
+        return E2ETest()
+
+    def test_recursive_sum(self, e2e):
+        """Test tail recursion: sum_acc(5, 0) = 5+4+3+2+1+0 = 15."""
+        result = e2e.run('''
+            #[zeropage(0x10)]
+            static mut RESULT: u8;
+
+            fn sum_acc(n: u8, acc: u8) -> u8 {
+                if n == 0 { return acc; }
+                return sum_acc(n - 1, acc + n);
+            }
+
+            #[entry]
+            fn main() {
+                RESULT = sum_acc(5, 0);
+            }
+        ''', ExpectedState(memory={
+            0x7E0010: 15,
+        }))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_recursive_triangular(self, e2e):
+        """Test recursion to depth 8: triangular number T(8) = 36."""
+        result = e2e.run('''
+            #[zeropage(0x10)]
+            static mut RESULT: u8;
+
+            fn triangular(n: u8, acc: u8) -> u8 {
+                if n == 0 { return acc; }
+                return triangular(n - 1, acc + n);
+            }
+
+            #[entry]
+            fn main() {
+                RESULT = triangular(8, 0);
+            }
+        ''', ExpectedState(memory={
+            0x7E0010: 36,
+        }))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_recursive_countdown_to_zero(self, e2e):
+        """Test recursion preserving separate accumulator: count(10,0) → acc=10."""
+        result = e2e.run('''
+            #[zeropage(0x10)]
+            static mut RESULT: u8;
+
+            fn count_down(depth: u8, acc: u8) -> u8 {
+                if depth == 0 { return acc; }
+                return count_down(depth - 1, acc + 1);
+            }
+
+            #[entry]
+            fn main() {
+                RESULT = count_down(10, 0);
+            }
+        ''', ExpectedState(memory={
+            0x7E0010: 10,
+        }))
+        assert result.success, f"Failures: {result.failures}"
+
+
 class TestShortCircuit:
     """Test short-circuit evaluation of && and ||."""
 
