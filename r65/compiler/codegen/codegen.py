@@ -170,14 +170,7 @@ class ProgramCodeGenerator:
         scratch_pool = self.func_gen.func_gen._create_scratch_pool(mir_program)
 
         # Run parameter promotion analysis (before loop promotion)
-        # FixedStack mode: mandatory promotion of ALL stack params to hw regs / scratch
-        # Default mode: optional scratch promotion for eligible params
-        if abi_model.requires_mandatory_param_promotion():
-            from r65.compiler.analysis.fixedstack_params import promote_all_stack_params
-            promote_all_stack_params(mir_program, scratch_pool)
-        elif not disable_scratch_params:
-            from r65.compiler.analysis.scratch_params import analyze_scratch_params
-            analyze_scratch_params(mir_program, scratch_pool)
+        abi_model.run_param_analysis(mir_program, scratch_pool, disable_scratch_params)
 
         # Run loop register promotion analysis (after scratch params)
         if not disable_loop_promotion:
@@ -185,9 +178,7 @@ class ProgramCodeGenerator:
             analyze_loop_promotion(mir_program)
 
         # Compute max outgoing arg bytes for caller-owned outgoing args convention
-        # FixedStack mode: no outgoing arg area (all params in regs/scratch)
-        if not abi_model.requires_mandatory_param_promotion():
-            self._compute_outgoing_arg_bytes(mir_program)
+        abi_model.compute_outgoing_args(mir_program, self._compute_outgoing_arg_bytes)
 
         # Generate code for each bank
         for bank_num in sorted(functions_by_bank.keys()):

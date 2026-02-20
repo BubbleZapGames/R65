@@ -806,52 +806,15 @@ class FunctionCodeGenerator:
         """
         Emit stack frame allocation code.
 
-        For small frames (1-4 bytes), uses PHB instructions which is more efficient.
-        PHB always pushes exactly 1 byte regardless of accumulator mode, and using
-        PLB for deallocation avoids clobbering the accumulator.
-        For larger frames, uses TSC/SBC/TCS to subtract from stack pointer.
-
-        PHB approach (3 cycles per PHB):
-        - 1 byte:  PHB (3 cycles)
-        - 2 bytes: PHB PHB (6 cycles)
-        - 3 bytes: PHB PHB PHB (9 cycles)
-        - 4 bytes: PHB PHB PHB PHB (12 cycles)
-
-        TSC/SBC/TCS approach (15 cycles total):
-        - REP #$20 (3) + TSC (2) + SEC (2) + SBC #imm (3) + TCS (2) + SEP #$20 (3)
-
-        Break-even is at 5 bytes, so PHB wins for 1-4 bytes.
+        Delegates to the ABIModel which decides between PHB-per-byte
+        (small/FixedStack) and TSC/SBC/TCS (large/Default).
 
         Args:
             frame_size: Number of bytes to allocate
             force_direct_stack: If True, always use TSC/SBC/TCS approach (for interrupt
                 handlers where mode is unknown after register saves)
         """
-        if frame_size <= 0:
-            return
-
-        # FixedStack ABI: always use PHB-per-byte (no TSC/SBC/TCS)
-        from r65.compiler.codegen.abi_model import ABIKind
-        use_phb = (frame_size <= 4 and not force_direct_stack) or \
-                  (hasattr(self, 'abi_model') and self.abi_model.kind == ABIKind.FIXED_STACK
-                   and not force_direct_stack)
-
-        if use_phb:
-            # Use PHB for frame allocation
-            # PHB pushes DBR (junk for our purposes) but that's fine since
-            # locals will be written before being read.
-            # PHB is always 1 byte regardless of accumulator mode, and
-            # PLB for deallocation won't clobber the accumulator.
-            for _ in range(frame_size):
-                self._emit_instr(Opcode.PHB, comment=f"Allocate frame ({frame_size} bytes)")
-        else:
-            # Use TSC/SBC/TCS for larger frames or when mode is unknown
-            self._emit_instr(Opcode.REP_IMMEDIATE, Immediate(M_FLAG), "16-bit A for frame setup")
-            self._emit_instr(Opcode.TSC, comment="Get stack pointer")
-            self._emit_instr(Opcode.SEC, comment="Set carry for subtraction")
-            self._emit_instr(Opcode.SBC_IMMEDIATE, Immediate(frame_size), f"Allocate {frame_size} bytes for locals")
-            self._emit_instr(Opcode.TCS, comment="Update stack pointer")
-            self._emit_instr(Opcode.SEP_IMMEDIATE, Immediate(M_FLAG), "Restore 8-bit A")
+        self.abi_model.emit_frame_alloc(self._emit_instr, frame_size, force_direct_stack)
 
     def _emit_frame_deallocation(self, frame_size: int):
         """
