@@ -860,6 +860,31 @@ class InstructionSelector:
             # For 8-bit operations, ensure we're in m8 mode
             self._ensure_m8_mode()
 
+        # --- Right-in-A conflict detection ---
+        # If right operand is in A and left is NOT in A, loading left would clobber right.
+        right_in_a = False
+        if not isinstance(right_operand, (MIRImmediate, MemoryLocation)):
+            _right_loc = self._get_operand_location(right_operand)
+            right_in_a = (_right_loc.kind == LocationKind.HARDWARE and _right_loc.hw_register == 'A')
+
+        if right_in_a and not (left_loc.kind == LocationKind.HARDWARE and left_loc.hw_register == 'A'):
+            _COMMUTATIVE = {'+', '&', '|', '^'}
+            if op in _COMMUTATIVE:
+                # Swap: A has right value, use left as memory operand for ADC/AND/ORA/EOR
+                right_operand = instr.left
+                left_loc = _right_loc  # HARDWARE A — load-left block will skip (already in A)
+            elif op == '-':
+                # Save right (A) to scratch, replace right_operand with scratch location
+                temp_addr = self._get_temp_address()
+                if temp_addr:
+                    self.emitter.emit_instr(Opcode.STA_DP, temp_addr, "Save right operand (in A) to temp")
+                    right_operand = MemoryLocation(storage_type='zeropage', address=temp_addr.value, symbol=None)
+                    # Normal flow: loads left into A, then SBC from scratch
+                else:
+                    raise InstructionSelectionError(
+                        "No scratch register available for non-commutative binary op with right operand in A",
+                        source_loc=self._current_source_loc)
+
         # Load left operand into A (if not already there)
         if left_loc.kind == LocationKind.HARDWARE and left_loc.hw_register == 'A':
             # Left operand is already in A, no need to load

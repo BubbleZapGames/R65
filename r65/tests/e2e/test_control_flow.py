@@ -525,8 +525,8 @@ class TestLoopExpression:
 class TestRecursion:
     """Test recursive function calls with stack parameters.
 
-    Uses tail-recursive (accumulator) style to avoid the known BinaryOp + call
-    result bug where `n + f(x)` clobbers the call result in A before the add.
+    Uses tail-recursive (accumulator) style. See TestBinaryOpCallResult for
+    non-tail-recursive patterns like `n + f(x)`.
     """
 
     @pytest.fixture
@@ -590,6 +590,82 @@ class TestRecursion:
             }
         ''', ExpectedState(memory={
             0x7E0010: 10,
+        }))
+        assert result.success, f"Failures: {result.failures}"
+
+
+class TestBinaryOpCallResult:
+    """Test binary operations where one operand is a call result.
+
+    Verifies that the codegen doesn't clobber A (holding the call result)
+    when loading the other operand for the binary operation.
+    """
+
+    @pytest.fixture
+    def e2e(self):
+        return E2ETest()
+
+    def test_add_with_call_result(self, e2e):
+        """Test expr + fn_call(): commutative swap path."""
+        result = e2e.run('''
+            #[zeropage(0x10)]
+            static mut RESULT: u8;
+            #[zeropage(0x20, register)]
+            static mut SCRATCH0: u8;
+
+            fn double(val @ A: u8) -> u8 {
+                return val + val;
+            }
+
+            #[entry]
+            fn main() {
+                RESULT = 3 + double(5);
+            }
+        ''', ExpectedState(memory={
+            0x7E0010: 13,   # 3 + double(5) = 3 + 10 = 13
+        }))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_subtract_with_call_result(self, e2e):
+        """Test expr - fn_call(): non-commutative save path."""
+        result = e2e.run('''
+            #[zeropage(0x10)]
+            static mut RESULT: u8;
+            #[zeropage(0x20, register)]
+            static mut SCRATCH0: u8;
+
+            fn half(val @ A: u8) -> u8 {
+                return val >> 1;
+            }
+
+            #[entry]
+            fn main() {
+                RESULT = 20 - half(6);
+            }
+        ''', ExpectedState(memory={
+            0x7E0010: 17,   # 20 - half(6) = 20 - 3 = 17
+        }))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_non_tail_recursive_sum(self, e2e):
+        """Test n + sum_to(n-1): the original bug pattern."""
+        result = e2e.run('''
+            #[zeropage(0x10)]
+            static mut RESULT: u8;
+            #[zeropage(0x20, register)]
+            static mut SCRATCH0: u8;
+
+            fn sum_to(n: u8) -> u8 {
+                if n == 0 { return 0; }
+                return n + sum_to(n - 1);
+            }
+
+            #[entry]
+            fn main() {
+                RESULT = sum_to(5);
+            }
+        ''', ExpectedState(memory={
+            0x7E0010: 15,   # 5+4+3+2+1+0 = 15
         }))
         assert result.success, f"Failures: {result.failures}"
 
