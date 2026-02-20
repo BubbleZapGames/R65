@@ -143,7 +143,7 @@ class CallInstructionSelector(BaseSelector):
         """Initialize call instruction selector with region tracking state."""
         super().__init__(parent)
         # Region tracking state for optimized spilling
-        self._region_state = ActiveRegionState()
+        self.region_state = ActiveRegionState()
         # Pre-computed regions for current function: {block_id: {hw_reg: [ClobberRegion]}}
         self._function_regions: Optional[Dict[int, Dict[str, List]]] = None
         # Whether A is bound to a vreg (uses region-based spilling if True)
@@ -188,12 +188,12 @@ class CallInstructionSelector(BaseSelector):
         """
         if self._function_regions is None:
             # No pre-computed regions, will fall back to per-call spilling
-            self._region_state = ActiveRegionState()
+            self.region_state = ActiveRegionState()
             return
 
         default_regions = {'A': [], 'X': [], 'Y': []} if self._a_bound_to_vreg else {'X': [], 'Y': []}
         regions = self._function_regions.get(block_id, default_regions)
-        self._region_state.set_block_regions(block_id, regions)
+        self.region_state.set_block_regions(block_id, regions)
 
     def _build_preserves_map(self) -> Dict[str, Set[str]]:
         """
@@ -471,11 +471,11 @@ class CallInstructionSelector(BaseSelector):
             )
 
             if use_region_based:
-                region = self._region_state.get_region_for_call(reg_name, instr_idx)
+                region = self.region_state.get_region_for_call(reg_name, instr_idx)
                 if region is not None:
-                    if self._region_state.is_first_call_in_region(reg_name, instr_idx):
+                    if self.region_state.is_first_call_in_region(reg_name, instr_idx):
                         spills.append(SpillInfo(vreg=None, hw_reg=reg_name))
-                        self._region_state.mark_region_active(reg_name, region)
+                        self.region_state.mark_region_active(reg_name, region)
                     continue
 
             hw_alloc = reg_alloc.get_hw_alloc(reg_name)
@@ -539,11 +539,11 @@ class CallInstructionSelector(BaseSelector):
             )
 
             if use_region_based:
-                region = self._region_state.get_region_for_call(reg_name, instr_idx)
+                region = self.region_state.get_region_for_call(reg_name, instr_idx)
                 if region is not None:
-                    if self._region_state.is_last_call_in_region(reg_name, instr_idx):
+                    if self.region_state.is_last_call_in_region(reg_name, instr_idx):
                         reloads.append(SpillInfo(vreg=None, hw_reg=reg_name))
-                        self._region_state.mark_region_inactive(reg_name)
+                        self.region_state.mark_region_inactive(reg_name)
                     continue
 
             hw_alloc = reg_alloc.get_hw_alloc(reg_name)
@@ -570,57 +570,10 @@ class CallInstructionSelector(BaseSelector):
         return reloads
 
     def _emit_trait_dispatch_args(self, instr: TraitDispatch) -> int:
-        """Emit argument setup for trait dispatch.
+        """Emit trait dispatch arguments. Delegates to ABIModel.emit_trait_dispatch_args."""
+        return self.parent.abi_model.emit_trait_dispatch_args(self, instr)
 
-        Self pointer is passed in Y (SELF_Y mechanism), other args are stack-passed.
-        Uses STA to outgoing area when no spills active, PHA fallback when spills active.
-        """
-        from r65.compiler.codegen.type_utils import get_type_size
-
-        stack_args = [arg for arg in instr.args if arg.mechanism == ArgumentMechanism.STACK]
-        self_y_arg = None
-        for arg in instr.args:
-            if arg.mechanism == ArgumentMechanism.SELF_Y:
-                self_y_arg = arg
-                break
-
-        spill_offset = self.get_current_spill_offset()
-        stack_bytes_pushed = 0
-
-        if spill_offset > 0 and stack_args:
-            # PHA mode: push in reverse order
-            for arg in reversed(stack_args):
-                arg_loc = self.parent._get_operand_location(arg.value)
-                arg_size = 1
-                if arg.param_type is not None:
-                    arg_size = get_type_size(arg.param_type)
-                elif hasattr(arg.value, 'type_info') and arg.value.type_info:
-                    arg_size = get_type_size(arg.value.type_info)
-                self._emit_pha_stack_argument(arg, arg_loc, arg_size)
-                stack_bytes_pushed += arg_size
-                self._region_state.stack_tracker.push(arg_size)
-        elif stack_args:
-            # STA mode: write to outgoing area
-            outgoing_offset = 1
-            for arg in stack_args:
-                arg_loc = self.parent._get_operand_location(arg.value)
-                self._emit_outgoing_stack_argument(arg, arg_loc, outgoing_offset)
-                arg_size = 1
-                if arg.param_type is not None:
-                    arg_size = get_type_size(arg.param_type)
-                elif hasattr(arg.value, 'type_info') and arg.value.type_info:
-                    arg_size = get_type_size(arg.value.type_info)
-                outgoing_offset += arg_size
-
-        # Load Y with self pointer address (after stack args, before JSR/JSL)
-        # PHA bytes are already tracked in stack_tracker (auto-adjusted by _emit_load),
-        # so don't pass stack_bytes_pushed as a manual adjustment — it would double-count.
-        if self_y_arg is not None:
-            self._load_y_with_self(self_y_arg, 0)
-
-        return stack_bytes_pushed
-
-    def _load_y_with_self(self, arg: 'Argument', stack_bytes_pushed: int):
+    def load_y_with_self(self, arg: 'Argument', stack_bytes_pushed: int):
         """Load Y register with the self pointer address for trait dispatch.
 
         Handles different source locations:
@@ -744,15 +697,15 @@ class CallInstructionSelector(BaseSelector):
 
             if use_region_based:
                 # Check if this call is in a region for this register
-                region = self._region_state.get_region_for_call(reg_name, instr_idx)
+                region = self.region_state.get_region_for_call(reg_name, instr_idx)
 
                 if region is not None:
                     # This call is in a clobber region
-                    if self._region_state.is_first_call_in_region(reg_name, instr_idx):
+                    if self.region_state.is_first_call_in_region(reg_name, instr_idx):
                         # First call in region - need to spill
                         spills.append(SpillInfo(vreg=None, hw_reg=reg_name))
                         # Mark region as active
-                        self._region_state.mark_region_active(reg_name, region)
+                        self.region_state.mark_region_active(reg_name, region)
                     # Else: already in active region, no spill needed
                     continue
 
@@ -806,15 +759,15 @@ class CallInstructionSelector(BaseSelector):
         reg_alloc = self.parent.reg_alloc
         if not reg_alloc or not reg_alloc.instr_liveness:
             # If A was spilled, still need to reload it
-            if self._region_state.pending_a_spill is not None:
-                reloads.append(self._region_state.pending_a_spill)
+            if self.region_state.pending_a_spill is not None:
+                reloads.append(self.region_state.pending_a_spill)
             return reloads
 
         # Get instruction position
         pos = reg_alloc.instr_liveness.get_instruction_position(instr)
         if not pos:
-            if self._region_state.pending_a_spill is not None:
-                reloads.append(self._region_state.pending_a_spill)
+            if self.region_state.pending_a_spill is not None:
+                reloads.append(self.region_state.pending_a_spill)
             return reloads
 
         _, instr_idx = pos
@@ -822,17 +775,17 @@ class CallInstructionSelector(BaseSelector):
         # Check each active region for X/Y and A (when bound)
         regs_to_check = ('A', 'X', 'Y') if self._a_bound_to_vreg else ('X', 'Y')
         for hw_reg in regs_to_check:
-            if self._region_state.is_region_active(hw_reg):
-                if self._region_state.is_last_call_in_region(hw_reg, instr_idx):
+            if self.region_state.is_region_active(hw_reg):
+                if self.region_state.is_last_call_in_region(hw_reg, instr_idx):
                     # Last call in region - need to reload
                     reloads.append(SpillInfo(vreg=None, hw_reg=hw_reg))
                     # Clear active region
-                    self._region_state.clear_active_region(hw_reg)
+                    self.region_state.clear_active_region(hw_reg)
 
         # A register per-call spilling (only when NOT using region-based)
         # This handles the case where A is used but not bound to a vreg
-        if not self._a_bound_to_vreg and self._region_state.pending_a_spill is not None:
-            reloads.append(self._region_state.pending_a_spill)
+        if not self._a_bound_to_vreg and self.region_state.pending_a_spill is not None:
+            reloads.append(self.region_state.pending_a_spill)
 
         return reloads
 
@@ -859,13 +812,13 @@ class CallInstructionSelector(BaseSelector):
                 )
                 self._emit_push('A', f"Spill A (m{current_mode})")
                 # Track stack growth based on actual mode
-                self._region_state.stack_tracker.push(2 if current_mode == 16 else 1)
+                self.region_state.stack_tracker.push(2 if current_mode == 16 else 1)
                 # Save spill info for reload
-                self._region_state.pending_a_spill = spill_with_mode
+                self.region_state.pending_a_spill = spill_with_mode
             else:
                 # X/Y are always 16-bit (2 bytes)
                 self._emit_push(spill.hw_reg, f"Spill {spill.hw_reg} (region start)")
-                self._region_state.stack_tracker.push(2)
+                self.region_state.stack_tracker.push(2)
 
     def _emit_hw_reloads(self, spills: List[SpillInfo]):
         """
@@ -887,7 +840,7 @@ class CallInstructionSelector(BaseSelector):
         for spill in reversed(spills):
             if spill.hw_reg == 'A':
                 # Get the mode A was spilled in
-                pending = self._region_state.pending_a_spill
+                pending = self.region_state.pending_a_spill
                 if pending and pending.spill_mode is not None:
                     spill_mode = pending.spill_mode
                     current_mode = self.parent.emitter.get_accu_mode()
@@ -906,18 +859,18 @@ class CallInstructionSelector(BaseSelector):
                     self._emit_pull('A', f"Reload A (m{spill_mode})")
 
                     # Track stack shrinkage based on spill mode
-                    self._region_state.stack_tracker.pop(2 if spill_mode == 16 else 1)
+                    self.region_state.stack_tracker.pop(2 if spill_mode == 16 else 1)
 
                     # Clear pending A spill
-                    self._region_state.pending_a_spill = None
+                    self.region_state.pending_a_spill = None
                 else:
                     # Fallback: no mode info, assume m8
                     self._emit_pull('A', "Reload A (region end)")
-                    self._region_state.stack_tracker.pop(1)
+                    self.region_state.stack_tracker.pop(1)
             else:
                 # X/Y are always 16-bit (2 bytes)
                 self._emit_pull(spill.hw_reg, f"Reload {spill.hw_reg} (region end)")
-                self._region_state.stack_tracker.pop(2)
+                self.region_state.stack_tracker.pop(2)
 
     def get_current_spill_offset(self) -> int:
         """
@@ -926,106 +879,17 @@ class CallInstructionSelector(BaseSelector):
         Returns:
             Number of bytes currently pushed for spilling
         """
-        return self._region_state.stack_tracker.displacement
+        return self.region_state.stack_tracker.displacement
 
     # ========================================================================
     # Argument Setup
     # ========================================================================
 
     def _emit_argument_setup(self, instr: Call, pre_arg_stack_adj: int = 0) -> int:
-        """
-        Set up call arguments in correct order.
+        """Set up call arguments. Delegates to ABIModel.emit_call_args."""
+        return self.parent.abi_model.emit_call_args(self, instr, pre_arg_stack_adj)
 
-        Two modes:
-        - STA mode (no active spills): Write args to caller's outgoing area via STA d,S.
-          SP does not move. This is the fast path.
-        - PHA mode (active spills): Push args via PHA in reverse order. Required when
-          region spills (PHY/PHX) have pushed bytes between the frame and SP, because
-          the callee expects params at a fixed offset from the return address.
-
-        Process in specific order to avoid clobbering:
-        1. Stack arguments (STA to outgoing area or PHA in reverse)
-        2. Variable-bound arguments
-        3. B register arguments (these clobber A via XBA)
-        4. X and Y register arguments
-        5. A register arguments (set up last to avoid being clobbered)
-
-        Args:
-            instr: Call instruction
-            pre_arg_stack_adj: Stack offset adjustment from operations before arg setup
-                (e.g., -2 when PLD was done before args, since S increased by 2)
-
-        Returns:
-            Number of bytes pushed (0 for STA mode, >0 for PHA mode)
-        """
-        from r65.compiler.codegen.type_utils import get_type_size
-
-        # Separate stack arguments from others
-        stack_args = [arg for arg in instr.args if arg.mechanism == ArgumentMechanism.STACK]
-        other_args = [arg for arg in instr.args if arg.mechanism != ArgumentMechanism.STACK]
-
-        spill_offset = self.get_current_spill_offset()
-        stack_bytes_pushed = 0
-
-        if spill_offset > 0 and stack_args:
-            # PHA mode: region spills are active, push args so they're adjacent
-            # to the return address (below the spills).
-            # Push in REVERSE order so first param ends up closest to return addr.
-            for arg in reversed(stack_args):
-                arg_loc = self.parent._get_operand_location(arg.value)
-
-                if arg_loc.kind == LocationKind.STACK and pre_arg_stack_adj != 0:
-                    arg_loc = self.parent._offset_location(arg_loc, pre_arg_stack_adj)
-
-                arg_size = 1
-                if arg.param_type is not None:
-                    arg_size = get_type_size(arg.param_type)
-                elif hasattr(arg.value, 'type_info') and arg.value.type_info:
-                    arg_size = get_type_size(arg.value.type_info)
-
-                self._emit_pha_stack_argument(arg, arg_loc, arg_size)
-                stack_bytes_pushed += arg_size
-                # Update stack tracker so subsequent source reads auto-adjust
-                self._region_state.stack_tracker.push(arg_size)
-        elif stack_args:
-            # STA mode: no spills active, write to outgoing area
-            outgoing_offset = 1
-            for arg in stack_args:
-                arg_loc = self.parent._get_operand_location(arg.value)
-
-                if arg_loc.kind == LocationKind.STACK and pre_arg_stack_adj != 0:
-                    arg_loc = self.parent._offset_location(arg_loc, pre_arg_stack_adj)
-
-                self._emit_outgoing_stack_argument(arg, arg_loc, outgoing_offset)
-
-                arg_size = 1
-                if arg.param_type is not None:
-                    arg_size = get_type_size(arg.param_type)
-                elif hasattr(arg.value, 'type_info') and arg.value.type_info:
-                    arg_size = get_type_size(arg.value.type_info)
-                outgoing_offset += arg_size
-
-        # Process other arguments (variable-bound and register) in sorted order
-        sorted_other_args = sorted(other_args, key=self._arg_sort_key)
-        for arg in sorted_other_args:
-            arg_loc = self.parent._get_operand_location(arg.value)
-
-            # Adjust stack-relative source locations for pre-arg changes only
-            if arg_loc.kind == LocationKind.STACK and pre_arg_stack_adj != 0:
-                arg_loc = self.parent._offset_location(arg_loc, pre_arg_stack_adj)
-
-            if arg.mechanism == ArgumentMechanism.REGISTER:
-                self._emit_register_argument(arg, arg_loc)
-
-            elif arg.mechanism == ArgumentMechanism.VARIABLE:
-                self._emit_variable_argument(arg, arg_loc)
-
-            elif arg.mechanism == ArgumentMechanism.SCRATCH_PARAM:
-                self._emit_scratch_param_argument(arg, arg_loc)
-
-        return stack_bytes_pushed
-
-    def _arg_sort_key(self, arg):
+    def arg_sort_key(self, arg):
         """Sort key for argument processing order."""
         if arg.mechanism == ArgumentMechanism.STACK:
             return 0  # Stack first
@@ -1043,7 +907,7 @@ class CallInstructionSelector(BaseSelector):
                 return 5  # A last (to avoid being clobbered)
         return 6
 
-    def _emit_outgoing_stack_argument(self, arg, arg_loc, outgoing_offset: int):
+    def emit_outgoing_stack_argument(self, arg, arg_loc, outgoing_offset: int):
         """Emit stack argument via STA d,S into caller's outgoing area.
 
         Writes the argument value to a fixed stack offset without moving SP.
@@ -1138,7 +1002,7 @@ class CallInstructionSelector(BaseSelector):
                 self.parent._emit_load('LDA', arg_loc)
             self.emitter.emit_instr(Opcode.STA_STACK, StackOffset(outgoing_offset), "Outgoing u8 arg")
 
-    def _emit_pha_stack_argument(self, arg, arg_loc, param_size: int):
+    def emit_pha_stack_argument(self, arg, arg_loc, param_size: int):
         """Emit stack argument via PHA (fallback when region spills are active).
 
         Pushes the argument value onto the stack. Used when region-based spills
@@ -1187,14 +1051,14 @@ class CallInstructionSelector(BaseSelector):
                 self._emit_load_immediate('A', 0, "Zero high byte")
                 self._emit_push('A', "Push high byte (zero)")
                 # First PHA shifted SP by 1; adjust tracker so source reads are correct
-                self._region_state.stack_tracker.push(1)
+                self.region_state.stack_tracker.push(1)
                 if isinstance(arg.value, MIRImmediate):
                     self._emit_load_immediate('A', arg.value.value & 0xFF)
                 else:
                     self.parent._emit_load('LDA', arg_loc)
                 self._emit_push('A', "Push low byte")
                 # Undo temporary adjustment (caller adds full param_size after return)
-                self._region_state.stack_tracker.pop(1)
+                self.region_state.stack_tracker.pop(1)
             else:
                 self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "16-bit A for u16 stack arg")
                 self.parent.emitter.emit_accu_mode(16)
@@ -1229,9 +1093,9 @@ class CallInstructionSelector(BaseSelector):
                 bytes_pushed_so_far += 1
                 # Temporarily adjust tracker for intermediate PHAs
                 if byte_idx > 0:  # Not the last byte
-                    self._region_state.stack_tracker.push(1)
+                    self.region_state.stack_tracker.push(1)
             # Undo all temporary adjustments (caller adds full param_size after return)
-            self._region_state.stack_tracker.pop(bytes_pushed_so_far - 1)
+            self.region_state.stack_tracker.pop(bytes_pushed_so_far - 1)
 
     def _emit_caller_arg_cleanup(self, stack_bytes_pushed: int):
         """Emit caller-side cleanup of PHA-pushed arguments after call returns.
@@ -1264,9 +1128,9 @@ class CallInstructionSelector(BaseSelector):
             self.parent.emitter.emit_raw("    TXA  ; Restore return A")
 
         # Reduce stack tracker to undo the PHA tracking
-        self._region_state.stack_tracker.pop(stack_bytes_pushed)
+        self.region_state.stack_tracker.pop(stack_bytes_pushed)
 
-    def _emit_register_argument(self, arg, arg_loc):
+    def emit_register_argument(self, arg, arg_loc):
         """Emit register argument (move to specified register)."""
         from r65.compiler.codegen.type_utils import get_type_size
 
@@ -1349,7 +1213,7 @@ class CallInstructionSelector(BaseSelector):
                 f"Cannot transfer from {src_reg} to {target_reg}",
                 source_loc=self.parent._current_source_loc)
 
-    def _emit_variable_argument(self, arg, arg_loc):
+    def emit_variable_argument(self, arg, arg_loc):
         """Emit variable-bound argument (store to memory location)."""
         # Load into A
         if arg_loc.kind == LocationKind.HARDWARE and arg_loc.hw_register == 'A':
@@ -1368,7 +1232,7 @@ class CallInstructionSelector(BaseSelector):
         var_loc = self.parent._get_operand_location(arg.location)
         self.parent._emit_store('STA', var_loc)
 
-    def _emit_scratch_param_argument(self, arg, arg_loc):
+    def emit_scratch_param_argument(self, arg, arg_loc):
         """
         Emit scratch parameter argument (store to zero-page scratch address).
 
