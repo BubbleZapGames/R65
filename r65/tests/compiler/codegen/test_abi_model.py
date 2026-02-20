@@ -394,3 +394,84 @@ class TestEmitTraitDispatchArgs:
         selector = _MockSelector()
         ABI_FIXED_STACK.emit_trait_dispatch_args(selector, instr)
         assert ('load_y_self',) in selector.calls
+
+
+# ---------------------------------------------------------------------------
+# emit_frame_dealloc
+# ---------------------------------------------------------------------------
+
+class _FakeEmitter:
+    """Minimal emitter stub for accu_mode tracking."""
+    def __init__(self, accu_mode=8):
+        self._accu_mode = accu_mode
+    def get_accu_mode(self):
+        return self._accu_mode
+
+
+class _FakeParentWithEmitter:
+    """Parent stub with an emitter for frame dealloc tests."""
+    def __init__(self, accu_mode=8):
+        self.emitter = _FakeEmitter(accu_mode)
+
+
+class _DeallocSelector:
+    """Records which frame-dealloc path was taken."""
+    def __init__(self, accu_mode=8):
+        self.parent = _FakeParentWithEmitter(accu_mode)
+        self.path = None
+        self.args = None
+
+    def emit_pla_frame_dealloc(self, frame_size, return_count):
+        self.path = 'pla'
+        self.args = (frame_size, return_count)
+
+    def emit_sp_adjust_preserving_a(self, adjust_bytes, return_count, current_mode):
+        self.path = 'sp_adjust'
+        self.args = (adjust_bytes, return_count, current_mode)
+
+
+class TestEmitFrameDealloc:
+    """Tests for ABIModel.emit_frame_dealloc."""
+
+    def test_zero_frame_is_noop(self):
+        sel = _DeallocSelector()
+        ABI_DEFAULT.emit_frame_dealloc(sel, frame_size=0, return_count=0)
+        assert sel.path is None
+
+    def test_default_small_frame_uses_pla(self):
+        sel = _DeallocSelector()
+        ABI_DEFAULT.emit_frame_dealloc(sel, frame_size=2, return_count=1)
+        assert sel.path == 'pla'
+        assert sel.args == (2, 1)
+
+    def test_default_large_frame_uses_sp_adjust(self):
+        sel = _DeallocSelector()
+        ABI_DEFAULT.emit_frame_dealloc(sel, frame_size=8, return_count=1)
+        assert sel.path == 'sp_adjust'
+        assert sel.args == (8, 1, 8)  # current_mode=8
+
+    def test_fixed_stack_large_frame_uses_pla(self):
+        """FixedStack always uses PLA (max_pla_dealloc_size is huge)."""
+        sel = _DeallocSelector()
+        ABI_FIXED_STACK.emit_frame_dealloc(sel, frame_size=8, return_count=0)
+        assert sel.path == 'pla'
+        assert sel.args == (8, 0)
+
+    def test_default_boundary_frame_uses_pla(self):
+        """frame_size=4 is exactly at the Default threshold — should PLA."""
+        sel = _DeallocSelector()
+        ABI_DEFAULT.emit_frame_dealloc(sel, frame_size=4, return_count=0)
+        assert sel.path == 'pla'
+
+    def test_default_boundary_plus_one_uses_sp_adjust(self):
+        """frame_size=5 exceeds Default threshold — should SP adjust."""
+        sel = _DeallocSelector()
+        ABI_DEFAULT.emit_frame_dealloc(sel, frame_size=5, return_count=0)
+        assert sel.path == 'sp_adjust'
+
+    def test_sp_adjust_passes_current_mode(self):
+        """SP-adjust path passes the emitter's current accu mode."""
+        sel = _DeallocSelector(accu_mode=16)
+        ABI_DEFAULT.emit_frame_dealloc(sel, frame_size=8, return_count=2)
+        assert sel.path == 'sp_adjust'
+        assert sel.args == (8, 2, 16)

@@ -43,6 +43,20 @@ class ABIModel(ABC):
     def max_pla_dealloc_size(self) -> int:
         """Max frame bytes for PLA-per-byte dealloc."""
 
+    def emit_frame_dealloc(self, selector, frame_size: int, return_count: int):
+        """Emit frame deallocation (epilogue counterpart to emit_frame_alloc).
+
+        For small frames (<= max_pla_dealloc_size): PLA-per-byte.
+        For large frames: TSC/CLC/ADC/TCS preserving A.
+        """
+        if frame_size <= 0:
+            return
+        if frame_size <= self.max_pla_dealloc_size:
+            selector.emit_pla_frame_dealloc(frame_size, return_count)
+        else:
+            current_mode = selector.parent.emitter.get_accu_mode()
+            selector.emit_sp_adjust_preserving_a(frame_size, return_count, current_mode)
+
     # -- shared helpers --
 
     def _emit_phb_alloc(self, emit_instr, frame_size: int):

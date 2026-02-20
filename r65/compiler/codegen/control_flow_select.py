@@ -841,15 +841,7 @@ class ControlFlowInstructionSelector(BaseSelector):
         # require saving A to a register which could clobber preserved regs).
         # FixedStack ABI: always use PLA-per-byte (no TSC/ADC/TCS)
         if stack_param_bytes == 0 and frame_size > 0:
-            from r65.compiler.codegen.abi_model import ABIKind
-            use_pla = frame_size <= 4 or \
-                      (hasattr(self.parent, 'abi_model') and
-                       self.parent.abi_model.kind == ABIKind.FIXED_STACK)
-            if use_pla:
-                self._emit_pla_frame_dealloc(frame_size, return_count)
-                return
-            current_mode = self.parent.emitter.get_accu_mode()
-            self._emit_sp_adjust_preserving_a(frame_size, return_count, current_mode)
+            self.parent.abi_model.emit_frame_dealloc(self, frame_size, return_count)
             return
 
         # Determine which register to use for return address
@@ -1072,7 +1064,7 @@ class ControlFlowInstructionSelector(BaseSelector):
         # Restore return value A
         self._emit_implied(Opcode.PLA, "Restore return value A")
 
-    def _emit_sp_adjust_preserving_a(self, adjust_bytes: int, return_count: int, current_mode: int):
+    def emit_sp_adjust_preserving_a(self, adjust_bytes: int, return_count: int, current_mode: int):
         """
         Emit SP adjustment that preserves return value in A.
 
@@ -1134,7 +1126,7 @@ class ControlFlowInstructionSelector(BaseSelector):
         elif restore_op is not None:
             self._emit_implied(restore_op, f"Restore return value A from {'X' if restore_op == Opcode.TXA else 'Y'}")
 
-    def _emit_pla_frame_dealloc(self, frame_size: int, return_count: int):
+    def emit_pla_frame_dealloc(self, frame_size: int, return_count: int):
         """
         Deallocate a small stack frame using PLA instructions.
 
@@ -1200,15 +1192,7 @@ class ControlFlowInstructionSelector(BaseSelector):
         # require saving A to a register which could clobber preserved regs).
         # FixedStack ABI: always use PLA-per-byte (no TSC/ADC/TCS)
         if stack_param_bytes == 0 and frame_size > 0:
-            from r65.compiler.codegen.abi_model import ABIKind
-            use_pla = frame_size <= 4 or \
-                      (hasattr(self.parent, 'abi_model') and
-                       self.parent.abi_model.kind == ABIKind.FIXED_STACK)
-            if use_pla:
-                self._emit_pla_frame_dealloc(frame_size, return_count)
-                return
-            current_mode = self.parent.emitter.get_accu_mode()
-            self._emit_sp_adjust_preserving_a(frame_size, return_count, current_mode)
+            self.parent.abi_model.emit_frame_dealloc(self, frame_size, return_count)
             return
 
         # General case: need to move return address past stack params
