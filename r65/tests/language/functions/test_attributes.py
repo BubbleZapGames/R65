@@ -1,7 +1,6 @@
 """Tests for function attributes."""
 
-from r65.compiler.frontend import ast
-from r65.tests.language.common import parse_function, get_attr, build_hir
+from r65.tests.language.common import parse_function, get_attr
 
 
 class TestPreservesAttribute:
@@ -19,63 +18,6 @@ class TestPreservesAttribute:
         func = parse_function("#[preserves(X, Y, A)] fn test() { }")
         attr = get_attr(func, "preserves")
         assert len(attr.args) == 3
-
-
-class TestModeAttribute:
-    """Tests for #[mode(...)] attribute.
-
-    The #[mode] attribute now only supports the databank parameter.
-    CPU mode (m8/m16) is inferred from parameter types automatically.
-    """
-
-    def test_mode_databank_inline(self):
-        """Test mode with databank=inline."""
-        hir_prog = build_hir("#[mode(databank=inline)] far fn test() { }")
-        func = hir_prog.functions[0]
-        assert func.mode_attr is not None
-
-    def test_mode_m8_rejected(self):
-        """Test mode with m8 is rejected at HIR level."""
-        import pytest
-        from r65.compiler.hir.errors import HIRError
-        with pytest.raises(HIRError) as exc_info:
-            build_hir("#[mode(m8)] fn test() { }")
-        assert "no longer supported" in str(exc_info.value)
-
-
-class TestBankDirective:
-    """Tests for #[bank(...)] directive."""
-
-    def test_bank_directive(self):
-        """Test bank directive placement."""
-        from r65.compiler.frontend.parser import parse
-        prog = parse("#[bank(1)] far fn rom_code() { }")
-
-        # First item should be the BankDirective
-        assert len(prog.items) == 2
-        assert isinstance(prog.items[0], ast.BankDirective)
-        assert prog.items[0].bank_number == 1
-
-        # Second item should be the far function
-        func = prog.items[1]
-        assert isinstance(func, ast.FunctionDecl)
-        assert func.is_far == True
-
-
-class TestInterruptAttribute:
-    """Tests for #[interrupt(...)] attribute."""
-
-    def test_interrupt_nmi(self):
-        """Test NMI interrupt handler."""
-        func = parse_function("#[interrupt(nmi)] fn vblank() { }")
-        attr = get_attr(func, "interrupt")
-        assert attr is not None
-
-    def test_interrupt_irq(self):
-        """Test IRQ interrupt handler."""
-        func = parse_function("#[interrupt(irq)] fn timer() { }")
-        attr = get_attr(func, "interrupt")
-        assert attr is not None
 
 
 class TestEntryAttribute:

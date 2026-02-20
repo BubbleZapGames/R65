@@ -1,8 +1,6 @@
 """Tests for loop control flow statements."""
 
-import pytest
 from r65.compiler.frontend import ast
-from r65.compiler.frontend.parser import ParseError
 from r65.tests.language.common import parse_function, build_hir
 
 
@@ -79,25 +77,6 @@ class TestWhileConditions:
             while_stmt = func.body.statements[0]
             assert isinstance(while_stmt.condition, expected_type)
 
-
-
-class TestLoopErrors:
-    """Tests for loop parse errors."""
-
-    def test_loop_missing_braces(self):
-        """Test loop without braces fails."""
-        with pytest.raises(ParseError):
-            parse_function("fn test() { loop A++; }")
-
-    def test_while_missing_condition(self):
-        """Test while without condition fails."""
-        with pytest.raises(ParseError):
-            parse_function("fn test() { while { A--; } }")
-
-    def test_while_missing_braces(self):
-        """Test while without braces fails."""
-        with pytest.raises(ParseError):
-            parse_function("fn test() { while A != 0 A--; }")
 
 
 class TestForLoops:

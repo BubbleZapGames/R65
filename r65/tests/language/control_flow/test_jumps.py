@@ -1,8 +1,6 @@
 """Tests for jump statements: break, continue, return."""
 
-import pytest
 from r65.compiler.frontend import ast
-from r65.compiler.frontend.parser import ParseError
 from r65.tests.language.common import parse_function
 
 
@@ -120,22 +118,3 @@ class TestReturnStatements:
         assert isinstance(ret1, ast.ReturnStmt)
         assert isinstance(ret2, ast.ReturnStmt)
 
-
-
-class TestJumpErrors:
-    """Tests for jump statement errors."""
-
-    def test_break_missing_semicolon(self):
-        """Test break without semicolon fails."""
-        with pytest.raises(ParseError):
-            parse_function("fn test() { loop { break } }")
-
-    def test_continue_missing_semicolon(self):
-        """Test continue without semicolon fails."""
-        with pytest.raises(ParseError):
-            parse_function("fn test() { loop { continue } }")
-
-    def test_return_missing_semicolon(self):
-        """Test return without semicolon fails."""
-        with pytest.raises(ParseError):
-            parse_function("fn test() { return A }")

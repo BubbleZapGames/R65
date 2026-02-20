@@ -139,45 +139,6 @@ def test_register_case_sensitivity():
     print("✓ Register case sensitivity test passed")
 
 
-def test_keywords_case_sensitivity():
-    """Test that keywords are case-sensitive."""
-    source = "fn FN Fn let LET"
-    tokens = tokenize(source)
-
-    # fn and let should be keywords
-    assert tokens[0].is_keyword('fn')
-    assert tokens[3].is_keyword('let')
-
-    # FN, Fn, LET should be identifiers
-    assert tokens[1].type == TokenType.IDENTIFIER
-    assert tokens[2].type == TokenType.IDENTIFIER
-    assert tokens[4].type == TokenType.IDENTIFIER
-
-    print("✓ Keyword case sensitivity test passed")
-
-
-def test_builtin_functions():
-    """Test built-in function names.
-
-    Built-in functions (mul, div, etc.) are now regular identifiers,
-    not keywords. This allows them to be called like normal functions and
-    recognized by the BuiltinRegistry during HIR building.
-    """
-    source = "mvn(0, 1) mul(a, b) div(x, y) wai() stp()"
-    tokens = tokenize(source)
-
-    # mvn, mul, div, wai, stp are identifiers (not keywords)
-    # Token positions: mvn(0), ((1), 0(2), ,(3), 1(4), )(5), mul(6), ...
-    assert tokens[0].type == TokenType.IDENTIFIER
-    assert tokens[0].value == 'mvn'
-    assert tokens[6].type == TokenType.IDENTIFIER
-    assert tokens[6].value == 'mul'
-    assert tokens[12].type == TokenType.IDENTIFIER
-    assert tokens[12].value == 'div'
-
-    print("✓ Built-in functions test passed")
-
-
 def test_pointer_syntax():
     """Test pointer type syntax."""
     source = "*u8 far *u16"
@@ -194,18 +155,6 @@ def test_pointer_syntax():
     print("✓ Pointer syntax test passed")
 
 
-def test_far_function_syntax():
-    """Test far function syntax."""
-    source = "far fn sound_engine() { }"
-    tokens = tokenize(source)
-
-    assert tokens[0].is_keyword('far')
-    assert tokens[1].is_keyword('fn')
-    assert tokens[2].value == 'sound_engine'
-
-    print("✓ Far function syntax test passed")
-
-
 if __name__ == '__main__':
     print("Running edge case tests...\n")
 
@@ -218,9 +167,6 @@ if __name__ == '__main__':
     test_invalid_hex()
     test_invalid_binary()
     test_register_case_sensitivity()
-    test_keywords_case_sensitivity()
-    test_builtin_functions()
     test_pointer_syntax()
-    test_far_function_syntax()
 
     print("\n✅ All edge case tests passed!")

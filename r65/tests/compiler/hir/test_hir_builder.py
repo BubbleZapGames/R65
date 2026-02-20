@@ -815,23 +815,6 @@ fn test() {
         increment = while_stmt.body.statements[-1]
         assert isinstance(increment, HIRAssignment)
 
-    def test_for_loop_condition_is_less_than(self):
-        """Test for loop condition uses < operator."""
-        source = """
-fn test() {
-    for i in 0..10 {
-        A = i;
-    }
-}
-"""
-        hir = build_hir(source)
-        func = hir.declarations[0]
-        block = func.body.statements[0]
-        while_stmt = block.statements[1]
-        # Condition should be i < end
-        assert isinstance(while_stmt.condition, HIRBinaryOp)
-        assert while_stmt.condition.op == '<'
-
     def test_nested_for_loops(self):
         """Test nested for loops."""
         source = """

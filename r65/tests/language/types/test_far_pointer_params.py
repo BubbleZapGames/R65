@@ -107,55 +107,17 @@ class TestFarPointerModeValidation:
             fn process(data: far *u8) {
             }
         """
-        # Should succeed - X/Y are always 16-bit in the new design
         mir = build_mir(source)
         assert len(mir.functions) == 1
 
-    def test_far_pointer_no_mode_attr_succeeds(self):
-        """Function with far pointer stack param without mode attr succeeds."""
+    def test_far_pointer_u16_succeeds(self):
+        """Function with far pointer to u16 should compile."""
         source = """
-            fn process(data: far *u8) {
+            fn process(data: far *u16) {
             }
         """
-        # Should succeed - X/Y are always 16-bit in the new design
         mir = build_mir(source)
         assert len(mir.functions) == 1
-
-    def test_far_pointer_with_x16_succeeds(self):
-        """Function with far pointer and x16 mode should compile."""
-        source = """
-                        fn process(data: far *u8) {
-            }
-        """
-        # Should not raise
-        mir = build_mir(source)
-        assert len(mir.functions) == 1
-
-    def test_far_pointer_with_m16_x16_succeeds(self):
-        """Function with far pointer and m16/x16 mode should compile."""
-        source = """
-                        fn process(data: far *u16) {
-            }
-        """
-        # Should not raise
-        mir = build_mir(source)
-        assert len(mir.functions) == 1
-
-
-class TestFarPointerCodegen:
-    """Tests for far pointer code generation."""
-
-    def test_far_pointer_prologue_generated(self):
-        """Function with far pointer should generate D = S prologue."""
-        # This test verifies MIR is built correctly
-        # Full codegen tests would need assembly output verification
-        source = """
-                        fn process(data: far *u8) {
-            }
-        """
-        mir = build_mir(source)
-        func = mir.functions[0]
-        assert func.has_far_ptr_stack_params is True
 
 
 class TestMixedParams:

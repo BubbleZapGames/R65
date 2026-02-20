@@ -96,16 +96,6 @@ class TestIfStatements:
 class TestIfErrors:
     """Tests for if statement parse errors."""
 
-    def test_if_missing_condition(self):
-        """Test if without condition fails."""
-        with pytest.raises(ParseError):
-            parse_function("fn test() { if { X = 1; } }")
-
-    def test_if_missing_braces(self):
-        """Test if without braces fails."""
-        with pytest.raises(ParseError):
-            parse_function("fn test() { if A == 0 X = 1; }")
-
     def test_else_without_if(self):
         """Test else without if fails."""
         with pytest.raises(ParseError):

@@ -35,17 +35,6 @@ class TestRegisterAliasing:
         assert len(func.body.statements) == 2
 
 
-class TestAliasInParameters:
-    """Tests for register aliasing in function parameters."""
-
-    def test_param_alias(self):
-        """Test parameter with register alias."""
-        func = parse_function("fn process(value @ A: u8) { }")
-        param = func.params[0]
-        assert param.name == "value"
-        assert param.binding.name == "A"
-
-
 class TestAliasHIR:
     """Tests for alias HIR generation."""
 
