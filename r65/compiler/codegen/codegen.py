@@ -45,7 +45,8 @@ class ProgramCodeGenerator:
     def generate(self, mir_program: MIRProgram, output_file: Optional[str] = None,
                  opt_level: int = 1, debug: bool = False,
                  disable_scratch_params: bool = False,
-                 disable_loop_promotion: bool = False) -> str:
+                 disable_loop_promotion: bool = False,
+                 abi_model=None) -> str:
         """
         Generate WLA-DX assembly from MIR program.
 
@@ -54,10 +55,15 @@ class ProgramCodeGenerator:
             output_file: Optional output file path
             opt_level: Optimization level (0=none, 1=basic, 2=with implicit inlining)
             debug: Generate Mesen-compatible .dbg file (default False)
+            abi_model: ABIModel instance (default: ABI_DEFAULT)
 
         Returns:
             Generated assembly as string
         """
+        from r65.compiler.codegen.abi_model import ABI_DEFAULT
+        if abi_model is None:
+            abi_model = ABI_DEFAULT
+        self.abi_model = abi_model
         # Initialize debug info collector if debug mode enabled
         if debug:
             self.debug_info = DebugInfoCollector()
@@ -163,10 +169,13 @@ class ProgramCodeGenerator:
         # Create scratch pool once for all functions
         scratch_pool = self.func_gen.func_gen._create_scratch_pool(mir_program)
 
-        # Run scratch parameter promotion analysis (before loop promotion)
-        # Scratch promotion removes params from stack_param_offsets, so loop
-        # promotion only sees params that actually remain on the stack.
-        if not disable_scratch_params:
+        # Run parameter promotion analysis (before loop promotion)
+        # FixedStack mode: mandatory promotion of ALL stack params to hw regs / scratch
+        # Default mode: optional scratch promotion for eligible params
+        if abi_model.requires_mandatory_param_promotion():
+            from r65.compiler.analysis.fixedstack_params import promote_all_stack_params
+            promote_all_stack_params(mir_program, scratch_pool)
+        elif not disable_scratch_params:
             from r65.compiler.analysis.scratch_params import analyze_scratch_params
             analyze_scratch_params(mir_program, scratch_pool)
 
@@ -176,7 +185,9 @@ class ProgramCodeGenerator:
             analyze_loop_promotion(mir_program)
 
         # Compute max outgoing arg bytes for caller-owned outgoing args convention
-        self._compute_outgoing_arg_bytes(mir_program)
+        # FixedStack mode: no outgoing arg area (all params in regs/scratch)
+        if not abi_model.requires_mandatory_param_promotion():
+            self._compute_outgoing_arg_bytes(mir_program)
 
         # Generate code for each bank
         for bank_num in sorted(functions_by_bank.keys()):
@@ -191,7 +202,8 @@ class ProgramCodeGenerator:
             for mir_func in bank_functions:
                 self.func_gen.func_gen.generate_function(
                     mir_func,
-                    scratch_pool=scratch_pool
+                    scratch_pool=scratch_pool,
+                    abi_model=abi_model
                 )
 
         # Phase 6.5: Trait dispatch tables (jump tables and wrapper functions)

@@ -839,8 +839,13 @@ class ControlFlowInstructionSelector(BaseSelector):
         # For small frames, use PLA-based deallocation which preserves B, X, Y,
         # and DBR (PLB would corrupt DBR, TSC/ADC/TCS would clobber B and
         # require saving A to a register which could clobber preserved regs).
+        # FixedStack ABI: always use PLA-per-byte (no TSC/ADC/TCS)
         if stack_param_bytes == 0 and frame_size > 0:
-            if frame_size <= 4:
+            from r65.compiler.codegen.abi_model import ABIKind
+            use_pla = frame_size <= 4 or \
+                      (hasattr(self.parent, 'abi_model') and
+                       self.parent.abi_model.kind == ABIKind.FIXED_STACK)
+            if use_pla:
                 self._emit_pla_frame_dealloc(frame_size, return_count)
                 return
             current_mode = self.parent.emitter.get_accu_mode()
@@ -1193,8 +1198,13 @@ class ControlFlowInstructionSelector(BaseSelector):
         # For small frames, use PLA-based deallocation which preserves B, X, Y,
         # and DBR (PLB would corrupt DBR, TSC/ADC/TCS would clobber B and
         # require saving A to a register which could clobber preserved regs).
+        # FixedStack ABI: always use PLA-per-byte (no TSC/ADC/TCS)
         if stack_param_bytes == 0 and frame_size > 0:
-            if frame_size <= 4:
+            from r65.compiler.codegen.abi_model import ABIKind
+            use_pla = frame_size <= 4 or \
+                      (hasattr(self.parent, 'abi_model') and
+                       self.parent.abi_model.kind == ABIKind.FIXED_STACK)
+            if use_pla:
                 self._emit_pla_frame_dealloc(frame_size, return_count)
                 return
             current_mode = self.parent.emitter.get_accu_mode()

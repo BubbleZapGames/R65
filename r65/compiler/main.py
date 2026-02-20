@@ -125,7 +125,8 @@ def compile_source(source: str, filename: str, output_file: str = None,
                    verbose: bool = False, quiet: bool = False, cfg_options: list[str] = None,
                    include_paths: list[str] = None, opt_level: int = 1, debug: bool = False,
                    disable_scratch_params: bool = False,
-                   disable_loop_promotion: bool = False):
+                   disable_loop_promotion: bool = False,
+                   abi_model=None):
     """Compile R65 source to WLA-DX assembly.
 
     Args:
@@ -218,7 +219,8 @@ def compile_source(source: str, filename: str, output_file: str = None,
         codegen = ProgramCodeGenerator()
         assembly = codegen.generate(mir_program, output_file=output_file, opt_level=opt_level, debug=debug,
                                     disable_scratch_params=disable_scratch_params,
-                                    disable_loop_promotion=disable_loop_promotion)
+                                    disable_loop_promotion=disable_loop_promotion,
+                                    abi_model=abi_model)
 
         # Print codegen warnings (always printed, not gated by quiet mode)
         if codegen.warnings:
@@ -330,13 +332,14 @@ def compile_source(source: str, filename: str, output_file: str = None,
         sys.exit(1)
 
 
-def compile_string(source: str, filename: str = "<string>") -> str:
+def compile_string(source: str, filename: str = "<string>", abi_model=None) -> str:
     """
     Simple compile function for tests - compiles and returns assembly string.
 
     Args:
         source: Source code to compile
         filename: Filename for error messages
+        abi_model: Optional ABIModel instance (default: Default ABI)
 
     Returns:
         Generated assembly code as string
@@ -358,7 +361,7 @@ def compile_string(source: str, filename: str = "<string>") -> str:
     recursion_checker.check()
 
     codegen = ProgramCodeGenerator()
-    return codegen.generate(mir_program)
+    return codegen.generate(mir_program, abi_model=abi_model)
 
 
 def main():
@@ -441,6 +444,12 @@ examples:
                        action='store_true',
                        dest='disable_loop_promotion',
                        help='Disable promotion of stack parameters used in loops to local registers')
+
+    parser.add_argument('--abi',
+                       choices=['Default', 'FixedStack'],
+                       default='Default',
+                       dest='abi',
+                       help='ABI model: Default (stack params, TSC frame) or FixedStack (hw regs + scratch only)')
 
     # Conditional compilation options
     cfg_group = parser.add_argument_group('conditional compilation options')
@@ -525,11 +534,15 @@ examples:
             return
 
         # Normal compilation
+        from r65.compiler.codegen.abi_model import abi_model_from_string
+        abi_model = abi_model_from_string(args.abi)
+
         compile_source(source, filename, args.output, args.verbose, args.quiet,
                        args.cfg_options, args.include_paths, opt_level=args.opt_level,
                        debug=args.generate_debug,
                        disable_scratch_params=args.disable_scratch_params,
-                       disable_loop_promotion=args.disable_loop_promotion)
+                       disable_loop_promotion=args.disable_loop_promotion,
+                       abi_model=abi_model)
 
     except (LexerError, ParseError, PreprocessorError, MacroError, HIRError, TypeCheckError) as e:
         # These are already handled in dump/compile functions

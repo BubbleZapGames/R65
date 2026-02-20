@@ -904,6 +904,10 @@ class MIRFunction:
     # Maps parameter index to scratch zero-page address for promoted stack params
     scratch_param_addrs: Dict[int, int] = field(default_factory=dict)
 
+    # HW-promoted parameter registers (populated by fixedstack_params pre-pass)
+    # Maps parameter index to hw register name for auto-promoted params
+    hw_param_regs: Dict[int, str] = field(default_factory=dict)
+
     # Loop-promoted hardware register vregs (populated by loop_register_promotion)
     # Maps hw register name ('X', 'Y') to the vreg pre-allocated to that register
     loop_promoted_hw_vregs: Dict[str, 'VirtualRegister'] = field(default_factory=dict)

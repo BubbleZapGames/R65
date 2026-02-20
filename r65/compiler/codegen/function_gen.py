@@ -56,14 +56,20 @@ class FunctionCodeGenerator:
 
     def generate_function(self,
                           mir_func: MIRFunction,
-                          scratch_pool: ScratchRegisterPool = None):
+                          scratch_pool: ScratchRegisterPool = None,
+                          abi_model=None):
         """
         Generate complete assembly for MIR function.
 
         Args:
             mir_func: MIR function to generate
             scratch_pool: Optional scratch register pool (if None, no scratch registers available)
+            abi_model: ABIModel instance (default: ABI_DEFAULT)
         """
+        from r65.compiler.codegen.abi_model import ABI_DEFAULT
+        if abi_model is None:
+            abi_model = ABI_DEFAULT
+        self.abi_model = abi_model
         # Setup register allocator for this function
         if scratch_pool is None:
             scratch_pool = ScratchRegisterPool()  # Empty pool if not provided
@@ -142,6 +148,21 @@ class FunctionCodeGenerator:
             hw_alloc.allocated_vreg = vreg
             hw_alloc.is_bound = True
 
+        # Pre-allocate hw-promoted parameter vregs (from FixedStack ABI promotion)
+        for param_idx, hw_reg_name in mir_func.hw_param_regs.items():
+            vreg = mir_func.param_to_vreg.get(param_idx)
+            if vreg:
+                vreg_size = get_type_size(vreg.type_info)
+                location = PhysicalLocation(
+                    kind=LocationKind.HARDWARE,
+                    hw_register=hw_reg_name,
+                    size=vreg_size
+                )
+                reg_alloc.allocations[vreg.id] = location
+                hw_alloc = reg_alloc.get_hw_alloc(hw_reg_name)
+                hw_alloc.allocated_vreg = vreg
+                hw_alloc.is_bound = True
+
         # Pre-allocate self pointer vreg to Y register for trait methods
         # Self is passed in Y by the caller/dispatch wrapper
         if mir_func.is_trait_method and mir_func.self_y_vreg:
@@ -188,7 +209,7 @@ class FunctionCodeGenerator:
                 mir_func.codegen_frame_dead_before_calls = True
 
         # Create instruction selector with current function context
-        instr_selector = InstructionSelector(self.emitter, reg_alloc, self.mem_alloc, mir_func, func_gen=self)
+        instr_selector = InstructionSelector(self.emitter, reg_alloc, self.mem_alloc, mir_func, func_gen=self, abi_model=abi_model)
 
         # Initialize region-based spilling for this function
         instr_selector.call_selector.initialize_regions_for_function()
@@ -809,8 +830,14 @@ class FunctionCodeGenerator:
         if frame_size <= 0:
             return
 
-        if frame_size <= 4 and not force_direct_stack:
-            # Use PHB for small frames - more efficient
+        # FixedStack ABI: always use PHB-per-byte (no TSC/SBC/TCS)
+        from r65.compiler.codegen.abi_model import ABIKind
+        use_phb = (frame_size <= 4 and not force_direct_stack) or \
+                  (hasattr(self, 'abi_model') and self.abi_model.kind == ABIKind.FIXED_STACK
+                   and not force_direct_stack)
+
+        if use_phb:
+            # Use PHB for frame allocation
             # PHB pushes DBR (junk for our purposes) but that's fine since
             # locals will be written before being read.
             # PHB is always 1 byte regardless of accumulator mode, and
