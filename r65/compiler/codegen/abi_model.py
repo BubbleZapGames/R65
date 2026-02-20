@@ -277,6 +277,23 @@ class ABIModel(ABC):
 
 
 class ABIDefault(ABIModel):
+    """Default R65 calling convention (--abi Default).
+
+    Hybrid parameter passing: register-bound (@ A, @ X, @ Y), variable-bound
+    (@ STATIC_VAR), scratch-promoted, and stack parameters all coexist.
+    Callers reserve a fixed outgoing-arg area at the bottom of their frame
+    and write stack args via STA d,S — callees see params at known offsets
+    above the return address and do NOT clean them up (just RTS/RTL).
+
+    Frame allocation uses TSC/SEC/SBC/TCS for frames > 4 bytes, or PHB per
+    byte for small frames. Deallocation mirrors this with PLA or
+    TSC/CLC/ADC/TCS. A pre-codegen scratch-param analysis pass promotes
+    eligible stack params to direct-page scratch registers when available.
+
+    Return values are passed in hardware registers (A, B, X, Y) determined
+    by the function's return type.
+    """
+
     def __init__(self):
         super().__init__(ABIKind.DEFAULT)
 
@@ -302,6 +319,24 @@ class ABIDefault(ABIModel):
 
 
 class ABIFixedStack(ABIModel):
+    """Fixed-stack ABI with no dynamic frame allocation (--abi FixedStack).
+
+    All parameters are promoted to hardware registers or direct-page scratch
+    locations — no stack-passed parameters are permitted. This eliminates
+    the need for an outgoing-arg area and simplifies frame layout to just
+    preserves and a minimal local frame.
+
+    Frame allocation always uses PHB per byte (never TSC/SBC/TCS), and
+    deallocation always uses PLA per byte (max_pla_dealloc_size is
+    unlimited). This keeps the stack pointer movement predictable and
+    bounded, which is useful for environments where stack depth must be
+    statically analyzable. Recursive functions are rejected at compile time
+    under this ABI.
+
+    Return values are passed in hardware registers (A, B, X, Y), identical
+    to the Default ABI.
+    """
+
     def __init__(self):
         super().__init__(ABIKind.FIXED_STACK)
 
@@ -326,20 +361,24 @@ class ABIFixedStack(ABIModel):
 
 
 class ABIPascal(ABIModel):
-    """Pascal/Apple IIGS calling convention.
+    """Pascal/Apple IIGS calling convention (--abi Pascal).
 
-    All parameters on stack (register bindings ignored), left-to-right push
-    order, callee cleans up parameter bytes, stack result space for return
-    values.
+    All parameters go on the stack regardless of register bindings (@ A,
+    @ X, @ Y annotations are ignored). Parameters are pushed left-to-right
+    via PHA — the first parameter is pushed first and ends up deepest, the
+    last parameter sits closest to the return address. No scratch promotion
+    or outgoing-arg area is used.
 
-    Caller pushes (in order):
-      1. Result space (N bytes, only if non-void return)
-      2. param0 (first param, pushed second, ends up deepest)
-      3. param1 ... paramN (last param closest to return addr)
-      4. JSR/JSL pushes return address
+    The caller pushes result space (sized to the return type) onto the stack
+    before any parameters. After the call returns, the callee has cleaned
+    up the parameter bytes, leaving just the result space at TOS for the
+    caller to PLA.
 
-    Callee cleanup: removes param bytes in epilogue but leaves result space
-    on stack for caller to pull.
+    Frame allocation uses PHB per byte for small frames (<=4) and
+    TSC/SEC/SBC/TCS for larger ones, same as Default. The callee writes
+    its return value into the result space via STA offset,S before the
+    epilogue, then removes parameter bytes (but not result space) using
+    the existing PLX/TSC/ADC/TCS/PHX/RTS cleanup machinery.
     """
 
     def __init__(self):
