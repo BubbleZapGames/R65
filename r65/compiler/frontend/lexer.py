@@ -11,10 +11,24 @@ from r65.compiler.frontend.tokens import *
 from r65.compiler.errors import SourceLocation, get_source_line
 
 
-# Load the grammar
+# Load the grammar, using a pre-compiled cache when available.
+# The cache is invalidated automatically when the grammar file changes.
 GRAMMAR_PATH = Path(__file__).parent / "grammar.lark"
-with open(GRAMMAR_PATH) as f:
-    GRAMMAR = f.read()
+_CACHE_PATH = GRAMMAR_PATH.with_suffix(".lark_cache")
+
+
+def _load_lark() -> Lark:
+    """Load the Lark parser, using a serialized cache if fresh."""
+    grammar_mtime = GRAMMAR_PATH.stat().st_mtime
+    if _CACHE_PATH.exists() and _CACHE_PATH.stat().st_mtime >= grammar_mtime:
+        with open(_CACHE_PATH, 'rb') as f:
+            return Lark.load(f)
+    with open(GRAMMAR_PATH) as f:
+        grammar = f.read()
+    lark = Lark(grammar, parser='lalr', lexer='contextual')
+    with open(_CACHE_PATH, 'wb') as f:
+        lark.save(f)
+    return lark
 
 
 class Lexer:
@@ -167,7 +181,7 @@ class Lexer:
         self.source = source
         self.filename = filename
         if Lexer._lark_cache is None:
-            Lexer._lark_cache = Lark(GRAMMAR, parser='lalr', lexer='contextual')
+            Lexer._lark_cache = _load_lark()
         self.lark = Lexer._lark_cache
         self.tokens: List[Token] = []
 

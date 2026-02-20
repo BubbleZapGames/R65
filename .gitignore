@@ -22,6 +22,9 @@ build/
 .coverage
 htmlcov/
 
+# Lark grammar cache
+*.lark_cache
+
 # Temporary files
 *.tmp
 .DS_Store
