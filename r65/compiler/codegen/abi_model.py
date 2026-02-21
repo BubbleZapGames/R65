@@ -2,7 +2,7 @@
 ABI model abstraction for the R65 compiler.
 
 Defines selectable ABI policies that control calling convention decisions:
-- Compact: PHA-based argument passing with caller PLX cleanup (default)
+- Default: PHA-based argument passing with caller PLX cleanup (default)
 - FixedStack: Zero-frame model with hw registers + scratch only, PHB-per-byte frames
 - Pascal: Apple IIGS/Pascal convention — all params on stack, callee cleanup, stack result space
 """
@@ -15,7 +15,7 @@ from enum import Enum
 class ABIKind(Enum):
     FIXED_STACK = "FixedStack"
     PASCAL = "Pascal"
-    COMPACT = "Compact"
+    DEFAULT = "Default"
 
 
 class ABIModel(ABC):
@@ -465,8 +465,8 @@ class ABIPascal(ABIModel):
                                         "Store return value to Pascal result space")
 
 
-class ABICompact(ABIModel):
-    """Compact calling convention with PHA-based argument passing (--abi Compact).
+class ABIDefault(ABIModel):
+    """Default calling convention with PHA-based argument passing (--abi Default).
 
     Eliminates the permanent outgoing-arg area from caller stack frames.
     Instead, arguments are pushed via PHA before each call and cleaned up
@@ -491,7 +491,7 @@ class ABICompact(ABIModel):
     """
 
     def __init__(self):
-        super().__init__(ABIKind.COMPACT)
+        super().__init__(ABIKind.DEFAULT)
 
     def run_param_analysis(self, mir_program, scratch_pool, disable_scratch_params: bool):
         if not disable_scratch_params:
@@ -499,7 +499,7 @@ class ABICompact(ABIModel):
             analyze_scratch_params(mir_program, scratch_pool)
 
     def compute_outgoing_args(self, mir_program, compute_fn):
-        # Compact ABI uses PHA per call — no permanent outgoing area
+        # Default ABI uses PHA per call — no permanent outgoing area
         for func in mir_program.functions:
             func.max_outgoing_arg_bytes = 0
 
@@ -516,9 +516,9 @@ class ABICompact(ABIModel):
         return 4
 
     def emit_call_args(self, selector, instr, pre_arg_stack_adj=0) -> int:
-        """Compact caller: always push stack args via PHA, then set up register args.
+        """Default caller: always push stack args via PHA, then set up register args.
 
-        Unlike Default which uses STA to a fixed outgoing area, Compact always
+        Unlike Default which uses STA to a fixed outgoing area, Default always
         pushes via PHA regardless of spill state. Register/variable/scratch args
         are handled identically to Default.
 
@@ -571,7 +571,7 @@ class ABICompact(ABIModel):
         return stack_bytes_pushed
 
     def emit_trait_dispatch_args(self, selector, instr) -> int:
-        """Compact trait dispatch: always push stack args via PHA.
+        """Default trait dispatch: always push stack args via PHA.
 
         Same as Default's trait dispatch but forces PHA path for stack args.
         """
@@ -610,14 +610,14 @@ class ABICompact(ABIModel):
 # Singleton instances
 ABI_FIXED_STACK = ABIFixedStack()
 ABI_PASCAL = ABIPascal()
-ABI_COMPACT = ABICompact()
+ABI_DEFAULT = ABIDefault()
 
 
 def abi_model_from_string(name: str) -> ABIModel:
     """Create ABIModel from CLI string argument.
 
     Args:
-        name: "Compact", "FixedStack", or "Pascal"
+        name: "Default", "FixedStack", or "Pascal"
 
     Returns:
         Corresponding ABIModel instance
@@ -629,7 +629,7 @@ def abi_model_from_string(name: str) -> ABIModel:
         return ABI_FIXED_STACK
     elif name == "Pascal":
         return ABI_PASCAL
-    elif name == "Compact":
-        return ABI_COMPACT
+    elif name == "Default":
+        return ABI_DEFAULT
     else:
-        raise ValueError(f"Unknown ABI model: {name!r}. Expected 'Compact', 'FixedStack', or 'Pascal'.")
+        raise ValueError(f"Unknown ABI model: {name!r}. Expected 'Default', 'FixedStack', or 'Pascal'.")

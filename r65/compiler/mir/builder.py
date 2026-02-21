@@ -65,7 +65,7 @@ class MIRBuilder:
         # ABI kind for calling convention decisions during MIR lowering
         # When Pascal, all parameters become stack parameters
         from r65.compiler.codegen.abi_model import ABIKind
-        self.abi_kind = abi_kind or ABIKind.COMPACT
+        self.abi_kind = abi_kind or ABIKind.DEFAULT
 
         # Shared lowering context (mutable state)
         self.ctx = LoweringContext()

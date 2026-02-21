@@ -64,11 +64,11 @@ class FunctionCodeGenerator:
         Args:
             mir_func: MIR function to generate
             scratch_pool: Optional scratch register pool (if None, no scratch registers available)
-            abi_model: ABIModel instance (default: ABI_COMPACT)
+            abi_model: ABIModel instance (default: ABI_DEFAULT)
         """
-        from r65.compiler.codegen.abi_model import ABI_COMPACT
+        from r65.compiler.codegen.abi_model import ABI_DEFAULT
         if abi_model is None:
-            abi_model = ABI_COMPACT
+            abi_model = ABI_DEFAULT
         self.abi_model = abi_model
         # Setup register allocator for this function
         if scratch_pool is None:

@@ -3,8 +3,8 @@
 import sys
 import pytest
 from r65.compiler.codegen.abi_model import (
-    ABIModel, ABIKind, ABIFixedStack, ABIPascal, ABICompact,
-    ABI_FIXED_STACK, ABI_PASCAL, ABI_COMPACT, abi_model_from_string,
+    ABIModel, ABIKind, ABIFixedStack, ABIPascal, ABIDefault,
+    ABI_FIXED_STACK, ABI_PASCAL, ABI_DEFAULT, abi_model_from_string,
 )
 
 
@@ -58,9 +58,9 @@ class TestAbiModelFromString:
         with pytest.raises(ValueError, match="Unknown ABI model"):
             abi_model_from_string("invalid")
 
-    def test_default_is_invalid(self):
+    def test_compact_is_invalid(self):
         with pytest.raises(ValueError, match="Unknown ABI model"):
-            abi_model_from_string("Default")
+            abi_model_from_string("Compact")
 
     def test_singleton_fixed_stack(self):
         assert abi_model_from_string("FixedStack") is ABI_FIXED_STACK
@@ -190,7 +190,7 @@ class TestEmitCallArgs:
         from r65.compiler.mir.nodes import Call
         instr = Call(function='foo', args=[], returns=[], is_far=False)
         selector = _MockSelector()
-        result = ABI_COMPACT.emit_call_args(selector, instr)
+        result = ABI_DEFAULT.emit_call_args(selector, instr)
         assert result == 0
         assert selector.calls == []
 
@@ -202,7 +202,7 @@ class TestEmitCallArgs:
         ]
         instr = Call(function='foo', args=args, returns=[], is_far=False)
         selector = _MockSelector()
-        ABI_COMPACT.emit_call_args(selector, instr)
+        ABI_DEFAULT.emit_call_args(selector, instr)
         assert ('register', 'A') in selector.calls
 
     def test_variable_args(self):
@@ -211,7 +211,7 @@ class TestEmitCallArgs:
         args = [_make_arg('variable', location=_FakeLocation('TEMP'))]
         instr = Call(function='foo', args=args, returns=[], is_far=False)
         selector = _MockSelector()
-        ABI_COMPACT.emit_call_args(selector, instr)
+        ABI_DEFAULT.emit_call_args(selector, instr)
         assert ('variable',) in selector.calls
 
     def test_scratch_param_args(self):
@@ -220,7 +220,7 @@ class TestEmitCallArgs:
         args = [_make_arg('scratch_param', scratch_addr=0x10)]
         instr = Call(function='foo', args=args, returns=[], is_far=False)
         selector = _MockSelector()
-        ABI_COMPACT.emit_call_args(selector, instr)
+        ABI_DEFAULT.emit_call_args(selector, instr)
         assert ('scratch_param', 0x10) in selector.calls
 
     def test_fixed_stack_abi_same_behavior(self):
@@ -243,7 +243,7 @@ class TestEmitTraitDispatchArgs:
             args=[], returns=[], is_far=False,
         )
         selector = _MockSelector()
-        result = ABI_COMPACT.emit_trait_dispatch_args(selector, instr)
+        result = ABI_DEFAULT.emit_trait_dispatch_args(selector, instr)
         assert result == 0
         assert selector.calls == []
 
@@ -256,7 +256,7 @@ class TestEmitTraitDispatchArgs:
             args=args, returns=[], is_far=False,
         )
         selector = _MockSelector()
-        ABI_COMPACT.emit_trait_dispatch_args(selector, instr)
+        ABI_DEFAULT.emit_trait_dispatch_args(selector, instr)
         assert ('load_y_self',) in selector.calls
 
     def test_fixed_stack_abi_same_behavior(self):
@@ -311,18 +311,18 @@ class TestEmitFrameDealloc:
 
     def test_zero_frame_is_noop(self):
         sel = _DeallocSelector()
-        ABI_COMPACT.emit_frame_dealloc(sel, frame_size=0, return_count=0)
+        ABI_DEFAULT.emit_frame_dealloc(sel, frame_size=0, return_count=0)
         assert sel.path is None
 
     def test_compact_small_frame_uses_pla(self):
         sel = _DeallocSelector()
-        ABI_COMPACT.emit_frame_dealloc(sel, frame_size=2, return_count=1)
+        ABI_DEFAULT.emit_frame_dealloc(sel, frame_size=2, return_count=1)
         assert sel.path == 'pla'
         assert sel.args == (2, 1)
 
     def test_compact_large_frame_uses_sp_adjust(self):
         sel = _DeallocSelector()
-        ABI_COMPACT.emit_frame_dealloc(sel, frame_size=8, return_count=1)
+        ABI_DEFAULT.emit_frame_dealloc(sel, frame_size=8, return_count=1)
         assert sel.path == 'sp_adjust'
         assert sel.args == (8, 1, 8)  # current_mode=8
 
@@ -334,21 +334,21 @@ class TestEmitFrameDealloc:
         assert sel.args == (8, 0)
 
     def test_compact_boundary_frame_uses_pla(self):
-        """frame_size=4 is exactly at the Compact threshold — should PLA."""
+        """frame_size=4 is exactly at the Default threshold — should PLA."""
         sel = _DeallocSelector()
-        ABI_COMPACT.emit_frame_dealloc(sel, frame_size=4, return_count=0)
+        ABI_DEFAULT.emit_frame_dealloc(sel, frame_size=4, return_count=0)
         assert sel.path == 'pla'
 
     def test_compact_boundary_plus_one_uses_sp_adjust(self):
-        """frame_size=5 exceeds Compact threshold — should SP adjust."""
+        """frame_size=5 exceeds Default threshold — should SP adjust."""
         sel = _DeallocSelector()
-        ABI_COMPACT.emit_frame_dealloc(sel, frame_size=5, return_count=0)
+        ABI_DEFAULT.emit_frame_dealloc(sel, frame_size=5, return_count=0)
         assert sel.path == 'sp_adjust'
 
     def test_sp_adjust_passes_current_mode(self):
         """SP-adjust path passes the emitter's current accu mode."""
         sel = _DeallocSelector(accu_mode=16)
-        ABI_COMPACT.emit_frame_dealloc(sel, frame_size=8, return_count=2)
+        ABI_DEFAULT.emit_frame_dealloc(sel, frame_size=8, return_count=2)
         assert sel.path == 'sp_adjust'
         assert sel.args == (8, 2, 16)
 
@@ -373,7 +373,7 @@ class TestAbiModelFromStringPascal:
 
 
 class TestABIPascalFrameAlloc:
-    """ABIPascal.emit_frame_alloc uses same strategy as Compact."""
+    """ABIPascal.emit_frame_alloc uses same strategy as Default."""
 
     def test_small_frame_emits_phb(self):
         collected = []
@@ -578,39 +578,39 @@ class TestPascalCompileIntegration:
 
 
 # ===========================================================================
-# Compact ABI Tests
+# Default ABI Tests
 # ===========================================================================
 
 
-class TestABIKindCompact:
+class TestABIKindDefault:
     def test_compact_value(self):
-        assert ABIKind.COMPACT.value == "Compact"
+        assert ABIKind.DEFAULT.value == "Default"
 
 
-class TestAbiModelFromStringCompact:
+class TestAbiModelFromStringDefault:
     def test_compact(self):
-        model = abi_model_from_string("Compact")
-        assert model.kind == ABIKind.COMPACT
+        model = abi_model_from_string("Default")
+        assert model.kind == ABIKind.DEFAULT
 
     def test_singleton_compact(self):
-        assert abi_model_from_string("Compact") is ABI_COMPACT
+        assert abi_model_from_string("Default") is ABI_DEFAULT
 
 
-class TestABICompactFrameAlloc:
-    """ABICompact.emit_frame_alloc uses same strategy as Default."""
+class TestABIDefaultFrameAlloc:
+    """ABIDefault.emit_frame_alloc uses same strategy as Default."""
 
     def test_small_frame_emits_phb(self):
         collected = []
         def fake_emit(opcode, *args, **kwargs):
             collected.append(opcode.name)
-        ABI_COMPACT.emit_frame_alloc(fake_emit, frame_size=2, force_direct_stack=False)
+        ABI_DEFAULT.emit_frame_alloc(fake_emit, frame_size=2, force_direct_stack=False)
         assert collected == ['PHB', 'PHB']
 
     def test_large_frame_emits_tsc(self):
         collected = []
         def fake_emit(opcode, *args, **kwargs):
             collected.append(opcode.name)
-        ABI_COMPACT.emit_frame_alloc(fake_emit, frame_size=8, force_direct_stack=False)
+        ABI_DEFAULT.emit_frame_alloc(fake_emit, frame_size=8, force_direct_stack=False)
         assert 'TSC' in collected
         assert 'PHB' not in collected
 
@@ -618,39 +618,39 @@ class TestABICompactFrameAlloc:
         collected = []
         def fake_emit(opcode, *args, **kwargs):
             collected.append(opcode.name)
-        ABI_COMPACT.emit_frame_alloc(fake_emit, frame_size=0, force_direct_stack=False)
+        ABI_DEFAULT.emit_frame_alloc(fake_emit, frame_size=0, force_direct_stack=False)
         assert collected == []
 
     def test_max_pla_dealloc_size(self):
-        assert ABI_COMPACT.max_pla_dealloc_size == 4
+        assert ABI_DEFAULT.max_pla_dealloc_size == 4
 
 
-class TestABICompactParamAnalysis:
-    """Compact ABI runs scratch param analysis like Default."""
+class TestABIDefaultParamAnalysis:
+    """Default ABI runs scratch param analysis like Default."""
 
     def test_compute_outgoing_args_sets_zero(self):
-        """Compact sets max_outgoing_arg_bytes=0 on all functions."""
+        """Default sets max_outgoing_arg_bytes=0 on all functions."""
         class FakeFunc:
             max_outgoing_arg_bytes = 99
         class FakeProg:
             functions = [FakeFunc()]
-        ABI_COMPACT.compute_outgoing_args(FakeProg(), None)
+        ABI_DEFAULT.compute_outgoing_args(FakeProg(), None)
         assert FakeProg.functions[0].max_outgoing_arg_bytes == 0
 
 
-class TestCompactEmitCallArgs:
-    """Compact emit_call_args: stack args always use PHA, register args unchanged."""
+class TestDefaultEmitCallArgs:
+    """Default emit_call_args: stack args always use PHA, register args unchanged."""
 
     def test_no_args_returns_zero(self):
         from r65.compiler.mir.nodes import Call
         instr = Call(function='foo', args=[], returns=[], is_far=False)
         selector = _MockSelector()
-        result = ABI_COMPACT.emit_call_args(selector, instr)
+        result = ABI_DEFAULT.emit_call_args(selector, instr)
         assert result == 0
         assert selector.calls == []
 
     def test_stack_args_always_use_pha(self):
-        """Compact always PHA's stack args even without spills."""
+        """Default always PHA's stack args even without spills."""
         from r65.compiler.mir.nodes import Call
         args = [
             _make_arg('stack', param_type=_FakeTypeInfo('u8')),
@@ -658,7 +658,7 @@ class TestCompactEmitCallArgs:
         ]
         instr = Call(function='foo', args=args, returns=[], is_far=False)
         selector = _MockSelector(spill_offset=0)  # No spills, but still uses PHA
-        result = ABI_COMPACT.emit_call_args(selector, instr)
+        result = ABI_DEFAULT.emit_call_args(selector, instr)
         assert result == 2  # 2 bytes pushed
         pha_calls = [c for c in selector.calls if c[0] == 'pha_stack']
         assert len(pha_calls) == 2
@@ -667,7 +667,7 @@ class TestCompactEmitCallArgs:
         assert len(outgoing_calls) == 0
 
     def test_stack_args_reversed_order(self):
-        """Compact pushes stack args right-to-left (reversed)."""
+        """Default pushes stack args right-to-left (reversed)."""
         from r65.compiler.mir.nodes import Call
         val0 = _FakeValue(_FakeTypeInfo('u8'))
         val1 = _FakeValue(_FakeTypeInfo('u8'))
@@ -677,7 +677,7 @@ class TestCompactEmitCallArgs:
         ]
         instr = Call(function='foo', args=args, returns=[], is_far=False)
         selector = _MockSelector()
-        ABI_COMPACT.emit_call_args(selector, instr)
+        ABI_DEFAULT.emit_call_args(selector, instr)
         pha_calls = [c for c in selector.calls if c[0] == 'pha_stack']
         assert len(pha_calls) == 2
 
@@ -689,7 +689,7 @@ class TestCompactEmitCallArgs:
         ]
         instr = Call(function='foo', args=args, returns=[], is_far=False)
         selector = _MockSelector()
-        ABI_COMPACT.emit_call_args(selector, instr)
+        ABI_DEFAULT.emit_call_args(selector, instr)
         assert ('register', 'A') in selector.calls
 
     def test_mixed_args(self):
@@ -702,7 +702,7 @@ class TestCompactEmitCallArgs:
         ]
         instr = Call(function='foo', args=args, returns=[], is_far=False)
         selector = _MockSelector()
-        result = ABI_COMPACT.emit_call_args(selector, instr)
+        result = ABI_DEFAULT.emit_call_args(selector, instr)
         assert result == 1  # 1 stack arg byte pushed
         # PHA stack first, then variable and register (sorted)
         assert selector.calls[0][0] == 'pha_stack'
@@ -718,7 +718,7 @@ class TestCompactEmitCallArgs:
         ]
         instr = Call(function='foo', args=args, returns=[], is_far=False)
         selector = _MockSelector()
-        result = ABI_COMPACT.emit_call_args(selector, instr)
+        result = ABI_DEFAULT.emit_call_args(selector, instr)
         assert result == 2
         assert selector.region_state.stack_tracker.displacement == 2
 
@@ -728,12 +728,12 @@ class TestCompactEmitCallArgs:
         args = [_make_arg('scratch_param', scratch_addr=0x10)]
         instr = Call(function='foo', args=args, returns=[], is_far=False)
         selector = _MockSelector()
-        ABI_COMPACT.emit_call_args(selector, instr)
+        ABI_DEFAULT.emit_call_args(selector, instr)
         assert ('scratch_param', 0x10) in selector.calls
 
 
-class TestCompactEmitTraitDispatchArgs:
-    """Compact emit_trait_dispatch_args: stack args always PHA'd."""
+class TestDefaultEmitTraitDispatchArgs:
+    """Default emit_trait_dispatch_args: stack args always PHA'd."""
 
     def test_no_args_returns_zero(self):
         from r65.compiler.mir.nodes import TraitDispatch
@@ -742,7 +742,7 @@ class TestCompactEmitTraitDispatchArgs:
             args=[], returns=[], is_far=False,
         )
         selector = _MockSelector()
-        result = ABI_COMPACT.emit_trait_dispatch_args(selector, instr)
+        result = ABI_DEFAULT.emit_trait_dispatch_args(selector, instr)
         assert result == 0
 
     def test_stack_args_always_pha(self):
@@ -756,7 +756,7 @@ class TestCompactEmitTraitDispatchArgs:
             args=args, returns=[], is_far=False,
         )
         selector = _MockSelector(spill_offset=0)
-        result = ABI_COMPACT.emit_trait_dispatch_args(selector, instr)
+        result = ABI_DEFAULT.emit_trait_dispatch_args(selector, instr)
         assert result == 1
         assert any(c[0] == 'pha_stack' for c in selector.calls)
 
@@ -769,39 +769,39 @@ class TestCompactEmitTraitDispatchArgs:
             args=args, returns=[], is_far=False,
         )
         selector = _MockSelector()
-        ABI_COMPACT.emit_trait_dispatch_args(selector, instr)
+        ABI_DEFAULT.emit_trait_dispatch_args(selector, instr)
         assert ('load_y_self',) in selector.calls
 
 
-class TestCompactFrameDealloc:
-    """Compact frame dealloc uses same thresholds as Default."""
+class TestDefaultFrameDealloc:
+    """Default frame dealloc uses same thresholds as Default."""
 
     def test_small_frame_uses_pla(self):
         sel = _DeallocSelector()
-        ABI_COMPACT.emit_frame_dealloc(sel, frame_size=3, return_count=1)
+        ABI_DEFAULT.emit_frame_dealloc(sel, frame_size=3, return_count=1)
         assert sel.path == 'pla'
 
     def test_large_frame_uses_sp_adjust(self):
         sel = _DeallocSelector()
-        ABI_COMPACT.emit_frame_dealloc(sel, frame_size=8, return_count=1)
+        ABI_DEFAULT.emit_frame_dealloc(sel, frame_size=8, return_count=1)
         assert sel.path == 'sp_adjust'
 
 
-class TestCompactRepr:
+class TestDefaultRepr:
     def test_repr(self):
-        assert "Compact" in repr(ABI_COMPACT)
+        assert "Default" in repr(ABI_DEFAULT)
 
 
 # ===========================================================================
-# Compact ABI integration tests (compile_string)
+# Default ABI integration tests (compile_string)
 # ===========================================================================
 
 
-class TestCompactCompileIntegration:
-    """Integration tests: compile R65 source with Compact ABI, verify assembly."""
+class TestDefaultCompileIntegration:
+    """Integration tests: compile R65 source with Default ABI, verify assembly."""
 
     def test_compact_caller_pushes_args(self):
-        """Compact caller should push stack args via PHA, not STA to outgoing."""
+        """Default caller should push stack args via PHA, not STA to outgoing."""
         source = """
         fn callee(a: u8) -> u8 {
             asm!("NOP", "NOP", "NOP", "NOP", "NOP", "NOP", "NOP", "NOP");
@@ -812,11 +812,11 @@ class TestCompactCompileIntegration:
         }
         """
         from r65.compiler.main import compile_string
-        result = compile_string(source, "test.r65", abi_model=ABI_COMPACT)
+        result = compile_string(source, "test.r65", abi_model=ABI_DEFAULT)
         assert 'PHA' in result
 
     def test_compact_caller_cleanup(self):
-        """Compact caller should clean up pushed args after call."""
+        """Default caller should clean up pushed args after call."""
         source = """
         fn callee(a: u8, b: u8) -> u8 {
             asm!("NOP", "NOP", "NOP", "NOP", "NOP", "NOP", "NOP", "NOP");
@@ -827,12 +827,12 @@ class TestCompactCompileIntegration:
         }
         """
         from r65.compiler.main import compile_string
-        result = compile_string(source, "test.r65", abi_model=ABI_COMPACT)
+        result = compile_string(source, "test.r65", abi_model=ABI_DEFAULT)
         # Should have PLX for cleanup (2 bytes pushed = 1 PLX)
         assert 'PLX' in result or 'PLY' in result
 
     def test_compact_no_outgoing_area(self):
-        """Compact should NOT have outgoing arg area in frame allocation."""
+        """Default should NOT have outgoing arg area in frame allocation."""
         source = """
         fn callee(a: u8) -> u8 {
             asm!("NOP", "NOP", "NOP", "NOP", "NOP", "NOP", "NOP", "NOP");
@@ -844,19 +844,19 @@ class TestCompactCompileIntegration:
         }
         """
         from r65.compiler.main import compile_string
-        result = compile_string(source, "test.r65", abi_model=ABI_COMPACT)
+        result = compile_string(source, "test.r65", abi_model=ABI_DEFAULT)
         # Should compile without errors
         assert 'caller' in result
 
     def test_compact_leaf_function_unchanged(self):
-        """Leaf functions produce identical output with Compact ABI."""
+        """Leaf functions produce identical output with Default ABI."""
         source = """
         fn add(a @ A: u8, b @ X: u16) -> u8 {
             return a;
         }
         """
         from r65.compiler.main import compile_string
-        result_compact = compile_string(source, "test.r65", abi_model=ABI_COMPACT)
+        result_compact = compile_string(source, "test.r65", abi_model=ABI_DEFAULT)
         assert 'add' in result_compact
 
     def test_compact_callee_reads_from_stack(self):
@@ -867,6 +867,6 @@ class TestCompactCompileIntegration:
         }
         """
         from r65.compiler.main import compile_string
-        result = compile_string(source, "test.r65", abi_model=ABI_COMPACT)
+        result = compile_string(source, "test.r65", abi_model=ABI_DEFAULT)
         # Callee reads from stack-relative addressing
         assert ',S' in result or ',s' in result

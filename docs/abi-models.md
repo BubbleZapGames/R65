@@ -3,7 +3,7 @@
 R65 supports three compile-wide ABI models selected via the `--abi` flag. Each model controls how parameters are passed, how stack frames are allocated, how return values are delivered, and who cleans up the stack after a call.
 
 ```bash
-r65c game.r65 -o game.asm              # Compact ABI (implicit default)
+r65c game.r65 -o game.asm              # Default ABI (implicit default)
 r65c game.r65 -o game.asm --abi FixedStack
 r65c game.r65 -o game.asm --abi Pascal
 ```
@@ -12,9 +12,9 @@ The ABI model is a compile-wide policy — every function in the program uses th
 
 ---
 
-## Compact
+## Default
 
-The Compact ABI is the default convention. It uses PHA-based argument passing with caller PLX cleanup. This eliminates the permanent outgoing-arg area from caller stack frames, producing smaller frames and smaller code.
+The Default ABI is the default convention. It uses PHA-based argument passing with caller PLX cleanup. This eliminates the permanent outgoing-arg area from caller stack frames, producing smaller frames and smaller code.
 
 ### Parameter Passing
 
@@ -78,7 +78,7 @@ Frame allocation always uses `PHB` per byte (never `TSC/SBC/TCS`). Deallocation 
 
 ### Return Values
 
-Identical to Compact — hardware registers A, B, X, Y.
+Identical to Default — hardware registers A, B, X, Y.
 
 ### Cleanup
 
@@ -163,7 +163,7 @@ After return, SP points at the result space. The caller pulls it with `PLA`.
 
 ### Frame Allocation
 
-Uses `PHB` per byte for small frames (4 bytes or less), `TSC / SEC / SBC / TCS` for larger frames — same as Compact.
+Uses `PHB` per byte for small frames (4 bytes or less), `TSC / SEC / SBC / TCS` for larger frames — same as Default.
 
 ### Characteristics
 
@@ -184,7 +184,7 @@ Uses `PHB` per byte for small frames (4 bytes or less), `TSC / SEC / SBC / TCS` 
 
 ## Comparison
 
-| Feature | Compact | FixedStack | Pascal |
+| Feature | Default | FixedStack | Pascal |
 |---|---|---|---|
 | Stack parameters | Yes (PHA push) | No | Yes (all params) |
 | Register parameters | Yes | Yes | No (ignored) |
@@ -204,7 +204,7 @@ Uses `PHB` per byte for small frames (4 bytes or less), `TSC / SEC / SBC / TCS` 
 
 The 65816 `LDA d,S` instruction uses an unsigned 8-bit offset (0-255), so a single function can only address 255 bytes from its SP. In practice this is not a limiting factor:
 
-- **Compact**: Per-function frame is locals + preserves. No outgoing area inflation, so frames are typically small. The hard stack limit (total RAM allocated for stack) is reached by call nesting long before any single frame approaches 255 bytes.
+- **Default**: Per-function frame is locals + preserves. No outgoing area inflation, so frames are typically small. The hard stack limit (total RAM allocated for stack) is reached by call nesting long before any single frame approaches 255 bytes.
 - **FixedStack**: No outgoing area, no stack params. Frames are just locals + preserves — often just a few bytes. The hard stack limit is reached by call nesting long before any single frame approaches 255 bytes.
 - **Pascal**: Parameters are pushed per-call (not part of the frame), so the frame itself stays small. The callee needs to reach the result space through frame + prologue + return address + params, which could approach the 255-byte limit for functions with many parameters and large frames.
 

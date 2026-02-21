@@ -55,14 +55,14 @@ class ProgramCodeGenerator:
             output_file: Optional output file path
             opt_level: Optimization level (0=none, 1=basic, 2=with implicit inlining)
             debug: Generate Mesen-compatible .dbg file (default False)
-            abi_model: ABIModel instance (default: ABI_COMPACT)
+            abi_model: ABIModel instance (default: ABI_DEFAULT)
 
         Returns:
             Generated assembly as string
         """
-        from r65.compiler.codegen.abi_model import ABI_COMPACT
+        from r65.compiler.codegen.abi_model import ABI_DEFAULT
         if abi_model is None:
-            abi_model = ABI_COMPACT
+            abi_model = ABI_DEFAULT
         self.abi_model = abi_model
         # Initialize debug info collector if debug mode enabled
         if debug:

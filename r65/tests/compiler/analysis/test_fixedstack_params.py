@@ -144,7 +144,7 @@ class TestFixedStackDefaultUnchanged:
         assert "add:" in result
 
     def test_default_abi_explicit_none(self):
-        """Passing abi_model=None should use Compact ABI (the default)."""
+        """Passing abi_model=None should use Default ABI (the default)."""
         source = """
         fn identity(x @ A: u8) -> u8 {
             return x;

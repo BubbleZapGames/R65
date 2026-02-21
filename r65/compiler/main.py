@@ -204,7 +204,7 @@ def compile_source(source: str, filename: str, output_file: str = None,
         if verbose:
             log(f"  [6/8] Building MIR...")
         from r65.compiler.codegen.abi_model import ABIKind
-        mir_abi_kind = abi_model.kind if abi_model else ABIKind.COMPACT
+        mir_abi_kind = abi_model.kind if abi_model else ABIKind.DEFAULT
         mir_builder = MIRBuilder(abi_kind=mir_abi_kind)
         mir_program = mir_builder.build_program(hir_program)
 
@@ -356,7 +356,7 @@ def compile_string(source: str, filename: str = "<string>", abi_model=None) -> s
     hir_program = builder.build_program(program)
     type_checker = TypeChecker(hir_program)
     type_checker.check()
-    mir_abi_kind = abi_model.kind if abi_model else ABIKind.COMPACT
+    mir_abi_kind = abi_model.kind if abi_model else ABIKind.DEFAULT
     mir_builder = MIRBuilder(abi_kind=mir_abi_kind)
     mir_program = mir_builder.build_program(hir_program)
 
@@ -450,10 +450,10 @@ examples:
                        help='Disable promotion of stack parameters used in loops to local registers')
 
     parser.add_argument('--abi',
-                       choices=['Compact', 'FixedStack', 'Pascal'],
-                       default='Compact',
+                       choices=['Default', 'FixedStack', 'Pascal'],
+                       default='Default',
                        dest='abi',
-                       help='ABI model: Compact (PHA args, caller PLX cleanup), FixedStack (hw regs + scratch only), or Pascal (all stack, callee cleanup)')
+                       help='ABI model: Default (PHA args, caller PLX cleanup), FixedStack (hw regs + scratch only), or Pascal (all stack, callee cleanup)')
 
     # Conditional compilation options
     cfg_group = parser.add_argument_group('conditional compilation options')
