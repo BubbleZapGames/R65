@@ -1,0 +1,9 @@
+#!/bin/bash
+# pre-push hook: run Python tests before allowing push
+
+set -e
+
+echo "Running tests before push..."
+python -m pytest r65/tests/ -x -q
+
+echo "All tests passed."
