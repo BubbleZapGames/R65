@@ -240,3 +240,43 @@ class TestArrayOfStructs:
             0x7E0010: [0xFF, 0x80, 0x00],
         }))
         assert result.success, f"Failures: {result.failures}"
+
+    def test_pointer_loop_indexed_read(self, e2e):
+        """Regression: LoadIndirect via pointer uses Y as index register.
+
+        LDA (dp),Y / LDA [dp],Y use Y as the index register. The compiler
+        must not coalesce other variables into Y when LoadIndirect/StoreIndirect
+        instructions exist in the same block, as the codegen uses Y for the
+        index operand.
+        """
+        result = e2e.run('''
+            #[zeropage(0x10)]
+            static mut PTR: *u8;
+
+            #[lowram(0x200)]
+            static mut DATA: [u8; 4];
+
+            #[lowram(0x300)]
+            static mut RESULT: u8;
+
+            #[entry]
+            fn main() {
+                DATA[0] = 10;
+                DATA[1] = 20;
+                DATA[2] = 30;
+                DATA[3] = 40;
+                PTR = &DATA as *u8;
+
+                let acc: u8 = 0;
+                let i: u16 = 0;
+                loop {
+                    if i == 4 { break; }
+                    acc = acc + PTR[i];
+                    i++;
+                }
+                RESULT = acc;
+            }
+        ''', ExpectedState(
+            memory={0x7E0300: 100}
+        ))
+        assert result.success, f"Failures: {result.failures}"

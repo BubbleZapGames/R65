@@ -137,7 +137,13 @@ class FunctionCodeGenerator:
         # These vregs were assigned X/Y hints by loop register promotion;
         # pre-allocating them prevents the slot allocator from creating
         # unnecessary frame slots.
-        for hw_reg, vreg in mir_func.loop_promoted_hw_vregs.items():
+        for hw_reg, vreg in list(mir_func.loop_promoted_hw_vregs.items()):
+            # Check for conflicts: LoadIndirect/StoreIndirect clobber Y,
+            # and explicit Move-to-HW defs can clobber X or Y.
+            if reg_alloc._hint_conflicts_with_hw_defs(vreg, hw_reg):
+                del mir_func.loop_promoted_hw_vregs[hw_reg]
+                vreg.register_hint = None
+                continue
             location = PhysicalLocation(
                 kind=LocationKind.HARDWARE,
                 hw_register=hw_reg,

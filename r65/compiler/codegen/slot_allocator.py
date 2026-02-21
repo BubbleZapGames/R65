@@ -979,6 +979,7 @@ class StackSlotAllocator:
                 return True
             return False
 
+
         # Other instructions don't modify X/Y
         # (they may use X/Y for indexing but don't modify them)
         return False

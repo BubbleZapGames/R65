@@ -539,6 +539,7 @@ class RegisterAllocator:
         from r65.compiler.mir.nodes import HardwareRegister, Move
         for block_id, block in self.mir_func.blocks.items():
             for instr_idx, instr in enumerate(block.instructions):
+                # Check explicit writes to the hardware register
                 if hasattr(instr, 'dest') and isinstance(instr.dest, HardwareRegister):
                     if instr.dest.name == hw_reg:
                         # Move from our vreg to the hw reg is a no-op if hint is honored
@@ -554,6 +555,7 @@ class RegisterAllocator:
                             info = self.instr_liveness.liveness.get(block_id)
                             if info and vreg in info.live_in:
                                 return True
+
         return False
 
     def _try_scratch(self, vreg: VirtualRegister) -> Optional[PhysicalLocation]:
