@@ -156,10 +156,10 @@ macro_token: IDENT | REGISTER | TYPE_NAME | INTEGER | STRING | BOOLEAN
            | BREAK | CONTINUE | ASM | STRUCT | ENUM | TYPE | AS | TRAIT | IMPL | SELF | FOR | IN | DYN
            | CFG | CFG_NOT
            | "(" | ")" | "[" | "]" | ";" | ":" | "," | "." | "#"
-           | "+" | "-" | "*" | "/" | "%" | "&" | "|" | "^" | "~" | "!"
+           | "+" | "-" | "*" | "/" | "&" | "|" | "^" | "~" | "!"
            | "=" | "<" | ">" | "@" | "->" | "==" | "!=" | "<=" | ">="
            | "&&" | "||" | "<<" | ">>" | "++" | "--"
-           | "+=" | "-=" | "*=" | "/=" | "%=" | "&=" | "|=" | "^=" | "<<=" | ">>="
+           | "+=" | "-=" | "*=" | "/=" | "&=" | "|=" | "^=" | "<<=" | ">>="
            | "::"
 
 // Top-level macro invocation: name!(args);
@@ -182,10 +182,10 @@ macro_arg_token: IDENT | REGISTER | TYPE_NAME | INTEGER | STRING | BOOLEAN
                | "(" macro_arg_token* ")"    // Nested parens
                | "[" macro_arg_token* "]"    // Nested brackets
                | "{" macro_arg_token* "}"    // Nested braces
-               | "+" | "-" | "*" | "/" | "%" | "&" | "|" | "^" | "~" | "!"
+               | "+" | "-" | "*" | "/" | "&" | "|" | "^" | "~" | "!"
                | "=" | "<" | ">" | "@" | "->" | "==" | "!=" | "<=" | ">="
                | "&&" | "||" | "<<" | ">>" | "++" | "--" | ";" | ":" | "." | "#"
-               | "+=" | "-=" | "*=" | "/=" | "%=" | "&=" | "|=" | "^=" | "<<=" | ">>="
+               | "+=" | "-=" | "*=" | "/=" | "&=" | "|=" | "^=" | "<<=" | ">>="
                | "::"
 
 // Attributes
@@ -309,7 +309,7 @@ pattern_ident: IDENT
            | lvalue "=" assignment                          -> assign
            | lvalue compound_op assignment                  -> compound_assign
 
-compound_op: PLUSEQUAL | MINUSEQUAL | STAREQUAL | SLASHEQUAL | PERCENTEQUAL
+compound_op: PLUSEQUAL | MINUSEQUAL | STAREQUAL | SLASHEQUAL
            | AMPEREQUAL | VBAREQUAL | CIRCUMFLEXEQUAL
            | LSHIFTEQUAL | RSHIFTEQUAL
 
@@ -356,7 +356,6 @@ lvalue: IDENT                                   -> lvalue_ident
 ?multiplication: cast
                | multiplication "*" cast        -> mul
                | multiplication "/" cast        -> div
-               | multiplication "%" cast        -> mod
 
 ?cast: unary
      | cast AS type_expr                        -> type_cast
@@ -553,7 +552,6 @@ PLUSEQUAL.10: "+="
 MINUSEQUAL.10: "-="
 STAREQUAL.10: "*="
 SLASHEQUAL.10: "/="
-PERCENTEQUAL.10: "%="
 AMPEREQUAL.10: "&="
 VBAREQUAL.10: "|="
 CIRCUMFLEXEQUAL.10: "^="
@@ -563,7 +561,6 @@ PLUS: "+"
 MINUS: "-"
 STAR: "*"
 SLASH: "/"
-PERCENT: "%"
 AMPER: "&"
 VBAR: "|"
 CIRCUMFLEX: "^"

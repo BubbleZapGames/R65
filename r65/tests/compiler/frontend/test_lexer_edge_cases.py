@@ -22,7 +22,7 @@ def test_nested_block_comments_not_supported():
 
 def test_operators_adjacent():
     """Test operators without spaces."""
-    source = "a+b*c-d/e%f&g|h^i<<j>>k"
+    source = "a+b*c-d/e&f|g^h<<i>>j"
     tokens = tokenize(source)
 
     # Should tokenize correctly even without spaces

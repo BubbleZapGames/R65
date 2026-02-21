@@ -743,7 +743,7 @@ class Assignment(Expression):
 class CompoundAssignment(Expression):
     """Compound assignment expression (e.g., +=, -=, &=)."""
     target: Union[Identifier, Register, ArrayIndex, FieldAccess]
-    operator: str  # "+", "-", "*", "/", "%", "&", "|", "^", "<<", ">>"
+    operator: str  # "+", "-", "*", "/", "&", "|", "^", "<<", ">>"
     value: Expression
 
 

@@ -30,7 +30,6 @@ class TokenType(Enum):
     MINUS = auto()          # -
     STAR = auto()           # *
     SLASH = auto()          # /
-    PERCENT = auto()        # %
     AMPERSAND = auto()      # &
     PIPE = auto()           # |
     CARET = auto()          # ^
@@ -122,7 +121,7 @@ class Token:
         """Check if this token is an operator."""
         return self.type in {
             TokenType.PLUS, TokenType.MINUS, TokenType.STAR, TokenType.SLASH,
-            TokenType.PERCENT, TokenType.AMPERSAND, TokenType.PIPE, TokenType.CARET,
+            TokenType.AMPERSAND, TokenType.PIPE, TokenType.CARET,
             TokenType.TILDE, TokenType.LSHIFT, TokenType.RSHIFT, TokenType.EQ,
             TokenType.NE, TokenType.LT, TokenType.LE, TokenType.GT, TokenType.GE,
             TokenType.AND, TokenType.OR, TokenType.NOT,

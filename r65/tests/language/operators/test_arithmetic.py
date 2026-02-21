@@ -45,8 +45,8 @@ class TestCompoundAssignment:
     """Tests for compound assignment operators."""
 
     def test_compound_assignment_operators(self):
-        """Test +=, -=, *=, /=, %=."""
-        ops = ["+", "-", "*", "/", "%"]
+        """Test +=, -=, *=, /=."""
+        ops = ["+", "-", "*", "/"]
         for op in ops:
             func = parse_function(f"fn test() {{ A {op}= 1; }}")
             stmt = func.body.statements[0]

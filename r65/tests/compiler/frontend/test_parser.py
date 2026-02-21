@@ -578,7 +578,6 @@ def test_compound_assignment():
         y -= 3;
         z *= 2;
         w /= 4;
-        a %= 8;
         b &= 0x0F;
         c |= 0x80;
         d ^= 0xFF;
@@ -612,47 +611,43 @@ def test_compound_assignment():
     assert isinstance(stmt4.expr, ast.CompoundAssignment)
     assert stmt4.expr.operator == '/'
 
+    # Test bitwise compound assignments
     stmt5 = func.body.statements[4]
     assert isinstance(stmt5.expr, ast.CompoundAssignment)
-    assert stmt5.expr.operator == '%'
+    assert stmt5.expr.operator == '&'
 
-    # Test bitwise compound assignments
     stmt6 = func.body.statements[5]
     assert isinstance(stmt6.expr, ast.CompoundAssignment)
-    assert stmt6.expr.operator == '&'
+    assert stmt6.expr.operator == '|'
 
     stmt7 = func.body.statements[6]
     assert isinstance(stmt7.expr, ast.CompoundAssignment)
-    assert stmt7.expr.operator == '|'
-
-    stmt8 = func.body.statements[7]
-    assert isinstance(stmt8.expr, ast.CompoundAssignment)
-    assert stmt8.expr.operator == '^'
+    assert stmt7.expr.operator == '^'
 
     # Test shift compound assignments
+    stmt8 = func.body.statements[7]
+    assert isinstance(stmt8.expr, ast.CompoundAssignment)
+    assert stmt8.expr.operator == '<<'
+
     stmt9 = func.body.statements[8]
     assert isinstance(stmt9.expr, ast.CompoundAssignment)
-    assert stmt9.expr.operator == '<<'
-
-    stmt10 = func.body.statements[9]
-    assert isinstance(stmt10.expr, ast.CompoundAssignment)
-    assert stmt10.expr.operator == '>>'
+    assert stmt9.expr.operator == '>>'
 
     # Test register compound assignment
-    stmt11 = func.body.statements[10]
-    assert isinstance(stmt11.expr, ast.CompoundAssignment)
-    assert isinstance(stmt11.expr.target, ast.Register)
-    assert stmt11.expr.target.name == 'A'
+    stmt10 = func.body.statements[9]
+    assert isinstance(stmt10.expr, ast.CompoundAssignment)
+    assert isinstance(stmt10.expr.target, ast.Register)
+    assert stmt10.expr.target.name == 'A'
 
     # Test array compound assignment
-    stmt12 = func.body.statements[11]
-    assert isinstance(stmt12.expr, ast.CompoundAssignment)
-    assert isinstance(stmt12.expr.target, ast.ArrayIndex)
+    stmt11 = func.body.statements[10]
+    assert isinstance(stmt11.expr, ast.CompoundAssignment)
+    assert isinstance(stmt11.expr.target, ast.ArrayIndex)
 
     # Test field compound assignment
-    stmt13 = func.body.statements[12]
-    assert isinstance(stmt13.expr, ast.CompoundAssignment)
-    assert isinstance(stmt13.expr.target, ast.FieldAccess)
+    stmt12 = func.body.statements[11]
+    assert isinstance(stmt12.expr, ast.CompoundAssignment)
+    assert isinstance(stmt12.expr.target, ast.FieldAccess)
 
     print("✓ Compound assignment test passed")
 

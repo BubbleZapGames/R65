@@ -8,12 +8,12 @@ from r65.compiler.frontend import tokenize, TokenType, LexerError
 
 def test_simple_tokens():
     """Test basic single-character tokens."""
-    source = "+ - * / % & | ^ ~ < > ! = @ ( ) { } [ ] ; : , . #"
+    source = "+ - * / & | ^ ~ < > ! = @ ( ) { } [ ] ; : , . #"
     tokens = tokenize(source)
 
     expected_types = [
         TokenType.PLUS, TokenType.MINUS, TokenType.STAR, TokenType.SLASH,
-        TokenType.PERCENT, TokenType.AMPERSAND, TokenType.PIPE, TokenType.CARET,
+        TokenType.AMPERSAND, TokenType.PIPE, TokenType.CARET,
         TokenType.TILDE, TokenType.LT, TokenType.GT, TokenType.NOT,
         TokenType.ASSIGN, TokenType.AT, TokenType.LPAREN, TokenType.RPAREN,
         TokenType.LBRACE, TokenType.RBRACE, TokenType.LBRACKET, TokenType.RBRACKET,

@@ -1830,8 +1830,6 @@ class ASTBuilder(Transformer):
     sub = _make_binary_op_handler('-')
     mul = _make_binary_op_handler('*')
     div = _make_binary_op_handler('/')
-    mod = _make_binary_op_handler('%')
-
     # Bitwise operators
     bitand = _make_binary_op_handler('&')
     bitor = _make_binary_op_handler('|')
@@ -1934,7 +1932,7 @@ class ASTBuilder(Transformer):
         """Compound assignment (+=, -=, etc.)."""
         # Keep compound operator tokens
         items = self._filter_tokens(items, keep_types={
-            'PLUSEQUAL', 'MINUSEQUAL', 'STAREQUAL', 'SLASHEQUAL', 'PERCENTEQUAL',
+            'PLUSEQUAL', 'MINUSEQUAL', 'STAREQUAL', 'SLASHEQUAL',
             'AMPEREQUAL', 'VBAREQUAL', 'CIRCUMFLEXEQUAL', 'LSHIFTEQUAL', 'RSHIFTEQUAL'
         })
         lvalue = items[0]
@@ -1948,7 +1946,6 @@ class ASTBuilder(Transformer):
             'MINUSEQUAL': '-',
             'STAREQUAL': '*',
             'SLASHEQUAL': '/',
-            'PERCENTEQUAL': '%',
             'AMPEREQUAL': '&',
             'VBAREQUAL': '|',
             'CIRCUMFLEXEQUAL': '^',
@@ -2007,7 +2004,7 @@ class ASTBuilder(Transformer):
         # Return the first token which is the compound operator
         # Keep all compound operator tokens
         items = self._filter_tokens(items, keep_types={
-            'PLUSEQUAL', 'MINUSEQUAL', 'STAREQUAL', 'SLASHEQUAL', 'PERCENTEQUAL',
+            'PLUSEQUAL', 'MINUSEQUAL', 'STAREQUAL', 'SLASHEQUAL',
             'AMPEREQUAL', 'VBAREQUAL', 'CIRCUMFLEXEQUAL', 'LSHIFTEQUAL', 'RSHIFTEQUAL'
         })
         return items[0]
@@ -2366,7 +2363,6 @@ class Parser:
             'MINUS': '-',
             'STAR': '*',
             'SLASH': '/',
-            'PERCENT': '%',
             # Bitwise operators
             'AMPER': '&',
             'VBAR': '|',
@@ -2383,7 +2379,6 @@ class Parser:
             'MINUSEQUAL': '-=',
             'STAREQUAL': '*=',
             'SLASHEQUAL': '/=',
-            'PERCENTEQUAL': '%=',
             'AMPEREQUAL': '&=',
             'VBAREQUAL': '|=',
             'CIRCUMFLEXEQUAL': '^=',
