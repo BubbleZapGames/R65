@@ -6,7 +6,7 @@ R65 provides operators and functions that clearly distinguish between hardware-s
 
 **Design Philosophy**:
 - **Operators (`+`, `-`, `*`, `/`, etc.)** = Hardware instructions or simple instruction sequences (2-10 cycles)
-- **Functions (`mul()`/`div()`/`mod()`, `shl()`, `shr()`, etc.)** = Software subroutines (20-200+ cycles)
+- **Functions (`mul8()`/`mul16()`, `div8()`/`div16()`, `mod8()`, `shl8()`/`shl16()`, `shr8()`/`shr16()`)** = Software subroutines (20-200+ cycles)
 
 All operations are **unchecked** - overflow, underflow, and division by zero are undefined behavior (matching hardware philosophy of no runtime checks).
 
@@ -69,11 +69,11 @@ let x = a & 0x0F;    // Bitwise AND (2-4 cycles)
 
 ### Slow Operations (use functions)
 ```rust
-let x = mul(a, b);    // General multiply: JSR __mul (20-100+ cycles)
-let x = div(a, b);    // General divide: JSR __div (50-200+ cycles)
-let x = mod(a, b);    // Modulo: JSR __mod (50-200+ cycles)
-let x = shl(a, n);    // Variable shift: loop (6-50+ cycles)
-let x = shr(a, n);    // Variable shift: loop (6-50+ cycles)
+let x = mul8(a, b);    // General multiply: JSR __mul (20-100+ cycles)
+let x = div8(a, b);    // General divide: JSR __div (50-200+ cycles)
+let x = mod8(a, b);    // Modulo: JSR __mod (50-200+ cycles)
+let x = shl8(a, n);    // Variable shift: loop (6-50+ cycles)
+let x = shr8(a, n);    // Variable shift: loop (6-50+ cycles)
 ```
 
 ---
@@ -172,8 +172,8 @@ let x = a * 8;   // ASL, ASL, ASL (shift left 3)
 let x = a * 64;  // 6x ASL (shift left 6)
 
 // These are ERRORS:
-let x = a * 3;   // ERROR: Use mul(a, 3)
-let x = a * b;   // ERROR: Use mul(a, b) for variable multiply
+let x = a * 3;   // ERROR: Use mul8(a, 3)
+let x = a * b;   // ERROR: Use mul8(a, b) for variable multiply
 ```
 
 **Performance**: 2-6 cycles
@@ -203,17 +203,17 @@ let x: u8 = a / 8;   // LSR, LSR, LSR (shift right 3)
 let x: u8 = a / 64;  // 6x LSR (shift right 6)
 
 // These are ERRORS:
-let x = a / 3;   // ERROR: Use div(a, 3)
-let x = a / b;   // ERROR: Use div(a, b) for variable division
+let x = a / 3;   // ERROR: Use div8(a, 3)
+let x = a / b;   // ERROR: Use div8(a, b) for variable division
 ```
 
 **Performance**: 2-6 cycles
 
 ---
 
-## Multiplication Function: `mul()`
+## Multiplication Functions: `mul8()` / `mul16()`
 
-**Syntax**: `mul(a, b)`
+**Syntax**: `mul8(a, b)` or `mul16(a, b)`
 
 **Type Rules**:
 - Both operands must be the same integer type
@@ -227,13 +227,13 @@ let x = a / b;   // ERROR: Use div(a, b) for variable division
 
 **Assembly Mapping**:
 ```rust
-let x: u8 = mul(a, b);
+let x: u8 = mul8(a, b);
 // LDA a
 // LDX b
 // JSR __mul_u8
 // (result in A)
 
-let x: u16 = mul(a, b);
+let x: u16 = mul16(a, b);
 // [Load a, b into appropriate registers/memory]
 // JSR __mul_u16
 // (result in A or memory)
@@ -243,16 +243,16 @@ let x: u16 = mul(a, b);
 
 **Examples**:
 ```rust
-let area: u8 = mul(width, height);
-let scaled: u8 = mul(value, 3);       // Not a power of 2
-let offset: u16 = mul(y as u16, 256 as u16);
+let area: u8 = mul8(width, height);
+let scaled: u8 = mul8(value, 3);       // Not a power of 2
+let offset: u16 = mul16(y as u16, 256 as u16);
 ```
 
 ---
 
-## Division Function: `div()`
+## Division Functions: `div8()` / `div16()`
 
-**Syntax**: `div(a, b)`
+**Syntax**: `div8(a, b)` or `div16(a, b)`
 
 **Type Rules**:
 - Both operands must be the same integer type
@@ -264,7 +264,7 @@ let offset: u16 = mul(y as u16, 256 as u16);
 
 **Assembly Mapping**:
 ```rust
-let x: u8 = div(a, b);
+let x: u8 = div8(a, b);
 // LDA a
 // LDX b
 // JSR __div_u8
@@ -275,15 +275,15 @@ let x: u8 = div(a, b);
 
 **Examples**:
 ```rust
-let avg: u8 = div(sum, count);
-let tiles: u8 = div(pixels, 7);       // Not a power of 2
+let avg: u8 = div8(sum, count);
+let tiles: u8 = div8(pixels, 7);       // Not a power of 2
 ```
 
 ---
 
-## Modulo Function: `mod()`
+## Modulo Function: `mod8()`
 
-**Syntax**: `mod(a, b)`
+**Syntax**: `mod8(a, b)`
 
 **Type Rules**:
 - Both operands must be the same integer type
@@ -295,7 +295,7 @@ let tiles: u8 = div(pixels, 7);       // Not a power of 2
 
 **Assembly Mapping**:
 ```rust
-let x: u8 = mod(a, b);
+let x: u8 = mod8(a, b);
 // LDA a
 // LDX b
 // JSR __mod_u8
@@ -306,14 +306,13 @@ let x: u8 = mod(a, b);
 
 **Examples**:
 ```rust
-let remainder: u8 = mod(distance, tile_size);
-let wrapped: u16 = mod(index, buffer_size);
+let remainder: u8 = mod8(distance, tile_size);
 
 // Prefer this for power of 2:
-let wrapped = index & 0xFF;  // Same as mod(index, 256)
+let wrapped = index & 0xFF;  // Same as mod8(index, 256)
 ```
 
-**Note**: The `%` operator is parsed but **not supported at code generation** — use the `mod()` function instead.
+**Note**: The `%` operator is parsed but **not supported at code generation** — use the `mod8()` function instead.
 
 ---
 
@@ -419,7 +418,7 @@ let x = a << 3;   // ASL, ASL, ASL
 let x = a << 4;   // ASL, ASL, ASL, ASL
 
 // ERROR: variable shift
-let x = a << n;   // ERROR: Use shl(a, n) for variable shifts
+let x = a << n;   // ERROR: Use shl8(a, n) for variable shifts
 ```
 
 **Performance**: 2 cycles per shift
@@ -446,18 +445,18 @@ let x: u8 = a >> 1;   // LSR
 let x: u8 = a >> 2;   // LSR, LSR
 
 // ERROR: variable shift
-let x = a >> n;   // ERROR: Use shr(a, n) for variable shifts
+let x = a >> n;   // ERROR: Use shr8(a, n) for variable shifts
 ```
 
 **Performance**: 2 cycles per shift
 
 ---
 
-## Shift Functions: `shl()` and `shr()`
+## Shift Functions: `shl8()` / `shl16()` and `shr8()` / `shr16()`
 
-### Left Shift Function: `shl()`
+### Left Shift Function: `shl8()` / `shl16()`
 
-**Syntax**: `shl(n, shift_amount)`
+**Syntax**: `shl8(n, shift_amount)` or `shl16(n, shift_amount)`
 
 **Type Rules**:
 - First operand: any integer type
@@ -471,7 +470,7 @@ let x = a >> n;   // ERROR: Use shr(a, n) for variable shifts
 
 **Assembly Mapping**:
 ```rust
-let x = shl(a, count);
+let x = shl8(a, count);
 // LDA a
 // LDX count
 // BEQ done
@@ -486,15 +485,15 @@ let x = shl(a, count);
 
 **Examples**:
 ```rust
-let shifted = shl(value, 3);        // OK but prefer: value << 3
-let dynamic = shl(base, bit_pos);   // Variable shift - required
+let shifted = shl8(value, 3);        // OK but prefer: value << 3
+let dynamic = shl8(base, bit_pos);   // Variable shift - required
 ```
 
 ---
 
-### Right Shift Function: `shr()`
+### Right Shift Function: `shr8()` / `shr16()`
 
-**Syntax**: `shr(n, shift_amount)`
+**Syntax**: `shr8(n, shift_amount)` or `shr16(n, shift_amount)`
 
 **Type Rules**:
 - First operand: any integer type
@@ -510,7 +509,7 @@ let dynamic = shl(base, bit_pos);   // Variable shift - required
 **Assembly Mapping**:
 ```rust
 // Unsigned
-let x: u8 = shr(a, count);
+let x: u8 = shr8(a, count);
 // LDA a
 // LDX count
 // BEQ done
@@ -521,7 +520,7 @@ let x: u8 = shr(a, count);
 // done:
 
 // Signed (more complex)
-let x: i8 = shr(a, count);
+let x: i8 = shri8(a, count);
 // [Sign-preserving loop]
 ```
 
@@ -529,8 +528,8 @@ let x: i8 = shr(a, count);
 
 **Examples**:
 ```rust
-let shifted = shr(value, 2);        // OK but prefer: value >> 2
-let dynamic = shr(bits, offset);    // Variable shift - required
+let shifted = shr8(value, 2);        // OK but prefer: value >> 2
+let dynamic = shr8(bits, offset);    // Variable shift - required
 ```
 
 ---
@@ -796,7 +795,7 @@ a *= 2;   // OK: desugars to a = a * 2 (power of 2)
 a *= b;   // ERROR: desugars to a = a * b (variable multiply not allowed)
 a /= 4;   // OK: desugars to a = a / 4 (power of 2)
 a /= b;   // ERROR: desugars to a = a / b (variable divide not allowed)
-a %= b;   // ERROR: % operator not supported at codegen — use a = mod(a, b)
+a %= b;   // ERROR: % operator not supported at codegen — use a = mod8(a, b)
 ```
 
 **Optimization**: Direct memory operations when beneficial:
@@ -833,7 +832,7 @@ When both operands are the same size, results wrap within that size:
 let x: u8 = 250;
 let y: u8 = 10;
 let z = x + y;      // z: u8 = 4 (wraps), NOT u16 = 260
-let z = mul(x, y);  // z: u8 = 196 (2500 truncated to u8)
+let z = mul8(x, y);  // z: u8 = 196 (2500 truncated to u8)
 ```
 
 ---
@@ -855,7 +854,7 @@ let x: u8 = 0;
 let y = x - 1;         // y = 255 (wraps)
 
 let x: u8 = 200;
-let y = mul(x, 2);     // y = 144 (400 wraps to 144)
+let y = mul8(x, 2);     // y = 144 (400 wraps to 144)
 
 let x: u8 = 255;
 let y = x * 2;         // y = 254 (510 truncated to u8)
@@ -866,7 +865,7 @@ let y = x * 2;         // y = 254 (510 truncated to u8)
 Division by zero is **undefined behavior** (no runtime check):
 
 ```rust
-let x = div(10, 0);    // UNDEFINED BEHAVIOR
+let x = div8(10, 0);    // UNDEFINED BEHAVIOR
 let x = 10 / 0;        // ERROR: constant division by zero (compile-time)
 ```
 
@@ -877,9 +876,9 @@ let x = 10 / 0;        // ERROR: constant division by zero (compile-time)
 Standard C/Rust precedence (highest to lowest):
 
 1. **Unary**: `!`, `~`, `-` (unary)
-2. **Multiplicative**: `*` (restricted), `/` (restricted), function calls: `mul()`, `div()`, `mod()`
+2. **Multiplicative**: `*` (restricted), `/` (restricted), function calls: `mul8()`, `div8()`, `mod8()`
 3. **Additive**: `+`, `-`
-4. **Shift**: `<<`, `>>` (constant only), `shl()`, `shr()`
+4. **Shift**: `<<`, `>>` (constant only), `shl8()`, `shr8()`
 5. **Comparison**: `<`, `<=`, `>`, `>=`
 6. **Equality**: `==`, `!=`
 7. **Bitwise AND**: `&`
@@ -891,7 +890,7 @@ Standard C/Rust precedence (highest to lowest):
 
 **Parentheses** override precedence: `(a + b) * c`
 
-**Note**: Function calls (`mul8()`, `div8()`, etc.) have high precedence like all function calls.
+**Note**: Function calls (`mul8()`, `div8()`, `mod8()`, etc.) have high precedence like all function calls.
 
 ---
 
@@ -912,10 +911,10 @@ a += 1, a -= 1            // 2-6 cycles (INC/DEC)
 
 ### Slow Operations (20-200+ cycles)
 ```rust
-mul(a, b)                  // 20-100+ cycles
-div(a, b)                  // 50-200+ cycles
-mod(a, b)                  // 50-200+ cycles
-shl(a, n), shr(a, n)       // 8 + (6 × n) cycles
+mul8(a, b)                  // 20-100+ cycles
+div8(a, b)                  // 50-200+ cycles
+mod8(a, b)                  // 50-200+ cycles
+shl8(a, n), shr8(a, n)     // 8 + (6 × n) cycles
 rotate_left(a, n)           // Similar to shifts
 rotate_right(a, n)          // Similar to shifts
 a < b (signed)              // 8-15 cycles or subroutine
@@ -925,14 +924,14 @@ a < b (signed)              // 8-15 cycles or subroutine
 
 ## Optimization Guidelines
 
-1. **Use operators for constants**: `a * 8` instead of `mul(a, 8)`
+1. **Use operators for constants**: `a * 8` instead of `mul8(a, 8)`
 2. **Prefer shifts**: `a << 3` is equivalent to `a * 8`
-3. **Use AND for power-of-2 modulo**: `a & 0xFF` instead of `mod(a, 256)`
+3. **Use AND for power-of-2 modulo**: `a & 0xFF` instead of `mod8(a, 256)`
 4. **Avoid division in loops**: Pre-compute or use lookup tables
 5. **Favor 8-bit operations**: Faster than 16-bit in m8 mode
 6. **Use INC/DEC for ±1**: `a += 1` optimizes to INC
 7. **Constant folding**: Let compiler optimize `5 + 3` to `8`
-8. **Strength reduction**: Compiler may optimize `mul(a, 2)` to `a << 1` (use `a * 2` for this directly)
+8. **Strength reduction**: Compiler may optimize `mul8(a, 2)` to `a << 1` (use `a * 2` for this directly)
 
 ---
 
@@ -1028,26 +1027,26 @@ The compiler provides these runtime functions:
 ```rust
 let x = a * 3;
 // ERROR: Multiply operator (*) requires a power-of-2 constant operand (1 to 256)
-// HELP: Use mul(a, 3) for general multiplication
+// HELP: Use mul8(a, 3) for general multiplication
 
 let x = a / 5;
 // ERROR: Divide operator (/) requires a power-of-2 constant divisor (1 to 256)
-// HELP: Use div(a, 5) for general division
+// HELP: Use div8(a, 5) for general division
 
 let x = a << count;
 // ERROR: Left shift operator (<<) requires constant shift amount
-// HELP: Use shl(a, count) for variable shifts
+// HELP: Use shl8(a, count) for variable shifts
 
 let x = a * b;
 // ERROR: Multiply operator (*) requires constant right operand
-// HELP: Use mul(a, b) for variable multiplication
+// HELP: Use mul8(a, b) for variable multiplication
 ```
 
 ### Type Mismatches
 ```rust
-let x = mul(a: u8, b: u16);
-// ERROR: mul() requires both operands to be the same type
-// HELP: Cast to same type: mul(a as u16, b)
+let x = mul8(a: u8, b: u16);
+// ERROR: mul8() requires both operands to be the same type
+// HELP: Cast to same type: mul16(a as u16, b)
 ```
 
 ---
@@ -1140,4 +1139,4 @@ let overflow = STATUS & OVERFLOW_FLAG;
 
 **STATUS**: Implemented
 **Last Updated**: 2026-02-10
-**Not Yet Implemented**: `%` operator at codegen (use `mod()` function), signed arithmetic right shift (uses logical shift for both)
+**Not Yet Implemented**: `%` operator at codegen (use `mod8()` function), signed arithmetic right shift (uses logical shift for both)

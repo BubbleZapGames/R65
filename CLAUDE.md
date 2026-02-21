@@ -323,7 +323,7 @@ Hardware-aware operators with restrictions for expensive operations:
 | Compare | `==`, `!=`, `<`, `>`, `<=`, `>=` | None |
 | Logical | `&&`, `\|\|`, `!` | Short-circuit |
 
-**Function alternatives**: `mul8()`/`mul16()`, `div8()`/`div16()`, `mod8()`/`mod16()`, `shl()`, `shr()` for variable amounts.
+**Function alternatives**: `mul8()`/`mul16()`, `div8()`/`div16()`, `mod8()`, `shl8()`/`shl16()`, `shr8()`/`shr16()` for variable amounts.
 
 **Also**: Compound assignments (`+=`, etc.), increment/decrement (`x++`, `x--` - postfix, statement-only).
 

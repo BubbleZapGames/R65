@@ -318,7 +318,7 @@ Generated:
 
 **Multiply (general)** - calls runtime function:
 ```
-MIR: dest = mul(a, b)
+MIR: dest = mul8(a, b)
 
 Generated:
     LDA a_loc

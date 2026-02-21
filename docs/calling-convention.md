@@ -1131,7 +1131,7 @@ multiply:
 **R65**:
 ```rust
 fn multiply(a @ A: u8, b @ X: u8) -> u8 {
-    let result @ A = mul(a, b);
+    let result @ A = mul8(a, b);
     return result;
 }
 ```
