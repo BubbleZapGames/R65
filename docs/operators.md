@@ -151,15 +151,15 @@ let c = a - b;
 
 ### Multiplication: `*` (Restricted)
 
-**Syntax**: `a * n` where `n` is a constant `1`, `2`, `4`, or `8`
+**Syntax**: `a * n` where `n` is a power-of-2 constant from 1 to 256
 
 **Type Rules**:
 - Left operand: any integer type
-- Right operand: **must be compile-time constant** 1, 2, 4, or 8
+- Right operand: **must be compile-time constant** power of 2 (1, 2, 4, 8, 16, 32, 64, 128, 256)
 - Result type matches left operand type (truncated)
 
 **Behavior**:
-- Compiler error if multiplier is not 1, 2, 4, or 8
+- Compiler error if multiplier is not a power of 2 from 1 to 256
 - Implemented using shifts (very fast)
 - Result truncated to operand size
 
@@ -169,10 +169,10 @@ let x = a * 1;   // No-op (compiler may optimize away)
 let x = a * 2;   // ASL (shift left 1)
 let x = a * 4;   // ASL, ASL (shift left 2)
 let x = a * 8;   // ASL, ASL, ASL (shift left 3)
+let x = a * 64;  // 6x ASL (shift left 6)
 
 // These are ERRORS:
 let x = a * 3;   // ERROR: Use mul(a, 3)
-let x = a * 16;  // ERROR: Use a << 4
 let x = a * b;   // ERROR: Use mul(a, b) for variable multiply
 ```
 
@@ -182,15 +182,15 @@ let x = a * b;   // ERROR: Use mul(a, b) for variable multiply
 
 ### Division: `/` (Restricted)
 
-**Syntax**: `a / n` where `n` is a constant `1`, `2`, `4`, or `8`
+**Syntax**: `a / n` where `n` is a power-of-2 constant from 1 to 256
 
 **Type Rules**:
 - Left operand: any integer type
-- Right operand: **must be compile-time constant** 1, 2, 4, or 8
+- Right operand: **must be compile-time constant** power of 2 (1, 2, 4, 8, 16, 32, 64, 128, 256)
 - Result type matches left operand type
 
 **Behavior**:
-- Compiler error if divisor is not 1, 2, 4, or 8
+- Compiler error if divisor is not a power of 2 from 1 to 256
 - Implemented using logical shifts (LSR) for both signed and unsigned
 - **Note**: Signed division does not currently round toward zero — it uses the same LSR as unsigned
 
@@ -200,10 +200,10 @@ let x: u8 = a / 1;   // No-op
 let x: u8 = a / 2;   // LSR (shift right 1)
 let x: u8 = a / 4;   // LSR, LSR (shift right 2)
 let x: u8 = a / 8;   // LSR, LSR, LSR (shift right 3)
+let x: u8 = a / 64;  // 6x LSR (shift right 6)
 
 // These are ERRORS:
 let x = a / 3;   // ERROR: Use div(a, 3)
-let x = a / 16;  // ERROR: Use a >> 4
 let x = a / b;   // ERROR: Use div(a, b) for variable division
 ```
 
@@ -902,8 +902,8 @@ Standard C/Rust precedence (highest to lowest):
 a + b, a - b              // 2-4 cycles
 a & b, a | b, a ^ b       // 2-4 cycles
 a << n, a >> n            // 2-8 cycles (n constant)
-a * 2, a * 4, a * 8       // 2-6 cycles (power of 2)
-a / 2, a / 4, a / 8       // 2-8 cycles (unsigned power of 2)
+a * 2, a * 4, a * 128     // 2-14 cycles (power of 2, up to 256)
+a / 2, a / 4, a / 128     // 2-14 cycles (unsigned power of 2, up to 256)
 a == b, a != b            // 4-6 cycles
 a < b, a >= b (unsigned)  // 4-6 cycles
 -a, ~a, !a                // 2-6 cycles
@@ -961,8 +961,8 @@ fn update_sprite(velocity: u8) {
 ```rust
 fn get_tile_offset(x: u8, y: u8) -> u16 {
     // Multiply y by 32 (tiles per row)
-    // 32 = power of 2, but not 1/2/4/8, so use mul8()/mul16() or shift
-    let row_offset: u16 = (y as u16) << 5;  // Shift by 5 = multiply by 32
+    // 32 = power of 2, so * 32 or << 5 both work
+    let row_offset: u16 = (y as u16) * 32;  // 5x ASL = multiply by 32
 
     // Add x coordinate
     let offset = row_offset + (x as u16);
@@ -1027,12 +1027,12 @@ The compiler provides these runtime functions:
 ### Restricted Operators
 ```rust
 let x = a * 3;
-// ERROR: Multiply operator (*) only supports constants 1, 2, 4, or 8
+// ERROR: Multiply operator (*) requires a power-of-2 constant operand (1 to 256)
 // HELP: Use mul(a, 3) for general multiplication
 
-let x = a / 16;
-// ERROR: Divide operator (/) only supports constants 1, 2, 4, or 8
-// HELP: Use div(a, 16) or a >> 4 for division by 16
+let x = a / 5;
+// ERROR: Divide operator (/) requires a power-of-2 constant divisor (1 to 256)
+// HELP: Use div(a, 5) for general division
 
 let x = a << count;
 // ERROR: Left shift operator (<<) requires constant shift amount

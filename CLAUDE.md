@@ -317,7 +317,7 @@ Hardware-aware operators with restrictions for expensive operations:
 | Category | Operator | Restriction |
 |----------|----------|-------------|
 | Arithmetic | `+`, `-` | None |
-| Multiply/Divide | `*`, `/` | Constants 1,2,4,8 only |
+| Multiply/Divide | `*`, `/` | Power-of-2 constants 1–256 only |
 | Shift | `<<`, `>>` | Constant amounts only |
 | Bitwise | `&`, `\|`, `^`, `~` | None |
 | Compare | `==`, `!=`, `<`, `>`, `<=`, `>=` | None |
