@@ -1068,7 +1068,13 @@ class CallInstructionSelector(BaseSelector):
                 self._emit_push('A', "Push high byte (zero)")
                 # First PHA shifted SP by 1; adjust tracker so source reads are correct
                 self.region_state.stack_tracker.push(1)
-                if isinstance(arg.value, MIRImmediate):
+                if arg_loc.kind == LocationKind.HARDWARE and arg_loc.hw_register == 'A':
+                    pass
+                elif arg_loc.kind == LocationKind.HARDWARE and arg_loc.hw_register == 'X':
+                    self._emit_transfer('X', 'A')
+                elif arg_loc.kind == LocationKind.HARDWARE and arg_loc.hw_register == 'Y':
+                    self._emit_transfer('Y', 'A')
+                elif isinstance(arg.value, MIRImmediate):
                     self._emit_load_immediate('A', arg.value.value & 0xFF)
                 else:
                     self.parent._emit_load('LDA', arg_loc)
@@ -1080,6 +1086,10 @@ class CallInstructionSelector(BaseSelector):
                 self.parent.emitter.emit_accu_mode(16)
                 if arg_loc.kind == LocationKind.HARDWARE and arg_loc.hw_register == 'A':
                     pass
+                elif arg_loc.kind == LocationKind.HARDWARE and arg_loc.hw_register == 'X':
+                    self._emit_transfer('X', 'A')
+                elif arg_loc.kind == LocationKind.HARDWARE and arg_loc.hw_register == 'Y':
+                    self._emit_transfer('Y', 'A')
                 elif isinstance(arg.value, MIRImmediate):
                     self._emit_load_immediate('A', arg.value.value)
                 else:
