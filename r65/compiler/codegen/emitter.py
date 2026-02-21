@@ -434,7 +434,8 @@ class AssemblyEmitter:
     # Memory Map
     # ========================================================================
 
-    def emit_memory_map(self, rom_type: str = "lorom", banks: int = 1):
+    def emit_memory_map(self, rom_type: str = "lorom", banks: int = 1,
+                        has_wram_7f: bool = False):
         """
         Emit WLA-DX memory map and ROM bank map.
 
@@ -470,6 +471,9 @@ class AssemblyEmitter:
         self.emit_directive("    DEFAULTSLOT 0")
         self.emit_directive(f"    SLOTSIZE ${slot_size:04X}")
         self.emit_directive(f"    SLOT 0 ${slot_addr:04X}")
+        self.emit_directive("    SLOT 1 $2000 SIZE $E000  ; WRAM bank $7E ($2000-$FFFF)")
+        if has_wram_7f:
+            self.emit_directive("    SLOT 2 $0000 SIZE $10000 ; WRAM bank $7F ($0000-$FFFF)")
         self.emit_directive(".ENDME")
         self.emit_blank_line()
 
@@ -500,6 +504,36 @@ class AssemblyEmitter:
         self.emit_directive(f".BANK {bank_num} SLOT {slot}")
         self.emit_directive(".ORG 0")
         self.emit_blank_line()
+
+    # ========================================================================
+    # RAM Sections
+    # ========================================================================
+
+    def emit_ramsection(self, section_name: str, bank: int, slot: int,
+                        orga: int, entries: list):
+        """
+        Emit a .RAMSECTION block for RAM variable allocation.
+
+        WLA-DX .RAMSECTION creates proper labels with correct bank metadata,
+        making the #: (bank byte) operator return the correct value.
+
+        Args:
+            section_name: Section name (e.g., "ram.data")
+            bank: Bank number (e.g., 0x7E)
+            slot: Slot number (e.g., 1)
+            orga: Origin address within the slot (e.g., 0x2000)
+            entries: List of (name, size, comment) tuples
+        """
+        self.emit_directive(
+            f'.RAMSECTION "{section_name}" BANK ${bank:02X} SLOT {slot} FORCE ORGA ${orga:04X}'
+        )
+        for name, size, comment in entries:
+            line = f"    {name} dsb {size}"
+            if comment:
+                padding = max(1, COMMENT_COLUMN - len(line))
+                line += " " * padding + f"; {comment}"
+            self.emit_directive(line)
+        self.emit_directive(".ENDS")
 
     # ========================================================================
     # Labels

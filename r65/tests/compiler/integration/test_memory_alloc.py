@@ -192,7 +192,7 @@ fn main() -> ! {
         ".DEFINE COUNTER $0022",
         ".DEFINE INIDISP $2100",
         ".DEFINE HVBJOY $4212",
-        ".DEFINE BUFFER $7E2000",
+        "BUFFER dsb 256",  # RAM vars use .RAMSECTION instead of .DEFINE
     ]
 
     assembly_passed = True

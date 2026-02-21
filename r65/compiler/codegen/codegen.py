@@ -244,6 +244,9 @@ class ProgramCodeGenerator:
             with open(output_file, 'w') as f:
                 f.write(assembly)
 
+            # Generate linkfile alongside assembly
+            self._generate_linkfile(output_file)
+
         # Generate debug file if requested
         if debug and output_file:
             self._generate_debug_file(mir_program, final_nodes, output_file)
@@ -646,6 +649,31 @@ class ProgramCodeGenerator:
 
         # Validate bank sizes
         validate_bank_sizes(nodes, is_hirom=is_hirom, has_header=has_header)
+
+    # ========================================================================
+    # Linkfile Generation
+    # ========================================================================
+
+    def _generate_linkfile(self, output_file: str):
+        """
+        Generate a WLA-DX linkfile alongside the assembly output.
+
+        The linkfile references the .o object file (same stem as .asm).
+        RAM section placement is handled by .RAMSECTION directives in
+        the assembly source itself (BANK/SLOT/FORCE ORGA), so no
+        [ramsections] block is needed in the linkfile.
+
+        Args:
+            output_file: Path to the .asm output file
+        """
+        import os
+
+        base = os.path.splitext(output_file)[0]
+        link_path = base + ".link"
+        obj_path = base + ".o"
+
+        with open(link_path, 'w') as f:
+            f.write(f"[objects]\n{obj_path}\n")
 
     # ========================================================================
     # Debug File Generation
