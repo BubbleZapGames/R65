@@ -84,7 +84,7 @@ class InstructionSelector:
             memory_allocator: Memory allocator for static variables
             current_function: Current MIR function being generated (for far/near context)
             func_gen: Function code generator (for epilogue emission)
-            abi_model: ABIModel instance (default: ABI_DEFAULT)
+            abi_model: ABIModel instance (default: ABI_COMPACT)
         """
         from r65.compiler.codegen.abi_model import ABI_COMPACT
         self.emitter = emitter

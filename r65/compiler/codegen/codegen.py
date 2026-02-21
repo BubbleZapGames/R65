@@ -55,7 +55,7 @@ class ProgramCodeGenerator:
             output_file: Optional output file path
             opt_level: Optimization level (0=none, 1=basic, 2=with implicit inlining)
             debug: Generate Mesen-compatible .dbg file (default False)
-            abi_model: ABIModel instance (default: ABI_DEFAULT)
+            abi_model: ABIModel instance (default: ABI_COMPACT)
 
         Returns:
             Generated assembly as string

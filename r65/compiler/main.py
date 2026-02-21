@@ -450,10 +450,10 @@ examples:
                        help='Disable promotion of stack parameters used in loops to local registers')
 
     parser.add_argument('--abi',
-                       choices=['Default', 'FixedStack', 'Pascal', 'Compact'],
+                       choices=['Compact', 'FixedStack', 'Pascal'],
                        default='Compact',
                        dest='abi',
-                       help='ABI model: Default (stack params, TSC frame), FixedStack (hw regs + scratch only), Pascal (all stack, callee cleanup), or Compact (PHA args, caller PLX cleanup)')
+                       help='ABI model: Compact (PHA args, caller PLX cleanup), FixedStack (hw regs + scratch only), or Pascal (all stack, callee cleanup)')
 
     # Conditional compilation options
     cfg_group = parser.add_argument_group('conditional compilation options')

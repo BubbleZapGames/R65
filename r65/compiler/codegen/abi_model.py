@@ -2,7 +2,7 @@
 ABI model abstraction for the R65 compiler.
 
 Defines selectable ABI policies that control calling convention decisions:
-- Default: Traditional stack-based parameters with TSC/SBC/TCS frame allocation
+- Compact: PHA-based argument passing with caller PLX cleanup (default)
 - FixedStack: Zero-frame model with hw registers + scratch only, PHB-per-byte frames
 - Pascal: Apple IIGS/Pascal convention — all params on stack, callee cleanup, stack result space
 """
@@ -13,7 +13,6 @@ from enum import Enum
 
 
 class ABIKind(Enum):
-    DEFAULT = "Default"
     FIXED_STACK = "FixedStack"
     PASCAL = "Pascal"
     COMPACT = "Compact"
@@ -275,48 +274,6 @@ class ABIModel(ABC):
 
     def __repr__(self):
         return f"ABIModel({self.kind.value})"
-
-
-class ABIDefault(ABIModel):
-    """Default R65 calling convention (--abi Default).
-
-    Hybrid parameter passing: register-bound (@ A, @ X, @ Y), variable-bound
-    (@ STATIC_VAR), scratch-promoted, and stack parameters all coexist.
-    Callers reserve a fixed outgoing-arg area at the bottom of their frame
-    and write stack args via STA d,S — callees see params at known offsets
-    above the return address and do NOT clean them up (just RTS/RTL).
-
-    Frame allocation uses TSC/SEC/SBC/TCS for frames > 4 bytes, or PHB per
-    byte for small frames. Deallocation mirrors this with PLA or
-    TSC/CLC/ADC/TCS. A pre-codegen scratch-param analysis pass promotes
-    eligible stack params to direct-page scratch registers when available.
-
-    Return values are passed in hardware registers (A, B, X, Y) determined
-    by the function's return type.
-    """
-
-    def __init__(self):
-        super().__init__(ABIKind.DEFAULT)
-
-    def run_param_analysis(self, mir_program, scratch_pool, disable_scratch_params: bool):
-        if not disable_scratch_params:
-            from r65.compiler.analysis.scratch_params import analyze_scratch_params
-            analyze_scratch_params(mir_program, scratch_pool)
-
-    def compute_outgoing_args(self, mir_program, compute_fn):
-        compute_fn(mir_program)
-
-    def emit_frame_alloc(self, emit_instr, frame_size: int, force_direct_stack: bool):
-        if frame_size <= 0:
-            return
-        if frame_size <= 4 and not force_direct_stack:
-            self._emit_phb_alloc(emit_instr, frame_size)
-        else:
-            self._emit_tsc_alloc(emit_instr, frame_size)
-
-    @property
-    def max_pla_dealloc_size(self) -> int:
-        return 4
 
 
 class ABIFixedStack(ABIModel):
@@ -651,7 +608,6 @@ class ABICompact(ABIModel):
 
 
 # Singleton instances
-ABI_DEFAULT = ABIDefault()
 ABI_FIXED_STACK = ABIFixedStack()
 ABI_PASCAL = ABIPascal()
 ABI_COMPACT = ABICompact()
@@ -661,7 +617,7 @@ def abi_model_from_string(name: str) -> ABIModel:
     """Create ABIModel from CLI string argument.
 
     Args:
-        name: "Default", "FixedStack", "Pascal", or "Compact"
+        name: "Compact", "FixedStack", or "Pascal"
 
     Returns:
         Corresponding ABIModel instance
@@ -669,13 +625,11 @@ def abi_model_from_string(name: str) -> ABIModel:
     Raises:
         ValueError: If name is not recognized
     """
-    if name == "Default":
-        return ABI_DEFAULT
-    elif name == "FixedStack":
+    if name == "FixedStack":
         return ABI_FIXED_STACK
     elif name == "Pascal":
         return ABI_PASCAL
     elif name == "Compact":
         return ABI_COMPACT
     else:
-        raise ValueError(f"Unknown ABI model: {name!r}. Expected 'Default', 'FixedStack', 'Pascal', or 'Compact'.")
+        raise ValueError(f"Unknown ABI model: {name!r}. Expected 'Compact', 'FixedStack', or 'Pascal'.")
