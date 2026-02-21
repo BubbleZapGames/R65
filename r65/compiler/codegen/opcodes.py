@@ -1128,7 +1128,7 @@ STORE_MNEMONICS: dict[str, str] = {
 }
 
 # Power-of-2 to shift count mapping (for multiply/divide optimization)
-POWER_OF_2_SHIFTS: dict[int, int] = {1: 0, 2: 1, 4: 2, 8: 3}
+POWER_OF_2_SHIFTS: dict[int, int] = {1: 0, 2: 1, 4: 2, 8: 3, 16: 4, 32: 5, 64: 6, 128: 7, 256: 8}
 
 # Builtin instruction to opcode mapping
 BUILTIN_OPCODES: dict[str, Opcode] = {

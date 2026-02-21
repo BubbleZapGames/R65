@@ -2,8 +2,8 @@
 Validates operator usage according to R65 hardware cost model.
 
 Operators are restricted to hardware-efficient operations:
-- Multiply (*) only for constants 1, 2, 4, 8
-- Divide (/) only for constants 1, 2, 4, 8
+- Multiply (*) only for power-of-2 constants (1, 2, 4, 8, 16, 32, 64, 128, 256)
+- Divide (/) only for power-of-2 constants (1, 2, 4, 8, 16, 32, 64, 128, 256)
 - Shift (<<, >>) only for constant amounts
 - Register-specific operations based on 65816 hardware capabilities
 """
@@ -20,7 +20,7 @@ from r65.compiler.typeck.register_capabilities import (
 class OperatorValidator:
     """Validates operator restrictions."""
 
-    POWER_OF_TWO_CONSTANTS = {1, 2, 4, 8}
+    POWER_OF_TWO_CONSTANTS = {1, 2, 4, 8, 16, 32, 64, 128, 256}
 
     # Operators that can be used for increment/decrement
     # X/Y support ++ (X = X + 1) and -- (X = X - 1) but not general add/subtract
@@ -52,7 +52,7 @@ class OperatorValidator:
 
         if not left_const and not right_const:
             raise TypeCheckError(
-                f"multiply operator (*) requires a constant operand (1, 2, 4, or 8)",
+                f"multiply operator (*) requires a power-of-2 constant operand (1 to 256)",
                 source_loc=op_node.source_loc,
                 hint="use mul8() or mul16() for general multiplication"
             )
@@ -63,7 +63,7 @@ class OperatorValidator:
         # Validate power-of-two
         if const_value not in OperatorValidator.POWER_OF_TWO_CONSTANTS:
             raise TypeCheckError(
-                f"multiply by {const_value} not supported (only 1, 2, 4, 8 allowed)",
+                f"multiply by {const_value} not supported (only powers of 2 from 1 to 256)",
                 source_loc=op_node.source_loc,
                 hint=f"use mul8(value, {const_value}) or mul16(value, {const_value}) instead"
             )
@@ -75,7 +75,7 @@ class OperatorValidator:
 
         if not isinstance(right, HIRIntegerLiteral):
             raise TypeCheckError(
-                f"divide operator (/) requires a constant divisor (1, 2, 4, or 8)",
+                f"divide operator (/) requires a power-of-2 constant divisor (1 to 256)",
                 source_loc=op_node.source_loc,
                 hint="use div8() or div16() for general division"
             )
@@ -84,7 +84,7 @@ class OperatorValidator:
 
         if divisor not in OperatorValidator.POWER_OF_TWO_CONSTANTS:
             raise TypeCheckError(
-                f"divide by {divisor} not supported (only 1, 2, 4, 8 allowed)",
+                f"divide by {divisor} not supported (only powers of 2 from 1 to 256)",
                 source_loc=op_node.source_loc,
                 hint=f"use div8(value, {divisor}) or div16(value, {divisor}) instead"
             )

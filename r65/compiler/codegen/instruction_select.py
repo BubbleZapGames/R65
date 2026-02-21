@@ -1087,26 +1087,26 @@ class InstructionSelector:
         self._emit_repeated_opcode(Opcode.LSR, count)
 
     def _emit_multiply(self, right_operand, is_u16: bool):
-        """Emit multiply by power of 2 (A * 1/2/4/8) using ASL instructions."""
+        """Emit multiply by power of 2 using ASL instructions."""
         value = self._require_immediate(right_operand, "Multiply")
         shift_count = POWER_OF_2_SHIFTS.get(value)
 
         if shift_count is None:
             raise InstructionSelectionError(
-                f"Multiply operator only supports 1, 2, 4, 8 (got {value}). "
+                f"Multiply operator only supports powers of 2 from 1 to 256 (got {value}). "
                 f"Use mul() for general multiplication.",
                 source_loc=self._current_source_loc)
 
         self._emit_repeated_opcode(Opcode.ASL, shift_count)
 
     def _emit_divide(self, right_operand, is_u16: bool):
-        """Emit divide by power of 2 (A / 1/2/4/8) using LSR instructions."""
+        """Emit divide by power of 2 using LSR instructions."""
         value = self._require_immediate(right_operand, "Divide")
         shift_count = POWER_OF_2_SHIFTS.get(value)
 
         if shift_count is None:
             raise InstructionSelectionError(
-                f"Divide operator only supports 1, 2, 4, 8 (got {value}). "
+                f"Divide operator only supports powers of 2 from 1 to 256 (got {value}). "
                 f"Use div() for general division.",
                 source_loc=self._current_source_loc)
 
