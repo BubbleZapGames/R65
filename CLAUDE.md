@@ -365,7 +365,7 @@ r65x init --platform snes my_project  # Create test project
 
 ## Testing ROMs
 
-`Mesen2/mesen-cli` is a headless SNES debugger for automated ROM testing. It supports batch mode with register/memory assertions, interactive GDB-style debugging, memory dumps, and trace logging. See [Mesen2/CLI/CLAUDE.md](Mesen2/CLI/CLAUDE.md) for full usage reference.
+`./Mesen-GDB/bin/linux-x64/Release/mesen-gdb` is a SNES debugger for automated ROM testing. It supports batch mode with register/memory assertions, interactive GDB-style debugging, memory dumps, and trace logging. See [Mesen-GDB/CLAUDE.md](Mesen-GDB/CLAUDE.md) for full usage reference.
 
 ## Directory Structure
 
