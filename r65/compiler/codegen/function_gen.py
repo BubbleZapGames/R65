@@ -617,9 +617,9 @@ class FunctionCodeGenerator:
             self._emit_interrupt_scratch_saves(reg_alloc.scratch_pool)
 
         # Check if A holds a register parameter that would be clobbered
-        # by TSC/SBC/TCS frame allocation (frames > 4 bytes).
+        # by frame allocation exceeding the ABI's push-based threshold.
         a_has_param = False
-        if frame_size > 4:
+        if frame_size > self.abi_model.frame_alloc_clobbers_a_threshold:
             force_direct = mir_func.interrupt_attr is not None
             if not force_direct:
                 from r65.compiler.hir import RegisterBinding

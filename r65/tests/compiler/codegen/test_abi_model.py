@@ -40,6 +40,17 @@ class TestMaxPlaDealloc:
         assert ABI_FIXED_STACK.max_pla_dealloc_size > 1000
 
 
+class TestFrameAllocClobbersAThreshold:
+    def test_fixed_stack_never_clobbers(self):
+        assert ABI_FIXED_STACK.frame_alloc_clobbers_a_threshold == sys.maxsize
+
+    def test_pascal_inherits_base(self):
+        assert ABI_PASCAL.frame_alloc_clobbers_a_threshold == 4
+
+    def test_default_uses_register_pushes(self):
+        assert ABI_DEFAULT.frame_alloc_clobbers_a_threshold == 8
+
+
 class TestComputeOutgoingArgs:
     def test_fixed_stack_skips_compute_fn(self):
         called = []
@@ -597,32 +608,61 @@ class TestAbiModelFromStringDefault:
 
 
 class TestABIDefaultFrameAlloc:
-    """ABIDefault.emit_frame_alloc uses same strategy as Default."""
+    """ABIDefault.emit_frame_alloc uses register pushes for frames <=8."""
 
-    def test_small_frame_emits_phb(self):
+    def _collect(self, frame_size, force_direct_stack=False):
         collected = []
         def fake_emit(opcode, *args, **kwargs):
             collected.append(opcode.name)
-        ABI_DEFAULT.emit_frame_alloc(fake_emit, frame_size=2, force_direct_stack=False)
-        assert collected == ['PHB', 'PHB']
+        ABI_DEFAULT.emit_frame_alloc(fake_emit, frame_size=frame_size,
+                                     force_direct_stack=force_direct_stack)
+        return collected
+
+    def test_frame_1_byte(self):
+        assert self._collect(1) == ['PHA']
+
+    def test_frame_2_bytes(self):
+        assert self._collect(2) == ['PHX']
+
+    def test_frame_3_bytes(self):
+        assert self._collect(3) == ['PHX', 'PHA']
+
+    def test_frame_4_bytes(self):
+        assert self._collect(4) == ['PHX', 'PHY']
+
+    def test_frame_5_bytes(self):
+        assert self._collect(5) == ['PHX', 'PHY', 'PHA']
+
+    def test_frame_6_bytes(self):
+        assert self._collect(6) == ['PHX', 'PHY', 'PHX']
+
+    def test_frame_7_bytes(self):
+        assert self._collect(7) == ['PHX', 'PHY', 'PHX', 'PHA']
+
+    def test_frame_8_bytes(self):
+        assert self._collect(8) == ['PHX', 'PHY', 'PHX', 'PHY']
 
     def test_large_frame_emits_tsc(self):
-        collected = []
-        def fake_emit(opcode, *args, **kwargs):
-            collected.append(opcode.name)
-        ABI_DEFAULT.emit_frame_alloc(fake_emit, frame_size=8, force_direct_stack=False)
+        """frame_size=10 exceeds threshold → TSC path."""
+        collected = self._collect(10)
         assert 'TSC' in collected
-        assert 'PHB' not in collected
+        assert 'PHX' not in collected
+        assert 'PHY' not in collected
 
     def test_zero_frame_noop(self):
-        collected = []
-        def fake_emit(opcode, *args, **kwargs):
-            collected.append(opcode.name)
-        ABI_DEFAULT.emit_frame_alloc(fake_emit, frame_size=0, force_direct_stack=False)
-        assert collected == []
+        assert self._collect(0) == []
+
+    def test_force_direct_stack_emits_tsc(self):
+        """force_direct_stack=True forces TSC even for small frames."""
+        collected = self._collect(4, force_direct_stack=True)
+        assert 'TSC' in collected
+        assert 'PHX' not in collected
 
     def test_max_pla_dealloc_size(self):
         assert ABI_DEFAULT.max_pla_dealloc_size == 4
+
+    def test_frame_alloc_clobbers_a_threshold(self):
+        assert ABI_DEFAULT.frame_alloc_clobbers_a_threshold == 8
 
 
 class TestABIDefaultParamAnalysis:

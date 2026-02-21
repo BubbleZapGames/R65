@@ -59,12 +59,41 @@ class ABIModel(ABC):
             current_mode = selector.parent.emitter.get_accu_mode()
             selector.emit_sp_adjust_preserving_a(frame_size, return_count, current_mode)
 
+    @property
+    def frame_alloc_clobbers_a_threshold(self) -> int:
+        """Max frame size that can be allocated without clobbering A.
+
+        Frames up to this size use push-based allocation (PHB/PHX/PHY/PHA).
+        Frames above this size use TSC/SEC/SBC/TCS which clobbers A.
+        """
+        return 4
+
     # -- shared helpers --
 
     def _emit_phb_alloc(self, emit_instr, frame_size: int):
         from r65.compiler.codegen.opcodes import Opcode
         for _ in range(frame_size):
             emit_instr(Opcode.PHB, comment=f"Allocate frame ({frame_size} bytes)")
+
+    def _emit_register_push_alloc(self, emit_instr, frame_size: int):
+        """Allocate frame using PHX/PHY (2 bytes each) and PHA (1 byte remainder).
+
+        More efficient than PHB-per-byte: PHX/PHY push 2 bytes at 4 cycles
+        vs 2×PHB at 6 cycles. Alternates PHX/PHY to avoid needing both
+        registers to hold specific values.
+        """
+        from r65.compiler.codegen.opcodes import Opcode
+        remaining = frame_size
+        use_x = True
+        while remaining >= 2:
+            if use_x:
+                emit_instr(Opcode.PHX, comment=f"Allocate frame ({frame_size} bytes)")
+            else:
+                emit_instr(Opcode.PHY, comment=f"Allocate frame ({frame_size} bytes)")
+            use_x = not use_x
+            remaining -= 2
+        if remaining == 1:
+            emit_instr(Opcode.PHA, comment=f"Allocate frame ({frame_size} bytes)")
 
     def _emit_tsc_alloc(self, emit_instr, frame_size: int):
         from r65.compiler.codegen.opcodes import Opcode
@@ -317,6 +346,10 @@ class ABIFixedStack(ABIModel):
     def max_pla_dealloc_size(self) -> int:
         return sys.maxsize
 
+    @property
+    def frame_alloc_clobbers_a_threshold(self) -> int:
+        return sys.maxsize  # PHB never clobbers A
+
 
 class ABIPascal(ABIModel):
     """Pascal/Apple IIGS calling convention (--abi Pascal).
@@ -480,10 +513,11 @@ class ABIDefault(ABIModel):
     behavior is completely unchanged — params appear at the same stack
     offsets above the return address.
 
-    Frame allocation uses PHB per byte for small frames (<=4) and
-    TSC/SEC/SBC/TCS for larger ones, same as Default. Frames are typically
-    smaller since there is no outgoing area, so more functions qualify for
-    the cheaper PHB path.
+    Frame allocation uses register pushes (PHX/PHY for 2-byte chunks,
+    PHA for 1-byte remainder) for frames up to 8 bytes, and
+    TSC/SEC/SBC/TCS for larger frames. This is more efficient than
+    PHB-per-byte (PHX/PHY push 2 bytes at 4 cycles vs 2×PHB at 6 cycles)
+    and avoids clobbering A for frames up to 8 bytes.
 
     Return values are passed in hardware registers (A, B, X, Y), identical
     to the Default ABI. For calls that return in X (multi-register returns),
@@ -506,14 +540,18 @@ class ABIDefault(ABIModel):
     def emit_frame_alloc(self, emit_instr, frame_size: int, force_direct_stack: bool):
         if frame_size <= 0:
             return
-        if frame_size <= 4 and not force_direct_stack:
-            self._emit_phb_alloc(emit_instr, frame_size)
+        if frame_size <= 8 and not force_direct_stack:
+            self._emit_register_push_alloc(emit_instr, frame_size)
         else:
             self._emit_tsc_alloc(emit_instr, frame_size)
 
     @property
     def max_pla_dealloc_size(self) -> int:
         return 4
+
+    @property
+    def frame_alloc_clobbers_a_threshold(self) -> int:
+        return 8  # Register pushes (PHX/PHY/PHA) don't clobber A
 
     def emit_call_args(self, selector, instr, pre_arg_stack_adj=0) -> int:
         """Default caller: always push stack args via PHA, then set up register args.
