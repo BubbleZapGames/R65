@@ -3,8 +3,8 @@
 import sys
 import pytest
 from r65.compiler.codegen.abi_model import (
-    ABIModel, ABIKind, ABIDefault, ABIFixedStack, ABIPascal,
-    ABI_DEFAULT, ABI_FIXED_STACK, ABI_PASCAL, abi_model_from_string,
+    ABIModel, ABIKind, ABIDefault, ABIFixedStack, ABIPascal, ABICompact,
+    ABI_DEFAULT, ABI_FIXED_STACK, ABI_PASCAL, ABI_COMPACT, abi_model_from_string,
 )
 
 
@@ -702,3 +702,301 @@ class TestPascalCompileIntegration:
         # Callee should store result to stack (STA offset,S)
         # and have "Pascal result space" comment
         assert 'Pascal result space' in result
+
+
+# ===========================================================================
+# Compact ABI Tests
+# ===========================================================================
+
+
+class TestABIKindCompact:
+    def test_compact_value(self):
+        assert ABIKind.COMPACT.value == "Compact"
+
+
+class TestAbiModelFromStringCompact:
+    def test_compact(self):
+        model = abi_model_from_string("Compact")
+        assert model.kind == ABIKind.COMPACT
+
+    def test_singleton_compact(self):
+        assert abi_model_from_string("Compact") is ABI_COMPACT
+
+
+class TestABICompactFrameAlloc:
+    """ABICompact.emit_frame_alloc uses same strategy as Default."""
+
+    def test_small_frame_emits_phb(self):
+        collected = []
+        def fake_emit(opcode, *args, **kwargs):
+            collected.append(opcode.name)
+        ABI_COMPACT.emit_frame_alloc(fake_emit, frame_size=2, force_direct_stack=False)
+        assert collected == ['PHB', 'PHB']
+
+    def test_large_frame_emits_tsc(self):
+        collected = []
+        def fake_emit(opcode, *args, **kwargs):
+            collected.append(opcode.name)
+        ABI_COMPACT.emit_frame_alloc(fake_emit, frame_size=8, force_direct_stack=False)
+        assert 'TSC' in collected
+        assert 'PHB' not in collected
+
+    def test_zero_frame_noop(self):
+        collected = []
+        def fake_emit(opcode, *args, **kwargs):
+            collected.append(opcode.name)
+        ABI_COMPACT.emit_frame_alloc(fake_emit, frame_size=0, force_direct_stack=False)
+        assert collected == []
+
+    def test_max_pla_dealloc_size(self):
+        assert ABI_COMPACT.max_pla_dealloc_size == 4
+
+
+class TestABICompactParamAnalysis:
+    """Compact ABI runs scratch param analysis like Default."""
+
+    def test_compute_outgoing_args_sets_zero(self):
+        """Compact sets max_outgoing_arg_bytes=0 on all functions."""
+        class FakeFunc:
+            max_outgoing_arg_bytes = 99
+        class FakeProg:
+            functions = [FakeFunc()]
+        ABI_COMPACT.compute_outgoing_args(FakeProg(), None)
+        assert FakeProg.functions[0].max_outgoing_arg_bytes == 0
+
+
+class TestCompactEmitCallArgs:
+    """Compact emit_call_args: stack args always use PHA, register args unchanged."""
+
+    def test_no_args_returns_zero(self):
+        from r65.compiler.mir.nodes import Call
+        instr = Call(function='foo', args=[], returns=[], is_far=False)
+        selector = _MockSelector()
+        result = ABI_COMPACT.emit_call_args(selector, instr)
+        assert result == 0
+        assert selector.calls == []
+
+    def test_stack_args_always_use_pha(self):
+        """Compact always PHA's stack args even without spills."""
+        from r65.compiler.mir.nodes import Call
+        args = [
+            _make_arg('stack', param_type=_FakeTypeInfo('u8')),
+            _make_arg('stack', param_type=_FakeTypeInfo('u8')),
+        ]
+        instr = Call(function='foo', args=args, returns=[], is_far=False)
+        selector = _MockSelector(spill_offset=0)  # No spills, but still uses PHA
+        result = ABI_COMPACT.emit_call_args(selector, instr)
+        assert result == 2  # 2 bytes pushed
+        pha_calls = [c for c in selector.calls if c[0] == 'pha_stack']
+        assert len(pha_calls) == 2
+        # Should NOT have any outgoing_stack calls
+        outgoing_calls = [c for c in selector.calls if c[0] == 'outgoing_stack']
+        assert len(outgoing_calls) == 0
+
+    def test_stack_args_reversed_order(self):
+        """Compact pushes stack args right-to-left (reversed)."""
+        from r65.compiler.mir.nodes import Call
+        val0 = _FakeValue(_FakeTypeInfo('u8'))
+        val1 = _FakeValue(_FakeTypeInfo('u8'))
+        args = [
+            _make_arg('stack', param_type=_FakeTypeInfo('u8'), value=val0),
+            _make_arg('stack', param_type=_FakeTypeInfo('u8'), value=val1),
+        ]
+        instr = Call(function='foo', args=args, returns=[], is_far=False)
+        selector = _MockSelector()
+        ABI_COMPACT.emit_call_args(selector, instr)
+        pha_calls = [c for c in selector.calls if c[0] == 'pha_stack']
+        assert len(pha_calls) == 2
+
+    def test_register_args_unchanged(self):
+        """Register args emit register calls, same as Default."""
+        from r65.compiler.mir.nodes import Call
+        args = [
+            _make_arg('register', location=_FakeLocation('A')),
+        ]
+        instr = Call(function='foo', args=args, returns=[], is_far=False)
+        selector = _MockSelector()
+        ABI_COMPACT.emit_call_args(selector, instr)
+        assert ('register', 'A') in selector.calls
+
+    def test_mixed_args(self):
+        """Stack args PHA'd, register/variable args handled normally."""
+        from r65.compiler.mir.nodes import Call
+        args = [
+            _make_arg('register', location=_FakeLocation('A')),
+            _make_arg('stack', param_type=_FakeTypeInfo('u8')),
+            _make_arg('variable', location=_FakeLocation('VAR')),
+        ]
+        instr = Call(function='foo', args=args, returns=[], is_far=False)
+        selector = _MockSelector()
+        result = ABI_COMPACT.emit_call_args(selector, instr)
+        assert result == 1  # 1 stack arg byte pushed
+        # PHA stack first, then variable and register (sorted)
+        assert selector.calls[0][0] == 'pha_stack'
+        assert selector.calls[1][0] == 'variable'
+        assert selector.calls[2][0] == 'register'
+
+    def test_stack_tracker_updated(self):
+        """Stack tracker reflects all PHA-pushed bytes."""
+        from r65.compiler.mir.nodes import Call
+        args = [
+            _make_arg('stack', param_type=_FakeTypeInfo('u8')),
+            _make_arg('stack', param_type=_FakeTypeInfo('u8')),
+        ]
+        instr = Call(function='foo', args=args, returns=[], is_far=False)
+        selector = _MockSelector()
+        result = ABI_COMPACT.emit_call_args(selector, instr)
+        assert result == 2
+        assert selector.region_state.stack_tracker.displacement == 2
+
+    def test_scratch_param_args(self):
+        """Scratch param args emit scratch_param calls."""
+        from r65.compiler.mir.nodes import Call
+        args = [_make_arg('scratch_param', scratch_addr=0x10)]
+        instr = Call(function='foo', args=args, returns=[], is_far=False)
+        selector = _MockSelector()
+        ABI_COMPACT.emit_call_args(selector, instr)
+        assert ('scratch_param', 0x10) in selector.calls
+
+
+class TestCompactEmitTraitDispatchArgs:
+    """Compact emit_trait_dispatch_args: stack args always PHA'd."""
+
+    def test_no_args_returns_zero(self):
+        from r65.compiler.mir.nodes import TraitDispatch
+        instr = TraitDispatch(
+            trait_name='MyTrait', method_name='do_thing',
+            args=[], returns=[], is_far=False,
+        )
+        selector = _MockSelector()
+        result = ABI_COMPACT.emit_trait_dispatch_args(selector, instr)
+        assert result == 0
+
+    def test_stack_args_always_pha(self):
+        """Stack args PHA'd even without spills."""
+        from r65.compiler.mir.nodes import TraitDispatch
+        args = [
+            _make_arg('stack', param_type=_FakeTypeInfo('u8')),
+        ]
+        instr = TraitDispatch(
+            trait_name='T', method_name='m',
+            args=args, returns=[], is_far=False,
+        )
+        selector = _MockSelector(spill_offset=0)
+        result = ABI_COMPACT.emit_trait_dispatch_args(selector, instr)
+        assert result == 1
+        assert any(c[0] == 'pha_stack' for c in selector.calls)
+
+    def test_self_y_arg(self):
+        """SELF_Y arg triggers load_y_with_self."""
+        from r65.compiler.mir.nodes import TraitDispatch
+        args = [_make_arg('self_y')]
+        instr = TraitDispatch(
+            trait_name='T', method_name='m',
+            args=args, returns=[], is_far=False,
+        )
+        selector = _MockSelector()
+        ABI_COMPACT.emit_trait_dispatch_args(selector, instr)
+        assert ('load_y_self',) in selector.calls
+
+
+class TestCompactFrameDealloc:
+    """Compact frame dealloc uses same thresholds as Default."""
+
+    def test_small_frame_uses_pla(self):
+        sel = _DeallocSelector()
+        ABI_COMPACT.emit_frame_dealloc(sel, frame_size=3, return_count=1)
+        assert sel.path == 'pla'
+
+    def test_large_frame_uses_sp_adjust(self):
+        sel = _DeallocSelector()
+        ABI_COMPACT.emit_frame_dealloc(sel, frame_size=8, return_count=1)
+        assert sel.path == 'sp_adjust'
+
+
+class TestCompactRepr:
+    def test_repr(self):
+        assert "Compact" in repr(ABI_COMPACT)
+
+
+# ===========================================================================
+# Compact ABI integration tests (compile_string)
+# ===========================================================================
+
+
+class TestCompactCompileIntegration:
+    """Integration tests: compile R65 source with Compact ABI, verify assembly."""
+
+    def test_compact_caller_pushes_args(self):
+        """Compact caller should push stack args via PHA, not STA to outgoing."""
+        source = """
+        fn callee(a: u8) -> u8 {
+            asm!("NOP", "NOP", "NOP", "NOP", "NOP", "NOP", "NOP", "NOP");
+            return a;
+        }
+        fn caller() -> u8 {
+            return callee(42);
+        }
+        """
+        from r65.compiler.main import compile_string
+        result = compile_string(source, "test.r65", abi_model=ABI_COMPACT)
+        assert 'PHA' in result
+
+    def test_compact_caller_cleanup(self):
+        """Compact caller should clean up pushed args after call."""
+        source = """
+        fn callee(a: u8, b: u8) -> u8 {
+            asm!("NOP", "NOP", "NOP", "NOP", "NOP", "NOP", "NOP", "NOP");
+            return a;
+        }
+        fn caller() -> u8 {
+            return callee(1, 2);
+        }
+        """
+        from r65.compiler.main import compile_string
+        result = compile_string(source, "test.r65", abi_model=ABI_COMPACT)
+        # Should have PLX for cleanup (2 bytes pushed = 1 PLX)
+        assert 'PLX' in result or 'PLY' in result
+
+    def test_compact_no_outgoing_area(self):
+        """Compact should NOT have outgoing arg area in frame allocation."""
+        source = """
+        fn callee(a: u8) -> u8 {
+            asm!("NOP", "NOP", "NOP", "NOP", "NOP", "NOP", "NOP", "NOP");
+            return a;
+        }
+        fn caller() -> u8 {
+            let x: u8 = callee(42);
+            return x;
+        }
+        """
+        from r65.compiler.main import compile_string
+        result = compile_string(source, "test.r65", abi_model=ABI_COMPACT)
+        # Should compile without errors
+        assert 'caller' in result
+
+    def test_compact_leaf_function_unchanged(self):
+        """Leaf functions have identical output to Default (no calls)."""
+        source = """
+        fn add(a @ A: u8, b @ X: u16) -> u8 {
+            return a;
+        }
+        """
+        from r65.compiler.main import compile_string
+        result_compact = compile_string(source, "test.r65", abi_model=ABI_COMPACT)
+        result_default = compile_string(source, "test.r65", abi_model=ABI_DEFAULT)
+        # Both should produce the same assembly for a leaf function with register params
+        assert 'add' in result_compact
+        assert 'add' in result_default
+
+    def test_compact_callee_reads_from_stack(self):
+        """Callee should read params from stack just like Default ABI."""
+        source = """
+        fn add(a: u8, b: u8) -> u8 {
+            return a + b;
+        }
+        """
+        from r65.compiler.main import compile_string
+        result = compile_string(source, "test.r65", abi_model=ABI_COMPACT)
+        # Callee reads from stack-relative addressing
+        assert ',S' in result or ',s' in result

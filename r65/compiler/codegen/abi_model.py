@@ -16,6 +16,7 @@ class ABIKind(Enum):
     DEFAULT = "Default"
     FIXED_STACK = "FixedStack"
     PASCAL = "Pascal"
+    COMPACT = "Compact"
 
 
 class ABIModel(ABC):
@@ -507,17 +508,160 @@ class ABIPascal(ABIModel):
                                         "Store return value to Pascal result space")
 
 
+class ABICompact(ABIModel):
+    """Compact calling convention with PHA-based argument passing (--abi Compact).
+
+    Eliminates the permanent outgoing-arg area from caller stack frames.
+    Instead, arguments are pushed via PHA before each call and cleaned up
+    by the caller via PLX after the call returns. This produces smaller
+    frames (no outgoing area inflation) and smaller code (PHA is 1 byte
+    vs STA d,S at 2 bytes).
+
+    Parameter passing uses the same hybrid mechanism as Default (register,
+    variable-bound, scratch-promoted, and stack), but stack arguments are
+    always emitted via PHA instead of STA to a fixed outgoing area. Callee
+    behavior is completely unchanged — params appear at the same stack
+    offsets above the return address.
+
+    Frame allocation uses PHB per byte for small frames (<=4) and
+    TSC/SEC/SBC/TCS for larger ones, same as Default. Frames are typically
+    smaller since there is no outgoing area, so more functions qualify for
+    the cheaper PHB path.
+
+    Return values are passed in hardware registers (A, B, X, Y), identical
+    to the Default ABI. For calls that return in X (multi-register returns),
+    the cleanup uses a scratch save to avoid clobbering X.
+    """
+
+    def __init__(self):
+        super().__init__(ABIKind.COMPACT)
+
+    def run_param_analysis(self, mir_program, scratch_pool, disable_scratch_params: bool):
+        if not disable_scratch_params:
+            from r65.compiler.analysis.scratch_params import analyze_scratch_params
+            analyze_scratch_params(mir_program, scratch_pool)
+
+    def compute_outgoing_args(self, mir_program, compute_fn):
+        # Compact ABI uses PHA per call — no permanent outgoing area
+        for func in mir_program.functions:
+            func.max_outgoing_arg_bytes = 0
+
+    def emit_frame_alloc(self, emit_instr, frame_size: int, force_direct_stack: bool):
+        if frame_size <= 0:
+            return
+        if frame_size <= 4 and not force_direct_stack:
+            self._emit_phb_alloc(emit_instr, frame_size)
+        else:
+            self._emit_tsc_alloc(emit_instr, frame_size)
+
+    @property
+    def max_pla_dealloc_size(self) -> int:
+        return 4
+
+    def emit_call_args(self, selector, instr, pre_arg_stack_adj=0) -> int:
+        """Compact caller: always push stack args via PHA, then set up register args.
+
+        Unlike Default which uses STA to a fixed outgoing area, Compact always
+        pushes via PHA regardless of spill state. Register/variable/scratch args
+        are handled identically to Default.
+
+        Returns total stack_bytes_pushed for caller cleanup.
+        """
+        from r65.compiler.mir.nodes import ArgumentMechanism
+        from r65.compiler.codegen.register_alloc import LocationKind
+        from r65.compiler.codegen.type_utils import get_type_size
+
+        stack_args = [arg for arg in instr.args if arg.mechanism == ArgumentMechanism.STACK]
+        other_args = [arg for arg in instr.args if arg.mechanism != ArgumentMechanism.STACK]
+
+        stack_bytes_pushed = 0
+
+        # Always use PHA path for stack args (right-to-left for correct callee layout)
+        if stack_args:
+            for arg in reversed(stack_args):
+                arg_loc = selector.parent._get_operand_location(arg.value)
+
+                if arg_loc.kind == LocationKind.STACK and pre_arg_stack_adj != 0:
+                    arg_loc = selector.parent._offset_location(arg_loc, pre_arg_stack_adj)
+
+                arg_size = 1
+                if arg.param_type is not None:
+                    arg_size = get_type_size(arg.param_type)
+                elif hasattr(arg.value, 'type_info') and arg.value.type_info:
+                    arg_size = get_type_size(arg.value.type_info)
+
+                selector.emit_pha_stack_argument(arg, arg_loc, arg_size)
+                stack_bytes_pushed += arg_size
+                selector.region_state.stack_tracker.push(arg_size)
+
+        # Non-stack args: same as Default
+        sorted_other_args = sorted(other_args, key=selector.arg_sort_key)
+        for arg in sorted_other_args:
+            arg_loc = selector.parent._get_operand_location(arg.value)
+
+            if arg_loc.kind == LocationKind.STACK and pre_arg_stack_adj != 0:
+                arg_loc = selector.parent._offset_location(arg_loc, pre_arg_stack_adj)
+
+            if arg.mechanism == ArgumentMechanism.REGISTER:
+                selector.emit_register_argument(arg, arg_loc)
+
+            elif arg.mechanism == ArgumentMechanism.VARIABLE:
+                selector.emit_variable_argument(arg, arg_loc)
+
+            elif arg.mechanism == ArgumentMechanism.SCRATCH_PARAM:
+                selector.emit_scratch_param_argument(arg, arg_loc)
+
+        return stack_bytes_pushed
+
+    def emit_trait_dispatch_args(self, selector, instr) -> int:
+        """Compact trait dispatch: always push stack args via PHA.
+
+        Same as Default's trait dispatch but forces PHA path for stack args.
+        """
+        from r65.compiler.mir.nodes import ArgumentMechanism
+        from r65.compiler.codegen.register_alloc import LocationKind
+        from r65.compiler.codegen.type_utils import get_type_size
+
+        stack_args = [arg for arg in instr.args if arg.mechanism == ArgumentMechanism.STACK]
+        self_y_arg = None
+        for arg in instr.args:
+            if arg.mechanism == ArgumentMechanism.SELF_Y:
+                self_y_arg = arg
+                break
+
+        stack_bytes_pushed = 0
+
+        # Always use PHA path for stack args
+        if stack_args:
+            for arg in reversed(stack_args):
+                arg_loc = selector.parent._get_operand_location(arg.value)
+                arg_size = 1
+                if arg.param_type is not None:
+                    arg_size = get_type_size(arg.param_type)
+                elif hasattr(arg.value, 'type_info') and arg.value.type_info:
+                    arg_size = get_type_size(arg.value.type_info)
+                selector.emit_pha_stack_argument(arg, arg_loc, arg_size)
+                stack_bytes_pushed += arg_size
+                selector.region_state.stack_tracker.push(arg_size)
+
+        if self_y_arg is not None:
+            selector.load_y_with_self(self_y_arg, 0)
+
+        return stack_bytes_pushed
+
+
 # Singleton instances
 ABI_DEFAULT = ABIDefault()
 ABI_FIXED_STACK = ABIFixedStack()
 ABI_PASCAL = ABIPascal()
+ABI_COMPACT = ABICompact()
 
 
 def abi_model_from_string(name: str) -> ABIModel:
     """Create ABIModel from CLI string argument.
 
     Args:
-        name: "Default", "FixedStack", or "Pascal"
+        name: "Default", "FixedStack", "Pascal", or "Compact"
 
     Returns:
         Corresponding ABIModel instance
@@ -531,5 +675,7 @@ def abi_model_from_string(name: str) -> ABIModel:
         return ABI_FIXED_STACK
     elif name == "Pascal":
         return ABI_PASCAL
+    elif name == "Compact":
+        return ABI_COMPACT
     else:
-        raise ValueError(f"Unknown ABI model: {name!r}. Expected 'Default', 'FixedStack', or 'Pascal'.")
+        raise ValueError(f"Unknown ABI model: {name!r}. Expected 'Default', 'FixedStack', 'Pascal', or 'Compact'.")

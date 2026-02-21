@@ -86,13 +86,13 @@ class InstructionSelector:
             func_gen: Function code generator (for epilogue emission)
             abi_model: ABIModel instance (default: ABI_DEFAULT)
         """
-        from r65.compiler.codegen.abi_model import ABI_DEFAULT
+        from r65.compiler.codegen.abi_model import ABI_COMPACT
         self.emitter = emitter
         self.reg_alloc = register_allocator
         self.mem_alloc = memory_allocator
         self.current_function = current_function
         self.func_gen = func_gen
-        self.abi_model = abi_model if abi_model is not None else ABI_DEFAULT
+        self.abi_model = abi_model if abi_model is not None else ABI_COMPACT
 
         # Location resolver for addressing mode and opcode selection
         self._resolver = default_resolver

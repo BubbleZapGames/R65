@@ -413,6 +413,7 @@ r65x init --platform snes my_project  # Create test project
 - [STATUS Flags](docs/status-flags.md)
 - [Array Bounds Checking](docs/array-bounds-checking.md)
 - [Calling Convention](docs/calling-convention.md)
+- [ABI Models](docs/abi-models.md)
 - [Mode Transitions](docs/mode-transition-analysis.md)
 - [Interrupt Handling](docs/interrupt-mode-transition.md)
 - [Register Allocation](docs/register-allocation.md)

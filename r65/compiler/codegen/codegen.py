@@ -60,9 +60,9 @@ class ProgramCodeGenerator:
         Returns:
             Generated assembly as string
         """
-        from r65.compiler.codegen.abi_model import ABI_DEFAULT
+        from r65.compiler.codegen.abi_model import ABI_COMPACT
         if abi_model is None:
-            abi_model = ABI_DEFAULT
+            abi_model = ABI_COMPACT
         self.abi_model = abi_model
         # Initialize debug info collector if debug mode enabled
         if debug:
