@@ -381,7 +381,8 @@ class CallInstructionSelector(BaseSelector):
         # Done after return value collection so A/X/Y return values are safely
         # stored in their virtual register destinations before we clobber A.
         if stack_bytes_pushed > 0:
-            self._emit_caller_arg_cleanup(stack_bytes_pushed)
+            returns_in_x = self._call_returns_in_x(instr)
+            self._emit_caller_arg_cleanup(stack_bytes_pushed, returns_in_x=returns_in_x)
 
         # Step 6: Restore mode after receiving return value
         # If callee exited in m16 (u16 return), switch back to m8
@@ -442,7 +443,8 @@ class CallInstructionSelector(BaseSelector):
 
         # Caller cleanup of PHA-pushed args (if spill fallback was used)
         if stack_bytes_pushed > 0:
-            self._emit_caller_arg_cleanup(stack_bytes_pushed)
+            returns_in_x = self._call_returns_in_x(instr)
+            self._emit_caller_arg_cleanup(stack_bytes_pushed, returns_in_x=returns_in_x)
 
         # Reload spilled registers
         reloads = self._compute_trait_dispatch_reloads(instr)
@@ -1111,35 +1113,52 @@ class CallInstructionSelector(BaseSelector):
             # Undo all temporary adjustments (caller adds full param_size after return)
             self.region_state.stack_tracker.pop(bytes_pushed_so_far - 1)
 
-    def _emit_caller_arg_cleanup(self, stack_bytes_pushed: int):
+    def _emit_caller_arg_cleanup(self, stack_bytes_pushed: int, returns_in_x: bool = False):
         """Emit caller-side cleanup of PHA-pushed arguments after call returns.
 
         Uses PLX to pop 2 bytes at a time, preserving the return value in A.
         X is safe to clobber here: it's either dead (callee clobbered it) or
         its pre-call value is saved by region spilling and will be reloaded later.
 
-        For odd remaining bytes, saves A in X, pops with PLA, restores A.
+        When returns_in_x is True (multi-register return via A+X), uses PLY
+        instead to avoid clobbering the X return value.
+
+        For odd remaining bytes, saves A in a free register, pops with PLA,
+        and restores A.
 
         Also updates the stack tracker to reflect the removed bytes.
 
         Args:
             stack_bytes_pushed: Number of bytes that were PHA-pushed for args
+            returns_in_x: True if the call returns a value in X that must be preserved
         """
         if stack_bytes_pushed == 0:
             return
 
         remaining = stack_bytes_pushed
-        # PLX pops 2 bytes (X is always 16-bit), preserves A
-        while remaining >= 2:
-            self._emit_pull('X', "Pop pushed arg bytes")
-            remaining -= 2
 
-        if remaining == 1:
-            # Save A return value in X, pop 1 byte with PLA, restore A
-            self._ensure_m8_mode("8-bit A for 1-byte pop")
-            self.parent.emitter.emit_raw("    TAX  ; Save return A")
-            self._emit_pull('A', "Pop 1 pushed arg byte")
-            self.parent.emitter.emit_raw("    TXA  ; Restore return A")
+        if returns_in_x:
+            # X holds a return value — use PLY (Y is 16-bit, pops 2 bytes)
+            while remaining >= 2:
+                self._emit_pull('Y', "Pop pushed arg bytes (preserve X)")
+                remaining -= 2
+            if remaining == 1:
+                # Save A in Y, pop 1 byte, restore A (X untouched)
+                self._ensure_m8_mode("8-bit A for 1-byte pop")
+                self.parent.emitter.emit_instr(Opcode.TAY, comment="Save return A")
+                self._emit_pull('A', "Pop 1 pushed arg byte")
+                self.parent.emitter.emit_instr(Opcode.TYA, comment="Restore return A")
+        else:
+            # Normal path: PLX to pop 2 bytes at a time
+            while remaining >= 2:
+                self._emit_pull('X', "Pop pushed arg bytes")
+                remaining -= 2
+            if remaining == 1:
+                # Save A return value in X, pop 1 byte with PLA, restore A
+                self._ensure_m8_mode("8-bit A for 1-byte pop")
+                self.parent.emitter.emit_instr(Opcode.TAX, comment="Save return A")
+                self._emit_pull('A', "Pop 1 pushed arg byte")
+                self.parent.emitter.emit_instr(Opcode.TXA, comment="Restore return A")
 
         # Reduce stack tracker to undo the PHA tracking
         self.region_state.stack_tracker.pop(stack_bytes_pushed)
@@ -1643,6 +1662,25 @@ class CallInstructionSelector(BaseSelector):
         if callee_return_type is not None:
             return get_return_registers(callee_return_type, callee_entry_mode)
         return ['A', 'X', 'Y']
+
+    def _call_returns_in_x(self, instr) -> bool:
+        """Check if a call returns a value in the X register.
+
+        Used by _emit_caller_arg_cleanup to determine whether PLX would clobber
+        a return value. When True, cleanup uses PLY instead of PLX.
+        """
+        return_regs = self._get_callee_return_registers(instr)
+        callee_return_type = getattr(instr, 'callee_return_type', None)
+        if callee_return_type is not None:
+            from r65.compiler.hir.types import TupleTypeInfo
+            if isinstance(callee_return_type, TupleTypeInfo):
+                num_returns = len(callee_return_type.element_types)
+            else:
+                num_returns = 1
+        else:
+            num_returns = len(getattr(instr, 'returns', []))
+        active_regs = return_regs[:num_returns]
+        return 'X' in active_regs
 
     def _emit_return_value_collection(self, instr: Call):
         """

@@ -32,7 +32,7 @@ from r65.compiler.codegen.opcodes import (
     Opcode, mnemonic, instruction_size,
 )
 from r65.compiler.codegen.asm_nodes import (
-    AsmNode, Instruction, Label, Directive,
+    AsmNode, Instruction, Label, Directive, RawAsm,
     Address, invert_branch,
 )
 from r65.compiler.errors import compiler_assert
@@ -241,6 +241,8 @@ class BranchFixup:
                     idx_16 = '16' in ''.join(node.args)
                 # Handle data directives
                 current_offset += self._directive_size(node)
+            elif isinstance(node, RawAsm):
+                current_offset += self._raw_asm_size(node)
 
         # Add final offset (end of code)
         offsets.append(current_offset)
@@ -276,6 +278,23 @@ class BranchFixup:
                     pass
 
         return 0
+
+    def _raw_asm_size(self, node: RawAsm) -> int:
+        """Estimate size of a RawAsm node by counting non-empty, non-comment lines."""
+        size = 0
+        for line in node.text.strip().splitlines():
+            stripped = line.strip()
+            # Skip empty lines, comments, and labels
+            if not stripped or stripped.startswith(';'):
+                continue
+            # Strip inline comments
+            code = stripped.split(';')[0].strip()
+            if not code or code.endswith(':'):
+                continue
+            # Each instruction line is at least 1 byte (implied addressing)
+            # Most RawAsm instructions are simple 1-byte transfers/stack ops
+            size += 1
+        return size
 
     def _apply_fixups(
         self,
