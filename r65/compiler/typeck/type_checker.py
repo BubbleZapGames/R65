@@ -1121,7 +1121,10 @@ class TypeChecker:
         # This allows `const X: u16 = 0 << 2` to infer 0 as u16
         left_context = context_type if expr.op in ['<<', '>>', '+', '-', '*', '/', '%', '&', '|', '^'] else None
         left_type = self.check_expression(expr.left, left_context)
-        right_type = self.check_expression(expr.right)
+        # For comparison operators, propagate left operand's type as context for right operand
+        # This ensures `off >= 32 * 32` (where off is u16) evaluates 32*32 as u16 (1024), not u8 (0)
+        right_context = left_type if expr.op in ['==', '!=', '<', '<=', '>', '>='] else None
+        right_type = self.check_expression(expr.right, right_context)
 
         # Type rules for binary operators
         if expr.op in ['<<', '>>']:
@@ -1209,6 +1212,34 @@ class TypeChecker:
                     source_loc=expr.source_loc,
                     hint="comparison requires compatible types"
                 )
+
+            # Promote mismatched integer types (e.g., u16 >= u8 -> u16 >= u16)
+            # Same logic as arithmetic promotion, ensures correct codegen
+            if not TypeUtils.types_equal(left_type, right_type):
+                promoted_type = self._get_promoted_type(left_type, right_type)
+                if promoted_type is not None:
+                    if not TypeUtils.types_equal(left_type, promoted_type):
+                        if not isinstance(expr.left, HIRIntegerLiteral):
+                            cast_node = HIRTypeCast(
+                                expr=expr.left,
+                                target_type=promoted_type,
+                                source_loc=expr.left.source_loc
+                            )
+                            cast_node.expr_type = promoted_type
+                            expr.left = cast_node
+                        else:
+                            expr.left.expr_type = promoted_type
+                    if not TypeUtils.types_equal(right_type, promoted_type):
+                        if not isinstance(expr.right, HIRIntegerLiteral):
+                            cast_node = HIRTypeCast(
+                                expr=expr.right,
+                                target_type=promoted_type,
+                                source_loc=expr.right.source_loc
+                            )
+                            cast_node.expr_type = promoted_type
+                            expr.right = cast_node
+                        else:
+                            expr.right.expr_type = promoted_type
 
             # Check for invalid index register comparison (X vs Y)
             # There's no direct CPX Y or CPY X instruction

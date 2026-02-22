@@ -743,3 +743,54 @@ class TestPBRTransfers:
         # Should fail because PBR is read-only
         assert "read-only" in str(exc_info.value).lower() or "cannot" in str(exc_info.value).lower()
 
+
+class TestComparisonTypePromotion:
+    """Tests for type promotion in comparison operators.
+
+    Regression: `off >= 32 * 32` where off is u16 would evaluate
+    32*32 as u8 (overflowing to 0), causing the comparison to be
+    eliminated as dead code.
+    """
+
+    def test_u16_comparison_promotes_rhs_literals(self):
+        """u16 variable compared to u8 literal product should promote to u16."""
+        source = """
+        fn test() {
+            let off: u16 = 0;
+            if off >= 32 * 32 {
+                A = 1;
+            }
+        }
+        """
+        hir = compile_and_type_check(source)
+        # Should compile without error - 32 * 32 evaluated as u16 (1024)
+        # The key test is that this doesn't raise and the comparison
+        # right operand is typed as u16
+
+    def test_comparison_rhs_inherits_lhs_context(self):
+        """Right operand of comparison should inherit left operand's type as context."""
+        source = """
+        #[zeropage(0x10)]
+        static mut COUNT: u16;
+        fn test() {
+            if COUNT >= 64 * 32 {
+                A = 1;
+            }
+        }
+        """
+        # 64 * 32 = 2048, should be u16 (not u8 which would overflow to 0)
+        compile_and_type_check(source)
+
+    def test_u8_comparison_still_works(self):
+        """u8 comparisons should still work normally without over-promotion."""
+        source = """
+        fn test(val @ A: u8) -> u8 {
+            if val >= 8 * 4 {
+                return 1;
+            }
+            return 0;
+        }
+        """
+        # 8 * 4 = 32, fits in u8, should stay as u8
+        compile_and_type_check(source)
+

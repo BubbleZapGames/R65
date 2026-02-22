@@ -728,3 +728,67 @@ class TestShortCircuit:
             0x7E0010: 0,
         }))
         assert result.success, f"Failures: {result.failures}"
+
+
+class TestComparisonLiteralPromotion:
+    """Test that literal expressions in comparisons use correct types.
+
+    Regression test for bug where `off >= 32 * 32` with u16 off
+    evaluated `32 * 32` as u8 (0) instead of u16 (1024), causing
+    dead code elimination of the comparison branch.
+    """
+
+    @pytest.fixture
+    def e2e(self):
+        return E2ETest()
+
+    def test_u16_comparison_with_u8_literal_product(self, e2e):
+        """Test u16 >= 32 * 32 correctly evaluates 32*32 as 1024."""
+        result = e2e.run('''
+            #[zeropage(0x10)]
+            static mut RESULT: u8;
+
+            #[entry]
+            fn main() {
+                let off: u16 = 0;
+                // 32 * 32 = 1024 (should NOT wrap to 0 as u8)
+                // off (0) >= 1024 should be false
+                if off >= 32 * 32 {
+                    RESULT = 0;  // Should NOT execute
+                } else {
+                    RESULT = 1;  // Should execute
+                }
+            }
+        ''', ExpectedState(memory={
+            0x7E0010: 1,
+        }))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_u16_loop_break_with_literal_product(self, e2e):
+        """Test loop with u16 >= 32 * 32 break condition counts correctly."""
+        result = e2e.run('''
+            #[zeropage(0x10)]
+            static mut COUNT_LO: u8;
+            #[zeropage(0x11)]
+            static mut COUNT_HI: u8;
+
+            #[entry]
+            fn main() {
+                let off: u16 = 0;
+                let count: u16 = 0;
+                loop {
+                    if off >= 32 * 32 {
+                        break;
+                    }
+                    off = off + 32;
+                    count = count + 1;
+                }
+                // Should iterate 32 times (0, 32, 64, ..., 992, then 1024 >= 1024 breaks)
+                COUNT_LO = count as u8;
+                COUNT_HI = (count >> 8) as u8;
+            }
+        ''', ExpectedState(memory={
+            0x7E0010: 32,
+            0x7E0011: 0,
+        }))
+        assert result.success, f"Failures: {result.failures}"
