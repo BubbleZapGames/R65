@@ -822,12 +822,12 @@ class PeepholeOptimizer:
         stack-relative) — indexed and indirect loads depend on register values
         that may change between loads.
 
-        State is cleared on: labels, mode changes, A-modifying instructions
-        (except trackable LDA which updates tracking), stack pointer changes
-        when tracking a stack-relative address, stores to the tracked address
-        by other registers (STX/STY), and indirect stores.
+        State is cleared on: labels, inline asm blocks, mode changes,
+        A-modifying instructions (except trackable LDA which updates tracking),
+        stack pointer changes when tracking a stack-relative address, stores to
+        the tracked address by other registers (STX/STY), and indirect stores.
         """
-        from r65.compiler.codegen.asm_nodes import Instruction, Label, StackOffset
+        from r65.compiler.codegen.asm_nodes import Instruction, Label, RawAsm, StackOffset
 
         # Only track LDA with deterministic addressing modes — the loaded
         # value depends solely on the operand (and SP for stack-relative),
@@ -859,8 +859,9 @@ class PeepholeOptimizer:
 
         for node in nodes:
             if not isinstance(node, Instruction):
-                if isinstance(node, Label):
+                if isinstance(node, (Label, RawAsm)):
                     # Label = unknown incoming state
+                    # RawAsm = inline asm!() may modify any register
                     known_a = None
                 optimized.append(node)
                 continue
