@@ -519,3 +519,52 @@ class TestPerCallXYSpillReload:
             0x7E0010: [26, 0],  # sum = 26
         }))
         assert result.success, f"Failures: {result.failures}"
+
+
+class TestThreeRegParamPrologue:
+    """Regression: TAY in prologue clobbers Y parameter when all 3 regs have params.
+
+    When a function has params in A, X, and Y, and the frame is large enough
+    to require TSC/SBC/TCS allocation (which clobbers A), the compiler saves
+    A via TAY before frame alloc. But TAY overwrites Y's parameter value.
+    Fix: use push-based frame allocation (PHX/PHY) which doesn't clobber any register.
+    """
+
+    @pytest.fixture
+    def e2e(self):
+        return E2ETest()
+
+    def test_three_reg_params_preserved(self, e2e):
+        """fn(A=5, X=0x100, Y=0x200) must see all three values correctly."""
+        result = e2e.run(f'''
+            {SCRATCH_DECLS}
+
+            #[zeropage(0x10)]
+            static mut RES_A: u8;
+            #[zeropage(0x11)]
+            static mut RES_X: u16;
+            #[zeropage(0x13)]
+            static mut RES_Y: u16;
+
+            far fn use_all_three(val @ A: u8, addr @ X: u16, size @ Y: u16) {{
+                // Locals force a large frame (>8 bytes) to trigger TSC/SBC/TCS
+                let a: u16 = 0;
+                let b: u16 = 0;
+                let c: u16 = 0;
+                let d: u16 = 0;
+                let e: u16 = 0;
+                RES_A = val;
+                RES_X = addr;
+                RES_Y = size;
+            }}
+
+            #[entry]
+            fn main() {{
+                use_all_three(5, 0x100, 0x200);
+            }}
+        ''', ExpectedState(memory={
+            0x7E0010: 5,
+            0x7E0011: [0x00, 0x01],  # 0x100 LE
+            0x7E0013: [0x00, 0x02],  # 0x200 LE
+        }))
+        assert result.success, f"Failures: {result.failures}"

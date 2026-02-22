@@ -622,31 +622,62 @@ class FunctionCodeGenerator:
             self._emit_interrupt_register_saves()
             self._emit_interrupt_scratch_saves(reg_alloc.scratch_pool)
 
-        # Check if A holds a register parameter that would be clobbered
-        # by frame allocation exceeding the ABI's push-based threshold.
+        # Detect which hardware registers hold parameters.
+        from r65.compiler.hir import RegisterBinding
         a_has_param = False
-        if frame_size > self.abi_model.frame_alloc_clobbers_a_threshold:
-            force_direct = mir_func.interrupt_attr is not None
-            if not force_direct:
-                from r65.compiler.hir import RegisterBinding
-                for param in mir_func.parameters:
-                    if (isinstance(param.binding, RegisterBinding) and
-                        param.binding.register_name == 'A'):
-                        a_has_param = True
-                        break
+        x_has_param = False
+        y_has_param = False
+        for param in mir_func.parameters:
+            if isinstance(param.binding, RegisterBinding):
+                reg = param.binding.register_name
+                if reg == 'A':
+                    a_has_param = True
+                elif reg == 'X':
+                    x_has_param = True
+                elif reg == 'Y':
+                    y_has_param = True
+
+        # Determine if/how to save A across prologue code that clobbers it.
+        # Possible clobber sources: frame alloc (TSC/SBC/TCS for large frames),
+        # DBR inline management (LDA #bank), far pointer D setup (TSC/TCD).
+        # a_save_method: 'Y' = TAY/TYA, 'X' = TAX/TXA, 'push' = force push-based
+        # frame alloc (no save needed), None = no save needed.
+        a_save_method = None
+        force_direct = mir_func.interrupt_attr is not None
+
+        if a_has_param and frame_size > 0:
+            frame_clobbers_a = (
+                frame_size > self.abi_model.frame_alloc_clobbers_a_threshold
+                or force_direct
+            )
+            dbr_clobbers_a = False
+            if mir_func.is_far and mir_func.mode_attr and mir_func.bank_attr:
+                from r65.compiler.hir.attributes import DataBankMode
+                if mir_func.mode_attr.databank == DataBankMode.INLINE:
+                    dbr_clobbers_a = True
+            fptr_clobbers_a = getattr(mir_func, 'has_far_ptr_stack_params', False)
+
+            if frame_clobbers_a or dbr_clobbers_a or fptr_clobbers_a:
+                if not y_has_param:
+                    a_save_method = 'Y'
+                elif not x_has_param:
+                    a_save_method = 'X'
+                else:
+                    # All three registers occupied — force push-based frame
+                    # allocation which doesn't clobber any register.
+                    a_save_method = 'push'
 
         # Allocate stack frame for functions with locals.
-        # For large frames (>4 bytes), TSC/SBC/TCS is used which clobbers A.
-        # If A holds a register parameter, we must save it first.
         if frame_size > 0:
-            force_direct = mir_func.interrupt_attr is not None
-
-            if a_has_param:
-                # Save A in Y before frame allocation.
-                # TYA to restore is deferred to after ALL prologue code that
-                # clobbers A (mode setup, preserves, PHD/TSC/TCD).
+            if a_save_method == 'Y':
                 self._emit_instr(Opcode.TAY, comment="Save A param before frame alloc")
                 self._emit_frame_allocation(frame_size, force_direct_stack=force_direct)
+            elif a_save_method == 'X':
+                self._emit_instr(Opcode.TAX, comment="Save A param before frame alloc (Y has param)")
+                self._emit_frame_allocation(frame_size, force_direct_stack=force_direct)
+            elif a_save_method == 'push':
+                # Push-based allocation (PHX/PHY) doesn't clobber A, X, or Y.
+                self.abi_model._emit_register_push_alloc(self._emit_instr, frame_size)
             else:
                 self._emit_frame_allocation(frame_size, force_direct_stack=force_direct)
 
@@ -699,14 +730,14 @@ class FunctionCodeGenerator:
             self._emit_instr(Opcode.TSC, comment="Transfer Stack to A")
             self._emit_instr(Opcode.TCD, comment="Transfer A to Direct Page (D = S)")
 
-        # Restore A param from Y AFTER all prologue code that clobbers A.
-        # Frame allocation (TSC/SBC/TCS) and PHD/TSC/TCD both overwrite A,
-        # so TYA must be deferred to here. The current mode (set by mode setup
-        # above) ensures TYA transfers the correct width:
-        # - m8 functions: TYA transfers 8-bit (sufficient for u8 @ A)
-        # - m16 functions: TYA transfers full 16-bit (required for u16 @ A)
-        if frame_size > 0 and a_has_param:
+        # Restore A param AFTER all prologue code that clobbers A.
+        # The current mode (set by mode setup above) ensures the transfer
+        # operates at the correct width (m8 for u8 @ A, m16 for u16 @ A).
+        if a_save_method == 'Y':
             self._emit_instr(Opcode.TYA, comment="Restore A param after frame alloc")
+        elif a_save_method == 'X':
+            self._emit_instr(Opcode.TXA, comment="Restore A param after frame alloc")
+        # 'push' and None: no restore needed (A was never clobbered)
 
     def _emit_entry_setup(self, mir_func: MIRFunction):
         """
