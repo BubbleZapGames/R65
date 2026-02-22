@@ -66,6 +66,10 @@ class ActiveRegionState:
         self.stack_tracker: StackStateTracker = StackStateTracker()
         # Track pending A spill info for reload (need to restore mode)
         self.pending_a_spill: Optional[SpillInfo] = None
+        # Track pending per-call X/Y spills for reload
+        # When X/Y are spilled via per-call fallback (no region), we need to
+        # emit PLX/PLY after the call. Maps hw_reg -> SpillInfo.
+        self.pending_xy_spills: Dict[str, SpillInfo] = {}
 
     def set_block_regions(self, block_id: int, regions: Dict[str, List['ClobberRegion']]):
         """Set pre-computed regions for a block."""
@@ -73,6 +77,8 @@ class ActiveRegionState:
         self.current_block_id = block_id
         # Clear active regions when entering new block
         self.active_regions.clear()
+        # Clear any pending per-call X/Y spills
+        self.pending_xy_spills.clear()
         # Reset stack tracker for new block
         self.stack_tracker.reset()
 
@@ -803,6 +809,16 @@ class CallInstructionSelector(BaseSelector):
         if not self._a_bound_to_vreg and self.region_state.pending_a_spill is not None:
             reloads.append(self.region_state.pending_a_spill)
 
+        # X/Y per-call spilling: when a vreg allocated to X/Y is live across
+        # a call but no clobber region was created (because the liveness analysis
+        # only tracks direct HardwareRegister usage, not vreg-to-hw mappings),
+        # the per-call fallback emits PHY/PHX but _compute_hw_reloads won't find
+        # an active region. Check pending per-call spills and emit PLY/PLX.
+        for hw_reg in ('X', 'Y'):
+            if hw_reg in self.region_state.pending_xy_spills:
+                reloads.append(self.region_state.pending_xy_spills[hw_reg])
+                del self.region_state.pending_xy_spills[hw_reg]
+
         return reloads
 
     def _emit_hw_spills(self, spills: List[SpillInfo]):
@@ -835,6 +851,11 @@ class CallInstructionSelector(BaseSelector):
                 # X/Y are always 16-bit (2 bytes)
                 self._emit_push(spill.hw_reg, f"Spill {spill.hw_reg} (region start)")
                 self.region_state.stack_tracker.push(2)
+                # Track per-call spill for X/Y when no region is active.
+                # Region-based spills have mark_region_active() called before
+                # _emit_hw_spills(), so is_region_active() distinguishes the paths.
+                if not self.region_state.is_region_active(spill.hw_reg):
+                    self.region_state.pending_xy_spills[spill.hw_reg] = spill
 
     def _emit_hw_reloads(self, spills: List[SpillInfo]):
         """

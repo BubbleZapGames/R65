@@ -462,3 +462,60 @@ class TestM16CallFromM8AndBack:
             0x7E0012: 42,
         }))
         assert result.success, f"Failures: {result.failures}"
+
+
+class TestPerCallXYSpillReload:
+    """
+    Regression: per-call X/Y spill (PHY) with no corresponding PLY.
+
+    When a vreg is allocated to Y and lives across a call, but the ClobberRegionAnalyzer
+    finds no region (because it only tracks direct HardwareRegister usage, not vreg-to-hw
+    allocations), the per-call fallback in _compute_hw_spills emits PHY. But
+    _compute_hw_reloads only checked active regions for X/Y reload, never finding one.
+    Result: PHY without PLY corrupts the stack, especially in loops where it accumulates.
+    """
+
+    @pytest.fixture
+    def e2e(self):
+        return E2ETest()
+
+    def test_y_spill_in_loop_with_call(self, e2e):
+        """Y-allocated loop variable must survive calls that clobber Y.
+
+        put_num-style pattern: Y holds a value, loop calls mod16/div16 which
+        clobber Y. Without per-call PLY, each iteration pushes 2 bytes onto
+        the stack without popping, corrupting the return address.
+        """
+        result = e2e.run(f'''
+            {SCRATCH_DECLS}
+
+            #[zeropage(0x10)]
+            static mut RESULT: u16;
+
+            fn halve(val @ A: u16) -> u16 {{
+                return A / 2;
+            }}
+
+            fn accumulate(count: u16, start: u16) {{
+                let value: u16 = start;
+                let i: u16 = count;
+                let sum: u16 = 0;
+                loop {{
+                    if i == 0 {{ break; }}
+                    i--;
+                    // Call that clobbers Y — value (in Y) must be preserved
+                    sum = sum + halve(value);
+                    value = value + 2;
+                }}
+                RESULT = sum;
+            }}
+
+            #[entry]
+            fn main() {{
+                // halve(10)+halve(12)+halve(14)+halve(16) = 5+6+7+8 = 26
+                accumulate(4, 10);
+            }}
+        ''', ExpectedState(memory={
+            0x7E0010: [26, 0],  # sum = 26
+        }))
+        assert result.success, f"Failures: {result.failures}"
