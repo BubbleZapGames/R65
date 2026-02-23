@@ -50,6 +50,10 @@ class OperatorValidator:
         left_const = isinstance(left, HIRIntegerLiteral)
         right_const = isinstance(right, HIRIntegerLiteral)
 
+        # Both operands are literals: will be const-folded, no restriction needed
+        if left_const and right_const:
+            return
+
         if not left_const and not right_const:
             raise TypeCheckError(
                 f"multiply operator (*) requires a power-of-2 constant operand (1 to 256)",
