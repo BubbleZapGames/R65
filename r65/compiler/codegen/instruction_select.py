@@ -43,7 +43,8 @@ from r65.compiler.codegen.type_conversion_select import TypeConversionSelector
 from r65.compiler.codegen.compare_select import CompareSelector
 from r65.compiler.codegen.opcodes import (
     Opcode, OPCODE_VARIANTS, PUSH_OPCODES, PULL_OPCODES,
-    TRANSFER_OPCODES, LOAD_IMMEDIATE_OPCODES, STORE_DP_OPCODES, POWER_OF_2_SHIFTS
+    TRANSFER_OPCODES, LOAD_IMMEDIATE_OPCODES, STORE_DP_OPCODES, POWER_OF_2_SHIFTS,
+    INCREMENT_OPCODES, DECREMENT_OPCODES
 )
 from r65.compiler.codegen.constants import (
     M_FLAG, X_FLAG, MX_FLAGS, BYTE_MASK, WORD_MASK, DP_BOUNDARY,
@@ -213,35 +214,6 @@ class InstructionSelector:
             self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "16-bit A")
             self.emitter.emit_accu_mode(16)
 
-    def _has_16bit_binding(self, register_name: str) -> bool:
-        """
-        Check if a hardware register has a 16-bit alias binding.
-
-        This is used to determine if operations on a register should be
-        done in 16-bit mode, even when the MIR instruction type says u8.
-
-        Example: After `let w @ A : u16 = 1000`, operations on A should
-        use 16-bit mode because A is bound to a u16 alias.
-
-        Args:
-            register_name: Hardware register name ('A', 'X', 'Y', etc.)
-
-        Returns:
-            True if register has an active u16/i16 binding
-        """
-        if not self.current_function:
-            return False
-
-        alias_tracker = getattr(self.current_function, 'alias_tracker', None)
-        if not alias_tracker:
-            return False
-
-        binding_type = alias_tracker.get_register_binding_type(register_name)
-        if binding_type and hasattr(binding_type, 'name'):
-            return binding_type.name in ('u16', 'i16')
-
-        return False
-
     # ========================================================================
     # Opcode Selection Helpers
     # ========================================================================
@@ -396,10 +368,6 @@ class InstructionSelector:
         """Mark A register as modified."""
         self.xba_manager.mark_a_modified()
 
-    def _mark_b_modified(self):
-        """Mark B register as modified."""
-        self.xba_manager.mark_b_modified()
-
     def _access_b_value_in_a(self):
         """Make B register value available in A for reading."""
         # B register access requires 8-bit mode (XBA swaps bytes within 16-bit C)
@@ -449,19 +417,6 @@ class InstructionSelector:
         self._instruction_index += 1
         self.hw_tracker.advance_to(self._instruction_index)
 
-    def _hw_reg_contains_vreg(self, reg_name: str, vreg) -> bool:
-        """
-        Check if a hardware register contains a specific virtual register value.
-
-        Args:
-            reg_name: Hardware register name ('A', 'X', 'Y')
-            vreg: VirtualRegister to check for
-
-        Returns:
-            True if the register contains that vreg's value
-        """
-        return self.hw_tracker.contains_vreg(reg_name, vreg)
-
     def _hw_reg_is_free(self, reg_name: str) -> bool:
         """
         Check if a hardware register is free for scratch use.
@@ -487,28 +442,6 @@ class InstructionSelector:
             Register name ('A', 'X', 'Y') or None if not in any register
         """
         return self.hw_tracker.find_register_containing(vreg)
-
-    def _mark_hw_reg_clobbered(self, reg_name: str):
-        """
-        Mark a hardware register as clobbered (contents unknown).
-
-        Called when an instruction modifies a register.
-
-        Args:
-            reg_name: Register name ('A', 'X', 'Y')
-        """
-        self.hw_tracker.mark_clobbered(reg_name)
-
-    def _mark_hw_reg_contains_vreg(self, reg_name: str, vreg, last_use: int = -1):
-        """
-        Mark that a hardware register now contains a virtual register value.
-
-        Args:
-            reg_name: Register name
-            vreg: VirtualRegister that was loaded
-            last_use: Last instruction index where vreg is used
-        """
-        self.hw_tracker.mark_contains_vreg(reg_name, vreg, last_use)
 
     # ========================================================================
     # Temporary Storage Management
@@ -699,6 +632,15 @@ class InstructionSelector:
     # Arithmetic Operations
     # ========================================================================
 
+    def _try_emit_inc_dec(self, op: str, register: str) -> bool:
+        """Try to emit INX/INY/INC or DEX/DEY/DEC for a register. Returns True if emitted."""
+        opcodes = INCREMENT_OPCODES if op == '+' else DECREMENT_OPCODES
+        opcode = opcodes.get(register)
+        if opcode:
+            self._emit_implied(opcode, f"{register}{'++' if op == '+' else '--'}")
+            return True
+        return False
+
     def select_binary_op(self, instr: BinaryOp):
         """
         Generate code for BinaryOp instruction.
@@ -729,30 +671,8 @@ class InstructionSelector:
             isinstance(instr.left, HardwareRegister) and
             isinstance(instr.dest, HardwareRegister) and
             instr.left.name == instr.dest.name):
-
-            register = instr.dest.name
-            if op == '+':
-                # Increment
-                if register == 'X':
-                    self._emit_implied(Opcode.INX, f"{register}++")
-                    return
-                elif register == 'Y':
-                    self._emit_implied(Opcode.INY, f"{register}++")
-                    return
-                elif register == 'A':
-                    self._emit_implied(Opcode.INC, "A++")
-                    return
-            else:  # op == '-'
-                # Decrement
-                if register == 'X':
-                    self._emit_implied(Opcode.DEX, f"{register}--")
-                    return
-                elif register == 'Y':
-                    self._emit_implied(Opcode.DEY, f"{register}--")
-                    return
-                elif register == 'A':
-                    self._emit_implied(Opcode.DEC, "A--")
-                    return
+            if self._try_emit_inc_dec(op, instr.dest.name):
+                return
 
         # OPTIMIZATION: Same pattern for VirtualRegisters allocated to hardware registers
         # After loop register promotion, operands are VirtualRegister (allocated to Y),
@@ -764,28 +684,8 @@ class InstructionSelector:
             instr.dest.id == instr.left.id):
             dest_loc = self._get_operand_location(instr.dest)
             if dest_loc.kind == LocationKind.HARDWARE and dest_loc.hw_register in ('A', 'X', 'Y'):
-                from r65.compiler.codegen.opcodes import Opcode as Op
-                register = dest_loc.hw_register
-                if op == '+':
-                    if register == 'X':
-                        self._emit_implied(Op.INX, f"{register}++")
-                        return
-                    elif register == 'Y':
-                        self._emit_implied(Op.INY, f"{register}++")
-                        return
-                    elif register == 'A':
-                        self._emit_implied(Op.INC, "A++")
-                        return
-                else:  # op == '-'
-                    if register == 'X':
-                        self._emit_implied(Op.DEX, f"{register}--")
-                        return
-                    elif register == 'Y':
-                        self._emit_implied(Op.DEY, f"{register}--")
-                        return
-                    elif register == 'A':
-                        self._emit_implied(Op.DEC, "A--")
-                        return
+                if self._try_emit_inc_dec(op, dest_loc.hw_register):
+                    return
 
         # FAR POINTER ARITHMETIC: 3-byte pointers need special handling.
         # The low 2 bytes (address within bank) are updated with 16-bit
@@ -1143,65 +1043,41 @@ class InstructionSelector:
     # Register Save/Restore
     # ========================================================================
 
-    def select_save_register(self, instr: SaveRegister):
-        """
-        Generate code for SaveRegister instruction.
-
-        Args:
-            instr: SaveRegister instruction
-        """
-        reg_name = instr.register.name
+    def _emit_push_register(self, reg_name: str):
+        """Emit a push instruction for the given register."""
         push_opcode = PUSH_OPCODES.get(reg_name)
         if push_opcode:
             self._emit_implied(push_opcode)
         else:
             raise InstructionSelectionError(f"Cannot push register: {reg_name}", source_loc=self._current_source_loc)
 
-    def select_restore_register(self, instr: RestoreRegister):
-        """
-        Generate code for RestoreRegister instruction.
-
-        Args:
-            instr: RestoreRegister instruction
-        """
-        reg_name = instr.register.name
+    def _emit_pull_register(self, reg_name: str):
+        """Emit a pull instruction for the given register."""
         pull_opcode = PULL_OPCODES.get(reg_name)
         if pull_opcode:
             self._emit_implied(pull_opcode)
         else:
             raise InstructionSelectionError(f"Cannot pull register: {reg_name}", source_loc=self._current_source_loc)
 
+    def select_save_register(self, instr: SaveRegister):
+        """Generate code for SaveRegister instruction."""
+        self._emit_push_register(instr.register.name)
+
+    def select_restore_register(self, instr: RestoreRegister):
+        """Generate code for RestoreRegister instruction."""
+        self._emit_pull_register(instr.register.name)
+
     # ========================================================================
     # Interrupt Handler Instructions
     # ========================================================================
 
     def select_push(self, instr: Push):
-        """
-        Generate code for Push instruction (save register to stack).
-
-        Args:
-            instr: Push instruction
-        """
-        reg = instr.register.name
-        push_opcode = PUSH_OPCODES.get(reg)
-        if push_opcode:
-            self._emit_implied(push_opcode)
-        else:
-            raise InstructionSelectionError(f"Cannot push register: {reg}", source_loc=self._current_source_loc)
+        """Generate code for Push instruction (save register to stack)."""
+        self._emit_push_register(instr.register.name)
 
     def select_pull(self, instr: Pull):
-        """
-        Generate code for Pull instruction (restore register from stack).
-
-        Args:
-            instr: Pull instruction
-        """
-        reg = instr.register.name
-        pull_opcode = PULL_OPCODES.get(reg)
-        if pull_opcode:
-            self._emit_implied(pull_opcode)
-        else:
-            raise InstructionSelectionError(f"Cannot pull register: {reg}", source_loc=self._current_source_loc)
+        """Generate code for Pull instruction (restore register from stack)."""
+        self._emit_pull_register(instr.register.name)
 
     def select_return_from_interrupt(self, instr: ReturnFromInterrupt):
         """

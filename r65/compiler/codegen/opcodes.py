@@ -1127,6 +1127,10 @@ STORE_MNEMONICS: dict[str, str] = {
     'A': 'STA', 'X': 'STX', 'Y': 'STY',
 }
 
+# Mappings for register increment/decrement
+INCREMENT_OPCODES: dict[str, Opcode] = {'X': Opcode.INX, 'Y': Opcode.INY, 'A': Opcode.INC}
+DECREMENT_OPCODES: dict[str, Opcode] = {'X': Opcode.DEX, 'Y': Opcode.DEY, 'A': Opcode.DEC}
+
 # Power-of-2 to shift count mapping (for multiply/divide optimization)
 POWER_OF_2_SHIFTS: dict[int, int] = {1: 0, 2: 1, 4: 2, 8: 3, 16: 4, 32: 5, 64: 6, 128: 7, 256: 8}
 

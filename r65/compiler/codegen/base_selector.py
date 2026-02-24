@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Optional
 from r65.compiler.codegen.opcodes import Opcode
 from r65.compiler.codegen.asm_nodes import Immediate, Address
 from r65.compiler.codegen.location_resolver import (
-    LocationResolver, StoreResolver, ResolvedLocation, default_resolver
+    LocationResolver, StoreResolver, default_resolver
 )
 from r65.compiler.codegen.register_alloc import PhysicalLocation, LocationKind
 
@@ -87,18 +87,6 @@ class BaseSelector(ABC):
     # ========================================================================
     # Location Resolution Helpers
     # ========================================================================
-
-    def _resolve_location(self, location: PhysicalLocation) -> ResolvedLocation:
-        """
-        Resolve a physical location to addressing mode and operand.
-
-        Args:
-            location: Physical location to resolve
-
-        Returns:
-            ResolvedLocation with mode, operand, and metadata
-        """
-        return self._resolver.resolve(location)
 
     def _get_opcode_for_location(self, mnemonic: str, location: PhysicalLocation) -> tuple[Opcode, Address]:
         """
@@ -201,13 +189,6 @@ class BaseSelector(ABC):
         """
         return self.parent._get_operand_location(operand)
 
-    def _is_hardware_register(self, location: PhysicalLocation) -> bool:
-        """Check if location is a hardware register."""
-        return location.kind == LocationKind.HARDWARE
-
-    def _is_memory_location(self, location: PhysicalLocation) -> bool:
-        """Check if location is a memory location (RAM, stack, scratch)."""
-        return location.kind in (LocationKind.MEMORY, LocationKind.STACK, LocationKind.SCRATCH)
 
 
 class SelectorComponent:
