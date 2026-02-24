@@ -342,6 +342,7 @@ Hardware-aware operators with restrictions for expensive operations:
 - ❌ Methods and `impl` blocks
 - ❌ `unsafe` keyword
 - ❌ Bounds checking
+- ❌ `cargo` or package manager (no Cargo.toml, no crates)
 
 ## Compiler Architecture
 
