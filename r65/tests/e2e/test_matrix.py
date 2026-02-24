@@ -51,7 +51,7 @@ class TestMatrixMultiplication:
             static mut RESULT: [u8; 4] = [0, 0, 0, 0];
 
             // 2x2 Matrix multiplication: result = mat_a * mat_b
-            // Passes matrices as *[u8] pointer parameters
+            // Passes matrices as *u8 pointer parameters
             //
             // Matrices stored as flat u8 arrays in row-major order:
             //   [[a, b], [c, d]] -> [a, b, c, d]
@@ -61,7 +61,7 @@ class TestMatrixMultiplication:
             //   result[1] = A00*B01 + A01*B11
             //   result[2] = A10*B00 + A11*B10
             //   result[3] = A10*B01 + A11*B11
-            fn multiply_matrix(mat_a: *[u8], mat_b: *[u8], result: *[u8]) {{
+            fn multiply_matrix(mat_a: *u8, mat_b: *u8, result: *u8) {{
                 // result[0] = mat_a[0]*mat_b[0] + mat_a[1]*mat_b[2]
                 // mul8 returns (low, high) - we only need low byte
                 let mut TEMP : u8;

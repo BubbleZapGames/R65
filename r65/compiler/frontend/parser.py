@@ -2080,11 +2080,6 @@ class ASTBuilder(Transformer):
         size = items[1]
         return ast.ArrayType(element_type=element_type, size=size)
 
-    def type_slice(self, items):
-        """Unsized array type for pointers: [T]."""
-        items = self._filter_tokens(items)
-        element_type = items[0]
-        return ast.SliceType(element_type=element_type)
 
     def type_pointer(self, items):
         """Pointer type: *type (implied near) or far *type or near *type.

@@ -46,20 +46,15 @@ class TestPointerTypes:
         assert t.is_far is False
         assert isinstance(t.pointee_type, ast.ArrayType)
 
-    def test_pointer_to_slice(self):
-        """Test pointer to unsized array (slice) type."""
-        t = parse_type("*[u8]")
-        assert isinstance(t, ast.PointerType)
-        assert t.is_far is False
-        assert isinstance(t.pointee_type, ast.SliceType)
-        assert t.pointee_type.element_type.name == "u8"
+    def test_pointer_to_slice_is_parse_error(self):
+        """Test that *[u8] (unsized slice pointer) is now a parse error."""
+        with pytest.raises(ParseError):
+            parse_type("*[u8]")
 
-    def test_far_pointer_to_slice(self):
-        """Test far pointer to slice type."""
-        t = parse_type("far *[u8]")
-        assert isinstance(t, ast.PointerType)
-        assert t.is_far is True
-        assert isinstance(t.pointee_type, ast.SliceType)
+    def test_far_pointer_to_slice_is_parse_error(self):
+        """Test that far *[u8] (unsized slice pointer) is now a parse error."""
+        with pytest.raises(ParseError):
+            parse_type("far *[u8]")
 
 
 class TestPointerOperations:
@@ -137,13 +132,13 @@ class TestPointerParameters:
         assert isinstance(func.params[0].param_type, ast.PointerType)
         assert func.params[0].param_type.is_far is True
 
-    def test_slice_pointer_param(self):
-        """Test pointer to slice parameter (unsized array)."""
-        func = parse_function("fn process(data: far *[u8]) { }")
+    def test_pointer_param(self):
+        """Test pointer parameter for array data uses *u8."""
+        func = parse_function("fn process(data: far *u8) { }")
         assert func.params[0].name == "data"
         assert isinstance(func.params[0].param_type, ast.PointerType)
         assert func.params[0].param_type.is_far is True
-        assert isinstance(func.params[0].param_type.pointee_type, ast.SliceType)
+        assert isinstance(func.params[0].param_type.pointee_type, ast.BasicType)
 
 
 class TestPointerStructFields:

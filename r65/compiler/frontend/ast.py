@@ -74,11 +74,6 @@ class ArrayType(Type):
     size: Expression
 
 
-@dataclass
-class SliceType(Type):
-    """Unsized array type for pointers: [T]"""
-    element_type: Type
-
 
 @dataclass
 class PointerType(Type):

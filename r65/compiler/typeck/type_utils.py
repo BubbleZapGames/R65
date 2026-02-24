@@ -2,7 +2,7 @@
 
 from typing import Optional, Tuple
 from r65.compiler.hir import (
-    TypeInfo, BasicTypeInfo, ArrayTypeInfo, SliceTypeInfo, PointerTypeInfo,
+    TypeInfo, BasicTypeInfo, ArrayTypeInfo, PointerTypeInfo,
     FunctionTypeInfo, StructTypeInfo, EnumTypeInfo,
     NeverTypeInfo, RegisterTypeInfo
 )
@@ -40,18 +40,18 @@ class TypeUtils:
         """
         Check if pointee types are compatible for pointer assignment.
 
-        This allows a pointer to a sized array [T; N] to be compatible with
-        a pointer to an unsized slice [T].
+        This allows *[T; N] to be compatible with *T (array pointer coerces
+        to element pointer).
         """
         # Exact match
         if TypeUtils.types_equal(t1, t2):
             return True
 
-        # Array [T; N] can match slice [T]
-        if isinstance(t1, ArrayTypeInfo) and isinstance(t2, SliceTypeInfo):
-            return TypeUtils.types_equal(t1.element_type, t2.element_type)
-        if isinstance(t1, SliceTypeInfo) and isinstance(t2, ArrayTypeInfo):
-            return TypeUtils.types_equal(t1.element_type, t2.element_type)
+        # *[T; N] can match *T (array pointer coerces to element pointer)
+        if isinstance(t1, ArrayTypeInfo) and not isinstance(t2, ArrayTypeInfo):
+            return TypeUtils.types_equal(t1.element_type, t2)
+        if isinstance(t2, ArrayTypeInfo) and not isinstance(t1, ArrayTypeInfo):
+            return TypeUtils.types_equal(t2.element_type, t1)
 
         return False
 
@@ -62,7 +62,7 @@ class TypeUtils:
         if isinstance(t1, PointerTypeInfo) and isinstance(t2, PointerTypeInfo):
             if t1.is_far != t2.is_far:
                 return False
-            # Allow sized array pointer to match slice pointer
+            # Allow *[T; N] to match *T via array pointer coercion
             return TypeUtils._pointee_types_compatible(t1.pointee_type, t2.pointee_type)
 
         if type(t1) != type(t2):
@@ -74,9 +74,6 @@ class TypeUtils:
         elif isinstance(t1, ArrayTypeInfo):
             return (t1.size == t2.size and
                     TypeUtils.types_equal(t1.element_type, t2.element_type))
-
-        elif isinstance(t1, SliceTypeInfo):
-            return TypeUtils.types_equal(t1.element_type, t2.element_type)
 
         elif isinstance(t1, FunctionTypeInfo):
             if t1.is_far != t2.is_far:
@@ -117,17 +114,17 @@ class TypeUtils:
         This is more permissive than types_equal - it allows:
         - Exact type matches
         - Enum types with compatible integer types (u8)
-        - Pointer coercion: far/near and sized array to slice
+        - Pointer coercion: far/near and *[T; N] to *T
         """
         # Exact match
         if TypeUtils.types_equal(t1, t2):
             return True
 
-        # Pointer compatibility: allow array-to-slice coercion and struct-to-trait coercion
+        # Pointer compatibility: allow *[T; N] to *T coercion and struct-to-trait coercion
         if isinstance(t1, PointerTypeInfo) and isinstance(t2, PointerTypeInfo):
             # far/near must match - no implicit coercion between them
             if t1.is_far == t2.is_far:
-                # Pointee types must be compatible (allows [T; N] -> [T])
+                # Pointee types must be compatible (allows [T; N] -> T)
                 if TypeUtils._pointee_types_compatible(t1.pointee_type, t2.pointee_type):
                     return True
                 # *Struct -> *Trait coercion: if struct implements the trait

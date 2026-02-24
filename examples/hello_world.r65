@@ -187,7 +187,7 @@ fn upload_font() {
 // Write a null-terminated message to the tilemap
 // ----------------------------------------------------------------------------
 
-fn write_message(col: u8, row: u16, msg: *[u8]) {
+fn write_message(col: u8, row: u16, msg: *u8) {
     // Calculate VRAM address: row * 32 + col
     row = row << 5;  // row * 32
     row = row + col;

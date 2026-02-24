@@ -39,14 +39,6 @@ class ArrayTypeInfo(TypeInfo):
         return f"[{self.element_type}; {self.size}]"
 
 
-@dataclass
-class SliceTypeInfo(TypeInfo):
-    """Unsized array type for pointers: [T]."""
-    element_type: TypeInfo
-
-    def __str__(self):
-        return f"[{self.element_type}]"
-
 
 @dataclass
 class PointerTypeInfo(TypeInfo):
@@ -169,20 +161,8 @@ class TypeResolver:
 
             return ArrayTypeInfo(element_type=elem_type, size=size)
 
-        elif isinstance(ast_type, ast.SliceType):
-            elem_type = self.resolve_type(ast_type.element_type)
-            return SliceTypeInfo(element_type=elem_type)
-
         elif isinstance(ast_type, ast.PointerType):
             pointee = self.resolve_type(ast_type.pointee_type)
-
-            # Pointers cannot point to sized arrays - must use unsized array [T]
-            if isinstance(pointee, ArrayTypeInfo):
-                raise HIRError(
-                    f"pointer cannot point to sized array type [{pointee.element_type}; {pointee.size}]",
-                    source_loc=getattr(ast_type, 'source_loc', None),
-                    hint=f"use unsized array type [{pointee.element_type}] instead"
-                )
 
             # Validate dyn keyword usage
             if isinstance(pointee, TraitTypeInfo) and not ast_type.is_dyn:

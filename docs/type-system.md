@@ -155,13 +155,13 @@ let (a, b) = get_pair();
 
 Used for functions that loop forever or halt the processor. The compiler omits `RTS`/`RTL` and emits `WAI` as a safety fallback.
 
-#### Slices (Unsized Arrays)
+#### Pointer to Array
 
 ```rust
-[T]            // Unsized array (only valid as pointee: *[T] or far *[T])
+*[T; N]        // Pointer to fixed-size array (coerces to *T)
 ```
 
-Pointer-to-slice (`*[T]`) is compatible with pointer-to-array (`*[T; N]`), enabling generic array parameters.
+A `*[T; N]` provides compile-time bounds checking on constant indices and implicitly coerces to `*T`.
 
 #### Type Aliases
 

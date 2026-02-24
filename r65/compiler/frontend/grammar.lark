@@ -428,14 +428,11 @@ initializer_array_literal: "[" initializer_expr ("," initializer_expr)* ","? "]"
 // Types
 ?type_expr: type_basic
           | type_array
-          | type_slice
           | type_pointer
           | type_fn
 
 type_basic: TYPE_NAME | IDENT
 type_array: "[" type_expr ";" expr "]"
-// Unsized array type for pointers: [T] (no size specified)
-type_slice: "[" type_expr "]"
 // Pointer type for casting: *type (implied near) or far *type or near *type
 // With optional dyn keyword for trait pointers: *dyn Trait or far *dyn Trait
 type_pointer: (FAR | NEAR)? STAR DYN? type_expr

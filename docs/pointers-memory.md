@@ -43,12 +43,12 @@ let value = *ptr;
 
 **Assembly**: `LDA [$zp]` (indirect long), `LDA [$zp],Y` (indirect long indexed)
 
-### Pointer to Slice: `name: *[T]`
+### Pointer to Array: `name: *[T; N]`
 
-Unsized array pointer — points to a contiguous sequence of `T` with no known length. Used for passing arrays of any size. A `*[T; N]` (pointer to fixed-size array) is implicitly coercible to `*[T]`.
+Pointer to a fixed-size array — enables compile-time bounds checking on constant indices. A `*[T; N]` implicitly coerces to `*T`, so arrays can be passed to functions taking element pointers.
 
 ```rust
-fn write_message(msg: *[u8]) {
+fn write_message(msg: *u8) {
     X = 0;
     loop {
         A = msg[X];
@@ -114,7 +114,7 @@ static mut BUFFER_PTR: far *u8;        // Far pointer in RAM
 ```rust
 fn read(src: *u8) { }                  // Near pointer param
 fn copy(dst: *u8, src: far *u8) { }    // Mixed near/far
-fn print(msg: *[u8]) { }              // Pointer to unsized array
+fn print(msg: *u8) { }                // Pointer to array data
 fn mul(a: u16, *result: u16) { }       // Pointer output param (pattern-side)
 ```
 
@@ -239,16 +239,16 @@ if ptr1 == ptr2 { }       // Equality
 if ptr1 as u16 != 0 { }   // Null check
 ```
 
-### Slice Coercion
+### Array Pointer Coercion
 
-A `*[T; N]` (pointer to fixed-size array) can be assigned to `*[T]` (pointer to unsized slice):
+A `*[T; N]` (pointer to fixed-size array) can be assigned to `*T` (element pointer):
 
 ```rust
 static TABLE: [u8; 256] = [0; 256];
 
-fn process(data: *[u8]) { }
+fn process(data: *u8) { }
 
-process(&TABLE);  // *[u8; 256] coerces to *[u8]
+process(&TABLE);  // *[u8; 256] coerces to *u8
 ```
 
 ## Addressing Modes
