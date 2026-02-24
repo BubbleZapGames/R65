@@ -227,7 +227,7 @@ fn preserves_xy(value @ A: u8) -> u8 {
 
 **Valid**: `A`, `X`, `Y`, `STATUS`, `D`, `DBR`. **Invalid**: `B`, `PBR`, `S`.
 
-*(See [docs/register-allocation.md](docs/register-allocation.md) and [docs/calling-convention.md](docs/calling-convention.md))*
+*(See [docs/register-allocation.md](docs/register-allocation.md) and [docs/abi-models.md](docs/abi-models.md))*
 
 ### Function Parameters and Returns
 
@@ -251,7 +251,7 @@ fn calculate(a: u8, b: u8) -> u8 { }               // Stack (must come first)
 
 **Function pointers**: `fn()` (near JSR/RTS), `far fn()` (cross-bank JSL/RTL).
 
-*(See [docs/calling-convention.md](docs/calling-convention.md) for complete ABI)*
+*(See [docs/abi-models.md](docs/abi-models.md) for complete ABI)*
 
 ### Cross-Bank Function Calls
 
@@ -274,7 +274,7 @@ far fn graphics_code() { }           // Callee manages DBR (PHB/PLB)
 - `inline`: Callee saves/restores DBR and sets it to function's bank
 - `caller`: Caller manages DBR (for batching multiple far calls)
 
-*(See [docs/calling-convention.md](docs/calling-convention.md) for cross-bank details)*
+*(See [docs/abi-models.md](docs/abi-models.md) for cross-bank details)*
 
 ### Interrupt Handlers
 
@@ -413,8 +413,7 @@ r65x init --platform snes my_project  # Create test project
 - [B Register](docs/b-register.md)
 - [STATUS Flags](docs/status-flags.md)
 - [Array Bounds Checking](docs/array-bounds-checking.md)
-- [Calling Convention](docs/calling-convention.md)
-- [ABI Models](docs/abi-models.md)
+- [ABI Models and Calling Convention](docs/abi-models.md)
 - [Mode Transitions](docs/mode-transition-analysis.md)
 - [Interrupt Handling](docs/interrupt-mode-transition.md)
 - [Register Allocation](docs/register-allocation.md)

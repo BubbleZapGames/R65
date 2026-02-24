@@ -483,7 +483,7 @@ r65x init --platform snes game  # Create new project
 | Document | Description |
 |----------|-------------|
 | [CLAUDE.md](CLAUDE.md) | Complete language specification |
-| [docs/calling-convention.md](docs/calling-convention.md) | Function calls, parameters, ABI |
+| [docs/abi-models.md](docs/abi-models.md) | Function calls, parameters, ABI |
 | [docs/pointers-memory.md](docs/pointers-memory.md) | Memory model, addressing modes |
 | [docs/type-system.md](docs/type-system.md) | Types, modes, conversions |
 | [docs/operators.md](docs/operators.md) | Operator semantics and cost |

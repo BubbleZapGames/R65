@@ -1,50 +1,576 @@
-# ABI Models
+# ABI Models and Calling Convention
 
-R65 supports three compile-wide ABI models selected via the `--abi` flag. Each model controls how parameters are passed, how stack frames are allocated, how return values are delivered, and who cleans up the stack after a call.
+## Overview
+
+R65's calling convention is **explicit and flexible**, designed to match hand-written assembly patterns from existing SNES code while providing type safety and mode tracking. The programmer specifies the parameter-passing mechanism for each parameter, and the compiler enforces consistency.
+
+R65 supports three compile-wide ABI models selected via the `--abi` flag. Each model controls how stack parameters are passed, who cleans up the stack, and how return values are delivered. Per-function details (register bindings, preserves, far/near) apply within any model.
 
 ```bash
-r65c game.r65 -o game.asm              # Default ABI (implicit default)
+r65c game.r65 -o game.asm              # Default ABI (implicit)
 r65c game.r65 -o game.asm --abi FixedStack
 r65c game.r65 -o game.asm --abi Pascal
 ```
 
-The ABI model is a compile-wide policy — every function in the program uses the same convention. Per-function details (register bindings, preserves, far/near) still apply within the chosen model.
-
 ---
 
-## Default
+## Parameter Passing
 
-The Default ABI is the default convention. It uses PHA-based argument passing with caller PLX cleanup. This eliminates the permanent outgoing-arg area from caller stack frames, producing smaller frames and smaller code.
+### Register Parameters (@ A, @ X, @ Y)
 
-### Parameter Passing
+**Syntax**: `param @ Register: Type`
 
-Register and variable-bound parameters work as declared — the caller places the value in the specified register or memory location before the call. Stack parameters are always pushed via PHA before each call (right-to-left, so the first parameter ends up closest to the return address) and cleaned up by the caller via PLX after the call returns.
+**Mechanism**: Caller places value in specified register. Zero overhead when values are already in the right registers.
+
+```rust
+fn add(a @ A: u8, b @ X: u16) -> u8 {
+    // a already in A, b already in X
+    return A;
+}
+```
+
+**Generated assembly (caller)**:
+```asm
+LDA #10        ; a @ A
+LDX #20        ; b @ X
+JSR add
+; Result in A
+```
+
+**Characteristics**:
+- Fastest (no memory access)
+- Limited to 3 registers (A, X, Y), plus B in m8 mode
+- **X/Y must be u16** (always x16 mode)
+- Zero overhead if values already in registers
+
+### B Register Parameters (@ B, m8 Only)
+
+In m8 mode (default, or when A parameter is u8), the B register (high byte of the 16-bit accumulator) is available as a fourth parameter slot.
+
+**Syntax**: `param @ B: Type`
+
+```rust
+fn pack_word(low @ A: u8, high @ B: u8) -> u16 {
+    return A as u16 | ((B as u16) << 8);
+}
+```
+
+**Key rules**:
+- **m8 only**: Compiler error if B used with `@ A: u16` (m16 mode)
+- **Caller setup**: Caller sets B via XBA instruction before the call
+- **Mixed parameters**: B can be combined with A, X, Y
+- **Not preserved**: B cannot appear in `#[preserves(...)]` (B shares hardware with A)
+
+**Performance**: B access via XBA costs 3 cycles. Common in hand-written 65816 assembly for byte packing.
+
+### Variable-Bound Parameters (@ VARIABLE)
+
+**Syntax**: `param @ VARIABLE: Type`
+
+**Mechanism**: Caller writes to a specific memory location (typically zero-page).
+
+```rust
+#[zeropage(0x10)]
+static mut INPUT_A: u8;
+
+#[zeropage(0x11)]
+static mut INPUT_B: u8;
+
+fn add(a @ INPUT_A: u8, b @ INPUT_B: u8) -> u8 {
+    return a + b;
+}
+```
+
+**Generated assembly**:
+```asm
+; Caller:
+LDA #10
+STA $10        ; INPUT_A
+LDA #20
+STA $11        ; INPUT_B
+JSR add
+
+; Callee:
+add:
+    LDA $10        ; Load from INPUT_A
+    CLC
+    ADC $11        ; Add INPUT_B
+    RTS
+```
+
+**Characteristics**:
+- Fast (zero-page is 3-4 cycles)
+- Zero overhead when caller already has values in those locations
+- Very common in hand-written SNES assembly
+
+### Stack Parameters
+
+**Syntax**: `param: Type`
+
+**Mechanism**: Pushed by caller, accessed via stack-relative addressing in the callee.
+
+```rust
+fn add(a: u8, b: u8) -> u8 {
+    return a + b;
+}
+
+let result = add(10, 20);
+```
+
+**Generated assembly (Default ABI)**:
+
+**Caller**:
+```asm
+LDA #20        ; Second parameter (pushed first, right-to-left)
+PHA
+LDA #10        ; First parameter
+PHA
+JSR add
+PLX            ; Caller cleans up 1st param byte (preserves A return)
+PLX            ; Caller cleans up 2nd param byte
+```
+
+**Callee**:
+```asm
+add:
+    LDA $03,S      ; Load first parameter (stack-relative)
+    CLC
+    ADC $04,S      ; Add second parameter
+    RTS            ; Just return — caller handles cleanup
+```
+
+**Characteristics**:
+- Slower than register/variable (stack access is expensive on 65816)
+- Reentrant (supports recursion)
+- Unlimited parameters
+- Push order: right to left (first parameter closest to return address)
 
 A pre-codegen analysis pass promotes eligible stack parameters to direct-page scratch registers when available (`--disable-scratch-parameters` turns this off). Promoted parameters are passed via `STA $dp` instead of PHA, avoiding stack-relative addressing entirely.
 
-### Stack Frame
+### Parameter Ordering Rules
 
-The caller's frame includes space for locals and preserved registers, but no outgoing argument area:
+Stack parameters must appear before register/variable-bound parameters in the signature:
 
+```rust
+// ERROR: Stack parameter after aliased parameter
+fn bad(reg @ A: u8, stack: u8) { }
+
+// OK: Stack parameters first
+fn good(stack: u8, reg @ A: u8) { }
+
+// OK: All same type
+fn all_stack(a: u8, b: u8, c: u8) { }
+fn all_register(a @ A: u8, b @ X: u16) { }
+```
+
+**Reason**: Stack layout must be determined before register operations.
+
+### Zero-Cost Calls
+
+When arguments already match parameter aliases, the compiler emits no setup code:
+
+```rust
+fn process(value @ A: u8, index @ X: u16) { }
+
+fn caller() {
+    let v @ A = compute();
+    let i @ X = 0;
+    process(v, i);  // Zero overhead — A and X already set
+}
+```
+
+**Generated**:
+```asm
+JSR compute     ; Result in A
+LDX #0
+JSR process     ; Direct call, no setup
+```
+
+---
+
+## Return Values
+
+### Implicit A Return
+
+Functions without an explicit return statement return A:
+
+```rust
+fn get_status() -> u8 {
+    A = HWREG;
+    // Implicitly returns A
+}
+```
+
+### Explicit Register Return
+
+```rust
+fn get_index() -> u16 {
+    X = 100;
+    return X;  // Transferred to A for single-value return
+}
+```
+
+**Convention**: A single return value is delivered in A (transferred if needed).
+
+### Multiple Return Values
+
+```rust
+fn divide(dividend @ A: u8, divisor @ X: u16) -> (u8, u8) {
+    // quotient in A, remainder in X
+    return A, X;
+}
+
+let (q @ A, r @ X) = divide(100, 7);
+```
+
+**Convention**: First return in A, second in X (or B in m8), third in Y. No parentheses in `return` statement.
+
+### B Register Returns (m8 Only)
+
+In m8 mode, B can be returned alone or with other registers:
+
+```rust
+fn unpack_word(value: u16) -> (u8, u8) {
+    A = value as u8;
+    B = (value >> 8) as u8;
+    return A, B;
+}
+```
+
+| Return Statement | A Status | B Status |
+|-----------------|----------|----------|
+| `return B;` | Caller must preserve A | Returns in B |
+| `return A, B;` | Returns in A | Returns in B |
+| `return B, A;` | Returns in A (2nd value) | Returns in B (1st value) |
+| `return B, X;` | Caller must preserve A | Returns in B |
+
+**Caller reads B** via XBA:
+```asm
+JSR get_high_byte
+XBA                ; Exchange B into A
+STA result         ; Store returned value
+```
+
+When a function returns only B (or B + non-A registers), the callee does **not** restore A. The caller must preserve A if needed.
+
+### Zero-Page Returns
+
+```rust
+#[zeropage(0x10)]
+static mut RESULT: u16;
+
+fn calculate(p @ PARAM: u16) {
+    RESULT = p + 100;
+    // Returns via RESULT (no explicit return)
+}
+
+calculate();
+let output = RESULT;  // Read result from zero-page
+```
+
+Very common in hand-written SNES code — zero-page is used for both parameters and returns.
+
+### Mixed Returns (Register + Zero-Page)
+
+```rust
+#[zeropage(0x10)]
+static mut RESULT: u16;
+
+fn mixed_return() {
+    RESULT = 1000;
+    return X, RESULT;  // X register + RESULT variable
+}
+```
+
+### Return Signature Consistency
+
+**All return paths in a function must return the same registers/variables in the same order.**
+
+```rust
+// GOOD: All paths return A
+fn good(val: u16) -> u8 {
+    if val > 100 {
+        return A;
+    } else {
+        return A;
+    }
+}
+
+// BAD: Different registers returned
+fn bad(val: u16) {
+    if val == 1 {
+        return A;     // Signature: (A)
+    } else {
+        return X;     // Signature: (X) — MISMATCH!
+    }
+}
+```
+
+The compiler validates consistency and produces an error on mismatch:
+```
+error: inconsistent return signature
+  --> file.r65:5:16
+   |
+3  |         return RESULT;
+   |                ------ first return has signature: (RESULT)
+5  |         return RESULT2;
+   |                ^^^^^^^ returns (RESULT2), expected (RESULT)
+```
+
+---
+
+## Structs and Arrays (Pass by Reference)
+
+Structs and arrays cannot be passed by value, returned by value, or directly assigned. This is a deliberate restriction — copying large data structures is expensive on 6502/65816 and the cost should be explicit.
+
+```rust
+// ERROR: Cannot pass struct by value
+fn bad(player: Player) { }
+
+// CORRECT: Pass by pointer
+fn process_player(player: *Player) {
+    player.health = player.health - 1;
+}
+
+// CORRECT: Return pointer to static data
+fn get_player() -> *Player {
+    return &PLAYER;
+}
+
+// CORRECT: Copy fields individually
+PLAYER1.x = PLAYER2.x;
+PLAYER1.y = PLAYER2.y;
+PLAYER1.health = PLAYER2.health;
+```
+
+---
+
+## Register Preservation
+
+### Caller-Save (Default)
+
+All registers are **caller-save** by default. No automatic preservation:
+
+```rust
+fn caller() {
+    let value @ A = 10;
+    SAVED = value;     // Must save A manually
+    callee();
+    A = SAVED;         // Restore after call
+}
+```
+
+### Preserves Attribute
+
+Functions declare which registers they preserve. The compiler automatically generates save/restore code:
+
+```rust
+#[preserves(X, Y)]
+fn careful(input @ A: u8) -> u8 {
+    X = 20;  // Freely modify — saved at entry, restored at exit
+    Y = 30;
+    return A;
+}
+```
+
+**Generated**:
+```asm
+careful:
+    PHX                ; Auto-save X
+    PHY                ; Auto-save Y
+    ; ... function body ...
+    PLY                ; Auto-restore Y
+    PLX                ; Auto-restore X
+    RTS
+```
+
+**Valid registers**: `A`, `X`, `Y`, `STATUS`, `D`, `DBR`. **Invalid**: `B`, `PBR`, `S`.
+
+---
+
+## Near vs Far Calls
+
+### Near (JSR/RTS)
+
+**Syntax**: `fn name() { }`
+
+Same-bank call using 16-bit address.
+
+```rust
+fn local_function() { }
+
+fn caller() {
+    local_function();  // JSR local_function / RTS
+}
+```
+
+- 6 cycles (JSR) + 6 cycles (RTS) = 12 cycles overhead
+- Same bank only
+- Return address: 2 bytes on stack
+
+### Far (JSL/RTL)
+
+**Syntax**: `far fn name() { }`
+
+Cross-bank call using 24-bit address. `#[bank(n)]` sets the bank context:
+
+```rust
+#[bank(1)]
+far fn remote_function() { }
+
+fn caller() {
+    remote_function();  // JSL remote_function / RTL
+}
+```
+
+- 8 cycles (JSL) + 6 cycles (RTL) = 14 cycles overhead
+- Cross-bank capable
+- Return address: 3 bytes on stack
+
+**Auto-Bank Mode**: `#[bank(auto)]` for automatic placement. Requires `far fn` and `far static` for ROM statics:
+```rust
+#[bank(auto)]
+far fn auto_placed() { }
+far static DATA: [u8; 256] = [0; 256];
+```
+
+### Data Bank Register (DBR) Management
+
+Far functions can specify DBR handling via `#[mode(databank=...)]`:
+
+**`databank=none`** (default): No DBR management. Programmer handles it manually.
+
+**`databank=inline`**: Callee saves/restores DBR:
+```rust
+#[bank(1)]
+#[mode(databank=inline)]
+far fn auto_dbr() { }
+```
+```asm
+auto_dbr:
+    PHB            ; Save DBR
+    LDA #$01
+    PHA
+    PLB            ; Set DBR = 1
+    ; ... function body ...
+    PLB            ; Restore DBR
+    RTL
+```
+
+**`databank=caller`**: Caller manages DBR (useful for batching multiple far calls):
+```rust
+#[bank(1)]
+#[mode(databank=caller)]
+far fn caller_dbr() { }
+```
+```asm
+caller:
+    PHB
+    LDA #$01
+    PHA
+    PLB            ; Set DBR = 1
+    JSL caller_dbr
+    PLB            ; Restore DBR
+```
+
+### Cross-Bank Call Validation
+
+Near functions can only call near functions in the **same bank**. JSR uses a 16-bit address and cannot cross bank boundaries.
+
+| Caller Bank | Callee Bank | Callee Type | Allowed? |
+|-------------|-------------|-------------|----------|
+| 0 | 0 | `fn` | Yes |
+| 0 | 1 | `fn` | **No** (compile error) |
+| 0 | 1 | `far fn` | Yes |
+| 1 | 0 | `fn` | **No** (compile error) |
+| Any | Any | `far fn` | Yes |
+
+---
+
+## Function Pointers
+
+```rust
+type NearFunc = fn(u8) -> u8;        // JSR/RTS
+type FarFunc = far fn(u8) -> u8;     // JSL/RTL
+```
+
+The type system enforces near vs far. Indirect calls use a trampoline:
+
+```rust
+type Callback = fn(input @ A: u8) -> u8;
+
+#[ram]
+static mut HANDLER: Callback;
+
+fn caller() {
+    let result @ A = HANDLER(10);
+}
+```
+
+**Generated**:
+```asm
+caller:
+    LDA #10
+    JSR call_trampoline
+
+call_trampoline:
+    JMP (HANDLER)  ; Indirect jump
+```
+
+---
+
+## Mode Transitions
+
+Mode transitions are handled automatically by the compiler:
+
+- **Default mode**: m8 (8-bit A), x16 (16-bit X/Y)
+- **m16 mode**: Inferred when function has `@ A: u16` parameter
+- **X/Y always u16**: No x8 mode in R65
+
+```rust
+fn process_byte(value @ A: u8) -> u8 { return value + 1; }    // m8
+fn process_word(value @ A: u16) -> u16 { return value + 1; }  // m16
+
+fn caller() {
+    let byte = process_byte(10);     // m8 → m8, no transition
+    let word = process_word(1000);   // callee switches to m16, restores m8
+}
+```
+
+**Generated (m16 callee)**:
+```asm
+process_word:
+    REP #$20       ; Switch to m16
+    ; ... function body ...
+    SEP #$20       ; Restore m8
+    RTS
+```
+
+---
+
+## ABI Models
+
+### Default
+
+The Default ABI uses PHA-based argument passing with caller PLX cleanup. This eliminates a permanent outgoing-arg area from caller stack frames, producing smaller frames and smaller code.
+
+**Parameter passing**: Register and variable-bound parameters work as declared. Stack parameters are pushed via PHA before each call (right-to-left) and cleaned up by the caller via PLX after the call returns.
+
+**Stack frame**: Space for locals and preserved registers, but no outgoing argument area:
 ```
 [locals]
-[preserved regs]   ← PHX, PHY, etc.
-[return address]   ← 2 bytes (JSR) or 3 bytes (JSL)
+[preserved regs]   <- PHX, PHY, etc.
+[return address]   <- 2 bytes (JSR) or 3 bytes (JSL)
 [caller's frame]
 ```
 
 Frame allocation uses `TSC / SEC / SBC #size / TCS` for frames larger than 4 bytes, or one `PHB` per byte for small frames. Deallocation mirrors this — `PLA` per byte for small frames, `TSC / CLC / ADC / TCS` for large ones.
 
-### Return Values
+**Return values**: Hardware registers: A (first), B (second, m8 only), X, Y. Callee loads values into registers before returning.
 
-Return values are passed in hardware registers: A (first), B (second, m8 only), X, Y. The callee loads values into the appropriate registers before returning.
+**Cleanup**: Callee simply executes `RTS` (or `RTL`). Caller cleans up pushed arguments via PLX (2 bytes per PLX, preserves A return value).
 
-### Cleanup
-
-The callee does **not** clean up parameters. It simply executes `RTS` (or `RTL` for far functions). The caller cleans up pushed arguments via PLX after the call returns (2 bytes per PLX, preserving the A return value).
-
-### Characteristics
-
+**Characteristics**:
 - Supports recursion
 - Unlimited stack parameters
 - Scratch promotion reduces stack traffic for leaf-like functions
@@ -52,65 +578,41 @@ The callee does **not** clean up parameters. It simply executes `RTS` (or `RTL` 
 - PHA is 1 byte vs STA d,S at 2 bytes — smaller code
 - Region spill analysis saves/restores hardware registers around calls when needed
 
----
+### FixedStack
 
-## FixedStack
+FixedStack eliminates stack-passed parameters entirely. All parameters must fit in hardware registers or direct-page scratch locations. This produces smaller, more predictable stack frames at the cost of limiting parameter count.
 
-FixedStack is a restricted ABI that eliminates stack-passed parameters entirely. All parameters must fit in hardware registers or direct-page scratch locations. This produces smaller, more predictable stack frames at the cost of limiting parameter count.
+**Parameter passing**: The parameter promotion pass converts all would-be stack parameters into hardware register or scratch DP assignments. Register bindings (`@ A`, `@ X`, `@ Y`) are honored. Remaining parameters are assigned to available scratch DP addresses. If there are more parameters than available locations, compilation fails.
 
-### Parameter Passing
-
-The parameter promotion pass converts all would-be stack parameters into hardware register or scratch DP assignments. Register bindings (`@ A`, `@ X`, `@ Y`) are honored. Remaining parameters are assigned to available scratch DP addresses. If there are more parameters than available locations, compilation fails.
-
-There is no outgoing argument area — the caller sets up registers and/or scratch locations directly, then calls.
-
-### Stack Frame
-
-Without stack parameters or an outgoing area, the frame is minimal:
-
+**Stack frame**: Without stack parameters or an outgoing area, the frame is minimal:
 ```
 [locals]
 [preserved regs]
 [return address]
 ```
 
-Frame allocation always uses `PHB` per byte (never `TSC/SBC/TCS`). Deallocation always uses `PLA` per byte. This keeps the stack pointer movement predictable and bounded — the stack pointer only changes by known constant amounts.
+Frame allocation always uses `PHB` per byte (never `TSC/SBC/TCS`). Deallocation always uses `PLA` per byte. This keeps the stack pointer movement predictable and bounded.
 
-### Return Values
+**Return values**: Identical to Default — hardware registers A, B, X, Y.
 
-Identical to Default — hardware registers A, B, X, Y.
+**Cleanup**: No parameters to clean up. Just `RTS` / `RTL`.
 
-### Cleanup
-
-The callee has no parameters to clean up. Just `RTS` / `RTL`.
-
-### Restrictions
-
-- **No recursion.** Recursive functions are rejected at compile time. Since all parameters go through fixed locations (registers and scratch DP), a recursive call would overwrite the caller's parameters.
+**Restrictions**:
+- **No recursion.** Recursive functions are rejected at compile time. Since all parameters go through fixed locations, a recursive call would overwrite the caller's parameters.
 - **Limited parameter count.** Bounded by available hardware registers (A, X, Y, B) plus scratch DP slots.
 
-### Use Cases
+**Use cases**: Interrupt handlers and NMI routines where stack depth must be predictable. Performance-critical inner loops. Programs that need static stack depth analysis. Environments with very small stacks (e.g., 256 bytes).
 
-- Interrupt handlers and NMI routines where stack depth must be predictable
-- Performance-critical inner loops where stack-relative addressing overhead matters
-- Programs that need static stack depth analysis (no recursion, no unbounded SP growth)
-- Environments with very small stacks (e.g., 256 bytes)
-
----
-
-## Pascal
+### Pascal
 
 The Pascal ABI implements an Apple IIGS / classic Pascal calling convention. All parameters go on the stack regardless of register binding annotations. The callee cleans up parameters before returning, and return values are passed through caller-allocated stack space rather than registers.
 
-### Parameter Passing
+**Parameter passing**: All parameters are pushed onto the stack via PHA, left-to-right — the first parameter is pushed first (deepest), and the last parameter sits closest to the return address. Register binding annotations (`@ A`, `@ X`, `@ Y`) are ignored. No scratch promotion occurs.
 
-All parameters are pushed onto the stack via `PHA`, left-to-right — the first parameter is pushed first (ending up deepest), and the last parameter sits closest to the return address. Register binding annotations (`@ A`, `@ X`, `@ Y`) are ignored. No scratch promotion occurs.
+Before pushing parameters, the caller pushes **result space** — enough bytes for the return type.
 
-Before pushing parameters, the caller pushes **result space** — enough bytes for the return type. For a `u8` return, 1 byte; for `u16`, 2 bytes; for void, nothing.
-
-### Caller Sequence
-
-```
+**Caller sequence**:
+```asm
 ; 1. Push result space (if non-void return)
 PHA                  ; result space byte(s)
 
@@ -128,30 +630,22 @@ JSR callee
 PLA                  ; result value
 ```
 
-### Stack Layout (callee's view)
-
-After the call, with the callee's frame set up:
-
+**Stack layout (callee's view)**:
 ```
-[result space]     ← caller will PLA this after return
-[param0]           ← deepest parameter
+[result space]     <- caller will PLA this after return
+[param0]           <- deepest parameter
 [param1]
 ...
-[paramN]           ← closest to return address
-[return address]   ← 2 bytes (JSR) or 3 bytes (JSL)
+[paramN]           <- closest to return address
+[return address]   <- 2 bytes (JSR) or 3 bytes (JSL)
 [preserved regs]
 [locals]
-SP →
+SP ->
 ```
 
-### Return Values
+**Return values**: Callee writes its return value into the result space on the stack via `STA offset,S` before the epilogue.
 
-The callee writes its return value into the result space on the stack via `STA offset,S` before beginning the epilogue. The offset is computed from the current SP through the frame, prologue, return address, and parameter bytes to reach the result space above all of that.
-
-### Cleanup
-
-The callee removes parameter bytes (but **not** result space) in the epilogue. Since the return address sits between the parameters and SP, the cleanup uses a save-adjust-restore sequence:
-
+**Cleanup**: Callee removes parameter bytes (but not result space) using a save-adjust-restore sequence:
 ```asm
 PLX                  ; save return address in X
 TSC / CLC / ADC #param_bytes / TCS   ; slide SP past params
@@ -161,28 +655,17 @@ RTS                  ; return to caller
 
 After return, SP points at the result space. The caller pulls it with `PLA`.
 
-### Frame Allocation
-
-Uses `PHB` per byte for small frames (4 bytes or less), `TSC / SEC / SBC / TCS` for larger frames — same as Default.
-
-### Characteristics
-
-- All parameters on stack — simple, uniform calling convention
+**Characteristics**:
+- All parameters on stack — simple, uniform convention
 - Callee cleanup — caller doesn't need to know parameter byte count
 - Stack result space — return values don't occupy registers
-- Register bindings are ignored — `@ A` has no effect
+- Register bindings are ignored
 - No scratch promotion
-- Supports recursion (all state is on the stack)
+- Supports recursion
 
-### Use Cases
+**Use cases**: Interoperability with Apple IIGS toolbox routines or Orca/Pascal code. Research and exploration of alternative calling conventions.
 
-- Interoperability with Apple IIGS toolbox routines or Orca/Pascal code
-- Research and exploration of alternative calling conventions
-- Situations where a uniform stack-only ABI simplifies code generation
-
----
-
-## Comparison
+### Comparison Table
 
 | Feature | Default | FixedStack | Pascal |
 |---|---|---|---|
@@ -200,14 +683,115 @@ Uses `PHB` per byte for small frames (4 bytes or less), `TSC / SEC / SBC / TCS` 
 
 ---
 
-## Stack Depth Considerations
+## Stack Frame Layout
+
+### Frame Organization
+
+```
+                  (high address)
+    +---------------------------+
+    | Parameter N               |  <- pushed by caller (Default/Pascal)
+    +---------------------------+
+    | ...                       |
+    +---------------------------+
+    | Parameter 1               |
+    +---------------------------+
+    | Return Address            |  <- 2 bytes (JSR) or 3 bytes (JSL)
+    +---------------------------+
+    | Preserved Registers       |  <- PHX, PHY, etc. from #[preserves]
+    +---------------------------+
+    | Local 1                   |
+    +---------------------------+
+    | Local 2                   |  <- SP
+    +---------------------------+
+                  (low address, growing down)
+```
+
+**Stack grows downward** (toward lower addresses).
+
+**Prologue** (frame allocation):
+```asm
+example:
+    TSC
+    SEC
+    SBC #<locals_size>   ; Allocate space for locals
+    TCS
+```
+
+**Epilogue** (frame deallocation — Default ABI):
+```asm
+    TSC
+    CLC
+    ADC #<locals_size>   ; Deallocate locals only
+    TCS
+    RTS                  ; Caller cleans up parameters
+```
+
+### Stack Depth Considerations
 
 The 65816 `LDA d,S` instruction uses an unsigned 8-bit offset (0-255), so a single function can only address 255 bytes from its SP. In practice this is not a limiting factor:
 
-- **Default**: Per-function frame is locals + preserves. No outgoing area inflation, so frames are typically small. The hard stack limit (total RAM allocated for stack) is reached by call nesting long before any single frame approaches 255 bytes.
-- **FixedStack**: No outgoing area, no stack params. Frames are just locals + preserves — often just a few bytes. The hard stack limit is reached by call nesting long before any single frame approaches 255 bytes.
+- **Default**: Per-function frame is locals + preserves. No outgoing area inflation, so frames are typically small.
+- **FixedStack**: No outgoing area, no stack params. Frames are just locals + preserves — often just a few bytes.
 - **Pascal**: Parameters are pushed per-call (not part of the frame), so the frame itself stays small. The callee needs to reach the result space through frame + prologue + return address + params, which could approach the 255-byte limit for functions with many parameters and large frames.
 
 ---
 
-*Last Updated: 2026-02-20*
+## Performance Characteristics
+
+```
+Register parameters:      0-3 cycles (setup)
+Variable-bound (zp):      3-6 cycles (memory writes)
+Stack parameters:         5-10 cycles (per parameter push)
+
+Near call (JSR/RTS):      12 cycles
+Far call (JSL/RTL):       14 cycles
+Indirect call:            18-24 cycles (trampoline)
+
+Mode transition (auto):   +6 cycles (REP/SEP)
+
+Caller stack cleanup:     ~4 cycles per parameter byte (PLX)
+Pascal callee cleanup:    ~24 cycles (PLX + TSC/CLC/ADC/TCS + PHX, constant)
+```
+
+**Fastest**: Register parameters + near call + no mode transition.
+
+---
+
+## Summary
+
+### Decision Tree
+
+**1. Choose parameter passing**:
+- Few parameters, performance critical → Register aliases
+- Shared communication area (hand-written style) → Zero-page variables
+- Many parameters, need reentrancy → Stack
+
+**2. Choose return mechanism**:
+- Register return → `return A` or `return A, X`
+- Zero-page return → Write to zero-page variable
+- Mixed → Combine both
+
+**3. Enforce consistency**:
+- All return paths must have identical signatures
+
+**4. Choose call type**:
+- Same bank → near `fn()`
+- Cross-bank → `far fn()`
+
+**5. Mode is automatic**:
+- Inferred from `@ A: u16` parameter
+- X/Y always u16 (x16 mode)
+- For data bank management, use `#[mode(databank=...)]`
+
+**6. Declare preservation**:
+- `#[preserves(X, Y)]` for callee-save registers
+
+**7. Choose ABI model**:
+- Default → General purpose, supports recursion, caller cleanup
+- FixedStack → Predictable stack depth, no recursion
+- Pascal → Apple IIGS interop, callee cleanup
+
+---
+
+*Last Updated: 2026-02-24*
