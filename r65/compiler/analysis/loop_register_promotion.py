@@ -259,7 +259,20 @@ def _promote_local_loop_counters(func: MIRFunction) -> int:
         # resolve a hardware register as memory operand. Call arguments may
         # also be incompatible depending on mechanism.
         if not _uses_compatible_with_hw(vreg_id, vreg_uses.get(vreg_id, [])):
-            continue
+            # Check if the only blocker is a Compare against a hw-promoted
+            # parameter. Local counters are more valuable in hw registers
+            # (used for [dp],Y indexing and INX/INY) than parameters that
+            # are only used for comparison. Demoting the parameter lets the
+            # counter use Y and the comparison becomes CPY $dp (parameter
+            # stays on stack at a DP-relative offset when D=S).
+            conflict = _find_compare_hw_conflict(vreg_id, vreg_uses.get(vreg_id, []))
+            if conflict:
+                _demote_hw_vreg(func, conflict, used_hints)
+                # Re-check after demotion
+                if not _uses_compatible_with_hw(vreg_id, vreg_uses.get(vreg_id, [])):
+                    continue
+            else:
+                continue
 
         # Prefer Y for loop counters (INY/DEY), then X
         if 'Y' not in used_hints:
@@ -358,6 +371,40 @@ def _uses_compatible_with_hw(vreg_id: int, uses: list) -> bool:
             if hasattr(use, 'source') and isinstance(use.source, VirtualRegister) and use.source.id == vreg_id:
                 return False
     return True
+
+
+def _find_compare_hw_conflict(vreg_id: int, uses: list) -> Optional[VirtualRegister]:
+    """
+    Find a hw-promoted vreg that conflicts with promoting vreg_id.
+
+    Returns the conflicting VirtualRegister if the ONLY reason
+    _uses_compatible_with_hw fails is a Compare where the other operand
+    has a register_hint (hw-promoted parameter).
+    """
+    conflict = None
+    for use in uses:
+        if isinstance(use, Compare):
+            is_left = isinstance(use.left, VirtualRegister) and use.left.id == vreg_id
+            if is_left and isinstance(use.right, VirtualRegister) and use.right.register_hint:
+                conflict = use.right
+    return conflict
+
+
+def _demote_hw_vreg(func: MIRFunction, vreg: VirtualRegister, used_hints: set):
+    """
+    Demote a hw-promoted vreg back to a stack allocation.
+
+    Clears the register_hint and removes it from loop_promoted_hw_vregs.
+    The vreg keeps its entry Move (loads from param to stack local),
+    which is a one-time O(1) cost vs the loop-body savings.
+    """
+    old_hint = vreg.register_hint
+    vreg.register_hint = None
+    if old_hint and old_hint in func.loop_promoted_hw_vregs:
+        if func.loop_promoted_hw_vregs[old_hint].id == vreg.id:
+            del func.loop_promoted_hw_vregs[old_hint]
+    if old_hint:
+        used_hints.discard(old_hint)
 
 
 def _find_loops(func: MIRFunction) -> List[Tuple[int, Set[int]]]:

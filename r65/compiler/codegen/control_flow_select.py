@@ -454,6 +454,9 @@ class ControlFlowInstructionSelector(BaseSelector):
         Mode switching for exit mode happens BEFORE loading return values so that
         16-bit return values are loaded in the correct mode.
 
+        When a shared epilogue label is set (multiple returns in function),
+        branches to the shared label instead of emitting the epilogue inline.
+
         Args:
             instr: Return instruction
         """
@@ -462,6 +465,12 @@ class ControlFlowInstructionSelector(BaseSelector):
         self._switch_to_exit_mode()
 
         self._emit_return_values(instr)
+
+        # If shared epilogue is active, branch there instead of inline epilogue
+        shared_label = getattr(self, 'shared_epilogue_label', None)
+        if shared_label:
+            self._emit_instr(Opcode.BRA, Address(shared_label))
+            return
 
         # Use consolidated emit_epilogue from FunctionCodeGenerator
         # Note: emit_epilogue no longer does mode switching (we did it above)

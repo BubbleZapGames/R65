@@ -46,32 +46,31 @@ class CompareSelector(BaseSelector):
                 operand.kind == LocationKind.STACK or
                 operand.index_register is not None
             ):
-                # Load to temp via A, then compare with temp
-                temp_addr = self.parent._get_temp_address()
-                if temp_addr:
-                    self._emit_load_store('LDA', operand)
-                    self._emit_instr(Opcode.STA_DP, temp_addr, "Store to temp for CPX/CPY")
+                # When D=S is active (far pointer functions), stack offsets
+                # ARE direct page offsets. Use CPX/CPY with DP addressing.
+                if (operand.kind == LocationKind.STACK and
+                    self.parent.current_function and
+                    self.parent.current_function.has_far_ptr_stack_params):
                     opcode = getattr(Opcode, f"{mnemonic}_DP")
-                    self._emit_instr(opcode, temp_addr)
+                    self._emit_instr(opcode, Address(operand.stack_offset))
                 else:
-                    # No scratch available - use push/pop pattern
-                    # LDA operand, PHA, then compare X/Y with stack value
-                    # This is more complex: transfer X/Y to A, compare with memory
-                    # Actually, simpler: transfer to A, push, compare using CMP
-                    # But we want CPX/CPY because the comparison is with X/Y
-                    # Solution: Load value to A, then use TXA/TYA + CMP approach
-                    # But that changes the register... Let's use the opposite approach:
-                    # Push X/Y, load A with operand, store to temp location on stack,
-                    # then compare X/Y with stack[1]
-                    # Transfer X/Y to A and use CMP (which supports all modes).
-                    # TXA/TYA don't modify X/Y so no save/restore needed.
-                    # This avoids PHX/PHY which would shift stack offsets and
-                    # PLX/PLY which clobber N/Z flags needed by CondBranch.
-                    if mnemonic == 'CPX':
-                        self._emit_instr(Opcode.TXA, comment="Transfer X to A for comparison")
-                    else:  # CPY
-                        self._emit_instr(Opcode.TYA, comment="Transfer Y to A for comparison")
-                    self._emit_load_store('CMP', operand)
+                    # Load to temp via A, then compare with temp
+                    temp_addr = self.parent._get_temp_address()
+                    if temp_addr:
+                        self._emit_load_store('LDA', operand)
+                        self._emit_instr(Opcode.STA_DP, temp_addr, "Store to temp for CPX/CPY")
+                        opcode = getattr(Opcode, f"{mnemonic}_DP")
+                        self._emit_instr(opcode, temp_addr)
+                    else:
+                        # Transfer X/Y to A and use CMP (which supports all modes).
+                        # TXA/TYA don't modify X/Y so no save/restore needed.
+                        # This avoids PHX/PHY which would shift stack offsets and
+                        # PLX/PLY which clobber N/Z flags needed by CondBranch.
+                        if mnemonic == 'CPX':
+                            self._emit_instr(Opcode.TXA, comment="Transfer X to A for comparison")
+                        else:  # CPY
+                            self._emit_instr(Opcode.TYA, comment="Transfer Y to A for comparison")
+                        self._emit_load_store('CMP', operand)
             else:
                 # Use parent's opcode selection
                 opcode, op = self.parent._get_opcode_for_location(mnemonic, operand)

@@ -576,6 +576,9 @@ class StackSlotAllocator:
                     (isinstance(use, Store) and
                      isinstance(use.source, VirtualRegister) and
                      use.source.id == vreg_id) or
+                    (isinstance(use, StoreIndirect) and
+                     isinstance(use.source, VirtualRegister) and
+                     use.source.id == vreg_id) or
                     (isinstance(use, BinaryOp) and
                      isinstance(use.left, VirtualRegister) and
                      use.left.id == vreg_id)
@@ -908,6 +911,10 @@ class StackSlotAllocator:
                     if isinstance(instr.source, VirtualRegister):
                         if instr.source.id == vreg_id:
                             return False  # TAX/TAY from our vreg — A preserved
+                        # Move to X/Y from a vreg with matching register_hint
+                        # is a no-op (value already in that register), no LDA needed
+                        if instr.source.register_hint == instr.dest.name:
+                            return False
                         return True
                     return False  # LDX #imm or LDX addr don't clobber A
                 if instr.dest.name == 'B':
@@ -938,8 +945,15 @@ class StackSlotAllocator:
             # LDA into vreg clobbers A
             return True
 
-        if isinstance(instr, (LoadIndirect, StoreIndirect)):
-            # Indirect operations use A
+        if isinstance(instr, LoadIndirect):
+            # LDA [dp],Y into vreg clobbers A
+            return True
+
+        if isinstance(instr, StoreIndirect):
+            # STA [dp],Y uses A. If source is our vreg, codegen emits STA
+            # directly from A (our vreg IS A). Otherwise it needs LDA first.
+            if isinstance(instr.source, VirtualRegister) and instr.source.id == vreg_id:
+                return False  # STA [dp],Y from our vreg = STA from A (no clobber)
             return True
 
         if isinstance(instr, StatusFlagRead):

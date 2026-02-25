@@ -5,7 +5,7 @@ Generates complete function bodies with headers, labels, and instructions.
 """
 
 from typing import List, Set, Optional
-from r65.compiler.mir.nodes import MIRFunction
+from r65.compiler.mir.nodes import MIRFunction, Return
 from r65.compiler.codegen.emitter import AssemblyEmitter
 from r65.compiler.codegen.instruction_select import InstructionSelector
 from r65.compiler.codegen.register_alloc import ScratchRegisterPool, RegisterAllocator, PhysicalLocation, LocationKind
@@ -214,11 +214,26 @@ class FunctionCodeGenerator:
             if frame_size > 0 and max_live < frame_size and not has_stack_params:
                 mir_func.codegen_frame_dead_before_calls = True
 
+        # Count Return instructions to decide if we need a shared epilogue.
+        # When multiple returns exist, they all branch to a shared epilogue
+        # label instead of emitting duplicate epilogue code inline.
+        return_count = sum(
+            1 for block in mir_func.blocks.values()
+            for instr in block.instructions
+            if isinstance(instr, Return)
+        )
+        shared_epilogue_label = (
+            f"{mir_func.name}__epilogue" if return_count > 1 else None
+        )
+
         # Create instruction selector with current function context
         instr_selector = InstructionSelector(self.emitter, reg_alloc, self.mem_alloc, mir_func, func_gen=self, abi_model=abi_model)
 
         # Initialize region-based spilling for this function
         instr_selector.call_selector.initialize_regions_for_function()
+
+        # Set shared epilogue label if function has multiple returns
+        instr_selector.control_flow_selector.shared_epilogue_label = shared_epilogue_label
 
         # Emit function header comment
         self.emit_function_header(mir_func)
@@ -290,10 +305,12 @@ class FunctionCodeGenerator:
             # Record this block's codegen exit mode
             codegen_exit_modes[block_id] = self.emitter.get_accu_mode()
 
-        # Emit epilogue (if needed)
-        # Note: Epilogue is emitted BEFORE the Return instruction in each block
-        # So we don't emit it here. Instead, we handle it in the Return instruction
-        # self.emit_epilogue(mir_func, reg_alloc)
+        # Emit shared epilogue if function has multiple returns.
+        # Each Return instruction branched here instead of emitting inline.
+        if shared_epilogue_label:
+            self.emitter.emit_label(shared_epilogue_label)
+            self.emit_epilogue(mir_func, reg_alloc)
+            instr_selector.control_flow_selector._emit_return_instruction()
 
         # Blank line after function
         self.emitter.emit_blank_line()

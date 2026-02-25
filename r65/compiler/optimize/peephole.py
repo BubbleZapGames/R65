@@ -488,8 +488,23 @@ class PeepholeOptimizer:
         return False
 
     def _reads_from_location(self, instr: 'Instruction', operand) -> bool:
-        """Check if instruction reads from the given memory location."""
-        return instr.opcode in READS_FROM_MEMORY_OPCODES and instr.operand == operand
+        """Check if instruction reads from the given memory location.
+
+        Also matches StackOffset(N) against Address(N) since they alias
+        when D=S mode is active (far pointer functions use PHD/TSC/TCD
+        to make stack offsets equivalent to direct page offsets).
+        """
+        if instr.opcode not in READS_FROM_MEMORY_OPCODES:
+            return False
+        if instr.operand == operand:
+            return True
+        # StackOffset(N) and Address(N) alias under D=S
+        from r65.compiler.codegen.asm_nodes import StackOffset, Address
+        if isinstance(operand, StackOffset) and isinstance(instr.operand, Address):
+            return instr.operand.value == operand.offset
+        if isinstance(operand, Address) and isinstance(instr.operand, StackOffset):
+            return operand.value == instr.operand.offset
+        return False
 
     def _eliminate_redundant_transfers(self, nodes: List['AsmNode']) -> List['AsmNode']:
         """
@@ -710,12 +725,18 @@ class PeepholeOptimizer:
 
         Pattern:
             Bcc label_A       ; conditional branch
+            [labels/directives/comments]
             BRA label_B       ; unconditional branch
+            [labels/directives/comments]
             label_A:          ; conditional target is right here
 
         Becomes:
             B!cc label_B      ; inverted condition, target BRA's destination
+            [labels/directives/comments preserved]
             label_A:          ; kept (may be targeted by other branches)
+
+        Labels between Bcc and BRA are safe to skip because they contain
+        no instructions — any branch targeting them reaches the same BRA.
         """
         from r65.compiler.codegen.asm_nodes import Instruction, Label, Address
         from r65.compiler.codegen.asm_nodes import invert_branch
@@ -735,10 +756,12 @@ class PeepholeOptimizer:
 
                 cond_target = node.operand.value
 
-                # Look ahead for BRA, skipping directives/comments
+                # Look ahead for BRA, skipping directives/comments AND labels.
+                # Labels with no instructions between them and the BRA are
+                # transparent — branches to them reach the same BRA destination.
                 j = i + 1
                 between = []
-                while j < len(nodes) and not isinstance(nodes[j], (Instruction, Label)):
+                while j < len(nodes) and not isinstance(nodes[j], Instruction):
                     between.append(nodes[j])
                     j += 1
 
@@ -750,16 +773,21 @@ class PeepholeOptimizer:
                     bra_node = nodes[j]
                     bra_target = bra_node.operand
 
-                    # Look ahead past the BRA for the label, skipping directives/comments
+                    # Look ahead past the BRA for the conditional target label,
+                    # skipping directives/comments and non-target labels
                     k = j + 1
                     between2 = []
-                    while k < len(nodes) and not isinstance(nodes[k], (Instruction, Label)):
+                    found_target = False
+                    while k < len(nodes):
+                        if isinstance(nodes[k], Instruction):
+                            break  # Hit an instruction before finding target
+                        if isinstance(nodes[k], Label) and nodes[k].name == cond_target:
+                            found_target = True
+                            break
                         between2.append(nodes[k])
                         k += 1
 
-                    if (k < len(nodes) and
-                        isinstance(nodes[k], Label) and
-                        nodes[k].name == cond_target):
+                    if found_target:
 
                         inverted = invert_branch(node.opcode)
                         if inverted is not None:
@@ -767,7 +795,7 @@ class PeepholeOptimizer:
                             optimized.append(Instruction(
                                 inverted, bra_target, bra_node.comment,
                                 node.source_loc))
-                            # Keep directives/comments that were between
+                            # Keep labels/directives/comments that were between
                             optimized.extend(between)
                             optimized.extend(between2)
                             # Label will be appended on next iteration
