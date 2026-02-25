@@ -19,7 +19,8 @@ from r65.compiler.mir.nodes import (
     VirtualRegister, MIRFunction, Move, Return, HardwareRegister, Call,
     Store, Load, BinaryOp, UnaryOp, TypeConvert, Compare, BitTest, Rotate,
     ToBool, LoadIndirect, StoreIndirect, StatusFlagRead, InlineAsm,
-    TraitDispatch, RestoreRegister,
+    TraitDispatch, RestoreRegister, SaveRegister,
+    CondBranch, JumpTable, LookupTable,
 )
 from r65.compiler.mir.liveness import LivenessAnalyzer
 from r65.compiler.hir.unified_type_utils import get_unified_type_size
@@ -174,6 +175,9 @@ class StackSlotAllocator:
         """
         # Run liveness analysis (includes all vregs)
         self.liveness_analyzer.analyze()
+
+        # Coalesce vreg-to-vreg Moves when lifetimes don't interfere
+        self._coalesce_vreg_moves()
 
         # Identify vregs that can stay in hardware registers
         hw_coalesceable = self._find_hw_coalesceable_vregs()
@@ -410,6 +414,145 @@ class StackSlotAllocator:
             return get_unified_type_size(vreg.type_info)
         except (HIRError, AttributeError, TypeError):
             return 1
+
+    # ------------------------------------------------------------------
+    # Vreg-to-vreg move coalescing
+    # ------------------------------------------------------------------
+
+    def _coalesce_vreg_moves(self) -> None:
+        """
+        Coalesce Move(dest=VReg, src=VReg) instructions where the two vregs
+        don't interfere.  Replace all uses of *dest* with *src*, remove the
+        Move, and propagate register hints.
+
+        This recovers the zero-cost aliasing that was previously done in
+        builder.py (reusing the same vreg for ``let x = y``).  The builder
+        now always allocates a fresh vreg so that independent mutations
+        don't corrupt each other; this pass merges them back when safe.
+
+        Must run BEFORE hw-coalescence so the hw pass sees simplified MIR.
+        """
+        changed = True
+        while changed:
+            changed = False
+            # Process blocks in order; within each block process moves in
+            # instruction order so that chains (a→b, b→c) collapse correctly.
+            for block_id in sorted(self.func.blocks):
+                block = self.func.blocks[block_id]
+                i = 0
+                while i < len(block.instructions):
+                    instr = block.instructions[i]
+                    if (isinstance(instr, Move)
+                            and isinstance(instr.dest, VirtualRegister)
+                            and isinstance(instr.source, VirtualRegister)
+                            and instr.dest != instr.source):
+                        dest = instr.dest
+                        src = instr.source
+                        if not self.liveness_analyzer.interferes(dest, src):
+                            # Propagate register hint from dest to src
+                            if dest.register_hint and not src.register_hint:
+                                src.register_hint = dest.register_hint
+                            # Replace dest with src everywhere in the MIR
+                            self._replace_vreg_everywhere(dest, src)
+                            # Remove the (now-redundant) Move
+                            block.instructions.pop(i)
+                            changed = True
+                            continue  # re-examine same index
+                    i += 1
+            if changed:
+                # Liveness data is stale after replacement — recompute
+                self.liveness_analyzer = LivenessAnalyzer(self.func)
+                self.liveness_analyzer.analyze()
+
+    @staticmethod
+    def _replace_vreg_in_instr(instr, old: VirtualRegister, new: VirtualRegister):
+        """Replace every occurrence of *old* vreg with *new* inside *instr*."""
+
+        def _sub(val):
+            return new if isinstance(val, VirtualRegister) and val == old else val
+
+        # --- Memory operations ---
+        if isinstance(instr, Load):
+            instr.dest = _sub(instr.dest)
+        elif isinstance(instr, Store):
+            instr.source = _sub(instr.source)
+        elif isinstance(instr, LoadIndirect):
+            instr.dest = _sub(instr.dest)
+            instr.pointer = _sub(instr.pointer)
+        elif isinstance(instr, StoreIndirect):
+            instr.source = _sub(instr.source)
+            instr.pointer = _sub(instr.pointer)
+
+        # --- Moves & conversions ---
+        elif isinstance(instr, Move):
+            instr.dest = _sub(instr.dest)
+            instr.source = _sub(instr.source)
+        elif isinstance(instr, TypeConvert):
+            instr.dest = _sub(instr.dest)
+            instr.source = _sub(instr.source)
+        elif isinstance(instr, ToBool):
+            instr.dest = _sub(instr.dest)
+            instr.source = _sub(instr.source)
+
+        # --- ALU ---
+        elif isinstance(instr, BinaryOp):
+            instr.dest = _sub(instr.dest)
+            instr.left = _sub(instr.left)
+            instr.right = _sub(instr.right)
+        elif isinstance(instr, UnaryOp):
+            instr.dest = _sub(instr.dest)
+            instr.operand = _sub(instr.operand)
+        elif isinstance(instr, Rotate):
+            instr.dest = _sub(instr.dest)
+            instr.source = _sub(instr.source)
+
+        # --- Compare / BitTest ---
+        elif isinstance(instr, Compare):
+            instr.left = _sub(instr.left)
+            instr.right = _sub(instr.right)
+        elif isinstance(instr, BitTest):
+            instr.value = _sub(instr.value)
+
+        # --- Control flow ---
+        elif isinstance(instr, CondBranch):
+            instr.condition = _sub(instr.condition)
+        elif isinstance(instr, JumpTable):
+            instr.scrutinee = _sub(instr.scrutinee)
+        elif isinstance(instr, LookupTable):
+            instr.dest = _sub(instr.dest)
+            instr.scrutinee = _sub(instr.scrutinee)
+
+        # --- Return ---
+        elif isinstance(instr, Return):
+            instr.values = [_sub(v) for v in instr.values]
+
+        # --- Calls ---
+        elif isinstance(instr, (Call, TraitDispatch)):
+            for arg in instr.args:
+                arg.value = _sub(arg.value)
+            instr.returns = [_sub(r) for r in instr.returns]
+            if isinstance(instr, Call) and isinstance(instr.function, VirtualRegister):
+                instr.function = _sub(instr.function)
+            if isinstance(instr, TraitDispatch) and isinstance(instr.self_ptr, VirtualRegister):
+                instr.self_ptr = _sub(instr.self_ptr)
+
+        # --- Save / Restore ---
+        elif isinstance(instr, SaveRegister):
+            instr.save_location = _sub(instr.save_location)
+        elif isinstance(instr, RestoreRegister):
+            instr.save_location = _sub(instr.save_location)
+
+        # --- StatusFlagRead ---
+        elif isinstance(instr, StatusFlagRead):
+            instr.dest = _sub(instr.dest)
+
+        # Other instructions (Jump, InlineAsm, SetMode, etc.) have no vregs.
+
+    def _replace_vreg_everywhere(self, old: VirtualRegister, new: VirtualRegister):
+        """Replace *old* with *new* in every instruction of every block."""
+        for block in self.func.blocks.values():
+            for instr in block.instructions:
+                self._replace_vreg_in_instr(instr, old, new)
 
     def _find_hw_coalesceable_vregs(self) -> Dict[VirtualRegister, str]:
         """

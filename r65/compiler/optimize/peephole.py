@@ -482,7 +482,15 @@ class PeepholeOptimizer:
         from r65.compiler.codegen.asm_nodes import Instruction
 
         for node in nodes:
-            if isinstance(node, Instruction) and self._reads_from_location(node, store_operand):
+            if not isinstance(node, Instruction):
+                continue
+            if self._reads_from_location(node, store_operand):
+                return True
+            # Indirect STA instructions (e.g. STA ($nn,S),Y) read the
+            # pointer from their operand even though they are stores.
+            # If the operand matches, the stored value IS being read.
+            if (node.opcode in INDIRECT_ADDRESSING_OPCODES
+                    and node.operand == store_operand):
                 return True
 
         return False

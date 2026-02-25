@@ -76,6 +76,50 @@ class CompareSelector(BaseSelector):
                 opcode, op = self.parent._get_opcode_for_location(mnemonic, operand)
                 self._emit_instr(opcode, op)
 
+    def _emit_swapped_hw_compare(self, left_reg: str, is_16bit: bool):
+        """
+        Handle comparison when both operands are in hardware registers
+        and no scratch is available.
+
+        A = right value, left_reg (X or Y) = left value.
+        Pushes right to stack, transfers left to A, compares against stack
+        (normal direction: left - right), then preserves flags across
+        stack cleanup using PHP/PLP.
+
+        Sets comparison_reversed = False (normal direction).
+        """
+        from r65.compiler.codegen.asm_nodes import StackOffset
+        # Push right (A) to stack
+        self._emit_instr(Opcode.PHA, comment="Push right operand for hw-hw compare")
+        # Transfer left to A
+        if left_reg == 'Y':
+            self._emit_instr(Opcode.TYA, comment="Transfer left (Y) to A")
+        else:
+            self._emit_instr(Opcode.TXA, comment="Transfer left (X) to A")
+        # Compare: A(left) - stack(right) = normal direction
+        self._emit_instr(Opcode.CMP_STACK, StackOffset(1), "Compare left vs right")
+        # Save comparison flags
+        self._emit_instr(Opcode.PHP, comment="Save comparison flags")
+        if is_16bit:
+            # PHA pushed 2 bytes + PHP pushed 1 byte = 3 bytes on stack.
+            # Use m8 to pop individual bytes, then PLP restores m16 + flags.
+            self._emit_instr(Opcode.SEP_IMMEDIATE, Immediate(0x20), "m8 for cleanup")
+            # Move saved P past the pushed right value
+            self._emit_instr(Opcode.LDA_STACK, StackOffset(1), "Load saved P")
+            self._emit_instr(Opcode.STA_STACK, StackOffset(3), "Move P past right")
+            self._emit_instr(Opcode.PLA, comment="Pop old P position")
+            self._emit_instr(Opcode.PLA, comment="Pop right byte")
+            self._emit_instr(Opcode.PLP, comment="Restore flags and m16 mode")
+        else:
+            # PHA pushed 1 byte + PHP pushed 1 byte = 2 bytes on stack.
+            # Move saved P past the pushed right value, then PLP.
+            self._emit_instr(Opcode.LDA_STACK, StackOffset(1), "Load saved P")
+            self._emit_instr(Opcode.STA_STACK, StackOffset(2), "Move P past right")
+            self._emit_instr(Opcode.PLA, comment="Pop old P position")
+            self._emit_instr(Opcode.PLP, comment="Restore flags and m8 mode")
+        # comparison_reversed = False: flags are left - right (normal order)
+        self.parent._comparison_reversed = False
+
     # ========================================================================
     # Compare Instruction
     # ========================================================================
@@ -113,6 +157,15 @@ class CompareSelector(BaseSelector):
                 self.parent._ensure_m16_mode()
             else:
                 self.parent._ensure_m8_mode()
+            if left_loc.kind == LocationKind.HARDWARE and left_loc.hw_register in ('X', 'Y'):
+                # Both operands in hardware registers, no scratch available.
+                # A = right value. X/Y = left value.
+                # Strategy: push right to stack, transfer left to A, compare
+                # against stack (NORMAL direction: left - right), then use
+                # PHP/PLP to preserve flags across stack cleanup.
+                self._emit_swapped_hw_compare(left_loc.hw_register, is_16bit)
+                # Comparison is left - right = normal order, NOT reversed
+                return
             self._emit_cmp('CMP', left_loc, False)
             self.parent._comparison_reversed = True
             return

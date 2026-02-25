@@ -680,11 +680,30 @@ class MIRBuilder:
                     register_hint = getattr(stmt.symbol, 'register_hint', None)
 
                     if isinstance(init_value, VirtualRegister):
-                        # Reuse the virtual register from initializer
-                        # Propagate register hint to the reused vreg
-                        if register_hint and not init_value.register_hint:
-                            init_value.register_hint = register_hint
-                        self.symbol_to_vreg[id(stmt.symbol)] = init_value
+                        # Check if init_value is already bound to another symbol.
+                        # If so, reusing it would alias two symbols to the same
+                        # slot — mutations of one (e.g. cy--) would corrupt reads
+                        # of the other (e.g. height).  Create a fresh vreg + Move
+                        # so each symbol has its own storage.  The slot allocator's
+                        # coalescing pass merges them back when safe.
+                        #
+                        # When init_value is an unbound temporary (function call
+                        # result, array load, etc.), reusing is safe since no
+                        # other symbol references it.
+                        source_is_bound = any(
+                            v is init_value
+                            for v in self.symbol_to_vreg.values()
+                        )
+                        if source_is_bound:
+                            vreg = self.current_function.vreg_allocator.alloc(
+                                stmt.var_type, stmt.name, register_hint=register_hint)
+                            self.symbol_to_vreg[id(stmt.symbol)] = vreg
+                            self.emit(Move(dest=vreg, source=init_value, type_info=stmt.var_type))
+                        else:
+                            # Safe to reuse — propagate register hint
+                            if register_hint and not init_value.register_hint:
+                                init_value.register_hint = register_hint
+                            self.symbol_to_vreg[id(stmt.symbol)] = init_value
                     elif isinstance(init_value, HardwareRegister):
                         # MUST copy from hardware register - it can be clobbered later!
                         # Cannot just alias the symbol to the hw register.

@@ -429,26 +429,31 @@ class LivenessAnalyzer:
         """
         ranges = self.get_live_ranges()
 
-        # Check block-level interference
-        if var1 in ranges and var2 in ranges:
-            if ranges[var1] & ranges[var2]:
-                return True
-
-        # Check intra-block interference using precise per-instruction liveness
+        # Fast non-interference check: if the block-level live ranges are
+        # completely disjoint, the variables cannot interfere.
+        var1_blocks = ranges.get(var1, set())
+        var2_blocks = ranges.get(var2, set())
+        shared_blocks = var1_blocks & var2_blocks
+        # Also include blocks where either variable is defined or used
+        # (a var may not be in live_in/live_out but still appear in the block)
+        candidate_blocks = set(shared_blocks)
         for block_id, info in self.liveness.items():
+            var1_relevant = var1 in info.use or var1 in info.define or var1 in info.live_in
+            var2_relevant = var2 in info.use or var2 in info.define or var2 in info.live_in
+            if var1_relevant and var2_relevant:
+                candidate_blocks.add(block_id)
+
+        if not candidate_blocks:
+            return False
+
+        # Precise per-instruction interference check within candidate blocks
+        for block_id in candidate_blocks:
+            info = self.liveness[block_id]
             block = self.func.blocks[block_id]
 
-            # Determine if each variable is relevant to this block
+            # Determine if each variable is live on entry to this block
             var1_live_on_entry = var1 in info.use or var1 in info.live_in
             var2_live_on_entry = var2 in info.use or var2 in info.live_in
-            var1_defined_in_block = var1 in info.define
-            var2_defined_in_block = var2 in info.define
-
-            # Skip if neither variable is relevant to this block
-            if not (var1_live_on_entry or var1_defined_in_block):
-                continue
-            if not (var2_live_on_entry or var2_defined_in_block):
-                continue
 
             # First pass: find last use of each variable
             var1_last_use = -1
@@ -466,7 +471,18 @@ class LivenessAnalyzer:
             if var2 in info.live_out:
                 var2_last_use = len(block.instructions)
 
-            # Second pass: check for interference at each instruction
+            # Second pass: check for interference at each instruction.
+            #
+            # A variable is live at instruction i if it was previously
+            # defined (or live-in) and still has future uses (i <= last_use).
+            #
+            # Crucially, a pure definition (not also a use) at instruction i
+            # makes the variable live starting AFTER i.  At i itself the old
+            # value is dead and the new value hasn't been observed yet, so a
+            # Move(dest, src) does NOT cause dest and src to interfere at
+            # that instruction — this is the standard copy-coalescing
+            # property.  We track this with *_just_defined flags.
+
             var1_live = var1_live_on_entry
             var2_live = var2_live_on_entry
 
@@ -474,18 +490,28 @@ class LivenessAnalyzer:
                 defs = self._get_defs(instr)
                 uses = self._get_uses(instr)
 
+                var1_just_defined = False
+                var2_just_defined = False
+
                 # A variable becomes live when defined
                 if var1 in defs:
+                    if not var1_live:
+                        var1_just_defined = True
                     var1_live = True
                 if var2 in defs:
+                    if not var2_live:
+                        var2_just_defined = True
                     var2_live = True
 
-                # Check if both variables are live at this instruction
-                # A variable is live at instruction i if:
-                # - It was live on entry and i <= last_use, OR
-                # - It was defined at some j <= i and i <= last_use
+                # A variable that was JUST defined (first def, not also used
+                # at this instruction) is not yet observable — skip it.
                 var1_live_here = var1_live and i <= var1_last_use
+                if var1_just_defined and var1 not in uses:
+                    var1_live_here = False
+
                 var2_live_here = var2_live and i <= var2_last_use
+                if var2_just_defined and var2 not in uses:
+                    var2_live_here = False
 
                 if var1_live_here and var2_live_here:
                     return True
