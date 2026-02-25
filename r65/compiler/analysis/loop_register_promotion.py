@@ -394,9 +394,11 @@ def _demote_hw_vreg(func: MIRFunction, vreg: VirtualRegister, used_hints: set):
     """
     Demote a hw-promoted vreg back to a stack allocation.
 
-    Clears the register_hint and removes it from loop_promoted_hw_vregs.
-    The vreg keeps its entry Move (loads from param to stack local),
-    which is a one-time O(1) cost vs the loop-body savings.
+    Fully reverses the promotion: clears the register_hint, removes
+    the entry-block Move, and replaces all uses of the promoted vreg
+    back to the original param vreg. This avoids allocating a separate
+    stack slot for the promoted vreg (which would just be a redundant
+    copy of the parameter).
     """
     old_hint = vreg.register_hint
     vreg.register_hint = None
@@ -405,6 +407,26 @@ def _demote_hw_vreg(func: MIRFunction, vreg: VirtualRegister, used_hints: set):
             del func.loop_promoted_hw_vregs[old_hint]
     if old_hint:
         used_hints.discard(old_hint)
+
+    # Find the entry-block Move that copies from the original param vreg
+    # into this promoted vreg, and reverse the promotion entirely.
+    entry_block = func.blocks[func.entry_block_id]
+    original_param = None
+    move_idx = None
+    for i, instr in enumerate(entry_block.instructions):
+        if (isinstance(instr, Move) and
+                isinstance(instr.dest, VirtualRegister) and
+                instr.dest.id == vreg.id and
+                isinstance(instr.source, VirtualRegister)):
+            original_param = instr.source
+            move_idx = i
+            break
+
+    if original_param is not None:
+        # Remove the Move instruction
+        entry_block.instructions.pop(move_idx)
+        # Replace all uses of the promoted vreg back to the original param
+        _replace_vregs(func, {vreg.id: original_param})
 
 
 def _find_loops(func: MIRFunction) -> List[Tuple[int, Set[int]]]:

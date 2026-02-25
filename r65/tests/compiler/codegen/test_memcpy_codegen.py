@@ -161,3 +161,37 @@ class TestMemcpyCodegen:
         frame_alloc = [i for i in prologue if i in ('PHX', 'PHY', 'PHA')]
         assert not frame_alloc, (
             f"Should not allocate stack frame, found: {frame_alloc}\n{func}")
+
+    def test_no_redundant_param_copy_after_demotion(self):
+        """Demoted parameter should not get a redundant copy to a local slot.
+
+        When loop promotion promotes param `n` to X but then demotes it
+        (because local counter `i` in Y conflicts in Compare), the demotion
+        should fully reverse the promotion: all uses of the promoted vreg
+        should revert to the original param vreg. Without this, the promoted
+        vreg gets its own stack slot and the prologue wastes cycles copying
+        from the param location to the local (e.g., LDA $0E,S; STA $03,S).
+
+        After the fix, `count` (== `n`) stays at the parameter's stack
+        location and CPY reads it directly via DP-relative addressing.
+        """
+        asm = compile_string(MEMCPY_SOURCE)
+        func = _get_function_asm(asm, 'memcpy')
+        instrs = _instruction_lines(func)
+
+        # Look for the pattern: LDA <offset>,S followed by STA <offset>,S
+        # which indicates a redundant copy from param slot to local slot
+        for i in range(len(instrs) - 1):
+            lda = instrs[i]
+            sta = instrs[i + 1]
+            if (lda.startswith('LDA') and ',S' in lda and
+                    sta.startswith('STA') and ',S' in sta):
+                # Extract the offsets — a copy is LDA X,S; STA Y,S with X != Y
+                lda_operand = lda.split()[1] if len(lda.split()) > 1 else ''
+                sta_operand = sta.split()[1] if len(sta.split()) > 1 else ''
+                if (lda_operand.endswith(',S') and sta_operand.endswith(',S')
+                        and lda_operand != sta_operand):
+                    pytest.fail(
+                        f"Redundant param copy found: {lda}; {sta}\n"
+                        f"Demotion should reuse param location directly.\n"
+                        f"Full function:\n{func}")
