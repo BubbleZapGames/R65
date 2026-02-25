@@ -187,9 +187,13 @@ class StackStateTracker:
         self._displacement += n_bytes
 
     def pop(self, n_bytes: int) -> None:
-        """Record n_bytes popped from stack (PLx, cleanup)."""
+        """Record n_bytes popped from stack (PLx, cleanup).
+
+        Displacement can go negative temporarily when the PLD/PHD dance
+        pops the saved D register before pushing call arguments. The
+        subsequent PHAs will bring it back to positive territory.
+        """
         self._displacement -= n_bytes
-        assert self._displacement >= 0, f"Stack underflow: displacement={self._displacement}"
 
     def adjust_offset(self, static_offset: int) -> int:
         """Adjust a frame-relative offset for current SP displacement."""

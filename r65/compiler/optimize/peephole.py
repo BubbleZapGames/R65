@@ -159,6 +159,13 @@ CONTROL_FLOW_OPCODES: Set[Opcode] = (
     BRANCH_OPCODES | JUMP_OPCODES | CALL_OPCODES | {Opcode.RTS, Opcode.RTL, Opcode.RTI}
 )
 
+# Instructions that modify the stack pointer — invalidate stack-relative operand tracking
+STACK_MODIFYING_OPCODES: Set[Opcode] = {
+    Opcode.PHA, Opcode.PHX, Opcode.PHY, Opcode.PHP, Opcode.PHD, Opcode.PHB,
+    Opcode.PLA, Opcode.PLX, Opcode.PLY, Opcode.PLP, Opcode.PLD, Opcode.PLB,
+    Opcode.TCS,
+}
+
 
 # ============================================================================
 # Statistics Tracking
@@ -431,6 +438,12 @@ class PeepholeOptimizer:
                         if not self._any_instruction_reads(
                             nodes, store_operand):
                             return True
+                return False
+
+            # Stack-modifying instructions invalidate stack-relative analysis.
+            # After PHA/PLX/etc., the same $XX,S offset refers to a different
+            # physical address, so we can't compare operands across SP changes.
+            if is_stack_relative and next_node.opcode in STACK_MODIFYING_OPCODES:
                 return False
 
             # Mode change = stop analysis (16-bit mode can read adjacent bytes)

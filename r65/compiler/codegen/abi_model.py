@@ -122,12 +122,49 @@ class ABIModel(ABC):
         from r65.compiler.mir.nodes import ArgumentMechanism
         from r65.compiler.codegen.register_alloc import LocationKind
         from r65.compiler.codegen.type_utils import get_type_size
+        from r65.compiler.codegen.opcodes import Opcode
+        from r65.compiler.codegen.constants import M_FLAG
 
         stack_args = [arg for arg in instr.args if arg.mechanism == ArgumentMechanism.STACK]
         other_args = [arg for arg in instr.args if arg.mechanism != ArgumentMechanism.STACK]
 
         spill_offset = selector.get_current_spill_offset()
         stack_bytes_pushed = 0
+
+        # Detect A→A collision: stack arg setup uses LDA which clobbers A.
+        # If a register arg targets A and its source is already in A
+        # (hw-coalescenced), save A to a temp register before stack arg
+        # setup and restore after.
+        a_save_reg = None
+        a_param_is_16bit = False
+        if stack_args:
+            for arg in other_args:
+                if arg.mechanism != ArgumentMechanism.REGISTER:
+                    continue
+                target_reg = arg.location.name if hasattr(arg.location, 'name') else str(arg.location)
+                if target_reg != 'A':
+                    continue
+                arg_loc = selector.parent._get_operand_location(arg.value)
+                if arg_loc.kind == LocationKind.HARDWARE and arg_loc.hw_register == 'A':
+                    if arg.param_type is not None:
+                        a_param_is_16bit = get_type_size(arg.param_type) >= 2
+                    # Find a temp register not used as a register arg target
+                    reg_targets = set()
+                    for a in other_args:
+                        if a.mechanism == ArgumentMechanism.REGISTER:
+                            t = a.location.name if hasattr(a.location, 'name') else str(a.location)
+                            reg_targets.add(t)
+                    if 'Y' not in reg_targets:
+                        a_save_reg = 'Y'
+                    elif 'X' not in reg_targets:
+                        a_save_reg = 'X'
+                    break
+
+        if a_save_reg:
+            # TAY/TAX: with X flag=0 (always 16-bit index in R65),
+            # transfers full 16-bit accumulator regardless of M flag.
+            op = Opcode.TAY if a_save_reg == 'Y' else Opcode.TAX
+            selector._emit_implied(op, f"Save A to {a_save_reg} before stack arg setup")
 
         if spill_offset > 0 and stack_args:
             for arg in reversed(stack_args):
@@ -161,6 +198,18 @@ class ABIModel(ABC):
                 elif hasattr(arg.value, 'type_info') and arg.value.type_info:
                     arg_size = get_type_size(arg.value.type_info)
                 outgoing_offset += arg_size
+
+        if a_save_reg:
+            # TYA/TXA: transfer size depends on M flag. For 16-bit A values,
+            # ensure m16 so all 16 bits are restored.
+            if a_param_is_16bit:
+                current_mode = selector.parent.emitter.get_accu_mode()
+                if current_mode != 16:
+                    selector._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG,
+                                             "m16 for A restore from index reg")
+                    selector.parent.emitter.emit_accu_mode(16)
+            op = Opcode.TYA if a_save_reg == 'Y' else Opcode.TXA
+            selector._emit_implied(op, f"Restore A from {a_save_reg} after stack arg setup")
 
         sorted_other_args = sorted(other_args, key=selector.arg_sort_key)
         for arg in sorted_other_args:
@@ -565,11 +614,46 @@ class ABIDefault(ABIModel):
         from r65.compiler.mir.nodes import ArgumentMechanism
         from r65.compiler.codegen.register_alloc import LocationKind
         from r65.compiler.codegen.type_utils import get_type_size
+        from r65.compiler.codegen.opcodes import Opcode
+        from r65.compiler.codegen.constants import M_FLAG
 
         stack_args = [arg for arg in instr.args if arg.mechanism == ArgumentMechanism.STACK]
         other_args = [arg for arg in instr.args if arg.mechanism != ArgumentMechanism.STACK]
 
         stack_bytes_pushed = 0
+
+        # Detect A→A collision: PHA stack arg setup uses LDA which clobbers A.
+        # If a register arg targets A and its source is already in A
+        # (hw-coalescenced), save A to a temp register before stack arg
+        # setup and restore after.
+        a_save_reg = None
+        a_param_is_16bit = False
+        if stack_args:
+            for arg in other_args:
+                if arg.mechanism != ArgumentMechanism.REGISTER:
+                    continue
+                target_reg = arg.location.name if hasattr(arg.location, 'name') else str(arg.location)
+                if target_reg != 'A':
+                    continue
+                arg_loc = selector.parent._get_operand_location(arg.value)
+                if arg_loc.kind == LocationKind.HARDWARE and arg_loc.hw_register == 'A':
+                    if arg.param_type is not None:
+                        a_param_is_16bit = get_type_size(arg.param_type) >= 2
+                    # Find a temp register not used as a register arg target
+                    reg_targets = set()
+                    for a in other_args:
+                        if a.mechanism == ArgumentMechanism.REGISTER:
+                            t = a.location.name if hasattr(a.location, 'name') else str(a.location)
+                            reg_targets.add(t)
+                    if 'Y' not in reg_targets:
+                        a_save_reg = 'Y'
+                    elif 'X' not in reg_targets:
+                        a_save_reg = 'X'
+                    break
+
+        if a_save_reg:
+            op = Opcode.TAY if a_save_reg == 'Y' else Opcode.TAX
+            selector._emit_implied(op, f"Save A to {a_save_reg} before stack arg setup")
 
         # Always use PHA path for stack args (right-to-left for correct callee layout)
         if stack_args:
@@ -588,6 +672,16 @@ class ABIDefault(ABIModel):
                 selector.emit_pha_stack_argument(arg, arg_loc, arg_size)
                 stack_bytes_pushed += arg_size
                 selector.region_state.stack_tracker.push(arg_size)
+
+        if a_save_reg:
+            if a_param_is_16bit:
+                current_mode = selector.parent.emitter.get_accu_mode()
+                if current_mode != 16:
+                    selector._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG,
+                                             "m16 for A restore from index reg")
+                    selector.parent.emitter.emit_accu_mode(16)
+            op = Opcode.TYA if a_save_reg == 'Y' else Opcode.TXA
+            selector._emit_implied(op, f"Restore A from {a_save_reg} after stack arg setup")
 
         # Non-stack args: same as Default
         sorted_other_args = sorted(other_args, key=selector.arg_sort_key)

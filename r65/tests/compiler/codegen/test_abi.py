@@ -222,10 +222,13 @@ class TestStackStateTracker:
         tracker.pop(2)
         assert tracker.displacement == 0
 
-    def test_pop_underflow_asserts(self):
+    def test_pop_allows_negative_displacement(self):
+        """Negative displacement is valid for PLD/PHD dance in far-ptr functions."""
         tracker = StackStateTracker()
-        with pytest.raises(AssertionError):
-            tracker.pop(1)
+        tracker.pop(2)  # Simulates PLD popping saved D
+        assert tracker.displacement == -2
+        tracker.push(3)  # Simulates 3 PHA bytes for far ptr arg
+        assert tracker.displacement == 1
 
     def test_adjust_offset(self):
         tracker = StackStateTracker()

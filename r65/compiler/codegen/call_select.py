@@ -336,15 +336,14 @@ class CallInstructionSelector(BaseSelector):
         # CRITICAL: PLD must happen before pushing arguments. If PLD happens after,
         # it pops 2 bytes from the top of the stack, consuming part of the just-pushed
         # arguments instead of the saved D value.
-        # After PLD, S increases by 2, so all stack-relative source offsets during
-        # argument setup must be adjusted by -2.
-        pre_arg_stack_adj = 0
+        # The stack tracker records the PLD displacement so that all subsequent
+        # stack-relative accesses (argument loading, return value storing) are
+        # automatically adjusted.
         if needs_d_management:
             self._emit_d_restore_before_call()
-            pre_arg_stack_adj = -2  # PLD popped 2 bytes, S increased by 2
 
-        # Step 1: Set up arguments (with stack offset adjustment if D was popped)
-        stack_bytes_pushed = self._emit_argument_setup(instr, pre_arg_stack_adj)
+        # Step 1: Set up arguments
+        stack_bytes_pushed = self._emit_argument_setup(instr)
 
         # Step 2: Handle caller-managed DBR (databank=caller)
         needs_dbr_restore = self._emit_caller_dbr_setup(instr)
@@ -1963,8 +1962,13 @@ class CallInstructionSelector(BaseSelector):
         The original D value was saved by PHD in the prologue. We use PLD to
         pop it from the stack and restore it. After the call returns, if we
         need D = S again, we'll push it back with PHD.
+
+        Updates the stack tracker because PLD pops 2 bytes from the frame,
+        shifting SP up. Without this, stack-relative offsets for storing
+        the call's return value would be off by 2 bytes.
         """
         self._emit_instr(Opcode.PLD, comment="Restore D from stack before call")
+        self.region_state.stack_tracker.pop(2)
 
     def _emit_d_push_only(self):
         """
@@ -1973,8 +1977,11 @@ class CallInstructionSelector(BaseSelector):
         Since we used PLD before the call, we must push D back so the
         epilogue's PLD will pop the correct value. This is used when there
         are no more far pointer dereferences after this call.
+
+        Updates the stack tracker to undo the displacement from PLD.
         """
         self._emit_instr(Opcode.PHD, comment="Save D back to stack for epilogue")
+        self.region_state.stack_tracker.push(2)
 
     def _emit_d_equals_s_restore(self):
         """
@@ -1984,8 +1991,11 @@ class CallInstructionSelector(BaseSelector):
         we need to:
         1. Push D back onto the stack (since PLD popped it before the call)
         2. Set D = S for continued far pointer access
+
+        Updates the stack tracker to undo the displacement from PLD.
         """
         self._emit_instr(Opcode.PHD, comment="Save D back to stack")
+        self.region_state.stack_tracker.push(2)
         self._emit_instr(Opcode.TSC, comment="Transfer S to A")
         self._emit_instr(Opcode.TCD, comment="Set D = S for far pointer access")
 

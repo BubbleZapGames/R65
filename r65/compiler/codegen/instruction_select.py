@@ -239,10 +239,12 @@ class InstructionSelector:
             Tuple of (Opcode variant, Operand)
         """
         # Adjust stack-relative locations for current spill offset
-        # When X/Y are spilled, stack grows and local variable offsets need adjustment
+        # When X/Y are spilled or D register management changes SP, local
+        # variable offsets need adjustment. Displacement can be negative
+        # when PLD temporarily shrinks the frame before PHA args are pushed.
         if location.kind == LocationKind.STACK:
             spill_offset = self.call_selector.get_current_spill_offset()
-            if spill_offset > 0:
+            if spill_offset != 0:
                 location = PhysicalLocation(
                     kind=LocationKind.STACK,
                     stack_offset=location.stack_offset + spill_offset,
