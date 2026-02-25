@@ -486,6 +486,25 @@ class StackSlotAllocator:
                                 vreg_uses[var.id] = []
                             vreg_uses[var.id].append(instr)
 
+                elif isinstance(instr, LoadIndirect):
+                    # LoadIndirect deposits its result in A via LDA [dp],Y.
+                    # Track dest vreg as defined-in-A for coalescence (u8 only).
+                    if isinstance(instr.dest, VirtualRegister):
+                        vreg_id = instr.dest.id
+                        if vreg_id not in vreg_defs:
+                            dest_size = self._get_vreg_size(instr.dest)
+                            if dest_size == 1:
+                                vreg_defs[vreg_id] = []
+                                vreg_defs[vreg_id].append((instr, 'A'))
+
+                    # Track pointer/index uses
+                    uses = self.liveness_analyzer._get_uses(instr)
+                    for var in uses:
+                        if isinstance(var, VirtualRegister):
+                            if var.id not in vreg_uses:
+                                vreg_uses[var.id] = []
+                            vreg_uses[var.id].append(instr)
+
                 elif isinstance(instr, (Call, TraitDispatch)):
                     # Call with exactly 1 return vreg: the return value is in A.
                     # Track as defined-in-A for coalescence (e.g., result = func()).
@@ -527,10 +546,10 @@ class StackSlotAllocator:
                             vreg_uses[var.id].append(instr)
 
         # Build candidate list: (vreg_id, def_instr, hw_reg, uses)
-        # For ALU-def vregs (BinaryOp/UnaryOp/etc.), restrict to cases where
-        # all uses are Return or Move-to-A. This prevents conflicts when another
-        # vreg is also live in A (the ALU op would clobber it).
-        _alu_def_types = (BinaryOp, UnaryOp)
+        # For ALU-def vregs (BinaryOp/UnaryOp/LoadIndirect), restrict to cases
+        # where all uses are Return, Move, Compare, Store (as source), or as
+        # the LEFT operand of a BinaryOp (chained arithmetic).
+        _alu_def_types = (BinaryOp, UnaryOp, LoadIndirect)
         candidates = []
         for vreg_id, defs in vreg_defs.items():
             if len(defs) != 1:
@@ -541,10 +560,11 @@ class StackSlotAllocator:
             uses = vreg_uses.get(vreg_id, [])
 
             # ALU-def vregs: only safe if the value is consumed by Move,
-            # Return, Store (as value source), or as the LEFT operand of
-            # a BinaryOp (chained arithmetic).
+            # Return, Compare, Store (as value source), or as the LEFT
+            # operand of a BinaryOp (chained arithmetic).
             # - Move variants just read A (STA/TAX/TAY preserve A).
             # - Store from our vreg emits STA directly from A (preserves A).
+            # - Compare emits CMP which reads A without modifying it.
             # - BinaryOp-left reads A first (no clobber), then overwrites A
             #   with the result — safe because the clobber analysis handles it
             #   (the BinaryOp at max_use_idx is not scanned for clobbers).
@@ -552,6 +572,7 @@ class StackSlotAllocator:
                 all_uses_safe = all(
                     isinstance(use, Return) or
                     isinstance(use, Move) or
+                    isinstance(use, Compare) or
                     (isinstance(use, Store) and
                      isinstance(use.source, VirtualRegister) and
                      use.source.id == vreg_id) or
@@ -679,7 +700,7 @@ class StackSlotAllocator:
         self, vreg_id: int, hw_reg: str, coalesceable: Dict[VirtualRegister, str]
     ):
         """Mark a vreg as hw-coalesceable by finding its def instruction."""
-        _def_types = (Move, BinaryOp, UnaryOp)
+        _def_types = (Move, BinaryOp, UnaryOp, LoadIndirect)
         for block in self.func.blocks.values():
             for instr in block.instructions:
                 if isinstance(instr, (Call, TraitDispatch)):

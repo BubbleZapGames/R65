@@ -26,24 +26,40 @@ from r65.compiler.codegen.type_utils import get_type_size
 
 def analyze_loop_promotion(mir_program: MIRProgram):
     """
-    Analyze and promote stack parameters used in loops to local vregs.
+    Analyze and promote loop variables to hardware registers.
 
     Mutates mir_program in place:
-    - Creates new local vregs with register hints for promoted params
-    - Inserts Move instructions at function entry to copy param -> local
-    - Replaces all references to param vregs with local vregs
+    - Stack parameters used in loops: creates new local vregs with register
+      hints, inserts Move instructions at function entry
+    - Local loop counters: sets register hints on existing vregs so the
+      register allocator places them in X/Y instead of stack slots
 
     Args:
         mir_program: MIR program to analyze (mutated in place)
     """
-    total_promoted = 0
+    total_param_promoted = 0
+    total_local_promoted = 0
 
     for func in mir_program.functions:
         promoted = _analyze_function(func)
-        total_promoted += promoted
+        total_param_promoted += promoted
 
-    if total_promoted > 0:
-        print(f"Loop register promotion: {total_promoted} parameter(s) promoted")
+    for func in mir_program.functions:
+        promoted = _promote_local_loop_counters(func)
+        total_local_promoted += promoted
+
+    # Eliminate temp copies in ALL functions with loops, even if no
+    # promotion happened. This collapses `%T = %V + 1; %V = Move %T`
+    # into `%V = %V + 1`, enabling INX/INY/DEX/DEY pattern matching
+    # in codegen (avoids expensive REP/TXA/ADC/TAX sequences).
+    for func in mir_program.functions:
+        if _find_loops(func):
+            _eliminate_temp_copies(func)
+
+    if total_param_promoted > 0:
+        print(f"Loop register promotion: {total_param_promoted} parameter(s) promoted")
+    if total_local_promoted > 0:
+        print(f"Loop register promotion: {total_local_promoted} local(s) promoted")
 
 
 def _analyze_function(func: MIRFunction) -> int:
@@ -163,6 +179,185 @@ def _analyze_function(func: MIRFunction) -> int:
     entry_block.instructions = moves_to_insert + entry_block.instructions
 
     return len(replacements)
+
+
+def _promote_local_loop_counters(func: MIRFunction) -> int:
+    """
+    Promote local loop counter variables to hardware registers (X/Y).
+
+    Unlike stack parameter promotion, this doesn't create new vregs or
+    insert entry Moves — it just sets register_hint on existing vregs
+    so the register allocator places them in X/Y instead of stack slots.
+
+    A local vreg is eligible if:
+    1. It is u16 (X/Y are always 16-bit)
+    2. It is a loop counter (incremented/decremented by 1 in loop body)
+    3. It is NOT a parameter vreg (those are handled by _analyze_function)
+    4. It is NOT already promoted
+
+    Returns:
+        Number of locals promoted
+    """
+    # Step 1: Find loops
+    loops = _find_loops(func)
+    if not loops:
+        return 0
+
+    # Step 2: Collect loop blocks
+    loop_blocks: Set[int] = set()
+    for header, body in loops:
+        loop_blocks.update(body)
+
+    # Step 3: Find loop counter vregs (checks both in-place and temp patterns)
+    loop_counter_vregs = _find_loop_counters(func, loop_blocks)
+    if not loop_counter_vregs:
+        return 0
+
+    # Step 3b: Eliminate temp copies BEFORE collecting uses.
+    # MIR lowers `len++` as `%T = %len + 1; %len = Move %T`.
+    # Without elimination, _uses_compatible_with_hw sees BinaryOp with
+    # dest=%T (not %len) and rejects it. After elimination, the pattern
+    # becomes `%len = %len + 1` which the compatibility check accepts.
+    _eliminate_temp_copies(func)
+
+    # Step 4: Build vreg_id -> VirtualRegister map from all instructions
+    all_vregs: Dict[int, VirtualRegister] = {}
+    for block in func.blocks.values():
+        for instr in block.instructions:
+            for vreg in _get_vregs_from_instr(instr):
+                all_vregs[vreg.id] = vreg
+
+    # Step 5: Collect all uses per vreg (for compatibility check)
+    vreg_uses: Dict[int, List] = {}
+    for block in func.blocks.values():
+        for instr in block.instructions:
+            for vreg in _get_vregs_from_instr(instr):
+                if vreg.id not in vreg_uses:
+                    vreg_uses[vreg.id] = []
+                vreg_uses[vreg.id].append(instr)
+
+    # Step 6: Filter to eligible local vregs
+    param_vreg_ids = {v.id for v in func.param_to_vreg.values() if v is not None}
+    already_promoted = {v.id for v in func.loop_promoted_hw_vregs.values()}
+    used_hints = set(func.loop_promoted_hw_vregs.keys())
+
+    promoted = 0
+    for vreg_id in sorted(loop_counter_vregs):
+        if vreg_id in param_vreg_ids:
+            continue
+        if vreg_id in already_promoted:
+            continue
+        vreg = all_vregs.get(vreg_id)
+        if vreg is None:
+            continue
+        if vreg.type_info is None:
+            continue
+        if get_type_size(vreg.type_info) != 2:
+            continue
+        # Check that all uses are compatible with hardware register allocation.
+        # Store/StoreIndirect with our vreg as source needs LDA which can't
+        # resolve a hardware register as memory operand. Call arguments may
+        # also be incompatible depending on mechanism.
+        if not _uses_compatible_with_hw(vreg_id, vreg_uses.get(vreg_id, [])):
+            continue
+
+        # Prefer Y for loop counters (INY/DEY), then X
+        if 'Y' not in used_hints:
+            hint = 'Y'
+        elif 'X' not in used_hints:
+            hint = 'X'
+        else:
+            continue
+
+        used_hints.add(hint)
+        vreg.register_hint = hint
+        func.loop_promoted_hw_vregs[hint] = vreg
+        promoted += 1
+
+    if promoted > 0:
+        _eliminate_temp_copies(func)
+
+    return promoted
+
+
+def _uses_compatible_with_hw(vreg_id: int, uses: list) -> bool:
+    """
+    Check if all uses of a vreg are compatible with hardware register allocation.
+
+    A vreg in X/Y can be used in:
+    - Move (source or dest) — emits TXA/TAX, LDX, etc.
+    - BinaryOp with +1/-1 where vreg is left operand — emits INX/INY/DEX/DEY
+    - Compare (as left or right) — emits CPX/CPY
+    - Return (as return value) — emits TXA/TYA
+    - CondBranch (as condition) — okay
+    - Jump — okay
+
+    Incompatible uses (codegen tries to resolve hw register as memory operand):
+    - BinaryOp with operations other than +1/-1 (shift, XOR, OR, etc.)
+    - BinaryOp where vreg is right operand (needs memory operand for CMP/SBC/etc.)
+    - UnaryOp — needs value in A
+    - Store (as source) — codegen resolves source as memory operand
+    - StoreIndirect (as source) — same issue
+    - LoadIndirect (as dest) — result comes from A, not X/Y
+    - Call/TraitDispatch (as argument value) — may need memory operand
+    - TypeConvert, ToBool, Rotate — need value in A
+    """
+    for use in uses:
+        if isinstance(use, BinaryOp):
+            # Only allow +1/-1 where our vreg is the left operand AND dest
+            # (this is the in-place increment/decrement that maps to INX/INY/DEX/DEY)
+            if isinstance(use.left, VirtualRegister) and use.left.id == vreg_id:
+                is_inc_dec = (
+                    use.op in ('+', '-') and
+                    isinstance(use.right, Immediate) and
+                    use.right.value == 1 and
+                    isinstance(use.dest, VirtualRegister) and
+                    use.dest.id == vreg_id
+                )
+                if not is_inc_dec:
+                    return False
+            # Vreg as right operand of BinaryOp — needs memory operand resolution
+            if isinstance(use.right, VirtualRegister) and use.right.id == vreg_id:
+                return False
+        elif isinstance(use, UnaryOp):
+            # UnaryOp needs value in A — incompatible
+            if isinstance(use.operand, VirtualRegister) and use.operand.id == vreg_id:
+                return False
+        elif isinstance(use, Compare):
+            # Compare: our vreg as LEFT can use CPX/CPY if right is
+            # Immediate or a non-hw vreg (memory operand). But if right
+            # is also a hw-promoted vreg, neither can be resolved as
+            # memory operand → reject.
+            # Our vreg as RIGHT: codegen resolves right as memory operand
+            # for CMP/CPX/CPY → reject.
+            is_left = isinstance(use.left, VirtualRegister) and use.left.id == vreg_id
+            is_right = isinstance(use.right, VirtualRegister) and use.right.id == vreg_id
+            if is_right:
+                return False
+            if is_left:
+                # Right operand must be resolvable as memory operand
+                if isinstance(use.right, VirtualRegister) and use.right.register_hint:
+                    # Other operand is also hw-promoted → can't resolve as memory
+                    return False
+        elif isinstance(use, Store):
+            if isinstance(use.source, VirtualRegister) and use.source.id == vreg_id:
+                return False
+        elif isinstance(use, StoreIndirect):
+            if isinstance(use.source, VirtualRegister) and use.source.id == vreg_id:
+                return False
+        elif isinstance(use, LoadIndirect):
+            # LoadIndirect dest gets the result in A, not compatible with X/Y dest
+            if isinstance(use.dest, VirtualRegister) and use.dest.id == vreg_id:
+                return False
+        elif isinstance(use, (Call, TraitDispatch)):
+            for arg in use.args:
+                if isinstance(arg.value, VirtualRegister) and arg.value.id == vreg_id:
+                    return False
+        elif isinstance(use, (TypeConvert, ToBool, Rotate)):
+            # These need value in A
+            if hasattr(use, 'source') and isinstance(use.source, VirtualRegister) and use.source.id == vreg_id:
+                return False
+    return True
 
 
 def _find_loops(func: MIRFunction) -> List[Tuple[int, Set[int]]]:

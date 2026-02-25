@@ -262,14 +262,22 @@ class FunctionCodeGenerator:
                 expected_is_m16 = (block.entry_mode.m_mode == ModeState.M16)
                 for pred_id in block.predecessors:
                     if pred_id not in codegen_exit_modes:
-                        # Back-edge: predecessor not yet emitted
-                        force_mode = True
-                        break
-                    pred_is_m16 = (codegen_exit_modes[pred_id] == 16)
-                    if pred_is_m16 != expected_is_m16:
-                        # Emitted predecessor exits in wrong mode
-                        force_mode = True
-                        break
+                        # Back-edge: predecessor not yet emitted.
+                        # Check if it's safe to skip: if the predecessor
+                        # enters in the same mode and doesn't contain
+                        # mode-changing operations, it will exit in the
+                        # same mode as our expected mode.
+                        if self._back_edge_may_change_mode(
+                            mir_func, pred_id, expected_is_m16
+                        ):
+                            force_mode = True
+                            break
+                    else:
+                        pred_is_m16 = (codegen_exit_modes[pred_id] == 16)
+                        if pred_is_m16 != expected_is_m16:
+                            # Emitted predecessor exits in wrong mode
+                            force_mode = True
+                            break
 
             # Emit mode switch at block entry if needed
             self._emit_block_entry_mode_switch(block, instr_selector,
@@ -360,8 +368,10 @@ class FunctionCodeGenerator:
         """
         Compute optimal ordering of basic blocks.
 
-        For now, simple DFS traversal from entry block.
-        Future: optimize for fall-through and minimize jumps.
+        Uses DFS traversal from entry block with a layout heuristic:
+        blocks containing Return instructions are visited last among
+        successors. This places loop bodies linearly before exit paths,
+        reducing mode-switch overhead at block boundaries.
 
         Args:
             mir_func: MIR function
@@ -369,6 +379,16 @@ class FunctionCodeGenerator:
         Returns:
             List of block IDs in emission order
         """
+        from r65.compiler.mir.nodes import Return as MIRReturn
+
+        # Pre-compute which blocks contain Return instructions
+        return_blocks: Set[int] = set()
+        for block_id, block in mir_func.blocks.items():
+            for instr in block.instructions:
+                if isinstance(instr, MIRReturn):
+                    return_blocks.add(block_id)
+                    break
+
         visited: Set[int] = set()
         order: List[int] = []
 
@@ -379,10 +399,15 @@ class FunctionCodeGenerator:
             visited.add(block_id)
             order.append(block_id)
 
-            # Visit successors
+            # Visit successors, placing return blocks last so loop bodies
+            # are laid out linearly (hot path as fallthrough)
             block = mir_func.blocks.get(block_id)
             if block:
-                for successor_id in block.successors:
+                successors = sorted(
+                    block.successors,
+                    key=lambda sid: sid in return_blocks,
+                )
+                for successor_id in successors:
                     visit(successor_id)
 
         # Start from entry block
@@ -394,6 +419,63 @@ class FunctionCodeGenerator:
                 visit(block_id)
 
         return order
+
+    def _back_edge_may_change_mode(
+        self, mir_func: MIRFunction, pred_id: int, expected_is_m16: bool
+    ) -> bool:
+        """
+        Check if a back-edge predecessor might exit in a different mode
+        than expected. Used to avoid redundant SEP/REP at loop headers.
+
+        Returns True (conservative, force mode switch) if:
+        - The predecessor block's entry mode differs from expected
+        - The predecessor contains instructions that may change accumulator mode
+        - The predecessor can't be analyzed (missing data)
+
+        Returns False (safe to skip mode switch) if the predecessor enters
+        in the same mode as expected and contains no mode-changing instructions.
+        """
+        from r65.compiler.typeck.processor_mode import ModeState
+        from r65.compiler.mir.nodes import (
+            BinaryOp, UnaryOp, Compare, Return, TypeConvert, Call,
+            TraitDispatch, LoadIndirect, Load, Store,
+        )
+        from r65.compiler.codegen.type_utils import get_type_size
+
+        pred_block = mir_func.blocks.get(pred_id)
+        if not pred_block:
+            return True  # Can't analyze
+
+        # Check if predecessor's entry mode matches our expected mode
+        if pred_block.entry_mode is None:
+            return True
+        pred_is_m16 = (pred_block.entry_mode.m_mode == ModeState.M16)
+        if pred_is_m16 != expected_is_m16:
+            return True  # Different entry mode
+
+        # Check if the block contains instructions that change accumulator mode.
+        # Operations on u16 values switch to m16; returns may switch for
+        # return value setup. Calls can leave mode in any state.
+        for instr in pred_block.instructions:
+            if isinstance(instr, (BinaryOp, UnaryOp)):
+                if instr.type_info and get_type_size(instr.type_info) >= 2:
+                    return True
+            elif isinstance(instr, Compare):
+                if instr.type_info and get_type_size(instr.type_info) >= 2:
+                    return True
+            elif isinstance(instr, Return):
+                return True  # May switch mode for return value
+            elif isinstance(instr, TypeConvert):
+                return True  # May involve mode changes
+            elif isinstance(instr, (Call, TraitDispatch)):
+                return True  # Callee may leave mode in any state
+            elif isinstance(instr, (LoadIndirect, Load, Store)):
+                # Check if the operation involves u16 types
+                if hasattr(instr, 'type_info') and instr.type_info:
+                    if get_type_size(instr.type_info) >= 2:
+                        return True
+
+        return False  # Block is mode-preserving
 
     def _emit_block_entry_mode_switch(self, block, instr_selector, force=False):
         """

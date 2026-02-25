@@ -438,7 +438,9 @@ class MemoryOperationSelector(BaseSelector):
                     self._emit_far_ptr_access_via_d_equals_s('LDA', ptr_loc, instr_index)
                 else:
                     self._emit_far_ptr_access_via_dbr('LDA', ptr_loc, instr_index)
-                self._emit_load_store('STA', dest_loc)
+                # Skip store if dest is A (hw-coalesceable) — value already in A
+                if not (dest_loc.kind == LocationKind.HARDWARE and dest_loc.hw_register == 'A'):
+                    self._emit_load_store('STA', dest_loc)
                 if will_clobber_y and self._has_y_self():
                     self._restore_y_self(y_self_save_addr)
                 return
@@ -452,7 +454,9 @@ class MemoryOperationSelector(BaseSelector):
             )
 
         self._emit_instr(opcode, operand, "Load through pointer")
-        self._emit_load_store('STA', dest_loc)
+        # Skip store if dest is A (hw-coalesceable) — value already in A
+        if not (dest_loc.kind == LocationKind.HARDWARE and dest_loc.hw_register == 'A'):
+            self._emit_load_store('STA', dest_loc)
         if will_clobber_y and self._has_y_self():
             self._restore_y_self(y_self_save_addr)
 

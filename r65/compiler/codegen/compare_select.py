@@ -63,17 +63,15 @@ class CompareSelector(BaseSelector):
                     # But that changes the register... Let's use the opposite approach:
                     # Push X/Y, load A with operand, store to temp location on stack,
                     # then compare X/Y with stack[1]
-                    # Actually, simplest: transfer X/Y to A and compare with memory
+                    # Transfer X/Y to A and use CMP (which supports all modes).
+                    # TXA/TYA don't modify X/Y so no save/restore needed.
+                    # This avoids PHX/PHY which would shift stack offsets and
+                    # PLX/PLY which clobber N/Z flags needed by CondBranch.
                     if mnemonic == 'CPX':
-                        self._emit_instr(Opcode.PHX, comment="Save X")
                         self._emit_instr(Opcode.TXA, comment="Transfer X to A for comparison")
-                        self._emit_load_store('CMP', operand)  # CMP supports all addressing modes
-                        self._emit_instr(Opcode.PLX, comment="Restore X")
                     else:  # CPY
-                        self._emit_instr(Opcode.PHY, comment="Save Y")
                         self._emit_instr(Opcode.TYA, comment="Transfer Y to A for comparison")
-                        self._emit_load_store('CMP', operand)  # CMP supports all addressing modes
-                        self._emit_instr(Opcode.PLY, comment="Restore Y")
+                    self._emit_load_store('CMP', operand)
             else:
                 # Use parent's opcode selection
                 opcode, op = self.parent._get_opcode_for_location(mnemonic, operand)
