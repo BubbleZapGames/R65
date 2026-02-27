@@ -240,6 +240,47 @@ class TestTypeCasts:
         }))
         assert result.success, f"Failures: {result.failures}"
 
+    def test_cast_then_multiply(self, e2e):
+        """Test u8 -> u16 cast followed by u16 constant multiply.
+        200 * 2 = 400 (overflow in u8, correct in u16).
+        Regression: ASL was emitted in m8 mode, truncating values > 127.
+        """
+        result = e2e.run('''
+            #[zeropage(0x10)]
+            static mut RESULT: u16;
+
+            fn double_wide(val: u8) -> u16 {
+                let wide: u16 = val as u16 * 2;
+                return wide;
+            }
+
+            #[entry]
+            fn main() {
+                RESULT = double_wide(200);
+            }
+        ''', ExpectedState(memory={
+            0x7E0010: [0x90, 0x01],  # 400 = 0x0190 LE
+        }))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_cast_then_divide(self, e2e):
+        """Test u16 constant divide uses 16-bit LSR.
+        0x0180 / 2 = 0x00C0 (192). In m8 mode LSR would only shift low byte.
+        """
+        result = e2e.run('''
+            #[zeropage(0x10)]
+            static mut RESULT: u16;
+
+            #[entry]
+            fn main() {
+                let val: u16 = 0x0180;
+                RESULT = val / 2;
+            }
+        ''', ExpectedState(memory={
+            0x7E0010: [0xC0, 0x00],  # 0x00C0 LE
+        }))
+        assert result.success, f"Failures: {result.failures}"
+
     def test_sign_extension_negative(self, e2e):
         """Test i8 -> i16 sign extension of negative value: -5 (0xFB) -> 0xFFFB."""
         result = e2e.run('''

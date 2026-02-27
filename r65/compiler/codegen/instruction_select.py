@@ -749,7 +749,7 @@ class InstructionSelector:
         # This is more efficient than byte-by-byte operations in 8-bit mode.
         needs_16bit_mode = (
             (is_u16 or has_large_immediate or involves_index_register or a_already_in_16bit) and
-            op in ('+', '-', '&', '|', '^', '<<', '>>')
+            op in ('+', '-', '&', '|', '^', '<<', '>>', '*', '/')
         )
 
         # Switch to appropriate mode for operation
