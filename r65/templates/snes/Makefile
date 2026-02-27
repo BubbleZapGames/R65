@@ -13,14 +13,14 @@ WLA = wla-65816
 WLA_LINK = wlalink
 
 # Flags
-WLA_FLAGS = -o
+WLA_FLAGS = -I src -o
 R65C_FLAGS = -v --cfg snes --dbg -I src
 
 # Default target
 all: $(ROM_FILE)
 
 # Compile R65 source to WLA-DX assembly
-$(BUILD_DIR)/main.asm: $(MAIN_SRC) $(wildcard src/lib/*.r65)
+$(BUILD_DIR)/main.asm: $(MAIN_SRC)
 	@mkdir -p $(BUILD_DIR)
 	$(R65C) $(MAIN_SRC) -o $@ $(R65C_FLAGS)
 
