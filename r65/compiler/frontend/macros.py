@@ -42,6 +42,7 @@ class MacroExpander:
         self._expansion_depth = 0
         self._expanding: Set[str] = set()  # Track currently expanding macros
         self._program_items: List[ast.Declaration] = []  # Store program declarations for symbol! resolution
+        self._format_literal_counter = 0  # Unique ID for format string literal statics
 
     def _invoke_macro(
         self,
@@ -1043,16 +1044,37 @@ class MacroExpander:
                 byte_len = self._compute_literal_byte_length(text)
                 if byte_len > 0:
                     if byte_len <= 3:
-                        # Inline byte writes for small literals (avoids memcpy call overhead)
+                        # Inline byte writes for small literals
                         for b in self._literal_to_bytes(text):
                             lines.append(f'*__fmtptr = {hex(b)};')
                             lines.append('__fmtptr = __fmtptr + 1;')
                     else:
+                        # Emit a static ROM array and for-loop copy
                         escaped = self._escape_format_literal(text)
+                        lit_id = self._format_literal_counter
+                        self._format_literal_counter += 1
+                        static_name = f'__fmtstr_{lit_id}'
+                        idx_var = f'__fmti{var_idx}'
+                        # Inject static into program items
+                        static_decl = ast.StaticDecl(
+                            attributes=[],
+                            is_far=False,
+                            is_mut=False,
+                            name=static_name,
+                            var_type=ast.ArrayType(
+                                element_type=ast.BasicType(name='u8'),
+                                size=ast.IntegerLiteral(value=byte_len),
+                            ),
+                            initializer=ast.StringLiteral(value=escaped),
+                        )
+                        if source_loc:
+                            static_decl.source_loc = source_loc
+                        self._program_items.append(static_decl)
                         lines.append(
-                            f'memcpy(__fmtptr, "{escaped}" as far *u8, {byte_len});'
+                            f'for {idx_var} in 0..{byte_len} {{ __fmtptr[{idx_var}] = {static_name}[{idx_var}]; }}'
                         )
                         lines.append(f'__fmtptr = __fmtptr + {byte_len};')
+                        var_idx += 1
             elif seg_type == 'specifier':
                 spec = seg_data
                 arg = format_args[arg_idx].strip()

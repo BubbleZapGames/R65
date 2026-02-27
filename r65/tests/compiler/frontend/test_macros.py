@@ -1215,10 +1215,8 @@ class TestFormatMacro:
     """Tests for format! macro expansion."""
 
     def test_format_literal_only(self):
-        """format! with only literal text generates memcpy + null terminate."""
+        """format! with only literal text generates inline copy + null terminate."""
         source = '''
-        far fn memcpy(dst: far *u8, src: far *u8, n: u16) {}
-
         #[ram]
         static mut BUF: [u8; 32] = [0; 32];
 
@@ -1232,13 +1230,12 @@ class TestFormatMacro:
         funcs = [i for i in expanded.items if isinstance(i, ast.FunctionDecl) and i.name == 'test']
         assert len(funcs) == 1
         stmts = funcs[0].body.statements
-        # Should have: let __fmtptr, memcpy call, ptr advance, null terminate
+        # Should have: let __fmtptr, let __fmtlit0, for loop, ptr advance, null terminate
         assert len(stmts) >= 3
 
     def test_format_with_u8(self):
         """format! with {u8} specifier generates u8_to_dec call."""
         source = '''
-        far fn memcpy(dst: far *u8, src: far *u8, n: u16) {}
         far fn u8_to_dec(buf: far *u8, value @ A: u8) -> u8 { return 0; }
 
         #[ram]
@@ -1253,7 +1250,7 @@ class TestFormatMacro:
 
         funcs = [i for i in expanded.items if isinstance(i, ast.FunctionDecl) and i.name == 'test']
         stmts = funcs[0].body.statements
-        # Should have: let __fmtptr, memcpy+advance, let __fmtn0 = u8_to_dec, advance, null term
+        # Should have: let __fmtptr, 2x inline byte write (N:), let __fmtn0 = u8_to_dec, advance, null term
         assert len(stmts) >= 5
 
     def test_format_wrong_arg_count(self):
@@ -1355,7 +1352,6 @@ class TestFormatMacro:
         from r65.compiler.main import compile_string
 
         source = '''
-        far fn memcpy(dst: far *u8, src: far *u8, n: u16) {}
         far fn u8_to_dec(buf: far *u8, value @ A: u8) -> u8 { return 0; }
         far fn u16_to_dec(buf: far *u8, value @ A: u16) -> u8 { return 0; }
         far fn u8_to_hex(buf: far *u8, value @ A: u8) {}
@@ -1657,10 +1653,8 @@ class TestFormatLiteralInlining:
         assert exp._literal_to_bytes("A\\nB") == [0x41, 0x0A, 0x42]
 
     def test_small_literal_inlines(self):
-        """1-3 byte literals emit inline byte writes instead of memcpy."""
+        """Small literals emit inline byte writes."""
         source = '''
-        far fn memcpy(dst: far *u8, src: far *u8, n: u16) {}
-
         #[ram]
         static mut BUF: [u8; 32] = [0; 32];
 
@@ -1673,16 +1667,13 @@ class TestFormatLiteralInlining:
 
         funcs = [i for i in expanded.items if isinstance(i, ast.FunctionDecl) and i.name == 'test']
         stmts = funcs[0].body.statements
-        # Should NOT contain a function call to memcpy
         # Should have: let __fmtptr, 2x (*__fmtptr=byte + ptr advance), null terminate
         # That's: 1 let + 2*(deref + advance) + 1 null = 6 stmts
         assert len(stmts) == 6
 
-    def test_large_literal_uses_memcpy(self):
-        """4+ byte literals still use memcpy."""
+    def test_large_literal_uses_for_loop(self):
+        """4+ byte literals use for loop copy from static ROM array."""
         source = '''
-        far fn memcpy(dst: far *u8, src: far *u8, n: u16) {}
-
         #[ram]
         static mut BUF: [u8; 32] = [0; 32];
 
@@ -1695,8 +1686,13 @@ class TestFormatLiteralInlining:
 
         funcs = [i for i in expanded.items if isinstance(i, ast.FunctionDecl) and i.name == 'test']
         stmts = funcs[0].body.statements
-        # Should have: let __fmtptr, memcpy call expr, ptr advance, null terminate = 4
+        # Should have: let __fmtptr, for loop, ptr advance, null terminate = 4
         assert len(stmts) == 4
+
+        # Should have injected a static declaration for the literal
+        statics = [i for i in expanded.items if isinstance(i, ast.StaticDecl) and i.name.startswith('__fmtstr_')]
+        assert len(statics) == 1
+        assert statics[0].is_mut is False  # ROM (immutable)
 
 
 class TestFormatNewSpecifiers:
