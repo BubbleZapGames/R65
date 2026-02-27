@@ -183,6 +183,7 @@ class OptimizationStats:
     branch_over_branch_eliminated: int = 0
     branch_to_next_eliminated: int = 0
     tracked_loads_eliminated: int = 0
+    identity_copies_eliminated: int = 0
 
     @property
     def total(self) -> int:
@@ -195,7 +196,8 @@ class OptimizationStats:
             self.redundant_and_before_sep_eliminated +
             self.branch_over_branch_eliminated +
             self.branch_to_next_eliminated +
-            self.tracked_loads_eliminated
+            self.tracked_loads_eliminated +
+            self.identity_copies_eliminated
         )
 
 
@@ -245,6 +247,7 @@ class PeepholeOptimizer:
         while changed:
             prev_total = self.stats.total
             nodes = self._eliminate_redundant_load_after_store(nodes)
+            nodes = self._eliminate_identity_copies(nodes)
             nodes = self._eliminate_redundant_loads_tracked(nodes)
             nodes = self._eliminate_dead_stores(nodes)
             nodes = self._eliminate_redundant_transfers(nodes)
@@ -305,6 +308,40 @@ class PeepholeOptimizer:
         """Check if two opcodes use the same addressing mode."""
         from r65.compiler.codegen.opcodes import addressing_mode
         return addressing_mode(op1) == addressing_mode(op2)
+
+    def _eliminate_identity_copies(self, nodes: List['AsmNode']) -> List['AsmNode']:
+        """
+        Eliminate adjacent LDA/STA pairs where source and destination are identical.
+
+        Patterns:
+            LDA $NN; STA $NN -> (removed)  — DP identity copy
+            LDA $NN,S; STA $NN,S -> (removed)  — Stack-relative identity copy
+        """
+        from r65.compiler.codegen.asm_nodes import Instruction
+
+        optimized = []
+        i = 0
+
+        while i < len(nodes):
+            node = nodes[i]
+
+            if (isinstance(node, Instruction) and
+                    node.opcode in LOAD_A_OPCODES and
+                    i + 1 < len(nodes)):
+                next_node = nodes[i + 1]
+                if (isinstance(next_node, Instruction) and
+                        next_node.opcode in STORE_A_OPCODES and
+                        node.operand == next_node.operand and
+                        self._same_addressing_mode(node.opcode, next_node.opcode)):
+                    # Identity copy — skip both instructions
+                    i += 2
+                    self.stats.identity_copies_eliminated += 1
+                    continue
+
+            optimized.append(node)
+            i += 1
+
+        return optimized
 
     def _eliminate_dead_stores(self, nodes: List['AsmNode']) -> List['AsmNode']:
         """

@@ -1290,6 +1290,12 @@ class CallInstructionSelector(BaseSelector):
         elif hasattr(arg.value, 'type_info') and arg.value.type_info:
             param_size = get_type_size(arg.value.type_info)
 
+        # Skip if value is already at the target scratch address (forwarding optimization)
+        if (arg_loc.kind == LocationKind.SCRATCH and
+                arg_loc.scratch_addr == scratch_addr and
+                arg_loc.size >= param_size):
+            return
+
         if param_size == 2:
             # 16-bit value: need m16 mode for single STA
             if arg_loc.kind == LocationKind.HARDWARE and arg_loc.hw_register == 'A':
