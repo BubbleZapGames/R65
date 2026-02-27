@@ -479,7 +479,9 @@ class PeepholeOptimizer:
         opportunities when multiple functions use the same stack offset,
         but is always safe (no false negatives).
         """
-        from r65.compiler.codegen.asm_nodes import Instruction
+        from r65.compiler.codegen.asm_nodes import Instruction, StackOffset
+
+        is_stack = isinstance(store_operand, StackOffset)
 
         for node in nodes:
             if not isinstance(node, Instruction):
@@ -491,6 +493,12 @@ class PeepholeOptimizer:
             # If the operand matches, the stored value IS being read.
             if (node.opcode in INDIRECT_ADDRESSING_OPCODES
                     and node.operand == store_operand):
+                return True
+            # Stack-modifying opcodes (PHB/PHA/PHX/PHY/PLB/PLA/PLX/PLY)
+            # shift the stack pointer, so a store to $N,S may be read as
+            # $(N+1),S after a push. We can't reliably match offsets across
+            # SP changes, so conservatively assume the store is read.
+            if is_stack and node.opcode in STACK_MODIFYING_OPCODES:
                 return True
 
         return False
