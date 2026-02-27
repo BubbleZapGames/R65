@@ -40,6 +40,7 @@ class MacroExpander:
         self.macros: Dict[str, MacroDefinition] = {}
         self._expansion_depth = 0
         self._expanding: Set[str] = set()  # Track currently expanding macros
+        self._program_items: List[ast.Declaration] = []  # Store program declarations for symbol! resolution
 
     def _invoke_macro(
         self,
@@ -120,6 +121,9 @@ class MacroExpander:
         Returns:
             A new program with macros expanded
         """
+        # Store program items for symbol! resolution
+        self._program_items = program.items
+
         # First pass: collect all macro definitions
         self._collect_macros(program)
 
@@ -350,6 +354,9 @@ class MacroExpander:
             # Handle stringify! specially
             if expr.name == "stringify":
                 return self._expand_stringify_expr(expr.args, expr.source_loc)
+            # Handle symbol! specially
+            if expr.name == "symbol":
+                return self._expand_symbol_expr(expr.args, expr.source_loc)
             # Expand user-defined macro to expression
             return self._expand_expression_invocation(expr.name, expr.args, expr.source_loc)
 
@@ -597,6 +604,9 @@ class MacroExpander:
         # Handle built-in stringify! macro
         if name == "stringify":
             return self._expand_stringify(args, source_loc)
+        # Handle built-in symbol! macro
+        if name == "symbol":
+            return self._expand_symbol(args, source_loc)
 
         def parse_as_statements(expanded_source: str, macro_name: str) -> List[ast.Statement]:
             # Wrap in a dummy function to parse as statements
@@ -851,6 +861,28 @@ class MacroExpander:
         text = text.replace('\r', '\\r')   # Carriage return
         return text
 
+    def _resolve_assembler_symbol(self, name: str) -> str:
+        """
+        Resolve an R65 identifier to its WLA-DX assembler label.
+
+        Rules:
+        - Immutable static with include_bytes! initializer -> "{name}_data"
+        - Immutable static with any other initializer -> "__{name}_data"
+        - Mutable static, function, const, or unknown -> "{name}" (pass-through)
+        """
+        for item in self._program_items:
+            if isinstance(item, ast.StaticDecl) and item.name == name:
+                if not item.is_mut and item.initializer is not None:
+                    if isinstance(item.initializer, ast.IncludeBytesExpr):
+                        return f"{name}_data"
+                    else:
+                        return f"__{name}_data"
+                return name
+            elif isinstance(item, (ast.FunctionDecl, ast.ConstDecl)) and item.name == name:
+                return name
+        # Unknown identifier - pass through
+        return name
+
     def _expand_stringify_expr(self, args: List[str], source_loc: Optional[SourceLocation]) -> ast.StringLiteral:
         """
         Expand stringify! macro in expression context.
@@ -870,6 +902,63 @@ class MacroExpander:
         
         # Return a string literal expression
         return ast.StringLiteral(value=escaped_args, source_loc=source_loc)
+
+    def _expand_symbol(
+        self,
+        args: List[str],
+        source_loc: Optional[SourceLocation]
+    ) -> List[ast.Statement]:
+        """
+        Expand the built-in symbol! macro in statement context.
+
+        symbol!(name) resolves an R65 identifier to its WLA-DX assembler label.
+
+        Args:
+            args: List of argument token strings (expects exactly one identifier)
+            source_loc: Source location of invocation
+
+        Returns:
+            List containing a single statement with the resolved string literal
+        """
+        if not args:
+            raise MacroError("symbol! requires exactly one identifier argument", source_loc)
+        name = args[0].strip()
+        resolved = self._resolve_assembler_symbol(name)
+        escaped = self._escape_string_literal(resolved)
+        string_literal = f'"{escaped}"'
+
+        try:
+            wrapped = f"fn __symbol_expand__() {{ {string_literal}; }}"
+            program = parse(wrapped, "<symbol>")
+
+            if program.items and isinstance(program.items[0], ast.FunctionDecl):
+                func = program.items[0]
+                if func.body.statements:
+                    return func.body.statements
+            return []
+        except Exception as e:
+            raise MacroError(
+                f"error expanding symbol!: {e}",
+                source_loc
+            )
+
+    def _expand_symbol_expr(self, args: List[str], source_loc: Optional[SourceLocation]) -> ast.StringLiteral:
+        """
+        Expand symbol! macro in expression context.
+
+        Args:
+            args: List of argument token strings (expects exactly one identifier)
+            source_loc: Source location of invocation
+
+        Returns:
+            String literal expression with resolved assembler label
+        """
+        if not args:
+            raise MacroError("symbol! requires exactly one identifier argument", source_loc)
+        name = args[0].strip()
+        resolved = self._resolve_assembler_symbol(name)
+        escaped = self._escape_string_literal(resolved)
+        return ast.StringLiteral(value=escaped, source_loc=source_loc)
 
     def _expand_repetition(
         self,
@@ -925,6 +1014,7 @@ class MacroExpander:
 
         Handles:
         - stringify!(args) -> "args"
+        - symbol!(name) -> "assembler_label"
         - "string1" + "string2" -> "string1string2"
 
         Args:
@@ -943,15 +1033,16 @@ class MacroExpander:
         while changed:
             changed = False
 
-            # First pass: expand stringify!(...)
+            # First pass: expand stringify!(...) and symbol!(...)
             i = 0
             new_result = []
             while i < len(result):
-                # Look for stringify ! ( ... )
+                # Look for stringify ! ( ... ) or symbol ! ( ... )
                 if (i + 3 < len(result) and
-                    result[i] == 'stringify' and
+                    result[i] in ('stringify', 'symbol') and
                     result[i + 1] == '!' and
                     result[i + 2] == '('):
+                    is_symbol = result[i] == 'symbol'
                     # Find matching close paren
                     depth = 1
                     j = i + 3
@@ -967,10 +1058,15 @@ class MacroExpander:
                             args.append(result[j])
                         j += 1
 
-                    # Create string literal from args
-                    arg_str = ' '.join(args)
-                    # Escape the string
-                    escaped = self._escape_string_literal(arg_str)
+                    if is_symbol:
+                        # Resolve identifier to assembler label
+                        name = args[0].strip() if args else ''
+                        resolved = self._resolve_assembler_symbol(name)
+                        escaped = self._escape_string_literal(resolved)
+                    else:
+                        # Create string literal from args
+                        arg_str = ' '.join(args)
+                        escaped = self._escape_string_literal(arg_str)
                     new_result.append(f'"{escaped}"')
                     i = j + 1  # Skip past closing paren
                     changed = True
@@ -1024,7 +1120,7 @@ class MacroExpander:
         # Tokens that should not have space after them
         no_space_after = {'!', '(', '[', '{', '.', '::', '@', '#'}
         # Identifiers and keywords that may precede ! for macros/builtins
-        macro_like = {'cfg', 'stringify', 'include', 'include_bytes', 'asm', 'NOP', 'compile_error', 'const_assert'}
+        macro_like = {'cfg', 'stringify', 'symbol', 'include', 'include_bytes', 'asm', 'NOP', 'compile_error', 'const_assert'}
 
         result = [tokens[0]]
 

@@ -958,3 +958,122 @@ class TestConstAssertMacro:
             builder.build_program(expanded)
 
         assert "not const-evaluable" in str(exc_info.value).lower() or "register" in str(exc_info.value).lower()
+
+
+# ============================================================================
+# Built-in symbol! Macro Tests
+# ============================================================================
+
+class TestSymbolMacro:
+    """Tests for built-in symbol! macro that resolves R65 names to WLA-DX labels."""
+
+    def test_symbol_rom_static_array_literal(self):
+        """Immutable static with array literal init -> __NAME_data."""
+        source = """
+        static TILE_DATA: [u8; 4] = [0, 1, 2, 3];
+
+        fn test() {
+            symbol!(TILE_DATA);
+        }
+        """
+        program = parse(source, "<test>")
+        expanded = expand_macros(program)
+
+        func = [i for i in expanded.items if isinstance(i, ast.FunctionDecl)][0]
+        stmt = func.body.statements[0]
+        assert isinstance(stmt, ast.ExprStmt)
+        assert isinstance(stmt.expr, ast.StringLiteral)
+        assert stmt.expr.value == "__TILE_DATA_data"
+
+    def test_symbol_rom_static_string_literal(self):
+        """Immutable static with string literal init -> __NAME_data."""
+        source = """
+        static MESSAGE: [u8; 6] = "Hello";
+
+        fn test() {
+            symbol!(MESSAGE);
+        }
+        """
+        program = parse(source, "<test>")
+        expanded = expand_macros(program)
+
+        func = [i for i in expanded.items if isinstance(i, ast.FunctionDecl)][0]
+        stmt = func.body.statements[0]
+        assert isinstance(stmt.expr, ast.StringLiteral)
+        assert stmt.expr.value == "__MESSAGE_data"
+
+    def test_symbol_mutable_static(self):
+        """Mutable static (RAM) -> name unchanged."""
+        source = """
+        #[ram]
+        static mut BUFFER: [u8; 256];
+
+        fn test() {
+            symbol!(BUFFER);
+        }
+        """
+        program = parse(source, "<test>")
+        expanded = expand_macros(program)
+
+        func = [i for i in expanded.items if isinstance(i, ast.FunctionDecl)][0]
+        stmt = func.body.statements[0]
+        assert isinstance(stmt.expr, ast.StringLiteral)
+        assert stmt.expr.value == "BUFFER"
+
+    def test_symbol_unknown_identifier(self):
+        """Unknown identifier -> pass-through."""
+        source = """
+        fn test() {
+            symbol!(UNKNOWN_THING);
+        }
+        """
+        program = parse(source, "<test>")
+        expanded = expand_macros(program)
+
+        func = [i for i in expanded.items if isinstance(i, ast.FunctionDecl)][0]
+        stmt = func.body.statements[0]
+        assert isinstance(stmt.expr, ast.StringLiteral)
+        assert stmt.expr.value == "UNKNOWN_THING"
+
+    def test_symbol_expression_context(self):
+        """symbol! in expression context returns StringLiteral."""
+        source = """
+        static PALETTE: [u8; 8] = [0; 8];
+
+        fn test() {
+            let x @ A = symbol!(PALETTE);
+        }
+        """
+        program = parse(source, "<test>")
+        expanded = expand_macros(program)
+
+        func = [i for i in expanded.items if isinstance(i, ast.FunctionDecl)][0]
+        let_stmt = func.body.statements[0]
+        assert isinstance(let_stmt, ast.LetStmt)
+        assert isinstance(let_stmt.initializer, ast.StringLiteral)
+        assert let_stmt.initializer.value == "__PALETTE_data"
+
+    def test_symbol_in_macro_body_token_level(self):
+        """symbol! resolved at token level inside user macro body (asm! named arg)."""
+        source = """
+        static GFX: [u8; 16] = [0; 16];
+
+        macro_rules! load_src($ptr:ident) {
+            asm!(
+                "LDA #<{PTR}",
+                PTR=symbol!($ptr)
+            );
+        }
+
+        fn test() {
+            load_src!(GFX);
+        }
+        """
+        program = parse(source, "<test>")
+        expanded = expand_macros(program)
+
+        func = [i for i in expanded.items if isinstance(i, ast.FunctionDecl)][0]
+        stmt = func.body.statements[0]
+        assert isinstance(stmt, ast.AsmStmt)
+        # The asm named arg should have the resolved label
+        assert stmt.format_args.get("PTR") == "__GFX_data"

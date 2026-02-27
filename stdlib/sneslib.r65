@@ -1388,7 +1388,7 @@ macro_rules! dma_set_src($channel:literal, $ptr:ident) {
         "STA A1T{CH}H",
         "LDA #:{PTR}",
         "STA A1B{CH}",
-        PTR=stringify!($ptr), CH=$channel
+        PTR=symbol!($ptr), CH=$channel
     );
 }
 
