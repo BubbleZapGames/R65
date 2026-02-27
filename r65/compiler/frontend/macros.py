@@ -38,6 +38,7 @@ class MacroExpander:
 
     def __init__(self):
         self.macros: Dict[str, MacroDefinition] = {}
+        self.warnings: List[str] = []
         self._expansion_depth = 0
         self._expanding: Set[str] = set()  # Track currently expanding macros
         self._program_items: List[ast.Declaration] = []  # Store program declarations for symbol! resolution
@@ -607,6 +608,9 @@ class MacroExpander:
         # Handle built-in symbol! macro
         if name == "symbol":
             return self._expand_symbol(args, source_loc)
+        # Handle built-in __format! macro (wrapped by format! in string.r65)
+        if name == "__format":
+            return self._expand_format_macro(args, source_loc)
 
         def parse_as_statements(expanded_source: str, macro_name: str) -> List[ast.Statement]:
             # Wrap in a dummy function to parse as statements
@@ -650,14 +654,21 @@ class MacroExpander:
         repeated_params = [p for p in macro.params if p.is_repeated]
 
         if repeated_params:
-            # All args go to the repeated parameter
             if len(repeated_params) > 1:
                 raise MacroError(
                     f"macro '{macro.name}' has multiple repeated parameters (not supported)",
                     source_loc
                 )
-            # Bind all args to the repeated param
-            bindings[repeated_params[0].name] = args
+            # Bind leading simple params first, remaining args go to repeated param
+            n_simple = len(simple_params)
+            if len(args) < n_simple:
+                raise MacroError(
+                    f"macro '{macro.name}' expects at least {n_simple} arguments, got {len(args)}",
+                    source_loc
+                )
+            for param, arg in zip(simple_params, args[:n_simple]):
+                bindings[param.name] = [arg]
+            bindings[repeated_params[0].name] = args[n_simple:]
         else:
             # Simple matching: each arg to each param
             if len(args) != len(simple_params):
@@ -960,6 +971,527 @@ class MacroExpander:
         escaped = self._escape_string_literal(resolved)
         return ast.StringLiteral(value=escaped, source_loc=source_loc)
 
+    # =========================================================================
+    # Built-in format! Macro
+    # =========================================================================
+
+    def _expand_format_macro(
+        self,
+        args: List[str],
+        source_loc: Optional[SourceLocation]
+    ) -> List[ast.Statement]:
+        """
+        Expand the built-in format! macro.
+
+        format!(buf, "fmt string {u8} {u16:x}", arg1, arg2)
+
+        Generates code that writes formatted output into the buffer using
+        pointer arithmetic and calls to string.r65 functions.
+
+        Args:
+            args: [buffer_ident, format_string_literal, ...format_args]
+            source_loc: Source location of invocation
+
+        Returns:
+            List of statements implementing the format operation
+        """
+        import re as _re
+
+        if len(args) < 2:
+            raise MacroError(
+                "format! requires at least a buffer and format string: "
+                "format!(BUF, \"text {u8}\", value)",
+                source_loc
+            )
+
+        buf = args[0].strip()
+        fmt_raw = args[1].strip()
+
+        # Strip quotes from format string literal
+        if not (fmt_raw.startswith('"') and fmt_raw.endswith('"')):
+            raise MacroError(
+                "format! second argument must be a string literal",
+                source_loc
+            )
+        fmt = fmt_raw[1:-1]
+
+        format_args = args[2:]  # Remaining args are format arguments
+
+        # Parse the format string into segments
+        segments = self._parse_format_string(fmt, source_loc)
+
+        # Count specifiers and validate against provided args
+        spec_count = sum(1 for seg_type, _ in segments if seg_type == 'specifier')
+        if spec_count != len(format_args):
+            raise MacroError(
+                f"format! has {spec_count} format specifier(s) but "
+                f"{len(format_args)} argument(s) were provided",
+                source_loc
+            )
+
+        # Check if output can fit in target buffer
+        self._check_format_buffer_overflow(buf, segments, source_loc)
+
+        # Generate R65 source code
+        lines = [f"let mut __fmtptr: far *u8 = &{buf} as far *u8;"]
+        arg_idx = 0
+        var_idx = 0
+
+        for seg_type, seg_data in segments:
+            if seg_type == 'literal':
+                text = seg_data['text']
+                byte_len = self._compute_literal_byte_length(text)
+                if byte_len > 0:
+                    if byte_len <= 3:
+                        # Inline byte writes for small literals (avoids memcpy call overhead)
+                        for b in self._literal_to_bytes(text):
+                            lines.append(f'*__fmtptr = {hex(b)};')
+                            lines.append('__fmtptr = __fmtptr + 1;')
+                    else:
+                        escaped = self._escape_format_literal(text)
+                        lines.append(
+                            f'memcpy(__fmtptr, "{escaped}" as far *u8, {byte_len});'
+                        )
+                        lines.append(f'__fmtptr = __fmtptr + {byte_len};')
+            elif seg_type == 'specifier':
+                spec = seg_data
+                arg = format_args[arg_idx].strip()
+
+                if spec['type'] == 'u8' and spec.get('format') == 'd':
+                    if spec.get('width'):
+                        w = spec['width']
+                        fill = '0x30' if spec.get('zero_pad') else '0x20'
+                        lines.append(
+                            f'u8_to_dec_pad(__fmtptr, {arg}, {w}, {fill});'
+                        )
+                        lines.append(f'__fmtptr = __fmtptr + {w};')
+                    else:
+                        lines.append(
+                            f'let __fmtn{var_idx}: u8 = u8_to_dec(__fmtptr, {arg});'
+                        )
+                        lines.append(
+                            f'__fmtptr = __fmtptr + __fmtn{var_idx} as u16;'
+                        )
+                        var_idx += 1
+                elif spec['type'] == 'u16' and spec.get('format') == 'd':
+                    if spec.get('width'):
+                        w = spec['width']
+                        fill = '0x30' if spec.get('zero_pad') else '0x20'
+                        lines.append(
+                            f'u16_to_dec_pad(__fmtptr, {arg}, {w}, {fill});'
+                        )
+                        lines.append(f'__fmtptr = __fmtptr + {w};')
+                    else:
+                        lines.append(
+                            f'let __fmtn{var_idx}: u8 = u16_to_dec(__fmtptr, {arg});'
+                        )
+                        lines.append(
+                            f'__fmtptr = __fmtptr + __fmtn{var_idx} as u16;'
+                        )
+                        var_idx += 1
+                elif spec['type'] == 'u8' and spec.get('format') == 'x':
+                    lines.append(f'u8_to_hex(__fmtptr, {arg});')
+                    lines.append('__fmtptr = __fmtptr + 2;')
+                elif spec['type'] == 'u16' and spec.get('format') == 'x':
+                    lines.append(f'u16_to_hex(__fmtptr, {arg});')
+                    lines.append('__fmtptr = __fmtptr + 4;')
+                elif spec['type'] == 's':
+                    # Cast strcpy return (u16) to u8 then back to u16.
+                    # This forces a mode switch that prevents hw-coalescence
+                    # of the return value to A, avoiding a clobber when the
+                    # pointer address is loaded for the subsequent addition.
+                    # String lengths >255 are not expected on SNES.
+                    lines.append(
+                        f'let __fmtn{var_idx}: u8 = strcpy(__fmtptr, {arg}) as u8;'
+                    )
+                    lines.append(
+                        f'__fmtptr = __fmtptr + __fmtn{var_idx} as u16;'
+                    )
+                    var_idx += 1
+                elif spec['type'] == 'c':
+                    lines.append(f'*__fmtptr = {arg};')
+                    lines.append('__fmtptr = __fmtptr + 1;')
+                elif spec['type'] == 'bool':
+                    lines.append(
+                        f'if {arg} {{ *__fmtptr = 0x31; }}'
+                        f' else {{ *__fmtptr = 0x30; }}'
+                    )
+                    lines.append('__fmtptr = __fmtptr + 1;')
+                elif spec['type'] == 'i8' and spec.get('format') == 'd':
+                    # Inline sign check: if negative, write '-' and negate
+                    lines.append(
+                        f'let __fmts{var_idx}: u8 = {arg} as u8;'
+                    )
+                    lines.append(
+                        f'if __fmts{var_idx} & 0x80 != 0 {{'
+                        f' *__fmtptr = 0x2D; __fmtptr = __fmtptr + 1;'
+                        f' __fmts{var_idx} = 0 - __fmts{var_idx};'
+                        f' }}'
+                    )
+                    lines.append(
+                        f'let __fmtn{var_idx}: u8 = u8_to_dec(__fmtptr, __fmts{var_idx});'
+                    )
+                    lines.append(
+                        f'__fmtptr = __fmtptr + __fmtn{var_idx} as u16;'
+                    )
+                    var_idx += 1
+                elif spec['type'] == 'i16' and spec.get('format') == 'd':
+                    # Inline sign check: if negative, write '-' and negate
+                    lines.append(
+                        f'let __fmts{var_idx}: u16 = {arg} as u16;'
+                    )
+                    lines.append(
+                        f'if __fmts{var_idx} & 0x8000 != 0 {{'
+                        f' *__fmtptr = 0x2D; __fmtptr = __fmtptr + 1;'
+                        f' __fmts{var_idx} = 0 - __fmts{var_idx};'
+                        f' }}'
+                    )
+                    lines.append(
+                        f'let __fmtn{var_idx}: u8 = u16_to_dec(__fmtptr, __fmts{var_idx});'
+                    )
+                    lines.append(
+                        f'__fmtptr = __fmtptr + __fmtn{var_idx} as u16;'
+                    )
+                    var_idx += 1
+
+                arg_idx += 1
+
+        # Null terminate
+        lines.append("*__fmtptr = 0;")
+
+        # Wrap in function, parse, extract statements
+        source_code = ' '.join(lines)
+        wrapped = f"fn __format_expand__() {{ {source_code} }}"
+
+        try:
+            program = parse(wrapped, "<format>")
+            if program.items and isinstance(program.items[0], ast.FunctionDecl):
+                func = program.items[0]
+                expanded_stmts = self._expand_statements(func.body.statements)
+                for stmt in expanded_stmts:
+                    self._override_source_loc(stmt, source_loc)
+                return expanded_stmts
+            return []
+        except MacroError:
+            raise
+        except Exception as e:
+            raise MacroError(f"error expanding format!: {e}", source_loc)
+
+    def _parse_format_string(
+        self,
+        fmt: str,
+        source_loc: Optional[SourceLocation]
+    ) -> List[tuple]:
+        """
+        Parse a format string into segments of literal text and specifiers.
+
+        Args:
+            fmt: Format string contents (without surrounding quotes)
+            source_loc: Source location for error reporting
+
+        Returns:
+            List of (type, data) tuples where type is 'literal' or 'specifier'
+        """
+        segments = []
+        i = 0
+        literal: List[str] = []
+
+        while i < len(fmt):
+            ch = fmt[i]
+
+            if ch == '\\':
+                # Escape sequence - keep entirely as-is for re-emission
+                literal.append('\\')
+                i += 1
+                if i < len(fmt):
+                    next_ch = fmt[i]
+                    literal.append(next_ch)
+                    i += 1
+                    if next_ch == 'x' and i + 1 < len(fmt):
+                        # \xNN - two hex digits
+                        literal.append(fmt[i])
+                        literal.append(fmt[i + 1])
+                        i += 2
+
+            elif ch == '{':
+                if i + 1 < len(fmt) and fmt[i + 1] == '{':
+                    # Escaped brace: {{ -> literal {
+                    literal.append('{')
+                    i += 2
+                else:
+                    # Start of specifier - flush accumulated literal
+                    if literal:
+                        segments.append(('literal', {'text': ''.join(literal)}))
+                        literal = []
+
+                    # Find closing brace
+                    end = fmt.find('}', i + 1)
+                    if end == -1:
+                        raise MacroError(
+                            "unterminated '{' in format string",
+                            source_loc
+                        )
+
+                    spec_str = fmt[i + 1:end]
+                    spec = self._parse_specifier(spec_str, source_loc)
+                    segments.append(('specifier', spec))
+                    i = end + 1
+
+            elif ch == '}':
+                if i + 1 < len(fmt) and fmt[i + 1] == '}':
+                    # Escaped brace: }} -> literal }
+                    literal.append('}')
+                    i += 2
+                else:
+                    raise MacroError(
+                        "unmatched '}' in format string "
+                        "(use '}}' for literal '}')",
+                        source_loc
+                    )
+            else:
+                literal.append(ch)
+                i += 1
+
+        # Flush remaining literal
+        if literal:
+            segments.append(('literal', {'text': ''.join(literal)}))
+
+        return segments
+
+    def _parse_specifier(
+        self,
+        spec_str: str,
+        source_loc: Optional[SourceLocation]
+    ) -> dict:
+        """
+        Parse a format specifier string.
+
+        Valid specifiers: u8, u16, u8:x, u16:x, u16:Nd (1<=N<=10), s, c
+
+        Args:
+            spec_str: Specifier string (contents between { and })
+            source_loc: Source location for error reporting
+
+        Returns:
+            Dict with 'type', optional 'format', optional 'width'
+        """
+        import re as _re
+
+        spec_str = spec_str.strip()
+
+        if spec_str == 'u8':
+            return {'type': 'u8', 'format': 'd'}
+        elif spec_str == 'u16':
+            return {'type': 'u16', 'format': 'd'}
+        elif spec_str == 'u8:x':
+            return {'type': 'u8', 'format': 'x'}
+        elif spec_str == 'u16:x':
+            return {'type': 'u16', 'format': 'x'}
+        elif spec_str == 's':
+            return {'type': 's'}
+        elif spec_str == 'c':
+            return {'type': 'c'}
+        elif spec_str == 'bool':
+            return {'type': 'bool'}
+        elif spec_str == 'i8':
+            return {'type': 'i8', 'format': 'd'}
+        elif spec_str == 'i16':
+            return {'type': 'i16', 'format': 'd'}
+        else:
+            # Check for (u8|u16):(0?)Nd pattern
+            m = _re.match(r'^(u8|u16):(0?)(\d+)d$', spec_str)
+            if m:
+                typ = m.group(1)
+                zero_pad = m.group(2) == '0'
+                width = int(m.group(3))
+                if width < 1 or width > 10:
+                    raise MacroError(
+                        f"format specifier width must be 1-10, got {width}",
+                        source_loc
+                    )
+                result = {'type': typ, 'format': 'd', 'width': width}
+                if zero_pad:
+                    result['zero_pad'] = True
+                return result
+
+            raise MacroError(
+                f"unknown format specifier '{{{spec_str}}}'. "
+                f"Valid: {{u8}}, {{u16}}, {{i8}}, {{i16}}, {{bool}}, "
+                f"{{u8:x}}, {{u16:x}}, {{u8:Nd}}, {{u16:Nd}}, "
+                f"{{u8:0Nd}}, {{u16:0Nd}}, {{s}}, {{c}}",
+                source_loc
+            )
+
+    def _compute_literal_byte_length(self, text: str) -> int:
+        """
+        Count the number of bytes a literal string will occupy after
+        escape sequence processing.
+
+        Args:
+            text: Raw literal text (with escape sequences in source form)
+
+        Returns:
+            Number of bytes
+        """
+        count = 0
+        i = 0
+        while i < len(text):
+            if text[i] == '\\':
+                # Escape sequence = 1 byte
+                i += 1
+                if i < len(text):
+                    if text[i] == 'x':
+                        i += 2  # skip two hex digits
+                    i += 1
+                count += 1
+            else:
+                count += 1
+                i += 1
+        return count
+
+    def _literal_to_bytes(self, text: str) -> list:
+        """
+        Convert literal text (with escape sequences) to a list of byte values.
+
+        Args:
+            text: Raw literal text (with escape sequences in source form)
+
+        Returns:
+            List of integer byte values
+        """
+        result = []
+        i = 0
+        while i < len(text):
+            if text[i] == '\\':
+                i += 1
+                if i < len(text):
+                    ch = text[i]
+                    if ch == 'n':
+                        result.append(0x0A)
+                    elif ch == 't':
+                        result.append(0x09)
+                    elif ch == 'r':
+                        result.append(0x0D)
+                    elif ch == '0':
+                        result.append(0x00)
+                    elif ch == '\\':
+                        result.append(0x5C)
+                    elif ch == 'x':
+                        if i + 2 < len(text):
+                            result.append(int(text[i + 1:i + 3], 16))
+                            i += 2
+                    else:
+                        result.append(ord(ch))
+                    i += 1
+            else:
+                result.append(ord(text[i]))
+                i += 1
+        return result
+
+    def _escape_format_literal(self, text: str) -> str:
+        """
+        Prepare literal text for embedding in a generated R65 string literal.
+
+        The text comes from inside a user-provided format string, so escape
+        sequences are already in their raw form. We only need to handle
+        characters that could break the generated string literal (e.g., if
+        {{ / }} processing introduced raw braces, which are fine in strings).
+
+        Args:
+            text: Literal text segment
+
+        Returns:
+            Text safe for embedding between double quotes in R65 source
+        """
+        # The text already contains properly-formed escape sequences from the
+        # original R65 string literal. Braces { } from {{ }} are valid in
+        # R65 strings. No additional escaping needed.
+        return text
+
+    def _check_format_buffer_overflow(
+        self,
+        buf: str,
+        segments: List[tuple],
+        source_loc: Optional[SourceLocation]
+    ):
+        """
+        Check if the formatted output can fit in the target buffer.
+
+        Looks up the buffer in program declarations. If it's a fixed-size
+        array with a literal size, computes the maximum possible output
+        length and warns if it may exceed the buffer.
+
+        Args:
+            buf: Buffer identifier name
+            segments: Parsed format string segments
+            source_loc: Source location for warning
+        """
+        # Look up the buffer declaration
+        buf_size = None
+        for item in self._program_items:
+            if isinstance(item, ast.StaticDecl) and item.name == buf:
+                if isinstance(item.var_type, ast.ArrayType):
+                    if isinstance(item.var_type.size, ast.IntegerLiteral):
+                        buf_size = item.var_type.size.value
+                break
+
+        if buf_size is None:
+            return
+
+        # Compute maximum output length from segments
+        # max_chars tracks known maximum; has_unbounded flags {s} specifiers
+        max_chars = 0
+        has_unbounded = False
+
+        for seg_type, seg_data in segments:
+            if seg_type == 'literal':
+                max_chars += self._compute_literal_byte_length(seg_data['text'])
+            elif seg_type == 'specifier':
+                spec = seg_data
+                if spec['type'] == 'u8' and spec.get('format') == 'd':
+                    if spec.get('width'):
+                        max_chars += spec['width']
+                    else:
+                        max_chars += 3    # "255"
+                elif spec['type'] == 'u16' and spec.get('format') == 'd':
+                    if spec.get('width'):
+                        max_chars += spec['width']
+                    else:
+                        max_chars += 5    # "65535"
+                elif spec['type'] == 'u8' and spec.get('format') == 'x':
+                    max_chars += 2    # "FF"
+                elif spec['type'] == 'u16' and spec.get('format') == 'x':
+                    max_chars += 4    # "FFFF"
+                elif spec['type'] == 'i8' and spec.get('format') == 'd':
+                    max_chars += 4    # "-128"
+                elif spec['type'] == 'i16' and spec.get('format') == 'd':
+                    max_chars += 6    # "-32768"
+                elif spec['type'] == 'bool':
+                    max_chars += 1    # "0" or "1"
+                elif spec['type'] == 's':
+                    has_unbounded = True
+                elif spec['type'] == 'c':
+                    max_chars += 1
+
+        # +1 for null terminator
+        total = max_chars + 1
+
+        if total > buf_size:
+            loc_str = f" at {source_loc}" if source_loc else ""
+            self.warnings.append(
+                f"format!{loc_str}: output may overflow buffer '{buf}' "
+                f"(max {total} bytes including null terminator, "
+                f"buffer is {buf_size} bytes)"
+            )
+        elif has_unbounded and max_chars + 1 >= buf_size:
+            # Known parts alone nearly fill the buffer, and {s} adds more
+            loc_str = f" at {source_loc}" if source_loc else ""
+            self.warnings.append(
+                f"format!{loc_str}: output may overflow buffer '{buf}' "
+                f"(at least {total} bytes before {{s}} content, "
+                f"buffer is {buf_size} bytes)"
+            )
+
     def _expand_repetition(
         self,
         content: List[str],
@@ -1120,7 +1652,7 @@ class MacroExpander:
         # Tokens that should not have space after them
         no_space_after = {'!', '(', '[', '{', '.', '::', '@', '#'}
         # Identifiers and keywords that may precede ! for macros/builtins
-        macro_like = {'cfg', 'stringify', 'symbol', 'include', 'include_bytes', 'asm', 'NOP', 'compile_error', 'const_assert'}
+        macro_like = {'cfg', 'stringify', 'symbol', 'include', 'include_bytes', 'asm', 'NOP', 'compile_error', 'const_assert', '__format'}
 
         result = [tokens[0]]
 
@@ -1240,5 +1772,9 @@ def expand_macros(program: ast.Program) -> ast.Program:
     Returns:
         A new program with macros expanded
     """
+    import sys as _sys
     expander = MacroExpander()
-    return expander.expand(program)
+    result = expander.expand(program)
+    for warning in expander.warnings:
+        print(f"warning: {warning}", file=_sys.stderr)
+    return result

@@ -5,6 +5,7 @@ Tests macro definition parsing, invocation parsing, and macro expansion.
 """
 import pytest
 from r65.compiler.frontend import parse, expand_macros, MacroError
+from r65.compiler.frontend.macros import MacroExpander
 from r65.compiler.frontend import ast
 
 
@@ -1077,3 +1078,726 @@ class TestSymbolMacro:
         assert isinstance(stmt, ast.AsmStmt)
         # The asm named arg should have the resolved label
         assert stmt.format_args.get("PTR") == "__GFX_data"
+
+
+# ============================================================================
+# Built-in __format! Macro Tests
+# ============================================================================
+
+class TestFormatStringParser:
+    """Tests for format string parsing internals."""
+
+    def _get_expander(self):
+        from r65.compiler.frontend.macros import MacroExpander
+        return MacroExpander()
+
+    def test_parse_literal_only(self):
+        """Format string with no specifiers."""
+        exp = self._get_expander()
+        segments = exp._parse_format_string("Hello World", None)
+        assert len(segments) == 1
+        assert segments[0] == ('literal', {'text': 'Hello World'})
+
+    def test_parse_single_specifier(self):
+        """Format string with one specifier."""
+        exp = self._get_expander()
+        segments = exp._parse_format_string("N:{u8}", None)
+        assert len(segments) == 2
+        assert segments[0] == ('literal', {'text': 'N:'})
+        assert segments[1] == ('specifier', {'type': 'u8', 'format': 'd'})
+
+    def test_parse_multiple_specifiers(self):
+        """Format string with multiple specifiers."""
+        exp = self._get_expander()
+        segments = exp._parse_format_string("{u8} {u16:x}", None)
+        assert len(segments) == 3
+        assert segments[0] == ('specifier', {'type': 'u8', 'format': 'd'})
+        assert segments[1] == ('literal', {'text': ' '})
+        assert segments[2] == ('specifier', {'type': 'u16', 'format': 'x'})
+
+    def test_parse_escaped_braces(self):
+        """{{ and }} produce literal braces."""
+        exp = self._get_expander()
+        segments = exp._parse_format_string("{{braces}}", None)
+        assert len(segments) == 1
+        assert segments[0] == ('literal', {'text': '{braces}'})
+
+    def test_parse_empty_string(self):
+        """Empty format string produces no segments."""
+        exp = self._get_expander()
+        segments = exp._parse_format_string("", None)
+        assert len(segments) == 0
+
+    def test_parse_all_specifier_types(self):
+        """All specifier types parse correctly."""
+        exp = self._get_expander()
+        for spec_str, expected in [
+            ('u8', {'type': 'u8', 'format': 'd'}),
+            ('u16', {'type': 'u16', 'format': 'd'}),
+            ('i8', {'type': 'i8', 'format': 'd'}),
+            ('i16', {'type': 'i16', 'format': 'd'}),
+            ('bool', {'type': 'bool'}),
+            ('u8:x', {'type': 'u8', 'format': 'x'}),
+            ('u16:x', {'type': 'u16', 'format': 'x'}),
+            ('u16:5d', {'type': 'u16', 'format': 'd', 'width': 5}),
+            ('u8:3d', {'type': 'u8', 'format': 'd', 'width': 3}),
+            ('u8:03d', {'type': 'u8', 'format': 'd', 'width': 3, 'zero_pad': True}),
+            ('u16:05d', {'type': 'u16', 'format': 'd', 'width': 5, 'zero_pad': True}),
+            ('s', {'type': 's'}),
+            ('c', {'type': 'c'}),
+        ]:
+            result = exp._parse_specifier(spec_str, None)
+            assert result == expected, f"Failed for {spec_str}: {result}"
+
+    def test_parse_escape_sequences(self):
+        """Escape sequences in literal text are preserved."""
+        exp = self._get_expander()
+        segments = exp._parse_format_string("A\\nB{u8}", None)
+        assert len(segments) == 2
+        assert segments[0] == ('literal', {'text': 'A\\nB'})
+
+    def test_parse_unterminated_brace_error(self):
+        """Unterminated { raises error."""
+        exp = self._get_expander()
+        with pytest.raises(MacroError) as exc:
+            exp._parse_format_string("bad {u8", None)
+        assert "unterminated" in str(exc.value)
+
+    def test_parse_unmatched_close_brace_error(self):
+        """Unmatched } raises error."""
+        exp = self._get_expander()
+        with pytest.raises(MacroError) as exc:
+            exp._parse_format_string("bad } here", None)
+        assert "unmatched" in str(exc.value)
+
+    def test_parse_unknown_specifier_error(self):
+        """Unknown specifier raises error."""
+        exp = self._get_expander()
+        with pytest.raises(MacroError) as exc:
+            exp._parse_specifier("i32", None)
+        assert "unknown format specifier" in str(exc.value)
+
+    def test_parse_padded_width_bounds(self):
+        """Padded width outside 1-10 raises error."""
+        exp = self._get_expander()
+        with pytest.raises(MacroError):
+            exp._parse_specifier("u16:0d", None)
+        with pytest.raises(MacroError):
+            exp._parse_specifier("u16:11d", None)
+
+    def test_compute_byte_length_simple(self):
+        """Byte length of plain text."""
+        exp = self._get_expander()
+        assert exp._compute_literal_byte_length("Hello") == 5
+
+    def test_compute_byte_length_escapes(self):
+        """Byte length counts escape sequences as 1 byte each."""
+        exp = self._get_expander()
+        assert exp._compute_literal_byte_length("A\\nB") == 3  # A, \n, B
+        assert exp._compute_literal_byte_length("\\x41") == 1  # \x41
+        assert exp._compute_literal_byte_length("\\\\") == 1   # \\
+
+    def test_compute_byte_length_empty(self):
+        """Byte length of empty string is 0."""
+        exp = self._get_expander()
+        assert exp._compute_literal_byte_length("") == 0
+
+    def test_adjacent_specifiers(self):
+        """Adjacent specifiers with no literal between them."""
+        exp = self._get_expander()
+        segments = exp._parse_format_string("{u8}{u16}", None)
+        assert len(segments) == 2
+        assert segments[0] == ('specifier', {'type': 'u8', 'format': 'd'})
+        assert segments[1] == ('specifier', {'type': 'u16', 'format': 'd'})
+
+
+class TestFormatMacro:
+    """Tests for format! macro expansion."""
+
+    def test_format_literal_only(self):
+        """format! with only literal text generates memcpy + null terminate."""
+        source = '''
+        far fn memcpy(dst: far *u8, src: far *u8, n: u16) {}
+
+        #[ram]
+        static mut BUF: [u8; 32] = [0; 32];
+
+        fn test() {
+            __format!(BUF, "Hello");
+        }
+        '''
+        program = parse(source, "<test>")
+        expanded = expand_macros(program)
+
+        funcs = [i for i in expanded.items if isinstance(i, ast.FunctionDecl) and i.name == 'test']
+        assert len(funcs) == 1
+        stmts = funcs[0].body.statements
+        # Should have: let __fmtptr, memcpy call, ptr advance, null terminate
+        assert len(stmts) >= 3
+
+    def test_format_with_u8(self):
+        """format! with {u8} specifier generates u8_to_dec call."""
+        source = '''
+        far fn memcpy(dst: far *u8, src: far *u8, n: u16) {}
+        far fn u8_to_dec(buf: far *u8, value @ A: u8) -> u8 { return 0; }
+
+        #[ram]
+        static mut BUF: [u8; 32] = [0; 32];
+
+        fn test() {
+            __format!(BUF, "N:{u8}", 42);
+        }
+        '''
+        program = parse(source, "<test>")
+        expanded = expand_macros(program)
+
+        funcs = [i for i in expanded.items if isinstance(i, ast.FunctionDecl) and i.name == 'test']
+        stmts = funcs[0].body.statements
+        # Should have: let __fmtptr, memcpy+advance, let __fmtn0 = u8_to_dec, advance, null term
+        assert len(stmts) >= 5
+
+    def test_format_wrong_arg_count(self):
+        """format! with wrong number of args raises error."""
+        source = '''
+        #[ram]
+        static mut BUF: [u8; 32] = [0; 32];
+
+        fn test() {
+            __format!(BUF, "{u8} {u16}", 42);
+        }
+        '''
+        program = parse(source, "<test>")
+        with pytest.raises(MacroError) as exc:
+            expand_macros(program)
+        assert "2 format specifier(s)" in str(exc.value)
+        assert "1 argument(s)" in str(exc.value)
+
+    def test_format_missing_format_string(self):
+        """format! with only buffer raises error."""
+        source = '''
+        #[ram]
+        static mut BUF: [u8; 32] = [0; 32];
+
+        fn test() {
+            __format!(BUF);
+        }
+        '''
+        program = parse(source, "<test>")
+        with pytest.raises(MacroError) as exc:
+            expand_macros(program)
+        assert "requires at least" in str(exc.value)
+
+    def test_format_non_string_literal(self):
+        """format! with non-string second arg raises error."""
+        source = '''
+        #[ram]
+        static mut BUF: [u8; 32] = [0; 32];
+
+        fn test() {
+            __format!(BUF, 42);
+        }
+        '''
+        program = parse(source, "<test>")
+        with pytest.raises(MacroError) as exc:
+            expand_macros(program)
+        assert "string literal" in str(exc.value)
+
+    def test_format_unknown_specifier(self):
+        """format! with unknown specifier raises error."""
+        source = '''
+        #[ram]
+        static mut BUF: [u8; 32] = [0; 32];
+
+        fn test() {
+            __format!(BUF, "{i32}", 42);
+        }
+        '''
+        program = parse(source, "<test>")
+        with pytest.raises(MacroError) as exc:
+            expand_macros(program)
+        assert "unknown format specifier" in str(exc.value)
+
+    def test_format_unterminated_brace(self):
+        """format! with unterminated { raises error."""
+        source = '''
+        #[ram]
+        static mut BUF: [u8; 32] = [0; 32];
+
+        fn test() {
+            __format!(BUF, "bad {u8");
+        }
+        '''
+        program = parse(source, "<test>")
+        with pytest.raises(MacroError) as exc:
+            expand_macros(program)
+        assert "unterminated" in str(exc.value)
+
+    def test_format_empty_string(self):
+        """format! with empty format string generates just null terminate."""
+        source = '''
+        #[ram]
+        static mut BUF: [u8; 32] = [0; 32];
+
+        fn test() {
+            __format!(BUF, "");
+        }
+        '''
+        program = parse(source, "<test>")
+        expanded = expand_macros(program)
+
+        funcs = [i for i in expanded.items if isinstance(i, ast.FunctionDecl) and i.name == 'test']
+        stmts = funcs[0].body.statements
+        # Should have: let __fmtptr, *__fmtptr = 0
+        assert len(stmts) == 2
+
+    def test_format_compile_with_all_specifiers(self):
+        """format! with all specifier types compiles without error."""
+        from r65.compiler.main import compile_string
+
+        source = '''
+        far fn memcpy(dst: far *u8, src: far *u8, n: u16) {}
+        far fn u8_to_dec(buf: far *u8, value @ A: u8) -> u8 { return 0; }
+        far fn u16_to_dec(buf: far *u8, value @ A: u16) -> u8 { return 0; }
+        far fn u8_to_hex(buf: far *u8, value @ A: u8) {}
+        far fn u16_to_hex(buf: far *u8, value @ A: u16) {}
+        far fn u16_to_dec_pad(buf: far *u8, value @ A: u16, width: u8, fill: u8) -> u8 { return 0; }
+        far fn strcpy(dst: far *u8, src: far *u8) -> u16 { return 0; }
+
+        #[ram]
+        static mut BUF: [u8; 128] = [0; 128];
+        static NAME: [u8; 6] = "World";
+
+        fn test() {
+            __format!(BUF, "{u8} {u16} {u8:x} {u16:x} {u16:5d} {s} {c}",
+                42, 1000, 0xAB, 0xDEAD, 99, &NAME as far *u8, 0x58);
+        }
+        '''
+        assembly = compile_string(source)
+        assert assembly is not None
+        assert len(assembly) > 0
+
+
+class TestFormatBufferOverflow:
+    """Tests for format! buffer overflow detection."""
+
+    def _get_expander_with_program(self, source):
+        """Parse source and return an expander with program items loaded."""
+        program = parse(source, "<test>")
+        expander = MacroExpander()
+        expander._program_items = program.items
+        return expander
+
+    def test_no_warning_when_buffer_fits(self):
+        """No warning when max output fits in buffer."""
+        source = '''
+        #[ram]
+        static mut BUF: [u8; 32] = [0; 32];
+        '''
+        exp = self._get_expander_with_program(source)
+        segments = exp._parse_format_string("Hello", None)
+        exp._check_format_buffer_overflow("BUF", segments, None)
+        assert len(exp.warnings) == 0
+
+    def test_warning_when_literal_overflows(self):
+        """Warning when literal text alone exceeds buffer."""
+        source = '''
+        #[ram]
+        static mut BUF: [u8; 4] = [0; 4];
+        '''
+        exp = self._get_expander_with_program(source)
+        # "Hello" = 5 bytes + 1 null = 6 > 4
+        segments = exp._parse_format_string("Hello", None)
+        exp._check_format_buffer_overflow("BUF", segments, None)
+        assert len(exp.warnings) == 1
+        assert "overflow" in exp.warnings[0]
+        assert "BUF" in exp.warnings[0]
+
+    def test_warning_with_u8_specifier_overflow(self):
+        """Warning when u8 specifier max (3) causes overflow."""
+        source = '''
+        #[ram]
+        static mut BUF: [u8; 4] = [0; 4];
+        '''
+        exp = self._get_expander_with_program(source)
+        # "N:" = 2 + {u8} max 3 + null = 6 > 4
+        segments = exp._parse_format_string("N:{u8}", None)
+        exp._check_format_buffer_overflow("BUF", segments, None)
+        assert len(exp.warnings) == 1
+
+    def test_warning_with_u16_specifier_overflow(self):
+        """Warning when u16 specifier max (5) causes overflow."""
+        source = '''
+        #[ram]
+        static mut BUF: [u8; 4] = [0; 4];
+        '''
+        exp = self._get_expander_with_program(source)
+        # {u16} max 5 + null = 6 > 4
+        segments = exp._parse_format_string("{u16}", None)
+        exp._check_format_buffer_overflow("BUF", segments, None)
+        assert len(exp.warnings) == 1
+
+    def test_no_warning_when_exactly_fits(self):
+        """No warning when max output exactly fills buffer."""
+        source = '''
+        #[ram]
+        static mut BUF: [u8; 3] = [0; 3];
+        '''
+        exp = self._get_expander_with_program(source)
+        # "AB" = 2 + null = 3 == 3
+        segments = exp._parse_format_string("AB", None)
+        exp._check_format_buffer_overflow("BUF", segments, None)
+        assert len(exp.warnings) == 0
+
+    def test_no_warning_for_unknown_buffer(self):
+        """No warning when buffer is not a known static array."""
+        source = '''
+        #[ram]
+        static mut OTHER: [u8; 4] = [0; 4];
+        '''
+        exp = self._get_expander_with_program(source)
+        segments = exp._parse_format_string("Hello World", None)
+        exp._check_format_buffer_overflow("BUF", segments, None)
+        assert len(exp.warnings) == 0
+
+    def test_hex_specifier_sizes(self):
+        """Hex specifiers have fixed sizes: u8:x=2, u16:x=4."""
+        source = '''
+        #[ram]
+        static mut BUF: [u8; 6] = [0; 6];
+        '''
+        exp = self._get_expander_with_program(source)
+        # {u8:x}=2 + {u16:x}=4 + null = 7 > 6
+        segments = [
+            ('specifier', {'type': 'u8', 'format': 'x'}),
+            ('specifier', {'type': 'u16', 'format': 'x'}),
+        ]
+        exp._check_format_buffer_overflow("BUF", segments, None)
+        assert len(exp.warnings) == 1
+
+    def test_padded_specifier_uses_width(self):
+        """Padded u16:Nd uses width N for size calculation."""
+        source = '''
+        #[ram]
+        static mut BUF: [u8; 6] = [0; 6];
+        '''
+        exp = self._get_expander_with_program(source)
+        # {u16:8d} = 8 + null = 9 > 6
+        segments = [
+            ('specifier', {'type': 'u16', 'format': 'd', 'width': 8}),
+        ]
+        exp._check_format_buffer_overflow("BUF", segments, None)
+        assert len(exp.warnings) == 1
+
+    def test_char_specifier_size(self):
+        """Char specifier {c} contributes 1 byte."""
+        source = '''
+        #[ram]
+        static mut BUF: [u8; 3] = [0; 3];
+        '''
+        exp = self._get_expander_with_program(source)
+        # "AB" = 2 + {c} = 1 + null = 4 > 3
+        segments = exp._parse_format_string("AB{c}", None)
+        exp._check_format_buffer_overflow("BUF", segments, None)
+        assert len(exp.warnings) == 1
+
+    def test_string_specifier_unbounded_near_full(self):
+        """Warning when known parts nearly fill buffer and {s} adds more."""
+        source = '''
+        #[ram]
+        static mut BUF: [u8; 6] = [0; 6];
+        '''
+        exp = self._get_expander_with_program(source)
+        # "Hello" = 5 + {s} = unknown + null = at least 6 == 6
+        segments = exp._parse_format_string("Hello{s}", None)
+        exp._check_format_buffer_overflow("BUF", segments, None)
+        assert len(exp.warnings) == 1
+        assert "{s}" in exp.warnings[0]
+
+    def test_string_specifier_unbounded_with_room(self):
+        """No warning when known parts leave room for {s}."""
+        source = '''
+        #[ram]
+        static mut BUF: [u8; 32] = [0; 32];
+        '''
+        exp = self._get_expander_with_program(source)
+        # "Hi " = 3 + {s} = unknown + null = at least 4 < 32
+        segments = exp._parse_format_string("Hi {s}", None)
+        exp._check_format_buffer_overflow("BUF", segments, None)
+        assert len(exp.warnings) == 0
+
+    def test_i8_overflow_size(self):
+        """i8 contributes max 4 bytes ('-128')."""
+        source = '''
+        #[ram]
+        static mut BUF: [u8; 4] = [0; 4];
+        '''
+        exp = self._get_expander_with_program(source)
+        # {i8} max 4 + null = 5 > 4
+        segments = [('specifier', {'type': 'i8', 'format': 'd'})]
+        exp._check_format_buffer_overflow("BUF", segments, None)
+        assert len(exp.warnings) == 1
+
+    def test_i16_overflow_size(self):
+        """i16 contributes max 6 bytes ('-32768')."""
+        source = '''
+        #[ram]
+        static mut BUF: [u8; 6] = [0; 6];
+        '''
+        exp = self._get_expander_with_program(source)
+        # {i16} max 6 + null = 7 > 6
+        segments = [('specifier', {'type': 'i16', 'format': 'd'})]
+        exp._check_format_buffer_overflow("BUF", segments, None)
+        assert len(exp.warnings) == 1
+
+    def test_bool_overflow_size(self):
+        """bool contributes 1 byte."""
+        source = '''
+        #[ram]
+        static mut BUF: [u8; 2] = [0; 2];
+        '''
+        exp = self._get_expander_with_program(source)
+        # {bool} = 1 + null = 2 == 2, should fit
+        segments = [('specifier', {'type': 'bool'})]
+        exp._check_format_buffer_overflow("BUF", segments, None)
+        assert len(exp.warnings) == 0
+
+    def test_u8_padded_overflow_size(self):
+        """u8 with width uses width for overflow calculation."""
+        source = '''
+        #[ram]
+        static mut BUF: [u8; 4] = [0; 4];
+        '''
+        exp = self._get_expander_with_program(source)
+        # {u8:5d} = 5 + null = 6 > 4
+        segments = [('specifier', {'type': 'u8', 'format': 'd', 'width': 5})]
+        exp._check_format_buffer_overflow("BUF", segments, None)
+        assert len(exp.warnings) == 1
+
+
+class TestFormatSpecifierParsing:
+    """Tests for new format specifier parsing."""
+
+    def _get_expander(self):
+        return MacroExpander()
+
+    def test_parse_bool(self):
+        """bool specifier parses correctly."""
+        exp = self._get_expander()
+        result = exp._parse_specifier("bool", None)
+        assert result == {'type': 'bool'}
+
+    def test_parse_i8(self):
+        """i8 specifier parses correctly."""
+        exp = self._get_expander()
+        result = exp._parse_specifier("i8", None)
+        assert result == {'type': 'i8', 'format': 'd'}
+
+    def test_parse_i16(self):
+        """i16 specifier parses correctly."""
+        exp = self._get_expander()
+        result = exp._parse_specifier("i16", None)
+        assert result == {'type': 'i16', 'format': 'd'}
+
+    def test_parse_u8_padded(self):
+        """u8:3d space-padded specifier parses correctly."""
+        exp = self._get_expander()
+        result = exp._parse_specifier("u8:3d", None)
+        assert result == {'type': 'u8', 'format': 'd', 'width': 3}
+
+    def test_parse_u8_zero_padded(self):
+        """u8:03d zero-padded specifier parses correctly."""
+        exp = self._get_expander()
+        result = exp._parse_specifier("u8:03d", None)
+        assert result == {'type': 'u8', 'format': 'd', 'width': 3, 'zero_pad': True}
+
+    def test_parse_u16_zero_padded(self):
+        """u16:05d zero-padded specifier parses correctly."""
+        exp = self._get_expander()
+        result = exp._parse_specifier("u16:05d", None)
+        assert result == {'type': 'u16', 'format': 'd', 'width': 5, 'zero_pad': True}
+
+    def test_parse_padded_width_bounds_u8(self):
+        """u8 padded width outside 1-10 raises error."""
+        exp = self._get_expander()
+        with pytest.raises(MacroError):
+            exp._parse_specifier("u8:0d", None)
+        with pytest.raises(MacroError):
+            exp._parse_specifier("u8:11d", None)
+
+
+class TestFormatLiteralInlining:
+    """Tests for small literal inlining optimization."""
+
+    def _get_expander(self):
+        return MacroExpander()
+
+    def test_literal_to_bytes_simple(self):
+        """Plain ASCII text converts to byte values."""
+        exp = self._get_expander()
+        assert exp._literal_to_bytes("AB") == [0x41, 0x42]
+
+    def test_literal_to_bytes_escapes(self):
+        """Escape sequences convert correctly."""
+        exp = self._get_expander()
+        assert exp._literal_to_bytes("\\n") == [0x0A]
+        assert exp._literal_to_bytes("\\t") == [0x09]
+        assert exp._literal_to_bytes("\\r") == [0x0D]
+        assert exp._literal_to_bytes("\\0") == [0x00]
+        assert exp._literal_to_bytes("\\\\") == [0x5C]
+
+    def test_literal_to_bytes_hex_escape(self):
+        """\\xNN hex escapes convert correctly."""
+        exp = self._get_expander()
+        assert exp._literal_to_bytes("\\x41") == [0x41]
+        assert exp._literal_to_bytes("\\xFF") == [0xFF]
+
+    def test_literal_to_bytes_mixed(self):
+        """Mixed text and escapes convert correctly."""
+        exp = self._get_expander()
+        assert exp._literal_to_bytes("A\\nB") == [0x41, 0x0A, 0x42]
+
+    def test_small_literal_inlines(self):
+        """1-3 byte literals emit inline byte writes instead of memcpy."""
+        source = '''
+        far fn memcpy(dst: far *u8, src: far *u8, n: u16) {}
+
+        #[ram]
+        static mut BUF: [u8; 32] = [0; 32];
+
+        fn test() {
+            __format!(BUF, "Hi");
+        }
+        '''
+        program = parse(source, "<test>")
+        expanded = expand_macros(program)
+
+        funcs = [i for i in expanded.items if isinstance(i, ast.FunctionDecl) and i.name == 'test']
+        stmts = funcs[0].body.statements
+        # Should NOT contain a function call to memcpy
+        # Should have: let __fmtptr, 2x (*__fmtptr=byte + ptr advance), null terminate
+        # That's: 1 let + 2*(deref + advance) + 1 null = 6 stmts
+        assert len(stmts) == 6
+
+    def test_large_literal_uses_memcpy(self):
+        """4+ byte literals still use memcpy."""
+        source = '''
+        far fn memcpy(dst: far *u8, src: far *u8, n: u16) {}
+
+        #[ram]
+        static mut BUF: [u8; 32] = [0; 32];
+
+        fn test() {
+            __format!(BUF, "Hello");
+        }
+        '''
+        program = parse(source, "<test>")
+        expanded = expand_macros(program)
+
+        funcs = [i for i in expanded.items if isinstance(i, ast.FunctionDecl) and i.name == 'test']
+        stmts = funcs[0].body.statements
+        # Should have: let __fmtptr, memcpy call expr, ptr advance, null terminate = 4
+        assert len(stmts) == 4
+
+
+class TestFormatNewSpecifiers:
+    """Tests for format! with new specifier types."""
+
+    def test_format_with_bool(self):
+        """format! with {bool} generates inline if/else."""
+        source = '''
+        #[ram]
+        static mut BUF: [u8; 32] = [0; 32];
+
+        fn test() {
+            __format!(BUF, "{bool}", true);
+        }
+        '''
+        program = parse(source, "<test>")
+        expanded = expand_macros(program)
+
+        funcs = [i for i in expanded.items if isinstance(i, ast.FunctionDecl) and i.name == 'test']
+        stmts = funcs[0].body.statements
+        # Should have: let __fmtptr, if/else, ptr advance, null terminate = 4
+        assert len(stmts) == 4
+
+    def test_format_with_i8(self):
+        """format! with {i8} generates inline sign check + u8_to_dec call."""
+        source = '''
+        far fn u8_to_dec(buf: far *u8, value @ A: u8) -> u8 { return 0; }
+
+        #[ram]
+        static mut BUF: [u8; 32] = [0; 32];
+
+        fn test() {
+            __format!(BUF, "{i8}", 42);
+        }
+        '''
+        program = parse(source, "<test>")
+        expanded = expand_macros(program)
+
+        funcs = [i for i in expanded.items if isinstance(i, ast.FunctionDecl) and i.name == 'test']
+        stmts = funcs[0].body.statements
+        # Should have: let __fmtptr, let __fmts0, if sign check, let __fmtn0 = u8_to_dec,
+        #              ptr advance, null terminate = 6
+        assert len(stmts) == 6
+
+    def test_format_with_i16(self):
+        """format! with {i16} generates inline sign check + u16_to_dec call."""
+        source = '''
+        far fn u16_to_dec(buf: far *u8, value @ A: u16) -> u8 { return 0; }
+
+        #[ram]
+        static mut BUF: [u8; 32] = [0; 32];
+
+        fn test() {
+            __format!(BUF, "{i16}", 1000);
+        }
+        '''
+        program = parse(source, "<test>")
+        expanded = expand_macros(program)
+
+        funcs = [i for i in expanded.items if isinstance(i, ast.FunctionDecl) and i.name == 'test']
+        stmts = funcs[0].body.statements
+        # Should have: let __fmtptr, let __fmts0, if sign check, let __fmtn0 = u16_to_dec,
+        #              ptr advance, null terminate = 6
+        assert len(stmts) == 6
+
+    def test_format_with_u8_padded(self):
+        """format! with {u8:3d} generates u8_to_dec_pad call."""
+        source = '''
+        far fn u8_to_dec_pad(buf: far *u8, value @ A: u8, width: u8, fill: u8) -> u8 { return 0; }
+
+        #[ram]
+        static mut BUF: [u8; 32] = [0; 32];
+
+        fn test() {
+            __format!(BUF, "{u8:3d}", 42);
+        }
+        '''
+        program = parse(source, "<test>")
+        expanded = expand_macros(program)
+
+        funcs = [i for i in expanded.items if isinstance(i, ast.FunctionDecl) and i.name == 'test']
+        stmts = funcs[0].body.statements
+        # Should have: let __fmtptr, u8_to_dec_pad call, ptr advance, null terminate = 4
+        assert len(stmts) == 4
+
+    def test_format_with_u16_zero_padded(self):
+        """format! with {u16:05d} generates u16_to_dec_pad with zero fill."""
+        source = '''
+        far fn u16_to_dec_pad(buf: far *u8, value @ A: u16, width: u8, fill: u8) -> u8 { return 0; }
+
+        #[ram]
+        static mut BUF: [u8; 32] = [0; 32];
+
+        fn test() {
+            __format!(BUF, "{u16:05d}", 42);
+        }
+        '''
+        program = parse(source, "<test>")
+        expanded = expand_macros(program)
+
+        funcs = [i for i in expanded.items if isinstance(i, ast.FunctionDecl) and i.name == 'test']
+        stmts = funcs[0].body.statements
+        # Should have: let __fmtptr, u16_to_dec_pad call, ptr advance, null terminate = 4
+        assert len(stmts) == 4

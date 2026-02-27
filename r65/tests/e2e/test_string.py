@@ -1086,7 +1086,7 @@ class TestU16ToDecPad:
 
             #[entry]
             fn main() {{
-                let len: u8 = u16_to_dec_pad(&BUF as far *u8, 42, 5);
+                let len: u8 = u16_to_dec_pad(&BUF as far *u8, 42, 5, 0x20);
                 RESULT[0] = BUF[0];
                 RESULT[1] = BUF[1];
                 RESULT[2] = BUF[2];
@@ -1113,7 +1113,7 @@ class TestU16ToDecPad:
 
             #[entry]
             fn main() {{
-                let len: u8 = u16_to_dec_pad(&BUF as far *u8, 123, 3);
+                let len: u8 = u16_to_dec_pad(&BUF as far *u8, 123, 3, 0x20);
                 RESULT[0] = BUF[0];
                 RESULT[1] = BUF[1];
                 RESULT[2] = BUF[2];
