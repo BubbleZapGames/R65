@@ -76,11 +76,17 @@ class ABIModel(ABC):
             emit_instr(Opcode.PHB, comment=f"Allocate frame ({frame_size} bytes)")
 
     def _emit_register_push_alloc(self, emit_instr, frame_size: int):
-        """Allocate frame using PHX/PHY (2 bytes each) and PHA (1 byte remainder).
+        """Allocate frame using PHX/PHY (2 bytes each) and PHB (1 byte remainder).
 
         More efficient than PHB-per-byte: PHX/PHY push 2 bytes at 4 cycles
         vs 2×PHB at 6 cycles. Alternates PHX/PHY to avoid needing both
         registers to hold specific values.
+
+        Uses PHB (not PHA) for the 1-byte remainder because PHA's push size
+        depends on the M flag: 1 byte in m8, 2 bytes in m16. Functions with
+        @ A: u16 parameters enter in m16 mode (caller does REP #$20 before
+        JSR), so PHA would push 2 bytes instead of 1. PHB always pushes
+        exactly 1 byte regardless of processor mode.
         """
         from r65.compiler.codegen.opcodes import Opcode
         remaining = frame_size
@@ -93,7 +99,7 @@ class ABIModel(ABC):
             use_x = not use_x
             remaining -= 2
         if remaining == 1:
-            emit_instr(Opcode.PHA, comment=f"Allocate frame ({frame_size} bytes)")
+            emit_instr(Opcode.PHB, comment=f"Allocate frame ({frame_size} bytes)")
 
     def _emit_tsc_alloc(self, emit_instr, frame_size: int):
         from r65.compiler.codegen.opcodes import Opcode

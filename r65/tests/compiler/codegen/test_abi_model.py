@@ -619,25 +619,27 @@ class TestABIDefaultFrameAlloc:
         return collected
 
     def test_frame_1_byte(self):
-        assert self._collect(1) == ['PHA']
+        # PHB (not PHA) for 1-byte remainder: PHA size depends on M flag
+        # (2 bytes in m16), PHB always pushes exactly 1 byte
+        assert self._collect(1) == ['PHB']
 
     def test_frame_2_bytes(self):
         assert self._collect(2) == ['PHX']
 
     def test_frame_3_bytes(self):
-        assert self._collect(3) == ['PHX', 'PHA']
+        assert self._collect(3) == ['PHX', 'PHB']
 
     def test_frame_4_bytes(self):
         assert self._collect(4) == ['PHX', 'PHY']
 
     def test_frame_5_bytes(self):
-        assert self._collect(5) == ['PHX', 'PHY', 'PHA']
+        assert self._collect(5) == ['PHX', 'PHY', 'PHB']
 
     def test_frame_6_bytes(self):
         assert self._collect(6) == ['PHX', 'PHY', 'PHX']
 
     def test_frame_7_bytes(self):
-        assert self._collect(7) == ['PHX', 'PHY', 'PHX', 'PHA']
+        assert self._collect(7) == ['PHX', 'PHY', 'PHX', 'PHB']
 
     def test_frame_8_bytes(self):
         assert self._collect(8) == ['PHX', 'PHY', 'PHX', 'PHY']
