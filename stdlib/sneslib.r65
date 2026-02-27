@@ -1185,7 +1185,7 @@ macro_rules! write_color($color:expr) {
 
 // Write RGB color to CGRAM (each component 0-31)
 // Usage: write_rgb!(31, 0, 0);  // Red
-macro_rules! write_rgb($r:expr, $g:expr, $b:expr) {
+macro_rules! write_rgb($r:literal, $g:literal, $b:literal) {
     CGDATA = (($g & 0x07) << 5) | ($r & 0x1F);
     CGDATA = (($b & 0x1F) << 2) | (($g >> 3) & 0x03);
 }
@@ -1379,7 +1379,7 @@ macro_rules! clear_nmi() {
 
 // Set DMA source address from a far pointer/label
 // Usage: dma_set_src!(0, my_graphics_data);
-macro_rules! dma_set_src($channel:literal, $ptr:expr) {
+macro_rules! dma_set_src($channel:literal, $ptr:ident) {
     const_assert!($channel < 8, "DMA channel must be 0-7");
     asm!(
         "LDA #<{PTR}",
@@ -1395,7 +1395,7 @@ macro_rules! dma_set_src($channel:literal, $ptr:expr) {
 // Set DMA destination with 24-bit address (for WRAM transfers)
 // Combines WRAM address setup (WMADDL/M/H) with DMA mode/BBAD configuration
 // Usage: dma_set_dest!(0, DMA_MODE_1REG_1WRITE, 0x7E2000);
-macro_rules! dma_set_dest($channel:literal, $mode:expr, $dest:expr) {
+macro_rules! dma_set_dest($channel:literal, $mode:literal, $dest:ident) {
     const_assert!($channel < 8, "DMA channel must be 0-7");
     asm!(
         "LDA #<{DEST}",
@@ -1414,7 +1414,7 @@ macro_rules! dma_set_dest($channel:literal, $mode:expr, $dest:expr) {
 
 // Set DMA destination for PPU registers (B-bus address) and transfer mode
 // Usage: dma_set_ppu_dest!(0, DMA_MODE_2REG_1WRITE, 0x18);
-macro_rules! dma_set_ppu_dest($channel:literal, $mode:expr, $bbad:expr) {
+macro_rules! dma_set_ppu_dest($channel:literal, $mode:expr, $bbad:literal) {
     const_assert!($channel < 8, "DMA channel must be 0-7");
     STATUS.A16 = false;  // Ensure 8-bit A (emits SEP #$20 only if needed)
     asm!(
@@ -1428,7 +1428,7 @@ macro_rules! dma_set_ppu_dest($channel:literal, $mode:expr, $bbad:expr) {
 
 // Set DMA transfer size
 // Usage: dma_set_size!(0, 4096);
-macro_rules! dma_set_size($channel:literal, $size:expr) {
+macro_rules! dma_set_size($channel:literal, $size:literal) {
     const_assert!($channel < 8, "DMA channel must be 0-7");
     asm!(
         "LDX #{SIZE}",
@@ -1439,7 +1439,7 @@ macro_rules! dma_set_size($channel:literal, $size:expr) {
 
 // Trigger DMA transfer on a channel
 // Usage: dma_trigger!(0);  // Trigger channel 0
-macro_rules! dma_trigger($channel:expr) {
+macro_rules! dma_trigger($channel:literal) {
     const_assert!($channel < 8, "DMA channel must be 0-7");
     MDMAEN = 1 << $channel;
 }
@@ -1455,11 +1455,11 @@ macro_rules! dma_trigger($channel:expr) {
 // DMA copy to VRAM (const version - compile-time source address)
 // Usage: dma_copy_vram_const!(0, src_label, dest_vram, size);
 // Note: src should be a WLA-DX label (e.g., sprites1_gfx_data), not an R65 variable
-macro_rules! dma_copy_vram_const($channel:literal, $src:expr, $dest:expr, $size:expr) {
+macro_rules! dma_copy_vram_const($channel:literal, $src:ident, $dest:ident, $size:literal) {
     STATUS.A16 = false;  // Ensure 8-bit A (emits SEP #$20 only if needed)
     asm!(
         "LDA #$80",       // VMAIN_INCREMENT_HIGH
-        "STA $2115",      // Store to VMAIN
+        "STA VMAIN",      // Store to VMAIN
         "LDX #{DEST}",
         "STX VMADD",
         DEST=$dest
@@ -1472,7 +1472,7 @@ macro_rules! dma_copy_vram_const($channel:literal, $src:expr, $dest:expr, $size:
 
 // DMA copy to CGRAM (palette) - const version
 // Usage: dma_copy_cgram_const!(0, src_label, start_color, num_colors);
-macro_rules! dma_copy_cgram_const($channel:literal, $src:expr, $start:expr, $count:expr) {
+macro_rules! dma_copy_cgram_const($channel:literal, $src:ident, $start:expr, $count:literal) {
     STATUS.A16 = false;  // Ensure 8-bit A (emits SEP #$20 only if needed)
     asm!(
         "LDA #{START}",
@@ -1491,7 +1491,7 @@ macro_rules! dma_copy_cgram_const($channel:literal, $src:expr, $start:expr, $cou
 
 // DMA copy to OAM (sprites) - const version
 // Usage: dma_copy_oam_const!(0, src_label, size);
-macro_rules! dma_copy_oam_const($channel:literal, $src:expr, $size:expr) {
+macro_rules! dma_copy_oam_const($channel:literal, $src:ident, $size:literal) {
     OAMADD = 0;
     dma_set_src!($channel, $src);
     dma_set_size!($channel, $size);
@@ -1522,7 +1522,7 @@ static dma_trigger_masks: [u8; 8] = [0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0
 //
 // Stack layout after JSL:
 //   S+4,5=size, S+6,7=vram_offset, S+8,9,10=src, S+11,12=channel
-far fn dma_copy_vram(channel: u16, src: far *u8, vram_offset: u16, size: u16) {
+far fn dma_copy_vram(channel: u8, src: far *u8, vram_offset: u16, size: u16) {
     // Save channel for trigger lookup
     Y = channel;
 
@@ -1557,7 +1557,7 @@ far fn dma_copy_vram(channel: u16, src: far *u8, vram_offset: u16, size: u16) {
 //
 // Stack layout after JSL:
 //   S+4,5=num_bytes, S+6,7=start_color, S+8,9,10=src, S+11,12=channel
-far fn dma_copy_cgram(channel: u16, src: far *u8, start_color: u16, num_bytes: u16) {
+far fn dma_copy_cgram(channel: u8, src: far *u8, start_color: u16, num_bytes: u16) {
     // Save channel for trigger lookup
     Y = channel;
 
@@ -1590,7 +1590,7 @@ far fn dma_copy_cgram(channel: u16, src: far *u8, start_color: u16, num_bytes: u
 //
 // Stack layout after JSL:
 //   S+4,5=size, S+6,7,8=src, S+9,10=channel
-far fn dma_copy_oam(channel: u16, src: far *u8, size: u16) {
+far fn dma_copy_oam(channel: u8, src: far *u8, size: u16) {
     // Save channel for trigger lookup
     Y = channel;
 
@@ -1617,15 +1617,15 @@ far fn dma_copy_oam(channel: u16, src: far *u8, size: u16) {
 
 
 // DMA fill VRAM with a value (fixed source address mode)
-// Usage: dma_fill_vram!(0, dest_vram, value_ptr, size);
-macro_rules! dma_fill_vram($channel:literal, $dest:expr, $value_ptr:expr, $size:expr) {
+// Usage: dma_fill_vram!(0, dest_vram, src, size);
+macro_rules! dma_fill_vram($channel:literal, $dest:ident, $src:ident, $size:literal) {
     VMAIN = VMAIN_INCREMENT_HIGH;
     asm!(
         "LDX #{DEST}",
         "STX VMADD",
         DEST=$dest
     );
-    dma_set_src!($channel, $value_ptr);
+    dma_set_src!($channel, $src);
     dma_set_size!($channel, $size);
     dma_set_ppu_dest!($channel, 9, 24);  // 9 = DMA_MODE_2REG_1WRITE | DMA_FIXED, 24 = $18
     dma_trigger!($channel);
@@ -1633,7 +1633,7 @@ macro_rules! dma_fill_vram($channel:literal, $dest:expr, $value_ptr:expr, $size:
 
 // DMA copy from VRAM to RAM
 // Usage: dma_copy_from_vram!(0, src_vram, dest_ptr, size);
-macro_rules! dma_copy_from_vram($channel:literal, $src:expr, $dest:expr, $size:expr) {
+macro_rules! dma_copy_from_vram($channel:literal, $src:ident, $dest:ident, $size:literal) {
     VMAIN = VMAIN_INCREMENT_HIGH;
     asm!(
         "LDX #{SRC}",
@@ -1647,8 +1647,8 @@ macro_rules! dma_copy_from_vram($channel:literal, $src:expr, $dest:expr, $size:e
 }
 
 // DMA copy to WRAM (ROM to RAM or RAM to WRAM)
-// Usage: dma_copy_wram!(0, dest_wram, src_ptr, size);
-macro_rules! dma_copy_wram($channel:literal, $dest:expr, $src:expr, $size:expr) {
+// Usage: dma_copy_wram!(0, dest_wram, src, size);
+macro_rules! dma_copy_wram($channel:literal, $dest:ident, $src:ident, $size:literal) {
     dma_set_src!($channel, $src);
     dma_set_size!($channel, $size);
     dma_set_dest!($channel, 0, $dest);  // 0 = DMA_MODE_1REG_1WRITE
@@ -1725,7 +1725,7 @@ macro_rules! set_fixed_color($color:expr) {
 
 // Set fixed color RGB (each 0-31)
 // Usage: set_fixed_rgb!(31, 31, 31);  // White
-macro_rules! set_fixed_rgb($r:expr, $g:expr, $b:expr) {
+macro_rules! set_fixed_rgb($r:literal, $g:literal, $b:literal) {
     COLDATA = COLDATA_RED | ($r & 0x1F) | COLDATA_GREEN | ($g & 0x1F) | COLDATA_BLUE | ($b & 0x1F);
 }
 

@@ -11,9 +11,6 @@
 //   STATUS_C - Carry flag (bit 0)
 //
 // Mode Macros:
-//   modeM16!({ A = 0x0FFF; });
-//   modeM8!({ A = 0xFF; B = 0x0F; });
-//   modeX16!({ X = 0xFFFF; Y = 0x1234; });
 //   modeX8!({ X = 0; Y = 0xFF; });
 
 // ============================================================================
@@ -39,57 +36,23 @@ const STATUS_NVZC: u8 = 0xC3; // Arithmetic result flags
 // ============================================================================
 // Processor Mode Macros
 // ============================================================================
-//
-// These macros temporarily switch processor modes for a block of code,
-// then restore the previous mode. Uses STATUS flag properties.
-//
-// Note: STATUS.A16 = true means 16-bit accumulator (M flag = 0)
-//       STATUS.A16 = false means 8-bit accumulator (M flag = 1)
-//       STATUS.XY16 = true means 16-bit index (X flag = 0)
-//       STATUS.XY16 = false means 8-bit index (X flag = 1)
 
-// Switch to 16-bit accumulator mode, execute block, restore 8-bit
-macro_rules! modeM16($body:tt) {
-    STATUS.A16 = true;
-    $body
-    STATUS.A16 = false;
-}
-
-// Switch to 8-bit accumulator mode, execute block, restore 16-bit
-macro_rules! modeM8($body:tt) {
-    STATUS.A16 = false;
-    $body
-    STATUS.A16 = true;
-}
-
-// Switch to 16-bit index mode, execute block, restore 8-bit
-macro_rules! modeX16($body:tt) {
-    STATUS.XY16 = true;
-    $body
-    STATUS.XY16 = false;
-}
-
-// Switch to 8-bit index mode, execute block, restore 16-bit
+// Switch to 8-bit index mode, execute block, restore
 macro_rules! modeX8($body:tt) {
+    asm!("PHP");
     STATUS.XY16 = false;
     $body
-    STATUS.XY16 = true;
+    asm!("PLP");
 }
 
-// Switch to 16-bit accumulator and index mode, execute block, restore 8-bit
-macro_rules! modeM16X16($body:tt) {
-    STATUS.A16 = true;
-    STATUS.XY16 = true;
+// For interupt handlers save register state. body param may safely execute.
+macro_rules! saveInteruptState($body:tt) {
+    asm!("PHP");
+    asm!("REP #$20");  //Force 16-bit A to save full accumulator
+    asm!("PHA", "PHX", "PHY", "PHD", "PHB");
     $body
-    STATUS.A16 = false;
-    STATUS.XY16 = false;
-}
-
-// Switch to 8-bit accumulator and index mode, execute block, restore 16-bit
-macro_rules! modeM8X8($body:tt) {
-    STATUS.A16 = false;
-    STATUS.XY16 = false;
-    $body
-    STATUS.A16 = true;
-    STATUS.XY16 = true;
+    asm!("PLB", "PLD", "PLY", "PLX");
+    asm!("REP #$20");  // Force 16-bit A to restore full accumulator
+    asm!("PLA");
+    asm!("PLP");
 }
