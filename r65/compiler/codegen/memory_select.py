@@ -818,36 +818,55 @@ class MemoryOperationSelector(BaseSelector):
         # Stack offset for the pointer (low byte location)
         stack_offset = ptr_loc.stack_offset
 
+        is_store = (mnemonic == 'STA')
+
         # Save current DBR
         self._emit_instr(Opcode.PHB, None, "Save DBR")
 
-        # Load bank byte from far pointer (3rd byte, at base offset+2)
-        # Account for PHB pushing 1 byte onto stack (+1 to all stack offsets)
-        self._emit_instr(Opcode.LDA_STACK, StackOffset(stack_offset + 2 + 1), "Load ptr bank")
-        self._emit_instr(Opcode.PHA, None, "Push bank")
-        self._emit_instr(Opcode.PLB, None, "Set DBR to ptr bank")
+        if is_store:
+            # For STA: A holds the value to store. Save it before loading bank byte.
+            # PHA saves the value (1 byte in m8 mode).
+            self._emit_instr(Opcode.PHA, None, "Save store value")
 
-        # Now (d,S),Y will use DBR for the bank byte
-        # Stack offset is +1 from original due to PHB (PHA/PLB cancel out)
-        adjusted_offset = stack_offset + 1
-        operand = StackOffset(adjusted_offset)
+            # Load bank byte from far pointer (3rd byte, at base offset+2)
+            # Account for PHB (+1) and PHA (+1) = +2 to all stack offsets
+            self._emit_instr(Opcode.LDA_STACK, StackOffset(stack_offset + 2 + 2), "Load ptr bank")
+            self._emit_instr(Opcode.PHA, None, "Push bank")
+            self._emit_instr(Opcode.PLB, None, "Set DBR to ptr bank")
 
-        # The (d,S),Y addressing mode requires Y index register
-        # If no index provided, set Y to 0
-        if not index_register:
-            self._emit_instr(Opcode.LDY_IMMEDIATE, Immediate(0), "Set Y=0 for indirect access")
-            index_register = 'Y'
+            # Set up Y index before restoring A
+            if not index_register:
+                self._emit_instr(Opcode.LDY_IMMEDIATE, Immediate(0), "Set Y=0 for indirect access")
+                index_register = 'Y'
 
-        # Select the appropriate opcode
-        if mnemonic == 'LDA':
-            opcode = Opcode.LDA_STACK_INDIRECT_Y
-        elif mnemonic == 'STA':
-            opcode = Opcode.STA_STACK_INDIRECT_Y
+            # Restore value to store (PLA pops 1 byte)
+            # Stack is now: +1 (PHB only, since PHA value/PHA bank/PLB cancel)
+            self._emit_instr(Opcode.PLA, None, "Restore store value")
+
+            adjusted_offset = stack_offset + 1
+            operand = StackOffset(adjusted_offset)
+
+            self._emit_instr(Opcode.STA_STACK_INDIRECT_Y, operand, "STA through far pointer")
         else:
-            raise InstructionSelectionError(f"Indirect addressing not supported for: {mnemonic}", source_loc=self.parent._current_source_loc)
+            # For LDA: bank byte load into A is fine (result goes into A anyway)
+            # Load bank byte from far pointer (3rd byte, at base offset+2)
+            # Account for PHB pushing 1 byte onto stack (+1 to all stack offsets)
+            self._emit_instr(Opcode.LDA_STACK, StackOffset(stack_offset + 2 + 1), "Load ptr bank")
+            self._emit_instr(Opcode.PHA, None, "Push bank")
+            self._emit_instr(Opcode.PLB, None, "Set DBR to ptr bank")
 
-        # Emit the actual memory access
-        self._emit_instr(opcode, operand, f"{mnemonic} through far pointer")
+            # Now (d,S),Y will use DBR for the bank byte
+            # Stack offset is +1 from original due to PHB (PHA/PLB cancel out)
+            adjusted_offset = stack_offset + 1
+            operand = StackOffset(adjusted_offset)
+
+            # The (d,S),Y addressing mode requires Y index register
+            # If no index provided, set Y to 0
+            if not index_register:
+                self._emit_instr(Opcode.LDY_IMMEDIATE, Immediate(0), "Set Y=0 for indirect access")
+                index_register = 'Y'
+
+            self._emit_instr(Opcode.LDA_STACK_INDIRECT_Y, operand, "LDA through far pointer")
 
         # Restore original DBR immediately after the access
         self._emit_instr(Opcode.PLB, None, "Restore DBR")
