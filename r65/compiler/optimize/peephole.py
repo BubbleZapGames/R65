@@ -166,6 +166,21 @@ STACK_MODIFYING_OPCODES: Set[Opcode] = {
     Opcode.TCS,
 }
 
+# LDA opcodes with deterministic addressing (value depends only on operand/SP)
+TRACKABLE_LDA_OPCODES: frozenset = frozenset({
+    Opcode.LDA_IMMEDIATE,
+    Opcode.LDA_DP,
+    Opcode.LDA_ABSOLUTE,
+    Opcode.LDA_STACK,
+})
+
+# Indirect store opcodes that could alias any address
+INDIRECT_STORE_OPCODES: frozenset = frozenset({
+    Opcode.STA_DP_INDIRECT, Opcode.STA_DP_INDIRECT_X, Opcode.STA_DP_INDIRECT_Y,
+    Opcode.STA_DP_INDIRECT_LONG, Opcode.STA_DP_INDIRECT_LONG_Y,
+    Opcode.STA_STACK_INDIRECT_Y,
+})
+
 
 # ============================================================================
 # Statistics Tracking
@@ -922,30 +937,6 @@ class PeepholeOptimizer:
         the tracked address by other registers (STX/STY), and indirect stores.
         """
         from r65.compiler.codegen.asm_nodes import Instruction, Label, RawAsm, StackOffset
-
-        # Only track LDA with deterministic addressing modes — the loaded
-        # value depends solely on the operand (and SP for stack-relative),
-        # not on X/Y register values or pointer contents
-        TRACKABLE_LDA_OPCODES = {
-            Opcode.LDA_IMMEDIATE,
-            Opcode.LDA_DP,
-            Opcode.LDA_ABSOLUTE,
-            Opcode.LDA_STACK,
-        }
-
-        # Opcodes that modify SP, invalidating stack-relative tracking
-        STACK_MODIFYING_OPCODES = {
-            Opcode.PHA, Opcode.PHX, Opcode.PHY, Opcode.PHP, Opcode.PHD, Opcode.PHB,
-            Opcode.PLA, Opcode.PLX, Opcode.PLY, Opcode.PLP, Opcode.PLD, Opcode.PLB,
-            Opcode.TCS,
-        }
-
-        # Indirect store opcodes that could alias any address
-        INDIRECT_STORE_OPCODES = {
-            Opcode.STA_DP_INDIRECT, Opcode.STA_DP_INDIRECT_X, Opcode.STA_DP_INDIRECT_Y,
-            Opcode.STA_DP_INDIRECT_LONG, Opcode.STA_DP_INDIRECT_LONG_Y,
-            Opcode.STA_STACK_INDIRECT_Y,
-        }
 
         optimized = []
         # Track last LDA: (opcode, operand) or None

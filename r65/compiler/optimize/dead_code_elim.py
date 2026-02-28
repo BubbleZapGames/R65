@@ -16,6 +16,155 @@ from r65.compiler.mir.nodes import (
 )
 
 
+# ============================================================================
+# _get_read_vregs dispatch helpers
+# ============================================================================
+
+def _read_move(instr):
+    s = instr.source
+    return {s.id} if type(s) is VirtualRegister else set()
+
+def _read_load(instr):
+    return set()
+
+def _read_store(instr):
+    s = instr.source
+    return {s.id} if type(s) is VirtualRegister else set()
+
+def _read_load_indirect(instr):
+    p = instr.pointer
+    return {p.id} if type(p) is VirtualRegister else set()
+
+def _read_store_indirect(instr):
+    read = set()
+    if type(instr.source) is VirtualRegister:
+        read.add(instr.source.id)
+    if type(instr.pointer) is VirtualRegister:
+        read.add(instr.pointer.id)
+    return read
+
+def _read_binary_op(instr):
+    read = set()
+    if type(instr.left) is VirtualRegister:
+        read.add(instr.left.id)
+    if type(instr.right) is VirtualRegister:
+        read.add(instr.right.id)
+    return read
+
+def _read_unary_op(instr):
+    o = instr.operand
+    return {o.id} if type(o) is VirtualRegister else set()
+
+def _read_compare(instr):
+    read = set()
+    if type(instr.left) is VirtualRegister:
+        read.add(instr.left.id)
+    if type(instr.right) is VirtualRegister:
+        read.add(instr.right.id)
+    return read
+
+def _read_type_convert(instr):
+    s = instr.source
+    return {s.id} if type(s) is VirtualRegister else set()
+
+def _read_to_bool(instr):
+    s = instr.source
+    return {s.id} if type(s) is VirtualRegister else set()
+
+def _read_cond_branch(instr):
+    c = instr.condition
+    return {c.id} if type(c) is VirtualRegister else set()
+
+def _read_return(instr):
+    read = set()
+    for val in instr.values:
+        if type(val) is VirtualRegister:
+            read.add(val.id)
+    return read
+
+def _read_call(instr):
+    read = set()
+    for arg in instr.args:
+        if type(arg.value) is VirtualRegister:
+            read.add(arg.value.id)
+    # Indirect call through vreg
+    if type(instr.function) is VirtualRegister:
+        read.add(instr.function.id)
+    return read
+
+def _read_trait_dispatch(instr):
+    read = set()
+    for arg in instr.args:
+        if type(arg.value) is VirtualRegister:
+            read.add(arg.value.id)
+    if type(instr.self_ptr) is VirtualRegister:
+        read.add(instr.self_ptr.id)
+    return read
+
+def _read_rotate(instr):
+    s = instr.source
+    return {s.id} if type(s) is VirtualRegister else set()
+
+def _read_bit_test(instr):
+    v = instr.value
+    return {v.id} if type(v) is VirtualRegister else set()
+
+def _read_jump_table(instr):
+    s = instr.scrutinee
+    return {s.id} if type(s) is VirtualRegister else set()
+
+def _read_lookup_table(instr):
+    s = instr.scrutinee
+    return {s.id} if type(s) is VirtualRegister else set()
+
+def _read_restore_register(instr):
+    s = instr.save_location
+    return {s.id} if type(s) is VirtualRegister else set()
+
+def _read_none(instr):
+    return set()
+
+
+# Dispatch table: instruction type -> read vregs extractor
+_GET_READ_VREGS = {
+    Move: _read_move,
+    Load: _read_load,
+    Store: _read_store,
+    LoadIndirect: _read_load_indirect,
+    StoreIndirect: _read_store_indirect,
+    BinaryOp: _read_binary_op,
+    UnaryOp: _read_unary_op,
+    Compare: _read_compare,
+    TypeConvert: _read_type_convert,
+    ToBool: _read_to_bool,
+    CondBranch: _read_cond_branch,
+    Return: _read_return,
+    Call: _read_call,
+    TraitDispatch: _read_trait_dispatch,
+    Rotate: _read_rotate,
+    BitTest: _read_bit_test,
+    JumpTable: _read_jump_table,
+    LookupTable: _read_lookup_table,
+    RestoreRegister: _read_restore_register,
+    # These don't read vregs directly
+    Jump: _read_none,
+    ReturnFromInterrupt: _read_none,
+    Push: _read_none,
+    Pull: _read_none,
+    SaveRegister: _read_none,
+    InlineAsm: _read_none,
+    SetMode: _read_none,
+    MemoryFill: _read_none,
+    BlockCopy: _read_none,
+}
+
+# Types whose dest field is a writable vreg
+_DEST_TYPES = frozenset({Move, Load, LoadIndirect, BinaryOp, UnaryOp, TypeConvert, ToBool, Rotate, LookupTable})
+
+# Types that are safe to eliminate (no side effects beyond writing dest)
+_SIDE_EFFECT_FREE = frozenset({Move, Load, LoadIndirect, BinaryOp, UnaryOp, TypeConvert, ToBool, Rotate, SaveRegister})
+
+
 class DeadCodeEliminator:
     """
     Eliminates dead code within MIR functions.
@@ -209,71 +358,18 @@ class DeadCodeEliminator:
         """
         Get the set of virtual register IDs read by an instruction.
 
+        Uses dispatch dict for O(1) type lookup.
+
         Args:
             instr: The MIR instruction
 
         Returns:
             Set of virtual register IDs that are read
         """
-        read = set()
-
-        def add_if_vreg(operand):
-            if isinstance(operand, VirtualRegister):
-                read.add(operand.id)
-
-        # Handle each instruction type
-        if isinstance(instr, Move):
-            add_if_vreg(instr.source)
-        elif isinstance(instr, Load):
-            # Load reads from memory, source is MemoryLocation (not vreg)
-            pass
-        elif isinstance(instr, Store):
-            add_if_vreg(instr.source)
-        elif isinstance(instr, LoadIndirect):
-            add_if_vreg(instr.pointer)
-        elif isinstance(instr, StoreIndirect):
-            add_if_vreg(instr.source)
-            add_if_vreg(instr.pointer)
-        elif isinstance(instr, BinaryOp):
-            add_if_vreg(instr.left)
-            add_if_vreg(instr.right)
-        elif isinstance(instr, UnaryOp):
-            add_if_vreg(instr.operand)
-        elif isinstance(instr, Compare):
-            add_if_vreg(instr.left)
-            add_if_vreg(instr.right)
-        elif isinstance(instr, TypeConvert):
-            add_if_vreg(instr.source)
-        elif isinstance(instr, ToBool):
-            add_if_vreg(instr.source)
-        elif isinstance(instr, CondBranch):
-            add_if_vreg(instr.condition)
-        elif isinstance(instr, Return):
-            for val in instr.values:
-                add_if_vreg(val)
-        elif isinstance(instr, (Call, TraitDispatch)):
-            for arg in instr.args:
-                add_if_vreg(arg.value)
-            # TraitDispatch uses self_ptr
-            if isinstance(instr, TraitDispatch) and isinstance(instr.self_ptr, VirtualRegister):
-                read.add(instr.self_ptr.id)
-            # Indirect call through vreg
-            if isinstance(instr, Call) and isinstance(instr.function, VirtualRegister):
-                read.add(instr.function.id)
-        elif isinstance(instr, Rotate):
-            add_if_vreg(instr.source)
-        elif isinstance(instr, BitTest):
-            add_if_vreg(instr.value)
-        elif isinstance(instr, JumpTable):
-            add_if_vreg(instr.scrutinee)
-        elif isinstance(instr, LookupTable):
-            add_if_vreg(instr.scrutinee)
-        elif isinstance(instr, RestoreRegister):
-            add_if_vreg(instr.save_location)
-        # Jump, ReturnFromInterrupt, Push, Pull, SaveRegister,
-        # InlineAsm, SetMode, MemoryFill, BlockCopy don't read vregs directly
-
-        return read
+        handler = _GET_READ_VREGS.get(type(instr))
+        if handler:
+            return handler(instr)
+        return set()
 
     def _get_written_vreg(self, instr: MIRInstruction) -> int:
         """
@@ -285,18 +381,20 @@ class DeadCodeEliminator:
         Returns:
             Virtual register ID if instruction writes to a vreg, else None
         """
-        dest = None
+        instr_type = type(instr)
 
-        if isinstance(instr, (Move, Load, LoadIndirect, BinaryOp, UnaryOp, TypeConvert, ToBool, Rotate, LookupTable)):
+        if instr_type in _DEST_TYPES:
             dest = instr.dest
-        elif isinstance(instr, SaveRegister):
+        elif instr_type is SaveRegister:
             dest = instr.save_location
-        elif isinstance(instr, (Call, TraitDispatch)):
+        elif instr_type is Call or instr_type is TraitDispatch:
             # Calls can have multiple return registers
             # For simplicity, we don't eliminate call results (they may have side effects)
             return None
+        else:
+            return None
 
-        if isinstance(dest, VirtualRegister):
+        if type(dest) is VirtualRegister:
             return dest.id
 
         return None
@@ -314,10 +412,7 @@ class DeadCodeEliminator:
         Returns:
             True if the instruction can be safely eliminated
         """
-        # These instructions only write to a destination register
-        # and have no other side effects
-        return isinstance(instr, (Move, Load, LoadIndirect, BinaryOp, UnaryOp,
-                                   TypeConvert, ToBool, Rotate, SaveRegister))
+        return type(instr) in _SIDE_EFFECT_FREE
 
     def _remove_dead_stores(self, func: MIRFunction, used_vregs: Set[int]) -> int:
         """

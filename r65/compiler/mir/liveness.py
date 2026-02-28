@@ -908,6 +908,8 @@ class ClobberRegionAnalyzer:
 
         # Scan instructions to find clobbering calls and uses
         for instr_idx, instr in enumerate(block.instructions):
+            instr_type = type(instr)
+
             # Check if this instruction uses the hw register
             uses = self.block_analyzer._get_uses(instr)
             is_use = any(
@@ -927,7 +929,8 @@ class ClobberRegionAnalyzer:
             # is NOT a clobber — it's a definition. Without this check, the
             # region analyzer would spill/restore the register around the call,
             # clobbering the return value.
-            if isinstance(instr, (Call, TraitDispatch)) and not is_def:
+            is_call = instr_type is Call or instr_type is TraitDispatch
+            if is_call and not is_def:
                 if self._call_returns_in_hw_reg(instr, hw_reg):
                     is_def = True
 
@@ -939,10 +942,10 @@ class ClobberRegionAnalyzer:
                 current_region = None
 
             # Check if this is a clobbering call (skip if call defines hw_reg)
-            if isinstance(instr, (Call, TraitDispatch)) and not is_def:
+            if is_call and not is_def:
                 # Get callee's preserved registers
                 preserved: Set[str] = set()
-                if isinstance(instr, Call) and isinstance(instr.function, str):
+                if instr_type is Call and isinstance(instr.function, str):
                     preserved = preserves_map.get(instr.function, set())
                 # Also check the preserves attribute on the call instruction
                 if hasattr(instr, 'preserves_attr') and instr.preserves_attr:

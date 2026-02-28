@@ -30,6 +30,9 @@ from typing import TYPE_CHECKING as _TYPE_CHECKING
 if _TYPE_CHECKING:
     from r65.compiler.codegen.abi import StackFrameLayout
 
+# Frozenset for ALU-type instructions that route through A register
+_ALU_TYPES = frozenset({BinaryOp, UnaryOp, TypeConvert, Compare, BitTest, Rotate, ToBool})
+
 
 @dataclass
 class PreassignedSlot:
@@ -579,113 +582,94 @@ class StackSlotAllocator:
         for block_id, block in self.func.blocks.items():
             for instr_idx, instr in enumerate(block.instructions):
                 instr_positions[id(instr)] = (block_id, instr_idx)
+                instr_type = type(instr)
 
-                if isinstance(instr, Move):
-                    if isinstance(instr.dest, VirtualRegister):
+                if instr_type is Move:
+                    if type(instr.dest) is VirtualRegister:
                         vreg_id = instr.dest.id
-                        if vreg_id not in vreg_defs:
-                            vreg_defs[vreg_id] = []
-
-                        if isinstance(instr.source, HardwareRegister):
-                            vreg_defs[vreg_id].append((instr, instr.source.name))
+                        if type(instr.source) is HardwareRegister:
+                            vreg_defs.setdefault(vreg_id, []).append((instr, instr.source.name))
                         else:
-                            vreg_defs[vreg_id].append((instr, None))
+                            vreg_defs.setdefault(vreg_id, []).append((instr, None))
 
-                    if isinstance(instr.source, VirtualRegister):
-                        vreg_id = instr.source.id
-                        if vreg_id not in vreg_uses:
-                            vreg_uses[vreg_id] = []
-                        vreg_uses[vreg_id].append(instr)
+                    if type(instr.source) is VirtualRegister:
+                        vreg_uses.setdefault(instr.source.id, []).append(instr)
 
-                elif isinstance(instr, (BinaryOp, UnaryOp)):
+                elif instr_type is BinaryOp or instr_type is UnaryOp:
                     # BinaryOp/UnaryOp implicitly produce their result in A.
                     # Track dest vreg as defined-in-A for coalescence,
                     # but only if no prior def exists. This avoids double-counting
                     # vregs first loaded from A (Move vreg <- A) then modified
                     # in-place (BinaryOp vreg = vreg + 1) — the Move def already
                     # enables coalescence for those.
-                    if isinstance(instr.dest, VirtualRegister):
+                    if type(instr.dest) is VirtualRegister:
                         vreg_id = instr.dest.id
                         if vreg_id not in vreg_defs:
                             dest_size = get_vreg_size(instr.dest)
                             # Skip far pointer results (3 bytes) — codegen stores
                             # them byte-by-byte, A holds only a partial value
                             if dest_size <= 2:
-                                vreg_defs[vreg_id] = []
-                                vreg_defs[vreg_id].append((instr, 'A'))
+                                vreg_defs[vreg_id] = [(instr, 'A')]
 
                     # Track operand uses
                     uses = self.liveness_analyzer._get_uses(instr)
                     for var in uses:
-                        if isinstance(var, VirtualRegister):
-                            if var.id not in vreg_uses:
-                                vreg_uses[var.id] = []
-                            vreg_uses[var.id].append(instr)
+                        if type(var) is VirtualRegister:
+                            vreg_uses.setdefault(var.id, []).append(instr)
 
-                elif isinstance(instr, LoadIndirect):
+                elif instr_type is LoadIndirect:
                     # LoadIndirect deposits its result in A via LDA [dp],Y.
                     # Track dest vreg as defined-in-A for coalescence (u8 only).
-                    if isinstance(instr.dest, VirtualRegister):
+                    if type(instr.dest) is VirtualRegister:
                         vreg_id = instr.dest.id
                         if vreg_id not in vreg_defs:
                             dest_size = get_vreg_size(instr.dest)
                             if dest_size == 1:
-                                vreg_defs[vreg_id] = []
-                                vreg_defs[vreg_id].append((instr, 'A'))
+                                vreg_defs[vreg_id] = [(instr, 'A')]
 
                     # Track pointer/index uses
                     uses = self.liveness_analyzer._get_uses(instr)
                     for var in uses:
-                        if isinstance(var, VirtualRegister):
-                            if var.id not in vreg_uses:
-                                vreg_uses[var.id] = []
-                            vreg_uses[var.id].append(instr)
+                        if type(var) is VirtualRegister:
+                            vreg_uses.setdefault(var.id, []).append(instr)
 
-                elif isinstance(instr, (Call, TraitDispatch)):
+                elif instr_type is Call or instr_type is TraitDispatch:
                     # Call with exactly 1 return vreg: the return value is in A.
                     # Track as defined-in-A for coalescence (e.g., result = func()).
                     # A Call clobbers all registers, so no other vreg can be live
                     # in A after the Call — no all_uses_consume_a filter needed.
                     if len(instr.returns) == 1:
                         ret_vreg = instr.returns[0]
-                        if isinstance(ret_vreg, VirtualRegister):
+                        if type(ret_vreg) is VirtualRegister:
                             vreg_id = ret_vreg.id
                             if vreg_id not in vreg_defs:
                                 dest_size = get_vreg_size(ret_vreg)
                                 if dest_size <= 2:
-                                    vreg_defs[vreg_id] = []
-                                    vreg_defs[vreg_id].append((instr, 'A'))
+                                    vreg_defs[vreg_id] = [(instr, 'A')]
                     # Track uses of arguments (fall through to else branch won't
                     # happen since we matched Call, so handle uses here)
                     uses = self.liveness_analyzer._get_uses(instr)
                     for var in uses:
-                        if isinstance(var, VirtualRegister):
-                            if var.id not in vreg_uses:
-                                vreg_uses[var.id] = []
-                            vreg_uses[var.id].append(instr)
+                        if type(var) is VirtualRegister:
+                            vreg_uses.setdefault(var.id, []).append(instr)
 
-                elif isinstance(instr, Return):
+                elif instr_type is Return:
                     if instr.values:
                         for val in instr.values:
-                            if isinstance(val, VirtualRegister):
-                                vreg_id = val.id
-                                if vreg_id not in vreg_uses:
-                                    vreg_uses[vreg_id] = []
-                                vreg_uses[vreg_id].append(instr)
+                            if type(val) is VirtualRegister:
+                                vreg_uses.setdefault(val.id, []).append(instr)
 
                 else:
                     uses = self.liveness_analyzer._get_uses(instr)
                     for var in uses:
-                        if isinstance(var, VirtualRegister):
-                            if var.id not in vreg_uses:
-                                vreg_uses[var.id] = []
-                            vreg_uses[var.id].append(instr)
+                        if type(var) is VirtualRegister:
+                            vreg_uses.setdefault(var.id, []).append(instr)
 
         # Build candidate list: (vreg_id, def_instr, hw_reg, uses)
         # For ALU-def vregs (BinaryOp/UnaryOp/LoadIndirect), restrict to cases
         # where all uses are Return, Move, Compare, Store (as source), or as
         # the LEFT operand of a BinaryOp (chained arithmetic).
-        _alu_def_types = (BinaryOp, UnaryOp, LoadIndirect)
+        _alu_def_types = frozenset({BinaryOp, UnaryOp, LoadIndirect})
         candidates = []
         for vreg_id, defs in vreg_defs.items():
             if len(defs) != 1:
@@ -704,22 +688,26 @@ class StackSlotAllocator:
             # - BinaryOp-left reads A first (no clobber), then overwrites A
             #   with the result — safe because the clobber analysis handles it
             #   (the BinaryOp at max_use_idx is not scanned for clobbers).
-            if isinstance(def_instr, _alu_def_types):
-                all_uses_safe = all(
-                    isinstance(use, Return) or
-                    isinstance(use, Move) or
-                    isinstance(use, Compare) or
-                    (isinstance(use, Store) and
-                     isinstance(use.source, VirtualRegister) and
-                     use.source.id == vreg_id) or
-                    (isinstance(use, StoreIndirect) and
-                     isinstance(use.source, VirtualRegister) and
-                     use.source.id == vreg_id) or
-                    (isinstance(use, BinaryOp) and
-                     isinstance(use.left, VirtualRegister) and
-                     use.left.id == vreg_id)
-                    for use in uses
-                )
+            if type(def_instr) in _alu_def_types:
+                all_uses_safe = True
+                for use in uses:
+                    use_type = type(use)
+                    if use_type is Return or use_type is Move or use_type is Compare:
+                        continue
+                    if (use_type is Store and
+                        type(use.source) is VirtualRegister and
+                        use.source.id == vreg_id):
+                        continue
+                    if (use_type is StoreIndirect and
+                        type(use.source) is VirtualRegister and
+                        use.source.id == vreg_id):
+                        continue
+                    if (use_type is BinaryOp and
+                        type(use.left) is VirtualRegister and
+                        use.left.id == vreg_id):
+                        continue
+                    all_uses_safe = False
+                    break
                 if not all_uses_safe:
                     continue
 
@@ -777,30 +765,22 @@ class StackSlotAllocator:
 
         for block_id, block in self.func.blocks.items():
             for instr in block.instructions:
-                if isinstance(instr, Load):
-                    if isinstance(instr.dest, VirtualRegister):
-                        vreg_id = instr.dest.id
-                        if vreg_id not in vreg_load_defs:
-                            vreg_load_defs[vreg_id] = []
-                        vreg_load_defs[vreg_id].append((instr, block_id))
+                if type(instr) is Load:
+                    if type(instr.dest) is VirtualRegister:
+                        vreg_load_defs.setdefault(instr.dest.id, []).append((instr, block_id))
 
                 # Track uses in Return instructions
-                if isinstance(instr, Return):
+                if type(instr) is Return:
                     if instr.values:
                         for val in instr.values:
-                            if isinstance(val, VirtualRegister):
-                                vreg_id = val.id
-                                if vreg_id not in vreg_uses:
-                                    vreg_uses[vreg_id] = []
-                                vreg_uses[vreg_id].append((instr, block_id))
+                            if type(val) is VirtualRegister:
+                                vreg_uses.setdefault(val.id, []).append((instr, block_id))
                 else:
                     # Track uses in non-Return instructions
                     uses = self.liveness_analyzer._get_uses(instr)
                     for var in uses:
-                        if isinstance(var, VirtualRegister):
-                            if var.id not in vreg_uses:
-                                vreg_uses[var.id] = []
-                            vreg_uses[var.id].append((instr, block_id))
+                        if type(var) is VirtualRegister:
+                            vreg_uses.setdefault(var.id, []).append((instr, block_id))
 
         sinkable: Dict[VirtualRegister, MemoryLocation] = {}
 
@@ -839,29 +819,32 @@ class StackSlotAllocator:
         self, vreg_id: int, hw_reg: str, coalesceable: Dict[VirtualRegister, str]
     ):
         """Mark a vreg as hw-coalesceable by finding its def instruction."""
-        _def_types = (Move, BinaryOp, UnaryOp, LoadIndirect)
+        _def_types = frozenset({Move, BinaryOp, UnaryOp, LoadIndirect})
         for block in self.func.blocks.values():
             for instr in block.instructions:
-                if isinstance(instr, (Call, TraitDispatch)):
-                    if instr.returns and isinstance(instr.returns[0], VirtualRegister):
+                instr_type = type(instr)
+                if instr_type is Call or instr_type is TraitDispatch:
+                    if instr.returns and type(instr.returns[0]) is VirtualRegister:
                         if instr.returns[0].id == vreg_id:
                             coalesceable[instr.returns[0]] = hw_reg
                             return
-                elif isinstance(instr, _def_types) and isinstance(instr.dest, VirtualRegister):
+                elif instr_type in _def_types and type(instr.dest) is VirtualRegister:
                     if instr.dest.id == vreg_id:
                         coalesceable[instr.dest] = hw_reg
                         return
 
     def _get_vreg_from_def(self, def_instr: Any, vreg_id: int) -> Optional[VirtualRegister]:
         """Extract VirtualRegister object from its defining instruction."""
-        if isinstance(def_instr, (Call, TraitDispatch)):
+        def_type = type(def_instr)
+        if def_type is Call or def_type is TraitDispatch:
             if def_instr.returns:
                 for r in def_instr.returns:
-                    if isinstance(r, VirtualRegister) and r.id == vreg_id:
+                    if type(r) is VirtualRegister and r.id == vreg_id:
                         return r
-        elif hasattr(def_instr, 'dest') and isinstance(def_instr.dest, VirtualRegister):
-            if def_instr.dest.id == vreg_id:
-                return def_instr.dest
+        else:
+            dest = getattr(def_instr, 'dest', None)
+            if type(dest) is VirtualRegister and dest.id == vreg_id:
+                return dest
         return None
 
     def _is_hw_unclobbered_in_range(
@@ -989,15 +972,17 @@ class StackSlotAllocator:
         if id(instr) in noop_instrs:
             return False
 
+        instr_type = type(instr)
+
         # Calls clobber all registers not in preserves
-        if isinstance(instr, (Call, TraitDispatch)):
+        if instr_type is Call or instr_type is TraitDispatch:
             preserved = set()
             if getattr(instr, 'preserves_attr', None):
                 preserved = set(instr.preserves_attr.registers)
             return hw_reg not in preserved
 
         # InlineAsm: conservatively assume it clobbers everything
-        if isinstance(instr, InlineAsm):
+        if instr_type is InlineAsm:
             return True
 
         if hw_reg == 'A':
@@ -1024,27 +1009,29 @@ class StackSlotAllocator:
         because our vreg IS A (it's coalesceable). The codegen will
         emit STA directly without needing to load first.
         """
-        if isinstance(instr, Store):
+        instr_type = type(instr)
+
+        if instr_type is Store:
             # Store uses A to transfer values. If the source is our vreg,
             # codegen will use STA directly (A already has the value).
             # If source is a different vreg or hw register, it clobbers A.
-            if isinstance(instr.source, VirtualRegister) and instr.source.id == vreg_id:
+            if type(instr.source) is VirtualRegister and instr.source.id == vreg_id:
                 return False  # STA from our vreg = STA from A (no clobber)
-            if isinstance(instr.source, HardwareRegister) and instr.source.name == 'A':
+            if type(instr.source) is HardwareRegister and instr.source.name == 'A':
                 return False  # STA from A (already in A)
             return True  # Needs LDA from somewhere else
 
-        if isinstance(instr, Move):
+        if instr_type is Move:
             # Move to vreg (other than ours): LDA + STA clobbers A
-            if isinstance(instr.dest, VirtualRegister) and instr.dest.id != vreg_id:
+            if type(instr.dest) is VirtualRegister and instr.dest.id != vreg_id:
                 return True
             # Move to hw register from vreg/immediate: codegen loads through A
-            if isinstance(instr.dest, HardwareRegister):
+            if type(instr.dest) is HardwareRegister:
                 if instr.dest.name in ('X', 'Y'):
                     # LDX/LDY don't clobber A (unless source is stack-relative for X/Y)
                     # But Move to X/Y from vreg goes LDA vreg; TAX (clobbers A)
                     # Unless source is our coalesceable vreg — then just TAX/TAY
-                    if isinstance(instr.source, VirtualRegister):
+                    if type(instr.source) is VirtualRegister:
                         if instr.source.id == vreg_id:
                             return False  # TAX/TAY from our vreg — A preserved
                         # Move to X/Y from a vreg with matching register_hint
@@ -1058,41 +1045,41 @@ class StackSlotAllocator:
                 if instr.dest.name == 'A':
                     return True  # Overwrites A
             # Move from B: XBA clobbers A
-            if isinstance(instr.source, HardwareRegister) and instr.source.name == 'B':
+            if type(instr.source) is HardwareRegister and instr.source.name == 'B':
                 return True
             return False
 
-        if isinstance(instr, (BinaryOp, UnaryOp, TypeConvert, Compare, BitTest, Rotate, ToBool)):
+        if instr_type in _ALU_TYPES:
             # ALU ops route through A, clobbering it — UNLESS the dest is our vreg,
             # in which case the op re-defines our vreg and leaves its new value in A
             # (analogous to Store exception: our vreg's value stays in A).
-            if (isinstance(instr, (BinaryOp, UnaryOp)) and
-                hasattr(instr, 'dest') and isinstance(instr.dest, VirtualRegister) and
+            if ((instr_type is BinaryOp or instr_type is UnaryOp) and
+                type(instr.dest) is VirtualRegister and
                 instr.dest.id == vreg_id):
                 return False
             # CMP preserves A on 65816 — it only sets flags. If the left operand
             # is our vreg (already in A), no load is needed and A survives.
-            if isinstance(instr, Compare):
-                if isinstance(instr.left, VirtualRegister) and instr.left.id == vreg_id:
+            if instr_type is Compare:
+                if type(instr.left) is VirtualRegister and instr.left.id == vreg_id:
                     return False
             return True
 
-        if isinstance(instr, Load):
+        if instr_type is Load:
             # LDA into vreg clobbers A
             return True
 
-        if isinstance(instr, LoadIndirect):
+        if instr_type is LoadIndirect:
             # LDA [dp],Y into vreg clobbers A
             return True
 
-        if isinstance(instr, StoreIndirect):
+        if instr_type is StoreIndirect:
             # STA [dp],Y uses A. If source is our vreg, codegen emits STA
             # directly from A (our vreg IS A). Otherwise it needs LDA first.
-            if isinstance(instr.source, VirtualRegister) and instr.source.id == vreg_id:
+            if type(instr.source) is VirtualRegister and instr.source.id == vreg_id:
                 return False  # STA [dp],Y from our vreg = STA from A (no clobber)
             return True
 
-        if isinstance(instr, StatusFlagRead):
+        if instr_type is StatusFlagRead:
             # PHP; PLA; AND - clobbers A
             return True
 
@@ -1110,11 +1097,13 @@ class StackSlotAllocator:
         during codegen, B is clobbered by TypeConvert, u16 BinaryOp/UnaryOp,
         u16 Store/Load, u16 Compare, and u16 Moves through memory.
         """
-        if isinstance(instr, Move):
+        instr_type = type(instr)
+
+        if instr_type is Move:
             # Move to/from B: XBA swaps, clobbers B
-            if isinstance(instr.dest, HardwareRegister) and instr.dest.name == 'B':
+            if type(instr.dest) is HardwareRegister and instr.dest.name == 'B':
                 return True
-            if isinstance(instr.source, HardwareRegister) and instr.source.name == 'B':
+            if type(instr.source) is HardwareRegister and instr.source.name == 'B':
                 return True
             # Move of u16 value through A (LDA/STA in m16) clobbers B
             if self._instr_involves_u16(instr):
@@ -1122,33 +1111,31 @@ class StackSlotAllocator:
             return False
 
         # TypeConvert always uses m16 (widening or narrowing)
-        if isinstance(instr, TypeConvert):
+        if instr_type is TypeConvert:
             return True
 
         # Any u16 arithmetic/logic clobbers B via m16 mode
-        if isinstance(instr, (BinaryOp, UnaryOp, Compare)):
-            if self._instr_involves_u16(instr):
-                return True
-            return False
+        if instr_type is BinaryOp or instr_type is UnaryOp or instr_type is Compare:
+            return self._instr_involves_u16(instr)
 
         # u16 Store/Load use m16 LDA/STA
-        if isinstance(instr, (Store, StoreIndirect, Load, LoadIndirect)):
-            if self._instr_involves_u16(instr):
-                return True
-            return False
+        if instr_type is Store or instr_type is StoreIndirect or instr_type is Load or instr_type is LoadIndirect:
+            return self._instr_involves_u16(instr)
 
         return False
 
     def _instr_involves_u16(self, instr: Any) -> bool:
         """Check if an instruction involves u16 types (may trigger m16 mode)."""
         # Check type_info on the instruction
-        if hasattr(instr, 'type_info') and instr.type_info is not None:
-            size = get_unified_type_size(instr.type_info)
+        type_info = getattr(instr, 'type_info', None)
+        if type_info is not None:
+            size = get_unified_type_size(type_info)
             if size >= 2:
                 return True
         # Check dest vreg size
-        if hasattr(instr, 'dest') and isinstance(instr.dest, VirtualRegister):
-            if get_vreg_size(instr.dest) >= 2:
+        dest = getattr(instr, 'dest', None)
+        if type(dest) is VirtualRegister:
+            if get_vreg_size(dest) >= 2:
                 return True
         return False
 
@@ -1162,26 +1149,27 @@ class StackSlotAllocator:
         - RestoreRegister for X/Y (PLX, PLY)
         - Calls that don't preserve X/Y (handled in caller)
         """
-        if isinstance(instr, Move):
-            if isinstance(instr.dest, HardwareRegister) and instr.dest.name == hw_reg:
+        instr_type = type(instr)
+
+        if instr_type is Move:
+            if type(instr.dest) is HardwareRegister and instr.dest.name == hw_reg:
                 # Move to our register — unless source is our vreg (no-op)
-                if isinstance(instr.source, VirtualRegister) and instr.source.id == vreg_id:
+                if type(instr.source) is VirtualRegister and instr.source.id == vreg_id:
                     return False  # Value already in register
                 return True
             return False
 
-        if isinstance(instr, BinaryOp):
+        if instr_type is BinaryOp:
             # INX/DEX/INY/DEY patterns: BinaryOp dest=HardwareRegister
-            if isinstance(instr.dest, HardwareRegister) and instr.dest.name == hw_reg:
+            if type(instr.dest) is HardwareRegister and instr.dest.name == hw_reg:
                 return True
             return False
 
-        if isinstance(instr, RestoreRegister):
+        if instr_type is RestoreRegister:
             # PLX/PLY restores clobber the register
             if instr.register.name == hw_reg:
                 return True
             return False
-
 
         # Other instructions don't modify X/Y
         # (they may use X/Y for indexing but don't modify them)
