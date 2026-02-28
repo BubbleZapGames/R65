@@ -5,7 +5,15 @@ Generates complete function bodies with headers, labels, and instructions.
 """
 
 from typing import List, Set, Optional
-from r65.compiler.mir.nodes import MIRFunction, Return, Call, TraitDispatch, ArgumentMechanism
+from r65.compiler.mir.nodes import (
+    MIRFunction, Return, Call, TraitDispatch, ArgumentMechanism,
+    VirtualRegister,
+    Load, Store, Move, BinaryOp, UnaryOp, Compare, BitTest, Rotate,
+    Jump, JumpTable, LookupTable, CondBranch, TypeConvert, ToBool,
+    LoadIndirect, StoreIndirect, StatusFlagRead, StatusFlagSet, StatusFlagTest,
+    SaveRegister, RestoreRegister, SetMode, Push, Pull, ReturnFromInterrupt,
+    MemoryFill, BlockCopy, InlineAsm,
+)
 from r65.compiler.codegen.emitter import AssemblyEmitter
 from r65.compiler.codegen.instruction_select import InstructionSelector
 from r65.compiler.codegen.register_alloc import ScratchRegisterPool, RegisterAllocator, PhysicalLocation, LocationKind
@@ -569,12 +577,50 @@ class FunctionCodeGenerator:
         # Allocate all at once
         reg_alloc.allocate_all(list(vregs))
 
+    # Static field-name table per instruction type for vreg extraction.
+    # Maps type → tuple of field names that may hold VirtualRegister values.
+    # None means special handling (variable-length lists).
+    _VREG_FIELDS = {
+        Load: ('dest',),
+        Store: ('source',),
+        Move: ('dest', 'source'),
+        BinaryOp: ('dest', 'left', 'right'),
+        UnaryOp: ('dest', 'operand'),
+        Compare: ('left', 'right'),
+        BitTest: ('value',),
+        Rotate: ('dest', 'source'),
+        TypeConvert: ('dest', 'source'),
+        ToBool: ('dest', 'source'),
+        LoadIndirect: ('dest', 'pointer'),
+        StoreIndirect: ('source', 'pointer'),
+        LookupTable: ('dest', 'scrutinee'),
+        JumpTable: ('scrutinee',),
+        CondBranch: ('condition',),
+        SaveRegister: ('save_location',),
+        RestoreRegister: ('save_location',),
+        StatusFlagRead: ('dest',),
+        # Types with no vreg fields
+        Jump: (),
+        SetMode: (),
+        Push: (),
+        Pull: (),
+        ReturnFromInterrupt: (),
+        MemoryFill: (),
+        BlockCopy: (),
+        InlineAsm: (),
+        StatusFlagSet: (),
+        StatusFlagTest: (),
+        # Special cases handled below
+        Return: None,
+        Call: None,
+        TraitDispatch: None,
+    }
+
     def _extract_vregs_from_instruction(self, instr) -> Set:
         """
         Extract virtual registers from instruction.
 
-        This is a simplified implementation. A real implementation
-        would use a visitor pattern or instruction introspection.
+        Uses static field-name table for O(1) type lookup instead of dir() reflection.
 
         Args:
             instr: MIR instruction
@@ -582,22 +628,39 @@ class FunctionCodeGenerator:
         Returns:
             Set of VirtualRegister objects
         """
-        from r65.compiler.mir.nodes import VirtualRegister
         vregs = set()
+        fields = self._VREG_FIELDS.get(type(instr))
 
-        # Check all attributes of instruction for VirtualRegisters
-        for attr_name in dir(instr):
-            if attr_name.startswith('_'):
-                continue
-
-            attr = getattr(instr, attr_name)
-
-            if isinstance(attr, VirtualRegister):
-                vregs.add(attr)
-            elif isinstance(attr, list):
-                for item in attr:
-                    if isinstance(item, VirtualRegister):
-                        vregs.add(item)
+        if fields is None:
+            # Special cases: Return, Call, TraitDispatch
+            instr_type = type(instr)
+            if instr_type is Return:
+                for v in instr.values:
+                    if isinstance(v, VirtualRegister):
+                        vregs.add(v)
+            elif instr_type is Call:
+                if isinstance(instr.function, VirtualRegister):
+                    vregs.add(instr.function)
+                for arg in instr.args:
+                    if isinstance(arg.value, VirtualRegister):
+                        vregs.add(arg.value)
+                for ret in instr.returns:
+                    if isinstance(ret, VirtualRegister):
+                        vregs.add(ret)
+            elif instr_type is TraitDispatch:
+                if isinstance(instr.self_ptr, VirtualRegister):
+                    vregs.add(instr.self_ptr)
+                for arg in instr.args:
+                    if isinstance(arg.value, VirtualRegister):
+                        vregs.add(arg.value)
+                for ret in instr.returns:
+                    if isinstance(ret, VirtualRegister):
+                        vregs.add(ret)
+        elif fields:
+            for field_name in fields:
+                val = getattr(instr, field_name, None)
+                if isinstance(val, VirtualRegister):
+                    vregs.add(val)
 
         return vregs
 

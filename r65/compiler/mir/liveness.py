@@ -15,6 +15,182 @@ from r65.compiler.mir.nodes import (
     LoadIndirect, StoreIndirect, StatusFlagRead, TraitDispatch,
 )
 
+# Types that count as register operands for liveness
+_REG_TYPES = (VirtualRegister, HardwareRegister)
+
+
+# ============================================================================
+# _get_uses dispatch helpers
+# ============================================================================
+
+def _uses_load(instr):
+    """Load: only VR source (not HR)."""
+    s = instr.source
+    return [s] if isinstance(s, VirtualRegister) else []
+
+def _uses_source_vr_hr(instr):
+    """Store, Move: source may be VR or HR."""
+    s = instr.source
+    return [s] if isinstance(s, _REG_TYPES) else []
+
+def _uses_left_right(instr):
+    """BinaryOp, Compare: left and right may be VR or HR."""
+    uses = []
+    if isinstance(instr.left, _REG_TYPES):
+        uses.append(instr.left)
+    if isinstance(instr.right, _REG_TYPES):
+        uses.append(instr.right)
+    return uses
+
+def _uses_operand(instr):
+    """UnaryOp: operand may be VR or HR."""
+    o = instr.operand
+    return [o] if isinstance(o, _REG_TYPES) else []
+
+def _uses_value(instr):
+    """BitTest: value may be VR or HR."""
+    v = instr.value
+    return [v] if isinstance(v, _REG_TYPES) else []
+
+def _uses_rotate_source(instr):
+    """Rotate, TypeConvert, ToBool: source may be VR or HR."""
+    s = instr.source
+    return [s] if isinstance(s, _REG_TYPES) else []
+
+def _uses_load_indirect(instr):
+    """LoadIndirect: pointer (VR only)."""
+    p = instr.pointer
+    return [p] if isinstance(p, VirtualRegister) else []
+
+def _uses_store_indirect(instr):
+    """StoreIndirect: pointer (VR) + source (VR or HR)."""
+    uses = []
+    if isinstance(instr.pointer, VirtualRegister):
+        uses.append(instr.pointer)
+    if isinstance(instr.source, _REG_TYPES):
+        uses.append(instr.source)
+    return uses
+
+def _uses_scrutinee(instr):
+    """LookupTable, JumpTable: scrutinee may be VR or HR."""
+    s = instr.scrutinee
+    return [s] if isinstance(s, _REG_TYPES) else []
+
+def _uses_call(instr):
+    """Call: argument values (VR or HR)."""
+    uses = []
+    for arg in instr.args:
+        if isinstance(arg.value, _REG_TYPES):
+            uses.append(arg.value)
+    return uses
+
+def _uses_trait_dispatch(instr):
+    """TraitDispatch: argument values + self_ptr."""
+    uses = []
+    for arg in instr.args:
+        if isinstance(arg.value, _REG_TYPES):
+            uses.append(arg.value)
+    if isinstance(instr.self_ptr, VirtualRegister):
+        uses.append(instr.self_ptr)
+    return uses
+
+def _uses_return(instr):
+    """Return: return values (VR or HR)."""
+    uses = []
+    for val in instr.values:
+        if isinstance(val, _REG_TYPES):
+            uses.append(val)
+    return uses
+
+def _uses_none(instr):
+    return []
+
+
+# Dispatch table: instruction type → uses extractor
+_GET_USES = {
+    Load: _uses_load,
+    Store: _uses_source_vr_hr,
+    Move: _uses_source_vr_hr,
+    BinaryOp: _uses_left_right,
+    UnaryOp: _uses_operand,
+    Compare: _uses_left_right,
+    BitTest: _uses_value,
+    Rotate: _uses_rotate_source,
+    TypeConvert: _uses_rotate_source,
+    ToBool: _uses_rotate_source,
+    LoadIndirect: _uses_load_indirect,
+    StoreIndirect: _uses_store_indirect,
+    LookupTable: _uses_scrutinee,
+    JumpTable: _uses_scrutinee,
+    Call: _uses_call,
+    TraitDispatch: _uses_trait_dispatch,
+    Return: _uses_return,
+    StatusFlagRead: _uses_none,
+    CondBranch: _uses_none,
+    Jump: _uses_none,
+}
+
+
+# ============================================================================
+# _get_defs dispatch helpers
+# ============================================================================
+
+def _defs_dest_vr_hr(instr):
+    """Load, Move, BinaryOp, UnaryOp, Rotate, TypeConvert, ToBool: dest may be VR or HR."""
+    d = instr.dest
+    return [d] if isinstance(d, _REG_TYPES) else []
+
+def _defs_load_indirect(instr):
+    """LoadIndirect: dest (VR only)."""
+    d = instr.dest
+    return [d] if isinstance(d, VirtualRegister) else []
+
+def _defs_lookup_table(instr):
+    """LookupTable: dest (VR only)."""
+    d = instr.dest
+    return [d] if isinstance(d, VirtualRegister) else []
+
+def _defs_call(instr):
+    """Call, TraitDispatch: return registers (VR only)."""
+    defs = []
+    for ret in instr.returns:
+        if isinstance(ret, VirtualRegister):
+            defs.append(ret)
+    return defs
+
+def _defs_status_flag_read(instr):
+    """StatusFlagRead: dest (VR or HR)."""
+    d = instr.dest
+    return [d] if isinstance(d, _REG_TYPES) else []
+
+def _defs_none(instr):
+    return []
+
+
+# Dispatch table: instruction type → defs extractor
+_GET_DEFS = {
+    Load: _defs_dest_vr_hr,
+    Move: _defs_dest_vr_hr,
+    BinaryOp: _defs_dest_vr_hr,
+    UnaryOp: _defs_dest_vr_hr,
+    Rotate: _defs_dest_vr_hr,
+    TypeConvert: _defs_dest_vr_hr,
+    ToBool: _defs_dest_vr_hr,
+    LoadIndirect: _defs_load_indirect,
+    LookupTable: _defs_lookup_table,
+    Call: _defs_call,
+    TraitDispatch: _defs_call,
+    StatusFlagRead: _defs_status_flag_read,
+    Store: _defs_none,
+    StoreIndirect: _defs_none,
+    Compare: _defs_none,
+    BitTest: _defs_none,
+    Return: _defs_none,
+    Jump: _defs_none,
+    CondBranch: _defs_none,
+    JumpTable: _defs_none,
+}
+
 
 @dataclass
 class LivenessInfo:
@@ -152,201 +328,31 @@ class LivenessAnalyzer:
         """
         Get variables used (read) by an instruction.
 
+        Uses dispatch dict for O(1) type lookup.
+
         Returns both VirtualRegister and HardwareRegister instances.
         Note: HardwareRegister tracking is only for X and Y; A is not tracked
         for direct usage because it's constantly used for intermediate calculations.
-
-        Args:
-            instr: Instruction to analyze
-
-        Returns:
-            List of used variables (VirtualRegister or HardwareRegister)
         """
-        uses = []
-
-        if isinstance(instr, Load):
-            # Load uses the source address
-            if hasattr(instr, 'source') and isinstance(instr.source, VirtualRegister):
-                uses.append(instr.source)
-
-        elif isinstance(instr, Store):
-            # Store uses both source value and destination address
-            if isinstance(instr.source, VirtualRegister):
-                uses.append(instr.source)
-            elif isinstance(instr.source, HardwareRegister):
-                uses.append(instr.source)
-
-        elif isinstance(instr, Move):
-            if isinstance(instr.source, VirtualRegister):
-                uses.append(instr.source)
-            elif isinstance(instr.source, HardwareRegister):
-                uses.append(instr.source)
-
-        elif isinstance(instr, BinaryOp):
-            if isinstance(instr.left, VirtualRegister):
-                uses.append(instr.left)
-            elif isinstance(instr.left, HardwareRegister):
-                uses.append(instr.left)
-            if isinstance(instr.right, VirtualRegister):
-                uses.append(instr.right)
-            elif isinstance(instr.right, HardwareRegister):
-                uses.append(instr.right)
-
-        elif isinstance(instr, UnaryOp):
-            if isinstance(instr.operand, VirtualRegister):
-                uses.append(instr.operand)
-            elif isinstance(instr.operand, HardwareRegister):
-                uses.append(instr.operand)
-
-        elif isinstance(instr, Compare):
-            if isinstance(instr.left, VirtualRegister):
-                uses.append(instr.left)
-            elif isinstance(instr.left, HardwareRegister):
-                uses.append(instr.left)
-            if isinstance(instr.right, VirtualRegister):
-                uses.append(instr.right)
-            elif isinstance(instr.right, HardwareRegister):
-                uses.append(instr.right)
-
-        elif isinstance(instr, BitTest):
-            if isinstance(instr.value, VirtualRegister):
-                uses.append(instr.value)
-            elif isinstance(instr.value, HardwareRegister):
-                uses.append(instr.value)
-
-        elif isinstance(instr, Rotate):
-            if isinstance(instr.source, VirtualRegister):
-                uses.append(instr.source)
-            elif isinstance(instr.source, HardwareRegister):
-                uses.append(instr.source)
-
-        elif isinstance(instr, TypeConvert):
-            if isinstance(instr.source, VirtualRegister):
-                uses.append(instr.source)
-            elif isinstance(instr.source, HardwareRegister):
-                uses.append(instr.source)
-
-        elif isinstance(instr, ToBool):
-            if isinstance(instr.source, VirtualRegister):
-                uses.append(instr.source)
-            elif isinstance(instr.source, HardwareRegister):
-                uses.append(instr.source)
-
-        elif isinstance(instr, LoadIndirect):
-            # LoadIndirect uses the pointer
-            if isinstance(instr.pointer, VirtualRegister):
-                uses.append(instr.pointer)
-
-        elif isinstance(instr, StoreIndirect):
-            # StoreIndirect uses both the pointer and the source value
-            if isinstance(instr.pointer, VirtualRegister):
-                uses.append(instr.pointer)
-            if isinstance(instr.source, VirtualRegister):
-                uses.append(instr.source)
-            elif isinstance(instr.source, HardwareRegister):
-                uses.append(instr.source)
-
-        elif isinstance(instr, LookupTable):
-            if isinstance(instr.scrutinee, VirtualRegister):
-                uses.append(instr.scrutinee)
-            elif isinstance(instr.scrutinee, HardwareRegister):
-                uses.append(instr.scrutinee)
-
-        elif isinstance(instr, (Call, TraitDispatch)):
-            # Call/TraitDispatch uses all argument registers
-            for arg in instr.args:
-                if isinstance(arg.value, VirtualRegister):
-                    uses.append(arg.value)
-                elif isinstance(arg.value, HardwareRegister):
-                    uses.append(arg.value)
-            # TraitDispatch also uses self_ptr
-            if isinstance(instr, TraitDispatch) and isinstance(instr.self_ptr, VirtualRegister):
-                uses.append(instr.self_ptr)
-
-        elif isinstance(instr, Return):
-            # Return uses all return value registers
-            for val in instr.values:
-                if isinstance(val, VirtualRegister):
-                    uses.append(val)
-                elif isinstance(val, HardwareRegister):
-                    uses.append(val)
-
-        return uses
+        handler = _GET_USES.get(type(instr))
+        if handler:
+            return handler(instr)
+        return []
 
     def _get_defs(self, instr: MIRInstruction) -> List:
         """
         Get variables defined (written) by an instruction.
 
+        Uses dispatch dict for O(1) type lookup.
+
         Returns both VirtualRegister and HardwareRegister instances.
         Note: HardwareRegister tracking is only for X and Y; A is not tracked
         for direct usage because it's constantly used for intermediate calculations.
-
-        Args:
-            instr: Instruction to analyze
-
-        Returns:
-            List of defined variables (VirtualRegister or HardwareRegister)
         """
-        defs = []
-
-        if isinstance(instr, Load):
-            if isinstance(instr.dest, VirtualRegister):
-                defs.append(instr.dest)
-            elif isinstance(instr.dest, HardwareRegister):
-                defs.append(instr.dest)
-
-        elif isinstance(instr, Move):
-            if isinstance(instr.dest, VirtualRegister):
-                defs.append(instr.dest)
-            elif isinstance(instr.dest, HardwareRegister):
-                defs.append(instr.dest)
-
-        elif isinstance(instr, BinaryOp):
-            if isinstance(instr.dest, VirtualRegister):
-                defs.append(instr.dest)
-            elif isinstance(instr.dest, HardwareRegister):
-                defs.append(instr.dest)
-
-        elif isinstance(instr, UnaryOp):
-            if isinstance(instr.dest, VirtualRegister):
-                defs.append(instr.dest)
-            elif isinstance(instr.dest, HardwareRegister):
-                defs.append(instr.dest)
-
-        elif isinstance(instr, Rotate):
-            if isinstance(instr.dest, VirtualRegister):
-                defs.append(instr.dest)
-            elif isinstance(instr.dest, HardwareRegister):
-                defs.append(instr.dest)
-
-        elif isinstance(instr, TypeConvert):
-            if isinstance(instr.dest, VirtualRegister):
-                defs.append(instr.dest)
-            elif isinstance(instr.dest, HardwareRegister):
-                defs.append(instr.dest)
-
-        elif isinstance(instr, ToBool):
-            if isinstance(instr.dest, VirtualRegister):
-                defs.append(instr.dest)
-            elif isinstance(instr.dest, HardwareRegister):
-                defs.append(instr.dest)
-
-        elif isinstance(instr, LoadIndirect):
-            # LoadIndirect defines the destination register
-            if isinstance(instr.dest, VirtualRegister):
-                defs.append(instr.dest)
-
-        elif isinstance(instr, LookupTable):
-            if isinstance(instr.dest, VirtualRegister):
-                defs.append(instr.dest)
-
-        elif isinstance(instr, (Call, TraitDispatch)):
-            # Call/TraitDispatch defines all return value registers
-            for ret in instr.returns:
-                if isinstance(ret, VirtualRegister):
-                    defs.append(ret)
-
-        return defs
+        handler = _GET_DEFS.get(type(instr))
+        if handler:
+            return handler(instr)
+        return []
 
     def _get_successors(self, block: BasicBlock) -> List[int]:
         """

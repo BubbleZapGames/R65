@@ -133,6 +133,42 @@ class InstructionSelector:
         self._pending_sep_mask = 0
         self._pending_rep_mask = 0
 
+        # Dispatch table: map MIR instruction type → handler method
+        # Built once per InstructionSelector instance; O(1) lookup vs O(n) isinstance chain
+        self._dispatch = {
+            Load: self.memory_selector.select_load,
+            Store: self.memory_selector.select_store,
+            LoadIndirect: self.memory_selector.select_load_indirect,
+            StoreIndirect: self.memory_selector.select_store_indirect,
+            Move: self.move_selector.select_move,
+            TypeConvert: self.type_conversion_selector.select_type_convert,
+            ToBool: self.select_to_bool,
+            BinaryOp: self.select_binary_op,
+            UnaryOp: self.select_unary_op,
+            Compare: self.compare_selector.select_compare,
+            BitTest: self.compare_selector.select_bit_test,
+            Rotate: self.compare_selector.select_rotate,
+            Jump: self.control_flow_selector.select_jump,
+            JumpTable: self.control_flow_selector.select_jump_table,
+            LookupTable: self.control_flow_selector.select_lookup_table,
+            CondBranch: self.control_flow_selector.select_cond_branch,
+            Return: self.control_flow_selector.select_return,
+            Call: self.call_selector.select_call,
+            TraitDispatch: self.call_selector.select_trait_dispatch,
+            SetMode: self.select_set_mode,
+            SaveRegister: self.select_save_register,
+            RestoreRegister: self.select_restore_register,
+            Push: self.select_push,
+            Pull: self.select_pull,
+            ReturnFromInterrupt: self.select_return_from_interrupt,
+            MemoryFill: self.select_memory_fill,
+            BlockCopy: self.select_block_copy,
+            InlineAsm: self.select_inline_asm,
+            StatusFlagTest: self.select_status_flag_test,
+            StatusFlagSet: self.select_status_flag_set,
+            StatusFlagRead: self.select_status_flag_read,
+        }
+
         # Initialize tracker from function parameters if available
         if current_function:
             self._init_hw_tracker(current_function)
@@ -504,6 +540,8 @@ class InstructionSelector:
         """
         Select and emit assembly for MIR instruction.
 
+        Uses dispatch dict for O(1) type lookup instead of isinstance chain.
+
         Args:
             instr: MIR instruction to convert
         """
@@ -512,71 +550,12 @@ class InstructionSelector:
 
         # Flush pending mode flags before any non-StatusFlagSet instruction
         # This enables combining sequential STATUS.A16/XY16 assignments
-        if not isinstance(instr, StatusFlagSet):
+        if type(instr) is not StatusFlagSet:
             self._flush_pending_mode_flags()
 
-        if isinstance(instr, Load):
-            self.memory_selector.select_load(instr)
-        elif isinstance(instr, Store):
-            self.memory_selector.select_store(instr)
-        elif isinstance(instr, LoadIndirect):
-            self.memory_selector.select_load_indirect(instr)
-        elif isinstance(instr, StoreIndirect):
-            self.memory_selector.select_store_indirect(instr)
-        elif isinstance(instr, Move):
-            self.move_selector.select_move(instr)
-        elif isinstance(instr, TypeConvert):
-            self.type_conversion_selector.select_type_convert(instr)
-        elif isinstance(instr, ToBool):
-            self.select_to_bool(instr)
-        elif isinstance(instr, BinaryOp):
-            self.select_binary_op(instr)
-        elif isinstance(instr, UnaryOp):
-            self.select_unary_op(instr)
-        elif isinstance(instr, Compare):
-            self.compare_selector.select_compare(instr)
-        elif isinstance(instr, BitTest):
-            self.compare_selector.select_bit_test(instr)
-        elif isinstance(instr, Rotate):
-            self.compare_selector.select_rotate(instr)
-        elif isinstance(instr, Jump):
-            self.control_flow_selector.select_jump(instr)
-        elif isinstance(instr, JumpTable):
-            self.control_flow_selector.select_jump_table(instr)
-        elif isinstance(instr, LookupTable):
-            self.control_flow_selector.select_lookup_table(instr)
-        elif isinstance(instr, CondBranch):
-            self.control_flow_selector.select_cond_branch(instr)
-        elif isinstance(instr, Return):
-            self.control_flow_selector.select_return(instr)
-        elif isinstance(instr, Call):
-            self.call_selector.select_call(instr)
-        elif isinstance(instr, TraitDispatch):
-            self.call_selector.select_trait_dispatch(instr)
-        elif isinstance(instr, SetMode):
-            self.select_set_mode(instr)
-        elif isinstance(instr, SaveRegister):
-            self.select_save_register(instr)
-        elif isinstance(instr, RestoreRegister):
-            self.select_restore_register(instr)
-        elif isinstance(instr, Push):
-            self.select_push(instr)
-        elif isinstance(instr, Pull):
-            self.select_pull(instr)
-        elif isinstance(instr, ReturnFromInterrupt):
-            self.select_return_from_interrupt(instr)
-        elif isinstance(instr, MemoryFill):
-            self.select_memory_fill(instr)
-        elif isinstance(instr, BlockCopy):
-            self.select_block_copy(instr)
-        elif isinstance(instr, InlineAsm):
-            self.select_inline_asm(instr)
-        elif isinstance(instr, StatusFlagTest):
-            self.select_status_flag_test(instr)
-        elif isinstance(instr, StatusFlagSet):
-            self.select_status_flag_set(instr)
-        elif isinstance(instr, StatusFlagRead):
-            self.select_status_flag_read(instr)
+        handler = self._dispatch.get(type(instr))
+        if handler:
+            handler(instr)
         else:
             raise InstructionSelectionError(f"Unsupported MIR instruction: {type(instr).__name__}", source_loc=self._current_source_loc)
 
