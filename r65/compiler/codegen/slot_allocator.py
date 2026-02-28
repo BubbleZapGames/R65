@@ -24,7 +24,7 @@ from r65.compiler.mir.nodes import (
 )
 from r65.compiler.mir.liveness import LivenessAnalyzer
 from r65.compiler.hir.unified_type_utils import get_unified_type_size
-from r65.compiler.hir import HIRError
+from r65.compiler.codegen.type_utils import get_vreg_size
 
 from typing import TYPE_CHECKING as _TYPE_CHECKING
 if _TYPE_CHECKING:
@@ -196,7 +196,7 @@ class StackSlotAllocator:
         # Calculate sizes for locals
         local_sizes: Dict[VirtualRegister, int] = {}
         for vreg in local_vregs:
-            local_sizes[vreg] = self._get_vreg_size(vreg)
+            local_sizes[vreg] = get_vreg_size(vreg)
 
         # Determine which locals are live at any call site (for frame partitioning)
         call_spanning_vregs = self._find_call_spanning_vregs(local_vregs) if self.instr_liveness else set()
@@ -408,13 +408,6 @@ class StackSlotAllocator:
 
         return max_live
 
-    def _get_vreg_size(self, vreg: VirtualRegister) -> int:
-        """Get size of virtual register in bytes."""
-        try:
-            return get_unified_type_size(vreg.type_info)
-        except (HIRError, AttributeError, TypeError):
-            return 1
-
     # ------------------------------------------------------------------
     # Vreg-to-vreg move coalescing
     # ------------------------------------------------------------------
@@ -614,7 +607,7 @@ class StackSlotAllocator:
                     if isinstance(instr.dest, VirtualRegister):
                         vreg_id = instr.dest.id
                         if vreg_id not in vreg_defs:
-                            dest_size = self._get_vreg_size(instr.dest)
+                            dest_size = get_vreg_size(instr.dest)
                             # Skip far pointer results (3 bytes) — codegen stores
                             # them byte-by-byte, A holds only a partial value
                             if dest_size <= 2:
@@ -635,7 +628,7 @@ class StackSlotAllocator:
                     if isinstance(instr.dest, VirtualRegister):
                         vreg_id = instr.dest.id
                         if vreg_id not in vreg_defs:
-                            dest_size = self._get_vreg_size(instr.dest)
+                            dest_size = get_vreg_size(instr.dest)
                             if dest_size == 1:
                                 vreg_defs[vreg_id] = []
                                 vreg_defs[vreg_id].append((instr, 'A'))
@@ -658,7 +651,7 @@ class StackSlotAllocator:
                         if isinstance(ret_vreg, VirtualRegister):
                             vreg_id = ret_vreg.id
                             if vreg_id not in vreg_defs:
-                                dest_size = self._get_vreg_size(ret_vreg)
+                                dest_size = get_vreg_size(ret_vreg)
                                 if dest_size <= 2:
                                     vreg_defs[vreg_id] = []
                                     vreg_defs[vreg_id].append((instr, 'A'))
@@ -1155,7 +1148,7 @@ class StackSlotAllocator:
                 return True
         # Check dest vreg size
         if hasattr(instr, 'dest') and isinstance(instr.dest, VirtualRegister):
-            if self._get_vreg_size(instr.dest) >= 2:
+            if get_vreg_size(instr.dest) >= 2:
                 return True
         return False
 

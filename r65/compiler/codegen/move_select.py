@@ -52,7 +52,7 @@ class MoveOperationSelector(BaseSelector):
         is_far_ptr = isinstance(instr.type_info, PointerTypeInfo) and instr.type_info.is_far
 
         # SPECIAL CASE: Destination is hardware register
-        if dest_loc.kind == LocationKind.HARDWARE:
+        if dest_loc.is_hw():
             self._move_to_hardware_register(instr, dest_loc, src_operand, is_u16)
             return
 
@@ -85,7 +85,7 @@ class MoveOperationSelector(BaseSelector):
             self._load_immediate_to_hw_register(dest_loc.hw_register, src_operand.value, is_u16, persist_mode)
         else:
             src_loc = self.parent._get_operand_location(src_operand)
-            if src_loc.kind == LocationKind.HARDWARE:
+            if src_loc.is_hw():
                 self.parent._emit_register_transfer(src_loc.hw_register, dest_loc.hw_register)
             else:
                 self._load_memory_to_hw_register(dest_loc.hw_register, src_loc, is_u16, persist_mode)
@@ -321,7 +321,7 @@ class MoveOperationSelector(BaseSelector):
         """Handle moving from a source location to memory destination."""
         src_loc = self.parent._get_operand_location(src_operand)
 
-        if src_loc.kind == LocationKind.HARDWARE:
+        if src_loc.is_hw():
             self._store_hw_register_to_memory(src_loc.hw_register, dest_loc, is_u16)
         elif is_far_ptr:
             # 3-byte far pointer copy

@@ -157,7 +157,7 @@ class CompareSelector(BaseSelector):
                 self.parent._ensure_m16_mode()
             else:
                 self.parent._ensure_m8_mode()
-            if left_loc.kind == LocationKind.HARDWARE and left_loc.hw_register in ('X', 'Y'):
+            if left_loc.is_hw() and left_loc.hw_register in ('X', 'Y'):
                 # Both operands in hardware registers, no scratch available.
                 # A = right value. X/Y = left value.
                 # Strategy: push right to stack, transfer left to A, compare
@@ -189,7 +189,7 @@ class CompareSelector(BaseSelector):
         # X/Y comparisons (CPX/CPY) use the X flag, not M flag, so no mode switch needed
         needs_16bit = (is_16bit and
             left_loc.kind != LocationKind.HARDWARE or
-            (is_16bit and left_loc.kind == LocationKind.HARDWARE and left_loc.hw_register == 'A'))
+            (is_16bit and left_loc.is_hw('A')))
 
         if needs_16bit:
             self.parent._ensure_m16_mode()
@@ -256,7 +256,7 @@ class CompareSelector(BaseSelector):
 
         right_loc = self.parent._get_operand_location(right)
 
-        if right_loc.kind == LocationKind.HARDWARE:
+        if right_loc.is_hw():
             operand, needs_pop = self._store_hw_register_to_temp(right_loc)
             return operand, False, needs_pop
 
@@ -335,7 +335,7 @@ class CompareSelector(BaseSelector):
             right_operand: Right operand (Immediate, Address, or location)
             is_immediate: True if right operand is immediate
         """
-        if left_loc.kind == LocationKind.HARDWARE:
+        if left_loc.is_hw():
             self._emit_hw_register_comparison(left_loc, right_operand, is_immediate)
         else:
             # Memory or virtual register - load to A and compare

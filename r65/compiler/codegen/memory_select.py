@@ -100,7 +100,7 @@ class MemoryOperationSelector(BaseSelector):
 
         if is_u16:
             # Check for hardware register destination - handle differently
-            if dest_loc.kind == LocationKind.HARDWARE:
+            if dest_loc.is_hw():
                 if dest_loc.hw_register == 'A':
                     # Load 16-bit into A - need 16-bit mode
                     self._ensure_m16_mode()
@@ -124,7 +124,7 @@ class MemoryOperationSelector(BaseSelector):
             self._ensure_m8_mode()
             self._emit_load_store('LDA', src_loc)
             # Skip store if destination is already the accumulator
-            if dest_loc.kind == LocationKind.HARDWARE and dest_loc.hw_register == 'A':
+            if dest_loc.is_hw('A'):
                 pass  # Value already in A from LDA
             else:
                 self._emit_load_store('STA', dest_loc)
@@ -145,7 +145,7 @@ class MemoryOperationSelector(BaseSelector):
         is_far_ptr = isinstance(instr.type_info, PointerTypeInfo) and instr.type_info.is_far
 
         # SPECIAL CASE: Storing to B register
-        if dest_loc.kind == LocationKind.HARDWARE and dest_loc.hw_register == 'B':
+        if dest_loc.is_hw('B'):
             self._store_to_b_register(instr, dest_loc)
             return
 
@@ -176,7 +176,7 @@ class MemoryOperationSelector(BaseSelector):
             self.parent._store_to_b_from_a()
         else:
             src_loc = self.parent._get_operand_location(instr.source)
-            if src_loc.kind == LocationKind.HARDWARE and src_loc.hw_register == 'A':
+            if src_loc.is_hw('A'):
                 self.parent._store_to_b_from_a()
             else:
                 self._emit_load_store('LDA', src_loc)
@@ -186,7 +186,7 @@ class MemoryOperationSelector(BaseSelector):
     def _store_immediate(self, value: int, dest_loc, is_u16: bool):
         """Store an immediate value to memory or hardware register."""
         # Special handling for hardware register A with 16-bit values
-        if is_u16 and dest_loc.kind == LocationKind.HARDWARE and dest_loc.hw_register == 'A':
+        if is_u16 and dest_loc.is_hw('A'):
             # Load 16-bit immediate into A - need 16-bit mode
             self._ensure_m16_mode()
             self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(value & 0xFFFF))
@@ -219,7 +219,7 @@ class MemoryOperationSelector(BaseSelector):
         """Store from a source location to destination."""
         src_loc = self.parent._get_operand_location(instr.source)
 
-        if src_loc.kind == LocationKind.HARDWARE:
+        if src_loc.is_hw():
             self._store_from_hardware_register(src_loc, dest_loc, is_u16)
         elif is_far_ptr:
             # 3-byte far pointer copy
@@ -357,14 +357,14 @@ class MemoryOperationSelector(BaseSelector):
         # Y-pointer optimization: pointer is in Y register (trait method self)
         # Use LDA $offset,Y — effective address is DBR:(offset + Y)
         # Only valid when no index_register is set (otherwise Y holds the index, not the pointer)
-        if (ptr_loc.kind == LocationKind.HARDWARE and ptr_loc.hw_register == 'Y'
+        if (ptr_loc.is_hw('Y')
                 and not instr.index_register):
             offset = getattr(instr, 'offset', 0)
             self._emit_y_pointer_load(offset, instr.type_info, dest_loc)
             return
 
         # Spill hardware register pointers to scratch for indirect addressing
-        if ptr_loc.kind == LocationKind.HARDWARE:
+        if ptr_loc.is_hw():
             ptr_loc = self._spill_pointer_to_scratch(ptr_loc)
 
         self._validate_pointer_location(ptr_loc)
@@ -441,7 +441,7 @@ class MemoryOperationSelector(BaseSelector):
                 else:
                     self._emit_far_ptr_access_via_dbr('LDA', ptr_loc, instr_index)
                 # Skip store if dest is A (hw-coalesceable) — value already in A
-                if not (dest_loc.kind == LocationKind.HARDWARE and dest_loc.hw_register == 'A'):
+                if not dest_loc.is_hw('A'):
                     self._emit_load_store('STA', dest_loc)
                 if will_clobber_y and self._has_y_self():
                     self._restore_y_self(y_self_save_addr)
@@ -457,7 +457,7 @@ class MemoryOperationSelector(BaseSelector):
 
         self._emit_instr(opcode, operand, "Load through pointer")
         # Skip store if dest is A (hw-coalesceable) — value already in A
-        if not (dest_loc.kind == LocationKind.HARDWARE and dest_loc.hw_register == 'A'):
+        if not dest_loc.is_hw('A'):
             self._emit_load_store('STA', dest_loc)
         if will_clobber_y and self._has_y_self():
             self._restore_y_self(y_self_save_addr)
@@ -483,14 +483,14 @@ class MemoryOperationSelector(BaseSelector):
         # Y-pointer optimization: pointer is in Y register (trait method self)
         # Use STA $offset,Y — effective address is DBR:(offset + Y)
         # Only valid when no index_register is set (otherwise Y holds the index, not the pointer)
-        if (ptr_loc.kind == LocationKind.HARDWARE and ptr_loc.hw_register == 'Y'
+        if (ptr_loc.is_hw('Y')
                 and not instr.index_register):
             offset = getattr(instr, 'offset', 0)
             self._emit_y_pointer_store(offset, instr.type_info, src_loc, instr.source)
             return
 
         # Spill hardware register pointers to scratch for indirect addressing
-        if ptr_loc.kind == LocationKind.HARDWARE:
+        if ptr_loc.is_hw():
             ptr_loc = self._spill_pointer_to_scratch(ptr_loc)
 
         self._validate_pointer_location(ptr_loc)
@@ -564,9 +564,9 @@ class MemoryOperationSelector(BaseSelector):
             if isinstance(instr.source, MIRImmediate):
                 value = instr.source.value & 0xFF
                 self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(value))
-            elif src_loc.kind == LocationKind.HARDWARE and src_loc.hw_register == 'A':
+            elif src_loc.is_hw('A'):
                 pass  # Already in A
-            elif src_loc.kind == LocationKind.HARDWARE and src_loc.hw_register in ('X', 'Y'):
+            elif src_loc.is_hw() and src_loc.hw_register in ('X', 'Y'):
                 transfer = Opcode.TXA if src_loc.hw_register == 'X' else Opcode.TYA
                 self._emit_instr(transfer, None, f"Transfer {src_loc.hw_register} to A for store")
             else:
@@ -597,9 +597,9 @@ class MemoryOperationSelector(BaseSelector):
         if isinstance(instr.source, MIRImmediate):
             value = instr.source.value & 0xFF
             self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(value))
-        elif src_loc.kind == LocationKind.HARDWARE and src_loc.hw_register == 'A':
+        elif src_loc.is_hw('A'):
             pass  # Already in A
-        elif src_loc.kind == LocationKind.HARDWARE and src_loc.hw_register in ('X', 'Y'):
+        elif src_loc.is_hw() and src_loc.hw_register in ('X', 'Y'):
             transfer = Opcode.TXA if src_loc.hw_register == 'X' else Opcode.TYA
             self._emit_instr(transfer, None, f"Transfer {src_loc.hw_register} to A for store")
         else:
@@ -632,7 +632,7 @@ class MemoryOperationSelector(BaseSelector):
             self.parent.emitter.emit_accu_mode(16)
             self.parent.emitter.emit_raw(f"    LDA ${offset:04X},Y")
             # Store 16-bit value
-            if dest_loc.kind == LocationKind.HARDWARE and dest_loc.hw_register == 'A':
+            if dest_loc.is_hw('A'):
                 pass  # Already in A
             else:
                 self._emit_load_store('STA', dest_loc)
@@ -641,7 +641,7 @@ class MemoryOperationSelector(BaseSelector):
         else:
             # 8-bit load: LDA abs,Y directly
             self.parent.emitter.emit_raw(f"    LDA ${offset:04X},Y")
-            if dest_loc.kind == LocationKind.HARDWARE and dest_loc.hw_register == 'A':
+            if dest_loc.is_hw('A'):
                 pass  # Already in A
             else:
                 self._emit_load_store('STA', dest_loc)
@@ -669,7 +669,7 @@ class MemoryOperationSelector(BaseSelector):
             if isinstance(source, MIRImmediate):
                 value = source.value & 0xFFFF
                 self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(value))
-            elif src_loc.kind == LocationKind.HARDWARE and src_loc.hw_register == 'A':
+            elif src_loc.is_hw('A'):
                 pass  # Already in A
             else:
                 self._emit_load_store('LDA', src_loc)
@@ -681,7 +681,7 @@ class MemoryOperationSelector(BaseSelector):
             if isinstance(source, MIRImmediate):
                 value = source.value & 0xFF
                 self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(value))
-            elif src_loc.kind == LocationKind.HARDWARE and src_loc.hw_register == 'A':
+            elif src_loc.is_hw('A'):
                 pass  # Already in A
             else:
                 self._emit_load_store('LDA', src_loc)
@@ -699,7 +699,7 @@ class MemoryOperationSelector(BaseSelector):
             raise InstructionSelectionError(
                 f"Pointer for indirect addressing must be in memory, got immediate value",
                 source_loc=self.parent._current_source_loc)
-        if ptr_loc.kind == LocationKind.HARDWARE:
+        if ptr_loc.is_hw():
             raise InstructionSelectionError(
                 f"Pointer for indirect addressing must be in memory, got: {ptr_loc.hw_register}",
                 source_loc=self.parent._current_source_loc)
@@ -1019,7 +1019,7 @@ class MemoryOperationSelector(BaseSelector):
         if isinstance(source, MIRImmediate):
             value = source.value & 0xFF
             self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(value), "Load low byte immediate")
-        elif src_loc and src_loc.kind == LocationKind.HARDWARE and src_loc.hw_register == 'A':
+        elif src_loc and src_loc.is_hw('A'):
             # Source is already in A register — use XBA to access both bytes
             # In m8 mode, A holds low byte, B (hidden high byte) holds high byte
             self._ensure_m8_mode()
@@ -1029,7 +1029,7 @@ class MemoryOperationSelector(BaseSelector):
             self._emit_instr(opcode_store, operand, "Store high byte through pointer")
             self._emit_instr(Opcode.XBA, None, "Restore A low byte")
             return
-        elif src_loc and src_loc.kind == LocationKind.HARDWARE and src_loc.hw_register in ('X', 'Y'):
+        elif src_loc and src_loc.is_hw() and src_loc.hw_register in ('X', 'Y'):
             # Source is X or Y register (16-bit) — transfer to A in m16, then byte-store
             transfer = Opcode.TXA if src_loc.hw_register == 'X' else Opcode.TYA
             self._ensure_m16_mode()
@@ -1118,7 +1118,7 @@ class MemoryOperationSelector(BaseSelector):
         if isinstance(source, MIRImmediate):
             value = source.value & 0xFF
             self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(value), "Load low byte immediate")
-        elif src_loc and src_loc.kind == LocationKind.HARDWARE and src_loc.hw_register == 'A':
+        elif src_loc and src_loc.is_hw('A'):
             # Source is already in A register — use XBA to access both bytes
             # In m8 mode, A holds low byte, B (hidden high byte) holds high byte
             self._ensure_m8_mode()
@@ -1128,7 +1128,7 @@ class MemoryOperationSelector(BaseSelector):
             self._emit_instr(opcode_store, operand, "Store high byte through stack pointer")
             self._emit_instr(Opcode.XBA, None, "Restore A low byte")
             return
-        elif src_loc and src_loc.kind == LocationKind.HARDWARE and src_loc.hw_register in ('X', 'Y'):
+        elif src_loc and src_loc.is_hw() and src_loc.hw_register in ('X', 'Y'):
             # Source is X or Y register (16-bit) — transfer to A in m16, then byte-store
             transfer = Opcode.TXA if src_loc.hw_register == 'X' else Opcode.TYA
             self._ensure_m16_mode()
@@ -1233,7 +1233,7 @@ class MemoryOperationSelector(BaseSelector):
         stack_offset = ptr_loc.stack_offset
 
         # Handle source in A register: save before DBR manipulation clobbers A
-        if src_loc and src_loc.kind == LocationKind.HARDWARE and src_loc.hw_register == 'A':
+        if src_loc and src_loc.is_hw('A'):
             self._ensure_m8_mode()
 
             # Save current DBR
@@ -1299,7 +1299,7 @@ class MemoryOperationSelector(BaseSelector):
         if isinstance(source, MIRImmediate):
             value = source.value & 0xFF
             self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(value), "Load low byte immediate")
-        elif src_loc and src_loc.kind == LocationKind.HARDWARE and src_loc.hw_register in ('X', 'Y'):
+        elif src_loc and src_loc.is_hw() and src_loc.hw_register in ('X', 'Y'):
             # Source is X or Y register (16-bit) — transfer to A in m16, then byte-store
             transfer = Opcode.TXA if src_loc.hw_register == 'X' else Opcode.TYA
             self._ensure_m16_mode()
@@ -1387,11 +1387,11 @@ class MemoryOperationSelector(BaseSelector):
         # Load source value into A (16-bit) and store through far pointer
         if isinstance(source, MIRImmediate):
             self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(source.value & 0xFFFF), "Load 16-bit immediate")
-        elif src_loc and src_loc.kind == LocationKind.HARDWARE and src_loc.hw_register == 'A':
+        elif src_loc and src_loc.is_hw('A'):
             pass  # Already in A (16-bit in m16 mode)
-        elif src_loc and src_loc.kind == LocationKind.HARDWARE and src_loc.hw_register == 'X':
+        elif src_loc and src_loc.is_hw('X'):
             self._emit_instr(Opcode.TXA, None, "Transfer X to A for far ptr store")
-        elif src_loc and src_loc.kind == LocationKind.HARDWARE and src_loc.hw_register == 'Y':
+        elif src_loc and src_loc.is_hw('Y'):
             self._emit_instr(Opcode.TYA, None, "Transfer Y to A for far ptr store")
         else:
             self._emit_load_store('LDA', src_loc)

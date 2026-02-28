@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from r65.compiler.mir.nodes import VirtualRegister, HardwareRegister, MIRFunction
 from r65.compiler.codegen.slot_allocator import StackSlotAllocator, SlotAllocation, PreassignedSlot
-from r65.compiler.codegen.type_utils import get_type_size
+from r65.compiler.codegen.type_utils import get_type_size, get_vreg_size
 from r65.compiler.codegen.abi import StackFrameLayout
 from r65.compiler.errors import MemoryAllocationError
 
@@ -68,6 +68,14 @@ class PhysicalLocation:
 
     # Size in bytes
     size: int = 1
+
+    def is_hw(self, register: str = None) -> bool:
+        """Check if this location is a hardware register, optionally a specific one."""
+        if self.kind != LocationKind.HARDWARE:
+            return False
+        if register is not None:
+            return self.hw_register == register
+        return True
 
     def __str__(self) -> str:
         """String representation for debugging."""
@@ -182,7 +190,7 @@ class ScratchRegisterPool:
                     pass
 
         # Find compatible free scratch (must match or exceed size)
-        vreg_size = self._get_vreg_size(vreg)
+        vreg_size = get_vreg_size(vreg)
         for scratch in self.scratches:
             if scratch.is_free and scratch.size >= vreg_size:
                 scratch.is_free = False
@@ -219,10 +227,6 @@ class ScratchRegisterPool:
         for scratch in self.scratches:
             scratch.is_free = True
         self.allocated.clear()
-
-    def _get_vreg_size(self, vreg: VirtualRegister) -> int:
-        """Get size of virtual register in bytes."""
-        return get_type_size(vreg.type_info)
 
 
 class StackAllocator:
@@ -261,7 +265,7 @@ class StackAllocator:
 
         # Allocate new slot
         offset = self.current_offset
-        vreg_size = self._get_vreg_size(vreg)
+        vreg_size = get_vreg_size(vreg)
         self.current_offset += vreg_size
         self.allocated[vreg.id] = offset
 
@@ -270,10 +274,6 @@ class StackAllocator:
     def get_frame_size(self) -> int:
         """Get total stack frame size."""
         return self.current_offset
-
-    def _get_vreg_size(self, vreg: VirtualRegister) -> int:
-        """Get size of virtual register in bytes."""
-        return get_type_size(vreg.type_info)
 
 
 class RegisterAllocator:
@@ -361,7 +361,7 @@ class RegisterAllocator:
             preassigned.append(PreassignedSlot(
                 vreg=vreg,
                 base_offset=base_offset,
-                size=self._get_vreg_size(vreg)
+                size=get_vreg_size(vreg)
             ))
 
         return preassigned
@@ -393,7 +393,7 @@ class RegisterAllocator:
             location = PhysicalLocation(
                 kind=LocationKind.HARDWARE,
                 hw_register=hw_reg,
-                size=self._get_vreg_size(vreg)
+                size=get_vreg_size(vreg)
             )
             self.allocations[vreg.id] = location
             self.hw_allocs[hw_reg].allocated_vreg = vreg
@@ -407,7 +407,7 @@ class RegisterAllocator:
                 location = PhysicalLocation(
                     kind=LocationKind.HARDWARE,
                     hw_register=hw_reg,
-                    size=self._get_vreg_size(vreg)
+                    size=get_vreg_size(vreg)
                 )
                 self.allocations[vreg.id] = location
                 # Track the allocation so spill logic can detect it
@@ -422,7 +422,7 @@ class RegisterAllocator:
                 location = PhysicalLocation(
                     kind=LocationKind.RETURN_SINKABLE,
                     source_location=mem_source,
-                    size=self._get_vreg_size(vreg)
+                    size=get_vreg_size(vreg)
                 )
                 self.allocations[vreg.id] = location
                 return location
@@ -440,7 +440,7 @@ class RegisterAllocator:
                     location = PhysicalLocation(
                         kind=LocationKind.HARDWARE,
                         hw_register=hw_reg,
-                        size=self._get_vreg_size(vreg)
+                        size=get_vreg_size(vreg)
                     )
                     self.allocations[vreg.id] = location
                     hw_alloc.allocated_vreg = vreg
@@ -473,7 +473,7 @@ class RegisterAllocator:
                 location = PhysicalLocation(
                     kind=LocationKind.STACK,
                     stack_offset=stack_offset,
-                    size=self._get_vreg_size(vreg)
+                    size=get_vreg_size(vreg)
                 )
                 self.allocations[vreg.id] = location
                 return location
@@ -487,7 +487,7 @@ class RegisterAllocator:
         location = PhysicalLocation(
             kind=LocationKind.STACK,
             stack_offset=stack_offset,
-            size=self._get_vreg_size(vreg)
+            size=get_vreg_size(vreg)
         )
         self.allocations[vreg.id] = location
         return location
@@ -579,7 +579,7 @@ class RegisterAllocator:
         if self.mir_func and self.mir_func.has_far_ptr_stack_params:
             return None
 
-        vreg_size = self._get_vreg_size(vreg)
+        vreg_size = get_vreg_size(vreg)
 
         for scratch in self.scratch_pool.scratches:
             if not scratch.is_free:
@@ -686,7 +686,7 @@ class RegisterAllocator:
         """
         if vreg.id in self.allocations:
             loc = self.allocations[vreg.id]
-            if loc.kind == LocationKind.HARDWARE:
+            if loc.is_hw():
                 return loc.hw_register
         return None
 
@@ -757,7 +757,3 @@ class RegisterAllocator:
             loc for loc in self.allocations.values()
             if loc.kind == LocationKind.STACK
         ])
-
-    def _get_vreg_size(self, vreg: VirtualRegister) -> int:
-        """Get size of virtual register in bytes."""
-        return get_type_size(vreg.type_info)

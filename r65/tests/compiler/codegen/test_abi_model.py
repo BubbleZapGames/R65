@@ -121,9 +121,18 @@ class _FakeRegionState:
 
 
 class _FakePhysicalLocation:
-    def __init__(self, kind='STACK'):
+    def __init__(self, kind='STACK', hw_register=None):
         from r65.compiler.codegen.register_alloc import LocationKind
         self.kind = LocationKind[kind]
+        self.hw_register = hw_register
+
+    def is_hw(self, register=None):
+        from r65.compiler.codegen.register_alloc import LocationKind
+        if self.kind != LocationKind.HARDWARE:
+            return False
+        if register is not None:
+            return self.hw_register == register
+        return True
 
 
 class _FakeParent:

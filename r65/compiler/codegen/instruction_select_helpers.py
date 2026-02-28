@@ -9,30 +9,6 @@ from r65.compiler.codegen.emitter import AssemblyEmitter
 from r65.compiler.codegen.opcodes import Opcode
 
 
-# =============================================================================
-# Register Instruction Mappings
-# =============================================================================
-
-class RegisterMappings:
-    """
-    Centralized mappings for register-related instructions.
-
-    Provides Opcode lookup for push/pull operations by register name.
-    """
-
-    # Push instructions by register (typed opcodes)
-    PUSH_OPCODES = {
-        'A': Opcode.PHA, 'X': Opcode.PHX, 'Y': Opcode.PHY,
-        'STATUS': Opcode.PHP, 'D': Opcode.PHD, 'DBR': Opcode.PHB
-    }
-
-    # Pull instructions by register (typed opcodes)
-    PULL_OPCODES = {
-        'A': Opcode.PLA, 'X': Opcode.PLX, 'Y': Opcode.PLY,
-        'STATUS': Opcode.PLP, 'D': Opcode.PLD, 'DBR': Opcode.PLB
-    }
-
-
 class XBAState(Enum):
     """
     Tracks the current state of A and B registers after XBA operations.

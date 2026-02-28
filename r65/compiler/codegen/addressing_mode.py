@@ -60,7 +60,7 @@ class AddressingModeSelector:
             Tuple of (AddressingMode, operand_string)
         """
         # Hardware registers use accumulator mode (implied)
-        if location.kind == LocationKind.HARDWARE:
+        if location.is_hw():
             if location.hw_register == 'A':
                 return (AddressingMode.ACCUMULATOR, "A")
             else:

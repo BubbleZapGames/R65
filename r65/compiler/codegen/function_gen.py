@@ -10,10 +10,9 @@ from r65.compiler.codegen.emitter import AssemblyEmitter
 from r65.compiler.codegen.instruction_select import InstructionSelector
 from r65.compiler.codegen.register_alloc import ScratchRegisterPool, RegisterAllocator, PhysicalLocation, LocationKind
 from r65.compiler.codegen.memory_alloc import MemoryAllocator
-from r65.compiler.codegen.instruction_select_helpers import RegisterMappings
 from r65.compiler.codegen.type_utils import get_type_size
 from r65.compiler.codegen.constants import DEFAULT_STACK_UPPER, M_FLAG, X_FLAG
-from r65.compiler.codegen.opcodes import Opcode
+from r65.compiler.codegen.opcodes import Opcode, PUSH_OPCODES, PULL_OPCODES
 from r65.compiler.codegen.asm_nodes import Immediate, Address, StackOffset
 from r65.compiler.codegen.abi import ABIInfo, StackFrameLayout
 
@@ -73,9 +72,6 @@ class FunctionCodeGenerator:
         # Setup register allocator for this function
         if scratch_pool is None:
             scratch_pool = ScratchRegisterPool()  # Empty pool if not provided
-
-        # DEBUG: Check scratch pool contents
-        # print(f"DEBUG: generate_function({mir_func.name}), scratch_pool.scratches={len(scratch_pool.scratches) if scratch_pool.scratches else 0}")
 
         # Reset scratch pool for this function (each function gets fresh allocation)
         scratch_pool.reset()
@@ -630,9 +626,6 @@ class FunctionCodeGenerator:
             if hasattr(static_var, 'storage_attr') and static_var.storage_attr:
                 storage_attr = static_var.storage_attr
 
-                # Debug: print register detection (comment out for production)
-                # print(f"DEBUG: static {static_var.name}, is_register={storage_attr.is_register}")
-
                 # Only use variables explicitly marked as registers
                 if storage_attr.is_register:
                     # Get the variable's address from memory allocator
@@ -823,7 +816,7 @@ class FunctionCodeGenerator:
             push_order = ['STATUS', 'A', 'X', 'Y', 'D', 'DBR']
             for reg in push_order:
                 if reg in preserved_regs:
-                    push_opcode = RegisterMappings.PUSH_OPCODES.get(reg)
+                    push_opcode = PUSH_OPCODES.get(reg)
                     if push_opcode:
                         self._emit_instr(push_opcode, comment=f"Preserve {reg}")
 
@@ -1075,7 +1068,7 @@ class FunctionCodeGenerator:
 
         for reg in pop_order:
             if reg in preserved_regs:
-                pull_opcode = RegisterMappings.PULL_OPCODES.get(reg)
+                pull_opcode = PULL_OPCODES.get(reg)
                 if pull_opcode:
                     self._emit_instr(pull_opcode, comment=f"Restore {reg}")
 

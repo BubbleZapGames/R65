@@ -26,7 +26,7 @@ from r65.compiler.codegen.register_alloc import (
 from r65.compiler.codegen.memory_alloc import MemoryAllocator
 from r65.compiler.errors import InstructionSelectionError
 from r65.compiler.codegen.errors import (
-    unsupported_addressing_mode, unknown_value, missing_allocation,
+    unknown_value, missing_allocation,
     requires_constant, unsupported_operation
 )
 from r65.compiler.codegen.instruction_select_helpers import (
@@ -685,7 +685,7 @@ class InstructionSelector:
             isinstance(instr.left, VirtualRegister) and
             instr.dest.id == instr.left.id):
             dest_loc = self._get_operand_location(instr.dest)
-            if dest_loc.kind == LocationKind.HARDWARE and dest_loc.hw_register in ('A', 'X', 'Y'):
+            if dest_loc.is_hw() and dest_loc.hw_register in ('A', 'X', 'Y'):
                 if self._try_emit_inc_dec(op, dest_loc.hw_register):
                     return
 
@@ -728,8 +728,8 @@ class InstructionSelector:
         # - `A = X + 5` (left is X, value transferred via TXA, operation in A)
         # In these cases, A must be in 16-bit mode to preserve the full 16-bit X/Y value.
         involves_index_register = (
-            (left_loc.kind == LocationKind.HARDWARE and left_loc.hw_register in ('X', 'Y')) or
-            (dest_loc.kind == LocationKind.HARDWARE and dest_loc.hw_register in ('X', 'Y'))
+            (left_loc.is_hw() and left_loc.hw_register in ('X', 'Y')) or
+            (dest_loc.is_hw() and dest_loc.hw_register in ('X', 'Y'))
         )
 
         # Check if we should use 16-bit mode because A is already in 16-bit mode
@@ -738,8 +738,7 @@ class InstructionSelector:
         # Only apply this when left operand is specifically in A, not when loading
         # a new value from memory.
         a_already_in_16bit = (
-            left_loc.kind == LocationKind.HARDWARE and
-            left_loc.hw_register == 'A' and
+            left_loc.is_hw('A') and
             self.emitter.get_accu_mode() == 16
         )
 
@@ -767,9 +766,9 @@ class InstructionSelector:
         right_in_a = False
         if not isinstance(right_operand, (MIRImmediate, MemoryLocation)):
             _right_loc = self._get_operand_location(right_operand)
-            right_in_a = (_right_loc.kind == LocationKind.HARDWARE and _right_loc.hw_register == 'A')
+            right_in_a = _right_loc.is_hw('A')
 
-        if right_in_a and not (left_loc.kind == LocationKind.HARDWARE and left_loc.hw_register == 'A'):
+        if right_in_a and not left_loc.is_hw('A'):
             _COMMUTATIVE = {'+', '&', '|', '^'}
             if op in _COMMUTATIVE:
                 # Swap: A has right value, use left as memory operand for ADC/AND/ORA/EOR
@@ -788,10 +787,10 @@ class InstructionSelector:
                         source_loc=self._current_source_loc)
 
         # Load left operand into A (if not already there)
-        if left_loc.kind == LocationKind.HARDWARE and left_loc.hw_register == 'A':
+        if left_loc.is_hw('A'):
             # Left operand is already in A, no need to load
             pass
-        elif left_loc.kind == LocationKind.HARDWARE:
+        elif left_loc.is_hw():
             # Transfer from other hardware register to A
             self._emit_register_transfer(left_loc.hw_register, 'A')
         elif left_loc.kind == LocationKind.IMMEDIATE:
@@ -832,10 +831,10 @@ class InstructionSelector:
             raise unsupported_operation("binary operation", op, source_loc=self._current_source_loc)
 
         # Store result from A (if destination is not A)
-        if dest_loc.kind == LocationKind.HARDWARE and dest_loc.hw_register == 'A':
+        if dest_loc.is_hw('A'):
             # Result is already in A, no need to store
             pass
-        elif dest_loc.kind == LocationKind.HARDWARE:
+        elif dest_loc.is_hw():
             # Transfer from A to other hardware register
             self._emit_register_transfer('A', dest_loc.hw_register)
         else:
@@ -867,9 +866,9 @@ class InstructionSelector:
             self._ensure_m8_mode()
 
         # Load operand into A (if not already there)
-        if operand_loc.kind == LocationKind.HARDWARE and operand_loc.hw_register == 'A':
+        if operand_loc.is_hw('A'):
             pass  # Already in A
-        elif operand_loc.kind == LocationKind.HARDWARE:
+        elif operand_loc.is_hw():
             self._emit_register_transfer(operand_loc.hw_register, 'A')
         else:
             self._emit_load('LDA', operand_loc)
@@ -897,9 +896,9 @@ class InstructionSelector:
             raise unsupported_operation("unary operation", op, source_loc=self._current_source_loc)
 
         # Store result from A (if destination is not A)
-        if dest_loc.kind == LocationKind.HARDWARE and dest_loc.hw_register == 'A':
+        if dest_loc.is_hw('A'):
             pass  # Result is already in A, no need to store
-        elif dest_loc.kind == LocationKind.HARDWARE:
+        elif dest_loc.is_hw():
             self._emit_register_transfer('A', dest_loc.hw_register)
         else:
             self._emit_store('STA', dest_loc)
@@ -1240,7 +1239,7 @@ class InstructionSelector:
             self._emit_immediate(immediate_opcode, value)
         else:
             right_loc = self._get_operand_location(right_operand)
-            if right_loc.kind == LocationKind.HARDWARE:
+            if right_loc.is_hw():
                 # Hardware register - must store to temp location first
                 # (65816 can't use hardware registers as operands for these ops)
                 if right_loc.hw_register in ['A', 'B']:
@@ -1526,7 +1525,7 @@ class InstructionSelector:
         Returns:
             Formatted operand string
         """
-        if location.kind == LocationKind.HARDWARE:
+        if location.is_hw():
             # Hardware register - can't be used as memory operand
             # This shouldn't happen in normal code generation
             raise InstructionSelectionError(f"Cannot use hardware register as memory operand: {location.hw_register}", source_loc=self._current_source_loc)

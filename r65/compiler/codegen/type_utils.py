@@ -4,7 +4,10 @@ Type utilities for code generation.
 Thin wrapper around the canonical implementation in hir/unified_type_utils.py.
 """
 
-from typing import Dict
+from typing import Dict, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from r65.compiler.mir.nodes import VirtualRegister
 
 
 # =============================================================================
@@ -40,3 +43,8 @@ def get_type_size(type_info) -> int:
         return get_unified_type_size(type_info)
     except Exception:
         return 1
+
+
+def get_vreg_size(vreg: 'VirtualRegister') -> int:
+    """Get size of virtual register in bytes."""
+    return get_type_size(vreg.type_info)

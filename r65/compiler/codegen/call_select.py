@@ -27,9 +27,7 @@ from r65.compiler.codegen.opcodes import (
 )
 from r65.compiler.codegen.asm_nodes import BlockMove
 from r65.compiler.errors import InstructionSelectionError
-from r65.compiler.codegen.errors import (
-    unknown_value, argument_count_error, requires_constant
-)
+from r65.compiler.codegen.errors import unknown_value
 from r65.compiler.codegen.base_selector import BaseSelector
 from r65.compiler.codegen.abi import StackStateTracker
 
@@ -615,7 +613,7 @@ class CallInstructionSelector(BaseSelector):
         if isinstance(arg.value, MIRImmediate):
             # Immediate address
             self.parent._emit_immediate(Opcode.LDY_IMMEDIATE, arg.value.value, "Load self ptr into Y")
-        elif arg_loc.kind == LocationKind.HARDWARE:
+        elif arg_loc.is_hw():
             if arg_loc.hw_register == 'Y':
                 pass  # Already in Y
             elif arg_loc.hw_register == 'X':
@@ -993,7 +991,7 @@ class CallInstructionSelector(BaseSelector):
         if param_size == 3:
             # 24-bit (far pointer): store byte by byte in m8
             self._ensure_m8_mode("8-bit A for byte store")
-            if arg_loc.kind == LocationKind.HARDWARE and arg_loc.hw_register == 'A':
+            if arg_loc.is_hw('A'):
                 raise InstructionSelectionError("Cannot store 24-bit value from A register", source_loc=self.parent._current_source_loc)
             self._store_multibyte_outgoing(arg, arg_loc, source_size, 3, outgoing_offset)
 
@@ -1003,7 +1001,7 @@ class CallInstructionSelector(BaseSelector):
                 # Source smaller than param — zero-extend byte by byte
                 self._ensure_m8_mode("8-bit A for zero-ext store")
                 self._store_multibyte_outgoing(arg, arg_loc, source_size, 2, outgoing_offset)
-            elif arg_loc.kind == LocationKind.HARDWARE and arg_loc.hw_register == 'A':
+            elif arg_loc.is_hw('A'):
                 # Value in A — ensure m16 for 16-bit store
                 current_mode = self.parent.emitter.get_accu_mode()
                 if current_mode != 16:
@@ -1025,9 +1023,9 @@ class CallInstructionSelector(BaseSelector):
         else:
             # 8-bit: ensure m8, load value, store to outgoing offset
             self._ensure_m8_mode("8-bit A for u8 outgoing arg")
-            if arg_loc.kind == LocationKind.HARDWARE and arg_loc.hw_register == 'A':
+            if arg_loc.is_hw('A'):
                 pass  # Already in A
-            elif arg_loc.kind == LocationKind.HARDWARE:
+            elif arg_loc.is_hw():
                 if arg_loc.hw_register == 'X':
                     self._emit_transfer('X', 'A')
                 elif arg_loc.hw_register == 'Y':
@@ -1061,9 +1059,9 @@ class CallInstructionSelector(BaseSelector):
         if param_size == 1:
             # 8-bit: load into A, PHA
             self._ensure_m8_mode("8-bit A for u8 stack arg")
-            if arg_loc.kind == LocationKind.HARDWARE and arg_loc.hw_register == 'A':
+            if arg_loc.is_hw('A'):
                 pass
-            elif arg_loc.kind == LocationKind.HARDWARE:
+            elif arg_loc.is_hw():
                 if arg_loc.hw_register == 'X':
                     self._emit_transfer('X', 'A')
                 elif arg_loc.hw_register == 'Y':
@@ -1088,11 +1086,11 @@ class CallInstructionSelector(BaseSelector):
                 self._emit_push('A', "Push high byte (zero)")
                 # First PHA shifted SP by 1; adjust tracker so source reads are correct
                 self.region_state.stack_tracker.push(1)
-                if arg_loc.kind == LocationKind.HARDWARE and arg_loc.hw_register == 'A':
+                if arg_loc.is_hw('A'):
                     pass
-                elif arg_loc.kind == LocationKind.HARDWARE and arg_loc.hw_register == 'X':
+                elif arg_loc.is_hw('X'):
                     self._emit_transfer('X', 'A')
-                elif arg_loc.kind == LocationKind.HARDWARE and arg_loc.hw_register == 'Y':
+                elif arg_loc.is_hw('Y'):
                     self._emit_transfer('Y', 'A')
                 elif isinstance(arg.value, MIRImmediate):
                     self._emit_load_immediate('A', arg.value.value & 0xFF)
@@ -1104,11 +1102,11 @@ class CallInstructionSelector(BaseSelector):
             else:
                 self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "16-bit A for u16 stack arg")
                 self.parent.emitter.emit_accu_mode(16)
-                if arg_loc.kind == LocationKind.HARDWARE and arg_loc.hw_register == 'A':
+                if arg_loc.is_hw('A'):
                     pass
-                elif arg_loc.kind == LocationKind.HARDWARE and arg_loc.hw_register == 'X':
+                elif arg_loc.is_hw('X'):
                     self._emit_transfer('X', 'A')
-                elif arg_loc.kind == LocationKind.HARDWARE and arg_loc.hw_register == 'Y':
+                elif arg_loc.is_hw('Y'):
                     self._emit_transfer('Y', 'A')
                 elif isinstance(arg.value, MIRImmediate):
                     self._emit_load_immediate('A', arg.value.value)
@@ -1199,7 +1197,7 @@ class CallInstructionSelector(BaseSelector):
 
         target_reg = arg.location.name if hasattr(arg.location, 'name') else str(arg.location)
 
-        if arg_loc.kind == LocationKind.HARDWARE and arg_loc.hw_register == target_reg:
+        if arg_loc.is_hw(target_reg):
             return  # Already in correct register
 
         # For A register with 16-bit param type, switch to m16 before loading.
@@ -1216,7 +1214,7 @@ class CallInstructionSelector(BaseSelector):
             self._emit_b_register_argument(arg, arg_loc)
         elif isinstance(arg.value, MIRImmediate):
             self._emit_immediate_to_register(arg.value.value, target_reg)
-        elif arg_loc.kind == LocationKind.HARDWARE:
+        elif arg_loc.is_hw():
             # Source is a hardware register - emit transfer
             self._emit_transfer(arg_loc.hw_register, target_reg)
         else:
@@ -1227,7 +1225,7 @@ class CallInstructionSelector(BaseSelector):
         if isinstance(arg.value, MIRImmediate):
             self._emit_load_immediate('A', arg.value.value)
             self.parent._store_to_b_from_a()
-        elif arg_loc.kind == LocationKind.HARDWARE:
+        elif arg_loc.is_hw():
             if arg_loc.hw_register != 'A':
                 self.parent._emit_register_transfer(arg_loc.hw_register, 'A')
             self.parent._store_to_b_from_a()
@@ -1256,9 +1254,9 @@ class CallInstructionSelector(BaseSelector):
     def emit_variable_argument(self, arg, arg_loc):
         """Emit variable-bound argument (store to memory location)."""
         # Load into A
-        if arg_loc.kind == LocationKind.HARDWARE and arg_loc.hw_register == 'A':
+        if arg_loc.is_hw('A'):
             pass  # Already in A
-        elif arg_loc.kind == LocationKind.HARDWARE:
+        elif arg_loc.is_hw():
             if arg_loc.hw_register == 'X':
                 self._emit_transfer('X', 'A')
             elif arg_loc.hw_register == 'Y':
@@ -1322,7 +1320,7 @@ class CallInstructionSelector(BaseSelector):
                                    f"Scratch far ptr ${scratch_addr + 2:02X} (bank)")
         elif param_size == 2:
             # 16-bit value: need m16 mode for single STA
-            if arg_loc.kind == LocationKind.HARDWARE and arg_loc.hw_register == 'A':
+            if arg_loc.is_hw('A'):
                 # Already in A, check mode
                 current_mode = self.parent.emitter.get_accu_mode()
                 if current_mode != 16:
@@ -1352,9 +1350,9 @@ class CallInstructionSelector(BaseSelector):
             # 8-bit value: standard LDA/STA in m8
             self._ensure_m8_mode("8-bit A for scratch param")
 
-            if arg_loc.kind == LocationKind.HARDWARE and arg_loc.hw_register == 'A':
+            if arg_loc.is_hw('A'):
                 pass  # Already in A
-            elif arg_loc.kind == LocationKind.HARDWARE:
+            elif arg_loc.is_hw():
                 if arg_loc.hw_register == 'X':
                     self._emit_transfer('X', 'A')
                 elif arg_loc.hw_register == 'Y':
@@ -1566,7 +1564,7 @@ class CallInstructionSelector(BaseSelector):
 
         # Handle hardware register fn pointers: spill to scratch before trampoline
         # since we need byte-level access (offset) which hw registers don't support
-        if ptr_loc.kind == LocationKind.HARDWARE and ptr_loc.hw_register in ('X', 'Y'):
+        if ptr_loc.is_hw() and ptr_loc.hw_register in ('X', 'Y'):
             needed = 3 if is_far else 2
             scratch_addr = None
             param_scratch_addrs = set()
@@ -1770,12 +1768,12 @@ class CallInstructionSelector(BaseSelector):
             source_reg = return_registers[i]
             dest_loc = self.parent._get_operand_location(return_vreg)
 
-            if dest_loc.kind == LocationKind.HARDWARE and dest_loc.hw_register == source_reg:
+            if dest_loc.is_hw(source_reg):
                 pass  # Already in correct location
             elif source_reg == 'B':
                 # B return: XBA to access B value in A, store, then XBA back
                 self.parent._access_b_value_in_a()
-                if dest_loc.kind == LocationKind.HARDWARE:
+                if dest_loc.is_hw():
                     if dest_loc.hw_register != 'A':
                         self._emit_return_register_transfer('A', dest_loc.hw_register)
                         self.parent._ensure_xba_state_normal()
@@ -1784,7 +1782,7 @@ class CallInstructionSelector(BaseSelector):
                 else:
                     self.parent._emit_store('STA', dest_loc)
                     self.parent._ensure_xba_state_normal()
-            elif dest_loc.kind == LocationKind.HARDWARE:
+            elif dest_loc.is_hw():
                 self._emit_return_register_transfer(source_reg, dest_loc.hw_register)
             else:
                 self._emit_return_store(source_reg, dest_loc)
@@ -1817,9 +1815,9 @@ class CallInstructionSelector(BaseSelector):
         if result_bytes == 1:
             self._ensure_m8_mode("8-bit for Pascal result pull")
             self._emit_pull('A', "Pull Pascal result (u8)")
-            if dest_loc.kind == LocationKind.HARDWARE and dest_loc.hw_register == 'A':
+            if dest_loc.is_hw('A'):
                 pass  # Already in A
-            elif dest_loc.kind == LocationKind.HARDWARE:
+            elif dest_loc.is_hw():
                 if dest_loc.hw_register == 'X':
                     self._emit_transfer('A', 'X')
                 elif dest_loc.hw_register == 'Y':
@@ -1831,9 +1829,9 @@ class CallInstructionSelector(BaseSelector):
             self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "16-bit for Pascal result pull")
             self.parent.emitter.emit_accu_mode(16)
             self._emit_pull('A', "Pull Pascal result (u16)")
-            if dest_loc.kind == LocationKind.HARDWARE and dest_loc.hw_register == 'A':
+            if dest_loc.is_hw('A'):
                 pass  # Already in A
-            elif dest_loc.kind == LocationKind.HARDWARE:
+            elif dest_loc.is_hw():
                 if dest_loc.hw_register == 'X':
                     self._emit_transfer('A', 'X')
                 elif dest_loc.hw_register == 'Y':
@@ -1968,11 +1966,11 @@ class CallInstructionSelector(BaseSelector):
         arg0_loc = self.parent._get_operand_location(arg0.value)
         if isinstance(arg0.value, MIRImmediate):
             self._emit_load_immediate('A', arg0.value.value)
-        elif arg0_loc.kind == LocationKind.HARDWARE and arg0_loc.hw_register == 'A':
+        elif arg0_loc.is_hw('A'):
             pass  # Already in A
-        elif arg0_loc.kind == LocationKind.HARDWARE and arg0_loc.hw_register == 'X':
+        elif arg0_loc.is_hw('X'):
             self._emit_implied(Opcode.TXA)  # Transfer X to A
-        elif arg0_loc.kind == LocationKind.HARDWARE and arg0_loc.hw_register == 'Y':
+        elif arg0_loc.is_hw('Y'):
             self._emit_implied(Opcode.TYA)  # Transfer Y to A
         else:
             self.parent._emit_load('LDA', arg0_loc)
@@ -1982,11 +1980,11 @@ class CallInstructionSelector(BaseSelector):
         arg1_loc = self.parent._get_operand_location(arg1.value)
         if isinstance(arg1.value, MIRImmediate):
             self._emit_load_immediate('X', arg1.value.value)
-        elif arg1_loc.kind == LocationKind.HARDWARE and arg1_loc.hw_register == 'X':
+        elif arg1_loc.is_hw('X'):
             pass  # Already in X
-        elif arg1_loc.kind == LocationKind.HARDWARE and arg1_loc.hw_register == 'A':
+        elif arg1_loc.is_hw('A'):
             self._emit_implied(Opcode.TAX)  # Transfer A to X
-        elif arg1_loc.kind == LocationKind.HARDWARE and arg1_loc.hw_register == 'Y':
+        elif arg1_loc.is_hw('Y'):
             # Y to X requires going through A (no direct TYX on 65816)
             # Save A, TYA, TAX, restore A
             self._emit_implied(Opcode.PHA)
@@ -2005,7 +2003,7 @@ class CallInstructionSelector(BaseSelector):
             return_vreg = instr.returns[0]
             dest_loc = self.parent._get_operand_location(return_vreg)
 
-            if dest_loc.kind == LocationKind.HARDWARE and dest_loc.hw_register == 'A':
+            if dest_loc.is_hw('A'):
                 pass  # Already in A
             else:
                 self.parent._emit_store('STA', dest_loc)

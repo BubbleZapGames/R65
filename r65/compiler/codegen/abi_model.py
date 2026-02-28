@@ -151,7 +151,7 @@ class ABIModel(ABC):
                 if target_reg != 'A':
                     continue
                 arg_loc = selector.parent._get_operand_location(arg.value)
-                if arg_loc.kind == LocationKind.HARDWARE and arg_loc.hw_register == 'A':
+                if arg_loc.is_hw('A'):
                     if arg.param_type is not None:
                         a_param_is_16bit = get_type_size(arg.param_type) >= 2
                     # Find a temp register not used as a register arg target
@@ -331,19 +331,19 @@ class ABIModel(ABC):
                 else:  # 'A'
                     selector.parent._emit_load('LDA', src_loc)
                 continue
-            elif value_loc.kind == LocationKind.HARDWARE and value_loc.hw_register == target_reg:
+            elif value_loc.is_hw(target_reg):
                 pass  # Already in correct register
             elif target_reg == 'B':
                 # B return: load value into A, then XBA to store in B
-                if value_loc.kind == LocationKind.HARDWARE and value_loc.hw_register == 'A':
+                if value_loc.is_hw('A'):
                     selector.parent._store_to_b_from_a()
-                elif value_loc.kind == LocationKind.HARDWARE:
+                elif value_loc.is_hw():
                     selector.parent._emit_register_transfer(value_loc.hw_register, 'A')
                     selector.parent._store_to_b_from_a()
                 else:
                     selector.parent._emit_load('LDA', value_loc)
                     selector.parent._store_to_b_from_a()
-            elif value_loc.kind == LocationKind.HARDWARE:
+            elif value_loc.is_hw():
                 selector.parent._emit_register_transfer(value_loc.hw_register, target_reg)
             elif target_reg in ('X', 'Y') and value_loc.kind == LocationKind.STACK:
                 # Handle stack-relative addressing: LDX/LDY don't support sr,S mode
@@ -536,7 +536,7 @@ class ABIPascal(ABIModel):
 
         if result_bytes == 1:
             # 8-bit result: load into A, STA offset,S
-            if not (value_loc.kind == LocationKind.HARDWARE and value_loc.hw_register == 'A'):
+            if not value_loc.is_hw('A'):
                 selector.parent._emit_load('LDA', value_loc)
             selector.emitter.emit_instr(Opcode.STA_STACK, StackOffset(result_offset),
                                         "Store return value to Pascal result space")
@@ -547,7 +547,7 @@ class ABIPascal(ABIModel):
                 selector._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG,
                                          "16-bit A for Pascal result store")
                 selector.parent.emitter.emit_accu_mode(16)
-            if not (value_loc.kind == LocationKind.HARDWARE and value_loc.hw_register == 'A'):
+            if not value_loc.is_hw('A'):
                 selector.parent._emit_load('LDA', value_loc)
             selector.emitter.emit_instr(Opcode.STA_STACK, StackOffset(result_offset),
                                         "Store return value to Pascal result space")
@@ -642,7 +642,7 @@ class ABIDefault(ABIModel):
                 if target_reg != 'A':
                     continue
                 arg_loc = selector.parent._get_operand_location(arg.value)
-                if arg_loc.kind == LocationKind.HARDWARE and arg_loc.hw_register == 'A':
+                if arg_loc.is_hw('A'):
                     if arg.param_type is not None:
                         a_param_is_16bit = get_type_size(arg.param_type) >= 2
                     # Find a temp register not used as a register arg target

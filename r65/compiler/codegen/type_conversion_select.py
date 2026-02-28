@@ -108,7 +108,7 @@ class TypeConversionSelector(BaseSelector):
                 pass  # Already in A
         else:
             src_loc = self.parent._get_operand_location(src_operand)
-            if src_loc.kind == LocationKind.HARDWARE:
+            if src_loc.is_hw():
                 if src_loc.hw_register == 'X':
                     self._emit_instr(Opcode.TXA, comment="Widen X to 16-bit")
                 elif src_loc.hw_register == 'Y':
@@ -180,7 +180,7 @@ class TypeConversionSelector(BaseSelector):
             dest_loc: Destination location
         """
         # Check if destination is a hardware register that needs special handling
-        if dest_loc.kind == LocationKind.HARDWARE and dest_loc.hw_register in ('X', 'Y'):
+        if dest_loc.is_hw() and dest_loc.hw_register in ('X', 'Y'):
             # X/Y = value as u8: zero-extend to ensure clean 16-bit value
             # Pattern: REP #$20, load value, AND #$00FF, TAX/TAY, SEP #$20
             self.parent._ensure_m16_mode()
@@ -203,7 +203,7 @@ class TypeConversionSelector(BaseSelector):
                 self._emit_instr(Opcode.AND_IMMEDIATE, Immediate(0x00FF), "Zero-extend to 16-bit")
             else:
                 src_loc = self.parent._get_operand_location(src_operand)
-                if src_loc.kind == LocationKind.HARDWARE:
+                if src_loc.is_hw():
                     if src_loc.hw_register == 'X':
                         self._emit_instr(Opcode.TXA, comment="Load X for narrowing")
                     elif src_loc.hw_register == 'Y':
@@ -228,7 +228,7 @@ class TypeConversionSelector(BaseSelector):
             return
 
         # Check if destination is A register
-        if dest_loc.kind == LocationKind.HARDWARE and dest_loc.hw_register == 'A':
+        if dest_loc.is_hw('A'):
             # A = value as u8: just load the low byte, switch to 8-bit mode
             if isinstance(src_operand, MIRImmediate):
                 value = src_operand.value & 0xFF
@@ -256,7 +256,7 @@ class TypeConversionSelector(BaseSelector):
             else:
                 src_loc = self.parent._get_operand_location(src_operand)
                 self.parent._ensure_m8_mode()
-                if src_loc.kind == LocationKind.HARDWARE:
+                if src_loc.is_hw():
                     if src_loc.hw_register == 'X':
                         self._emit_instr(Opcode.TXA, comment="Narrow X to u8")
                     elif src_loc.hw_register == 'Y':
@@ -281,7 +281,7 @@ class TypeConversionSelector(BaseSelector):
                 pass  # Already in A
         else:
             src_loc = self.parent._get_operand_location(src_operand)
-            if src_loc.kind == LocationKind.HARDWARE:
+            if src_loc.is_hw():
                 # Hardware register location
                 if src_loc.hw_register == 'X':
                     self._emit_instr(Opcode.TXA, comment="Narrow X to u8")
@@ -381,7 +381,7 @@ class TypeConversionSelector(BaseSelector):
         else:
             # Variable: copy 2 bytes
             src_loc = self.parent._get_operand_location(src_operand)
-            if src_loc.kind == LocationKind.HARDWARE:
+            if src_loc.is_hw():
                 # Hardware register location
                 if src_loc.hw_register == 'X':
                     self._emit_instr(Opcode.TXA, comment="Near ptr from X")
@@ -437,7 +437,7 @@ class TypeConversionSelector(BaseSelector):
         else:
             # Copy low 2 bytes only
             src_loc = self.parent._get_operand_location(src_operand)
-            if src_loc.kind == LocationKind.HARDWARE:
+            if src_loc.is_hw():
                 if src_loc.hw_register == 'X':
                     self._emit_instr(Opcode.TXA, comment="Far ptr from X (truncate)")
                 elif src_loc.hw_register == 'Y':
@@ -467,7 +467,7 @@ class TypeConversionSelector(BaseSelector):
                 self._emit_instr(Opcode.TYA, comment="Ptr to u8 from Y")
         else:
             src_loc = self.parent._get_operand_location(src_operand)
-            if src_loc.kind == LocationKind.HARDWARE:
+            if src_loc.is_hw():
                 if src_loc.hw_register == 'X':
                     self._emit_instr(Opcode.TXA, comment="Ptr to u8 from X")
                 elif src_loc.hw_register == 'Y':
@@ -523,7 +523,7 @@ class TypeConversionSelector(BaseSelector):
                 self._emit_load_store('STA', dest_bank)
         else:
             src_loc = self.parent._get_operand_location(src_operand)
-            if src_loc.kind == LocationKind.HARDWARE:
+            if src_loc.is_hw():
                 # Copy from hardware register location
                 if src_loc.hw_register == 'X':
                     self._emit_instr(Opcode.TXA, comment="Ptr copy from X")

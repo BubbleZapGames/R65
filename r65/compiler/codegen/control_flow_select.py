@@ -8,7 +8,7 @@ with proper signed/unsigned comparison handling.
 from r65.compiler.mir.nodes import Jump, JumpTable, LookupTable, CondBranch, Return
 from r65.compiler.codegen.register_alloc import LocationKind
 from r65.compiler.errors import InstructionSelectionError
-from r65.compiler.codegen.opcodes import Opcode
+from r65.compiler.codegen.opcodes import Opcode, PULL_OPCODES
 from r65.compiler.codegen.asm_nodes import Address
 from r65.compiler.codegen.base_selector import BaseSelector
 
@@ -70,7 +70,7 @@ class ControlFlowInstructionSelector(BaseSelector):
         scrutinee_loc = self.parent._get_operand_location(instr.scrutinee)
 
         # Load scrutinee into A (if not already there)
-        if scrutinee_loc.kind == LocationKind.HARDWARE and scrutinee_loc.hw_register == 'A':
+        if scrutinee_loc.is_hw('A'):
             pass  # Already in A
         else:
             self.parent._emit_load('LDA', scrutinee_loc)
@@ -121,7 +121,7 @@ class ControlFlowInstructionSelector(BaseSelector):
         scrutinee_loc = self.parent._get_operand_location(instr.scrutinee)
 
         # Load scrutinee into A (always 8-bit at this point)
-        if not (scrutinee_loc.kind == LocationKind.HARDWARE and scrutinee_loc.hw_register == 'A'):
+        if not scrutinee_loc.is_hw('A'):
             self.parent._emit_load('LDA', scrutinee_loc)
 
         default_label = self.parent._get_unique_label()
@@ -162,7 +162,7 @@ class ControlFlowInstructionSelector(BaseSelector):
         # Merge — store result
         self.emitter.emit_label(merge_label)
         dest_loc = self.parent._get_operand_location(instr.dest)
-        if not (dest_loc.kind == LocationKind.HARDWARE and dest_loc.hw_register == 'A'):
+        if not dest_loc.is_hw('A'):
             self.parent._emit_store('STA', dest_loc)
 
         # u16: restore m8
@@ -423,7 +423,7 @@ class ControlFlowInstructionSelector(BaseSelector):
         cond_loc = self.parent._get_operand_location(instr.condition)
         # Skip load if condition is already in A (from bitwise optimization)
         # The Z flag is already set from the previous BinaryOp
-        if cond_loc.kind == LocationKind.HARDWARE and cond_loc.hw_register == 'A':
+        if cond_loc.is_hw('A'):
             pass  # Z flag already set from previous operation
         else:
             self.parent._emit_load('LDA', cond_loc)
@@ -543,13 +543,6 @@ class ControlFlowInstructionSelector(BaseSelector):
             self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "Switch to m8 for return")
             self.parent.emitter.emit_accu_mode(8)
 
-    # Mappings from register name to pull opcodes
-    _PULL_OPCODES = {
-        'A': Opcode.PLA, 'X': Opcode.PLX, 'Y': Opcode.PLY,
-        'STATUS': Opcode.PLP, 'P': Opcode.PLP,
-        'D': Opcode.PLD, 'DBR': Opcode.PLB, 'B': Opcode.PLB,
-    }
-
     def _get_return_register_order(self):
         """
         Get the return register order for the current function.
@@ -582,7 +575,7 @@ class ControlFlowInstructionSelector(BaseSelector):
 
         for reg in pop_order:
             if reg in preserved_regs:
-                pull_opcode = self._PULL_OPCODES.get(reg)
+                pull_opcode = PULL_OPCODES.get(reg)
                 if pull_opcode:
                     self._emit_implied(pull_opcode, f"Restore {reg}")
 
