@@ -1296,7 +1296,31 @@ class CallInstructionSelector(BaseSelector):
                 arg_loc.size >= param_size):
             return
 
-        if param_size == 2:
+        if param_size == 3:
+            # 24-bit far pointer: store low word in m16, bank byte in m8
+            self._ensure_m8_mode("8-bit mode before far ptr scratch")
+
+            # Store low 16 bits
+            self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "16-bit A for far ptr low word")
+            self.parent.emitter.emit_accu_mode(16)
+            if isinstance(arg.value, MIRImmediate):
+                self._emit_load_immediate('A', arg.value.value & 0xFFFF)
+            else:
+                self.parent._emit_load('LDA', arg_loc)
+            self.emitter.emit_instr(Opcode.STA_DP, Address(scratch_addr),
+                                   f"Scratch far ptr ${scratch_addr:02X} (low word)")
+            self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "8-bit A for bank byte")
+            self.parent.emitter.emit_accu_mode(8)
+
+            # Store bank byte
+            if isinstance(arg.value, MIRImmediate):
+                self._emit_load_immediate('A', (arg.value.value >> 16) & 0xFF)
+            else:
+                byte2_loc = self.parent._offset_location(arg_loc, 2)
+                self.parent._emit_load('LDA', byte2_loc)
+            self.emitter.emit_instr(Opcode.STA_DP, Address(scratch_addr + 2),
+                                   f"Scratch far ptr ${scratch_addr + 2:02X} (bank)")
+        elif param_size == 2:
             # 16-bit value: need m16 mode for single STA
             if arg_loc.kind == LocationKind.HARDWARE and arg_loc.hw_register == 'A':
                 # Already in A, check mode
@@ -1528,7 +1552,8 @@ class CallInstructionSelector(BaseSelector):
             is_far: True for far call (24-bit), False for near call (16-bit)
             stack_bytes_pushed: Bytes pushed for stack arguments before trampoline
         """
-        from r65.compiler.codegen.asm_nodes import StackOffset, Immediate
+        from r65.compiler.codegen.asm_nodes import StackOffset, Immediate, Address
+        from r65.compiler.codegen.register_alloc import PhysicalLocation
 
         ret_label = self.parent._get_unique_label()
 
@@ -1538,6 +1563,37 @@ class CallInstructionSelector(BaseSelector):
 
         ptr_loc = self.parent._get_operand_location(func_ptr_vreg)
         is_stack = ptr_loc.kind == LocationKind.STACK
+
+        # Handle hardware register fn pointers: spill to scratch before trampoline
+        # since we need byte-level access (offset) which hw registers don't support
+        if ptr_loc.kind == LocationKind.HARDWARE and ptr_loc.hw_register in ('X', 'Y'):
+            needed = 3 if is_far else 2
+            scratch_addr = None
+            param_scratch_addrs = set()
+            cur_func = getattr(self.parent, 'current_function', None)
+            if cur_func and hasattr(cur_func, 'scratch_param_addrs'):
+                param_scratch_addrs = set(cur_func.scratch_param_addrs.values())
+            if hasattr(self.parent.reg_alloc, 'scratch_pool') and self.parent.reg_alloc.scratch_pool:
+                for scratch in self.parent.reg_alloc.scratch_pool.scratches:
+                    if scratch.size >= needed and scratch.address not in param_scratch_addrs:
+                        scratch_addr = scratch.address
+                        break
+            if scratch_addr is not None:
+                # Store hw reg directly to scratch DP (STX/STY in x16 stores 2 bytes)
+                store_op = Opcode.STX_DP if ptr_loc.hw_register == 'X' else Opcode.STY_DP
+                self.emitter.emit_instr(store_op, Address(scratch_addr),
+                                       f"Spill {ptr_loc.hw_register} fn ptr to scratch ${scratch_addr:02X}")
+                ptr_loc = PhysicalLocation(
+                    kind=LocationKind.SCRATCH,
+                    scratch_addr=scratch_addr,
+                    size=needed
+                )
+                is_stack = False
+            else:
+                raise InstructionSelectionError(
+                    f"Cannot spill hardware register fn pointer for indirect call trampoline",
+                    source_loc=self.parent._current_source_loc
+                )
 
         # Adjust ptr_loc for stack arguments pushed before the trampoline
         if is_stack and stack_bytes_pushed > 0:

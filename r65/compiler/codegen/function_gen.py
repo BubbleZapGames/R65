@@ -5,7 +5,7 @@ Generates complete function bodies with headers, labels, and instructions.
 """
 
 from typing import List, Set, Optional
-from r65.compiler.mir.nodes import MIRFunction, Return
+from r65.compiler.mir.nodes import MIRFunction, Return, Call, TraitDispatch, ArgumentMechanism
 from r65.compiler.codegen.emitter import AssemblyEmitter
 from r65.compiler.codegen.instruction_select import InstructionSelector
 from r65.compiler.codegen.register_alloc import ScratchRegisterPool, RegisterAllocator, PhysicalLocation, LocationKind
@@ -88,6 +88,17 @@ class FunctionCodeGenerator:
                     scratch.is_free = False
                     break
 
+        # Mark ALL globally-used scratch param addresses as occupied.
+        # In FixedStack mode, a caller's scratch params persist while the callee
+        # runs. If we allow local variables at those addresses, the callee's locals
+        # overwrite the caller's params. Globally reserving all param addresses
+        # prevents this collision.
+        global_addrs = getattr(mir_func, '_global_scratch_param_addrs', None)
+        if global_addrs:
+            for scratch in scratch_pool.scratches:
+                if scratch.address in global_addrs:
+                    scratch.is_free = False
+
         # Build ABI info and calculate prologue bytes BEFORE creating register allocator
         # This allows stack params to be allocated at their passed locations
         abi_info = ABIInfo.from_mir_function(mir_func)
@@ -154,20 +165,15 @@ class FunctionCodeGenerator:
             hw_alloc.allocated_vreg = vreg
             hw_alloc.is_bound = True
 
-        # Pre-allocate hw-promoted parameter vregs (from FixedStack ABI promotion)
+        # Set register hints for hw-promoted parameter vregs (from FixedStack ABI promotion)
+        # Do NOT pre-allocate to HARDWARE — let slot_allocator's coalescence analysis
+        # determine whether the vreg can safely stay in the hw register. If A is clobbered
+        # between the parameter Move and a later use, coalescence will correctly allocate
+        # the vreg to stack/scratch instead.
         for param_idx, hw_reg_name in mir_func.hw_param_regs.items():
             vreg = mir_func.param_to_vreg.get(param_idx)
             if vreg:
-                vreg_size = get_type_size(vreg.type_info)
-                location = PhysicalLocation(
-                    kind=LocationKind.HARDWARE,
-                    hw_register=hw_reg_name,
-                    size=vreg_size
-                )
-                reg_alloc.allocations[vreg.id] = location
-                hw_alloc = reg_alloc.get_hw_alloc(hw_reg_name)
-                hw_alloc.allocated_vreg = vreg
-                hw_alloc.is_bound = True
+                vreg.register_hint = hw_reg_name
 
         # Pre-allocate self pointer vreg to Y register for trait methods
         # Self is passed in Y by the caller/dispatch wrapper

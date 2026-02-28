@@ -1109,22 +1109,54 @@ class StackSlotAllocator:
         """
         Check if an instruction clobbers the B register.
 
-        B is the high byte of the 16-bit accumulator. It's only modified by:
-        - XBA instruction (swaps A and B)
-        - Move to/from B register in MIR
-        - Calls that don't preserve B
+        B is the high byte of the 16-bit accumulator. It is clobbered by:
+        - XBA instruction (swaps A and B) — emitted for Move to/from B
+        - Any m16 operation (REP #$20 + LDA writes both A low and B high)
+
+        Since any instruction involving u16 types may trigger m16 mode
+        during codegen, B is clobbered by TypeConvert, u16 BinaryOp/UnaryOp,
+        u16 Store/Load, u16 Compare, and u16 Moves through memory.
         """
         if isinstance(instr, Move):
-            # Move to B: XBA to store, clobbers B
+            # Move to/from B: XBA swaps, clobbers B
             if isinstance(instr.dest, HardwareRegister) and instr.dest.name == 'B':
                 return True
-            # Move from B: XBA to access, but XBA swaps - clobbers B
             if isinstance(instr.source, HardwareRegister) and instr.source.name == 'B':
+                return True
+            # Move of u16 value through A (LDA/STA in m16) clobbers B
+            if self._instr_involves_u16(instr):
                 return True
             return False
 
-        # Most other instructions don't touch B
-        # (BinaryOp, Store, Load etc. only use A, not B)
+        # TypeConvert always uses m16 (widening or narrowing)
+        if isinstance(instr, TypeConvert):
+            return True
+
+        # Any u16 arithmetic/logic clobbers B via m16 mode
+        if isinstance(instr, (BinaryOp, UnaryOp, Compare)):
+            if self._instr_involves_u16(instr):
+                return True
+            return False
+
+        # u16 Store/Load use m16 LDA/STA
+        if isinstance(instr, (Store, StoreIndirect, Load, LoadIndirect)):
+            if self._instr_involves_u16(instr):
+                return True
+            return False
+
+        return False
+
+    def _instr_involves_u16(self, instr: Any) -> bool:
+        """Check if an instruction involves u16 types (may trigger m16 mode)."""
+        # Check type_info on the instruction
+        if hasattr(instr, 'type_info') and instr.type_info is not None:
+            size = get_unified_type_size(instr.type_info)
+            if size >= 2:
+                return True
+        # Check dest vreg size
+        if hasattr(instr, 'dest') and isinstance(instr.dest, VirtualRegister):
+            if self._get_vreg_size(instr.dest) >= 2:
+                return True
         return False
 
     def _clobbers_xy(self, instr: Any, hw_reg: str, vreg_id: int) -> bool:

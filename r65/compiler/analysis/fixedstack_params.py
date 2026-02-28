@@ -8,7 +8,7 @@ compile error if any parameter cannot be placed.
 This replaces scratch_params.py for FixedStack mode.
 """
 
-from typing import Dict, Set, List, Optional, Tuple
+from typing import Dict, Set, List, Optional, Tuple, Sequence
 from r65.compiler.mir.nodes import (
     MIRProgram, MIRFunction, Call, Argument, ArgumentMechanism,
     FunctionPointer, Move, VirtualRegister, HardwareRegister, TraitDispatch,
@@ -87,11 +87,28 @@ def promote_all_stack_params(mir_program: MIRProgram, scratch_pool: ScratchRegis
             if param_idx in func.stack_param_offsets:
                 del func.stack_param_offsets[param_idx]
 
-    # Step 4: Update call sites
+        # Clear far pointer stack param flag if all far ptrs promoted off stack
+        if func.far_ptr_param_indices:
+            remaining_far = func.far_ptr_param_indices - set(func_promos.keys())
+            if not remaining_far:
+                func.has_far_ptr_stack_params = False
+                func.far_ptr_param_indices.clear()
+
+    # Step 4: Collect global set of all scratch param addresses.
+    # Any function's locals must avoid these addresses because a caller's
+    # scratch params persist across calls while the callee runs.
+    global_scratch_param_addrs: Set[int] = set()
+    for func in mir_program.functions:
+        global_scratch_param_addrs.update(func.scratch_param_addrs.values())
+    # Store on each function so function_gen.py can access it
+    for func in mir_program.functions:
+        func._global_scratch_param_addrs = global_scratch_param_addrs
+
+    # Step 5: Update call sites
     for func in mir_program.functions:
         _update_call_sites(func, all_promotions)
 
-    # Step 5: Zero out outgoing arg bytes for all functions
+    # Step 6: Zero out outgoing arg bytes for all functions
     for func in mir_program.functions:
         func.max_outgoing_arg_bytes = 0
 
@@ -221,7 +238,17 @@ def _promote_function_params(
             params_to_place.append((param_idx, vreg, param_size, cross_call))
 
     # Available hw regs for promotion (order: A, B for u8; X, Y for u16)
+    # B is only usable in m8 mode — exclude it from m16 functions (@ A: u16)
+    # because in m16, B is the high byte of the 16-bit accumulator and
+    # every accumulator operation clobbers it.
+    func_is_m16 = any(
+        isinstance(p.binding, RegisterBinding) and p.binding.register_name == 'A'
+        and get_type_size(p.param_type) == 2
+        for p in func.parameters
+    )
     available_hw_u8 = [r for r in ['A', 'B'] if r not in taken_hw_regs]
+    if func_is_m16:
+        available_hw_u8 = [r for r in available_hw_u8 if r != 'B']
     available_hw_u16 = [r for r in ['X', 'Y'] if r not in taken_hw_regs]
 
     # Available scratch registers
@@ -231,7 +258,9 @@ def _promote_function_params(
     result: Dict[int, Tuple[str, object]] = {}
 
     # First pass: assign cross-call params to hw regs (they have existing region-spill support)
-    # Second pass: assign local params to hw regs, then scratch
+    #   - Only A, X, Y are safe (B has no spill support, callees clobber it via m16 ops)
+    #   - Scratch registers are NOT safe (callees allocate their own locals to same DP addresses)
+    # Second pass: assign local params to hw regs (incl. B), then scratch
     for is_cross_call_pass in [True, False]:
         for param_idx, vreg, param_size, cross_call in params_to_place:
             if param_idx in result:
@@ -247,8 +276,10 @@ def _promote_function_params(
             # Try hw regs first (not for far pointers)
             if not is_far_ptr:
                 if param_size <= 1:
-                    # u8/i8 → try A, then B
+                    # u8/i8 → try A, then B (B only for non-cross-call params)
                     for reg in available_hw_u8:
+                        if is_cross_call_pass and reg == 'B':
+                            continue  # B has no region-spill support
                         result[param_idx] = ('hw', reg)
                         available_hw_u8.remove(reg)
                         placed = True
@@ -272,6 +303,16 @@ def _promote_function_params(
                         placed = True
                         break
 
+            # Try composite: find adjacent free scratches that together cover param_size
+            if not placed:
+                composite = _find_composite_scratch(scratch_available, used_scratches, param_size)
+                if composite:
+                    base_addr = composite[0][0]
+                    result[param_idx] = ('scratch', base_addr)
+                    for addr, _, _ in composite:
+                        used_scratches.add(addr)
+                    placed = True
+
             if not placed:
                 param_name = func.parameters[param_idx].name
                 raise CodegenError(
@@ -282,6 +323,36 @@ def _promote_function_params(
                 )
 
     return result
+
+
+def _find_composite_scratch(
+    scratch_available: Sequence[Tuple[int, int, str]],
+    used_scratches: Set[int],
+    needed_size: int,
+) -> Optional[List[Tuple[int, int, str]]]:
+    """Find adjacent free scratches that together provide needed_size bytes."""
+    free = sorted(
+        [(addr, size, name) for addr, size, name in scratch_available
+         if addr not in used_scratches],
+        key=lambda x: x[0],
+    )
+
+    for i, (start_addr, start_size, start_name) in enumerate(free):
+        total = start_size
+        group = [(start_addr, start_size, start_name)]
+        expected_next = start_addr + start_size
+
+        for j in range(i + 1, len(free)):
+            addr_j, size_j, name_j = free[j]
+            if addr_j != expected_next:
+                break
+            group.append((addr_j, size_j, name_j))
+            total += size_j
+            if total >= needed_size:
+                return group
+            expected_next = addr_j + size_j
+
+    return None
 
 
 def _inject_hw_param_moves(func: MIRFunction):

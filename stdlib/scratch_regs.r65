@@ -1,5 +1,5 @@
 // Scratch registers for FixedStack ABI parameter promotion.
-// 6x u8 + 6x u16 = 12 registers, 18 bytes at $30-$41.
+// 8x u8 + 8x u16 + 4x far *u8 = 20 registers, 36 bytes at $30-$53.
 
 #[zeropage(0x30, register)] static mut __FS_S0: u8;
 #[zeropage(0x31, register)] static mut __FS_S1: u8;
@@ -7,9 +7,17 @@
 #[zeropage(0x33, register)] static mut __FS_S3: u8;
 #[zeropage(0x34, register)] static mut __FS_S4: u8;
 #[zeropage(0x35, register)] static mut __FS_S5: u8;
-#[zeropage(0x36, register)] static mut __FS_S6: u16;
-#[zeropage(0x38, register)] static mut __FS_S7: u16;
-#[zeropage(0x3A, register)] static mut __FS_S8: u16;
-#[zeropage(0x3C, register)] static mut __FS_S9: u16;
-#[zeropage(0x3E, register)] static mut __FS_SA: u16;
-#[zeropage(0x40, register)] static mut __FS_SB: u16;
+#[zeropage(0x36, register)] static mut __FS_S6: u8;
+#[zeropage(0x37, register)] static mut __FS_S7: u8;
+#[zeropage(0x38, register)] static mut __FS_S8: u16;
+#[zeropage(0x3A, register)] static mut __FS_S9: u16;
+#[zeropage(0x3C, register)] static mut __FS_SA: u16;
+#[zeropage(0x3E, register)] static mut __FS_SB: u16;
+#[zeropage(0x40, register)] static mut __FS_SC: u16;
+#[zeropage(0x42, register)] static mut __FS_SD: u16;
+#[zeropage(0x44, register)] static mut __FS_SE: u16;
+#[zeropage(0x46, register)] static mut __FS_SF: u16;
+#[zeropage(0x48, register)] static mut __FS_FP0: far *u8;
+#[zeropage(0x4B, register)] static mut __FS_FP1: far *u8;
+#[zeropage(0x4E, register)] static mut __FS_FP2: far *u8;
+#[zeropage(0x51, register)] static mut __FS_FP3: far *u8;

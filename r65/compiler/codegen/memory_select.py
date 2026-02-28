@@ -356,7 +356,9 @@ class MemoryOperationSelector(BaseSelector):
 
         # Y-pointer optimization: pointer is in Y register (trait method self)
         # Use LDA $offset,Y — effective address is DBR:(offset + Y)
-        if ptr_loc.kind == LocationKind.HARDWARE and ptr_loc.hw_register == 'Y':
+        # Only valid when no index_register is set (otherwise Y holds the index, not the pointer)
+        if (ptr_loc.kind == LocationKind.HARDWARE and ptr_loc.hw_register == 'Y'
+                and not instr.index_register):
             offset = getattr(instr, 'offset', 0)
             self._emit_y_pointer_load(offset, instr.type_info, dest_loc)
             return
@@ -480,7 +482,9 @@ class MemoryOperationSelector(BaseSelector):
 
         # Y-pointer optimization: pointer is in Y register (trait method self)
         # Use STA $offset,Y — effective address is DBR:(offset + Y)
-        if ptr_loc.kind == LocationKind.HARDWARE and ptr_loc.hw_register == 'Y':
+        # Only valid when no index_register is set (otherwise Y holds the index, not the pointer)
+        if (ptr_loc.kind == LocationKind.HARDWARE and ptr_loc.hw_register == 'Y'
+                and not instr.index_register):
             offset = getattr(instr, 'offset', 0)
             self._emit_y_pointer_store(offset, instr.type_info, src_loc, instr.source)
             return
@@ -562,6 +566,9 @@ class MemoryOperationSelector(BaseSelector):
                 self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(value))
             elif src_loc.kind == LocationKind.HARDWARE and src_loc.hw_register == 'A':
                 pass  # Already in A
+            elif src_loc.kind == LocationKind.HARDWARE and src_loc.hw_register in ('X', 'Y'):
+                transfer = Opcode.TXA if src_loc.hw_register == 'X' else Opcode.TYA
+                self._emit_instr(transfer, None, f"Transfer {src_loc.hw_register} to A for store")
             else:
                 self._emit_load_store('LDA', src_loc)
 
@@ -592,6 +599,9 @@ class MemoryOperationSelector(BaseSelector):
             self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(value))
         elif src_loc.kind == LocationKind.HARDWARE and src_loc.hw_register == 'A':
             pass  # Already in A
+        elif src_loc.kind == LocationKind.HARDWARE and src_loc.hw_register in ('X', 'Y'):
+            transfer = Opcode.TXA if src_loc.hw_register == 'X' else Opcode.TYA
+            self._emit_instr(transfer, None, f"Transfer {src_loc.hw_register} to A for store")
         else:
             self._emit_load_store('LDA', src_loc)
 
@@ -708,13 +718,19 @@ class MemoryOperationSelector(BaseSelector):
         if ptr_loc.kind != LocationKind.HARDWARE:
             return ptr_loc
 
-        # Find a scratch register with at least 2 bytes
-        # Even if it's "in use", we can temporarily reuse it since this is
-        # just a temporary spill within a single instruction sequence
+        # Find a scratch register with at least 2 bytes.
+        # Must skip scratches occupied by parameters (scratch_param_addrs)
+        # since those hold values that persist across the function body.
+        # Free scratches and scratches used only for compiler temporaries
+        # can be safely reused for a single instruction sequence.
         scratch_addr = None
+        param_scratch_addrs = set()
+        cur_func = getattr(self.parent, 'current_function', None)
+        if cur_func and hasattr(cur_func, 'scratch_param_addrs'):
+            param_scratch_addrs = set(cur_func.scratch_param_addrs.values())
         if hasattr(self.parent.reg_alloc, 'scratch_pool') and self.parent.reg_alloc.scratch_pool:
             for scratch in self.parent.reg_alloc.scratch_pool.scratches:
-                if scratch.size >= 2:
+                if scratch.size >= 2 and scratch.address not in param_scratch_addrs:
                     scratch_addr = scratch.address
                     break
 
@@ -1013,6 +1029,18 @@ class MemoryOperationSelector(BaseSelector):
             self._emit_instr(opcode_store, operand, "Store high byte through pointer")
             self._emit_instr(Opcode.XBA, None, "Restore A low byte")
             return
+        elif src_loc and src_loc.kind == LocationKind.HARDWARE and src_loc.hw_register in ('X', 'Y'):
+            # Source is X or Y register (16-bit) — transfer to A in m16, then byte-store
+            transfer = Opcode.TXA if src_loc.hw_register == 'X' else Opcode.TYA
+            self._ensure_m16_mode()
+            self._emit_instr(transfer, None, f"Transfer {src_loc.hw_register} to A for indirect store")
+            self._ensure_m8_mode()  # A = low byte, B = high byte
+            self._emit_instr(opcode_store, operand, "Store low byte through pointer")
+            self._emit_instr(Opcode.INY, None, "Increment for high byte")
+            self._emit_instr(Opcode.XBA, None, "Swap to get high byte")
+            self._emit_instr(opcode_store, operand, "Store high byte through pointer")
+            self._emit_instr(Opcode.XBA, None, "Restore A low byte")
+            return
         else:
             self._emit_load_store('LDA', src_loc)
         self._emit_instr(opcode_store, operand, "Store low byte through pointer")
@@ -1095,6 +1123,18 @@ class MemoryOperationSelector(BaseSelector):
             # In m8 mode, A holds low byte, B (hidden high byte) holds high byte
             self._ensure_m8_mode()
             self._emit_instr(opcode_store, operand, "Store low byte (already in A)")
+            self._emit_instr(Opcode.INY, None, "Increment for high byte")
+            self._emit_instr(Opcode.XBA, None, "Swap to get high byte")
+            self._emit_instr(opcode_store, operand, "Store high byte through stack pointer")
+            self._emit_instr(Opcode.XBA, None, "Restore A low byte")
+            return
+        elif src_loc and src_loc.kind == LocationKind.HARDWARE and src_loc.hw_register in ('X', 'Y'):
+            # Source is X or Y register (16-bit) — transfer to A in m16, then byte-store
+            transfer = Opcode.TXA if src_loc.hw_register == 'X' else Opcode.TYA
+            self._ensure_m16_mode()
+            self._emit_instr(transfer, None, f"Transfer {src_loc.hw_register} to A for indirect store")
+            self._ensure_m8_mode()  # A = low byte, B = high byte
+            self._emit_instr(opcode_store, operand, "Store low byte through stack pointer")
             self._emit_instr(Opcode.INY, None, "Increment for high byte")
             self._emit_instr(Opcode.XBA, None, "Swap to get high byte")
             self._emit_instr(opcode_store, operand, "Store high byte through stack pointer")
@@ -1259,6 +1299,19 @@ class MemoryOperationSelector(BaseSelector):
         if isinstance(source, MIRImmediate):
             value = source.value & 0xFF
             self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(value), "Load low byte immediate")
+        elif src_loc and src_loc.kind == LocationKind.HARDWARE and src_loc.hw_register in ('X', 'Y'):
+            # Source is X or Y register (16-bit) — transfer to A in m16, then byte-store
+            transfer = Opcode.TXA if src_loc.hw_register == 'X' else Opcode.TYA
+            self._ensure_m16_mode()
+            self._emit_instr(transfer, None, f"Transfer {src_loc.hw_register} to A for far ptr store")
+            self._ensure_m8_mode()  # A = low byte, B = high byte
+            self._emit_instr(Opcode.STA_STACK_INDIRECT_Y, operand, "Store low byte through far pointer")
+            self._emit_instr(Opcode.INY, None, "Increment for high byte")
+            self._emit_instr(Opcode.XBA, None, "Swap to get high byte")
+            self._emit_instr(Opcode.STA_STACK_INDIRECT_Y, operand, "Store high byte through far pointer")
+            self._emit_instr(Opcode.XBA, None, "Restore A low byte")
+            self._emit_instr(Opcode.PLB, None, "Restore DBR")
+            return
         else:
             self._emit_load_store('LDA', src_loc)
         self._emit_instr(Opcode.STA_STACK_INDIRECT_Y, operand, "Store low byte through far pointer")

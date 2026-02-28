@@ -11,7 +11,7 @@ A stack parameter is promoted if:
 3. The function's address is not taken (would break function pointer callers)
 """
 
-from typing import Dict, Set, List, Optional
+from typing import Dict, Set, List, Optional, Tuple, Sequence
 from r65.compiler.mir.nodes import (
     MIRProgram, MIRFunction, Call, Argument, ArgumentMechanism,
     FunctionPointer, Move, VirtualRegister, TraitDispatch,
@@ -64,6 +64,13 @@ def analyze_scratch_params(mir_program: MIRProgram, scratch_pool: ScratchRegiste
 
             # Recompute stack_param_offsets excluding promoted params
             _recompute_stack_offsets(func)
+
+            # Clear far pointer flag if all far ptrs promoted
+            if func.far_ptr_param_indices:
+                remaining_far = func.far_ptr_param_indices - set(func_promos.keys())
+                if not remaining_far:
+                    func.has_far_ptr_stack_params = False
+                    func.far_ptr_param_indices.clear()
 
     # Step 4: Update call sites
     for func in mir_program.functions:
@@ -152,6 +159,7 @@ def _analyze_function(func: MIRFunction, scratch_pool: ScratchRegisterPool) -> D
     result: Dict[int, int] = {}
 
     for param_idx, vreg, param_size in eligible:
+        placed = False
         # Find a compatible scratch
         for addr, size, name in available:
             if addr in used_scratches:
@@ -159,9 +167,49 @@ def _analyze_function(func: MIRFunction, scratch_pool: ScratchRegisterPool) -> D
             if size >= param_size:
                 result[param_idx] = addr
                 used_scratches.add(addr)
+                placed = True
                 break
 
+        # Try composite: find adjacent free scratches that together cover param_size
+        if not placed:
+            composite = _find_composite_scratch(available, used_scratches, param_size)
+            if composite:
+                base_addr = composite[0][0]
+                result[param_idx] = base_addr
+                for addr, _, _ in composite:
+                    used_scratches.add(addr)
+
     return result
+
+
+def _find_composite_scratch(
+    scratch_available: Sequence[Tuple[int, int, str]],
+    used_scratches: Set[int],
+    needed_size: int,
+) -> Optional[List[Tuple[int, int, str]]]:
+    """Find adjacent free scratches that together provide needed_size bytes."""
+    free = sorted(
+        [(addr, size, name) for addr, size, name in scratch_available
+         if addr not in used_scratches],
+        key=lambda x: x[0],
+    )
+
+    for i, (start_addr, start_size, start_name) in enumerate(free):
+        total = start_size
+        group = [(start_addr, start_size, start_name)]
+        expected_next = start_addr + start_size
+
+        for j in range(i + 1, len(free)):
+            addr_j, size_j, name_j = free[j]
+            if addr_j != expected_next:
+                break
+            group.append((addr_j, size_j, name_j))
+            total += size_j
+            if total >= needed_size:
+                return group
+            expected_next = addr_j + size_j
+
+    return None
 
 
 def _recompute_stack_offsets(func: MIRFunction):

@@ -88,7 +88,7 @@ class PhysicalLocation:
 class ScratchRegister:
     """A scratch register available for temporary allocation."""
     address: int      # Zero-page address
-    size: int         # Size in bytes (1 or 2)
+    size: int         # Size in bytes (1, 2, or 3)
     name: str         # Name (e.g., "SCRATCH0")
     is_free: bool = True
 

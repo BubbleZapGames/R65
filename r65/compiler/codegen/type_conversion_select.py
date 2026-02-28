@@ -102,6 +102,8 @@ class TypeConversionSelector(BaseSelector):
                 self._emit_instr(Opcode.TXA, comment="Widen X to 16-bit")
             elif src_operand.name == 'Y':
                 self._emit_instr(Opcode.TYA, comment="Widen Y to 16-bit")
+            elif src_operand.name == 'B':
+                self.parent._access_b_value_in_a()
             elif src_operand.name == 'A':
                 pass  # Already in A
         else:
@@ -111,6 +113,8 @@ class TypeConversionSelector(BaseSelector):
                     self._emit_instr(Opcode.TXA, comment="Widen X to 16-bit")
                 elif src_loc.hw_register == 'Y':
                     self._emit_instr(Opcode.TYA, comment="Widen Y to 16-bit")
+                elif src_loc.hw_register == 'B':
+                    self.parent._access_b_value_in_a()
                 elif src_loc.hw_register == 'A':
                     pass  # Already in A
             else:

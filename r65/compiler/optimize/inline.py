@@ -633,6 +633,13 @@ class FunctionInliner:
             callee.return_type.name in ('u8', 'i8', 'u16', 'i16')
         )
 
+        # Collect REMAPPED callee parameter vregs — these may be hw-promoted to
+        # X/Y after inlining (FixedStack ABI), so we can't assume they'll be in A
+        # at return. Must use remapped vregs since cloned blocks have remapped values.
+        callee_param_vregs = set()
+        for vreg in callee.param_to_vreg.values():
+            callee_param_vregs.add(cloner._remap_vreg(vreg))
+
         for cloned_block in cloned_blocks.values():
             new_instructions = []
             for instr in cloned_block.instructions:
@@ -641,13 +648,16 @@ class FunctionInliner:
                     if result_vreg and instr.values:
                         return_value = instr.values[0]
 
-                        # For A-register returns, the value is in A, not in the vreg's memory
-                        # The vreg represents the computation result which stays in A
+                        # The return_value vreg is already remapped by clone_blocks().
+                        # Do NOT call _remap_operand again — that would create a
+                        # disconnected new vreg.
                         if returns_via_a and isinstance(return_value, VirtualRegister):
-                            return_value = HardwareRegister('A')
-                        elif isinstance(return_value, VirtualRegister):
-                            # Remap the return value if it's a vreg
-                            return_value = cloner._remap_operand(return_value)
+                            if return_value not in callee_param_vregs:
+                                # Computed result: ALU ops leave result in A
+                                return_value = HardwareRegister('A')
+                            # else: parameter passthrough — use remapped vreg directly.
+                            # With FixedStack ABI the param may be hw-promoted to X/Y
+                            # after inlining, so we can't assume it's in A.
 
                         new_instructions.append(Move(
                             dest=result_vreg,
