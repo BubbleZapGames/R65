@@ -139,8 +139,43 @@ class ASTBuilder(Transformer):
     # Program
     # ========================================================================
 
+    # Messages for reserved Rust keywords that appear as dangling Token items
+    # via the grammar's _reserved_keyword rule. Maps keyword → (error_msg, hint).
+    _KEYWORD_MESSAGES = {
+        'pub':      ("'pub' visibility is not supported in R65", "all declarations are globally visible; remove 'pub'"),
+        'async':    ("'async' functions are not supported in R65", "use interrupt handlers (#[interrupt]) for async events"),
+        'await':    ("'await' is not supported in R65", "R65 has no async runtime"),
+        'unsafe':   ("'unsafe' is not supported in R65", "all R65 code has direct hardware access; 'unsafe' is unnecessary"),
+        'use':      ("'use' imports are not supported in R65", "use include!(\"file.r65\") for file inclusion"),
+        'extern':   ("'extern' is not supported in R65", "use #[hw(addr)] for hardware registers or asm!() for assembly"),
+        'crate':    ("'crate' is not supported in R65", "use include!(\"file.r65\") for file inclusion"),
+        'move':     ("'move' closures are not supported in R65", "use function pointers (fn() or far fn())"),
+        'ref':      ("'ref' patterns are not supported in R65", "use raw pointers (*u8)"),
+        'where':    ("'where' clauses are not supported in R65", "R65 has no generics or trait bounds"),
+        'yield':    ("'yield' is not supported in R65", "R65 has no generators"),
+        'super':    ("'super' is not supported in R65", "R65 has no module system; use include!()"),
+        'abstract': ("'abstract' is not supported in R65", "use traits for polymorphism"),
+        'try':      ("'try' is not supported in R65", "use return codes or error flags"),
+        'box':      ("'box' is not supported in R65", "use raw pointers (*u8)"),
+        'do':       ("'do' is not supported in R65", "use loop or while"),
+        'priv':     ("'priv' is not supported in R65", "all declarations are globally visible"),
+    }
+
     def start(self, items):
         """Start rule - returns a Program node."""
+        # Check for reserved keyword tokens that the grammar accepted as _reserved_keyword
+        for item in items:
+            if isinstance(item, LarkToken) and item.type == 'KEYWORD':
+                kw = item.value
+                msg, hint = self._KEYWORD_MESSAGES.get(kw, (
+                    f"'{kw}' is a reserved keyword not supported in R65", None
+                ))
+                source_loc = SourceLocation(
+                    file_path=self.filename,
+                    line=getattr(item, 'line', 0),
+                    column=getattr(item, 'column', 0),
+                )
+                raise ParseError(msg, source_loc, hint=hint)
         return ast.Program(items=list(items))
 
     # ========================================================================
@@ -571,6 +606,16 @@ class ASTBuilder(Transformer):
                     is_far = False
 
         return ('self_param', is_far)
+
+    @v_args(tree=True)
+    def self_safe_ptr_error(self, tree):
+        """Error handler for &self syntax (Rust safe reference)."""
+        source_loc = self._make_source_loc(tree.meta) if hasattr(tree, 'meta') else None
+        raise ParseError(
+            "safe references are not supported in R65",
+            source_loc=source_loc,
+            hint="use '*self' instead of '&self' — R65 uses raw pointers"
+        )
 
     def impl_const(self, items):
         """Associated constant in impl block: const NAME: type = value;"""
@@ -2203,9 +2248,12 @@ class Parser:
             else:
                 message = "unexpected token"
 
-            # Check for macro syntax hints first - these are important enough to be in the message
-            macro_hint = self._check_macro_syntax_hints(source, str(e))
-            if macro_hint:
+            # Check for Rust feature hints first (most specific)
+            rust_hint = self._check_rust_feature_hints(source, token, line)
+            if rust_hint:
+                message, hint = rust_hint
+            # Check for macro syntax hints - these are important enough to be in the message
+            elif (macro_hint := self._check_macro_syntax_hints(source, str(e))):
                 # For macro errors, include the full hint in the message
                 message = f"{message}\n\n{macro_hint}"
                 hint = None
@@ -2246,6 +2294,12 @@ class Parser:
             else:
                 message = "unexpected character"
 
+            # Check for ? operator
+            hint = None
+            if char == '?':
+                message = "the '?' operator is not supported in R65"
+                hint = "R65 has no Result/Option types; use return codes or error flags"
+
             source_line = get_source_line(source, line)
             source_loc = SourceLocation(
                 file_path=filename,
@@ -2255,7 +2309,9 @@ class Parser:
                 included_from=included_from
             )
 
-            raise ParseError(message, source_loc) from e
+            error = ParseError(message, source_loc)
+            error.hint = hint
+            raise error from e
 
         except UnexpectedEOF as e:
             # Handle unexpected end of file
@@ -2450,6 +2506,60 @@ class Parser:
                 unique.append(item)
 
         return unique
+
+    def _check_rust_feature_hints(self, source, token, line):
+        """Check for common Rust features and return (message, hint) or None.
+
+        Only runs on error paths — zero cost on successful compilation.
+        """
+        if token is None or token.type == '$END':
+            return None
+
+        source_line = get_source_line(source, line) or ''
+        # Lark columns are 1-based; slice up to (but not including) the token
+        col = token.column - 1 if token.column > 0 else 0
+        before = source_line[:col]
+
+        import re
+
+        # Generics: '<' after 'fn name' or after a type name
+        if token.value == '<':
+            if re.search(r'\bfn\s+\w+\s*$', before):
+                return ("generics are not supported in R65",
+                        "use concrete types (u8, u16) instead of type parameters")
+            # Also catch Type<T> patterns
+            if re.search(r'\b[A-Z]\w*\s*$', before):
+                return ("generics are not supported in R65",
+                        "use concrete types (u8, u16) instead of type parameters")
+
+        # Closures: '|' after '=' in a let/assignment context
+        if token.value == '|':
+            if before.rstrip().endswith('='):
+                return ("closures are not supported in R65",
+                        "use function pointers (fn() or far fn())")
+
+        # 'if let' / 'while let': unexpected token after 'if let' or 'while let'
+        if re.search(r'\bif\s+let\s*$', before):
+            return ("'if let' pattern matching is not supported in R65",
+                    "use 'if' with comparison operators or 'match'")
+        if re.search(r'\bwhile\s+let\s*$', before):
+            return ("'while let' pattern matching is not supported in R65",
+                    "use 'while' with comparison operators")
+
+        # 'use' statement: 'use' was consumed as _reserved_keyword, error on following tokens
+        # Detect by checking if 'use' appears earlier on the same line
+        if re.search(r'\buse\s+\w+\s*$', before) or re.search(r'\buse\s*$', before):
+            return ("'use' imports are not supported in R65",
+                    "use include!(\"file.r65\") for file inclusion")
+
+        # 'mod' keyword (it's an IDENT, not KEYWORD, so start() won't catch it)
+        if token.type == 'IDENT' and token.value == 'mod':
+            stripped = before.strip()
+            if stripped == '' or stripped.endswith(';') or stripped.endswith('}'):
+                return ("'mod' modules are not supported in R65",
+                        "use include!(\"file.r65\") for file inclusion")
+
+        return None
 
     def _check_macro_syntax_hints(self, source: str, error_str: str) -> str:
         """Check for common Rust macro syntax mistakes and return helpful error message."""

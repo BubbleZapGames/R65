@@ -36,6 +36,21 @@ class MacroExpander:
 
     MAX_EXPANSION_DEPTH = 64
 
+    # Hints for common Rust macros that don't exist in R65
+    _RUST_MACRO_HINTS = {
+        'println':       "use format!() to write to a buffer, then output via hardware",
+        'print':         "use format!() to write to a buffer, then output via hardware",
+        'eprintln':      "use format!() to write to a buffer",
+        'dbg':           "use format!() to write to a buffer",
+        'panic':         "use asm!(\"BRK\") for traps",
+        'todo':          "use asm!(\"BRK\") for traps",
+        'unimplemented': "use asm!(\"BRK\") for traps",
+        'assert':        "use if !condition { asm!(\"BRK\"); }",
+        'assert_eq':     "use if a != b { asm!(\"BRK\"); }",
+        'assert_ne':     "use if a == b { asm!(\"BRK\"); }",
+        'vec':           "use fixed-size array literals: [1, 2, 3]",
+    }
+
     def __init__(self):
         self.macros: Dict[str, MacroDefinition] = {}
         self.warnings: List[str] = []
@@ -68,7 +83,11 @@ class MacroExpander:
         """
         # Check if macro exists
         if name not in self.macros:
-            raise MacroError(f"undefined macro: '{name}'", source_loc)
+            hint = self._RUST_MACRO_HINTS.get(name)
+            error = MacroError(f"undefined macro: '{name}'", source_loc)
+            if hint:
+                error.hint = hint
+            raise error
 
         macro = self.macros[name]
 

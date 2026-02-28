@@ -197,12 +197,42 @@ class TypeResolver:
         else:
             raise HIRError(f"Unknown type node: {type(ast_type).__name__}", source_loc=getattr(ast_type, 'source_loc', None))
 
+    # Hints for common Rust types that don't exist in R65
+    _RUST_TYPE_HINTS = {
+        'String':  "use [u8; N] arrays for text data",
+        'str':     "use [u8; N] arrays for text data",
+        'Vec':     "use fixed-size arrays [T; N]",
+        'Option':  "use sentinel values (e.g., 0xFF) or status flags",
+        'Result':  "use return codes or error flags",
+        'usize':   "use u16 (65816 is 16-bit)",
+        'isize':   "use i16 (65816 is 16-bit)",
+        'u32':     "65816 is 16-bit; max integer type is u16",
+        'i32':     "65816 is 16-bit; max integer type is i16",
+        'u64':     "65816 is 16-bit; max integer type is u16",
+        'i64':     "65816 is 16-bit; max integer type is i16",
+        'u128':    "65816 is 16-bit; max integer type is u16",
+        'i128':    "65816 is 16-bit; max integer type is i16",
+        'f32':     "65816 has no FPU; use fixed-point arithmetic",
+        'f64':     "65816 has no FPU; use fixed-point arithmetic",
+        'char':    "use u8 for ASCII characters",
+        'Box':     "use raw pointers (*u8 or far *u8)",
+        'Rc':      "use raw pointers (*u8 or far *u8)",
+        'Arc':     "use raw pointers (*u8 or far *u8)",
+        'HashMap': "use fixed-size arrays with manual lookup",
+        'HashSet': "use fixed-size arrays with manual lookup",
+        'BTreeMap': "use fixed-size arrays with manual lookup",
+    }
+
     def resolve_named_type(self, name: str) -> TypeInfo:
         """Resolve a named type (struct, enum, trait, or type alias) by name."""
         symbol = self.symbol_table.lookup(name)
 
         if symbol is None:
-            raise HIRError(f"Undefined type: {name}", source_loc=None)
+            hint = self._RUST_TYPE_HINTS.get(name)
+            error = HIRError(f"Undefined type: {name}", source_loc=None)
+            if hint:
+                error.hint = hint
+            raise error
 
         if symbol.kind.value == "struct":
             return StructTypeInfo(name=name, definition=symbol.definition, symbol=symbol)

@@ -114,6 +114,7 @@ impl_param_list: self_param ("," param)* ","?
 
 // Self parameter: *self, far *self, or near *self
 self_param: (FAR | NEAR)? STAR SELF
+          | (FAR | NEAR)? AMPER SELF -> self_safe_ptr_error
 
 // Associated constant in impl block
 impl_const: CONST IDENT ":" type_expr "=" expr ";"
