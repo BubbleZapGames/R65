@@ -44,7 +44,7 @@ fn main() -> ! {
     set_bg12_chr!(1, 0);
 
     // Upload default font to VRAM $1000
-    console_upload_default_font(0x1000);
+    my_console.upload_default_font(0x1000);
 
     // Upload palette
     set_cgram_addr!(0);
@@ -87,7 +87,7 @@ fn main() -> ! {
     // Test formatted output (method macro syntax)
     score = 12345;
     lives = 3;
-    my_console.cprint_at!(0, 5, "Score: {u16} Lives: {u8}", score, lives);
+    my_console.print_at!(0, 5, "Score: {u16} Lives: {u8}", score, lives);
 
     // DMA nametable to VRAM
     dma_copy_vram_const!(0, nametable1, 0x0000, 2048);

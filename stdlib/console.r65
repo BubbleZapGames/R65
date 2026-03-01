@@ -288,22 +288,22 @@ impl far Console {
     // ========================================================================
 
     // Format + streaming print.
-    // Usage: my_console.cprint!("Score: {u16}", score);
-    macro_rules! cprint($fmt:literal, $($args:expr),*) {
+    // Usage: my_console.print!("Score: {u16}", score);
+    macro_rules! print($fmt:literal, $($args:expr),*) {
         format!(__console_fmt_buf, $fmt, $($args),*);
         self.print(&__console_fmt_buf as far *u8);
     }
 
     // Format + aligned print + advance to next row.
-    // Usage: my_console.cprintln!("Level: {u8}", level);
-    macro_rules! cprintln($fmt:literal, $($args:expr),*) {
+    // Usage: my_console.println!("Level: {u8}", level);
+    macro_rules! println($fmt:literal, $($args:expr),*) {
         format!(__console_fmt_buf, $fmt, $($args),*);
         self.print_line(&__console_fmt_buf as far *u8);
     }
 
     // Format + print at position.
-    // Usage: my_console.cprint_at!(5, 3, "HP: {u8}", hp);
-    macro_rules! cprint_at($x:expr, $y:expr, $fmt:literal, $($args:expr),*) {
+    // Usage: my_console.print_at!(5, 3, "HP: {u8}", hp);
+    macro_rules! print_at($x:expr, $y:expr, $fmt:literal, $($args:expr),*) {
         format!(__console_fmt_buf, $fmt, $($args),*);
         self.print_at($x, $y, &__console_fmt_buf as far *u8);
     }
@@ -356,63 +356,42 @@ impl far Console {
             col++;
         }
     }
-}
 
-// ============================================================================
-// Free Functions - Font Upload
-// ============================================================================
+    // ========================================================================
+    // Font Upload
+    // ========================================================================
 
-// Upload 1bpp font data to VRAM, converting to 2bpp.
-// Each source byte is written to both VMDATAL and VMDATAH so that
-// set pixels appear as color 3 (both bitplanes set).
-// vram_addr: VRAM word address for character data.
-// num_tiles: number of 8x8 tiles (each tile = 8 source bytes).
-far fn console_upload_font_1bpp(vram_addr: u16, data: far *u8, num_tiles: u16) {
-    set_vram_addr!(vram_addr);
-    let d: far *u8 = data;
-    let total: u16 = num_tiles << 3;  // num_tiles * 8 bytes per tile
-    let mut i: u16 = 0;
-    loop {
-        if i >= total { break; }
-        A = d[i];
-        VMDATAL = A;  // Bitplane 0
-        VMDATAH = A;  // Bitplane 1
-        i++;
+    // Upload 1bpp font data to VRAM, converting to 2bpp.
+    // Each source byte is written to both VMDATAL and VMDATAH so that
+    // set pixels appear as color 3 (both bitplanes set).
+    // vram_addr: VRAM word address for character data.
+    // num_tiles: number of 8x8 tiles (each tile = 8 source bytes).
+    far fn upload_font_1bpp(far *self, vram_addr: u16, data: far *u8, num_tiles: u16) {
+        set_vram_addr!(vram_addr);
+        let d: far *u8 = data;
+        let total: u16 = num_tiles << 3;  // num_tiles * 8 bytes per tile
+        let mut i: u16 = 0;
+        loop {
+            if i >= total { break; }
+            A = d[i];
+            VMDATAL = A;  // Bitplane 0
+            VMDATAH = A;  // Bitplane 1
+            i++;
+        }
+    }
+
+    // Upload the built-in CONSOLE_FONT (95 tiles) to VRAM.
+    far fn upload_default_font(far *self, vram_addr: u16) {
+        self.upload_font_1bpp(vram_addr, &CONSOLE_FONT as far *u8, 95);
     }
 }
 
-// Convenience wrapper: upload the built-in CONSOLE_FONT (95 tiles) to VRAM.
-far fn console_upload_default_font(vram_addr: u16) {
-    console_upload_font_1bpp(vram_addr, &CONSOLE_FONT as far *u8, 95);
-}
-
 // ============================================================================
-// Macros - Format Buffer
+// Format Buffer (global, used by method macros)
 // ============================================================================
 
 #[ram]
 static mut __console_fmt_buf: [u8; 128];
-
-// Format + streaming print.
-// Usage: console_print!(my_console, "Score: {u16}", score);
-macro_rules! console_print($console:expr, $fmt:literal, $($args:expr),*) {
-    format!(__console_fmt_buf, $fmt, $($args),*);
-    $console.print(&__console_fmt_buf as far *u8);
-}
-
-// Format + aligned print + advance to next row.
-// Usage: console_println!(my_console, "Level: {u8}", level);
-macro_rules! console_println($console:expr, $fmt:literal, $($args:expr),*) {
-    format!(__console_fmt_buf, $fmt, $($args),*);
-    $console.print_line(&__console_fmt_buf as far *u8);
-}
-
-// Format + print at position.
-// Usage: console_print_at!(my_console, 5, 3, "HP: {u8}", hp);
-macro_rules! console_print_at($console:expr, $x:expr, $y:expr, $fmt:literal, $($args:expr),*) {
-    format!(__console_fmt_buf, $fmt, $($args),*);
-    $console.print_at($x, $y, &__console_fmt_buf as far *u8);
-}
 
 // ============================================================================
 // Default Font Data - CP437/IBM BIOS Style 8x8 Monospace
