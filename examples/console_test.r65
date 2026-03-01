@@ -1,0 +1,108 @@
+// ============================================================================
+// Console Library Test
+// ============================================================================
+// Tests the console.r65 library by displaying text on screen.
+// ============================================================================
+
+#[snesrom(name="CONSOLE TEST")]
+#[bank(0)]
+
+include!("../stdlib/sneslib.r65")
+include!("../stdlib/string.r65")
+include!("../stdlib/console.r65")
+
+// Nametable buffer in RAM
+#[ram]
+static mut nametable1: [u16; 1024];
+
+// Console instance in RAM
+#[ram]
+static mut my_console: Console;
+
+// Palette data (4 colors for 2bpp mode)
+static PALETTE: [u8; 8] = [
+    0x00, 0x00,  // Color 0: Black (background)
+    0x29, 0x25,  // Color 1: Dark gray
+    0x52, 0x4A,  // Color 2: Light gray
+    0xFF, 0x7F   // Color 3: White (foreground)
+];
+
+// Test variables
+#[lowram]
+static mut score: u16;
+#[lowram]
+static mut lives: u8;
+
+// Entry point
+#[entry]
+fn main() -> ! {
+    snes_init();
+
+    // Configure BG mode and tilemap
+    set_bgmode!(0, 0);
+    set_bg1_map!(0x00, 0);
+    set_bg12_chr!(1, 0);
+
+    // Upload default font to VRAM $1000
+    console_upload_default_font(0x1000);
+
+    // Upload palette
+    set_cgram_addr!(0);
+    for i in 0..8 {
+        A = PALETTE[i];
+        CGDATA = A;
+    }
+
+    // Initialize console
+    my_console.init(&nametable1 as far *u16, 0, BG_PRIORITY);
+
+    // Test basic print
+    my_console.print("Hello, World!\0" as far *u8);
+
+    // Test newline
+    my_console.newline();
+
+    // Test putc
+    my_console.putc(0x41);  // 'A'
+    my_console.putc(0x42);  // 'B'
+    my_console.putc(0x43);  // 'C'
+
+    // Test print_at
+    my_console.print_at(5, 5, "At position 5,5\0" as far *u8);
+
+    // Test set_area and clear
+    my_console.set_area(2, 10, 28, 10);
+    my_console.clear();
+
+    // Test alignment
+    my_console.set_align(CONSOLE_ALIGN_CENTER);
+    my_console.print_line("Centered Text\0" as far *u8);
+
+    my_console.set_align(CONSOLE_ALIGN_RIGHT);
+    my_console.print_line("Right Aligned\0" as far *u8);
+
+    my_console.set_align(CONSOLE_ALIGN_LEFT);
+    my_console.print_line("Left Aligned\0" as far *u8);
+
+    // Test formatted output (method macro syntax)
+    score = 12345;
+    lives = 3;
+    my_console.cprint_at!(0, 5, "Score: {u16} Lives: {u8}", score, lives);
+
+    // DMA nametable to VRAM
+    dma_copy_vram_const!(0, nametable1, 0x0000, 2048);
+
+    // Enable BG1 and turn on screen
+    enable_main!(SCREEN_BG1);
+    screen_on!(15);
+
+    loop {
+        wait_nmi();
+    }
+}
+
+// NMI handler
+#[interrupt(nmi)]
+fn nmi_handler() {
+    A = RDNMI;
+}

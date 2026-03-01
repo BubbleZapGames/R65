@@ -331,6 +331,7 @@ class ImplDecl(Declaration):
     methods: List[ImplMethod]
     constants: List[ImplConst]
     trait_name: Optional[str] = None  # Set for `impl TraitName for StructName`
+    macros: List['ImplMacro'] = field(default_factory=list)
 
 
 @dataclass
@@ -438,6 +439,26 @@ class MacroDecl(Declaration):
 
 
 @dataclass
+class ImplMacro(ASTNode):
+    """Macro defined inside an impl block.
+
+    Stored with the struct type for scoped lookup.
+    Body uses bare 'self' to reference the receiver.
+
+    Example:
+        impl far Console {
+            macro_rules! cprint($fmt:literal, $($args:expr),*) {
+                format!(__buf, $fmt, $($args),*);
+                self.print(&__buf as far *u8);
+            }
+        }
+    """
+    name: str
+    params: List[MacroParam]
+    body_tokens: List[str]
+
+
+@dataclass
 class MacroInvocation(Expression):
     """Macro invocation (e.g., my_macro!(arg1, arg2)).
 
@@ -467,6 +488,17 @@ class MacroInvocationStmtInner(Statement):
     """
     name: str
     args: List[str]  # Raw argument token strings
+
+
+@dataclass
+class MethodMacro(Expression):
+    """Method macro invocation: receiver.name!(args).
+
+    Example: my_console.cprint!("Score: {u16}", score);
+    """
+    receiver: Expression    # Parsed receiver AST (for type resolution)
+    name: str               # Macro name
+    args: List[str]         # Raw argument token strings
 
 
 # ============================================================================

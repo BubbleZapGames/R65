@@ -53,6 +53,7 @@ class MacroExpander:
 
     def __init__(self):
         self.macros: Dict[str, MacroDefinition] = {}
+        self._impl_macros: Dict[str, Dict[str, MacroDefinition]] = {}  # struct_name → {macro_name → MacroDef}
         self.warnings: List[str] = []
         self._expansion_depth = 0
         self._expanding: Set[str] = set()  # Track currently expanding macros
@@ -168,6 +169,10 @@ class MacroExpander:
                     body_tokens=body,
                     source_loc=item.source_loc
                 )
+            elif isinstance(item, ast.ImplDecl):
+                # Collect impl macros
+                for macro in item.macros:
+                    self._register_impl_macro(item.struct_name, macro)
 
     def _expand_declarations(self, items: List[ast.Declaration]) -> List[ast.Declaration]:
         """Expand macro invocations in a list of declarations."""
@@ -237,12 +242,14 @@ class MacroExpander:
                         value=new_value,
                         source_loc=const.source_loc,
                     ))
+                # Impl macros are already collected; don't need to expand them
                 result.append(ast.ImplDecl(
                     struct_name=item.struct_name,
                     is_far=item.is_far,
                     methods=new_methods,
                     constants=new_constants,
                     trait_name=item.trait_name,
+                    macros=item.macros,
                     source_loc=item.source_loc,
                 ))
             else:
@@ -322,6 +329,10 @@ class MacroExpander:
                     expanded = self._expand_statement_invocation(
                         stmt.expr.name, stmt.expr.args, stmt.expr.source_loc
                     )
+                    result.extend(expanded)
+                elif isinstance(stmt.expr, ast.MethodMacro):
+                    # Method macro invocation: receiver.name!(args)
+                    expanded = self._expand_method_macro(stmt.expr)
                     result.extend(expanded)
                 else:
                     # Expand macros in expression
@@ -562,6 +573,138 @@ class MacroExpander:
             else_block=new_else,
             source_loc=stmt.source_loc
         )
+
+    # =========================================================================
+    # Impl (Method) Macros
+    # =========================================================================
+
+    def _register_impl_macro(self, struct_name: str, macro: 'ast.ImplMacro'):
+        """Register a macro defined inside an impl block."""
+        body = macro.body_tokens
+        if body and body[0] == '{' and body[-1] == '}':
+            body = body[1:-1]
+
+        if struct_name not in self._impl_macros:
+            self._impl_macros[struct_name] = {}
+
+        self._impl_macros[struct_name][macro.name] = MacroDefinition(
+            name=macro.name,
+            params=macro.params,
+            body_tokens=body,
+            source_loc=macro.source_loc
+        )
+
+    def _resolve_receiver_type(self, receiver: ast.Expression) -> Optional[str]:
+        """Try to resolve receiver expression to a struct type name."""
+        if isinstance(receiver, ast.Identifier):
+            for item in self._program_items:
+                if isinstance(item, ast.StaticDecl) and item.name == receiver.name:
+                    if isinstance(item.var_type, ast.BasicType):
+                        return item.var_type.name
+        return None  # Can't resolve — fall back to name-only search
+
+    def _resolve_impl_macro(
+        self,
+        receiver: ast.Expression,
+        name: str,
+        source_loc: Optional[SourceLocation]
+    ) -> MacroDefinition:
+        """Find the right impl macro for a method macro invocation."""
+        # Try type-directed lookup first
+        struct_type = self._resolve_receiver_type(receiver)
+        if struct_type and struct_type in self._impl_macros:
+            if name in self._impl_macros[struct_type]:
+                return self._impl_macros[struct_type][name]
+
+        # Fallback: search all impl macros by name
+        matches = [(sname, m) for sname, macros in self._impl_macros.items()
+                    for mname, m in macros.items() if mname == name]
+        if len(matches) == 1:
+            return matches[0][1]
+        if len(matches) == 0:
+            raise MacroError(f"no method macro '{name}' found", source_loc)
+        struct_names = ', '.join(s for s, _ in matches)
+        raise MacroError(
+            f"ambiguous method macro '{name}' — defined in: {struct_names}",
+            source_loc
+        )
+
+    def _ast_to_source(self, node: ast.Expression) -> str:
+        """Convert a parsed AST expression back to source text for macro substitution."""
+        if isinstance(node, ast.Identifier):
+            return node.name
+        elif isinstance(node, ast.Register):
+            return node.name
+        elif isinstance(node, ast.FieldAccess):
+            return f"{self._ast_to_source(node.base)}.{node.field}"
+        elif isinstance(node, ast.ArrayIndex):
+            return f"{self._ast_to_source(node.array)}[{self._ast_to_source(node.index)}]"
+        elif isinstance(node, ast.Dereference):
+            return f"*{self._ast_to_source(node.pointer)}"
+        elif isinstance(node, ast.AddressOf):
+            return f"&{self._ast_to_source(node.operand)}"
+        elif isinstance(node, ast.IntegerLiteral):
+            if node.suffix:
+                return f"{node.value}{node.suffix}"
+            return str(node.value)
+        elif isinstance(node, ast.FunctionCall):
+            func_src = self._ast_to_source(node.func)
+            args_src = ', '.join(self._ast_to_source(a) for a in node.args)
+            return f"{func_src}({args_src})"
+        elif isinstance(node, ast.TypeCast):
+            return f"{self._ast_to_source(node.expr)} as {self._type_to_source(node.target_type)}"
+        elif isinstance(node, ast.BinaryOp):
+            return f"{self._ast_to_source(node.left)} {node.op} {self._ast_to_source(node.right)}"
+        elif isinstance(node, ast.UnaryOp):
+            return f"{node.op}{self._ast_to_source(node.operand)}"
+        else:
+            # Fallback for unknown nodes
+            return repr(node)
+
+    def _type_to_source(self, t: ast.Type) -> str:
+        """Convert an AST type node back to source text."""
+        if isinstance(t, ast.BasicType):
+            return t.name
+        elif isinstance(t, ast.PointerType):
+            far = "far " if t.is_far else ""
+            return f"{far}*{self._type_to_source(t.pointee_type)}"
+        elif isinstance(t, ast.ArrayType):
+            return f"[{self._type_to_source(t.element_type)}; {self._ast_to_source(t.size)}]"
+        return str(t)
+
+    def _expand_method_macro(self, mm: ast.MethodMacro) -> List[ast.Statement]:
+        """Expand a method macro invocation: receiver.name!(args)."""
+        receiver_text = self._ast_to_source(mm.receiver)
+
+        # Resolve which impl macro to use
+        macro = self._resolve_impl_macro(mm.receiver, mm.name, mm.source_loc)
+
+        # Replace 'self' with receiver text in body tokens
+        body_tokens = [receiver_text if t == 'self' else t for t in macro.body_tokens]
+
+        # Build a temporary MacroDefinition with the substituted body
+        temp_macro = MacroDefinition(
+            name=mm.name,
+            params=macro.params,
+            body_tokens=body_tokens,
+            source_loc=macro.source_loc
+        )
+
+        # Save the original macro, temporarily register this as a regular macro
+        old = self.macros.get(mm.name)
+        self.macros[mm.name] = temp_macro
+        try:
+            expanded = self._expand_statement_invocation(
+                mm.name, mm.args, mm.source_loc
+            )
+        finally:
+            # Restore the original macro (or remove if it didn't exist)
+            if old is not None:
+                self.macros[mm.name] = old
+            else:
+                del self.macros[mm.name]
+
+        return expanded
 
     def _expand_top_level_invocation(
         self,

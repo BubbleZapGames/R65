@@ -504,20 +504,24 @@ class ASTBuilder(Transformer):
         struct_name = items[idx].value if isinstance(items[idx], LarkToken) else items[idx]
         idx += 1
 
-        # Collect methods and constants from remaining items
+        # Collect methods, constants, and macros from remaining items
         methods = []
         constants = []
+        macros = []
         for item in items[idx:]:
             if isinstance(item, ast.ImplMethod):
                 methods.append(item)
             elif isinstance(item, ast.ImplConst):
                 constants.append(item)
+            elif isinstance(item, ast.ImplMacro):
+                macros.append(item)
 
         return ast.ImplDecl(
             struct_name=struct_name,
             is_far=is_far,
             methods=methods,
             constants=constants,
+            macros=macros,
             source_loc=self._make_source_loc(tree.meta)
         )
 
@@ -624,6 +628,31 @@ class ASTBuilder(Transformer):
         const_type = items[1]
         value = items[2]
         return ast.ImplConst(name=name, const_type=const_type, value=value)
+
+    @v_args(tree=True)
+    def impl_macro(self, tree):
+        """Macro definition inside impl block: macro_rules! name($param:type, ...) { body }"""
+        items = tree.children
+        name = None
+        params = []
+        body_tokens = []
+
+        for item in items:
+            if isinstance(item, LarkToken) and item.type == 'IDENT':
+                name = item.value
+            elif isinstance(item, list):  # macro_params result
+                params = item
+            elif isinstance(item, ast.MacroParam):
+                params.append(item)
+            elif isinstance(item, tuple) and item[0] == 'macro_body':
+                body_tokens = item[1]
+
+        return ast.ImplMacro(
+            name=name,
+            params=params,
+            body_tokens=body_tokens,
+            source_loc=self._make_source_loc(tree.meta)
+        )
 
     @v_args(tree=True)
     def impl_trait_decl(self, tree):
@@ -1952,6 +1981,29 @@ class ASTBuilder(Transformer):
         base = items[0]
         field = items[1].value if isinstance(items[1], LarkToken) else items[1]
         return ast.FieldAccess(base=base, field=field)
+
+    @v_args(tree=True)
+    def method_macro(self, tree):
+        """Method macro invocation: receiver.name!(args)"""
+        items = tree.children
+        receiver = None
+        name = None
+        args = []
+
+        for item in items:
+            if receiver is None and isinstance(item, ast.Expression):
+                receiver = item
+            elif isinstance(item, LarkToken) and item.type == 'IDENT':
+                name = item.value
+            elif isinstance(item, list):  # macro_args result
+                args = item
+
+        return ast.MethodMacro(
+            receiver=receiver,
+            name=name,
+            args=args,
+            source_loc=self._make_source_loc(tree.meta)
+        )
 
     def type_cast(self, items):
         """Type cast."""
