@@ -43,9 +43,6 @@ fn main() -> ! {
     set_bg1_map!(0x00, 0);
     set_bg12_chr!(1, 0);
 
-    // Upload default font to VRAM $1000
-    my_console.upload_default_font(0x1000);
-
     // Upload palette
     set_cgram_addr!(0);
     for i in 0..8 {
@@ -53,8 +50,12 @@ fn main() -> ! {
         CGDATA = A;
     }
 
-    // Initialize console
-    my_console.init(&nametable1 as far *u16, 0, BG_PRIORITY);
+    // Initialize console (buffer mode for DMA)
+    my_console.init(BG_PRIORITY);
+    my_console.set_nametable(&nametable1 as far *u16);
+
+    // Upload default font to VRAM $1000 (after init so tile_base isn't overwritten)
+    my_console.setup_default_font(0x1000);
 
     // Test basic print
     my_console.print("Hello, World!\0" as far *u8);

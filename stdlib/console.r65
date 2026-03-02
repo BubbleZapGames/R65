@@ -2,8 +2,9 @@
 // R65 Standard Library - Console (Text Output via Background Tiles)
 //
 // Provides a reusable Console struct for formatted text output on SNES.
-// Renders text by writing tile indices into a RAM nametable buffer,
-// which the caller DMA-transfers to VRAM each frame.
+// Two output modes:
+//   - Buffer mode: writes tile indices to a RAM nametable buffer (DMA'd by caller)
+//   - VRAM mode: writes tile indices directly to VRAM via VMADD/VMDATA
 //
 // Dependencies (include before this file):
 //   - stdlib/string.r65  (strlen, format!)
@@ -24,11 +25,18 @@ const CONSOLE_ALIGN_CENTER: u8 = 1;
 const CONSOLE_ALIGN_RIGHT: u8 = 2;
 
 // ============================================================================
-// Console Struct (14 bytes, packed)
+// Mode Constants
+// ============================================================================
+
+const CONSOLE_MODE_BUFFER: u8 = 0;
+const CONSOLE_MODE_VRAM: u8 = 1;
+
+// ============================================================================
+// Console Struct (16 bytes, packed)
 // ============================================================================
 
 struct Console {
-    nametable: far *u16,   // 3 bytes - pointer to caller's nametable buffer
+    nametable: far *u16,   // 3 bytes - pointer to caller's nametable buffer (buffer mode)
     cursor_x: u8,          // current column (relative to area)
     cursor_y: u8,          // current row (relative to area)
     area_x: u8,            // left column of text area (0-31)
@@ -37,7 +45,9 @@ struct Console {
     area_h: u8,            // height in tiles (1-32)
     tile_attr: u16,        // attribute bits OR'd into each entry (palette, priority, flip)
     tile_base: u16,        // base tile index for ASCII mapping (char 32 -> tile_base + 0)
-    align: u8              // CONSOLE_ALIGN_LEFT / CENTER / RIGHT
+    align: u8,             // CONSOLE_ALIGN_LEFT / CENTER / RIGHT
+    mode: u8,              // CONSOLE_MODE_BUFFER or CONSOLE_MODE_VRAM
+    vram_base: u16         // VRAM base word address (VRAM mode only)
 }
 
 // ============================================================================
@@ -50,11 +60,10 @@ impl far Console {
     // Initialization
     // ========================================================================
 
-    // Initialize console with nametable pointer, tile base, and tile attributes.
-    // Defaults: cursor (0,0), area (0,0,32,28), align left.
-    far fn init(far *self, nametable: far *u16, tile_base: u16, tile_attr: u16) {
-        self.nametable = nametable;
-        self.tile_base = tile_base;
+    // Initialize console with tile attributes.
+    // Defaults: cursor (0,0), area (0,0,32,28), tile_base 0, align left, VRAM mode.
+    far fn init(far *self, tile_attr: u16) {
+        self.tile_base = 0;
         self.tile_attr = tile_attr;
         self.cursor_x = 0;
         self.cursor_y = 0;
@@ -63,6 +72,8 @@ impl far Console {
         self.area_w = 32;
         self.area_h = 28;
         self.align = CONSOLE_ALIGN_LEFT;
+        self.mode = CONSOLE_MODE_VRAM;
+        self.vram_base = 0;
     }
 
     // ========================================================================
@@ -100,6 +111,18 @@ impl far Console {
         self.tile_attr = attr;
     }
 
+    // Set nametable buffer pointer and switch to buffer mode.
+    far fn set_nametable(far *self, nametable: far *u16) {
+        self.nametable = nametable;
+        self.mode = CONSOLE_MODE_BUFFER;
+    }
+
+    // Set VRAM base word address and switch to VRAM mode.
+    far fn set_vram(far *self, addr: u16) {
+        self.vram_base = addr;
+        self.mode = CONSOLE_MODE_VRAM;
+    }
+
     // ========================================================================
     // Output
     // ========================================================================
@@ -107,11 +130,11 @@ impl far Console {
     // Write a single character at the cursor position and advance cursor.
     far fn putc(far *self, ch: u8) {
         let c: u8 = ch;
-        let nt: far *u16 = self.nametable;
         let attr: u16 = self.tile_attr;
         let base: u16 = self.tile_base;
         let aw: u8 = self.area_w;
         let ah: u8 = self.area_h;
+        let m: u8 = self.mode;
 
         // Handle newline
         if c == 0x0A {
@@ -124,14 +147,22 @@ impl far Console {
             return;
         }
 
-        // Compute nametable offset: (area_y + cursor_y) * 32 + area_x + cursor_x
+        // Compute offset: (area_y + cursor_y) * 32 + area_x + cursor_x
         let row: u16 = (self.area_y + self.cursor_y) as u16;
         let col: u16 = (self.area_x + self.cursor_x) as u16;
         let offset: u16 = (row << 5) + col;
 
         // Compute tile entry: (ch - 32 + tile_base) | tile_attr
         let tile: u16 = ((c as u16) - 32 + base) | attr;
-        nt[offset] = tile;
+
+        // Write tile
+        if m == CONSOLE_MODE_VRAM {
+            VMADD = self.vram_base + offset;
+            VMDATA = tile;
+        } else {
+            let nt: far *u16 = self.nametable;
+            nt[offset] = tile;
+        }
 
         // Advance cursor
         let mut cx: u8 = self.cursor_x + 1;
@@ -158,16 +189,18 @@ impl far Console {
     }
 
     // Streaming write: walk null-terminated string, convert each ASCII char
-    // to tile entry, write to nametable. Supports \n (0x0A) as newline.
+    // to tile entry, write to buffer or VRAM. Supports \n (0x0A) as newline.
     far fn print(far *self, str: far *u8) {
         let s: far *u8 = str;
-        let nt: far *u16 = self.nametable;
         let attr: u16 = self.tile_attr;
         let base: u16 = self.tile_base;
         let aw: u8 = self.area_w;
         let ah: u8 = self.area_h;
         let ax: u8 = self.area_x;
         let ay: u8 = self.area_y;
+        let m: u8 = self.mode;
+        let vb: u16 = self.vram_base;
+        let nt: far *u16 = self.nametable;
         let mut cx: u8 = self.cursor_x;
         let mut cy: u8 = self.cursor_y;
         let mut i: u16 = 0;
@@ -184,14 +217,19 @@ impl far Console {
                     cy = 0;
                 }
             } else {
-                // Compute nametable offset
+                // Compute offset
                 let row: u16 = (ay + cy) as u16;
                 let col: u16 = (ax + cx) as u16;
                 let offset: u16 = (row << 5) + col;
 
                 // Write tile
                 let tile: u16 = ((c as u16) - 32 + base) | attr;
-                nt[offset] = tile;
+                if m == CONSOLE_MODE_VRAM {
+                    VMADD = vb + offset;
+                    VMDATA = tile;
+                } else {
+                    nt[offset] = tile;
+                }
 
                 // Advance cursor
                 cx++;
@@ -223,7 +261,6 @@ impl far Console {
     // clear the current row, write string at computed offset, advance to next row.
     far fn print_line(far *self, str: far *u8) {
         let s: far *u8 = str;
-        let nt: far *u16 = self.nametable;
         let attr: u16 = self.tile_attr;
         let base: u16 = self.tile_base;
         let aw: u8 = self.area_w;
@@ -232,6 +269,9 @@ impl far Console {
         let ay: u8 = self.area_y;
         let cy: u8 = self.cursor_y;
         let alignment: u8 = self.align;
+        let m: u8 = self.mode;
+        let vb: u16 = self.vram_base;
+        let nt: far *u16 = self.nametable;
 
         // Compute string length (capped at area width)
         let mut len: u8 = strlen(s) as u8;
@@ -254,7 +294,12 @@ impl far Console {
         loop {
             if col >= aw { break; }
             let off: u16 = row_base + (ax + col) as u16;
-            nt[off] = space_tile;
+            if m == CONSOLE_MODE_VRAM {
+                VMADD = vb + off;
+                VMDATA = space_tile;
+            } else {
+                nt[off] = space_tile;
+            }
             col++;
         }
 
@@ -268,7 +313,12 @@ impl far Console {
 
             let off: u16 = row_base + (ax + wx) as u16;
             let tile: u16 = ((c as u16) - 32 + base) | attr;
-            nt[off] = tile;
+            if m == CONSOLE_MODE_VRAM {
+                VMADD = vb + off;
+                VMDATA = tile;
+            } else {
+                nt[off] = tile;
+            }
 
             wx++;
             si++;
@@ -314,12 +364,14 @@ impl far Console {
 
     // Fill entire text area with space tiles, reset cursor to (0,0).
     far fn clear(far *self) {
-        let nt: far *u16 = self.nametable;
         let space_tile: u16 = self.tile_base | self.tile_attr;
         let aw: u8 = self.area_w;
         let ah: u8 = self.area_h;
         let ax: u8 = self.area_x;
         let ay: u8 = self.area_y;
+        let m: u8 = self.mode;
+        let vb: u16 = self.vram_base;
+        let nt: far *u16 = self.nametable;
 
         let mut row: u8 = 0;
         loop {
@@ -329,7 +381,12 @@ impl far Console {
             loop {
                 if col >= aw { break; }
                 let off: u16 = row_base + (ax + col) as u16;
-                nt[off] = space_tile;
+                if m == CONSOLE_MODE_VRAM {
+                    VMADD = vb + off;
+                    VMDATA = space_tile;
+                } else {
+                    nt[off] = space_tile;
+                }
                 col++;
             }
             row++;
@@ -341,49 +398,60 @@ impl far Console {
 
     // Fill one row within the text area with space tiles.
     far fn clear_row(far *self, row: u8) {
-        let nt: far *u16 = self.nametable;
         let space_tile: u16 = self.tile_base | self.tile_attr;
         let aw: u8 = self.area_w;
         let ax: u8 = self.area_x;
         let ay: u8 = self.area_y;
+        let m: u8 = self.mode;
+        let vb: u16 = self.vram_base;
+        let nt: far *u16 = self.nametable;
 
         let row_base: u16 = ((ay + row) as u16) << 5;
         let mut col: u8 = 0;
         loop {
             if col >= aw { break; }
             let off: u16 = row_base + (ax + col) as u16;
-            nt[off] = space_tile;
+            if m == CONSOLE_MODE_VRAM {
+                VMADD = vb + off;
+                VMDATA = space_tile;
+            } else {
+                nt[off] = space_tile;
+            }
             col++;
         }
     }
 
     // ========================================================================
-    // Font Upload
+    // Font Setup
     // ========================================================================
 
-    // Upload 1bpp font data to VRAM, converting to 2bpp.
-    // Each source byte is written to both VMDATAL and VMDATAH so that
-    // set pixels appear as color 3 (both bitplanes set).
-    // vram_addr: VRAM word address for character data.
-    // num_tiles: number of 8x8 tiles (each tile = 8 source bytes).
-    far fn upload_font_1bpp(far *self, vram_addr: u16, data: far *u8, num_tiles: u16) {
-        set_vram_addr!(vram_addr);
+    // Upload 1bpp font data to VRAM as 2bpp tiles, writing each source byte
+    // to both bitplanes so that set pixels appear as color 3.
+    // vram_addr: VRAM word address for CHR base.
+    // tile_base: base tile index (font uploaded at vram_addr + tile_base * 8).
+    // data: pointer to 1bpp font data (8 bytes per tile).
+    // num_tiles: number of 8x8 tiles.
+    far fn upload_font(far *self, vram_addr: u16, tile_base: u16, data: far *u8, num_tiles: u16) {
+        self.tile_base = tile_base;
+        VMAIN = VMAIN_INCREMENT_HIGH;
+        VMADD = vram_addr + (tile_base << 3);
         let d: far *u8 = data;
-        let total: u16 = num_tiles << 3;  // num_tiles * 8 bytes per tile
+        let total: u16 = num_tiles << 3;
         let mut i: u16 = 0;
         loop {
             if i >= total { break; }
             A = d[i];
-            VMDATAL = A;  // Bitplane 0
-            VMDATAH = A;  // Bitplane 1
+            VMDATAL = A;
+            VMDATAH = A;
             i++;
         }
     }
 
-    // Upload the built-in CONSOLE_FONT (95 tiles) to VRAM.
-    far fn upload_default_font(far *self, vram_addr: u16) {
-        self.upload_font_1bpp(vram_addr, &CONSOLE_FONT as far *u8, 95);
+    // Upload the built-in default font (95 tiles, ASCII 32-126) to VRAM.
+    far fn setup_default_font(far *self, vram_addr: u16) {
+        self.upload_font(vram_addr, 32, &CONSOLE_FONT as far *u8, 95);
     }
+
 }
 
 // ============================================================================
@@ -397,7 +465,7 @@ static mut __console_fmt_buf: [u8; 128];
 // Default Font Data - CP437/IBM BIOS Style 8x8 Monospace
 // ============================================================================
 // 95 tiles covering ASCII 32 (space) through 126 (~)
-// Each tile is 8 bytes (1bpp: 8 rows of 8 pixels)
+// Each tile is 8 bytes (8 rows of 8 pixels)
 // Total: 95 * 8 = 760 bytes
 
 static CONSOLE_FONT: [u8; 760] = [
@@ -592,3 +660,4 @@ static CONSOLE_FONT: [u8; 760] = [
     // Tile 94: '~' (0x7E)
     0x00, 0x00, 0x36, 0x6C, 0x00, 0x00, 0x00, 0x00
 ];
+
