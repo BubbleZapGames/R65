@@ -401,7 +401,8 @@ class CallInstructionSelector(BaseSelector):
             # We used PLD before the call, so we must push D back
             # If there are more far pointer dereferences, also set D = S
             if self._has_far_ptr_derefs_after_call(instr):
-                self._emit_d_equals_s_restore()  # PHD + TSC + TCD
+                live_regs = self._compute_live_regs_after_call(instr, reloads)
+                self._emit_d_equals_s_restore(live_regs)  # PHD + TSC + TCD
             else:
                 self._emit_d_push_only()  # Just PHD (for epilogue)
 
@@ -2128,7 +2129,47 @@ class CallInstructionSelector(BaseSelector):
         self._emit_instr(Opcode.PHD, comment="Save D back to stack for epilogue")
         self.region_state.stack_tracker.push(2)
 
-    def _emit_d_equals_s_restore(self):
+    def _compute_live_regs_after_call(self, instr: Call, reloads: List[SpillInfo]) -> set:
+        """
+        Determine which hardware registers (A, X, Y) are live after return
+        value collection and spill reloads (steps 5 through 6.5).
+
+        A register is live if:
+        - A return value landed in A and was hw-coalesced (stayed in A)
+        - A was reloaded from a spill
+
+        X/Y are live if:
+        - A return value was hw-coalesced to X or Y
+        - X or Y was reloaded from a spill
+
+        Args:
+            instr: The Call instruction
+            reloads: Spill reloads that were emitted in step 6.5
+
+        Returns:
+            Set of live hardware register names (e.g. {'A'}, {'A', 'X'})
+        """
+        live = set()
+
+        # Check spill reloads — any reloaded register is live
+        for spill in reloads:
+            live.add(spill.hw_reg)
+
+        # Check return values hw-coalesced to registers
+        if instr.returns:
+            return_registers = self._get_callee_return_registers(instr)
+            for i, return_vreg in enumerate(instr.returns):
+                if i >= len(return_registers):
+                    break
+                source_reg = return_registers[i]
+                dest_loc = self.parent._get_operand_location(return_vreg)
+                if dest_loc.is_hw(source_reg):
+                    # Return value stayed in its source register (hw-coalesced)
+                    live.add(source_reg)
+
+        return live
+
+    def _emit_d_equals_s_restore(self, live_regs: set):
         """
         Re-establish D = S after a call for continued far pointer access.
 
@@ -2137,12 +2178,72 @@ class CallInstructionSelector(BaseSelector):
         1. Push D back onto the stack (since PLD popped it before the call)
         2. Set D = S for continued far pointer access
 
+        TSC clobbers A, so we use a tiered strategy based on which registers
+        are live at this point:
+
+        Tier 1 - A is dead (common: void calls, returns stored to stack):
+          PHD          ; push D (2 bytes)
+          TSC          ; A = SP (clobbers dead A)
+          TCD          ; D = SP = frame_base
+
+        Tier 2 - A is live, X or Y is dead:
+          PHD          ; push D
+          TAX/TAY      ; save A in dead register
+          TSC          ; A = SP
+          TCD          ; D = SP = frame_base
+          TXA/TYA      ; restore A
+
+        Tier 3 - A, X, Y all live (extremely rare):
+          PHD          ; push D (2 bytes), SP = frame_base
+          PHA          ; save A (1 byte), SP = frame_base - 1
+          REP #$20     ; 16-bit for correct INC across page boundary
+          TSC          ; A(16) = SP = frame_base - 1
+          INC A        ; A(16) = frame_base
+          TCD          ; D = frame_base
+          SEP #$20     ; back to 8-bit
+          PLA          ; restore A, SP = frame_base, D = SP
+
         Updates the stack tracker to undo the displacement from PLD.
         """
-        self._emit_instr(Opcode.PHD, comment="Save D back to stack")
-        self.region_state.stack_tracker.push(2)
-        self._emit_instr(Opcode.TSC, comment="Transfer S to A")
-        self._emit_instr(Opcode.TCD, comment="Set D = S for far pointer access")
+        from r65.compiler.codegen.constants import M_FLAG
+
+        a_live = 'A' in live_regs
+
+        if not a_live:
+            # Tier 1: A is dead — fast path (3 instructions, ~8 cycles)
+            self._emit_instr(Opcode.PHD, comment="Save D back to stack")
+            self.region_state.stack_tracker.push(2)
+            self._emit_instr(Opcode.TSC, comment="A = SP (A is dead)")
+            self._emit_instr(Opcode.TCD, comment="D = SP = frame_base (D = S)")
+        elif 'X' not in live_regs:
+            # Tier 2a: A live, X dead — use TAX/TXA (5 instructions, ~12 cycles)
+            self._emit_instr(Opcode.PHD, comment="Save D back to stack")
+            self.region_state.stack_tracker.push(2)
+            self._emit_instr(Opcode.TAX, comment="Save A in X")
+            self._emit_instr(Opcode.TSC, comment="A = SP")
+            self._emit_instr(Opcode.TCD, comment="D = SP = frame_base (D = S)")
+            self._emit_instr(Opcode.TXA, comment="Restore A from X")
+        elif 'Y' not in live_regs:
+            # Tier 2b: A live, Y dead — use TAY/TYA (5 instructions, ~12 cycles)
+            self._emit_instr(Opcode.PHD, comment="Save D back to stack")
+            self.region_state.stack_tracker.push(2)
+            self._emit_instr(Opcode.TAY, comment="Save A in Y")
+            self._emit_instr(Opcode.TSC, comment="A = SP")
+            self._emit_instr(Opcode.TCD, comment="D = SP = frame_base (D = S)")
+            self._emit_instr(Opcode.TYA, comment="Restore A from Y")
+        else:
+            # Tier 3: All registers live — PHA fallback (8 instructions)
+            self._emit_instr(Opcode.PHD, comment="Save D back to stack")
+            self.region_state.stack_tracker.push(2)
+            self._emit_instr(Opcode.PHA, comment="Save A before D=S setup")
+            self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "16-bit A for D=S setup")
+            self.parent.emitter.emit_accu_mode(16)
+            self._emit_instr(Opcode.TSC, comment="A(16) = SP")
+            self._emit_instr(Opcode.INC, comment="A(16) = SP + 1 (frame_base)")
+            self._emit_instr(Opcode.TCD, comment="D = frame_base (D = S)")
+            self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "Restore 8-bit A")
+            self.parent.emitter.emit_accu_mode(8)
+            self._emit_instr(Opcode.PLA, comment="Restore A after D=S setup")
 
     def _has_far_ptr_derefs_after_call(self, call_instr: Call) -> bool:
         """

@@ -9,6 +9,9 @@
 // Usage:
 //   include!("lib/string.r65")
 
+include!("sneslib.r65")
+include!("math.r65")
+
 // ============================================================================
 // Memory Primitives
 // ============================================================================
@@ -237,7 +240,6 @@ far fn to_lower(ch @ A: u8) -> u8 {
 far fn u8_to_dec(buf: far *u8, value @ A: u8) -> u8 {
     let mut v: u8 = value;
     let mut pos: u8 = 0;
-    let mut digit: u8 = 0;
 
     if v == 0 {
         buf[0] = 0x30;
@@ -246,27 +248,19 @@ far fn u8_to_dec(buf: far *u8, value @ A: u8) -> u8 {
     }
 
     // 100s place
-    digit = 0;
-    loop {
-        if v < 100 { break; }
-        v = v - 100;
-        digit++;
-    }
-    if digit > 0 {
-        buf[pos as u16] = digit + 0x30;
+    let hundreds: u8 = div8(v, 100);
+    if hundreds > 0 {
+        buf[pos as u16] = hundreds + 0x30;
         pos++;
+        v = mod8(v, 100);
     }
 
     // 10s place
-    digit = 0;
-    loop {
-        if v < 10 { break; }
-        v = v - 10;
-        digit++;
-    }
-    if pos > 0 || digit > 0 {
-        buf[pos as u16] = digit + 0x30;
+    let tens: u8 = div8(v, 10);
+    if pos > 0 || tens > 0 {
+        buf[pos as u16] = tens + 0x30;
         pos++;
+        v = mod8(v, 10);
     }
 
     // 1s place (always written)
