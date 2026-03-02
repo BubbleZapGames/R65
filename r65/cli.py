@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """
-R65 Project Initialization Tool
+R65 Project Tool
 
-A CLI tool for creating R65 projects for different platforms.
+A CLI tool for creating R65 projects and generating assets.
 
 Usage:
     r65x init --platform=snes my_game    # Create new SNES project
+    r65x fontgen                         # Generate console font from TrueType
 """
 
 import sys
@@ -128,13 +129,18 @@ def init_command(args):
 
 def main():
     """Main entry point for r65x CLI."""
+    from r65.tools.fontgen import register_parser as fontgen_register, fontgen_command
+
     parser = argparse.ArgumentParser(
         prog='r65x',
-        description='R65 Project Initialization Tool - Create R65 projects',
+        description='R65 Project Tool - Create projects and generate assets',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 examples:
   r65x init --platform=snes my_game     Create new SNES project
+  r65x fontgen                          Generate console font (DejaVu Sans Mono Bold)
+  r65x fontgen --font path/to/font.ttf  Generate from custom font
+  r65x fontgen --preview --dry-run      Preview without modifying files
         """
     )
 
@@ -149,6 +155,9 @@ examples:
     init_parser.add_argument('directory',
                            help='Project directory name')
 
+    # fontgen command
+    fontgen_register(subparsers)
+
     args = parser.parse_args()
 
     if not args.command:
@@ -158,6 +167,8 @@ examples:
     # Route to appropriate command
     if args.command == 'init':
         init_command(args)
+    elif args.command == 'fontgen':
+        fontgen_command(args)
 
 
 if __name__ == '__main__':

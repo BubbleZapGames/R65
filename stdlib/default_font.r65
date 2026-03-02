@@ -3,7 +3,6 @@
 // ============================================================================
 
 // Upload the built-in default font (95 tiles, ASCII 32-126) to VRAM. Usage:
-// console.upload_font(vram_addr, 32, &CONSOLE_FONT as far *u8, 95);
 
 // ============================================================================
 // Default Font Data - DejaVuSansMono Bold 8x8 (2bpp, 3-color anti-aliased)
@@ -14,6 +13,11 @@
 // Color 3: character body (white), Color 2: anti-alias edges (light gray)
 // Color 1: unused, Color 0: background (transparent)
 // Total: 95 * 16 = 1520 bytes
+
+
+// Code usage:
+//
+//   console.upload_font(0x1000, 32, &CONSOLE_FONT as far *u8, 95);
 
 static CONSOLE_FONT: [u8; 1520] = [
     // Tile  0: ' ' (0x20)
