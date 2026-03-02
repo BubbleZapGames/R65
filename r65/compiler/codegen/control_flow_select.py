@@ -851,22 +851,18 @@ class ControlFlowInstructionSelector(BaseSelector):
         elif a_save_method == 'stack':
             self._emit_implied(Opcode.PHA, "Save return value A")
 
-        # Check current mode - if already m16, skip mode switches
-        current_mode = self.parent.emitter.get_accu_mode()
-        need_mode_switch = (current_mode != 16)
-
-        if need_mode_switch:
-            self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "16-bit A for SP adjust")
-            self.parent.emitter.emit_accu_mode(16)
+        # Always switch to m16 for TSC/ADC/TCS (emitter mode tracking may not
+        # match runtime mode at control flow merge points like epilogues)
+        self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "16-bit A for SP adjust")
+        self.parent.emitter.emit_accu_mode(16)
 
         self._emit_implied(Opcode.TSC, "SP to A")
         self._emit_implied(Opcode.CLC)
         self._emit_immediate(Opcode.ADC_IMMEDIATE, total_cleanup, f"Adjust past {total_cleanup} bytes")
         self._emit_implied(Opcode.TCS, "A to SP")
 
-        if need_mode_switch:
-            self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "Restore 8-bit A")
-            self.parent.emitter.emit_accu_mode(8)
+        self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "Restore 8-bit A")
+        self.parent.emitter.emit_accu_mode(8)
 
         # Restore A return value
         if a_save_method == 'Y':
@@ -931,12 +927,10 @@ class ControlFlowInstructionSelector(BaseSelector):
             self._emit_implied(Opcode.PHA, "Save return value A")
             ret_addr_offset += 1
 
-        current_mode = self.parent.emitter.get_accu_mode()
-        need_mode_switch = (current_mode != 16)
-
-        if need_mode_switch:
-            self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "16-bit A for cleanup")
-            self.parent.emitter.emit_accu_mode(16)
+        # Always switch to m16 for TSC/ADC/TCS (emitter mode tracking may not
+        # match runtime mode at control flow merge points like epilogues)
+        self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "16-bit A for cleanup")
+        self.parent.emitter.emit_accu_mode(16)
 
         # Load return address from current position, store at new position
         store_offset = total_cleanup + 1 + (1 if save_method == 'stack' else 0)
@@ -950,9 +944,8 @@ class ControlFlowInstructionSelector(BaseSelector):
         self._emit_immediate(Opcode.ADC_IMMEDIATE, adj_amount, f"Adjust past {total_cleanup} bytes")
         self._emit_implied(Opcode.TCS, "A to SP")
 
-        if need_mode_switch:
-            self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "Restore 8-bit A")
-            self.parent.emitter.emit_accu_mode(8)
+        self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "Restore 8-bit A")
+        self.parent.emitter.emit_accu_mode(8)
 
         # Restore return value
         if save_method == 'X':
@@ -981,18 +974,15 @@ class ControlFlowInstructionSelector(BaseSelector):
         # Without frame: SP+1, With frame: SP+frame_size+1
         ret_addr_offset = frame_size + 1
 
-        current_mode = self.parent.emitter.get_accu_mode()
-
         # Save return value A to stack first (A has a return value since all regs are used)
         self._emit_implied(Opcode.PHA, "Save return value A")
         # After PHA, return address is one byte deeper
         ret_addr_offset += 1
 
-        need_mode_switch = (current_mode != 16)
-
-        if need_mode_switch:
-            self._emit_immediate(Opcode.REP_IMMEDIATE, 0x20, "16-bit A for cleanup")
-            self.parent.emitter.emit_accu_mode(16)
+        # Always switch to m16 for TSC/ADC/TCS (emitter mode tracking may not
+        # match runtime mode at control flow merge points like epilogues)
+        self._emit_immediate(Opcode.REP_IMMEDIATE, 0x20, "16-bit A for cleanup")
+        self.parent.emitter.emit_accu_mode(16)
 
         # Load return address from stack, store it higher up
         # Account for the extra byte we pushed
@@ -1006,9 +996,8 @@ class ControlFlowInstructionSelector(BaseSelector):
         self._emit_immediate(Opcode.ADC_IMMEDIATE, total_cleanup + 1, f"Adjust past {total_cleanup} bytes + saved A")
         self._emit_implied(Opcode.TCS, "A to SP")
 
-        if need_mode_switch:
-            self._emit_immediate(Opcode.SEP_IMMEDIATE, 0x20, "Restore 8-bit A")
-            self.parent.emitter.emit_accu_mode(8)
+        self._emit_immediate(Opcode.SEP_IMMEDIATE, 0x20, "Restore 8-bit A")
+        self.parent.emitter.emit_accu_mode(8)
 
         # Restore return value A
         self._emit_implied(Opcode.PLA, "Restore return value A")
@@ -1053,10 +1042,10 @@ class ControlFlowInstructionSelector(BaseSelector):
         elif save_reg is not None:
             self._emit_implied(save_reg, f"Save return value A in {'X' if save_reg == Opcode.TAX else 'Y'}")
 
-        # Switch to m16 if needed
-        if current_mode != 16:
-            self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "16-bit A for SP adjust")
-            self.parent.emitter.emit_accu_mode(16)
+        # Always switch to m16 for TSC/ADC/TCS (emitter mode tracking may not
+        # match runtime mode at control flow merge points like epilogues)
+        self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "16-bit A for SP adjust")
+        self.parent.emitter.emit_accu_mode(16)
 
         # TSC/CLC/ADC/TCS sequence
         self._emit_implied(Opcode.TSC, "SP to A")
@@ -1064,10 +1053,9 @@ class ControlFlowInstructionSelector(BaseSelector):
         self._emit_immediate(Opcode.ADC_IMMEDIATE, actual_adjust, f"Adjust past {adjust_bytes} bytes")
         self._emit_implied(Opcode.TCS, "A to SP")
 
-        # Restore original mode before restoring A (preserves full register width)
-        if current_mode != 16:
-            self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "Restore 8-bit A")
-            self.parent.emitter.emit_accu_mode(8)
+        # Always restore m8 after SP adjustment
+        self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "Restore 8-bit A")
+        self.parent.emitter.emit_accu_mode(8)
 
         # Restore A if needed
         if restore_op == 'stack':
