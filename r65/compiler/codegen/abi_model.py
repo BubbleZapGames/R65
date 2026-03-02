@@ -282,7 +282,10 @@ class ABIModel(ABC):
                 outgoing_offset += arg_size
 
         if self_y_arg is not None:
-            selector.load_y_with_self(self_y_arg, 0)
+            if instr.self_is_far:
+                selector.load_y_with_far_self(self_y_arg, 0)
+            else:
+                selector.load_y_with_self(self_y_arg, 0)
 
         return stack_bytes_pushed
 
@@ -740,7 +743,10 @@ class ABIDefault(ABIModel):
                 selector.region_state.stack_tracker.push(arg_size)
 
         if self_y_arg is not None:
-            selector.load_y_with_self(self_y_arg, 0)
+            if instr.self_is_far:
+                selector.load_y_with_far_self(self_y_arg, 0)
+            else:
+                selector.load_y_with_self(self_y_arg, 0)
 
         return stack_bytes_pushed
 

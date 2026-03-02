@@ -444,6 +444,9 @@ class CallLowerer:
                 )
                 returns.append(result_vreg)
 
+        # Determine if self pointer is far (24-bit)
+        self_is_far = isinstance(self_ptr_type, PointerTypeInfo) and self_ptr_type.is_far
+
         # Emit TraitDispatch MIR node
         self.emit(TraitDispatch(
             trait_name=trait_name,
@@ -453,6 +456,7 @@ class CallLowerer:
             args=args,
             returns=returns,
             is_far=trait_is_far,
+            self_is_far=self_is_far,
             callee_return_type=return_type
         ))
 

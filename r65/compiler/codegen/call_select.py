@@ -417,6 +417,13 @@ class CallInstructionSelector(BaseSelector):
         The dispatch wrapper (generated separately) loads TypeId and jumps
         to the concrete implementation via a jump table.
 
+        For far self (self_is_far=True), the caller must:
+        1. PHB to save caller's DBR
+        2. Load bank byte from far pointer → PHA; PLB to set DBR
+        3. Load 16-bit address into Y
+        4. JSR/JSL dispatch wrapper
+        5. PLB to restore caller's DBR
+
         Args:
             instr: TraitDispatch instruction
         """
@@ -428,6 +435,11 @@ class CallInstructionSelector(BaseSelector):
         # Compute hw register spills (no preserves_attr for trait dispatch)
         spills = self._compute_trait_dispatch_spills(instr)
         self._emit_hw_spills(spills)
+
+        # For far self, save caller's DBR before arg setup sets it to object's bank
+        if instr.self_is_far:
+            self._emit_push('B', "Save caller's DBR for far self dispatch")
+            self.region_state.stack_tracker.push(1)  # PHB = 1 byte
 
         # Set up arguments (same mechanism as regular calls)
         stack_bytes_pushed = self._emit_trait_dispatch_args(instr)
@@ -448,6 +460,11 @@ class CallInstructionSelector(BaseSelector):
         if stack_bytes_pushed > 0:
             returns_in_x = self._call_returns_in_x(instr)
             self._emit_caller_arg_cleanup(stack_bytes_pushed, returns_in_x=returns_in_x)
+
+        # Restore caller's DBR after far self dispatch
+        if instr.self_is_far:
+            self._emit_pull('B', "Restore caller's DBR after far self dispatch")
+            self.region_state.stack_tracker.pop(1)  # PLB = 1 byte
 
         # Reload spilled registers
         reloads = self._compute_trait_dispatch_reloads(instr)
@@ -639,6 +656,74 @@ class CallInstructionSelector(BaseSelector):
             self.parent._emit_load('LDY', arg_loc, "Load self ptr into Y")
         else:
             raise InstructionSelectionError(f"Cannot load Y from location kind {arg_loc.kind}", source_loc=self.parent._current_source_loc)
+
+    def load_y_with_far_self(self, arg: 'Argument', stack_bytes_pushed: int):
+        """Load Y register and set DBR from a 3-byte far self pointer for trait dispatch.
+
+        For a far self pointer (3 bytes: addr_low, addr_high, bank):
+        1. Load bank byte (offset +2) into A
+        2. PHA; PLB — set DBR to object's bank (net stack change = 0)
+        3. Load 16-bit address (offset +0) into Y
+
+        Handles different source locations:
+        - Scratch/DP: LDA dp+2 for bank, LDY dp for addr
+        - Stack: LDA sp+2,S for bank; REP; LDA sp,S; TAY; SEP for addr
+        - Memory: LDA abs+2 for bank, LDY abs for addr
+        - Immediate: extract statically
+        """
+        from r65.compiler.codegen.constants import M_FLAG
+
+        arg_loc = self.parent._get_operand_location(arg.value)
+
+        # Adjust for stack args that were pushed
+        if arg_loc.kind == LocationKind.STACK and stack_bytes_pushed > 0:
+            arg_loc = self.parent._offset_location(arg_loc, stack_bytes_pushed)
+
+        if isinstance(arg.value, MIRImmediate):
+            # Immediate far address: extract bank and addr statically
+            val = arg.value.value
+            bank = (val >> 16) & 0xFF
+            addr = val & 0xFFFF
+            # Set DBR to bank
+            self.parent._emit_immediate(Opcode.LDA_IMMEDIATE, bank, f"Bank byte ${bank:02X}")
+            self._emit_push('A', "Push bank byte")
+            self._emit_pull('B', "Set DBR to object's bank")
+            # Load 16-bit address into Y
+            self.parent._emit_immediate(Opcode.LDY_IMMEDIATE, addr, f"Load self addr ${addr:04X} into Y")
+        elif arg_loc.kind == LocationKind.SCRATCH:
+            # Scratch (direct page) location
+            # Load bank byte from dp+2
+            bank_loc = self.parent._offset_location(arg_loc, 2)
+            self.parent._emit_load('LDA', bank_loc, "Load bank byte from far self ptr")
+            self._emit_push('A', "Push bank byte")
+            self._emit_pull('B', "Set DBR to object's bank")
+            # Load 16-bit address into Y from dp
+            self.parent._emit_load('LDY', arg_loc, "Load self addr into Y")
+        elif arg_loc.kind == LocationKind.STACK:
+            # Stack-relative: load bank byte (offset +2)
+            bank_loc = self.parent._offset_location(arg_loc, 2)
+            self.parent._emit_load('LDA', bank_loc, "Load bank byte from far self ptr")
+            self._emit_push('A', "Push bank byte")
+            self._emit_pull('B', "Set DBR to object's bank")
+            # Load 16-bit address: no LDY d,S on 65816, use LDA d,S; TAY
+            self.parent._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "16-bit A for stack self addr load")
+            self.parent.emitter.emit_accu_mode(16)
+            self.parent._emit_load('LDA', arg_loc, "Load self addr from stack")
+            self.parent.emitter.emit_raw("    TAY")
+            self.parent._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "Restore 8-bit A")
+            self.parent.emitter.emit_accu_mode(8)
+        elif arg_loc.kind == LocationKind.MEMORY:
+            # Absolute memory location
+            bank_loc = self.parent._offset_location(arg_loc, 2)
+            self.parent._emit_load('LDA', bank_loc, "Load bank byte from far self ptr")
+            self._emit_push('A', "Push bank byte")
+            self._emit_pull('B', "Set DBR to object's bank")
+            self.parent._emit_load('LDY', arg_loc, "Load self addr into Y")
+        else:
+            raise InstructionSelectionError(
+                f"Cannot load far self from location kind {arg_loc.kind}",
+                source_loc=self.parent._current_source_loc
+            )
 
     # ========================================================================
     # Hardware Register Spill/Reload (Region-Based)

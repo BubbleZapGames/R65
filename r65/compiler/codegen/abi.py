@@ -24,7 +24,7 @@ class ABIInfo:
     __slots__ = (
         'is_far', 'is_entry', 'is_interrupt', 'is_trait_method',
         'entry_m_mode', 'preserves', 'databank_mode',
-        'has_far_ptr_stack_params',
+        'has_far_ptr_stack_params', 'self_far_uses_d_equals_s',
     )
 
     def __init__(
@@ -37,6 +37,7 @@ class ABIInfo:
         preserves: Tuple[str, ...] = (),
         databank_mode=None,
         has_far_ptr_stack_params: bool = False,
+        self_far_uses_d_equals_s: bool = False,
     ):
         self.is_far = is_far
         self.is_entry = is_entry
@@ -46,6 +47,7 @@ class ABIInfo:
         self.preserves = preserves
         self.databank_mode = databank_mode
         self.has_far_ptr_stack_params = has_far_ptr_stack_params
+        self.self_far_uses_d_equals_s = self_far_uses_d_equals_s
 
     @property
     def return_addr_size(self) -> int:
@@ -87,6 +89,10 @@ class ABIInfo:
         for reg in self.preserves:
             total += self.push_size(reg)
 
+        # Far self D=S path: PHB (1 byte) + PHY (2 bytes) for self pointer on stack
+        if self.self_far_uses_d_equals_s:
+            total += 3
+
         # Far pointer stack params: PHD pushes 2 bytes
         if self.has_far_ptr_stack_params:
             total += 2
@@ -115,6 +121,7 @@ class ABIInfo:
             preserves=preserves,
             databank_mode=databank_mode,
             has_far_ptr_stack_params=mir_func.has_far_ptr_stack_params,
+            self_far_uses_d_equals_s=mir_func.self_far_uses_d_equals_s,
         )
 
 

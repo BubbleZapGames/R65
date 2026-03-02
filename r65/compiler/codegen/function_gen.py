@@ -7,7 +7,7 @@ Generates complete function bodies with headers, labels, and instructions.
 from typing import List, Set, Optional
 from r65.compiler.mir.nodes import (
     MIRFunction, Return, Call, TraitDispatch, ArgumentMechanism,
-    VirtualRegister,
+    VirtualRegister, MemoryLocation,
     Load, Store, Move, BinaryOp, UnaryOp, Compare, BitTest, Rotate,
     Jump, JumpTable, LookupTable, CondBranch, TypeConvert, ToBool,
     LoadIndirect, StoreIndirect, StatusFlagRead, StatusFlagSet, StatusFlagTest,
@@ -103,6 +103,10 @@ class FunctionCodeGenerator:
                 if scratch.address in global_addrs:
                     scratch.is_free = False
 
+        # Analyze far self trait methods to determine if D=S prologue is needed
+        # Must run before ABIInfo creation since it may set has_far_ptr_stack_params
+        self._analyze_far_self_trait_method(mir_func)
+
         # Build ABI info and calculate prologue bytes BEFORE creating register allocator
         # This allows stack params to be allocated at their passed locations
         abi_info = ABIInfo.from_mir_function(mir_func)
@@ -179,19 +183,30 @@ class FunctionCodeGenerator:
             if vreg:
                 vreg.register_hint = hw_reg_name
 
-        # Pre-allocate self pointer vreg to Y register for trait methods
-        # Self is passed in Y by the caller/dispatch wrapper
+        # Pre-allocate self pointer vreg for trait methods
         if mir_func.is_trait_method and mir_func.self_y_vreg:
-            location = PhysicalLocation(
-                kind=LocationKind.HARDWARE,
-                hw_register='Y',
-                size=2  # Near pointer is always 16-bit
-            )
-            reg_alloc.allocations[mir_func.self_y_vreg.id] = location
-            # Also track in hw_allocs so spill logic knows Y is occupied
-            hw_alloc = reg_alloc.get_hw_alloc('Y')
-            hw_alloc.allocated_vreg = mir_func.self_y_vreg
-            hw_alloc.is_bound = True
+            if mir_func.self_far_uses_d_equals_s:
+                # D=S path: self pointer pushed to stack by PHB+PHY in prologue
+                # Offset computed after frame_size known — mark as pre-allocated
+                # with a placeholder so the slot allocator skips it
+                location = PhysicalLocation(
+                    kind=LocationKind.STACK,
+                    stack_offset=0,  # Placeholder, computed post-allocation
+                    size=3  # Far pointer: 3 bytes
+                )
+                reg_alloc.allocations[mir_func.self_y_vreg.id] = location
+            else:
+                # DBR:Y path (near self or far self leaf method): self stays in Y
+                location = PhysicalLocation(
+                    kind=LocationKind.HARDWARE,
+                    hw_register='Y',
+                    size=2  # Pointer address is always 16-bit
+                )
+                reg_alloc.allocations[mir_func.self_y_vreg.id] = location
+                # Also track in hw_allocs so spill logic knows Y is occupied
+                hw_alloc = reg_alloc.get_hw_alloc('Y')
+                hw_alloc.allocated_vreg = mir_func.self_y_vreg
+                hw_alloc.is_bound = True
 
         # Allocate all virtual registers in function
         self._allocate_function_registers(mir_func, reg_alloc)
@@ -208,6 +223,20 @@ class FunctionCodeGenerator:
         # Update register allocator with frame info
         reg_alloc.frame_size = frame_size
         reg_alloc.has_frame_allocation = layout.has_frame
+
+        # Fix up far self D=S vreg offset now that frame_size is known
+        # The far self pointer (3 bytes) was pushed by PHB+PHY before frame alloc.
+        # From SP after all prologue: offset = prologue_stack_bytes - 2 + frame_size
+        # (prologue_stack_bytes includes the 3 bytes for PHB+PHY, minus those 3 gives
+        # the bytes above the self ptr; + frame_size for the frame; +1 for SP+1 base)
+        if mir_func.self_far_uses_d_equals_s and mir_func.self_y_vreg:
+            self_offset = prologue_bytes - 3 + frame_size + 1
+            location = PhysicalLocation(
+                kind=LocationKind.STACK,
+                stack_offset=self_offset,
+                size=3
+            )
+            reg_alloc.allocations[mir_func.self_y_vreg.id] = location
 
         # Store stack usage on MIR function for stack depth analysis
         mir_func.codegen_frame_size = frame_size
@@ -783,6 +812,13 @@ class FunctionCodeGenerator:
             self._emit_interrupt_register_saves()
             self._emit_interrupt_scratch_saves(reg_alloc.scratch_pool)
 
+        # For far self D=S path: push DBR (bank) and Y (addr) to stack BEFORE frame alloc
+        # This places the 3-byte far self pointer on the stack where D=S can access it
+        # Stack layout after PHB+PHY: [PHY_lo, PHY_hi, PHB_bank] (3 bytes)
+        if mir_func.self_far_uses_d_equals_s:
+            self._emit_instr(Opcode.PHB, comment="Push self bank byte (DBR = object's bank)")
+            self._emit_instr(Opcode.PHY, comment="Push self address (Y = object addr)")
+
         # Detect which hardware registers hold parameters.
         from r65.compiler.hir import RegisterBinding
         a_has_param = False
@@ -1078,6 +1114,63 @@ class FunctionCodeGenerator:
             )
         else:
             raise ValueError(f"Cannot offset location kind: {location.kind}")
+
+    def _analyze_far_self_trait_method(self, mir_func: MIRFunction):
+        """Analyze trait method with far *self to determine access mode.
+
+        For trait methods where self is a far pointer (24-bit), determine whether
+        the method can use the fast DBR:Y path (leaf methods with no ROM/HW access)
+        or needs the D=S fallback (methods with calls, ROM statics, or HW registers).
+
+        DBR:Y path (fast): DBR is set to object's bank by dispatch caller,
+        field access via LDA $offset,Y. Works when function doesn't need DBR
+        for anything else (no ROM data, no HW, no function calls).
+
+        D=S path: PHB+PHY push far self pointer to stack, then D=S infrastructure
+        provides [dp],Y indirect long addressing for self access. DBR stays at
+        caller's bank, so ROM/HW/calls work normally.
+        """
+        if not mir_func.is_trait_method or not mir_func.self_y_vreg:
+            return
+
+        # Check if self pointer is far
+        self_type = mir_func.self_y_vreg.type_info
+        from r65.compiler.hir.types import PointerTypeInfo
+        if not isinstance(self_type, PointerTypeInfo) or not self_type.is_far:
+            return
+
+        # Already has far ptr stack params from other sources
+        if mir_func.has_far_ptr_stack_params:
+            mir_func.self_far_uses_d_equals_s = True
+            return
+
+        # Analyze MIR instructions to determine if DBR:Y is safe
+        needs_d_equals_s = False
+
+        for block in mir_func.blocks.values():
+            for instr in block.instructions:
+                # Any function call means we need D=S (callee expects normal DBR)
+                if isinstance(instr, (Call, TraitDispatch)):
+                    needs_d_equals_s = True
+                    break
+
+                # ROM static access uses absolute addressing which depends on DBR
+                if isinstance(instr, (Load, Store)):
+                    if hasattr(instr, 'source') and isinstance(instr.source, MemoryLocation):
+                        if instr.source.storage_type in ('rom', 'hw'):
+                            needs_d_equals_s = True
+                            break
+                    if hasattr(instr, 'dest') and isinstance(instr.dest, MemoryLocation):
+                        if instr.dest.storage_type in ('rom', 'hw'):
+                            needs_d_equals_s = True
+                            break
+
+            if needs_d_equals_s:
+                break
+
+        if needs_d_equals_s:
+            mir_func.self_far_uses_d_equals_s = True
+            mir_func.has_far_ptr_stack_params = True
 
     def emit_epilogue(self, mir_func: MIRFunction, reg_alloc: RegisterAllocator):
         """

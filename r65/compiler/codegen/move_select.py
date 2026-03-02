@@ -5,7 +5,7 @@ Handles Move instruction generation including register transfers,
 immediate loads, function pointers, and memory-to-memory moves.
 """
 
-from r65.compiler.mir.nodes import Move, Immediate as MIRImmediate, FunctionPointer, LabelRef
+from r65.compiler.mir.nodes import Move, Immediate as MIRImmediate, FunctionPointer, LabelRef, HardwareRegister, VirtualRegister
 from r65.compiler.codegen.register_alloc import LocationKind
 from r65.compiler.errors import InstructionSelectionError
 from r65.compiler.codegen.opcodes import Opcode, STORE_MNEMONICS, LOAD_MNEMONICS
@@ -50,6 +50,16 @@ class MoveOperationSelector(BaseSelector):
 
         # Check if this is a far pointer (3 bytes)
         is_far_ptr = isinstance(instr.type_info, PointerTypeInfo) and instr.type_info.is_far
+
+        # SPECIAL CASE: Far self D=S path — prologue PHB+PHY already captured
+        # the self pointer (Y addr + DBR bank) to the stack. The MIR
+        # Move(dest=self_y_vreg, source=HW_Y) is a no-op.
+        func = self.parent.current_function
+        if (func and getattr(func, 'self_far_uses_d_equals_s', False)
+                and isinstance(src_operand, HardwareRegister) and src_operand.name == 'Y'
+                and isinstance(instr.dest, VirtualRegister)
+                and func.self_y_vreg and instr.dest.id == func.self_y_vreg.id):
+            return  # No-op: PHB+PHY in prologue already placed self on stack
 
         # SPECIAL CASE: Destination is hardware register
         if dest_loc.is_hw():

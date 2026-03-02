@@ -493,3 +493,188 @@ class TestFarTraitDispatch:
         ))
         assert result.success, f"Failures: {result.failures}"
 
+
+class TestFarSelfTraitDispatch:
+    """Test trait dispatch with far *self (24-bit self pointer).
+
+    When objects are in a different bank (e.g., #[ram] in bank $7E) from the
+    code (bank $00), near *self can't reach them. far *self uses a 24-bit
+    pointer and the caller sets DBR to the object's bank before dispatch.
+    """
+
+    @pytest.fixture
+    def e2e(self):
+        return E2ETest()
+
+    def test_far_self_leaf_method_reads_field(self, e2e):
+        """Far self leaf method reads struct field via DBR:Y path.
+
+        Leaf method (no calls, no ROM/HW access) uses fast DBR:Y path:
+        caller sets DBR to object's bank, Y to object's address,
+        field access via LDA $offset,Y.
+        """
+        result = e2e.run('''
+            #[zeropage(0x10, register)]
+            static mut SCRATCH0: u8;
+            #[zeropage(0x12, register)]
+            static mut SCRATCH1: u16;
+
+            #[lowram]
+            static mut RESULT: u8;
+
+            struct Player { x: u8, y: u8 }
+
+            trait HasPosition {
+                far fn get_x(far *self) -> u8;
+            }
+
+            impl HasPosition for Player {
+                far fn get_x(far *self) -> u8 {
+                    return self.x;
+                }
+            }
+
+            #[ram]
+            static mut PLAYER: Player = Player { x: 42, y: 99 };
+
+            #[entry]
+            fn main() {
+                let p: far *dyn HasPosition = &PLAYER;
+                RESULT = p.get_x();
+            }
+        ''', ExpectedState(
+            memory={0x7E0200: 42}
+        ))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_far_self_leaf_method_second_field(self, e2e):
+        """Far self leaf method reads second field (non-zero offset)."""
+        result = e2e.run('''
+            #[zeropage(0x10, register)]
+            static mut SCRATCH0: u8;
+            #[zeropage(0x12, register)]
+            static mut SCRATCH1: u16;
+
+            #[lowram]
+            static mut RESULT: u8;
+
+            struct Player { x: u8, y: u8 }
+
+            trait HasPosition {
+                far fn get_y(far *self) -> u8;
+            }
+
+            impl HasPosition for Player {
+                far fn get_y(far *self) -> u8 {
+                    return self.y;
+                }
+            }
+
+            #[ram]
+            static mut PLAYER: Player = Player { x: 42, y: 99 };
+
+            #[entry]
+            fn main() {
+                let p: far *dyn HasPosition = &PLAYER;
+                RESULT = p.get_y();
+            }
+        ''', ExpectedState(
+            memory={0x7E0200: 99}
+        ))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_far_self_method_with_call(self, e2e):
+        """Far self method with function call uses D=S path.
+
+        Method contains a function call, so it needs D=S prologue to
+        preserve DBR for the callee while still accessing self fields.
+        """
+        result = e2e.run('''
+            #[zeropage(0x10, register)]
+            static mut SCRATCH0: u8;
+            #[zeropage(0x12, register)]
+            static mut SCRATCH1: u16;
+
+            #[lowram]
+            static mut RESULT: u8;
+            #[lowram]
+            static mut RESULT2: u8;
+
+            struct Player { x: u8, y: u8 }
+
+            fn helper(val @ A: u8) {
+                RESULT2 = A;
+            }
+
+            trait Drawable {
+                far fn draw(far *self);
+            }
+
+            impl Drawable for Player {
+                far fn draw(far *self) {
+                    RESULT = self.x;
+                    helper(self.y);
+                }
+            }
+
+            #[ram]
+            static mut PLAYER: Player = Player { x: 55, y: 77 };
+
+            #[entry]
+            fn main() {
+                let p: far *dyn Drawable = &PLAYER;
+                p.draw();
+            }
+        ''', ExpectedState(
+            memory={
+                0x7E0200: 55,  # RESULT = self.x
+                0x7E0201: 77,  # RESULT2 = self.y (via helper)
+            }
+        ))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_far_self_dispatch_selects_correct_impl(self, e2e):
+        """Far self dispatch routes to correct implementation based on TypeId."""
+        result = e2e.run('''
+            #[zeropage(0x10, register)]
+            static mut SCRATCH0: u8;
+            #[zeropage(0x12, register)]
+            static mut SCRATCH1: u16;
+
+            #[lowram]
+            static mut RESULT: u8;
+
+            struct Player { x: u8 }
+            struct Enemy { x: u8 }
+
+            trait Identifiable {
+                far fn identify(far *self) -> u8;
+            }
+
+            impl Identifiable for Player {
+                far fn identify(far *self) -> u8 {
+                    return self.x;
+                }
+            }
+            impl Identifiable for Enemy {
+                far fn identify(far *self) -> u8 {
+                    return self.x;
+                }
+            }
+
+            #[ram]
+            static mut PLAYER: Player = Player { x: 10 };
+            #[ram]
+            static mut ENEMY: Enemy = Enemy { x: 20 };
+
+            #[entry]
+            fn main() {
+                let p: far *dyn Identifiable = &PLAYER;
+                let e: far *dyn Identifiable = &ENEMY;
+                RESULT = p.identify();
+            }
+        ''', ExpectedState(
+            memory={0x7E0200: 10}
+        ))
+        assert result.success, f"Failures: {result.failures}"
+

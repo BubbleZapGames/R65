@@ -683,6 +683,7 @@ class TraitDispatch(MIRInstruction):
     args: List[Argument] = field(default_factory=list)
     returns: List[VirtualRegister] = field(default_factory=list)
     is_far: bool = False
+    self_is_far: bool = False  # True if self pointer is far (24-bit)
     callee_return_type: Optional[Any] = None
 
     def __repr__(self):
@@ -902,6 +903,10 @@ class MIRFunction:
 
     # Self pointer vreg for trait methods (passed in Y register)
     self_y_vreg: Optional['VirtualRegister'] = None
+
+    # Far self D=S mode: True when trait method with far *self needs D=S prologue
+    # (methods with calls, ROM/HW access, or other far ptr params)
+    self_far_uses_d_equals_s: bool = False
 
     # Scratch parameter tracking (populated by analyze_scratch_params pre-pass)
     # Maps parameter index to scratch zero-page address for promoted stack params

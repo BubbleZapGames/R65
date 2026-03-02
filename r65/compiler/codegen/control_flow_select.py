@@ -743,8 +743,14 @@ class ControlFlowInstructionSelector(BaseSelector):
         if self.parent.reg_alloc and self.parent.reg_alloc.has_frame_allocation:
             frame_size = self.parent.reg_alloc.frame_size
 
-        # Total bytes to clean up: frame + stack parameters
-        total_cleanup_bytes = frame_size + stack_param_bytes
+        # Include far self PHB+PHY bytes (3 bytes pushed before frame alloc)
+        # These sit between the frame and the return address on the stack
+        far_self_bytes = 0
+        if self.current_function and getattr(self.current_function, 'self_far_uses_d_equals_s', False):
+            far_self_bytes = 3  # PHB (1 byte) + PHY (2 bytes)
+
+        # Total bytes to clean up: frame + far_self + stack parameters
+        total_cleanup_bytes = frame_size + far_self_bytes + stack_param_bytes
 
         if total_cleanup_bytes == 0:
             return
@@ -762,10 +768,14 @@ class ControlFlowInstructionSelector(BaseSelector):
         else:
             effective_return_count = return_count
 
+        # Include far_self_bytes in frame_size for cleanup — these bytes sit
+        # between the frame and the return address, like extra frame allocation
+        cleanup_frame_size = frame_size + far_self_bytes
+
         if is_far:
-            self._emit_far_stack_cleanup(frame_size, stack_param_bytes, effective_return_count, returns_b)
+            self._emit_far_stack_cleanup(cleanup_frame_size, stack_param_bytes, effective_return_count, returns_b)
         else:
-            self._emit_near_stack_cleanup(frame_size, stack_param_bytes, effective_return_count, returns_b)
+            self._emit_near_stack_cleanup(cleanup_frame_size, stack_param_bytes, effective_return_count, returns_b)
 
     def _emit_near_stack_cleanup(self, frame_size: int, stack_param_bytes: int, return_count: int, returns_b: bool = False):
         """

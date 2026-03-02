@@ -47,11 +47,16 @@ class MemoryOperationSelector(BaseSelector):
     # ========================================================================
 
     def _has_y_self(self) -> bool:
-        """Check if current function has self bound to Y register (trait method)."""
+        """Check if current function has self bound to Y register (trait method).
+
+        Returns False for far self D=S path where self is on the stack, not in Y.
+        """
         func = self.parent.current_function
-        return (func is not None and
-                getattr(func, 'is_trait_method', False) and
-                getattr(func, 'self_y_vreg', None) is not None)
+        if func is None or not getattr(func, 'is_trait_method', False):
+            return False
+        if getattr(func, 'self_far_uses_d_equals_s', False):
+            return False  # Self is on stack, not in Y
+        return getattr(func, 'self_y_vreg', None) is not None
 
     def _save_y_self(self) -> 'Address | None':
         """Save Y (self) to scratch DP before clobbering Y for indirect access.
