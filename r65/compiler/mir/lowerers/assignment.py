@@ -407,6 +407,37 @@ class AssignmentLowerer:
         # Lower index expression
         index_operand = self.builder.lower_expression(array_index.index)
 
+        # Scale index by element size for multi-byte elements
+        # (ptr[i] byte offset = i * sizeof(element), matching _lower_pointer_index in expression.py)
+        element_size = self.builder._get_type_size(element_type)
+        if element_size > 1:
+            if isinstance(index_operand, Immediate):
+                index_operand = Immediate(index_operand.value * element_size)
+            else:
+                offset_vreg = self.ctx.alloc_vreg(index_type, "ptr_idx_offset")
+                if element_size & (element_size - 1) == 0:
+                    shift_amount = 0
+                    temp = element_size
+                    while temp > 1:
+                        shift_amount += 1
+                        temp >>= 1
+                    self.emit(BinaryOp(
+                        dest=offset_vreg,
+                        left=index_operand,
+                        right=Immediate(shift_amount),
+                        op='<<',
+                        type_info=index_type
+                    ))
+                else:
+                    self.emit(BinaryOp(
+                        dest=offset_vreg,
+                        left=index_operand,
+                        right=Immediate(element_size),
+                        op='*',
+                        type_info=index_type
+                    ))
+                index_operand = offset_vreg
+
         # Lower the pointer expression to get the pointer value
         ptr_operand = self.builder.lower_expression(array_index.array)
 
