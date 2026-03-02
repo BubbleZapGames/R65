@@ -11,7 +11,7 @@
 //   - stdlib/sneslib.r65  (VRAM registers, DMA macros)
 //
 // Usage:
-/   include!("lib/console.r65")
+//   include!("lib/console.r65")
 // ============================================================================
 
 include!("sneslib.r65")
@@ -137,18 +137,11 @@ impl far Console {
 
     // Write a single character at the cursor position and advance cursor.
     far fn putc(far *self, ch: u8) {
-        let c: u8 = ch;
-        let attr: u16 = self.tile_attr;
-        let base: u16 = self.tile_base;
-        let aw: u8 = self.area_w;
-        let ah: u8 = self.area_h;
-        let m: u8 = self.mode;
-
         // Handle newline
-        if c == 0x0A {
+        if ch == 0x0A {
             self.cursor_x = 0;
             let mut cy: u8 = self.cursor_y + 1;
-            if cy >= ah {
+            if cy >= self.area_h {
                 cy = 0;
             }
             self.cursor_y = cy;
@@ -161,10 +154,10 @@ impl far Console {
         let offset: u16 = (row << 5) + col;
 
         // Compute tile entry: (ch - 32 + tile_base) | tile_attr
-        let tile: u16 = ((c as u16) - 32 + base) | attr;
+        let tile: u16 = ((ch as u16) - 32 + self.tile_base) | self.tile_attr;
 
         // Write tile
-        if m == CONSOLE_MODE_VRAM {
+        if self.mode == CONSOLE_MODE_VRAM {
             VMADD = self.vram_base + offset;
             VMDATA = tile;
         } else {
@@ -174,10 +167,10 @@ impl far Console {
 
         // Advance cursor
         let mut cx: u8 = self.cursor_x + 1;
-        if cx >= aw {
+        if cx >= self.area_w {
             cx = 0;
             let mut cy: u8 = self.cursor_y + 1;
-            if cy >= ah {
+            if cy >= self.area_h {
                 cy = 0;
             }
             self.cursor_y = cy;
@@ -188,9 +181,8 @@ impl far Console {
     // Move cursor to start of next row.
     far fn newline(far *self) {
         self.cursor_x = 0;
-        let ah: u8 = self.area_h;
         let mut cy: u8 = self.cursor_y + 1;
-        if cy >= ah {
+        if cy >= self.area_h {
             cy = 0;
         }
         self.cursor_y = cy;
@@ -203,11 +195,9 @@ impl far Console {
         let attr: u16 = self.tile_attr;
         let base: u16 = self.tile_base;
         let aw: u8 = self.area_w;
-        let ah: u8 = self.area_h;
         let ax: u8 = self.area_x;
         let ay: u8 = self.area_y;
         let m: u8 = self.mode;
-        let vb: u16 = self.vram_base;
         let nt: far *u16 = self.nametable;
         let mut cx: u8 = self.cursor_x;
         let mut cy: u8 = self.cursor_y;
@@ -221,7 +211,7 @@ impl far Console {
                 // Newline
                 cx = 0;
                 cy++;
-                if cy >= ah {
+                if cy >= self.area_h {
                     cy = 0;
                 }
             } else {
@@ -233,7 +223,7 @@ impl far Console {
                 // Write tile
                 let tile: u16 = ((c as u16) - 32 + base) | attr;
                 if m == CONSOLE_MODE_VRAM {
-                    VMADD = vb + offset;
+                    VMADD = self.vram_base + offset;
                     VMDATA = tile;
                 } else {
                     nt[offset] = tile;
@@ -244,7 +234,7 @@ impl far Console {
                 if cx >= aw {
                     cx = 0;
                     cy++;
-                    if cy >= ah {
+                    if cy >= self.area_h {
                         cy = 0;
                     }
                 }
@@ -272,13 +262,11 @@ impl far Console {
         let attr: u16 = self.tile_attr;
         let base: u16 = self.tile_base;
         let aw: u8 = self.area_w;
-        let ah: u8 = self.area_h;
         let ax: u8 = self.area_x;
         let ay: u8 = self.area_y;
         let cy: u8 = self.cursor_y;
         let alignment: u8 = self.align;
         let m: u8 = self.mode;
-        let vb: u16 = self.vram_base;
         let nt: far *u16 = self.nametable;
 
         // Compute string length (capped at area width)
@@ -303,7 +291,7 @@ impl far Console {
             if col >= aw { break; }
             let off: u16 = row_base + (ax + col) as u16;
             if m == CONSOLE_MODE_VRAM {
-                VMADD = vb + off;
+                VMADD = self.vram_base + off;
                 VMDATA = space_tile;
             } else {
                 nt[off] = space_tile;
@@ -322,7 +310,7 @@ impl far Console {
             let off: u16 = row_base + (ax + wx) as u16;
             let tile: u16 = ((c as u16) - 32 + base) | attr;
             if m == CONSOLE_MODE_VRAM {
-                VMADD = vb + off;
+                VMADD = self.vram_base + off;
                 VMDATA = tile;
             } else {
                 nt[off] = tile;
@@ -335,7 +323,7 @@ impl far Console {
         // Advance to next row
         self.cursor_x = 0;
         let mut ny: u8 = cy + 1;
-        if ny >= ah {
+        if ny >= self.area_h {
             ny = 0;
         }
         self.cursor_y = ny;
@@ -378,7 +366,6 @@ impl far Console {
         let ax: u8 = self.area_x;
         let ay: u8 = self.area_y;
         let m: u8 = self.mode;
-        let vb: u16 = self.vram_base;
         let nt: far *u16 = self.nametable;
 
         let mut row: u8 = 0;
@@ -390,7 +377,7 @@ impl far Console {
                 if col >= aw { break; }
                 let off: u16 = row_base + (ax + col) as u16;
                 if m == CONSOLE_MODE_VRAM {
-                    VMADD = vb + off;
+                    VMADD = self.vram_base + off;
                     VMDATA = space_tile;
                 } else {
                     nt[off] = space_tile;
@@ -409,18 +396,16 @@ impl far Console {
         let space_tile: u16 = self.tile_base | self.tile_attr;
         let aw: u8 = self.area_w;
         let ax: u8 = self.area_x;
-        let ay: u8 = self.area_y;
         let m: u8 = self.mode;
-        let vb: u16 = self.vram_base;
         let nt: far *u16 = self.nametable;
 
-        let row_base: u16 = ((ay + row) as u16) << 5;
+        let row_base: u16 = ((self.area_y + row) as u16) << 5;
         let mut col: u8 = 0;
         loop {
             if col >= aw { break; }
             let off: u16 = row_base + (ax + col) as u16;
             if m == CONSOLE_MODE_VRAM {
-                VMADD = vb + off;
+                VMADD = self.vram_base + off;
                 VMDATA = space_tile;
             } else {
                 nt[off] = space_tile;
