@@ -137,34 +137,52 @@ class ABIModel(ABC):
         spill_offset = selector.get_current_spill_offset()
         stack_bytes_pushed = 0
 
-        # Detect A→A collision: stack arg setup uses LDA which clobbers A.
-        # If a register arg targets A and its source is already in A
-        # (hw-coalescenced), save A to a temp register before stack arg
-        # setup and restore after.
+        # Detect A-resident collision: if any arg's value is already in A
+        # (hw-coalesced), stack arg setup for OTHER args uses LDA which
+        # clobbers A. We need to either reorder processing (outgoing path)
+        # or save/restore A (PHA path).
         a_save_reg = None
         a_param_is_16bit = False
+        a_resident_stack_idx = None  # Index of A-resident stack arg
+
         if stack_args:
-            for arg in other_args:
-                if arg.mechanism != ArgumentMechanism.REGISTER:
-                    continue
-                target_reg = arg.location.name if hasattr(arg.location, 'name') else str(arg.location)
-                if target_reg != 'A':
-                    continue
+            # Check if any stack arg has its value in A
+            for i, arg in enumerate(stack_args):
                 arg_loc = selector.parent._get_operand_location(arg.value)
                 if arg_loc.is_hw('A'):
-                    if arg.param_type is not None:
-                        a_param_is_16bit = get_type_size(arg.param_type) >= 2
-                    # Find a temp register not used as a register arg target
-                    reg_targets = set()
-                    for a in other_args:
-                        if a.mechanism == ArgumentMechanism.REGISTER:
-                            t = a.location.name if hasattr(a.location, 'name') else str(a.location)
-                            reg_targets.add(t)
-                    if 'Y' not in reg_targets:
-                        a_save_reg = 'Y'
-                    elif 'X' not in reg_targets:
-                        a_save_reg = 'X'
+                    a_resident_stack_idx = i
                     break
+
+            # Check other_args for A-resident values (register-A or scratch/variable)
+            a_in_other = False
+            for arg in other_args:
+                arg_loc = selector.parent._get_operand_location(arg.value)
+                if not arg_loc.is_hw('A'):
+                    continue
+                a_in_other = True
+                if (arg.mechanism == ArgumentMechanism.REGISTER and
+                        arg.param_type is not None):
+                    a_param_is_16bit = get_type_size(arg.param_type) >= 2
+                break
+
+            # Need save if other_arg is in A (stack processing would clobber it),
+            # or PHA path with A-resident stack arg not at last position.
+            a_stack_needs_save = (
+                a_resident_stack_idx is not None and
+                len(stack_args) > 1 and
+                a_resident_stack_idx != len(stack_args) - 1 and
+                spill_offset > 0
+            )
+            if (a_in_other or a_stack_needs_save) and not a_save_reg:
+                reg_targets = set()
+                for a in other_args:
+                    if a.mechanism == ArgumentMechanism.REGISTER:
+                        t = a.location.name if hasattr(a.location, 'name') else str(a.location)
+                        reg_targets.add(t)
+                if 'Y' not in reg_targets:
+                    a_save_reg = 'Y'
+                elif 'X' not in reg_targets:
+                    a_save_reg = 'X'
 
         if a_save_reg:
             # TAY/TAX: with X flag=0 (always 16-bit index in R65),
@@ -173,8 +191,17 @@ class ABIModel(ABC):
             selector._emit_implied(op, f"Save A to {a_save_reg} before stack arg setup")
 
         if spill_offset > 0 and stack_args:
+            # PHA path: push args in reverse order. If an A-resident arg
+            # isn't first in reversed order, prior args' LDA clobbers A.
+            # Use saved temp register to restore A when needed.
+            a_clobbered = False
             for arg in reversed(stack_args):
                 arg_loc = selector.parent._get_operand_location(arg.value)
+
+                # Restore A from temp if it was clobbered by prior args' LDA
+                if arg_loc.is_hw('A') and a_clobbered and a_save_reg:
+                    op = Opcode.TYA if a_save_reg == 'Y' else Opcode.TXA
+                    selector._emit_implied(op, f"Restore A from {a_save_reg}")
 
                 if arg_loc.kind == LocationKind.STACK and pre_arg_stack_adj != 0:
                     arg_loc = selector.parent._offset_location(arg_loc, pre_arg_stack_adj)
@@ -188,22 +215,38 @@ class ABIModel(ABC):
                 selector.emit_pha_stack_argument(arg, arg_loc, arg_size)
                 stack_bytes_pushed += arg_size
                 selector.region_state.stack_tracker.push(arg_size)
+
+                if not arg_loc.is_hw('A'):
+                    a_clobbered = True
         elif stack_args:
+            # Outgoing STA path: each arg goes to a pre-computed offset.
+            # If an A-resident arg exists, process it first to avoid
+            # clobbering A with other args' LDA.
+            offsets = []
             outgoing_offset = 1
             for arg in stack_args:
-                arg_loc = selector.parent._get_operand_location(arg.value)
-
-                if arg_loc.kind == LocationKind.STACK and pre_arg_stack_adj != 0:
-                    arg_loc = selector.parent._offset_location(arg_loc, pre_arg_stack_adj)
-
-                selector.emit_outgoing_stack_argument(arg, arg_loc, outgoing_offset)
-
+                offsets.append(outgoing_offset)
                 arg_size = 1
                 if arg.param_type is not None:
                     arg_size = get_type_size(arg.param_type)
                 elif hasattr(arg.value, 'type_info') and arg.value.type_info:
                     arg_size = get_type_size(arg.value.type_info)
                 outgoing_offset += arg_size
+
+            # Build processing order: A-resident arg first if present
+            indices = list(range(len(stack_args)))
+            if a_resident_stack_idx is not None and len(stack_args) > 1:
+                indices.remove(a_resident_stack_idx)
+                indices.insert(0, a_resident_stack_idx)
+
+            for i in indices:
+                arg = stack_args[i]
+                arg_loc = selector.parent._get_operand_location(arg.value)
+
+                if arg_loc.kind == LocationKind.STACK and pre_arg_stack_adj != 0:
+                    arg_loc = selector.parent._offset_location(arg_loc, pre_arg_stack_adj)
+
+                selector.emit_outgoing_stack_argument(arg, arg_loc, offsets[i])
 
         if a_save_reg:
             # TYA/TXA: transfer size depends on M flag. For 16-bit A values,
@@ -217,7 +260,14 @@ class ABIModel(ABC):
             op = Opcode.TYA if a_save_reg == 'Y' else Opcode.TXA
             selector._emit_implied(op, f"Restore A from {a_save_reg} after stack arg setup")
 
+        # Process non-stack args. Stable-sort to prioritize A-resident
+        # non-register args (STA from A before other args' LDA clobbers it).
         sorted_other_args = sorted(other_args, key=selector.arg_sort_key)
+        sorted_other_args.sort(key=lambda arg: (
+            0 if (arg.mechanism != ArgumentMechanism.REGISTER and
+                  selector.parent._get_operand_location(arg.value).is_hw('A'))
+            else 1))
+
         for arg in sorted_other_args:
             arg_loc = selector.parent._get_operand_location(arg.value)
 
@@ -631,43 +681,74 @@ class ABIDefault(ABIModel):
 
         stack_bytes_pushed = 0
 
-        # Detect A→A collision: PHA stack arg setup uses LDA which clobbers A.
-        # If a register arg targets A and its source is already in A
-        # (hw-coalescenced), save A to a temp register before stack arg
-        # setup and restore after.
+        # Detect A-resident collision: if any arg's value is already in A
+        # (hw-coalesced), PHA stack arg setup for OTHER args uses LDA which
+        # clobbers A. Save A to a temp register and restore before the
+        # A-resident arg is pushed.
         a_save_reg = None
         a_param_is_16bit = False
+
         if stack_args:
-            for arg in other_args:
-                if arg.mechanism != ArgumentMechanism.REGISTER:
-                    continue
-                target_reg = arg.location.name if hasattr(arg.location, 'name') else str(arg.location)
-                if target_reg != 'A':
-                    continue
+            # Check if any stack arg has its value in A and would be
+            # clobbered during PHA loop (not last position = not first
+            # in reversed order).
+            a_in_stack_needs_save = False
+            for i, arg in enumerate(stack_args):
                 arg_loc = selector.parent._get_operand_location(arg.value)
                 if arg_loc.is_hw('A'):
-                    if arg.param_type is not None:
-                        a_param_is_16bit = get_type_size(arg.param_type) >= 2
-                    # Find a temp register not used as a register arg target
-                    reg_targets = set()
-                    for a in other_args:
-                        if a.mechanism == ArgumentMechanism.REGISTER:
-                            t = a.location.name if hasattr(a.location, 'name') else str(a.location)
-                            reg_targets.add(t)
-                    if 'Y' not in reg_targets:
-                        a_save_reg = 'Y'
-                    elif 'X' not in reg_targets:
-                        a_save_reg = 'X'
+                    # Last position is processed first in reversed order,
+                    # so A is still valid. Other positions need save.
+                    if i != len(stack_args) - 1:
+                        a_in_stack_needs_save = True
                     break
+
+            # Check other_args for A-resident values (register-A or scratch/variable)
+            a_in_other = False
+            for arg in other_args:
+                if arg.mechanism != ArgumentMechanism.REGISTER:
+                    arg_loc = selector.parent._get_operand_location(arg.value)
+                    if arg_loc.is_hw('A'):
+                        a_in_other = True
+                        break
+                else:
+                    target_reg = arg.location.name if hasattr(arg.location, 'name') else str(arg.location)
+                    if target_reg != 'A':
+                        continue
+                    arg_loc = selector.parent._get_operand_location(arg.value)
+                    if arg_loc.is_hw('A'):
+                        a_in_other = True
+                        if arg.param_type is not None:
+                            a_param_is_16bit = get_type_size(arg.param_type) >= 2
+                        break
+
+            # Need save if A-resident arg would be clobbered
+            if (a_in_other or a_in_stack_needs_save):
+                reg_targets = set()
+                for a in other_args:
+                    if a.mechanism == ArgumentMechanism.REGISTER:
+                        t = a.location.name if hasattr(a.location, 'name') else str(a.location)
+                        reg_targets.add(t)
+                if 'Y' not in reg_targets:
+                    a_save_reg = 'Y'
+                elif 'X' not in reg_targets:
+                    a_save_reg = 'X'
 
         if a_save_reg:
             op = Opcode.TAY if a_save_reg == 'Y' else Opcode.TAX
             selector._emit_implied(op, f"Save A to {a_save_reg} before stack arg setup")
 
-        # Always use PHA path for stack args (right-to-left for correct callee layout)
+        # Always use PHA path for stack args (right-to-left for correct callee layout).
+        # If an A-resident stack arg isn't first in reversed order, prior args'
+        # LDA clobbers A. Restore from temp register when needed.
         if stack_args:
+            a_clobbered = False
             for arg in reversed(stack_args):
                 arg_loc = selector.parent._get_operand_location(arg.value)
+
+                # Restore A from temp if it was clobbered by prior args' LDA
+                if arg_loc.is_hw('A') and a_clobbered and a_save_reg:
+                    op = Opcode.TYA if a_save_reg == 'Y' else Opcode.TXA
+                    selector._emit_implied(op, f"Restore A from {a_save_reg}")
 
                 if arg_loc.kind == LocationKind.STACK and pre_arg_stack_adj != 0:
                     arg_loc = selector.parent._offset_location(arg_loc, pre_arg_stack_adj)
@@ -682,6 +763,9 @@ class ABIDefault(ABIModel):
                 stack_bytes_pushed += arg_size
                 selector.region_state.stack_tracker.push(arg_size)
 
+                if not arg_loc.is_hw('A'):
+                    a_clobbered = True
+
         if a_save_reg:
             if a_param_is_16bit:
                 current_mode = selector.parent.emitter.get_accu_mode()
@@ -692,8 +776,14 @@ class ABIDefault(ABIModel):
             op = Opcode.TYA if a_save_reg == 'Y' else Opcode.TXA
             selector._emit_implied(op, f"Restore A from {a_save_reg} after stack arg setup")
 
-        # Non-stack args: same as Default
+        # Non-stack args. Stable-sort to prioritize A-resident non-register
+        # args (STA from A before other args' LDA clobbers it).
         sorted_other_args = sorted(other_args, key=selector.arg_sort_key)
+        sorted_other_args.sort(key=lambda arg: (
+            0 if (arg.mechanism != ArgumentMechanism.REGISTER and
+                  selector.parent._get_operand_location(arg.value).is_hw('A'))
+            else 1))
+
         for arg in sorted_other_args:
             arg_loc = selector.parent._get_operand_location(arg.value)
 

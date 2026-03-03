@@ -696,14 +696,17 @@ class StackSlotAllocator:
             uses = vreg_uses.get(vreg_id, [])
 
             # ALU-def vregs: only safe if the value is consumed by Move,
-            # Return, Compare, Store (as value source), or as the LEFT
-            # operand of a BinaryOp (chained arithmetic).
+            # Return, Compare, Store (as value source), as the LEFT
+            # operand of a BinaryOp (chained arithmetic), or as a Call
+            # argument (pushed via PHA or stored via STA from A).
             # - Move variants just read A (STA/TAX/TAY preserve A).
             # - Store from our vreg emits STA directly from A (preserves A).
             # - Compare emits CMP which reads A without modifying it.
             # - BinaryOp-left reads A first (no clobber), then overwrites A
             #   with the result — safe because the clobber analysis handles it
             #   (the BinaryOp at max_use_idx is not scanned for clobbers).
+            # - Call arg: codegen reads A for PHA/STA; emit_call_args ensures
+            #   A-resident args are processed before other args clobber A.
             if type(def_instr) in _alu_def_types:
                 all_uses_safe = True
                 for use in uses:
@@ -721,6 +724,11 @@ class StackSlotAllocator:
                     if (use_type is BinaryOp and
                         type(use.left) is VirtualRegister and
                         use.left.id == vreg_id):
+                        continue
+                    if (use_type is Call and
+                        any(type(a.value) is VirtualRegister and
+                            a.value.id == vreg_id
+                            for a in use.args)):
                         continue
                     all_uses_safe = False
                     break
