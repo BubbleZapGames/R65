@@ -633,6 +633,22 @@ class StackSlotAllocator:
                         if type(var) is VirtualRegister:
                             vreg_uses.setdefault(var.id, []).append(instr)
 
+                elif instr_type is Load:
+                    # Load deposits its result in A via LDA.
+                    # Track dest vreg as defined-in-A for coalescence.
+                    if type(instr.dest) is VirtualRegister:
+                        vreg_id = instr.dest.id
+                        if vreg_id not in vreg_defs:
+                            dest_size = get_vreg_size(instr.dest)
+                            if dest_size <= 2:
+                                vreg_defs[vreg_id] = [(instr, 'A')]
+
+                    # Track operand uses
+                    uses = self.liveness_analyzer._get_uses(instr)
+                    for var in uses:
+                        if type(var) is VirtualRegister:
+                            vreg_uses.setdefault(var.id, []).append(instr)
+
                 elif instr_type is Call or instr_type is TraitDispatch:
                     # Call with exactly 1 return vreg: the return value is in A.
                     # Track as defined-in-A for coalescence (e.g., result = func()).
@@ -669,7 +685,7 @@ class StackSlotAllocator:
         # For ALU-def vregs (BinaryOp/UnaryOp/LoadIndirect), restrict to cases
         # where all uses are Return, Move, Compare, Store (as source), or as
         # the LEFT operand of a BinaryOp (chained arithmetic).
-        _alu_def_types = frozenset({BinaryOp, UnaryOp, LoadIndirect})
+        _alu_def_types = frozenset({BinaryOp, UnaryOp, LoadIndirect, Load})
         candidates = []
         for vreg_id, defs in vreg_defs.items():
             if len(defs) != 1:
@@ -826,7 +842,7 @@ class StackSlotAllocator:
         self, vreg_id: int, hw_reg: str, coalesceable: Dict[VirtualRegister, str]
     ):
         """Mark a vreg as hw-coalesceable by finding its def instruction."""
-        _def_types = frozenset({Move, BinaryOp, UnaryOp, LoadIndirect})
+        _def_types = frozenset({Move, BinaryOp, UnaryOp, LoadIndirect, Load})
         for block in self.func.blocks.values():
             for instr in block.instructions:
                 instr_type = type(instr)

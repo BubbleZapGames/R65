@@ -77,8 +77,10 @@ def _uses_scrutinee(instr):
     return [s] if isinstance(s, _REG_TYPES) else []
 
 def _uses_call(instr):
-    """Call: argument values (VR or HR)."""
+    """Call: argument values (VR or HR), plus function pointer if indirect."""
     uses = []
+    if isinstance(instr.function, _REG_TYPES):
+        uses.append(instr.function)
     for arg in instr.args:
         if isinstance(arg.value, _REG_TYPES):
             uses.append(arg.value)
