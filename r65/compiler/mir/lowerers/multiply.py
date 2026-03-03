@@ -269,6 +269,57 @@ def emit_shift_and_add_multiply(
         return accumulated
 
 
+def compute_scaled_index(
+    index_operand,
+    struct_size: int,
+    type_info,
+    ctx: 'LoweringContext',
+    emit: Callable,
+):
+    """
+    Compute scaled index for array element access: index * struct_size.
+
+    Unlike compute_array_field_offset(), does NOT add the field offset.
+    The field offset should be folded into the MemoryLocation address
+    constant instead, saving a CLC+ADC per non-zero field access.
+
+    Args:
+        index_operand: The index value (VirtualRegister, HardwareRegister, or Immediate)
+        struct_size: Size of each struct element in bytes
+        type_info: Type information for intermediate values
+        ctx: Lowering context for allocating virtual registers
+        emit: Function to emit MIR instructions
+
+    Returns:
+        Operand containing index * struct_size
+    """
+    if struct_size == 1:
+        return index_operand
+    elif struct_size <= 16:
+        return emit_shift_and_add_multiply(
+            index_operand, struct_size, type_info, ctx, emit
+        )
+    else:
+        _check_runtime_mul_available(ctx, struct_size)
+        from r65.compiler.hir.types import BasicTypeInfo
+        u8_type = BasicTypeInfo('u8')
+        u16_type = BasicTypeInfo('u16')
+
+        scaled_index = ctx.alloc_vreg(type_info, "scaled_index")
+        emit(Call(
+            function='mul16',
+            args=[
+                Argument(value=Immediate(struct_size), mechanism=ArgumentMechanism.REGISTER,
+                         location=HardwareRegister('A'), param_type=u8_type),
+                Argument(value=index_operand, mechanism=ArgumentMechanism.STACK,
+                         location=None, param_type=u16_type),
+            ],
+            returns=[scaled_index],
+            is_far=True
+        ))
+        return scaled_index
+
+
 def compute_array_field_offset(
     index_operand,
     struct_size: int,
@@ -298,48 +349,9 @@ def compute_array_field_offset(
     Returns:
         Operand containing the computed byte offset
     """
-    # First compute index * struct_size
-    if struct_size == 1:
-        scaled_index = index_operand
-    elif struct_size <= 16:
-        # Use shift-and-add decomposition for sizes 1-16
-        scaled_index = emit_shift_and_add_multiply(
-            index_operand, struct_size, type_info, ctx, emit
-        )
-    else:
-        # Large struct sizes: use mul16() runtime function from math.r65
-        # Validate that runtime multiplication is available
-        _check_runtime_mul_available(ctx, struct_size)
-
-        # WARNING: mul16 uses the SNES 8x8 hardware multiplier, so only the
-        # low 8 bits of the index are used. Variable indices > 255 will
-        # produce incorrect results. Constant indices are handled earlier
-        # in the pipeline with compile-time multiplication, so they work
-        # correctly for any index value.
-        #
-        # mul16 signature: mul16(multA @ A: u8, multB: u16) -> u16
-        # Since multiplication is commutative (a*b = b*a), we pass:
-        #   A = struct_size (u8 constant, 17-255)
-        #   stack = index (u16 variable, but only low 8 bits used)
-        # This computes: struct_size * index = index * struct_size
-        from r65.compiler.hir.types import BasicTypeInfo
-        u8_type = BasicTypeInfo('u8')
-        u16_type = BasicTypeInfo('u16')
-
-        scaled_index = ctx.alloc_vreg(type_info, "scaled_index")
-        emit(Call(
-            function='mul16',
-            args=[
-                # First arg: struct_size in A (u8)
-                Argument(value=Immediate(struct_size), mechanism=ArgumentMechanism.REGISTER,
-                         location=HardwareRegister('A'), param_type=u8_type),
-                # Second arg: index on stack (u16)
-                Argument(value=index_operand, mechanism=ArgumentMechanism.STACK,
-                         location=None, param_type=u16_type),
-            ],
-            returns=[scaled_index],
-            is_far=True  # mul16 is a far function
-        ))
+    scaled_index = compute_scaled_index(
+        index_operand, struct_size, type_info, ctx, emit
+    )
 
     # Add field offset if non-zero
     if field_offset == 0:

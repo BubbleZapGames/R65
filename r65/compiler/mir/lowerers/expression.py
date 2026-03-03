@@ -17,7 +17,7 @@ from r65.compiler.mir.nodes import (
     VirtualRegister, HardwareRegister, Immediate, MemoryLocation,
     Move, Load, LoadIndirect, BinaryOp, UnaryOp, TypeConvert, ToBool,
 )
-from r65.compiler.mir.lowerers.multiply import compute_array_field_offset
+from r65.compiler.mir.lowerers.multiply import compute_array_field_offset, compute_scaled_index
 from r65.compiler.errors import MIRLoweringError
 
 if TYPE_CHECKING:
@@ -689,25 +689,36 @@ class ExpressionLowerer:
             field_memloc = self.builder._create_offset_memloc(base_memloc, total_offset, array_symbol)
             self.emit(Load(dest=result, source=field_memloc, type_info=expr.expr_type))
         else:
-            # Variable index: compute offset at runtime
-            # offset = (index * struct_size) + field_offset
-            offset_operand = self._compute_array_field_offset(
-                index_operand, struct_size, field_offset, struct_type
+            # Variable index: compute scaled index (index * struct_size)
+            # Field offset is folded into the address constant instead of
+            # being added at runtime, saving CLC+ADC per non-zero field access
+            scaled_operand = compute_scaled_index(
+                index_operand, struct_size, struct_type, self.ctx, self.emit
             )
 
-            # Move offset to X register for indexed addressing
+            # Move scaled index to X register for indexed addressing
             x_reg = HardwareRegister('X')
-            self.emit(Move(dest=x_reg, source=offset_operand, type_info=struct_type))
+            self.emit(Move(dest=x_reg, source=scaled_operand, type_info=struct_type))
 
-            # Create indexed memory location
+            # Create indexed memory location with field_offset folded into address
             base_memloc = self.builder.get_memory_location(array_symbol)
-            indexed_memloc = MemoryLocation(
-                storage_type=base_memloc.storage_type,
-                address=base_memloc.address,
-                symbol=array_symbol,
-                is_volatile=base_memloc.is_volatile,
-                index_register='X'
-            )
+            if base_memloc.address is not None:
+                indexed_memloc = MemoryLocation(
+                    storage_type=base_memloc.storage_type,
+                    address=base_memloc.address + field_offset,
+                    symbol=base_memloc.symbol,
+                    is_volatile=base_memloc.is_volatile,
+                    index_register='X'
+                )
+            else:
+                indexed_memloc = MemoryLocation(
+                    storage_type=base_memloc.storage_type,
+                    address=None,
+                    symbol=base_memloc.symbol,
+                    is_volatile=base_memloc.is_volatile,
+                    index_register='X',
+                    offset=base_memloc.offset + field_offset
+                )
 
             self.emit(Load(dest=result, source=indexed_memloc, type_info=expr.expr_type))
 
