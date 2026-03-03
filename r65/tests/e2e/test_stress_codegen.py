@@ -568,3 +568,113 @@ class TestThreeRegParamPrologue:
             0x7E0013: [0x00, 0x02],  # 0x200 LE
         }))
         assert result.success, f"Failures: {result.failures}"
+
+
+class TestCallReturnValueAcrossCall:
+    """Regression: return values from calls must survive across subsequent calls.
+
+    The hw coalescence pass incorrectly treated Call instructions as no-ops
+    in the two-pass mechanism, allowing both call results to be coalesced to A.
+    The comparison then compared A with itself (always equal).
+    """
+
+    @pytest.fixture
+    def e2e(self):
+        return E2ETest()
+
+    def test_two_calls_compare_greater(self, e2e):
+        """Call results compared: double(3)=6 > double(2)=4 should be true."""
+        result = e2e.run(f'''
+            {SCRATCH_DECLS}
+
+            #[zeropage(0x10)]
+            static mut RESULT: u8;
+
+            fn double(val @ A: u8) -> u8 {{
+                return A + A;
+            }}
+
+            fn is_first_greater(a: u8, b: u8) -> u8 {{
+                let key_a: u8 = double(a);
+                let key_b: u8 = double(b);
+                if key_a > key_b {{
+                    return 1;
+                }}
+                return 0;
+            }}
+
+            #[entry]
+            fn main() {{
+                RESULT = is_first_greater(3, 2);
+            }}
+        ''', ExpectedState(memory={
+            0x7E0010: 1,  # 6 > 4 = true
+        }))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_two_calls_compare_not_greater(self, e2e):
+        """Call results compared: double(2)=4 > double(3)=6 should be false."""
+        result = e2e.run(f'''
+            {SCRATCH_DECLS}
+
+            #[zeropage(0x10)]
+            static mut RESULT: u8;
+
+            fn double(val @ A: u8) -> u8 {{
+                return A + A;
+            }}
+
+            fn is_first_greater(a: u8, b: u8) -> u8 {{
+                let key_a: u8 = double(a);
+                let key_b: u8 = double(b);
+                if key_a > key_b {{
+                    return 1;
+                }}
+                return 0;
+            }}
+
+            #[entry]
+            fn main() {{
+                RESULT = is_first_greater(2, 3);
+            }}
+        ''', ExpectedState(memory={
+            0x7E0010: 0,  # 4 > 6 = false
+        }))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_call_result_survives_recursive_call(self, e2e):
+        """Call result used after recursive call must survive on stack.
+
+        Pattern: pivot = partition(), then recursive call, then use pivot.
+        Tests that cross-block liveness correctly prevents coalescence.
+        """
+        result = e2e.run(f'''
+            {SCRATCH_DECLS}
+
+            #[zeropage(0x10)]
+            static mut RESULT: u8;
+
+            fn compute(val @ A: u8) -> u8 {{
+                return A + 10;
+            }}
+
+            fn accumulate(n: u8) -> u8 {{
+                if n == 0 {{
+                    return 0;
+                }}
+                let base: u8 = compute(n);
+                let rest: u8 = accumulate(n - 1);
+                // base must survive across the recursive call
+                return base + rest;
+            }}
+
+            #[entry]
+            fn main() {{
+                // accumulate(3) = compute(3) + compute(2) + compute(1) + 0
+                //               = 13 + 12 + 11 + 0 = 36
+                RESULT = accumulate(3);
+            }}
+        ''', ExpectedState(memory={
+            0x7E0010: 36,
+        }))
+        assert result.success, f"Failures: {result.failures}"

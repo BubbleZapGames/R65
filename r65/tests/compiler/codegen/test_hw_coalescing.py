@@ -13,7 +13,7 @@ from r65.compiler.mir.nodes import (
     MIRProgram,
     MIRFunction,
     BasicBlock,
-    Move, Return, BinaryOp, Load, Store, Compare, Jump, CondBranch,
+    Move, Return, BinaryOp, Load, Store, Compare, Jump, CondBranch, Call,
     VirtualRegister,
     Immediate,
     HardwareRegister,
@@ -902,5 +902,194 @@ class TestNarrowerHintRejection:
 
         # Should NOT detect conflict: X write is in block where counter is dead
         assert allocator._hint_conflicts_with_hw_defs(vreg_counter, 'X') is False
+
+    def test_call_return_not_coalesceable_across_second_call(self):
+        """Regression test: Call return value must not coalesce to A across another Call.
+
+        Pattern (card_greater bug):
+            %2 = Call foo(%0)       ; returns key_a in A
+            %3 = Call foo(%1)       ; clobbers A! key_a lost
+            Compare %2 > %3         ; needs key_a and key_b
+
+        Without the fix, the second Call's def instruction was added to
+        noop_instrs (because %3 was coalesceable), making %2 incorrectly
+        appear coalesceable too. Result: both coalesced to A, comparison
+        compared A with itself.
+        """
+        vreg_alloc = VirtualRegisterAllocator()
+        vreg_arg0 = vreg_alloc.alloc(BasicTypeInfo('u8'), "arg0")
+        vreg_arg1 = vreg_alloc.alloc(BasicTypeInfo('u8'), "arg1")
+        vreg_ret1 = vreg_alloc.alloc(BasicTypeInfo('u8'), "call1_result")
+        vreg_ret2 = vreg_alloc.alloc(BasicTypeInfo('u8'), "call2_result")
+
+        block0 = BasicBlock(block_id=0)
+        block0.instructions = [
+            Call(
+                function='foo',
+                args=[],
+                returns=[vreg_ret1],
+                is_far=False,
+            ),
+            Call(
+                function='foo',
+                args=[],
+                returns=[vreg_ret2],
+                is_far=False,
+            ),
+            Compare(
+                left=vreg_ret1,
+                right=vreg_ret2,
+                comparison='>',
+                type_info=BasicTypeInfo('u8')
+            ),
+            CondBranch(
+                condition=None,
+                true_target=1,
+                false_target=2,
+                comparison='>'
+            ),
+        ]
+        block0.successors = [1, 2]
+
+        block1 = BasicBlock(block_id=1)
+        block1.instructions = [Return(values=[vreg_arg0])]
+        block1.predecessors = [0]
+
+        block2 = BasicBlock(block_id=2)
+        block2.instructions = [Return(values=[vreg_arg1])]
+        block2.predecessors = [0]
+
+        func = MIRFunction(
+            name="two_calls_compare",
+            parameters=[],
+            return_type=BasicTypeInfo('u8'),
+            blocks={0: block0, 1: block1, 2: block2},
+            entry_block_id=0,
+            is_far=True,
+            vreg_allocator=vreg_alloc
+        )
+
+        allocator = StackSlotAllocator(func)
+        allocation = allocator.allocate()
+
+        # %3 (second call) CAN coalesce to A — nothing clobbers A between it and Compare
+        assert vreg_ret2 in allocation.hw_coalesceable, \
+            "Second call result should be coalesceable (no clobber before Compare)"
+
+        # %2 (first call) must NOT coalesce to A — the second Call clobbers A
+        assert vreg_ret1 not in allocation.hw_coalesceable, \
+            "First call result must NOT coalesce to A (second Call clobbers A)"
+
+    def test_call_return_not_coalesceable_across_call_in_successor(self):
+        """Regression test: Call return must not coalesce when used across blocks with a Call.
+
+        Pattern (quicksort bug):
+            Block 1: %2 = Call partition()
+                      Compare %2, branch to Block 3 or Block 4
+            Block 3: %3 = %2 - 1
+                     Call quicksort(%0, %3)  ; clobbers A!
+                     Jump -> Block 4
+            Block 4: Compare %2 < %1    ; needs %2 to survive Block 3
+
+        The cross-block use scanning only checked up to the max use index
+        in a use block, missing the Call after the last use when the vreg
+        was still live-out.
+        """
+        vreg_alloc = VirtualRegisterAllocator()
+        vreg_low = vreg_alloc.alloc(BasicTypeInfo('u8'), "low")
+        vreg_high = vreg_alloc.alloc(BasicTypeInfo('u8'), "high")
+        vreg_pivot = vreg_alloc.alloc(BasicTypeInfo('u8'), "pivot")
+        vreg_minus1 = vreg_alloc.alloc(BasicTypeInfo('u8'), "minus1")
+
+        # Block 1: %pivot = Call partition(), Compare, CondBranch
+        block1 = BasicBlock(block_id=1)
+        block1.instructions = [
+            Call(
+                function='partition',
+                args=[],
+                returns=[vreg_pivot],
+                is_far=False,
+            ),
+            Compare(
+                left=vreg_pivot,
+                right=vreg_low,
+                comparison='>',
+                type_info=BasicTypeInfo('u8')
+            ),
+            CondBranch(
+                condition=None,
+                true_target=3,
+                false_target=4,
+                comparison='>'
+            ),
+        ]
+        block1.successors = [3, 4]
+
+        # Block 3: use %pivot in BinaryOp, then Call (clobbers A), jump to Block 4
+        block3 = BasicBlock(block_id=3)
+        block3.instructions = [
+            BinaryOp(
+                dest=vreg_minus1,
+                left=vreg_pivot,
+                op='-',
+                right=Immediate(1),
+                type_info=BasicTypeInfo('u8')
+            ),
+            Call(
+                function='quicksort',
+                args=[],
+                returns=[],
+                is_far=False,
+            ),
+            Jump(target=4),
+        ]
+        block3.successors = [4]
+        block3.predecessors = [1]
+
+        # Block 4: use %pivot in Compare (merge point)
+        block4 = BasicBlock(block_id=4)
+        block4.instructions = [
+            Compare(
+                left=vreg_pivot,
+                right=vreg_high,
+                comparison='<',
+                type_info=BasicTypeInfo('u8')
+            ),
+            CondBranch(
+                condition=None,
+                true_target=5,
+                false_target=6,
+                comparison='<'
+            ),
+        ]
+        block4.successors = [5, 6]
+        block4.predecessors = [1, 3]
+
+        # Block 5/6: empty return blocks
+        block5 = BasicBlock(block_id=5)
+        block5.instructions = [Return(values=[])]
+        block5.predecessors = [4]
+
+        block6 = BasicBlock(block_id=6)
+        block6.instructions = [Return(values=[])]
+        block6.predecessors = [4]
+
+        func = MIRFunction(
+            name="cross_block_call_clobber",
+            parameters=[],
+            return_type=None,
+            blocks={1: block1, 3: block3, 4: block4, 5: block5, 6: block6},
+            entry_block_id=1,
+            is_far=True,
+            vreg_allocator=vreg_alloc
+        )
+
+        allocator = StackSlotAllocator(func)
+        allocation = allocator.allocate()
+
+        # %pivot must NOT coalesce to A — Block 3 has a Call that clobbers A
+        # and %pivot is live-out from Block 3 (used in Block 4)
+        assert vreg_pivot not in allocation.hw_coalesceable, \
+            "Call return must NOT coalesce when live across a Call in a successor block"
 
 

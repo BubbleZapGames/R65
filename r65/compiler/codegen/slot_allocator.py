@@ -734,7 +734,14 @@ class StackSlotAllocator:
                     hw_reg, vreg_id, def_instr, uses, instr_positions, noop_instrs
                 ):
                     self._mark_coalesceable(vreg_id, hw_reg, coalesceable)
-                    noop_instrs.add(id(def_instr))
+                    # Only add Move instructions to noop_instrs. The two-pass
+                    # mechanism is designed for A/B interdependency where a
+                    # coalesceable Move (e.g., XBA for B) becomes a no-op.
+                    # Call/TraitDispatch instructions ALWAYS clobber registers
+                    # during execution even if their return value is coalesceable,
+                    # so they must never be treated as no-ops.
+                    if type(def_instr) is Move:
+                        noop_instrs.add(id(def_instr))
                 else:
                     remaining.append((vreg_id, def_instr, hw_reg, uses))
 
@@ -931,8 +938,17 @@ class StackSlotAllocator:
                 continue
 
             if block_id in use_block_max:
-                # Use block: check from start to max use index
-                for i in range(0, use_block_max[block_id]):
+                # Use block: check from start to max use index, OR to end of
+                # block if the vreg is live-out (used in a successor block).
+                # Without this, instructions after the last use (e.g., a Call)
+                # would be missed even though the vreg must survive to the
+                # block exit.
+                vreg_live_out = any(
+                    succ_id in live_blocks
+                    for succ_id in blk.successors
+                )
+                scan_end = len(blk.instructions) if vreg_live_out else use_block_max[block_id]
+                for i in range(0, scan_end):
                     if self._instruction_clobbers_register(blk.instructions[i], hw_reg,
                                                             vreg_id, noop_instrs):
                         return False
