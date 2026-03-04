@@ -59,7 +59,8 @@ class PointerValidator:
         expr.expr_type = pointer_type
         return expr.expr_type
 
-    def _needs_far_pointer(self, operand: HIRExpression) -> bool:
+    @staticmethod
+    def _needs_far_pointer(operand: HIRExpression) -> bool:
         """
         Determine if taking address of operand requires a far pointer.
 

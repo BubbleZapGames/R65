@@ -122,11 +122,12 @@ class TypeUtils:
 
         # Pointer compatibility: allow *[T; N] to *T coercion and struct-to-trait coercion
         if isinstance(t1, PointerTypeInfo) and isinstance(t2, PointerTypeInfo):
-            # far/near must match - no implicit coercion between them
+            # Pointee types must be compatible (allows [T; N] -> T)
+            if TypeUtils._pointee_types_compatible(t1.pointee_type, t2.pointee_type):
+                # Allow far/near pointer widening (near *T compatible with far *T)
+                return True
+            # far/near must match for trait coercion
             if t1.is_far == t2.is_far:
-                # Pointee types must be compatible (allows [T; N] -> T)
-                if TypeUtils._pointee_types_compatible(t1.pointee_type, t2.pointee_type):
-                    return True
                 # *Struct -> *Trait coercion: if struct implements the trait
                 # t1 = expected (*Trait), t2 = actual (*Struct)
                 if isinstance(t1.pointee_type, TraitTypeInfo) and isinstance(t2.pointee_type, StructTypeInfo):

@@ -842,11 +842,13 @@ class FunctionCodeGenerator:
         a_save_method = None
         force_direct = mir_func.interrupt_attr is not None
 
-        if a_has_param and frame_size > 0:
-            frame_clobbers_a = (
-                frame_size > self.abi_model.frame_alloc_clobbers_a_threshold
-                or force_direct
-            )
+        if a_has_param:
+            frame_clobbers_a = False
+            if frame_size > 0:
+                frame_clobbers_a = (
+                    frame_size > self.abi_model.frame_alloc_clobbers_a_threshold
+                    or force_direct
+                )
             dbr_clobbers_a = False
             if mir_func.is_far and mir_func.mode_attr and mir_func.bank_attr:
                 from r65.compiler.hir.attributes import DataBankMode
@@ -864,15 +866,16 @@ class FunctionCodeGenerator:
                     # allocation which doesn't clobber any register.
                     a_save_method = 'push'
 
+        # Save A param before any prologue code that clobbers A.
+        # This must happen before frame allocation AND D=S setup (both use A).
+        if a_save_method == 'Y':
+            self._emit_instr(Opcode.TAY, comment="Save A param before prologue")
+        elif a_save_method == 'X':
+            self._emit_instr(Opcode.TAX, comment="Save A param before prologue (Y has param)")
+
         # Allocate stack frame for functions with locals.
         if frame_size > 0:
-            if a_save_method == 'Y':
-                self._emit_instr(Opcode.TAY, comment="Save A param before frame alloc")
-                self._emit_frame_allocation(frame_size, force_direct_stack=force_direct)
-            elif a_save_method == 'X':
-                self._emit_instr(Opcode.TAX, comment="Save A param before frame alloc (Y has param)")
-                self._emit_frame_allocation(frame_size, force_direct_stack=force_direct)
-            elif a_save_method == 'push':
+            if a_save_method == 'push':
                 # Push-based allocation (PHX/PHY) doesn't clobber A, X, or Y.
                 self.abi_model._emit_register_push_alloc(self._emit_instr, frame_size)
             else:
@@ -931,9 +934,9 @@ class FunctionCodeGenerator:
         # The current mode (set by mode setup above) ensures the transfer
         # operates at the correct width (m8 for u8 @ A, m16 for u16 @ A).
         if a_save_method == 'Y':
-            self._emit_instr(Opcode.TYA, comment="Restore A param after frame alloc")
+            self._emit_instr(Opcode.TYA, comment="Restore A param after prologue")
         elif a_save_method == 'X':
-            self._emit_instr(Opcode.TXA, comment="Restore A param after frame alloc")
+            self._emit_instr(Opcode.TXA, comment="Restore A param after prologue")
         # 'push' and None: no restore needed (A was never clobbered)
 
     def _emit_entry_setup(self, mir_func: MIRFunction):

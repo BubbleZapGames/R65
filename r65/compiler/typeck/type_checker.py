@@ -634,6 +634,9 @@ class TypeChecker:
                         "const declaration", decl.source_loc
                     )
 
+        # Pre-pass: promote near pointer params to far when called with WRAM args
+        self._promote_far_pointer_params()
+
         # Type check all functions
         from r65.compiler.hir import HIRImplDecl
 
@@ -644,6 +647,101 @@ class TypeChecker:
             elif isinstance(decl, HIRImplDecl):
                 for method in decl.methods:
                     self.check_function(method)
+
+    def _promote_far_pointer_params(self):
+        """Pre-pass: promote near pointer params to far when called with WRAM address args.
+
+        Walks all function bodies to find calls where a far pointer (e.g. &RAM_BUFFER)
+        is passed to a near pointer parameter. Mutates the parameter type to far *T so
+        the MIR builder activates the D=S codegen path (indirect long addressing).
+
+        Must run before function body type checking so all callers see the promoted type.
+        """
+        from r65.compiler.hir import HIRImplDecl
+        from r65.compiler.typeck.pointer_validator import PointerValidator
+
+        # Build map of function_name -> HIRFunctionDecl
+        func_map = {}
+        for decl in self.program.declarations:
+            if isinstance(decl, HIRFunctionDecl):
+                func_map[decl.name] = decl
+            elif isinstance(decl, HIRImplDecl):
+                for method in decl.methods:
+                    func_map[method.name] = method
+
+        # Walk all function bodies, find HIRFunctionCall nodes with HIRAddressOf args
+        def _walk_expressions(node):
+            """Yield all HIRExpression nodes in the AST subtree."""
+            if node is None:
+                return
+            if isinstance(node, HIRFunctionCall):
+                yield node
+                for arg in node.args:
+                    yield from _walk_expressions(arg)
+                if node.func:
+                    yield from _walk_expressions(node.func)
+                return
+            # Walk all child attributes that are HIR nodes or lists
+            for attr_name in ('body', 'statements', 'then_block', 'else_block',
+                              'condition', 'left', 'right', 'operand', 'value',
+                              'target', 'initializer', 'pointer', 'array', 'index',
+                              'base', 'args', 'branches', 'expression', 'expr', 'func',
+                              'receiver', 'targets', 'elements'):
+                attr = getattr(node, attr_name, None)
+                if attr is None:
+                    continue
+                if isinstance(attr, list):
+                    for item in attr:
+                        if isinstance(item, HIRExpression) or isinstance(item, HIRStatement):
+                            yield from _walk_expressions(item)
+                        # Handle match branches, if branches, etc.
+                        elif hasattr(item, 'body'):
+                            yield from _walk_expressions(getattr(item, 'body', None))
+                        elif hasattr(item, 'value'):
+                            yield from _walk_expressions(getattr(item, 'value', None))
+                elif isinstance(attr, (HIRExpression, HIRStatement)):
+                    yield from _walk_expressions(attr)
+                elif hasattr(attr, 'statements'):
+                    yield from _walk_expressions(attr)
+
+        # Scan all function bodies for calls that pass far pointers to near params
+        for func in func_map.values():
+            if func.body is None:
+                continue
+            for expr in _walk_expressions(func.body):
+                if not isinstance(expr, HIRFunctionCall):
+                    continue
+                # Only handle direct calls to known functions
+                if not isinstance(expr.func, HIRIdentifier):
+                    continue
+                if not expr.func.symbol or expr.func.symbol.kind != SymbolKind.FUNCTION:
+                    continue
+                callee_name = expr.func.symbol.name
+                callee = func_map.get(callee_name)
+                if callee is None:
+                    continue
+
+                # Check each argument
+                for i, arg in enumerate(expr.args):
+                    if i >= len(callee.parameters):
+                        break
+                    param = callee.parameters[i]
+                    # Only promote near pointer params
+                    if not isinstance(param.param_type, PointerTypeInfo):
+                        continue
+                    if param.param_type.is_far:
+                        continue
+                    # Check if the argument is &something that needs a far pointer
+                    if isinstance(arg, HIRAddressOf):
+                        if PointerValidator._needs_far_pointer(arg.operand):
+                            # Promote parameter from *T to far *T
+                            param.param_type = PointerTypeInfo(
+                                is_far=True,
+                                pointee_type=param.param_type.pointee_type
+                            )
+                            # Update symbol too
+                            if param.symbol:
+                                param.symbol.var_type = param.param_type
 
     def check_function(self, func: HIRFunctionDecl):
         """Type check a single function."""
@@ -846,6 +944,14 @@ class TypeChecker:
                     "let binding (first element of tuple)", stmt.source_loc
                 )
             else:
+                # Auto-promote let binding from *T to far *T when initializer is far
+                if (isinstance(var_type, PointerTypeInfo) and not var_type.is_far and
+                        isinstance(init_type, PointerTypeInfo) and init_type.is_far and
+                        TypeUtils._pointee_types_compatible(var_type.pointee_type, init_type.pointee_type)):
+                    var_type = PointerTypeInfo(is_far=True, pointee_type=var_type.pointee_type)
+                    stmt.var_type = var_type
+                    if stmt.symbol:
+                        stmt.symbol.var_type = var_type
                 self._check_type_match(
                     var_type, init_type, stmt.initializer,
                     "let binding", stmt.source_loc, use_compatible=True
@@ -1582,6 +1688,20 @@ class TypeChecker:
             )
             expr.expr_type = target_type
             return target_type
+
+        # Guard: assigning far *T to a static declared as near *T would silently
+        # truncate the bank byte (static is allocated as 2 bytes, not 3).
+        if (isinstance(target_type, PointerTypeInfo) and not target_type.is_far and
+                isinstance(value_type, PointerTypeInfo) and value_type.is_far):
+            if isinstance(expr.target, HIRIdentifier) and expr.target.symbol:
+                defn = expr.target.symbol.definition
+                if isinstance(defn, HIRStaticDecl):
+                    raise TypeCheckError(
+                        f"cannot assign far pointer to near pointer static '{expr.target.name}': "
+                        f"the static is allocated as 2 bytes but a far pointer requires 3 bytes",
+                        source_loc=expr.source_loc,
+                        hint=f"declare as 'static mut {expr.target.name}: far {target_type}' instead"
+                    )
 
         # Types must be compatible (allows enum/integer interop)
         self._check_type_match(
