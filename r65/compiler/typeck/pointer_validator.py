@@ -80,11 +80,25 @@ class PointerValidator:
         Returns:
             True if far pointer needed, False for near pointer
         """
-        # Only identifiers can have storage attributes
-        if not isinstance(operand, HIRIdentifier):
+        # Extract symbol from the operand (may be wrapped in ArrayIndex or FieldAccess)
+        if isinstance(operand, HIRIdentifier):
+            symbol = operand.symbol
+        elif isinstance(operand, HIRArrayIndex):
+            # &array[i] — check the array's storage
+            base = operand.array
+            if isinstance(base, HIRIdentifier):
+                symbol = base.symbol
+            else:
+                return False
+        elif isinstance(operand, HIRFieldAccess):
+            # &var.field — check the struct's storage
+            base = operand.base
+            if isinstance(base, HIRIdentifier):
+                symbol = base.symbol
+            else:
+                return False
+        else:
             return False
-
-        symbol = operand.symbol
         if not symbol or not symbol.definition:
             return False
 
