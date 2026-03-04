@@ -5,26 +5,98 @@
 //
 //   include!("lib/q10_type.r65")
 //
-//   static mut velocity_q10: i16;    // Q10.6 velocity
+//   static mut velocity: q10;    // Q10.6 velocity
 //
 //   fn update() {
 //       // Create fixed-point values
-//       let player_x_q10 : i16 = q10_from_int!(100);   // 100.0
-//       velocity_q10 = q10_from!(0, 32);     // 0.5 (32/64)
+//       let player_x : q10 = q10_from_int!(100);   // 100.0
+//       velocity = q10_from!(0, 32);     // 0.5 (32/64)
 //
 //       // Extract integer for screen position
-//       let screen_x: i16 = q10_to_int!(player_x_q10);  // 100
+//       let screen_x: i16 = q10_to_int!(player_x);  // 100
 //
 //       // Extract fractional part (0-63)
-//       let frac: i16 = q10_to_frac!(player_x_q10);     // 0
+//       let frac: i16 = q10_to_frac!(player_x);     // 0
 //   }
 
-const Q10_ONE: i16 = 64;
-const Q10_HALF: i16 = 32;
-const Q10_FRAC_MASK: i16 = 0x3F;
+type q10 = i16;
+
+const Q10_ONE: q10 = 64;
+const Q10_HALF: q10 = 32;
+const Q10_FRAC_MASK: q10 = 0x3F;
 const Q10_1_64TH: u8 = 1;
 
 macro_rules! q10_from_int($n:expr) { $n << 6 }
 macro_rules! q10_from($n:expr, $f:expr) { ($n << 6) | ($f & Q10_FRAC_MASK) }
 macro_rules! q10_to_int($q:expr) { $q >> 6 }
 macro_rules! q10_to_frac($q:expr) { $q & Q10_FRAC_MASK }
+macro_rules! q10_neg($val:expr) { 0 - $val }
+
+// Absolute value of a Q10.6 value
+fn q10_abs(val: q10) -> q10 {
+    if val < 0 {
+        return 0 - val;
+    }
+    return val;
+}
+
+// Multiply two Q10.6 values: result = (a * b) >> 6
+// Uses SNES hardware 8x8 multiply unit (4 partial products)
+// Requires: include!("lib/sneslib.r65")
+#[cfg(snes)]
+fn q10_mul(a @ A: q10, b: q10) -> q10 {
+    let mut ua: u16 = A as u16;
+    let mut ub: u16 = b as u16;
+    let mut neg: u8 = 0;
+
+    if a < 0 {
+        ua = (0 - a) as u16;
+        neg = 1;
+    }
+    if b < 0 {
+        ub = (0 - b) as u16;
+        neg = neg ^ 1;
+    }
+
+    let a_lo: u8 = ua as u8;
+    let a_hi: u8 = (ua >> 8) as u8;
+    let b_lo: u8 = ub as u8;
+    let b_hi: u8 = (ub >> 8) as u8;
+
+    // p0 = a_lo * b_lo
+    WRMPYA = a_lo;
+    WRMPYB = b_lo;
+    NOP(4);
+    let p0: u16 = (RDMPYH as u16) << 8 | (RDMPYL as u16);
+
+    // p1 = a_lo * b_hi (a_lo still in WRMPYA)
+    WRMPYB = b_hi;
+    NOP(4);
+    let mut mid: u16 = (RDMPYH as u16) << 8 | (RDMPYL as u16);
+
+    // p2 = a_hi * b_lo
+    WRMPYA = a_hi;
+    WRMPYB = b_lo;
+    NOP(4);
+    mid = mid + ((RDMPYH as u16) << 8 | (RDMPYL as u16));
+
+    // p3 = a_hi * b_hi (a_hi still in WRMPYA)
+    WRMPYB = b_hi;
+    NOP(4);
+    let p3: u16 = (RDMPYH as u16) << 8 | (RDMPYL as u16);
+
+    // Accumulate 32-bit product as hi:lo
+    let lo: u16 = p0 + (mid << 8);
+    let mut hi: u16 = p3 + (mid >> 8);
+    if lo < p0 {
+        hi = hi + 1;
+    }
+
+    // Extract bits [6:21] of 32-bit product
+    let result: u16 = (lo >> 6) | (hi << 10);
+
+    if neg != 0 {
+        return 0 - (result as q10);
+    }
+    return result as q10;
+}
