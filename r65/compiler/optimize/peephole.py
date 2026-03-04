@@ -962,7 +962,8 @@ class PeepholeOptimizer:
                     self.stats.tracked_loads_eliminated += 1
                     continue
                 # Update tracking only for deterministic addressing modes
-                if opcode in TRACKABLE_LDA_OPCODES:
+                # Never track loads from hardware I/O registers (volatile)
+                if opcode in TRACKABLE_LDA_OPCODES and not self._is_hardware_register(node.operand):
                     known_a = (opcode, node.operand)
                 else:
                     # Non-deterministic load (indexed/indirect) — A changed
@@ -1016,7 +1017,16 @@ class PeepholeOptimizer:
                 optimized.append(node)
                 continue
 
-            # Other instructions (CMP, STA, TAX, TAY, CLC, SEC, etc.)
+            # Stores to hw I/O registers may have side effects that change
+            # the value at the tracked address (e.g., STA WRMPYB triggers
+            # a multiply, changing RDMPYL/RDMPYH)
+            if opcode in (STORE_A_OPCODES | STORE_X_OPCODES | STORE_Y_OPCODES):
+                if known_a is not None and self._is_hardware_register(node.operand):
+                    known_a = None
+                optimized.append(node)
+                continue
+
+            # Other instructions (CMP, TAX, TAY, CLC, SEC, etc.)
             # don't modify A — tracking stays valid
             optimized.append(node)
 

@@ -1195,16 +1195,25 @@ class MIRBuilder:
             if hw_reg:
                 return hw_reg  # Direct hardware register reference
 
-            # Check if already in a virtual register
+            # Check if this is a volatile (hardware) symbol — must re-read every time
+            is_volatile_sym = (
+                symbol.kind == SymbolKind.STATIC_VAR
+                and hasattr(symbol.definition, 'storage_attr')
+                and symbol.definition.storage_attr is not None
+                and symbol.definition.storage_attr.storage_kind == StorageKind.HW
+            )
+
+            # Check if already in a virtual register (skip cache for volatile)
             symbol_id = id(symbol)
-            if symbol_id in self.symbol_to_vreg:
+            if not is_volatile_sym and symbol_id in self.symbol_to_vreg:
                 return self.symbol_to_vreg[symbol_id]
 
             # Otherwise, load from memory
             vreg = self.current_function.vreg_allocator.alloc(expr.expr_type, symbol.name)
             mem_loc = self.get_memory_location(symbol)
             self.emit(Load(dest=vreg, source=mem_loc, type_info=expr.expr_type))
-            self.symbol_to_vreg[symbol_id] = vreg
+            if not is_volatile_sym:
+                self.symbol_to_vreg[symbol_id] = vreg
             return vreg
 
         elif isinstance(expr, HIRRegister):

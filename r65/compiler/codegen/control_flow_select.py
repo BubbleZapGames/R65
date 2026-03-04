@@ -954,8 +954,16 @@ class ControlFlowInstructionSelector(BaseSelector):
         self._emit_immediate(Opcode.ADC_IMMEDIATE, adj_amount, f"Adjust past {total_cleanup} bytes")
         self._emit_implied(Opcode.TCS, "A to SP")
 
-        self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "Restore 8-bit A")
-        self.parent.emitter.emit_accu_mode(8)
+        # Restore to function's exit mode before restoring A from temp register.
+        # If exit mode is m16, TXA/TYA must run in m16 to transfer full 16 bits.
+        from r65.compiler.typeck.processor_mode import ModeState
+        exit_mode = getattr(self.current_function, 'exit_m_mode', None) or ModeState.M8
+        if exit_mode == ModeState.M16:
+            # Already in m16 from REP above — just update tracker
+            self.parent.emitter.emit_accu_mode(16)
+        else:
+            self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "Restore 8-bit A")
+            self.parent.emitter.emit_accu_mode(8)
 
         # Restore return value
         if save_method == 'X':
@@ -1063,9 +1071,16 @@ class ControlFlowInstructionSelector(BaseSelector):
         self._emit_immediate(Opcode.ADC_IMMEDIATE, actual_adjust, f"Adjust past {adjust_bytes} bytes")
         self._emit_implied(Opcode.TCS, "A to SP")
 
-        # Always restore m8 after SP adjustment
-        self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "Restore 8-bit A")
-        self.parent.emitter.emit_accu_mode(8)
+        # Restore to function's exit mode before restoring A from temp register.
+        # If exit mode is m16, TXA/TYA must run in m16 to transfer full 16 bits.
+        from r65.compiler.typeck.processor_mode import ModeState
+        exit_mode = getattr(self.current_function, 'exit_m_mode', None) or ModeState.M8
+        if exit_mode == ModeState.M16:
+            # Already in m16 from REP above — just update tracker
+            self.parent.emitter.emit_accu_mode(16)
+        else:
+            self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "Restore 8-bit A")
+            self.parent.emitter.emit_accu_mode(8)
 
         # Restore A if needed
         if restore_op == 'stack':
