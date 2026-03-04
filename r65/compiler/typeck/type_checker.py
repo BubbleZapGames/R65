@@ -25,7 +25,7 @@ from r65.compiler.hir.types import FunctionTypeInfo, PointerTypeInfo
 from r65.compiler.typeck.processor_mode import ProcessorMode, ModeState, XModeState
 from r65.compiler.typeck.mode_tracker import ModeTracker
 from r65.compiler.typeck.cfg_builder import CFGBuilder
-from r65.compiler.typeck.type_utils import TypeUtils
+from r65.compiler.typeck.type_utils import TypeUtils, value_fits_type
 from r65.compiler.typeck.operator_validator import OperatorValidator
 from r65.compiler.typeck.preservation_checker import PreservationChecker
 from r65.compiler.typeck.register_capabilities import (
@@ -1143,6 +1143,20 @@ class TypeChecker:
                     source_loc=expr.source_loc,
                     hint="shift amount should be a constant like 1, 2, 4, etc."
                 )
+            # Promote unsuffixed literals if compile-time result overflows
+            if (isinstance(expr.left, HIRIntegerLiteral) and expr.left.suffix is None
+                    and isinstance(expr.right, HIRIntegerLiteral)
+                    and isinstance(left_type, BasicTypeInfo)):
+                if expr.op == '<<':
+                    result_val = expr.left.value << expr.right.value
+                else:  # >>
+                    result_val = expr.left.value >> expr.right.value
+                if not value_fits_type(result_val, left_type.name):
+                    promoted_name = 'i16' if left_type.name in ('i8', 'i16') else 'u16'
+                    promoted_type = BasicTypeInfo(name=promoted_name)
+                    expr.left.expr_type = promoted_type
+                    left_type = promoted_type
+
             expr.expr_type = left_type
             return left_type
 
@@ -1200,9 +1214,26 @@ class TypeChecker:
                 expr.expr_type = promoted_type
                 return promoted_type
 
-            # Result is same type
-            expr.expr_type = left_type
-            return left_type
+            # Result is same type - but check for overflow with unsuffixed literals
+            result_type = left_type
+            if (expr.op in ['+', '-', '*']
+                    and isinstance(expr.left, HIRIntegerLiteral) and expr.left.suffix is None
+                    and isinstance(expr.right, HIRIntegerLiteral) and expr.right.suffix is None
+                    and isinstance(result_type, BasicTypeInfo)):
+                if expr.op == '+':
+                    result_val = expr.left.value + expr.right.value
+                elif expr.op == '-':
+                    result_val = expr.left.value - expr.right.value
+                else:  # *
+                    result_val = expr.left.value * expr.right.value
+                if not value_fits_type(result_val, result_type.name):
+                    promoted_name = 'i16' if result_type.name in ('i8', 'i16') else 'u16'
+                    result_type = BasicTypeInfo(name=promoted_name)
+                    expr.left.expr_type = result_type
+                    expr.right.expr_type = result_type
+
+            expr.expr_type = result_type
+            return result_type
 
         elif expr.op in ['==', '!=', '<', '<=', '>', '>=']:
             # Comparison: operands must be compatible, result is bool
