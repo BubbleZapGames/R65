@@ -876,6 +876,21 @@ class ExpressionLowerer:
                 offset_vreg = self._compute_index_offset(index_operand, element_size, offset_type)
             else:
                 offset_vreg = index_operand
+                # Ensure offset is u16 for pointer arithmetic (16-bit add).
+                # A u8 index used directly in a m16 ADC would read 2 bytes
+                # from a 1-byte stack slot, picking up junk in the high byte.
+                if (isinstance(offset_vreg, VirtualRegister) and
+                        isinstance(offset_vreg.type_info, BasicTypeInfo) and
+                        offset_vreg.type_info.name in ('u8', 'i8')):
+                    from r65.compiler.mir.nodes import TypeConvert
+                    extended = self.ctx.alloc_vreg(BasicTypeInfo('u16'), f"idx_ext")
+                    self.emit(TypeConvert(
+                        dest=extended,
+                        source=offset_vreg,
+                        source_type=offset_vreg.type_info,
+                        target_type=BasicTypeInfo('u16')
+                    ))
+                    offset_vreg = extended
 
             # Add base + offset
             self.emit(BinaryOp(

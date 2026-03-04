@@ -287,6 +287,30 @@ class StackSlotAllocator:
             # Sort by size descending for better packing
             sorted_vregs = sorted(local_vregs, key=lambda v: -local_sizes[v])
 
+        # Build forced-interference pairs: vregs that co-occur as different
+        # operands in the same instruction must not share a slot. Codegen
+        # may read one operand while writing another in multi-byte sequences
+        # (e.g., far pointer add reads base while writing result, indirect
+        # load reads pointer while writing dest). Slot aliasing between
+        # such operands causes corruption.
+        cooccur_pairs: Set[Tuple[int, int]] = set()
+        local_ids = {v.id for v in local_vregs}
+        for block in self.func.blocks.values():
+            for instr in block.instructions:
+                # Collect all VirtualRegister operands in this instruction
+                vreg_ids = []
+                for attr_name in ('dest', 'source', 'left', 'right', 'pointer',
+                                  'condition', 'value'):
+                    op = getattr(instr, attr_name, None)
+                    if isinstance(op, VirtualRegister) and op.id in local_ids:
+                        vreg_ids.append(op.id)
+                # All distinct pairs of local vregs in the same instruction
+                for i in range(len(vreg_ids)):
+                    for j in range(i + 1, len(vreg_ids)):
+                        a, b = vreg_ids[i], vreg_ids[j]
+                        if a != b:
+                            cooccur_pairs.add((min(a, b), max(a, b)))
+
         for vreg in sorted_vregs:
             size = local_sizes[vreg]
 
@@ -296,13 +320,43 @@ class StackSlotAllocator:
             # adjacent memory. Padding to 2 bytes prevents this corruption.
             alloc_size = max(size, 2)
 
-            # Allocate sequentially without reuse to avoid overlap bugs.
-            # TODO: re-enable liveness-based reuse after fixing interference analysis
-            assigned_slot = next_slot
-            next_slot = assigned_slot + alloc_size
+            assigned_slot = None
+
+            # Try to reuse an existing slot whose occupant doesn't interfere.
+            # Overlap checks use alloc_size (padded) so m16 writes stay safe.
+            for start_slot in range(next_slot):
+                end_slot = start_slot + alloc_size
+                can_use = True
+
+                for (other_start, other_end, other_vreg) in allocated_ranges:
+                    if start_slot < other_end and end_slot > other_start:
+                        # Check liveness interference
+                        if self.liveness_analyzer.interferes(vreg, other_vreg):
+                            can_use = False
+                            break
+                        # Check instruction co-occurrence: vregs that appear
+                        # as different operands in the same instruction must
+                        # not share a slot (codegen multi-byte aliasing)
+                        pair = (min(vreg.id, other_vreg.id),
+                                max(vreg.id, other_vreg.id))
+                        if pair in cooccur_pairs:
+                            can_use = False
+                            break
+
+                if can_use:
+                    assigned_slot = start_slot
+                    break
+
+            if assigned_slot is None:
+                assigned_slot = next_slot
+                next_slot = assigned_slot + alloc_size
+            else:
+                new_end = assigned_slot + alloc_size
+                if new_end > next_slot:
+                    next_slot = new_end
 
             allocation[vreg] = assigned_slot
-            allocated_ranges.append((assigned_slot, assigned_slot + size, vreg))
+            allocated_ranges.append((assigned_slot, assigned_slot + alloc_size, vreg))
 
         # Frame size is the total local slots needed
         # Ensure frame_size covers all allocated ranges (safety check)
@@ -311,15 +365,6 @@ class StackSlotAllocator:
             if end > max_end:
                 max_end = end
         frame_size = max(next_slot, max_end)
-
-        # DEBUG: Print slot allocation for debugging
-        import os
-        if os.environ.get('R65_DEBUG_SLOTS') and frame_size >= 10:
-            import sys
-            print(f"SLOT_ALLOC frame_size={frame_size}", file=sys.stderr)
-            for vreg, slot in sorted(allocation.items(), key=lambda x: x[1]):
-                size = local_sizes.get(vreg, '?')
-                print(f"  {vreg} (size={size}) -> slot {slot} (bytes {slot}-{slot+size-1})", file=sys.stderr)
 
         # Calculate slots saved
         total_without_reuse = sum(local_sizes.values())

@@ -104,6 +104,11 @@ def _uses_return(instr):
             uses.append(val)
     return uses
 
+def _uses_condbranch(instr):
+    """CondBranch: condition may be a VirtualRegister."""
+    c = instr.condition
+    return [c] if isinstance(c, _REG_TYPES) else []
+
 def _uses_none(instr):
     return []
 
@@ -128,7 +133,7 @@ _GET_USES = {
     TraitDispatch: _uses_trait_dispatch,
     Return: _uses_return,
     StatusFlagRead: _uses_none,
-    CondBranch: _uses_none,
+    CondBranch: _uses_condbranch,
     Jump: _uses_none,
 }
 
