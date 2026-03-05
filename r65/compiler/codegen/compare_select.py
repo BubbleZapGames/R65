@@ -449,17 +449,19 @@ class CompareSelector(BaseSelector):
         Args:
             instr: Rotate instruction
         """
-        # Load source into A
+        # Load source into A (skip if already in A)
         source_loc = self.parent._get_operand_location(instr.source)
-        self._emit_load_store('LDA', source_loc)
+        if not source_loc.is_hw('A'):
+            self._emit_load_store('LDA', source_loc)
 
         # Determine instruction based on direction
-        rotate_opcode = Opcode.ROL_A if instr.direction == 'left' else Opcode.ROR_A
+        rotate_opcode = Opcode.ROL if instr.direction == 'left' else Opcode.ROR
 
         # Emit rotate instruction 'count' times
         for _ in range(instr.count):
             self._emit_instr(rotate_opcode)
 
-        # Store result to destination
+        # Store result to destination (skip if dest is A)
         dest_loc = self.parent._get_operand_location(instr.dest)
-        self._emit_load_store('STA', dest_loc)
+        if not dest_loc.is_hw('A'):
+            self._emit_load_store('STA', dest_loc)
