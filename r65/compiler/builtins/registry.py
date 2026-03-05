@@ -18,6 +18,7 @@ class BuiltinKind(Enum):
     SHIFT = "shift"                           # shl, shr
     ROTATE = "rotate"                         # rotate_left, rotate_right
     TYPE_INFO = "type_info"                   # size_of
+    CONST_MATH = "const_math"                 # fixed_sin, fixed_cos, etc.
 
 
 @dataclass
@@ -177,6 +178,57 @@ class BuiltinRegistry:
             description='Get byte offset of struct field'
         ),
         
+        # Const math functions (compile-time only, for LUT generation)
+        'fixed_sin': BuiltinSignature(
+            name='fixed_sin',
+            kind=BuiltinKind.CONST_MATH,
+            param_count=3,
+            returns_value=True,
+            description='Const-only: round(sin(2*pi*index/table_size) * amplitude) -> i16'
+        ),
+        'fixed_cos': BuiltinSignature(
+            name='fixed_cos',
+            kind=BuiltinKind.CONST_MATH,
+            param_count=3,
+            returns_value=True,
+            description='Const-only: round(cos(2*pi*index/table_size) * amplitude) -> i16'
+        ),
+        'fixed_atan2': BuiltinSignature(
+            name='fixed_atan2',
+            kind=BuiltinKind.CONST_MATH,
+            param_count=3,
+            returns_value=True,
+            description='Const-only: atan2(y, x) mapped to 0..table_size -> u16'
+        ),
+        'fixed_sqrt': BuiltinSignature(
+            name='fixed_sqrt',
+            kind=BuiltinKind.CONST_MATH,
+            param_count=2,
+            returns_value=True,
+            description='Const-only: round(sqrt(value) * scale) -> u16'
+        ),
+        'fixed_log2': BuiltinSignature(
+            name='fixed_log2',
+            kind=BuiltinKind.CONST_MATH,
+            param_count=2,
+            returns_value=True,
+            description='Const-only: round(log2(value) * scale) -> i16'
+        ),
+        'fixed_exp2': BuiltinSignature(
+            name='fixed_exp2',
+            kind=BuiltinKind.CONST_MATH,
+            param_count=3,
+            returns_value=True,
+            description='Const-only: round(2^(value/in_scale) * out_scale) -> u16'
+        ),
+        'fixed_lerp': BuiltinSignature(
+            name='fixed_lerp',
+            kind=BuiltinKind.CONST_MATH,
+            param_count=4,
+            returns_value=True,
+            description='Const-only: a + (b-a)*t/t_max -> i16'
+        ),
+
         # Conditional compilation (1 parameter: cfg identifier/key-value, const evaluation only, returns boolean)
         'cfg': BuiltinSignature(
             name='cfg',

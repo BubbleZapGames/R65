@@ -228,6 +228,15 @@ class ExpressionBuilder:
                             # size_of: if const evaluation fails, fall back to runtime call
                             pass
 
+                    # Const math builtins - try to fold if all args are const
+                    if builtin and builtin.kind.value == "const_math":
+                        try:
+                            const_value = self.const_evaluator.eval(expr)
+                            if isinstance(const_value, int):
+                                return hir.HIRIntegerLiteral(value=const_value, source_loc=src_loc)
+                        except HIRError:
+                            pass  # Args may be runtime vars inside a const fn
+
                     # Mark this as a built-in function call
                     builtin_name = func_name
 

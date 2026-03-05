@@ -1993,6 +1993,13 @@ class CallInstructionSelector(BaseSelector):
             self._emit_block_move_builtin(instr, builtin)
         elif builtin.kind in (BuiltinKind.ARITHMETIC, BuiltinKind.SHIFT):
             self._emit_runtime_builtin(instr, builtin)
+        elif builtin.kind == BuiltinKind.CONST_MATH:
+            from r65.compiler.codegen.errors import CodegenError
+            raise CodegenError(
+                f"const math builtin '{instr.builtin_name}' must be resolved at compile time "
+                f"(only usable in const fn or with constant arguments)",
+                source_loc=self.parent._current_source_loc
+            )
 
     def _emit_processor_control_builtin(self, instr: Call, builtin):
         """Emit processor control built-in (wai, stp, xba, NOP)."""

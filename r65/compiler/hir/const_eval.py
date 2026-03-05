@@ -315,9 +315,14 @@ class ConstEvaluator:
 
         builtin = BuiltinRegistry.get_builtin(func_name)
 
-        # Only allow type info built-ins in const expressions
-        if builtin.kind.value != "type_info":
+        # Only allow type info and const math built-ins in const expressions
+        if builtin.kind.value not in ("type_info", "const_math"):
             raise HIRError(f"Built-in '{func_name}' is not allowed in const expressions", source_loc=expr.source_loc)
+
+        # Handle const math builtins
+        if builtin.kind.value == "const_math":
+            arg_values = [self.eval(arg) for arg in expr.args]
+            return self._eval_const_math(func_name, arg_values, expr.source_loc)
 
         # Handle size_of specifically
         if func_name == "size_of":
@@ -423,6 +428,68 @@ class ConstEvaluator:
 
         # Return the array size
         return symbol.var_type.size
+
+    def _eval_const_math(self, func_name: str, args: list, source_loc) -> int:
+        """Evaluate a const math builtin (fixed_sin, fixed_cos, etc.)."""
+        import math
+
+        def _clamp_i16(v):
+            v = int(round(v))
+            return max(-32768, min(32767, v))
+
+        def _clamp_u16(v):
+            v = int(round(v))
+            return max(0, min(65535, v))
+
+        if func_name == 'fixed_sin':
+            index, table_size, amplitude = args
+            if table_size == 0:
+                raise HIRError("fixed_sin: table_size must not be zero", source_loc=source_loc)
+            return _clamp_i16(math.sin(2 * math.pi * index / table_size) * amplitude)
+
+        elif func_name == 'fixed_cos':
+            index, table_size, amplitude = args
+            if table_size == 0:
+                raise HIRError("fixed_cos: table_size must not be zero", source_loc=source_loc)
+            return _clamp_i16(math.cos(2 * math.pi * index / table_size) * amplitude)
+
+        elif func_name == 'fixed_atan2':
+            y, x, table_size = args
+            if table_size == 0:
+                raise HIRError("fixed_atan2: table_size must not be zero", source_loc=source_loc)
+            if y == 0 and x == 0:
+                return 0
+            angle = math.atan2(y, x)
+            if angle < 0:
+                angle += 2 * math.pi
+            return _clamp_u16(angle / (2 * math.pi) * table_size)
+
+        elif func_name == 'fixed_sqrt':
+            value, scale = args
+            if value < 0:
+                raise HIRError("fixed_sqrt: value must not be negative", source_loc=source_loc)
+            return _clamp_u16(math.sqrt(value) * scale)
+
+        elif func_name == 'fixed_log2':
+            value, scale = args
+            if value <= 0:
+                raise HIRError("fixed_log2: value must be positive", source_loc=source_loc)
+            return _clamp_i16(math.log2(value) * scale)
+
+        elif func_name == 'fixed_exp2':
+            value, in_scale, out_scale = args
+            if in_scale == 0:
+                raise HIRError("fixed_exp2: in_scale must not be zero", source_loc=source_loc)
+            return _clamp_u16(math.pow(2, value / in_scale) * out_scale)
+
+        elif func_name == 'fixed_lerp':
+            a, b, t, t_max = args
+            if t_max == 0:
+                raise HIRError("fixed_lerp: t_max must not be zero", source_loc=source_loc)
+            return _clamp_i16(a + (b - a) * t / t_max)
+
+        else:
+            raise HIRError(f"Unknown const math function: {func_name}", source_loc=source_loc)
 
     def _ensure_int(self, value: Any) -> int:
         """Ensure value is an integer."""
@@ -619,9 +686,63 @@ class ConstEvaluator:
                 raise ZeroDivisionError("modulo by zero")
             return int(a) % int(b)
 
+        import math as _math
+
+        def _clamp_i16(v):
+            v = int(round(v))
+            return max(-32768, min(32767, v))
+
+        def _clamp_u16(v):
+            v = int(round(v))
+            return max(0, min(65535, v))
+
+        def _fixed_sin(index, table_size, amplitude):
+            if table_size == 0:
+                raise ZeroDivisionError("fixed_sin: table_size must not be zero")
+            return _clamp_i16(_math.sin(2 * _math.pi * index / table_size) * amplitude)
+
+        def _fixed_cos(index, table_size, amplitude):
+            if table_size == 0:
+                raise ZeroDivisionError("fixed_cos: table_size must not be zero")
+            return _clamp_i16(_math.cos(2 * _math.pi * index / table_size) * amplitude)
+
+        def _fixed_atan2(y, x, table_size):
+            if table_size == 0:
+                raise ZeroDivisionError("fixed_atan2: table_size must not be zero")
+            if y == 0 and x == 0:
+                return 0
+            angle = _math.atan2(y, x)
+            if angle < 0:
+                angle += 2 * _math.pi
+            return _clamp_u16(angle / (2 * _math.pi) * table_size)
+
+        def _fixed_sqrt(value, scale):
+            if value < 0:
+                raise ValueError("fixed_sqrt: value must not be negative")
+            return _clamp_u16(_math.sqrt(value) * scale)
+
+        def _fixed_log2(value, scale):
+            if value <= 0:
+                raise ValueError("fixed_log2: value must be positive")
+            return _clamp_i16(_math.log2(value) * scale)
+
+        def _fixed_exp2(value, in_scale, out_scale):
+            if in_scale == 0:
+                raise ZeroDivisionError("fixed_exp2: in_scale must not be zero")
+            return _clamp_u16(_math.pow(2, value / in_scale) * out_scale)
+
+        def _fixed_lerp(a, b, t, t_max):
+            if t_max == 0:
+                raise ZeroDivisionError("fixed_lerp: t_max must not be zero")
+            return _clamp_i16(a + (b - a) * t / t_max)
+
         ns = {
             '_u8': _u8, '_u16': _u16, '_i8': _i8, '_i16': _i16, '_bool': _bool,
             '_idiv': _idiv, '_imod': _imod,
+            'fixed_sin': _fixed_sin, 'fixed_cos': _fixed_cos,
+            'fixed_atan2': _fixed_atan2, 'fixed_sqrt': _fixed_sqrt,
+            'fixed_log2': _fixed_log2, 'fixed_exp2': _fixed_exp2,
+            'fixed_lerp': _fixed_lerp,
         }
 
         # Add all compiled const fns to namespace so they can call each other
@@ -840,6 +961,12 @@ class ConstEvaluator:
                         return str(val)
                     except HIRError:
                         pass
+
+                # Check for const_math builtins
+                builtin = BuiltinRegistry.get_builtin(func_name)
+                if builtin and builtin.kind.value == "const_math":
+                    args_str = ", ".join(self._transpile_expr(a) for a in expr.args)
+                    return f"_ns_['{func_name}']({args_str})"
 
                 # Check if it's a const fn call
                 from r65.compiler.hir.symbol_table import SymbolKind
