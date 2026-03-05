@@ -153,6 +153,28 @@ class TestFixedLerp:
             build_hir("const VAL: i16 = fixed_lerp(0, 100, 5, 0);")
 
 
+class TestFixedClamp:
+    def test_clamp_within_range(self):
+        assert eval_const("const VAL: i16 = fixed_clamp(50, 0, 100);") == 50
+
+    def test_clamp_below_min(self):
+        assert eval_const("const VAL: i16 = fixed_clamp(-10, 0, 100);") == 0
+
+    def test_clamp_above_max(self):
+        assert eval_const("const VAL: i16 = fixed_clamp(200, 0, 100);") == 100
+
+    def test_clamp_negative_range(self):
+        assert eval_const("const VAL: i16 = fixed_clamp(0, -50, 50);") == 0
+
+    def test_clamp_at_boundaries(self):
+        assert eval_const("const VAL: i16 = fixed_clamp(0, 0, 100);") == 0
+        assert eval_const("const VAL: i16 = fixed_clamp(100, 0, 100);") == 100
+
+    def test_clamp_inverted_range_error(self):
+        with pytest.raises(HIRError, match="min must not be greater than max"):
+            build_hir("const VAL: i16 = fixed_clamp(50, 100, 0);")
+
+
 class TestConstFnIntegration:
     """Test const math builtins inside const fn (transpiled path)."""
 
@@ -210,6 +232,7 @@ class TestConstFnIntegration:
         const LOG_VAL: i16 = fixed_log2(8, 256);
         const EXP_VAL: u16 = fixed_exp2(256, 256, 256);
         const LERP_VAL: i16 = fixed_lerp(0, 100, 5, 10);
+        const CLAMP_VAL: i16 = fixed_clamp(50, 0, 100);
         ''')
 
 

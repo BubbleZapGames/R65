@@ -415,7 +415,7 @@ class CallValidator:
 
         # Const math builtins - should be folded away, but set types for safety
         if builtin.kind.value == "const_math":
-            if expr.builtin_name in ('fixed_sin', 'fixed_cos', 'fixed_log2', 'fixed_lerp'):
+            if expr.builtin_name in ('fixed_sin', 'fixed_cos', 'fixed_log2', 'fixed_lerp', 'fixed_clamp'):
                 expr.expr_type = BasicTypeInfo('i16')
             else:
                 expr.expr_type = BasicTypeInfo('u16')

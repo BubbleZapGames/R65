@@ -488,6 +488,12 @@ class ConstEvaluator:
                 raise HIRError("fixed_lerp: t_max must not be zero", source_loc=source_loc)
             return _clamp_i16(a + (b - a) * t / t_max)
 
+        elif func_name == 'fixed_clamp':
+            value, min_val, max_val = args
+            if min_val > max_val:
+                raise HIRError("fixed_clamp: min must not be greater than max", source_loc=source_loc)
+            return _clamp_i16(max(min_val, min(max_val, value)))
+
         else:
             raise HIRError(f"Unknown const math function: {func_name}", source_loc=source_loc)
 
@@ -736,13 +742,18 @@ class ConstEvaluator:
                 raise ZeroDivisionError("fixed_lerp: t_max must not be zero")
             return _clamp_i16(a + (b - a) * t / t_max)
 
+        def _fixed_clamp(value, min_val, max_val):
+            if min_val > max_val:
+                raise ValueError("fixed_clamp: min must not be greater than max")
+            return _clamp_i16(max(min_val, min(max_val, value)))
+
         ns = {
             '_u8': _u8, '_u16': _u16, '_i8': _i8, '_i16': _i16, '_bool': _bool,
             '_idiv': _idiv, '_imod': _imod,
             'fixed_sin': _fixed_sin, 'fixed_cos': _fixed_cos,
             'fixed_atan2': _fixed_atan2, 'fixed_sqrt': _fixed_sqrt,
             'fixed_log2': _fixed_log2, 'fixed_exp2': _fixed_exp2,
-            'fixed_lerp': _fixed_lerp,
+            'fixed_lerp': _fixed_lerp, 'fixed_clamp': _fixed_clamp,
         }
 
         # Add all compiled const fns to namespace so they can call each other
