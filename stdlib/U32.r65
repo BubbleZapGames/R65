@@ -118,6 +118,7 @@ impl far U32 {
     // ========================================================================
 
     // Copy another U32 into self
+    #[inline(always)]
     far fn copy(far *self, src: far *U32) {
         self.lo = src.lo;
         self.hi = src.hi;
@@ -125,11 +126,13 @@ impl far U32 {
 
     // Initialize from u16 (zero-extend)
     // NOTE: Uses @ X because @ A is clobbered by far fn prologue (TSC/TCD)
+    #[inline(always)]
     far fn from_u16(far *self, value @ X: u16) {
         self.lo = X;
         self.hi = 0;
     }
 
+    #[inline(always)]
     // Convert to u16 (truncate, keeps low 16 bits)
     far fn to_u16(far *self) -> u16 {
         return self.lo;
@@ -140,6 +143,7 @@ impl far U32 {
     // ========================================================================
 
     // Add a u16 value: self += value (zero-extends value to 32 bits)
+    #[inline(always)]
     far fn add_u16(far *self, value @ A: u16) {
         let s_lo: u16 = self.lo;
         let r_lo: u16 = s_lo + A;
@@ -152,6 +156,7 @@ impl far U32 {
     }
 
     // Subtract a u16 value: self -= value (zero-extends value to 32 bits)
+    #[inline(always)]
     far fn sub_u16(far *self, value @ A: u16) {
         let s_lo: u16 = self.lo;
         let r_lo: u16 = s_lo - A;

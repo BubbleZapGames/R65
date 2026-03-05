@@ -141,6 +141,7 @@ impl far I32 {
     // ========================================================================
 
     // Copy another I32 into self
+    #[inline(always)]
     far fn copy(far *self, src: far *I32) {
         self.lo = src.lo;
         self.hi = src.hi;
@@ -148,11 +149,11 @@ impl far I32 {
 
     // Initialize from i16 (sign-extend)
     // If value is negative, extends 0xFFFF to high word
-    // NOTE: Uses @ X because @ A is clobbered by far fn prologue (TSC/TCD)
-    far fn from_i16(far *self, value @ X: u16) {
-        self.lo = X;
+    #[inline(always)]
+    far fn from_i16(far *self, value: u16) {
+        self.lo = value;
         // Check sign bit (bit 15)
-        if X & 0x8000 != 0 {
+        if value & 0x8000 != 0 {
             // Negative: sign extend with 0xFFFF
             self.hi = 0xFFFF;
         } else {
@@ -162,13 +163,14 @@ impl far I32 {
     }
 
     // Initialize from u16 (zero-extend, for positive values only)
-    // NOTE: Uses @ X because @ A is clobbered by far fn prologue (TSC/TCD)
-    far fn from_u16(far *self, value @ X: u16) {
-        self.lo = X;
+    #[inline(always)]
+    far fn from_u16(far *self, value: u16) {
+        self.lo = value;
         self.hi = 0;
     }
 
     // Convert to i16 (truncate, keeps low 16 bits)
+    #[inline(always)]
     far fn to_i16(far *self) -> i16 {
         return self.lo as i16;
     }
@@ -179,6 +181,7 @@ impl far I32 {
 
     // Check if the value is negative (sign bit set)
     // Returns true if negative, false if zero or positive
+    #[inline(always)]
     far fn is_negative(far *self) -> bool {
         let hi: u16 = self.hi;
         if (hi & 0x8000) != 0 {
@@ -188,6 +191,7 @@ impl far I32 {
     }
 
     // Negate the value (two's complement: ~self + 1)
+    #[inline(always)]
     far fn neg(far *self) {
         let mut lo: u16 = self.lo;
         let mut hi: u16 = self.hi;
@@ -197,6 +201,7 @@ impl far I32 {
     }
 
     // Absolute value: if negative, negate
+    #[inline(always)]
     far fn abs(far *self) {
         let hi: u16 = self.hi;
         if (hi & 0x8000) != 0 {
