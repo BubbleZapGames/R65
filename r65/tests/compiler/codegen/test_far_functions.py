@@ -6,9 +6,10 @@ from r65.compiler.mir.nodes import (
     MIRProgram,
     MIRFunction,
     BasicBlock,
-    Move, Return, Call,
+    Move, Return, Call, Load,
     VirtualRegister,
     Immediate,
+    MemoryLocation,
     HardwareRegister,
     Argument,
     ArgumentMechanism,
@@ -19,6 +20,7 @@ from r65.compiler.hir.attributes import (
     DataBankMode,
     ModeAttribute,
 )
+from r65.compiler.hir.types import BasicTypeInfo
 from r65.compiler.mir.virtual_registers import VirtualRegisterAllocator
 
 
@@ -67,16 +69,24 @@ def test_basic_far_function():
 
 
 def test_far_function_with_databank_inline():
-    """Test far function with databank=inline (callee manages DBR)."""
+    """Test far function with databank=inline (callee manages DBR).
+
+    Function accesses ROM data, so DBR setup is required.
+    """
 
     vreg_alloc = VirtualRegisterAllocator()
 
     entry_block = BasicBlock(block_id=0)
     entry_block.instructions = [
-        Move(
+        # Load from ROM static data (requires DBR to be set)
+        Load(
             dest=HardwareRegister('A'),
-            source=Immediate(99),
-            type_info=None
+            source=MemoryLocation(
+                storage_type='rom',
+                address=0x8000,
+                symbol=None,
+            ),
+            type_info=BasicTypeInfo('u8'),
         ),
         Return(values=[HardwareRegister('A')])
     ]
@@ -139,6 +149,111 @@ def test_far_function_with_databank_inline():
         "DBR sequence should be: PHB ... PLB (set) ... PLB (restore) ... RTL"
 
     print("✓ databank=inline test passed")
+
+
+def test_far_function_databank_inline_skipped_when_no_rom_access():
+    """Test that databank=inline skips DBR setup when function has no ROM/HW access."""
+
+    vreg_alloc = VirtualRegisterAllocator()
+
+    entry_block = BasicBlock(block_id=0)
+    entry_block.instructions = [
+        # Only immediate loads — no ROM or HW access, no calls
+        Move(
+            dest=HardwareRegister('A'),
+            source=Immediate(99),
+            type_info=None
+        ),
+        Return(values=[HardwareRegister('A')])
+    ]
+
+    far_func = MIRFunction(
+        name="leaf_helper",
+        parameters=[],
+        return_type=None,
+        blocks={0: entry_block},
+        entry_block_id=0,
+        is_far=True,
+        mode_attr=ModeAttribute(
+            name='mode',
+            databank=DataBankMode.INLINE
+        ),
+        bank_attr=BankAttribute(
+            name='bank',
+            bank_number=2
+        ),
+        vreg_allocator=vreg_alloc
+    )
+
+    program = MIRProgram(functions=[far_func])
+    codegen = ProgramCodeGenerator()
+    asm_output = codegen.generate(program)
+
+    # DBR setup should be skipped — no PHB/PLB emitted
+    assert 'PHB' not in asm_output, "No ROM/HW access: DBR setup should be skipped"
+    assert 'PLB' not in asm_output, "No ROM/HW access: DBR restore should be skipped"
+    assert 'RTL' in asm_output, "Far function should still emit RTL"
+
+    print("✓ databank=inline skip optimization test passed")
+
+
+def test_far_function_databank_inline_kept_with_near_call():
+    """Test that databank=inline keeps DBR setup when function makes near calls."""
+
+    vreg_alloc = VirtualRegisterAllocator()
+
+    # Near callee (inherits DBR, might access ROM data)
+    callee_block = BasicBlock(block_id=0)
+    callee_block.instructions = [Return(values=[])]
+    callee_func = MIRFunction(
+        name="near_helper",
+        parameters=[],
+        return_type=None,
+        blocks={0: callee_block},
+        entry_block_id=0,
+        is_far=False,
+        vreg_allocator=VirtualRegisterAllocator()
+    )
+
+    # Far function that calls the near helper
+    entry_block = BasicBlock(block_id=0)
+    entry_block.instructions = [
+        Call(
+            function="near_helper",
+            args=[],
+            returns=[],
+            is_far=False,
+        ),
+        Return(values=[])
+    ]
+
+    far_func = MIRFunction(
+        name="caller_func",
+        parameters=[],
+        return_type=None,
+        blocks={0: entry_block},
+        entry_block_id=0,
+        is_far=True,
+        mode_attr=ModeAttribute(
+            name='mode',
+            databank=DataBankMode.INLINE
+        ),
+        bank_attr=BankAttribute(
+            name='bank',
+            bank_number=2
+        ),
+        vreg_allocator=vreg_alloc
+    )
+
+    program = MIRProgram(functions=[callee_func, far_func])
+    codegen = ProgramCodeGenerator()
+    asm_output = codegen.generate(program)
+
+    # DBR setup should NOT be skipped — near call inherits DBR
+    assert 'PHB' in asm_output, "Near call present: DBR setup should be emitted"
+    assert 'PLB' in asm_output, "Near call present: DBR restore should be emitted"
+
+    print("✓ databank=inline kept with near call test passed")
 
 
 def test_far_function_with_databank_caller():
@@ -400,6 +515,8 @@ def run_all_tests():
 
     test_basic_far_function()
     test_far_function_with_databank_inline()
+    test_far_function_databank_inline_skipped_when_no_rom_access()
+    test_far_function_databank_inline_kept_with_near_call()
     test_far_function_with_databank_caller()
     test_near_function_uses_rts()
     test_far_call_jsl()

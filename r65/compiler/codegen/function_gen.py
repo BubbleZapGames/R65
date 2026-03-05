@@ -107,6 +107,10 @@ class FunctionCodeGenerator:
         # Must run before ABIInfo creation since it may set has_far_ptr_stack_params
         self._analyze_far_self_trait_method(mir_func)
 
+        # Check if databank=inline function actually needs DBR setup
+        # Must run before ABIInfo creation since it affects prologue_stack_bytes
+        self._analyze_dbr_inline_needed(mir_func)
+
         # Build ABI info and calculate prologue bytes BEFORE creating register allocator
         # This allows stack params to be allocated at their passed locations
         abi_info = ABIInfo.from_mir_function(mir_func)
@@ -886,13 +890,14 @@ class FunctionCodeGenerator:
             from r65.compiler.hir.attributes import DataBankMode
 
             if mir_func.mode_attr.databank == DataBankMode.INLINE:
-                # Save current DBR and set to function's bank
-                # Sequence: PHB, LDA #bank, PHA, PLB
-                self._emit_instr(Opcode.PHB, comment="Save current data bank")
-                self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(mir_func.bank_attr.bank_number),
-                                "Load function's bank number")
-                self._emit_instr(Opcode.PHA, comment="Push bank number")
-                self._emit_instr(Opcode.PLB, comment="Set data bank register")
+                if not getattr(mir_func, '_skip_dbr_inline', False):
+                    # Save current DBR and set to function's bank
+                    # Sequence: PHB, LDA #bank, PHA, PLB
+                    self._emit_instr(Opcode.PHB, comment="Save current data bank")
+                    self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(mir_func.bank_attr.bank_number),
+                                    "Load function's bank number")
+                    self._emit_instr(Opcode.PHA, comment="Push bank number")
+                    self._emit_instr(Opcode.PLB, comment="Set data bank register")
 
         # Set up processor mode based on inferred entry mode
         # In R65, X/Y are always x16, A mode is based on parameter types
@@ -1149,6 +1154,44 @@ class FunctionCodeGenerator:
         else:
             raise ValueError(f"Cannot offset location kind: {location.kind}")
 
+    def _analyze_dbr_inline_needed(self, mir_func: MIRFunction):
+        """Check if a databank=inline function actually needs DBR setup.
+
+        Scans MIR instructions to determine if the function accesses any
+        bank-dependent memory (ROM data, HW registers) or makes near calls
+        (which inherit DBR and may access bank-dependent memory).
+
+        Sets mir_func._skip_dbr_inline = True if DBR setup can be safely
+        skipped because the function only accesses DBR-independent memory
+        (zeropage, lowram, RAM via long addressing) and makes no near calls.
+        """
+        from r65.compiler.hir.attributes import DataBankMode
+
+        if not (mir_func.is_far and mir_func.mode_attr and mir_func.bank_attr):
+            return
+        if mir_func.mode_attr.databank != DataBankMode.INLINE:
+            return
+
+        for block in mir_func.blocks.values():
+            for instr in block.instructions:
+                # ROM/HW static access uses absolute addressing which depends on DBR
+                if isinstance(instr, Load):
+                    if isinstance(instr.source, MemoryLocation):
+                        if instr.source.storage_type in ('rom', 'hw'):
+                            return
+                elif isinstance(instr, Store):
+                    if isinstance(instr.dest, MemoryLocation):
+                        if instr.dest.storage_type in ('rom', 'hw'):
+                            return
+
+                # Near calls inherit DBR — callee may access ROM/HW data
+                elif isinstance(instr, (Call, TraitDispatch)):
+                    if not getattr(instr, 'is_far', False):
+                        return
+
+        # No bank-dependent accesses found — skip DBR setup
+        mir_func._skip_dbr_inline = True
+
     def _analyze_far_self_trait_method(self, mir_func: MIRFunction):
         """Analyze trait method with far *self to determine access mode.
 
@@ -1273,7 +1316,8 @@ class FunctionCodeGenerator:
 
         from r65.compiler.hir.attributes import DataBankMode
         if mir_func.mode_attr.databank == DataBankMode.INLINE:
-            self._emit_instr(Opcode.PLB, comment="Restore data bank")
+            if not getattr(mir_func, '_skip_dbr_inline', False):
+                self._emit_instr(Opcode.PLB, comment="Restore data bank")
 
     def _emit_mode_restore(self, mir_func: MIRFunction):
         """Mode restore placeholder.
