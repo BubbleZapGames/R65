@@ -1607,6 +1607,12 @@ class MemoryOperationSelector(BaseSelector):
         # Restore DBR - PLB correctly pops the PHB-saved value
         self._emit_instr(Opcode.PLB, None, "Restore DBR")
 
+        # Reassemble 16-bit result into A so that hw-coalescence works correctly.
+        # The byte-by-byte load above only leaves the high byte in A (m8 mode).
+        # Load the full 16-bit value from dest so A has the correct result.
+        self._ensure_m16_mode()
+        self._emit_load_store('LDA', dest_loc)
+
     def _emit_16bit_far_ptr_store_via_dbr(self, ptr_loc, src_loc, source, index_register: str = None):
         """
         Emit 16-bit indirect store through far pointer on stack using DBR manipulation.
@@ -1678,6 +1684,13 @@ class MemoryOperationSelector(BaseSelector):
         adjusted_offset = stack_offset + 1
         operand = StackOffset(adjusted_offset)
 
+        # Adjust src_loc for PHB stack shift if it's stack-relative
+        from dataclasses import replace as dc_replace
+        if src_loc and src_loc.kind == LocationKind.STACK:
+            adj_src = dc_replace(src_loc, stack_offset=src_loc.stack_offset + 1)
+        else:
+            adj_src = src_loc
+
         if index_register == 'Y':
             pass  # Caller set up Y
         else:
@@ -1701,7 +1714,7 @@ class MemoryOperationSelector(BaseSelector):
             self._emit_instr(Opcode.PLB, None, "Restore DBR")
             return
         else:
-            self._emit_load_store('LDA', src_loc)
+            self._emit_load_store('LDA', adj_src)
         self._emit_instr(Opcode.STA_STACK_INDIRECT_Y, operand, "Store low byte through far pointer")
 
         # Increment Y for high byte
@@ -1712,8 +1725,8 @@ class MemoryOperationSelector(BaseSelector):
             value = (source.value >> 8) & 0xFF
             self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(value), "Load high byte immediate")
         else:
-            src_high = self.parent._offset_location(src_loc, 1)
-            self._emit_load_store('LDA', src_high)
+            adj_src_high = self.parent._offset_location(adj_src, 1)
+            self._emit_load_store('LDA', adj_src_high)
         self._emit_instr(Opcode.STA_STACK_INDIRECT_Y, operand, "Store high byte through far pointer")
 
         # Restore DBR

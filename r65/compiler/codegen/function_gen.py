@@ -336,10 +336,21 @@ class FunctionCodeGenerator:
                             # Emitted predecessor exits in wrong mode
                             force_mode = True
                             break
+            elif block.entry_mode is None and hasattr(block, 'predecessors'):
+                # Inlined blocks may lack entry_mode. Check if any
+                # predecessor exits in a mode that disagrees with the
+                # current tracked mode — if so, we must sync.
+                current_bits = self.emitter.get_accu_mode()
+                for pred_id in block.predecessors:
+                    if pred_id in codegen_exit_modes:
+                        if codegen_exit_modes[pred_id] != current_bits:
+                            force_mode = True
+                            break
 
             # Emit mode switch at block entry if needed
             self._emit_block_entry_mode_switch(block, instr_selector,
-                                               force=force_mode)
+                                               force=force_mode,
+                                               codegen_exit_modes=codegen_exit_modes)
 
             # Emit instructions in block
             for instr in block.instructions:
@@ -537,7 +548,8 @@ class FunctionCodeGenerator:
 
         return False  # Block is mode-preserving
 
-    def _emit_block_entry_mode_switch(self, block, instr_selector, force=False):
+    def _emit_block_entry_mode_switch(self, block, instr_selector, force=False,
+                                       codegen_exit_modes=None):
         """
         Emit mode switch at block entry if the block's expected mode differs
         from the current tracked mode.
@@ -555,11 +567,28 @@ class FunctionCodeGenerator:
             block: MIR basic block
             instr_selector: InstructionSelector with mode tracking
             force: If True, always emit mode switch regardless of tracked mode
+            codegen_exit_modes: Dict mapping block_id to exit accu mode (8 or 16)
         """
         from r65.compiler.typeck.processor_mode import ModeState
 
         # Get block's expected entry mode
         if not hasattr(block, 'entry_mode') or block.entry_mode is None:
+            # Inlined blocks may lack entry_mode. When forced, sync the
+            # tracked mode with the predecessor's actual exit mode.
+            if force and codegen_exit_modes and hasattr(block, 'predecessors'):
+                for pred_id in block.predecessors:
+                    if pred_id in codegen_exit_modes:
+                        pred_mode = codegen_exit_modes[pred_id]
+                        if pred_mode != self.emitter.get_accu_mode():
+                            if pred_mode == 16:
+                                self._emit_instr(Opcode.REP_IMMEDIATE, Immediate(M_FLAG),
+                                               "Sync to m16 from predecessor")
+                                self.emitter.emit_accu_mode(16)
+                            else:
+                                self._emit_instr(Opcode.SEP_IMMEDIATE, Immediate(M_FLAG),
+                                               "Sync to m8 from predecessor")
+                                self.emitter.emit_accu_mode(8)
+                            break
             return
 
         block_entry_mode = block.entry_mode

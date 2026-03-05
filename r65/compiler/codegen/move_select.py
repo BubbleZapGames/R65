@@ -96,6 +96,13 @@ class MoveOperationSelector(BaseSelector):
         else:
             src_loc = self.parent._get_operand_location(src_operand)
             if src_loc.is_hw():
+                # X/Y ↔ A transfers are mode-sensitive: TXA/TYA/TAX/TAY in m8
+                # mode only copy the low 8 bits. Ensure m16 for 16-bit values.
+                if is_u16 and (
+                    (src_loc.hw_register in ('X', 'Y') and dest_loc.hw_register == 'A') or
+                    (src_loc.hw_register == 'A' and dest_loc.hw_register in ('X', 'Y'))
+                ):
+                    self.parent._ensure_m16_mode()
                 self.parent._emit_register_transfer(src_loc.hw_register, dest_loc.hw_register)
             else:
                 self._load_memory_to_hw_register(dest_loc.hw_register, src_loc, is_u16, persist_mode)
