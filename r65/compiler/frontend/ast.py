@@ -633,7 +633,7 @@ class BooleanLiteral(Expression):
 @dataclass
 class StringLiteral(Expression):
     """String literal for byte array initialization."""
-    value: str  # Raw string value (escape sequences not yet processed)
+    value: str  # Raw string value (escape sequences processed by StringValidator)
 
 
 @dataclass
