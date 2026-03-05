@@ -199,6 +199,7 @@ class OptimizationStats:
     branch_to_next_eliminated: int = 0
     tracked_loads_eliminated: int = 0
     identity_copies_eliminated: int = 0
+    memory_inc_dec_folded: int = 0
 
     @property
     def total(self) -> int:
@@ -212,7 +213,8 @@ class OptimizationStats:
             self.branch_over_branch_eliminated +
             self.branch_to_next_eliminated +
             self.tracked_loads_eliminated +
-            self.identity_copies_eliminated
+            self.identity_copies_eliminated +
+            self.memory_inc_dec_folded
         )
 
 
@@ -261,6 +263,7 @@ class PeepholeOptimizer:
         changed = True
         while changed:
             prev_total = self.stats.total
+            nodes = self._fold_memory_inc_dec(nodes)
             nodes = self._eliminate_redundant_load_after_store(nodes)
             nodes = self._eliminate_identity_copies(nodes)
             nodes = self._eliminate_redundant_loads_tracked(nodes)
@@ -274,6 +277,100 @@ class PeepholeOptimizer:
             changed = self.stats.total > prev_total
 
         return nodes
+
+    def _fold_memory_inc_dec(self, nodes: List['AsmNode']) -> List['AsmNode']:
+        """
+        Fold load/add-1/store sequences into INC/DEC on memory.
+
+        Patterns (m8 mode, DP addressing):
+            LDA dp; CLC; ADC #$01; STA dp  →  INC dp  (same address)
+            LDA dp; SEC; SBC #$01; STA dp  →  DEC dp  (same address)
+
+        Also handles ABSOLUTE addressing. Skips volatile (hardware) addresses.
+        Only applies in m8 mode — INC/DEC on memory is always 8-bit width.
+        """
+        from r65.compiler.codegen.asm_nodes import Instruction, Directive, Address, Immediate as AsmImmediate
+        from r65.compiler.codegen.constants import DP_BOUNDARY
+
+        optimized = []
+        i = 0
+        in_m16 = False
+
+        while i < len(nodes):
+            node = nodes[i]
+
+            # Track accumulator mode via .ACCU directives
+            if isinstance(node, Directive) and node.name == '.ACCU':
+                if node.args and node.args[0] == '16':
+                    in_m16 = True
+                elif node.args and node.args[0] == '8':
+                    in_m16 = False
+                optimized.append(node)
+                i += 1
+                continue
+
+            # Track mode changes via REP/SEP
+            if isinstance(node, Instruction):
+                if node.opcode == Opcode.REP_IMMEDIATE and isinstance(node.operand, AsmImmediate):
+                    if isinstance(node.operand.value, int) and node.operand.value & 0x20:
+                        in_m16 = True
+                elif node.opcode == Opcode.SEP_IMMEDIATE and isinstance(node.operand, AsmImmediate):
+                    if isinstance(node.operand.value, int) and node.operand.value & 0x20:
+                        in_m16 = False
+
+            # Only fold in m8 mode (INC/DEC on memory operates at current A width,
+            # but the pattern we're matching — LDA/CLC/ADC #1/STA — is m8 specific)
+            if in_m16 or i + 3 >= len(nodes):
+                optimized.append(node)
+                i += 1
+                continue
+
+            if not isinstance(node, Instruction):
+                optimized.append(node)
+                i += 1
+                continue
+
+            # Match: LDA addr; CLC; ADC #$01; STA addr (increment)
+            #    or: LDA addr; SEC; SBC #$01; STA addr (decrement)
+            n1 = nodes[i + 1]
+            n2 = nodes[i + 2]
+            n3 = nodes[i + 3]
+
+            if not (isinstance(n1, Instruction) and isinstance(n2, Instruction) and isinstance(n3, Instruction)):
+                optimized.append(node)
+                i += 1
+                continue
+
+            is_inc = (node.opcode in (Opcode.LDA_DP, Opcode.LDA_ABSOLUTE) and
+                      n1.opcode == Opcode.CLC and
+                      n2.opcode == Opcode.ADC_IMMEDIATE and
+                      isinstance(n2.operand, AsmImmediate) and n2.operand.value == 1 and
+                      n3.opcode in (Opcode.STA_DP, Opcode.STA_ABSOLUTE) and
+                      node.operand == n3.operand)
+
+            is_dec = (node.opcode in (Opcode.LDA_DP, Opcode.LDA_ABSOLUTE) and
+                      n1.opcode == Opcode.SEC and
+                      n2.opcode == Opcode.SBC_IMMEDIATE and
+                      isinstance(n2.operand, AsmImmediate) and n2.operand.value == 1 and
+                      n3.opcode in (Opcode.STA_DP, Opcode.STA_ABSOLUTE) and
+                      node.operand == n3.operand)
+
+            if (is_inc or is_dec) and not self._is_hardware_register(node.operand):
+                # Determine DP vs ABSOLUTE opcode
+                use_dp = node.opcode in (Opcode.LDA_DP,)
+                if is_inc:
+                    opcode = Opcode.INC_DP if use_dp else Opcode.INC_ABSOLUTE
+                else:
+                    opcode = Opcode.DEC_DP if use_dp else Opcode.DEC_ABSOLUTE
+                optimized.append(Instruction(opcode, node.operand,
+                                             comment=f"{'INC' if is_inc else 'DEC'} memory (folded)"))
+                i += 4
+                self.stats.memory_inc_dec_folded += 1
+            else:
+                optimized.append(node)
+                i += 1
+
+        return optimized
 
     def _eliminate_redundant_load_after_store(self, nodes: List['AsmNode']) -> List['AsmNode']:
         """
