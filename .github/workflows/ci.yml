@@ -1,0 +1,157 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install R65 compiler
+        run: pip install -e ".[dev]"
+
+      - name: Run unit tests
+        run: pytest r65/tests/ --ignore=r65/tests/e2e -x -q
+
+  emulator-tests:
+    name: Emulator Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install R65 compiler
+        run: pip install -e ".[dev]"
+
+      - name: Run emulator tests
+        run: pytest r65/emulator/tests/ -x -q
+
+  e2e-tests:
+    name: E2E Tests
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        abi: [Default, FixedStack]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up Homebrew
+        uses: Homebrew/actions/setup-homebrew@master
+
+      - name: Install WLA-DX
+        run: brew install wla-dx
+
+      - name: Install R65 compiler
+        run: pip install -e ".[dev]"
+
+      - name: Run E2E tests (${{ matrix.abi }} ABI)
+        run: pytest r65/tests/e2e/ -x -q --abi ${{ matrix.abi }}
+
+  project-init-pipeline:
+    name: Project Init Pipeline
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up Homebrew
+        uses: Homebrew/actions/setup-homebrew@master
+
+      - name: Install WLA-DX
+        run: brew install wla-dx
+
+      - name: Install R65 compiler
+        run: pip install -e ".[dev]"
+
+      - name: Create project with r65x init
+        run: r65x init --platform snes test_project
+
+      - name: Verify project structure
+        run: |
+          test -f test_project/Makefile
+          test -f test_project/src/main.r65
+          test -f test_project/src/lib/sneslib.r65
+          test -f test_project/src/lib/math.r65
+          test -f test_project/src/lib/65816.r65
+          test -d test_project/build
+
+      - name: Compile R65 to assembly
+        working-directory: test_project
+        run: |
+          python -m r65.compiler.main src/main.r65 -o build/main.asm \
+            --cfg snes --dbg -I src
+
+      - name: Verify assembly and debug output
+        run: |
+          test -f test_project/build/main.asm
+          test -f test_project/build/main.dbg
+
+      - name: Assemble with WLA-DX
+        working-directory: test_project
+        run: wla-65816 -o build/main.o build/main.asm
+
+      - name: Link ROM
+        working-directory: test_project
+        run: |
+          wlalink -r build/main.link build/TEST_PROJECT.sfc
+
+      - name: Verify ROM
+        run: |
+          test -f test_project/build/TEST_PROJECT.sfc
+          ROM_SIZE=$(stat -c%s test_project/build/TEST_PROJECT.sfc)
+          echo "ROM size: $ROM_SIZE bytes"
+          test "$ROM_SIZE" -ge 131072
+
+      - name: Run ROM on emulator
+        run: |
+          python -c "
+          from r65.emulator.cpu import CPU65816, StopExecution, WaitForInterrupt
+          from r65.emulator.memory import SNESMemory
+
+          rom = open('test_project/build/TEST_PROJECT.sfc', 'rb').read()
+          memory = SNESMemory(rom, mapping='lorom')
+          cpu = CPU65816(memory)
+          cpu.PC = memory.read16(0xFFFC)
+          cpu.PBR = 0x00
+
+          instructions = 0
+          try:
+              while instructions < 10000:
+                  cpu.step()
+                  instructions += 1
+          except (StopExecution, WaitForInterrupt):
+              pass
+
+          print(f'Executed {instructions} instructions, {cpu.cycles} cycles')
+          print(f'PC=0x{cpu.PC:04X} A=0x{cpu.A:04X} X=0x{cpu.X:04X} Y=0x{cpu.Y:04X}')
+          print(f'SP=0x{cpu.SP:04X} DBR=0x{cpu.DBR:02X} PBR=0x{cpu.PBR:02X}')
+          assert instructions > 10, f'ROM barely executed ({instructions} instructions)'
+          print('ROM executed successfully')
+          "
