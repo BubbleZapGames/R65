@@ -317,10 +317,16 @@ class CallInstructionSelector(BaseSelector):
             self._emit_builtin_call(instr)
             return
 
-        # Check if we need D register management for far pointer params
+        # Check if we need D/DBR management for far pointer params
+        from r65.compiler.mir.nodes import FarPtrStrategy
         needs_d_management = (
             self.parent.current_function and
-            self.parent.current_function.has_far_ptr_stack_params
+            self.parent.current_function.has_far_ptr_stack_params and
+            self.parent.current_function.far_ptr_strategy != FarPtrStrategy.SET_DBR
+        )
+        needs_dbr_management = (
+            self.parent.current_function and
+            self.parent.current_function.far_ptr_strategy == FarPtrStrategy.SET_DBR
         )
 
         # Step 0: Compute hardware register spills needed
@@ -339,6 +345,10 @@ class CallInstructionSelector(BaseSelector):
         # automatically adjusted.
         if needs_d_management:
             self._emit_d_restore_before_call()
+
+        # Step 0.7b: SET_DBR: save ptr-bank DBR and set DBR to code bank for callee
+        if needs_dbr_management:
+            self._emit_dbr_save_before_call()
 
         # Step 1: Set up arguments
         stack_bytes_pushed = self._emit_argument_setup(instr)
@@ -405,6 +415,10 @@ class CallInstructionSelector(BaseSelector):
                 self._emit_d_equals_s_restore(live_regs)  # PHD + TSC + TCD
             else:
                 self._emit_d_push_only()  # Just PHD (for epilogue)
+
+        # Step 8b: SET_DBR: restore ptr-bank DBR after call
+        if needs_dbr_management:
+            self._emit_dbr_restore_after_call()
 
     # ========================================================================
     # Trait Dispatch
@@ -2279,3 +2293,25 @@ class CallInstructionSelector(BaseSelector):
                             return True
 
         return False
+
+    # ========================================================================
+    # DBR Management for SET_DBR Strategy
+    # ========================================================================
+
+    def _emit_dbr_save_before_call(self):
+        """Save ptr-bank DBR and set DBR to code bank before a call.
+
+        Under SET_DBR strategy, DBR is set to the far pointer's bank.
+        Callees expect DBR to be the code bank (bank 0 for LoROM), so we
+        save DBR (PHB), push code bank (PHK), and pop it into DBR (PLB).
+        """
+        self._emit_instr(Opcode.PHB, comment="Save ptr-bank DBR before call")
+        self.region_state.stack_tracker.push(1)
+        self._emit_instr(Opcode.PHK, comment="Push code bank")
+        self._emit_instr(Opcode.PLB, comment="Set DBR to code bank for callee")
+        # PHK pushes 1, PLB pops 1 — net zero for stack tracker
+
+    def _emit_dbr_restore_after_call(self):
+        """Restore ptr-bank DBR after a call returns."""
+        self._emit_instr(Opcode.PLB, comment="Restore ptr-bank DBR after call")
+        self.region_state.stack_tracker.pop(1)

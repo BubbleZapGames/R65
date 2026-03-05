@@ -288,9 +288,12 @@ class InstructionSelector:
                 )
 
         # When D = S, DP addressing is unavailable - force absolute addressing
-        # for both scratch registers and zeropage memory locations
+        # for both scratch registers and zeropage memory locations.
+        # SET_DBR strategy keeps DP intact, so no forcing needed.
+        from r65.compiler.mir.nodes import FarPtrStrategy
         if (self.current_function and
-            self.current_function.has_far_ptr_stack_params):
+            self.current_function.has_far_ptr_stack_params and
+            self.current_function.far_ptr_strategy != FarPtrStrategy.SET_DBR):
             if location.kind == LocationKind.SCRATCH:
                 # Convert scratch to memory location with absolute addressing
                 abs_location = PhysicalLocation(
@@ -312,6 +315,46 @@ class InstructionSelector:
                 )
                 opcode = self._resolver.get_opcode(mnemonic, resolved)
                 return opcode, resolved.operand
+
+        # When SET_DBR is active, DBR is set to the far pointer's bank ($7E for WRAM).
+        # ROM labels and HW addresses need LONG addressing (different bank from DBR).
+        # RAM addresses in $7E bank can use ABSOLUTE (strip bank byte, saves 1 cycle).
+        if (self.current_function and
+            self.current_function.far_ptr_strategy == FarPtrStrategy.SET_DBR):
+            if location.kind == LocationKind.MEMORY:
+                from r65.compiler.codegen.location_resolver import ResolvedLocation, AddressingMode
+                if location.memory_label and location.storage_type == 'rom':
+                    # ROM label: force LONG addressing (label is in code bank, not DBR bank)
+                    resolved = ResolvedLocation(
+                        mode=self._resolver._get_indexed_mode(location.index_register, is_dp=False, is_long=True),
+                        operand=Address(location.memory_label),
+                        label=location.memory_label,
+                        is_dp=False
+                    )
+                    opcode = self._resolver.get_opcode(mnemonic, resolved)
+                    return opcode, resolved.operand
+                elif location.memory_addr is not None:
+                    if location.storage_type == 'hw':
+                        # HW register (bank $00): force LONG addressing
+                        resolved = ResolvedLocation(
+                            mode=self._resolver._get_indexed_mode(location.index_register, is_dp=False, is_long=True),
+                            operand=Address(location.memory_addr),
+                            address=location.memory_addr,
+                            is_dp=False
+                        )
+                        opcode = self._resolver.get_opcode(mnemonic, resolved)
+                        return opcode, resolved.operand
+                    elif location.memory_addr > 0xFFFF:
+                        # RAM in $7E bank: strip bank byte, use ABSOLUTE (DBR matches)
+                        stripped_addr = location.memory_addr & 0xFFFF
+                        resolved = ResolvedLocation(
+                            mode=self._resolver._get_indexed_mode(location.index_register, is_dp=False, is_long=False),
+                            operand=Address(stripped_addr),
+                            address=stripped_addr,
+                            is_dp=False
+                        )
+                        opcode = self._resolver.get_opcode(mnemonic, resolved)
+                        return opcode, resolved.operand
 
         return self._resolver.resolve_and_get_opcode(mnemonic, location)
 
@@ -1461,7 +1504,8 @@ class InstructionSelector:
                     kind=LocationKind.MEMORY,
                     memory_label=operand.symbol.rom_label,
                     size=1,  # Size determined by context
-                    index_register=operand.index_register  # Pass indexed addressing info
+                    index_register=operand.index_register,
+                    storage_type=operand.storage_type,
                 )
             # Check if MemoryLocation has explicit address (for offsets)
             elif operand.address is not None:
@@ -1470,7 +1514,8 @@ class InstructionSelector:
                     kind=LocationKind.MEMORY,
                     memory_addr=operand.address,
                     size=1,  # Size determined by context
-                    index_register=operand.index_register  # Pass indexed addressing info
+                    index_register=operand.index_register,
+                    storage_type=operand.storage_type,
                 )
             else:
                 # Get address from memory allocator
@@ -1480,7 +1525,8 @@ class InstructionSelector:
                         kind=LocationKind.MEMORY,
                         memory_addr=alloc.address + operand.offset,
                         size=alloc.size,
-                        index_register=operand.index_register  # Pass indexed addressing info
+                        index_register=operand.index_register,
+                        storage_type=operand.storage_type,
                     )
                 else:
                     raise missing_allocation(operand.symbol.name, source_loc=self._current_source_loc)

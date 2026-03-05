@@ -599,6 +599,12 @@ class ReturnFromInterrupt(MIRInstruction):
 # Function Calls
 # ============================================================================
 
+class FarPtrStrategy(Enum):
+    """Strategy for accessing far pointer stack parameters."""
+    D_EQUALS_S = "d_equals_s"  # PHD/TSC/TCD: D=S enables [dp],Y indirect long
+    SET_DBR = "set_dbr"        # PHB/LDA/PHA/PLB: set DBR to ptr bank, use (d,S),Y
+
+
 class ArgumentMechanism(Enum):
     """Argument passing mechanism."""
     STACK = "stack"          # Pushed on stack
@@ -881,10 +887,12 @@ class MIRFunction:
     exit_m_mode: Optional[Any] = None       # ModeState (M8 or M16)
 
     # Far pointer stack parameter tracking
-    # True if any stack parameters are far pointers (need D=S prologue)
+    # True if any stack parameters are far pointers (need D=S prologue or SET_DBR)
     has_far_ptr_stack_params: bool = False
     # Set of parameter indices that are far pointers on stack
     far_ptr_param_indices: Set[int] = field(default_factory=set)
+    # Strategy for far pointer access (D=S or SET_DBR), set by analysis pass
+    far_ptr_strategy: Optional['FarPtrStrategy'] = None
 
     # Source location for debugging (from HIR)
     source_loc: Optional[Any] = None  # SourceLocation

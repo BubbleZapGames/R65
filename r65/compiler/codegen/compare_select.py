@@ -48,9 +48,12 @@ class CompareSelector(BaseSelector):
             ):
                 # When D=S is active (far pointer functions), stack offsets
                 # ARE direct page offsets. Use CPX/CPY with DP addressing.
+                # Only applies to D_EQUALS_S strategy (SET_DBR keeps DP at zeropage).
+                from r65.compiler.mir.nodes import FarPtrStrategy
                 if (operand.kind == LocationKind.STACK and
                     self.parent.current_function and
-                    self.parent.current_function.has_far_ptr_stack_params):
+                    self.parent.current_function.has_far_ptr_stack_params and
+                    self.parent.current_function.far_ptr_strategy != FarPtrStrategy.SET_DBR):
                     opcode = getattr(Opcode, f"{mnemonic}_DP")
                     self._emit_instr(opcode, Address(operand.stack_offset))
                 else:

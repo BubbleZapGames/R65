@@ -172,6 +172,11 @@ class ProgramCodeGenerator:
         # Run parameter promotion analysis (before loop promotion)
         abi_model.run_param_analysis(mir_program, scratch_pool, disable_scratch_params)
 
+        # Analyze far pointer strategy (D=S vs SET_DBR) after param promotion
+        # has set has_far_ptr_stack_params, before code generation
+        from r65.compiler.analysis.far_ptr_strategy import analyze_far_ptr_strategy
+        analyze_far_ptr_strategy(mir_program)
+
         # Run loop register promotion analysis (after scratch params)
         if not disable_loop_promotion:
             from r65.compiler.analysis.loop_register_promotion import analyze_loop_promotion

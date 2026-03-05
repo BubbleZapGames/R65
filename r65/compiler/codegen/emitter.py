@@ -179,10 +179,13 @@ def _emit_instruction(opcode: Opcode, operand: Operand | None) -> str:
             return f"{mnem}{suffix} {_format_absolute(value)},Y"
 
         # Long (24-bit)
+        # For labels, use .l suffix to force 24-bit addressing in WLA-DX
         case ("LONG", Address(value)):
-            return f"{mnem} {_format_long_value(value)}"
+            suffix = ".l" if isinstance(value, str) else ""
+            return f"{mnem}{suffix} {_format_long_value(value)}"
         case ("LONG_X", Address(value)):
-            return f"{mnem} {_format_long_value(value)},X"
+            suffix = ".l" if isinstance(value, str) else ""
+            return f"{mnem}{suffix} {_format_long_value(value)},X"
 
         # Indirect
         case ("INDIRECT", Address(value)):

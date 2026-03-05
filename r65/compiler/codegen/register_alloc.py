@@ -66,6 +66,9 @@ class PhysicalLocation:
     # For RETURN_SINKABLE: the MIR MemoryLocation to load from at return site
     source_location: Optional[Any] = None
 
+    # Storage type hint for SET_DBR addressing ('zeropage', 'ram', 'rom', 'hw')
+    storage_type: Optional[str] = None
+
     # Size in bytes
     size: int = 1
 
@@ -571,13 +574,16 @@ class RegisterAllocator:
         Returns:
             PhysicalLocation if scratch allocated, None otherwise
         """
-        # In functions with far ptr stack params, the prologue does PHD/TSC/TCD
+        # In functions with D=S far ptr strategy, the prologue does PHD/TSC/TCD
         # which sets D=S. This makes DP addressing (e.g., STA $04) access S+4
         # (within the stack frame) instead of physical zeropage address $0004.
         # Scratch registers use DP addressing, so they cannot be used in these
         # functions without corrupting the stack frame.
+        # SET_DBR strategy keeps DP intact, so scratch registers work normally.
         if self.mir_func and self.mir_func.has_far_ptr_stack_params:
-            return None
+            from r65.compiler.mir.nodes import FarPtrStrategy
+            if self.mir_func.far_ptr_strategy != FarPtrStrategy.SET_DBR:
+                return None
 
         vreg_size = get_vreg_size(vreg)
 

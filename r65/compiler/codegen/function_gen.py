@@ -922,13 +922,24 @@ class FunctionCodeGenerator:
                     if push_opcode:
                         self._emit_instr(push_opcode, comment=f"Preserve {reg}")
 
-        # Set up D = S for far pointer stack parameters
-        # This enables [dp],Y addressing to access 24-bit pointers on the stack
-        # Must come AFTER all other prologue pushes so D reflects final SP
+        # Set up far pointer access for stack parameters
+        # Must come AFTER all other prologue pushes so offsets are final
         if mir_func.has_far_ptr_stack_params:
-            self._emit_instr(Opcode.PHD, comment="Save Direct Page register")
-            self._emit_instr(Opcode.TSC, comment="Transfer Stack to A")
-            self._emit_instr(Opcode.TCD, comment="Transfer A to Direct Page (D = S)")
+            from r65.compiler.mir.nodes import FarPtrStrategy
+            if mir_func.far_ptr_strategy == FarPtrStrategy.SET_DBR:
+                # SET_DBR: save DBR, load bank byte from far pointer param, set DBR
+                # This preserves DP, keeping scratch registers and zeropage available
+                bank_offset = self._get_far_ptr_bank_stack_offset(mir_func, frame_size)
+                self._emit_instr(Opcode.PHB, comment="Save Data Bank Register")
+                self._emit_instr(Opcode.LDA_STACK, StackOffset(bank_offset),
+                                "Load far pointer bank byte from stack")
+                self._emit_instr(Opcode.PHA, comment="Push bank byte")
+                self._emit_instr(Opcode.PLB, comment="Set DBR to far pointer bank")
+            else:
+                # D_EQUALS_S: enables [dp],Y addressing for 24-bit pointers
+                self._emit_instr(Opcode.PHD, comment="Save Direct Page register")
+                self._emit_instr(Opcode.TSC, comment="Transfer Stack to A")
+                self._emit_instr(Opcode.TCD, comment="Transfer A to Direct Page (D = S)")
 
         # Restore A param AFTER all prologue code that clobbers A.
         # The current mode (set by mode setup above) ensures the transfer
@@ -938,6 +949,26 @@ class FunctionCodeGenerator:
         elif a_save_method == 'X':
             self._emit_instr(Opcode.TXA, comment="Restore A param after prologue")
         # 'push' and None: no restore needed (A was never clobbered)
+
+    def _get_far_ptr_bank_stack_offset(self, mir_func: MIRFunction, frame_size: int) -> int:
+        """Compute stack offset to the far pointer's bank byte for SET_DBR prologue.
+
+        At the point SET_DBR code runs (after frame alloc + preserves, before PHB),
+        the offset from SP to the bank byte = param_offset + 2 + (prologue_bytes - 1) + frame_size.
+        The -1 accounts for PHB not having been pushed yet.
+        """
+        # Get the single far pointer param index
+        far_idx = next(iter(mir_func.far_ptr_param_indices))
+        base_offset = mir_func.stack_param_offsets[far_idx]
+
+        # Bank byte is at +2 from param start (3-byte pointer: lo, hi, bank)
+        bank_byte_base = base_offset + 2
+
+        # Adjust for everything pushed before this point:
+        # prologue_stack_bytes includes 1 for PHB, but PHB hasn't happened yet
+        abi = ABIInfo.from_mir_function(mir_func)
+        pre_phb_bytes = abi.prologue_stack_bytes - 1  # Everything except PHB itself
+        return bank_byte_base + pre_phb_bytes + frame_size
 
     def _emit_entry_setup(self, mir_func: MIRFunction):
         """
@@ -1193,10 +1224,14 @@ class FunctionCodeGenerator:
             mir_func: MIR function
             reg_alloc: Register allocator
         """
-        # Restore D register if we set up D = S for far pointer params
-        # This must come first since PHD was the last push in prologue
+        # Restore register saved by far pointer prologue
+        # This must come first since it was the last push in prologue (LIFO)
         if mir_func.has_far_ptr_stack_params:
-            self._emit_instr(Opcode.PLD, comment="Restore Direct Page register")
+            from r65.compiler.mir.nodes import FarPtrStrategy
+            if mir_func.far_ptr_strategy == FarPtrStrategy.SET_DBR:
+                self._emit_instr(Opcode.PLB, comment="Restore Data Bank Register")
+            else:
+                self._emit_instr(Opcode.PLD, comment="Restore Direct Page register")
 
         self._emit_preserved_register_restores(mir_func)
         self._emit_dbr_restore(mir_func)

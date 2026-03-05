@@ -25,6 +25,7 @@ class ABIInfo:
         'is_far', 'is_entry', 'is_interrupt', 'is_trait_method',
         'entry_m_mode', 'preserves', 'databank_mode',
         'has_far_ptr_stack_params', 'self_far_uses_d_equals_s',
+        'far_ptr_strategy',
     )
 
     def __init__(
@@ -38,6 +39,7 @@ class ABIInfo:
         databank_mode=None,
         has_far_ptr_stack_params: bool = False,
         self_far_uses_d_equals_s: bool = False,
+        far_ptr_strategy=None,
     ):
         self.is_far = is_far
         self.is_entry = is_entry
@@ -48,6 +50,7 @@ class ABIInfo:
         self.databank_mode = databank_mode
         self.has_far_ptr_stack_params = has_far_ptr_stack_params
         self.self_far_uses_d_equals_s = self_far_uses_d_equals_s
+        self.far_ptr_strategy = far_ptr_strategy
 
     @property
     def return_addr_size(self) -> int:
@@ -93,9 +96,13 @@ class ABIInfo:
         if self.self_far_uses_d_equals_s:
             total += 3
 
-        # Far pointer stack params: PHD pushes 2 bytes
+        # Far pointer stack params: PHD (2 bytes) for D=S, PHB (1 byte) for SET_DBR
         if self.has_far_ptr_stack_params:
-            total += 2
+            from r65.compiler.mir.nodes import FarPtrStrategy
+            if self.far_ptr_strategy == FarPtrStrategy.SET_DBR:
+                total += 1  # PHB
+            else:
+                total += 2  # PHD (D_EQUALS_S or no strategy set yet)
 
         return total
 
@@ -122,6 +129,7 @@ class ABIInfo:
             databank_mode=databank_mode,
             has_far_ptr_stack_params=mir_func.has_far_ptr_stack_params,
             self_far_uses_d_equals_s=mir_func.self_far_uses_d_equals_s,
+            far_ptr_strategy=mir_func.far_ptr_strategy,
         )
 
 
