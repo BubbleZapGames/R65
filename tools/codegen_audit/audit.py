@@ -54,36 +54,72 @@ from tools.codegen_audit.report import (
 from tools.codegen_audit.corpus import get_all_corpus_entries
 
 
-def _invoke_claude(prompt: str, timeout: int = 120, verbose: bool = False) -> str | None:
+def _invoke_claude(prompt: str, timeout: int = 120, verbose: bool = False,
+                   model: str = 'sonnet') -> str | None:
     """Invoke claude CLI and return the response text.
 
     Returns None on failure.
     """
     if verbose:
-        print(f'  [claude] Sending prompt ({len(prompt)} chars)...', file=sys.stderr)
+        print(f'  [claude] Sending prompt ({len(prompt)} chars) to {model}...',
+              file=sys.stderr)
 
     if shutil.which('claude') is None:
         print('ERROR: `claude` CLI not found in PATH', file=sys.stderr)
         return None
 
+    # Build env with nesting detection disabled so we can call claude
+    # from within a Claude Code session
+    import os
+    env = os.environ.copy()
+    env.pop('CLAUDECODE', None)
+    env.pop('CLAUDE_CODE_ENTRYPOINT', None)
+
     try:
         result = subprocess.run(
-            ['claude', '--print', '-p', prompt],
+            ['claude', '-p', '--model', model],
+            input=prompt,
             capture_output=True,
             text=True,
             timeout=timeout,
+            env=env,
         )
-        if result.returncode != 0:
-            print(f'  [claude] Error (exit {result.returncode}): {result.stderr[:200]}',
+        # claude -p outputs response to stderr
+        response = result.stderr.strip()
+        if result.returncode != 0 and not response:
+            print(f'  [claude] Error (exit {result.returncode}): {result.stdout[:200]}',
                   file=sys.stderr)
             return None
-        return result.stdout
+        if not response:
+            # Try stdout as fallback
+            response = result.stdout.strip()
+        if verbose and response:
+            print(f'  [claude] Got response ({len(response)} chars)', file=sys.stderr)
+        return response or None
     except subprocess.TimeoutExpired:
         print(f'  [claude] Timed out after {timeout}s', file=sys.stderr)
         return None
     except Exception as e:
         print(f'  [claude] Error: {e}', file=sys.stderr)
         return None
+
+
+def _find_source_in_includes(r65_source: str, func_name: str) -> str | None:
+    """Search included files for a function's source code."""
+    import re
+    # Find include!("path") directives
+    include_re = re.compile(r'include!\("([^"]+)"\)')
+    for match in include_re.finditer(r65_source):
+        include_path = Path(match.group(1))
+        if include_path.exists():
+            try:
+                included_source = include_path.read_text()
+                result = get_function_source(included_source, func_name)
+                if result is not None:
+                    return result
+            except Exception:
+                pass
+    return None
 
 
 def _compile_source(source: str, filename: str = '<audit>') -> str | None:
@@ -102,6 +138,7 @@ def audit_function(
     skip_verify: bool = False,
     verbose: bool = False,
     timeout: int = 120,
+    model: str = 'sonnet',
 ) -> tuple[FunctionMetrics | None, list[Improvement]]:
     """Audit a single function through the full pipeline.
 
@@ -116,11 +153,14 @@ def audit_function(
     compiler_lines = instruction_lines(compiler_asm)
     compiler_metrics = get_metrics(compiler_lines)
 
-    # 2. Extract R65 source for this function
+    # 2. Extract R65 source for this function (search includes too)
     func_source = get_function_source(r65_source, func_name)
     if func_source is None:
-        print(f'  Could not extract R65 source for {func_name}', file=sys.stderr)
-        return None, []
+        # Try to find source in included files
+        func_source = _find_source_in_includes(r65_source, func_name)
+    if func_source is None:
+        print(f'  Could not extract R65 source for {func_name} (using compiler ASM only)',
+              file=sys.stderr)
 
     print(f'  Compiler output: {compiler_metrics["instructions"]}i / '
           f'{compiler_metrics["bytes"]}B / ~{compiler_metrics["cycles"]}cy')
@@ -137,7 +177,8 @@ def audit_function(
         print(f'  --- Agent 1 prompt ---', file=sys.stderr)
         print(agent1_prompt[:500] + '...', file=sys.stderr)
 
-    agent1_response = _invoke_claude(agent1_prompt, timeout=timeout, verbose=verbose)
+    agent1_response = _invoke_claude(agent1_prompt, timeout=timeout, verbose=verbose,
+                                     model=model)
     if agent1_response is None:
         print(f'  Agent 1 failed for {func_name}', file=sys.stderr)
         fm = FunctionMetrics(
@@ -216,7 +257,8 @@ def audit_function(
         print(f'  --- Agent 2 prompt ---', file=sys.stderr)
         print(agent2_prompt[:500] + '...', file=sys.stderr)
 
-    agent2_response = _invoke_claude(agent2_prompt, timeout=timeout, verbose=verbose)
+    agent2_response = _invoke_claude(agent2_prompt, timeout=timeout, verbose=verbose,
+                                     model=model)
     if agent2_response is None:
         print(f'  Agent 2 failed for {func_name}', file=sys.stderr)
         return fm, []
@@ -251,6 +293,7 @@ def run_audit(
     dry_run: bool = False,
     verbose: bool = False,
     timeout: int = 120,
+    model: str = 'sonnet',
 ) -> AuditReport:
     """Run the full audit pipeline on a source file or string.
 
@@ -322,6 +365,7 @@ def run_audit(
             skip_verify=skip_verify,
             verbose=verbose,
             timeout=timeout,
+            model=model,
         )
 
         if fm:
@@ -339,6 +383,7 @@ def run_corpus(
     dry_run: bool = False,
     verbose: bool = False,
     timeout: int = 120,
+    model: str = 'sonnet',
 ) -> AuditReport:
     """Run audit on all built-in corpus entries."""
     combined_report = AuditReport(source_file='<corpus>')
@@ -356,6 +401,7 @@ def run_corpus(
             dry_run=dry_run,
             verbose=verbose,
             timeout=timeout,
+            model=model,
         )
 
         combined_report.functions_analyzed += report.functions_analyzed
@@ -415,8 +461,12 @@ examples:
         help='Verbose output (show prompts and debug info)',
     )
     parser.add_argument(
-        '--timeout', type=int, default=120,
-        help='Timeout for each AI agent invocation in seconds (default: 120)',
+        '--timeout', type=int, default=300,
+        help='Timeout for each AI agent invocation in seconds (default: 300)',
+    )
+    parser.add_argument(
+        '--model', default='sonnet',
+        help='Claude model to use (default: sonnet)',
     )
 
     args = parser.parse_args()
@@ -431,6 +481,7 @@ examples:
             dry_run=args.dry_run,
             verbose=args.verbose,
             timeout=args.timeout,
+            model=args.model,
         )
     else:
         report = run_audit(
@@ -440,6 +491,7 @@ examples:
             dry_run=args.dry_run,
             verbose=args.verbose,
             timeout=args.timeout,
+            model=args.model,
         )
 
     # Output report

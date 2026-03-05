@@ -11,7 +11,7 @@ from .isa_reference import get_isa_reference
 
 def build_agent1_prompt(
     func_name: str,
-    r65_source: str,
+    r65_source: str | None,
     compiler_asm: str,
     abi_context: str = '',
     variable_context: str = '',
@@ -20,12 +20,21 @@ def build_agent1_prompt(
 
     Args:
         func_name: Name of the function being optimized
-        r65_source: R65 source code for the function
+        r65_source: R65 source code for the function (may be None)
         compiler_asm: Current compiler-generated assembly (for reference)
         abi_context: Description of ABI (param locations, return convention, mode)
         variable_context: Static/zeropage variable addresses referenced
     """
     isa_ref = get_isa_reference()
+
+    source_section = ''
+    if r65_source:
+        source_section = f"""### R65 Source Code
+```
+{r65_source}
+```
+
+"""
 
     return f"""\
 You are an expert 65816 assembly programmer writing optimal code for the SNES.
@@ -39,12 +48,7 @@ entry/exit processor mode.
 
 **Name**: `{func_name}`
 
-### R65 Source Code
-```
-{r65_source}
-```
-
-### Current Compiler Output (your baseline to beat)
+{source_section}### Current Compiler Output (your baseline to beat)
 ```
 {compiler_asm}
 ```

@@ -35,7 +35,7 @@ def extract_function_asm(full_asm: str, func_name: str) -> str | None:
     """Extract assembly for a single function from full compiler output.
 
     Returns the assembly text from the function label through to the next
-    section separator, or None if the function is not found.
+    section separator or section header, or None if the function is not found.
     """
     lines = full_asm.split('\n')
     in_func = False
@@ -46,13 +46,20 @@ def extract_function_asm(full_asm: str, func_name: str) -> str | None:
             in_func = True
             func_lines.append(line)
         elif in_func:
-            # Stop at next function separator block
-            if _SEPARATOR_RE.match(line.strip()) and func_lines:
+            stripped = line.strip()
+            # Stop at next function separator block or section header
+            if _SEPARATOR_RE.match(stripped) and func_lines:
+                break
+            # Stop at ROM data sections or other major delimiters
+            if stripped.startswith('; ====') and func_lines:
                 break
             func_lines.append(line)
 
     if not func_lines:
         return None
+    # Trim trailing blank lines
+    while func_lines and not func_lines[-1].strip():
+        func_lines.pop()
     return '\n'.join(func_lines)
 
 
@@ -119,15 +126,29 @@ def get_function_source(r65_source: str, func_name: str) -> str | None:
 
     Does basic brace-matching to find the function body.
     Returns the full function text including signature, or None if not found.
+
+    Handles mangled trait method names like 'U32__add' by searching for 'fn add('
+    inside the source.
     """
     lines = r65_source.split('\n')
-    # Find function declaration line
-    pattern = re.compile(rf'\bfn\s+{re.escape(func_name)}\s*\(')
 
-    start_idx = None
-    for i, line in enumerate(lines):
-        if pattern.search(line):
-            start_idx = i
+    # Try exact name first, then demangle trait method names (Type__method -> method)
+    names_to_try = [func_name]
+    if '__' in func_name:
+        # U32__add -> add, I32__from_i16 -> from_i16
+        demangled = func_name.split('__', 1)[1]
+        names_to_try.append(demangled)
+
+    for name in names_to_try:
+        pattern = re.compile(rf'\bfn\s+{re.escape(name)}\s*\(')
+
+        start_idx = None
+        for i, line in enumerate(lines):
+            if pattern.search(line):
+                start_idx = i
+                break
+
+        if start_idx is not None:
             break
 
     if start_idx is None:
