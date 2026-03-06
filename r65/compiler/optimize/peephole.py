@@ -287,6 +287,7 @@ class PeepholeOptimizer:
             nodes = self._rotate_top_tested_loops(nodes)
             nodes = self._hoist_loop_invariant_loads(nodes)
             nodes = self._count_down_loops(nodes)
+            nodes = self._hoist_loop_mode_switches(nodes)
             changed = self.stats.total > prev_total
 
         return nodes
@@ -1716,6 +1717,144 @@ class PeepholeOptimizer:
                 optimized.append(replace_map[i])
             else:
                 optimized.append(node)
+
+        return optimized
+
+    def _hoist_loop_mode_switches(self, nodes: List['AsmNode']) -> List['AsmNode']:
+        """
+        Hoist SEP/REP from inside bottom-tested loops to before the loop header.
+
+        Pattern: Label / SEP|REP / body / BCC|BNE Label
+        When the back-edge arrives in the target mode already (body doesn't change
+        it back), hoisting the SEP/REP before the label makes it execute once
+        instead of every iteration. The cross-block mode pass then eliminates
+        the now-redundant in-loop copy.
+        """
+        from r65.compiler.codegen.asm_nodes import Instruction, Immediate, Directive, Label, Address
+
+        M_FLAG = 0x20
+        BACK_EDGE_OPCODES = {Opcode.BCC, Opcode.BNE, Opcode.BRA, Opcode.BCS, Opcode.BEQ,
+                             Opcode.BPL, Opcode.BMI}
+
+        # Build label reference counts
+        label_refs: dict[str, int] = {}
+        for node in nodes:
+            if isinstance(node, Instruction) and node.opcode in (BRANCH_OPCODES | JUMP_OPCODES):
+                if hasattr(node.operand, 'value') and isinstance(node.operand.value, str):
+                    label_refs[node.operand.value] = label_refs.get(node.operand.value, 0) + 1
+
+        # Find candidates: Label followed by SEP/REP (possibly with .ACCU between)
+        hoists = []  # (label_idx, sep_idx, accu_idx_or_none, target_mode)
+
+        for i, node in enumerate(nodes):
+            if not isinstance(node, Label):
+                continue
+
+            label_name = node.name
+            # Only handle labels with exactly 1 reference (the back-edge)
+            if label_refs.get(label_name, 0) != 1:
+                continue
+
+            # Look for SEP/REP after label (skip .ACCU directives)
+            j = i + 1
+            accu_before = None
+            sep_idx = None
+            while j < len(nodes):
+                if isinstance(nodes[j], Directive) and nodes[j].name == '.ACCU':
+                    accu_before = j
+                    j += 1
+                    continue
+                if isinstance(nodes[j], Instruction):
+                    if (nodes[j].opcode == Opcode.SEP_IMMEDIATE and
+                            isinstance(nodes[j].operand, Immediate) and
+                            isinstance(nodes[j].operand.value, int) and
+                            nodes[j].operand.value & M_FLAG):
+                        sep_idx = j
+                    elif (nodes[j].opcode == Opcode.REP_IMMEDIATE and
+                            isinstance(nodes[j].operand, Immediate) and
+                            isinstance(nodes[j].operand.value, int) and
+                            nodes[j].operand.value & M_FLAG):
+                        sep_idx = j
+                break
+
+            if sep_idx is None:
+                continue
+
+            target_mode = 8 if nodes[sep_idx].opcode == Opcode.SEP_IMMEDIATE else 16
+
+            # Find the .ACCU directive AFTER the SEP/REP
+            accu_after = None
+            if (sep_idx + 1 < len(nodes) and isinstance(nodes[sep_idx + 1], Directive) and
+                    nodes[sep_idx + 1].name == '.ACCU'):
+                accu_after = sep_idx + 1
+
+            # Find the back-edge branch that targets this label
+            # Track mode through the loop body to verify it arrives in target_mode
+            body_start = (accu_after + 1) if accu_after else sep_idx + 1
+            current_mode = target_mode  # After the SEP/REP, we're in target_mode
+            found_back_edge = False
+
+            for k in range(body_start, len(nodes)):
+                n = nodes[k]
+                if isinstance(n, Label):
+                    # Reached another label — might be fall-through from our loop
+                    continue
+                if isinstance(n, Directive) and n.name == '.ACCU':
+                    if n.args:
+                        if n.args[0] == '8':
+                            current_mode = 8
+                        elif n.args[0] == '16':
+                            current_mode = 16
+                    continue
+                if not isinstance(n, Instruction):
+                    continue
+
+                # Track mode
+                if n.opcode == Opcode.REP_IMMEDIATE and isinstance(n.operand, Immediate):
+                    if isinstance(n.operand.value, int) and n.operand.value & M_FLAG:
+                        current_mode = 16
+                elif n.opcode == Opcode.SEP_IMMEDIATE and isinstance(n.operand, Immediate):
+                    if isinstance(n.operand.value, int) and n.operand.value & M_FLAG:
+                        current_mode = 8
+                elif n.opcode in (Opcode.PLP, Opcode.RTI):
+                    current_mode = None
+                    break
+
+                # Check for back-edge
+                if (n.opcode in BACK_EDGE_OPCODES and
+                        hasattr(n.operand, 'value') and n.operand.value == label_name):
+                    if current_mode == target_mode:
+                        found_back_edge = True
+                    break
+
+                # If we hit an unconditional branch/jump to elsewhere, stop
+                if n.opcode == Opcode.BRA or n.opcode in JUMP_OPCODES:
+                    break
+
+            if found_back_edge:
+                hoists.append((i, sep_idx, accu_after, target_mode))
+
+        if not hoists:
+            return nodes
+
+        # Apply hoists: insert SEP/REP before label, remove from inside loop
+        hoist_set = {h[1] for h in hoists}  # SEP/REP indices to remove
+        accu_set = {h[2] for h in hoists if h[2] is not None}  # .ACCU indices to remove
+        insert_before = {}  # label_idx -> (sep_node, accu_node_or_none)
+        for label_idx, sep_idx, accu_idx, target_mode in hoists:
+            insert_before[label_idx] = (nodes[sep_idx], nodes[accu_idx] if accu_idx else None)
+
+        optimized = []
+        for i, node in enumerate(nodes):
+            if i in insert_before:
+                sep_node, accu_node = insert_before[i]
+                optimized.append(sep_node)
+                if accu_node:
+                    optimized.append(accu_node)
+                self.stats.redundant_mode_changes_eliminated += 1
+            if i in hoist_set or i in accu_set:
+                continue
+            optimized.append(node)
 
         return optimized
 
