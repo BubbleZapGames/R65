@@ -132,6 +132,16 @@ def _emit_instruction(opcode: Opcode, operand: Operand | None) -> str:
             case _:
                 return f"{mnem} {operand}"
 
+    # PEA: Push Effective Address — takes a 16-bit absolute operand
+    if opcode == Opcode.PEA:
+        if operand is not None:
+            match operand:
+                case Immediate(value) | Address(value):
+                    return f"{mnem} {_format_value(value)}"
+                case _:
+                    return f"{mnem} {operand}"
+        return mnem
+
     # Accumulator mode instructions (need explicit 'A' operand in WLA-DX)
     ACCUMULATOR_OPCODES = {Opcode.ASL, Opcode.LSR, Opcode.ROL, Opcode.ROR, Opcode.INC, Opcode.DEC}
     if opcode in ACCUMULATOR_OPCODES:

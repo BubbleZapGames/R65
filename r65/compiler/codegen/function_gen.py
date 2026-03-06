@@ -863,7 +863,9 @@ class FunctionCodeGenerator:
         # would corrupt saved registers if done before the pushes.
         # Order: register saves -> scratch saves -> frame allocation -> mode setup -> body
         if mir_func.interrupt_attr:
-            self._emit_interrupt_register_saves()
+            modified_regs = self._analyze_interrupt_modified_regs(mir_func)
+            mir_func.interrupt_modified_regs = modified_regs
+            self._emit_interrupt_register_saves(modified_regs)
             self._emit_interrupt_scratch_saves(reg_alloc.scratch_pool)
 
         # For far self D=S path: push DBR (bank) and Y (addr) to stack BEFORE frame alloc
@@ -1060,7 +1062,60 @@ class FunctionCodeGenerator:
         # Emit REP to set up x16 mode (always) and m16 mode (if requested)
         self._emit_instr(Opcode.REP_IMMEDIATE, Immediate(rep_mask))
 
-    def _emit_interrupt_register_saves(self):
+    def _analyze_interrupt_modified_regs(self, mir_func: MIRFunction) -> set:
+        """
+        Analyze which hardware registers are modified by an interrupt handler body.
+
+        Scans all MIR instructions to determine which of X, Y, D, DBR are
+        written. A/STATUS are always saved (via PHP/PHA). Returns a set of
+        register names that need saving.
+
+        Calls, TraitDispatch, and asm! blocks conservatively clobber everything.
+        """
+        from r65.compiler.mir.nodes import (
+            BinaryOp, UnaryOp, Move, TypeConvert, ToBool, Compare,
+            Call, TraitDispatch, Load, Store, LoadIndirect, StoreIndirect,
+            SaveRegister, RestoreRegister, HardwareRegister, VirtualRegister,
+            Rotate, InlineAsm, MemoryFill, BlockCopy,
+        )
+
+        modified = set()  # subset of {'X', 'Y', 'D', 'DBR'}
+        ALL_REGS = {'X', 'Y', 'D', 'DBR'}
+
+        for block in mir_func.blocks.values():
+            for instr in block.instructions:
+                if modified == ALL_REGS:
+                    return modified  # Already full, no need to scan more
+
+                # Calls/TraitDispatch/InlineAsm clobber everything
+                if isinstance(instr, (Call, TraitDispatch)):
+                    return ALL_REGS
+                if isinstance(instr, InlineAsm):
+                    return ALL_REGS
+
+                # MemSet/MemCopy use registers
+                if isinstance(instr, (MemoryFill, BlockCopy)):
+                    return ALL_REGS
+
+                # Check explicit hardware register definitions
+                dest = getattr(instr, 'dest', None)
+                if isinstance(dest, HardwareRegister) and dest.name in ALL_REGS:
+                    modified.add(dest.name)
+
+                # Check if vreg with X/Y hint could imply X/Y modification
+                # (loop counters promoted to X/Y)
+                if isinstance(dest, VirtualRegister) and dest.register_hint in ('X', 'Y'):
+                    modified.add(dest.register_hint)
+
+                # SaveRegister/RestoreRegister explicitly push/pull hw regs
+                if isinstance(instr, (SaveRegister, RestoreRegister)):
+                    reg = instr.register
+                    if isinstance(reg, HardwareRegister) and reg.name in ALL_REGS:
+                        modified.add(reg.name)
+
+        return modified
+
+    def _emit_interrupt_register_saves(self, modified_regs: set = None):
         """
         Emit register saves for interrupt handlers.
 
@@ -1081,13 +1136,20 @@ class FunctionCodeGenerator:
         Order of pushes: PHP, [REP #$20], PHA(16-bit), PHX, PHY, PHD, PHB
         (Corresponding pops in epilogue: PLB, PLD, PLY, PLX, [REP #$20], PLA(16-bit), PLP)
         """
+        # PHP and PHA are always needed (saves mode + full 16-bit A)
         self._emit_instr(Opcode.PHP, comment="Save processor status (first - before mode change)")
         self._emit_instr(Opcode.REP_IMMEDIATE, Immediate(M_FLAG), "Force 16-bit A to save full accumulator")
         self._emit_instr(Opcode.PHA, comment="Save A (full 16-bit, includes hidden high byte)")
-        self._emit_instr(Opcode.PHX, comment="Save X")
-        self._emit_instr(Opcode.PHY, comment="Save Y")
-        self._emit_instr(Opcode.PHD, comment="Save Direct Page")
-        self._emit_instr(Opcode.PHB, comment="Save Data Bank")
+        # Only save X, Y, D, DBR if actually modified by the handler body
+        save_all = modified_regs is None
+        if save_all or 'X' in modified_regs:
+            self._emit_instr(Opcode.PHX, comment="Save X")
+        if save_all or 'Y' in modified_regs:
+            self._emit_instr(Opcode.PHY, comment="Save Y")
+        if save_all or 'D' in modified_regs:
+            self._emit_instr(Opcode.PHD, comment="Save Direct Page")
+        if save_all or 'DBR' in modified_regs:
+            self._emit_instr(Opcode.PHB, comment="Save Data Bank")
         self._emit_instr(Opcode.SEP_IMMEDIATE, Immediate(M_FLAG), "Restore 8-bit A for handler body")
 
     def _emit_interrupt_scratch_saves(self, scratch_pool: ScratchRegisterPool):

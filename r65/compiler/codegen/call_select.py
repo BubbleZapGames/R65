@@ -1200,19 +1200,23 @@ class CallInstructionSelector(BaseSelector):
                 # Undo temporary adjustment (caller adds full param_size after return)
                 self.region_state.stack_tracker.pop(1)
             else:
-                self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "16-bit A for u16 stack arg")
-                self.parent.emitter.emit_accu_mode(16)
-                if arg_loc.is_hw('A'):
-                    pass
-                elif arg_loc.is_hw('X'):
-                    self._emit_transfer('X', 'A')
-                elif arg_loc.is_hw('Y'):
-                    self._emit_transfer('Y', 'A')
-                elif isinstance(arg.value, MIRImmediate):
-                    self._emit_load_immediate('A', arg.value.value)
+                # Use PEA for immediate u16 values — pushes 16-bit regardless
+                # of accumulator mode, no REP/SEP needed.
+                if isinstance(arg.value, MIRImmediate):
+                    self._emit_immediate(Opcode.PEA, arg.value.value,
+                                         "Push u16 immediate")
                 else:
-                    self.parent._emit_load('LDA', arg_loc)
-                self._emit_push('A', "Push u16 arg")
+                    self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "16-bit A for u16 stack arg")
+                    self.parent.emitter.emit_accu_mode(16)
+                    if arg_loc.is_hw('A'):
+                        pass
+                    elif arg_loc.is_hw('X'):
+                        self._emit_transfer('X', 'A')
+                    elif arg_loc.is_hw('Y'):
+                        self._emit_transfer('Y', 'A')
+                    else:
+                        self.parent._emit_load('LDA', arg_loc)
+                    self._emit_push('A', "Push u16 arg")
 
         elif param_size == 3:
             # 24-bit (far pointer): push byte by byte in m8, high byte first

@@ -1140,10 +1140,18 @@ class InstructionSelector:
         # Pop order: PLB PLD PLY PLX [REP #$20] PLA PLP
         # CRITICAL: PLA must be in m16 mode to restore the full 16-bit A (including
         # the hidden high byte). PLP comes LAST to restore the original processor mode.
-        self._emit_implied(Opcode.PLB, "Restore Data Bank")
-        self._emit_implied(Opcode.PLD, "Restore Direct Page")
-        self._emit_implied(Opcode.PLY, "Restore Y")
-        self._emit_implied(Opcode.PLX, "Restore X")
+        # Only restore registers that were actually saved (based on analysis).
+        mir_func = self.current_function
+        modified = getattr(mir_func, 'interrupt_modified_regs', None) if mir_func else None
+        restore_all = modified is None
+        if restore_all or 'DBR' in modified:
+            self._emit_implied(Opcode.PLB, "Restore Data Bank")
+        if restore_all or 'D' in modified:
+            self._emit_implied(Opcode.PLD, "Restore Direct Page")
+        if restore_all or 'Y' in modified:
+            self._emit_implied(Opcode.PLY, "Restore Y")
+        if restore_all or 'X' in modified:
+            self._emit_implied(Opcode.PLX, "Restore X")
         self._emit_immediate(Opcode.REP_IMMEDIATE, 0x20, "Force 16-bit A for full restore")
         self._emit_implied(Opcode.PLA, "Restore A (full 16-bit, includes hidden high byte)")
         self._emit_implied(Opcode.PLP, "Restore processor status (restores original mode)")

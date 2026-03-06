@@ -872,6 +872,7 @@ class MIRFunction:
     preserves_attr: Optional[Any] = None    # PreservesAttribute
     bank_attr: Optional[Any] = None         # BankAttribute
     interrupt_attr: Optional[Any] = None    # InterruptAttribute
+    interrupt_modified_regs: Optional[set] = None  # Set of hw reg names modified in handler body
     inline_attr: Optional[Any] = None       # InlineAttribute
     is_entry: bool = False
     is_far: bool = False
