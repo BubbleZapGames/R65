@@ -279,6 +279,7 @@ class PeepholeOptimizer:
             nodes = self._eliminate_redundant_transfers(nodes)
             nodes = self._eliminate_redundant_stack_ops(nodes)
             nodes = self._eliminate_redundant_mode_changes(nodes)
+            nodes = self._eliminate_cross_block_mode_changes(nodes)
             nodes = self._eliminate_redundant_and_before_sep(nodes)
             nodes = self._eliminate_branch_over_branch(nodes)
             nodes = self._thread_branches(nodes)
@@ -859,6 +860,118 @@ class PeepholeOptimizer:
             # PLP/RTI restore unknown mode
             if node.opcode in (Opcode.PLP, Opcode.RTI):
                 current_mode = None
+
+            optimized.append(node)
+            i += 1
+
+        return optimized
+
+    def _eliminate_cross_block_mode_changes(self, nodes: List['AsmNode']) -> List['AsmNode']:
+        """
+        Eliminate SEP/REP at label targets when all predecessors arrive in the target mode.
+
+        The linear mode tracker resets at labels (conservative). This pass collects
+        the mode at each branch source and fallthrough, then removes SEP/REP that
+        are provably redundant because all predecessors agree on the mode.
+        """
+        from r65.compiler.codegen.asm_nodes import Instruction, Immediate, Directive, Label
+
+        M_FLAG = 0x20
+
+        # Pass 1: Collect mode at each branch source and fallthrough to each label.
+        # label_arriving_modes[label_name] = set of modes (8, 16, or None for unknown)
+        label_arriving_modes: dict[str, set] = {}
+        current_mode = None
+
+        for i, node in enumerate(nodes):
+            if isinstance(node, Label):
+                # Fallthrough arrives with current_mode
+                if node.name not in label_arriving_modes:
+                    label_arriving_modes[node.name] = set()
+                label_arriving_modes[node.name].add(current_mode)
+                # Don't reset current_mode here — we still know the fallthrough mode
+                continue
+
+            if isinstance(node, Directive) and node.name == '.ACCU':
+                if node.args:
+                    if node.args[0] == '8':
+                        current_mode = 8
+                    elif node.args[0] == '16':
+                        current_mode = 16
+                continue
+
+            if not isinstance(node, Instruction):
+                continue
+
+            # Track mode changes
+            if node.opcode == Opcode.REP_IMMEDIATE and isinstance(node.operand, Immediate):
+                if isinstance(node.operand.value, int) and node.operand.value & M_FLAG:
+                    current_mode = 16
+            elif node.opcode == Opcode.SEP_IMMEDIATE and isinstance(node.operand, Immediate):
+                if isinstance(node.operand.value, int) and node.operand.value & M_FLAG:
+                    current_mode = 8
+            elif node.opcode in (Opcode.PLP, Opcode.RTI):
+                current_mode = None
+
+            # Branch: record mode at branch target
+            if node.opcode in BRANCH_OPCODES:
+                target = node.operand.value if hasattr(node.operand, 'value') else None
+                if target:
+                    if target not in label_arriving_modes:
+                        label_arriving_modes[target] = set()
+                    label_arriving_modes[target].add(current_mode)
+                # After unconditional branch, mode is unknown for fallthrough
+                if node.opcode == Opcode.BRA:
+                    current_mode = None
+            elif node.opcode in JUMP_OPCODES:
+                current_mode = None
+
+        # Pass 2: Remove SEP/REP at labels where all predecessors agree on mode
+        optimized = []
+        i = 0
+        while i < len(nodes):
+            node = nodes[i]
+
+            # Look for Label followed by SEP/REP (possibly with .ACCU between)
+            if isinstance(node, Label):
+                modes = label_arriving_modes.get(node.name, set())
+                # Check if next non-directive instruction is SEP or REP
+                j = i + 1
+                accu_idx = None
+                sep_rep_idx = None
+                while j < len(nodes):
+                    if isinstance(nodes[j], Directive) and nodes[j].name == '.ACCU':
+                        accu_idx = j
+                        j += 1
+                        continue
+                    if isinstance(nodes[j], Instruction):
+                        if (nodes[j].opcode == Opcode.SEP_IMMEDIATE and
+                                isinstance(nodes[j].operand, Immediate) and
+                                isinstance(nodes[j].operand.value, int) and
+                                nodes[j].operand.value & M_FLAG):
+                            sep_rep_idx = j
+                        elif (nodes[j].opcode == Opcode.REP_IMMEDIATE and
+                                isinstance(nodes[j].operand, Immediate) and
+                                isinstance(nodes[j].operand.value, int) and
+                                nodes[j].operand.value & M_FLAG):
+                            sep_rep_idx = j
+                    break
+                    # Labels or other nodes: stop looking
+                    break
+
+                if sep_rep_idx is not None:
+                    target_mode = 8 if nodes[sep_rep_idx].opcode == Opcode.SEP_IMMEDIATE else 16
+                    # All predecessors must arrive in target_mode (no None/unknown)
+                    if modes and all(m == target_mode for m in modes):
+                        # Eliminate the SEP/REP and its .ACCU directive
+                        optimized.append(node)  # Keep the label
+                        i = sep_rep_idx + 1
+                        # Skip trailing .ACCU directive after SEP/REP
+                        if (i < len(nodes) and isinstance(nodes[i], Directive) and
+                                nodes[i].name == '.ACCU'):
+                            i += 1
+                        self.stats.redundant_mode_changes_eliminated += 1
+                        continue
 
             optimized.append(node)
             i += 1
