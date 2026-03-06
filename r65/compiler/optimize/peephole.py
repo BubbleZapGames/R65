@@ -201,6 +201,8 @@ class OptimizationStats:
     tracked_loads_eliminated: int = 0
     identity_copies_eliminated: int = 0
     memory_inc_dec_folded: int = 0
+    loops_rotated: int = 0
+    loop_invariant_loads_hoisted: int = 0
 
     @property
     def total(self) -> int:
@@ -216,7 +218,9 @@ class OptimizationStats:
             self.tracked_loads_eliminated +
             self.identity_copies_eliminated +
             self.memory_inc_dec_folded +
-            self.branch_threading_applied
+            self.branch_threading_applied +
+            self.loops_rotated +
+            self.loop_invariant_loads_hoisted
         )
 
 
@@ -277,6 +281,8 @@ class PeepholeOptimizer:
             nodes = self._eliminate_branch_over_branch(nodes)
             nodes = self._thread_branches(nodes)
             nodes = self._eliminate_branch_to_next_label(nodes)
+            nodes = self._rotate_top_tested_loops(nodes)
+            nodes = self._hoist_loop_invariant_loads(nodes)
             changed = self.stats.total > prev_total
 
         return nodes
@@ -764,69 +770,92 @@ class PeepholeOptimizer:
 
     def _eliminate_redundant_mode_changes(self, nodes: List['AsmNode']) -> List['AsmNode']:
         """
-        Eliminate redundant processor mode changes.
+        Eliminate redundant processor mode changes using mode state tracking.
 
-        Patterns:
-            SEP #$XX; SEP #$XX -> SEP #$XX (same value)
-            REP #$XX; REP #$XX -> REP #$XX (same value)
-            SEP #$20; REP #$20 -> (cancel out for m flag)
+        Tracks the current m-flag state (8-bit or 16-bit accumulator) and
+        removes REP/SEP instructions that don't change the current mode.
+        Also removes .ACCU directives that follow eliminated mode switches.
 
-        Also handles directives (.ACCU) between SEP/REP pairs.
+        Handles non-adjacent redundancies: if we know the mode is already m16,
+        a REP #$20 several instructions later is redundant even with intervening
+        instructions (as long as no branch target or mode change occurs between).
         """
-        from r65.compiler.codegen.asm_nodes import Instruction, Immediate, Directive
+        from r65.compiler.codegen.asm_nodes import Instruction, Immediate, Directive, Label
 
         optimized = []
         i = 0
+        # None = unknown, 8 = m8, 16 = m16
+        current_mode = None
 
         while i < len(nodes):
             node = nodes[i]
+
+            # Labels invalidate mode tracking (branch target could arrive in any mode)
+            if isinstance(node, Label):
+                current_mode = None
+                optimized.append(node)
+                i += 1
+                continue
+
+            # Track mode from .ACCU directives
+            if isinstance(node, Directive) and node.name == '.ACCU':
+                if node.args:
+                    if node.args[0] == '8':
+                        current_mode = 8
+                    elif node.args[0] == '16':
+                        current_mode = 16
+                optimized.append(node)
+                i += 1
+                continue
 
             if not isinstance(node, Instruction):
                 optimized.append(node)
                 i += 1
                 continue
 
-            if node.opcode in (Opcode.SEP_IMMEDIATE, Opcode.REP_IMMEDIATE):
-                # Find the next instruction, skipping over directives
-                next_instr_idx = i + 1
-                directives_between = []
-                while next_instr_idx < len(nodes):
-                    next_node = nodes[next_instr_idx]
-                    if isinstance(next_node, Directive):
-                        directives_between.append(next_node)
-                        next_instr_idx += 1
-                    elif isinstance(next_node, Instruction):
-                        break
-                    else:
-                        # Comments, labels, etc. - stop looking
-                        break
+            # Branch/jump invalidates mode knowledge for what follows
+            if node.opcode in BRANCH_OPCODES or node.opcode in JUMP_OPCODES:
+                optimized.append(node)
+                current_mode = None
+                i += 1
+                continue
 
-                if next_instr_idx < len(nodes):
-                    next_instr = nodes[next_instr_idx]
+            # Check REP/SEP for redundancy
+            if node.opcode == Opcode.REP_IMMEDIATE and isinstance(node.operand, Immediate):
+                if isinstance(node.operand.value, int) and node.operand.value & 0x20:
+                    if current_mode == 16:
+                        # Already in m16 — skip REP and trailing .ACCU 16
+                        self.stats.redundant_mode_changes_eliminated += 1
+                        i += 1
+                        if (i < len(nodes) and isinstance(nodes[i], Directive)
+                                and nodes[i].name == '.ACCU' and nodes[i].args
+                                and nodes[i].args[0] == '16'):
+                            i += 1
+                        continue
+                    current_mode = 16
+                    optimized.append(node)
+                    i += 1
+                    continue
 
-                    if isinstance(next_instr, Instruction):
-                        # Same instruction with same operand
-                        if (next_instr.opcode == node.opcode and
-                            node.operand == next_instr.operand):
-                            # Duplicate - keep first, skip second (and directives between)
-                            optimized.append(node)
-                            optimized.extend(directives_between)
-                            i = next_instr_idx + 1
-                            self.stats.redundant_mode_changes_eliminated += 1
-                            continue
+            if node.opcode == Opcode.SEP_IMMEDIATE and isinstance(node.operand, Immediate):
+                if isinstance(node.operand.value, int) and node.operand.value & 0x20:
+                    if current_mode == 8:
+                        # Already in m8 — skip SEP and trailing .ACCU 8
+                        self.stats.redundant_mode_changes_eliminated += 1
+                        i += 1
+                        if (i < len(nodes) and isinstance(nodes[i], Directive)
+                                and nodes[i].name == '.ACCU' and nodes[i].args
+                                and nodes[i].args[0] == '8'):
+                            i += 1
+                        continue
+                    current_mode = 8
+                    optimized.append(node)
+                    i += 1
+                    continue
 
-                        # Opposite pair with same operand (SEP #$V → REP #$V or vice versa):
-                        # The second instruction unconditionally determines the final mode,
-                        # so the first is redundant. Keep only the second.
-                        opposite = {Opcode.SEP_IMMEDIATE: Opcode.REP_IMMEDIATE,
-                                    Opcode.REP_IMMEDIATE: Opcode.SEP_IMMEDIATE}
-                        if (next_instr.opcode == opposite[node.opcode] and
-                            node.operand == next_instr.operand):
-                            # Skip first instruction and directives between;
-                            # next iteration will naturally append the second
-                            i = next_instr_idx
-                            self.stats.redundant_mode_changes_eliminated += 1
-                            continue
+            # PLP/RTI restore unknown mode
+            if node.opcode in (Opcode.PLP, Opcode.RTI):
+                current_mode = None
 
             optimized.append(node)
             i += 1
@@ -1037,6 +1066,284 @@ class PeepholeOptimizer:
                     self.stats.branch_threading_applied += 1
                     continue
 
+            optimized.append(node)
+
+        return optimized
+
+    def _rotate_top_tested_loops(self, nodes: List['AsmNode']) -> List['AsmNode']:
+        """
+        Rotate top-tested loops to bottom-tested when safe.
+
+        Pattern (top-tested, count-up with X/Y):
+            [LDX/LDY #0 or small const]
+            HEADER:
+                CPX/CPY #N          ; N > init value
+                BCS EXIT            ; exit when >= N
+            [BODY_LABEL:]
+                ... body ...        ; no branches to HEADER except back-edge
+                INX/INY/DEX/DEY
+                BRA HEADER
+            EXIT:
+
+        Transforms to (bottom-tested):
+            [LDX/LDY #init]
+            BODY_LABEL:
+                ... body ...
+                INX/INY/DEX/DEY
+                CPX/CPY #N
+                BCC BODY_LABEL      ; continue while < N
+            EXIT:
+
+        Only applies when:
+        - Loop init < bound (guaranteed to execute at least once)
+        - No other branches target HEADER within the loop
+        - The compare+branch pattern uses BCS (unsigned >=) for count-up
+        """
+        from r65.compiler.codegen.asm_nodes import (
+            Instruction, Label, Address, Immediate as AsmImmediate, Directive, Comment
+        )
+
+        CMP_OPCODES = {Opcode.CPX_IMMEDIATE, Opcode.CPY_IMMEDIATE}
+        INC_OPCODES = {Opcode.INX, Opcode.INY, Opcode.DEX, Opcode.DEY}
+        INIT_OPCODES = {Opcode.LDX_IMMEDIATE, Opcode.LDY_IMMEDIATE}
+
+        # Build label reference counts to check if header has other refs
+        label_refs: dict[str, int] = {}
+        for node in nodes:
+            if (isinstance(node, Instruction) and
+                isinstance(getattr(node, 'operand', None), Address) and
+                isinstance(node.operand.value, str)):
+                label_refs[node.operand.value] = label_refs.get(node.operand.value, 0) + 1
+
+        optimized = []
+        i = 0
+
+        while i < len(nodes):
+            node = nodes[i]
+
+            # Look for pattern: LDX/LDY #init; HEADER: CPX/CPY #N; BCS EXIT
+            if (isinstance(node, Instruction) and node.opcode in INIT_OPCODES and
+                    isinstance(node.operand, AsmImmediate) and
+                    isinstance(node.operand.value, int)):
+                init_val = node.operand.value
+                init_reg = 'X' if node.opcode == Opcode.LDX_IMMEDIATE else 'Y'
+
+                # Next should be header label
+                j = i + 1
+                if (j < len(nodes) and isinstance(nodes[j], Label)):
+                    header_label = nodes[j].name
+
+                    # Header should only be referenced by the back-edge BRA
+                    if label_refs.get(header_label, 0) != 1:
+                        optimized.append(node)
+                        i += 1
+                        continue
+
+                    # Next instructions: optional directives/mode switches, then CPX/CPY, then BCS
+                    k = j + 1
+                    pre_cmp_nodes = []
+                    while k < len(nodes) and isinstance(nodes[k], (Directive, Comment)):
+                        pre_cmp_nodes.append(nodes[k])
+                        k += 1
+                    # Also skip SEP/REP mode switches before the compare
+                    # (these will be included in the rotated loop body)
+                    if (k < len(nodes) and isinstance(nodes[k], Instruction) and
+                            nodes[k].opcode in (Opcode.SEP_IMMEDIATE, Opcode.REP_IMMEDIATE)):
+                        pre_cmp_nodes.append(nodes[k])
+                        k += 1
+                        # Skip trailing .ACCU directive
+                        while k < len(nodes) and isinstance(nodes[k], (Directive, Comment)):
+                            pre_cmp_nodes.append(nodes[k])
+                            k += 1
+
+                    if (k < len(nodes) and isinstance(nodes[k], Instruction) and
+                            nodes[k].opcode in CMP_OPCODES and
+                            isinstance(nodes[k].operand, AsmImmediate) and
+                            isinstance(nodes[k].operand.value, int)):
+                        cmp_instr = nodes[k]
+                        bound_val = cmp_instr.operand.value
+                        cmp_reg = 'X' if cmp_instr.opcode == Opcode.CPX_IMMEDIATE else 'Y'
+
+                        if cmp_reg != init_reg:
+                            optimized.append(node)
+                            i += 1
+                            continue
+
+                        # Must be BCS (unsigned >=) for count-up
+                        k2 = k + 1
+                        if (k2 < len(nodes) and isinstance(nodes[k2], Instruction) and
+                                nodes[k2].opcode == Opcode.BCS and
+                                isinstance(nodes[k2].operand, Address) and
+                                isinstance(nodes[k2].operand.value, str)):
+                            exit_label_name = nodes[k2].operand.value
+                            branch_instr = nodes[k2]
+
+                            # Check loop executes at least once
+                            if init_val >= bound_val:
+                                optimized.append(node)
+                                i += 1
+                                continue
+
+                            # Scan body: find BRA HEADER at end, collect body nodes
+                            body_start = k2 + 1
+                            # Skip optional body label
+                            body_label_node = None
+                            bs = body_start
+                            if bs < len(nodes) and isinstance(nodes[bs], Label):
+                                body_label_node = nodes[bs]
+                                bs += 1
+
+                            # Collect body up to BRA HEADER
+                            body_nodes = []
+                            found_bra = False
+                            bra_idx = bs
+                            while bra_idx < len(nodes):
+                                n = nodes[bra_idx]
+                                if (isinstance(n, Instruction) and
+                                        n.opcode == Opcode.BRA and
+                                        isinstance(n.operand, Address) and
+                                        n.operand.value == header_label):
+                                    found_bra = True
+                                    break
+                                # If we hit the exit label, stop
+                                if isinstance(n, Label) and n.name == exit_label_name:
+                                    break
+                                body_nodes.append(n)
+                                bra_idx += 1
+
+                            if not found_bra or not body_nodes:
+                                optimized.append(node)
+                                i += 1
+                                continue
+
+                            # Verify last instruction of body is INX/INY
+                            last_body_instr = None
+                            for bn in reversed(body_nodes):
+                                if isinstance(bn, Instruction):
+                                    last_body_instr = bn
+                                    break
+                            if last_body_instr is None or last_body_instr.opcode not in INC_OPCODES:
+                                optimized.append(node)
+                                i += 1
+                                continue
+
+                            # Transform: emit init, body label, pre-cmp nodes, body, compare, BCC body
+                            optimized.append(node)  # LDX/LDY #init
+                            target_label = body_label_node.name if body_label_node else header_label
+                            if body_label_node:
+                                optimized.append(body_label_node)
+                            else:
+                                # Reuse header label as body target
+                                optimized.append(nodes[j])  # header label
+                            optimized.extend(pre_cmp_nodes)
+                            optimized.extend(body_nodes)
+                            optimized.append(cmp_instr)  # CPX/CPY #N
+                            optimized.append(Instruction(
+                                Opcode.BCC,
+                                Address(target_label),
+                                "Continue loop",
+                                branch_instr.source_loc,
+                            ))
+                            # Skip to after BRA (exit label will be picked up next)
+                            i = bra_idx + 1
+                            self.stats.loops_rotated += 1
+                            continue
+
+            optimized.append(node)
+            i += 1
+
+        return optimized
+
+    def _hoist_loop_invariant_loads(self, nodes: List['AsmNode']) -> List['AsmNode']:
+        """
+        Hoist loop-invariant LDA #imm out of bottom-tested loops.
+
+        Pattern: a bottom-tested loop (body ending with BCC/BCS/BNE/BEQ to
+        body label) where LDA #imm appears in the body and A is not modified
+        by any other instruction in the loop. The LDA is moved before the
+        loop header label.
+
+        Only applies when:
+        - Exactly one LDA in the loop body (the invariant load)
+        - No other instruction in the loop modifies A
+        - The LDA is LDA_IMMEDIATE
+        """
+        from r65.compiler.codegen.asm_nodes import Instruction, Label, Address
+
+        # Find bottom-tested loops: label -> body -> BCC/BCS/BNE/BEQ label
+        # Build label position map
+        label_positions: dict[str, int] = {}
+        for i, node in enumerate(nodes):
+            if isinstance(node, Label):
+                label_positions[node.name] = i
+
+        # Find back-edges (conditional branches that jump backward to a label)
+        loops = []  # (label_idx, branch_idx, label_name)
+        for i, node in enumerate(nodes):
+            if (isinstance(node, Instruction) and
+                    node.opcode in BRANCH_OPCODES and
+                    node.opcode != Opcode.BRA and
+                    isinstance(getattr(node, 'operand', None), Address) and
+                    isinstance(node.operand.value, str)):
+                target = node.operand.value
+                if target in label_positions and label_positions[target] < i:
+                    loops.append((label_positions[target], i, target))
+
+        if not loops:
+            return nodes
+
+        # Process each loop
+        hoists = {}  # label_idx -> (lda_instruction, lda_body_offset)
+        for label_idx, branch_idx, label_name in loops:
+            # Collect body instructions (between label and branch, inclusive of branch)
+            body_instrs = []
+            lda_positions = []
+            other_a_mods = False
+
+            for j in range(label_idx + 1, branch_idx + 1):
+                n = nodes[j]
+                if not isinstance(n, Instruction):
+                    continue
+                body_instrs.append((j, n))
+                if n.opcode == Opcode.LDA_IMMEDIATE:
+                    lda_positions.append(j)
+                elif n.opcode in MODIFIES_A_OPCODES:
+                    other_a_mods = True
+
+            # Only hoist if exactly one LDA #imm and nothing else modifies A
+            if len(lda_positions) == 1 and not other_a_mods:
+                hoists[lda_positions[0]] = label_idx
+
+        if not hoists:
+            return nodes
+
+        # Rebuild node list with hoisted LDAs
+        optimized = []
+        for i, node in enumerate(nodes):
+            if i in hoists:
+                # Skip — already hoisted before the label
+                self.stats.loop_invariant_loads_hoisted += 1
+                continue
+            optimized.append(node)
+            # If this is a label that has a hoist, insert the LDA after it...
+            # Actually, we need to insert BEFORE the label.
+            # Let me rethink: collect all hoists per label_idx, insert before label
+            pass
+
+        # Redo: build insert-before map
+        optimized = []
+        insert_before: dict[int, list] = {}  # label_idx -> [instructions to insert]
+        for lda_idx, label_idx in hoists.items():
+            if label_idx not in insert_before:
+                insert_before[label_idx] = []
+            insert_before[label_idx].append(nodes[lda_idx])
+
+        for i, node in enumerate(nodes):
+            if i in insert_before:
+                optimized.extend(insert_before[i])
+            if i in hoists:
+                self.stats.loop_invariant_loads_hoisted += 1
+                continue
             optimized.append(node)
 
         return optimized

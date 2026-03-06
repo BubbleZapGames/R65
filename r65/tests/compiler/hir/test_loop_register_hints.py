@@ -270,6 +270,8 @@ class TestLoopRegisterAllocation:
         """
         result = compile_string(source, "test.r65")
 
-        # Should see CPX for the loop condition
-        assert "CPX #$0A" in result or "CPX #10" in result, \
-            "Expected CPX for loop bound comparison"
+        # Should see CPX or CPY for the loop condition (register choice
+        # depends on promotion order; u8 counters may get X or Y)
+        assert ("CPX #$0A" in result or "CPX #10" in result or
+                "CPY #$0A" in result or "CPY #10" in result), \
+            "Expected CPX/CPY for loop bound comparison"

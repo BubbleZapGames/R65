@@ -252,7 +252,8 @@ def _promote_local_loop_counters(func: MIRFunction) -> int:
             continue
         if vreg.type_info is None:
             continue
-        if get_type_size(vreg.type_info) != 2:
+        vreg_size = get_type_size(vreg.type_info)
+        if vreg_size > 2:
             continue
         # Check that all uses are compatible with hardware register allocation.
         # Store/StoreIndirect with our vreg as source needs LDA which can't
