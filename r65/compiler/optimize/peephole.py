@@ -203,6 +203,7 @@ class OptimizationStats:
     memory_inc_dec_folded: int = 0
     loops_rotated: int = 0
     loop_invariant_loads_hoisted: int = 0
+    count_down_loops: int = 0
 
     @property
     def total(self) -> int:
@@ -220,7 +221,8 @@ class OptimizationStats:
             self.memory_inc_dec_folded +
             self.branch_threading_applied +
             self.loops_rotated +
-            self.loop_invariant_loads_hoisted
+            self.loop_invariant_loads_hoisted +
+            self.count_down_loops
         )
 
 
@@ -283,6 +285,7 @@ class PeepholeOptimizer:
             nodes = self._eliminate_branch_to_next_label(nodes)
             nodes = self._rotate_top_tested_loops(nodes)
             nodes = self._hoist_loop_invariant_loads(nodes)
+            nodes = self._count_down_loops(nodes)
             changed = self.stats.total > prev_total
 
         return nodes
@@ -1345,6 +1348,261 @@ class PeepholeOptimizer:
                 self.stats.loop_invariant_loads_hoisted += 1
                 continue
             optimized.append(node)
+
+        return optimized
+
+    def _count_down_loops(self, nodes: List['AsmNode']) -> List['AsmNode']:
+        """
+        Transform count-up loops to count-down when the counter is unused in body.
+
+        Pattern (bottom-tested, count-up):
+            LDX/LDY #0
+            LABEL:
+                ... body (no reads of X/Y) ...
+                INX/INY
+                CPX/CPY #N
+                BCC LABEL
+
+        Transforms to (count-down):
+            LDX/LDY #N
+            LABEL:
+                ... body ...
+                DEX/DEY
+                BNE LABEL
+
+        Saves 2 bytes and 2 cycles per iteration (CPX/CPY eliminated).
+        Only applies when the counter register is not read in the body.
+        """
+        from r65.compiler.codegen.asm_nodes import (
+            Instruction, Label, Address, Immediate as AsmImmediate, Directive, Comment
+        )
+
+        # Build sets of opcodes that read X or Y register value
+        # (indexed addressing, transfers, stores, compares, push)
+        def _reads_register(opcode: Opcode, reg: str) -> bool:
+            name = opcode.name
+            if reg == 'X':
+                return (name.endswith('_X') or name.endswith('_DP_X') or
+                        '_ABSOLUTE_X' in name or '_LONG_X' in name or
+                        '_INDIRECT_X' in name or
+                        name in ('TXA', 'TXY', 'STX_DP', 'STX_ABSOLUTE',
+                                 'STX_DP_Y', 'PHX', 'INX', 'DEX',
+                                 'CPX_IMMEDIATE', 'CPX_DP', 'CPX_ABSOLUTE'))
+            else:  # Y
+                return (name.endswith('_Y') or name.endswith('_DP_Y') or
+                        '_ABSOLUTE_Y' in name or '_INDIRECT_Y' in name or
+                        '_INDIRECT_LONG_Y' in name or '_STACK_INDIRECT_Y' in name or
+                        name in ('TYA', 'TYX', 'STY_DP', 'STY_ABSOLUTE',
+                                 'STY_DP_X', 'PHY', 'INY', 'DEY',
+                                 'CPY_IMMEDIATE', 'CPY_DP', 'CPY_ABSOLUTE'))
+
+        INC_TO_DEC = {
+            Opcode.INX: Opcode.DEX, Opcode.INY: Opcode.DEY,
+        }
+        INC_REG = {
+            Opcode.INX: 'X', Opcode.INY: 'Y',
+        }
+        CMP_OPCODES = {
+            'X': Opcode.CPX_IMMEDIATE, 'Y': Opcode.CPY_IMMEDIATE,
+        }
+        INIT_OPCODES = {
+            'X': Opcode.LDX_IMMEDIATE, 'Y': Opcode.LDY_IMMEDIATE,
+        }
+
+        # Build label position map
+        label_positions: dict[str, int] = {}
+        for i, node in enumerate(nodes):
+            if isinstance(node, Label):
+                label_positions[node.name] = i
+
+        optimized = []
+        skip_until = -1
+        # Track which init instructions to replace (idx -> new_value)
+        init_replacements: dict[int, int] = {}
+
+        # Find bottom-tested loops: scan for BCC that targets a label before it
+        # with trailing INX/CPX or INY/CPY pattern
+        i = 0
+        while i < len(nodes):
+            node = nodes[i]
+
+            if isinstance(node, Instruction) and node.opcode == Opcode.BCC:
+                if (isinstance(node.operand, Address) and
+                        isinstance(node.operand.value, str)):
+                    target = node.operand.value
+                    if target in label_positions:
+                        label_idx = label_positions[target]
+                        if label_idx < i:
+                            # Found a bottom-tested loop: label_idx .. i
+                            # Check for INX/CPX/BCC or INY/CPY/BCC at end
+                            # BCC is at i, CPX/CPY should be at i-1, INX/INY at i-2
+                            # (skipping directives)
+                            cmp_idx = i - 1
+                            while cmp_idx > label_idx and isinstance(nodes[cmp_idx], (Directive, Comment)):
+                                cmp_idx -= 1
+                            inc_idx = cmp_idx - 1
+                            while inc_idx > label_idx and isinstance(nodes[inc_idx], (Directive, Comment)):
+                                inc_idx -= 1
+
+                            if (inc_idx > label_idx and
+                                    isinstance(nodes[inc_idx], Instruction) and
+                                    isinstance(nodes[cmp_idx], Instruction)):
+                                inc_instr = nodes[inc_idx]
+                                cmp_instr = nodes[cmp_idx]
+
+                                if (inc_instr.opcode in INC_TO_DEC and
+                                        cmp_instr.opcode == CMP_OPCODES.get(INC_REG.get(inc_instr.opcode)) and
+                                        isinstance(cmp_instr.operand, AsmImmediate) and
+                                        isinstance(cmp_instr.operand.value, int)):
+
+                                    reg = INC_REG[inc_instr.opcode]
+                                    bound = cmp_instr.operand.value
+
+                                    # Check that counter register is not read in body
+                                    # (between label and inc_idx, exclusive)
+                                    body_uses_counter = False
+                                    for j in range(label_idx + 1, inc_idx):
+                                        n = nodes[j]
+                                        if isinstance(n, Instruction):
+                                            if _reads_register(n.opcode, reg):
+                                                body_uses_counter = True
+                                                break
+
+                                    if not body_uses_counter and bound > 0:
+                                        # Find the init instruction (LDX/LDY #0 before label)
+                                        # May be separated by hoisted instructions (e.g. LDA #imm)
+                                        init_opcode = INIT_OPCODES[reg]
+                                        init_idx = None
+                                        search_depth = 0
+                                        for j in range(label_idx - 1, -1, -1):
+                                            n = nodes[j]
+                                            if isinstance(n, Instruction):
+                                                if (n.opcode == init_opcode and
+                                                        isinstance(n.operand, AsmImmediate) and
+                                                        n.operand.value == 0):
+                                                    init_idx = j
+                                                    break
+                                                search_depth += 1
+                                                if search_depth > 3:
+                                                    break
+                                            elif isinstance(n, Label):
+                                                break
+
+                                        if init_idx is not None:
+                                            # Replace init value with bound
+                                            init_replacements[init_idx] = bound
+                                            # Replace INX->DEX, remove CPX, replace BCC->BNE
+                                            # We'll rebuild from inc_idx
+                                            # Output everything up to inc_idx as-is
+                                            # Then: DEX/DEY, BNE label
+                                            # Skip cmp_instr and original BCC
+
+                                            # Emit everything from current optimized position to inc_idx
+                                            # (handled by the normal append below)
+                                            # Actually, we need to handle this inline
+                                            # Mark the nodes to transform
+                                            # For simplicity, rebuild by replacing nodes in-place
+                                            pass  # Will handle below with node replacement
+
+            optimized.append(node)
+            i += 1
+
+        if not init_replacements:
+            return nodes
+
+        # Second pass: apply transformations
+        optimized = []
+        # Rebuild loop structures
+        # For each identified count-down loop, track (init_idx, inc_idx, cmp_idx, bcc_idx, bound, reg)
+        # Re-scan to collect full info
+        transforms = []
+        for i, node in enumerate(nodes):
+            if isinstance(node, Instruction) and node.opcode == Opcode.BCC:
+                if (isinstance(node.operand, Address) and
+                        isinstance(node.operand.value, str)):
+                    target = node.operand.value
+                    if target in label_positions:
+                        label_idx = label_positions[target]
+                        if label_idx < i:
+                            cmp_idx = i - 1
+                            while cmp_idx > label_idx and isinstance(nodes[cmp_idx], (Directive, Comment)):
+                                cmp_idx -= 1
+                            inc_idx = cmp_idx - 1
+                            while inc_idx > label_idx and isinstance(nodes[inc_idx], (Directive, Comment)):
+                                inc_idx -= 1
+
+                            if (inc_idx > label_idx and
+                                    isinstance(nodes[inc_idx], Instruction) and
+                                    isinstance(nodes[cmp_idx], Instruction)):
+                                inc_instr = nodes[inc_idx]
+                                cmp_instr = nodes[cmp_idx]
+
+                                if (inc_instr.opcode in INC_TO_DEC and
+                                        cmp_instr.opcode == CMP_OPCODES.get(INC_REG.get(inc_instr.opcode))):
+                                    reg = INC_REG[inc_instr.opcode]
+                                    init_opcode = INIT_OPCODES[reg]
+                                    # Find init (may be separated by hoisted instrs)
+                                    search_depth_2 = 0
+                                    for j in range(label_idx - 1, -1, -1):
+                                        n = nodes[j]
+                                        if isinstance(n, Instruction):
+                                            if j in init_replacements:
+                                                transforms.append({
+                                                    'init_idx': j,
+                                                    'inc_idx': inc_idx,
+                                                    'cmp_idx': cmp_idx,
+                                                    'bcc_idx': i,
+                                                    'bound': init_replacements[j],
+                                                    'reg': reg,
+                                                    'target': target,
+                                                })
+                                                break
+                                            search_depth_2 += 1
+                                            if search_depth_2 > 3:
+                                                break
+                                        elif isinstance(n, Label):
+                                            break
+
+        if not transforms:
+            return nodes
+
+        # Build sets of indices to skip/replace
+        skip_indices = set()
+        replace_map = {}  # idx -> replacement instruction
+
+        for t in transforms:
+            # Replace init LDX/LDY #0 with LDX/LDY #bound
+            replace_map[t['init_idx']] = Instruction(
+                nodes[t['init_idx']].opcode,
+                AsmImmediate(t['bound']),
+                nodes[t['init_idx']].comment,
+                nodes[t['init_idx']].source_loc,
+            )
+            # Replace INX/INY with DEX/DEY
+            replace_map[t['inc_idx']] = Instruction(
+                INC_TO_DEC[nodes[t['inc_idx']].opcode],
+                None,
+                nodes[t['inc_idx']].comment,
+                nodes[t['inc_idx']].source_loc,
+            )
+            # Skip CPX/CPY
+            skip_indices.add(t['cmp_idx'])
+            # Replace BCC with BNE
+            replace_map[t['bcc_idx']] = Instruction(
+                Opcode.BNE,
+                nodes[t['bcc_idx']].operand,
+                nodes[t['bcc_idx']].comment,
+                nodes[t['bcc_idx']].source_loc,
+            )
+            self.stats.count_down_loops += 1
+
+        for i, node in enumerate(nodes):
+            if i in skip_indices:
+                continue
+            if i in replace_map:
+                optimized.append(replace_map[i])
+            else:
+                optimized.append(node)
 
         return optimized
 

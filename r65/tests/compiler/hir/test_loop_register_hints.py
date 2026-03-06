@@ -239,12 +239,12 @@ class TestLoopRegisterAllocation:
         """
         result = compile_string(source, "test.r65")
 
-        # Should see both X and Y register operations
-        has_x_init = "LDX #$00" in result or "LDX #0" in result
-        has_y_init = "LDY #$00" in result or "LDY #0" in result
+        # Should see both X and Y register operations (may be count-up or count-down)
+        has_x = "LDX #" in result or "DEX" in result or "INX" in result
+        has_y = "LDY #" in result or "DEY" in result or "INY" in result
 
-        assert has_x_init, "Expected X register for outer loop"
-        assert has_y_init, "Expected Y register for inner loop"
+        assert has_x, "Expected X register for one loop"
+        assert has_y, "Expected Y register for other loop"
 
     def test_loop_comparison_uses_correct_register(self):
         """Test that loop comparison uses the hinted register."""
@@ -270,8 +270,10 @@ class TestLoopRegisterAllocation:
         """
         result = compile_string(source, "test.r65")
 
-        # Should see CPX or CPY for the loop condition (register choice
-        # depends on promotion order; u8 counters may get X or Y)
-        assert ("CPX #$0A" in result or "CPX #10" in result or
-                "CPY #$0A" in result or "CPY #10" in result), \
-            "Expected CPX/CPY for loop bound comparison"
+        # Should see loop control using hardware register (CPX/CPY for count-up,
+        # or DEX/DEY+BNE for count-down when counter unused in body)
+        has_count_up = ("CPX #$0A" in result or "CPX #10" in result or
+                        "CPY #$0A" in result or "CPY #10" in result)
+        has_count_down = ("DEX" in result or "DEY" in result) and "BNE" in result
+        assert has_count_up or has_count_down, \
+            "Expected hardware register loop control (CPX/CPY or DEX/DEY)"

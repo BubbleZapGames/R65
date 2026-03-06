@@ -275,8 +275,12 @@ def _promote_local_loop_counters(func: MIRFunction) -> int:
             else:
                 continue
 
-        # Prefer Y for loop counters (INY/DEY), then X
-        if 'Y' not in used_hints:
+        # Choose register: prefer X when vreg is used as array index
+        # (Move to HW X for indexed addressing), otherwise prefer Y.
+        prefers_x = _prefers_x_register(vreg_id, vreg_uses.get(vreg_id, []))
+        if prefers_x and 'X' not in used_hints:
+            hint = 'X'
+        elif 'Y' not in used_hints:
             hint = 'Y'
         elif 'X' not in used_hints:
             hint = 'X'
@@ -311,6 +315,21 @@ def _promote_local_loop_counters(func: MIRFunction) -> int:
         _eliminate_temp_copies(func)
 
     return promoted
+
+
+def _prefers_x_register(vreg_id: int, uses: list) -> bool:
+    """
+    Check if a loop counter vreg is used as an array index.
+
+    When the counter is Moved to hardware register X for indexed addressing
+    (LDA addr,X), placing it in X directly eliminates the TYX transfer.
+    """
+    for use in uses:
+        if isinstance(use, Move):
+            if (isinstance(use.source, VirtualRegister) and use.source.id == vreg_id and
+                    isinstance(use.dest, HardwareRegister) and use.dest.name == 'X'):
+                return True
+    return False
 
 
 def _uses_compatible_with_hw(vreg_id: int, uses: list) -> bool:
