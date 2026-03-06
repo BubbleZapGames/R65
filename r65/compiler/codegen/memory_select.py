@@ -90,6 +90,16 @@ class MemoryOperationSelector(BaseSelector):
         Args:
             instr: Load instruction
         """
+        # Check for dead volatile load (side-effect read in interrupt handler).
+        # Use BIT instead of LDA to read the address without modifying A.
+        mir_func = self.parent.current_function
+        dead_volatile = getattr(mir_func, 'dead_volatile_loads', None) if mir_func else None
+        if dead_volatile and id(instr) in dead_volatile:
+            src_loc = self.parent._get_operand_location(instr.source)
+            self._ensure_m8_mode()
+            self._emit_load_store('BIT', src_loc)
+            return
+
         # Check if dest is return-sinkable: load deferred to return site
         from r65.compiler.mir.nodes import VirtualRegister
         if isinstance(instr.dest, VirtualRegister):

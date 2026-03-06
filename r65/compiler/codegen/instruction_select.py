@@ -1152,9 +1152,11 @@ class InstructionSelector:
             self._emit_implied(Opcode.PLY, "Restore Y")
         if restore_all or 'X' in modified:
             self._emit_implied(Opcode.PLX, "Restore X")
-        self._emit_immediate(Opcode.REP_IMMEDIATE, 0x20, "Force 16-bit A for full restore")
-        self._emit_implied(Opcode.PLA, "Restore A (full 16-bit, includes hidden high byte)")
-        self._emit_implied(Opcode.PLP, "Restore processor status (restores original mode)")
+        # PLA only if A was saved in prologue (handler modifies A)
+        if restore_all or 'A' in modified:
+            self._emit_immediate(Opcode.REP_IMMEDIATE, 0x20, "Force 16-bit A for full restore")
+            self._emit_implied(Opcode.PLA, "Restore A (full 16-bit, includes hidden high byte)")
+        # PHP/PLP eliminated — RTI restores P from the CPU-pushed stack frame
 
         # 4. Return from interrupt
         self._emit_implied(Opcode.RTI)

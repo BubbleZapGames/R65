@@ -44,6 +44,16 @@ class MoveOperationSelector(BaseSelector):
         Args:
             instr: Move instruction
         """
+        # Dead volatile load: emit BIT instead of LDA for side-effect reads
+        # in interrupt handlers where A's value is never used.
+        func = self.parent.current_function
+        dead_volatile = getattr(func, 'dead_volatile_loads', None) if func else None
+        if dead_volatile and id(instr) in dead_volatile:
+            src_loc = self.parent._get_operand_location(instr.source)
+            self.parent._ensure_m8_mode()
+            self._emit_load_store('BIT', src_loc)
+            return
+
         dest_loc = self.parent._get_operand_location(instr.dest)
         src_operand = instr.source
         is_u16 = self.parent._is_16bit(instr.type_info)

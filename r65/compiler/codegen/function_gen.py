@@ -1066,9 +1066,12 @@ class FunctionCodeGenerator:
         """
         Analyze which hardware registers are modified by an interrupt handler body.
 
-        Scans all MIR instructions to determine which of X, Y, D, DBR are
-        written. A/STATUS are always saved (via PHP/PHA). Returns a set of
-        register names that need saving.
+        Scans all MIR instructions to determine which of A, X, Y, D, DBR are
+        written. Returns a set of register names that need saving.
+
+        A is included in the analysis so that handlers which don't modify A
+        can skip the REP/PHA/PLA save/restore sequence. PHP/PLP is always
+        skipped because RTI restores P from the CPU-pushed stack frame.
 
         Calls, TraitDispatch, and asm! blocks conservatively clobber everything.
         """
@@ -1079,13 +1082,34 @@ class FunctionCodeGenerator:
             Rotate, InlineAsm, MemoryFill, BlockCopy,
         )
 
-        modified = set()  # subset of {'X', 'Y', 'D', 'DBR'}
-        ALL_REGS = {'X', 'Y', 'D', 'DBR'}
+        modified = set()  # subset of {'A', 'X', 'Y', 'D', 'DBR'}
+        ALL_REGS = {'A', 'X', 'Y', 'D', 'DBR'}
+
+        # Collect all vreg IDs that are actually USED (appear as source/operand)
+        used_vregs = set()
+        for block in mir_func.blocks.values():
+            for instr in block.instructions:
+                # Check all fields for VirtualRegister references (as sources)
+                for attr in ('source', 'left', 'right', 'operand', 'condition',
+                             'address', 'ptr', 'function'):
+                    val = getattr(instr, attr, None)
+                    if isinstance(val, VirtualRegister):
+                        used_vregs.add(val.id)
+                # Check args list
+                if hasattr(instr, 'args'):
+                    for arg in instr.args:
+                        if isinstance(getattr(arg, 'value', None), VirtualRegister):
+                            used_vregs.add(arg.value.id)
+                # Store/StoreIndirect source
+                if isinstance(instr, Store) and isinstance(instr.source, VirtualRegister):
+                    used_vregs.add(instr.source.id)
+                if isinstance(instr, StoreIndirect) and isinstance(instr.source, VirtualRegister):
+                    used_vregs.add(instr.source.id)
 
         for block in mir_func.blocks.values():
             for instr in block.instructions:
                 if modified == ALL_REGS:
-                    return modified  # Already full, no need to scan more
+                    return modified
 
                 # Calls/TraitDispatch/InlineAsm clobber everything
                 if isinstance(instr, (Call, TraitDispatch)):
@@ -1100,12 +1124,48 @@ class FunctionCodeGenerator:
                 # Check explicit hardware register definitions
                 dest = getattr(instr, 'dest', None)
                 if isinstance(dest, HardwareRegister) and dest.name in ALL_REGS:
+                    # Check if this is a dead volatile read to A (side-effect only).
+                    # Move A = [volatile_hw_addr] where A is never read after → use BIT.
+                    if (dest.name == 'A' and isinstance(instr, Move) and
+                            isinstance(instr.source, MemoryLocation) and
+                            instr.source.is_volatile):
+                        # Check if A is used after this instruction in the block
+                        a_is_used = False
+                        block_instrs = block.instructions
+                        instr_idx = block_instrs.index(instr)
+                        for later in block_instrs[instr_idx + 1:]:
+                            # Check if later instruction reads A
+                            src = getattr(later, 'source', None)
+                            if isinstance(src, HardwareRegister) and src.name == 'A':
+                                a_is_used = True
+                                break
+                            left = getattr(later, 'left', None)
+                            if isinstance(left, HardwareRegister) and left.name == 'A':
+                                a_is_used = True
+                                break
+                        if not a_is_used:
+                            # Mark for BIT substitution
+                            if not hasattr(mir_func, 'dead_volatile_loads'):
+                                mir_func.dead_volatile_loads = set()
+                            mir_func.dead_volatile_loads.add(id(instr))
+                            continue  # Don't count as modifying A
                     modified.add(dest.name)
 
-                # Check if vreg with X/Y hint could imply X/Y modification
-                # (loop counters promoted to X/Y)
-                if isinstance(dest, VirtualRegister) and dest.register_hint in ('X', 'Y'):
-                    modified.add(dest.register_hint)
+                # VirtualRegister dests: check if the vreg is actually used.
+                # Dead volatile loads (side-effect reads) define a vreg that's
+                # never consumed — these can use BIT instead of LDA, avoiding
+                # A modification.
+                if isinstance(dest, VirtualRegister):
+                    if dest.id not in used_vregs:
+                        if isinstance(instr, Load) and instr.source.is_volatile:
+                            if not hasattr(mir_func, 'dead_volatile_loads'):
+                                mir_func.dead_volatile_loads = set()
+                            mir_func.dead_volatile_loads.add(id(instr))
+                            continue  # Don't count as modifying A
+                    if dest.register_hint in ('X', 'Y'):
+                        modified.add(dest.register_hint)
+                    else:
+                        modified.add('A')
 
                 # SaveRegister/RestoreRegister explicitly push/pull hw regs
                 if isinstance(instr, (SaveRegister, RestoreRegister)):
@@ -1136,12 +1196,14 @@ class FunctionCodeGenerator:
         Order of pushes: PHP, [REP #$20], PHA(16-bit), PHX, PHY, PHD, PHB
         (Corresponding pops in epilogue: PLB, PLD, PLY, PLX, [REP #$20], PLA(16-bit), PLP)
         """
-        # PHP and PHA are always needed (saves mode + full 16-bit A)
-        self._emit_instr(Opcode.PHP, comment="Save processor status (first - before mode change)")
-        self._emit_instr(Opcode.REP_IMMEDIATE, Immediate(M_FLAG), "Force 16-bit A to save full accumulator")
-        self._emit_instr(Opcode.PHA, comment="Save A (full 16-bit, includes hidden high byte)")
-        # Only save X, Y, D, DBR if actually modified by the handler body
         save_all = modified_regs is None
+        saves_a = save_all or 'A' in modified_regs
+        # PHP is unnecessary — RTI restores P from the CPU-pushed stack frame.
+        # PHA is only needed if the handler body modifies A.
+        if saves_a:
+            self._emit_instr(Opcode.REP_IMMEDIATE, Immediate(M_FLAG), "Force 16-bit A to save full accumulator")
+            self._emit_instr(Opcode.PHA, comment="Save A (full 16-bit, includes hidden high byte)")
+        # Only save X, Y, D, DBR if actually modified by the handler body
         if save_all or 'X' in modified_regs:
             self._emit_instr(Opcode.PHX, comment="Save X")
         if save_all or 'Y' in modified_regs:
@@ -1150,7 +1212,12 @@ class FunctionCodeGenerator:
             self._emit_instr(Opcode.PHD, comment="Save Direct Page")
         if save_all or 'DBR' in modified_regs:
             self._emit_instr(Opcode.PHB, comment="Save Data Bank")
-        self._emit_instr(Opcode.SEP_IMMEDIATE, Immediate(M_FLAG), "Restore 8-bit A for handler body")
+        # SEP #$20 ensures m8 mode for the handler body. Skip only when nothing
+        # is saved AND the body has no register-modifying instructions (e.g., just
+        # BIT + RTI), since BIT is mode-independent and RTI restores P.
+        any_saved = save_all or bool(modified_regs)
+        if any_saved:
+            self._emit_instr(Opcode.SEP_IMMEDIATE, Immediate(M_FLAG), "8-bit A for handler body")
 
     def _emit_interrupt_scratch_saves(self, scratch_pool: ScratchRegisterPool):
         """
