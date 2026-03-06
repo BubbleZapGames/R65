@@ -27,6 +27,7 @@ Parse `$ARGUMENTS` for a source file path and optional flags:
 - `-o <file>`: write report to file
 - `--model <model>`: Claude model to use (default: sonnet)
 - `--corpus`: run on built-in corpus samples instead of a source file
+- `--cfg <cond>`: set cfg condition, e.g. `--cfg snes` (repeatable)
 - `--timeout <secs>`: timeout per AI agent invocation (default: 300)
 - `-v`: verbose output
 

@@ -334,7 +334,8 @@ def compile_source(source: str, filename: str, output_file: str = None,
         sys.exit(1)
 
 
-def compile_string(source: str, filename: str = "<string>", abi_model=None) -> str:
+def compile_string(source: str, filename: str = "<string>", abi_model=None,
+                   cfg_options: list[str] = None, include_paths: list[str] = None) -> str:
     """
     Simple compile function for tests - compiles and returns assembly string.
 
@@ -342,6 +343,8 @@ def compile_string(source: str, filename: str = "<string>", abi_model=None) -> s
         source: Source code to compile
         filename: Filename for error messages
         abi_model: Optional ABIModel instance (default: Default ABI)
+        cfg_options: List of cfg conditions (e.g. ['snes'])
+        include_paths: List of include search paths
 
     Returns:
         Generated assembly code as string
@@ -349,10 +352,15 @@ def compile_string(source: str, filename: str = "<string>", abi_model=None) -> s
     from r65.compiler.analysis import RecursionChecker
     from r65.compiler.codegen.abi_model import ABIKind
 
+    cfg_evaluator = None
+    if cfg_options:
+        cfg_evaluator = CfgEvaluator.from_string_list(cfg_options)
+
     program = parse(source, filename)
-    program = preprocess(program, filename)
+    program = preprocess(program, filename, include_paths=include_paths or [])
     program = expand_macros(program)
-    builder = HIRBuilder(source_file=filename)
+    builder = HIRBuilder(source_file=filename, cfg_evaluator=cfg_evaluator,
+                         include_paths=include_paths or [])
     hir_program = builder.build_program(program)
     type_checker = TypeChecker(hir_program)
     type_checker.check()

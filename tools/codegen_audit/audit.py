@@ -122,10 +122,13 @@ def _find_source_in_includes(r65_source: str, func_name: str) -> str | None:
     return None
 
 
-def _compile_source(source: str, filename: str = '<audit>') -> str | None:
+def _compile_source(source: str, filename: str = '<audit>',
+                    cfg_options: list[str] = None,
+                    include_paths: list[str] = None) -> str | None:
     """Compile R65 source to assembly string. Returns None on failure."""
     try:
-        return compile_string(source, filename)
+        return compile_string(source, filename, cfg_options=cfg_options,
+                              include_paths=include_paths)
     except Exception as e:
         print(f'Compilation error: {e}', file=sys.stderr)
         return None
@@ -294,6 +297,7 @@ def run_audit(
     verbose: bool = False,
     timeout: int = 120,
     model: str = 'sonnet',
+    cfg_options: list[str] = None,
 ) -> AuditReport:
     """Run the full audit pipeline on a source file or string.
 
@@ -305,6 +309,7 @@ def run_audit(
         dry_run: Just list functions, don't invoke agents
         verbose: Print prompts and debug info
         timeout: Agent invocation timeout in seconds
+        cfg_options: List of cfg conditions (e.g. ['snes'])
     """
     # Load source
     if source_path:
@@ -318,9 +323,15 @@ def run_audit(
 
     report = AuditReport(source_file=filename)
 
+    # Compute include paths from source directory
+    include_paths = None
+    if source_path:
+        include_paths = [str(Path(source_path).resolve().parent)]
+
     # Compile
     print(f'Compiling {filename}...')
-    full_asm = _compile_source(r65_source, filename)
+    full_asm = _compile_source(r65_source, filename, cfg_options=cfg_options,
+                               include_paths=include_paths)
     if full_asm is None:
         report.errors.append('Compilation failed')
         return report
@@ -468,6 +479,10 @@ examples:
         '--model', default='sonnet',
         help='Claude model to use (default: sonnet)',
     )
+    parser.add_argument(
+        '--cfg', action='append', dest='cfg_options',
+        help='Set cfg condition (can be repeated, e.g. --cfg snes)',
+    )
 
     args = parser.parse_args()
 
@@ -492,6 +507,7 @@ examples:
             verbose=args.verbose,
             timeout=args.timeout,
             model=args.model,
+            cfg_options=args.cfg_options,
         )
 
     # Output report
