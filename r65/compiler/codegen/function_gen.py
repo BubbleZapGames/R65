@@ -509,7 +509,7 @@ class FunctionCodeGenerator:
         from r65.compiler.typeck.processor_mode import ModeState
         from r65.compiler.mir.nodes import (
             BinaryOp, UnaryOp, Compare, Return, TypeConvert, Call,
-            TraitDispatch, LoadIndirect, Load, Store,
+            TraitDispatch, LoadIndirect, Load, Store, VirtualRegister,
         )
         from r65.compiler.codegen.type_utils import get_type_size
 
@@ -527,12 +527,33 @@ class FunctionCodeGenerator:
         # Check if the block contains instructions that change accumulator mode.
         # Operations on u16 values switch to m16; returns may switch for
         # return value setup. Calls can leave mode in any state.
+        #
+        # Exception: operations targeting X/Y hardware registers (INX/DEX/INY/DEY,
+        # CPX/CPY) don't touch accumulator mode even though they're u16.
+        # At MIR level, X/Y-targeted ops may use VirtualRegisters with
+        # register_hint='X'/'Y' (not yet lowered to HardwareRegister).
+        from r65.compiler.mir.nodes import HardwareRegister
+
+        def _is_xy(operand):
+            """Check if operand targets X or Y (HW register or hinted vreg)."""
+            if isinstance(operand, HardwareRegister):
+                return operand.name in ('X', 'Y')
+            if isinstance(operand, VirtualRegister):
+                return operand.register_hint in ('X', 'Y')
+            return False
+
         for instr in pred_block.instructions:
             if isinstance(instr, (BinaryOp, UnaryOp)):
                 if instr.type_info and get_type_size(instr.type_info) >= 2:
+                    # INX/DEX/INY/DEY: dest is X or Y — no mode change
+                    if _is_xy(instr.dest):
+                        continue
                     return True
             elif isinstance(instr, Compare):
                 if instr.type_info and get_type_size(instr.type_info) >= 2:
+                    # CPX/CPY: left is X or Y — no mode change
+                    if _is_xy(instr.left):
+                        continue
                     return True
             elif isinstance(instr, Return):
                 return True  # May switch mode for return value

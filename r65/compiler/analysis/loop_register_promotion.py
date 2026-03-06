@@ -287,6 +287,25 @@ def _promote_local_loop_counters(func: MIRFunction) -> int:
         func.loop_promoted_hw_vregs[hint] = vreg
         promoted += 1
 
+    # Step 7: Register HIR-hinted loop counters that weren't promoted above.
+    # The HIR builder sets register_hint='X'/'Y' on for-loop counter vregs
+    # (including u8 ones), but only u16 vregs pass the size filter above.
+    # For u8 loop counters with existing hints, register them in
+    # loop_promoted_hw_vregs so function_gen pre-allocates them to hardware
+    # instead of creating unnecessary stack frame slots.
+    for vreg_id in sorted(loop_counter_vregs):
+        if vreg_id in param_vreg_ids:
+            continue
+        vreg = all_vregs.get(vreg_id)
+        if vreg is None:
+            continue
+        hint = vreg.register_hint
+        if hint in ('X', 'Y') and hint not in used_hints:
+            if vreg.id not in {v.id for v in func.loop_promoted_hw_vregs.values()}:
+                func.loop_promoted_hw_vregs[hint] = vreg
+                used_hints.add(hint)
+                promoted += 1
+
     if promoted > 0:
         _eliminate_temp_copies(func)
 

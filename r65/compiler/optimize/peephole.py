@@ -197,6 +197,7 @@ class OptimizationStats:
     redundant_and_before_sep_eliminated: int = 0
     branch_over_branch_eliminated: int = 0
     branch_to_next_eliminated: int = 0
+    branch_threading_applied: int = 0
     tracked_loads_eliminated: int = 0
     identity_copies_eliminated: int = 0
     memory_inc_dec_folded: int = 0
@@ -214,7 +215,8 @@ class OptimizationStats:
             self.branch_to_next_eliminated +
             self.tracked_loads_eliminated +
             self.identity_copies_eliminated +
-            self.memory_inc_dec_folded
+            self.memory_inc_dec_folded +
+            self.branch_threading_applied
         )
 
 
@@ -273,6 +275,7 @@ class PeepholeOptimizer:
             nodes = self._eliminate_redundant_mode_changes(nodes)
             nodes = self._eliminate_redundant_and_before_sep(nodes)
             nodes = self._eliminate_branch_over_branch(nodes)
+            nodes = self._thread_branches(nodes)
             nodes = self._eliminate_branch_to_next_label(nodes)
             changed = self.stats.total > prev_total
 
@@ -973,6 +976,71 @@ class PeepholeOptimizer:
 
         return optimized
 
+    def _thread_branches(self, nodes: List['AsmNode']) -> List['AsmNode']:
+        """
+        Thread branches through intermediate unconditional branches.
+
+        When a branch (conditional or BRA) targets a label whose first
+        instruction is BRA, redirect it to the BRA's ultimate target.
+
+        Example:
+            BPL label_A       ->  BPL label_B
+            ...                   ...
+            label_A:              label_A:
+            BRA label_B           BRA label_B  (now dead, removed by later passes)
+        """
+        from r65.compiler.codegen.asm_nodes import Instruction, Label, Address
+
+        ALL_BRANCHES = BRANCH_OPCODES
+
+        # Build label -> BRA target map: for each label immediately followed
+        # by a BRA (skipping other labels/directives), record the BRA target.
+        label_to_bra_target: dict[str, str] = {}
+        for i, node in enumerate(nodes):
+            if isinstance(node, Label):
+                # Find the first instruction after this label
+                j = i + 1
+                while j < len(nodes) and not isinstance(nodes[j], Instruction):
+                    j += 1
+                if (j < len(nodes) and
+                    isinstance(nodes[j], Instruction) and
+                    nodes[j].opcode == Opcode.BRA and
+                    isinstance(nodes[j].operand, Address) and
+                    isinstance(nodes[j].operand.value, str)):
+                    label_to_bra_target[node.name] = nodes[j].operand.value
+
+        # Follow chains (label_A -> BRA label_B -> BRA label_C)
+        def resolve(label: str, depth: int = 0) -> str:
+            if depth > 10:
+                return label
+            if label in label_to_bra_target:
+                return resolve(label_to_bra_target[label], depth + 1)
+            return label
+
+        # Rewrite branch targets
+        optimized = []
+        for node in nodes:
+            if (isinstance(node, Instruction) and
+                node.opcode in ALL_BRANCHES and
+                isinstance(node.operand, Address) and
+                isinstance(node.operand.value, str)):
+
+                target = node.operand.value
+                resolved = resolve(target)
+                if resolved != target:
+                    optimized.append(Instruction(
+                        node.opcode,
+                        Address(resolved),
+                        node.comment,
+                        node.source_loc,
+                    ))
+                    self.stats.branch_threading_applied += 1
+                    continue
+
+            optimized.append(node)
+
+        return optimized
+
     def _eliminate_branch_to_next_label(self, nodes: List['AsmNode']) -> List['AsmNode']:
         """
         Eliminate BRA instructions that branch to the immediately following label.
@@ -995,9 +1063,13 @@ class PeepholeOptimizer:
 
                 target = node.operand.value
 
-                # Look ahead past directives/comments for the label
+                # Look ahead past directives/comments/non-target labels for the target label.
+                # Labels between the BRA and target contain no instructions, so
+                # falling through them is equivalent to branching to the target.
                 j = i + 1
-                while j < len(nodes) and not isinstance(nodes[j], (Instruction, Label)):
+                while j < len(nodes) and not isinstance(nodes[j], Instruction):
+                    if isinstance(nodes[j], Label) and nodes[j].name == target:
+                        break
                     j += 1
 
                 if (j < len(nodes) and

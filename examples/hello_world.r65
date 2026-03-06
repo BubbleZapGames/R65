@@ -8,7 +8,7 @@
 #[snesrom(name="HELLO WORLD")]
 #[bank(0)]
 
-include!("lib/sneslib.r65")
+include!("../stdlib/sneslib.r65")
 
 // ----------------------------------------------------------------------------
 // Message to display
