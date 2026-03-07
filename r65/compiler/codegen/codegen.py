@@ -652,8 +652,10 @@ class ProgramCodeGenerator:
             for func in mir_program.functions
         )
 
-        # Validate bank sizes
-        validate_bank_sizes(nodes, is_hirom=is_hirom, has_header=has_header)
+        # Bank size validation is handled by WLA-DX linker, which has
+        # accurate bank boundaries from .BANK directives in the emitted assembly.
+        # The AsmNode list doesn't contain .BANK directives (emitted separately),
+        # so node-based validation would miscount all code as bank 0.
 
     # ========================================================================
     # Linkfile Generation

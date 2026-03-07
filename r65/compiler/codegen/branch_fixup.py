@@ -280,7 +280,7 @@ class BranchFixup:
         return 0
 
     def _raw_asm_size(self, node: RawAsm) -> int:
-        """Estimate size of a RawAsm node by counting non-empty, non-comment lines."""
+        """Estimate size of a RawAsm node by parsing addressing modes."""
         size = 0
         for line in node.text.strip().splitlines():
             stripped = line.strip()
@@ -291,10 +291,49 @@ class BranchFixup:
             code = stripped.split(';')[0].strip()
             if not code or code.endswith(':'):
                 continue
-            # Each instruction line is at least 1 byte (implied addressing)
-            # Most RawAsm instructions are simple 1-byte transfers/stack ops
-            size += 1
+            size += self._estimate_instruction_size(code)
         return size
+
+    @staticmethod
+    def _estimate_instruction_size(code: str) -> int:
+        """Estimate byte size of a single raw asm instruction."""
+        parts = code.split(None, 1)
+        mnem = parts[0].upper()
+
+        # Directives that aren't instructions
+        if mnem.startswith('.'):
+            return 0
+
+        if len(parts) < 2:
+            # Implied addressing (e.g., NOP, RTS, TAX, PHB, PLB)
+            return 1
+
+        operand = parts[1].strip().rstrip(',')
+
+        # Immediate: LDA #$xx or LDA #<label (2 bytes: opcode + imm8)
+        # In 8-bit mode most immediates are 1-byte operand
+        if operand.startswith('#'):
+            return 2
+
+        # Long addressing: LDA $7E2000 or STA $7E2000 (4 bytes) / LDA.l
+        if '.l' in mnem.lower():
+            return 4
+
+        # Check operand for addressing mode
+        # Direct page: $xx (2 bytes)
+        if operand.startswith('$') and not operand.startswith('$0'):
+            # Count hex digits after $
+            hex_part = operand[1:].split(',')[0].split('.')[0]
+            hex_digits = len(hex_part.lstrip('0')) or 1
+            if hex_digits <= 2:
+                return 2  # Direct page
+            elif hex_digits <= 4:
+                return 3  # Absolute
+            else:
+                return 4  # Long
+
+        # Default: assume 3 bytes (absolute addressing, most common in raw asm)
+        return 3
 
     def _apply_fixups(
         self,
