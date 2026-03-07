@@ -92,6 +92,21 @@ class TypeConversionSelector(BaseSelector):
             dest_loc: Destination location
             source_signed: True if source is signed (requires sign extension)
         """
+        # For unsigned zero-extension from memory/stack sources to memory/stack
+        # destinations, use m16 AND #$00FF for a compact single-store approach.
+        # This avoids mode-switching overhead (SEP/REP) of the byte-by-byte path.
+        if (not source_signed and
+                not isinstance(src_operand, (MIRImmediate, HardwareRegister)) and
+                not dest_loc.is_hw()):
+            src_loc = self.parent._get_operand_location(src_operand)
+            if not src_loc.is_hw():
+                self.parent._ensure_m16_mode()
+                self._emit_load_store('LDA', src_loc)
+                self._emit_instr(Opcode.AND_IMMEDIATE, Immediate(0x00FF),
+                                 "Zero-extend u8 to u16")
+                self._emit_load_store('STA', dest_loc)
+                return
+
         # Load source into A
         if isinstance(src_operand, MIRImmediate):
             value = src_operand.value & 0xFF

@@ -414,8 +414,9 @@ class TestTypeCastCodeGen:
                 RESULT = (VALUE as u16);
             }
         """)
-        # Should store low byte and zero high byte
-        assert "LDA #$00" in asm or "STZ" in asm, "Expected zero extension for u8->u16"
+        # Should zero-extend: either LDA #$00 (byte-by-byte) or AND #$FF (m16 path)
+        assert "LDA #$00" in asm or "STZ" in asm or "AND #$FF" in asm, \
+            "Expected zero extension for u8->u16"
 
     def test_codegen_truncate(self):
         """u16 -> u8 should generate truncation (load low byte only)."""
