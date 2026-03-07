@@ -204,6 +204,7 @@ class OptimizationStats:
     loops_rotated: int = 0
     loop_invariant_loads_hoisted: int = 0
     count_down_loops: int = 0
+    unreachable_nodes_eliminated: int = 0
 
     @property
     def total(self) -> int:
@@ -222,7 +223,8 @@ class OptimizationStats:
             self.branch_threading_applied +
             self.loops_rotated +
             self.loop_invariant_loads_hoisted +
-            self.count_down_loops
+            self.count_down_loops +
+            self.unreachable_nodes_eliminated
         )
 
 
@@ -288,6 +290,7 @@ class PeepholeOptimizer:
             nodes = self._hoist_loop_invariant_loads(nodes)
             nodes = self._count_down_loops(nodes)
             nodes = self._hoist_loop_mode_switches(nodes)
+            nodes = self._eliminate_unreachable_code(nodes)
             changed = self.stats.total > prev_total
 
         return nodes
@@ -1856,6 +1859,53 @@ class PeepholeOptimizer:
                 continue
             optimized.append(node)
 
+        return optimized
+
+    def _eliminate_unreachable_code(self, nodes: List['AsmNode']) -> List['AsmNode']:
+        """
+        Eliminate unreachable code after unconditional control flow (RTS, RTI, RTL, BRA, JMP).
+
+        After an unconditional transfer, any instructions before the next referenced
+        label are dead code. Removes instructions, directives, and unreferenced labels.
+        """
+        from r65.compiler.codegen.asm_nodes import Instruction, Label, Directive
+
+        TERMINAL_OPCODES = ({Opcode.RTS, Opcode.RTI, Opcode.RTL, Opcode.BRA} |
+                            JUMP_OPCODES)
+
+        # Build set of referenced labels
+        referenced = set()
+        for node in nodes:
+            if isinstance(node, Instruction):
+                if hasattr(node.operand, 'value') and isinstance(node.operand.value, str):
+                    referenced.add(node.operand.value)
+
+        optimized = []
+        skipping = False
+        eliminated = 0
+
+        for node in nodes:
+            if skipping:
+                if isinstance(node, Label):
+                    # Stop skipping at any label — it may be referenced by
+                    # expressions (e.g., LDA #>(__SCMP1 - 1)) not caught by
+                    # simple operand scanning
+                    skipping = False
+                    optimized.append(node)
+                    continue
+                # Only skip Instructions — preserve Directives and Comments
+                if isinstance(node, Instruction):
+                    eliminated += 1
+                    continue
+                # Non-instruction node (Directive/Comment) — stop skipping
+                skipping = False
+
+            optimized.append(node)
+
+            if isinstance(node, Instruction) and node.opcode in TERMINAL_OPCODES:
+                skipping = True
+
+        self.stats.unreachable_nodes_eliminated += eliminated
         return optimized
 
     def _eliminate_branch_to_next_label(self, nodes: List['AsmNode']) -> List['AsmNode']:
