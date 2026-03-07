@@ -286,6 +286,7 @@ class PeepholeOptimizer:
             nodes = self._eliminate_branch_over_branch(nodes)
             nodes = self._thread_branches(nodes)
             nodes = self._eliminate_branch_to_next_label(nodes)
+            nodes = self._inline_branch_to_return(nodes)
             nodes = self._rotate_top_tested_loops(nodes)
             nodes = self._hoist_loop_invariant_loads(nodes)
             nodes = self._count_down_loops(nodes)
@@ -1952,6 +1953,49 @@ class PeepholeOptimizer:
 
             optimized.append(node)
             i += 1
+
+        return optimized
+
+    def _inline_branch_to_return(self, nodes: List['AsmNode']) -> List['AsmNode']:
+        """
+        Replace BRA to a return instruction with the return instruction itself.
+
+        Pattern: BRA label / ... / label: RTS → RTS (inline the return)
+        Saves 1 cycle and allows subsequent dead code elimination of the
+        now-unreferenced label.
+        """
+        from r65.compiler.codegen.asm_nodes import Instruction, Label
+
+        RETURN_OPCODES = {Opcode.RTS, Opcode.RTI, Opcode.RTL}
+
+        # Build label -> return opcode map
+        label_to_return: dict[str, Opcode] = {}
+        for i, node in enumerate(nodes):
+            if isinstance(node, Label):
+                # Find first instruction after label (skip directives/labels)
+                j = i + 1
+                while j < len(nodes) and not isinstance(nodes[j], Instruction):
+                    j += 1
+                if (j < len(nodes) and isinstance(nodes[j], Instruction) and
+                        nodes[j].opcode in RETURN_OPCODES):
+                    label_to_return[node.name] = nodes[j].opcode
+
+        if not label_to_return:
+            return nodes
+
+        optimized = []
+        for node in nodes:
+            if (isinstance(node, Instruction) and
+                    node.opcode == Opcode.BRA and
+                    hasattr(node.operand, 'value') and
+                    isinstance(node.operand.value, str) and
+                    node.operand.value in label_to_return):
+                # Replace BRA with the return instruction
+                ret_opcode = label_to_return[node.operand.value]
+                optimized.append(Instruction(ret_opcode, None, node.comment, node.source_loc))
+                self.stats.branch_to_next_eliminated += 1
+                continue
+            optimized.append(node)
 
         return optimized
 
