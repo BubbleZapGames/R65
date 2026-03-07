@@ -2207,17 +2207,27 @@ class PeepholeOptimizer:
                     i += 1
                     continue
 
-                # Check if A=0 is needed after the last converted STA
+                # Check if A=0 is needed after the last converted STA.
+                # Skip over mode switches (SEP/REP) and directives since
+                # they don't use A's value.
                 a_needed = True
                 k = stz_indices[-1] + 1
                 while k < len(nodes):
                     n = nodes[k]
-                    if isinstance(n, (Label, Directive)):
+                    if isinstance(n, Label):
                         break
+                    if isinstance(n, Directive):
+                        k += 1
+                        continue
                     if isinstance(n, Instruction):
                         if n.opcode in MODIFIES_A_OPCODES:
                             a_needed = False  # A is overwritten
-                        break
+                            break
+                        # SEP/REP don't use A's value, skip them
+                        if n.opcode in (Opcode.SEP_IMMEDIATE, Opcode.REP_IMMEDIATE):
+                            k += 1
+                            continue
+                        break  # Other instruction uses A (or might)
                     k += 1
 
                 # If A=0 is potentially needed, keep the LDA #$00
