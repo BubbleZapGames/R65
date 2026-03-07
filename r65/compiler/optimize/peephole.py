@@ -887,13 +887,19 @@ class PeepholeOptimizer:
         # label_arriving_modes[label_name] = set of modes (8, 16, or None for unknown)
         label_arriving_modes: dict[str, set] = {}
         current_mode = None
+        dead_fallthrough = False  # True after terminal instructions (RTS/RTL/RTI/BRA/JMP)
+
+        from r65.compiler.codegen.opcodes import RETURN_OPCODES
+        TERMINAL_OPCODES = RETURN_OPCODES | JUMP_OPCODES | frozenset({Opcode.BRA})
 
         for i, node in enumerate(nodes):
             if isinstance(node, Label):
-                # Fallthrough arrives with current_mode
+                # Only record fallthrough mode if control can actually fall through
                 if node.name not in label_arriving_modes:
                     label_arriving_modes[node.name] = set()
-                label_arriving_modes[node.name].add(current_mode)
+                if not dead_fallthrough:
+                    label_arriving_modes[node.name].add(current_mode)
+                dead_fallthrough = False
                 # Don't reset current_mode here — we still know the fallthrough mode
                 continue
 
@@ -925,11 +931,17 @@ class PeepholeOptimizer:
                     if target not in label_arriving_modes:
                         label_arriving_modes[target] = set()
                     label_arriving_modes[target].add(current_mode)
-                # After unconditional branch, mode is unknown for fallthrough
+                # After unconditional branch, no fallthrough
                 if node.opcode == Opcode.BRA:
                     current_mode = None
+                    dead_fallthrough = True
             elif node.opcode in JUMP_OPCODES:
                 current_mode = None
+                dead_fallthrough = True
+
+            # Return instructions: no fallthrough to next label
+            if node.opcode in RETURN_OPCODES:
+                dead_fallthrough = True
 
         # Pass 2: Remove SEP/REP at labels where all predecessors agree on mode
         optimized = []
@@ -966,14 +978,34 @@ class PeepholeOptimizer:
 
                 if sep_rep_idx is not None:
                     target_mode = 8 if nodes[sep_rep_idx].opcode == Opcode.SEP_IMMEDIATE else 16
-                    # All predecessors must arrive in target_mode (no None/unknown)
-                    if modes and all(m == target_mode for m in modes):
-                        # Eliminate the SEP/REP and its .ACCU directive
+                    # All predecessors must arrive in target_mode (no None/unknown).
+                    # Function entry labels (after RTS/RTL) have no fallthrough
+                    # predecessors recorded, so labels with empty modes or all-matching
+                    # modes can be optimized.
+                    # Labels with NO predecessors at all (empty set) get an .ACCU
+                    # directive — trust it as the declared entry mode.
+                    accu_declares_mode = False
+                    if accu_idx is not None:
+                        accu_node = nodes[accu_idx]
+                        accu_val = int(accu_node.args[0]) if accu_node.args else None
+                        accu_declares_mode = (accu_val == target_mode)
+                    all_match = modes and all(m == target_mode for m in modes)
+                    no_preds_but_declared = (not modes and accu_declares_mode)
+                    if all_match or no_preds_but_declared:
+                        # Eliminate the SEP/REP but KEEP the .ACCU directive.
+                        # WLA-DX tracks accumulator size linearly (not by control
+                        # flow), so the .ACCU directive is needed to inform the
+                        # assembler of the correct mode for subsequent instructions
+                        # even when the runtime SEP/REP is provably redundant.
                         optimized.append(node)  # Keep the label
+                        # Keep the .ACCU directive before SEP/REP
+                        if accu_idx is not None:
+                            optimized.append(nodes[accu_idx])
                         i = sep_rep_idx + 1
-                        # Skip trailing .ACCU directive after SEP/REP
+                        # Keep trailing .ACCU directive after SEP/REP
                         if (i < len(nodes) and isinstance(nodes[i], Directive) and
                                 nodes[i].name == '.ACCU'):
+                            optimized.append(nodes[i])
                             i += 1
                         self.stats.redundant_mode_changes_eliminated += 1
                         continue
