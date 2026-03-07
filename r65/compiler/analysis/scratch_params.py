@@ -13,11 +13,12 @@ A stack parameter is promoted if:
 
 from typing import Dict, Set, List
 from r65.compiler.mir.nodes import (
-    MIRProgram, MIRFunction, Call, ArgumentMechanism, TraitDispatch,
+    MIRProgram, MIRFunction, Call, ArgumentMechanism, TraitDispatch, Move, VirtualRegister,
 )
 from r65.compiler.codegen.register_alloc import ScratchRegisterPool
 from r65.compiler.codegen.type_utils import get_type_size
 from r65.compiler.analysis.param_utils import find_address_taken_functions, find_composite_scratch
+from r65.compiler.analysis.far_ptr_strategy import _is_set_dbr_safe
 
 
 def analyze_scratch_params(mir_program: MIRProgram, scratch_pool: ScratchRegisterPool):
@@ -46,6 +47,11 @@ def analyze_scratch_params(mir_program: MIRProgram, scratch_pool: ScratchRegiste
     for func in mir_program.functions:
         if func.name in address_taken:
             continue  # Skip functions whose address is taken
+
+        # Skip functions with far ptr stack params that would need D=S.
+        # D=S moves DP to the stack, making scratch regs inaccessible.
+        if func.has_far_ptr_stack_params and not _is_set_dbr_safe(func):
+            continue
 
         func_promotions = _analyze_function(func, scratch_pool)
         if func_promotions:
@@ -110,6 +116,13 @@ def _analyze_function(func: MIRFunction, scratch_pool: ScratchRegisterPool) -> D
         if liveness.is_live_across_any_call(vreg):
             continue  # Can't use scratch - would be clobbered by callee
 
+        # Also check vregs that receive a Move from this param vreg.
+        # If Move(dest=w, source=param_vreg) exists and w is live across
+        # calls, w may be coalesced with param_vreg during register alloc,
+        # inheriting the scratch address. The callee would then clobber w.
+        if _any_move_target_live_across_call(func, vreg, liveness):
+            continue
+
         param_size = get_type_size(func.parameters[param_idx].param_type)
         eligible.append((param_idx, vreg, param_size))
 
@@ -145,6 +158,25 @@ def _analyze_function(func: MIRFunction, scratch_pool: ScratchRegisterPool) -> D
                     used_scratches.add(addr)
 
     return result
+
+
+def _any_move_target_live_across_call(func: MIRFunction, param_vreg, liveness) -> bool:
+    """Check if any vreg that receives a Move from param_vreg is live across calls.
+
+    This catches the case where `let d = digits` creates Move(dest=d, source=digits),
+    and d is live across calls. If d gets coalesced with digits during register alloc,
+    it inherits the scratch address and gets clobbered by the callee.
+    """
+    for block in func.blocks.values():
+        for instr in block.instructions:
+            if (isinstance(instr, Move) and
+                isinstance(instr.source, VirtualRegister) and
+                instr.source == param_vreg and
+                isinstance(instr.dest, VirtualRegister) and
+                instr.dest != param_vreg):
+                if liveness.is_live_across_any_call(instr.dest):
+                    return True
+    return False
 
 
 def _recompute_stack_offsets(func: MIRFunction):

@@ -5,7 +5,7 @@ Handles memory access instruction generation including direct and indirect
 addressing modes for the 65816 processor.
 """
 
-from r65.compiler.mir.nodes import Load, Store, LoadIndirect, StoreIndirect, Immediate as MIRImmediate, FunctionPointer, LabelRef
+from r65.compiler.mir.nodes import Load, Store, LoadIndirect, StoreIndirect, Immediate as MIRImmediate, FunctionPointer, LabelRef, FarPtrStrategy
 from r65.compiler.codegen.register_alloc import LocationKind
 from r65.compiler.errors import InstructionSelectionError
 from r65.compiler.codegen.opcodes import Opcode, STORE_MNEMONICS
@@ -216,9 +216,20 @@ class MemoryOperationSelector(BaseSelector):
             value_masked = value & 0xFF
             # Use STZ for storing zero (more efficient than LDA #0; STA)
             # But STZ doesn't support stack-relative or 24-bit long addressing
+            # STZ doesn't support stack-relative or LONG addressing modes.
+            # Under SET_DBR, ROM labels and HW registers are forced to LONG.
+            is_long_under_set_dbr = False
+            if (self.parent.current_function and
+                self.parent.current_function.far_ptr_strategy == FarPtrStrategy.SET_DBR and
+                dest_loc.kind == LocationKind.MEMORY):
+                if dest_loc.memory_label and dest_loc.storage_type == 'rom':
+                    is_long_under_set_dbr = True
+                elif dest_loc.storage_type == 'hw':
+                    is_long_under_set_dbr = True
             can_use_stz = (
                 value_masked == 0 and
                 dest_loc.kind != LocationKind.STACK and
+                not is_long_under_set_dbr and
                 # STZ only supports 16-bit absolute addresses
                 not (dest_loc.kind == LocationKind.MEMORY and
                      dest_loc.memory_addr is not None and

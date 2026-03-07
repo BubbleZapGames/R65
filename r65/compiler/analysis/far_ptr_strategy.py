@@ -31,6 +31,12 @@ def analyze_far_ptr_strategy(mir_program):
 
 def _choose_strategy(func: MIRFunction) -> FarPtrStrategy:
     """Choose the optimal far pointer access strategy for a function."""
+    # D=S is incompatible with scratch params: D=S moves DP to the stack,
+    # so DP addresses no longer reach zeropage scratch registers.
+    # Force SET_DBR when scratch params are present.
+    if func.scratch_param_addrs and _is_set_dbr_safe(func):
+        return FarPtrStrategy.SET_DBR
+
     # Safety checks — force D=S if any disqualifier
     if not _is_set_dbr_safe(func):
         return FarPtrStrategy.D_EQUALS_S

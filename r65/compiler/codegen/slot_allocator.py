@@ -965,6 +965,13 @@ class StackSlotAllocator:
                 return False
             use_block_id, use_idx = use_pos
             if use_block_id == def_block_id:
+                if use_idx < def_idx:
+                    # Loop-carried dependency: use appears before def in the
+                    # same block (created by Move coalescing merging a pre-loop
+                    # vreg with a mid-loop vreg). The hw register must survive
+                    # the back-edge, but instructions between block start and
+                    # this use (e.g. decrements) will clobber it. Reject.
+                    return False
                 same_block_max_idx = max(same_block_max_idx, use_idx)
             else:
                 cross_block_uses.append((use_block_id, use_idx))
