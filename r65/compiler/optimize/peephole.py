@@ -2055,9 +2055,12 @@ class PeepholeOptimizer:
 
             # Stores to hw I/O registers may have side effects that change
             # the value at the tracked address (e.g., STA WRMPYB triggers
-            # a multiply, changing RDMPYL/RDMPYH)
+            # a multiply, changing RDMPYL/RDMPYH). But immediate loads are
+            # unaffected — the constant value doesn't depend on memory.
             if opcode in (STORE_A_OPCODES | STORE_X_OPCODES | STORE_Y_OPCODES):
-                if known_a is not None and self._is_hardware_register(node.operand):
+                if (known_a is not None and
+                        known_a[0] not in (Opcode.LDA_IMMEDIATE,) and
+                        self._is_hardware_register(node.operand)):
                     known_a = None
                 optimized.append(node)
                 continue
