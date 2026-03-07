@@ -207,6 +207,7 @@ class OptimizationStats:
     unreachable_nodes_eliminated: int = 0
     stz_conversions: int = 0
     inc_dec_folded: int = 0
+    redundant_cmp_zero_eliminated: int = 0
 
     @property
     def total(self) -> int:
@@ -228,7 +229,8 @@ class OptimizationStats:
             self.count_down_loops +
             self.unreachable_nodes_eliminated +
             self.stz_conversions +
-            self.inc_dec_folded
+            self.inc_dec_folded +
+            self.redundant_cmp_zero_eliminated
         )
 
 
@@ -298,6 +300,7 @@ class PeepholeOptimizer:
             nodes = self._eliminate_unreachable_code(nodes)
             nodes = self._convert_zero_stores_to_stz(nodes)
             nodes = self._fold_inc_dec_accumulator(nodes)
+            nodes = self._eliminate_redundant_cmp_zero(nodes)
             changed = self.stats.total > prev_total
 
         return nodes
@@ -2243,6 +2246,87 @@ class PeepholeOptimizer:
                         self.stats.inc_dec_folded += 1
                         i += 2
                         continue
+
+            optimized.append(node)
+            i += 1
+
+        return optimized
+
+    # ========================================================================
+    # Redundant CMP #$00 Elimination
+    # ========================================================================
+
+    # Instructions that set the Z and N flags based on their result
+    _Z_N_SETTING_OPCODES = (
+        LOAD_A_OPCODES | LOAD_X_OPCODES | LOAD_Y_OPCODES | {
+        Opcode.AND_IMMEDIATE, Opcode.AND_DP, Opcode.AND_ABSOLUTE, Opcode.AND_STACK,
+        Opcode.AND_DP_X, Opcode.AND_ABSOLUTE_X, Opcode.AND_ABSOLUTE_Y,
+        Opcode.ORA_IMMEDIATE, Opcode.ORA_DP, Opcode.ORA_ABSOLUTE, Opcode.ORA_STACK,
+        Opcode.ORA_DP_X, Opcode.ORA_ABSOLUTE_X, Opcode.ORA_ABSOLUTE_Y,
+        Opcode.EOR_IMMEDIATE, Opcode.EOR_DP, Opcode.EOR_ABSOLUTE, Opcode.EOR_STACK,
+        Opcode.EOR_DP_X, Opcode.EOR_ABSOLUTE_X, Opcode.EOR_ABSOLUTE_Y,
+        Opcode.ADC_IMMEDIATE, Opcode.ADC_DP, Opcode.ADC_ABSOLUTE, Opcode.ADC_STACK,
+        Opcode.SBC_IMMEDIATE, Opcode.SBC_DP, Opcode.SBC_ABSOLUTE, Opcode.SBC_STACK,
+        Opcode.ASL, Opcode.LSR, Opcode.ROL, Opcode.ROR,
+        Opcode.INC, Opcode.DEC,
+        Opcode.INX, Opcode.DEX, Opcode.INY, Opcode.DEY,
+        Opcode.TXA, Opcode.TYA, Opcode.PLA, Opcode.TAX, Opcode.TAY,
+        Opcode.XBA,
+        Opcode.BIT_IMMEDIATE, Opcode.BIT_DP, Opcode.BIT_ABSOLUTE,
+    })
+
+    # Branches that only check Z or N flags (not carry or overflow)
+    _Z_N_BRANCH_OPCODES = frozenset({
+        Opcode.BEQ, Opcode.BNE, Opcode.BMI, Opcode.BPL,
+    })
+
+    def _eliminate_redundant_cmp_zero(self, nodes: List['AsmNode']) -> List['AsmNode']:
+        """
+        Eliminate CMP #$00 when the previous instruction already sets Z/N flags
+        and the next branch only checks Z or N (not carry or overflow).
+
+        CMP #$00 is redundant after LDA, AND, ORA, EOR, etc. when the only
+        consumers of the flags are BEQ/BNE/BMI/BPL.
+        """
+        from r65.compiler.codegen.asm_nodes import Instruction, Immediate, Label, Directive
+
+        optimized = []
+        i = 0
+        while i < len(nodes):
+            node = nodes[i]
+
+            if (isinstance(node, Instruction) and
+                    node.opcode == Opcode.CMP_IMMEDIATE and
+                    isinstance(node.operand, Immediate) and
+                    node.operand.value == 0):
+                # Check: previous real instruction sets Z/N
+                prev_sets_zn = False
+                for j in range(len(optimized) - 1, -1, -1):
+                    prev = optimized[j]
+                    if isinstance(prev, (Directive,)):
+                        continue
+                    if isinstance(prev, Label):
+                        break
+                    if isinstance(prev, Instruction):
+                        prev_sets_zn = prev.opcode in self._Z_N_SETTING_OPCODES
+                        break
+                    break
+
+                # Check: next real instruction only uses Z/N flags
+                next_only_zn = False
+                if prev_sets_zn:
+                    for k in range(i + 1, len(nodes)):
+                        n = nodes[k]
+                        if isinstance(n, Directive):
+                            continue
+                        if isinstance(n, Instruction):
+                            next_only_zn = n.opcode in self._Z_N_BRANCH_OPCODES
+                        break
+
+                if prev_sets_zn and next_only_zn:
+                    self.stats.redundant_cmp_zero_eliminated += 1
+                    i += 1
+                    continue
 
             optimized.append(node)
             i += 1
