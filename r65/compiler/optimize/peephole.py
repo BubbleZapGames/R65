@@ -206,6 +206,7 @@ class OptimizationStats:
     count_down_loops: int = 0
     unreachable_nodes_eliminated: int = 0
     stz_conversions: int = 0
+    inc_dec_folded: int = 0
 
     @property
     def total(self) -> int:
@@ -226,7 +227,8 @@ class OptimizationStats:
             self.loop_invariant_loads_hoisted +
             self.count_down_loops +
             self.unreachable_nodes_eliminated +
-            self.stz_conversions
+            self.stz_conversions +
+            self.inc_dec_folded
         )
 
 
@@ -295,6 +297,7 @@ class PeepholeOptimizer:
             nodes = self._hoist_loop_mode_switches(nodes)
             nodes = self._eliminate_unreachable_code(nodes)
             nodes = self._convert_zero_stores_to_stz(nodes)
+            nodes = self._fold_inc_dec_accumulator(nodes)
             changed = self.stats.total > prev_total
 
         return nodes
@@ -2147,6 +2150,102 @@ class PeepholeOptimizer:
             # Other instructions (CMP, TAX, TAY, CLC, SEC, etc.)
             # don't modify A — tracking stays valid
             optimized.append(node)
+
+        return optimized
+
+    # ========================================================================
+    # INC/DEC Accumulator Folding
+    # ========================================================================
+
+    # Instructions that use the carry flag as input
+    _CARRY_INPUT_OPCODES = frozenset({
+        Opcode.ADC_IMMEDIATE, Opcode.ADC_DP, Opcode.ADC_ABSOLUTE, Opcode.ADC_STACK,
+        Opcode.ADC_DP_X, Opcode.ADC_ABSOLUTE_X, Opcode.ADC_ABSOLUTE_Y,
+        Opcode.ADC_DP_INDIRECT, Opcode.ADC_DP_INDIRECT_X, Opcode.ADC_DP_INDIRECT_Y,
+        Opcode.ADC_DP_INDIRECT_LONG, Opcode.ADC_DP_INDIRECT_LONG_Y, Opcode.ADC_STACK_INDIRECT_Y,
+        Opcode.SBC_IMMEDIATE, Opcode.SBC_DP, Opcode.SBC_ABSOLUTE, Opcode.SBC_STACK,
+        Opcode.SBC_DP_X, Opcode.SBC_ABSOLUTE_X, Opcode.SBC_ABSOLUTE_Y,
+        Opcode.SBC_DP_INDIRECT, Opcode.SBC_DP_INDIRECT_X, Opcode.SBC_DP_INDIRECT_Y,
+        Opcode.SBC_DP_INDIRECT_LONG, Opcode.SBC_DP_INDIRECT_LONG_Y, Opcode.SBC_STACK_INDIRECT_Y,
+        Opcode.ROL, Opcode.ROR,
+        Opcode.ROL_DP, Opcode.ROR_DP,
+        Opcode.ROL_ABSOLUTE, Opcode.ROR_ABSOLUTE,
+        Opcode.BCC, Opcode.BCS,
+    })
+
+    # Instructions that set the carry flag (overwriting previous carry)
+    _CARRY_SETTING_OPCODES = frozenset({
+        Opcode.CLC, Opcode.SEC,
+        Opcode.CMP_IMMEDIATE, Opcode.CMP_DP, Opcode.CMP_ABSOLUTE, Opcode.CMP_STACK,
+        Opcode.CMP_DP_X, Opcode.CMP_ABSOLUTE_X,
+        Opcode.CPX_IMMEDIATE, Opcode.CPX_DP, Opcode.CPX_ABSOLUTE,
+        Opcode.CPY_IMMEDIATE, Opcode.CPY_DP, Opcode.CPY_ABSOLUTE,
+        Opcode.ASL, Opcode.LSR, Opcode.ASL_DP, Opcode.LSR_DP,
+        Opcode.ASL_ABSOLUTE, Opcode.LSR_ABSOLUTE,
+        Opcode.PLP,  # Restores all flags from stack
+    }) | _CARRY_INPUT_OPCODES  # ADC/SBC/ROL/ROR also set carry
+
+    def _carry_dead_after(self, nodes: List['AsmNode'], start: int) -> bool:
+        """Check if the carry flag is dead (not used) after position start."""
+        from r65.compiler.codegen.asm_nodes import Instruction, Label
+        from r65.compiler.codegen.opcodes import RETURN_OPCODES
+        for j in range(start, min(start + 30, len(nodes))):
+            n = nodes[j]
+            if isinstance(n, Label):
+                return False  # Conservative: unknown predecessors could use carry
+            if not isinstance(n, Instruction):
+                continue
+            if n.opcode in self._CARRY_INPUT_OPCODES:
+                return False  # Carry is used
+            if n.opcode in self._CARRY_SETTING_OPCODES:
+                return True  # Carry is overwritten before use
+            if n.opcode in RETURN_OPCODES or n.opcode in JUMP_OPCODES or n.opcode == Opcode.BRA:
+                return True  # Control flow exit, carry not used on this path
+        return False  # Conservative
+
+    def _fold_inc_dec_accumulator(self, nodes: List['AsmNode']) -> List['AsmNode']:
+        """
+        Fold CLC/ADC #$01 → INC A and SEC/SBC #$01 → DEC A.
+
+        INC/DEC are 1 instruction (2 cycles) vs CLC/ADC or SEC/SBC (4 cycles).
+        Only safe when carry flag is not used after (INC/DEC don't affect carry).
+        """
+        from r65.compiler.codegen.asm_nodes import Instruction, Immediate
+
+        optimized = []
+        i = 0
+        while i < len(nodes):
+            node = nodes[i]
+
+            if isinstance(node, Instruction):
+                # CLC / ADC #$01 → INC A
+                if (node.opcode == Opcode.CLC and
+                        i + 1 < len(nodes) and
+                        isinstance(nodes[i + 1], Instruction) and
+                        nodes[i + 1].opcode == Opcode.ADC_IMMEDIATE and
+                        isinstance(nodes[i + 1].operand, Immediate) and
+                        nodes[i + 1].operand.value == 1):
+                    if self._carry_dead_after(nodes, i + 2):
+                        optimized.append(Instruction(Opcode.INC, comment="INC A (folded CLC/ADC #1)"))
+                        self.stats.inc_dec_folded += 1
+                        i += 2
+                        continue
+
+                # SEC / SBC #$01 → DEC A
+                if (node.opcode == Opcode.SEC and
+                        i + 1 < len(nodes) and
+                        isinstance(nodes[i + 1], Instruction) and
+                        nodes[i + 1].opcode == Opcode.SBC_IMMEDIATE and
+                        isinstance(nodes[i + 1].operand, Immediate) and
+                        nodes[i + 1].operand.value == 1):
+                    if self._carry_dead_after(nodes, i + 2):
+                        optimized.append(Instruction(Opcode.DEC, comment="DEC A (folded SEC/SBC #1)"))
+                        self.stats.inc_dec_folded += 1
+                        i += 2
+                        continue
+
+            optimized.append(node)
+            i += 1
 
         return optimized
 
