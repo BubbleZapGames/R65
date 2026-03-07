@@ -86,11 +86,15 @@ class FunctionCodeGenerator:
 
         # Mark scratch registers occupied by scratch-promoted parameters
         # These must be reserved before normal allocation so other vregs don't use them
+        # For multi-byte params (e.g. u16 at $00), mark ALL overlapping scratches
         for param_idx, scratch_addr in mir_func.scratch_param_addrs.items():
+            param_size = get_type_size(mir_func.parameters[param_idx].param_type)
+            param_end = scratch_addr + param_size
             for scratch in scratch_pool.scratches:
-                if scratch.address == scratch_addr:
+                scratch_end = scratch.address + scratch.size
+                # Overlap: scratch range intersects param range
+                if scratch.address < param_end and scratch_end > scratch_addr:
                     scratch.is_free = False
-                    break
 
         # Mark ALL globally-used scratch param addresses as occupied.
         # In FixedStack mode, a caller's scratch params persist while the callee

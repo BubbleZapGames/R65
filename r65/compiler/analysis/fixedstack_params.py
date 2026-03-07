@@ -98,9 +98,13 @@ def promote_all_stack_params(mir_program: MIRProgram, scratch_pool: ScratchRegis
     # Step 4: Collect global set of all scratch param addresses.
     # Any function's locals must avoid these addresses because a caller's
     # scratch params persist across calls while the callee runs.
+    # For multi-byte params, include ALL bytes in the range (e.g. u16 at $00 → {$00, $01}).
     global_scratch_param_addrs: Set[int] = set()
     for func in mir_program.functions:
-        global_scratch_param_addrs.update(func.scratch_param_addrs.values())
+        for param_idx, base_addr in func.scratch_param_addrs.items():
+            param_size = get_type_size(func.parameters[param_idx].param_type)
+            for offset in range(param_size):
+                global_scratch_param_addrs.add(base_addr + offset)
     # Store on each function so function_gen.py can access it
     for func in mir_program.functions:
         func._global_scratch_param_addrs = global_scratch_param_addrs

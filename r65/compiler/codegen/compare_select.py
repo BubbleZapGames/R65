@@ -169,7 +169,12 @@ class CompareSelector(BaseSelector):
                 self._emit_swapped_hw_compare(left_loc.hw_register, is_16bit)
                 # Comparison is left - right = normal order, NOT reversed
                 return
-            self._emit_cmp('CMP', left_loc, False)
+            if left_loc.is_hw() and left_loc.hw_register == 'A':
+                # Both left and right are in A — they must be the same value.
+                # CMP A,A always yields zero/equal. Emit CMP #$00 as equivalent.
+                self._emit_cmp('CMP', MIRImmediate(0), True)
+            else:
+                self._emit_cmp('CMP', left_loc, False)
             self.parent._comparison_reversed = True
             return
 
@@ -354,14 +359,24 @@ class CompareSelector(BaseSelector):
         """Emit comparison for hardware register left operand."""
         reg = left_loc.hw_register
 
-        if reg == 'X':
-            if self._can_elide_cmp_zero('X', right_operand, is_immediate):
+        if reg in ('X', 'Y'):
+            if self._can_elide_cmp_zero(reg, right_operand, is_immediate):
                 return
-            self._emit_cmp('CPX', right_operand, is_immediate)
-        elif reg == 'Y':
-            if self._can_elide_cmp_zero('Y', right_operand, is_immediate):
+            # CPX/CPY always do 16-bit compares in x16 mode.
+            # For u8 memory operands, CPX/CPY dp reads 2 bytes from memory
+            # but only 1 byte was written — the adjacent byte may be garbage.
+            # Fix: use TXA/TYA + CMP for u8 non-immediate comparisons.
+            is_u8_compare = not self._is_16bit_type(self.parent.last_comparison_type)
+            if is_u8_compare and not is_immediate:
+                if reg == 'X':
+                    self._emit_instr(Opcode.TXA, comment="Transfer X to A for u8 comparison")
+                else:
+                    self._emit_instr(Opcode.TYA, comment="Transfer Y to A for u8 comparison")
+                self.parent._ensure_m8_mode()
+                self._emit_cmp('CMP', right_operand, is_immediate)
                 return
-            self._emit_cmp('CPY', right_operand, is_immediate)
+            mnem = 'CPX' if reg == 'X' else 'CPY'
+            self._emit_cmp(mnem, right_operand, is_immediate)
         elif reg == 'A':
             if self._can_elide_cmp_zero('A', right_operand, is_immediate):
                 return
