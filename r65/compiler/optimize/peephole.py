@@ -205,6 +205,7 @@ class OptimizationStats:
     loop_invariant_loads_hoisted: int = 0
     count_down_loops: int = 0
     unreachable_nodes_eliminated: int = 0
+    stz_conversions: int = 0
 
     @property
     def total(self) -> int:
@@ -224,7 +225,8 @@ class OptimizationStats:
             self.loops_rotated +
             self.loop_invariant_loads_hoisted +
             self.count_down_loops +
-            self.unreachable_nodes_eliminated
+            self.unreachable_nodes_eliminated +
+            self.stz_conversions
         )
 
 
@@ -292,6 +294,7 @@ class PeepholeOptimizer:
             nodes = self._count_down_loops(nodes)
             nodes = self._hoist_loop_mode_switches(nodes)
             nodes = self._eliminate_unreachable_code(nodes)
+            nodes = self._convert_zero_stores_to_stz(nodes)
             changed = self.stats.total > prev_total
 
         return nodes
@@ -2144,6 +2147,97 @@ class PeepholeOptimizer:
             # Other instructions (CMP, TAX, TAY, CLC, SEC, etc.)
             # don't modify A — tracking stays valid
             optimized.append(node)
+
+        return optimized
+
+    # ========================================================================
+    # STZ Conversion
+    # ========================================================================
+
+    # Mapping from STA addressing modes to equivalent STZ opcodes
+    _STA_TO_STZ = {
+        Opcode.STA_DP: Opcode.STZ_DP,
+        Opcode.STA_DP_X: Opcode.STZ_DP_X,
+        Opcode.STA_ABSOLUTE: Opcode.STZ_ABSOLUTE,
+        Opcode.STA_ABSOLUTE_X: Opcode.STZ_ABSOLUTE_X,
+    }
+
+    def _convert_zero_stores_to_stz(self, nodes: List['AsmNode']) -> List['AsmNode']:
+        """
+        Convert LDA #$00 / STA addr sequences to STZ addr.
+
+        When A is loaded with zero solely for storing to memory, STZ is more
+        efficient: it stores zero directly without occupying A (1 fewer instr).
+
+        Converts all consecutive STZ-compatible STAs after LDA #$00 to STZ.
+        The LDA #$00 is removed if A is overwritten before next use, or kept
+        if subsequent code depends on A=0.
+        """
+        from r65.compiler.codegen.asm_nodes import Instruction, Immediate, Label, Directive
+
+        optimized = []
+        i = 0
+        while i < len(nodes):
+            node = nodes[i]
+
+            # Match LDA #$00 (immediate zero)
+            if (isinstance(node, Instruction) and
+                    node.opcode == Opcode.LDA_IMMEDIATE and
+                    isinstance(node.operand, Immediate) and
+                    node.operand.value == 0):
+
+                # Scan forward: convert all consecutive STZ-compatible STAs
+                j = i + 1
+                stz_indices = []
+                while j < len(nodes):
+                    n = nodes[j]
+                    if isinstance(n, (Directive, Label)):
+                        break
+                    if not isinstance(n, Instruction):
+                        j += 1
+                        continue
+                    if n.opcode in self._STA_TO_STZ:
+                        stz_indices.append(j)
+                        j += 1
+                        continue
+                    break  # Non-STA instruction
+
+                if not stz_indices:
+                    optimized.append(node)
+                    i += 1
+                    continue
+
+                # Check if A=0 is needed after the last converted STA
+                a_needed = True
+                k = stz_indices[-1] + 1
+                while k < len(nodes):
+                    n = nodes[k]
+                    if isinstance(n, (Label, Directive)):
+                        break
+                    if isinstance(n, Instruction):
+                        if n.opcode in MODIFIES_A_OPCODES:
+                            a_needed = False  # A is overwritten
+                        break
+                    k += 1
+
+                # If A=0 is potentially needed, keep the LDA #$00
+                if a_needed:
+                    optimized.append(node)
+
+                # Convert STAs to STZs
+                for idx in stz_indices:
+                    sta_node = nodes[idx]
+                    stz_opcode = self._STA_TO_STZ[sta_node.opcode]
+                    stz_node = Instruction(stz_opcode, sta_node.operand, sta_node.comment)
+                    optimized.append(stz_node)
+                    self.stats.stz_conversions += 1
+
+                # Resume after the last converted STA
+                i = stz_indices[-1] + 1
+                continue
+
+            optimized.append(node)
+            i += 1
 
         return optimized
 
