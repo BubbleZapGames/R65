@@ -339,7 +339,6 @@ Hardware-aware operators with restrictions for expensive operations:
 - ❌ Procedural macros
 - ❌ String types, dynamic collections
 - ❌ Module system (`mod`, `pub`)
-- ❌ Methods and `impl` blocks
 - ❌ `unsafe` keyword
 - ❌ Bounds checking
 - ❌ `cargo` or package manager (no Cargo.toml, no crates)
