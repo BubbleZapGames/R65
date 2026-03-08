@@ -1530,6 +1530,17 @@ class PeepholeOptimizer:
 
             # Only hoist if exactly one LDA #imm and nothing else modifies A
             if len(lda_positions) == 1 and not other_a_mods:
+                # Don't hoist if the instruction before the label is an
+                # unconditional branch — inserted code would be unreachable.
+                # This happens in bottom-tested loops where the initial entry
+                # is BRA label, skipping any code placed before the label.
+                prev_idx = label_idx - 1
+                while prev_idx >= 0 and not isinstance(nodes[prev_idx], Instruction):
+                    prev_idx -= 1
+                if prev_idx >= 0 and isinstance(nodes[prev_idx], Instruction):
+                    prev_op = nodes[prev_idx].opcode
+                    if prev_op in (Opcode.BRA, Opcode.BRL, Opcode.JMP_ABSOLUTE, Opcode.JMP_LONG):
+                        continue
                 hoists[lda_positions[0]] = label_idx
 
         if not hoists:
