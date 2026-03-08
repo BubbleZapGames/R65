@@ -314,11 +314,12 @@ class StackSlotAllocator:
         for vreg in sorted_vregs:
             size = local_sizes[vreg]
 
-            # Enforce minimum 2-byte slot size. The codegen often operates in
-            # m16 mode (16-bit accumulator) even for 1-byte variables (bool, u8),
-            # causing 16-bit loads/stores that would overflow a 1-byte slot into
-            # adjacent memory. Padding to 2 bytes prevents this corruption.
-            alloc_size = max(size, 2)
+            # Round slot sizes up to even numbers. The codegen operates in m16
+            # mode (16-bit accumulator) for many operations, causing 16-bit
+            # loads/stores. A 1-byte slot would overflow into adjacent memory,
+            # and a 3-byte slot (e.g., far pointer) at the frame boundary would
+            # overflow into the return address. Rounding to even prevents this.
+            alloc_size = (size + 1) & ~1  # Round up to even, minimum 2
 
             assigned_slot = None
 

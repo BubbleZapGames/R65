@@ -1445,7 +1445,10 @@ class MIRBuilder:
         # Jump back to header (unless body ends with break/return)
         if not self._block_has_terminator():
             self.emit(Jump(target=header_block.block_id))
-            self.cfg_builder.add_edge(body_block, header_block)
+            # Use current_block (not body_block) because body lowering may
+            # have created new blocks, so current_block is the actual block
+            # containing the Jump instruction.
+            self.cfg_builder.add_edge(self.current_block, header_block)
 
         # Continue at exit block
         self.current_block = exit_block
@@ -1623,7 +1626,10 @@ class MIRBuilder:
         # Jump back to header (unless body ends with break/return)
         if not self._block_has_terminator():
             self.emit(Jump(target=header_block.block_id))
-            self.cfg_builder.add_edge(body_block, header_block)
+            # Use current_block (not body_block) because body lowering may
+            # have created new blocks, so current_block is the actual block
+            # containing the Jump instruction.
+            self.cfg_builder.add_edge(self.current_block, header_block)
 
         # Continue at exit block
         self.current_block = exit_block

@@ -288,6 +288,8 @@ class AssemblyEmitter:
         # Track which register (if any) the N/Z flags currently reflect.
         # Used to elide redundant CMP/CPX/CPY #0 when flags are already valid.
         self.nz_valid_for: str | None = None  # 'A', 'X', 'Y', or None
+        # Track banks that have had data/code emitted to avoid .ORG 0 overlap
+        self._used_banks: set = set()
 
     # ========================================================================
     # Low-Level Node Emission
@@ -512,10 +514,14 @@ class AssemblyEmitter:
 
         Generated:
             .BANK 0 SLOT 0
-            .ORG 0
+            .ORG 0           (only on first use of this bank)
         """
         self.emit_directive(f".BANK {bank_num} SLOT {slot}")
-        self.emit_directive(".ORG 0")
+        if bank_num not in self._used_banks:
+            self.emit_directive(".ORG 0")
+            self._used_banks.add(bank_num)
+        # If bank was already used, omit .ORG 0 so WLA-DX continues
+        # after previously emitted data/code (avoids bank overlap)
         self.emit_blank_line()
 
     # ========================================================================

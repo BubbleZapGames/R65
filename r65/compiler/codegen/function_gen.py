@@ -1014,9 +1014,8 @@ class FunctionCodeGenerator:
     def _get_far_ptr_bank_stack_offset(self, mir_func: MIRFunction, frame_size: int) -> int:
         """Compute stack offset to the far pointer's bank byte for SET_DBR prologue.
 
-        At the point SET_DBR code runs (after frame alloc + preserves, before PHB),
-        the offset from SP to the bank byte = param_offset + 2 + (prologue_bytes - 1) + frame_size.
-        The -1 accounts for PHB not having been pushed yet.
+        At the point the LDA runs, PHB has already been pushed (line 994 emits PHB
+        before line 995 emits LDA), so we need the full prologue_stack_bytes.
         """
         # Get the single far pointer param index
         far_idx = next(iter(mir_func.far_ptr_param_indices))
@@ -1026,10 +1025,9 @@ class FunctionCodeGenerator:
         bank_byte_base = base_offset + 2
 
         # Adjust for everything pushed before this point:
-        # prologue_stack_bytes includes 1 for PHB, but PHB hasn't happened yet
+        # PHB has already been pushed, so include full prologue_stack_bytes
         abi = ABIInfo.from_mir_function(mir_func)
-        pre_phb_bytes = abi.prologue_stack_bytes - 1  # Everything except PHB itself
-        return bank_byte_base + pre_phb_bytes + frame_size
+        return bank_byte_base + abi.prologue_stack_bytes + frame_size
 
     def _emit_entry_setup(self, mir_func: MIRFunction):
         """
