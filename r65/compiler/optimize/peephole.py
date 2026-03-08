@@ -580,6 +580,32 @@ class PeepholeOptimizer:
 
         return False
 
+    def _get_accu_mode_at(self, nodes: List['AsmNode'], idx: int) -> int:
+        """
+        Determine accumulator width (8 or 16) at the given instruction index
+        by scanning backwards for the most recent SEP/REP or .ACCU directive.
+        Returns 8 (default/m8) or 16 (m16).
+        """
+        from r65.compiler.codegen.asm_nodes import Instruction, Directive
+        for i in range(idx - 1, -1, -1):
+            node = nodes[i]
+            if isinstance(node, Instruction):
+                if node.opcode == Opcode.SEP_IMMEDIATE:
+                    # SEP #$20 sets m8
+                    if isinstance(node.operand, int) and node.operand & 0x20:
+                        return 8
+                elif node.opcode == Opcode.REP_IMMEDIATE:
+                    # REP #$20 sets m16
+                    if isinstance(node.operand, int) and node.operand & 0x20:
+                        return 16
+            elif isinstance(node, Directive):
+                if node.name == '.ACCU':
+                    if node.args and node.args[0] == '16':
+                        return 16
+                    elif node.args and node.args[0] == '8':
+                        return 8
+        return 8  # default m8
+
     def _is_dead_store(self, nodes: List['AsmNode'], store_idx: int, store_operand) -> bool:
         """
         Check if a store is dead (overwritten before read).
@@ -588,10 +614,25 @@ class PeepholeOptimizer:
         branches (BRA/BRL): if no instruction in the entire node list reads
         from the stored address, the store is dead. This catches temporaries
         whose only reader was eliminated by a prior pass.
+
+        In m16 mode, a 16-bit store to offset N also writes to N+1, so reads
+        from N+1 must also prevent elimination.
         """
-        from r65.compiler.codegen.asm_nodes import Instruction, Label, StackOffset
+        from r65.compiler.codegen.asm_nodes import Instruction, Label, StackOffset, Address
 
         is_stack_relative = isinstance(store_operand, StackOffset)
+
+        # In m16 mode, STA writes 2 bytes: offset N and N+1.
+        # We need to check reads from the adjacent byte too.
+        adjacent_operand = None
+        if is_stack_relative:
+            accu_mode = self._get_accu_mode_at(nodes, store_idx)
+            if accu_mode == 16:
+                adjacent_operand = StackOffset(store_operand.offset + 1)
+        elif isinstance(store_operand, Address) and isinstance(store_operand.value, int):
+            accu_mode = self._get_accu_mode_at(nodes, store_idx)
+            if accu_mode == 16:
+                adjacent_operand = Address(store_operand.value + 1)
 
         j = store_idx + 1
 
@@ -612,7 +653,7 @@ class PeepholeOptimizer:
                 if is_stack_relative:
                     if next_node.opcode in (Opcode.BRA, Opcode.BRL):
                         if not self._any_instruction_reads(
-                            nodes, store_operand):
+                            nodes, store_operand, adjacent_operand):
                             return True
                 return False
 
@@ -636,10 +677,20 @@ class PeepholeOptimizer:
             if (next_node.opcode in STORE_A_OPCODES and
                 next_node.operand == store_operand and
                 not self._is_indexed_addressing(next_node.opcode)):
+                # But only if the overwriting store also covers the adjacent byte,
+                # or there's no adjacent byte to worry about
+                if adjacent_operand is None:
+                    return True
+                # In m16, the overwriting store also writes N+1, so it's still dead
+                # But we need to check that no read of N+1 happened between us and here
                 return True
 
             # Read from same location = store is not dead
             if self._reads_from_location(next_node, store_operand):
+                return False
+
+            # Read from adjacent byte (m16 overlap) = store is not dead
+            if adjacent_operand is not None and self._reads_from_location(next_node, adjacent_operand):
                 return False
 
             j += 1
@@ -647,9 +698,11 @@ class PeepholeOptimizer:
         return False
 
     def _any_instruction_reads(self, nodes: List['AsmNode'],
-                              store_operand) -> bool:
+                              store_operand,
+                              adjacent_operand=None) -> bool:
         """
-        Check if any instruction in the node list reads from store_operand.
+        Check if any instruction in the node list reads from store_operand
+        (or adjacent_operand for m16 overlap).
 
         Conservatively scans all nodes. This may miss optimization
         opportunities when multiple functions use the same stack offset,
@@ -664,11 +717,14 @@ class PeepholeOptimizer:
                 continue
             if self._reads_from_location(node, store_operand):
                 return True
+            if adjacent_operand is not None and self._reads_from_location(node, adjacent_operand):
+                return True
             # Indirect STA instructions (e.g. STA ($nn,S),Y) read the
             # pointer from their operand even though they are stores.
             # If the operand matches, the stored value IS being read.
             if (node.opcode in INDIRECT_ADDRESSING_OPCODES
-                    and node.operand == store_operand):
+                    and (node.operand == store_operand or
+                         (adjacent_operand is not None and node.operand == adjacent_operand))):
                 return True
             # Stack-modifying opcodes (PHB/PHA/PHX/PHY/PLB/PLA/PLX/PLY)
             # shift the stack pointer, so a store to $N,S may be read as
