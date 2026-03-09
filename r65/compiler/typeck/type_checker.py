@@ -732,8 +732,14 @@ class TypeChecker:
                     if param.param_type.is_far:
                         continue
                     # Check if the argument is &something that needs a far pointer
-                    if isinstance(arg, HIRAddressOf):
-                        if PointerValidator._needs_far_pointer(arg.operand):
+                    # Unwrap explicit casts (e.g. &map as *u8) to find the HIRAddressOf
+                    inner_arg = arg
+                    has_cast = False
+                    while isinstance(inner_arg, HIRTypeCast):
+                        has_cast = True
+                        inner_arg = inner_arg.expr
+                    if isinstance(inner_arg, HIRAddressOf):
+                        if PointerValidator._needs_far_pointer(inner_arg.operand):
                             # Promote parameter from *T to far *T
                             param.param_type = PointerTypeInfo(
                                 is_far=True,
@@ -742,6 +748,11 @@ class TypeChecker:
                             # Update symbol too
                             if param.symbol:
                                 param.symbol.var_type = param.param_type
+                            # If the arg was wrapped in a near pointer cast,
+                            # remove the cast so the address-of produces a far pointer
+                            # directly (preserving the bank byte)
+                            if has_cast:
+                                expr.args[i] = inner_arg
 
     def check_function(self, func: HIRFunctionDecl):
         """Type check a single function."""
