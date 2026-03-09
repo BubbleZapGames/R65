@@ -316,9 +316,10 @@ class InstructionSelector:
                 opcode = self._resolver.get_opcode(mnemonic, resolved)
                 return opcode, resolved.operand
 
-        # When SET_DBR is active, DBR is set to the far pointer's bank ($7E for WRAM).
-        # ROM labels and HW addresses need LONG addressing (different bank from DBR).
-        # RAM addresses in $7E bank can use ABSOLUTE (strip bank byte, saves 1 cycle).
+        # When SET_DBR is active, DBR is set to the far pointer's bank.
+        # The far pointer may point to ROM or WRAM, so DBR is not guaranteed
+        # to be any particular bank. All non-DBR-bank accesses need LONG addressing:
+        # ROM labels, HW registers, AND RAM ($7E) all need LONG.
         if (self.current_function and
             self.current_function.far_ptr_strategy == FarPtrStrategy.SET_DBR):
             if location.kind == LocationKind.MEMORY:
@@ -345,12 +346,11 @@ class InstructionSelector:
                         opcode = self._resolver.get_opcode(mnemonic, resolved)
                         return opcode, resolved.operand
                     elif location.memory_addr > 0xFFFF:
-                        # RAM in $7E bank: strip bank byte, use ABSOLUTE (DBR matches)
-                        stripped_addr = location.memory_addr & 0xFFFF
+                        # RAM in $7E bank: force LONG addressing (DBR may not be $7E)
                         resolved = ResolvedLocation(
-                            mode=self._resolver._get_indexed_mode(location.index_register, is_dp=False, is_long=False),
-                            operand=Address(stripped_addr),
-                            address=stripped_addr,
+                            mode=self._resolver._get_indexed_mode(location.index_register, is_dp=False, is_long=True),
+                            operand=Address(location.memory_addr),
+                            address=location.memory_addr,
                             is_dp=False
                         )
                         opcode = self._resolver.get_opcode(mnemonic, resolved)

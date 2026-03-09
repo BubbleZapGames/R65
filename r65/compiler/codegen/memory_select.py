@@ -217,7 +217,8 @@ class MemoryOperationSelector(BaseSelector):
             # Use STZ for storing zero (more efficient than LDA #0; STA)
             # But STZ doesn't support stack-relative or 24-bit long addressing
             # STZ doesn't support stack-relative or LONG addressing modes.
-            # Under SET_DBR, ROM labels and HW registers are forced to LONG.
+            # Under SET_DBR, ROM labels, HW registers, and RAM are forced to LONG
+            # because DBR may not match the target bank.
             is_long_under_set_dbr = False
             if (self.parent.current_function and
                 self.parent.current_function.far_ptr_strategy == FarPtrStrategy.SET_DBR and
@@ -225,6 +226,8 @@ class MemoryOperationSelector(BaseSelector):
                 if dest_loc.memory_label and dest_loc.storage_type == 'rom':
                     is_long_under_set_dbr = True
                 elif dest_loc.storage_type == 'hw':
+                    is_long_under_set_dbr = True
+                elif dest_loc.storage_type == 'ram':
                     is_long_under_set_dbr = True
             can_use_stz = (
                 value_masked == 0 and

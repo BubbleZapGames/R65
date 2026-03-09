@@ -9,9 +9,9 @@ For functions with far pointer stack parameters, choose between two strategies:
 
 Cost model:
   D=S cost     = 13 + 1*N_zp + 13*N_calls
-  SET_DBR cost = 19 + 1*N_rom + 1*N_hw - 1*N_ram + 14*N_calls
+  SET_DBR cost = 19 + 1*N_rom + 1*N_hw + 1*N_ram + 14*N_calls
 
-SET_DBR wins when: N_zp + N_ram > N_rom + N_hw + N_calls + 6
+SET_DBR wins when: N_zp > N_rom + N_hw + N_ram + N_calls + 6
 """
 
 from r65.compiler.mir.nodes import (
@@ -46,10 +46,11 @@ def _choose_strategy(func: MIRFunction) -> FarPtrStrategy:
 
     # Cost comparison:
     # D=S cost     = 13 + n_zp + 13*n_calls
-    # SET_DBR cost = 19 + n_rom + n_hw - n_ram + 14*n_calls
-    # SET_DBR wins when: n_zp + n_ram > n_rom + n_hw + n_calls + 6
+    # SET_DBR cost = 19 + n_rom + n_hw + n_ram + 14*n_calls
+    # RAM needs LONG under SET_DBR because DBR may not be $7E
+    # SET_DBR wins when: n_zp > n_rom + n_hw + n_ram + n_calls + 6
     d_equals_s_cost = 13 + n_zp + 13 * n_calls
-    set_dbr_cost = 19 + n_rom + n_hw - n_ram + 14 * n_calls
+    set_dbr_cost = 19 + n_rom + n_hw + n_ram + 14 * n_calls
 
     if set_dbr_cost < d_equals_s_cost:
         return FarPtrStrategy.SET_DBR
