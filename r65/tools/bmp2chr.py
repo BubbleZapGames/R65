@@ -63,9 +63,10 @@ def _write_palette(bitmap, output_path):
 
     for color in bitmap._palette:
         # BMP palette is stored as BGRA (32-bit little-endian)
-        b = (color >> 16) & 0xFF
+        # Bits 0-7: Blue, Bits 8-15: Green, Bits 16-23: Red
+        r = (color >> 16) & 0xFF
         g = (color >> 8) & 0xFF
-        r = color & 0xFF
+        b = color & 0xFF
 
         # Convert 8-bit RGB to 5-bit BGR555
         r5 = (r >> 3) & 0x1F
