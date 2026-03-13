@@ -52,6 +52,11 @@ class LoweringContext:
     # id(Symbol) → VirtualRegister mapping for current function
     symbol_to_vreg: Dict[int, VirtualRegister] = field(default_factory=dict)
 
+    # Set of symbol ids in symbol_to_vreg that came from explicit memory
+    # locations (statics).  Used by _invalidate_memloc_cache() to quickly
+    # find which cache entries to evict at branch merge points.
+    memloc_cached_symbols: set = field(default_factory=set)
+
     # Function name → HIRFunctionDecl mapping (for looking up during calls)
     function_decls: Dict[str, 'HIRFunctionDecl'] = field(default_factory=dict)
 
@@ -111,6 +116,7 @@ class LoweringContext:
         self.current_function = mir_func
         self.cfg_builder = CFGBuilder(mir_func)
         self.symbol_to_vreg.clear()
+        self.memloc_cached_symbols.clear()
         self.loop_stack.clear()
 
     def end_function(self):

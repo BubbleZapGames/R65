@@ -1214,6 +1214,9 @@ class MIRBuilder:
             self.emit(Load(dest=vreg, source=mem_loc, type_info=expr.expr_type))
             if not is_volatile_sym:
                 self.symbol_to_vreg[symbol_id] = vreg
+                # Track that this is a memory-location cache entry so it can
+                # be invalidated at branch merge points.
+                self.ctx.memloc_cached_symbols.add(symbol_id)
             return vreg
 
         elif isinstance(expr, HIRRegister):
@@ -1244,10 +1247,16 @@ class MIRBuilder:
             return self.assign_lowerer.lower_multi_assignment(expr)
 
         elif isinstance(expr, HIRFunctionCall):
-            return self.call_lowerer.lower_function_call(expr)
+            result = self.call_lowerer.lower_function_call(expr)
+            # Invalidate cached memloc vregs — the callee may have
+            # modified any static variable via its memory location.
+            self._invalidate_memloc_cache()
+            return result
 
         elif isinstance(expr, HIRMethodCall):
-            return self.call_lowerer.lower_method_call(expr)
+            result = self.call_lowerer.lower_method_call(expr)
+            self._invalidate_memloc_cache()
+            return result
 
         elif isinstance(expr, HIRTypeCast):
             return self.expr_lowerer.lower_type_cast(expr)
@@ -1528,6 +1537,17 @@ class MIRBuilder:
         # Lower condition with short-circuit evaluation
         self.cond_lowerer.lower_condition(stmt.condition, then_block.block_id, else_block.block_id)
 
+        # Save memloc cache entries before branching.  A Load for a static
+        # variable emitted in the then-block must not create a cached vreg
+        # that the else-block (a sibling, not a successor) silently reuses.
+        # Only memloc entries (explicit-location statics) are saved/restored;
+        # local-variable vregs must persist because they ARE the storage.
+        saved_memloc = {
+            sym_id: self.symbol_to_vreg[sym_id]
+            for sym_id in self.ctx.memloc_cached_symbols
+            if sym_id in self.symbol_to_vreg
+        }
+
         # Lower then branch
         self.current_block = then_block
         self.lower_block(stmt.then_block)
@@ -1538,6 +1558,13 @@ class MIRBuilder:
 
         # Lower else branch if present
         if stmt.else_block:
+            # Restore memloc cache entries to pre-branch state so the
+            # else-block doesn't reuse vregs loaded only in the then-block.
+            for sym_id in list(self.ctx.memloc_cached_symbols):
+                if sym_id in self.symbol_to_vreg:
+                    del self.symbol_to_vreg[sym_id]
+            for sym_id, vreg in saved_memloc.items():
+                self.symbol_to_vreg[sym_id] = vreg
             self.current_block = else_block
             # Handle else-if chains (else_block can be HIRIfStmt)
             if isinstance(stmt.else_block, HIRIfStmt):
@@ -1548,6 +1575,13 @@ class MIRBuilder:
             if not self._block_has_terminator():
                 self.emit(Jump(target=merge_block.block_id))
                 self.cfg_builder.add_edge(else_block, merge_block)
+
+        # At the merge point, invalidate cached vregs for symbols with
+        # explicit memory locations (statics).  Either branch may have
+        # modified them, so the only safe value is a fresh Load.
+        # Local-variable vregs (no explicit location) are fine — they
+        # ARE the variable's storage and persist across blocks.
+        self._invalidate_memloc_cache()
 
         # Continue at merge block
         self.current_block = merge_block
@@ -1925,6 +1959,14 @@ class MIRBuilder:
         count_in_block(hir_func.body)
 
         return counts
+
+    def _invalidate_memloc_cache(self):
+        """Remove symbol_to_vreg entries for symbols with explicit memory
+        locations (statics, promoted locals).  Local-variable vregs that
+        ARE the variable storage are kept."""
+        for sym_id in list(self.ctx.memloc_cached_symbols):
+            if sym_id in self.symbol_to_vreg:
+                del self.symbol_to_vreg[sym_id]
 
     def _block_has_terminator(self) -> bool:
         """

@@ -1452,6 +1452,15 @@ class InstructionSelector:
         transfer_opcode = TRANSFER_OPCODES.get((src_reg, dest_reg))
 
         if transfer_opcode:
+            # When transferring 8-bit A to 16-bit X/Y, the hidden B register
+            # (high byte of the 16-bit accumulator C) may contain garbage from
+            # prior 16-bit operations.  TAX/TAY transfers the full 16-bit C,
+            # so we must zero-extend A first to avoid B register pollution.
+            if (src_reg == 'A' and dest_reg in ('X', 'Y')
+                    and self.emitter.get_accu_mode() == 8):
+                self._ensure_m16_mode()
+                self._emit_immediate(Opcode.AND_IMMEDIATE, 0x00FF,
+                                     "Zero-extend to 16-bit")
             self._emit_implied(transfer_opcode)
         else:
             # Indirect transfer through A (e.g., X to Y)

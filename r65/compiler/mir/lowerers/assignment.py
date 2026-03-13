@@ -197,6 +197,12 @@ class AssignmentLowerer:
         if self.builder.has_explicit_location(symbol):
             mem_loc = self.builder.get_memory_location(symbol)
             self.emit(Store(source=value, dest=mem_loc, type_info=expr.expr_type))
+            # Invalidate cached vreg — the memory location now holds a new
+            # value, so any previously cached vreg is stale.  The next read
+            # of this symbol will emit a fresh Load from memory.
+            symbol_id = id(symbol)
+            if symbol_id in self.ctx.symbol_to_vreg:
+                del self.ctx.symbol_to_vreg[symbol_id]
             return value
 
         # Otherwise, update virtual register
@@ -677,6 +683,10 @@ class AssignmentLowerer:
                     if self.builder.has_explicit_location(symbol):
                         mem_loc = self.builder.get_memory_location(symbol)
                         self.emit(Store(source=source_reg, dest=mem_loc, type_info=elem_type))
+                        # Invalidate cached vreg (memory now has a new value)
+                        s_id = id(symbol)
+                        if s_id in self.ctx.symbol_to_vreg:
+                            del self.ctx.symbol_to_vreg[s_id]
                     else:
                         # Update or create virtual register
                         symbol_id = id(symbol)
