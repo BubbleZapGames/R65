@@ -130,6 +130,8 @@ def init_command(args):
 def main():
     """Main entry point for r65x CLI."""
     from r65.tools.fontgen import register_parser as fontgen_register, fontgen_command
+    from r65.tools.packer import register_parser as packer_register, packer_command
+    from r65.tools.bmp2chr import register_parser as bmp2chr_register, bmp2chr_command
 
     parser = argparse.ArgumentParser(
         prog='r65x',
@@ -140,7 +142,8 @@ examples:
   r65x init --platform=snes my_game     Create new SNES project
   r65x fontgen                          Generate console font (DejaVu Sans Mono Bold)
   r65x fontgen --font path/to/font.ttf  Generate from custom font
-  r65x fontgen --preview --dry-run      Preview without modifying files
+  r65x packer pack data.bin -o data.lz5 -x lz5
+  r65x bmp2chr sprites.bmp -o sprites.chr -b4
         """
     )
 
@@ -158,6 +161,12 @@ examples:
     # fontgen command
     fontgen_register(subparsers)
 
+    # packer command
+    packer_register(subparsers)
+
+    # bmp2chr command
+    bmp2chr_register(subparsers)
+
     args = parser.parse_args()
 
     if not args.command:
@@ -169,6 +178,10 @@ examples:
         init_command(args)
     elif args.command == 'fontgen':
         fontgen_command(args)
+    elif args.command == 'packer':
+        packer_command(args)
+    elif args.command == 'bmp2chr':
+        bmp2chr_command(args)
 
 
 if __name__ == '__main__':
