@@ -94,19 +94,21 @@ class OperatorValidator:
             )
 
     @staticmethod
+    def _is_const_expr(node) -> bool:
+        """Check if an expression is a compile-time constant (literal, const ident, or cast of one)."""
+        if isinstance(node, HIRIntegerLiteral):
+            return True
+        if isinstance(node, HIRIdentifier):
+            return node.symbol and node.symbol.kind == SymbolKind.CONST
+        if isinstance(node, HIRTypeCast):
+            return OperatorValidator._is_const_expr(node.expr)
+        return False
+
+    @staticmethod
     def _validate_shift(op_node: HIRBinaryOp):
         """Validate shift operators (<< and >>)."""
-        right = op_node.right
-
-        # Accept integer literals
-        if isinstance(right, HIRIntegerLiteral):
+        if OperatorValidator._is_const_expr(op_node.right):
             return
-
-        # Accept const identifiers (references to const values)
-        if isinstance(right, HIRIdentifier):
-            symbol = right.symbol
-            if symbol and symbol.kind == SymbolKind.CONST:
-                return
 
         raise TypeCheckError(
             f"shift operator ({op_node.op}) requires a constant shift amount",

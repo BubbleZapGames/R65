@@ -1263,49 +1263,49 @@ macro_rules! set_bg34_chr($bg3:expr, $bg4:expr) {
 // Set BG scroll position (writes twice for 10-bit value)
 // Usage: set_bg1_scroll!(hscroll, vscroll);
 macro_rules! set_bg1_hscroll($scroll:expr) {
-    A = $scroll as u16;
+    A = ($scroll) as u16;
     BG1HOFS = A as u8;
     BG1HOFS = B;
 }
 
 macro_rules! set_bg1_vscroll($scroll:expr) {
-    A = $scroll as u16;
+    A = ($scroll) as u16;
     BG1VOFS = A as u8;
     BG1VOFS = B;
 }
 
 macro_rules! set_bg2_hscroll($scroll:expr) {
-    A = $scroll as u16;
+    A = ($scroll) as u16;
     BG2HOFS = A as u8;
     BG2HOFS = B;
 }
 
 macro_rules! set_bg2_vscroll($scroll:expr) {
-    A = $scroll as u16;
+    A = ($scroll) as u16;
     BG2VOFS = A as u8;
     BG2VOFS = B;
 }
 
 macro_rules! set_bg3_hscroll($scroll:expr) {
-    A = $scroll as u16;
+    A = ($scroll) as u16;
     BG3HOFS = A as u8;
     BG3HOFS = B;
 }
 
 macro_rules! set_bg3_vscroll($scroll:expr) {
-    A = $scroll as u16;
+    A = ($scroll) as u16;
     BG3VOFS = A as u8;
     BG3VOFS = B;
 }
 
 macro_rules! set_bg4_hscroll($scroll:expr) {
-    A = $scroll as u16;
+    A = ($scroll) as u16;
     BG4HOFS = A as u8;
     BG4HOFS = B;
 }
 
 macro_rules! set_bg4_vscroll($scroll:expr) {
-    A = $scroll as u16;
+    A = ($scroll) as u16;
     BG4VOFS = A as u8;
     BG4VOFS = B;
 }
@@ -1492,7 +1492,8 @@ macro_rules! dma_copy_cgram_const($channel:literal, $src:ident, $start:expr, $co
 // DMA copy to OAM (sprites) - const version
 // Usage: dma_copy_oam_const!(0, src_label, size);
 macro_rules! dma_copy_oam_const($channel:literal, $src:ident, $size:literal) {
-    OAMADD = 0;
+    OAMADDL = 0;
+    OAMADDH = 0;
     dma_set_src!($channel, $src);
     dma_set_size!($channel, $size);
     dma_set_ppu_dest!($channel, 0, 4);  // 0 = DMA_MODE_1REG_1WRITE, 4 = $04 (OAMDATA)
@@ -1519,7 +1520,7 @@ static dma_trigger_masks: [u8; 8] = [0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0
 // src: 24-bit far pointer to source data
 // vram_offset: destination VRAM word address
 // size: number of bytes to transfer
-//
+// TODO: Remove the stack based approach 
 // Stack layout after JSL:
 //   S+4,5=size, S+6,7=vram_offset, S+8,9,10=src, S+11,12=channel
 far fn dma_copy_vram(channel: u8, src: far *u8, vram_offset: u16, size: u16) {
@@ -1554,7 +1555,7 @@ far fn dma_copy_vram(channel: u8, src: far *u8, vram_offset: u16, size: u16) {
 // src: 24-bit far pointer to source data
 // start_color: starting color index (0-255)
 // num_bytes: number of bytes to transfer (colors * 2)
-//
+// TODO: Remove the stack based approach 
 // Stack layout after JSL:
 //   S+4,5=num_bytes, S+6,7=start_color, S+8,9,10=src, S+11,12=channel
 far fn dma_copy_cgram(channel: u8, src: far *u8, start_color: u16, num_bytes: u16) {
@@ -1587,7 +1588,7 @@ far fn dma_copy_cgram(channel: u8, src: far *u8, start_color: u16, num_bytes: u1
 // channel: DMA channel (0-7)
 // src: 24-bit far pointer to source data
 // size: number of bytes to transfer (usually 544)
-//
+// TODO: Remove the stack based approach 
 // Stack layout after JSL:
 //   S+4,5=size, S+6,7,8=src, S+9,10=channel
 far fn dma_copy_oam(channel: u8, src: far *u8, size: u16) {

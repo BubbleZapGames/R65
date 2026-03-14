@@ -319,9 +319,10 @@ class ASTBuilder(Transformer):
             return item
         return None
 
-    def static_decl(self, items):
+    @v_args(tree=True)
+    def static_decl(self, tree):
         """Static variable declaration."""
-        items = self._filter_tokens(items, keep_types={'IDENT', 'MUT', 'FAR', 'NEAR', 'STAR', 'INTEGER', 'STRING', 'BOOLEAN', 'REGISTER'})
+        items = self._filter_tokens(tree.children, keep_types={'IDENT', 'MUT', 'FAR', 'NEAR', 'STAR', 'INTEGER', 'STRING', 'BOOLEAN', 'REGISTER'})
 
         # Collect attributes
         attrs, idx = self._collect_attributes(items, 0)
@@ -371,7 +372,8 @@ class ASTBuilder(Transformer):
             is_mut=is_mut,
             name=name,
             var_type=var_type,
-            initializer=initializer
+            initializer=initializer,
+            source_loc=self._make_source_loc(tree.meta)
         )
 
     def var_name(self, items):
@@ -403,13 +405,15 @@ class ASTBuilder(Transformer):
             hint=f"use 'static {mut_str}{name_str}: *type' instead of 'static {mut_str}&{name_str}: type'"
         )
 
-    def const_decl(self, items):
+    @v_args(tree=True)
+    def const_decl(self, tree):
         """Const declaration."""
-        items = self._filter_tokens(items)
+        items = self._filter_tokens(tree.children)
         name = items[0].value if isinstance(items[0], LarkToken) else items[0]
         const_type = items[1]
         value = items[2]
-        return ast.ConstDecl(name=name, const_type=const_type, value=value)
+        return ast.ConstDecl(name=name, const_type=const_type, value=value,
+                             source_loc=self._make_source_loc(tree.meta))
 
     def struct_decl(self, items):
         """Struct declaration."""

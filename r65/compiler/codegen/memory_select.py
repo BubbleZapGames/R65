@@ -315,6 +315,11 @@ class MemoryOperationSelector(BaseSelector):
                 self._ensure_m16_mode()
                 self._emit_load_store('STA', dest_loc)
                 # Note: Do NOT switch back - mode will be restored when needed
+            elif reg == 'A' and not is_u16:
+                # 8-bit store from A must ensure m8 to avoid 16-bit STA
+                # (critical for write-twice PPU registers like BGnHOFS/BGnVOFS)
+                self._ensure_m8_mode()
+                self._emit_load_store('STA', dest_loc)
             else:
                 self._emit_load_store(STORE_MNEMONICS[reg], dest_loc)
 
