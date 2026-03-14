@@ -623,7 +623,8 @@ class TypeChecker:
                     init_type = self.check_expression(decl.initializer, decl.var_type)
                     self._check_type_match(
                         decl.var_type, init_type, decl.initializer,
-                        "static variable initializer", decl.source_loc
+                        "static variable initializer", decl.source_loc,
+                        use_compatible=True
                     )
 
             elif isinstance(decl, HIRConstDecl):

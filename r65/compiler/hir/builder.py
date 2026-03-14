@@ -991,7 +991,8 @@ class HIRBuilder:
             initializer=initializer,
             storage_attr=storage_attr,
             bank_attr=bank_attr,
-            symbol=static_symbol
+            symbol=static_symbol,
+            source_loc=static.source_loc
         )
 
         # Update symbol's definition to point to HIR node (not AST node)
@@ -1016,7 +1017,8 @@ class HIRBuilder:
             const_type=const_type,
             value=value_expr,
             evaluated_value=evaluated_value,
-            symbol=const_symbol
+            symbol=const_symbol,
+            source_loc=const.source_loc
         )
 
     def _build_struct(self, struct: ast.StructDecl) -> hir.HIRStructDecl:
