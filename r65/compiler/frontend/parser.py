@@ -1878,9 +1878,11 @@ class ASTBuilder(Transformer):
         Returns:
             A handler function for Lark Transformer
         """
-        def handler(self, items):
-            items = self._filter_tokens(items)
-            return ast.BinaryOp(op=operator, left=items[0], right=items[1])
+        @v_args(tree=True)
+        def handler(self, tree):
+            items = self._filter_tokens(tree.children)
+            return ast.BinaryOp(op=operator, left=items[0], right=items[1],
+                                source_loc=self._make_source_loc(tree.meta))
         return handler
 
     @staticmethod
@@ -1894,9 +1896,11 @@ class ASTBuilder(Transformer):
         Returns:
             A handler function for Lark Transformer
         """
-        def handler(self, items):
-            items = self._filter_tokens(items)
-            return ast.UnaryOp(op=operator, operand=items[0])
+        @v_args(tree=True)
+        def handler(self, tree):
+            items = self._filter_tokens(tree.children)
+            return ast.UnaryOp(op=operator, operand=items[0],
+                               source_loc=self._make_source_loc(tree.meta))
         return handler
 
     # ========================================================================

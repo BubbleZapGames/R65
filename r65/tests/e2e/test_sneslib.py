@@ -44,7 +44,7 @@ class TestSneslibConstants:
         return E2ETest()
 
     def test_vmain_constants(self, e2e):
-        """Test VMAIN increment mode constants."""
+        """Test VMAIN increment mode enums."""
         source = f'''
             include!("{SNESLIB_PATH}")
 
@@ -53,10 +53,10 @@ class TestSneslibConstants:
 
             #[entry]
             fn main() {{
-                RESULT[0] = VMAIN_INCREMENT_LOW;
-                RESULT[1] = VMAIN_INCREMENT_HIGH;
-                RESULT[2] = VMAIN_INCREMENT_1;
-                RESULT[3] = VMAIN_INCREMENT_32;
+                RESULT[0] = VmainTrigger::Low as u8;
+                RESULT[1] = VmainTrigger::High as u8;
+                RESULT[2] = VmainStep::By1 as u8;
+                RESULT[3] = VmainStep::By32 as u8;
             }}
         '''
         result = e2e.run(source, ExpectedState(memory={
@@ -65,7 +65,7 @@ class TestSneslibConstants:
         assert result.success, f"Failures: {result.failures}"
 
     def test_screen_constants(self, e2e):
-        """Test screen mode constants."""
+        """Test screen mode enums."""
         source = f'''
             include!("{SNESLIB_PATH}")
 
@@ -74,10 +74,10 @@ class TestSneslibConstants:
 
             #[entry]
             fn main() {{
-                RESULT[0] = BRIGHTNESS_FULL;
+                RESULT[0] = Brightness::Full as u8;
                 RESULT[1] = FORCE_BLANK;
-                RESULT[2] = BGMODE_0;
-                RESULT[3] = BGMODE_1;
+                RESULT[2] = BG::Mode0 as u8;
+                RESULT[3] = BG::Mode1 as u8;
             }}
         '''
         result = e2e.run(source, ExpectedState(memory={
@@ -86,7 +86,7 @@ class TestSneslibConstants:
         assert result.success, f"Failures: {result.failures}"
 
     def test_dma_mode_constants(self, e2e):
-        """Test DMA mode constants."""
+        """Test DMA mode enums."""
         source = f'''
             include!("{SNESLIB_PATH}")
 
@@ -95,14 +95,14 @@ class TestSneslibConstants:
 
             #[entry]
             fn main() {{
-                RESULT[0] = DMA_MODE_1REG_1WRITE;
-                RESULT[1] = DMA_MODE_2REG_1WRITE;
-                RESULT[2] = DMA_MODE_1REG_2WRITE;
-                RESULT[3] = DMA_MODE_2REG_2WRITE;
-                RESULT[4] = DMA_MODE_4REG_1WRITE;
-                RESULT[5] = DMA_DIRECTION_TO_PPU;
-                RESULT[6] = DMA_DIRECTION_TO_CPU;
-                RESULT[7] = DMA_FIXED;
+                RESULT[0] = DmaTransferMode::OneReg as u8;
+                RESULT[1] = DmaTransferMode::TwoReg as u8;
+                RESULT[2] = DmaTransferMode::OneRegX2 as u8;
+                RESULT[3] = DmaTransferMode::TwoRegX2 as u8;
+                RESULT[4] = DmaTransferMode::FourReg as u8;
+                RESULT[5] = DmaDirection::ToPPU as u8;
+                RESULT[6] = DmaDirection::ToCPU as u8;
+                RESULT[7] = DmaAddress::Fixed as u8;
             }}
         '''
         result = e2e.run(source, ExpectedState(memory={
@@ -120,15 +120,15 @@ class TestSneslibConstants:
 
             #[entry]
             fn main() {{
-                // Low bytes of button masks
-                RESULT[0] = (JOY_A >> 8) as u8;
-                RESULT[1] = (JOY_B >> 8) as u8;
-                RESULT[2] = (JOY_X >> 8) as u8;
-                RESULT[3] = (JOY_Y >> 8) as u8;
-                RESULT[4] = (JOY_L >> 8) as u8;
-                RESULT[5] = (JOY_R >> 8) as u8;
-                RESULT[6] = (JOY_START >> 8) as u8;
-                RESULT[7] = (JOY_SELECT >> 8) as u8;
+                // High bytes of button masks
+                RESULT[0] = (Joy::A as u16 >> 8) as u8;
+                RESULT[1] = (Joy::B as u16 >> 8) as u8;
+                RESULT[2] = (Joy::X as u16 >> 8) as u8;
+                RESULT[3] = (Joy::Y as u16 >> 8) as u8;
+                RESULT[4] = (Joy::L as u16 >> 8) as u8;
+                RESULT[5] = (Joy::R as u16 >> 8) as u8;
+                RESULT[6] = (Joy::Start as u16 >> 8) as u8;
+                RESULT[7] = (Joy::Select as u16 >> 8) as u8;
             }}
         '''
         result = e2e.run(source, ExpectedState(memory={
@@ -160,7 +160,7 @@ class TestSneslibMacros:
                 // set_brightness! writes to INIDISP ($2100)
                 // We can't easily read PPU regs, but we can verify it compiles
                 // and check that BRIGHTNESS_FULL is correct
-                BRIGHTNESS_COPY = BRIGHTNESS_FULL;
+                BRIGHTNESS_COPY = Brightness::Full as u8;
             }}
         '''
         result = e2e.run(source, ExpectedState(memory={
@@ -274,16 +274,16 @@ class TestSneslibOamHelpers:
 
             #[entry]
             fn main() {{
-                // OAM entry offsets
-                RESULT[0] = OAM_X;
-                RESULT[1] = OAM_Y;
-                RESULT[2] = OAM_TILE;
-                RESULT[3] = OAM_ATTR;
-                // OAM attribute flags
-                RESULT[4] = OAM_FLIP_V;
-                RESULT[5] = OAM_FLIP_H;
-                RESULT[6] = OAM_PRIORITY_3;
-                RESULT[7] = OAM_PALETTE_7;
+                // OAM entry struct field offsets (0,1,2,3)
+                RESULT[0] = 0;  // OamEntry.x offset
+                RESULT[1] = 1;  // OamEntry.y offset
+                RESULT[2] = 2;  // OamEntry.tile offset
+                RESULT[3] = 3;  // OamEntry.attr offset
+                // OAM attribute enums
+                RESULT[4] = OamFlip::V as u8;
+                RESULT[5] = OamFlip::H as u8;
+                RESULT[6] = OamPriority::InFront as u8;
+                RESULT[7] = OamPalette::Palette7 as u8;
             }}
         '''
         result = e2e.run(source, ExpectedState(memory={
@@ -377,11 +377,11 @@ class TestSneslibDmaMacros:
             #[entry]
             fn main() {{
                 // Set up VRAM destination mode
-                dma_set_ppu_dest!(0, DMA_MODE_2REG_1WRITE, 0x18);
+                dma_set_ppu_dest!(0, DmaTransferMode::TwoReg as u8, 0x18);
                 // Set up CGRAM destination mode
-                dma_set_ppu_dest!(1, DMA_MODE_1REG_2WRITE, 0x22);
+                dma_set_ppu_dest!(1, DmaTransferMode::OneRegX2 as u8, 0x22);
                 // Set up OAM destination mode
-                dma_set_ppu_dest!(2, DMA_MODE_1REG_1WRITE, 0x04);
+                dma_set_ppu_dest!(2, DmaTransferMode::OneReg as u8, 0x04);
                 DONE = 0xBB;
             }}
         '''
@@ -423,11 +423,11 @@ class TestSneslibDmaMacros:
             #[entry]
             fn main() {{
                 // Normal copy mode
-                dma_set_ppu_dest!(0, DMA_MODE_2REG_1WRITE, 0x18);
+                dma_set_ppu_dest!(0, DmaTransferMode::TwoReg as u8, 0x18);
                 // Fixed source (for fills)
-                dma_set_ppu_dest!(1, DMA_MODE_2REG_1WRITE | DMA_FIXED, 0x18);
+                dma_set_ppu_dest!(1, DmaTransferMode::TwoReg as u8 | DmaAddress::Fixed as u8, 0x18);
                 // Reverse direction (PPU to CPU)
-                dma_set_ppu_dest!(2, DMA_MODE_2REG_1WRITE | DMA_DIRECTION_TO_CPU, 0x39);
+                dma_set_ppu_dest!(2, DmaTransferMode::TwoReg as u8 | DmaDirection::ToCPU as u8, 0x39);
                 DONE = 0xDD;
             }}
         '''
@@ -447,7 +447,7 @@ class TestSneslibDmaMacros:
             #[entry]
             fn main() {{
                 // Set VMAIN for high byte increment (used before VRAM DMA)
-                VMAIN = VMAIN_INCREMENT_HIGH;
+                VMAIN = VmainTrigger::High as u8;
                 // Set VRAM address
                 VMADD = 0x1000;
                 DONE = 0xEE;

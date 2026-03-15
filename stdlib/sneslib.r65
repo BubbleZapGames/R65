@@ -893,155 +893,131 @@ const TILES_PER_COL_OVERSCAN: u8 = 30;
 const TILE_SIZE_8: u8 = 8;
 const TILE_SIZE_16: u8 = 16;
 
-const TILE_BYTES_2BPP: u8 = 16;
-const TILE_BYTES_4BPP: u8 = 32;
-const TILE_BYTES_8BPP: u8 = 64;
+enum TileSize { Bpp2 = 16, Bpp4 = 32, Bpp8 = 64 }
 
 
 // ============================================================================
 // CONSTANTS - INIDISP Values
 // ============================================================================
 
-const BRIGHTNESS_OFF: u8 = 0x00;
-const BRIGHTNESS_FULL: u8 = 0x0F;
+enum Brightness { Off = 0x00, Full = 0x0F }
 const FORCE_BLANK: u8 = 0x80;
-const SCREEN_ON_FULL: u8 = 0x0F;
 
 
 // ============================================================================
-// CONSTANTS - BGMODE Values
+// ENUMS - BgMode Values
 // ============================================================================
 
-const BGMODE_0: u8 = 0x00;  // 4 layers, 4 colors each
-const BGMODE_1: u8 = 0x01;  // 2 layers 16 colors, 1 layer 4 colors
-const BGMODE_2: u8 = 0x02;  // 2 layers 16 colors, offset-per-tile
-const BGMODE_3: u8 = 0x03;  // 1 layer 256 colors, 1 layer 16 colors
-const BGMODE_4: u8 = 0x04;  // 1 layer 256 colors, 1 layer 4 colors, OPT
-const BGMODE_5: u8 = 0x05;  // 1 layer 16 colors, 1 layer 4 colors, hires
-const BGMODE_6: u8 = 0x06;  // 1 layer 16 colors, OPT, hires
-const BGMODE_7: u8 = 0x07;  // 1 layer 256 colors, rotation/scaling
+enum BG {
+    Mode0 = 0x00,  // 4 layers, 4 colors each
+    Mode1 = 0x01,  // 2 layers 16 colors, 1 layer 4 colors
+    Mode2 = 0x02,  // 2 layers 16 colors, offset-per-tile
+    Mode3 = 0x03,  // 1 layer 256 colors, 1 layer 16 colors
+    Mode4 = 0x04,  // 1 layer 256 colors, 1 layer 4 colors, OPT
+    Mode5 = 0x05,  // 1 layer 16 colors, 1 layer 4 colors, hires
+    Mode6 = 0x06,  // 1 layer 16 colors, OPT, hires
+    Mode7 = 0x07   // 1 layer 256 colors, rotation/scaling
+}
 
-const BG1_TILE_16X16: u8 = 0x10;
-const BG2_TILE_16X16: u8 = 0x20;
-const BG3_TILE_16X16: u8 = 0x40;
-const BG4_TILE_16X16: u8 = 0x80;
+enum BgTileSize {
+     BG1_16x16 = 0x10,
+     BG2_16x16 = 0x20,
+     BG3_16x16 = 0x40, 
+     BG4_16x16 = 0x80 
+}
 
 
 // ============================================================================
-// CONSTANTS - OBSEL Object Sizes
+// ENUMS - ObjSize Object Sizes
 // ============================================================================
 
-const OBJSEL_8X8_16X16: u8 = 0x00;
-const OBJSEL_8X8_32X32: u8 = 0x20;
-const OBJSEL_8X8_64X64: u8 = 0x40;
-const OBJSEL_16X16_32X32: u8 = 0x60;
-const OBJSEL_16X16_64X64: u8 = 0x80;
-const OBJSEL_32X32_64X64: u8 = 0xA0;
-const OBJSEL_16X32_32X64: u8 = 0xC0;
-const OBJSEL_16X32_32X32: u8 = 0xE0;
+enum ObjSize {
+    T8x8_16x16   = 0x00,
+    T8x8_32x32   = 0x20,
+    T8x8_64x64   = 0x40,
+    T16x16_32x32 = 0x60,
+    T16x16_64x64 = 0x80,
+    T32x32_64x64 = 0xA0,
+    T16x32_32x64 = 0xC0,
+    T16x32_32x32 = 0xE0
+}
 
 
 // ============================================================================
 // CONSTANTS - VMAIN Increment Modes
 // ============================================================================
 
-const VMAIN_INCREMENT_LOW: u8 = 0x00;   // Increment after low byte write
-const VMAIN_INCREMENT_HIGH: u8 = 0x80;  // Increment after high byte write
-const VMAIN_INCREMENT_1: u8 = 0x00;     // Increment by 1 word
-const VMAIN_INCREMENT_32: u8 = 0x01;    // Increment by 32 words
-const VMAIN_INCREMENT_128: u8 = 0x02;   // Increment by 128 words
+enum VmainTrigger { Low = 0x00, High = 0x80 }    // Increment after low/high byte write
+enum VmainStep { By1 = 0x00, By32 = 0x01, By128 = 0x02 }  // Increment step size
 
 
 // ============================================================================
-// CONSTANTS - DMA Transfer Modes
+// ENUMS - DMA Transfer Modes
 // ============================================================================
 
-const DMA_MODE_1REG_1WRITE: u8 = 0x00;  // 1 register, write once
-const DMA_MODE_2REG_1WRITE: u8 = 0x01;  // 2 registers, write once each (L,H)
-const DMA_MODE_1REG_2WRITE: u8 = 0x02;  // 1 register, write twice
-const DMA_MODE_2REG_2WRITE: u8 = 0x03;  // 2 registers, write twice each (L,L,H,H)
-const DMA_MODE_4REG_1WRITE: u8 = 0x04;  // 4 registers, write once each
+enum DmaTransferMode {
+    OneReg   = 0x00,  // 1 register, write once
+    TwoReg   = 0x01,  // 2 registers, write once each (L,H)
+    OneRegX2 = 0x02,  // 1 register, write twice
+    TwoRegX2 = 0x03,  // 2 registers, write twice each (L,L,H,H)
+    FourReg  = 0x04   // 4 registers, write once each
+}
 
-const DMA_DIRECTION_TO_PPU: u8 = 0x00;  // A-bus to B-bus (CPU to PPU)
-const DMA_DIRECTION_TO_CPU: u8 = 0x80;  // B-bus to A-bus (PPU to CPU)
-
-const DMA_INCREMENT: u8 = 0x00;         // Increment source address
-const DMA_DECREMENT: u8 = 0x10;         // Decrement source address
-const DMA_FIXED: u8 = 0x08;             // Fixed source address
+enum DmaDirection { ToPPU = 0x00, ToCPU = 0x80 }
+enum DmaAddress { Increment = 0x00, Decrement = 0x10, Fixed = 0x08 }
 
 
 // ============================================================================
 // CONSTANTS - NMITIMEN Interrupt Flags
 // ============================================================================
 
-const NMI_ENABLE: u8 = 0x80;
-const IRQ_ENABLE_V: u8 = 0x20;
-const IRQ_ENABLE_HV: u8 = 0x30;
-const AUTOJOY_ENABLE: u8 = 0x01;
+enum Interrupt { Nmi = 0x80, IrqV = 0x20, IrqHV = 0x30, AutoJoy = 0x01 }
 
 
 // ============================================================================
 // CONSTANTS - TM/TS Main/Sub Screen Enables
 // ============================================================================
 
-const SCREEN_BG1: u8 = 0x01;
-const SCREEN_BG2: u8 = 0x02;
-const SCREEN_BG3: u8 = 0x04;
-const SCREEN_BG4: u8 = 0x08;
-const SCREEN_OBJ: u8 = 0x10;
+enum Screen { BG1 = 0x01, BG2 = 0x02, BG3 = 0x04, BG4 = 0x08, Obj = 0x10 }
 
 
 // ============================================================================
 // CONSTANTS - Joypad Button Masks
 // ============================================================================
 
-const JOY_B: u16 = 0x8000;
-const JOY_Y: u16 = 0x4000;
-const JOY_SELECT: u16 = 0x2000;
-const JOY_START: u16 = 0x1000;
-const JOY_UP: u16 = 0x0800;
-const JOY_DOWN: u16 = 0x0400;
-const JOY_LEFT: u16 = 0x0200;
-const JOY_RIGHT: u16 = 0x0100;
-const JOY_A: u16 = 0x0080;
-const JOY_X: u16 = 0x0040;
-const JOY_L: u16 = 0x0020;
-const JOY_R: u16 = 0x0010;
-
-// High byte masks for JOY1H/JOY2H
-const JOYH_B: u8 = 0x80;
-const JOYH_Y: u8 = 0x40;
-const JOYH_SELECT: u8 = 0x20;
-const JOYH_START: u8 = 0x10;
-const JOYH_UP: u8 = 0x08;
-const JOYH_DOWN: u8 = 0x04;
-const JOYH_LEFT: u8 = 0x02;
-const JOYH_RIGHT: u8 = 0x01;
-
-// Low byte masks for JOY1L/JOY2L
-const JOYL_A: u8 = 0x80;
-const JOYL_X: u8 = 0x40;
-const JOYL_L: u8 = 0x20;
-const JOYL_R: u8 = 0x10;
+enum Joy {
+    B      = 0x8000,
+    Y      = 0x4000,
+    Select = 0x2000,
+    Start  = 0x1000,
+    Up     = 0x0800,
+    Down   = 0x0400,
+    Left   = 0x0200,
+    Right  = 0x0100,
+    A      = 0x0080,
+    X      = 0x0040,
+    L      = 0x0020,
+    R      = 0x0010
+}
 
 
 // ============================================================================
 // CONSTANTS - Color Math
 // ============================================================================
 
-const CGADSUB_ADD: u8 = 0x00;
-const CGADSUB_SUB: u8 = 0x80;
-const CGADSUB_HALF: u8 = 0x40;
-const CGADSUB_BG1: u8 = 0x01;
-const CGADSUB_BG2: u8 = 0x02;
-const CGADSUB_BG3: u8 = 0x04;
-const CGADSUB_BG4: u8 = 0x08;
-const CGADSUB_OBJ: u8 = 0x10;
-const CGADSUB_BACKDROP: u8 = 0x20;
+enum ColorMath {
+    Add      = 0x00,
+    Sub      = 0x80,
+    Half     = 0x40,
+    BG1      = 0x01,
+    BG2      = 0x02,
+    BG3      = 0x04,
+    BG4      = 0x08,
+    Obj      = 0x10,
+    Backdrop = 0x20
+}
 
-const COLDATA_RED: u8 = 0x20;
-const COLDATA_GREEN: u8 = 0x40;
-const COLDATA_BLUE: u8 = 0x80;
+enum ColorChannel { Red = 0x20, Green = 0x40, Blue = 0x80 }
 
 
 // ============================================================================
@@ -1054,28 +1030,111 @@ const VRAM_BG1_MAP: u16 = 0x7000;
 const VRAM_BG2_MAP: u16 = 0x7400;
 const VRAM_OBJ_TILES: u16 = 0x6000;
 
-// OAM entry offsets within 4-byte sprite entry
-const OAM_X: u8 = 0;
-const OAM_Y: u8 = 1;
-const OAM_TILE: u8 = 2;
-const OAM_ATTR: u8 = 3;
+// OAM sprite entry (4 bytes, packed)
+// attr byte: V H PP PPP N
+//   Bit 7: vertical flip, Bit 6: horizontal flip
+//   Bits 5-4: priority (0-3), Bits 3-1: palette (0-7), Bit 0: name table
+struct OamEntry {
+    x: u8,
+    y: u8,
+    tile: u8,
+    attr: u8
+}
 
-// OAM attribute flags
-const OAM_FLIP_V: u8 = 0x80;
-const OAM_FLIP_H: u8 = 0x40;
-const OAM_PRIORITY_0: u8 = 0x00;
-const OAM_PRIORITY_1: u8 = 0x10;
-const OAM_PRIORITY_2: u8 = 0x20;
-const OAM_PRIORITY_3: u8 = 0x30;
-const OAM_PALETTE_0: u8 = 0x00;
-const OAM_PALETTE_1: u8 = 0x02;
-const OAM_PALETTE_2: u8 = 0x04;
-const OAM_PALETTE_3: u8 = 0x06;
-const OAM_PALETTE_4: u8 = 0x08;
-const OAM_PALETTE_5: u8 = 0x0A;
-const OAM_PALETTE_6: u8 = 0x0C;
-const OAM_PALETTE_7: u8 = 0x0E;
-const OAM_NAME_TABLE: u8 = 0x01;  // Use second name table
+// OAM attribute enums
+enum OamFlip { V = 0x80, H = 0x40, VH = 0xC0 }
+
+enum OamPriority {
+    Behind  = 0x00,
+    Low     = 0x10,
+    High    = 0x20,
+    InFront = 0x30
+}
+
+enum OamPalette {
+    Palette0 = 0x00,
+    Palette1 = 0x02,
+    Palette2 = 0x04,
+    Palette3 = 0x06,
+    Palette4 = 0x08,
+    Palette5 = 0x0A,
+    Palette6 = 0x0C,
+    Palette7 = 0x0E
+}
+
+// OAM entry helper macros
+impl OamEntry {
+    // Set position, tile, and clear attributes
+    // Usage: sprite.set!(x, y, tile);
+    macro_rules! set($x:expr, $y:expr, $tile:expr) {
+        self.x = $x;
+        self.y = $y;
+        self.tile = $tile;
+        self.attr = 0;
+    }
+
+    // Set position, tile, and attributes in one call
+    // Usage: sprite.set_all!(x, y, tile, OamPriority::High as u8 | OamPalette::Palette1 as u8);
+    macro_rules! set_all($x:expr, $y:expr, $tile:expr, $attr:expr) {
+        self.x = $x;
+        self.y = $y;
+        self.tile = $tile;
+        self.attr = $attr;
+    }
+
+    // Set priority (clears old priority bits, preserves others)
+    // Usage: sprite.set_priority!(OamPriority::High);
+    macro_rules! set_priority($pri:expr) {
+        self.attr = (self.attr & 0xCF) | ($pri as u8);
+    }
+
+    // Set palette (clears old palette bits, preserves others)
+    // Usage: sprite.set_palette!(OamPalette::Palette3);
+    macro_rules! set_palette($pal:expr) {
+        self.attr = (self.attr & 0xF1) | ($pal as u8);
+    }
+
+    // Set horizontal flip
+    // Usage: sprite.flip_h!();
+    macro_rules! flip_h() {
+        self.attr = self.attr | OamFlip::H as u8;
+    }
+
+    // Set vertical flip
+    // Usage: sprite.flip_v!();
+    macro_rules! flip_v() {
+        self.attr = self.attr | OamFlip::V as u8;
+    }
+
+    // Clear all flip flags
+    // Usage: sprite.clear_flip!();
+    macro_rules! clear_flip() {
+        self.attr = self.attr & 0x3F;
+    }
+
+    // Use second name table (tile numbers 256-511)
+    // Usage: sprite.name_table_1!();
+    macro_rules! name_table_1() {
+        self.attr = self.attr | 0x01;
+    }
+
+    // Hide sprite (move Y off-screen)
+    // Usage: sprite.hide!();
+    macro_rules! hide() {
+        self.y = 240;
+    }
+
+    // Write this entry to OAM hardware at sprite index N (0-127).
+    // Sets OAMADD to N*2 then writes 4 bytes via OAMDATA.
+    // Usage: sprite.write_oam!(0);   // Write to sprite slot 0
+    macro_rules! write_oam($index:expr) {
+        OAMADD = ($index as u16) * 2;
+        OAMDATA = self.x;
+        OAMDATA = self.y;
+        OAMDATA = self.tile;
+        OAMDATA = self.attr;
+    }
+}
 
 // SPC700 transfer states
 const SPC_READY: u8 = 0xAA;
@@ -1090,42 +1149,22 @@ const R_MASK: u16 = 0x001F;  // Red component (bits 0-4)
 const G_MASK: u16 = 0x03E0;  // Green component (bits 5-9)
 const B_MASK: u16 = 0x7C00;  // Blue component (bits 10-14)
 
-
-// ============================================================================
-// CONSTANTS - Sprite Attribute Flags (for OAM high word)
-// ============================================================================
-
-const SPR_HFLIP: u16 = 0x4000;    // Horizontal flip
-const SPR_VFLIP: u16 = 0x8000;    // Vertical flip
-const SPR_PRIORITY_0: u16 = 0x0000;  // Behind all BG layers
-const SPR_PRIORITY_1: u16 = 0x1000;
-const SPR_PRIORITY_2: u16 = 0x2000;
-const SPR_PRIORITY_3: u16 = 0x3000;  // In front of all BG layers
-const SPR_PALETTE_0: u16 = 0x0000;   // Palette 0 (colors 128-143)
-const SPR_PALETTE_1: u16 = 0x0200;   // Palette 1 (colors 144-159)
-const SPR_PALETTE_2: u16 = 0x0400;
-const SPR_PALETTE_3: u16 = 0x0600;
-const SPR_PALETTE_4: u16 = 0x0800;
-const SPR_PALETTE_5: u16 = 0x0A00;
-const SPR_PALETTE_6: u16 = 0x0C00;
-const SPR_PALETTE_7: u16 = 0x0E00;   // Palette 7 (colors 240-255)
-
-
 // ============================================================================
 // CONSTANTS - Background Tile Attribute Flags (for tilemap entries)
 // ============================================================================
 
-const BG_HFLIP: u16 = 0x4000;     // Horizontal flip
-const BG_VFLIP: u16 = 0x8000;     // Vertical flip
-const BG_PRIORITY: u16 = 0x2000;  // Priority bit
-const BG_PALETTE_0: u16 = 0x0000; // Palette 0
-const BG_PALETTE_1: u16 = 0x0400; // Palette 1
-const BG_PALETTE_2: u16 = 0x0800; // Palette 2
-const BG_PALETTE_3: u16 = 0x0C00; // Palette 3
-const BG_PALETTE_4: u16 = 0x1000; // Palette 4
-const BG_PALETTE_5: u16 = 0x1400; // Palette 5
-const BG_PALETTE_6: u16 = 0x1800; // Palette 6
-const BG_PALETTE_7: u16 = 0x1C00; // Palette 7
+enum BgAttr { HFlip = 0x4000, VFlip = 0x8000, Priority = 0x2000 }
+
+enum BgPalette {
+    Palette0 = 0x0000, // Palette 0
+    Palette1 = 0x0400, // Palette 1
+    Palette2 = 0x0800, // Palette 2
+    Palette3 = 0x0C00, // Palette 3
+    Palette4 = 0x1000, // Palette 4
+    Palette5 = 0x1400, // Palette 5
+    Palette6 = 0x1800, // Palette 6
+    Palette7 = 0x1C00  // Palette 7
+}
 
 // ============================================================================
 // MACROS - Screen Control
@@ -1154,7 +1193,7 @@ macro_rules! set_vram_addr($addr:expr) {
 }
 
 // Set VRAM increment mode
-// Usage: set_vram_inc!(VMAIN_INCREMENT_HIGH);
+// Usage: set_vram_inc!(VmainTrigger::High);
 macro_rules! set_vram_inc($mode:expr) {
     VMAIN = $mode as u8;
 }
@@ -1225,9 +1264,9 @@ macro_rules! write_oam_entry($x:expr, $y:expr, $tile:expr, $attr:expr) {
 // ============================================================================
 
 // Set BG mode (0-7) with optional tile size flags
-// Usage: set_bgmode!(1, BG1_TILE_16X16);
+// Usage: set_bgmode!(BG::Mode1, BgTileSize::BG1_16x16);
 macro_rules! set_bgmode($mode:expr, $sizes:expr) {
-    BGMODE = ($mode & 0x07) | $sizes;
+    BGMODE = ($mode as u8 & 0x07) | $sizes;
 }
 
 // Set BG1 tilemap address and size
@@ -1315,13 +1354,13 @@ macro_rules! set_bg4_vscroll($scroll:expr) {
 // ============================================================================
 
 // Enable layers on main screen
-// Usage: enable_main!(SCREEN_BG1 | SCREEN_OBJ);
+// Usage: enable_main!(Screen::BG1 | Screen::Obj);
 macro_rules! enable_main($layers:expr) {
     TM = $layers;
 }
 
 // Enable layers on sub screen
-// Usage: enable_sub!(SCREEN_BG2);
+// Usage: enable_sub!(Screen::BG2);
 macro_rules! enable_sub($layers:expr) {
     TS = $layers;
 }
@@ -1331,9 +1370,9 @@ macro_rules! enable_sub($layers:expr) {
 // ============================================================================
 
 // Set object size and name base
-// Usage: set_obj_sel!(OBJSEL_8X8_16X16, 0, 0);
+// Usage: set_obj_sel!(ObjSize::T8x8_16x16, 0, 0);
 macro_rules! set_obj_sel($size:expr, $base:expr, $gap:expr) {
-    OBSEL = $size | ($base & 0x07) | (($gap & 0x03) << 3);
+    OBSEL = $size as u8 | ($base & 0x07) | (($gap & 0x03) << 3);
 }
 
 // ============================================================================
@@ -1343,7 +1382,7 @@ macro_rules! set_obj_sel($size:expr, $base:expr, $gap:expr) {
 // Enable NMI
 // Usage: enable_nmi!();
 macro_rules! enable_nmi() {
-    NMITIMEN = NMITIMEN | NMI_ENABLE;
+    NMITIMEN = NMITIMEN | Interrupt::Nmi;
 }
 
 // Disable NMI
@@ -1355,11 +1394,11 @@ macro_rules! disable_nmi() {
 // Enable auto-joypad read
 // Usage: enable_autojoy!();
 macro_rules! enable_autojoy() {
-    NMITIMEN |= AUTOJOY_ENABLE;
+    NMITIMEN |= Interrupt::AutoJoy;
 }
 
 // Set all interrupt flags at once
-// Usage: set_nmitimen!(NMI_ENABLE | AUTOJOY_ENABLE);
+// Usage: set_nmitimen!(Interrupt::Nmi | Interrupt::AutoJoy);
 macro_rules! set_nmitimen($flags:expr) {
     NMITIMEN = $flags;
 }
@@ -1394,7 +1433,7 @@ macro_rules! dma_set_src($channel:literal, $ptr:ident) {
 
 // Set DMA destination with 24-bit address (for WRAM transfers)
 // Combines WRAM address setup (WMADDL/M/H) with DMA mode/BBAD configuration
-// Usage: dma_set_dest!(0, DMA_MODE_1REG_1WRITE, 0x7E2000);
+// Usage: dma_set_dest!(0, DmaTransferMode::OneReg, 0x7E2000);
 macro_rules! dma_set_dest($channel:literal, $mode:literal, $dest:ident) {
     const_assert!($channel < 8, "DMA channel must be 0-7");
     asm!(
@@ -1413,7 +1452,7 @@ macro_rules! dma_set_dest($channel:literal, $mode:literal, $dest:ident) {
 }
 
 // Set DMA destination for PPU registers (B-bus address) and transfer mode
-// Usage: dma_set_ppu_dest!(0, DMA_MODE_2REG_1WRITE, 0x18);
+// Usage: dma_set_ppu_dest!(0, DmaTransferMode::TwoReg, 0x18);
 macro_rules! dma_set_ppu_dest($channel:literal, $mode:expr, $bbad:literal) {
     const_assert!($channel < 8, "DMA channel must be 0-7");
     STATUS.A16 = false;  // Ensure 8-bit A (emits SEP #$20 only if needed)
@@ -1458,7 +1497,7 @@ macro_rules! dma_trigger($channel:literal) {
 macro_rules! dma_copy_vram_const($channel:literal, $src:ident, $dest:ident, $size:literal) {
     STATUS.A16 = false;  // Ensure 8-bit A (emits SEP #$20 only if needed)
     asm!(
-        "LDA #$80",       // VMAIN_INCREMENT_HIGH
+        "LDA #$80",       // VmainTrigger::High
         "STA VMAIN",      // Store to VMAIN
         "LDX #{DEST}",
         "STX VMADD",
@@ -1620,7 +1659,7 @@ far fn dma_copy_oam(channel: u8, src: far *u8, size: u16) {
 // DMA fill VRAM with a value (fixed source address mode)
 // Usage: dma_fill_vram!(0, dest_vram, src, size);
 macro_rules! dma_fill_vram($channel:literal, $dest:ident, $src:ident, $size:literal) {
-    VMAIN = VMAIN_INCREMENT_HIGH;
+    VMAIN = VmainTrigger::High;
     asm!(
         "LDX #{DEST}",
         "STX VMADD",
@@ -1635,7 +1674,7 @@ macro_rules! dma_fill_vram($channel:literal, $dest:ident, $src:ident, $size:lite
 // DMA copy from VRAM to RAM
 // Usage: dma_copy_from_vram!(0, src_vram, dest_ptr, size);
 macro_rules! dma_copy_from_vram($channel:literal, $src:ident, $dest:ident, $size:literal) {
-    VMAIN = VMAIN_INCREMENT_HIGH;
+    VMAIN = VmainTrigger::High;
     asm!(
         "LDX #{SRC}",
         "STX VMADD",
@@ -1719,7 +1758,7 @@ macro_rules! set_m7_center($x:expr, $y:expr) {
 // ============================================================================
 
 // Set fixed color for color math
-// Usage: set_fixed_color!(COLDATA_RED | 15);  // Red = 15
+// Usage: set_fixed_color!(ColorChannel::Red | 15);  // Red = 15
 macro_rules! set_fixed_color($color:expr) {
     COLDATA = $color;
 }
@@ -1727,7 +1766,7 @@ macro_rules! set_fixed_color($color:expr) {
 // Set fixed color RGB (each 0-31)
 // Usage: set_fixed_rgb!(31, 31, 31);  // White
 macro_rules! set_fixed_rgb($r:literal, $g:literal, $b:literal) {
-    COLDATA = COLDATA_RED | ($r & 0x1F) | COLDATA_GREEN | ($g & 0x1F) | COLDATA_BLUE | ($b & 0x1F);
+    COLDATA = ColorChannel::Red | ($r & 0x1F) | ColorChannel::Green | ($g & 0x1F) | ColorChannel::Blue | ($b & 0x1F);
 }
 
 
@@ -1801,7 +1840,7 @@ fn wait_autojoy() {
 fn clear_vram() {
     VMADDL = 0;
     VMADDH = 0;
-    VMAIN = VMAIN_INCREMENT_HIGH;
+    VMAIN = VmainTrigger::High;
 
     // 128 * 256 = 32768 words to clear
     for i in 0..32768 {
@@ -1859,7 +1898,7 @@ fn init_ppu() {
         ptr = ptr + 1;
     }
 
-    VMAIN = VMAIN_INCREMENT_HIGH;
+    VMAIN = VmainTrigger::High;
     VMADDL = 0;
     VMADDH = 0;
 
@@ -1888,9 +1927,9 @@ fn init_ppu() {
     TSW = 0;
     CGWSEL = 0;
     CGADSUB = 0;
-    COLDATA = COLDATA_RED;
-    COLDATA = COLDATA_GREEN;
-    COLDATA = COLDATA_BLUE;
+    COLDATA = ColorChannel::Red;
+    COLDATA = ColorChannel::Green;
+    COLDATA = ColorChannel::Blue;
     SETINI = 0;
 }
 
@@ -1908,7 +1947,7 @@ fn snes_init() {
     clear_vram();
     clear_cgram();
     clear_oam();
-    NMITIMEN = NMI_ENABLE | AUTOJOY_ENABLE;
+    NMITIMEN = Interrupt::Nmi | Interrupt::AutoJoy;
 }
 
 // Delay for specified number of frames
@@ -1933,8 +1972,8 @@ fn is_pal() -> bool {
 
 // Set pixelization/mosaic effect (user-friendly version)
 // level: 0 = off, 1 = min pixelization, 16 = max pixelization
-// bgs: which backgrounds to apply mosaic to (use SCREEN_BG1, etc.)
-// Usage: set_pixelize(4, SCREEN_BG1 | SCREEN_BG2);
+// bgs: which backgrounds to apply mosaic to (use Screen::BG1, etc.)
+// Usage: set_pixelize(4, Screen::BG1 | Screen::BG2);
 far fn set_pixelize(level: u8, bgs: u16) {
     if level == 0 {
         MOSAIC = 0;
@@ -2020,7 +2059,7 @@ fn spc_end_transfer(exec_low @ A: u8, exec_high: u16) {
 // Usage: dma_clear_vram!(0, zero_byte_ptr);
 macro_rules! dma_clear_vram($channel:literal, $zero_ptr:expr) {
     VMADD = 0;
-    VMAIN = VMAIN_INCREMENT_HIGH;
+    VMAIN = VmainTrigger::High;
     dma_set_src!($channel, $zero_ptr);
     asm!("STZ DAS{CH}", CH=$channel);  // 0 = 64KB
     dma_set_ppu_dest!($channel, 9, 24);  // 9 = DMA_MODE_2REG_1WRITE | DMA_FIXED, 24 = $18
