@@ -12,7 +12,7 @@ from r65.compiler.hir import (
     HIRArrayIndex, HIRFieldAccess, HIRDereference, HIRAddressOf,
     HIRIdentifier,
 )
-from r65.compiler.hir.types import PointerTypeInfo
+from r65.compiler.hir.types import BasicTypeInfo, PointerTypeInfo
 from r65.compiler.mir.nodes import (
     VirtualRegister, HardwareRegister, Immediate, MemoryLocation,
     Move, Load, LoadIndirect, BinaryOp, UnaryOp, TypeConvert, ToBool,
@@ -545,8 +545,28 @@ class ExpressionLowerer:
         return result
 
     def _compute_index_offset(self, index_operand, element_size, element_type):
-        """Compute byte offset from array index."""
-        offset_vreg = self.ctx.alloc_vreg(element_type, "array_offset")
+        """Compute byte offset from array index.
+
+        When element_size > 1, the byte offset can exceed 255 even for u8 indices
+        (e.g., u8 index 200 * element_size 2 = 400). The shift/multiply must use
+        u16 to avoid 8-bit overflow.
+        """
+        # Widen to u16 when multiplying would overflow u8
+        offset_type = element_type
+        if element_size > 1 and self.builder._get_type_size(element_type) < 2:
+            offset_type = BasicTypeInfo('u16')
+            # Zero-extend the index operand to u16
+            if not isinstance(index_operand, Immediate):
+                extended = self.ctx.alloc_vreg(offset_type, "idx_ext")
+                self.emit(TypeConvert(
+                    dest=extended,
+                    source=index_operand,
+                    source_type=element_type,
+                    target_type=offset_type
+                ))
+                index_operand = extended
+
+        offset_vreg = self.ctx.alloc_vreg(offset_type, "array_offset")
 
         # Use shift for power-of-2 sizes
         if element_size & (element_size - 1) == 0:
@@ -561,7 +581,7 @@ class ExpressionLowerer:
                 left=index_operand,
                 right=Immediate(shift_amount),
                 op='<<',
-                type_info=element_type
+                type_info=offset_type
             ))
         else:
             # Non-power-of-2: use multiplication
@@ -570,7 +590,7 @@ class ExpressionLowerer:
                 left=index_operand,
                 right=Immediate(element_size),
                 op='*',
-                type_info=element_type
+                type_info=offset_type
             ))
 
         return offset_vreg

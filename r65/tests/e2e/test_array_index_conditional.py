@@ -260,3 +260,82 @@ class TestArrayIndexConditional:
             0x7E0011: 0x11,  # TABLE[0] high byte
         }))
         assert result.success, f"Failures: {result.failures}"
+
+    def test_u8_index_into_i16_array_high_index(self, e2e):
+        """Regression: u8 index >= 128 into multi-byte element array.
+
+        The element-size multiply (ASL for x2) must happen AFTER zero-extending
+        the u8 index to u16. If ASL runs in 8-bit mode first, index 128 (0x80)
+        wraps to 0x00 and reads the wrong entry.
+        """
+        result = e2e.run('''
+            #[zeropage(0x00, register)]
+            static mut SCRATCH0: u8;
+
+            static TABLE: [i16; 256] = build_table();
+
+            const fn build_table() -> [i16; 256] {
+                let mut t: [i16; 256] = [0; 256];
+                for i in 0..256 {
+                    t[i] = i as i16;
+                }
+                return t;
+            }
+
+            #[zeropage(0x10)]
+            static mut RESULT_LO: u8;
+
+            #[zeropage(0x11)]
+            static mut RESULT_HI: u8;
+
+            #[zeropage(0x12)]
+            static mut IDX: u8 = 200;
+
+            #[entry]
+            fn main() {
+                let val: i16 = TABLE[IDX];
+                RESULT_LO = val as u8;
+                RESULT_HI = (val >> 8) as u8;
+            }
+        ''', ExpectedState(memory={
+            0x7E0010: 200,  # TABLE[200] low byte = 200
+            0x7E0011: 0,    # TABLE[200] high byte = 0
+        }))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_u8_index_128_into_u16_array(self, e2e):
+        """Edge case: u8 index exactly 128 (0x80) - ASL overflow boundary."""
+        result = e2e.run('''
+            #[zeropage(0x00, register)]
+            static mut SCRATCH0: u8;
+
+            static TABLE: [u16; 256] = build_table();
+
+            const fn build_table() -> [u16; 256] {
+                let mut t: [u16; 256] = [0; 256];
+                for i in 0..256 {
+                    t[i] = (i as u16) * 100;
+                }
+                return t;
+            }
+
+            #[zeropage(0x10)]
+            static mut RESULT_LO: u8;
+
+            #[zeropage(0x11)]
+            static mut RESULT_HI: u8;
+
+            #[zeropage(0x12)]
+            static mut IDX: u8 = 128;
+
+            #[entry]
+            fn main() {
+                let val: u16 = TABLE[IDX];
+                RESULT_LO = val as u8;
+                RESULT_HI = (val >> 8) as u8;
+            }
+        ''', ExpectedState(memory={
+            0x7E0010: 0x00,  # 128 * 100 = 12800 = 0x3200, low byte
+            0x7E0011: 0x32,  # high byte
+        }))
+        assert result.success, f"Failures: {result.failures}"
