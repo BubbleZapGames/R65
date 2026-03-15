@@ -1,13 +1,18 @@
 """
 bmp2chr - Convert an indexed bitmap to SNES CHR tile data.
 
-Supports planar (2bpp, 3bpp, 4bpp, 8bpp) and linear (2bpp, 4bpp, 8bpp)
-output formats. Optionally outputs a SNES-format palette file.
+Supports planar (2bpp, 3bpp, 4bpp, 8bpp), linear (2bpp, 4bpp, 8bpp),
+and Mode 7 (8bpp, 1 byte per pixel) output formats. Optionally outputs
+a SNES-format palette file.
+
+With -t/--tilemap, de-duplicates 8x8 tiles (matching flipped variants and
+palette assignments) and outputs a packed .chr plus a .tilemap file.
 
 Usage:
   r65x bmp2chr input.bmp -o output.chr -b4
   r65x bmp2chr input.bmp -o output.chr -l4 --fullsize
   r65x bmp2chr input.bmp -o output.chr -b4 -p
+  r65x bmp2chr input.bmp -o output.chr -b4 -t
 """
 
 import os
@@ -18,6 +23,7 @@ from r65.tools.bitmap import BitmapIndex
 from r65.tools.tile import (
     Encode2bppTile, Encode3bppTile, Encode4bppTile, Encode8bppTile,
     EncodeLinear2Tile, EncodeLinear4Tile, EncodeLinear8Tile,
+    EncodeMode7Tile,
 )
 
 
@@ -46,8 +52,12 @@ def register_parser(subparsers):
                         help="16 colors linear graphic output")
     parser.add_argument('-l8', '--linear8', action='store_true', default=False,
                         help="256 colors linear graphic output")
+    parser.add_argument('-m7', '--mode7', action='store_true', default=False,
+                        help="Mode 7 graphic output (8bpp, 1 byte per pixel)")
     parser.add_argument('-p', '--palette', action='store_true', default=False,
                         help="Output color *.pal file")
+    parser.add_argument('-t', '--tilemap', action='store_true', default=False,
+                        help="De-duplicate tiles and output .tilemap file")
     parser.add_argument('-f', '--fullsize', action='store_true', default=False,
                         help="Ignore destination CHR file size and write whole bitmap")
 
@@ -85,6 +95,127 @@ def _write_palette(bitmap, output_path):
         print("Error writing palette: %s" % str(e), file=sys.stderr)
 
 
+def _extract_tile(bitmap, tx, ty):
+    """Extract an 8x8 tile as a flat list of pixel indices."""
+    tile = bytearray()
+    for y in range(ty, ty + 8):
+        for x in range(tx, tx + 8):
+            tile.append(bitmap.getPixel(x, y))
+    return tile
+
+
+def _flip_h(tile):
+    """Horizontally flip an 8x8 tile (reverse each row)."""
+    out = bytearray(64)
+    for row in range(8):
+        off = row * 8
+        for col in range(8):
+            out[off + col] = tile[off + 7 - col]
+    return out
+
+
+def _flip_v(tile):
+    """Vertically flip an 8x8 tile (reverse row order)."""
+    out = bytearray(64)
+    for row in range(8):
+        src = (7 - row) * 8
+        dst = row * 8
+        out[dst:dst + 8] = tile[src:src + 8]
+    return out
+
+
+def _tile_palette(tile, colors_per_pal):
+    """Determine palette index from pixel values. Returns (palette, normalized_tile).
+
+    For tiles using palette N, pixel values are in [N*colors_per_pal, (N+1)*colors_per_pal).
+    Normalized tile has pixel values in [0, colors_per_pal).
+    Returns None if tile uses colors from multiple palettes (invalid).
+    """
+    pal = None
+    for px in tile:
+        if px == 0:
+            continue  # Color 0 is transparent, shared across palettes
+        p = px // colors_per_pal
+        if pal is None:
+            pal = p
+        elif p != pal:
+            return None, None
+    if pal is None:
+        pal = 0
+    normalized = bytearray(len(tile))
+    base = pal * colors_per_pal
+    for i, px in enumerate(tile):
+        if px < base:
+            normalized[i] = px  # color 0 / shared colors stay as-is
+        else:
+            normalized[i] = px - base
+    return pal, normalized
+
+
+def _build_tilemap(bitmap, depth, encode):
+    """Build de-duplicated tile set and tilemap.
+
+    Returns (unique_tiles_encoded, tilemap_entries) where tilemap_entries
+    is a list of 16-bit SNES tilemap words.
+    """
+    colors_per_pal = 1 << depth
+    num_palette_colors = len(bitmap._palette)
+    use_palette_matching = num_palette_colors > colors_per_pal and depth in (2, 4)
+
+    # Map from normalized tile bytes → (tile_index)
+    tile_dict = {}
+    unique_tiles = []
+    tilemap = []
+
+    tiles_wide = bitmap._bcWidth // 8
+    tiles_high = bitmap._bcHeight // 8
+
+    for ty_idx in range(tiles_high):
+        for tx_idx in range(tiles_wide):
+            raw_tile = _extract_tile(bitmap, tx_idx * 8, ty_idx * 8)
+
+            if use_palette_matching:
+                pal, norm_tile = _tile_palette(raw_tile, colors_per_pal)
+                if pal is None:
+                    print("Warning: tile at (%d,%d) uses colors from multiple palettes"
+                          % (tx_idx * 8, ty_idx * 8), file=sys.stderr)
+                    pal = 0
+                    norm_tile = raw_tile
+            else:
+                pal = 0
+                norm_tile = raw_tile
+
+            # Try all flip variants: (h_flip, v_flip)
+            variants = [
+                (norm_tile, 0, 0),
+                (_flip_h(norm_tile), 1, 0),
+                (_flip_v(norm_tile), 0, 1),
+                (_flip_h(_flip_v(norm_tile)), 1, 1),
+            ]
+
+            matched = False
+            for variant, h, v in variants:
+                key = bytes(variant)
+                if key in tile_dict:
+                    tile_idx = tile_dict[key]
+                    entry = tile_idx | (pal << 10) | (h << 14) | (v << 15)
+                    tilemap.append(entry)
+                    matched = True
+                    break
+
+            if not matched:
+                tile_idx = len(unique_tiles)
+                if tile_idx > 1023:
+                    print("Warning: tile count exceeds 1024 at (%d,%d)"
+                          % (tx_idx * 8, ty_idx * 8), file=sys.stderr)
+                tile_dict[bytes(norm_tile)] = tile_idx
+                unique_tiles.append(encode(bytearray(norm_tile)))
+                entry = tile_idx | (pal << 10)
+                tilemap.append(entry)
+
+    return unique_tiles, tilemap
+
+
 def bmp2chr_command(args):
     """Execute the bmp2chr command."""
     if args.input:
@@ -94,7 +225,15 @@ def bmp2chr_command(args):
             print("Error: %s" % str(e), file=sys.stderr)
             sys.exit(1)
 
-        if args.b2pp:
+        if args.mode7 and (args.b2pp or args.b3pp or args.b8pp):
+            print("Error: --mode7 cannot be combined with --b2pp, --b3pp, or --b8pp",
+                  file=sys.stderr)
+            sys.exit(1)
+
+        if args.mode7:
+            encode = EncodeMode7Tile
+            depth = 8
+        elif args.b2pp:
             encode = Encode2bppTile
             depth = 2
         elif args.b8pp:
@@ -116,7 +255,11 @@ def bmp2chr_command(args):
             encode = Encode4bppTile
             depth = 4
 
-        if depth != b._bcBitCount:
+        if args.tilemap and depth in (2, 4) and b._bcBitCount > depth:
+            # Tilemap mode: allow higher-depth BMPs for multi-palette matching
+            # e.g., 8-bit BMP with 4bpp tiles (colors 0-15 = pal 0, 16-31 = pal 1, ...)
+            pass
+        elif depth != b._bcBitCount:
             print("Error: Bitmap file %s does not have a bit depth of %d" % (args.input, depth),
                   file=sys.stderr)
             sys.exit(1)
@@ -126,39 +269,68 @@ def bmp2chr_command(args):
                   file=sys.stderr)
             sys.exit(1)
 
-        # For odd shaped bitmaps match the number of tiles in the destination chr file by limiting the size
-        if os.path.isfile(args.output) and not args.fullsize:
-            max_size = os.path.getsize(args.output)
-        else:
-            # Calculate size based on tile count and bytes per tile
+        if args.tilemap:
+            # Tilemap mode: de-duplicate tiles and output .tilemap
+            unique_tiles, tilemap_entries = _build_tilemap(b, depth, encode)
+
+            try:
+                with open(args.output, "wb") as chr_fp:
+                    for encoded_tile in unique_tiles:
+                        chr_fp.write(encoded_tile)
+            except Exception as e:
+                print("Error: %s" % str(e), file=sys.stderr)
+                sys.exit(1)
+
+            tilemap_path = os.path.splitext(args.output)[0] + '.tilemap'
+            try:
+                with open(tilemap_path, "wb") as tm_fp:
+                    for entry in tilemap_entries:
+                        tm_fp.write(struct.pack('<H', entry))
+            except Exception as e:
+                print("Error writing tilemap: %s" % str(e), file=sys.stderr)
+                sys.exit(1)
+
             tiles_wide = b._bcWidth // 8
             tiles_high = b._bcHeight // 8
-            bytes_per_tile = {2: 16, 3: 24, 4: 32, 8: 64}.get(depth, 32)
-            max_size = tiles_wide * tiles_high * bytes_per_tile
+            total_tiles = tiles_wide * tiles_high
+            print("Wrote %d unique tiles (%d total, %.0f%% reduction): %s"
+                  % (len(unique_tiles), total_tiles,
+                     (1 - len(unique_tiles) / total_tiles) * 100 if total_tiles else 0,
+                     args.output),
+                  file=sys.stderr)
+            print("Wrote tilemap (%dx%d = %d entries): %s"
+                  % (tiles_wide, tiles_high, len(tilemap_entries), tilemap_path),
+                  file=sys.stderr)
+        else:
+            # Standard mode: write all tiles sequentially
+            # For odd shaped bitmaps match the number of tiles in the destination chr file
+            if os.path.isfile(args.output) and not args.fullsize:
+                max_size = os.path.getsize(args.output)
+            else:
+                tiles_wide = b._bcWidth // 8
+                tiles_high = b._bcHeight // 8
+                bytes_per_tile = {2: 16, 3: 24, 4: 32, 8: 64}.get(depth, 32)
+                max_size = tiles_wide * tiles_high * bytes_per_tile
 
-        try:
-            chr_fp = open(args.output, "wb")
-        except Exception as e:
-            print("Error: %s" % str(e), file=sys.stderr)
-            sys.exit(1)
+            try:
+                chr_fp = open(args.output, "wb")
+            except Exception as e:
+                print("Error: %s" % str(e), file=sys.stderr)
+                sys.exit(1)
 
-        # Write tile data
-        running = True
-        for ty in range(0, b._bcHeight, 8):
-            for tx in range(0, b._bcWidth, 8):
-                tile = bytearray()
-                for y in range(ty, ty+8):
-                    for x in range(tx, tx+8):
-                        tile.append(b.getPixel(x, y))
-                encoded = encode(tile)
-                chr_fp.write(encoded)
-                if chr_fp.tell() >= max_size:
-                    running = False
+            running = True
+            for ty in range(0, b._bcHeight, 8):
+                for tx in range(0, b._bcWidth, 8):
+                    tile = _extract_tile(b, tx, ty)
+                    encoded = encode(tile)
+                    chr_fp.write(encoded)
+                    if chr_fp.tell() >= max_size:
+                        running = False
+                        break
+
+                if not running:
                     break
-
-            if not running:
-                break
-        chr_fp.close()
+            chr_fp.close()
 
         # Output palette if requested
         if args.palette:

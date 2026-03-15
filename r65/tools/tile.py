@@ -214,6 +214,8 @@ def DecodeLinear4Tile(data):
 def DecodeLinear8Tile(data):
 	return bytearray(data)
 
+def EncodeMode7Tile(tile):
+	return bytearray(tile)
+
 def DecodeMode7Tile(data):
-	#TODO
 	return bytearray(data)
