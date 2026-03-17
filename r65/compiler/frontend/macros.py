@@ -59,6 +59,7 @@ class MacroExpander:
         self._expanding: Set[str] = set()  # Track currently expanding macros
         self._program_items: List[ast.Declaration] = []  # Store program declarations for symbol! resolution
         self._format_literal_counter = 0  # Unique ID for format string literal statics
+        self._format_invocation_counter = 0  # Unique ID for format! invocations
 
     def _invoke_macro(
         self,
@@ -1195,8 +1196,11 @@ class MacroExpander:
         # Check if output can fit in target buffer
         self._check_format_buffer_overflow(buf, segments, source_loc)
 
-        # Generate R65 source code
-        lines = [f"let mut __fmtptr: far *u8 = &{buf} as far *u8;"]
+        # Generate R65 source code with unique variable names per invocation
+        fmt_id = self._format_invocation_counter
+        self._format_invocation_counter += 1
+        p = f'__fmtptr{fmt_id}'  # unique pointer name
+        lines = [f"let mut {p}: far *u8 = &{buf} as far *u8;"]
         arg_idx = 0
         var_idx = 0
 
@@ -1208,15 +1212,15 @@ class MacroExpander:
                     if byte_len <= 3:
                         # Inline byte writes for small literals
                         for b in self._literal_to_bytes(text):
-                            lines.append(f'*__fmtptr = {hex(b)};')
-                            lines.append('__fmtptr = __fmtptr + 1;')
+                            lines.append(f'*{p} = {hex(b)};')
+                            lines.append(f'{p} = {p} + 1;')
                     else:
                         # Emit a static ROM array and for-loop copy
                         escaped = self._escape_format_literal(text)
                         lit_id = self._format_literal_counter
                         self._format_literal_counter += 1
                         static_name = f'__fmtstr_{lit_id}'
-                        idx_var = f'__fmti{var_idx}'
+                        idx_var = f'__fmti{fmt_id}_{var_idx}'
                         # Inject static into program items
                         static_decl = ast.StaticDecl(
                             attributes=[],
@@ -1233,28 +1237,31 @@ class MacroExpander:
                             static_decl.source_loc = source_loc
                         self._program_items.append(static_decl)
                         lines.append(
-                            f'for {idx_var} in 0..{byte_len} {{ __fmtptr[{idx_var}] = {static_name}[{idx_var}]; }}'
+                            f'for {idx_var} in 0..{byte_len} {{ {p}[{idx_var}] = {static_name}[{idx_var}]; }}'
                         )
-                        lines.append(f'__fmtptr = __fmtptr + {byte_len};')
+                        lines.append(f'{p} = {p} + {byte_len};')
                         var_idx += 1
             elif seg_type == 'specifier':
                 spec = seg_data
                 arg = format_args[arg_idx].strip()
+
+                n = f'__fmtn{fmt_id}_{var_idx}'
+                s = f'__fmts{fmt_id}_{var_idx}'
 
                 if spec['type'] == 'u8' and spec.get('format') == 'd':
                     if spec.get('width'):
                         w = spec['width']
                         fill = '0x30' if spec.get('zero_pad') else '0x20'
                         lines.append(
-                            f'u8_to_dec_pad(__fmtptr, {arg}, {w}, {fill});'
+                            f'u8_to_dec_pad({p}, {arg}, {w}, {fill});'
                         )
-                        lines.append(f'__fmtptr = __fmtptr + {w};')
+                        lines.append(f'{p} = {p} + {w};')
                     else:
                         lines.append(
-                            f'let __fmtn{var_idx}: u8 = u8_to_dec(__fmtptr, {arg});'
+                            f'let {n}: u8 = u8_to_dec({p}, {arg});'
                         )
                         lines.append(
-                            f'__fmtptr = __fmtptr + __fmtn{var_idx} as u16;'
+                            f'{p} = {p} + {n} as u16;'
                         )
                         var_idx += 1
                 elif spec['type'] == 'u16' and spec.get('format') == 'd':
@@ -1262,23 +1269,23 @@ class MacroExpander:
                         w = spec['width']
                         fill = '0x30' if spec.get('zero_pad') else '0x20'
                         lines.append(
-                            f'u16_to_dec_pad(__fmtptr, {arg}, {w}, {fill});'
+                            f'u16_to_dec_pad({p}, {arg}, {w}, {fill});'
                         )
-                        lines.append(f'__fmtptr = __fmtptr + {w};')
+                        lines.append(f'{p} = {p} + {w};')
                     else:
                         lines.append(
-                            f'let __fmtn{var_idx}: u8 = u16_to_dec(__fmtptr, {arg});'
+                            f'let {n}: u8 = u16_to_dec({p}, {arg});'
                         )
                         lines.append(
-                            f'__fmtptr = __fmtptr + __fmtn{var_idx} as u16;'
+                            f'{p} = {p} + {n} as u16;'
                         )
                         var_idx += 1
                 elif spec['type'] == 'u8' and spec.get('format') == 'x':
-                    lines.append(f'u8_to_hex(__fmtptr, {arg});')
-                    lines.append('__fmtptr = __fmtptr + 2;')
+                    lines.append(f'u8_to_hex({p}, {arg});')
+                    lines.append(f'{p} = {p} + 2;')
                 elif spec['type'] == 'u16' and spec.get('format') == 'x':
-                    lines.append(f'u16_to_hex(__fmtptr, {arg});')
-                    lines.append('__fmtptr = __fmtptr + 4;')
+                    lines.append(f'u16_to_hex({p}, {arg});')
+                    lines.append(f'{p} = {p} + 4;')
                 elif spec['type'] == 's':
                     # Cast strcpy return (u16) to u8 then back to u16.
                     # This forces a mode switch that prevents hw-coalescence
@@ -1286,62 +1293,62 @@ class MacroExpander:
                     # pointer address is loaded for the subsequent addition.
                     # String lengths >255 are not expected on SNES.
                     lines.append(
-                        f'let __fmtn{var_idx}: u8 = strcpy(__fmtptr, {arg}) as u8;'
+                        f'let {n}: u8 = strcpy({p}, {arg}) as u8;'
                     )
                     lines.append(
-                        f'__fmtptr = __fmtptr + __fmtn{var_idx} as u16;'
+                        f'{p} = {p} + {n} as u16;'
                     )
                     var_idx += 1
                 elif spec['type'] == 'c':
-                    lines.append(f'*__fmtptr = {arg};')
-                    lines.append('__fmtptr = __fmtptr + 1;')
+                    lines.append(f'*{p} = {arg};')
+                    lines.append(f'{p} = {p} + 1;')
                 elif spec['type'] == 'bool':
                     lines.append(
-                        f'if {arg} {{ *__fmtptr = 0x31; }}'
-                        f' else {{ *__fmtptr = 0x30; }}'
+                        f'if {arg} {{ *{p} = 0x31; }}'
+                        f' else {{ *{p} = 0x30; }}'
                     )
-                    lines.append('__fmtptr = __fmtptr + 1;')
+                    lines.append(f'{p} = {p} + 1;')
                 elif spec['type'] == 'i8' and spec.get('format') == 'd':
                     # Inline sign check: if negative, write '-' and negate
                     lines.append(
-                        f'let __fmts{var_idx}: u8 = {arg} as u8;'
+                        f'let {s}: u8 = {arg} as u8;'
                     )
                     lines.append(
-                        f'if __fmts{var_idx} & 0x80 != 0 {{'
-                        f' *__fmtptr = 0x2D; __fmtptr = __fmtptr + 1;'
-                        f' __fmts{var_idx} = 0 - __fmts{var_idx};'
+                        f'if {s} & 0x80 != 0 {{'
+                        f' *{p} = 0x2D; {p} = {p} + 1;'
+                        f' {s} = 0 - {s};'
                         f' }}'
                     )
                     lines.append(
-                        f'let __fmtn{var_idx}: u8 = u8_to_dec(__fmtptr, __fmts{var_idx});'
+                        f'let {n}: u8 = u8_to_dec({p}, {s});'
                     )
                     lines.append(
-                        f'__fmtptr = __fmtptr + __fmtn{var_idx} as u16;'
+                        f'{p} = {p} + {n} as u16;'
                     )
                     var_idx += 1
                 elif spec['type'] == 'i16' and spec.get('format') == 'd':
                     # Inline sign check: if negative, write '-' and negate
                     lines.append(
-                        f'let __fmts{var_idx}: u16 = {arg} as u16;'
+                        f'let {s}: u16 = {arg} as u16;'
                     )
                     lines.append(
-                        f'if __fmts{var_idx} & 0x8000 != 0 {{'
-                        f' *__fmtptr = 0x2D; __fmtptr = __fmtptr + 1;'
-                        f' __fmts{var_idx} = 0 - __fmts{var_idx};'
+                        f'if {s} & 0x8000 != 0 {{'
+                        f' *{p} = 0x2D; {p} = {p} + 1;'
+                        f' {s} = 0 - {s};'
                         f' }}'
                     )
                     lines.append(
-                        f'let __fmtn{var_idx}: u8 = u16_to_dec(__fmtptr, __fmts{var_idx});'
+                        f'let {n}: u8 = u16_to_dec({p}, {s});'
                     )
                     lines.append(
-                        f'__fmtptr = __fmtptr + __fmtn{var_idx} as u16;'
+                        f'{p} = {p} + {n} as u16;'
                     )
                     var_idx += 1
 
                 arg_idx += 1
 
         # Null terminate
-        lines.append("*__fmtptr = 0;")
+        lines.append(f"*{p} = 0;")
 
         # Wrap in function, parse, extract statements
         source_code = ' '.join(lines)

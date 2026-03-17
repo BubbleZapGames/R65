@@ -770,3 +770,111 @@ class TestFormatLiteralInlining:
             result_addr(): ascii_bytes_null("Z")
         }))
         assert result.success, f"Failures: {result.failures}"
+
+
+# ============================================================================
+# Multiple format! Calls in Same Scope
+# ============================================================================
+
+class TestFormatMultipleCalls:
+    """Test that multiple format! calls in the same scope compile and run correctly."""
+
+    @pytest.fixture
+    def e2e(self):
+        return E2ETest()
+
+    def test_format_two_calls_same_buffer(self, e2e):
+        """Two format! calls to the same buffer; second overwrites first."""
+        result = e2e.run(f'''
+            include!("{STRING_PATH}")
+
+            #[ram]
+            static mut BUF: [u8; 32] = [0xFF; 32];
+
+            #[zeropage(0x10)]
+            static mut RESULT: [u8; 6];
+
+            #[entry]
+            fn main() {{
+                format!(BUF, "FIRST");
+                format!(BUF, "ABCDE");
+                RESULT[0] = BUF[0];
+                RESULT[1] = BUF[1];
+                RESULT[2] = BUF[2];
+                RESULT[3] = BUF[3];
+                RESULT[4] = BUF[4];
+                RESULT[5] = BUF[5];
+            }}
+        ''', ExpectedState(memory={
+            result_addr(): ascii_bytes_null("ABCDE")
+        }))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_format_two_calls_different_buffers(self, e2e):
+        """Two format! calls to different buffers in same scope."""
+        result = e2e.run(f'''
+            include!("{STRING_PATH}")
+
+            #[ram]
+            static mut BUF_A: [u8; 32] = [0xFF; 32];
+            #[ram]
+            static mut BUF_B: [u8; 32] = [0xFF; 32];
+
+            #[zeropage(0x10)]
+            static mut RESULT: [u8; 10];
+
+            #[entry]
+            fn main() {{
+                format!(BUF_A, "X:{{u16:04d}}", 123);
+                format!(BUF_B, "Y:{{u16:04d}}", 456);
+                RESULT[0] = BUF_A[0];
+                RESULT[1] = BUF_A[1];
+                RESULT[2] = BUF_A[2];
+                RESULT[3] = BUF_A[3];
+                RESULT[4] = BUF_A[4];
+                RESULT[5] = BUF_B[0];
+                RESULT[6] = BUF_B[1];
+                RESULT[7] = BUF_B[2];
+                RESULT[8] = BUF_B[3];
+                RESULT[9] = BUF_B[4];
+            }}
+        ''', ExpectedState(memory={
+            result_addr(): list(b"X:012") + list(b"Y:045"),
+        }))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_format_three_calls_with_specifiers(self, e2e):
+        """Three format! calls with different specifiers in same scope."""
+        result = e2e.run(f'''
+            include!("{STRING_PATH}")
+
+            #[ram]
+            static mut BUF: [u8; 32] = [0xFF; 32];
+
+            #[zeropage(0x10)]
+            static mut R1: [u8; 4];
+            #[zeropage(0x14)]
+            static mut R2: [u8; 3];
+            #[zeropage(0x17)]
+            static mut R3: [u8; 3];
+
+            #[entry]
+            fn main() {{
+                format!(BUF, "{{u8:x}}", 255);
+                R1[0] = BUF[0];
+                R1[1] = BUF[1];
+                R1[2] = BUF[2];
+
+                format!(BUF, "{{u8}}", 42);
+                R2[0] = BUF[0];
+                R2[1] = BUF[1];
+                R2[2] = BUF[2];
+
+                format!(BUF, "{{bool}}", true);
+                R3[0] = BUF[0];
+                R3[1] = BUF[1];
+            }}
+        ''', ExpectedState(memory={
+            result_addr(): ascii_bytes_null("FF") + [0x00] + ascii_bytes_null("42") + ascii_bytes_null("1"),
+        }))
+        assert result.success, f"Failures: {result.failures}"
