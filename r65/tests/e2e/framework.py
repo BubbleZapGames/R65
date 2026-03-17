@@ -6,6 +6,7 @@ Compiles R65 source, runs on emulator, validates results.
 """
 
 import subprocess
+import sys
 import tempfile
 import shutil
 import re
@@ -103,7 +104,7 @@ class E2ETest:
 
     def _check_toolchain(self):
         """Verify required tools are available."""
-        tools = ["r65c", "wla-65816", "wlalink"]
+        tools = ["wla-65816", "wlalink"]
         missing = [t for t in tools if shutil.which(t) is None]
         if missing:
             raise RuntimeError(f"Missing required tools: {', '.join(missing)}")
@@ -137,7 +138,8 @@ class E2ETest:
 
             # Compile R65 to assembly (also generates .link file)
             # Always pass --cfg snes since these are SNES e2e tests
-            cmd = ["r65c", str(src_path), "-o", str(asm_path), "--cfg", "snes"]
+            # Use python -m to avoid requiring pip install
+            cmd = [sys.executable, "-m", "r65.compiler.main", str(src_path), "-o", str(asm_path), "--cfg", "snes"]
             if _abi_override:
                 cmd.extend(["--abi", _abi_override])
 

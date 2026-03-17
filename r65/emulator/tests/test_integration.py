@@ -5,6 +5,7 @@ Integration tests for the emulator with compiled R65 programs.
 
 import pytest
 import subprocess
+import sys
 import tempfile
 import os
 from pathlib import Path
@@ -25,9 +26,9 @@ def compile_r65(source: str) -> bytes:
 
         src_path.write_text(source)
 
-        # Compile R65 to assembly
+        # Compile R65 to assembly (use python -m to avoid requiring pip install)
         result = subprocess.run(
-            ["r65c", str(src_path), "-o", str(asm_path)],
+            [sys.executable, "-m", "r65.compiler.main", str(src_path), "-o", str(asm_path)],
             capture_output=True,
             text=True
         )
@@ -78,9 +79,9 @@ def run_program(rom_data: bytes, max_instructions: int = 1000) -> CPU65816:
 
 @pytest.fixture
 def has_toolchain():
-    """Check if R65 compiler and WLA-DX are available."""
+    """Check if WLA-DX tools are available."""
     import shutil
-    tools = ["r65c", "wla-65816", "wlalink"]
+    tools = ["wla-65816", "wlalink"]
     for tool in tools:
         if shutil.which(tool) is None:
             pytest.skip(f"Tool '{tool}' not available")
