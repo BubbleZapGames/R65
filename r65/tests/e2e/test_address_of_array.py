@@ -1,3 +1,4 @@
+# Copyright (c) 2026 Neutron Emulation, LLC. MIT licensed.
 """
 End-to-end tests for &array[index] address-of array element operations.
 

@@ -1,3 +1,4 @@
+# Copyright (c) 2026 Neutron Emulation, LLC. MIT licensed.
 """
 End-to-end tests for U32 (32-bit unsigned integer) stdlib.
 

@@ -1,3 +1,4 @@
+# Copyright (c) 2026 Neutron Emulation, LLC. MIT licensed.
 """
 Static 65816 cycle and byte counter.
 

@@ -1,3 +1,4 @@
+# Copyright (c) 2026 Neutron Emulation, LLC. MIT licensed.
 """
 MIR (Mid-level Intermediate Representation) for R65 compiler.
 

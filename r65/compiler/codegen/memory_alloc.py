@@ -1,3 +1,4 @@
+# Copyright (c) 2026 Neutron Emulation, LLC. MIT licensed.
 """
 Memory allocation: tracks and allocates memory locations.
 

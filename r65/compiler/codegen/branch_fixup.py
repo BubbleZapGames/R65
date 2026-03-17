@@ -1,3 +1,4 @@
+# Copyright (c) 2026 Neutron Emulation, LLC. MIT licensed.
 """
 Branch fixup pass: handles conditional branches that exceed 127-byte range.
 

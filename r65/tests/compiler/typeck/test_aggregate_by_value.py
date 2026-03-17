@@ -1,3 +1,4 @@
+# Copyright (c) 2026 Neutron Emulation, LLC. MIT licensed.
 """
 Tests for the restriction that arrays and structs cannot be passed or returned by value.
 """

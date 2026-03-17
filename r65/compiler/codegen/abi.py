@@ -1,3 +1,4 @@
+# Copyright (c) 2026 Neutron Emulation, LLC. MIT licensed.
 """
 ABI and stack frame abstractions for the R65 compiler.
 

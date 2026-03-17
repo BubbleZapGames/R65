@@ -1,3 +1,4 @@
+# Copyright (c) 2026 Neutron Emulation, LLC. MIT licensed.
 """
 Built-in sample R65 snippets for validating the audit harness itself.
 

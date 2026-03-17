@@ -1,3 +1,4 @@
+# Copyright (c) 2026 Neutron Emulation, LLC. MIT licensed.
 """
 Addressing mode selection: choose optimal 65816 addressing modes.
 

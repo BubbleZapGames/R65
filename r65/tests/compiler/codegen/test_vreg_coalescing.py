@@ -1,3 +1,4 @@
+# Copyright (c) 2026 Neutron Emulation, LLC. MIT licensed.
 """
 Test vreg-to-vreg move coalescing in the slot allocator.
 

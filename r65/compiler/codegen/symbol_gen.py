@@ -1,3 +1,4 @@
+# Copyright (c) 2026 Neutron Emulation, LLC. MIT licensed.
 """
 Symbol definition generator: emits .DEFINE and .EQU directives.
 

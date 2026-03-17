@@ -1,3 +1,4 @@
+# Copyright (c) 2026 Neutron Emulation, LLC. MIT licensed.
 """Tests for local aggregate variable promotion and struct decomposition.
 
 Local struct and array variables are handled in two ways:

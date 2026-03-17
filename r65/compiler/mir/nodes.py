@@ -1,3 +1,4 @@
+# Copyright (c) 2026 Neutron Emulation, LLC. MIT licensed.
 """
 MIR node types: instructions, operands, basic blocks, and CFG structures.
 

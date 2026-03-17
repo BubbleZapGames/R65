@@ -1,3 +1,4 @@
+# Copyright (c) 2026 Neutron Emulation, LLC. MIT licensed.
 """Tests for hardware registers: A, X, Y, STATUS, D, DBR, PBR, S, B."""
 
 from r65.compiler.frontend import ast

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 Neutron Emulation, LLC. MIT licensed.
 """Test scratch parameter forwarding identity skip optimization.
 
 When caller and callee both use scratch param promotion for the same parameter

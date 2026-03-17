@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 Neutron Emulation, LLC. MIT licensed.
 """Test program with no static initializers (undefined values)."""
 
 from r65.compiler.frontend import parse

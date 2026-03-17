@@ -1,3 +1,4 @@
+# Copyright (c) 2026 Neutron Emulation, LLC. MIT licensed.
 """
 Packer - Encode and decode files with SNES compression algorithms.
 

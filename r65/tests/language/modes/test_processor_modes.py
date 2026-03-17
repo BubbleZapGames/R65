@@ -1,3 +1,4 @@
+# Copyright (c) 2026 Neutron Emulation, LLC. MIT licensed.
 """Tests for processor mode annotations.
 
 The #[mode] attribute now only supports the databank parameter.

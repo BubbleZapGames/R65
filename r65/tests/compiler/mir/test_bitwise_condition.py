@@ -1,3 +1,4 @@
+# Copyright (c) 2026 Neutron Emulation, LLC. MIT licensed.
 """Tests for bitwise condition optimization.
 
 Tests that bitwise expressions (&, |, ^) used as conditions are properly

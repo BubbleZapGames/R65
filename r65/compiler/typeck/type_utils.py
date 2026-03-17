@@ -1,3 +1,4 @@
+# Copyright (c) 2026 Neutron Emulation, LLC. MIT licensed.
 """Type comparison and compatibility utilities for R65."""
 
 from typing import Optional, Tuple

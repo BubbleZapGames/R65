@@ -1,3 +1,4 @@
+# Copyright (c) 2026 Neutron Emulation, LLC. MIT licensed.
 """
 End-to-end tests for mixed u8/u16 mode switching.
 

@@ -1,3 +1,4 @@
+# Copyright (c) 2026 Neutron Emulation, LLC. MIT licensed.
 """Tests for match expression lowering to MIR.
 
 Tests that the match lowerer correctly chooses between:

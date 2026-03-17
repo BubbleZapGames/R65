@@ -1,3 +1,4 @@
+# Copyright (c) 2026 Neutron Emulation, LLC. MIT licensed.
 """
 Abstract Syntax Tree (AST) node definitions for R65.
 

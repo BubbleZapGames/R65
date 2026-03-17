@@ -1,3 +1,4 @@
+# Copyright (c) 2026 Neutron Emulation, LLC. MIT licensed.
 """Tests for jump table and lookup table code generation.
 
 Tests that dense match expressions emit the correct assembly:

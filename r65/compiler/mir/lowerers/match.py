@@ -1,3 +1,4 @@
+# Copyright (c) 2026 Neutron Emulation, LLC. MIT licensed.
 """
 Match expression lowerer: HIR match expressions → MIR instructions.
 

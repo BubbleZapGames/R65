@@ -1,3 +1,4 @@
+# Copyright (c) 2026 Neutron Emulation, LLC. MIT licensed.
 """
 End-to-end tests for integer literal type suffixes (u8, u16, i8, i16).
 """

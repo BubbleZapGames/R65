@@ -1,3 +1,4 @@
+# Copyright (c) 2026 Neutron Emulation, LLC. MIT licensed.
 """
 HIR (High-level IR) node definitions for the R65 compiler.
 

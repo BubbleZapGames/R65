@@ -1,3 +1,4 @@
+# Copyright (c) 2026 Neutron Emulation, LLC. MIT licensed.
 # -*- coding: utf-8 -*-
 
 from r65.tools.compression.lz import lz_compress, lz_decompress, bit_reverse

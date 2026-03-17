@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 Neutron Emulation, LLC. MIT licensed.
 """
 End-to-end integration tests for the R65 compiler.
 

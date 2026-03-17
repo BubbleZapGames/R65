@@ -1,3 +1,4 @@
+# Copyright (c) 2026 Neutron Emulation, LLC. MIT licensed.
 """
 End-to-end tests for I32 (32-bit signed integer) stdlib.
 

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 Neutron Emulation, LLC. MIT licensed.
 """Comprehensive test for Phase 7 advanced features."""
 
 from r65.compiler.frontend import parse

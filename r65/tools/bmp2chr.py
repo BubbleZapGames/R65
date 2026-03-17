@@ -1,3 +1,4 @@
+# Copyright (c) 2026 Neutron Emulation, LLC. MIT licensed.
 """
 bmp2chr - Convert an indexed bitmap to SNES CHR tile data.
 

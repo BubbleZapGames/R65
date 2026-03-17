@@ -11,10 +11,11 @@ include!("lib/math.r65")
 // Bank 0 - Main code
 #[bank(0)]
 
-// NMI handler - called every VBlank (~60Hz NTSC, ~50Hz PAL)
+// NMI handler - called every VBlank
 #[interrupt(nmi)]
 fn nmi_handler() {
     // Update game logic here
+    clear_nmi!()
 }
 
 // Program entry point

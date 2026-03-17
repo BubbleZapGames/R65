@@ -1,3 +1,4 @@
+# Copyright (c) 2026 Neutron Emulation, LLC. MIT licensed.
 """
 CFG (Conditional Compilation) Condition Evaluator.
 

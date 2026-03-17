@@ -1,3 +1,4 @@
+# Copyright (c) 2026 Neutron Emulation, LLC. MIT licensed.
 """Tests for block expressions, if expressions, and trailing return expressions."""
 
 from r65.compiler.frontend import ast

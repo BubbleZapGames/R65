@@ -1,3 +1,4 @@
+# Copyright (c) 2026 Neutron Emulation, LLC. MIT licensed.
 """
 Codegen stress tests targeting high-risk register/stack interactions.
 

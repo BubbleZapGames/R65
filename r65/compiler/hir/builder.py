@@ -1,3 +1,4 @@
+# Copyright (c) 2026 Neutron Emulation, LLC. MIT licensed.
 """
 HIR Builder - transforms AST to HIR with name resolution and desugaring.
 

@@ -1,3 +1,4 @@
+# Copyright (c) 2026 Neutron Emulation, LLC. MIT licensed.
 """
 Test loop register promotion and codegen quality for loop-heavy functions.
 

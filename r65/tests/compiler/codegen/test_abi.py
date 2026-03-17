@@ -1,3 +1,4 @@
+# Copyright (c) 2026 Neutron Emulation, LLC. MIT licensed.
 """Tests for ABI, stack frame layout, and stack state tracker abstractions."""
 
 import pytest

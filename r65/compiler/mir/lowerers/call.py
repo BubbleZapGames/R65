@@ -1,3 +1,4 @@
+# Copyright (c) 2026 Neutron Emulation, LLC. MIT licensed.
 """
 Call lowerer: HIR function/method calls → MIR instructions.
 

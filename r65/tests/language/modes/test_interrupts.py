@@ -1,3 +1,4 @@
+# Copyright (c) 2026 Neutron Emulation, LLC. MIT licensed.
 """Tests for interrupt handlers."""
 
 from r65.compiler.frontend import ast

@@ -1,3 +1,4 @@
+# Copyright (c) 2026 Neutron Emulation, LLC. MIT licensed.
 # -*- coding: utf-8 -*-
 
 # 1111-0000 = 0101-0101

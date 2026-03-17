@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 Neutron Emulation, LLC. MIT licensed.
 """Test hardware register coalescing optimization.
 
 This tests the optimization that allows trivial functions to skip stack frame

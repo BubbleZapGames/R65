@@ -1,3 +1,4 @@
+# Copyright (c) 2026 Neutron Emulation, LLC. MIT licensed.
 """Tests for array types and literals."""
 
 from r65.compiler.frontend import ast

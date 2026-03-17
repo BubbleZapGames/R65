@@ -1,3 +1,4 @@
+# Copyright (c) 2026 Neutron Emulation, LLC. MIT licensed.
 """
 Static init lowerer: generates __init_start() for static variable initialization.
 

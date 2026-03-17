@@ -1,3 +1,4 @@
+# Copyright (c) 2026 Neutron Emulation, LLC. MIT licensed.
 """
 Condition lowerer: HIR conditions → MIR branching instructions.
 

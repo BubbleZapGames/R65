@@ -1,3 +1,4 @@
+# Copyright (c) 2026 Neutron Emulation, LLC. MIT licensed.
 """Tests for pointer types: *T (near) and far *T (far)."""
 
 import pytest

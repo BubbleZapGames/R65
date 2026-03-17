@@ -1,3 +1,4 @@
+# Copyright (c) 2026 Neutron Emulation, LLC. MIT licensed.
 """Tests for function parameters."""
 
 from r65.compiler.frontend import ast

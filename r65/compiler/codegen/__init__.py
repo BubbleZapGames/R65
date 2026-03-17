@@ -1,3 +1,4 @@
+# Copyright (c) 2026 Neutron Emulation, LLC. MIT licensed.
 """
 Code generation: MIR → WLA-DX assembly for 65816.
 

@@ -1,3 +1,4 @@
+# Copyright (c) 2026 Neutron Emulation, LLC. MIT licensed.
 """Tests for basic types: u8, i8, u16, i16, bool."""
 
 from r65.compiler.frontend import ast
