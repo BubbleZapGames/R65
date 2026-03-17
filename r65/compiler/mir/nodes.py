@@ -878,6 +878,7 @@ class MIRFunction:
     is_entry: bool = False
     is_far: bool = False
     is_trait_method: bool = False  # True for trait impl methods (self passed in Y)
+    is_recursive: bool = False  # True if function is in a recursive cycle
 
     # Inferred entry mode (M8 or M16, always X16)
     # Set based on A parameter type: u16 @ A -> M16, otherwise M8

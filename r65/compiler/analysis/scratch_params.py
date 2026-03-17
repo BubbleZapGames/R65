@@ -49,6 +49,9 @@ def analyze_scratch_params(mir_program: MIRProgram, scratch_pool: ScratchRegiste
         if func.name in address_taken:
             continue  # Skip functions whose address is taken
 
+        if func.is_recursive:
+            continue  # Scratch DP params are non-reentrant
+
         # Skip functions with far ptr stack params that would need D=S.
         # D=S moves DP to the stack, making scratch regs inaccessible.
         if func.has_far_ptr_stack_params and not _is_set_dbr_safe(func):

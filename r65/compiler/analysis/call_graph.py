@@ -193,6 +193,12 @@ class RecursionChecker:
         # Find cycles
         cycles = analyzer.find_cycles()
 
+        # Mark recursive functions on MIRFunction nodes
+        for cycle in cycles:
+            for func_name in cycle:
+                if func_name in self.func_map:
+                    self.func_map[func_name].is_recursive = True
+
         # Check each cycle for unsafe parameters
         for cycle in cycles:
             self._check_cycle(cycle, graph)
