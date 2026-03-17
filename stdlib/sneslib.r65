@@ -1170,15 +1170,15 @@ enum BgPalette {
 // MACROS - Screen Control
 // ============================================================================
 
-// Turn screen on with specified brightness (0-15)
-// Usage: screen_on!(15);
-macro_rules! screen_on($brightness:expr) {
+// Set screen brightness (0-15), disables force blank
+// Usage: set_brightness!(15);
+macro_rules! set_brightness($brightness:expr) {
     INIDISP = $brightness & 0x0F;
 }
 
 // Turn screen off (force blank)
-// Usage: screen_off!();
-macro_rules! screen_off() {
+// Usage: set_screen_off!();
+macro_rules! set_screen_off() {
     INIDISP = FORCE_BLANK;
 }
 
@@ -1353,15 +1353,15 @@ macro_rules! set_bg4_vscroll($scroll:expr) {
 // MACROS - Screen Layers
 // ============================================================================
 
-// Enable layers on main screen
-// Usage: enable_main!(Screen::BG1 | Screen::Obj);
-macro_rules! enable_main($layers:expr) {
+// Set layers on main screen
+// Usage: set_main_layers!(Screen::BG1 | Screen::Obj);
+macro_rules! set_main_layers($layers:expr) {
     TM = $layers;
 }
 
-// Enable layers on sub screen
-// Usage: enable_sub!(Screen::BG2);
-macro_rules! enable_sub($layers:expr) {
+// Set layers on sub screen
+// Usage: set_sub_layers!(Screen::BG2);
+macro_rules! set_sub_layers($layers:expr) {
     TS = $layers;
 }
 
@@ -1701,13 +1701,13 @@ macro_rules! dma_copy_wram($channel:literal, $dest:ident, $src:ident, $size:lite
 
 // Enable HDMA channels
 // Usage: enable_hdma!(0x01);  // Channel 0
-macro_rules! enable_hdma($channels:expr) {
+macro_rules! dma_set_hdma($channels:expr) {
     HDMAEN = $channels;
 }
 
 // Disable all HDMA
-// Usage: disable_hdma!();
-macro_rules! disable_hdma() {
+// Usage: dma_disable_hdma!();
+macro_rules! dma_disable_hdma() {
     HDMAEN = 0;
 }
 
@@ -1978,7 +1978,7 @@ far fn set_pixelize(level: u8, bgs: u16) {
     if level == 0 {
         MOSAIC = 0;
     } else {
-        let val: u8 = 16 - level;
+        let val: u8 = level;
         val = val << 4;
         val = val | (bgs as u8);
         MOSAIC = val;

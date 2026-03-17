@@ -307,3 +307,11 @@ static CONSOLE_FONT: [u8; 1520] = [
     0x4C, 0x7E, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
 ];
 
+// Palette (4 colors for 2bpp anti-aliased font)
+static CONSOLE_PALETTE: [u8; 8] = [
+    0x00, 0x00,  // Color 0: Black (background)
+    0x29, 0x25,  // Color 1: Dark gray
+    0x52, 0x4A,  // Color 2: Light gray (anti-alias)
+    0xFF, 0x7F   // Color 3: White (foreground)
+];
+
