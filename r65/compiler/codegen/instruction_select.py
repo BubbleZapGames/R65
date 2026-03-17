@@ -203,12 +203,16 @@ class InstructionSelector:
             comment_parts = []
             if mask & M_FLAG:
                 comment_parts.append("M")
-                self.emitter.emit_accu_mode(8)  # Update tracked mode
             if mask & X_FLAG:
                 comment_parts.append("X")
-                self.emitter.emit_index_mode(8)  # Update tracked mode
             comment = f"Set {'+'.join(comment_parts)} flag{'s' if len(comment_parts) > 1 else ''} (8-bit mode)"
             self.emitter.emit_instr(Opcode.SEP_IMMEDIATE, Immediate(mask), comment=comment)
+            # Emit .ACCU/.INDEX AFTER the instruction so the peephole optimizer
+            # sees the actual SEP before the directive (prevents false redundancy)
+            if mask & M_FLAG:
+                self.emitter.emit_accu_mode(8)
+            if mask & X_FLAG:
+                self.emitter.emit_index_mode(8)
             self._pending_sep_mask = 0
 
         if self._pending_rep_mask:
@@ -216,12 +220,16 @@ class InstructionSelector:
             comment_parts = []
             if mask & M_FLAG:
                 comment_parts.append("M")
-                self.emitter.emit_accu_mode(16)  # Update tracked mode
             if mask & X_FLAG:
                 comment_parts.append("X")
-                self.emitter.emit_index_mode(16)  # Update tracked mode
             comment = f"Clear {'+'.join(comment_parts)} flag{'s' if len(comment_parts) > 1 else ''} (16-bit mode)"
             self.emitter.emit_instr(Opcode.REP_IMMEDIATE, Immediate(mask), comment=comment)
+            # Emit .ACCU/.INDEX AFTER the instruction so the peephole optimizer
+            # sees the actual REP before the directive (prevents false redundancy)
+            if mask & M_FLAG:
+                self.emitter.emit_accu_mode(16)
+            if mask & X_FLAG:
+                self.emitter.emit_index_mode(16)
             self._pending_rep_mask = 0
 
     def flush_pending_mode_flags(self):

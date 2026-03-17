@@ -194,6 +194,18 @@ class MoveOperationSelector(BaseSelector):
                 else:
                     self._emit_instr(Opcode.TAY, comment="Transfer to Y (no LDY sr,S)")
                 # Note: Do NOT switch back - mode will be restored when needed
+        elif hw_register in ('X', 'Y') and not is_u16:
+            # u8 value from DP/memory to 16-bit X/Y: must zero-extend through A
+            # LDX/LDY always read 16 bits in x16 mode, but the stored value is
+            # only 1 byte — the adjacent byte may be garbage
+            self.parent._ensure_m8_mode()
+            self._emit_load_store('LDA', src_loc)
+            self.parent._ensure_m16_mode()
+            self._emit_instr(Opcode.AND_IMMEDIATE, Immediate(0x00FF), "Zero-extend to 16-bit")
+            if hw_register == 'X':
+                self._emit_instr(Opcode.TAX, comment="Transfer to X (zero-extended)")
+            else:
+                self._emit_instr(Opcode.TAY, comment="Transfer to Y (zero-extended)")
         elif hw_register in LOAD_MNEMONICS:
             self._emit_load_store(LOAD_MNEMONICS[hw_register], src_loc)
         elif hw_register == 'B':

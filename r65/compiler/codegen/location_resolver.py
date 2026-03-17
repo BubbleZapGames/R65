@@ -141,12 +141,12 @@ class LocationResolver:
         """Resolve memory location (RAM, ROM, etc.)."""
         # Check for ROM label first
         if location.memory_label:
-            # Labels could be in any bank - assume they might need long addressing
-            # if they're labeled with a full address (e.g., $7ED410)
+            # ROM data labels can be placed in any bank by the linker,
+            # so always use long (24-bit) addressing for correctness
             mode = self._get_indexed_mode(
                 location.index_register,
                 is_dp=False,
-                is_long=False  # Labels will be resolved by assembler
+                is_long=True  # Cross-bank ROM data needs long addressing
             )
             return ResolvedLocation(
                 mode=mode,

@@ -268,6 +268,11 @@ class ABIModel(ABC):
                   selector.parent._get_operand_location(arg.value).is_hw('A'))
             else 1))
 
+        # Reorder scratch params to avoid WAR hazards: if a scratch param's
+        # source value resides at another scratch param's target address,
+        # the reader must be processed before the writer.
+        sorted_other_args = self._reorder_scratch_params(selector, sorted_other_args)
+
         for arg in sorted_other_args:
             arg_loc = selector.parent._get_operand_location(arg.value)
 
@@ -284,6 +289,103 @@ class ABIModel(ABC):
                 selector.emit_scratch_param_argument(arg, arg_loc)
 
         return stack_bytes_pushed
+
+    def _reorder_scratch_params(self, selector, args):
+        """Reorder scratch params to avoid WAR (Write-After-Read) hazards.
+
+        If scratch param A's source value lives at scratch param B's target
+        address, A must be emitted before B (read before write). Uses
+        topological sort; cycles are broken by emitting in original order.
+
+        A-resident scratch params are kept in their original position to
+        preserve the A-priority sort that runs before this reorder.
+        """
+        from r65.compiler.mir.nodes import ArgumentMechanism
+        from r65.compiler.codegen.register_alloc import LocationKind
+        from r65.compiler.codegen.type_utils import get_type_size
+
+        # Separate scratch params from non-scratch args, excluding A-resident
+        # ones which must stay in place (their LDA-free emit depends on A
+        # not being clobbered by other params' loads)
+        scratch_args = []  # (original_position_in_args, arg)
+        a_resident_scratches = []  # (original_position_in_args, arg)
+        for pos, arg in enumerate(args):
+            if arg.mechanism != ArgumentMechanism.SCRATCH_PARAM:
+                continue
+            arg_loc = selector.parent._get_operand_location(arg.value)
+            if arg_loc.is_hw('A'):
+                a_resident_scratches.append((pos, arg))
+            else:
+                scratch_args.append(arg)
+
+        if len(scratch_args) <= 1:
+            return args  # No reordering needed among non-A-resident scratches
+
+        # Build target address set for each non-A-resident scratch param
+        target_addrs = {}  # byte_addr -> arg index
+        for i, arg in enumerate(scratch_args):
+            addr = arg.scratch_addr
+            param_size = 1
+            if arg.param_type is not None:
+                param_size = get_type_size(arg.param_type)
+            for byte_off in range(param_size):
+                target_addrs[addr + byte_off] = i
+
+        # Build dependency graph: arg i must come before arg j if
+        # arg i's source is at an address that arg j will write to
+        must_precede = {}  # i -> set of j (i must come before j)
+        for i, arg in enumerate(scratch_args):
+            arg_loc = selector.parent._get_operand_location(arg.value)
+            if arg_loc.kind != LocationKind.SCRATCH:
+                continue
+            src_addr = arg_loc.scratch_addr
+            src_size = arg_loc.size or 1
+            for byte_off in range(src_size):
+                check_addr = src_addr + byte_off
+                if check_addr in target_addrs:
+                    j = target_addrs[check_addr]
+                    if j != i:  # Don't add self-dependency
+                        must_precede.setdefault(i, set()).add(j)
+
+        if not must_precede:
+            return args  # No hazards
+
+        # Topological sort of non-A-resident scratch args
+        ordered = []
+        visited = set()
+        in_progress = set()
+
+        def visit(idx):
+            if idx in visited:
+                return
+            if idx in in_progress:
+                return  # Cycle — break by emitting in original order
+            in_progress.add(idx)
+            for dep in must_precede.get(idx, ()):
+                visit(dep)
+            in_progress.discard(idx)
+            visited.add(idx)
+            ordered.append(idx)
+
+        for i in range(len(scratch_args)):
+            visit(i)
+
+        # visit() appends in post-order — the node with no deps last.
+        # We want it first (emit readers before writers), so reverse.
+        ordered.reverse()
+
+        # Rebuild: A-resident scratches stay in place, others get reordered
+        reordered_scratch = [scratch_args[i] for i in ordered]
+        result = []
+        scratch_iter = iter(reordered_scratch)
+        a_positions = {pos for pos, _ in a_resident_scratches}
+        for pos, arg in enumerate(args):
+            if arg.mechanism == ArgumentMechanism.SCRATCH_PARAM and pos not in a_positions:
+                result.append(next(scratch_iter))
+            else:
+                result.append(arg)
+
+        return result
 
     def emit_trait_dispatch_args(self, selector, instr) -> int:
         """Emit trait dispatch arguments. Returns stack_bytes_pushed.
@@ -783,6 +885,9 @@ class ABIDefault(ABIModel):
             0 if (arg.mechanism != ArgumentMechanism.REGISTER and
                   selector.parent._get_operand_location(arg.value).is_hw('A'))
             else 1))
+
+        # Reorder scratch params to avoid WAR hazards
+        sorted_other_args = self._reorder_scratch_params(selector, sorted_other_args)
 
         for arg in sorted_other_args:
             arg_loc = selector.parent._get_operand_location(arg.value)
