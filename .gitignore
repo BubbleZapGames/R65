@@ -30,15 +30,8 @@ htmlcov/
 .DS_Store
 
 # Generated test outputs
-tests/*.asm
-tests/*.o
-tests/*.sfc
-tests/linkfile
-.webui_secret_key
-
-# Generated example outputs
-examples/*.asm
-examples/*.o
-examples/*.sfc
-examples/linkfile
-hello/
+*.asm
+*.o
+*.sfc
+*.smc
+linkfile
