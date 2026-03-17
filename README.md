@@ -30,12 +30,22 @@ cd R65
 pip install -e .
 ```
 
+### Install WLA-DX
+
+WLA-DX is the target assembler/linker. Install via Homebrew or download binaries:
+
+```bash
+brew install wla-dx
+```
+
+Or download pre-built binaries from https://github.com/vhelin/wla-dx/releases and place `wla-65816` and `wlalink` on your PATH.
+
 ### Create a Project and Build
 
 ```bash
 r65x init --platform snes my_game
 cd my_game
-make                          # Assemble and link (requires WLA-DX)
+make                          # Assemble and link
 ```
 ---
 

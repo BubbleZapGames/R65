@@ -49,7 +49,15 @@ clean:
 # Install dependencies
 install-deps:
 	@echo "[INSTALL] Installing WLA-DX..."
-	pip install wla-dx
+	@if command -v brew >/dev/null 2>&1; then \
+		brew install wla-dx; \
+	else \
+		echo "Error: Homebrew not found."; \
+		echo "Option 1: Install Homebrew (https://brew.sh) then run: brew install wla-dx"; \
+		echo "Option 2: Download pre-built binaries from https://github.com/vhelin/wla-dx/releases"; \
+		echo "          Extract and place wla-65816 and wlalink on your PATH."; \
+		exit 1; \
+	fi
 
 # Run with emulator (requires BSNES or higan)
 run: $(ROM_FILE)
