@@ -378,7 +378,7 @@ r65x init --platform snes my_project  # Create test project
 │   ├── mir/                # Mid-level IR
 │   ├── codegen/            # Code generation
 │   └── builtins/           # Built-in functions
-├── stdlib/core65/hw/       # Hardware register definitions
+├── stdlib/                 # Standard library (sneslib, math, strings, I32/U32, etc.)
 └── docs/                   # Documentation
 ```
 

@@ -108,9 +108,10 @@ loop {
 Immutable statics are automatically stored in ROM:
 
 ```rust
-static SPRITE_DATA: [u8; 256] = include_bytes!("sprites.bin");
-
 static SINE_TABLE: [u8; 256] = [0, 3, 6, 9, /* ... */];
+
+// Include raw binary data from a file
+static SPRITE_DATA: [u8; 256] = include_bytes!("sprites.bin");
 ```
 
 ## CPU Registers
@@ -121,6 +122,7 @@ All 65816 registers are available as global variables:
 A = 0x42;        // Accumulator (u8 default, u16 with @ A: u16 parameter)
 X = 10;          // X index (always u16)
 Y = 20;          // Y index (always u16)
+B                // Accumulator high byte (m8 mode only, accessed via XBA)
 STATUS;          // Processor flags
 D = 0x0000;      // Direct page base
 DBR = 0x7E;      // Data bank
@@ -168,6 +170,30 @@ fn fill(*buffer @ X: u8, value @ A: u8, count @ Y: u16) {
 
 // Call - value goes straight into registers
 fill(&BUFFER, 0, 256);
+```
+
+### Multiple Return Values
+
+Functions can return values in multiple registers:
+
+```rust
+fn divide(dividend @ A: u8, divisor: u8) -> u8, u8 {
+    // Returns quotient in A, remainder in X
+    return A, X;
+}
+
+let quotient, remainder = divide(100, 7);
+```
+
+### Never-Return Functions
+
+Use `-> !` for functions that never return (e.g., main game loop):
+
+```rust
+#[entry]
+fn main() -> ! {
+    loop { update(); }  // Compiler omits RTS/RTL
+}
 ```
 
 ### Register Preservation
@@ -415,6 +441,65 @@ macro_rules! inc_twice($reg:reg) {
 inc_twice!(X);  // Expands to: X++; X++;
 ```
 
+### format! Macro
+
+Format values into a byte buffer (printf-style):
+
+```rust
+#[ram]
+static mut BUF: [u8; 64] = [0; 64];
+
+format!(BUF, "Score: {u16:05d} HP: {u8}", score, health);
+```
+
+Supported specifiers: `{u8}`, `{u16}`, `{i8}`, `{i16}` (decimal), `{u8:x}`, `{u16:x}` (hex), `{bool}`, `{c}` (char), `{s}` (string pointer). Width and zero-padding: `{u16:05d}`.
+
+## Const Evaluation
+
+Compile-time evaluation of constant expressions:
+
+```rust
+const TILE_SIZE: u8 = 8;
+const MASK: u8 = 0x80 | 0x40;
+static BUFFER: [u8; TILE_SIZE * 2] = [0; TILE_SIZE * 2];
+```
+
+### Const Functions
+
+`const fn` enables user-defined compile-time computation. Calls with all-const arguments are folded to literals; calls with runtime arguments emit a normal function call.
+
+```rust
+const fn tile_offset(x: u8, y: u8) -> u16 {
+    return (y as u16) * 32 + (x as u16);
+}
+const PLAYER_TILE: u16 = tile_offset(5, 3);
+```
+
+## Traits
+
+Traits provide TypeId-based dynamic dispatch for polymorphism:
+
+```rust
+trait Drawable {
+    fn draw(*self, x @ X: u16, y @ Y: u16);
+    fn get_width(*self) -> u8;
+}
+
+impl Drawable for Player {
+    fn draw(*self, x @ X: u16, y @ Y: u16) { /* ... */ }
+    fn get_width(*self) -> u8 { return 16; }
+}
+
+// Heterogeneous collection via trait pointers
+fn draw_all(*objects: *Drawable, count @ Y: u16) {
+    for i in 0..count {
+        objects[i].draw(0, 0);
+    }
+}
+```
+
+See [docs/traits.md](docs/traits.md) for full trait documentation.
+
 ## Conditional Compilation
 
 Use `#[cfg]` to conditionally compile for different targets:
@@ -477,6 +562,14 @@ r65x init --platform snes game  # Create new project
 |--------|-------------|
 | `stdlib/sneslib.r65` | SNES hardware registers and DMA macros |
 | `stdlib/math.r65` | Multiply, divide, modulo, variable shift |
+| `stdlib/string.r65` | String utilities (strcpy, u8/u16 to decimal/hex) |
+| `stdlib/console.r65` | Text console with buffered nametable output |
+| `stdlib/default_font.r65` | 2bpp font tileset for console |
+| `stdlib/I32.r65` | 32-bit signed integer arithmetic |
+| `stdlib/U32.r65` | 32-bit unsigned integer arithmetic |
+| `stdlib/q10_type.r65` | Q10.6 fixed-point number type |
+| `stdlib/65816.r65` | CPU utility routines |
+| `stdlib/scratch_regs.r65` | Scratch register definitions for compiler |
 
 ## Documentation
 
@@ -490,7 +583,16 @@ r65x init --platform snes game  # Create new project
 | [docs/control-flow.md](docs/control-flow.md) | Loops, branches, labels |
 | [docs/code-generation.md](docs/code-generation.md) | How R65 compiles to assembly |
 | [docs/macros.md](docs/macros.md) | Macro system |
+| [docs/traits.md](docs/traits.md) | Traits and dynamic dispatch |
 | [docs/struct-array-indexing.md](docs/struct-array-indexing.md) | Struct array indexing strategies |
+| [docs/register-allocation.md](docs/register-allocation.md) | Register allocation strategy |
+| [docs/b-register.md](docs/b-register.md) | B register (accumulator high byte) |
+| [docs/status-flags.md](docs/status-flags.md) | STATUS register flags |
+| [docs/snes-rom-header.md](docs/snes-rom-header.md) | ROM header configuration |
+| [docs/mode-transition-analysis.md](docs/mode-transition-analysis.md) | Processor mode transitions |
+| [docs/interrupt-mode-transition.md](docs/interrupt-mode-transition.md) | Interrupt handler modes |
+| [docs/array-bounds-checking.md](docs/array-bounds-checking.md) | Array bounds design rationale |
+| [docs/reserved-keywords.md](docs/reserved-keywords.md) | Reserved keywords list |
 
 ## External References
 
