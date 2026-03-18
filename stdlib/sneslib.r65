@@ -1106,6 +1106,12 @@ impl OamEntry {
         self.attr = self.attr | OamFlip::V as u8;
     }
 
+    // Set vertical flip
+    // Usage: sprite.flip_hv!();
+    macro_rules! flip_v() {
+        self.attr = self.attr | OamFlip::H as u8 | OamFlip::V as u8;
+    }
+
     // Clear all flip flags
     // Usage: sprite.clear_flip!();
     macro_rules! clear_flip() {
