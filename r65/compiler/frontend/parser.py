@@ -354,14 +354,19 @@ class ASTBuilder(Transformer):
         name = items[idx].value if isinstance(items[idx], LarkToken) else items[idx]
         idx += 1
 
-        # Type (this is the pointee type if is_pointer is True)
-        var_type = items[idx]
-        idx += 1
+        # Type (optional - can be inferred for include_bytes!)
+        var_type = None
+        if idx < len(items) and isinstance(items[idx], ast.Type):
+            var_type = items[idx]
+            idx += 1
 
         # If this is a pointer declaration, wrap the type in PointerType
         # Note: The is_far on StaticDecl is for auto-bank (far static),
         # not for the pointer type. For far pointers, use type: far *T
         if is_pointer:
+            if var_type is None:
+                raise self._make_error("pointer static declarations require a type annotation",
+                                       tree.meta)
             var_type = ast.PointerType(is_far=False, pointee_type=var_type)
 
         # Initializer (optional)

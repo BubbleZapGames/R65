@@ -195,7 +195,7 @@ class StaticDecl(Declaration):
     is_far: bool  # True if declared with 'far' keyword (required for ROM statics in auto-bank mode)
     is_mut: bool
     name: str
-    var_type: Type
+    var_type: Optional[Type]  # None when type is inferred (e.g., include_bytes!)
     initializer: Optional[Expression]
 
 

@@ -275,8 +275,24 @@ class HIRBuilder:
             self.symbol_table.declare(decl.name, symbol)
 
         elif isinstance(decl, ast.StaticDecl):
-            # Resolve type and create static variable symbol
-            var_type = self.type_resolver.resolve_type(decl.var_type)
+            # Resolve type (or infer from include_bytes!)
+            if decl.var_type is not None:
+                var_type = self.type_resolver.resolve_type(decl.var_type)
+            elif isinstance(decl.initializer, ast.IncludeBytesExpr):
+                # Infer [u8; N] from file size
+                _, file_size = self.expression_builder._validate_include_bytes_path(
+                    decl.initializer.path, decl.source_loc
+                )
+                var_type = ArrayTypeInfo(
+                    element_type=BasicTypeInfo(name='u8'),
+                    size=file_size
+                )
+            else:
+                raise HIRError(
+                    f"static '{decl.name}' requires a type annotation",
+                    source_loc=decl.source_loc,
+                    hint="add ': Type' after the name, e.g., static NAME: u8 = ...;"
+                )
             symbol = Symbol(
                 name=decl.name,
                 kind=SymbolKind.STATIC_VAR,
@@ -953,8 +969,20 @@ class HIRBuilder:
         # Validate storage class based on mutability
         storage_attr = self._validate_static_storage(static, raw_storage_attr)
 
-        # Resolve type
-        var_type = self.type_resolver.resolve_type(static.var_type)
+        # Resolve type (or use inferred type from pass 1 for include_bytes!)
+        if static.var_type is not None:
+            var_type = self.type_resolver.resolve_type(static.var_type)
+        else:
+            # Type was inferred in pass 1 - retrieve from symbol table
+            var_type = self.symbol_table.lookup(static.name).var_type
+
+        # Reject include_bytes! on mutable (RAM) statics — no runtime copy support
+        if isinstance(static.initializer, ast.IncludeBytesExpr) and static.is_mut:
+            raise HIRError(
+                f"include_bytes! cannot be used with 'static mut' (RAM variables)",
+                source_loc=static.source_loc,
+                hint=f"remove 'mut' to place in ROM: static {static.name} = include_bytes!(...)"
+            )
 
         # Build initializer if present
         initializer = None

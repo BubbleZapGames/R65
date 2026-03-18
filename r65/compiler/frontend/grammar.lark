@@ -69,6 +69,7 @@ return_type: "->" (type_tuple | type_expr | "!")
 // Supports pointer declarations and far modifier: [far|near] static mut *name: type
 // Note: var_name allows REGISTER tokens as variable names (e.g., static mut X: u8)
 static_decl: attribute* (FAR | NEAR)? STATIC MUT? STAR? var_name ":" type_expr ("=" initializer_expr)? ";"
+           | attribute* (FAR | NEAR)? STATIC MUT? var_name "=" initializer_expr ";"
            | attribute* (FAR | NEAR)? STATIC MUT? AMPER var_name ":" type_expr ("=" initializer_expr)? ";"  -> static_decl_safe_ptr_error
 
 // Variable name - can be IDENT or REGISTER (allows naming variables X, Y, A, etc.)
