@@ -88,7 +88,7 @@ class TypeChecker:
     def match_validator(self) -> MatchValidator:
         """Lazy initialization of match validator."""
         if self._match_validator is None:
-            self._match_validator = MatchValidator(self.check_expression)
+            self._match_validator = MatchValidator(self.check_expression, self.check_statement)
         return self._match_validator
 
     @property
@@ -1787,7 +1787,11 @@ class TypeChecker:
             self.check_statement(stmt)
 
         # Check final expression - propagate context type for inference
-        final_type = self.check_expression(expr.final_expr, context_type)
+        if expr.final_expr is not None:
+            final_type = self.check_expression(expr.final_expr, context_type)
+        else:
+            # Diverging block (e.g. { return 1; }) - void type
+            final_type = BasicTypeInfo(name='void')
         expr.expr_type = final_type
         return final_type
 

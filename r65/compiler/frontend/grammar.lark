@@ -286,7 +286,16 @@ asm_value: expr
 
 // Match expression
 match_expr: MATCH expr "{" match_arm ("," match_arm)* ","? "}"
-match_arm: pattern "=>" expr
+match_arm: pattern "=>" match_arm_body
+?match_arm_body: match_arm_return
+              | match_arm_break
+              | match_arm_continue
+              | match_arm_block
+              | expr
+match_arm_block: "{" statement+ "}"
+match_arm_return: RETURN expr?
+match_arm_break: BREAK LABEL_REF?
+match_arm_continue: CONTINUE LABEL_REF?
 
 // Patterns
 ?pattern: pattern_or

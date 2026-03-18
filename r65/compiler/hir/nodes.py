@@ -691,9 +691,13 @@ class HIROrPattern(HIRPattern):
 
 @dataclass
 class HIRMatchArm(HIRNode):
-    """Single arm of a match expression."""
+    """Single arm of a match expression.
+
+    body is an HIRExpression for normal arms, or an HIRStatement (e.g. HIRReturnStmt)
+    for arms with control flow statements like return/break/continue.
+    """
     pattern: Optional[HIRPattern] = None
-    body: Optional[HIRExpression] = None
+    body: Optional['HIRNode'] = None  # HIRExpression or HIRStatement
     # Scope for pattern bindings
     scope_id: Optional[int] = None
 

@@ -414,8 +414,11 @@ class ExpressionBuilder:
             # Build pattern (may create bindings in scope)
             pattern = self._build_pattern(ast_arm.pattern)
 
-            # Build body expression
-            body = self.build_expression(ast_arm.body)
+            # Build body expression or statement (return/break/continue)
+            if isinstance(ast_arm.body, (ast.ReturnStmt, ast.BreakStmt, ast.ContinueStmt, ast.Block)):
+                body = self.statement_builder(ast_arm.body)
+            else:
+                body = self.build_expression(ast_arm.body)
 
             # Exit scope
             self.symbol_table.exit_scope()
@@ -552,8 +555,8 @@ class ExpressionBuilder:
             hir_stmt = self.statement_builder(stmt)
             hir_stmts.append(hir_stmt)
 
-        # Build final expression
-        final_expr = self.build_expression(expr.final_expr)
+        # Build final expression (None for diverging blocks like { return 1; })
+        final_expr = self.build_expression(expr.final_expr) if expr.final_expr is not None else None
 
         self.symbol_table.exit_scope()
 

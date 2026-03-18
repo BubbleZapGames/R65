@@ -1821,8 +1821,43 @@ class ASTBuilder(Transformer):
     def match_arm(self, items):
         """Match arm."""
         items = self._filter_tokens(items)
-        # items[0] is pattern, items[1] is body expression
+        # items[0] is pattern, items[1] is body expression or statement
         return ast.MatchArm(pattern=items[0], body=items[1])
+
+    @v_args(tree=True)
+    def match_arm_return(self, tree):
+        """Return statement in match arm (no semicolon)."""
+        values = [item for item in tree.children if not isinstance(item, LarkToken)]
+        if values and isinstance(values[0], list):
+            values = values[0]
+        return ast.ReturnStmt(values=values, source_loc=self._make_source_loc(tree.meta))
+
+    @v_args(tree=True)
+    def match_arm_break(self, tree):
+        """Break statement in match arm (no semicolon)."""
+        label = None
+        value = None
+        for item in tree.children:
+            if isinstance(item, LarkToken) and item.type == 'LABEL_REF':
+                label = item.value[1:]
+            elif isinstance(item, ast.Expression):
+                value = item
+        return ast.BreakStmt(label=label, value=value, source_loc=self._make_source_loc(tree.meta))
+
+    @v_args(tree=True)
+    def match_arm_continue(self, tree):
+        """Continue statement in match arm (no semicolon)."""
+        label = None
+        for item in tree.children:
+            if isinstance(item, LarkToken) and item.type == 'LABEL_REF':
+                label = item.value[1:]
+        return ast.ContinueStmt(label=label, source_loc=self._make_source_loc(tree.meta))
+
+    @v_args(tree=True)
+    def match_arm_block(self, tree):
+        """Statement-only block in match arm (no trailing expression)."""
+        items = self._filter_tokens(tree.children)
+        return ast.Block(statements=list(items), source_loc=self._make_source_loc(tree.meta))
 
     def pattern_range(self, items):
         """Range pattern (e.g., 0..5 or 0..=5)."""

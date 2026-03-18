@@ -1356,6 +1356,10 @@ class MIRBuilder:
             self.lower_statement(stmt)
 
         # Lower final expression and return its result
+        # For diverging blocks (e.g. { return 1; }), final_expr is None
+        if expr.final_expr is None:
+            # Return a dummy vreg — this block diverges so the result is never used
+            return self.current_function.vreg_allocator.alloc(expr.expr_type, "diverging_block")
         return self.lower_expression(expr.final_expr)
 
     def _lower_if_expression(self, expr: HIRIfExpression) -> Union[VirtualRegister, HardwareRegister, Immediate]:

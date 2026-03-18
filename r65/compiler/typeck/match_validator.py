@@ -12,6 +12,7 @@ from r65.compiler.hir import (
     HIRWildcardPattern, HIRIdentifierPattern, HIRRangePattern,
     HIROrPattern, BasicTypeInfo
 )
+from r65.compiler.hir.nodes import HIRStatement
 from r65.compiler.hir.types import TypeInfo, EnumTypeInfo
 from r65.compiler.typeck.errors import TypeCheckError
 from r65.compiler.typeck.type_utils import TypeUtils
@@ -20,14 +21,16 @@ from r65.compiler.typeck.type_utils import TypeUtils
 class MatchValidator:
     """Validates match expressions."""
 
-    def __init__(self, check_expression_fn: Callable):
+    def __init__(self, check_expression_fn: Callable, check_statement_fn: Callable = None):
         """
         Initialize with expression checker callback.
 
         Args:
             check_expression_fn: Function to type check expressions (from TypeChecker)
+            check_statement_fn: Function to type check statements (from TypeChecker)
         """
         self.check_expression = check_expression_fn
+        self.check_statement = check_statement_fn
 
     def check_match_expression(self, expr: HIRMatchExpression, context_type=None) -> TypeInfo:
         """Type check match expression."""
@@ -47,15 +50,21 @@ class MatchValidator:
             if self._check_pattern(arm.pattern, scrutinee_type):
                 has_wildcard = True
 
-            # Check arm body with expected type context so integer literals
-            # are inferred correctly (e.g., `0` as u16 when let binding is u16)
-            body_type = self.check_expression(arm.body, expected_type)
-            arm_types.append(body_type)
+            # Check arm body - statements (return/break/continue) have "never" type
+            if isinstance(arm.body, HIRStatement):
+                if self.check_statement:
+                    self.check_statement(arm.body)
+                arm_types.append(None)  # None = never type (diverging)
+            else:
+                # Check arm body with expected type context so integer literals
+                # are inferred correctly (e.g., `0` as u16 when let binding is u16)
+                body_type = self.check_expression(arm.body, expected_type)
+                arm_types.append(body_type)
 
-            # After checking the first arm, use its type as the expected type
-            # for remaining arms (if no external context was provided)
-            if expected_type is None:
-                expected_type = body_type
+                # After checking the first arm, use its type as the expected type
+                # for remaining arms (if no external context was provided)
+                if expected_type is None:
+                    expected_type = body_type
 
         # All arms must return compatible types
         if not arm_types:
@@ -64,14 +73,21 @@ class MatchValidator:
                 source_loc=expr.source_loc
             )
 
-        # Use first arm's type as the expected type
-        result_type = arm_types[0]
-        for i, arm_type in enumerate(arm_types[1:], 1):
-            if not TypeUtils.types_equal(result_type, arm_type):
-                raise TypeCheckError(
-                    f"Match arm {i} returns type {arm_type}, expected {result_type}",
-                    source_loc=expr.arms[i].body.source_loc
-                )
+        # Filter out None (never/diverging) types from statement arms
+        expr_arm_types = [(i, t) for i, t in enumerate(arm_types) if t is not None]
+
+        if expr_arm_types:
+            # Use first non-diverging arm's type as the expected type
+            result_type = expr_arm_types[0][1]
+            for i, arm_type in expr_arm_types[1:]:
+                if not TypeUtils.types_equal(result_type, arm_type):
+                    raise TypeCheckError(
+                        f"Match arm {i} returns type {arm_type}, expected {result_type}",
+                        source_loc=expr.arms[i].body.source_loc
+                    )
+        else:
+            # All arms are diverging (return/break/continue) - match has void type
+            result_type = BasicTypeInfo(name='void')
 
         # Exhaustiveness check: must have wildcard/identifier pattern or cover all cases
         if not has_wildcard:

@@ -833,9 +833,12 @@ class OrPattern(Pattern):
 
 @dataclass
 class MatchArm(ASTNode):
-    """Single arm of a match expression."""
+    """Single arm of a match expression.
+
+    body can be an Expression (normal case) or a Statement (return/break/continue).
+    """
     pattern: Pattern
-    body: Expression
+    body: 'ASTNode'  # Expression or Statement (ReturnStatement, BreakStatement, ContinueStatement)
 
 
 @dataclass

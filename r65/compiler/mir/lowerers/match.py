@@ -14,6 +14,7 @@ from r65.compiler.hir import (
     HIRLiteralPattern, HIREnumPattern, HIRWildcardPattern,
     HIRIdentifierPattern, HIRRangePattern, HIROrPattern,
 )
+from r65.compiler.hir.nodes import HIRStatement
 from r65.compiler.mir.nodes import (
     VirtualRegister, HardwareRegister, Immediate,
     Move, Compare, Jump, CondBranch, JumpTable, LookupTable,
@@ -302,15 +303,20 @@ class MatchLowerer:
                 self.ctx.symbol_to_vreg[id(arm.pattern.symbol)] = binding_vreg
                 self.emit(Move(dest=binding_vreg, source=scrutinee_vreg, type_info=arm.pattern.symbol.var_type))
 
-            # Lower arm body
-            arm_result = self.builder.lower_expression(arm.body)
+            # Lower arm body - handle statement arms (return/break/continue)
+            if isinstance(arm.body, HIRStatement):
+                self.builder.lower_statement(arm.body)
+                # Statement already terminates the block (return/break/continue)
+                # No need for Move or Jump to merge
+            else:
+                arm_result = self.builder.lower_expression(arm.body)
 
-            # Move result to result_vreg
-            self.emit(Move(dest=result_vreg, source=arm_result, type_info=expr.expr_type))
+                # Move result to result_vreg
+                self.emit(Move(dest=result_vreg, source=arm_result, type_info=expr.expr_type))
 
-            # Jump to merge block
-            self.emit(Jump(target=merge_block.block_id))
-            self.ctx.add_cfg_edge(arm_block, merge_block)
+                # Jump to merge block
+                self.emit(Jump(target=merge_block.block_id))
+                self.ctx.add_cfg_edge(arm_block, merge_block)
 
             # Continue with next pattern (if not last)
             if not is_last_arm:
@@ -411,15 +417,19 @@ class MatchLowerer:
                 self.ctx.symbol_to_vreg[id(arm.pattern.symbol)] = binding_vreg
                 self.emit(Move(dest=binding_vreg, source=scrutinee_vreg, type_info=arm.pattern.symbol.var_type))
 
-            # Lower arm body
-            arm_result = self.builder.lower_expression(arm.body)
+            # Lower arm body - handle statement arms (return/break/continue)
+            if isinstance(arm.body, HIRStatement):
+                self.builder.lower_statement(arm.body)
+                # Statement already terminates the block
+            else:
+                arm_result = self.builder.lower_expression(arm.body)
 
-            # Move result to result_vreg
-            self.emit(Move(dest=result_vreg, source=arm_result, type_info=expr.expr_type))
+                # Move result to result_vreg
+                self.emit(Move(dest=result_vreg, source=arm_result, type_info=expr.expr_type))
 
-            # Jump to merge
-            self.emit(Jump(target=merge_block.block_id))
-            self.ctx.add_cfg_edge(arm_block, merge_block)
+                # Jump to merge
+                self.emit(Jump(target=merge_block.block_id))
+                self.ctx.add_cfg_edge(arm_block, merge_block)
 
         # Set current block to merge
         self.ctx.set_current_block(merge_block)
