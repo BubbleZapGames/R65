@@ -1,0 +1,62 @@
+// R65 Standard Library - Random Number Generator
+//
+// 16-bit xorshift LFSR pseudo-random number generator.
+// Fast and suitable for games (not cryptographic).
+//
+// Usage:
+//   include!("lib/rand.r65")
+//
+//   // Seed the generator (must be non-zero)
+//   __rand_seed = 0xBEEF;
+//
+//   // Update seed inline with a mix value (use in hot loops for speed)
+//   rand_update!(my_variable);
+//
+//   // Get a random u16 via function call
+//   let r @ A = rand();
+
+#[lowram]
+static mut __rand_seed: u16 = 0xDEAD;
+
+// Inline xorshift16 LFSR update with a mix value.
+// XORs the provided value into the seed before advancing.
+// Tap values: 7, 9, 8 (Marsaglia's xorshift parameters for 16-bit)
+// Period: 65535 (seed must never be zero)
+macro_rules! rand_update($value:expr) {
+    A = __rand_seed;
+    A = A ^ $value;
+    A = A ^ (A << 7);
+    A = A ^ (A >> 9);
+    A = A ^ (A << 8);
+    __rand_seed = A;
+}
+
+// Return a pseudo-random u16.
+// Advances the LFSR and returns the full 16-bit state.
+// Hand-written 65816 assembly for optimal cycle count.
+// Xorshift16 with taps (7, 9, 8): period 65535.
+far fn rand() -> u16 {
+    asm!(
+        "REP #$20",          // m16: 16-bit accumulator
+        "LDA __rand_seed",   // A = seed
+        // A ^= A << 7  (<<7 = <<8 then >>1)
+        "STA __rand_seed",   // temp = A
+        "XBA",               // A << 8 (swap bytes)
+        "AND #$FF00",        // clear leaked low byte
+        "LSR A",             // >> 1 = net << 7
+        "EOR __rand_seed",   // A = seed ^ (seed << 7)
+        // A ^= A >> 9  (>>9 = >>8 then >>1)
+        "STA __rand_seed",   // temp = A
+        "XBA",               // A >> 8 (swap bytes)
+        "AND #$00FF",        // clear leaked high byte
+        "LSR A",             // >> 1 = net >> 9
+        "EOR __rand_seed",   // A ^= (A >> 9)
+        // A ^= A << 8
+        "STA __rand_seed",   // temp = A
+        "XBA",               // swap bytes = << 8
+        "AND #$FF00",        // clear leaked low byte
+        "EOR __rand_seed",   // A ^= (A << 8)
+        "STA __rand_seed",   // store result
+        "DEC A"              // shift range from 1-65535 to 0-65534
+    );
+}
