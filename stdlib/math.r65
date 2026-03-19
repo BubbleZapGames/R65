@@ -195,6 +195,26 @@ far fn div8(dividend @ A: u8, divisor @ X: u16) -> u8 {
     return RDDIVL;
 }
 
+// Hardware 16/8 -> 16 modulo
+// Uses SNES $4204-$4206 division unit, returns remainder
+// Cycles: ~30 (16 wait + overhead)
+#[cfg(snes)]
+far fn mod16(dividend @ A: u16, divisor: u8) -> u16 {
+    // Write 16-bit dividend
+    WRDIVL = dividend;
+
+    // Switch to 8-bit for hardware register writes
+    STATUS.A16 = false;  // SEP #$20 - switch to 8-bit
+    // Write divisor (starts division)
+    WRDIVB = divisor;
+
+    // Wait 16 machine cycles for division to complete
+    STATUS.A16 = true;  // REP #$20 - switch back to 16-bit
+    NOP(6);
+
+    return RDMPYL;
+}
+
 // Hardware 8/8 -> 8 modulo
 // Performs division and returns remainder
 #[cfg(snes)]
