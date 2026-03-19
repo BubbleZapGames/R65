@@ -1116,7 +1116,7 @@ impl OamEntry {
 
     // Set vertical flip
     // Usage: sprite.flip_hv!();
-    macro_rules! flip_v() {
+    macro_rules! flip_hv() {
         self.attr = self.attr | OamFlip::H as u8 | OamFlip::V as u8;
     }
 
