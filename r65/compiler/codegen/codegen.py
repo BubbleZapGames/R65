@@ -117,6 +117,14 @@ class ProgramCodeGenerator:
                 if func_eliminated2 > 0:
                     print(f"Post-inlining dead function elimination: {func_eliminated2} function(s) removed")
 
+            # Loop unrolling - fully unroll small static loops at -O2
+            if opt_level >= 2:
+                from r65.compiler.optimize.loop_unroll import LoopUnroller
+                loop_unroller = LoopUnroller(verbose=False)
+                unrolled_count = loop_unroller.unroll(mir_program)
+                if unrolled_count > 0:
+                    print(f"Loop unrolling: {unrolled_count} loop(s) unrolled")
+
         # Emit file header and processor directives
         self.emitter.emit_file_header()
         self.emitter.emit_processor_directive()
