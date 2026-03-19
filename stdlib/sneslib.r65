@@ -433,6 +433,10 @@ static mut HVBJOY: u8;
 #[hw(0x4213)]
 static mut RDIO: u8;
 
+// Division Result
+#[hw(0x4214)]
+static mut RDDIV: u16;
+
 // Division Result (quotient, low byte)
 #[hw(0x4214)]
 static mut RDDIVL: u8;
@@ -440,6 +444,10 @@ static mut RDDIVL: u8;
 // Division Result (quotient, high byte)
 #[hw(0x4215)]
 static mut RDDIVH: u8;
+
+// Multiplication Result / Division Remainder
+#[hw(0x4216)]
+static mut RDMPY: u16;
 
 // Multiplication Result / Division Remainder (low byte)
 #[hw(0x4216)]
