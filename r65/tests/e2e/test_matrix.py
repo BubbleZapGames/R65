@@ -64,7 +64,7 @@ class TestMatrixMultiplication:
             //   result[3] = A10*B01 + A11*B11
             fn multiply_matrix(mat_a: *u8, mat_b: *u8, result: *u8) {{
                 // result[0] = mat_a[0]*mat_b[0] + mat_a[1]*mat_b[2]
-                // mul8 returns (low, high) - we only need low byte
+                // mul8 returns u16 - truncated to u8 on assignment
                 let mut TEMP : u8;
                 TEMP = mul8(mat_a[0], mat_b[0]);
                 A = mul8(mat_a[1], mat_b[2]);

@@ -15,28 +15,26 @@ MATH_PATH = STDLIB_DIR / "math.r65"
 
 
 class TestMul8MultiReturn:
-    """Test mul8 (u8,u8) tuple returns."""
+    """Test mul8 u16 return."""
 
     @pytest.fixture
     def e2e(self):
         return E2ETest()
 
-    def test_mul8_unpack(self, e2e):
-        """Test mul8 returning low and high bytes: 7*6=42 (lo=42, hi=0)."""
+    def test_mul8_small(self, e2e):
+        """Test mul8 returning u16: 7*6=42."""
         source = f'''
             include!("{SNESLIB_PATH}")
             include!("{MATH_PATH}")
 
             #[zeropage(0x10)]
-            static mut LO: u8;
-            #[zeropage(0x11)]
-            static mut HI: u8;
+            static mut RESULT: [u8; 2];
 
             #[entry]
             fn main() {{
-                let (lo, hi) = mul8(7, 6);
-                LO = lo;
-                HI = hi;
+                let r: u16 = mul8(7, 6);
+                RESULT[0] = r as u8;
+                RESULT[1] = (r >> 8) as u8;
             }}
         '''
         result = e2e.run(source, ExpectedState(memory={
@@ -45,22 +43,20 @@ class TestMul8MultiReturn:
         }))
         assert result.success, f"Failures: {result.failures}"
 
-    def test_mul8_high_byte(self, e2e):
-        """Test mul8 with overflow: 200*200=40000 (0x9C40)."""
+    def test_mul8_overflow(self, e2e):
+        """Test mul8 with large result: 200*200=40000 (0x9C40)."""
         source = f'''
             include!("{SNESLIB_PATH}")
             include!("{MATH_PATH}")
 
             #[zeropage(0x10)]
-            static mut LO: u8;
-            #[zeropage(0x11)]
-            static mut HI: u8;
+            static mut RESULT: [u8; 2];
 
             #[entry]
             fn main() {{
-                let (lo, hi) = mul8(200, 200);
-                LO = lo;
-                HI = hi;
+                let r: u16 = mul8(200, 200);
+                RESULT[0] = r as u8;
+                RESULT[1] = (r >> 8) as u8;
             }}
         '''
         result = e2e.run(source, ExpectedState(memory={

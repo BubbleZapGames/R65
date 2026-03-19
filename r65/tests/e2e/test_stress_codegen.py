@@ -260,35 +260,31 @@ class TestIfElseOneBranchCalls:
 
 
 class TestChainedMul8Calls:
-    """Two consecutive mul8() calls with B register + tuple returns."""
+    """Two consecutive mul8() calls with B register + u16 returns."""
 
     @pytest.fixture
     def e2e(self):
         return E2ETest()
 
     def test_chained_mul8_calls(self, e2e):
-        """mul8(10,20)=200 lo=0xC8 hi=0x00; mul8(3,7)=21 lo=0x15 hi=0x00."""
+        """mul8(10,20)=200; mul8(3,7)=21."""
         source = f'''
             include!("{SNESLIB_PATH}")
             include!("{MATH_PATH}")
 
             #[zeropage(0x10)]
-            static mut LO1: u8;
-            #[zeropage(0x11)]
-            static mut HI1: u8;
+            static mut R1: [u8; 2];
             #[zeropage(0x12)]
-            static mut LO2: u8;
-            #[zeropage(0x13)]
-            static mut HI2: u8;
+            static mut R2: [u8; 2];
 
             #[entry]
             fn main() {{
-                let (lo, hi) = mul8(10, 20);
-                LO1 = lo;
-                HI1 = hi;
-                let (lo2, hi2) = mul8(3, 7);
-                LO2 = lo2;
-                HI2 = hi2;
+                let r1: u16 = mul8(10, 20);
+                R1[0] = r1 as u8;
+                R1[1] = (r1 >> 8) as u8;
+                let r2: u16 = mul8(3, 7);
+                R2[0] = r2 as u8;
+                R2[1] = (r2 >> 8) as u8;
             }}
         '''
         result = e2e.run(source, ExpectedState(memory={

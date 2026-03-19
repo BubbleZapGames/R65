@@ -337,10 +337,10 @@ class TestMathPipeline:
 
             #[entry]
             fn main() {{
-                // mul8(15, 8) = 120 (lo=120, hi=0)
-                let lo: u8 = mul8(15, 8);
+                // mul8(15, 8) = 120
+                let r: u16 = mul8(15, 8);
                 // div8(120, 4) = 30
-                RESULT = div8(lo, 4);
+                RESULT = div8(r as u8, 4);
             }}
         '''
         result = e2e.run(source, ExpectedState(memory={

@@ -14,9 +14,11 @@
 // Multiplication Functions
 // ============================================================================
 
-// Hardware 8x8 -> 8 unsigned multiply (widening)
+// Hardware 8x8 -> 16 unsigned multiply (widening)
+// Uses SNES $4202-$4203 multiplication unit
+// Result: 16-bit widening product
 #[cfg(snes)]
-far fn mul8(multA @ A: u8, multB @ B: u8) -> (u8, u8) {
+far fn mul8(multA @ A: u8, multB @ B: u8) -> u16 {
     // Write multiplicand
     WRMPYA = multA;
 
@@ -24,129 +26,127 @@ far fn mul8(multA @ A: u8, multB @ B: u8) -> (u8, u8) {
     WRMPYB = multB;
 
     // Wait 8 machine cycles for multiplication to complete
-    // NOP is 2 cycles, so 4 NOPs = 8 cycles
     NOP(4);
 
-    // Return low byte (caller can read RDMPYH for high byte)
-    return RDMPYL, RDMPYH;
+    // Return 16-bit result (RDMPY is u16, reads $4216-$4217 in m16)
+    return RDMPY;
 }
 
-// Hardware 8x8 -> 16 unsigned multiply
-// Uses SNES $4202-$4203 multiplication unit
-// Result: 16-bit widening product
+// Hardware 16x16 -> 16 unsigned multiply
+// Decomposes into three 8x8 partial products using SNES multiplication unit
+// result = A_lo*B_lo + (A_lo*B_hi)<<8 + (A_hi*B_lo)<<8
+// (A_hi*B_hi<<16 overflows 16-bit, skipped)
+// Cycles: ~60
 #[cfg(snes)]
-far fn mul16(multA @ A: u8, multB: u16) -> u16 {
-    // Write multiplicand in 8-bit mode
-    WRMPYA = multA;
+far fn mul16(multA @ A: u16, multB: u16) -> u16 {
+    // Extract bytes from multA (16-bit) while in m8
+    let _a_lo: u8 = multA as u8;
+    let _a_hi: u8 = B;
+    let _b_lo: u8 = multB as u8;
+    let _b_hi: u8;
+    // Get high byte of multB: load u16, shift right 8, truncate
+    A = multB;
+    A = A >> 8;
+    _b_hi = A as u8;
 
-    // Write multiplier (starts multiplication)
-    WRMPYB = multB;
+    // Partial product 1: A_lo * B_lo -> 16-bit
+    WRMPYA = _a_lo;
+    WRMPYB = _b_lo;
+    NOP(4);
+    // Read 16-bit result with manual mode switch
+    STATUS.A16 = true;
+    let mut _result: u16 = RDMPYL;
 
-    // Wait 8 machine cycles for multiplication to complete
-    // REP is 3 cycles, NOP is 2 cycles, so 3 + 2 + 2 + 1 = 8 cycles
-    STATUS.A16 = true;  // REP #$20 - switch back to 16-bit
-    NOP(2);
+    // Partial product 2: A_lo * B_hi -> add low byte << 8
+    if _b_hi != 0 {
+        WRMPYA = _a_lo;
+        WRMPYB = _b_hi;
+        NOP(4);
+        A = RDMPYL as u16;
+        A = A << 8;
+        _result = _result + A;
+    }
 
-    // Return 16-bit result
-    return RDMPYL;
+    // Partial product 3: A_hi * B_lo -> add low byte << 8
+    if _a_hi != 0 {
+        WRMPYA = _a_hi;
+        WRMPYB = _b_lo;
+        NOP(4);
+        A = RDMPYL as u16;
+        A = A << 8;
+        _result = _result + A;
+    }
+    A = _result;
+
+    return A;
 }
 
-// Software 8x8 -> 8 unsigned multiply
-// Uses shift-and-add algorithm
-// Returns: low byte and high byte
-// Cycles: ~150-300 depending on operands
+// Software 8x8 -> 16 unsigned multiply (widening)
+// Uses shift-and-add algorithm with 16-bit accumulation
+// Cycles: ~80-160 depending on operands
 #[cfg(not(snes))]
-far fn mul8(multA @ A: u8, multB @ B: u8) -> (u8, u8) {
-    // Store multiplicand for shifting
-    let mut _mul_temp : u8 = multA;
+far fn mul8(multA @ A: u8, multB @ B: u8) -> u16 {
+    let mut _multiplier: u8 = multB;
+    let mut _multiplicand: u16 = multA as u16;
+    let mut _result: u16 = 0;
 
-    // Clear 16-bit result
-    let mut _mul_result_lo : u8 = 0;
-    let mut _mul_result_hi : u8 = 0;
-
-    // Process each bit of multiplier
     loop {
-        // If multiplier is zero, we're done
-        if multB == 0 {
+        if _multiplier == 0 {
             break;
         }
 
         // Test lowest bit of multiplier
-        multA = multB;
-        multA = multA & 0x01;
-        if multA != 0 {
-            // Add multiplicand to result (with carry to high byte)
-            asm!("CLC");
-            multA = _mul_result_lo;
-            multA = multA + _mul_temp;
-            _mul_result_lo = multA;
-            multA = _mul_result_hi;
-            asm!("ADC #$00");  // Add carry
-            _mul_result_hi = multA;
+        A = _multiplier;
+        A = A & 0x01;
+        if A != 0 {
+            _result = _result + _multiplicand;
         }
 
-        // Shift multiplicand left (double it)
-        multA = _mul_temp;
-        multA = multA << 1;
-        _mul_temp = multA;
+        // Shift multiplicand left (16-bit, widens naturally)
+        _multiplicand = _multiplicand << 1;
 
-        // Shift multiplier right (halve it)
-        multA = multB;
-        multA = multA >> 1;
-        multB = multA;
+        // Shift multiplier right
+        _multiplier = _multiplier >> 1;
     }
 
-    // Return low byte
-    return _mul_result_lo, _mul_result_hi;
+    return _result;
 }
 
-// Software 8x8 -> 16 unsigned multiply (returns as u16)
-// Same algorithm as mul_shift but returns result in 16-bit A register
-// Uses mode switch to return 16-bit value
-// Cycles: ~150-300 depending on operands
+// Software 16x16 -> 16 unsigned multiply
+// Shift-and-add on full 16-bit operands
+// Cycles: ~300-600 depending on operands
 #[cfg(not(snes))]
-far fn mul16(multA @ A: u8, multB: u16) -> u16 {
-    // Store multiplicand for shifting
-    let mut _mul_temp : u8 = multA;
+far fn mul16(multA @ A: u16, multB: u16) -> u16 {
+    let mut _multiplicand: u16 = multA;
+    let mut _multiplier: u16 = multB;
+    let mut _result: u16 = 0;
 
-    // Clear 16-bit result
-    let mut _mul_result_lo : u8 = 0;
-    let mut _mul_result_hi : u8 = 0;
-
-    // Process each bit of multiplier
     loop {
-        // If multiplier is zero, we're done
-        if multB == 0 {
+        if _multiplier == 0 {
             break;
         }
 
         // Test lowest bit of multiplier
-        multA = multB;
-        multA = multA & 0x01;
-        if multA != 0 {
-            // Add multiplicand to result (with carry to high byte)
-            asm!("CLC");
-            multA = _mul_result_lo;
-            multA = multA + _mul_temp;
-            _mul_result_lo = multA;
-            multA = _mul_result_hi;
-            asm!("ADC #$00");  // Add carry
-            _mul_result_hi = multA;
+        A = _multiplier;
+        A = A & 1;
+        if A != 0 {
+            A = _result;
+            A = A + _multiplicand;
+            _result = A;
         }
 
         // Shift multiplicand left (double it)
-        multA = _mul_temp;
-        multA = multA << 1;
-        _mul_temp = multA;
+        A = _multiplicand;
+        A = A << 1;
+        _multiplicand = A;
 
         // Shift multiplier right (halve it)
-        multA = multB;
-        multA = multA >> 1;
-        multB = multA;
+        A = _multiplier;
+        A = A >> 1;
+        _multiplier = A;
     }
 
-    // Return 16-bit result
-    return _mul_result_lo;
+    return _result;
 }
 
 
