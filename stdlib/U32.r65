@@ -26,40 +26,6 @@ macro_rules! U32($value:expr) {
 }
 
 // ============================================================================
-// U32 Macros - Binary operations with destination (dest = a op b)
-// ============================================================================
-
-// dest = a + b
-macro_rules! u32_add($dest:expr, $a:expr, $b:expr) {
-    $dest.copy($a);
-    $dest.add($b);
-}
-
-// dest = a - b
-macro_rules! u32_sub($dest:expr, $a:expr, $b:expr) {
-    $dest.copy($a);
-    $dest.sub($b);
-}
-
-// dest = a * b
-macro_rules! u32_mul($dest:expr, $a:expr, $b:expr) {
-    $dest.copy($a);
-    $dest.mul($b);
-}
-
-// dest = a / b
-macro_rules! u32_div($dest:expr, $a:expr, $b:expr) {
-    $dest.copy($a);
-    $dest.div($b);
-}
-
-// dest = a % b
-macro_rules! u32_mod($dest:expr, $a:expr, $b:expr) {
-    $dest.copy($a);
-    $dest.mod($b);
-}
-
-// ============================================================================
 // Internal Macros
 // ============================================================================
 
@@ -113,6 +79,41 @@ macro_rules! _hwdiv_first() {
 // ============================================================================
 
 impl far U32 {
+    // ========================================================================
+    // Binary operation macros: dest = self op b
+    // Usage: a.add_to!(b, dest)  →  dest = a + b
+    // ========================================================================
+
+    // dest = self + b
+    macro_rules! add_to($b:ident, $dest:ident) {
+        $dest.copy(self);
+        $dest.add($b);
+    }
+
+    // dest = self - b
+    macro_rules! sub_to($b:ident, $dest:ident) {
+        $dest.copy(self);
+        $dest.sub($b);
+    }
+
+    // dest = self * b
+    macro_rules! mul_to($b:ident, $dest:ident) {
+        $dest.copy(self);
+        $dest.mul($b);
+    }
+
+    // dest = self / b
+    macro_rules! div_to($b:ident, $dest:ident) {
+        $dest.copy(self);
+        $dest.div($b);
+    }
+
+    // dest = self % b
+    macro_rules! mod_to($b:ident, $dest:ident) {
+        $dest.copy(self);
+        $dest.mod($b);
+    }
+
     // ========================================================================
     // Conversion and Copy Methods
     // ========================================================================
