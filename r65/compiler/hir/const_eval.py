@@ -495,6 +495,16 @@ class ConstEvaluator:
                 raise HIRError("fixed_clamp: min must not be greater than max", source_loc=source_loc)
             return _clamp_i16(max(min_val, min(max_val, value)))
 
+        elif func_name == 'fixed_color_bgr':
+            red, green, blue = args
+            for name, val in [('red', red), ('green', green), ('blue', blue)]:
+                if val < 0 or val > 255:
+                    raise HIRError(f"fixed_color_bgr: {name} must be 0-255, got {val}", source_loc=source_loc)
+            r5 = (red >> 3) & 0x1F
+            g5 = (green >> 3) & 0x1F
+            b5 = (blue >> 3) & 0x1F
+            return (b5 << 10) | (g5 << 5) | r5
+
         else:
             raise HIRError(f"Unknown const math function: {func_name}", source_loc=source_loc)
 
@@ -748,6 +758,15 @@ class ConstEvaluator:
                 raise ValueError("fixed_clamp: min must not be greater than max")
             return _clamp_i16(max(min_val, min(max_val, value)))
 
+        def _fixed_color_bgr(red, green, blue):
+            for name, val in [('red', red), ('green', green), ('blue', blue)]:
+                if val < 0 or val > 255:
+                    raise ValueError(f"fixed_color_bgr: {name} must be 0-255, got {val}")
+            r5 = (red >> 3) & 0x1F
+            g5 = (green >> 3) & 0x1F
+            b5 = (blue >> 3) & 0x1F
+            return (b5 << 10) | (g5 << 5) | r5
+
         ns = {
             '_u8': _u8, '_u16': _u16, '_i8': _i8, '_i16': _i16, '_bool': _bool,
             '_idiv': _idiv, '_imod': _imod,
@@ -755,6 +774,7 @@ class ConstEvaluator:
             'fixed_atan2': _fixed_atan2, 'fixed_sqrt': _fixed_sqrt,
             'fixed_log2': _fixed_log2, 'fixed_exp2': _fixed_exp2,
             'fixed_lerp': _fixed_lerp, 'fixed_clamp': _fixed_clamp,
+            'fixed_color_bgr': _fixed_color_bgr,
         }
 
         # Add all compiled const fns to namespace so they can call each other

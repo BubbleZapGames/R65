@@ -176,6 +176,52 @@ class TestFixedClamp:
             build_hir("const VAL: i16 = fixed_clamp(50, 100, 0);")
 
 
+class TestFixedColorBgr:
+    def test_pure_red(self):
+        """Red 255 -> r5=31, g5=0, b5=0 -> 0x001F"""
+        assert eval_const("const VAL: u16 = fixed_color_bgr(255, 0, 0);") == 0x001F
+
+    def test_pure_green(self):
+        """Green 255 -> r5=0, g5=31, b5=0 -> 0x03E0"""
+        assert eval_const("const VAL: u16 = fixed_color_bgr(0, 255, 0);") == 0x03E0
+
+    def test_pure_blue(self):
+        """Blue 255 -> r5=0, g5=0, b5=31 -> 0x7C00"""
+        assert eval_const("const VAL: u16 = fixed_color_bgr(0, 0, 255);") == 0x7C00
+
+    def test_white(self):
+        """White (255,255,255) -> 0x7FFF"""
+        assert eval_const("const VAL: u16 = fixed_color_bgr(255, 255, 255);") == 0x7FFF
+
+    def test_black(self):
+        """Black (0,0,0) -> 0x0000"""
+        assert eval_const("const VAL: u16 = fixed_color_bgr(0, 0, 0);") == 0x0000
+
+    def test_mid_gray(self):
+        """Gray (128,128,128) -> r5=16, g5=16, b5=16 -> (16<<10)|(16<<5)|16 = 0x4210"""
+        assert eval_const("const VAL: u16 = fixed_color_bgr(128, 128, 128);") == 0x4210
+
+    def test_snes_cornflower(self):
+        """Cornflower blue (100, 149, 237) -> r5=12, g5=18, b5=29 -> (29<<10)|(18<<5)|12 = 0x764C"""
+        assert eval_const("const VAL: u16 = fixed_color_bgr(100, 149, 237);") == (29 << 10) | (18 << 5) | 12
+
+    def test_low_values_truncate_to_zero(self):
+        """Values < 8 truncate to 0 in 5-bit (>>3)."""
+        assert eval_const("const VAL: u16 = fixed_color_bgr(7, 7, 7);") == 0x0000
+
+    def test_red_out_of_range_error(self):
+        with pytest.raises(HIRError, match="red must be 0-255"):
+            build_hir("const VAL: u16 = fixed_color_bgr(256, 0, 0);")
+
+    def test_negative_green_error(self):
+        with pytest.raises(HIRError, match="green must be 0-255"):
+            build_hir("const VAL: u16 = fixed_color_bgr(0, -1, 0);")
+
+    def test_blue_out_of_range_error(self):
+        with pytest.raises(HIRError, match="blue must be 0-255"):
+            build_hir("const VAL: u16 = fixed_color_bgr(0, 0, 300);")
+
+
 class TestConstFnIntegration:
     """Test const math builtins inside const fn (transpiled path)."""
 
@@ -223,6 +269,27 @@ class TestConstFnIntegration:
         values = [e.value for e in static_decl.initializer.elements]
         assert values == [0, 25, 50, 75, 100]
 
+    def test_color_palette_via_const_fn(self):
+        """Generate a palette table using fixed_color_bgr inside const fn."""
+        hir = build_hir('''
+        const fn build_palette() -> [u16; 3] {
+            let mut t: [u16; 3] = [0; 3];
+            t[0] = fixed_color_bgr(255, 0, 0);
+            t[1] = fixed_color_bgr(0, 255, 0);
+            t[2] = fixed_color_bgr(0, 0, 255);
+            return t;
+        }
+        static PALETTE: [u16; 3] = build_palette();
+        ''')
+        static_decl = None
+        for d in hir.declarations:
+            if isinstance(d, HIRStaticDecl) and d.name == 'PALETTE':
+                static_decl = d
+                break
+        assert static_decl is not None
+        values = [e.value for e in static_decl.initializer.elements]
+        assert values == [0x001F, 0x03E0, 0x7C00]
+
     def test_type_checking(self):
         """Const math builtins pass type checking."""
         build_and_typecheck('''
@@ -234,6 +301,7 @@ class TestConstFnIntegration:
         const EXP_VAL: u16 = fixed_exp2(256, 256, 256);
         const LERP_VAL: i16 = fixed_lerp(0, 100, 5, 10);
         const CLAMP_VAL: i16 = fixed_clamp(50, 0, 100);
+        const COLOR_VAL: u16 = fixed_color_bgr(255, 128, 0);
         ''')
 
 

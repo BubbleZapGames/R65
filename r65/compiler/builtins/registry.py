@@ -236,6 +236,13 @@ class BuiltinRegistry:
             returns_value=True,
             description='Const-only: clamp value to [min, max] -> i16'
         ),
+        'fixed_color_bgr': BuiltinSignature(
+            name='fixed_color_bgr',
+            kind=BuiltinKind.CONST_MATH,
+            param_count=3,
+            returns_value=True,
+            description='Const-only: convert RGB888 to SNES BGR555 -> u16'
+        ),
 
         # Conditional compilation (1 parameter: cfg identifier/key-value, const evaluation only, returns boolean)
         'cfg': BuiltinSignature(
