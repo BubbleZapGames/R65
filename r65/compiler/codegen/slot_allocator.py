@@ -492,6 +492,18 @@ class StackSlotAllocator:
                         dest = instr.dest
                         src = instr.source
                         if not self.liveness_analyzer.interferes(dest, src):
+                            # Don't coalesce if source is a pre-allocated
+                            # scratch param AND dest has additional defs
+                            # beyond this Move. If dest is re-defined (e.g.
+                            # `let pos = ptr; pos = pos + dx;`), coalescing
+                            # would put pos at the scratch address where
+                            # later writes corrupt the param and the scratch
+                            # may be reused as a temporary. Read-only aliases
+                            # (only def is this Move) are safe to coalesce.
+                            if src in self.pre_allocated_vregs:
+                                if self._has_other_defs(dest, block_id, i):
+                                    i += 1
+                                    continue
                             # Propagate register hint from dest to src
                             if dest.register_hint and not src.register_hint:
                                 src.register_hint = dest.register_hint
@@ -506,6 +518,25 @@ class StackSlotAllocator:
                 # Liveness data is stale after replacement — recompute
                 self.liveness_analyzer = LivenessAnalyzer(self.func)
                 self.liveness_analyzer.analyze()
+
+    def _has_other_defs(self, vreg: VirtualRegister, move_block_id: int,
+                        move_idx: int) -> bool:
+        """Check if vreg has any definitions beyond the Move at (block, idx).
+
+        Returns True if the vreg is defined (written to) by any instruction
+        other than the specified Move. This includes assignments like
+        `pos = pos + dx` which create a new def of pos.
+        """
+        for bid in sorted(self.func.blocks):
+            block = self.func.blocks[bid]
+            for j, instr in enumerate(block.instructions):
+                if bid == move_block_id and j == move_idx:
+                    continue  # Skip the Move itself
+                # Check if this instruction defines (writes to) the vreg
+                defs = self.liveness_analyzer._get_defs(instr)
+                if vreg in defs:
+                    return True
+        return False
 
     @staticmethod
     def _replace_vreg_in_instr(instr, old: VirtualRegister, new: VirtualRegister):
