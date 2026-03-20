@@ -274,20 +274,77 @@ class ABIModel(ABC):
         # the reader must be processed before the writer.
         sorted_other_args = self._reorder_scratch_params(selector, sorted_other_args)
 
-        for arg in sorted_other_args:
-            arg_loc = selector.parent._get_operand_location(arg.value)
+        # Check if any non-A scratch param must precede an A-resident
+        # scratch param (WAR hazard). If so, we need to:
+        # 1. Save A to Y (before any non-A scratch params clobber A)
+        # 2. Emit all non-A scratch params first
+        # 3. Restore A from Y
+        # 4. Emit A-resident scratch params last
+        has_war_with_a = any(
+            getattr(arg, '_needs_a_save', False)
+            for arg in sorted_other_args
+        )
 
-            if arg_loc.kind == LocationKind.STACK and pre_arg_stack_adj != 0:
-                arg_loc = selector.parent._offset_location(arg_loc, pre_arg_stack_adj)
+        if has_war_with_a:
+            # Split into: non-scratch args, non-A scratch, A-resident scratch
+            non_scratch = []
+            non_a_scratch = []
+            a_scratch = []
+            for arg in sorted_other_args:
+                if arg.mechanism != ArgumentMechanism.SCRATCH_PARAM:
+                    non_scratch.append(arg)
+                elif selector.parent._get_operand_location(arg.value).is_hw('A'):
+                    a_scratch.append(arg)
+                else:
+                    non_a_scratch.append(arg)
 
-            if arg.mechanism == ArgumentMechanism.REGISTER:
-                selector.emit_register_argument(arg, arg_loc)
+            # Emit non-scratch args first (register, variable)
+            for arg in non_scratch:
+                arg_loc = selector.parent._get_operand_location(arg.value)
+                if arg_loc.kind == LocationKind.STACK and pre_arg_stack_adj != 0:
+                    arg_loc = selector.parent._offset_location(arg_loc, pre_arg_stack_adj)
+                if arg.mechanism == ArgumentMechanism.REGISTER:
+                    selector.emit_register_argument(arg, arg_loc)
+                elif arg.mechanism == ArgumentMechanism.VARIABLE:
+                    selector.emit_variable_argument(arg, arg_loc)
 
-            elif arg.mechanism == ArgumentMechanism.VARIABLE:
-                selector.emit_variable_argument(arg, arg_loc)
+            # Save A to Y (TAY always transfers 16 bits in x16 mode)
+            selector._emit_implied(Opcode.TAY,
+                                  "Save A (WAR hazard: non-A scratch before A-resident)")
 
-            elif arg.mechanism == ArgumentMechanism.SCRATCH_PARAM:
+            # Emit non-A scratch params (these may LDA from sources that
+            # overlap A-resident param targets)
+            for arg in non_a_scratch:
+                arg_loc = selector.parent._get_operand_location(arg.value)
+                if arg_loc.kind == LocationKind.STACK and pre_arg_stack_adj != 0:
+                    arg_loc = selector.parent._offset_location(arg_loc, pre_arg_stack_adj)
                 selector.emit_scratch_param_argument(arg, arg_loc)
+
+            # Restore A from Y
+            selector._emit_implied(Opcode.TYA,
+                                  "Restore A (WAR hazard resolved)")
+
+            # Emit A-resident scratch params last (STA from A)
+            for arg in a_scratch:
+                arg_loc = selector.parent._get_operand_location(arg.value)
+                if arg_loc.kind == LocationKind.STACK and pre_arg_stack_adj != 0:
+                    arg_loc = selector.parent._offset_location(arg_loc, pre_arg_stack_adj)
+                selector.emit_scratch_param_argument(arg, arg_loc)
+        else:
+            for arg in sorted_other_args:
+                arg_loc = selector.parent._get_operand_location(arg.value)
+
+                if arg_loc.kind == LocationKind.STACK and pre_arg_stack_adj != 0:
+                    arg_loc = selector.parent._offset_location(arg_loc, pre_arg_stack_adj)
+
+                if arg.mechanism == ArgumentMechanism.REGISTER:
+                    selector.emit_register_argument(arg, arg_loc)
+
+                elif arg.mechanism == ArgumentMechanism.VARIABLE:
+                    selector.emit_variable_argument(arg, arg_loc)
+
+                elif arg.mechanism == ArgumentMechanism.SCRATCH_PARAM:
+                    selector.emit_scratch_param_argument(arg, arg_loc)
 
         return stack_bytes_pushed
 
@@ -298,33 +355,32 @@ class ABIModel(ABC):
         address, A must be emitted before B (read before write). Uses
         topological sort; cycles are broken by emitting in original order.
 
-        A-resident scratch params are kept in their original position to
-        preserve the A-priority sort that runs before this reorder.
+        A-resident scratch params participate in the hazard analysis (their
+        target addresses may overlap other params' source locations), but
+        are handled specially: when a non-A-resident param must precede an
+        A-resident param, the non-A param is moved before the A-resident
+        param with A saved/restored around it.
         """
         from r65.compiler.mir.nodes import ArgumentMechanism
         from r65.compiler.codegen.register_alloc import LocationKind
         from r65.compiler.codegen.type_utils import get_type_size
 
-        # Separate scratch params from non-scratch args, excluding A-resident
-        # ones which must stay in place (their LDA-free emit depends on A
-        # not being clobbered by other params' loads)
-        scratch_args = []  # (original_position_in_args, arg)
-        a_resident_scratches = []  # (original_position_in_args, arg)
+        # Collect all scratch params, noting which are A-resident
+        all_scratch = []  # list of (arg, is_a_resident)
+        scratch_positions = []  # original positions in args list
         for pos, arg in enumerate(args):
             if arg.mechanism != ArgumentMechanism.SCRATCH_PARAM:
                 continue
             arg_loc = selector.parent._get_operand_location(arg.value)
-            if arg_loc.is_hw('A'):
-                a_resident_scratches.append((pos, arg))
-            else:
-                scratch_args.append(arg)
+            all_scratch.append((arg, arg_loc.is_hw('A')))
+            scratch_positions.append(pos)
 
-        if len(scratch_args) <= 1:
-            return args  # No reordering needed among non-A-resident scratches
+        if len(all_scratch) <= 1:
+            return args
 
-        # Build target address set for each non-A-resident scratch param
-        target_addrs = {}  # byte_addr -> arg index
-        for i, arg in enumerate(scratch_args):
+        # Build target address set for ALL scratch params (including A-resident)
+        target_addrs = {}  # byte_addr -> scratch index
+        for i, (arg, _is_a) in enumerate(all_scratch):
             addr = arg.scratch_addr
             param_size = 1
             if arg.param_type is not None:
@@ -335,7 +391,7 @@ class ABIModel(ABC):
         # Build dependency graph: arg i must come before arg j if
         # arg i's source is at an address that arg j will write to
         must_precede = {}  # i -> set of j (i must come before j)
-        for i, arg in enumerate(scratch_args):
+        for i, (arg, _is_a) in enumerate(all_scratch):
             arg_loc = selector.parent._get_operand_location(arg.value)
             if arg_loc.kind != LocationKind.SCRATCH:
                 continue
@@ -351,7 +407,19 @@ class ABIModel(ABC):
         if not must_precede:
             return args  # No hazards
 
-        # Topological sort of non-A-resident scratch args
+        # Check if any non-A param must precede an A-resident param.
+        # If so, we need A save/restore: move the conflicting non-A
+        # readers before the A-resident writers.
+        a_indices = {i for i, (_arg, is_a) in enumerate(all_scratch) if is_a}
+        non_a_before_a = set()  # non-A indices that must precede an A-resident
+        for i, deps in must_precede.items():
+            if i not in a_indices:
+                # non-A param i must precede some set of params
+                for j in deps:
+                    if j in a_indices:
+                        non_a_before_a.add(i)
+
+        # Topological sort of ALL scratch args
         ordered = []
         visited = set()
         in_progress = set()
@@ -368,20 +436,32 @@ class ABIModel(ABC):
             visited.add(idx)
             ordered.append(idx)
 
-        for i in range(len(scratch_args)):
+        for i in range(len(all_scratch)):
             visit(i)
 
-        # visit() appends in post-order — the node with no deps last.
-        # We want it first (emit readers before writers), so reverse.
+        # visit() appends in post-order — reverse for correct order.
         ordered.reverse()
 
-        # Rebuild: A-resident scratches stay in place, others get reordered
-        reordered_scratch = [scratch_args[i] for i in ordered]
+        # Rebuild args list preserving non-scratch args in place
+        reordered_scratch = [all_scratch[i][0] for i in ordered]
+
+        # If non-A params must precede A-resident params, we need to
+        # wrap the moved params with A save/restore. We mark them
+        # so emit_call_args can handle the save/restore.
+        if non_a_before_a:
+            for arg in reordered_scratch:
+                idx_in_all = next(
+                    i for i, (a, _) in enumerate(all_scratch) if a is arg
+                )
+                if idx_in_all in non_a_before_a:
+                    # Mark this arg as needing A save/restore around it
+                    arg._needs_a_save = True
+
         result = []
         scratch_iter = iter(reordered_scratch)
-        a_positions = {pos for pos, _ in a_resident_scratches}
+        scratch_pos_set = set(scratch_positions)
         for pos, arg in enumerate(args):
-            if arg.mechanism == ArgumentMechanism.SCRATCH_PARAM and pos not in a_positions:
+            if pos in scratch_pos_set:
                 result.append(next(scratch_iter))
             else:
                 result.append(arg)
@@ -890,20 +970,62 @@ class ABIDefault(ABIModel):
         # Reorder scratch params to avoid WAR hazards
         sorted_other_args = self._reorder_scratch_params(selector, sorted_other_args)
 
-        for arg in sorted_other_args:
-            arg_loc = selector.parent._get_operand_location(arg.value)
+        # Check for WAR hazard with A-resident scratch params
+        has_war_with_a = any(
+            getattr(arg, '_needs_a_save', False)
+            for arg in sorted_other_args
+        )
 
-            if arg_loc.kind == LocationKind.STACK and pre_arg_stack_adj != 0:
-                arg_loc = selector.parent._offset_location(arg_loc, pre_arg_stack_adj)
+        if has_war_with_a:
+            non_scratch = []
+            non_a_scratch = []
+            a_scratch = []
+            for arg in sorted_other_args:
+                if arg.mechanism != ArgumentMechanism.SCRATCH_PARAM:
+                    non_scratch.append(arg)
+                elif selector.parent._get_operand_location(arg.value).is_hw('A'):
+                    a_scratch.append(arg)
+                else:
+                    non_a_scratch.append(arg)
 
-            if arg.mechanism == ArgumentMechanism.REGISTER:
-                selector.emit_register_argument(arg, arg_loc)
+            for arg in non_scratch:
+                arg_loc = selector.parent._get_operand_location(arg.value)
+                if arg_loc.kind == LocationKind.STACK and pre_arg_stack_adj != 0:
+                    arg_loc = selector.parent._offset_location(arg_loc, pre_arg_stack_adj)
+                if arg.mechanism == ArgumentMechanism.REGISTER:
+                    selector.emit_register_argument(arg, arg_loc)
+                elif arg.mechanism == ArgumentMechanism.VARIABLE:
+                    selector.emit_variable_argument(arg, arg_loc)
 
-            elif arg.mechanism == ArgumentMechanism.VARIABLE:
-                selector.emit_variable_argument(arg, arg_loc)
-
-            elif arg.mechanism == ArgumentMechanism.SCRATCH_PARAM:
+            selector._emit_implied(Opcode.TAY,
+                                  "Save A (WAR hazard: non-A scratch before A-resident)")
+            for arg in non_a_scratch:
+                arg_loc = selector.parent._get_operand_location(arg.value)
+                if arg_loc.kind == LocationKind.STACK and pre_arg_stack_adj != 0:
+                    arg_loc = selector.parent._offset_location(arg_loc, pre_arg_stack_adj)
                 selector.emit_scratch_param_argument(arg, arg_loc)
+            selector._emit_implied(Opcode.TYA,
+                                  "Restore A (WAR hazard resolved)")
+            for arg in a_scratch:
+                arg_loc = selector.parent._get_operand_location(arg.value)
+                if arg_loc.kind == LocationKind.STACK and pre_arg_stack_adj != 0:
+                    arg_loc = selector.parent._offset_location(arg_loc, pre_arg_stack_adj)
+                selector.emit_scratch_param_argument(arg, arg_loc)
+        else:
+            for arg in sorted_other_args:
+                arg_loc = selector.parent._get_operand_location(arg.value)
+
+                if arg_loc.kind == LocationKind.STACK and pre_arg_stack_adj != 0:
+                    arg_loc = selector.parent._offset_location(arg_loc, pre_arg_stack_adj)
+
+                if arg.mechanism == ArgumentMechanism.REGISTER:
+                    selector.emit_register_argument(arg, arg_loc)
+
+                elif arg.mechanism == ArgumentMechanism.VARIABLE:
+                    selector.emit_variable_argument(arg, arg_loc)
+
+                elif arg.mechanism == ArgumentMechanism.SCRATCH_PARAM:
+                    selector.emit_scratch_param_argument(arg, arg_loc)
 
         return stack_bytes_pushed
 
