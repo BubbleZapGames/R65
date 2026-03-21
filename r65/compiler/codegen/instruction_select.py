@@ -1155,7 +1155,11 @@ class InstructionSelector:
         restore_all = modified is None
         if restore_all or 'DBR' in modified:
             self._emit_implied(Opcode.PLB, "Restore Data Bank")
-        if restore_all or 'D' in modified:
+        # D must be restored if handler modifies D OR if scratch save reset D=0
+        has_scratches = bool(
+            self.reg_alloc and self.reg_alloc.scratch_pool and
+            self.reg_alloc.scratch_pool.scratches)
+        if restore_all or 'D' in modified or has_scratches:
             self._emit_implied(Opcode.PLD, "Restore Direct Page")
         if restore_all or 'Y' in modified:
             self._emit_implied(Opcode.PLY, "Restore Y")

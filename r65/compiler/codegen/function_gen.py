@@ -870,6 +870,10 @@ class FunctionCodeGenerator:
         if mir_func.interrupt_attr:
             modified_regs = self._analyze_interrupt_modified_regs(mir_func)
             mir_func.interrupt_modified_regs = modified_regs
+            # Track if we have scratches — D must be saved/restored if so
+            # (scratch save resets D=0, which clobbers interrupted code's D)
+            self._interrupt_has_scratches = bool(
+                reg_alloc.scratch_pool and reg_alloc.scratch_pool.scratches)
             self._emit_interrupt_register_saves(modified_regs)
             self._emit_interrupt_scratch_saves(reg_alloc.scratch_pool)
 
@@ -1211,7 +1215,7 @@ class FunctionCodeGenerator:
             self._emit_instr(Opcode.PHX, comment="Save X")
         if save_all or 'Y' in modified_regs:
             self._emit_instr(Opcode.PHY, comment="Save Y")
-        if save_all or 'D' in modified_regs:
+        if save_all or 'D' in modified_regs or self._interrupt_has_scratches:
             self._emit_instr(Opcode.PHD, comment="Save Direct Page")
         if save_all or 'DBR' in modified_regs:
             self._emit_instr(Opcode.PHB, comment="Save Data Bank")
@@ -1243,16 +1247,23 @@ class FunctionCodeGenerator:
         if not scratch_pool or not scratch_pool.scratches:
             return
 
+        # First, reset D=0 so DP addressing works correctly.
+        # The interrupted code may have D set to a non-zero value (e.g., D=S
+        # for far pointer params), making DP-relative reads go to wrong addresses.
+        # PHD was already done in register saves; now reset D to 0.
+        self._emit_instr(Opcode.PEA, Immediate(0), "Push 0 for D reset")
+        self._emit_instr(Opcode.PLD, comment="D = 0 (safe for scratch DP access)")
+
         for scratch in scratch_pool.scratches:
             if scratch.size == 1:
-                # 1-byte scratch: LDA abs / PHA (already in m8)
-                self._emit_instr(Opcode.LDA_ABSOLUTE, Address(scratch.address),
+                # 1-byte scratch: LDA dp / PHA (already in m8, D=0)
+                self._emit_instr(Opcode.LDA_DP, Address(scratch.address),
                                 f"Save scratch {scratch.name}")
                 self._emit_instr(Opcode.PHA)
             elif scratch.size == 2:
-                # 2-byte scratch: REP #$20 / LDA abs / PHA / SEP #$20
+                # 2-byte scratch: REP #$20 / LDA dp / PHA / SEP #$20
                 self._emit_instr(Opcode.REP_IMMEDIATE, Immediate(M_FLAG), "16-bit A for 2-byte scratch save")
-                self._emit_instr(Opcode.LDA_ABSOLUTE, Address(scratch.address),
+                self._emit_instr(Opcode.LDA_DP, Address(scratch.address),
                                 f"Save scratch {scratch.name}")
                 self._emit_instr(Opcode.PHA)
                 self._emit_instr(Opcode.SEP_IMMEDIATE, Immediate(M_FLAG), "Restore 8-bit A")
