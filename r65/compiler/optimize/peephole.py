@@ -1063,7 +1063,12 @@ class PeepholeOptimizer:
                         accu_declares_mode = (accu_val == target_mode)
                     all_match = modes and all(m == target_mode for m in modes)
                     no_preds_but_declared = (not modes and accu_declares_mode)
-                    if all_match or no_preds_but_declared:
+                    # Never remove REQUIRED mode switches (codegen inserted
+                    # these for cross-block mode mismatches it detected)
+                    is_required = (hasattr(nodes[sep_rep_idx], 'comment') and
+                                 nodes[sep_rep_idx].comment and
+                                 'REQUIRED' in nodes[sep_rep_idx].comment)
+                    if not is_required and (all_match or no_preds_but_declared):
                         # Eliminate the SEP/REP but KEEP the .ACCU directive.
                         # WLA-DX tracks accumulator size linearly (not by control
                         # flow), so the .ACCU directive is needed to inform the
@@ -1113,8 +1118,25 @@ class PeepholeOptimizer:
                                     break
                                 if isinstance(nodes[k], Label):
                                     continue
-                        # Default: if no .ACCU found but modes disagree,
-                        # assume m8 (the default function mode in R65)
+                        # If no .ACCU found, scan forward for the first
+                        # mode-sensitive instruction to infer the expected mode
+                        if expected_mode is None:
+                            for k in range(i + 1, min(i + 20, len(nodes))):
+                                if isinstance(nodes[k], Directive) and nodes[k].name == '.ACCU':
+                                    expected_mode = int(nodes[k].args[0]) if nodes[k].args else None
+                                    break
+                                if isinstance(nodes[k], Label):
+                                    continue
+                                if isinstance(nodes[k], Instruction):
+                                    # If we see a REP/SEP, that IS the mode switch
+                                    if nodes[k].opcode == Opcode.SEP_IMMEDIATE:
+                                        expected_mode = 8
+                                        break
+                                    elif nodes[k].opcode == Opcode.REP_IMMEDIATE:
+                                        expected_mode = 16
+                                        break
+                                    break
+                        # Ultimate default: assume m8
                         if expected_mode is None:
                             expected_mode = 8
                         if expected_mode == 8:

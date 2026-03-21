@@ -629,14 +629,15 @@ class FunctionCodeGenerator:
         expected_is_m16 = (expected_m_mode == ModeState.M16)
 
         # Emit mode switch if needed (or forced for back-edge targets)
+        # Use "REQUIRED" comment to prevent peephole from removing it
         if force or current_is_m16 != expected_is_m16:
             if expected_is_m16:
                 self._emit_instr(Opcode.REP_IMMEDIATE, Immediate(M_FLAG),
-                               "Restore m16 mode for block")
+                               "REQUIRED: restore m16 mode for block")
                 self.emitter.emit_accu_mode(16)
             else:
                 self._emit_instr(Opcode.SEP_IMMEDIATE, Immediate(M_FLAG),
-                               "Restore m8 mode for block")
+                               "REQUIRED: restore m8 mode for block")
                 self.emitter.emit_accu_mode(8)
 
     # ========================================================================
