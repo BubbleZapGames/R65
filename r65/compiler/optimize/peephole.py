@@ -1002,6 +1002,12 @@ class PeepholeOptimizer:
                     current_mode = None
                     dead_fallthrough = True
             elif node.opcode in JUMP_OPCODES:
+                # Record source mode at jump target (same as branches)
+                target = node.operand.value if hasattr(node.operand, 'value') else None
+                if target:
+                    if target not in label_arriving_modes:
+                        label_arriving_modes[target] = set()
+                    label_arriving_modes[target].add(current_mode)
                 current_mode = None
                 dead_fallthrough = True
 
@@ -1075,6 +1081,62 @@ class PeepholeOptimizer:
                             i += 1
                         self.stats.redundant_mode_changes_eliminated += 1
                         continue
+
+                # If label has no SEP/REP but predecessors arrive with mixed
+                # modes (some m8, some m16), insert a mode switch to match
+                # the .ACCU directive's declared mode.
+                from r65.compiler.codegen.asm_nodes import Immediate
+                if sep_rep_idx is None and modes and len(modes) > 1:
+                    has_8 = 8 in modes
+                    has_16 = 16 in modes
+                    if has_8 and has_16:
+                        # Find .ACCU directive to determine expected mode
+                        # Check both before and after the label (co-located labels
+                        # may have .ACCU before the first label in the group)
+                        expected_mode = None
+                        # Check after label
+                        for k in range(i + 1, min(i + 4, len(nodes))):
+                            if isinstance(nodes[k], Directive) and nodes[k].name == '.ACCU':
+                                expected_mode = int(nodes[k].args[0]) if nodes[k].args else None
+                                break
+                            if isinstance(nodes[k], Instruction):
+                                break  # Stop at first real instruction
+                            if isinstance(nodes[k], Label):
+                                continue  # Skip co-located labels
+                        # Check before label (up to 3 nodes back)
+                        if expected_mode is None:
+                            for k in range(i - 1, max(i - 4, -1), -1):
+                                if isinstance(nodes[k], Directive) and nodes[k].name == '.ACCU':
+                                    expected_mode = int(nodes[k].args[0]) if nodes[k].args else None
+                                    break
+                                if isinstance(nodes[k], Instruction):
+                                    break
+                                if isinstance(nodes[k], Label):
+                                    continue
+                        # Default: if no .ACCU found but modes disagree,
+                        # assume m8 (the default function mode in R65)
+                        if expected_mode is None:
+                            expected_mode = 8
+                        if expected_mode == 8:
+                            optimized.append(node)  # Label
+                            i += 1
+                            while i < len(nodes) and isinstance(nodes[i], Directive):
+                                optimized.append(nodes[i])
+                                i += 1
+                            sep = Instruction(Opcode.SEP_IMMEDIATE, Immediate(M_FLAG),
+                                            "Mode fix: predecessors disagree on A size")
+                            optimized.append(sep)
+                            continue
+                        elif expected_mode == 16:
+                            optimized.append(node)  # Label
+                            i += 1
+                            while i < len(nodes) and isinstance(nodes[i], Directive):
+                                optimized.append(nodes[i])
+                                i += 1
+                            rep = Instruction(Opcode.REP_IMMEDIATE, Immediate(M_FLAG),
+                                            "Mode fix: predecessors disagree on A size")
+                            optimized.append(rep)
+                            continue
 
             optimized.append(node)
             i += 1
