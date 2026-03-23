@@ -2464,16 +2464,33 @@ class PeepholeOptimizer:
                         break
                     break
 
-                # Check: next real instruction only uses Z/N flags
+                # Check: ALL subsequent flag consumers only use Z/N flags.
+                # Must scan past the first branch because signed comparisons
+                # emit BNE (Z-only) followed by BVC/EOR (V-dependent).
+                # Long branch fixup may insert JMP between them.
+                # If ANY consumer needs V or C, the CMP is NOT redundant.
                 next_only_zn = False
                 if prev_sets_zn:
+                    all_zn = True
                     for k in range(i + 1, len(nodes)):
                         n = nodes[k]
                         if isinstance(n, Directive):
                             continue
+                        if isinstance(n, Label):
+                            break  # Label = control flow merge, stop scanning
                         if isinstance(n, Instruction):
-                            next_only_zn = n.opcode in self._Z_N_BRANCH_OPCODES
-                        break
+                            if n.opcode in self._Z_N_BRANCH_OPCODES:
+                                continue  # This branch only uses Z/N, keep scanning
+                            elif n.opcode in (Opcode.BVC, Opcode.BVS,
+                                              Opcode.BCC, Opcode.BCS):
+                                all_zn = False  # Needs V or C from CMP
+                                break
+                            elif n.opcode in (Opcode.EOR_IMMEDIATE,
+                                              Opcode.JMP, Opcode.JMP_LONG):
+                                continue  # Part of signed compare / long branch pattern
+                            else:
+                                break  # Non-branch instruction, stop scanning
+                    next_only_zn = all_zn
 
                 if prev_sets_zn and next_only_zn:
                     self.stats.redundant_cmp_zero_eliminated += 1

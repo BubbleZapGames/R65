@@ -82,6 +82,20 @@ def analyze_scratch_params(mir_program: MIRProgram, scratch_pool: ScratchRegiste
                     func.has_far_ptr_stack_params = False
                     func.far_ptr_param_indices.clear()
 
+    # Step 3b: Collect global set of all scratch param addresses.
+    # Any function's locals must avoid these addresses because a caller's
+    # scratch params persist across calls while the callee runs.
+    # For multi-byte params, include ALL bytes in the range (e.g. u16 at $00 -> {$00, $01}).
+    global_scratch_param_addrs: Set[int] = set()
+    for func in mir_program.functions:
+        for param_idx, base_addr in func.scratch_param_addrs.items():
+            param_size = get_type_size(func.parameters[param_idx].param_type)
+            for offset in range(param_size):
+                global_scratch_param_addrs.add(base_addr + offset)
+    # Store on each function so function_gen.py can mark them as occupied
+    for func in mir_program.functions:
+        func._global_scratch_param_addrs = global_scratch_param_addrs
+
     # Step 4: Update call sites
     for func in mir_program.functions:
         _update_call_sites(func, promotions)

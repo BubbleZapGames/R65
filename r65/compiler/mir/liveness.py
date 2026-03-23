@@ -517,15 +517,34 @@ class LivenessAnalyzer:
                         var2_just_defined = True
                     var2_live = True
 
-                # A variable that was JUST defined (first def, not also used
-                # at this instruction) is not yet observable — skip it.
+                # A variable that was JUST defined at a Move instruction (and
+                # not also used) is not yet observable — the Move's dest doesn't
+                # interfere with the Move's source.  This is the standard
+                # copy-coalescing property.
+                #
+                # For non-Move defs (BinaryOp, Load, etc.), the dest's physical
+                # storage IS written during the instruction.  Even if the dest
+                # vreg has no future uses (e.g., it was eliminated by copy
+                # propagation), the write still occurs and would corrupt any
+                # other variable sharing the same storage.  So we must NOT
+                # suppress interference for non-Move defining instructions.
+                from r65.compiler.mir.nodes import Move as MoveInstr
+                is_move = isinstance(instr, MoveInstr)
+
                 var1_live_here = var1_live and i <= var1_last_use
-                if var1_just_defined and var1 not in uses:
+                if var1_just_defined and var1 not in uses and is_move:
                     var1_live_here = False
+                # A dead def (no future uses) at a non-Move instruction still
+                # physically writes to the storage location, so it must
+                # interfere with any other live variable at this instruction.
+                if var1 in defs and not is_move:
+                    var1_live_here = True
 
                 var2_live_here = var2_live and i <= var2_last_use
-                if var2_just_defined and var2 not in uses:
+                if var2_just_defined and var2 not in uses and is_move:
                     var2_live_here = False
+                if var2 in defs and not is_move:
+                    var2_live_here = True
 
                 if var1_live_here and var2_live_here:
                     return True
