@@ -906,10 +906,15 @@ class CallInstructionSelector(BaseSelector):
                     # Clear active region
                     self.region_state.clear_active_region(hw_reg)
 
-        # A register per-call spilling (only when NOT using region-based)
-        # This handles the case where A is used but not bound to a vreg
-        if not self._a_bound_to_vreg and self.region_state.pending_a_spill is not None:
-            reloads.append(self.region_state.pending_a_spill)
+        # A register per-call spilling fallback: reload if A was spilled for this call.
+        # This handles both: (a) A not bound to a vreg (always per-call), and
+        # (b) A bound to a vreg but this call has no clobber region (per-call fallback).
+        # If a region-based reload already handled A above, pending_a_spill was cleared
+        # by _emit_hw_reloads, so this won't double-reload.
+        if self.region_state.pending_a_spill is not None:
+            # Only add if not already handled by region reload above
+            if not any(r.hw_reg == 'A' for r in reloads):
+                reloads.append(self.region_state.pending_a_spill)
 
         # X/Y per-call spilling: when a vreg allocated to X/Y is live across
         # a call but no clobber region was created (because the liveness analysis
@@ -1407,6 +1412,11 @@ class CallInstructionSelector(BaseSelector):
         elif hasattr(arg.value, 'type_info') and arg.value.type_info:
             param_size = get_type_size(arg.value.type_info)
 
+        # Determine source size for zero-extension check
+        source_size = param_size
+        if hasattr(arg.value, 'type_info') and arg.value.type_info:
+            source_size = get_type_size(arg.value.type_info)
+
         # Skip if value is already at the target scratch address (forwarding optimization)
         if (arg_loc.kind == LocationKind.SCRATCH and
                 arg_loc.scratch_addr == scratch_addr and
@@ -1438,33 +1448,51 @@ class CallInstructionSelector(BaseSelector):
             self.emitter.emit_instr(Opcode.STA_DP, Address(scratch_addr + 2),
                                    f"Scratch far ptr ${scratch_addr + 2:02X} (bank)")
         elif param_size == 2:
-            # 16-bit value: need m16 mode for single STA
-            if arg_loc.is_hw('A'):
-                # Already in A, check mode
-                current_mode = self.parent.emitter.get_accu_mode()
-                if current_mode != 16:
+            needs_zero_ext = source_size < 2
+
+            if needs_zero_ext:
+                # Source is u8 but param is u16: store byte-by-byte in m8 to avoid
+                # garbage in the high byte of A when switching to m16.
+                self._ensure_m8_mode("8-bit A for zero-ext scratch param")
+                if arg_loc.is_hw('A'):
+                    pass  # Already in A low byte
+                elif isinstance(arg.value, MIRImmediate):
+                    self._emit_load_immediate('A', arg.value.value & 0xFF)
+                else:
+                    self.parent._emit_load('LDA', arg_loc)
+                self.emitter.emit_instr(Opcode.STA_DP, Address(scratch_addr),
+                                       f"Scratch param ${scratch_addr:02X} (low byte)")
+                self._emit_load_immediate('A', 0)
+                self.emitter.emit_instr(Opcode.STA_DP, Address(scratch_addr + 1),
+                                       f"Scratch param ${scratch_addr + 1:02X} (high byte, zero-ext)")
+            else:
+                # 16-bit value: need m16 mode for single STA
+                if arg_loc.is_hw('A'):
+                    # Already in A, check mode
+                    current_mode = self.parent.emitter.get_accu_mode()
+                    if current_mode != 16:
+                        self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "16-bit A for scratch param")
+                        self.parent.emitter.emit_accu_mode(16)
+                    self.emitter.emit_instr(Opcode.STA_DP, Address(scratch_addr),
+                                           f"Scratch param ${scratch_addr:02X}")
+                    self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "Restore 8-bit A")
+                    self.parent.emitter.emit_accu_mode(8)
+                elif isinstance(arg.value, MIRImmediate):
                     self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "16-bit A for scratch param")
                     self.parent.emitter.emit_accu_mode(16)
-                self.emitter.emit_instr(Opcode.STA_DP, Address(scratch_addr),
-                                       f"Scratch param ${scratch_addr:02X}")
-                self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "Restore 8-bit A")
-                self.parent.emitter.emit_accu_mode(8)
-            elif isinstance(arg.value, MIRImmediate):
-                self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "16-bit A for scratch param")
-                self.parent.emitter.emit_accu_mode(16)
-                self._emit_load_immediate('A', arg.value.value)
-                self.emitter.emit_instr(Opcode.STA_DP, Address(scratch_addr),
-                                       f"Scratch param ${scratch_addr:02X}")
-                self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "Restore 8-bit A")
-                self.parent.emitter.emit_accu_mode(8)
-            else:
-                self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "16-bit A for scratch param")
-                self.parent.emitter.emit_accu_mode(16)
-                self.parent._emit_load('LDA', arg_loc)
-                self.emitter.emit_instr(Opcode.STA_DP, Address(scratch_addr),
-                                       f"Scratch param ${scratch_addr:02X}")
-                self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "Restore 8-bit A")
-                self.parent.emitter.emit_accu_mode(8)
+                    self._emit_load_immediate('A', arg.value.value)
+                    self.emitter.emit_instr(Opcode.STA_DP, Address(scratch_addr),
+                                           f"Scratch param ${scratch_addr:02X}")
+                    self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "Restore 8-bit A")
+                    self.parent.emitter.emit_accu_mode(8)
+                else:
+                    self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "16-bit A for scratch param")
+                    self.parent.emitter.emit_accu_mode(16)
+                    self.parent._emit_load('LDA', arg_loc)
+                    self.emitter.emit_instr(Opcode.STA_DP, Address(scratch_addr),
+                                           f"Scratch param ${scratch_addr:02X}")
+                    self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "Restore 8-bit A")
+                    self.parent.emitter.emit_accu_mode(8)
         else:
             # 8-bit value: standard LDA/STA in m8
             self._ensure_m8_mode("8-bit A for scratch param")
