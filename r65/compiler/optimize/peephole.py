@@ -1321,18 +1321,19 @@ class PeepholeOptimizer:
             label_A:              label_A:
             BRA label_B           BRA label_B  (now dead, removed by later passes)
         """
-        from r65.compiler.codegen.asm_nodes import Instruction, Label, Address
+        from r65.compiler.codegen.asm_nodes import Instruction, Label, Address, RawAsm
 
         ALL_BRANCHES = BRANCH_OPCODES
 
         # Build label -> BRA target map: for each label immediately followed
         # by a BRA (skipping other labels/directives), record the BRA target.
+        # RawAsm nodes (inline asm) count as executable code and stop the scan.
         label_to_bra_target: dict[str, str] = {}
         for i, node in enumerate(nodes):
             if isinstance(node, Label):
                 # Find the first instruction after this label
                 j = i + 1
-                while j < len(nodes) and not isinstance(nodes[j], Instruction):
+                while j < len(nodes) and not isinstance(nodes[j], (Instruction, RawAsm)):
                     j += 1
                 if (j < len(nodes) and
                     isinstance(nodes[j], Instruction) and
@@ -2157,7 +2158,7 @@ class PeepholeOptimizer:
         Saves 1 cycle and allows subsequent dead code elimination of the
         now-unreferenced label.
         """
-        from r65.compiler.codegen.asm_nodes import Instruction, Label
+        from r65.compiler.codegen.asm_nodes import Instruction, Label, RawAsm
 
         RETURN_OPCODES = {Opcode.RTS, Opcode.RTI, Opcode.RTL}
 
@@ -2165,9 +2166,9 @@ class PeepholeOptimizer:
         label_to_return: dict[str, Opcode] = {}
         for i, node in enumerate(nodes):
             if isinstance(node, Label):
-                # Find first instruction after label (skip directives/labels)
+                # Find first instruction after label (skip directives/labels/RawAsm)
                 j = i + 1
-                while j < len(nodes) and not isinstance(nodes[j], Instruction):
+                while j < len(nodes) and not isinstance(nodes[j], (Instruction, RawAsm)):
                     j += 1
                 if (j < len(nodes) and isinstance(nodes[j], Instruction) and
                         nodes[j].opcode in RETURN_OPCODES):

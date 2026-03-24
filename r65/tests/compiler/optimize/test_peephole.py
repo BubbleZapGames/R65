@@ -6,7 +6,9 @@ import pytest
 
 from r65.compiler.optimize.peephole import PeepholeOptimizer
 from r65.compiler.codegen.opcodes import Opcode
-from r65.compiler.codegen.asm_nodes import Instruction, Address, StackOffset
+from r65.compiler.codegen.asm_nodes import (
+    Instruction, Address, StackOffset, Label, RawAsm,
+)
 
 
 class TestIdentityCopyElimination:
@@ -105,3 +107,57 @@ class TestIdentityCopyElimination:
         assert len(result) == 2
         assert result[0].opcode == Opcode.TAX
         assert result[1].opcode == Opcode.TAY
+
+
+class TestBranchThreadingRawAsm:
+    """Test that _thread_branches treats RawAsm as executable code.
+
+    Bug: _thread_branches skipped RawAsm nodes when scanning for the first
+    instruction after a label. If a block had inline asm followed by BRA,
+    the pass saw the BRA as the "first instruction" and incorrectly threaded
+    branches targeting that label through to the BRA's destination.
+    This made the else clause in long if-else-if chains unreachable when
+    branches used inline asm (asm! macro).
+    """
+
+    def test_rawasm_blocks_branch_threading(self):
+        """BNE to label with RawAsm before BRA should NOT be threaded."""
+        nodes = [
+            # BNE targets else_label
+            Instruction(opcode=Opcode.BNE, operand=Address("else_label")),
+            # ... then block ...
+            Label("then_label"),
+            Instruction(opcode=Opcode.NOP),
+            Instruction(opcode=Opcode.BRA, operand=Address("merge_label")),
+            # merge block (just a BRA to epilogue)
+            Label("merge_label"),
+            Instruction(opcode=Opcode.BRA, operand=Address("epilogue")),
+            # else block: RawAsm (inline asm) THEN BRA
+            Label("else_label"),
+            RawAsm("LDA #$42"),
+            RawAsm("STA $4302"),
+            Instruction(opcode=Opcode.BRA, operand=Address("merge_label")),
+            # epilogue
+            Label("epilogue"),
+            Instruction(opcode=Opcode.RTS),
+        ]
+        opt = PeepholeOptimizer()
+        result = opt._thread_branches(nodes)
+        # BNE should still target else_label, NOT epilogue
+        assert result[0].opcode == Opcode.BNE
+        assert result[0].operand.value == "else_label"
+
+    def test_empty_label_before_bra_is_threaded(self):
+        """BNE to label with only BRA (no RawAsm) should be threaded."""
+        nodes = [
+            Instruction(opcode=Opcode.BNE, operand=Address("merge_label")),
+            Label("merge_label"),
+            Instruction(opcode=Opcode.BRA, operand=Address("epilogue")),
+            Label("epilogue"),
+            Instruction(opcode=Opcode.RTS),
+        ]
+        opt = PeepholeOptimizer()
+        result = opt._thread_branches(nodes)
+        # BNE should be threaded to epilogue
+        assert result[0].opcode == Opcode.BNE
+        assert result[0].operand.value == "epilogue"
