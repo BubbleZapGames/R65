@@ -1,0 +1,889 @@
+// R65 Standard Library - F32 (32-bit Floating Point) Support
+//
+// Woz/Rankin floating point format (Dr. Dobb's Journal, August 1976)
+// adapted for the 65816 with 16-bit register optimizations and
+// SNES hardware multiply acceleration.
+//
+// Format: 4 bytes (1-byte exponent + 3-byte two's complement mantissa)
+//   - Exponent: excess-128 bias ($00=-128, $80=0, $81=+1, $FF=+127)
+//   - Mantissa: 24-bit two's complement, sign in MSB (bit 23)
+//   - Normalized: bit 22 set for positive (01xxxxxx), clear for negative (10xxxxxx)
+//   - Value = mantissa_int / 2^23 * 2^(exponent - 128)
+//   - Zero: exponent byte = 0
+//
+// Precision: 6-7 significant decimal digits
+// Range: ~10^-38 to 10^+38
+//
+// Usage:
+//   include!("lib/F32.r65")
+
+include!("math.r65")
+
+// ============================================================================
+// F32 (32-bit Floating Point) Support
+// ============================================================================
+
+// 32-bit floating point (Woz format, u16-native byte order)
+// Size: 4 bytes, packed
+struct F32 {
+    mant_lo: u16,   // Offset 0-1: Mantissa low 16 bits (little-endian native)
+    exp_hi: u16     // Offset 2-3: Low byte = mantissa high (sign + 7 bits),
+                    //             High byte = exponent (excess-128)
+}
+
+// Construct an F32 from raw pre-computed components.
+// exp: excess-128 exponent byte
+// mant_hi: mantissa high byte (sign bit in bit 7, normalized bit in bit 6)
+// mant_lo_word: mantissa low 16 bits
+macro_rules! F32_RAW($exp:expr, $mant_hi:expr, $mant_lo_word:expr) {
+    F32 {
+        mant_lo: ($mant_lo_word) as u16,
+        exp_hi: ((($exp) as u16) << 8) | ((($mant_hi) as u16) & 0xFF)
+    }
+}
+
+// ============================================================================
+// Pre-computed Constants
+// ============================================================================
+// Encoding: value = (mantissa_24bit_signed / 2^23) * 2^(exp - 128)
+// For positive normalized: mantissa high byte = 0x40..0x7F (bit 6 set, bit 7 clear)
+// Derived with: fraction = value / 2^(exp-128), mantissa = round(fraction * 2^23)
+
+const F32_ZERO:    F32 = F32_RAW!(0x00, 0x00, 0x0000);  // 0.0
+const F32_ONE:     F32 = F32_RAW!(0x81, 0x40, 0x0000);  // 1.0
+const F32_NEG_ONE: F32 = F32_RAW!(0x81, 0xC0, 0x0000);  // -1.0
+const F32_HALF:    F32 = F32_RAW!(0x80, 0x40, 0x0000);  // 0.5
+const F32_TWO:     F32 = F32_RAW!(0x82, 0x40, 0x0000);  // 2.0
+const F32_TEN:     F32 = F32_RAW!(0x84, 0x50, 0x0000);  // 10.0
+const F32_HUNDRED: F32 = F32_RAW!(0x87, 0x64, 0x0000);  // 100.0
+const F32_PI:      F32 = F32_RAW!(0x82, 0x64, 0x87ED);  // 3.14159
+const F32_E:       F32 = F32_RAW!(0x82, 0x56, 0xFC2A);  // 2.71828
+
+// ============================================================================
+// Internal Macros
+// ============================================================================
+
+// Shift 24-bit mantissa left by 1. hi uses only low 8 bits (upper byte is don't-care).
+// Bit 15 of lo carries into bit 0 of hi.
+macro_rules! _f32_shl24($lo:expr, $hi:expr) {
+    if ($lo & 0x8000) != 0 {
+        $lo = $lo + $lo;
+        $hi = $hi + $hi;
+        $hi = $hi | 1;
+    } else {
+        $lo = $lo + $lo;
+        $hi = $hi + $hi;
+    }
+}
+
+// Shift 24-bit mantissa right by 1 (logical - zero fill).
+// Bit 0 of hi carries into bit 15 of lo.
+macro_rules! _f32_shr24($lo:expr, $hi:expr) {
+    if ($hi & 1) != 0 {
+        $hi = $hi >> 1;
+        $lo = $lo >> 1;
+        $lo = $lo | 0x8000;
+    } else {
+        $hi = $hi >> 1;
+        $lo = $lo >> 1;
+    }
+}
+
+// Arithmetic shift right 24-bit mantissa by 1 (preserves sign in bit 7 of hi).
+macro_rules! _f32_asr24($lo:expr, $hi:expr) {
+    if ($hi & 1) != 0 {
+        $hi = ($hi >> 1) | ($hi & 0x80);
+        $lo = ($lo >> 1) | 0x8000;
+    } else {
+        $hi = ($hi >> 1) | ($hi & 0x80);
+        $lo = $lo >> 1;
+    }
+}
+
+// Negate 24-bit mantissa (two's complement: ~val + 1).
+// hi uses only low 8 bits.
+macro_rules! _f32_negate24($lo:expr, $hi:expr) {
+    $lo = $lo ^ 0xFFFF;
+    $hi = ($hi ^ 0xFF) & 0xFF;
+    $lo = $lo + 1;
+    if $lo == 0 {
+        $hi = $hi + 1;
+    }
+}
+
+// Normalize a 24-bit two's complement mantissa.
+// After normalization: bits 7 and 6 of hi differ (01=positive, 10=negative).
+// Adjusts exp accordingly. Sets exp=0 if mantissa is zero.
+macro_rules! _f32_normalize($lo:expr, $hi:expr, $exp:expr) {
+    if ($hi & 0xFF) == 0 {
+        if $lo == 0 {
+            $exp = 0;
+        }
+    }
+    if $exp != 0 {
+        loop {
+            if ($hi & 0xC0) == 0x40 {
+                break;
+            }
+            if ($hi & 0xC0) == 0x80 {
+                break;
+            }
+            _f32_shl24!($lo, $hi);
+            $exp = $exp - 1;
+            if $exp == 0 {
+                break;
+            }
+        }
+    }
+}
+
+// ============================================================================
+// F32 Implementation
+// ============================================================================
+
+impl far F32 {
+    // ========================================================================
+    // Binary operation macros: dest = self op b
+    // Usage: a.add_to!(b, dest)  ->  dest = a + b
+    // ========================================================================
+
+    // dest = self + b
+    macro_rules! add_to($b:ident, $dest:ident) {
+        $dest.copy(self);
+        $dest.add($b);
+    }
+
+    // dest = self - b
+    macro_rules! sub_to($b:ident, $dest:ident) {
+        $dest.copy(self);
+        $dest.sub($b);
+    }
+
+    // dest = self * b
+    macro_rules! mul_to($b:ident, $dest:ident) {
+        $dest.copy(self);
+        $dest.mul($b);
+    }
+
+    // dest = self / b
+    macro_rules! div_to($b:ident, $dest:ident) {
+        $dest.copy(self);
+        $dest.div($b);
+    }
+
+    // dest = -self
+    macro_rules! neg_to($dest:ident) {
+        $dest.copy(self);
+        $dest.neg();
+    }
+
+    // dest = |self|
+    macro_rules! abs_to($dest:ident) {
+        $dest.copy(self);
+        $dest.abs();
+    }
+
+    // ========================================================================
+    // Copy and Query Methods
+    // ========================================================================
+
+    // Copy another F32 into self
+    #[inline(always)]
+    far fn copy(far *self, src: far *F32) {
+        self.mant_lo = src.mant_lo;
+        self.exp_hi = src.exp_hi;
+    }
+
+    // Check if the value is zero (exponent byte is 0)
+    #[inline(always)]
+    far fn is_zero(far *self) -> bool {
+        if (self.exp_hi & 0xFF00) == 0 {
+            return true;
+        }
+        return false;
+    }
+
+    // Check if the value is negative (sign bit = bit 7 of mantissa high byte)
+    #[inline(always)]
+    far fn is_negative(far *self) -> bool {
+        if (self.exp_hi & 0x0080) != 0 {
+            return true;
+        }
+        return false;
+    }
+
+    // ========================================================================
+    // Sign Operations
+    // ========================================================================
+
+    // Negate the value (flip mantissa sign, preserve exponent)
+    #[inline(always)]
+    far fn neg(far *self) {
+        let eh: u16 = self.exp_hi;
+        if (eh & 0xFF00) == 0 {
+            return;
+        }
+        let mut ml: u16 = self.mant_lo;
+        let mut mhi: u16 = eh & 0xFF;
+        let exp_byte: u16 = eh & 0xFF00;
+        _f32_negate24!(ml, mhi);
+        self.mant_lo = ml;
+        self.exp_hi = exp_byte | (mhi & 0xFF);
+    }
+
+    // Absolute value: if negative, negate
+    #[inline(always)]
+    far fn abs(far *self) {
+        if (self.exp_hi & 0x0080) != 0 {
+            self.neg();
+        }
+    }
+
+    // ========================================================================
+    // Conversion Methods
+    // ========================================================================
+
+    // Convert a signed 16-bit integer to floating point (FLOAT).
+    // Normalizes the integer into Woz FP format.
+    far fn from_i16(far *self, value: u16) {
+        if value == 0 {
+            self.mant_lo = 0;
+            self.exp_hi = 0;
+            return;
+        }
+
+        let mut negative: bool = false;
+        let mut val: u16 = value;
+        if (val & 0x8000) != 0 {
+            negative = true;
+            val = val ^ 0xFFFF;
+            val = val + 1;
+        }
+
+        // Place absolute value in 24-bit mantissa: hi=0, lo=val
+        // Starting exponent: 128 + 23 = 151 (if mantissa were at bit 22)
+        let mut mant_hi: u16 = 0;
+        let mut mant_lo: u16 = val;
+        let mut exp: u16 = 151;
+
+        // Normalize: shift left until bit 6 of mant_hi is set
+        loop {
+            if (mant_hi & 0x40) != 0 {
+                break;
+            }
+            _f32_shl24!(mant_lo, mant_hi);
+            exp = exp - 1;
+        }
+
+        // Apply two's complement if negative
+        if negative {
+            _f32_negate24!(mant_lo, mant_hi);
+        }
+
+        self.mant_lo = mant_lo;
+        self.exp_hi = (exp << 8) | (mant_hi & 0xFF);
+    }
+
+    // Convert floating point to signed 16-bit integer (FIX).
+    // Truncates toward zero. Returns 0 for values < 1.0.
+    // Clamps to -32768/32767 on overflow.
+    far fn to_i16(far *self) -> i16 {
+        let eh: u16 = self.exp_hi;
+        let exp: u16 = eh >> 8;
+
+        // Zero or exponent too small (value < 0.5)
+        if exp == 0 {
+            A = 0;
+            return A;
+        }
+
+        // Value magnitude < 1.0
+        if exp < 129 {
+            A = 0;
+            return A;
+        }
+
+        // Exponent too large: any mantissa at exp >= 151 produces value >= 2^22
+        if exp > 150 {
+            if (eh & 0x80) != 0 {
+                A = 0x8000;
+                return A;
+            }
+            A = 0x7FFF;
+            return A;
+        }
+
+        // Extract mantissa and determine sign
+        let mut mant_hi: u16 = eh & 0xFF;
+        let mut mant_lo: u16 = self.mant_lo;
+        let negative: bool = (mant_hi & 0x80) != 0;
+
+        // Work with magnitude
+        if negative {
+            _f32_negate24!(mant_lo, mant_hi);
+        }
+
+        // Shift right by (151 - exp) to convert fraction to integer
+        let mut shifts: u16 = 151 - exp;
+        loop {
+            if shifts == 0 {
+                break;
+            }
+            _f32_shr24!(mant_lo, mant_hi);
+            shifts = shifts - 1;
+        }
+
+        // After shifting, result should be in mant_lo (mant_hi should be 0)
+        let mut result: u16 = mant_lo;
+
+        // Clamp to i16 range
+        if !negative {
+            if result > 0x7FFF {
+                result = 0x7FFF;
+            }
+        } else {
+            if result > 0x8000 {
+                result = 0x8000;
+            }
+            // Apply sign (two's complement)
+            result = result ^ 0xFFFF;
+            result = result + 1;
+        }
+
+        return result as i16;
+    }
+
+    // ========================================================================
+    // Arithmetic Methods (all modify self in-place)
+    // ========================================================================
+
+    // Internal addition core. Adds a mantissa/exponent pair to self.
+    // Both add() and sub() delegate to this.
+    // o_lo: other mantissa low 16 bits
+    // o_hi: other mantissa high byte (in low 8 bits of u16)
+    // o_exp: other exponent (biased)
+    far fn add_raw(far *self, o_lo: u16, o_hi: u16, o_exp: u16) {
+        let s_eh: u16 = self.exp_hi;
+        let s_exp: u16 = s_eh >> 8;
+
+        // If self is zero, just store the other value
+        if s_exp == 0 {
+            self.mant_lo = o_lo;
+            self.exp_hi = (o_exp << 8) | (o_hi & 0xFF);
+            return;
+        }
+
+        let mut s_mhi: u16 = s_eh & 0xFF;
+        let mut s_mlo: u16 = self.mant_lo;
+        let mut o_mhi: u16 = o_hi;
+        let mut o_mlo: u16 = o_lo;
+        let mut exp: u16 = s_exp;
+
+        // Align exponents by arithmetic-shifting the smaller mantissa right
+        if s_exp > o_exp {
+            let mut diff: u16 = s_exp - o_exp;
+            if diff > 23 {
+                // Other is too small to matter
+                return;
+            }
+            loop {
+                if diff == 0 { break; }
+                _f32_asr24!(o_mlo, o_mhi);
+                diff = diff - 1;
+            }
+            exp = s_exp;
+        } else if o_exp > s_exp {
+            let mut diff: u16 = o_exp - s_exp;
+            if diff > 23 {
+                // Self is too small, result is other
+                self.mant_lo = o_lo;
+                self.exp_hi = (o_exp << 8) | (o_hi & 0xFF);
+                return;
+            }
+            loop {
+                if diff == 0 { break; }
+                _f32_asr24!(s_mlo, s_mhi);
+                diff = diff - 1;
+            }
+            exp = o_exp;
+        }
+
+        // Add 24-bit mantissas (two's complement)
+        let r_lo: u16 = s_mlo + o_mlo;
+        let mut carry: u16 = 0;
+        if r_lo < s_mlo {
+            carry = 1;
+        }
+        // Keep r_hi as full u16 to detect overflow past 8 bits
+        let mut r_hi: u16 = (s_mhi & 0xFF) + (o_mhi & 0xFF) + carry;
+
+        // Check for 24-bit overflow (carry past bit 7 of high byte)
+        if (r_hi & 0x100) != 0 {
+            // 25-bit result: shift right by 1, bit 8 becomes new bit 7
+            if (r_hi & 1) != 0 {
+                r_hi = r_hi >> 1;
+                let mut shifted_lo: u16 = r_lo >> 1;
+                shifted_lo = shifted_lo | 0x8000;
+                self.mant_lo = shifted_lo;
+            } else {
+                r_hi = r_hi >> 1;
+                self.mant_lo = r_lo >> 1;
+            }
+            exp = exp + 1;
+            if exp > 255 {
+                // Overflow - set to max
+                self.mant_lo = 0xFFFF;
+                self.exp_hi = 0xFF7F;
+                return;
+            }
+            let mut norm_lo: u16 = self.mant_lo;
+            let mut norm_hi: u16 = r_hi & 0xFF;
+            _f32_normalize!(norm_lo, norm_hi, exp);
+            self.mant_lo = norm_lo;
+            self.exp_hi = (exp << 8) | (norm_hi & 0xFF);
+        } else {
+            r_hi = r_hi & 0xFF;
+            let mut norm_lo: u16 = r_lo;
+            let mut norm_hi: u16 = r_hi;
+
+            // Check for zero result
+            if norm_hi == 0 {
+                if norm_lo == 0 {
+                    self.mant_lo = 0;
+                    self.exp_hi = 0;
+                    return;
+                }
+            }
+
+            _f32_normalize!(norm_lo, norm_hi, exp);
+            self.mant_lo = norm_lo;
+            self.exp_hi = (exp << 8) | (norm_hi & 0xFF);
+        }
+    }
+
+    // Add: self += other
+    far fn add(far *self, other: far *F32) {
+        let o_eh: u16 = other.exp_hi;
+        let o_exp: u16 = o_eh >> 8;
+        if o_exp == 0 { return; }
+        self.add_raw(other.mant_lo, o_eh & 0xFF, o_exp);
+    }
+
+    // Subtract: self -= other
+    far fn sub(far *self, other: far *F32) {
+        let o_eh: u16 = other.exp_hi;
+        let o_exp: u16 = o_eh >> 8;
+        if o_exp == 0 { return; }
+        // Negate other's mantissa locally, then add
+        let mut neg_lo: u16 = other.mant_lo;
+        let mut neg_hi: u16 = o_eh & 0xFF;
+        _f32_negate24!(neg_lo, neg_hi);
+        self.add_raw(neg_lo, neg_hi, o_exp);
+    }
+
+    // Multiply: self *= other
+    far fn mul(far *self, other: far *F32) {
+        _f32_mul_impl(self, other);
+    }
+
+    // Divide: self /= other
+    // Uses 24-bit restoring division (24 iterations).
+    // Returns max magnitude on divide-by-zero.
+    far fn div(far *self, other: far *F32) {
+        let s_eh: u16 = self.exp_hi;
+        let o_eh: u16 = other.exp_hi;
+        let s_exp: u16 = s_eh >> 8;
+        let o_exp: u16 = o_eh >> 8;
+
+        // Division by zero
+        if o_exp == 0 {
+            self.mant_lo = 0xFFFF;
+            self.exp_hi = 0xFF7F;
+            return;
+        }
+
+        // Zero / anything = zero
+        if s_exp == 0 { return; }
+
+        // Result sign
+        let result_neg: bool = ((s_eh ^ o_eh) & 0x80) != 0;
+
+        // Get absolute mantissas
+        let mut dvnd_hi: u16 = s_eh & 0xFF;
+        let mut dvnd_lo: u16 = self.mant_lo;
+        if (dvnd_hi & 0x80) != 0 {
+            _f32_negate24!(dvnd_lo, dvnd_hi);
+        }
+
+        let mut dvsr_hi: u16 = o_eh & 0xFF;
+        let mut dvsr_lo: u16 = other.mant_lo;
+        if (dvsr_hi & 0x80) != 0 {
+            _f32_negate24!(dvsr_lo, dvsr_hi);
+        }
+
+        // Compute exponent: s_exp - o_exp + 128
+        let mut r_exp: u16 = s_exp + 128;
+        if r_exp < o_exp {
+            // Underflow
+            self.mant_lo = 0;
+            self.exp_hi = 0;
+            return;
+        }
+        r_exp = r_exp - o_exp;
+        if r_exp > 255 {
+            self.mant_lo = 0xFFFF;
+            self.exp_hi = 0xFF7F;
+            return;
+        }
+
+        // 24-bit restoring division
+        let mut q_hi: u16 = 0;
+        let mut q_lo: u16 = 0;
+        let mut rem_hi: u16 = 0;
+        let mut rem_lo: u16 = 0;
+        let mut borrow: bool = false;
+        let mut count: u8 = 24;
+
+        loop {
+            // Shift remainder left, bring in top bit of dividend
+            _f32_shl24!(rem_lo, rem_hi);
+            if (dvnd_hi & 0x40) != 0 {
+                rem_lo = rem_lo | 1;
+            }
+            _f32_shl24!(dvnd_lo, dvnd_hi);
+
+            // Shift quotient left
+            _f32_shl24!(q_lo, q_hi);
+
+            // Compare remainder >= divisor (24-bit unsigned)
+            if (rem_hi & 0xFF) > (dvsr_hi & 0xFF) {
+                // Remainder > divisor (high byte), definitely subtract
+                borrow = false;
+                if rem_lo < dvsr_lo { borrow = true; }
+                rem_lo = rem_lo - dvsr_lo;
+                rem_hi = rem_hi - dvsr_hi;
+                if borrow { rem_hi = rem_hi - 1; }
+                q_lo = q_lo | 1;
+            } else if (rem_hi & 0xFF) == (dvsr_hi & 0xFF) {
+                if rem_lo >= dvsr_lo {
+                    rem_lo = rem_lo - dvsr_lo;
+                    rem_hi = rem_hi - dvsr_hi;
+                    q_lo = q_lo | 1;
+                }
+            }
+
+            count--;
+            if count == 0 { break; }
+        }
+
+        // Normalize quotient
+        _f32_normalize!(q_lo, q_hi, r_exp);
+
+        // Apply sign
+        if result_neg {
+            _f32_negate24!(q_lo, q_hi);
+        }
+
+        self.mant_lo = q_lo;
+        self.exp_hi = (r_exp << 8) | (q_hi & 0xFF);
+    }
+
+    // ========================================================================
+    // Comparison
+    // ========================================================================
+
+    // Compare self with other.
+    // Returns: 1 if self > other, 0 if equal, 0xFF (-1 as i8) if self < other.
+    far fn cmp(far *self, other: far *F32) -> i8 {
+        let s_eh: u16 = self.exp_hi;
+        let o_eh: u16 = other.exp_hi;
+        let s_exp: u16 = s_eh >> 8;
+        let o_exp: u16 = o_eh >> 8;
+
+        // Handle zeros
+        if s_exp == 0 {
+            if o_exp == 0 {
+                A = 0;
+                return A;
+            }
+            if (o_eh & 0x80) != 0 {
+                A = 1;
+                return A;
+            }
+            A = 0xFF;
+            return A;
+        }
+        if o_exp == 0 {
+            if (s_eh & 0x80) != 0 {
+                A = 0xFF;
+                return A;
+            }
+            A = 1;
+            return A;
+        }
+
+        // Check sign difference
+        let s_neg: bool = (s_eh & 0x80) != 0;
+        let o_neg: bool = (o_eh & 0x80) != 0;
+        if s_neg {
+            if !o_neg {
+                A = 0xFF;
+                return A;
+            }
+        }
+        if !s_neg {
+            if o_neg {
+                A = 1;
+                return A;
+            }
+        }
+
+        // Same sign: compare exponents
+        if !s_neg {
+            if s_exp > o_exp { A = 1; return A; }
+            if s_exp < o_exp { A = 0xFF; return A; }
+        } else {
+            if s_exp > o_exp { A = 0xFF; return A; }
+            if s_exp < o_exp { A = 1; return A; }
+        }
+
+        // Same sign, same exponent: compare mantissa bytes
+        let s_hi: u16 = s_eh & 0xFF;
+        let o_hi: u16 = o_eh & 0xFF;
+        if s_hi > o_hi { A = 1; return A; }
+        if s_hi < o_hi { A = 0xFF; return A; }
+
+        if self.mant_lo > other.mant_lo { A = 1; return A; }
+        if self.mant_lo < other.mant_lo { A = 0xFF; return A; }
+
+        A = 0;
+        return A;
+    }
+}
+
+// ============================================================================
+// Standalone Multiply Implementations (outside impl for #[cfg] support)
+// ============================================================================
+
+// SNES hardware-accelerated multiply.
+// Uses 8x8 hardware multiply unit for 9 partial products.
+#[cfg(snes)]
+far fn _f32_mul_impl(self_ptr: far *F32, other: far *F32) {
+    let s_eh: u16 = self_ptr.exp_hi;
+    let o_eh: u16 = other.exp_hi;
+    let s_exp: u16 = s_eh >> 8;
+    let o_exp: u16 = o_eh >> 8;
+
+    // Zero check
+    if s_exp == 0 { return; }
+    if o_exp == 0 {
+        self_ptr.mant_lo = 0;
+        self_ptr.exp_hi = 0;
+        return;
+    }
+
+    // Compute result exponent: (s_exp + o_exp - 128)
+    let mut r_exp: u16 = s_exp + o_exp;
+    if r_exp < 129 {
+        self_ptr.mant_lo = 0;
+        self_ptr.exp_hi = 0;
+        return;
+    }
+    r_exp = r_exp - 128;
+    if r_exp > 255 {
+        self_ptr.mant_lo = 0xFFFF;
+        self_ptr.exp_hi = 0xFF7F;
+        return;
+    }
+
+    // Determine result sign (XOR of sign bits)
+    let result_neg: bool = ((s_eh ^ o_eh) & 0x80) != 0;
+
+    // Get absolute mantissas
+    let mut s_hi: u16 = s_eh & 0xFF;
+    let mut s_lo: u16 = self_ptr.mant_lo;
+    if (s_hi & 0x80) != 0 {
+        _f32_negate24!(s_lo, s_hi);
+    }
+
+    let mut o_hi: u16 = o_eh & 0xFF;
+    let mut o_lo: u16 = other.mant_lo;
+    if (o_hi & 0x80) != 0 {
+        _f32_negate24!(o_lo, o_hi);
+    }
+
+    // Extract 6 bytes for partial products
+    let s_l: u8 = s_lo as u8;
+    let s_m: u8 = (s_lo >> 8) as u8;
+    let s_h: u8 = s_hi as u8;
+    let o_l: u8 = o_lo as u8;
+    let o_m: u8 = (o_lo >> 8) as u8;
+    let o_h: u8 = o_hi as u8;
+
+    // Compute 9 partial products using hardware multiply.
+    // Grouped by s_byte to minimize WRMPYA reloads.
+
+    // --- s_l group ---
+    WRMPYA = s_l;
+    WRMPYB = o_l; NOP(4);
+    let p_ll_hi: u16 = RDMPYH as u16;
+
+    WRMPYB = o_m; NOP(4);
+    let p_lm: u16 = (RDMPYH as u16) << 8 | (RDMPYL as u16);
+
+    WRMPYB = o_h; NOP(4);
+    let p_lh: u16 = (RDMPYH as u16) << 8 | (RDMPYL as u16);
+
+    // --- s_m group ---
+    WRMPYA = s_m;
+    WRMPYB = o_l; NOP(4);
+    let p_ml: u16 = (RDMPYH as u16) << 8 | (RDMPYL as u16);
+
+    WRMPYB = o_m; NOP(4);
+    let p_mm: u16 = (RDMPYH as u16) << 8 | (RDMPYL as u16);
+
+    WRMPYB = o_h; NOP(4);
+    let p_mh: u16 = (RDMPYH as u16) << 8 | (RDMPYL as u16);
+
+    // --- s_h group ---
+    WRMPYA = s_h;
+    WRMPYB = o_l; NOP(4);
+    let p_hl: u16 = (RDMPYH as u16) << 8 | (RDMPYL as u16);
+
+    WRMPYB = o_m; NOP(4);
+    let p_hm: u16 = (RDMPYH as u16) << 8 | (RDMPYL as u16);
+
+    WRMPYB = o_h; NOP(4);
+    let p_hh: u16 = (RDMPYH as u16) << 8 | (RDMPYL as u16);
+
+    // Accumulate into res_hi:res_mid (top 32 bits of 48-bit product)
+    let mut carry_count: u16 = 0;
+    let mut old: u16 = 0;
+
+    // Offset 1 sum: p_lm + p_ml
+    let mid1: u16 = p_lm + p_ml;
+    let mut mid1_carry: u16 = 0;
+    if mid1 < p_lm { mid1_carry = 1; }
+
+    // Offset 2 sum: p_lh + p_mm + p_hl + (mid1 >> 8) + p_ll_hi
+    let mut res_mid: u16 = p_lh;
+
+    old = res_mid;
+    res_mid = res_mid + p_mm;
+    if res_mid < old { carry_count = carry_count + 1; }
+
+    old = res_mid;
+    res_mid = res_mid + p_hl;
+    if res_mid < old { carry_count = carry_count + 1; }
+
+    old = res_mid;
+    res_mid = res_mid + (mid1 >> 8);
+    if res_mid < old { carry_count = carry_count + 1; }
+
+    old = res_mid;
+    res_mid = res_mid + p_ll_hi;
+    if res_mid < old { carry_count = carry_count + 1; }
+
+    // Offset 3 sum: p_mh + p_hm
+    let mid2: u16 = p_mh + p_hm;
+    let mut mid2_carry: u16 = 0;
+    if mid2 < p_mh { mid2_carry = 1; }
+
+    old = res_mid;
+    res_mid = res_mid + (mid2 << 8);
+    if res_mid < old { carry_count = carry_count + 1; }
+
+    // Build res_hi
+    let res_hi: u16 = p_hh + (mid2 >> 8) + carry_count + mid1_carry + mid2_carry;
+
+    // Extract mantissa: product >> 23
+    let mut r_mhi: u16 = (res_hi >> 7) & 0x7F;
+    let mut r_mlo: u16 = (res_mid >> 7) | ((res_hi & 0x7F) << 9);
+
+    _f32_normalize!(r_mlo, r_mhi, r_exp);
+
+    if result_neg {
+        _f32_negate24!(r_mlo, r_mhi);
+    }
+
+    self_ptr.mant_lo = r_mlo;
+    self_ptr.exp_hi = (r_exp << 8) | (r_mhi & 0xFF);
+}
+
+// Software multiply fallback (shift-and-add, 24 iterations).
+#[cfg(not(snes))]
+far fn _f32_mul_impl(self_ptr: far *F32, other: far *F32) {
+    let s_eh: u16 = self_ptr.exp_hi;
+    let o_eh: u16 = other.exp_hi;
+    let s_exp: u16 = s_eh >> 8;
+    let o_exp: u16 = o_eh >> 8;
+
+    if s_exp == 0 { return; }
+    if o_exp == 0 {
+        self_ptr.mant_lo = 0;
+        self_ptr.exp_hi = 0;
+        return;
+    }
+
+    let mut r_exp: u16 = s_exp + o_exp;
+    if r_exp < 129 {
+        self_ptr.mant_lo = 0;
+        self_ptr.exp_hi = 0;
+        return;
+    }
+    r_exp = r_exp - 128;
+    if r_exp > 255 {
+        self_ptr.mant_lo = 0xFFFF;
+        self_ptr.exp_hi = 0xFF7F;
+        return;
+    }
+
+    let result_neg: bool = ((s_eh ^ o_eh) & 0x80) != 0;
+
+    let mut mcand_hi: u16 = s_eh & 0xFF;
+    let mut mcand_lo: u16 = self_ptr.mant_lo;
+    if (mcand_hi & 0x80) != 0 {
+        _f32_negate24!(mcand_lo, mcand_hi);
+    }
+
+    let mut mplier_hi: u16 = o_eh & 0xFF;
+    let mut mplier_lo: u16 = other.mant_lo;
+    if (mplier_hi & 0x80) != 0 {
+        _f32_negate24!(mplier_lo, mplier_hi);
+    }
+
+    let mut res_hi: u16 = 0;
+    let mut res_mid: u16 = 0;
+    let mut new_mid: u16 = 0;
+    let mut carry: bool = false;
+
+    let mut count: u8 = 24;
+    loop {
+        if (mplier_lo & 1) != 0 {
+            new_mid = res_mid + mcand_lo;
+            carry = false;
+            if new_mid < res_mid { carry = true; }
+            res_mid = new_mid;
+            res_hi = res_hi + mcand_hi;
+            if carry { res_hi = res_hi + 1; }
+        }
+
+        _f32_shl24!(mcand_lo, mcand_hi);
+        _f32_shr24!(mplier_lo, mplier_hi);
+
+        count--;
+        if count == 0 { break; }
+    }
+
+    let mut r_mhi: u16 = (res_hi >> 7) & 0x7F;
+    let mut r_mlo: u16 = (res_mid >> 7) | ((res_hi & 0x7F) << 9);
+
+    _f32_normalize!(r_mlo, r_mhi, r_exp);
+
+    if result_neg {
+        _f32_negate24!(r_mlo, r_mhi);
+    }
+
+    self_ptr.mant_lo = r_mlo;
+    self_ptr.exp_hi = (r_exp << 8) | (r_mhi & 0xFF);
+}
