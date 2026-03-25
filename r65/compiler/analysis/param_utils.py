@@ -6,7 +6,7 @@ Contains helper functions used by both scratch_params.py (Default ABI)
 and fixedstack_params.py (FixedStack ABI).
 """
 
-from typing import Set, List, Optional, Tuple, Sequence
+from typing import Dict, Set, List, Optional, Tuple, Sequence
 from r65.compiler.mir.nodes import (
     MIRProgram, Call, FunctionPointer, Move, TraitDispatch,
 )
@@ -37,14 +37,42 @@ def find_address_taken_functions(mir_program: MIRProgram) -> Set[str]:
                             address_taken.add(arg.value.function_name)
 
     # Trait method implementations are called indirectly through dispatch tables,
-    # so they cannot have scratch-promoted parameters
-    if hasattr(mir_program, 'trait_dispatch_info') and mir_program.trait_dispatch_info:
-        for trait_info in mir_program.trait_dispatch_info.values():
-            for impl in trait_info.get('implementors', []):
-                for mangled_name in impl.get('mangled', []):
-                    address_taken.add(mangled_name)
+    # but they CAN have scratch-promoted parameters as long as all impls of the
+    # same trait method share the same scratch addresses. They are NOT marked
+    # address-taken; instead, find_trait_impl_groups() coordinates their scratch
+    # layout separately.
 
     return address_taken
+
+
+def find_trait_impl_groups(mir_program: MIRProgram) -> Dict[Tuple[str, int], List[str]]:
+    """
+    Group trait method implementations by (trait_name, method_index).
+
+    All impls of the same trait method share the same parameter signature,
+    so they can be assigned shared scratch addresses for coordination.
+
+    Returns:
+        Dict mapping (trait_name, method_idx) -> list of impl mangled function names
+    """
+    groups: Dict[Tuple[str, int], List[str]] = {}
+
+    if not hasattr(mir_program, 'trait_dispatch_info') or not mir_program.trait_dispatch_info:
+        return groups
+
+    for trait_name, trait_info in mir_program.trait_dispatch_info.items():
+        methods = trait_info.get('methods', [])
+        for method_idx in range(len(methods)):
+            key = (trait_name, method_idx)
+            impl_names: List[str] = []
+            for impl in trait_info.get('implementors', []):
+                mangled_list = impl.get('mangled', [])
+                if method_idx < len(mangled_list):
+                    impl_names.append(mangled_list[method_idx])
+            if impl_names:
+                groups[key] = impl_names
+
+    return groups
 
 
 def find_composite_scratch(

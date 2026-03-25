@@ -17,7 +17,9 @@ from r65.compiler.mir.nodes import (
 from r65.compiler.codegen.register_alloc import ScratchRegisterPool
 from r65.compiler.codegen.type_utils import get_type_size
 from r65.compiler.errors import CodegenError
-from r65.compiler.analysis.param_utils import find_address_taken_functions, find_composite_scratch
+from r65.compiler.analysis.param_utils import (
+    find_address_taken_functions, find_composite_scratch, find_trait_impl_groups,
+)
 
 
 def promote_all_stack_params(mir_program: MIRProgram, scratch_pool: ScratchRegisterPool):
@@ -40,12 +42,57 @@ def promote_all_stack_params(mir_program: MIRProgram, scratch_pool: ScratchRegis
     # Step 1: Find functions whose address is taken
     address_taken = find_address_taken_functions(mir_program)
 
+    # Step 1b: Coordinate trait method scratch params.
+    # All impls of the same trait method share the same scratch addresses.
+    # Allocate once per trait method, then force-assign to all impls.
+    trait_impl_groups = find_trait_impl_groups(mir_program)
+    func_by_name = {f.name: f for f in mir_program.functions}
+    # Maps (trait_name, method_idx) -> {param_idx: ('scratch', addr)}
+    trait_method_promos: Dict[Tuple[str, int], Dict[int, Tuple[str, object]]] = {}
+    trait_promoted_funcs: Set[str] = set()
+
+    for (trait_name, method_idx), impl_names in trait_impl_groups.items():
+        # Find the first impl function that has stack params
+        first_func = None
+        for name in impl_names:
+            f = func_by_name.get(name)
+            if f and f.stack_param_offsets:
+                first_func = f
+                break
+
+        if first_func is None:
+            continue  # No stack params on this trait method
+
+        # Allocate scratch addresses using the first impl's signature.
+        # scratch_only=True: dispatch wrapper clobbers A/X, so only DP scratch is safe.
+        promos = _promote_function_params(first_func, scratch_pool, scratch_only=True)
+        if not promos:
+            continue
+
+        trait_method_promos[(trait_name, method_idx)] = promos
+
+        # Force-assign the same addresses to ALL impls
+        for name in impl_names:
+            f = func_by_name.get(name)
+            if f:
+                trait_promoted_funcs.add(name)
+
     # Step 2: For each function, promote all stack params
     # Build promotions: function_name -> {param_idx: ('hw', reg_name) | ('scratch', addr)}
     all_promotions: Dict[str, Dict[int, Tuple[str, object]]] = {}
 
+    # First, register trait method promotions
+    for (trait_name, method_idx), promos in trait_method_promos.items():
+        impl_names = trait_impl_groups[(trait_name, method_idx)]
+        for name in impl_names:
+            all_promotions[name] = promos
+
     for func in mir_program.functions:
         if not func.stack_param_offsets:
+            continue
+
+        # Skip trait impl functions already promoted by the coordination pre-pass
+        if func.name in trait_promoted_funcs:
             continue
 
         # Address-taken functions in FixedStack mode: error if they have unbound stack params
@@ -100,8 +147,14 @@ def promote_all_stack_params(mir_program: MIRProgram, scratch_pool: ScratchRegis
     # Any function's locals must avoid these addresses because a caller's
     # scratch params persist across calls while the callee runs.
     # For multi-byte params, include ALL bytes in the range (e.g. u16 at $00 → {$00, $01}).
+    #
+    # Trait dispatch scratch addresses are NOT globally reserved — they use
+    # caller-scoped reservation (only functions that contain TraitDispatch
+    # calls mark those addresses as occupied).
     global_scratch_param_addrs: Set[int] = set()
     for func in mir_program.functions:
+        if func.name in trait_promoted_funcs:
+            continue  # Trait impl scratches are caller-scoped, not global
         for param_idx, base_addr in func.scratch_param_addrs.items():
             param_size = get_type_size(func.parameters[param_idx].param_type)
             for offset in range(param_size):
@@ -110,9 +163,17 @@ def promote_all_stack_params(mir_program: MIRProgram, scratch_pool: ScratchRegis
     for func in mir_program.functions:
         func._global_scratch_param_addrs = global_scratch_param_addrs
 
+    # Step 4b: Caller-scoped reservation for trait dispatch scratches.
+    # Scan each function for TraitDispatch instructions. For each caller that
+    # dispatches a trait method, collect the scratch addresses used by that
+    # dispatch so function_gen.py reserves them as occupied for that function.
+    # Two different trait methods CAN share the same scratch addresses since
+    # a given caller only dispatches one at a time (liveness doesn't cross).
+    _collect_trait_dispatch_scratch_addrs(mir_program, trait_method_promos)
+
     # Step 5: Update call sites
     for func in mir_program.functions:
-        _update_call_sites(func, all_promotions)
+        _update_call_sites(func, all_promotions, trait_method_promos)
 
     # Step 6: Zero out outgoing arg bytes for all functions
     for func in mir_program.functions:
@@ -171,7 +232,8 @@ def _reject_recursive_functions(mir_program: MIRProgram):
 
 
 def _promote_function_params(
-    func: MIRFunction, scratch_pool: ScratchRegisterPool
+    func: MIRFunction, scratch_pool: ScratchRegisterPool,
+    scratch_only: bool = False,
 ) -> Dict[int, Tuple[str, object]]:
     """
     Promote all stack parameters of a function to hw regs or scratch.
@@ -224,15 +286,20 @@ def _promote_function_params(
     # B is only usable in m8 mode — exclude it from m16 functions (@ A: u16)
     # because in m16, B is the high byte of the 16-bit accumulator and
     # every accumulator operation clobbers it.
-    func_is_m16 = any(
-        isinstance(p.binding, RegisterBinding) and p.binding.register_name == 'A'
-        and get_type_size(p.param_type) == 2
-        for p in func.parameters
-    )
-    available_hw_u8 = [r for r in ['A', 'B'] if r not in taken_hw_regs]
-    if func_is_m16:
-        available_hw_u8 = [r for r in available_hw_u8 if r != 'B']
-    available_hw_u16 = [r for r in ['X', 'Y'] if r not in taken_hw_regs]
+    # scratch_only=True: trait dispatch wrapper clobbers A/X, so only scratch is safe.
+    if scratch_only:
+        available_hw_u8 = []
+        available_hw_u16 = []
+    else:
+        func_is_m16 = any(
+            isinstance(p.binding, RegisterBinding) and p.binding.register_name == 'A'
+            and get_type_size(p.param_type) == 2
+            for p in func.parameters
+        )
+        available_hw_u8 = [r for r in ['A', 'B'] if r not in taken_hw_regs]
+        if func_is_m16:
+            available_hw_u8 = [r for r in available_hw_u8 if r != 'B']
+        available_hw_u16 = [r for r in ['X', 'Y'] if r not in taken_hw_regs]
 
     # Available scratch registers
     scratch_available = [(s.address, s.size, s.name) for s in scratch_pool.scratches]
@@ -342,38 +409,93 @@ def _inject_hw_param_moves(func: MIRFunction):
     entry_block.instructions = moves_to_inject + entry_block.instructions
 
 
-def _update_call_sites(func: MIRFunction, all_promotions: Dict[str, Dict[int, Tuple[str, object]]]):
+def _update_call_sites(
+    func: MIRFunction,
+    all_promotions: Dict[str, Dict[int, Tuple[str, object]]],
+    trait_method_promos: Dict[Tuple[str, int], Dict[int, Tuple[str, object]]] = None,
+):
     """
-    Update Call instructions to use REGISTER or SCRATCH_PARAM mechanism
-    for promoted parameters.
+    Update Call and TraitDispatch instructions to use REGISTER or SCRATCH_PARAM
+    mechanism for promoted parameters.
     """
     for block in func.blocks.values():
         for instr in block.instructions:
-            if not isinstance(instr, (Call, TraitDispatch)):
-                continue
-
-            # TraitDispatch doesn't have a static callee — skip
             if isinstance(instr, TraitDispatch):
-                continue
-
-            # Only direct calls (not indirect through function pointer)
-            if not isinstance(instr.function, str):
-                continue
-
-            callee_promos = all_promotions.get(instr.function)
-            if not callee_promos:
-                continue
-
-            for arg_idx, arg in enumerate(instr.args):
-                if arg.mechanism != ArgumentMechanism.STACK:
+                if trait_method_promos is None:
                     continue
-                if arg_idx not in callee_promos:
+                # Look up shared scratch addresses for this trait method
+                key = (instr.trait_name, instr.method_index)
+                callee_promos = trait_method_promos.get(key)
+                if not callee_promos:
                     continue
+                _apply_promos_to_args(instr.args, callee_promos)
 
-                kind, loc = callee_promos[arg_idx]
-                if kind == 'hw':
-                    arg.mechanism = ArgumentMechanism.REGISTER
-                    arg.location = HardwareRegister(loc)
-                elif kind == 'scratch':
-                    arg.mechanism = ArgumentMechanism.SCRATCH_PARAM
-                    arg.scratch_addr = loc
+            elif isinstance(instr, Call):
+                # Only direct calls (not indirect through function pointer)
+                if not isinstance(instr.function, str):
+                    continue
+                callee_promos = all_promotions.get(instr.function)
+                if not callee_promos:
+                    continue
+                _apply_promos_to_args(instr.args, callee_promos)
+
+
+def _apply_promos_to_args(args, callee_promos: Dict[int, Tuple[str, object]]):
+    """Apply promotions to argument list (shared by Call and TraitDispatch)."""
+    for arg_idx, arg in enumerate(args):
+        if arg.mechanism != ArgumentMechanism.STACK:
+            continue
+        if arg_idx not in callee_promos:
+            continue
+
+        kind, loc = callee_promos[arg_idx]
+        if kind == 'hw':
+            arg.mechanism = ArgumentMechanism.REGISTER
+            arg.location = HardwareRegister(loc)
+        elif kind == 'scratch':
+            arg.mechanism = ArgumentMechanism.SCRATCH_PARAM
+            arg.scratch_addr = loc
+
+
+def _collect_trait_dispatch_scratch_addrs(
+    mir_program: MIRProgram,
+    trait_method_promos: Dict[Tuple[str, int], Dict[int, Tuple[str, object]]],
+):
+    """
+    For each function that contains TraitDispatch calls, collect the scratch
+    addresses used by those dispatches and store them on the function.
+
+    These addresses are reserved in function_gen.py so the function's locals
+    don't collide with trait dispatch scratch params.
+    """
+    if not trait_method_promos:
+        return
+
+    # Build set of all scratch byte addresses per trait method
+    trait_scratch_bytes: Dict[Tuple[str, int], Set[int]] = {}
+    for key, promos in trait_method_promos.items():
+        addrs: Set[int] = set()
+        # Need impl function to get param sizes — find any impl
+        for func in mir_program.functions:
+            if func.name in {n for names in find_trait_impl_groups(mir_program).values() for n in names}:
+                for param_idx, (kind, base_addr) in promos.items():
+                    if kind == 'scratch' and param_idx < len(func.parameters):
+                        param_size = get_type_size(func.parameters[param_idx].param_type)
+                        for offset in range(param_size):
+                            addrs.add(base_addr + offset)
+                break
+        if addrs:
+            trait_scratch_bytes[key] = addrs
+
+    # Scan each function for TraitDispatch instructions
+    for func in mir_program.functions:
+        func_trait_addrs: Set[int] = set()
+        for block in func.blocks.values():
+            for instr in block.instructions:
+                if isinstance(instr, TraitDispatch):
+                    key = (instr.trait_name, instr.method_index)
+                    addrs = trait_scratch_bytes.get(key)
+                    if addrs:
+                        func_trait_addrs |= addrs
+        if func_trait_addrs:
+            func._trait_dispatch_scratch_addrs = func_trait_addrs

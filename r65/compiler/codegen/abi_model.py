@@ -482,11 +482,17 @@ class ABIModel(ABC):
         from r65.compiler.codegen.type_utils import get_type_size
 
         stack_args = [arg for arg in instr.args if arg.mechanism == ArgumentMechanism.STACK]
+        scratch_args = [arg for arg in instr.args if arg.mechanism == ArgumentMechanism.SCRATCH_PARAM]
         self_y_arg = None
         for arg in instr.args:
             if arg.mechanism == ArgumentMechanism.SELF_Y:
                 self_y_arg = arg
                 break
+
+        # Emit scratch param arguments first (they write to DP, don't touch stack)
+        for arg in scratch_args:
+            arg_loc = selector.parent._get_operand_location(arg.value)
+            selector.emit_scratch_param_argument(arg, arg_loc)
 
         spill_offset = selector.get_current_spill_offset()
         stack_bytes_pushed = 0
@@ -1033,17 +1039,24 @@ class ABIDefault(ABIModel):
         """Default trait dispatch: always push stack args via PHA.
 
         Same as Default's trait dispatch but forces PHA path for stack args.
+        Scratch param args are emitted first (they write to DP, not stack).
         """
         from r65.compiler.mir.nodes import ArgumentMechanism
         from r65.compiler.codegen.register_alloc import LocationKind
         from r65.compiler.codegen.type_utils import get_type_size
 
         stack_args = [arg for arg in instr.args if arg.mechanism == ArgumentMechanism.STACK]
+        scratch_args = [arg for arg in instr.args if arg.mechanism == ArgumentMechanism.SCRATCH_PARAM]
         self_y_arg = None
         for arg in instr.args:
             if arg.mechanism == ArgumentMechanism.SELF_Y:
                 self_y_arg = arg
                 break
+
+        # Emit scratch param arguments first (they write to DP, don't touch stack)
+        for arg in scratch_args:
+            arg_loc = selector.parent._get_operand_location(arg.value)
+            selector.emit_scratch_param_argument(arg, arg_loc)
 
         stack_bytes_pushed = 0
 

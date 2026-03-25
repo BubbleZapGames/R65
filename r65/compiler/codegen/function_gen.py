@@ -108,6 +108,15 @@ class FunctionCodeGenerator:
                 if scratch.address in global_addrs:
                     scratch.is_free = False
 
+        # Mark trait dispatch scratch addresses as occupied (caller-scoped).
+        # These are only reserved in functions that contain TraitDispatch calls,
+        # keeping the pool available for functions that don't use trait dispatch.
+        trait_addrs = getattr(mir_func, '_trait_dispatch_scratch_addrs', None)
+        if trait_addrs:
+            for scratch in scratch_pool.scratches:
+                if scratch.address in trait_addrs:
+                    scratch.is_free = False
+
         # Analyze far self trait methods to determine if D=S prologue is needed
         # Must run before ABIInfo creation since it may set has_far_ptr_stack_params
         self._analyze_far_self_trait_method(mir_func)
