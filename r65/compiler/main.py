@@ -122,6 +122,40 @@ def dump_mir(source: str, filename: str):
     print("=" * 80)
 
 
+def _inject_builtin_traits(program):
+    """Inject built-in trait declarations at the start of the program.
+
+    These traits are always available without explicit include.
+    Currently injects:
+      - ToString: fn to_string(*self, buf: *u8) -> u16
+    """
+    from r65.compiler.frontend.ast import (
+        TraitDecl, TraitMethod, Parameter, BasicType, PointerType,
+    )
+
+    # trait ToString { fn to_string(*self, buf: *u8) -> u16; }
+    toString_trait = TraitDecl(
+        name='ToString',
+        methods=[
+            TraitMethod(
+                is_far=False,
+                name='to_string',
+                self_is_far=False,
+                params=[
+                    Parameter(
+                        name='buf',
+                        binding=None,
+                        param_type=PointerType(is_far=False, pointee_type=BasicType('u8')),
+                    ),
+                ],
+                return_type=BasicType('u16'),
+            ),
+        ],
+        constants=[],
+    )
+    program.items.insert(0, toString_trait)
+
+
 def compile_source(source: str, filename: str, output_file: str = None,
                    verbose: bool = False, quiet: bool = False, cfg_options: list[str] = None,
                    include_paths: list[str] = None, opt_level: int = 1, debug: bool = False,
@@ -174,6 +208,9 @@ def compile_source(source: str, filename: str, output_file: str = None,
         if verbose:
             log(f"  [3/8] Expanding macros...")
         program = expand_macros(program)
+
+        # Inject built-in trait declarations
+        _inject_builtin_traits(program)
 
         # Build HIR
         if verbose:

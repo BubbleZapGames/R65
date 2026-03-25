@@ -474,3 +474,18 @@ far fn u16_to_hex(buf: far *u8, value @ A: u16) {
 macro_rules! format($target_buffer:ident, $format_string:literal, $($args:expr),*) {
     __format!($target_buffer, $format_string, $($args),*);
 }
+
+// ============================================================================
+// ToString Trait
+//
+// Built-in trait — always available without include.
+// See r65/compiler/main.py _inject_builtin_traits().
+//
+//   trait ToString {
+//       fn to_string(*self, buf: *u8) -> u16;
+//   }
+//
+// Types implementing ToString write their string representation into a
+// caller-provided buffer. The buffer must be large enough to hold the result
+// plus a null terminator. Returns characters written (excluding null).
+// ============================================================================
