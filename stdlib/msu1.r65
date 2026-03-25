@@ -1,0 +1,240 @@
+// R65 Standard Library - MSU-1 Coprocessor
+//
+// The MSU-1 adds CD-quality streaming audio and large data access to SNES.
+// Supported by most modern emulators (Mesen, bsnes, snes9x) and the
+// SD2SNES/FXPak Pro flashcart on real hardware.
+//
+// Audio: 44.1kHz 16-bit stereo PCM, up to 99999 tracks
+// Data:  Up to 4GB sequential read access
+//
+// File naming convention (next to .sfc ROM file):
+//   romname.msu          — data file (optional)
+//   romname-1.pcm        — track 1 audio
+//   romname-2.pcm        — track 2 audio, etc.
+//
+// PCM format: 4-byte header "MSU1", then 16-bit signed stereo samples at 44100Hz
+//
+// Usage:
+//   include!("msu1.r65")
+
+// ============================================================================
+// MSU-1 Hardware Registers ($2000-$2007)
+// ============================================================================
+
+// --- Read Registers ---
+
+// Status register (read-only)
+//   Bit 0: Revision (always 1)
+//   Bit 3: Track missing (requested .pcm file not found)
+//   Bit 4: Audio playing
+//   Bit 5: Audio repeat enabled
+//   Bit 6: Audio busy (wait before sending commands)
+//   Bit 7: Data busy (wait before reading data)
+#[hw(0x2000)]
+static mut MSU_STATUS: u8;
+
+// Data read port — returns next byte from data file at current pointer
+#[hw(0x2001)]
+static mut MSU_DATA: u8;
+
+// ID string registers (read-only): 'S', '-', 'M', 'S', 'U', '1'
+#[hw(0x2002)]
+static mut MSU_ID0: u8;
+#[hw(0x2003)]
+static mut MSU_ID1: u8;
+#[hw(0x2004)]
+static mut MSU_ID2: u8;
+#[hw(0x2005)]
+static mut MSU_ID3: u8;
+#[hw(0x2006)]
+static mut MSU_ID4: u8;
+#[hw(0x2007)]
+static mut MSU_ID5: u8;
+
+// --- Write Registers ---
+
+// Data seek pointer (write-only, 32-bit little-endian)
+// Writing byte 3 ($2003) triggers the seek operation.
+#[hw(0x2000)]
+static mut MSU_SEEK0: u8;
+#[hw(0x2001)]
+static mut MSU_SEEK1: u8;
+#[hw(0x2002)]
+static mut MSU_SEEK2: u8;
+#[hw(0x2003)]
+static mut MSU_SEEK3: u8;
+
+// Track select (write-only, 16-bit little-endian)
+// Writing high byte ($2005) triggers track load.
+#[hw(0x2004)]
+static mut MSU_TRACK_LO: u8;
+#[hw(0x2005)]
+static mut MSU_TRACK_HI: u8;
+
+// Volume (write-only, 0-255)
+#[hw(0x2006)]
+static mut MSU_VOLUME: u8;
+
+// Control register (write-only)
+//   Bit 0: Play (1) / Pause (0)
+//   Bit 1: Repeat (loop track)
+//   Bit 2: Resume (play without restarting from beginning)
+#[hw(0x2007)]
+static mut MSU_CONTROL: u8;
+
+
+// ============================================================================
+// Status Flag Constants
+// ============================================================================
+
+const MSU_REVISION: u8      = 0x01;  // Bit 0: always set
+const MSU_TRACK_MISSING: u8 = 0x08;  // Bit 3: .pcm file not found
+const MSU_PLAYING: u8       = 0x10;  // Bit 4: audio is playing
+const MSU_REPEAT: u8        = 0x20;  // Bit 5: repeat mode active
+const MSU_AUDIO_BUSY: u8    = 0x40;  // Bit 6: audio busy (wait)
+const MSU_DATA_BUSY: u8     = 0x80;  // Bit 7: data seek busy (wait)
+
+
+// ============================================================================
+// Control Register Constants
+// ============================================================================
+
+const MSU_CTRL_PAUSE: u8    = 0x00;  // Stop playback
+const MSU_CTRL_PLAY: u8     = 0x01;  // Start playback
+const MSU_CTRL_LOOP: u8     = 0x03;  // Play + repeat
+const MSU_CTRL_RESUME: u8   = 0x05;  // Resume without restart
+const MSU_CTRL_RESUME_LOOP: u8 = 0x07;  // Resume + repeat
+
+
+// ============================================================================
+// Detection
+// ============================================================================
+
+// Detect MSU-1 hardware by reading the ID string "S-MSU1".
+// Returns true if MSU-1 is present, false otherwise.
+far fn msu1_detect() -> bool {
+    // ID bytes: 'S'=0x53, '-'=0x2D, 'M'=0x4D, 'S'=0x53, 'U'=0x55, '1'=0x31
+    if MSU_ID0 == 0x53 && MSU_ID1 == 0x2D && MSU_ID2 == 0x4D &&
+       MSU_ID3 == 0x53 && MSU_ID4 == 0x55 && MSU_ID5 == 0x31 {
+        return true;
+    }
+    return false;
+}
+
+
+// ============================================================================
+// Audio Playback
+// ============================================================================
+
+// Play a track from the beginning.
+//   track:  track number (matches filename: romname-{track}.pcm)
+//   volume: 0-255
+//   repeat: true to loop, false for one-shot
+far fn msu1_play(track: u16, volume: u8, repeat: u8) {
+    let t: u16 = track;
+    let v: u8 = volume;
+
+    // Wait for audio to be ready
+    loop {
+        if (MSU_STATUS & MSU_AUDIO_BUSY) == 0 { break; }
+    }
+
+    // Select track (high byte write triggers load)
+    MSU_TRACK_LO = t as u8;
+    MSU_TRACK_HI = (t >> 8) as u8;
+
+    // Wait for track to load
+    loop {
+        if (MSU_STATUS & MSU_AUDIO_BUSY) == 0 { break; }
+    }
+
+    MSU_VOLUME = v;
+
+    if repeat != 0 {
+        MSU_CONTROL = MSU_CTRL_LOOP;
+    } else {
+        MSU_CONTROL = MSU_CTRL_PLAY;
+    }
+}
+
+// Resume playback without restarting from beginning.
+// If the track is already playing, this is a no-op on the track select.
+// If a different track is requested, loads and plays it.
+far fn msu1_resume(track: u16, volume: u8, repeat: u8) {
+    let t: u16 = track;
+    let v: u8 = volume;
+
+    loop {
+        if (MSU_STATUS & MSU_AUDIO_BUSY) == 0 { break; }
+    }
+
+    MSU_TRACK_LO = t as u8;
+    MSU_TRACK_HI = (t >> 8) as u8;
+
+    loop {
+        if (MSU_STATUS & MSU_AUDIO_BUSY) == 0 { break; }
+    }
+
+    MSU_VOLUME = v;
+
+    if repeat != 0 {
+        MSU_CONTROL = MSU_CTRL_RESUME_LOOP;
+    } else {
+        MSU_CONTROL = MSU_CTRL_RESUME;
+    }
+}
+
+// Stop (pause) audio playback.
+far fn msu1_stop() {
+    MSU_CONTROL = MSU_CTRL_PAUSE;
+}
+
+// Set playback volume (0-255).
+far fn msu1_set_volume(volume @ A: u8) {
+    MSU_VOLUME = A;
+}
+
+// Check if audio is currently playing.
+far fn msu1_is_playing() -> bool {
+    if (MSU_STATUS & MSU_PLAYING) != 0 {
+        return true;
+    }
+    return false;
+}
+
+// Check if the last requested track was not found.
+far fn msu1_track_missing() -> bool {
+    if (MSU_STATUS & MSU_TRACK_MISSING) != 0 {
+        return true;
+    }
+    return false;
+}
+
+
+// ============================================================================
+// Data Access
+// ============================================================================
+
+// Seek to a 32-bit offset in the data file (.msu).
+// Pass as two 16-bit halves: addr_lo = bits 0-15, addr_hi = bits 16-31.
+// Writing byte 3 triggers the seek; wait for MSU_DATA_BUSY to clear before reading.
+far fn msu1_seek(addr_lo: u16, addr_hi: u16) {
+    let lo: u16 = addr_lo;
+    let hi: u16 = addr_hi;
+
+    MSU_SEEK0 = lo as u8;
+    MSU_SEEK1 = (lo >> 8) as u8;
+    MSU_SEEK2 = hi as u8;
+    MSU_SEEK3 = (hi >> 8) as u8;  // Triggers seek
+
+    // Wait for seek to complete
+    loop {
+        if (MSU_STATUS & MSU_DATA_BUSY) == 0 { break; }
+    }
+}
+
+// Read next byte from data file at current pointer.
+// Pointer auto-increments after each read.
+far fn msu1_read() -> u8 {
+    return MSU_DATA;
+}
