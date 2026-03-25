@@ -576,6 +576,29 @@ class ProgramCodeGenerator:
             # Emit empty interrupt handler for unused vectors
             self.emitter.emit_empty_interrupt_handler()
 
+            # For HiROM, all interrupt vectors must point to addresses >= $8000
+            # because the CPU reads vectors from bank $00 where only $8000-$FFFF
+            # maps to ROM. Emit trampolines at $FF00+ for each handler.
+            is_hirom = False
+            if mir_program.snesrom_config:
+                is_hirom = mir_program.snesrom_config.hirom or mir_program.snesrom_config.exhirom
+
+            actual_nmi = nmi_handler
+            actual_irq = irq_handler
+            actual_reset = reset_handler
+            if is_hirom:
+                self.emitter.emit_hirom_vector_trampolines(
+                    reset=reset_handler,
+                    nmi=nmi_handler,
+                    irq=irq_handler
+                )
+                if reset_handler:
+                    actual_reset = "__hirom_reset"
+                if nmi_handler:
+                    actual_nmi = "__hirom_nmi"
+                if irq_handler:
+                    actual_irq = "__hirom_irq"
+
             # Emit SNES ROM header (use config from #[snesrom(...)] if present)
             self.emitter.emit_snes_header(
                 snesrom_config=mir_program.snesrom_config,
@@ -584,9 +607,9 @@ class ProgramCodeGenerator:
 
             # Emit interrupt vectors
             self.emitter.emit_interrupt_vectors(
-                nmi=nmi_handler,
-                irq=irq_handler,
-                reset=reset_handler
+                nmi=actual_nmi,
+                irq=actual_irq,
+                reset=actual_reset
             )
 
     def _emit_rom_data_sections(self, mir_program: MIRProgram):

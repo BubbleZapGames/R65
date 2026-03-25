@@ -320,6 +320,16 @@ class FunctionCodeGenerator:
             # Emit block label (except entry block which uses function label)
             if block_id != mir_func.entry_block_id:
                 self.emitter.emit_label(f"{mir_func.name}__L{block_id}")
+                # Emit .ACCU directive at every branch target so WLA-DX's
+                # accumulator size tracking stays in sync. WLA-DX tracks
+                # REP/SEP linearly through the text — it doesn't follow
+                # branches — so a block that textually follows a 16-bit
+                # epilogue will be assembled with wrong immediate sizes
+                # unless we explicitly reset .ACCU here.
+                if block.entry_mode is not None:
+                    from r65.compiler.typeck.processor_mode import ModeState
+                    accu_bits = 16 if block.entry_mode.m_mode == ModeState.M16 else 8
+                    self.emitter.emit_directive(f".ACCU {accu_bits}")
 
             # Determine if we need to force a mode switch at block entry.
             # This is needed when:
@@ -1235,6 +1245,12 @@ class FunctionCodeGenerator:
         any_saved = save_all or bool(modified_regs)
         if any_saved:
             self._emit_instr(Opcode.SEP_IMMEDIATE, Immediate(M_FLAG), "8-bit A for handler body")
+            # Emit .ACCU 8 so WLA-DX tracks the mode correctly.
+            # WLA-DX auto-tracks REP/SEP, so the preceding REP #$20 (for PHA)
+            # switched its internal state to 16-bit. The SEP #$20 switches it
+            # back, but we emit .ACCU 8 explicitly to be safe — WLA-DX's
+            # linear tracking can lose sync across branch targets.
+            self.emitter.emit_directive(".ACCU 8")
 
     def _emit_interrupt_scratch_saves(self, scratch_pool: ScratchRegisterPool):
         """

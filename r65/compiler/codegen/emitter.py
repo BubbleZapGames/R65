@@ -291,6 +291,9 @@ class AssemblyEmitter:
         self.nz_valid_for: str | None = None  # 'A', 'X', 'Y', or None
         # Track banks that have had data/code emitted to avoid .ORG 0 overlap
         self._used_banks: set = set()
+        # HiROM flag: when True, .BASE $C0 is emitted before ROM sections
+        # and .BASE $00 before RAM sections so #: bank bytes resolve correctly.
+        self.is_hirom: bool = False
 
     # ========================================================================
     # Low-Level Node Emission
@@ -501,6 +504,10 @@ class AssemblyEmitter:
         self.emit_directive(".ENDRO")
         self.emit_blank_line()
 
+        # Store HiROM flag so emit_bank_directive and emit_ramsection
+        # can emit the correct .BASE before each section.
+        self.is_hirom = rom_type.lower() != "lorom"
+
     # ========================================================================
     # Bank Directives
     # ========================================================================
@@ -509,20 +516,19 @@ class AssemblyEmitter:
         """
         Emit bank directive and origin.
 
+        For HiROM, emits .BASE $C0 so #: bank bytes resolve to $C0+
+        (where $0000-$FFFF all map to ROM).
+
         Args:
             bank_num: Bank number
             slot: Slot number (usually 0)
-
-        Generated:
-            .BANK 0 SLOT 0
-            .ORG 0           (only on first use of this bank)
         """
+        if self.is_hirom:
+            self.emit_directive(".BASE $C0")
         self.emit_directive(f".BANK {bank_num} SLOT {slot}")
         if bank_num not in self._used_banks:
             self.emit_directive(".ORG 0")
             self._used_banks.add(bank_num)
-        # If bank was already used, omit .ORG 0 so WLA-DX continues
-        # after previously emitted data/code (avoids bank overlap)
         self.emit_blank_line()
 
     # ========================================================================
@@ -544,8 +550,11 @@ class AssemblyEmitter:
             orga: Origin address within the slot (e.g., 0x2000)
             entries: List of (name, size, comment) tuples
         """
+        # Set .BASE to the target bank so #: resolves correctly.
+        # RAMSECTION uses BANK $00 since .BASE provides the bank offset.
+        self.emit_directive(f".BASE ${bank:02X}")
         self.emit_directive(
-            f'.RAMSECTION "{section_name}" BANK ${bank:02X} SLOT {slot} FORCE ORGA ${orga:04X}'
+            f'.RAMSECTION "{section_name}" BANK $00 SLOT {slot} FORCE ORGA ${orga:04X}'
         )
         for name, size, comment in entries:
             line = f"    {name} dsb {size}"
@@ -862,6 +871,41 @@ class AssemblyEmitter:
         """
         self.emit_label("__empty_handler")
         self.emit_instr(Opcode.RTI)
+        self.emit_blank_line()
+
+    def emit_hirom_vector_trampolines(self, reset=None, nmi=None, irq=None):
+        """
+        Emit HiROM interrupt vector trampolines at addresses >= $8000.
+
+        In HiROM, the CPU reads interrupt vectors from bank $00 where only
+        $8000-$FFFF maps to ROM. Code at .ORG 0 gets addresses $0000-$7FFF
+        which are WRAM/IO in bank $00. These trampolines at $FF00+ sit in
+        ROM and jump to the real handlers via bank $C0.
+
+        Generated at $FF00:
+            __hirom_reset: SEI / CLC / XCE / JML main
+            __hirom_nmi:   JML nmi_handler
+            __hirom_irq:   JML irq_handler
+        """
+        self.emit_section_header("HiROM Vector Trampolines")
+        self.emit_directive(".BANK 0 SLOT 0")
+        self.emit_directive(".ORG $FF00")
+
+        if reset:
+            self.emit_label("__hirom_reset")
+            self.emit_instr(Opcode.SEI)
+            self.emit_instr(Opcode.CLC)
+            self.emit_instr(Opcode.XCE)
+            self.emit_raw(f"    JML {reset}")
+
+        if nmi:
+            self.emit_label("__hirom_nmi")
+            self.emit_raw(f"    JML {nmi}")
+
+        if irq:
+            self.emit_label("__hirom_irq")
+            self.emit_raw(f"    JML {irq}")
+
         self.emit_blank_line()
 
     def emit_interrupt_vectors(self, nmi=None, irq=None, reset=None):
