@@ -563,6 +563,10 @@ class AssemblyEmitter:
                 line += " " * padding + f"; {comment}"
             self.emit_directive(line)
         self.emit_directive(".ENDS")
+        # Reset .BASE so subsequent ROM bank labels get correct bank bytes.
+        # Without this, .BASE $7E persists and offsets all later :label
+        # calculations (e.g., BANK 1 would resolve to $7F instead of $01).
+        self.emit_directive(".BASE $00")
 
     # ========================================================================
     # Labels

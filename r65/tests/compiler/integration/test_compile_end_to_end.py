@@ -129,8 +129,8 @@ def assemble_and_link(assembly: str, workdir: Path) -> Path:
     if result.returncode != 0:
         raise RuntimeError(f"Assembly failed:\n{result.stderr}\n{result.stdout}")
 
-    # Create link file (ramsection placement is handled by .RAMSECTION
-    # directives in the assembly, no [ramsections] block needed)
+    # Create link file (RAM placement is handled by .ENUM directives
+    # in the assembly, no [ramsections] block needed)
     link_file.write_text(f"[objects]\n{obj_file}\n")
 
     # Link
