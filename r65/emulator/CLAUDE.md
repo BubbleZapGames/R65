@@ -13,8 +13,6 @@ r65/emulator/
 ├── disasm.py       # Disassembler
 ├── trace.py        # Execution trace logging
 ├── cli.py          # Command-line interface (r65-emu)
-├── compare.py      # ROM execution comparison
-├── compare_cli.py  # Comparison CLI (python -m r65.emulator.compare_cli)
 └── tests/          # Test suite
 ```
 
@@ -112,53 +110,6 @@ cpu.set_nmi_enabled(True)   # Enable NMI at vblank (NMITIMEN $4200)
 
 # NMI triggers at scanline 225 (~48,762 cycles per frame)
 ```
-
-## ROM Comparison Tool
-
-Compare execution between two ROMs instruction-by-instruction:
-
-```bash
-# Basic comparison
-python -m r65.emulator.compare_cli original.smc port.sfc
-
-# With more instructions
-python -m r65.emulator.compare_cli original.smc port.sfc --max-instructions 10000
-
-# Verbose parallel trace
-python -m r65.emulator.compare_cli original.smc port.sfc --verbose
-
-# Enable vblank NMI timing
-python -m r65.emulator.compare_cli original.smc port.sfc --enable-nmi
-
-# Find multiple divergences
-python -m r65.emulator.compare_cli original.smc port.sfc --continue-on-diverge
-```
-
-### Programmatic Usage
-
-```python
-from r65.emulator import RomComparator
-
-comparator = RomComparator(rom1_data, rom2_data, "Original", "Port")
-comparator.reset()
-comparator.enable_nmi(True)
-
-divergence = comparator.run(max_instructions=10000)
-if divergence:
-    comparator.format_divergence(divergence)
-```
-
-### What Gets Compared
-
-- Opcode (same instruction executed)
-- Registers A, X, Y after execution
-- Status flags P
-- Branch decisions (taken/not taken)
-
-### What Gets Ignored
-
-- Absolute addresses (different code locations expected)
-- Exact cycle counts
 
 ## Architecture Notes
 
