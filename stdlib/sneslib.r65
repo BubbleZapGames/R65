@@ -1573,9 +1573,6 @@ static dma_trigger_masks: [u8; 8] = [0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0
 // src: 24-bit far pointer to source data
 // vram_offset: destination VRAM word address
 // size: number of bytes to transfer
-// TODO: Remove the stack based approach 
-// Stack layout after JSL:
-//   S+4,5=size, S+6,7=vram_offset, S+8,9,10=src, S+11,12=channel
 far fn dma_copy_vram(channel: u8, src: far *u8, vram_offset: u16, size: u16) {
     // Save channel for trigger lookup
     Y = channel;
@@ -1587,16 +1584,21 @@ far fn dma_copy_vram(channel: u8, src: far *u8, vram_offset: u16, size: u16) {
     VMAIN = 0x80;
     VMADD = vram_offset;
 
-    // DMA register writes - X-indexed addressing requires assembly
-    asm!(
-        "LDA #$01",  "STA $4300,X",  // DMAPn - 2 regs, increment
-        "LDA #$18",  "STA $4301,X",  // BBADn - VMDATAL
-        "LDA $08,S", "STA $4302,X",  // src lo
-        "LDA $09,S", "STA $4303,X",  // src hi
-        "LDA $0A,S", "STA $4304,X",  // src bank
-        "LDA $04,S", "STA $4305,X",  // size lo
-        "LDA $05,S", "STA $4306,X"   // size hi
-    );
+    // DMA register writes - X-indexed STA requires assembly
+    A = 0x01;
+    asm!("STA $4300,X");  // DMAPn - 2 regs, increment
+    A = 0x18;
+    asm!("STA $4301,X");  // BBADn - VMDATAL
+    A = src as u8;
+    asm!("STA $4302,X");  // src lo
+    A = ((src as u16) >> 8) as u8;
+    asm!("STA $4303,X");  // src hi
+    A = src.bank_byte();
+    asm!("STA $4304,X");  // src bank
+    A = size as u8;
+    asm!("STA $4305,X");  // size lo
+    A = (size >> 8) as u8;
+    asm!("STA $4306,X");  // size hi
 
     // Trigger DMA
     MDMAEN = dma_trigger_masks[Y];
@@ -1608,9 +1610,6 @@ far fn dma_copy_vram(channel: u8, src: far *u8, vram_offset: u16, size: u16) {
 // src: 24-bit far pointer to source data
 // start_color: starting color index (0-255)
 // num_bytes: number of bytes to transfer (colors * 2)
-// TODO: Remove the stack based approach 
-// Stack layout after JSL:
-//   S+4,5=num_bytes, S+6,7=start_color, S+8,9,10=src, S+11,12=channel
 far fn dma_copy_cgram(channel: u8, src: far *u8, start_color: u16, num_bytes: u16) {
     // Save channel for trigger lookup
     Y = channel;
@@ -1621,16 +1620,21 @@ far fn dma_copy_cgram(channel: u8, src: far *u8, start_color: u16, num_bytes: u1
     // CGRAM setup
     CGADD = start_color as u8;
 
-    // DMA register writes - X-indexed addressing requires assembly
-    asm!(
-        "LDA #$02",  "STA $4300,X",  // DMAPn - 1 reg, write twice
-        "LDA #$22",  "STA $4301,X",  // BBADn - CGDATA
-        "LDA $08,S", "STA $4302,X",  // src lo
-        "LDA $09,S", "STA $4303,X",  // src hi
-        "LDA $0A,S", "STA $4304,X",  // src bank
-        "LDA $04,S", "STA $4305,X",  // num_bytes lo
-        "LDA $05,S", "STA $4306,X"   // num_bytes hi
-    );
+    // DMA register writes - X-indexed STA requires assembly
+    A = 0x02;
+    asm!("STA $4300,X");  // DMAPn - 1 reg, write twice
+    A = 0x22;
+    asm!("STA $4301,X");  // BBADn - CGDATA
+    A = src as u8;
+    asm!("STA $4302,X");  // src lo
+    A = ((src as u16) >> 8) as u8;
+    asm!("STA $4303,X");  // src hi
+    A = src.bank_byte();
+    asm!("STA $4304,X");  // src bank
+    A = num_bytes as u8;
+    asm!("STA $4305,X");  // num_bytes lo
+    A = (num_bytes >> 8) as u8;
+    asm!("STA $4306,X");  // num_bytes hi
 
     // Trigger DMA
     MDMAEN = dma_trigger_masks[Y];
@@ -1641,9 +1645,6 @@ far fn dma_copy_cgram(channel: u8, src: far *u8, start_color: u16, num_bytes: u1
 // channel: DMA channel (0-7)
 // src: 24-bit far pointer to source data
 // size: number of bytes to transfer (usually 544)
-// TODO: Remove the stack based approach 
-// Stack layout after JSL:
-//   S+4,5=size, S+6,7,8=src, S+9,10=channel
 far fn dma_copy_oam(channel: u8, src: far *u8, size: u16) {
     // Save channel for trigger lookup
     Y = channel;
@@ -1654,16 +1655,21 @@ far fn dma_copy_oam(channel: u8, src: far *u8, size: u16) {
     // OAM setup
     OAMADD = 0;
 
-    // DMA register writes - X-indexed addressing requires assembly
-    asm!(
-        "LDA #$00",  "STA $4300,X",  // DMAPn - 1 reg, write once
-        "LDA #$04",  "STA $4301,X",  // BBADn - OAMDATA
-        "LDA $06,S", "STA $4302,X",  // src lo
-        "LDA $07,S", "STA $4303,X",  // src hi
-        "LDA $08,S", "STA $4304,X",  // src bank
-        "LDA $04,S", "STA $4305,X",  // size lo
-        "LDA $05,S", "STA $4306,X"   // size hi
-    );
+    // DMA register writes - X-indexed STA requires assembly
+    A = 0x00;
+    asm!("STA $4300,X");  // DMAPn - 1 reg, write once
+    A = 0x04;
+    asm!("STA $4301,X");  // BBADn - OAMDATA
+    A = src as u8;
+    asm!("STA $4302,X");  // src lo
+    A = ((src as u16) >> 8) as u8;
+    asm!("STA $4303,X");  // src hi
+    A = src.bank_byte();
+    asm!("STA $4304,X");  // src bank
+    A = size as u8;
+    asm!("STA $4305,X");  // size lo
+    A = (size >> 8) as u8;
+    asm!("STA $4306,X");  // size hi
 
     // Trigger DMA
     MDMAEN = dma_trigger_masks[Y];
