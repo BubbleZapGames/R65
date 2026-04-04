@@ -329,6 +329,22 @@ class TypeConvert(MIRInstruction):
 
 
 @dataclass
+class BankByte(MIRInstruction):
+    """
+    Extract bank byte (byte 2) from a far pointer.
+
+    dest = bank_byte(source)
+
+    Source must be a far pointer (3 bytes). Result is u8.
+    """
+    dest: Union[VirtualRegister, HardwareRegister]
+    source: Union[VirtualRegister, HardwareRegister, Immediate]
+
+    def __repr__(self):
+        return f"{self.dest} = BankByte {self.source}"
+
+
+@dataclass
 class ToBool(MIRInstruction):
     """
     Convert value to boolean (branchless).

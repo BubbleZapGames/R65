@@ -207,6 +207,27 @@ class ExpressionBuilder:
                         args=[],
                         source_loc=src_loc
                     )
+                elif method_name == 'bank_byte':
+                    # bank_byte() method on far pointers — extracts bank byte (byte 2)
+                    if len(expr.args) != 0:
+                        raise HIRError(f"bank_byte() takes no arguments, got {len(expr.args)}", source_loc=src_loc)
+
+                    # Try const evaluation first
+                    try:
+                        value = self.const_evaluator.eval_method_call(expr.func.base, 'bank_byte')
+                        result = hir.HIRIntegerLiteral(value=value, source_loc=src_loc)
+                        result.expr_type = BasicTypeInfo('u8')
+                        return result
+                    except HIRError:
+                        pass  # Not const-evaluable, fall through to runtime
+
+                    base = self.build_expression(expr.func.base)
+                    return hir.HIRMethodCall(
+                        receiver=base,
+                        method_name='bank_byte',
+                        args=[],
+                        source_loc=src_loc
+                    )
 
             # Check if this is a built-in function call BEFORE trying to build func expression
             # This prevents "undefined identifier" errors for built-in function names

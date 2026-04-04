@@ -281,6 +281,13 @@ class ConstEvaluator:
 
             else:
                 raise HIRError(f"Cannot cast to {type_name} in const expression", source_loc=expr.source_loc)
+        elif isinstance(target_type, ast.PointerType):
+            # Cast to pointer type: preserve integer value (it's the address)
+            int_val = self._ensure_int(value)
+            if target_type.is_far:
+                return int_val & 0xFFFFFF  # 24-bit far pointer
+            else:
+                return int_val & 0xFFFF  # 16-bit near pointer
         else:
             raise HIRError(f"Unsupported cast target in const expression: {type(target_type).__name__}", source_loc=expr.source_loc)
         
@@ -397,6 +404,17 @@ class ConstEvaluator:
 
         raise HIRError(f"Struct '{struct_name}' has no field '{field_name}'", source_loc=expr.source_loc)
 
+    def eval_method_call(self, receiver: ast.Expression, method_name: str) -> int:
+        """Evaluate a method call on a receiver expression at compile time.
+
+        Called from expression_builder for methods like bank_byte().
+        """
+        if method_name == 'bank_byte':
+            value = self.eval(receiver)
+            int_val = self._ensure_int(value)
+            return (int_val >> 16) & 0xFF
+        raise HIRError(f"Method '{method_name}' is not const-evaluable", source_loc=receiver.source_loc)
+
     def _eval_method_call(self, expr: ast.FunctionCall) -> int:
         """Evaluate method call in const expression (e.g., array.len())."""
         compiler_assert(
@@ -407,7 +425,11 @@ class ConstEvaluator:
         method_name = expr.func.field
         receiver = expr.func.base
 
-        # Only len() is supported as a const method
+        # Handle bank_byte() on far pointers
+        if method_name == 'bank_byte':
+            return self.eval_method_call(receiver, 'bank_byte')
+
+        # Only len() is supported as a const method (besides bank_byte)
         if method_name != 'len':
             raise HIRError(f"Method '{method_name}' is not allowed in const expressions", source_loc=expr.source_loc)
 

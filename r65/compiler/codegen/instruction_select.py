@@ -15,6 +15,7 @@ from r65.compiler.mir.nodes import (
     Load, Store, LoadIndirect, StoreIndirect,
     Move, Return, Jump, JumpTable, LookupTable, CondBranch, Call,
     BinaryOp, UnaryOp, Compare, BitTest, Rotate, SetMode, TypeConvert, ToBool,
+    BankByte,
     Push, Pull, SaveRegister, RestoreRegister, ReturnFromInterrupt,
     StatusFlagTest, StatusFlagSet, StatusFlagRead,
     MemoryFill, BlockCopy, InlineAsm, TraitDispatch,
@@ -144,6 +145,7 @@ class InstructionSelector:
             Move: self.move_selector.select_move,
             TypeConvert: self.type_conversion_selector.select_type_convert,
             ToBool: self.select_to_bool,
+            BankByte: self.select_bank_byte,
             BinaryOp: self.select_binary_op,
             UnaryOp: self.select_unary_op,
             Compare: self.compare_selector.select_compare,
@@ -658,6 +660,27 @@ class InstructionSelector:
             self.emitter.emit_instr(Opcode.ADC_IMMEDIATE, Immediate(0), comment="A = carry (0 or 1)")
 
         # Store result
+        dest_opcode, dest_operand = self._get_opcode_for_location('STA', dest_loc)
+        self.emitter.emit_instr(dest_opcode, dest_operand)
+
+    def select_bank_byte(self, instr: BankByte):
+        """
+        Extract bank byte (byte 2) from a far pointer.
+
+        For immediates: LDA #(value >> 16) & 0xFF
+        For memory: LDA source+2
+        """
+        dest_loc = self._get_operand_location(instr.dest)
+
+        if isinstance(instr.source, MIRImmediate):
+            bank = (instr.source.value >> 16) & 0xFF
+            self.emitter.emit_instr(Opcode.LDA_IMMEDIATE, Immediate(bank), comment="bank_byte")
+        else:
+            src_loc = self._get_operand_location(instr.source)
+            bank_loc = self._offset_location(src_loc, 2)
+            src_opcode, src_operand = self._get_opcode_for_location('LDA', bank_loc)
+            self.emitter.emit_instr(src_opcode, src_operand, comment="bank_byte")
+
         dest_opcode, dest_operand = self._get_opcode_for_location('STA', dest_loc)
         self.emitter.emit_instr(dest_opcode, dest_operand)
 

@@ -13,7 +13,7 @@ from r65.compiler.mir.nodes import (
     BasicBlock, MIRFunction,
     Load, Store, Move, BinaryOp, UnaryOp, Compare, BitTest, Rotate,
     Call, Return, Jump, CondBranch, JumpTable, LookupTable, TypeConvert, ToBool,
-    LoadIndirect, StoreIndirect, StatusFlagRead, TraitDispatch,
+    LoadIndirect, StoreIndirect, StatusFlagRead, TraitDispatch, BankByte,
 )
 
 # Types that count as register operands for liveness
@@ -126,6 +126,7 @@ _GET_USES = {
     Rotate: _uses_rotate_source,
     TypeConvert: _uses_rotate_source,
     ToBool: _uses_rotate_source,
+    BankByte: _uses_rotate_source,
     LoadIndirect: _uses_load_indirect,
     StoreIndirect: _uses_store_indirect,
     LookupTable: _uses_scrutinee,
@@ -184,6 +185,7 @@ _GET_DEFS = {
     Rotate: _defs_dest_vr_hr,
     TypeConvert: _defs_dest_vr_hr,
     ToBool: _defs_dest_vr_hr,
+    BankByte: _defs_dest_vr_hr,
     LoadIndirect: _defs_load_indirect,
     LookupTable: _defs_lookup_table,
     Call: _defs_call,

@@ -15,7 +15,7 @@ from r65.compiler.hir import (
 )
 from r65.compiler.mir.nodes import (
     VirtualRegister, HardwareRegister, Immediate,
-    Move, Store, Call, Argument, ArgumentMechanism, Rotate,
+    Move, Store, Call, Argument, ArgumentMechanism, Rotate, BankByte,
     SetMode, Push, Pull, TraitDispatch, LoadIndirect,
 )
 from r65.compiler.hir.types import ArrayTypeInfo, BasicTypeInfo
@@ -214,6 +214,16 @@ class CallLowerer:
         Returns:
             VirtualRegister holding the result
         """
+        # Handle bank_byte() method on far pointers
+        if call_expr.method_name == 'bank_byte':
+            receiver_value = self.builder.lower_expression(call_expr.receiver)
+            result_vreg = self.ctx.alloc_vreg(BasicTypeInfo('u8'), "bank_byte")
+            self.emit(BankByte(
+                dest=result_vreg,
+                source=receiver_value,
+            ))
+            return result_vreg
+
         # Handle len() method on arrays
         if call_expr.method_name == 'len':
             # Get the receiver's type (must be ArrayTypeInfo, validated in type checker)

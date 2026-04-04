@@ -21,7 +21,7 @@ from r65.compiler.mir.nodes import (
     Store, Load, BinaryOp, UnaryOp, TypeConvert, Compare, BitTest, Rotate,
     ToBool, LoadIndirect, StoreIndirect, StatusFlagRead, InlineAsm,
     TraitDispatch, RestoreRegister, SaveRegister,
-    CondBranch, JumpTable, LookupTable,
+    CondBranch, JumpTable, LookupTable, BankByte,
 )
 from r65.compiler.mir.liveness import LivenessAnalyzer
 from r65.compiler.hir.unified_type_utils import get_unified_type_size
@@ -32,7 +32,7 @@ if _TYPE_CHECKING:
     from r65.compiler.codegen.abi import StackFrameLayout
 
 # Frozenset for ALU-type instructions that route through A register
-_ALU_TYPES = frozenset({BinaryOp, UnaryOp, TypeConvert, Compare, BitTest, Rotate, ToBool})
+_ALU_TYPES = frozenset({BinaryOp, UnaryOp, TypeConvert, Compare, BitTest, Rotate, ToBool, BankByte})
 
 
 @dataclass
@@ -763,7 +763,7 @@ class StackSlotAllocator:
         # For ALU-def vregs (BinaryOp/UnaryOp/LoadIndirect), restrict to cases
         # where all uses are Return, Move, Compare, Store (as source), or as
         # the LEFT operand of a BinaryOp (chained arithmetic).
-        _alu_def_types = frozenset({BinaryOp, UnaryOp, LoadIndirect, Load})
+        _alu_def_types = frozenset({BinaryOp, UnaryOp, LoadIndirect, Load, BankByte})
         candidates = []
         for vreg_id, defs in vreg_defs.items():
             if len(defs) != 1:
@@ -928,7 +928,7 @@ class StackSlotAllocator:
         self, vreg_id: int, hw_reg: str, coalesceable: Dict[VirtualRegister, str]
     ):
         """Mark a vreg as hw-coalesceable by finding its def instruction."""
-        _def_types = frozenset({Move, BinaryOp, UnaryOp, LoadIndirect, Load})
+        _def_types = frozenset({Move, BinaryOp, UnaryOp, LoadIndirect, Load, BankByte})
         for block in self.func.blocks.values():
             for instr in block.instructions:
                 instr_type = type(instr)
@@ -1178,7 +1178,7 @@ class StackSlotAllocator:
             # ALU ops route through A, clobbering it — UNLESS the dest is our vreg,
             # in which case the op re-defines our vreg and leaves its new value in A
             # (analogous to Store exception: our vreg's value stays in A).
-            if ((instr_type is BinaryOp or instr_type is UnaryOp) and
+            if ((instr_type is BinaryOp or instr_type is UnaryOp or instr_type is BankByte) and
                 type(instr.dest) is VirtualRegister and
                 instr.dest.id == vreg_id):
                 return False

@@ -442,6 +442,22 @@ class CallValidator:
         # Type check receiver
         receiver_type = self.check_expression(expr.receiver)
 
+        # Handle bank_byte() on far pointers
+        if expr.method_name == 'bank_byte':
+            if not isinstance(receiver_type, PointerTypeInfo) or not receiver_type.is_far:
+                raise TypeCheckError(
+                    f"bank_byte() can only be called on far pointers, found {receiver_type}",
+                    source_loc=expr.source_loc,
+                    hint="bank_byte() extracts the bank byte from a far pointer (e.g., far_ptr.bank_byte())"
+                )
+            if len(expr.args) != 0:
+                raise TypeCheckError(
+                    f"bank_byte() takes no arguments, got {len(expr.args)}",
+                    source_loc=expr.source_loc
+                )
+            expr.expr_type = BasicTypeInfo('u8')
+            return expr.expr_type
+
         # Handle type_id() on trait pointers
         if expr.method_name == 'type_id':
             if isinstance(receiver_type, PointerTypeInfo) and isinstance(receiver_type.pointee_type, TraitTypeInfo):
