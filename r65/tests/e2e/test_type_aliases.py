@@ -6,16 +6,11 @@ Verifies that type aliases resolve correctly through the full pipeline:
 Source → Lexer → Parser → AST → HIR → TypeCheck → MIR → CodeGen → ASM → ROM.
 """
 
-import pytest
-from r65.tests.e2e import E2ETest, ExpectedState
+from r65.tests.e2e import ExpectedState
 
 
 class TestPointerTypeAliases:
     """Test type aliases for pointer types through full compilation."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
 
     def test_pointer_to_struct_alias(self, e2e):
         """type SpritePtr = *Sprite; — write through alias-typed pointer."""
@@ -86,10 +81,6 @@ class TestPointerTypeAliases:
 class TestFunctionPointerTypeAliases:
     """Test type aliases for function pointer types with indirect calls."""
 
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
-
     def test_fn_pointer_alias_call(self, e2e):
         """type Callback = fn() -> u8; — call through alias-typed fn pointer."""
         result = e2e.run('''
@@ -149,10 +140,6 @@ class TestFunctionPointerTypeAliases:
 
 class TestTypeAliasInDeclarations:
     """Test type aliases used in various declaration contexts."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
 
     def test_alias_as_static_var_type(self, e2e):
         """type Word = u16; used as static variable type."""

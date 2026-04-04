@@ -5,9 +5,8 @@ End-to-end tests for 2x2 matrix multiplication.
 Tests matrix multiplication using u8 arrays and validates the resulting matrix.
 """
 
-import pytest
 from pathlib import Path
-from r65.tests.e2e import E2ETest, ExpectedState
+from r65.tests.e2e import ExpectedState
 
 # Absolute paths to stdlib files
 # test_matrix.py is at r65/tests/e2e/test_matrix.py
@@ -19,11 +18,6 @@ MATH_R65_PATH = STDLIB_DIR / "math.r65"
 
 class TestMatrixMultiplication:
     """Test 2x2 matrix multiplication operations."""
-
-    @pytest.fixture
-    def e2e(self):
-        """Create E2ETest instance."""
-        return E2ETest()
 
     def _make_matrix_source(self, mat_a: list, mat_b: list) -> str:
         """Generate R65 source for matrix multiplication test.

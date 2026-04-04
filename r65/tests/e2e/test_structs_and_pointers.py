@@ -5,16 +5,11 @@ End-to-end tests for struct and pointer operations.
 Tests struct field access, pointer auto-deref, multi-byte fields, and arrays of structs.
 """
 
-import pytest
-from r65.tests.e2e import E2ETest, ExpectedState
+from r65.tests.e2e import ExpectedState
 
 
 class TestStructFieldAccess:
     """Test struct field read/write operations."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
 
     def test_struct_field_read_write(self, e2e):
         """Test writing and reading struct fields in zeropage.
@@ -113,10 +108,6 @@ class TestStructFieldAccess:
 class TestStructPointers:
     """Test struct access through pointers."""
 
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
-
     def test_struct_pointer_field_read(self, e2e):
         """Test reading struct fields through a pointer."""
         result = e2e.run('''
@@ -185,10 +176,6 @@ class TestStructPointers:
 
 class TestArrayOfStructs:
     """Test arrays of structs with field access."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
 
     def test_array_of_structs_write_read(self, e2e):
         """Test writing and reading from an array of structs."""

@@ -8,96 +8,42 @@ from r65.compiler.codegen import (
     MemoryAllocator,
 )
 from r65.compiler.mir.nodes import (
-    MIRFunction,
-    BasicBlock,
+    MIRFunction, BasicBlock,
     Move, BinaryOp, Jump, CondBranch, Return,
     VirtualRegister,
     Immediate,
 )
 from r65.compiler.hir.types import BasicTypeInfo
 from r65.compiler.mir.virtual_registers import VirtualRegisterAllocator
+from r65.tests.language.common import make_mir_function
 
 
 def create_simple_function():
     """Create a simple MIR function for testing."""
-    # Function: add(a: u8, b: u8) -> u8
-    #   let sum @ %0 = a + b
-    #   return sum
+    func = make_mir_function("add")
 
-    func = MIRFunction(
-        name="add",
-        parameters=[],
-        return_type=BasicTypeInfo('u8'),
-        blocks={},
-        entry_block_id=0,
-        exit_block_ids=[0],
-        mode_attr=None,
-        preserves_attr=None,
-        bank_attr=None,
-        interrupt_attr=None,
-        is_entry=False,
-        is_far=False,
-        vreg_allocator=VirtualRegisterAllocator(),
-        alias_tracker=None,
-    )
-
-    # Create virtual registers
     vreg_a = VirtualRegister(id=0, type_info=BasicTypeInfo('u8'), hint="a")
     vreg_b = VirtualRegister(id=1, type_info=BasicTypeInfo('u8'), hint="b")
     vreg_sum = VirtualRegister(id=2, type_info=BasicTypeInfo('u8'), hint="sum")
 
-    # Entry block
-    entry_block = BasicBlock(
+    func.blocks[0] = BasicBlock(
         block_id=0,
         instructions=[
-            # Initialize a and b
             Move(dest=vreg_a, source=Immediate(10), type_info=BasicTypeInfo('u8')),
             Move(dest=vreg_b, source=Immediate(20), type_info=BasicTypeInfo('u8')),
-
-            # sum = a + b
-            BinaryOp(
-                dest=vreg_sum,
-                left=vreg_a,
-                right=vreg_b,
-                op='+',
-                type_info=BasicTypeInfo('u8')
-            ),
-
-            # return
+            BinaryOp(dest=vreg_sum, left=vreg_a, right=vreg_b, op='+',
+                     type_info=BasicTypeInfo('u8')),
             Return(values=[vreg_sum])
         ],
-        predecessors=[],
-        successors=[]
+        predecessors=[], successors=[]
     )
-
-    func.blocks[0] = entry_block
     return func
 
 
 def create_function_with_branches():
     """Create MIR function with conditional branches."""
-    # Function: max(a: u8, b: u8) -> u8
-    #   if a > b:
-    #       return a
-    #   else:
-    #       return b
-
-    func = MIRFunction(
-        name="max",
-        parameters=[],
-        return_type=BasicTypeInfo('u8'),
-        blocks={},
-        entry_block_id=0,
-        exit_block_ids=[1, 2],
-        mode_attr=None,
-        preserves_attr=None,
-        bank_attr=None,
-        interrupt_attr=None,
-        is_entry=False,
-        is_far=False,
-        vreg_allocator=VirtualRegisterAllocator(),
-        alias_tracker=None,
-    )
+    func = make_mir_function("max")
+    func.exit_block_ids = [1, 2]
 
     # Virtual registers
     vreg_a = VirtualRegister(id=0, type_info=BasicTypeInfo('u8'), hint="a")

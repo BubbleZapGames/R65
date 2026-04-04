@@ -21,6 +21,7 @@ from r65.compiler.mir.nodes import (
 from r65.compiler.hir.types import BasicTypeInfo
 from r65.compiler.hir.attributes import InlineAttribute, InlineMode, InterruptAttribute, InterruptVector
 from r65.compiler.mir.virtual_registers import VirtualRegisterAllocator
+from r65.tests.language.common import make_mir_function
 
 
 class MockSymbol:
@@ -29,588 +30,268 @@ class MockSymbol:
         self.name = name
 
 
-def create_simple_callee() -> MIRFunction:
+INLINE = InlineAttribute(name='inline')
+
+
+def create_simple_callee():
     """Create a simple function to be inlined: add_one(x) -> x + 1"""
-    func = MIRFunction(
-        name="add_one",
-        parameters=[],
-        return_type=BasicTypeInfo('u8'),
-        blocks={},
-        entry_block_id=0,
-        exit_block_ids=[0],
-        mode_attr=None,
-        preserves_attr=None,
-        bank_attr=None,
-        interrupt_attr=None,
-        inline_attr=InlineAttribute(name='inline'),
-        is_entry=False,
-        is_far=False,
-        vreg_allocator=VirtualRegisterAllocator(),
-        alias_tracker=None,
-    )
+    func = make_mir_function("add_one", inline_attr=INLINE)
 
     vreg_x = VirtualRegister(id=0, type_info=BasicTypeInfo('u8'), hint="x")
     vreg_result = VirtualRegister(id=1, type_info=BasicTypeInfo('u8'), hint="result")
 
-    entry_block = BasicBlock(
+    func.blocks[0] = BasicBlock(
         block_id=0,
         instructions=[
             Move(dest=vreg_x, source=Immediate(5), type_info=BasicTypeInfo('u8')),
-            BinaryOp(
-                dest=vreg_result,
-                left=vreg_x,
-                right=Immediate(1),
-                op='+',
-                type_info=BasicTypeInfo('u8')
-            ),
+            BinaryOp(dest=vreg_result, left=vreg_x, right=Immediate(1), op='+',
+                     type_info=BasicTypeInfo('u8')),
             Return(values=[vreg_result])
         ],
-        predecessors=[],
-        successors=[]
+        predecessors=[], successors=[]
     )
-
-    func.blocks[0] = entry_block
     return func
 
 
-def create_caller_with_call(callee_name: str) -> MIRFunction:
+def create_caller_with_call(callee_name: str):
     """Create a caller function that calls the given function."""
-    func = MIRFunction(
-        name="main",
-        parameters=[],
-        return_type=BasicTypeInfo('u8'),
-        blocks={},
-        entry_block_id=0,
-        exit_block_ids=[0],
-        mode_attr=None,
-        preserves_attr=None,
-        bank_attr=None,
-        interrupt_attr=None,
-        inline_attr=None,
-        is_entry=True,
-        is_far=False,
-        vreg_allocator=VirtualRegisterAllocator(),
-        alias_tracker=None,
-    )
+    func = make_mir_function("main", is_entry=True)
 
     vreg_result = VirtualRegister(id=0, type_info=BasicTypeInfo('u8'), hint="result")
 
-    entry_block = BasicBlock(
+    func.blocks[0] = BasicBlock(
         block_id=0,
         instructions=[
-            Call(
-                function=callee_name,
-                args=[],
-                returns=[vreg_result],
-                is_far=False,
-            ),
+            Call(function=callee_name, args=[], returns=[vreg_result], is_far=False),
             Return(values=[vreg_result])
         ],
-        predecessors=[],
-        successors=[]
+        predecessors=[], successors=[]
     )
-
-    func.blocks[0] = entry_block
     return func
 
 
-def create_recursive_function() -> MIRFunction:
+def create_recursive_function():
     """Create a recursive function that should not be inlined."""
-    func = MIRFunction(
-        name="factorial",
-        parameters=[],
-        return_type=BasicTypeInfo('u8'),
-        blocks={},
-        entry_block_id=0,
-        exit_block_ids=[1, 2],
-        mode_attr=None,
-        preserves_attr=None,
-        bank_attr=None,
-        interrupt_attr=None,
-        inline_attr=InlineAttribute(name='inline'),
-        is_entry=False,
-        is_far=False,
-        vreg_allocator=VirtualRegisterAllocator(),
-        alias_tracker=None,
-    )
+    func = make_mir_function("factorial", inline_attr=INLINE)
+    func.exit_block_ids = [1, 2]
 
     vreg_n = VirtualRegister(id=0, type_info=BasicTypeInfo('u8'), hint="n")
     vreg_cond = VirtualRegister(id=1, type_info=BasicTypeInfo('u8'), hint="cond")
     vreg_result = VirtualRegister(id=2, type_info=BasicTypeInfo('u8'), hint="result")
 
-    # Block 0: check if n <= 1
-    entry_block = BasicBlock(
+    func.blocks[0] = BasicBlock(
         block_id=0,
         instructions=[
             Move(dest=vreg_n, source=Immediate(5), type_info=BasicTypeInfo('u8')),
-            CondBranch(
-                condition=vreg_cond,
-                true_target=1,
-                false_target=2,
-            )
+            CondBranch(condition=vreg_cond, true_target=1, false_target=2)
         ],
-        predecessors=[],
-        successors=[1, 2]
+        predecessors=[], successors=[1, 2]
     )
-
-    # Block 1: base case, return 1
-    base_block = BasicBlock(
+    func.blocks[1] = BasicBlock(
         block_id=1,
         instructions=[
             Move(dest=vreg_result, source=Immediate(1), type_info=BasicTypeInfo('u8')),
             Return(values=[vreg_result])
         ],
-        predecessors=[0],
-        successors=[]
+        predecessors=[0], successors=[]
     )
-
-    # Block 2: recursive case
-    recursive_block = BasicBlock(
+    func.blocks[2] = BasicBlock(
         block_id=2,
         instructions=[
-            Call(
-                function="factorial",  # Recursive call
-                args=[],
-                returns=[vreg_result],
-                is_far=False,
-            ),
+            Call(function="factorial", args=[], returns=[vreg_result], is_far=False),
             Return(values=[vreg_result])
         ],
-        predecessors=[0],
-        successors=[]
+        predecessors=[0], successors=[]
     )
-
-    func.blocks[0] = entry_block
-    func.blocks[1] = base_block
-    func.blocks[2] = recursive_block
     return func
 
 
-def create_far_function() -> MIRFunction:
+def create_far_function():
     """Create a far function that should not be inlined."""
-    func = MIRFunction(
-        name="far_helper",
-        parameters=[],
-        return_type=BasicTypeInfo('u8'),
-        blocks={},
-        entry_block_id=0,
-        exit_block_ids=[0],
-        mode_attr=None,
-        preserves_attr=None,
-        bank_attr=None,
-        interrupt_attr=None,
-        inline_attr=InlineAttribute(name='inline'),
-        is_entry=False,
-        is_far=True,  # Far function
-        vreg_allocator=VirtualRegisterAllocator(),
-        alias_tracker=None,
-    )
+    func = make_mir_function("far_helper", is_far=True, inline_attr=INLINE)
 
     vreg_result = VirtualRegister(id=0, type_info=BasicTypeInfo('u8'), hint="result")
-
-    entry_block = BasicBlock(
+    func.blocks[0] = BasicBlock(
         block_id=0,
         instructions=[
             Move(dest=vreg_result, source=Immediate(42), type_info=BasicTypeInfo('u8')),
             Return(values=[vreg_result])
         ],
-        predecessors=[],
-        successors=[]
+        predecessors=[], successors=[]
     )
-
-    func.blocks[0] = entry_block
     return func
 
 
-def create_function_with_asm() -> MIRFunction:
+def create_function_with_asm():
     """Create a function with inline assembly that should not be inlined."""
-    func = MIRFunction(
-        name="asm_helper",
-        parameters=[],
-        return_type=BasicTypeInfo('u8'),
-        blocks={},
-        entry_block_id=0,
-        exit_block_ids=[0],
-        mode_attr=None,
-        preserves_attr=None,
-        bank_attr=None,
-        interrupt_attr=None,
-        inline_attr=InlineAttribute(name='inline'),
-        is_entry=False,
-        is_far=False,
-        vreg_allocator=VirtualRegisterAllocator(),
-        alias_tracker=None,
-    )
+    func = make_mir_function("asm_helper", inline_attr=INLINE)
 
     vreg_result = VirtualRegister(id=0, type_info=BasicTypeInfo('u8'), hint="result")
-
-    entry_block = BasicBlock(
+    func.blocks[0] = BasicBlock(
         block_id=0,
         instructions=[
             InlineAsm(instructions=["NOP"]),
             Move(dest=vreg_result, source=Immediate(42), type_info=BasicTypeInfo('u8')),
             Return(values=[vreg_result])
         ],
-        predecessors=[],
-        successors=[]
+        predecessors=[], successors=[]
     )
-
-    func.blocks[0] = entry_block
     return func
 
 
-def create_interrupt_handler() -> MIRFunction:
+def create_interrupt_handler():
     """Create an interrupt handler that should not be inlined."""
-    func = MIRFunction(
-        name="nmi_handler",
-        parameters=[],
-        return_type=None,
-        blocks={},
-        entry_block_id=0,
-        exit_block_ids=[0],
-        mode_attr=None,
-        preserves_attr=None,
-        bank_attr=None,
-        interrupt_attr=InterruptAttribute(name='interrupt', vector=InterruptVector.NMI),
-        inline_attr=InlineAttribute(name='inline'),
-        is_entry=False,
-        is_far=False,
-        vreg_allocator=VirtualRegisterAllocator(),
-        alias_tracker=None,
+    func = make_mir_function("nmi_handler", return_type=None,
+                             interrupt_attr=InterruptAttribute(name='interrupt', vector=InterruptVector.NMI),
+                             inline_attr=INLINE)
+    func.blocks[0] = BasicBlock(
+        block_id=0, instructions=[Return(values=[])],
+        predecessors=[], successors=[]
     )
-
-    entry_block = BasicBlock(
-        block_id=0,
-        instructions=[
-            Return(values=[])
-        ],
-        predecessors=[],
-        successors=[]
-    )
-
-    func.blocks[0] = entry_block
     return func
 
 
-def create_function_with_multiple_returns() -> MIRFunction:
+def create_function_with_multiple_returns():
     """Create a function with multiple return paths."""
-    func = MIRFunction(
-        name="multi_return",
-        parameters=[],
-        return_type=BasicTypeInfo('u8'),
-        blocks={},
-        entry_block_id=0,
-        exit_block_ids=[1, 2],
-        mode_attr=None,
-        preserves_attr=None,
-        bank_attr=None,
-        interrupt_attr=None,
-        inline_attr=InlineAttribute(name='inline'),
-        is_entry=False,
-        is_far=False,
-        vreg_allocator=VirtualRegisterAllocator(),
-        alias_tracker=None,
-    )
+    func = make_mir_function("multi_return", inline_attr=INLINE)
+    func.exit_block_ids = [1, 2]
 
     vreg_cond = VirtualRegister(id=0, type_info=BasicTypeInfo('u8'), hint="cond")
     vreg_result1 = VirtualRegister(id=1, type_info=BasicTypeInfo('u8'), hint="result1")
     vreg_result2 = VirtualRegister(id=2, type_info=BasicTypeInfo('u8'), hint="result2")
 
-    # Block 0: conditional branch
-    entry_block = BasicBlock(
+    func.blocks[0] = BasicBlock(
         block_id=0,
         instructions=[
             Move(dest=vreg_cond, source=Immediate(1), type_info=BasicTypeInfo('u8')),
-            CondBranch(
-                condition=vreg_cond,
-                true_target=1,
-                false_target=2,
-            )
+            CondBranch(condition=vreg_cond, true_target=1, false_target=2)
         ],
-        predecessors=[],
-        successors=[1, 2]
+        predecessors=[], successors=[1, 2]
     )
-
-    # Block 1: return 10
-    true_block = BasicBlock(
+    func.blocks[1] = BasicBlock(
         block_id=1,
         instructions=[
             Move(dest=vreg_result1, source=Immediate(10), type_info=BasicTypeInfo('u8')),
             Return(values=[vreg_result1])
         ],
-        predecessors=[0],
-        successors=[]
+        predecessors=[0], successors=[]
     )
-
-    # Block 2: return 20
-    false_block = BasicBlock(
+    func.blocks[2] = BasicBlock(
         block_id=2,
         instructions=[
             Move(dest=vreg_result2, source=Immediate(20), type_info=BasicTypeInfo('u8')),
             Return(values=[vreg_result2])
         ],
-        predecessors=[0],
-        successors=[]
+        predecessors=[0], successors=[]
     )
-
-    func.blocks[0] = entry_block
-    func.blocks[1] = true_block
-    func.blocks[2] = false_block
     return func
 
 
-def create_large_function(num_instructions: int) -> MIRFunction:
+def create_large_function(num_instructions: int):
     """Create a function with many instructions."""
-    func = MIRFunction(
-        name="large_func",
-        parameters=[],
-        return_type=BasicTypeInfo('u8'),
-        blocks={},
-        entry_block_id=0,
-        exit_block_ids=[0],
-        mode_attr=None,
-        preserves_attr=None,
-        bank_attr=None,
-        interrupt_attr=None,
-        inline_attr=InlineAttribute(name='inline'),
-        is_entry=False,
-        is_far=False,
-        vreg_allocator=VirtualRegisterAllocator(),
-        alias_tracker=None,
-    )
+    func = make_mir_function("large_func", inline_attr=INLINE)
 
     vreg_acc = VirtualRegister(id=0, type_info=BasicTypeInfo('u8'), hint="acc")
-
     instructions = [
         Move(dest=vreg_acc, source=Immediate(0), type_info=BasicTypeInfo('u8'))
     ]
-
-    # Add many BinaryOp instructions
-    for i in range(num_instructions - 2):  # -2 for initial Move and final Return
+    for i in range(num_instructions - 2):
         instructions.append(
-            BinaryOp(
-                dest=vreg_acc,
-                left=vreg_acc,
-                right=Immediate(1),
-                op='+',
-                type_info=BasicTypeInfo('u8')
-            )
+            BinaryOp(dest=vreg_acc, left=vreg_acc, right=Immediate(1), op='+',
+                     type_info=BasicTypeInfo('u8'))
         )
-
     instructions.append(Return(values=[vreg_acc]))
 
-    entry_block = BasicBlock(
-        block_id=0,
-        instructions=instructions,
-        predecessors=[],
-        successors=[]
+    func.blocks[0] = BasicBlock(
+        block_id=0, instructions=instructions,
+        predecessors=[], successors=[]
     )
-
-    func.blocks[0] = entry_block
     return func
 
 
-def create_getter_function() -> MIRFunction:
-    """Create a simple getter function: fn get_value() -> u8 { return 15; }
-
-    Note: inline_attr is set because HIR builder auto-detects trivial getters.
-    """
-    func = MIRFunction(
-        name="get_value",
-        parameters=[],
-        return_type=BasicTypeInfo('u8'),
-        blocks={},
-        entry_block_id=0,
-        exit_block_ids=[0],
-        mode_attr=None,
-        preserves_attr=None,
-        bank_attr=None,
-        interrupt_attr=None,
-        inline_attr=InlineAttribute(name='inline'),  # Auto-set by HIR builder for trivial getters
-        is_entry=False,
-        is_far=False,
-        vreg_allocator=VirtualRegisterAllocator(),
-        alias_tracker=None,
-    )
+def create_getter_function():
+    """Create a simple getter function: fn get_value() -> u8 { return 15; }"""
+    func = make_mir_function("get_value", inline_attr=INLINE)
 
     vreg_result = VirtualRegister(id=0, type_info=BasicTypeInfo('u8'), hint="result")
-
-    entry_block = BasicBlock(
+    func.blocks[0] = BasicBlock(
         block_id=0,
         instructions=[
             Move(dest=vreg_result, source=Immediate(15), type_info=BasicTypeInfo('u8')),
             Return(values=[vreg_result])
         ],
-        predecessors=[],
-        successors=[]
+        predecessors=[], successors=[]
     )
-
-    func.blocks[0] = entry_block
     return func
 
 
-def create_getter_with_load() -> MIRFunction:
-    """Create a getter that loads from memory: fn get_static() -> u8 { return STATIC; }
-
-    Note: inline_attr is set because HIR builder auto-detects trivial getters.
-    """
-    func = MIRFunction(
-        name="get_static",
-        parameters=[],
-        return_type=BasicTypeInfo('u8'),
-        blocks={},
-        entry_block_id=0,
-        exit_block_ids=[0],
-        mode_attr=None,
-        preserves_attr=None,
-        bank_attr=None,
-        interrupt_attr=None,
-        inline_attr=InlineAttribute(name='inline'),  # Auto-set by HIR builder for trivial getters
-        is_entry=False,
-        is_far=False,
-        vreg_allocator=VirtualRegisterAllocator(),
-        alias_tracker=None,
-    )
+def create_getter_with_load():
+    """Create a getter that loads from memory: fn get_static() -> u8 { return STATIC; }"""
+    func = make_mir_function("get_static", inline_attr=INLINE)
 
     vreg_result = VirtualRegister(id=0, type_info=BasicTypeInfo('u8'), hint="result")
     mem_loc = MemoryLocation(storage_type="zeropage", address=0x10, symbol=MockSymbol("STATIC"))
-
-    entry_block = BasicBlock(
+    func.blocks[0] = BasicBlock(
         block_id=0,
         instructions=[
             Load(dest=vreg_result, source=mem_loc, type_info=BasicTypeInfo('u8')),
             Return(values=[vreg_result])
         ],
-        predecessors=[],
-        successors=[]
+        predecessors=[], successors=[]
     )
-
-    func.blocks[0] = entry_block
     return func
 
 
-def create_setter_function() -> MIRFunction:
-    """Create a simple setter function: fn set_value(v @ A: u8) { STATIC = v; }
-
-    Note: inline_attr is set because HIR builder auto-detects trivial setters.
-    """
-    func = MIRFunction(
-        name="set_value",
-        parameters=[],
-        return_type=None,
-        blocks={},
-        entry_block_id=0,
-        exit_block_ids=[0],
-        mode_attr=None,
-        preserves_attr=None,
-        bank_attr=None,
-        interrupt_attr=None,
-        inline_attr=InlineAttribute(name='inline'),  # Auto-set by HIR builder for trivial setters
-        is_entry=False,
-        is_far=False,
-        vreg_allocator=VirtualRegisterAllocator(),
-        alias_tracker=None,
-    )
+def create_setter_function():
+    """Create a simple setter function: fn set_value(v @ A: u8) { STATIC = v; }"""
+    func = make_mir_function("set_value", return_type=None, inline_attr=INLINE)
 
     vreg_value = VirtualRegister(id=0, type_info=BasicTypeInfo('u8'), hint="value")
     mem_loc = MemoryLocation(storage_type="zeropage", address=0x10, symbol=MockSymbol("STATIC"))
-
-    entry_block = BasicBlock(
+    func.blocks[0] = BasicBlock(
         block_id=0,
         instructions=[
             Store(dest=mem_loc, source=vreg_value, type_info=BasicTypeInfo('u8')),
             Return(values=[])
         ],
-        predecessors=[],
-        successors=[]
+        predecessors=[], successors=[]
     )
-
-    func.blocks[0] = entry_block
     return func
 
 
-def create_pointer_getter_function() -> MIRFunction:
-    """Create a pointer-based getter: fn get_damage(*self) -> u8 { return self.damage; }
+def create_pointer_getter_function():
+    """Create a pointer-based getter: fn get_damage(*self) -> u8 { return self.damage; }"""
+    func = make_mir_function("get_damage", inline_attr=INLINE)
 
-    Note: inline_attr is set because HIR builder auto-detects trivial getters.
-    """
-    func = MIRFunction(
-        name="get_damage",
-        parameters=[],
-        return_type=BasicTypeInfo('u8'),
-        blocks={},
-        entry_block_id=0,
-        exit_block_ids=[0],
-        mode_attr=None,
-        preserves_attr=None,
-        bank_attr=None,
-        interrupt_attr=None,
-        inline_attr=InlineAttribute(name='inline'),  # Auto-set by HIR builder for trivial getters
-        is_entry=False,
-        is_far=False,
-        vreg_allocator=VirtualRegisterAllocator(),
-        alias_tracker=None,
-    )
-
-    # Simulates: self.damage where self is a pointer
-    # This would be lowered to LoadIndirect (near pointer for impl methods)
-    vreg_self = VirtualRegister(id=0, type_info=BasicTypeInfo('u16'), hint="self")  # pointer
+    vreg_self = VirtualRegister(id=0, type_info=BasicTypeInfo('u16'), hint="self")
     vreg_result = VirtualRegister(id=1, type_info=BasicTypeInfo('u8'), hint="result")
-
-    entry_block = BasicBlock(
+    func.blocks[0] = BasicBlock(
         block_id=0,
         instructions=[
-            # LoadIndirect: load from pointer (with Y register for offset)
-            LoadIndirect(dest=vreg_result, pointer=vreg_self, is_far=False, index_register='Y', type_info=BasicTypeInfo('u8')),
+            LoadIndirect(dest=vreg_result, pointer=vreg_self, is_far=False,
+                        index_register='Y', type_info=BasicTypeInfo('u8')),
             Return(values=[vreg_result])
         ],
-        predecessors=[],
-        successors=[]
+        predecessors=[], successors=[]
     )
-
-    func.blocks[0] = entry_block
     return func
 
 
-def create_pointer_setter_function() -> MIRFunction:
-    """Create a pointer-based setter: fn set_damage(*self, v @ A: u8) { self.damage = v; }
+def create_pointer_setter_function():
+    """Create a pointer-based setter: fn set_damage(*self, v @ A: u8) { self.damage = v; }"""
+    func = make_mir_function("set_damage", return_type=None, inline_attr=INLINE)
 
-    Note: inline_attr is set because HIR builder auto-detects trivial setters.
-    """
-    func = MIRFunction(
-        name="set_damage",
-        parameters=[],
-        return_type=None,
-        blocks={},
-        entry_block_id=0,
-        exit_block_ids=[0],
-        mode_attr=None,
-        preserves_attr=None,
-        bank_attr=None,
-        interrupt_attr=None,
-        inline_attr=InlineAttribute(name='inline'),  # Auto-set by HIR builder for trivial setters
-        is_entry=False,
-        is_far=False,
-        vreg_allocator=VirtualRegisterAllocator(),
-        alias_tracker=None,
-    )
-
-    # Simulates: self.damage = v where self is a pointer
-    vreg_self = VirtualRegister(id=0, type_info=BasicTypeInfo('u16'), hint="self")  # pointer
+    vreg_self = VirtualRegister(id=0, type_info=BasicTypeInfo('u16'), hint="self")
     vreg_value = VirtualRegister(id=1, type_info=BasicTypeInfo('u8'), hint="value")
-
-    entry_block = BasicBlock(
+    func.blocks[0] = BasicBlock(
         block_id=0,
         instructions=[
-            # StoreIndirect: store to pointer (with Y register for offset)
-            StoreIndirect(source=vreg_value, pointer=vreg_self, is_far=False, index_register='Y', type_info=BasicTypeInfo('u8')),
+            StoreIndirect(source=vreg_value, pointer=vreg_self, is_far=False,
+                         index_register='Y', type_info=BasicTypeInfo('u8')),
             Return(values=[])
         ],
-        predecessors=[],
-        successors=[]
+        predecessors=[], successors=[]
     )
-
-    func.blocks[0] = entry_block
     return func
 
 

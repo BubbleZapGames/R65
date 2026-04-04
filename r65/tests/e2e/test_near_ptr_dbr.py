@@ -8,16 +8,11 @@ Writes through the near pointer must use long addressing to avoid
 DBR-relative writes going to the wrong bank.
 """
 
-import pytest
-from r65.tests.e2e import E2ETest, ExpectedState
+from r65.tests.e2e import ExpectedState
 
 
 class TestNearPtrDBR:
     """Test near pointer writes under D=S far pointer mode."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
 
     def test_near_ptr_write_with_far_ptr_param(self, e2e):
         """Near pointer write should work even when far pointer is present."""

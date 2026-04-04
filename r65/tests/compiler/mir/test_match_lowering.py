@@ -8,35 +8,9 @@ Tests that the match lowerer correctly chooses between:
 """
 
 import pytest
-from r65.compiler.frontend import Parser
-from r65.compiler.hir import HIRBuilder
-from r65.compiler.typeck.type_checker import TypeChecker
 from r65.compiler.typeck.errors import TypeCheckError
-from r65.compiler.mir.builder import MIRBuilder
 from r65.compiler.mir.nodes import JumpTable, LookupTable, CondBranch
-
-
-def build_mir(source: str) -> 'MIRProgram':
-    """Helper to build MIR from source code."""
-    parser = Parser()
-    ast = parser.parse(source)
-    hir_builder = HIRBuilder()
-    hir_prog = hir_builder.build_program(ast)
-    type_checker = TypeChecker(hir_prog)
-    type_checker.check()
-    mir_builder = MIRBuilder()
-    return mir_builder.build_program(hir_prog)
-
-
-def get_function_instructions(mir_prog, func_name: str) -> list:
-    """Get all instructions from a function's blocks."""
-    for func in mir_prog.functions:
-        if func.name == func_name:
-            instrs = []
-            for block in func.blocks.values():
-                instrs.extend(block.instructions)
-            return instrs
-    return []
+from r65.tests.language.common import build_mir, get_mir_instructions, type_check
 
 
 def has_jump_table(instrs) -> bool:
@@ -92,7 +66,7 @@ class TestJumpTableSelection:
         }
         """
         mir = build_mir(source)
-        instrs = get_function_instructions(mir, "classify")
+        instrs = get_mir_instructions(mir, "classify")
 
         assert has_table_optimization(instrs), "Dense 3-pattern match should use table optimization"
         assert count_cond_branches(instrs) == 0, "Table path should have no CondBranch"
@@ -110,7 +84,7 @@ class TestJumpTableSelection:
         }
         """
         mir = build_mir(source)
-        instrs = get_function_instructions(mir, "classify")
+        instrs = get_mir_instructions(mir, "classify")
 
         assert not has_table_optimization(instrs), "2-pattern match should NOT use table optimization"
         assert count_cond_branches(instrs) >= 2, "Should use CondBranch chain"
@@ -129,7 +103,7 @@ class TestJumpTableSelection:
         }
         """
         mir = build_mir(source)
-        instrs = get_function_instructions(mir, "classify")
+        instrs = get_mir_instructions(mir, "classify")
 
         assert not has_table_optimization(instrs), "Sparse match should NOT use table optimization"
         assert count_cond_branches(instrs) >= 3, "Should use CondBranch chain"
@@ -155,7 +129,7 @@ class TestJumpTableProperties:
         }
         """
         mir = build_mir(source)
-        instrs = get_function_instructions(mir, "classify")
+        instrs = get_mir_instructions(mir, "classify")
 
         assert has_jump_table(instrs), "Non-constant arm should use JumpTable"
         assert not has_lookup_table(instrs), "Non-constant arm should NOT use LookupTable"
@@ -174,7 +148,7 @@ class TestJumpTableProperties:
         }
         """
         mir = build_mir(source)
-        instrs = get_function_instructions(mir, "classify")
+        instrs = get_mir_instructions(mir, "classify")
 
         # 3 patterns in range 0..3 → range_size=4, density=3/4=75% ≥ 50%
         # All constant → LookupTable
@@ -203,7 +177,7 @@ class TestLookupTableSelection:
         }
         """
         mir = build_mir(source)
-        instrs = get_function_instructions(mir, "classify")
+        instrs = get_mir_instructions(mir, "classify")
 
         assert has_lookup_table(instrs), "Pure constant match should emit LookupTable"
         assert not has_jump_table(instrs), "Pure constant match should NOT emit JumpTable"
@@ -222,7 +196,7 @@ class TestLookupTableSelection:
         }
         """
         mir = build_mir(source)
-        instrs = get_function_instructions(mir, "classify")
+        instrs = get_mir_instructions(mir, "classify")
 
         lut = get_lookup_table(instrs)
         assert lut is not None
@@ -244,7 +218,7 @@ class TestLookupTableSelection:
         }
         """
         mir = build_mir(source)
-        instrs = get_function_instructions(mir, "classify")
+        instrs = get_mir_instructions(mir, "classify")
 
         lut = get_lookup_table(instrs)
         assert lut is not None, "Should emit LookupTable for dense constants"
@@ -269,7 +243,7 @@ class TestLookupTableSelection:
         }
         """
         mir = build_mir(source)
-        instrs = get_function_instructions(mir, "dir_cost")
+        instrs = get_mir_instructions(mir, "dir_cost")
 
         lut = get_lookup_table(instrs)
         assert lut is not None, "Dense enum with constant bodies should emit LookupTable"
@@ -293,7 +267,7 @@ class TestLookupTableSelection:
         }
         """
         mir = build_mir(source)
-        instrs = get_function_instructions(mir, "classify")
+        instrs = get_mir_instructions(mir, "classify")
 
         assert has_jump_table(instrs), "Non-constant arm should force JumpTable"
         assert not has_lookup_table(instrs), "Non-constant arm should NOT use LookupTable"
@@ -314,7 +288,7 @@ class TestRangePatternLowering:
         }
         """
         mir = build_mir(source)
-        instrs = get_function_instructions(mir, "classify")
+        instrs = get_mir_instructions(mir, "classify")
 
         # 0..=1 expands to 2 values, below MIN_PATTERNS=3, so uses branch chain
         # Range pattern emits two CondBranch instructions (>= and <=)
@@ -336,7 +310,7 @@ class TestRangePatternLowering:
         }
         """
         mir = build_mir(source)
-        instrs = get_function_instructions(mir, "classify")
+        instrs = get_mir_instructions(mir, "classify")
 
         # 9 values (0..=8) across 3 arms, all constant → LookupTable
         lut = get_lookup_table(instrs)
@@ -358,7 +332,7 @@ class TestRangePatternLowering:
         }
         """
         mir = build_mir(source)
-        instrs = get_function_instructions(mir, "classify")
+        instrs = get_mir_instructions(mir, "classify")
 
         lut = get_lookup_table(instrs)
         assert lut is not None, "Dense mixed range+literal should use LookupTable"
@@ -376,7 +350,7 @@ class TestRangePatternLowering:
         }
         """
         mir = build_mir(source)
-        instrs = get_function_instructions(mir, "classify")
+        instrs = get_mir_instructions(mir, "classify")
 
         # Single-value range should emit one == CondBranch, not two >= <=
         assert count_cond_branches(instrs) == 1, \
@@ -396,22 +370,12 @@ class TestRangePatternLowering:
         }
         """
         mir = build_mir(source)
-        instrs = get_function_instructions(mir, "classify")
+        instrs = get_mir_instructions(mir, "classify")
 
         lut = get_lookup_table(instrs)
         assert lut is not None, "Dense exclusive range should use LookupTable"
         assert lut.values == [10, 10, 10, 20, 20, 20, 30, 30, 30]
 
-
-def type_check(source: str):
-    """Helper to type check source code (without MIR lowering)."""
-    parser = Parser()
-    ast = parser.parse(source)
-    hir_builder = HIRBuilder()
-    hir_prog = hir_builder.build_program(ast)
-    type_checker = TypeChecker(hir_prog)
-    type_checker.check()
-    return hir_prog
 
 
 class TestRangePatternTypeCheck:

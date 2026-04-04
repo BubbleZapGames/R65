@@ -3,16 +3,11 @@
 End-to-end tests for block expressions, if expressions, and trailing return expressions.
 """
 
-import pytest
-from r65.tests.e2e import E2ETest, ExpectedState
+from r65.tests.e2e import ExpectedState
 
 
 class TestBlockExpressions:
     """Test block expressions compile and execute correctly."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
 
     def test_simple_block_expr(self, e2e):
         """Test block expression with just a value."""
@@ -71,10 +66,6 @@ class TestBlockExpressions:
 
 class TestIfExpressions:
     """Test if expressions compile and execute correctly."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
 
     def test_if_expr_true_branch(self, e2e):
         """Test if expression takes true branch."""
@@ -174,10 +165,6 @@ class TestIfExpressions:
 
 class TestTrailingReturn:
     """Test trailing return expressions compile and execute correctly."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
 
     def test_trailing_return_literal(self, e2e):
         """Test function with trailing literal return (no semicolon)."""

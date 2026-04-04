@@ -5,17 +5,11 @@ Basic end-to-end tests for R65 compiler.
 Tests simple programs to verify the compilation and execution pipeline.
 """
 
-import pytest
-from r65.tests.e2e import E2ETest, ExpectedState
+from r65.tests.e2e import ExpectedState
 
 
 class TestBasicOperations:
     """Test basic R65 operations compile and execute correctly."""
-
-    @pytest.fixture
-    def e2e(self):
-        """Create E2ETest instance."""
-        return E2ETest()
 
     def test_assign_accumulator(self, e2e):
         """Test simple accumulator assignment."""
@@ -80,10 +74,6 @@ class TestBasicOperations:
 class TestArithmetic:
     """Test arithmetic operations."""
 
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
-
     def test_addition(self, e2e):
         """Test addition operation."""
         result = e2e.run('''
@@ -139,10 +129,6 @@ class TestArithmetic:
 class TestMemoryOperations:
     """Test memory read/write operations."""
 
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
-
     def test_zeropage_write(self, e2e):
         """Test writing to zero page memory."""
         result = e2e.run('''
@@ -174,10 +160,6 @@ class TestMemoryOperations:
 
 class TestFlags:
     """Test processor flag operations."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
 
     def test_zero_flag_set(self, e2e):
         """Test zero flag is set when result is zero."""
@@ -226,10 +208,6 @@ class TestFlags:
 
 class Test16BitMode:
     """Test 16-bit mode operations."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
 
     def test_16bit_accumulator(self, e2e):
         """Test 16-bit accumulator assignment with automatic mode switching.
@@ -281,10 +259,6 @@ class Test16BitMode:
 
 class TestArrayOperations:
     """Test array operations including len()."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
 
     def test_array_len_small(self, e2e):
         """Test len() on a small array (no initializer)."""
@@ -376,10 +350,6 @@ class TestStackArgumentDrift:
     as multiple arguments would use stale offsets after each push.
     """
 
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
-
     def test_same_variable_as_multiple_stack_args(self, e2e):
         """Test passing same variable as multiple stack arguments.
 
@@ -459,10 +429,6 @@ class TestStackArgumentDrift:
 
 class TestOffsetOf:
     """Test offset_of() built-in function end-to-end."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
 
     def test_offset_of_struct_field(self, e2e):
         """Test offset_of returns correct byte offset for struct field."""

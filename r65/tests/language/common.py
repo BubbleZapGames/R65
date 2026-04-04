@@ -10,6 +10,11 @@ from r65.compiler.frontend.parser import parse, ParseError
 from r65.compiler.frontend import ast
 from r65.compiler.hir.builder import HIRBuilder
 from r65.compiler.hir import nodes as hir
+from r65.compiler.typeck.type_checker import TypeChecker
+from r65.compiler.mir.builder import MIRBuilder
+from r65.compiler.mir.nodes import MIRFunction
+from r65.compiler.mir.virtual_registers import VirtualRegisterAllocator
+from r65.compiler.hir.types import BasicTypeInfo
 
 
 # =============================================================================
@@ -138,6 +143,64 @@ def build_hir_function(source: str) -> hir.HIRFunctionDecl:
     if hir_prog.functions:
         return hir_prog.functions[0]
     raise ValueError("No function in HIR")
+
+
+# =============================================================================
+# MIR Building Helpers
+# =============================================================================
+
+def type_check(source: str):
+    """Parse source, build HIR, and type-check. Returns HIR program."""
+    hir_prog = build_hir(source)
+    type_checker = TypeChecker(hir_prog)
+    type_checker.check()
+    return hir_prog
+
+
+def build_mir(source: str):
+    """Parse source, build HIR, type-check, and build MIR."""
+    hir_prog = type_check(source)
+    mir_builder = MIRBuilder()
+    return mir_builder.build_program(hir_prog)
+
+
+def get_mir_function(mir_prog, func_name: str):
+    """Get MIRFunction by name, or None if not found."""
+    for func in mir_prog.functions:
+        if func.name == func_name:
+            return func
+    return None
+
+
+def get_mir_instructions(mir_prog, func_name: str) -> list:
+    """Get all instructions from a function's blocks."""
+    func = get_mir_function(mir_prog, func_name)
+    if func is None:
+        return []
+    instrs = []
+    for block in func.blocks.values():
+        instrs.extend(block.instructions)
+    return instrs
+
+
+def make_mir_function(name: str, *, return_type='u8', is_entry=False,
+                      is_far=False, bank_attr=None, inline_attr=None,
+                      interrupt_attr=None) -> MIRFunction:
+    """Create a MIRFunction with sensible test defaults.
+
+    Only exposes the fields that vary across test factories.
+    """
+    rt = BasicTypeInfo(return_type) if isinstance(return_type, str) else return_type
+    return MIRFunction(
+        name=name,
+        return_type=rt,
+        is_entry=is_entry,
+        is_far=is_far,
+        bank_attr=bank_attr,
+        inline_attr=inline_attr,
+        interrupt_attr=interrupt_attr,
+        vreg_allocator=VirtualRegisterAllocator(),
+    )
 
 
 # =============================================================================

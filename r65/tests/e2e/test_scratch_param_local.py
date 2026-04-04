@@ -10,16 +10,11 @@ pos needed its own stack slot — the Move that copies the scratch value
 to the stack was eliminated, leaving pos uninitialized.
 """
 
-import pytest
-from r65.tests.e2e import E2ETest, ExpectedState
+from r65.tests.e2e import ExpectedState
 
 
 class TestScratchParamLocalAssignment:
     """Test that assigning scratch params to locals preserves the value."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
 
     def test_let_local_equals_scratch_param(self, e2e):
         """let pos = ptr; must copy scratch param value to local."""

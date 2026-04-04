@@ -5,45 +5,13 @@ Tests that bitwise expressions (&, |, ^) used as conditions are properly
 optimized to use direct Z flag testing instead of short-circuit evaluation.
 """
 
-import pytest
-from r65.compiler.frontend import Parser
-from r65.compiler.hir import HIRBuilder
-from r65.compiler.typeck.type_checker import TypeChecker
-from r65.compiler.mir.builder import MIRBuilder
 from r65.compiler.mir.nodes import BinaryOp, CondBranch, Compare, BitTest
-
-
-def build_mir(source: str) -> 'MIRProgram':
-    """Helper to build MIR from source code."""
-    parser = Parser()
-    ast = parser.parse(source)
-    hir_builder = HIRBuilder()
-    hir_prog = hir_builder.build_program(ast)
-    type_checker = TypeChecker(hir_prog)
-    type_checker.check()
-    mir_builder = MIRBuilder()
-    return mir_builder.build_program(hir_prog)
-
-
-def get_function_instructions(mir_prog, func_name: str) -> list:
-    """Get all instructions from a function's blocks."""
-    for func in mir_prog.functions:
-        if func.name == func_name:
-            instrs = []
-            for block in func.blocks.values():
-                instrs.extend(block.instructions)
-            return instrs
-    return []
+from r65.tests.language.common import build_mir, get_mir_instructions
 
 
 def has_binary_op(instrs, op: str) -> bool:
     """Check if instruction list contains a BinaryOp with given operator."""
     return any(isinstance(i, BinaryOp) and i.op == op for i in instrs)
-
-
-def has_cond_branch(instrs) -> bool:
-    """Check if instruction list contains a CondBranch."""
-    return any(isinstance(i, CondBranch) for i in instrs)
 
 
 def count_cond_branches(instrs) -> int:
@@ -76,7 +44,7 @@ class TestBitwiseOrCondition:
         }
         """
         mir = build_mir(source)
-        instrs = get_function_instructions(mir, "test")
+        instrs = get_mir_instructions(mir, "test")
 
         # Should have ORA binary op
         assert has_binary_op(instrs, '|'), "Should emit ORA (|) instruction"
@@ -100,7 +68,7 @@ class TestBitwiseOrCondition:
         }
         """
         mir = build_mir(source)
-        instrs = get_function_instructions(mir, "test")
+        instrs = get_mir_instructions(mir, "test")
 
         assert has_binary_op(instrs, '|'), "Should emit ORA instruction"
         assert count_cond_branches(instrs) == 1
@@ -122,7 +90,7 @@ class TestBitwiseOrCondition:
         }
         """
         mir = build_mir(source)
-        instrs = get_function_instructions(mir, "test")
+        instrs = get_mir_instructions(mir, "test")
 
         assert has_binary_op(instrs, '|')
         assert count_cond_branches(instrs) == 1
@@ -151,7 +119,7 @@ class TestBitwiseAndCondition:
         }
         """
         mir = build_mir(source)
-        instrs = get_function_instructions(mir, "test")
+        instrs = get_mir_instructions(mir, "test")
 
         assert has_binary_op(instrs, '&'), "Should emit AND instruction"
         assert count_cond_branches(instrs) == 1
@@ -171,7 +139,7 @@ class TestBitwiseAndCondition:
         }
         """
         mir = build_mir(source)
-        instrs = get_function_instructions(mir, "test")
+        instrs = get_mir_instructions(mir, "test")
 
         # Bit 7 test should use BIT instruction, not AND
         assert has_bit_test(instrs), "Should use BIT instruction for bit 7 test"
@@ -191,7 +159,7 @@ class TestBitwiseAndCondition:
         }
         """
         mir = build_mir(source)
-        instrs = get_function_instructions(mir, "test")
+        instrs = get_mir_instructions(mir, "test")
 
         # Bit 6 test should use BIT instruction (BVS/BVC)
         assert has_bit_test(instrs), "Should use BIT instruction for bit 6 test"
@@ -217,7 +185,7 @@ class TestBitwiseXorCondition:
         }
         """
         mir = build_mir(source)
-        instrs = get_function_instructions(mir, "test")
+        instrs = get_mir_instructions(mir, "test")
 
         assert has_binary_op(instrs, '^'), "Should emit EOR (^) instruction"
         assert count_cond_branches(instrs) == 1
@@ -245,7 +213,7 @@ class TestChainedBitwiseCondition:
         }
         """
         mir = build_mir(source)
-        instrs = get_function_instructions(mir, "test")
+        instrs = get_mir_instructions(mir, "test")
 
         # Should have multiple ORA ops (chained)
         or_count = sum(1 for i in instrs if isinstance(i, BinaryOp) and i.op == '|')
@@ -275,7 +243,7 @@ class TestNegatedBitwiseCondition:
         }
         """
         mir = build_mir(source)
-        instrs = get_function_instructions(mir, "test")
+        instrs = get_mir_instructions(mir, "test")
 
         assert has_binary_op(instrs, '|')
         assert count_cond_branches(instrs) == 1
@@ -306,7 +274,7 @@ class TestLogicalVsBitwiseCondition:
         }
         """
         mir = build_mir(source)
-        instrs = get_function_instructions(mir, "test")
+        instrs = get_mir_instructions(mir, "test")
 
         # Logical OR should have multiple branches for short-circuit
         branch_count = count_cond_branches(instrs)
@@ -329,7 +297,7 @@ class TestLogicalVsBitwiseCondition:
         }
         """
         mir = build_mir(source)
-        instrs = get_function_instructions(mir, "test")
+        instrs = get_mir_instructions(mir, "test")
 
         # Logical AND should have multiple branches for short-circuit
         branch_count = count_cond_branches(instrs)
@@ -356,7 +324,7 @@ class TestVolatileNotOptimized:
         }
         """
         mir = build_mir(source)
-        instrs = get_function_instructions(mir, "test")
+        instrs = get_mir_instructions(mir, "test")
 
         # Should NOT use the bitwise optimization for volatile vars
         # This means it will use normal comparison path (Compare + CondBranch)
@@ -387,7 +355,7 @@ class TestBitwiseWithComparison:
         }
         """
         mir = build_mir(source)
-        instrs = get_function_instructions(mir, "test")
+        instrs = get_mir_instructions(mir, "test")
 
         # Should have AND operation
         assert has_binary_op(instrs, '&'), "Should emit AND instruction"

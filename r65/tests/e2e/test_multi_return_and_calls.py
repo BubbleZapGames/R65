@@ -5,9 +5,8 @@ End-to-end tests for multi-return functions and nested calls.
 Tests (u8,u8) tuple returns via A/B, nested calls with spilling.
 """
 
-import pytest
 from pathlib import Path
-from r65.tests.e2e import E2ETest, ExpectedState
+from r65.tests.e2e import ExpectedState
 
 STDLIB_DIR = Path(__file__).parent.parent.parent.parent / "stdlib"
 SNESLIB_PATH = STDLIB_DIR / "sneslib.r65"
@@ -16,10 +15,6 @@ MATH_PATH = STDLIB_DIR / "math.r65"
 
 class TestMul8MultiReturn:
     """Test mul8 u16 return."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
 
     def test_mul8_small(self, e2e):
         """Test mul8 returning u16: 7*6=42."""
@@ -68,10 +63,6 @@ class TestMul8MultiReturn:
 
 class TestNestedCalls:
     """Test nested function calls."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
 
     def test_nested_calls(self, e2e):
         """Test double(add_one(5)) = 12."""
@@ -130,10 +121,6 @@ class TestNestedCalls:
 class TestMultipleReturnPaths:
     """Test functions with multiple return paths."""
 
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
-
     def test_multiple_return_paths(self, e2e):
         """Test function with return in both if and else branches."""
         result = e2e.run('''
@@ -164,10 +151,6 @@ class TestMultipleReturnPaths:
 
 class TestMixedParams:
     """Test mixed register and stack parameters."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
 
     def test_mixed_register_stack_params(self, e2e):
         """Test fn(a @ A: u8, b: u8) with mixed calling convention."""
@@ -209,10 +192,6 @@ class TestMixedParams:
 
 class TestVariableBoundParams:
     """Test variable-bound parameter passing (param @ STATIC_VAR)."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
 
     def test_variable_bound_basic(self, e2e):
         """Test basic variable-bound parameter: fn process(temp @ TEMP: u8)."""
@@ -261,10 +240,6 @@ class TestVariableBoundParams:
 
 class TestBRegister:
     """Test B register parameter passing and (A,B) tuple returns."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
 
     def test_b_parameter_and_return(self, e2e):
         """Test B param passing and (u8,u8) return via A,B registers.

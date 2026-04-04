@@ -17,16 +17,11 @@ The fix must ensure the array index is loaded from the authoritative variable
 location on every path, not from a scratch register that may be stale.
 """
 
-import pytest
-from r65.tests.e2e import E2ETest, ExpectedState
+from r65.tests.e2e import ExpectedState
 
 
 class TestArrayIndexConditional:
     """Test array indexing with variables across conditional branches."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
 
     def test_array_index_after_conditional_update(self, e2e):
         """Array index variable modified in if-block, used after if-block.

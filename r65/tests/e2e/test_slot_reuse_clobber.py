@@ -11,16 +11,11 @@ Reproduction: `oy` is defined early and used late (after function calls).
 in separate slots.
 """
 
-import pytest
-from r65.tests.e2e import E2ETest, ExpectedState
+from r65.tests.e2e import ExpectedState
 
 
 class TestSlotReuseClobber:
     """Test that slot reuse doesn't merge live variables."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
 
     def test_derived_local_does_not_clobber_source(self, e2e):
         """A local computed from another must not share its slot."""

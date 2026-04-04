@@ -3,17 +3,11 @@
 End-to-end tests for integer literal type suffixes (u8, u16, i8, i16).
 """
 
-import pytest
-from r65.tests.e2e import E2ETest, ExpectedState
+from r65.tests.e2e import ExpectedState
 
 
 class TestIntegerSuffixes:
     """Test integer literal suffix support."""
-
-    @pytest.fixture
-    def e2e(self):
-        """Create E2ETest instance."""
-        return E2ETest()
 
     def test_u8_suffix(self, e2e):
         """Test u8 suffix on integer literal."""

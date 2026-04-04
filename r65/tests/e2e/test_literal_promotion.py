@@ -6,16 +6,11 @@ When unsuffixed integer literals produce a compile-time result that overflows
 the inferred type, the compiler should promote to u16/i16 automatically.
 """
 
-import pytest
-from r65.tests.e2e import E2ETest, ExpectedState
+from r65.tests.e2e import ExpectedState
 
 
 class TestLiteralPromotion:
     """Test that unsuffixed literals are promoted when compile-time result overflows."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
 
     def test_shift_overflow_promotes(self, e2e):
         """8 << 5 = 256, overflows u8 -> promote to u16."""

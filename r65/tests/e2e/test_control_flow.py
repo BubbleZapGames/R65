@@ -5,16 +5,11 @@ End-to-end tests for control flow operations.
 Tests while loops, nested if/else, enum comparisons, and boundary comparisons.
 """
 
-import pytest
-from r65.tests.e2e import E2ETest, ExpectedState
+from r65.tests.e2e import ExpectedState
 
 
 class TestWhileLoops:
     """Test while loop operations."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
 
     def test_while_loop_sum(self, e2e):
         """Test while loop with accumulation: sum 1..10 by 3s."""
@@ -78,10 +73,6 @@ class TestWhileLoops:
 class TestIfElse:
     """Test if/else branching."""
 
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
-
     def test_nested_if_else_chain(self, e2e):
         """Test multi-branch classify function."""
         result = e2e.run('''
@@ -144,10 +135,6 @@ class TestIfElse:
 class TestEnumComparison:
     """Test enum variant comparisons."""
 
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
-
     def test_enum_comparison(self, e2e):
         """Test enum variants in if/else chain."""
         result = e2e.run('''
@@ -185,10 +172,6 @@ class TestEnumComparison:
 
 class TestUnsignedComparisons:
     """Test unsigned comparison edge cases."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
 
     def test_unsigned_comparison_boundary(self, e2e):
         """Test unsigned comparisons at byte boundaries."""
@@ -281,10 +264,6 @@ class TestUnsignedComparisons:
 
 class TestMatchExpression:
     """Test match expression compilation and runtime."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
 
     def test_match_basic(self, e2e):
         """Test match expression with multiple arms and wildcard."""
@@ -385,10 +364,6 @@ class TestMatchExpression:
 class TestForLoops:
     """Test for loop compilation and runtime."""
 
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
-
     def test_for_loop_sum(self, e2e):
         """Test for loop summing: for i in 0..10 { SUM += 1; }."""
         result = e2e.run('''
@@ -427,10 +402,6 @@ class TestForLoops:
 
 class TestInclusiveForLoops:
     """Test inclusive for loop (..) compilation and runtime."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
 
     def test_inclusive_for_loop_count(self, e2e):
         """Test inclusive for loop: for i in 0..=3 iterates 4 times."""
@@ -471,10 +442,6 @@ class TestInclusiveForLoops:
 
 class TestLoopExpression:
     """Test loop expression with break values."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
 
     def test_loop_break_value(self, e2e):
         """Test loop expression: let x = loop { break 42; };"""
@@ -529,10 +496,6 @@ class TestRecursion:
     Uses tail-recursive (accumulator) style. See TestBinaryOpCallResult for
     non-tail-recursive patterns like `n + f(x)`.
     """
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
 
     def test_recursive_sum(self, e2e):
         """Test tail recursion: sum_acc(5, 0) = 5+4+3+2+1+0 = 15."""
@@ -602,10 +565,6 @@ class TestBinaryOpCallResult:
     when loading the other operand for the binary operation.
     """
 
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
-
     def test_add_with_call_result(self, e2e):
         """Test expr + fn_call(): commutative swap path."""
         result = e2e.run('''
@@ -674,10 +633,6 @@ class TestBinaryOpCallResult:
 class TestShortCircuit:
     """Test short-circuit evaluation of && and ||."""
 
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
-
     def test_and_short_circuit(self, e2e):
         """Test && skips right side when left is false."""
         result = e2e.run('''
@@ -738,10 +693,6 @@ class TestComparisonLiteralPromotion:
     evaluated `32 * 32` as u8 (0) instead of u16 (1024), causing
     dead code elimination of the comparison branch.
     """
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
 
     def test_u16_comparison_with_u8_literal_product(self, e2e):
         """Test u16 >= 32 * 32 correctly evaluates 32*32 as 1024."""

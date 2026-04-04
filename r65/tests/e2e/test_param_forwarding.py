@@ -6,16 +6,11 @@ Tests that forwarded parameters produce correct results when the compiler
 eliminates redundant identity copies (scratch param → same scratch param).
 """
 
-import pytest
-from r65.tests.e2e import E2ETest, ExpectedState
+from r65.tests.e2e import ExpectedState
 
 
 class TestParamForwarding:
     """Test parameter forwarding produces correct results."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
 
     def test_forward_u8_stack_params(self, e2e):
         """Forward u8 stack params through nested call."""

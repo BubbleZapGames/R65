@@ -6,16 +6,11 @@ Tests that trait method calls correctly dispatch through jump tables
 to the right implementation at runtime.
 """
 
-import pytest
-from r65.tests.e2e import E2ETest, ExpectedState
+from r65.tests.e2e import ExpectedState
 
 
 class TestTraitDispatch:
     """Test trait dynamic dispatch compiles and executes correctly."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
 
     def test_basic_trait_dispatch(self, e2e):
         """Trait pointer dispatches to correct implementation."""
@@ -291,10 +286,6 @@ class TestTraitDispatch:
 class TestFarTraitDispatch:
     """Test trait dynamic dispatch with far functions (JSL/RTL)."""
 
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
-
     def test_far_trait_basic_dispatch(self, e2e):
         """Far trait pointer dispatches to correct implementation via JML trampoline."""
         result = e2e.run('''
@@ -502,10 +493,6 @@ class TestFarSelfTraitDispatch:
     code (bank $00), near *self can't reach them. far *self uses a 24-bit
     pointer and the caller sets DBR to the object's bank before dispatch.
     """
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
 
     def test_far_self_leaf_method_reads_field(self, e2e):
         """Far self leaf method reads struct field via DBR:Y path.

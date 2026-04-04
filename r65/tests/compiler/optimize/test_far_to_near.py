@@ -15,114 +15,58 @@ from r65.compiler.hir.attributes import (
     BankAttribute, InterruptAttribute, InterruptVector
 )
 from r65.compiler.mir.virtual_registers import VirtualRegisterAllocator
+from r65.tests.language.common import make_mir_function
 
 
-def create_near_function(name: str, is_entry: bool = False) -> MIRFunction:
+def create_near_function(name: str, is_entry: bool = False):
     """Create a simple near function."""
-    func = MIRFunction(
-        name=name,
-        parameters=[],
-        return_type=BasicTypeInfo('u8'),
-        blocks={},
-        entry_block_id=0,
-        exit_block_ids=[0],
-        mode_attr=None,
-        preserves_attr=None,
-        bank_attr=None,
-        interrupt_attr=None,
-        inline_attr=None,
-        is_entry=is_entry,
-        is_far=False,
-        vreg_allocator=VirtualRegisterAllocator(),
-        alias_tracker=None,
-    )
+    func = make_mir_function(name, is_entry=is_entry)
 
     vreg = VirtualRegister(id=0, type_info=BasicTypeInfo('u8'), hint="result")
-    entry_block = BasicBlock(
+    func.blocks[0] = BasicBlock(
         block_id=0,
         instructions=[
             Move(dest=vreg, source=Immediate(42), type_info=BasicTypeInfo('u8')),
             Return(values=[vreg])
         ],
-        predecessors=[],
-        successors=[]
+        predecessors=[], successors=[]
     )
-    func.blocks[0] = entry_block
     return func
 
 
-def create_far_function(name: str, bank: int = 0) -> MIRFunction:
+def create_far_function(name: str, bank: int = 0):
     """Create a simple far function in the specified bank."""
-    func = MIRFunction(
-        name=name,
-        parameters=[],
-        return_type=BasicTypeInfo('u8'),
-        blocks={},
-        entry_block_id=0,
-        exit_block_ids=[0],
-        mode_attr=None,
-        preserves_attr=None,
-        bank_attr=BankAttribute(name='bank', bank_number=bank),
-        interrupt_attr=None,
-        inline_attr=None,
-        is_entry=False,
-        is_far=True,
-        vreg_allocator=VirtualRegisterAllocator(),
-        alias_tracker=None,
-    )
+    func = make_mir_function(name, is_far=True,
+                             bank_attr=BankAttribute(name='bank', bank_number=bank))
 
     vreg = VirtualRegister(id=0, type_info=BasicTypeInfo('u8'), hint="result")
-    entry_block = BasicBlock(
+    func.blocks[0] = BasicBlock(
         block_id=0,
         instructions=[
             Move(dest=vreg, source=Immediate(42), type_info=BasicTypeInfo('u8')),
             Return(values=[vreg])
         ],
-        predecessors=[],
-        successors=[]
+        predecessors=[], successors=[]
     )
-    func.blocks[0] = entry_block
     return func
 
 
 def create_caller_in_bank(name: str, callee_name: str, bank: int = 0,
-                          is_entry: bool = False, call_is_far: bool = False) -> MIRFunction:
+                          is_entry: bool = False, call_is_far: bool = False):
     """Create a caller function that calls the given function."""
-    func = MIRFunction(
-        name=name,
-        parameters=[],
-        return_type=BasicTypeInfo('u8'),
-        blocks={},
-        entry_block_id=0,
-        exit_block_ids=[0],
-        mode_attr=None,
-        preserves_attr=None,
-        bank_attr=BankAttribute(name='bank', bank_number=bank),
-        interrupt_attr=None,
-        inline_attr=None,
-        is_entry=is_entry,
-        is_far=False,
-        vreg_allocator=VirtualRegisterAllocator(),
-        alias_tracker=None,
-    )
+    func = make_mir_function(name, is_entry=is_entry,
+                             bank_attr=BankAttribute(name='bank', bank_number=bank))
 
     vreg_result = VirtualRegister(id=0, type_info=BasicTypeInfo('u8'), hint="result")
-
-    entry_block = BasicBlock(
+    func.blocks[0] = BasicBlock(
         block_id=0,
         instructions=[
-            Call(
-                function=callee_name,
-                args=[],
-                returns=[vreg_result],
-                is_far=call_is_far,
-            ),
+            Call(function=callee_name, args=[], returns=[vreg_result],
+                 is_far=call_is_far),
             Return(values=[vreg_result])
         ],
-        predecessors=[],
-        successors=[]
+        predecessors=[], successors=[]
     )
-    func.blocks[0] = entry_block
     return func
 
 

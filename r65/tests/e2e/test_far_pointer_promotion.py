@@ -7,15 +7,11 @@ called with &RAM_BUFFER arguments, enabling correct D=S codegen for WRAM access.
 """
 
 import pytest
-from r65.tests.e2e import E2ETest, ExpectedState, CompilationError
+from r65.tests.e2e import ExpectedState, CompilationError
 
 
 class TestFarPointerPromotion:
     """Test automatic near-to-far pointer promotion."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
 
     def test_param_promotion_ram_buffer(self, e2e):
         """fn fill(ptr: *u8) called with &RAM_BUFFER promotes to far *u8, writes to WRAM."""

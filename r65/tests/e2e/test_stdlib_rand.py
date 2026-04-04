@@ -5,9 +5,8 @@ End-to-end tests for stdlib rand functions.
 Tests rand(), rand_update!(), and rand_range!().
 """
 
-import pytest
 from pathlib import Path
-from r65.tests.e2e import E2ETest, ExpectedState
+from r65.tests.e2e import ExpectedState
 
 STDLIB_DIR = Path(__file__).parent.parent.parent.parent / "stdlib"
 SNESLIB_PATH = STDLIB_DIR / "sneslib.r65"
@@ -17,10 +16,6 @@ RAND_PATH = STDLIB_DIR / "rand.r65"
 
 class TestRand:
     """Test rand() function."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
 
     def test_rand_returns_nonzero(self, e2e):
         """Test that rand() returns a non-zero value with default seed."""
@@ -93,10 +88,6 @@ class TestRand:
 
 class TestRandUpdate:
     """Test rand_update!() macro."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
 
     def test_rand_update_changes_seed(self, e2e):
         """Test that rand_update! modifies the seed."""

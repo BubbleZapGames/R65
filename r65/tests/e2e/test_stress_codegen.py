@@ -6,9 +6,8 @@ Each test exercises a specific codegen weak point with hand-computed
 expected values stored in zeropage statics for precise verification.
 """
 
-import pytest
 from pathlib import Path
-from r65.tests.e2e import E2ETest, ExpectedState
+from r65.tests.e2e import ExpectedState
 
 STDLIB_DIR = Path(__file__).parent.parent.parent.parent / "stdlib"
 SNESLIB_PATH = STDLIB_DIR / "sneslib.r65"
@@ -28,10 +27,6 @@ SCRATCH_DECLS = '''
 
 class TestDeepCallChain:
     """4-level @A call chain forcing A spill/restore at every level."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
 
     def test_deep_call_chain(self, e2e):
         """main -> level3(10) -> level2 -> level1 -> leaf.
@@ -75,10 +70,6 @@ class TestDeepCallChain:
 
 class TestRegionSpillAcrossThreeCalls:
     """Live A value must survive across 3 function calls via region spilling."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
 
     def test_region_spill_across_three_calls(self, e2e):
         """value @ A: u8 = 42 must survive calls to fn_a, fn_b, fn_c."""
@@ -130,10 +121,6 @@ class TestRegionSpillAcrossThreeCalls:
 class TestForLoopWithCalls:
     """X loop counter must survive function calls inside loop body."""
 
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
-
     def test_for_loop_with_calls(self, e2e):
         """for i in 0..5 { SUM += add_ten(i); } => 10+11+12+13+14 = 60."""
         result = e2e.run(f'''
@@ -166,10 +153,6 @@ class TestForLoopWithCalls:
 class TestThreeStackOneRegisterParam:
     """3 stack params + 1 register param: codegen must track SP offset drift."""
 
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
-
     def test_three_stack_one_register_param(self, e2e):
         """combine(10, 20, 30, 40) = 10+20+30+40 = 100."""
         result = e2e.run(f'''
@@ -197,10 +180,6 @@ class TestThreeStackOneRegisterParam:
 
 class TestIfElseOneBranchCalls:
     """Asymmetric spilling: call in one branch, none in the other."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
 
     def test_if_branch_with_call(self, e2e):
         """flag=1 path: A = double(21) = 42."""
@@ -262,10 +241,6 @@ class TestIfElseOneBranchCalls:
 class TestChainedMul8Calls:
     """Two consecutive mul8() calls with B register + u16 returns."""
 
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
-
     def test_chained_mul8_calls(self, e2e):
         """mul8(10,20)=200; mul8(3,7)=21."""
         source = f'''
@@ -299,10 +274,6 @@ class TestChainedMul8Calls:
 class TestPreservesSkipsCallerSpill:
     """#[preserves(X,Y)] callee saves/restores X and Y for the caller."""
 
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
-
     def test_preserves_skips_caller_spill(self, e2e):
         """Set X=0x1234, Y=0x5678, call fn that trashes both. Verify preserved."""
         result = e2e.run(f'''
@@ -334,10 +305,6 @@ class TestPreservesSkipsCallerSpill:
 
 class TestTripleCallChainForwarding:
     """Return value in A flows through sequential calls: result-as-argument."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
 
     def test_triple_call_chain_forwarding(self, e2e):
         """add_three(7)=10, double(10)=20, add_five(20)=25."""
@@ -382,10 +349,6 @@ class TestTripleCallChainForwarding:
 class TestMultiReturnAXWithLiveY:
     """(u8, u16) multi-return via A,X with Y preserved across the call."""
 
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
-
     def test_multi_return_a_x_with_live_y(self, e2e):
         """fn returns (21, 0x1600) in A,X. Caller has Y=0xAAAA with #[preserves(Y)]."""
         result = e2e.run(f'''
@@ -422,10 +385,6 @@ class TestMultiReturnAXWithLiveY:
 
 class TestM16CallFromM8AndBack:
     """Mode switching: call m16 function from m8 context, then call m8 function."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
 
     def test_m16_call_from_m8_and_back(self, e2e):
         """Call add_hundred(1000)=1100, then call add_two(40)=42."""
@@ -471,10 +430,6 @@ class TestPerCallXYSpillReload:
     _compute_hw_reloads only checked active regions for X/Y reload, never finding one.
     Result: PHY without PLY corrupts the stack, especially in loops where it accumulates.
     """
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
 
     def test_y_spill_in_loop_with_call(self, e2e):
         """Y-allocated loop variable must survive calls that clobber Y.
@@ -527,10 +482,6 @@ class TestThreeRegParamPrologue:
     Fix: use push-based frame allocation (PHX/PHY) which doesn't clobber any register.
     """
 
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
-
     def test_three_reg_params_preserved(self, e2e):
         """fn(A=5, X=0x100, Y=0x200) must see all three values correctly."""
         result = e2e.run(f'''
@@ -574,10 +525,6 @@ class TestCallReturnValueAcrossCall:
     in the two-pass mechanism, allowing both call results to be coalesced to A.
     The comparison then compared A with itself (always equal).
     """
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
 
     def test_two_calls_compare_greater(self, e2e):
         """Call results compared: double(3)=6 > double(2)=4 should be true."""

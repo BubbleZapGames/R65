@@ -9,16 +9,11 @@ scratch param (u16 at $02-$03) is written before the y param's vreg
 (allocated at scratch $02) is read. The A-resident chr clobbers y.
 """
 
-import pytest
-from r65.tests.e2e import E2ETest, ExpectedState
+from r65.tests.e2e import ExpectedState
 
 
 class TestScratchParamWARHazard:
     """Test scratch param WAR hazard with A-resident args."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
 
     def test_array_expr_clobbers_global_param(self, e2e):
         """Array expression as u16 scratch param clobbers u8 param.

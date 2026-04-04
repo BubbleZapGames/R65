@@ -5,9 +5,8 @@ End-to-end tests for stdlib math functions.
 Tests div8, mod8, shl8, shr8, and type casts.
 """
 
-import pytest
 from pathlib import Path
-from r65.tests.e2e import E2ETest, ExpectedState
+from r65.tests.e2e import ExpectedState
 
 STDLIB_DIR = Path(__file__).parent.parent.parent.parent / "stdlib"
 SNESLIB_PATH = STDLIB_DIR / "sneslib.r65"
@@ -16,10 +15,6 @@ MATH_PATH = STDLIB_DIR / "math.r65"
 
 class TestDiv8:
     """Test 8-bit division."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
 
     def test_div8_basic(self, e2e):
         """Test basic division: 100/10=10, 255/5=51, 7/2=3."""
@@ -79,10 +74,6 @@ class TestDiv8:
 class TestMod8:
     """Test 8-bit modulo."""
 
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
-
     def test_mod8_basic(self, e2e):
         """Test basic modulo: 10%3=1, 100%7=2, 15%5=0."""
         source = f'''
@@ -113,10 +104,6 @@ class TestMod8:
 
 class TestShift:
     """Test variable-amount shift operations."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
 
     def test_shl8_variable(self, e2e):
         """Test variable left shift: shl8(1,0)=1, shl8(1,3)=8, shl8(3,4)=48, shl8(1,7)=128."""
@@ -179,10 +166,6 @@ class TestShift:
 
 class TestTypeCasts:
     """Test type conversion operations."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
 
     def test_u8_to_u16_cast(self, e2e):
         """Test u8 -> u16 zero extension: 0xAB -> [0xAB, 0x00]."""
@@ -321,10 +304,6 @@ class TestTypeCasts:
 
 class TestMathPipeline:
     """Test combining multiple math operations."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
 
     def test_mul_then_div(self, e2e):
         """Test div8(mul8(15,8), 4) = 30."""

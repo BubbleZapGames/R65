@@ -6,9 +6,8 @@ Tests memory primitives, string operations, character classification,
 and number formatting functions.
 """
 
-import pytest
 from pathlib import Path
-from r65.tests.e2e import E2ETest, ExpectedState
+from r65.tests.e2e import ExpectedState
 
 # Path to stdlib
 STDLIB_DIR = Path(__file__).parent.parent.parent.parent / "stdlib"
@@ -41,10 +40,6 @@ def ascii_bytes_null(s):
 
 class TestStrlen:
     """Test strlen function."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
 
     def test_strlen_empty(self, e2e):
         """strlen of empty string returns 0."""
@@ -116,10 +111,6 @@ class TestStrlen:
 class TestMemcpy:
     """Test memcpy function."""
 
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
-
     def test_memcpy_basic(self, e2e):
         """memcpy copies bytes from src to dst."""
         result = e2e.run(f'''
@@ -173,10 +164,6 @@ class TestMemcpy:
 class TestMemset:
     """Test memset function."""
 
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
-
     def test_memset_fill(self, e2e):
         """memset fills buffer with value."""
         result = e2e.run(f'''
@@ -225,10 +212,6 @@ class TestMemset:
 
 class TestMemcmp:
     """Test memcmp function."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
 
     def test_memcmp_equal(self, e2e):
         """memcmp returns 0 for equal regions."""
@@ -330,10 +313,6 @@ class TestMemcmp:
 class TestStrcpy:
     """Test strcpy function."""
 
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
-
     def test_strcpy_basic(self, e2e):
         """strcpy copies string including null, returns length."""
         result = e2e.run(f'''
@@ -394,10 +373,6 @@ class TestStrcpy:
 
 class TestStrncpy:
     """Test strncpy function."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
 
     def test_strncpy_truncates(self, e2e):
         """strncpy truncates when src is longer than max-1."""
@@ -482,10 +457,6 @@ class TestStrncpy:
 class TestStrcat:
     """Test strcat function."""
 
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
-
     def test_strcat_basic(self, e2e):
         """strcat appends src after dst's null."""
         result = e2e.run(f'''
@@ -544,10 +515,6 @@ class TestStrcat:
 
 class TestStrcmp:
     """Test strcmp function."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
 
     def test_strcmp_equal(self, e2e):
         """strcmp returns 0 for equal strings."""
@@ -669,10 +636,6 @@ class TestStrcmp:
 class TestStrchr:
     """Test strchr function."""
 
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
-
     def test_strchr_found(self, e2e):
         """strchr returns index of first match."""
         result = e2e.run(f'''
@@ -744,10 +707,6 @@ class TestStrchr:
 class TestCharClassification:
     """Test is_digit, is_upper, is_lower, is_alpha."""
 
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
-
     def test_char_classification_batch(self, e2e):
         """Batch test: digit, upper, lower, alpha classification."""
         result = e2e.run(f'''
@@ -810,10 +769,6 @@ class TestCharClassification:
 class TestCharConversion:
     """Test to_upper and to_lower."""
 
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
-
     def test_to_upper(self, e2e):
         """to_upper converts lowercase, leaves others unchanged."""
         result = e2e.run(f'''
@@ -861,10 +816,6 @@ class TestCharConversion:
 
 class TestU8ToDec:
     """Test u8_to_dec function."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
 
     def test_u8_to_dec_batch(self, e2e):
         """Batch: u8_to_dec for 0, single digit, two digit, three digit."""
@@ -961,10 +912,6 @@ class TestU8ToDec:
 
 class TestU16ToDec:
     """Test u16_to_dec function."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
 
     def test_u16_to_dec_zero(self, e2e):
         """u16_to_dec(0) produces "0"."""
@@ -1070,10 +1017,6 @@ class TestU16ToDec:
 class TestU16ToDecPad:
     """Test u16_to_dec_pad function."""
 
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
-
     def test_pad_short_number(self, e2e):
         """u16_to_dec_pad(42, 5) produces "   42"."""
         result = e2e.run(f'''
@@ -1128,10 +1071,6 @@ class TestU16ToDecPad:
 
 class TestU8ToHex:
     """Test u8_to_hex function."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
 
     def test_u8_to_hex_batch(self, e2e):
         """Batch: u8_to_hex for 0x00, 0xAB, 0xFF."""
@@ -1199,10 +1138,6 @@ class TestU8ToHex:
 
 class TestU16ToHex:
     """Test u16_to_hex function."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
 
     def test_u16_to_hex_1234(self, e2e):
         """u16_to_hex(0x1234) produces "1234"."""

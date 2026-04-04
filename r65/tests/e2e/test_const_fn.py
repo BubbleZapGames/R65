@@ -6,16 +6,11 @@ Verifies that const fn can generate lookup tables at compile time
 and the resulting ROM data is correct when accessed at runtime.
 """
 
-import pytest
-from r65.tests.e2e import E2ETest, ExpectedState
+from r65.tests.e2e import ExpectedState
 
 
 class TestConstFnArrayE2E:
     """Test const fn array generation produces correct ROM data."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
 
     def test_fibonacci_table(self, e2e):
         """Const fn generates Fibonacci table, copies to zeropage at runtime."""

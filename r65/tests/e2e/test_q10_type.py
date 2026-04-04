@@ -6,9 +6,8 @@ Verifies that the `type q10 = i16;` alias and q10_neg, q10_abs, q10_mul
 work through the full pipeline.
 """
 
-import pytest
 from pathlib import Path
-from r65.tests.e2e import E2ETest, ExpectedState
+from r65.tests.e2e import ExpectedState
 
 STDLIB_DIR = Path(__file__).parent.parent.parent.parent / "stdlib"
 SNESLIB_PATH = STDLIB_DIR / "sneslib.r65"
@@ -17,10 +16,6 @@ Q10_PATH = STDLIB_DIR / "q10_type.r65"
 
 class TestQ10TypeAlias:
     """Test the q10 type alias from q10_type.r65."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
 
     def test_q10_static_variable(self, e2e):
         """Declare a static variable with the q10 type alias."""
@@ -113,10 +108,6 @@ class TestQ10TypeAlias:
 class TestQ10Neg:
     """Test q10_neg macro."""
 
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
-
     def test_neg_positive(self, e2e):
         """Negate a positive Q10.6 value: neg(3.0) = -3.0."""
         result = e2e.run(f'''
@@ -160,10 +151,6 @@ class TestQ10Neg:
 
 class TestQ10Abs:
     """Test q10_abs function."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
 
     def test_abs_positive(self, e2e):
         """Absolute value of positive: abs(5.0) = 5.0."""
@@ -227,10 +214,6 @@ class TestQ10Abs:
 
 class TestQ10Mul:
     """Test q10_mul function (SNES hardware multiply)."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
 
     def test_mul_integers(self, e2e):
         """3.0 * 4.0 = 12.0."""

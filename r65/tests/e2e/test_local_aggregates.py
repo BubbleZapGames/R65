@@ -6,16 +6,11 @@ Local structs and arrays are promoted to static lowram storage.
 These tests verify the full compilation and emulation pipeline.
 """
 
-import pytest
-from r65.tests.e2e import E2ETest, ExpectedState
+from r65.tests.e2e import ExpectedState
 
 
 class TestLocalStructE2E:
     """Test local struct variables compile and execute correctly."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
 
     def test_local_struct_field_write_read(self, e2e):
         """Local struct field writes and reads produce correct results."""
@@ -97,10 +92,6 @@ class TestLocalStructE2E:
 class TestLocalArrayE2E:
     """Test local array variables compile and execute correctly."""
 
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
-
     def test_local_array_fill_and_access(self, e2e):
         """Local array with fill initializer, then constant index access."""
         result = e2e.run('''
@@ -177,10 +168,6 @@ class TestLocalArrayE2E:
 
 class TestLocalStringLiteralE2E:
     """Test local array initialized with string literal."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
 
     def test_local_string_literal(self, e2e):
         """Local array initialized with string literal."""

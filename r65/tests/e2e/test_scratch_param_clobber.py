@@ -16,16 +16,11 @@ calls `inner` which takes a scratch param at the same DP address. After
 the call, `flag` must retain its original value, not the inner param.
 """
 
-import pytest
-from r65.tests.e2e import E2ETest, ExpectedState
+from r65.tests.e2e import ExpectedState
 
 
 class TestScratchParamClobberLocal:
     """Test that local variables are not clobbered by callee scratch params."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
 
     def test_local_survives_callee_scratch_param(self, e2e):
         """Local variable must not share a scratch address with callee params.

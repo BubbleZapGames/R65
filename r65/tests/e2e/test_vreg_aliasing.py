@@ -10,16 +10,11 @@ don't corrupt the other.  These tests verify that:
 2. Dead-after-copy variables are still coalesced (no perf regression).
 """
 
-import pytest
-from r65.tests.e2e import E2ETest, ExpectedState
+from r65.tests.e2e import ExpectedState
 
 
 class TestVregAliasing:
     """Regression tests for the vreg aliasing correctness fix."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
 
     def test_let_copy_independent_of_original(self, e2e):
         """let x = y; y--; x should retain original value."""

@@ -6,9 +6,8 @@ Tests that format! generates correct output in memory by compiling R65 source,
 running on the emulator, and validating buffer contents.
 """
 
-import pytest
 from pathlib import Path
-from r65.tests.e2e import E2ETest, ExpectedState
+from r65.tests.e2e import ExpectedState
 
 # Path to stdlib
 STDLIB_DIR = Path(__file__).parent.parent.parent.parent / "stdlib"
@@ -36,10 +35,6 @@ def ascii_bytes_null(s):
 
 class TestFormatLiteral:
     """Test format! with literal-only format strings."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
 
     def test_format_literal_only(self, e2e):
         """format! with only literal text produces correct output."""
@@ -98,10 +93,6 @@ class TestFormatLiteral:
 class TestFormatU8:
     """Test format! with {u8} specifier."""
 
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
-
     def test_format_u8_single(self, e2e):
         """format! with single {u8} value."""
         result = e2e.run(f'''
@@ -132,10 +123,6 @@ class TestFormatU8:
 
 class TestFormatU16:
     """Test format! with {u16} specifier."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
 
     def test_format_u16_single(self, e2e):
         """format! with single {u16} value."""
@@ -194,10 +181,6 @@ class TestFormatU16:
 
 class TestFormatHex:
     """Test format! with hex specifiers."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
 
     def test_format_u8_hex(self, e2e):
         """format! with {u8:x} produces 2-char hex."""
@@ -260,10 +243,6 @@ class TestFormatHex:
 class TestFormatMixed:
     """Test format! with multiple specifiers."""
 
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
-
     def test_format_mixed_u8_u16hex(self, e2e):
         """format! with {u8} and {u16:x} together."""
         result = e2e.run(f'''
@@ -305,10 +284,6 @@ class TestFormatMixed:
 class TestFormatChar:
     """Test format! with {c} specifier."""
 
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
-
     def test_format_char(self, e2e):
         """format! with {c} writes single byte."""
         result = e2e.run(f'''
@@ -341,10 +316,6 @@ class TestFormatChar:
 
 class TestFormatString:
     """Test format! with {s} specifier."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
 
     def test_format_string(self, e2e):
         """format! with {s} copies string."""
@@ -387,10 +358,6 @@ class TestFormatString:
 class TestFormatEscapedBraces:
     """Test format! with {{ and }} for literal braces."""
 
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
-
     def test_format_escaped_braces(self, e2e):
         """format! with {{braces}} produces {braces}."""
         result = e2e.run(f'''
@@ -428,10 +395,6 @@ class TestFormatEscapedBraces:
 
 class TestFormatPadded:
     """Test format! with {u16:Nd} padded specifier."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
 
     def test_format_padded(self, e2e):
         """format! with {u16:5d} produces space-padded output."""
@@ -547,10 +510,6 @@ class TestFormatPadded:
 class TestFormatBool:
     """Test format! with {bool} specifier."""
 
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
-
     def test_format_bool_true(self, e2e):
         """format! with {bool} and true produces "1"."""
         result = e2e.run(f'''
@@ -602,10 +561,6 @@ class TestFormatBool:
 
 class TestFormatSigned:
     """Test format! with signed integer specifiers."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
 
     def test_format_i8_positive(self, e2e):
         """format! with {i8} and positive value."""
@@ -719,10 +674,6 @@ class TestFormatSigned:
 class TestFormatLiteralInlining:
     """Test that small literals are inlined (1-3 bytes) and large use memcpy."""
 
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
-
     def test_format_small_literal(self, e2e):
         """format! with 2-byte literal produces correct output via inlining."""
         result = e2e.run(f'''
@@ -779,10 +730,6 @@ class TestFormatLiteralInlining:
 
 class TestFormatMultipleCalls:
     """Test that multiple format! calls in the same scope compile and run correctly."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
 
     def test_format_two_calls_same_buffer(self, e2e):
         """Two format! calls to the same buffer; second overwrites first."""

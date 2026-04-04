@@ -6,16 +6,11 @@ Verifies that fixed_sin/fixed_cos etc. generate correct ROM data
 when used inside const fn for LUT generation.
 """
 
-import pytest
-from r65.tests.e2e import E2ETest, ExpectedState
+from r65.tests.e2e import ExpectedState
 
 
 class TestConstMathE2E:
     """Test const math builtins produce correct ROM data at runtime."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
 
     def test_sin_cos_table(self, e2e):
         """Generate sin/cos values via const fn, store individual results."""

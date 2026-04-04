@@ -7,16 +7,11 @@ Tests that taking the address of an array element produces the correct pointer
 far pointers, and different element sizes.
 """
 
-import pytest
-from r65.tests.e2e import E2ETest, ExpectedState
+from r65.tests.e2e import ExpectedState
 
 
 class TestAddressOfArrayIndex:
     """Test &array[index] produces correct pointer values."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
 
     def test_zp_array_constant_index_u8(self, e2e):
         """&zp_array[2] should produce near pointer to base+2."""

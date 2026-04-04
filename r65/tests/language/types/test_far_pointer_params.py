@@ -2,22 +2,8 @@
 """Tests for far pointer parameters using D = S technique."""
 
 import pytest
-from r65.compiler.frontend import parse
-from r65.compiler.hir import HIRBuilder
-from r65.compiler.typeck import TypeChecker
-from r65.compiler.mir import MIRBuilder
 from r65.compiler.errors import MIRLoweringError, TypeCheckError
-
-
-def build_mir(source: str):
-    """Parse source and build MIR."""
-    program = parse(source, "test.r65")
-    hir_builder = HIRBuilder(source_file="test.r65")
-    hir_prog = hir_builder.build_program(program)
-    type_checker = TypeChecker(hir_prog)
-    type_checker.check()
-    mir_builder = MIRBuilder()
-    return mir_builder.build_program(hir_prog)
+from r65.tests.language.common import build_mir
 
 
 class TestFarPointerStackParamDetection:

@@ -7,7 +7,7 @@ Tests SNES hardware register definitions, constants, and macros.
 
 import pytest
 from pathlib import Path
-from r65.tests.e2e import E2ETest, ExpectedState
+from r65.tests.e2e import ExpectedState
 
 # Path to stdlib
 STDLIB_DIR = Path(__file__).parent.parent.parent.parent / "stdlib"
@@ -16,11 +16,6 @@ SNESLIB_PATH = STDLIB_DIR / "sneslib.r65"
 
 class TestSneslibInclude:
     """Test that sneslib includes and compiles correctly."""
-
-    @pytest.fixture
-    def e2e(self):
-        """Create E2ETest instance."""
-        return E2ETest()
 
     def test_sneslib_includes(self, e2e):
         """Test that sneslib.r65 can be included and compiles."""
@@ -38,11 +33,6 @@ class TestSneslibInclude:
 
 class TestSneslibConstants:
     """Test sneslib constant definitions."""
-
-    @pytest.fixture
-    def e2e(self):
-        """Create E2ETest instance."""
-        return E2ETest()
 
     def test_vmain_constants(self, e2e):
         """Test VMAIN increment mode enums."""
@@ -143,11 +133,6 @@ class TestSneslibConstants:
 class TestSneslibMacros:
     """Test sneslib macro functionality."""
 
-    @pytest.fixture
-    def e2e(self):
-        """Create E2ETest instance."""
-        return E2ETest()
-
     def test_set_brightness_macro(self, e2e):
         """Test set_brightness! macro sets INIDISP correctly."""
         source = f'''
@@ -190,11 +175,6 @@ class TestSneslibMacros:
 class TestSneslibHardwareAddresses:
     """Test that hardware register addresses are correct."""
 
-    @pytest.fixture
-    def e2e(self):
-        """Create E2ETest instance."""
-        return E2ETest()
-
     def test_ppu_register_writes(self, e2e):
         """Test writing to PPU registers compiles correctly."""
         source = f'''
@@ -219,11 +199,6 @@ class TestSneslibHardwareAddresses:
 
 class TestSneslibColorMath:
     """Test color manipulation utilities."""
-
-    @pytest.fixture
-    def e2e(self):
-        """Create E2ETest instance."""
-        return E2ETest()
 
     def test_rgb15_constant(self, e2e):
         """Test RGB15 color format constants."""
@@ -260,11 +235,6 @@ class TestSneslibColorMath:
 class TestSneslibOamHelpers:
     """Test OAM helper functionality."""
 
-    @pytest.fixture
-    def e2e(self):
-        """Create E2ETest instance."""
-        return E2ETest()
-
     def test_oam_attribute_constants(self, e2e):
         """Test OAM attribute constants."""
         source = f'''
@@ -295,11 +265,6 @@ class TestSneslibOamHelpers:
 
 class TestSneslibVramAddressing:
     """Test VRAM addressing utilities."""
-
-    @pytest.fixture
-    def e2e(self):
-        """Create E2ETest instance."""
-        return E2ETest()
 
     def test_vram_word_address(self, e2e):
         """Test VRAM addressing (word addresses)."""
@@ -341,11 +306,6 @@ class TestSneslibDmaMacros:
     DMA macros use WLA-DX assembler operators (#<, #>, #^) to extract addresses
     from labels, which requires the data to have proper assembly labels.
     """
-
-    @pytest.fixture
-    def e2e(self):
-        """Create E2ETest instance."""
-        return E2ETest()
 
     def test_dma_trigger_compiles(self, e2e):
         """Test dma_trigger! macro compiles and runs."""

@@ -6,16 +6,11 @@ Stress tests the automatic REP/SEP mode switching for correctness and
 efficiency when alternating between 8-bit and 16-bit operations.
 """
 
-import pytest
-from r65.tests.e2e import E2ETest, ExpectedState
+from r65.tests.e2e import ExpectedState
 
 
 class TestModeSwitchingBasic:
     """Basic mode switching between u8 and u16 operations."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
 
     def test_u8_then_u16_accumulator(self, e2e):
         """Test u8 operation followed by u16 operation."""
@@ -123,10 +118,6 @@ class TestModeSwitchingBasic:
 class TestModeSwitchingArithmetic:
     """Mode switching with arithmetic operations."""
 
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
-
     def test_u8_add_then_u16_add(self, e2e):
         """Test 8-bit addition followed by 16-bit addition."""
         result = e2e.run('''
@@ -210,10 +201,6 @@ class TestModeSwitchingArithmetic:
 class TestModeSwitchingBitwise:
     """Mode switching with bitwise operations."""
 
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
-
     def test_u8_and_u16_bitwise_and(self, e2e):
         """Test 8-bit AND followed by 16-bit AND."""
         result = e2e.run('''
@@ -292,10 +279,6 @@ class TestModeSwitchingBitwise:
 
 class TestModeSwitchingMemory:
     """Mode switching with memory loads and stores."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
 
     def test_load_store_mixed_sizes(self, e2e):
         """Test loading and storing mixed 8-bit and 16-bit values."""
@@ -379,10 +362,6 @@ class TestModeSwitchingMemory:
 
 class TestModeSwitchingIndexRegisters:
     """Mode switching involving X and Y registers (always 16-bit)."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
 
     def test_x_y_with_u8_a(self, e2e):
         """Test X/Y (16-bit) alongside u8 A operations."""
@@ -480,10 +459,6 @@ class TestModeSwitchingIndexRegisters:
 
 class TestModeSwitchingEdgeCases:
     """Edge cases for mode switching."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
 
     def test_u16_value_fits_in_u8(self, e2e):
         """Test u16 binding with value that fits in u8."""
@@ -599,10 +574,6 @@ class TestModeSwitchingEdgeCases:
 class TestModeSwitchingLoops:
     """Mode switching inside loops."""
 
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
-
     def test_u8_loop_counter_u16_accumulator(self, e2e):
         """Test u8 loop counter with u16 accumulator inside loop."""
         result = e2e.run('''
@@ -691,10 +662,6 @@ class TestModeSwitchingLoops:
 
 class TestCrossModeFunctionCalls:
     """Tests for calling functions with different entry/exit modes."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
 
     def test_call_m8_function_from_m8(self, e2e):
         """Test calling an m8 function from m8 context (no mode switch needed)."""
@@ -839,10 +806,6 @@ class TestCrossModeFunctionCalls:
 
 class TestPreservesRegisters:
     """Test #[preserves(X, Y)] attribute saves/restores registers across calls."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
 
     def test_preserves_x_and_y(self, e2e):
         """Test that #[preserves(X, Y)] saves and restores both X and Y."""

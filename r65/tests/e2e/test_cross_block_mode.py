@@ -10,16 +10,11 @@ modes and incorrectly eliminated the SEP #$20 at the target. This
 caused subsequent instructions to decode with wrong operand sizes.
 """
 
-import pytest
-from r65.tests.e2e import E2ETest, ExpectedState
+from r65.tests.e2e import ExpectedState
 
 
 class TestCrossBlockMode:
     """Test cross-block A mode tracking with JMP instructions."""
-
-    @pytest.fixture
-    def e2e(self):
-        return E2ETest()
 
     def test_jmp_from_m16_to_m8_label(self, e2e):
         """JMP from 16-bit A context to label expecting 8-bit A.
