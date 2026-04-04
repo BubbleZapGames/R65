@@ -16,8 +16,8 @@ class SymbolDefinitionGenerator:
     Generates symbol definition sections in assembly.
 
     Emits .DEFINE directives for variables and .EQU directives for constants,
-    organized by storage type. RAM variables use .ENUM for address
-    assignment without creating linker sections.
+    organized by storage type. RAM variables use .RAMSECTION for correct
+    bank byte metadata with WLA-DX's #: operator.
     """
 
     def __init__(self, emitter: AssemblyEmitter, allocator: MemoryAllocator):
@@ -92,21 +92,19 @@ class SymbolDefinitionGenerator:
 
     def emit_ram_definitions(self):
         """
-        Emit RAM variable definitions using .ENUM blocks.
+        Emit RAM variable definitions using .RAMSECTION blocks.
 
-        Uses .ENUM with EXPORT to assign addresses to RAM labels without
-        creating linker sections. This avoids a WLA-DX bug where
-        .RAMSECTION in BANK $00 corrupts bank byte resolution for ROM
-        data in other banks.
+        Uses WLA-DX .RAMSECTION instead of .DEFINE so that the #: (bank byte)
+        operator returns the correct bank ($7E or $7F) for WRAM addresses.
 
         Generated:
             ; ============================================================================
             ; RAM Allocations
             ; ============================================================================
-            .ENUM $7E2000 EXPORT
-                BUFFER DSB 256
-                PLAYER_DATA DSB 100
-            .ENDE
+            .RAMSECTION "ram.7E" BANK $7E SLOT 1 FORCE ORGA $2000
+                BUFFER dsb 256
+                PLAYER_DATA dsb 100
+            .ENDS
         """
         allocations = self.allocator.get_allocations_by_type('ram')
 
@@ -123,38 +121,49 @@ class SymbolDefinitionGenerator:
         bank_7f = [a for a in allocations if a.address >= 0x7F0000]
 
         if bank_7e:
-            self._emit_ram_enum(bank_7e)
+            self._emit_ram_ramsection(bank_7e, bank=0x7E, slot=1,
+                                      section_name="ram.7E",
+                                      bank_base=0x7E0000)
 
         if bank_7f:
-            self._emit_ram_enum(bank_7f)
+            self._emit_ram_ramsection(bank_7f, bank=0x7F, slot=2,
+                                      section_name="ram.7F",
+                                      bank_base=0x7F0000)
 
         self.emitter.emit_blank_line()
 
-    def _emit_ram_enum(self, allocations: list):
+    def _emit_ram_ramsection(self, allocations: list, bank: int, slot: int,
+                              section_name: str, bank_base: int):
         """
-        Emit a .ENUM block for a set of RAM allocations.
+        Emit a single .RAMSECTION block for a set of RAM allocations.
 
-        Uses absolute addresses so WLA-DX's #: (bank byte) operator
-        naturally returns the correct bank ($7E or $7F) from the
-        address high byte.
+        Inserts padding `dsb` entries for gaps between allocations.
 
         Args:
             allocations: Sorted list of AllocationInfo in this bank
+            bank: Bank number (0x7E or 0x7F)
+            slot: WLA-DX slot number
+            section_name: Section name for the .RAMSECTION
+            bank_base: Base address of the bank (e.g., 0x7E0000)
         """
+        # Compute the origin address relative to the slot
+        first_addr = allocations[0].address
+        orga = first_addr - bank_base
+
         entries = []
-        current_addr = allocations[0].address
+        current_addr = first_addr
 
         for alloc in allocations:
             # Insert padding for gaps
             gap = alloc.address - current_addr
             if gap > 0:
-                entries.append((f"__pad_{current_addr:06X}", gap, None))
+                entries.append((f"__pad_{current_addr - bank_base:04X}", gap, "padding"))
 
             comment = self._make_allocation_comment(alloc)
             entries.append((alloc.symbol.name, alloc.size, comment))
             current_addr = alloc.address + alloc.size
 
-        self.emitter.emit_enum(allocations[0].address, entries)
+        self.emitter.emit_ramsection(section_name, bank, slot, orga, entries)
 
     # ========================================================================
     # Low RAM Definitions
