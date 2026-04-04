@@ -23,12 +23,8 @@ static mut __rand_seed: u16 = 0xDEAD;
 // Tap values: 7, 9, 8 (Marsaglia's xorshift parameters for 16-bit)
 // Period: 65535 (seed must never be zero)
 macro_rules! rand_update($value:expr) {
-    A = __rand_seed;
-    A = A ^ $value;
-    A = A ^ (A << 7);
-    A = A ^ (A >> 9);
-    A = A ^ (A << 8);
-    __rand_seed = A;
+   __rand_seed ^= $value;
+   rand();
 }
 
 // Return a pseudo-random u16.
