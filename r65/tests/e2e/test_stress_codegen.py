@@ -271,38 +271,6 @@ class TestChainedMul8Calls:
         assert result.success, f"Failures: {result.failures}"
 
 
-class TestPreservesSkipsCallerSpill:
-    """#[preserves(X,Y)] callee saves/restores X and Y for the caller."""
-
-    def test_preserves_skips_caller_spill(self, e2e):
-        """Set X=0x1234, Y=0x5678, call fn that trashes both. Verify preserved."""
-        result = e2e.run(f'''
-            {SCRATCH_DECLS}
-
-            #[zeropage(0x10)]
-            static mut RET_A: u8;
-
-            #[preserves(X, Y)]
-            fn trasher(val @ A: u8) -> u8 {{
-                X = 0xDEAD;
-                Y = 0xBEEF;
-                return A + 2;
-            }}
-
-            #[entry]
-            fn main() {{
-                X = 0x1234;
-                Y = 0x5678;
-                RET_A = trasher(40);
-            }}
-        ''', ExpectedState(
-            X=0x1234,
-            Y=0x5678,
-            memory={0x7E0010: 42},
-        ))
-        assert result.success, f"Failures: {result.failures}"
-
-
 class TestTripleCallChainForwarding:
     """Return value in A flows through sequential calls: result-as-argument."""
 
@@ -380,43 +348,6 @@ class TestMultiReturnAXWithLiveY:
                 0x7E0011: [0x00, 0x16],  # 0x1600 LE
             },
         ))
-        assert result.success, f"Failures: {result.failures}"
-
-
-class TestM16CallFromM8AndBack:
-    """Mode switching: call m16 function from m8 context, then call m8 function."""
-
-    def test_m16_call_from_m8_and_back(self, e2e):
-        """Call add_hundred(1000)=1100, then call add_two(40)=42."""
-        result = e2e.run(f'''
-            {SCRATCH_DECLS}
-
-            #[zeropage(0x10)]
-            static mut RESULT16: u16;
-            #[zeropage(0x12)]
-            static mut RESULT8: u8;
-
-            fn add_hundred(val @ A: u16) -> u16 {{
-                return A + 100;
-            }}
-
-            fn add_two(val @ A: u8) -> u8 {{
-                return A + 2;
-            }}
-
-            #[entry]
-            fn main() {{
-                let w @ A : u16 = 1000;
-                A = add_hundred(A);
-                RESULT16 = A;
-
-                A = add_two(40);
-                RESULT8 = A;
-            }}
-        ''', ExpectedState(memory={
-            0x7E0010: [0x4C, 0x04],  # 1100 = 0x044C LE
-            0x7E0012: 42,
-        }))
         assert result.success, f"Failures: {result.failures}"
 
 

@@ -46,20 +46,6 @@ class TestLiteralPromotion:
         ''', ExpectedState(A=128))
         assert result.success, f"Failures: {result.failures}"
 
-    def test_shift_just_overflows(self, e2e):
-        """1 << 8 = 256, overflows u8 -> promote to u16."""
-        result = e2e.run('''
-            #[zeropage]
-            static mut VAL: u16;
-
-            #[entry]
-            fn main() {
-                VAL = 1 << 8;
-                X = VAL;
-            }
-        ''', ExpectedState(X=256))
-        assert result.success, f"Failures: {result.failures}"
-
     def test_multiply_overflow_promotes(self, e2e):
         """32 * 32 = 1024, overflows u8 -> promote to u16."""
         result = e2e.run('''

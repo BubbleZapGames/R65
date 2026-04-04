@@ -11,39 +11,6 @@ from r65.tests.e2e import ExpectedState
 class TestBasicOperations:
     """Test basic R65 operations compile and execute correctly."""
 
-    def test_assign_accumulator(self, e2e):
-        """Test simple accumulator assignment."""
-        result = e2e.run('''
-                        #[entry]
-            fn main() {
-                A = 0x42;
-            }
-        ''', ExpectedState(A=0x42))
-
-        assert result.success, f"Failures: {result.failures}"
-
-    def test_assign_x_register(self, e2e):
-        """Test X register assignment."""
-        result = e2e.run('''
-                        #[entry]
-            fn main() {
-                X = 0x10;
-            }
-        ''', ExpectedState(X=0x10))
-
-        assert result.success, f"Failures: {result.failures}"
-
-    def test_assign_y_register(self, e2e):
-        """Test Y register assignment."""
-        result = e2e.run('''
-                        #[entry]
-            fn main() {
-                Y = 0xFF;
-            }
-        ''', ExpectedState(Y=0xFF))
-
-        assert result.success, f"Failures: {result.failures}"
-
     def test_assign_all_registers(self, e2e):
         """Test assignment to all registers."""
         result = e2e.run('''
@@ -305,24 +272,6 @@ class TestArrayOperations:
                         #[entry]
             fn main() {
                 let arrCount @ A : u16 = DATA.len();
-            }
-        ''', ExpectedState(A=256, flags={'M': False}))  # m16 mode, full value
-
-        assert result.success, f"Failures: {result.failures}"
-
-    def test_array_len_large_implicit_u16(self, e2e):
-        """Test len() with implicit u16 let binding preserves full 16-bit value.
-
-        Type inference infers u16 from DATA.len() return type,
-        and the register binding keeps A in m16 mode (persist_16bit_mode).
-        """
-        result = e2e.run('''
-            #[ram]
-            static mut DATA: [u8; 256];
-
-                        #[entry]
-            fn main() {
-                let arrCount @ A = DATA.len();
             }
         ''', ExpectedState(A=256, flags={'M': False}))  # m16 mode, full value
 

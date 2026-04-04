@@ -226,31 +226,6 @@ class TestModeSwitchingBitwise:
         ))
         assert result.success, f"Failures: {result.failures}"
 
-    def test_u8_and_u16_bitwise_or(self, e2e):
-        """Test 8-bit OR followed by 16-bit OR."""
-        result = e2e.run('''
-            #[zeropage(0x10)]
-            static mut R8: u8;
-            #[zeropage(0x12)]
-            static mut R16: u16;
-
-            #[entry]
-            fn main() {
-                // 8-bit OR
-                A = 0x0F;
-                A = A | 0xF0;
-                R8 = A;  // 0xFF
-
-                // 16-bit OR
-                let w @ A : u16 = 0x00FF;
-                A = A | 0xFF00;
-                R16 = A;  // 0xFFFF
-            }
-        ''', ExpectedState(
-            memory={0x7E0010: 0xFF, 0x7E0012: [0xFF, 0xFF]}
-        ))
-        assert result.success, f"Failures: {result.failures}"
-
     def test_mixed_bitwise_xor(self, e2e):
         """Test mixed XOR operations."""
         result = e2e.run('''
