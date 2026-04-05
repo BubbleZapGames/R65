@@ -282,6 +282,7 @@ class TypeChecker:
 
         return None
 
+
     def _binary_op_uses_target(self, value: HIRExpression, target: HIRExpression) -> bool:
         """
         Check if a binary operation's left operand references the same target.
@@ -1023,6 +1024,20 @@ class TypeChecker:
             # If type already set (e.g., from const evaluation), preserve it
             if expr.expr_type is not None:
                 return expr.expr_type
+            # Overflow check: if context type is a specific integer type and no suffix,
+            # verify the value fits the declared type range.
+            if (context_type is not None and isinstance(context_type, BasicTypeInfo)
+                    and expr.suffix is None):
+                from r65.compiler.typeck.type_utils import get_type_range
+                range_info = get_type_range(context_type.name)
+                if range_info is not None and not value_fits_type(expr.value, context_type.name):
+                    min_val, max_val = range_info
+                    raise TypeCheckError(
+                        f"integer literal {expr.value} does not fit in type {context_type.name} "
+                        f"(valid range: {min_val} to {max_val})",
+                        source_loc=expr.source_loc,
+                        hint=f"use a wider type, or cast with 'as {context_type.name}' to explicitly truncate"
+                    )
             # Infer type from context, suffix, or default
             expr_type = TypeInference.infer_integer_literal_type(expr.value, context_type, suffix=expr.suffix)
             expr.expr_type = expr_type
@@ -1437,6 +1452,19 @@ class TypeChecker:
             expr.expr_type = operand_type
 
         elif expr.op == '-':
+            # Special case: -MIN_VALUE for signed types (e.g., -128 for i8, -32768 for i16).
+            # The parser represents -128 as UnaryOp(-, IntegerLiteral(128)), but 128 doesn't
+            # fit in i8. Pre-set the operand's type to bypass the overflow check.
+            if (isinstance(expr.operand, HIRIntegerLiteral)
+                    and expr.operand.expr_type is None
+                    and expr.operand.suffix is None
+                    and context_type is not None
+                    and isinstance(context_type, BasicTypeInfo)
+                    and context_type.name in ('i8', 'i16')):
+                from r65.compiler.typeck.type_utils import get_type_range
+                range_info = get_type_range(context_type.name)
+                if range_info is not None and expr.operand.value == -range_info[0]:
+                    expr.operand.expr_type = context_type
             # Negation: propagate context type to operand for proper literal typing
             operand_type = self.check_expression(expr.operand, context_type)
             if not TypeUtils.is_integer_type(operand_type):
@@ -1445,6 +1473,34 @@ class TypeChecker:
                     source_loc=expr.operand.source_loc,
                     hint="only integer types can be negated"
                 )
+            # Overflow check for negated literals: e.g., `let x: u8 = -1`.
+            # Only applies when the literal itself fits operand_type (so it's a
+            # clean negation). Wide literals like -100000 flow through bitwise
+            # masks in stdlib macros (I32!, U32!) and are handled downstream.
+            if (isinstance(expr.operand, HIRIntegerLiteral)
+                    and isinstance(operand_type, BasicTypeInfo)):
+                from r65.compiler.typeck.type_utils import get_type_range, value_fits_type
+                range_info = get_type_range(operand_type.name)
+                if range_info is not None and value_fits_type(expr.operand.value, operand_type.name):
+                    neg_val = -expr.operand.value
+                    if not (range_info[0] <= neg_val <= range_info[1]):
+                        # Try signed promotion when no explicit context was given
+                        promoted = False
+                        if context_type is None and operand_type.name in ('u8', 'u16'):
+                            for signed_name in ('i8', 'i16'):
+                                signed_range = get_type_range(signed_name)
+                                if signed_range is not None and signed_range[0] <= neg_val <= signed_range[1]:
+                                    operand_type = BasicTypeInfo(signed_name)
+                                    expr.operand.expr_type = operand_type
+                                    promoted = True
+                                    break
+                        if not promoted:
+                            raise TypeCheckError(
+                                f"integer literal {neg_val} does not fit in type {operand_type.name} "
+                                f"(valid range: {range_info[0]} to {range_info[1]})",
+                                source_loc=expr.source_loc,
+                                hint=f"use a signed type (i8/i16) for negative values"
+                            )
             expr.expr_type = operand_type
 
         else:
@@ -1654,12 +1710,17 @@ class TypeChecker:
             return self._check_status_flag_assignment(expr)
 
         target_type = self.check_expression(expr.target)
-        value_type = self.check_expression(expr.value, target_type)
+
+        # For register targets (A, X, Y, B, aliases), the compiler auto-widens the
+        # operation (e.g., REP #$20 for 16-bit A). Do not propagate target_type as
+        # context to avoid spurious overflow errors for constants like `A = 0x1234`.
+        target_register = self._get_target_register(expr.target)
+        value_context = None if target_register else target_type
+        value_type = self.check_expression(expr.value, value_context)
 
         # Validate register-specific operator restrictions
         # If target is a register (or register-aliased) and value is a binary op using that register,
         # validate that the register supports the operation
-        target_register = self._get_target_register(expr.target)
         if target_register and self._binary_op_uses_target(expr.value, expr.target):
             binary_op = expr.value
             OperatorValidator.validate_register_binary_op(

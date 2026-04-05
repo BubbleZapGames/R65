@@ -75,6 +75,19 @@ class CallValidator:
                     hint=hint
                 )
 
+            # Guard: passing far pointer to near pointer parameter silently drops
+            # the bank byte. Require an explicit `as *T` cast.
+            if (isinstance(param_type, PointerTypeInfo) and not param_type.is_far and
+                    isinstance(arg_type, PointerTypeInfo) and arg_type.is_far):
+                cast_hint = (f"parameter '{param_name}' expects type {param_type}; "
+                             f"bank byte would be dropped"
+                             if param_name else "bank byte would be dropped")
+                raise TypeCheckError(
+                    f"cannot pass far pointer as argument {i + 1} to '{func_name}' (expected near pointer {param_type})",
+                    source_loc=arg.source_loc if hasattr(arg, 'source_loc') else source_loc,
+                    hint=f"use an explicit cast: (value as {param_type}) to drop the bank byte"
+                )
+
     def check_function_call(self, expr: HIRFunctionCall) -> TypeInfo:
         """
         Type check function call.

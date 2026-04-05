@@ -2015,11 +2015,12 @@ class HIRBuilder:
         if start_val is None or end_val is None:
             return BasicTypeInfo('u16')
 
-        # Determine the range of values
-        # For exclusive (..), max value is end_val - 1; for inclusive (..=), it's end_val
-        effective_end = end_val if inclusive else end_val - 1
-        min_val = min(start_val, effective_end) if effective_end >= start_val else start_val
-        max_val = max(start_val, effective_end) if effective_end >= start_val else start_val
+        # Determine the range of values. The loop var type must hold BOTH the
+        # iteration values AND the comparison value (end_val), since the loop
+        # condition compares against end_val directly. For exclusive `0..256`,
+        # iteration reaches 255 but comparison is `i < 256`, so type must hold 256.
+        min_val = min(start_val, end_val)
+        max_val = max(start_val, end_val)
 
         # Check if values fit in each type (prefer unsigned, smallest first)
         if min_val >= 0:
