@@ -136,6 +136,63 @@ class ASTBuilder(Transformer):
             idx += 1
         return attrs, idx
 
+    @staticmethod
+    def _strip_doc_comment(text: str) -> str:
+        """Strip doc comment prefix from a single comment token."""
+        if text.startswith('///'):
+            return text[3:]  # Strip ///
+        elif text.startswith('//!'):
+            return text[3:]  # Strip //!
+        elif text.startswith('/**'):
+            # Block doc comment: strip /** and */
+            inner = text[3:-2]
+            # Strip leading * from each line (common formatting)
+            lines = inner.split('\n')
+            stripped = []
+            for line in lines:
+                s = line.lstrip()
+                if s.startswith('* '):
+                    stripped.append(s[2:])
+                elif s.startswith('*') and (len(s) == 1 or not s[1:].strip()):
+                    stripped.append('')
+                else:
+                    stripped.append(line)
+            return '\n'.join(stripped)
+        elif text.startswith('/*!'):
+            inner = text[3:-2]
+            lines = inner.split('\n')
+            stripped = []
+            for line in lines:
+                s = line.lstrip()
+                if s.startswith('* '):
+                    stripped.append(s[2:])
+                elif s.startswith('*') and (len(s) == 1 or not s[1:].strip()):
+                    stripped.append('')
+                else:
+                    stripped.append(line)
+            return '\n'.join(stripped)
+        return text
+
+    def _collect_doc_comments(self, items: list, start_idx: int):
+        """
+        Collect doc comment strings from items list starting at index.
+
+        Returns:
+            Tuple of (doc_string_or_None, next_index)
+        """
+        doc_parts = []
+        idx = start_idx
+        while idx < len(items) and isinstance(items[idx], str) and items[idx].startswith('__doc__:'):
+            doc_parts.append(items[idx][8:])  # Strip __doc__: prefix
+            idx += 1
+        doc = '\n'.join(doc_parts).strip() if doc_parts else None
+        return doc, idx
+
+    def doc_comment(self, items):
+        """Transform doc comment rule into a tagged string."""
+        token = items[0]
+        return '__doc__:' + self._strip_doc_comment(str(token))
+
     # ========================================================================
     # Program
     # ========================================================================
@@ -164,9 +221,13 @@ class ASTBuilder(Transformer):
 
     def start(self, items):
         """Start rule - returns a Program node."""
-        # Check for reserved keyword tokens that the grammar accepted as _reserved_keyword
+        # Collect inner doc comments (//! and /*! */) from the beginning
+        inner_doc_parts = []
+        decl_items = []
         for item in items:
-            if isinstance(item, LarkToken) and item.type == 'KEYWORD':
+            if isinstance(item, LarkToken) and item.type in ('DOC_INNER', 'DOC_BLOCK_INNER'):
+                inner_doc_parts.append(self._strip_doc_comment(str(item)))
+            elif isinstance(item, LarkToken) and item.type == 'KEYWORD':
                 kw = item.value
                 msg, hint = self._KEYWORD_MESSAGES.get(kw, (
                     f"'{kw}' is a reserved keyword not supported in R65", None
@@ -177,7 +238,10 @@ class ASTBuilder(Transformer):
                     column=getattr(item, 'column', 0),
                 )
                 raise ParseError(msg, source_loc, hint=hint)
-        return ast.Program(items=list(items))
+            else:
+                decl_items.append(item)
+        doc = '\n'.join(inner_doc_parts).strip() if inner_doc_parts else None
+        return ast.Program(items=decl_items, doc=doc)
 
     # ========================================================================
     # Declarations
@@ -188,8 +252,11 @@ class ASTBuilder(Transformer):
         """Function declaration."""
         items = self._filter_tokens(tree.children, keep_types={'IDENT', 'MUT', 'FAR', 'CONST', 'INTEGER', 'STRING', 'BOOLEAN', 'REGISTER'})
 
+        # Collect doc comments
+        doc, idx = self._collect_doc_comments(items, 0)
+
         # Collect attributes
-        attrs, idx = self._collect_attributes(items, 0)
+        attrs, idx = self._collect_attributes(items, idx)
 
         # Check for const
         is_const = False
@@ -229,6 +296,7 @@ class ASTBuilder(Transformer):
             return_type=return_type,
             body=body,
             is_const=is_const,
+            doc=doc,
             source_loc=self._make_source_loc(tree.meta)
         )
 
@@ -325,8 +393,11 @@ class ASTBuilder(Transformer):
         """Static variable declaration."""
         items = self._filter_tokens(tree.children, keep_types={'IDENT', 'MUT', 'FAR', 'NEAR', 'STAR', 'INTEGER', 'STRING', 'BOOLEAN', 'REGISTER'})
 
+        # Collect doc comments
+        doc, idx = self._collect_doc_comments(items, 0)
+
         # Collect attributes
-        attrs, idx = self._collect_attributes(items, 0)
+        attrs, idx = self._collect_attributes(items, idx)
 
         # Check for far/near modifier (for pointer declarations)
         is_far = False
@@ -379,6 +450,7 @@ class ASTBuilder(Transformer):
             name=name,
             var_type=var_type,
             initializer=initializer,
+            doc=doc,
             source_loc=self._make_source_loc(tree.meta)
         )
 
@@ -415,19 +487,20 @@ class ASTBuilder(Transformer):
     def const_decl(self, tree):
         """Const declaration."""
         items = self._filter_tokens(tree.children)
-        name = items[0].value if isinstance(items[0], LarkToken) else items[0]
-        const_type = items[1]
-        value = items[2]
+        doc, idx = self._collect_doc_comments(items, 0)
+        name = items[idx].value if isinstance(items[idx], LarkToken) else items[idx]
+        const_type = items[idx + 1]
+        value = items[idx + 2]
         return ast.ConstDecl(name=name, const_type=const_type, value=value,
-                             source_loc=self._make_source_loc(tree.meta))
+                             doc=doc, source_loc=self._make_source_loc(tree.meta))
 
     def struct_decl(self, items):
         """Struct declaration."""
         items = self._filter_tokens(items)
-        name = items[0].value if isinstance(items[0], LarkToken) else items[0]
-        # Filter to keep only StructField nodes
-        fields = [item for item in items[1:] if isinstance(item, ast.StructField)]
-        return ast.StructDecl(name=name, fields=fields)
+        doc, idx = self._collect_doc_comments(items, 0)
+        name = items[idx].value if isinstance(items[idx], LarkToken) else items[idx]
+        fields = [item for item in items[idx + 1:] if isinstance(item, ast.StructField)]
+        return ast.StructDecl(name=name, fields=fields, doc=doc)
 
     def struct_field(self, items):
         """Struct field."""
@@ -485,10 +558,10 @@ class ASTBuilder(Transformer):
     def enum_decl(self, items):
         """Enum declaration."""
         items = self._filter_tokens(items)
-        name = items[0].value if isinstance(items[0], LarkToken) else items[0]
-        # Filter to keep only EnumVariant nodes
-        variants = [item for item in items[1:] if isinstance(item, ast.EnumVariant)]
-        return ast.EnumDecl(name=name, variants=variants)
+        doc, idx = self._collect_doc_comments(items, 0)
+        name = items[idx].value if isinstance(items[idx], LarkToken) else items[idx]
+        variants = [item for item in items[idx + 1:] if isinstance(item, ast.EnumVariant)]
+        return ast.EnumDecl(name=name, variants=variants, doc=doc)
 
     def enum_variant(self, items):
         """Enum variant."""
@@ -502,7 +575,8 @@ class ASTBuilder(Transformer):
         """Impl block declaration: impl [far] StructName { methods and constants }"""
         items = self._filter_tokens(tree.children, keep_types={'IDENT', 'FAR'})
 
-        idx = 0
+        # Collect doc comments
+        doc, idx = self._collect_doc_comments(items, 0)
 
         # Check for far modifier
         is_far = False
@@ -532,6 +606,7 @@ class ASTBuilder(Transformer):
             methods=methods,
             constants=constants,
             macros=macros,
+            doc=doc,
             source_loc=self._make_source_loc(tree.meta)
         )
 
@@ -669,7 +744,8 @@ class ASTBuilder(Transformer):
         """Trait impl declaration: impl TraitName for StructName { methods and constants }"""
         items = self._filter_tokens(tree.children, keep_types={'IDENT'})
 
-        idx = 0
+        # Collect doc comments
+        doc, idx = self._collect_doc_comments(items, 0)
 
         # Trait name (first IDENT)
         trait_name = items[idx].value if isinstance(items[idx], LarkToken) else items[idx]
@@ -694,6 +770,7 @@ class ASTBuilder(Transformer):
             methods=methods,
             constants=constants,
             trait_name=trait_name,
+            doc=doc,
             source_loc=self._make_source_loc(tree.meta)
         )
 
@@ -702,7 +779,8 @@ class ASTBuilder(Transformer):
         """Trait declaration: trait TraitName { methods and constants }"""
         items = self._filter_tokens(tree.children, keep_types={'IDENT', 'FAR'})
 
-        idx = 0
+        # Collect doc comments
+        doc, idx = self._collect_doc_comments(items, 0)
 
         # Trait name
         name = items[idx].value if isinstance(items[idx], LarkToken) else items[idx]
@@ -721,6 +799,7 @@ class ASTBuilder(Transformer):
             name=name,
             methods=methods,
             constants=constants,
+            doc=doc,
             source_loc=self._make_source_loc(tree.meta)
         )
 

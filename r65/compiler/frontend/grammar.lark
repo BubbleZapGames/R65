@@ -6,7 +6,8 @@
 // ============================================================================
 
 // Starting rule - a source file is a list of items
-start: item*
+// Inner doc comments (//! and /*! */) attach to the file scope
+start: (DOC_INNER | DOC_BLOCK_INNER)* item*
 
 // Top-level items
 ?item: function_decl
@@ -48,8 +49,11 @@ snesrom_arg: IDENT "=" (STRING | INTEGER)  -> snesrom_named_arg
 // Dummy rule to tell Lark that these terminals are valid (never actually matched in valid code)
 _reserved_keyword: KEYWORD
 
+// Doc comments (/// and /** */) attach to the following declaration
+doc_comment: DOC_OUTER | DOC_BLOCK_OUTER
+
 // Function declaration (function_body allows trailing expression for implicit returns)
-function_decl: attribute* CONST? FAR? FN IDENT "(" param_list? ")" return_type? function_body
+function_decl: doc_comment* attribute* CONST? FAR? FN IDENT "(" param_list? ")" return_type? function_body
 
 // Function body: block with optional trailing expression (Rust-style implicit returns)
 function_body: "{" statement* "}"
@@ -68,28 +72,28 @@ return_type: "->" (type_tuple | type_expr | "!")
 // Uses initializer_expr to allow struct literals after =
 // Supports pointer declarations and far modifier: [far|near] static mut *name: type
 // Note: var_name allows REGISTER tokens as variable names (e.g., static mut X: u8)
-static_decl: attribute* (FAR | NEAR)? STATIC MUT? STAR? var_name ":" type_expr ("=" initializer_expr)? ";"
-           | attribute* (FAR | NEAR)? STATIC MUT? var_name "=" initializer_expr ";"
-           | attribute* (FAR | NEAR)? STATIC MUT? AMPER var_name ":" type_expr ("=" initializer_expr)? ";"  -> static_decl_safe_ptr_error
+static_decl: doc_comment* attribute* (FAR | NEAR)? STATIC MUT? STAR? var_name ":" type_expr ("=" initializer_expr)? ";"
+           | doc_comment* attribute* (FAR | NEAR)? STATIC MUT? var_name "=" initializer_expr ";"
+           | doc_comment* attribute* (FAR | NEAR)? STATIC MUT? AMPER var_name ":" type_expr ("=" initializer_expr)? ";"  -> static_decl_safe_ptr_error
 
 // Variable name - can be IDENT or REGISTER (allows naming variables X, Y, A, etc.)
 var_name: IDENT | REGISTER
 
 // Const declaration
-const_decl: CONST IDENT ":" type_expr "=" initializer_expr ";"
+const_decl: doc_comment* CONST IDENT ":" type_expr "=" initializer_expr ";"
 
 // Struct declaration
-struct_decl: STRUCT IDENT "{" struct_field* "}"
+struct_decl: doc_comment* STRUCT IDENT "{" struct_field* "}"
 // Supports pointer fields: [far|near] *name: type
 struct_field: (FAR | NEAR)? STAR? IDENT ":" type_expr ","?
             | (FAR | NEAR)? AMPER IDENT ":" type_expr ","?  -> struct_field_safe_ptr_error
 
 // Enum declaration
-enum_decl: ENUM IDENT "{" enum_variant ("," enum_variant)* ","? "}"
+enum_decl: doc_comment* ENUM IDENT "{" enum_variant ("," enum_variant)* ","? "}"
 enum_variant: var_name ("=" expr)?
 
 // Trait declaration
-trait_decl: TRAIT IDENT "{" trait_item* "}"
+trait_decl: doc_comment* TRAIT IDENT "{" trait_item* "}"
 ?trait_item: trait_method | trait_const
 trait_method: FAR? FN IDENT "(" trait_param_list ")" return_type? ";"
 trait_param_list: self_param ("," param)* ","?
@@ -99,8 +103,8 @@ trait_const: CONST IDENT ":" type_expr ";"
 // impl StructName { ... } for near *self
 // impl far StructName { ... } for far *self
 // impl TraitName for StructName { ... } for trait implementation
-impl_decl: IMPL FAR? IDENT "{" impl_item* "}"
-          | IMPL IDENT FOR IDENT "{" impl_item* "}"  -> impl_trait_decl
+impl_decl: doc_comment* IMPL FAR? IDENT "{" impl_item* "}"
+          | doc_comment* IMPL IDENT FOR IDENT "{" impl_item* "}"  -> impl_trait_decl
 
 ?impl_item: impl_method
           | impl_const
@@ -610,9 +614,17 @@ IDENT.1: /(?!(include_bytes|macro_rules|continue|include|return|struct|static|br
 // Imports and ignores
 %import common.ESCAPED_STRING
 %import common.WS
-%import common.C_COMMENT
-%import common.CPP_COMMENT
+
+// Doc comment terminals (high priority - matched before regular comments)
+DOC_OUTER.10: /\/\/\/(?!\/)[^\n]*/
+DOC_INNER.10: /\/\/![^\n]*/
+DOC_BLOCK_OUTER.10: /\/\*\*[^\/]([^*]|\*+[^*\/])*\*+\//
+DOC_BLOCK_INNER.10: /\/\*!([^*]|\*+[^*\/])*\*+\//
+
+// Regular comments (lower priority - ignored)
+LINE_COMMENT: /\/\/[^\n]*/
+BLOCK_COMMENT: /\/\*([^*]|\*+[^*\/])*\*+\/|\/\*\*\//
 
 %ignore WS
-%ignore C_COMMENT
-%ignore CPP_COMMENT
+%ignore LINE_COMMENT
+%ignore BLOCK_COMMENT

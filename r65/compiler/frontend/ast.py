@@ -56,6 +56,7 @@ class Type(ASTNode):
 class Program(ASTNode):
     """Top-level program node containing all declarations."""
     items: List[Declaration]
+    doc: Optional[str] = None  # Inner doc comments (//! and /*! */)
 
 
 # ============================================================================
@@ -186,6 +187,7 @@ class FunctionDecl(Declaration):
     return_type: Optional[Union[Type, NeverType]]
     body: 'Block'
     is_const: bool = False
+    doc: Optional[str] = None
 
 
 @dataclass
@@ -197,6 +199,7 @@ class StaticDecl(Declaration):
     name: str
     var_type: Optional[Type]  # None when type is inferred (e.g., include_bytes!)
     initializer: Optional[Expression]
+    doc: Optional[str] = None
 
 
 @dataclass
@@ -205,6 +208,7 @@ class ConstDecl(Declaration):
     name: str
     const_type: Type
     value: Expression
+    doc: Optional[str] = None
 
 
 @dataclass
@@ -219,6 +223,7 @@ class StructDecl(Declaration):
     """Struct declaration."""
     name: str
     fields: List[StructField]
+    doc: Optional[str] = None
 
 
 @dataclass
@@ -233,6 +238,7 @@ class EnumDecl(Declaration):
     """Enum declaration."""
     name: str
     variants: List[EnumVariant]
+    doc: Optional[str] = None
 
 
 @dataclass
@@ -275,6 +281,7 @@ class TraitDecl(Declaration):
     name: str
     methods: List[TraitMethod]
     constants: List[TraitConst]
+    doc: Optional[str] = None
 
 
 @dataclass
@@ -333,6 +340,7 @@ class ImplDecl(Declaration):
     constants: List[ImplConst]
     trait_name: Optional[str] = None  # Set for `impl TraitName for StructName`
     macros: List['ImplMacro'] = field(default_factory=list)
+    doc: Optional[str] = None
 
 
 @dataclass

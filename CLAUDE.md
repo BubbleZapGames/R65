@@ -18,7 +18,18 @@ A Rust-inspired compiler for 6502/65816 processors targeting WLA-DX assembly syn
 
 ### Comments
 
-Standard Rust/C-style comments: `//` for line comments, `/* */` for block comments (non-nesting). No doc comments.
+Full Rust-style comment syntax:
+
+| Syntax | Type | Description |
+|--------|------|-------------|
+| `//` | Line comment | Ignored by compiler |
+| `/* */` | Block comment | Non-nesting, ignored by compiler |
+| `///` | Outer doc comment | Attaches to following declaration |
+| `//!` | Inner doc comment | Attaches to enclosing file/module |
+| `/** */` | Block outer doc | Attaches to following declaration |
+| `/*! */` | Block inner doc | Attaches to enclosing file/module |
+
+Doc comments are parsed and preserved on AST nodes (`doc` field on declarations, `Program.doc` for inner). `////` (4+ slashes) is a regular comment, not a doc comment.
 
 ### Global Hardware Registers
 
