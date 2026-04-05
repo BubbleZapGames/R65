@@ -1912,7 +1912,7 @@ fn init_ppu() {
     BG34NBA = 0;
 
     // BG scroll registers (write-twice each)
-    let ptr: *u8 = 0x210D as *u8;
+    let mut ptr: *u8 = 0x210D as *u8;
     for i in 0..16 {
         *ptr = 0;
         ptr = ptr + 1;
@@ -1973,7 +1973,7 @@ fn snes_init() {
 // Delay for specified number of frames
 // Usage: delay(60);  // Wait ~1 second (NTSC)
 far fn delay(frames: u16) {
-    let count: u16 = frames;
+    let mut count: u16 = frames;
     loop {
         wait_nmi();
         count--;
