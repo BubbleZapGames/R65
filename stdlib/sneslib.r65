@@ -1998,7 +1998,7 @@ far fn set_pixelize(level: u8, bgs: u16) {
     if level == 0 {
         MOSAIC = 0;
     } else {
-        let val: u8 = level;
+        let mut val: u8 = level;
         val = val << 4;
         val = val | (bgs as u8);
         MOSAIC = val;
@@ -2011,7 +2011,7 @@ far fn set_pixelize(level: u8, bgs: u16) {
 
 // Wait for SPC700 to be ready
 fn spc_wait_ready() -> u8 {
-    let timeout: u8 = 0;
+    let mut timeout: u8 = 0;
     loop {
         A = APUIO0;
         if A == 0xAA {

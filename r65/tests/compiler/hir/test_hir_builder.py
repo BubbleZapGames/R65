@@ -884,7 +884,7 @@ class TestLoopExpression:
         """Test loop expression in let initializer builds HIRLoopExpression."""
         source = """
 fn test() {
-    let x: u8 = loop {
+    let mut x: u8 = loop {
         break 42;
     };
 }
@@ -900,7 +900,7 @@ fn test() {
         """Test break with value builds HIRBreakStmt with value."""
         source = """
 fn test() {
-    let x: u8 = loop {
+    let mut x: u8 = loop {
         break 42;
     };
 }
@@ -1262,7 +1262,7 @@ fn test() {
         """Test that using a local variable in format argument fails gracefully."""
         source = '''
 fn test() {
-    let x: u8 = 10;
+    let mut x: u8 = 10;
     asm!("LDA #{VAL}", VAL=x);
 }
 '''

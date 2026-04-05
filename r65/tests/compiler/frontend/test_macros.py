@@ -1043,7 +1043,7 @@ class TestSymbolMacro:
         static PALETTE: [u8; 8] = [0; 8];
 
         fn test() {
-            let x @ A = symbol!(PALETTE);
+            let mut x @ A = symbol!(PALETTE);
         }
         """
         program = parse(source, "<test>")

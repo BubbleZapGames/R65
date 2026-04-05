@@ -54,7 +54,7 @@ class TestStrlen:
 
             #[entry]
             fn main() {{
-                let len: u16 = strlen(&STR as far *u8);
+                let mut len: u16 = strlen(&STR as far *u8);
                 RESULT[0] = len as u8;
                 RESULT[1] = (len >> 8) as u8;
             }}
@@ -76,7 +76,7 @@ class TestStrlen:
 
             #[entry]
             fn main() {{
-                let len: u16 = strlen(&STR as far *u8);
+                let mut len: u16 = strlen(&STR as far *u8);
                 RESULT[0] = len as u8;
                 RESULT[1] = (len >> 8) as u8;
             }}
@@ -98,7 +98,7 @@ class TestStrlen:
 
             #[entry]
             fn main() {{
-                let len: u16 = strlen(&STR as far *u8);
+                let mut len: u16 = strlen(&STR as far *u8);
                 RESULT[0] = len as u8;
                 RESULT[1] = (len >> 8) as u8;
             }}
@@ -328,7 +328,7 @@ class TestStrcpy:
 
             #[entry]
             fn main() {{
-                let len: u16 = strcpy(&DST as far *u8, &SRC as far *u8);
+                let mut len: u16 = strcpy(&DST as far *u8, &SRC as far *u8);
                 RESULT[0] = DST[0];
                 RESULT[1] = DST[1];
                 RESULT[2] = DST[2];
@@ -359,7 +359,7 @@ class TestStrcpy:
 
             #[entry]
             fn main() {{
-                let len: u16 = strcpy(&DST as far *u8, &SRC as far *u8);
+                let mut len: u16 = strcpy(&DST as far *u8, &SRC as far *u8);
                 RESULT[0] = DST[0];
                 RESULT[1] = DST[1];
                 RESULT[2] = len as u8;
@@ -389,7 +389,7 @@ class TestStrncpy:
 
             #[entry]
             fn main() {{
-                let len: u16 = strncpy(&DST as far *u8, &SRC as far *u8, 4);
+                let mut len: u16 = strncpy(&DST as far *u8, &SRC as far *u8, 4);
                 RESULT[0] = DST[0];
                 RESULT[1] = DST[1];
                 RESULT[2] = DST[2];
@@ -417,7 +417,7 @@ class TestStrncpy:
 
             #[entry]
             fn main() {{
-                let len: u16 = strncpy(&DST as far *u8, &SRC as far *u8, 8);
+                let mut len: u16 = strncpy(&DST as far *u8, &SRC as far *u8, 8);
                 RESULT[0] = DST[0];
                 RESULT[1] = DST[1];
                 RESULT[2] = DST[2];
@@ -444,7 +444,7 @@ class TestStrncpy:
 
             #[entry]
             fn main() {{
-                let len: u16 = strncpy(&DST as far *u8, &SRC as far *u8, 0);
+                let mut len: u16 = strncpy(&DST as far *u8, &SRC as far *u8, 0);
                 RESULT[0] = DST[0];
                 RESULT[1] = len as u8;
             }}
@@ -472,7 +472,7 @@ class TestStrcat:
 
             #[entry]
             fn main() {{
-                let len: u16 = strcat(&DST as far *u8, &SRC as far *u8);
+                let mut len: u16 = strcat(&DST as far *u8, &SRC as far *u8);
                 RESULT[0] = DST[0];
                 RESULT[1] = DST[1];
                 RESULT[2] = DST[2];
@@ -501,7 +501,7 @@ class TestStrcat:
 
             #[entry]
             fn main() {{
-                let len: u16 = strcat(&DST as far *u8, &SRC as far *u8);
+                let mut len: u16 = strcat(&DST as far *u8, &SRC as far *u8);
                 RESULT[0] = DST[0];
                 RESULT[1] = DST[1];
                 RESULT[2] = DST[2];
@@ -926,7 +926,7 @@ class TestU16ToDec:
 
             #[entry]
             fn main() {{
-                let len: u8 = u16_to_dec(&BUF as far *u8, 0);
+                let mut len: u8 = u16_to_dec(&BUF as far *u8, 0);
                 RESULT[0] = BUF[0];
                 RESULT[1] = BUF[1];
                 RESULT[2] = len;
@@ -949,7 +949,7 @@ class TestU16ToDec:
 
             #[entry]
             fn main() {{
-                let len: u8 = u16_to_dec(&BUF as far *u8, 12345);
+                let mut len: u8 = u16_to_dec(&BUF as far *u8, 12345);
                 RESULT[0] = BUF[0];
                 RESULT[1] = BUF[1];
                 RESULT[2] = BUF[2];
@@ -975,7 +975,7 @@ class TestU16ToDec:
 
             #[entry]
             fn main() {{
-                let len: u8 = u16_to_dec(&BUF as far *u8, 65535);
+                let mut len: u8 = u16_to_dec(&BUF as far *u8, 65535);
                 RESULT[0] = BUF[0];
                 RESULT[1] = BUF[1];
                 RESULT[2] = BUF[2];
@@ -1001,7 +1001,7 @@ class TestU16ToDec:
 
             #[entry]
             fn main() {{
-                let len: u8 = u16_to_dec(&BUF as far *u8, 1000);
+                let mut len: u8 = u16_to_dec(&BUF as far *u8, 1000);
                 RESULT[0] = BUF[0];
                 RESULT[1] = BUF[1];
                 RESULT[2] = BUF[2];
@@ -1030,7 +1030,7 @@ class TestU16ToDecPad:
 
             #[entry]
             fn main() {{
-                let len: u8 = u16_to_dec_pad(&BUF as far *u8, 42, 5, 0x20);
+                let mut len: u8 = u16_to_dec_pad(&BUF as far *u8, 42, 5, 0x20);
                 RESULT[0] = BUF[0];
                 RESULT[1] = BUF[1];
                 RESULT[2] = BUF[2];
@@ -1057,7 +1057,7 @@ class TestU16ToDecPad:
 
             #[entry]
             fn main() {{
-                let len: u8 = u16_to_dec_pad(&BUF as far *u8, 123, 3, 0x20);
+                let mut len: u8 = u16_to_dec_pad(&BUF as far *u8, 123, 3, 0x20);
                 RESULT[0] = BUF[0];
                 RESULT[1] = BUF[1];
                 RESULT[2] = BUF[2];

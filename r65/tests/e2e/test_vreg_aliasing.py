@@ -23,7 +23,7 @@ class TestVregAliasing:
             static mut RESULT: [u8; 2];
 
             fn use_copy(height @ A: u8) {
-                let cy: u8 = height;
+                let mut cy: u8 = height;
                 cy--;
                 // height should still be original, cy should be original - 1
                 RESULT[0] = height;
@@ -72,7 +72,7 @@ class TestVregAliasing:
             static mut RESULT: u8;
 
             fn compute(val @ A: u8) -> u8 {
-                let x: u8 = val;
+                let mut x: u8 = val;
                 // val is never used again — x should work correctly
                 return x + 1;
             }
@@ -93,9 +93,9 @@ class TestVregAliasing:
             static mut RESULT: [u8; 3];
 
             fn triple_copy(val @ A: u8) {
-                let a: u8 = val;
-                let b: u8 = val;
-                let c: u8 = val;
+                let mut a: u8 = val;
+                let mut b: u8 = val;
+                let mut c: u8 = val;
                 a = a + 1;
                 b = b + 2;
                 c = c + 3;

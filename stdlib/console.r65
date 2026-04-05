@@ -171,8 +171,8 @@ impl far Console {
                 0
             },
             ConsoleMode::Vram => {
-                let row: u16 = (self.area_y + self.cursor_y) as u16;
-                let col: u16 = (self.area_x + self.cursor_x) as u16;
+                let mut row: u16 = (self.area_y + self.cursor_y) as u16;
+                let mut col: u16 = (self.area_x + self.cursor_x) as u16;
                 let offset: u16 = (row << 5) + col;
                 let tile: u16 = ((ch as u16) - 32 + self.tile_base) | self.tile_attr;
                 VMADD = self.vram_base + offset;
@@ -181,8 +181,8 @@ impl far Console {
             },
             _ => {
                 let buf: far *u8 = self.buffer;
-                let row: u16 = (self.area_y + self.cursor_y) as u16;
-                let col: u16 = (self.area_x + self.cursor_x) as u16;
+                let mut row: u16 = (self.area_y + self.cursor_y) as u16;
+                let mut col: u16 = (self.area_x + self.cursor_x) as u16;
                 let tile: u16 = ((ch as u16) - 32 + self.tile_base) | self.tile_attr;
                 Y = ((row << 5) + col) << 1;
                 buf[Y] = tile as u8;
@@ -257,8 +257,8 @@ impl far Console {
                         0
                     },
                     ConsoleMode::Vram => {
-                        let row: u16 = (ay + cy) as u16;
-                        let col: u16 = (ax + cx) as u16;
+                        let mut row: u16 = (ay + cy) as u16;
+                        let mut col: u16 = (ax + cx) as u16;
                         let offset: u16 = (row << 5) + col;
                         let tile: u16 = ((c as u16) - 32 + base) | attr;
                         VMADD = vb + offset;
@@ -266,8 +266,8 @@ impl far Console {
                         0
                     },
                     _ => {
-                        let row: u16 = (ay + cy) as u16;
-                        let col: u16 = (ax + cx) as u16;
+                        let mut row: u16 = (ay + cy) as u16;
+                        let mut col: u16 = (ax + cx) as u16;
                         let tile: u16 = ((c as u16) - 32 + base) | attr;
                         Y = ((row << 5) + col) << 1;
                         buf[Y] = tile as u8;
@@ -312,7 +312,7 @@ impl far Console {
         let aw: u8 = self.area_w;
         let ax: u8 = self.area_x;
         let ay: u8 = self.area_y;
-        let cy: u8 = self.cursor_y;
+        let mut cy: u8 = self.cursor_y;
         let alignment: u8 = self.align;
         let m: u8 = self.mode;
         let buf: far *u8 = self.buffer;

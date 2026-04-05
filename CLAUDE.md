@@ -222,8 +222,8 @@ far fn graphics_code() { }
 **Aliasing**: Named references to hardware registers with zero runtime cost.
 
 ```rust
-let hitpoints @ A = PLAYER.health;  // A holds hitpoints
-hitpoints = hitpoints - 1;           // Modifies A
+let mut hitpoints @ A = PLAYER.health;  // A holds hitpoints
+hitpoints = hitpoints - 1;               // Modifies A
 ```
 
 **Preservation**: Compiler generates save/restore code for declared registers.
@@ -320,6 +320,23 @@ static mut PTR: *u8;               // Zero-page pointer (fastest)
 ### Variable Initialization
 
 Compiler generates `__init_start()` for static initializers. **SNES RAM is unpredictable at power-on** - always initialize variables that need known values.
+
+### Mutability
+
+Local bindings and statics are immutable by default. Add `mut` to allow reassignment:
+
+```rust
+let x: u8 = 5;        // immutable
+// x = 10;             // ERROR: cannot assign to immutable variable
+let mut y: u8 = 5;
+y = 10;                // OK
+
+static X: u8 = 5;     // immutable (ROM)
+#[zeropage]
+static mut Y: u8;     // mutable (RAM)
+```
+
+**Always allowed** (no `mut` required): register assignments (`A = 5`), pointer dereference writes (`*ptr = 5`), struct field writes (`p.x = 5`), array element writes (`arr[0] = 5`). Function parameters are implicitly mutable.
 
 ### Operators
 

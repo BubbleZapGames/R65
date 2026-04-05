@@ -282,6 +282,24 @@ class TypeChecker:
 
         return None
 
+    def _check_target_mutable(self, target: HIRExpression, source_loc):
+        """
+        Verify that an assignment target is mutable.
+
+        Only checks direct identifier reassignments (x = 5, x += 1, x++). Struct
+        field mutations (p.x = 5) and array element mutations (arr[0] = 5) are
+        always allowed since R65 lacks struct literal initializers in `let`,
+        requiring the `let p: Point; p.x = 5` pattern for zero-initialized structs.
+        """
+        # Only check direct identifier assignments
+        if isinstance(target, HIRIdentifier) and target.symbol is not None:
+            if not target.symbol.is_mutable:
+                raise TypeCheckError(
+                    f"cannot assign to immutable variable '{target.name}'",
+                    source_loc=source_loc,
+                    hint=f"declare with 'let mut {target.name}' or 'static mut {target.name}' to allow mutation"
+                )
+
 
     def _binary_op_uses_target(self, value: HIRExpression, target: HIRExpression) -> bool:
         """
@@ -1708,6 +1726,9 @@ class TypeChecker:
         # Special handling for STATUS flag assignments
         if isinstance(expr.target, HIRStatusFlagAccess):
             return self._check_status_flag_assignment(expr)
+
+        # Mutability check: reject assignments to immutable variables
+        self._check_target_mutable(expr.target, expr.source_loc)
 
         target_type = self.check_expression(expr.target)
 

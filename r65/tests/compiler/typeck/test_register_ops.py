@@ -322,7 +322,7 @@ class TestRegisterAliasTracking:
         """let x @ X = ...; x++ should be allowed."""
         source = """
         fn test() {
-            let x @ X = 10;
+            let mut x @ X = 10;
             x++;
         }
         """
@@ -332,7 +332,7 @@ class TestRegisterAliasTracking:
         """let x @ X = ...; x = x + 5 should be rejected."""
         source = """
         fn test() {
-            let x @ X = 10;
+            let mut x @ X = 10;
             x = x + 5;
         }
         """
@@ -344,7 +344,7 @@ class TestRegisterAliasTracking:
         """let idx @ Y = ...; idx = idx - 3 should be rejected."""
         source = """
         fn test() {
-            let idx @ Y = 0;
+            let mut idx @ Y = 0;
             idx = idx - 3;
         }
         """
@@ -356,7 +356,7 @@ class TestRegisterAliasTracking:
         """let acc @ A = ...; acc = acc + 5 should be allowed."""
         source = """
         fn test() {
-            let acc @ A = 10;
+            let mut acc @ A = 10;
             acc = acc + 5;
             acc = acc & 0x0F;
             acc = acc << 2;
@@ -489,7 +489,7 @@ class TestIndexRegisterComparison:
         """Aliased X vs Y should be rejected."""
         source = """
         fn test() {
-            let x @ X = 100;
+            let mut x @ X = 100;
             let y @ Y = 200;
             if x == y {
                 A = 1;

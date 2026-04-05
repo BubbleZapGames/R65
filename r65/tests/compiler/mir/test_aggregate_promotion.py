@@ -256,7 +256,7 @@ class TestPromotedLocalNaming:
         """Multiple aggregate locals get distinct synthetic static names."""
         mir = build_mir('''
             fn test_func() {
-                let a: [u8; 4];
+                let mut a: [u8; 4];
                 let b: [u8; 4];
                 a[0] = 1;
                 b[0] = 2;
@@ -298,7 +298,7 @@ class TestHasPromotedLocalsFlag:
         """Functions without aggregate locals have flag = False."""
         mir = build_mir('''
             fn test_func() {
-                let x: u8 = 42;
+                let mut x: u8 = 42;
             }
         ''')
         func = get_mir_function(mir, 'test_func')

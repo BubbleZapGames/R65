@@ -289,7 +289,7 @@ impl far F32 {
     // Clamps to -32768/32767 on overflow.
     far fn to_i16(far *self) -> i16 {
         let eh: u16 = self.exp_hi;
-        let exp: u16 = eh >> 8;
+        let mut exp: u16 = eh >> 8;
 
         // Zero or exponent too small (value < 0.5)
         if exp == 0 {
@@ -316,7 +316,7 @@ impl far F32 {
         // Extract mantissa and determine sign
         let mut mant_hi: u16 = eh & 0xFF;
         let mut mant_lo: u16 = self.mant_lo;
-        let negative: bool = (mant_hi & 0x80) != 0;
+        let mut negative: bool = (mant_hi & 0x80) != 0;
 
         // Work with magnitude
         if negative {
@@ -794,7 +794,7 @@ far fn _f32_mul_impl(self_ptr: far *F32, other: far *F32) {
     if res_mid < old { carry_count = carry_count + 1; }
 
     // Build res_hi
-    let res_hi: u16 = p_hh + (mid2 >> 8) + carry_count + mid1_carry + mid2_carry;
+    let mut res_hi: u16 = p_hh + (mid2 >> 8) + carry_count + mid1_carry + mid2_carry;
 
     // Extract mantissa: product >> 23
     let mut r_mhi: u16 = (res_hi >> 7) & 0x7F;

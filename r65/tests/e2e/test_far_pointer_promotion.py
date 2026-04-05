@@ -51,7 +51,7 @@ class TestFarPointerPromotion:
 
             #[entry]
             fn main() {
-                let p: *u8 = &BUF;
+                let mut p: *u8 = &BUF;
                 *p = 0xAB;
                 // Read back via another let binding to verify
                 let q: *u8 = &BUF;

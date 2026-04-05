@@ -29,7 +29,7 @@ class TestRegisterAliasing:
         """Test using aliased register name."""
         func = parse_function("""
             fn test() {
-                let count @ A = 10;
+                let mut count @ A = 10;
                 count = count + 1;
             }
         """)

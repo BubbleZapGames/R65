@@ -60,7 +60,7 @@ class TestLookupTableAssembly:
         """u8 LUT should emit LDA.w table,X with .DB entries."""
         source = """
         fn classify(val @ A: u8) -> u8 {
-            let result: u8 = match val {
+            let mut result: u8 = match val {
                 0 => 10,
                 1 => 20,
                 2 => 30,
@@ -81,7 +81,7 @@ class TestLookupTableAssembly:
         """u8 LUT should not emit ASL (byte table, no index doubling needed)."""
         source = """
         fn classify(val @ A: u8) -> u8 {
-            let result: u8 = match val {
+            let mut result: u8 = match val {
                 0 => 10,
                 1 => 20,
                 2 => 30,
@@ -99,7 +99,7 @@ class TestLookupTableAssembly:
         """LUT with non-zero base should emit SEC + SBC."""
         source = """
         fn classify(val @ A: u8) -> u8 {
-            let result: u8 = match val {
+            let mut result: u8 = match val {
                 5 => 10,
                 6 => 20,
                 7 => 30,
@@ -118,7 +118,7 @@ class TestLookupTableAssembly:
         """LUT with zero base should not emit SEC/SBC."""
         source = """
         fn classify(val @ A: u8) -> u8 {
-            let result: u8 = match val {
+            let mut result: u8 = match val {
                 0 => 10,
                 1 => 20,
                 2 => 30,
@@ -137,7 +137,7 @@ class TestLookupTableAssembly:
         """LUT should emit CMP + BCS for upper bounds check."""
         source = """
         fn classify(val @ A: u8) -> u8 {
-            let result: u8 = match val {
+            let mut result: u8 = match val {
                 0 => 10,
                 1 => 20,
                 2 => 30,
@@ -156,7 +156,7 @@ class TestLookupTableAssembly:
         """u8 LUT should have correct number of .DB entries."""
         source = """
         fn classify(val @ A: u8) -> u8 {
-            let result: u8 = match val {
+            let mut result: u8 = match val {
                 0 => 10,
                 1 => 20,
                 2 => 30,
@@ -177,7 +177,7 @@ class TestLookupTableAssembly:
         """u16 LUT should emit .DW entries, ASL, REP/SEP mode switch."""
         source = """
         fn classify(val @ A: u8) -> u16 {
-            let result: u16 = match val {
+            let mut result: u16 = match val {
                 0 => 1000,
                 1 => 2000,
                 2 => 3000,
@@ -200,7 +200,7 @@ class TestLookupTableAssembly:
         fn identity(x @ A: u8) -> u8 { return x; }
 
         fn classify(val @ A: u8) -> u8 {
-            let result: u8 = match val {
+            let mut result: u8 = match val {
                 0 => 10,
                 1 => identity(20),
                 2 => 30,
@@ -225,7 +225,7 @@ class TestJumpTableAssembly:
         fn identity(x @ A: u8) -> u8 { return x; }
 
         fn classify(val @ A: u8) -> u8 {
-            let result: u8 = match val {
+            let mut result: u8 = match val {
                 0 => identity(10),
                 1 => identity(20),
                 2 => identity(30),
@@ -248,7 +248,7 @@ class TestJumpTableAssembly:
         fn identity(x @ A: u8) -> u8 { return x; }
 
         fn classify(val @ A: u8) -> u8 {
-            let result: u8 = match val {
+            let mut result: u8 = match val {
                 0 => identity(10),
                 1 => identity(20),
                 2 => identity(30),
@@ -273,7 +273,7 @@ class TestBranchChainAssembly:
         """Sparse patterns should NOT emit jump table, should use CMP/BEQ."""
         source = """
         fn classify(val @ A: u8) -> u8 {
-            let result: u8 = match val {
+            let mut result: u8 = match val {
                 0 => 10,
                 50 => 20,
                 100 => 30,
@@ -295,7 +295,7 @@ class TestBranchChainAssembly:
         """2-arm match (below MIN_PATTERNS=3) should use branch chain."""
         source = """
         fn classify(val @ A: u8) -> u8 {
-            let result: u8 = match val {
+            let mut result: u8 = match val {
                 0 => 10,
                 1 => 20,
                 _ => 0

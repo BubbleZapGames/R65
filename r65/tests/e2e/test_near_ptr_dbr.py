@@ -32,7 +32,7 @@ class TestNearPtrDBR:
             static src_data: [u8; 4] = [0xAA, 0xBB, 0xCC, 0xDD];
 
             fn copy_bytes(dst: *u8, src: far *u8, count: u8) {
-                let i: u8 = 0;
+                let mut i: u8 = 0;
                 loop {
                     if i >= count {
                         break;
@@ -82,7 +82,7 @@ class TestNearPtrDBR:
             ];
 
             fn decompress(dst: *u8, src: far *u8) {
-                let tag: u8 = *src;
+                let mut tag: u8 = *src;
                 src++;
                 loop {
                     let byte: u8 = *src;

@@ -39,7 +39,7 @@ class TestBlockExpressions:
         result = e2e.run('''
             #[entry]
             fn main() {
-                let result: u8 = {
+                let mut result: u8 = {
                     let a: u8 = 10;
                     let b: u8 = 20;
                     a + b
@@ -101,7 +101,7 @@ class TestIfExpressions:
         """Test if expression using register values in branches."""
         result = e2e.run('''
             fn max(a: u8, b: u8) -> u8 {
-                let result: u8 = if a > b { a } else { b };
+                let mut result: u8 = if a > b { a } else { b };
                 return result;
             }
 
@@ -146,7 +146,7 @@ class TestIfExpressions:
         """Test if expression with multi-statement blocks."""
         result = e2e.run('''
             fn compute(val @ A: u8) -> u8 {
-                let result: u8 = if val > 10 {
+                let mut result: u8 = if val > 10 {
                     let excess: u8 = val - 10;
                     excess
                 } else {

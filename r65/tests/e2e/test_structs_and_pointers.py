@@ -255,8 +255,8 @@ class TestArrayOfStructs:
                 DATA[3] = 40;
                 PTR = &DATA as *u8;
 
-                let acc: u8 = 0;
-                let i: u16 = 0;
+                let mut acc: u8 = 0;
+                let mut i: u16 = 0;
                 loop {
                     if i == 4 { break; }
                     acc = acc + PTR[i];

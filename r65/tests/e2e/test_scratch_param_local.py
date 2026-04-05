@@ -35,8 +35,8 @@ class TestScratchParamLocalAssignment:
 
             // 4 params forces scratch promotion for off and ptr
             fn process(off: u16, ptr: u16, wdt: u8, dx: u8) {
-                let idx: u16 = off << 5;
-                let pos: u16 = ptr;
+                let mut idx: u16 = off << 5;
+                let mut pos: u16 = ptr;
 
                 // Use both locals to prevent dead code elimination
                 result1 = idx;
@@ -73,8 +73,8 @@ class TestScratchParamLocalAssignment:
             static mut result: u16;
 
             fn accumulate(start: u16, count: u8, step: u8) {
-                let pos: u16 = start;
-                let i: u8 = 0;
+                let mut pos: u16 = start;
+                let mut i: u8 = 0;
                 loop {
                     if i >= count {
                         break;

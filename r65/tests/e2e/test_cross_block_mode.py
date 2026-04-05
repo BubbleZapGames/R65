@@ -40,7 +40,7 @@ class TestCrossBlockMode:
             static mut wide_val: u16;
 
             fn process(n: u8, flag: u8) -> u8 {
-                let val: u8 = n;
+                let mut val: u8 = n;
 
                 if flag == 1 {
                     // This path does 16-bit operations then falls through
@@ -102,7 +102,7 @@ class TestCrossBlockMode:
             static mut wide_d: u16;
 
             fn big_switch(n: u8, code: u8) -> u8 {
-                let val: u8 = n;
+                let mut val: u8 = n;
 
                 if code == 0xFE {
                     wide_a = (n as u16) + 0x100;

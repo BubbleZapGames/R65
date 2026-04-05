@@ -140,7 +140,7 @@ fn main() {
     GAME.paused = false;
 
     init_player();
-    let i @ X = 0;
+    let mut i @ X = 0;
     while i < MAX_ENTITIES {
         init_entity(i);
         i = i + 1;
@@ -193,7 +193,7 @@ fn update_game() {
     if new_x < SCREEN_WIDTH { PLAYER.pos.x = new_x; }
 
     // Update enemies
-    let i @ X = 0;
+    let mut i @ X = 0;
     loop {
         if i >= MAX_ENTITIES { break; }
         if ENEMIES[X].state != State::Dead as u8 { update_enemy(i); }
@@ -211,7 +211,7 @@ fn update_game() {
 }
 
 fn update_enemy(index @ X: u16) {
-    let state: u8 = ENEMIES[X].state;
+    let mut state: u8 = ENEMIES[X].state;
     let behavior: u8 = match state {
         0 => 0, 1 => 1, _ => 2
     };
@@ -225,8 +225,8 @@ fn update_enemy(index @ X: u16) {
 }
 
 fn check_collision(index @ X: u16) -> bool {
-    let dx: i16 = PLAYER.pos.x as i16 - ENEMIES[X].pos.x as i16;
-    let dy: i16 = PLAYER.pos.y as i16 - ENEMIES[X].pos.y as i16;
+    let mut dx: i16 = PLAYER.pos.x as i16 - ENEMIES[X].pos.x as i16;
+    let mut dy: i16 = PLAYER.pos.y as i16 - ENEMIES[X].pos.y as i16;
     if dx < 0 { dx = -dx; }
     if dy < 0 { dy = -dy; }
     return dx < TILE_SIZE as i16 && dy < TILE_SIZE as i16;
@@ -265,8 +265,8 @@ fn draw_entity(x: u16, y: u16, tile @ A: u8) {
 
 #[preserves(X, Y)]
 fn multiply(a @ A: u8, b: u8) -> u8 {
-    let result: u8 = 0;
-    let count @ X = b;
+    let mut result: u8 = 0;
+    let mut count @ X = b;
     while count > 0 {
         result = result + A;
         count = count - 1;
@@ -388,7 +388,7 @@ fn test_expressions() {
 }
 
 fn trailing_return_fn() -> u8 {
-    let x: u8 = 42;
+    let mut x: u8 = 42;
     x
 }
 
@@ -397,7 +397,7 @@ fn test_match_patterns(val @ A: u8) -> u8 {
     let tier: u8 = match val {
         0..5 => 0, 5..10 => 1, 10..20 => 2, _ => 3
     };
-    let priority: u8 = match val {
+    let mut priority: u8 = match val {
         0..=3 => 0, 4..=7 => 1, 8..=15 => 2, _ => 3
     };
     // Dense constant match (LookupTable optimization)

@@ -55,7 +55,7 @@ def test_register_aliasing():
     """Test parsing register aliasing."""
     source = """
     fn test() {
-        let value @ A = 100;
+        let mut value @ A = 100;
     }
     """
 
@@ -420,7 +420,7 @@ def test_loop_expression():
     """Test parsing loop expression in initializer context."""
     source = """
     fn test() {
-        let x: u8 = loop {
+        let mut x: u8 = loop {
             break 42;
         };
     }
@@ -526,8 +526,8 @@ def test_type_cast():
     """Test parsing type casts."""
     source = """
     fn test() {
-        let x: u16 = y as u16;
-        let b: bool = flag as bool;
+        let mut x: u16 = y as u16;
+        let mut b: bool = flag as bool;
     }
     """
 

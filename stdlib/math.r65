@@ -43,7 +43,7 @@ far fn mul16(multA @ A: u16, multB: u16) -> u16 {
     let _a_lo: u8 = multA as u8;
     let _a_hi: u8 = B;
     let _b_lo: u8 = multB as u8;
-    let _b_hi: u8;
+    let mut _b_hi: u8;
     // Get high byte of multB: load u16, shift right 8, truncate
     A = multB;
     A >>= 8;

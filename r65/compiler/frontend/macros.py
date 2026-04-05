@@ -1312,7 +1312,7 @@ class MacroExpander:
                 elif spec['type'] == 'i8' and spec.get('format') == 'd':
                     # Inline sign check: if negative, write '-' and negate
                     lines.append(
-                        f'let {s}: u8 = {arg} as u8;'
+                        f'let mut {s}: u8 = {arg} as u8;'
                     )
                     lines.append(
                         f'if {s} & 0x80 != 0 {{'
@@ -1330,7 +1330,7 @@ class MacroExpander:
                 elif spec['type'] == 'i16' and spec.get('format') == 'd':
                     # Inline sign check: if negative, write '-' and negate
                     lines.append(
-                        f'let {s}: u16 = {arg} as u16;'
+                        f'let mut {s}: u16 = {arg} as u16;'
                     )
                     lines.append(
                         f'if {s} & 0x8000 != 0 {{'

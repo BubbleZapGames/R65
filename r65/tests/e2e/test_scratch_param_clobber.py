@@ -57,8 +57,8 @@ class TestScratchParamClobberLocal:
             // used by `helper`'s promoted params.
             fn outer(count @ A: u8) {
                 let flag: u8 = 42;
-                let val: u8 = 0;
-                let i: u8 = 0;
+                let mut val: u8 = 0;
+                let mut i: u8 = 0;
 
                 loop {
                     if i >= count {
@@ -117,7 +117,7 @@ class TestScratchParamClobberLocal:
             }
 
             fn process() {
-                let fire: u8 = 0;
+                let mut fire: u8 = 0;
 
                 // Call 1: check_map scratch params may overlap fire's address
                 let floor: u8 = check_map(50, 80);

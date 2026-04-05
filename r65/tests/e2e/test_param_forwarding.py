@@ -61,7 +61,7 @@ class TestParamForwarding:
 
             #[entry]
             fn main() {
-                let result: u16 = outer(0x1234);
+                let mut result: u16 = outer(0x1234);
                 RESULT_LO = result as u8;
                 RESULT_HI = (result >> 8) as u8;
             }

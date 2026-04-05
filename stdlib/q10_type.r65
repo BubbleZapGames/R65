@@ -67,7 +67,7 @@ fn q10_mul(a @ A: q10, b: q10) -> q10 {
     WRMPYA = a_lo;
     WRMPYB = b_lo;
     NOP(4);
-    let p0: u16 = (RDMPYH as u16) << 8 | (RDMPYL as u16);
+    let mut p0: u16 = (RDMPYH as u16) << 8 | (RDMPYL as u16);
 
     // p1 = a_lo * b_hi (a_lo still in WRMPYA)
     WRMPYB = b_hi;
@@ -83,7 +83,7 @@ fn q10_mul(a @ A: q10, b: q10) -> q10 {
     // p3 = a_hi * b_hi (a_hi still in WRMPYA)
     WRMPYB = b_hi;
     NOP(4);
-    let p3: u16 = (RDMPYH as u16) << 8 | (RDMPYL as u16);
+    let mut p3: u16 = (RDMPYH as u16) << 8 | (RDMPYL as u16);
 
     // Accumulate 32-bit product as hi:lo
     let lo: u16 = p0 + (mid << 8);
@@ -93,7 +93,7 @@ fn q10_mul(a @ A: q10, b: q10) -> q10 {
     }
 
     // Extract bits [6:21] of 32-bit product
-    let result: u16 = (lo >> 6) | (hi << 10);
+    let mut result: u16 = (lo >> 6) | (hi << 10);
 
     if neg != 0 {
         return 0 - (result as q10);

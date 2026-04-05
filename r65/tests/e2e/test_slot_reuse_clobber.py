@@ -48,7 +48,7 @@ class TestSlotReuseClobber:
             far fn process(idx: u8, spr: u16) {
                 let ox: u8 = data[idx];
                 let oy: u8 = data[idx + 1];
-                let sy: u8;
+                let mut sy: u8;
 
                 // sy = oy - offset (derived from oy)
                 if data[idx + 2] < 19 {

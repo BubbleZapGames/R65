@@ -186,7 +186,7 @@ class TestArrayIndexConditional:
 
             #[entry]
             fn main() {
-                let tile: u8;
+                let mut tile: u8;
                 if FLAG != 0 {
                     tile = 0xAA;
                 } else {
@@ -210,7 +210,7 @@ class TestArrayIndexConditional:
 
             #[entry]
             fn main() {
-                let tile: u8;
+                let mut tile: u8;
                 if FLAG != 0 {
                     tile = 0xAA;
                 } else {

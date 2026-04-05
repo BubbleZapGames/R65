@@ -380,9 +380,9 @@ class TestPerCallXYSpillReload:
             }}
 
             fn accumulate(count: u16, start: u16) {{
-                let value: u16 = start;
-                let i: u16 = count;
-                let sum: u16 = 0;
+                let mut value: u16 = start;
+                let mut i: u16 = count;
+                let mut sum: u16 = 0;
                 loop {{
                     if i == 0 {{ break; }}
                     i--;

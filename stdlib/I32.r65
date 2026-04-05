@@ -184,7 +184,7 @@ impl far I32 {
     // Returns true if negative, false if zero or positive
     #[inline(always)]
     far fn is_negative(far *self) -> bool {
-        let hi: u16 = self.hi;
+        let mut hi: u16 = self.hi;
         if (hi & 0x8000) != 0 {
             return true;
         }
@@ -204,7 +204,7 @@ impl far I32 {
     // Absolute value: if negative, negate
     #[inline(always)]
     far fn abs(far *self) {
-        let hi: u16 = self.hi;
+        let mut hi: u16 = self.hi;
         if (hi & 0x8000) != 0 {
             self.neg();
         }
@@ -461,7 +461,7 @@ impl far I32 {
         let s_lo: u16 = self.lo;
         let s_hi: u16 = self.hi;
         let o_lo: u16 = other.lo;
-        let o_hi: u16 = other.hi;
+        let mut o_hi: u16 = other.hi;
         let r_lo: u16 = s_lo + o_lo;
         let mut r_hi: u16 = s_hi + o_hi;
         // Carry: unsigned addition overflowed if result < operand
@@ -478,7 +478,7 @@ impl far I32 {
         let s_lo: u16 = self.lo;
         let s_hi: u16 = self.hi;
         let o_lo: u16 = other.lo;
-        let o_hi: u16 = other.hi;
+        let mut o_hi: u16 = other.hi;
         let r_lo: u16 = s_lo - o_lo;
         let mut r_hi: u16 = s_hi - o_hi;
         // Borrow: underflow occurred if self.lo < other.lo
@@ -496,7 +496,7 @@ impl far I32 {
 
         // Determine if result should be negative (signs differ)
         let s_hi: u16 = self.hi;
-        let o_hi: u16 = other.hi;
+        let mut o_hi: u16 = other.hi;
         if (s_hi ^ o_hi) & 0x8000 != 0 {
             negate_result = true;
         }
@@ -561,7 +561,7 @@ impl far I32 {
     // Signed division: track signs, divide magnitudes, fix sign
     far fn div(far *self, other: far *I32) {
         let o_lo: u16 = other.lo;
-        let o_hi: u16 = other.hi;
+        let mut o_hi: u16 = other.hi;
 
         // Handle division by zero
         if o_lo == 0 {
@@ -657,7 +657,7 @@ impl far I32 {
     // Unchanged if other == 0
     far fn mod(far *self, other: far *I32) {
         let o_lo: u16 = other.lo;
-        let o_hi: u16 = other.hi;
+        let mut o_hi: u16 = other.hi;
 
         // Handle division by zero - leave self unchanged
         if o_lo == 0 {
@@ -747,7 +747,7 @@ impl far I32 {
     // Returns: 1 if self > other, 0 if equal, -1 if self < other
     far fn cmp(far *self, other: far *I32) -> i8 {
         let s_hi: u16 = self.hi;
-        let o_hi: u16 = other.hi;
+        let mut o_hi: u16 = other.hi;
 
         // Check if signs differ
         if (s_hi ^ o_hi) & 0x8000 != 0 {

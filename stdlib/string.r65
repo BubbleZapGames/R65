@@ -45,7 +45,7 @@ far fn memcpy(dst: far *u8, src: far *u8, n: u16) {
 far fn memset(dst: far *u8, value: u8, n: u16) {
     let count: u16 = n;
     if count == 0 { return; }
-    let v: u8 = value;
+    let mut v: u8 = value;
     let mut i: u16 = 0;
     loop {
         dst[i] = v;
@@ -80,7 +80,7 @@ far fn memcmp(a: far *u8, b: far *u8, n: u16) -> i8 {
 far fn strcpy(dst: far *u8, src: far *u8) -> u16 {
     let mut i: u16 = 0;
     loop {
-        let ch: u8 = src[i];
+        let mut ch: u8 = src[i];
         dst[i] = ch;
         if ch == 0 { break; }
         i++;
@@ -99,7 +99,7 @@ far fn strncpy(dst: far *u8, src: far *u8, max: u16) -> u16 {
     let end: u16 = limit - 1;
     loop {
         if i >= end { break; }
-        let ch: u8 = src[i];
+        let mut ch: u8 = src[i];
         if ch == 0 { break; }
         dst[i] = ch;
         i++;
@@ -120,7 +120,7 @@ far fn strcat(dst: far *u8, src: far *u8) -> u16 {
     // Copy src starting at dst's null
     let mut si: u16 = 0;
     loop {
-        let ch: u8 = src[si];
+        let mut ch: u8 = src[si];
         dst[di] = ch;
         if ch == 0 { break; }
         di++;
@@ -427,7 +427,7 @@ macro_rules! _hex_char($dst:expr, $n:expr) {
 // Write 2-char hex representation of u8 value to buf.
 // Always writes exactly 2 characters plus null. Example: 0xAB -> "AB"
 far fn u8_to_hex(buf: far *u8, value @ A: u8) {
-    let v: u8 = value;
+    let mut v: u8 = value;
     _hex_char!(buf[0], v >> 4);
     _hex_char!(buf[1], v & 0x0F);
     buf[2] = 0;
@@ -436,7 +436,7 @@ far fn u8_to_hex(buf: far *u8, value @ A: u8) {
 // Write 4-char hex representation of u16 value to buf.
 // Always writes exactly 4 characters plus null. Example: 0x1234 -> "1234"
 far fn u16_to_hex(buf: far *u8, value @ A: u16) {
-    let v: u16 = value;
+    let mut v: u16 = value;
     let hi: u8 = (v >> 8) as u8;
     let lo: u8 = v as u8;
     _hex_char!(buf[0], hi >> 4);

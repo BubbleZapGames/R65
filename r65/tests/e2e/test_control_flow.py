@@ -276,7 +276,7 @@ class TestMatchExpression:
             static mut R3: u8;
 
             fn classify(val @ A: u8) -> u8 {
-                let result: u8 = match val {
+                let mut result: u8 = match val {
                     0 => 10,
                     1 => 20,
                     _ => 30
@@ -336,7 +336,7 @@ class TestMatchExpression:
             static mut R4: u8;
 
             fn classify(id @ A: u8) -> u8 {
-                let result: u8 = match id {
+                let mut result: u8 = match id {
                     PLAYER => 10,
                     ENEMY => 20,
                     ITEM => 30,
@@ -451,7 +451,7 @@ class TestLoopExpression:
 
             #[entry]
             fn main() {
-                let x: u8 = loop {
+                let mut x: u8 = loop {
                     break 42;
                 };
                 RESULT = x;
@@ -472,7 +472,7 @@ class TestLoopExpression:
             #[entry]
             fn main() {
                 COUNTER = 0;
-                let x: u8 = loop {
+                let mut x: u8 = loop {
                     COUNTER = COUNTER + 1;
                     if COUNTER == 3 {
                         break 30;
@@ -702,7 +702,7 @@ class TestComparisonLiteralPromotion:
 
             #[entry]
             fn main() {
-                let off: u16 = 0;
+                let mut off: u16 = 0;
                 // 32 * 32 = 1024 (should NOT wrap to 0 as u8)
                 // off (0) >= 1024 should be false
                 if off >= 32 * 32 {
@@ -726,8 +726,8 @@ class TestComparisonLiteralPromotion:
 
             #[entry]
             fn main() {
-                let off: u16 = 0;
-                let count: u16 = 0;
+                let mut off: u16 = 0;
+                let mut count: u16 = 0;
                 loop {
                     if off >= 32 * 32 {
                         break;
