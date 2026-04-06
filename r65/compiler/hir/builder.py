@@ -904,12 +904,14 @@ class HIRBuilder:
         func_name: str
     ) -> None:
         """
-        Validate that no register is bound to multiple parameters.
+        Validate that no register or variable is bound to multiple parameters.
 
         Example of invalid code:
-            fn bad(a @ A: u8, b @ A: u8) { }  // Error: A bound twice
+            fn bad(a @ A: u8, b @ A: u8) { }      // Error: A bound twice
+            fn bad(a @ TEMP: u8, b @ TEMP: u8) { } // Error: TEMP bound twice
         """
         register_bindings: dict[str, str] = {}  # register_name -> param_name
+        variable_bindings: dict[str, str] = {}  # variable_name -> param_name
 
         for param in params:
             if param.binding and isinstance(param.binding, hir.RegisterBinding):
@@ -924,6 +926,18 @@ class HIRBuilder:
                              f"Consider using stack parameters for additional values."
                     )
                 register_bindings[reg_name] = param.name
+            elif param.binding and isinstance(param.binding, hir.VariableBinding):
+                var_name = param.binding.variable_name
+                if var_name in variable_bindings:
+                    first_param = variable_bindings[var_name]
+                    raise HIRError(
+                        f"Variable {var_name} is bound to multiple parameters in function '{func_name}': "
+                        f"'{first_param}' and '{param.name}'",
+                        source_loc=None,
+                        hint=f"Each variable can only be bound to one parameter per function.\n"
+                             f"Use different variables or stack parameters for additional values."
+                    )
+                variable_bindings[var_name] = param.name
 
     def _validate_static_storage(
         self,
