@@ -2758,6 +2758,10 @@ class Parser:
             if re.search(r'\bfn\s+\w+\s*$', before):
                 return ("generics are not supported in R65",
                         "use concrete types (u8, u16) instead of type parameters")
+            # Turbofish: foo::<u8>()
+            if re.search(r'::\s*$', before):
+                return ("turbofish syntax (::<T>) is not supported in R65",
+                        "R65 has no generics; call functions directly without type parameters")
             # Also catch Type<T> patterns
             if re.search(r'\b[A-Z]\w*\s*$', before):
                 return ("generics are not supported in R65",
