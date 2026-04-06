@@ -2790,6 +2790,14 @@ class Parser:
                 return ("'mod' modules are not supported in R65",
                         "use include!(\"file.r65\") for file inclusion")
 
+        # Struct literal with register name: S { x: 1 } where S is a register
+        if token.value == '{' or (hasattr(token, 'type') and token.type == 'LBRACE'):
+            if re.search(r'=\s*[ABSXYD]\s*$', before):
+                reg = before.rstrip()[-1]
+                return (f"'{reg}' is a hardware register name, not a struct identifier",
+                        f"rename the struct to avoid conflict with register {reg} "
+                        f"(reserved: A, B, S, X, Y, D, DBR, PBR, STATUS)")
+
         # Tuple literals: (1, 2) — comma inside parenthesized expression
         if token.value == ',':
             if re.search(r'\(\s*(?:\d+|0x[0-9a-fA-F]+|\w+)\s*$', before):
