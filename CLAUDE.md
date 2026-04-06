@@ -68,6 +68,19 @@ static mut MESSAGE: [u8; 16] = "Hello, World!";  // String literal, zero-padded
 
 *(See [docs/array-bounds-checking.md](docs/array-bounds-checking.md) for design rationale)*
 
+### Character Literals
+
+Single-byte ASCII character literals produce u8 values:
+
+```rust
+let newline: u8 = '\n';      // 10
+let letter: u8 = 'A';        // 65
+let extended: u8 = '\xFF';   // 255
+let byte: u8 = b'a';         // 97 (b-prefix accepted as an alias)
+```
+
+**Escapes**: `\n \t \r \0 \\ \' \" \xNN`. Only 7-bit ASCII accepted in raw form — use `\xNN` for bytes 0x80–0xFF. UTF-8/Unicode characters are rejected (e.g., `'é'`, `'€'`).
+
 ### Error Handling
 
 No built-in error handling. Use return codes, global error flags, or sentinel values. No `Result`, `Option`, or `panic!()`.

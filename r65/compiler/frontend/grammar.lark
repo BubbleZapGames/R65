@@ -397,6 +397,7 @@ arg_list: expr ("," expr)* ","?
 // Note: struct_literal_expr is NOT in primary to avoid IDENT "{" ambiguity.
 // Struct literals are only allowed in specific initializer contexts (after =).
 ?primary: INTEGER                               -> integer
+         | CHAR_LITERAL                          -> char_literal
          | BOOLEAN                               -> boolean
          | STRING                                -> string_literal
          | CFG_FUNCTION "(" expr ")"             -> cfg_function_call
@@ -538,6 +539,10 @@ TYPE_NAME.10: /bool\b/ | /u16\b/ | /i16\b/ | /u8\b/ | /i8\b/
 
 // Literals
 INTEGER: HEX_INTEGER | BIN_INTEGER | DEC_INTEGER
+
+// Character literals: 'a', 'A', '\n', '\x7F', b'a' (byte literal prefix)
+// Matches one ASCII-range character, simple escape, or hex escape
+CHAR_LITERAL.2: /b?'(?:\\[nt0r\\'"]|\\x[0-9a-fA-F]{2}|[^'\\\n])'/
 // Allow zero digits after prefix - validation happens in lexer
 HEX_INTEGER: /0[xX][0-9a-fA-F_]*(u16|i16|u8|i8)?/
 BIN_INTEGER: /0[bB][01_]*(u16|i16|u8|i8)?/

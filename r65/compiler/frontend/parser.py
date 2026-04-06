@@ -1740,6 +1740,54 @@ class ASTBuilder(Transformer):
         return ast.IntegerLiteral(value=value, suffix=suffix, source_loc=self._make_source_loc(tree.meta))
 
     @v_args(tree=True)
+    def char_literal(self, tree):
+        """Character literal ('a', '\\n', '\\x7F', b'a'). Produces u8 integer."""
+        raw = tree.children[0].value
+        # Strip optional byte-literal 'b' prefix
+        if raw.startswith('b'):
+            raw = raw[1:]
+        # Strip surrounding quotes
+        inner = raw[1:-1]
+        src_loc = self._make_source_loc(tree.meta)
+        value = self._parse_char_content(inner, src_loc)
+        return ast.IntegerLiteral(value=value, suffix='u8', source_loc=src_loc)
+
+    _CHAR_ESCAPES = {
+        '\\n': 10, '\\t': 9, '\\r': 13, '\\0': 0,
+        '\\\\': 92, "\\'": 39, '\\"': 34,
+    }
+
+    def _parse_char_content(self, inner: str, src_loc) -> int:
+        """Parse character literal content, returning the byte value (0-255)."""
+        if inner.startswith('\\'):
+            # Hex escape: \xNN
+            if inner.startswith('\\x'):
+                return int(inner[2:], 16)
+            # Simple escape
+            if inner in self._CHAR_ESCAPES:
+                return self._CHAR_ESCAPES[inner]
+            raise ParseError(
+                f"invalid escape sequence in character literal: '{inner}'",
+                source_loc=src_loc,
+                hint=r"supported escapes: \n \t \r \0 \\ \' \" \xNN"
+            )
+        # Single character — must be 7-bit ASCII. Use \xNN escape for 128-255.
+        if len(inner) != 1:
+            raise ParseError(
+                f"character literal must be a single ASCII character",
+                source_loc=src_loc,
+                hint="UTF-8/Unicode not supported; use \\xNN escapes for bytes 0x80-0xFF"
+            )
+        code = ord(inner)
+        if code > 127:
+            raise ParseError(
+                f"character literal '{inner}' (U+{code:04X}) is not 7-bit ASCII",
+                source_loc=src_loc,
+                hint=f"use \\x{code:02X} escape for byte 0x{code:02X}, or \\xNN for any byte 0x80-0xFF"
+            )
+        return code
+
+    @v_args(tree=True)
     def boolean(self, tree):
         """Boolean literal."""
         items = tree.children
