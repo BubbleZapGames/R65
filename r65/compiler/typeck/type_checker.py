@@ -1269,9 +1269,10 @@ class TypeChecker:
         if not (self.current_function and self.current_function.is_const):
             OperatorValidator.validate_binary_op(expr)
 
-        # For shift ops and arithmetic, propagate context type to left operand
-        # This allows `const X: u16 = 0 << 2` to infer 0 as u16
-        left_context = context_type if expr.op in ['<<', '>>', '+', '-', '*', '/', '%', '&', '|', '^'] else None
+        # Propagate context type ONLY for shift operators — needed so `const X: u16 = 0 << 2`
+        # infers `0` as u16. Do NOT propagate for arithmetic/bitwise (+, -, *, etc.) because
+        # intermediate values commonly exceed the target type (e.g., `let x: u8 = 256 - 200`).
+        left_context = context_type if expr.op in ('<<', '>>') else None
         left_type = self.check_expression(expr.left, left_context)
         # For comparison operators, propagate left operand's type as context for right operand
         # This ensures `off >= 32 * 32` (where off is u16) evaluates 32*32 as u16 (1024), not u8 (0)
