@@ -2790,6 +2790,12 @@ class Parser:
                 return ("'mod' modules are not supported in R65",
                         "use include!(\"file.r65\") for file inclusion")
 
+        # Tuple literals: (1, 2) — comma inside parenthesized expression
+        if token.value == ',':
+            if re.search(r'\(\s*(?:\d+|0x[0-9a-fA-F]+|\w+)\s*$', before):
+                return ("tuple literals are not supported in R65",
+                        "R65 has no tuple type; use separate variables or a struct")
+
         return None
 
     def _check_macro_syntax_hints(self, source: str, error_str: str) -> str:
