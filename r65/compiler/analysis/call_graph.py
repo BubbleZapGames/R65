@@ -8,7 +8,7 @@ to check for unsafe use of zero-page or register parameters.
 
 from typing import Dict, List, Set, Optional
 from dataclasses import dataclass, field
-from r65.compiler.mir.nodes import MIRProgram, MIRFunction, Call, TraitDispatch
+from r65.compiler.mir.nodes import MIRProgram, MIRFunction, Call, TraitDispatch, Move
 from r65.compiler.errors import get_diagnostics
 
 
@@ -87,8 +87,9 @@ class CallGraphAnalyzer:
         return self.graph
 
     def _analyze_function(self, func: MIRFunction):
-        """Analyze a single function to find calls."""
-        # Scan all blocks for Call instructions
+        """Analyze a single function to find calls and address-taken functions."""
+        from r65.compiler.mir.nodes import FunctionPointer
+        # Scan all blocks for Call instructions and function address references
         for block in func.blocks.values():
             for instr in block.instructions:
                 if isinstance(instr, Call):
@@ -103,6 +104,9 @@ class CallGraphAnalyzer:
                 elif isinstance(instr, TraitDispatch):
                     # Trait dispatch is an indirect call — track as indirect caller
                     self.graph.indirect_callers.add(func.name)
+                # Detect function address references (FN_PTR = some_func)
+                if isinstance(instr, Move) and isinstance(instr.source, FunctionPointer):
+                    self.graph.add_address_taken(instr.source.function_name)
 
     def find_cycles(self) -> List[List[str]]:
         """

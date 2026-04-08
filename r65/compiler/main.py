@@ -250,8 +250,18 @@ def compile_source(source: str, filename: str, output_file: str = None,
         if verbose:
             log(f"  [7/8] Checking for unsafe recursion...")
         from r65.compiler.analysis import RecursionChecker
+        from r65.compiler.errors import get_diagnostics
         recursion_checker = RecursionChecker(mir_program)
         recursion_checker.check()
+
+        # Flush analysis warnings (e.g., address-taken functions with promoted locals)
+        analysis_diagnostics = get_diagnostics()
+        for diag in analysis_diagnostics.get_warnings():
+            code_prefix = f"{diag.code}: " if diag.code else ""
+            print(f"warning: {code_prefix}{diag.message}", file=sys.stderr)
+            if diag.hint:
+                print(f"  hint: {diag.hint}", file=sys.stderr)
+        analysis_diagnostics.clear()
 
         # Generate assembly
         if verbose:
@@ -407,8 +417,10 @@ def compile_string(source: str, filename: str = "<string>", abi_model=None,
     mir_program = mir_builder.build_program(hir_program)
 
     # Check for unsafe recursion
+    from r65.compiler.errors import get_diagnostics
     recursion_checker = RecursionChecker(mir_program)
     recursion_checker.check()
+    get_diagnostics().clear()  # Clear analysis warnings for test path
 
     codegen = ProgramCodeGenerator()
     return codegen.generate(mir_program, abi_model=abi_model)
