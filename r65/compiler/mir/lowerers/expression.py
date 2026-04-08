@@ -850,6 +850,12 @@ class ExpressionLowerer:
             )
 
         symbol = expr.operand.symbol
+
+        # If this is a promoted aggregate local, resolve to the synthetic static
+        # so codegen can find the allocation
+        if id(symbol) in self.builder._promoted_locals:
+            symbol = self.builder._promoted_locals[id(symbol)]
+
         self.builder.get_memory_location(symbol)  # Validate symbol has location
 
         result = self.ctx.alloc_vreg(expr.expr_type, f"addr_of_{symbol.name}")
