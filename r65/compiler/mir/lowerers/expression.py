@@ -641,13 +641,18 @@ class ExpressionLowerer:
             field_memloc = self.builder._create_offset_memloc(base_memloc, field_offset, struct_symbol)
             self.emit(Load(dest=result, source=field_memloc, type_info=expr.expr_type))
 
+        elif isinstance(expr.base, HIRDereference):
+            # Explicit dereference case: (*ptr).field
+            self._lower_deref_field_access(expr, result, field_offset)
+
         elif isinstance(expr.base, HIRArrayIndex):
             # Array case: array[index].field
             self._lower_array_field_access(expr, result, field_offset)
 
         else:
             raise MIRLoweringError(
-                f"Field access only supports static structs and array indexing, got: {type(expr.base)}",
+                f"Field access only supports static structs, pointer dereference, "
+                f"and array indexing, got: {type(expr.base)}",
                 source_loc=expr.source_loc
             )
 
@@ -674,6 +679,30 @@ class ExpressionLowerer:
         is_far = isinstance(base_type, PointerTypeInfo) and base_type.is_far
 
         # Emit LoadIndirect with field offset
+        self.emit(LoadIndirect(
+            dest=result,
+            pointer=ptr_vreg,
+            is_far=is_far,
+            type_info=expr.expr_type,
+            offset=field_offset
+        ))
+
+    def _lower_deref_field_access(self, expr: HIRFieldAccess, result: VirtualRegister, field_offset: int):
+        """
+        Lower (*ptr).field — explicit dereference then field access.
+
+        Same as pointer-based field access but the pointer is inside
+        an HIRDereference node: HIRFieldAccess(base=HIRDereference(expr=ptr)).
+        """
+        from r65.compiler.mir.nodes import LoadIndirect
+        from r65.compiler.hir.types import PointerTypeInfo
+
+        deref = expr.base  # HIRDereference
+        ptr_vreg = self.builder.lower_expression(deref.pointer)
+
+        base_type = deref.pointer.expr_type
+        is_far = isinstance(base_type, PointerTypeInfo) and base_type.is_far
+
         self.emit(LoadIndirect(
             dest=result,
             pointer=ptr_vreg,

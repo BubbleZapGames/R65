@@ -267,13 +267,18 @@ class AssignmentLowerer:
             field_memloc = self.builder._create_offset_memloc(base_memloc, field_offset, struct_symbol)
             self.emit(Store(source=value, dest=field_memloc, type_info=expr.expr_type))
 
+        elif isinstance(field_access.base, HIRDereference):
+            # Explicit dereference case: (*ptr).field = value
+            self._lower_deref_field_assignment(field_access, value, field_offset, expr.expr_type)
+
         elif isinstance(field_access.base, HIRArrayIndex):
             # Array case: array[index].field = value
             self._lower_array_field_assignment(field_access, value, field_offset, expr.expr_type)
 
         else:
             raise MIRLoweringError(
-                f"Field access only supports static structs and array indexing, got: {type(field_access.base)}",
+                f"Field access only supports static structs, pointer dereference, "
+                f"and array indexing, got: {type(field_access.base)}",
                 source_loc=expr.source_loc
             )
 
@@ -299,6 +304,29 @@ class AssignmentLowerer:
         is_far = isinstance(base_type, PointerTypeInfo) and base_type.is_far
 
         # Emit StoreIndirect with field offset
+        self.emit(StoreIndirect(
+            source=value,
+            pointer=ptr_vreg,
+            is_far=is_far,
+            type_info=type_info,
+            offset=field_offset
+        ))
+
+    def _lower_deref_field_assignment(self, field_access: HIRFieldAccess, value, field_offset: int, type_info):
+        """
+        Lower (*ptr).field = value — explicit dereference then field store.
+
+        Same as pointer-based field assignment but the pointer is inside
+        an HIRDereference node: HIRFieldAccess(base=HIRDereference(expr=ptr)).
+        """
+        from r65.compiler.hir.types import PointerTypeInfo
+
+        deref = field_access.base  # HIRDereference
+        ptr_vreg = self.builder.lower_expression(deref.pointer)
+
+        base_type = deref.pointer.expr_type
+        is_far = isinstance(base_type, PointerTypeInfo) and base_type.is_far
+
         self.emit(StoreIndirect(
             source=value,
             pointer=ptr_vreg,
