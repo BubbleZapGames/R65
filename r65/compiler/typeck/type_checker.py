@@ -950,8 +950,18 @@ class TypeChecker:
                     source_loc=stmt.source_loc
                 )
             stmt.var_type = var_type  # Fill in inferred type
+        elif stmt.initializer:
+            # No explicit type — infer from initializer expression
+            init_type = self.check_expression(stmt.initializer)
+            if isinstance(init_type, TupleTypeInfo):
+                init_type = init_type.element_types[0]
+            var_type = init_type
+            inferred_from_initializer = True
+            stmt.var_type = var_type
+            if stmt.symbol:
+                stmt.symbol.var_type = var_type
         else:
-            # Must have explicit type
+            # No type annotation and no initializer — cannot infer
             raise TypeCheckError(
                 f"Variable '{stmt.name}' requires explicit type annotation",
                 source_loc=stmt.source_loc
