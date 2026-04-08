@@ -1811,8 +1811,10 @@ class TypeChecker:
 
         # Register A mode switching: the value's type drives A's mode.
         # A = u16_expr → switch to m16; A = u8_expr → switch to m8.
-        # The codegen already emits REP/SEP based on Move type_info.
-        if target_register == 'A' and TypeUtils.is_integer_type(value_type):
+        # Exception: register-bound variables (let v @ A: u16) keep their
+        # declared type — only bare 'A' assignments trigger mode switching.
+        if (target_register == 'A' and isinstance(expr.target, HIRRegister)
+                and TypeUtils.is_integer_type(value_type)):
             expr.expr_type = value_type
             return value_type
 
