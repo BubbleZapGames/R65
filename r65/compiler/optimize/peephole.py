@@ -2110,7 +2110,12 @@ class PeepholeOptimizer:
         Pattern: BRA label; label: -> label:
         Skips directives/comments between the BRA and the label.
         """
-        from r65.compiler.codegen.asm_nodes import Instruction, Label, Address
+        from r65.compiler.codegen.asm_nodes import Instruction, Label, Address, RawAsm
+
+        # Data directives that emit bytes into the code stream (e.g. inline
+        # lookup tables).  A BRA must NOT be eliminated when these appear
+        # between it and its target — the CPU would execute the data as code.
+        _DATA_DIRECTIVE_PREFIXES = ('.DB ', '.DW ', '.DL ', '.DSB ', '.DS ')
 
         optimized = []
         i = 0
@@ -2128,9 +2133,14 @@ class PeepholeOptimizer:
                 # Look ahead past directives/comments/non-target labels for the target label.
                 # Labels between the BRA and target contain no instructions, so
                 # falling through them is equivalent to branching to the target.
+                # IMPORTANT: .DB/.DW/.DL data directives emit bytes into the code
+                # stream (e.g. inline lookup tables) — treat them as barriers.
                 j = i + 1
                 while j < len(nodes) and not isinstance(nodes[j], Instruction):
                     if isinstance(nodes[j], Label) and nodes[j].name == target:
+                        break
+                    if isinstance(nodes[j], RawAsm) and nodes[j].text.lstrip().upper().startswith(
+                            _DATA_DIRECTIVE_PREFIXES):
                         break
                     j += 1
 
