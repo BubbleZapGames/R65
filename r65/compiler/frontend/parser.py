@@ -1992,22 +1992,60 @@ class ASTBuilder(Transformer):
         return ast.Block(statements=list(items), source_loc=self._make_source_loc(tree.meta))
 
     def pattern_range(self, items):
-        """Range pattern (e.g., 0..5 or 0..=5)."""
+        """Range pattern (e.g., 0..5 or 0..=5, supports negative bounds)."""
         items = self._filter_tokens(items, keep_types={'INTEGER', 'DOTDOT', 'DOTDOTEQ'})
-        start_val = self._parse_integer(items[0].value)
-        inclusive = items[1].type == 'DOTDOTEQ'
-        end_val = self._parse_integer(items[2].value)
-        return ast.RangePattern(start=start_val, end=end_val, inclusive=inclusive)
+        # items are: [pattern_int_value, DOTDOT/DOTDOTEQ, pattern_int_value]
+        # pattern_int sub-rules are already resolved to ints by pattern_int()
+        filtered = []
+        range_op = None
+        for item in items:
+            if isinstance(item, LarkToken) and item.type in ('DOTDOT', 'DOTDOTEQ'):
+                range_op = item
+            elif isinstance(item, int):
+                filtered.append(item)
+            elif isinstance(item, LarkToken) and item.type == 'INTEGER':
+                filtered.append(self._parse_integer(item.value))
+        inclusive = range_op is not None and range_op.type == 'DOTDOTEQ'
+        return ast.RangePattern(start=filtered[0], end=filtered[1], inclusive=inclusive)
+
+    @v_args(tree=True)
+    def pattern_int(self, tree):
+        """Integer in pattern context (possibly negative)."""
+        has_neg = any(
+            isinstance(t, LarkToken) and t == '-' for t in tree.children
+        )
+        int_token = next(
+            t for t in tree.children
+            if isinstance(t, LarkToken) and t.type == 'INTEGER'
+        )
+        value = self._parse_integer(int_token.value)
+        return -value if has_neg else value
 
     def pattern_literal(self, items):
-        """Literal pattern."""
-        items = self._filter_tokens(items, keep_types={'INTEGER', 'BOOLEAN'})
+        """Literal pattern (integer, boolean, or character)."""
+        items = self._filter_tokens(items, keep_types={'INTEGER', 'BOOLEAN', 'CHAR_LITERAL'})
         token = items[0]
         if token.type == 'INTEGER':
             value = self._parse_integer(token.value)
+        elif token.type == 'CHAR_LITERAL':
+            raw = token.value
+            if raw.startswith('b'):
+                raw = raw[1:]
+            inner = raw[1:-1]
+            value = self._parse_char_content(inner, None)
         else:  # BOOLEAN
             value = token.value == 'true'
         return ast.LiteralPattern(value=value)
+
+    @v_args(tree=True)
+    def pattern_neg_literal(self, tree):
+        """Negative integer literal pattern (e.g., -1)."""
+        int_token = next(
+            t for t in tree.children
+            if isinstance(t, LarkToken) and t.type == 'INTEGER'
+        )
+        value = self._parse_integer(int_token.value)
+        return ast.LiteralPattern(value=-value)
 
     def pattern_enum(self, items):
         """Enum variant pattern."""

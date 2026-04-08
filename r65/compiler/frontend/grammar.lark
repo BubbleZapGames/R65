@@ -289,8 +289,8 @@ asm_arg: STRING | asm_named_arg
 asm_named_arg: IDENT "=" asm_value
 asm_value: expr
 
-// Match expression
-match_expr: MATCH expr "{" match_arm ("," match_arm)* ","? "}"
+// Match expression — commas between arms are optional (Rust-compatible)
+match_expr: MATCH expr "{" (match_arm ","?)+ "}"
 match_arm: pattern "=>" match_arm_body
 ?match_arm_body: match_arm_return
               | match_arm_break
@@ -308,15 +308,19 @@ match_arm_continue: CONTINUE LABEL_REF?
 pattern_or: pattern_primary ("|" pattern_primary)*
 
 ?pattern_primary: pattern_range
+                | pattern_neg_literal
                 | pattern_literal
                 | pattern_enum
                 | pattern_wildcard
                 | pattern_ident
 
-pattern_range: INTEGER DOTDOTEQ INTEGER
-             | INTEGER DOTDOT INTEGER
+pattern_range: pattern_int DOTDOTEQ pattern_int
+             | pattern_int DOTDOT pattern_int
 
-pattern_literal: INTEGER | BOOLEAN
+pattern_int: "-"? INTEGER
+
+pattern_literal: INTEGER | BOOLEAN | CHAR_LITERAL
+pattern_neg_literal: "-" INTEGER
 pattern_enum: IDENT "::" IDENT
 pattern_wildcard: "_"
 pattern_ident: IDENT
