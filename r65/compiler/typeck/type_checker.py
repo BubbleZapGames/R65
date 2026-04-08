@@ -1809,6 +1809,13 @@ class TypeChecker:
                         hint=f"declare as 'static mut {expr.target.name}: far {target_type}' instead"
                     )
 
+        # Register A mode switching: the value's type drives A's mode.
+        # A = u16_expr → switch to m16; A = u8_expr → switch to m8.
+        # The codegen already emits REP/SEP based on Move type_info.
+        if target_register == 'A' and TypeUtils.is_integer_type(value_type):
+            expr.expr_type = value_type
+            return value_type
+
         # Types must be compatible (allows enum/integer interop)
         self._check_type_match(
             target_type, value_type, expr.value,
