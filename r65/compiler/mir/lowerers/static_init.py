@@ -328,7 +328,7 @@ class StaticInitLowerer:
                 total_size = max(total_size, field.offset + field_size)
         elif isinstance(struct_decl, ast.StructDecl):
             from r65.compiler.hir.types import TypeResolver
-            from r65.compiler.hir.const_eval import ConstEvaluator
+            from r65.compiler.hir.ast_const_eval import ConstEvaluator
             type_resolver = TypeResolver(self.builder._hir_program.symbol_table, ConstEvaluator(self.builder._hir_program.symbol_table))
             current_offset = 0
             for field in struct_decl.fields:
@@ -466,7 +466,7 @@ class StaticInitLowerer:
         elif isinstance(struct_decl, ast.StructDecl):
             # AST struct - need to compute offsets
             from r65.compiler.hir.types import TypeResolver
-            from r65.compiler.hir.const_eval import ConstEvaluator
+            from r65.compiler.hir.ast_const_eval import ConstEvaluator
             type_resolver = TypeResolver(self.builder._hir_program.symbol_table, ConstEvaluator(self.builder._hir_program.symbol_table))
             current_offset = 0
             for field in struct_decl.fields:

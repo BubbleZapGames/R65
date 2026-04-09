@@ -12,19 +12,38 @@ from r65.compiler.hir.errors import *
 
 
 # =============================================================================
+# Type Size Constants
+# =============================================================================
+
+_TYPE_SIZES = {
+    'u8': 1, 'i8': 1, 'bool': 1,
+    'u16': 2, 'i16': 2,
+    'u24': 3,
+}
+
+
+# =============================================================================
 # Type Information
 # =============================================================================
 
 @dataclass
 class TypeInfo:
     """Base class for type information."""
-    pass
+
+    @property
+    def size_bytes(self) -> int:
+        """Size of this type in bytes. Subclasses must override."""
+        raise NotImplementedError(f"{type(self).__name__}.size_bytes")
 
 
 @dataclass
 class BasicTypeInfo(TypeInfo):
     """Basic type: u8, u16, i8, i16, bool."""
     name: str  # "u8", "u16", "i8", "i16", "bool"
+
+    @property
+    def size_bytes(self) -> int:
+        return _TYPE_SIZES.get(self.name, 1)
 
     def __str__(self):
         return self.name
@@ -36,9 +55,12 @@ class ArrayTypeInfo(TypeInfo):
     element_type: TypeInfo
     size: int  # Must be compile-time constant
 
+    @property
+    def size_bytes(self) -> int:
+        return self.element_type.size_bytes * self.size
+
     def __str__(self):
         return f"[{self.element_type}; {self.size}]"
-
 
 
 @dataclass
@@ -46,6 +68,10 @@ class PointerTypeInfo(TypeInfo):
     """Pointer type: *T (near) or far *T."""
     is_far: bool
     pointee_type: TypeInfo
+
+    @property
+    def size_bytes(self) -> int:
+        return 3 if self.is_far else 2
 
     def __str__(self):
         dyn_str = "dyn " if isinstance(self.pointee_type, TraitTypeInfo) else ""
@@ -61,6 +87,10 @@ class FunctionTypeInfo(TypeInfo):
     param_types: List[TypeInfo]
     return_type: Optional[TypeInfo]
 
+    @property
+    def size_bytes(self) -> int:
+        return 3 if self.is_far else 2
+
     def __str__(self):
         far_str = "far " if self.is_far else ""
         params = ", ".join(str(p) for p in self.param_types)
@@ -75,6 +105,18 @@ class StructTypeInfo(TypeInfo):
     definition: Optional[Any] = None  # Will be HIRStructDecl (resolved during HIR)
     symbol: Optional[Any] = None  # Symbol table entry (for accessing current definition)
 
+    @property
+    def size_bytes(self) -> int:
+        # Prefer symbol's current definition (updated in Pass 2 with TypeId field)
+        defn = None
+        if self.symbol is not None and getattr(self.symbol, 'definition', None) is not None:
+            defn = self.symbol.definition
+        elif self.definition is not None:
+            defn = self.definition
+        if defn is not None and hasattr(defn, 'fields'):
+            return sum(f.field_type.size_bytes for f in defn.fields)
+        raise HIRError(f"Cannot determine size of struct '{self.name}': no definition", source_loc=None)
+
     def __str__(self):
         return self.name
 
@@ -84,6 +126,10 @@ class EnumTypeInfo(TypeInfo):
     """Enum type reference."""
     name: str
     definition: Optional[Any] = None  # Will be HIREnumDecl (resolved during HIR)
+
+    @property
+    def size_bytes(self) -> int:
+        return 1
 
     def __str__(self):
         return self.name
@@ -95,6 +141,10 @@ class TraitTypeInfo(TypeInfo):
     name: str
     definition: Optional[Any] = None  # Will be HIRTraitDecl (resolved during HIR)
 
+    @property
+    def size_bytes(self) -> int:
+        raise HIRError(f"Trait '{self.name}' is unsized (use a pointer type)", source_loc=None)
+
     def __str__(self):
         return self.name
 
@@ -102,6 +152,10 @@ class TraitTypeInfo(TypeInfo):
 @dataclass
 class NeverTypeInfo(TypeInfo):
     """Never type: ! (function never returns)."""
+
+    @property
+    def size_bytes(self) -> int:
+        return 0
 
     def __str__(self):
         return "!"
@@ -111,6 +165,10 @@ class NeverTypeInfo(TypeInfo):
 class TupleTypeInfo(TypeInfo):
     """Tuple type: (T1, T2, ...) for multiple return values."""
     element_types: List[TypeInfo]
+
+    @property
+    def size_bytes(self) -> int:
+        return sum(t.size_bytes for t in self.element_types)
 
     def __str__(self):
         types_str = ", ".join(str(t) for t in self.element_types)
@@ -122,6 +180,13 @@ class RegisterTypeInfo(TypeInfo):
     """Type of a hardware register (mode-dependent)."""
     register_name: str
     # Actual type depends on processor mode (resolved in type checker)
+
+    @property
+    def size_bytes(self) -> int:
+        # Register size depends on processor mode — 2 for X/Y, 1 or 2 for A
+        if self.register_name in ('X', 'Y'):
+            return 2
+        return 1  # Default to u8 for A in m8 mode
 
     def __str__(self):
         return f"Register<{self.register_name}>"

@@ -89,8 +89,14 @@ class TestRepr:
 
 class _FakeTypeInfo:
     """Minimal type_info stub for testing."""
+    _SIZES = {'u8': 1, 'i8': 1, 'bool': 1, 'u16': 2, 'i16': 2, 'u24': 3}
+
     def __init__(self, name='u8'):
         self.name = name
+
+    @property
+    def size_bytes(self):
+        return self._SIZES.get(self.name, 1)
 
 
 class _FakeValue:

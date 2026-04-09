@@ -212,27 +212,8 @@ class OptimizationStats:
 
     @property
     def total(self) -> int:
-        return (
-            self.redundant_loads_eliminated +
-            self.dead_stores_eliminated +
-            self.redundant_transfers_eliminated +
-            self.redundant_stack_ops_eliminated +
-            self.redundant_mode_changes_eliminated +
-            self.redundant_and_before_sep_eliminated +
-            self.branch_over_branch_eliminated +
-            self.branch_to_next_eliminated +
-            self.tracked_loads_eliminated +
-            self.identity_copies_eliminated +
-            self.memory_inc_dec_folded +
-            self.branch_threading_applied +
-            self.loops_rotated +
-            self.loop_invariant_loads_hoisted +
-            self.count_down_loops +
-            self.unreachable_nodes_eliminated +
-            self.stz_conversions +
-            self.inc_dec_folded +
-            self.redundant_cmp_zero_eliminated
-        )
+        from dataclasses import fields
+        return sum(getattr(self, f.name) for f in fields(self))
 
 
 # ============================================================================

@@ -96,7 +96,7 @@ from r65.compiler.hir.nodes import (
 from r65.compiler.hir.symbol_table import *
 from r65.compiler.hir.types import *
 from r65.compiler.hir.attributes import *
-from r65.compiler.hir.const_eval import ConstEvaluator
+from r65.compiler.hir.ast_const_eval import ConstEvaluator
 from r65.compiler.hir.builder import HIRBuilder
 
 __all__ = [

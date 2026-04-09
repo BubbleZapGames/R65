@@ -2,24 +2,15 @@
 """
 Unified type size utilities for both AST and HIR types.
 
-This module provides a single source of truth for type size calculations,
-eliminating duplication across const evaluator, HIR builder, and type checker.
+For HIR types (TypeInfo subclasses), use the `size_bytes` property directly.
+This module provides `get_unified_type_size()` which additionally handles
+AST type nodes — needed during const evaluation before HIR lowering.
 """
 
-from typing import Union, Any
+from typing import Any
 from r65.compiler.hir.errors import HIRError
+from r65.compiler.hir.types import TypeInfo, _TYPE_SIZES
 
-
-# =============================================================================
-# Type Size Constants
-# =============================================================================
-
-# Size in bytes for basic types
-TYPE_SIZES = {
-    'u8': 1, 'i8': 1, 'bool': 1,
-    'u16': 2, 'i16': 2,
-    'u24': 3,  # For far pointers
-}
 
 # Import AST types for isinstance checks
 try:
@@ -27,20 +18,13 @@ try:
 except ImportError:
     ast_types = None
 
-# Import HIR types for isinstance checks  
-try:
-    from r65.compiler.hir.types import BasicTypeInfo, ArrayTypeInfo, StructTypeInfo, FunctionTypeInfo
-    from r65.compiler.hir.nodes import HIRStructDecl
-except ImportError:
-    BasicTypeInfo = ArrayTypeInfo = StructTypeInfo = FunctionTypeInfo = HIRStructDecl = None
-
 
 def get_unified_type_size(type_obj: Any, symbol_table=None) -> int:
     """
     Get size of a type in bytes, supporting both AST and HIR type objects.
 
-    This is the unified interface that should be used throughout the compiler
-    to eliminate duplication of type size logic.
+    For HIR TypeInfo objects, delegates to TypeInfo.size_bytes.
+    For AST type nodes, resolves size using the symbol table.
 
     Args:
         type_obj: AST type node, HIR type object, or type name string
@@ -52,145 +36,79 @@ def get_unified_type_size(type_obj: Any, symbol_table=None) -> int:
     Raises:
         HIRError: If type cannot be resolved or is unsupported
     """
-
-    # None guard (matches codegen behavior)
     if type_obj is None:
         return 1
 
+    # HIR TypeInfo — use the size_bytes property directly
+    if isinstance(type_obj, TypeInfo):
+        return type_obj.size_bytes
+
     # Handle basic type names (strings)
     if isinstance(type_obj, str):
-        if type_obj in TYPE_SIZES:
-            return TYPE_SIZES[type_obj]
+        if type_obj in _TYPE_SIZES:
+            return _TYPE_SIZES[type_obj]
         raise HIRError(f"Unknown basic type: {type_obj}", source_loc=None)
-    
-    # Handle HIR BasicTypeInfo (or similar with name attribute)
-    if hasattr(type_obj, 'name') and not hasattr(type_obj, 'element_type'):
-        type_name = type_obj.name
-        if type_name in TYPE_SIZES:
-            return TYPE_SIZES[type_name]
-        # Could be a struct name - delegate to HIR type handler
-        if hasattr(type_obj, 'fields'):  # StructTypeInfo
-            return _get_struct_size(type_obj)
-        # Don't raise error - might be a struct name to look up
-        # Let the struct lookup logic below handle it
-    
-    # Handle AST BasicType
+
+    # --- AST type nodes (used during const evaluation before HIR lowering) ---
+
     if ast_types and isinstance(type_obj, ast_types.BasicType):
         type_name = type_obj.name
-        if type_name in TYPE_SIZES:
-            return TYPE_SIZES[type_name]
+        if type_name in _TYPE_SIZES:
+            return _TYPE_SIZES[type_name]
         raise HIRError(f"Unknown basic type: {type_name}", source_loc=None)
-    
-    # Handle AST Identifier (type names)
+
     if ast_types and isinstance(type_obj, ast_types.Identifier):
         type_name = type_obj.name
-        if type_name in TYPE_SIZES:
-            return TYPE_SIZES[type_name]
-        
-        # Look up struct/enum in symbol table
+        if type_name in _TYPE_SIZES:
+            return _TYPE_SIZES[type_name]
         if symbol_table:
             symbol = symbol_table.lookup(type_name)
             if symbol and hasattr(symbol, 'kind'):
                 if hasattr(symbol, 'definition') and symbol.definition:
-                    if hasattr(symbol.definition, 'fields'):  # Struct
-                        return _get_struct_size(symbol.definition)
-                    # Add other types as needed
+                    if hasattr(symbol.definition, 'fields'):
+                        return _get_ast_struct_size(symbol.definition, symbol_table)
                 elif symbol.kind.value == "enum":
                     return 1
-        
-        raise HIRError(f"Cannot determine size of type: {type_name}", source_loc=getattr(type_obj, 'source_loc', None))
-    
-    # Handle Array types (both HIR and AST)
-    if hasattr(type_obj, 'element_type') and hasattr(type_obj, 'size'):
-        # HIR ArrayTypeInfo
-        elem_size = get_unified_type_size(type_obj.element_type, symbol_table)
-        return elem_size * type_obj.size
-    
+        raise HIRError(
+            f"Cannot determine size of type: {type_name}",
+            source_loc=getattr(type_obj, 'source_loc', None),
+        )
+
     if ast_types and isinstance(type_obj, ast_types.ArrayType):
-        # AST ArrayType
         elem_size = get_unified_type_size(type_obj.element_type, symbol_table)
         if hasattr(type_obj, 'length') and type_obj.length:
-            if hasattr(type_obj.length, 'value'):  # IntegerLiteral
+            if hasattr(type_obj.length, 'value'):
                 return elem_size * type_obj.length.value
-        raise HIRError("Array type must have constant length for size calculation", source_loc=getattr(type_obj, 'source_loc', None))
-    
-    # Handle AST ArrayFillExpr ([u8; 10] syntax)
+        raise HIRError(
+            "Array type must have constant length for size calculation",
+            source_loc=getattr(type_obj, 'source_loc', None),
+        )
+
     if ast_types and isinstance(type_obj, ast_types.ArrayFillExpr):
         elem_size = get_unified_type_size(type_obj.value, symbol_table)
         if hasattr(type_obj, 'count') and hasattr(type_obj.count, 'value'):
             return elem_size * type_obj.count.value
-        raise HIRError("Array fill expression must have constant count", source_loc=getattr(type_obj, 'source_loc', None))
-    
-    # Handle Struct types (HIR StructTypeInfo or similar)
+        raise HIRError(
+            "Array fill expression must have constant count",
+            source_loc=getattr(type_obj, 'source_loc', None),
+        )
+
+    # AST struct-like object with fields
     if hasattr(type_obj, 'fields'):
-        return _get_struct_size(type_obj)
-
-    # Handle HIR struct definition nodes
-    if HIRStructDecl and isinstance(type_obj, HIRStructDecl):
-        return _get_struct_size(type_obj)
-
-    # Handle StructTypeInfo with definition (name reference to struct)
-    # Prefer symbol's current definition (updated in Pass 2 with TypeId field)
-    # over the stale snapshot captured during Pass 1 type resolution
-    if hasattr(type_obj, 'symbol') and type_obj.symbol is not None:
-        current_def = type_obj.symbol.definition
-        if current_def is not None and hasattr(current_def, 'fields'):
-            return _get_struct_size(current_def)
-    if hasattr(type_obj, 'definition') and type_obj.definition is not None:
-        if hasattr(type_obj.definition, 'fields'):
-            return _get_struct_size(type_obj.definition)
-
-    # Handle EnumTypeInfo (default to 1 byte)
-    if hasattr(type_obj, '__class__') and type_obj.__class__.__name__ == 'EnumTypeInfo':
-        return 1
-    
-    # Handle pointer types
-    if hasattr(type_obj, 'pointee_type'):
-        # Near pointer = 2 bytes, far pointer = 3 bytes
-        if hasattr(type_obj, 'is_far') and type_obj.is_far:
-            return 3
-        return 2
-    
-    # Handle FunctionTypeInfo (function pointers)
-    if FunctionTypeInfo and isinstance(type_obj, FunctionTypeInfo):
-        return 3 if type_obj.is_far else 2
-
-    # Check for pointer type names (fallback for string representations)
-    type_name_str = str(type_obj)
-    if type_name_str.startswith('far *'):
-        return 3  # 24-bit far pointer
-    elif type_name_str.startswith('*'):
-        return 2  # 16-bit near pointer
-    elif type_name_str.startswith('far fn('):
-        return 3  # 24-bit far function pointer
-    elif type_name_str.startswith('fn('):
-        return 2  # 16-bit near function pointer
+        return _get_ast_struct_size(type_obj, symbol_table)
 
     # Default to 1 byte if unknown
     return 1
 
 
-def _get_struct_size(struct_obj: Any) -> int:
-    """
-    Calculate size of a struct type by summing field sizes.
-    
-    Supports both HIR struct definitions and AST struct declarations.
-    """
-    if not hasattr(struct_obj, 'fields'):
-        raise HIRError("Struct type has no fields", source_loc=None)
-    
-    total_size = 0
+def _get_ast_struct_size(struct_obj: Any, symbol_table=None) -> int:
+    """Calculate size of an AST struct by summing field sizes."""
+    total = 0
     for field in struct_obj.fields:
-        field_size = get_unified_type_size(field.field_type)
-        total_size += field_size
-    
-    return total_size
+        total += get_unified_type_size(field.field_type, symbol_table)
+    return total
 
 
 def get_basic_type_size(type_name: str) -> int:
-    """
-    Get size of a basic type by name.
-    
-    Quick lookup for common basic types.
-    """
-    return TYPE_SIZES.get(type_name, 1)  # Default to 1 byte if unknown
+    """Get size of a basic type by name."""
+    return _TYPE_SIZES.get(type_name, 1)

@@ -16,7 +16,7 @@ from r65.compiler.hir import nodes as hir
 from r65.compiler.hir.symbol_table import *
 from r65.compiler.hir.types import *
 from r65.compiler.hir.attributes import *
-from r65.compiler.hir.const_eval import *
+from r65.compiler.hir.ast_const_eval import *
 from r65.compiler.hir.cfg import CfgEvaluator
 from r65.compiler.hir.expression_builder import ExpressionBuilder
 from r65.compiler.hir.errors import *

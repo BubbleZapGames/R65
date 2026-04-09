@@ -41,7 +41,7 @@ from r65.compiler.typeck.match_validator import MatchValidator
 from r65.compiler.typeck.struct_validator import StructValidator
 from r65.compiler.typeck.call_validator import CallValidator
 from r65.compiler.typeck.pointer_validator import PointerValidator
-from r65.compiler.hir.const_eval import ConstEvaluator
+from r65.compiler.hir.ast_const_eval import ConstEvaluator
 
 
 class TypeChecker:
