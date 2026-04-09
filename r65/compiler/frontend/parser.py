@@ -2225,11 +2225,13 @@ class ASTBuilder(Transformer):
         return ast.TypeCast(expr=items[0], target_type=items[1])
 
     # Assignment
-    def assign(self, items):
+    @v_args(tree=True)
+    def assign(self, tree):
         """Assignment."""
-        items = self._filter_tokens(items)
+        items = self._filter_tokens(tree.children)
         lvalue = items[0]
         value = items[1]
+        source_loc = self._make_source_loc(tree.meta)
 
         # Convert lvalue to appropriate target
         if isinstance(lvalue, ast.Identifier):
@@ -2237,12 +2239,13 @@ class ASTBuilder(Transformer):
         else:
             target = lvalue
 
-        return ast.Assignment(target=target, value=value)
+        return ast.Assignment(target=target, value=value, source_loc=source_loc)
 
-    def compound_assign(self, items):
+    @v_args(tree=True)
+    def compound_assign(self, tree):
         """Compound assignment (+=, -=, etc.)."""
         # Keep compound operator tokens
-        items = self._filter_tokens(items, keep_types={
+        items = self._filter_tokens(tree.children, keep_types={
             'PLUSEQUAL', 'MINUSEQUAL', 'STAREQUAL', 'SLASHEQUAL',
             'AMPEREQUAL', 'VBAREQUAL', 'CIRCUMFLEXEQUAL', 'LSHIFTEQUAL', 'RSHIFTEQUAL'
         })
@@ -2250,6 +2253,7 @@ class ASTBuilder(Transformer):
         # items[1] is the compound_op result (a token like PLUSEQUAL)
         compound_op_token = items[1]
         value = items[2]
+        source_loc = self._make_source_loc(tree.meta)
 
         # Map compound operator token to binary operator
         op_map = {
@@ -2273,7 +2277,7 @@ class ASTBuilder(Transformer):
 
         operator = op_map.get(op_type, '+')  # Default to '+' if unknown
 
-        return ast.CompoundAssignment(target=lvalue, operator=operator, value=value)
+        return ast.CompoundAssignment(target=lvalue, operator=operator, value=value, source_loc=source_loc)
 
     def multi_assign(self, items):
         """Multiple assignment for multiple return values (e.g., lo, hi = func())."""
