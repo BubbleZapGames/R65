@@ -733,7 +733,7 @@ fn main() -> ! {
 fn fatal_error() -> ! {
     SCREEN = 0x00;  // Black screen
     loop {
-        stp();  // Stop processor
+        asm!("STP");  // Stop processor
     }
 }
 ```

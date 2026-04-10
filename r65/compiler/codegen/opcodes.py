@@ -1137,8 +1137,7 @@ POWER_OF_2_SHIFTS: dict[int, int] = {1: 0, 2: 1, 4: 2, 8: 3, 16: 4, 32: 5, 64: 6
 
 # Builtin instruction to opcode mapping
 BUILTIN_OPCODES: dict[str, Opcode] = {
-    'NOP': Opcode.NOP, 'WAI': Opcode.WAI, 'STP': Opcode.STP, 'XBA': Opcode.XBA,
-    'COP': Opcode.COP, 'MVN': Opcode.MVN, 'MVP': Opcode.MVP,
+    'NOP': Opcode.NOP,
 }
 
 

@@ -13,8 +13,6 @@ from typing import Optional, List
 class BuiltinKind(Enum):
     """Categories of built-in functions."""
     PROCESSOR_CONTROL = "processor_control"  # wai, stp, NOP, xba
-    SOFTWARE_INTERRUPT = "software_interrupt"  # cop, brk
-    BLOCK_MOVE = "block_move"                # mvn, mvp
     ARITHMETIC = "arithmetic"                 # mul, div, mod
     SHIFT = "shift"                           # shl, shr
     ROTATE = "rotate"                         # rotate_left, rotate_right
@@ -44,22 +42,6 @@ class BuiltinRegistry:
     # Built-in function definitions
     BUILTINS = {
         # Processor control (no parameters, no return value)
-        'wai': BuiltinSignature(
-            name='wai',
-            kind=BuiltinKind.PROCESSOR_CONTROL,
-            param_count=0,
-            returns_value=False,
-            description='Wait for interrupt',
-            instruction='WAI'
-        ),
-        'stp': BuiltinSignature(
-            name='stp',
-            kind=BuiltinKind.PROCESSOR_CONTROL,
-            param_count=0,
-            returns_value=False,
-            description='Stop processor',
-            instruction='STP'
-        ),
         'NOP': BuiltinSignature(
             name='NOP',
             kind=BuiltinKind.PROCESSOR_CONTROL,
@@ -68,42 +50,6 @@ class BuiltinRegistry:
             returns_value=False,
             description='No operation (optionally repeated)',
             instruction='NOP'
-        ),
-        'xba': BuiltinSignature(
-            name='xba',
-            kind=BuiltinKind.PROCESSOR_CONTROL,
-            param_count=0,
-            returns_value=False,
-            description='Exchange B and A registers (swap high/low bytes)',
-            instruction='XBA'
-        ),
-
-        # Software interrupts (1 parameter: signature byte, no return value)
-        'cop': BuiltinSignature(
-            name='cop',
-            kind=BuiltinKind.SOFTWARE_INTERRUPT,
-            param_count=1,
-            returns_value=False,
-            description='Trigger co-processor interrupt with signature byte',
-            instruction='COP'
-        ),
-
-        # Block moves (2 parameters: src_bank, dst_bank, no return value)
-        'mvn': BuiltinSignature(
-            name='mvn',
-            kind=BuiltinKind.BLOCK_MOVE,
-            param_count=2,
-            returns_value=False,
-            description='Move memory forward (MVN instruction)',
-            instruction='MVN'
-        ),
-        'mvp': BuiltinSignature(
-            name='mvp',
-            kind=BuiltinKind.BLOCK_MOVE,
-            param_count=2,
-            returns_value=False,
-            description='Move memory backward (MVP instruction)',
-            instruction='MVP'
         ),
 
         # Arithmetic operations (2 parameters, returns value)

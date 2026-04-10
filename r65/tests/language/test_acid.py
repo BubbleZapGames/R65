@@ -303,19 +303,19 @@ fn test_macros() {
     repeat_inc!(X, Y);
 }
 
-// --- Hardware Operations (asm, mode, block move, cop) ---
+// --- Hardware Operations (asm, mode) ---
 fn test_hardware_ops() {
     asm!("CLI");
     asm!("SEI");
     asm!("WAI");
     STATUS.A16 = false;
     STATUS.A16 = true;
-    xba();
+    asm!("XBA");
     A = 255;
     X = 0x1000;
     Y = 0x2000;
-    mvn(0x00, 0x7E);
-    cop(0x00);
+    asm!("MVN $00, $7E");
+    asm!("COP #$00");
 }
 
 // --- Operators (compound assign, NOT, shifts, inc/dec) ---

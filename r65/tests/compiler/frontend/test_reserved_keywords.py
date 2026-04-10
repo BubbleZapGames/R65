@@ -31,7 +31,7 @@ def test_builtin_functions():
     not keywords. This allows them to be called like normal functions and
     recognized by the BuiltinRegistry during HIR building.
     """
-    builtins = ['mvn', 'mvp', 'wai', 'stp', 'mul', 'div', 'mod', 'shl', 'shr', 'xba']
+    builtins = ['mul', 'div', 'mod', 'shl', 'shr']
 
     for builtin in builtins:
         source = f"{builtin} identifier"
@@ -157,7 +157,7 @@ def test_total_keyword_count():
 
     # Count from the grammar:
     # - Currently used: 19 (fn, let, mut, const, static, if, else, loop, while, break, continue, return, struct, enum, type, include, asm, as, macro_rules)
-    # - Built-ins: 10 (mvn, mvp, wai, stp, mul, div, mod, shl, shr, xba) - identifiers, not keywords
+    # - Built-ins: 5 (mul, div, mod, shl, shr) - identifiers, not keywords
     # - Reserved: 17 (impl, trait, for, in, match, where, use, pub, crate, self, Self, super, async, await, move, ref, dyn, extern, unsafe)
     # - Strict: 12 (abstract, become, box, do, final, override, priv, typeof, unsized, virtual, yield, try)
     # - far: 1

@@ -103,16 +103,6 @@ class TestModeDatabank:
         assert func.mode_attr.databank == DataBankMode.CALLER
 
 
-class TestModeBuiltins:
-    """Tests for mode control built-in functions."""
-
-    def test_xba_builtin(self):
-        """Test xba() built-in."""
-        func = parse_function("fn test() { xba(); }")
-        stmt = func.body.statements[0]
-        assert isinstance(stmt, ast.ExprStmt)
-
-
 class TestModeInference:
     """Tests for automatic mode inference from parameter and return types."""
 

@@ -79,8 +79,7 @@ class TokenType(Enum):
 
 # Built-in function names (recognized by BuiltinRegistry, not grammar keywords)
 BUILTIN_FUNCTIONS = {
-    'mvn', 'mvp', 'wai', 'stp', 'mul', 'div', 'mod', 'shl', 'shr', 'xba',
-    'NOP', 'cop', 'brk',
+    'mul', 'div', 'mod', 'shl', 'shr', 'NOP',
 }
 
 # Hardware register names (special global variables)

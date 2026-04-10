@@ -118,9 +118,9 @@ fn caller() {
     let high: u8 = 0x12;
 
     // Setup B register
-    A = high;    // Load high byte into A
-    xba();       // Exchange: A now has low, B has high
-    A = low;     // Restore low byte to A
+    A = high;       // Load high byte into A
+    asm!("XBA");    // Exchange: A now has low, B has high
+    A = low;        // Restore low byte to A
 
     // Now: A = 0x34, B = 0x12
     let result = pack_word(A, B);
@@ -220,9 +220,9 @@ fn caller() {
     let high = get_high_byte(0x1234);  // Returns in B
 
     // Option 1: Read via XBA
-    xba();           // Exchange: B → A
+    asm!("XBA");     // Exchange: B → A
     let value = A;   // Read from A
-    xba();           // Exchange back
+    asm!("XBA");     // Exchange back
 
     // Option 2: Assign from B directly
     let value @ B = B;  // Alias B register
@@ -383,7 +383,7 @@ The compiler emits XBA when:
 1. **Switching from A to B context**
 2. **Switching from B to A context**
 3. **Function entry/exit** with B parameters/returns
-4. **Explicit `xba()` builtin** called by programmer
+4. **Explicit `asm!("XBA")`** written by the programmer
 
 The compiler does NOT emit XBA:
 - Between consecutive B operations
@@ -392,9 +392,11 @@ The compiler does NOT emit XBA:
 
 ---
 
-## The xba() Builtin
+## Explicit XBA via asm!()
 
-R65 provides the `xba()` builtin for explicit exchange:
+There is no `xba()` built-in function. When you need direct control over
+exchange timing — e.g. matching specific hand-written assembly patterns —
+drop into inline assembly:
 
 ```rust
 // m8 mode (default)
@@ -402,12 +404,12 @@ fn manual_exchange() {
     A = 0x34;
     B = 0x12;
 
-    xba();  // Explicit exchange
+    asm!("XBA");  // Explicit exchange
     // Now: A = 0x12, B = 0x34
 
-    A = A + 1;  // Modify new A value (was B)
+    A = A + 1;    // Modify new A value (was B)
 
-    xba();  // Exchange back
+    asm!("XBA");  // Exchange back
     // Now: A = 0x34, B = 0x13
 }
 ```
@@ -418,13 +420,11 @@ manual_exchange:
     LDA #$34
     XBA
     LDA #$12
-    XBA            ; Explicit XBA from xba()
+    XBA            ; Explicit XBA from asm!()
     INC A
-    XBA            ; Explicit XBA from xba()
+    XBA            ; Explicit XBA from asm!()
     RTS
 ```
-
-**Use case**: When you need direct control over exchange timing, or matching specific hand-written assembly patterns.
 
 ---
 
@@ -477,7 +477,7 @@ fn get_high_byte(value: u16) -> u8 {
 fn swap_bytes(value: u16) -> u16 {
     A = value as u8;
     B = (value >> 8) as u8;
-    xba();  // Swap them
+    asm!("XBA");  // Swap them
     return (B as u16) | ((A as u16) << 8);
 }
 ```

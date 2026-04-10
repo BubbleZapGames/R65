@@ -26,7 +26,6 @@ from r65.compiler.codegen.opcodes import (
     Opcode, TRANSFER_OPCODES, PUSH_OPCODES, PULL_OPCODES,
     LOAD_IMMEDIATE_OPCODES, STORE_MNEMONICS, BUILTIN_OPCODES
 )
-from r65.compiler.codegen.asm_nodes import BlockMove
 from r65.compiler.errors import InstructionSelectionError
 from r65.compiler.codegen.errors import unknown_value
 from r65.compiler.codegen.base_selector import BaseSelector
@@ -2028,9 +2027,8 @@ class CallInstructionSelector(BaseSelector):
         Emit code for built-in function call.
 
         Built-in categories:
-        - Processor control: wai(), stp(), xba(), NOP([count])
+        - Processor control: NOP([count])
         - Mode control: SEP(flags), REP(flags)
-        - Block moves: mvn(src_bank, dst_bank), mvp(src_bank, dst_bank)
         - Arithmetic: mul(a, b), div(a, b), mod(a, b) - call runtime library
         - Shifts: shl(a, n), shr(a, n) - call runtime library
 
@@ -2045,10 +2043,6 @@ class CallInstructionSelector(BaseSelector):
 
         if builtin.kind == BuiltinKind.PROCESSOR_CONTROL:
             self._emit_processor_control_builtin(instr, builtin)
-        elif builtin.kind == BuiltinKind.SOFTWARE_INTERRUPT:
-            self._emit_software_interrupt_builtin(instr, builtin)
-        elif builtin.kind == BuiltinKind.BLOCK_MOVE:
-            self._emit_block_move_builtin(instr, builtin)
         elif builtin.kind in (BuiltinKind.ARITHMETIC, BuiltinKind.SHIFT):
             self._emit_runtime_builtin(instr, builtin)
         elif builtin.kind == BuiltinKind.CONST_MATH:
@@ -2060,65 +2054,21 @@ class CallInstructionSelector(BaseSelector):
             )
 
     def _emit_processor_control_builtin(self, instr: Call, builtin):
-        """Emit processor control built-in (wai, stp, xba, NOP)."""
+        """Emit processor control built-in (NOP)."""
         opcode = BUILTIN_OPCODES.get(builtin.instruction)
         if not opcode:
             raise unknown_value("processor control builtin", builtin.instruction, source_loc=self.parent._current_source_loc)
 
-        if instr.builtin_name == 'NOP':
-            count = 1  # Default
-            if len(instr.args) == 1:
-                arg = instr.args[0]
-                if isinstance(arg.value, MIRImmediate):
-                    count = arg.value.value
-                else:
-                    raise InstructionSelectionError("NOP() count must be a constant immediate value", source_loc=self.parent._current_source_loc)
+        count = 1  # Default
+        if len(instr.args) == 1:
+            arg = instr.args[0]
+            if isinstance(arg.value, MIRImmediate):
+                count = arg.value.value
+            else:
+                raise InstructionSelectionError("NOP() count must be a constant immediate value", source_loc=self.parent._current_source_loc)
 
-            for _ in range(count):
-                self._emit_implied(opcode)
-        else:
+        for _ in range(count):
             self._emit_implied(opcode)
-
-    def _emit_software_interrupt_builtin(self, instr: Call, builtin):
-        """Emit software interrupt built-in (cop)."""
-        if len(instr.args) != 1:
-            raise InstructionSelectionError(
-                f"{instr.builtin_name}() expects 1 argument, got {len(instr.args)}", source_loc=self.parent._current_source_loc)
-
-        opcode = BUILTIN_OPCODES.get(builtin.instruction)
-        if not opcode:
-            raise unknown_value("software interrupt builtin", builtin.instruction, source_loc=self.parent._current_source_loc)
-
-        arg = instr.args[0]
-
-        # COP requires an immediate signature byte
-        if isinstance(arg.value, MIRImmediate):
-            self._emit_immediate(opcode, arg.value.value)
-        else:
-            raise InstructionSelectionError(
-                f"{instr.builtin_name}() requires a constant signature byte", source_loc=self.parent._current_source_loc)
-
-    def _emit_block_move_builtin(self, instr: Call, builtin):
-        """Emit block move built-in (mvn, mvp)."""
-        if len(instr.args) != 2:
-            raise InstructionSelectionError(
-                f"{instr.builtin_name}() expects 2 arguments, got {len(instr.args)}", source_loc=self.parent._current_source_loc)
-
-        src_bank_arg = instr.args[0]
-        dst_bank_arg = instr.args[1]
-
-        if not isinstance(src_bank_arg.value, MIRImmediate) or not isinstance(dst_bank_arg.value, MIRImmediate):
-            raise InstructionSelectionError(
-                f"{instr.builtin_name}() expects immediate bank numbers", source_loc=self.parent._current_source_loc)
-
-        src_bank = src_bank_arg.value.value
-        dst_bank = dst_bank_arg.value.value
-
-        opcode = BUILTIN_OPCODES.get(builtin.instruction)
-        if not opcode:
-            raise unknown_value("block move builtin", builtin.instruction, source_loc=self.parent._current_source_loc)
-
-        self.emitter.emit_instr(opcode, BlockMove(src_bank, dst_bank))
 
     def _emit_runtime_builtin(self, instr: Call, builtin):
         """Emit runtime library built-in (mul, div, mod, shl, shr)."""

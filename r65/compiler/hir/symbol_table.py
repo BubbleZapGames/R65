@@ -107,10 +107,6 @@ class SymbolTable:
         builtin_funcs = [
             'SEP',   # Set processor status bits
             'REP',   # Reset processor status bits
-            'mvn',   # Block move next (forward)
-            'mvp',   # Block move previous (backward)
-            'wai',   # Wait for interrupt
-            'stp',   # Stop processor
             'mul',   # Multiply (general)
             'div',   # Divide (general)
             'mod',   # Modulo
