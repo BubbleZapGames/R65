@@ -406,6 +406,64 @@ fn test_match_patterns(val @ A: u8) -> u8 {
     };
 }
 
+// --- Character Literals ---
+fn test_char_literals() {
+    let newline: u8 = '\\n';
+    let letter: u8 = 'A';
+    let extended: u8 = '\\xFF';
+    let byte: u8 = b'a';
+    // Char literals in match patterns
+    let kind: u8 = match letter {
+        'A' => 1,
+        'B' => 2,
+        _ => 0
+    };
+}
+
+// --- Type Inference ---
+fn test_type_inference() {
+    let inferred_u8 = 42;
+    let inferred_bool = true;
+    let inferred_u16: u16 = inferred_u8 as u16;
+}
+
+// --- Pointer Dereference + Field Access ---
+fn test_deref_field_access() {
+    let px: u16 = (*STRUCT_PTR).pos.x;
+    (*STRUCT_PTR).health = 50;
+    (*STRUCT_PTR).state = State::Running as u8;
+}
+
+// --- Negative Match Patterns ---
+fn test_negative_match(val @ A: u8) -> u8 {
+    let signed: i8 = val as i8;
+    return match signed {
+        -1 => 0xFF,
+        0 => 0,
+        1 => 1,
+        _ => 0x80
+    };
+}
+
+// --- Traits and Impl Blocks ---
+trait Renderable {
+    fn get_x(*self) -> u16;
+    fn get_y(*self) -> u16;
+    fn get_tile(*self) -> u8;
+}
+
+impl Renderable for Entity {
+    fn get_x(*self) -> u16 { return (*self).pos.x; }
+    fn get_y(*self) -> u16 { return (*self).pos.y; }
+    fn get_tile(*self) -> u8 { return (*self).state; }
+}
+
+fn test_trait_dispatch(obj: *dyn Renderable) {
+    let x: u16 = obj.get_x();
+    let y: u16 = obj.get_y();
+    let tile: u8 = obj.get_tile();
+}
+
 // --- String Literals, offset_of ---
 fn test_new_features() {
     let greeting: *u8 = "Hello SNES!\\0";
@@ -458,7 +516,7 @@ class TestAcidTest:
         assert counts['enum'] >= 2, f"Expected at least 2 enums, got {counts['enum']}"
         assert counts['struct'] >= 5, f"Expected at least 5 structs, got {counts['struct']}"
         assert counts['static'] >= 16, f"Expected at least 16 statics, got {counts['static']}"
-        assert counts['function'] >= 28, f"Expected at least 28 functions, got {counts['function']}"
+        assert counts['function'] >= 35, f"Expected at least 35 functions, got {counts['function']}"
         assert counts['macro'] >= 3, f"Expected at least 3 macros, got {counts['macro']}"
 
     def test_acid_test_builds_hir(self):
@@ -468,7 +526,7 @@ class TestAcidTest:
         builder = HIRBuilder()
         hir_program = builder.build_program(program)
 
-        assert len(hir_program.functions) >= 28
+        assert len(hir_program.functions) >= 35
         assert len(hir_program.statics) >= 16
         assert len(hir_program.structs) >= 5
         assert len(hir_program.enums) >= 2
@@ -508,6 +566,13 @@ class TestAcidTest:
             'never_return_type': False,
             'for_loop': False,
             'type_alias': False,
+            'char_literal': False,
+            'type_inference': False,
+            'deref_field_access': False,
+            'negative_pattern': False,
+            'trait_decl': False,
+            'impl_decl': False,
+            'trait_pointer': False,
         }
 
         for item in program.items:
@@ -534,6 +599,13 @@ class TestAcidTest:
                     features_found['const_fn'] = True
                 if isinstance(item.return_type, ast.NeverType):
                     features_found['never_return_type'] = True
+                if item.name == 'test_char_literals':
+                    features_found['char_literal'] = True
+                if item.name == 'test_trait_dispatch':
+                    # Has *dyn Renderable param — trait pointer
+                    for param in item.params:
+                        if isinstance(param.param_type, ast.PointerType) and param.param_type.is_dyn:
+                            features_found['trait_pointer'] = True
 
                 for param in item.params:
                     if param.binding is not None:
@@ -557,6 +629,10 @@ class TestAcidTest:
 
             elif isinstance(item, ast.MacroDecl):
                 features_found['macro_decl'] = True
+            elif isinstance(item, ast.TraitDecl):
+                features_found['trait_decl'] = True
+            elif isinstance(item, ast.ImplDecl):
+                features_found['impl_decl'] = True
 
         for feature, found in features_found.items():
             assert found, f"Feature '{feature}' not found in acid test"
@@ -571,6 +647,8 @@ class TestAcidTest:
             elif isinstance(stmt, ast.LetStmt):
                 if stmt.binding is not None:
                     features_found['register_alias'] = True
+                if stmt.var_type is None and stmt.initializer is not None:
+                    features_found['type_inference'] = True
                 if isinstance(stmt.initializer, ast.MatchExpression):
                     features_found['match_expr'] = True
                 if stmt.initializer:
@@ -580,6 +658,9 @@ class TestAcidTest:
             elif isinstance(stmt, ast.ReturnStmt):
                 if stmt.values and len(stmt.values) > 1:
                     features_found['multiple_return'] = True
+                if stmt.values:
+                    for val in stmt.values:
+                        self._check_expression(val, features_found)
             elif isinstance(stmt, ast.IfStmt):
                 self._check_expression(stmt.condition, features_found)
                 self._check_statements(stmt.then_block.statements, features_found)
@@ -605,12 +686,17 @@ class TestAcidTest:
                 features_found['unary_not'] = True
         elif isinstance(expr, ast.Dereference):
             features_found['pointer_deref'] = True
+        elif isinstance(expr, ast.FieldAccess):
+            if isinstance(expr.base, ast.Dereference):
+                features_found['deref_field_access'] = True
         elif isinstance(expr, ast.AddressOf):
             features_found['address_of'] = True
         elif isinstance(expr, ast.BinaryOp):
             self._check_expression(expr.left, features_found)
             self._check_expression(expr.right, features_found)
         elif isinstance(expr, ast.Assignment):
+            if isinstance(expr.target, ast.FieldAccess) and isinstance(expr.target.base, ast.Dereference):
+                features_found['deref_field_access'] = True
             self._check_expression(expr.value, features_found)
         elif isinstance(expr, ast.BlockExpression):
             features_found['block_expr'] = True
@@ -627,3 +713,6 @@ class TestAcidTest:
                     for sub in arm.pattern.patterns:
                         if isinstance(sub, ast.RangePattern):
                             features_found['range_pattern'] = True
+                elif isinstance(arm.pattern, ast.LiteralPattern):
+                    if isinstance(arm.pattern.value, int) and arm.pattern.value < 0:
+                        features_found['negative_pattern'] = True
