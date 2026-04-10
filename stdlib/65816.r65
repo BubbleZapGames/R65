@@ -56,3 +56,33 @@ macro_rules! saveInteruptState($body:tt) {
     asm!("PLA");
     asm!("PLP");
 }
+
+// ============================================================================
+// Stack Overflow Guard
+// ============================================================================
+
+// Check the stack pointer against the floor declared by #[stack(lo, hi)]
+// (or the default $0100..$01FF when no attribute is set) and jump to a
+// user-provided handler if S has descended into or below the floor.
+//
+// Typical use: call once per frame from the NMI handler or at the top of
+// the main loop. The handler must be a near function or label in the
+// current bank — the macro emits JMP, not JML.
+//
+// Cost: 8 cycles on the hot path (TSX + CPX + taken BCS). asm!() is
+// treated as a black box by the compiler, so X is spilled automatically
+// if it was live across the check.
+//
+// Usage:
+//   fn overflow_trap() -> ! { loop { } }
+//   stack_guard_check!(overflow_trap);
+macro_rules! stack_guard_check($handler:ident) {
+    asm!(
+        "TSX",
+        "CPX #__R65_STACK_LO",
+        "BCS +",
+        "JMP {HANDLER}",
+        "+:",
+        HANDLER=symbol!($handler)
+    );
+}

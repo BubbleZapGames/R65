@@ -336,6 +336,28 @@ class SymbolDefinitionGenerator:
         self.emitter.emit_blank_line()
 
     # ========================================================================
+    # Stack Bounds
+    # ========================================================================
+
+    def emit_stack_bounds(self):
+        """
+        Emit WLA-DX defines for the stack region bounds.
+
+        These expose `#[stack(lo, hi)]` (or the default region) to user
+        `asm!()` blocks — e.g. for stack-guard macros that check the stack
+        pointer against the declared floor.
+        """
+        lower = self.allocator.stack_lower
+        upper = self.allocator.stack_upper
+        if lower is None or upper is None:
+            return
+
+        self.emitter.emit_section_header("Stack Region")
+        self.emitter.emit_define("__R65_STACK_LO", lower, "Stack lower bound")
+        self.emitter.emit_define("__R65_STACK_HI", upper, "Stack upper bound (S init)")
+        self.emitter.emit_blank_line()
+
+    # ========================================================================
     # All Definitions
     # ========================================================================
 
@@ -347,14 +369,18 @@ class SymbolDefinitionGenerator:
             constants: Optional list of constant declarations
 
         Order:
-        1. Constants (.EQU)
-        2. Direct Page (.DEFINE)
-        3. Low RAM (.DEFINE)
-        4. Hardware Registers (.DEFINE)
-        5. RAM (.DEFINE)
-        6. ROM Data (.INCBIN)
+        1. Stack bounds (.DEFINE __R65_STACK_LO / __R65_STACK_HI)
+        2. Constants (.EQU)
+        3. Direct Page (.DEFINE)
+        4. Low RAM (.DEFINE)
+        5. Hardware Registers (.DEFINE)
+        6. RAM (.DEFINE)
+        7. ROM Data (.INCBIN)
         """
-        # Constants first
+        # Stack bounds first — stable well-known symbols usable from asm!()
+        self.emit_stack_bounds()
+
+        # Constants
         if constants:
             self.emit_constant_definitions(constants)
 
