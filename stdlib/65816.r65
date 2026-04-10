@@ -58,6 +58,90 @@ macro_rules! saveInteruptState($body:tt) {
 }
 
 // ============================================================================
+// Critical Section (IRQ Disable)
+// ============================================================================
+
+// Disable interrupts for the duration of `body` and restore the prior I
+// flag state on exit via PHP/PLP. Safe to nest. Use when touching state
+// that an interrupt handler also reads or writes.
+//
+// Overhead: ~11 cycles (PHP + SEI + PLP).
+//
+// Usage:
+//   without_irq!({
+//       shared_counter = shared_counter + 1;
+//   });
+macro_rules! without_irq($body:tt) {
+    asm!("PHP");
+    asm!("SEI");
+    $body
+    asm!("PLP");
+}
+
+// ============================================================================
+// BCD Arithmetic
+// ============================================================================
+
+// Run `body` with the decimal (D) flag set so that ADC/SBC operate in BCD.
+// PHP/PLP preserves the caller's D flag so nesting is safe. Commonly used
+// for score counters and time-of-day math. The 65816 clears D on interrupt
+// entry, so IRQ/NMI handlers will not accidentally inherit this mode.
+//
+// Usage:
+//   bcd_mode!({
+//       A = A + 1;  // BCD increment
+//       score = A;
+//   });
+macro_rules! bcd_mode($body:tt) {
+    asm!("PHP");
+    asm!("SED");
+    $body
+    asm!("PLP");
+}
+
+// ============================================================================
+// Block Move (MVN)
+// ============================================================================
+
+// Copy a fixed number of bytes from one symbol to another using the 65816
+// hardware block-move instruction (MVN). Roughly 7 cycles/byte, far faster
+// than any hand-rolled loop and the only way to touch this instruction from
+// R65 today.
+//
+// Constraints:
+//   - `src` and `dst` must be symbols whose bank WLA-DX tracks correctly:
+//     RAM statics (.RAMSECTION) or ROM statics (.BANK). Zeropage/lowram
+//     .DEFINE symbols are not supported (WLA-DX returns the wrong bank).
+//   - `len` must be a compile-time literal in 1..=65535.
+//   - MVN copies forward (low→high). If `src` and `dst` overlap and
+//     `dst > src`, the copy will corrupt itself — hand-roll MVP instead.
+//
+// Clobbers: A, X, Y (via the asm!() black-box contract). DBR is saved and
+// restored via PHB/PLB so surrounding near addressing continues to work.
+// The macro leaves A in 8-bit mode on exit.
+//
+// Usage:
+//   static GREETING: [u8; 6] = "Hello\0";
+//   #[ram]
+//   static mut BUFFER: [u8; 6] = [0; 6];
+//   block_move!(GREETING, BUFFER, 6);
+macro_rules! block_move($src:ident, $dst:ident, $len:literal) {
+    const_assert!($len > 0, "block_move: length must be > 0");
+    const_assert!($len <= 0xFFFF, "block_move: length must be <= 65535");
+    asm!(
+        "PHB",
+        "REP #$20",
+        "LDA #{LEN}-1",
+        "LDX #{SRC}",
+        "LDY #{DST}",
+        "MVN :{SRC}, :{DST}",
+        "SEP #$20",
+        "PLB",
+        LEN=$len, SRC=symbol!($src), DST=symbol!($dst)
+    );
+}
+
+// ============================================================================
 // Stack Overflow Guard
 // ============================================================================
 
