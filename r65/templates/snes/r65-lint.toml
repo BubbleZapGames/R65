@@ -20,37 +20,90 @@
 enable = ["L001", "L002", "L003", "L004", "L005", "L006"]
 
 # -------------------------------------------------------------------
-# C001: PPU registers may only be touched from the NMI handler subtree.
+# C001: PPU registers that are unsafe to touch during active rendering.
 #
-# Background: outside the vblank interval, writes to registers $2100-$213F
-# produce garbage on-screen. The convention is to do all PPU work inside
-# NMI, or inside an explicit force-blank window.
+# Writing these while the PPU is mid-frame corrupts the current scanline
+# onward. Most other $2100-$213F registers are HDMA-friendly (BG scroll,
+# mode, windowing, color math, Mode 7 matrix) and are NOT listed here —
+# games legitimately write them from the main thread.
+#
+# Hard corruption (current-frame garbage):
+#   $2102  OAMADDL    — OAM fetch state corruption
+#   $2103  OAMADDH    — OAM fetch state corruption
+#   $2104  OAMDATA    — sprite scramble
+#   $2118  VMDATAL    — VRAM tile / tilemap corruption
+#   $2119  VMDATAH    — VRAM tile / tilemap corruption
+#   $2122  CGDATA     — palette entry corruption
+#
+# Risky (state-machine race, usually glitchy):
+#   $2101  OBSEL      — sprite base/size race
+#   $2115  VMAIN      — only dangerous coupled with VMDATA writes, but
+#                       touching it outside a PPU-setup block is almost
+#                       always a bug
 #
 # `exclude_subtrees` lists functions whose entire call tree is exempt:
 #   - nmi_handler  — the primary vblank handler
 #   - snes_init    — stdlib boot init; SNES powers up in force-blank
 # Add your own force-blank helpers (e.g. boot_screen_setup) here as you
-# write them, otherwise the rule will flag their PPU writes.
+# write them.
 # -------------------------------------------------------------------
 [[rule]]
 code = "C001"
 kind = "reachability_forbidden_access"
-message = "PPU register accessed from non-NMI path — force-blank only outside vblank"
+message = "PPU register write unsafe during active rendering"
 severity = "warning"
 entry_points     = ["main"]
 exclude_subtrees = ["nmi_handler", "snes_init"]
-forbid_addr_range = { start = 0x2100, end = 0x2140 }
+forbid_addrs = [
+    0x2101,  # OBSEL   — sprite base/size race
+    0x2102,  # OAMADDL — OAM fetch state corruption
+    0x2103,  # OAMADDH — OAM fetch state corruption
+    0x2104,  # OAMDATA — sprite scramble
+    0x2115,  # VMAIN   — unsafe coupled with VMDATA writes
+    0x2118,  # VMDATAL — VRAM tile / tilemap corruption
+    0x2119,  # VMDATAH — VRAM tile / tilemap corruption
+    0x2122,  # CGDATA  — palette entry corruption
+]
 
 # -------------------------------------------------------------------
-# C002: DMA control registers ($4300-$437F) should only be touched from
-# NMI (or from an explicit vblank/force-blank helper). Starting a DMA
-# outside vblank can corrupt VRAM or hang the display.
+# C002: DMA channels configured to write into PPU memory.
+#
+# DMA itself is fine to run any time — what matters is the destination.
+# Each channel's `BBADx` register ($43x1) holds the LOW BYTE of the PPU
+# port the channel will write to on the next MDMAEN trigger:
+#
+#   BBADx = 0x18  →  DMA will write to $2118 (VMDATAL)  → corrupts VRAM
+#   BBADx = 0x80  →  DMA will write to $2180 (WMDATA)   → fine, that's WRAM
+#
+# This rule flags `BBADx = <constant>` writes whose value matches the low
+# byte of one of the unsafe PPU registers from C001's set. It's the DMA
+# analogue of C001: same destinations, one level of indirection.
+#
+# Limitations:
+#   - Only literal RHS values are checked. `BBAD0 = computed_target;` is
+#     silent. The rule will still fire on whichever helper function
+#     contains the literal write.
+#   - HDMA setup uses the same BBADx registers and will trigger false
+#     positives. Add HDMA helper function names to `exclude_subtrees`.
 # -------------------------------------------------------------------
 [[rule]]
 code = "C002"
-kind = "reachability_forbidden_access"
-message = "DMA register accessed from non-NMI path — DMA must run in vblank"
+kind = "forbidden_value_at_register"
+message = "DMA channel will write to unsafe PPU register"
 severity = "warning"
 entry_points     = ["main"]
 exclude_subtrees = ["nmi_handler", "snes_init"]
-forbid_addr_range = { start = 0x4300, end = 0x4380 }
+target_addrs = [
+    0x4301, 0x4311, 0x4321, 0x4331,   # BBAD0..BBAD3
+    0x4341, 0x4351, 0x4361, 0x4371,   # BBAD4..BBAD7
+]
+forbid_values = [
+    0x01,  # OBSEL   — sprite base/size race
+    0x02,  # OAMADDL — OAM fetch state corruption
+    0x03,  # OAMADDH — OAM fetch state corruption
+    0x04,  # OAMDATA — sprite scramble
+    0x15,  # VMAIN   — unsafe coupled with VMDATA writes
+    0x18,  # VMDATAL — VRAM tile / tilemap corruption
+    0x19,  # VMDATAH — VRAM tile / tilemap corruption
+    0x22,  # CGDATA  — palette entry corruption
+]

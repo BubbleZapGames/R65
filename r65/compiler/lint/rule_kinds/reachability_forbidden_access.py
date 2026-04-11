@@ -1,35 +1,39 @@
 """
 Rule kind: ``reachability_forbidden_access``.
 
-Flags accesses to a forbidden set of symbols (by name or by ``#[hw]`` address
-range) from any function transitively reachable from configured entry points,
-with subtree exclusions for legal contexts.
+Flags accesses to a forbidden set of symbols (by name, by sparse address
+list, or by ``#[hw]`` address range) from any function transitively
+reachable from configured entry points, with subtree exclusions for legal
+contexts.
 
-Canonical use case: *"PPU registers (``$2100``–``$213F``) may only be touched
-from the NMI handler subtree."*
+Canonical use case: *"Writing ``$2118`` (VMDATAL) during active rendering
+corrupts VRAM; flag any such write not reachable only from the NMI
+handler."*
 
 Config shape::
 
     [[rule]]
     code = "C001"
     kind = "reachability_forbidden_access"
-    message = "PPU registers may only be accessed from the NMI handler"
+    message = "PPU register write unsafe during rendering"
     severity = "warning"                       # optional, default "warning"
     entry_points     = ["main"]                # required
     exclude_subtrees = ["nmi_handler"]         # optional, default []
-    forbid_symbols   = ["INIDISP", "VMADDL"]   # optional
-    forbid_addr_range = { start = 0x2100, end = 0x2140 }  # optional
-    # At least one of forbid_symbols / forbid_addr_range is required.
+    forbid_symbols   = ["VMDATAL", "CGDATA"]   # optional; by symbol name
+    forbid_addrs     = [0x2118, 0x2119]        # optional; sparse address list
+    forbid_addr_range = { start = 0x2100, end = 0x2140 }  # optional; contiguous range
+    # At least one of forbid_symbols / forbid_addrs / forbid_addr_range is required.
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, Set, Tuple
+from typing import Any, Dict, Iterable, Optional, Set, Tuple
 
 from r65.compiler.hir import HIRFunctionDecl, HIRIdentifier, HIRStaticDecl
 from r65.compiler.lint.rule import LintContext, LintRule
 from r65.compiler.lint.rule_kinds._common import (
     optional_addr_range,
+    optional_list_of_int,
     optional_list_of_str,
     parse_severity,
     require_key,
@@ -50,6 +54,7 @@ class ReachabilityForbiddenAccess(LintRule):
         entry_points,
         exclude_subtrees=(),
         forbid_symbols=(),
+        forbid_addrs: Iterable[int] = (),
         forbid_addr_range: Optional[Tuple[int, int]] = None,
         severity_name: str = "warning",
         hint: Optional[str] = None,
@@ -58,10 +63,10 @@ class ReachabilityForbiddenAccess(LintRule):
             raise ValueError(
                 f"rule kind '{KIND_NAME}': `entry_points` must not be empty"
             )
-        if not forbid_symbols and forbid_addr_range is None:
+        if not forbid_symbols and not forbid_addrs and forbid_addr_range is None:
             raise ValueError(
-                f"rule kind '{KIND_NAME}': at least one of `forbid_symbols` or "
-                f"`forbid_addr_range` must be specified"
+                f"rule kind '{KIND_NAME}': at least one of `forbid_symbols`, "
+                f"`forbid_addrs`, or `forbid_addr_range` must be specified"
             )
 
         super().__init__(
@@ -73,6 +78,7 @@ class ReachabilityForbiddenAccess(LintRule):
         self.entry_points = list(entry_points)
         self.exclude_subtrees = list(exclude_subtrees)
         self.forbid_symbols: Set[str] = set(forbid_symbols)
+        self.forbid_addrs: Set[int] = set(forbid_addrs)
         self.forbid_addr_range = forbid_addr_range
         self.severity = parse_severity(severity_name)
         self.custom_hint = hint
@@ -104,10 +110,14 @@ class ReachabilityForbiddenAccess(LintRule):
     def _decl_matches(self, decl: HIRStaticDecl) -> bool:
         if decl.name in self.forbid_symbols:
             return True
-        if self.forbid_addr_range is not None and decl.storage_attr is not None:
-            addr = getattr(decl.storage_attr, "address", None)
-            if addr is None:
-                return False
+        if decl.storage_attr is None:
+            return False
+        addr = getattr(decl.storage_attr, "address", None)
+        if addr is None:
+            return False
+        if addr in self.forbid_addrs:
+            return True
+        if self.forbid_addr_range is not None:
             start, end = self.forbid_addr_range
             return start <= addr < end
         return False
@@ -175,6 +185,7 @@ def from_config(spec: Dict[str, Any]) -> ReachabilityForbiddenAccess:
     )
     exclude_subtrees = optional_list_of_str(spec, "exclude_subtrees", KIND_NAME)
     forbid_symbols = optional_list_of_str(spec, "forbid_symbols", KIND_NAME)
+    forbid_addrs = optional_list_of_int(spec, "forbid_addrs", KIND_NAME)
     forbid_addr_range = optional_addr_range(spec, "forbid_addr_range", KIND_NAME)
     severity = spec.get("severity", "warning")
     hint = spec.get("hint")
@@ -184,6 +195,7 @@ def from_config(spec: Dict[str, Any]) -> ReachabilityForbiddenAccess:
         entry_points=entry_points,
         exclude_subtrees=exclude_subtrees,
         forbid_symbols=forbid_symbols,
+        forbid_addrs=forbid_addrs,
         forbid_addr_range=forbid_addr_range,
         severity_name=severity,
         hint=hint,

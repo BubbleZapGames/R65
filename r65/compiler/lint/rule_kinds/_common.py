@@ -37,6 +37,32 @@ def optional_list_of_str(
     return require_list_of_str(spec[key], key, kind)
 
 
+def optional_list_of_int(
+    spec: Dict[str, Any], key: str, kind: str
+) -> List[int]:
+    """Parse a list of ints (TOML ``[0x2100, 0x2104, ...]``) or return ``[]``.
+
+    ``bool`` is rejected even though Python treats ``True``/``False`` as ints —
+    ``forbid_addrs = [true]`` is almost certainly a config typo.
+    """
+    if key not in spec:
+        return []
+    raw = spec[key]
+    if not isinstance(raw, list):
+        raise ValueError(
+            f"rule kind '{kind}': `{key}` must be a list of integers"
+        )
+    result: List[int] = []
+    for i, v in enumerate(raw):
+        if isinstance(v, bool) or not isinstance(v, int):
+            raise ValueError(
+                f"rule kind '{kind}': `{key}[{i}]` must be an integer "
+                f"(got {type(v).__name__})"
+            )
+        result.append(v)
+    return result
+
+
 def optional_addr_range(
     spec: Dict[str, Any], key: str, kind: str
 ) -> Optional[Tuple[int, int]]:
