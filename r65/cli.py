@@ -67,6 +67,10 @@ class TemplateManager:
     def _copy_directory(self, src: Path, dst: Path, project_name: str):
         """Copy directory with template substitution."""
         for item in src.iterdir():
+            # Skip hidden files (vim swap files, .DS_Store, .git, etc.) —
+            # they should never end up in a user's new project.
+            if item.name.startswith('.'):
+                continue
             if item.is_file():
                 # Read and substitute template variables
                 content = item.read_text(encoding='utf-8')
