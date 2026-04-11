@@ -17,7 +17,7 @@ make syntax   # Check syntax only (no ROM generation)
 ```
 {{PROJECT_NAME}}/
 ├── src/
-│   ├── main.r65              # Main entry point (#[entry] fn main)
+│   ├── main.r65              # Reset / NMI handlers + game loop (#[entry] fn init_reset)
 │   └── lib/                  # Standard libraries
 │       ├── 65816.r65         # CPU register definitions
 │       ├── sneslib.r65       # SNES hardware registers and helpers

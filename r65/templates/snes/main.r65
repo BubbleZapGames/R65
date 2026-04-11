@@ -11,23 +11,24 @@ include!("lib/math.r65")
 // Bank 0 - Main code
 #[bank(0)]
 
-// NMI handler - called every VBlank
+// Reset handler — runs once at power-on. Initializes SNES hardware, then
+// hands off to main(). Listed in r65-lint.toml's exclude_subtrees so the
+// PPU/DMA writes inside snes_init() are recognized as force-blank boot.
+#[entry]
+fn init_reset() -> ! {
+    snes_init();
+    main();
+}
+
+// NMI handler — called every VBlank. Put PPU/DMA traffic here
 #[interrupt(nmi)]
 fn nmi_handler() {
-    // Update game logic here
     clear_nmi!()
 }
 
-// Program entry point
-#[entry]
+// Game loop: runs forever after init_reset() hands off. Edit this.
 fn main() -> ! {
-    // Initialize SNES hardware (force-blank boot path; configure PPU / DMA
-    // inside snes_init or other functions listed in r65-lint.toml's
-    // exclude_subtrees).
-    snes_init();
-
-    // Main loop
     loop {
-
+        wait_nmi();
     }
 }
