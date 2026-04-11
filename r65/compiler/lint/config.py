@@ -5,22 +5,28 @@ Discovers ``r65-lint.toml`` by walking up from the source file's directory (or
 takes an explicit path via ``--lint-config``), parses it with stdlib
 ``tomllib``, and produces a :class:`LintConfig` that :func:`run_lint` consumes.
 
-Schema (v1):
+**Built-in rules are opt-in.** Without a config file, or without an
+``[lint].enable`` list, no rules run — ``--lint`` is a no-op. A project that
+wants to use the built-in style rules must list them explicitly::
 
     [lint]
-    enable  = ["L001", "L002", ...]    # optional allowlist
-    disable = ["L006"]                  # optional denylist
-    deny    = ["L003"]                  # promote matching codes to error
+    enable = ["L001", "L002", "L003", "L004", "L005", "L006"]
+
+Schema:
+
+    [lint]
+    enable  = ["L001", "L002", ...]     # built-in rules to run (required to activate them)
+    disable = ["L006"]                   # subtract from the enable set
+    deny    = ["L003"]                   # promote matching codes to error (non-zero exit)
 
     [[rule]]
     code = "C001"
     kind = "reachability_forbidden_access"
     message = "..."
-    # kind-specific params (stashed as raw dicts until rule kinds are wired in)
+    # kind-specific params
 
 User rule codes must use the ``C`` prefix; built-ins use ``L``. ``[[rule]]``
-tables are parsed and shape-validated but not instantiated in this step — the
-loader stashes them in ``raw_rule_specs`` for later steps to consume.
+tables are always enabled — declaring a custom rule implicitly activates it.
 """
 
 from __future__ import annotations
@@ -67,13 +73,13 @@ class LintConfig:
 
 
 def default_config() -> LintConfig:
-    """Return a config with all built-in rules enabled and nothing denied."""
-    from r65.compiler.lint.rules import BUILTIN_RULES
+    """Return an empty config — nothing enabled, nothing denied.
 
-    return LintConfig(
-        enabled_codes={cls().code for cls in BUILTIN_RULES},
-        denied_codes=set(),
-    )
+    Built-in rules (L001–L006) only run when explicitly listed in a project's
+    ``r65-lint.toml`` ``[lint].enable`` list. Without a config file, ``--lint``
+    is a no-op.
+    """
+    return LintConfig(enabled_codes=set(), denied_codes=set())
 
 
 def discover_config(source_file: Path) -> Optional[Path]:

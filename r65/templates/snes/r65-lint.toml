@@ -8,8 +8,16 @@
 # the command line to toggle individual codes.
 
 [lint]
-# Built-in style/dead-code rules. All on by default; uncomment to silence.
-# disable = ["L004"]  # `* 2` → `<< 1` suggestion, sometimes too noisy
+# Built-in style/dead-code rules. Lint rules are opt-in: remove a code from
+# this list to silence the rule for the whole project.
+#
+#   L001  unused_mut        — `let mut x` never reassigned
+#   L002  unused_binding    — `let x` never read (prefix with `_` to silence)
+#   L003  unreachable_code  — statements after return/break/continue
+#   L004  missed_shift      — `* C` / `/ C` where C is a power of 2
+#   L005  dead_static_mut   — `static mut` written but never read
+#   L006  empty_block       — empty `if` / `else` body
+enable = ["L001", "L002", "L003", "L004", "L005", "L006"]
 
 # -------------------------------------------------------------------
 # C001: PPU registers may only be touched from the NMI handler subtree.
