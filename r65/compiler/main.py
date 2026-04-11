@@ -156,12 +156,28 @@ def _inject_builtin_traits(program):
     program.items.insert(0, toString_trait)
 
 
+def _parse_lint_codes(values):
+    """Flatten a list of --allow/--deny values; each entry may be comma-separated."""
+    if not values:
+        return set()
+    out = set()
+    for v in values:
+        for part in v.split(","):
+            part = part.strip()
+            if part:
+                out.add(part)
+    return out
+
+
 def compile_source(source: str, filename: str, output_file: str = None,
                    verbose: bool = False, quiet: bool = False, cfg_options: list[str] = None,
                    include_paths: list[str] = None, opt_level: int = 1, debug: bool = False,
                    disable_scratch_params: bool = False,
                    disable_loop_promotion: bool = False,
-                   abi_model=None):
+                   abi_model=None,
+                   lint: bool = False, lint_only: bool = False,
+                   lint_allow: list[str] = None, lint_deny: list[str] = None,
+                   lint_config_path: str = None):
     """Compile R65 source to WLA-DX assembly.
 
     Args:
@@ -238,6 +254,52 @@ def compile_source(source: str, filename: str, output_file: str = None,
                 log(f"{warning}")
             log(f"{'=' * 80}\n")
 
+        # Lint
+        lint_had_denied = False
+        if lint or lint_only:
+            if verbose:
+                log(f"  [5.5/8] Linting...")
+            from pathlib import Path
+            from r65.compiler.lint import load_config, run_lint, LintConfigError
+            allow_set = _parse_lint_codes(lint_allow)
+            deny_set = _parse_lint_codes(lint_deny)
+            try:
+                lint_config = load_config(
+                    path=Path(lint_config_path) if lint_config_path else None,
+                    source_file=Path(filename) if filename not in (None, "<stdin>", "<string>") else None,
+                    cli_allow=allow_set,
+                    cli_deny=deny_set,
+                )
+            except LintConfigError as e:
+                print(f"error: {e}", file=sys.stderr)
+                sys.exit(1)
+            if verbose and lint_config.config_path is not None:
+                log(f"    loaded lint config from {lint_config.config_path}")
+            from r65.compiler.errors import DiagnosticSeverity
+            lint_diags = run_lint(hir_program, config=lint_config)
+            for diag in lint_diags.diagnostics:
+                if diag.code and not lint_config.is_enabled(diag.code):
+                    continue
+                # Promotion: a rule may emit at ERROR directly (via severity=
+                # "error"), or --deny / [lint].deny may promote a warning
+                # after the fact. Both paths exit non-zero.
+                promoted = (
+                    diag.severity == DiagnosticSeverity.ERROR
+                    or (diag.code is not None and lint_config.is_denied(diag.code))
+                )
+                label = "error" if promoted else "warning"
+                code_prefix = f"[{diag.code}] " if diag.code else ""
+                loc = f"{diag.source_loc}: " if diag.source_loc else ""
+                print(f"{loc}{label}: {code_prefix}{diag.message}", file=sys.stderr)
+                if diag.hint:
+                    print(f"  hint: {diag.hint}", file=sys.stderr)
+                if promoted:
+                    lint_had_denied = True
+            if lint_only:
+                if lint_had_denied:
+                    sys.exit(1)
+                return
+
         # Build MIR
         if verbose:
             log(f"  [6/8] Building MIR...")
@@ -291,6 +353,9 @@ def compile_source(source: str, filename: str, output_file: str = None,
         else:
             # Print to stdout
             print(assembly)
+
+        if lint_had_denied:
+            sys.exit(1)
 
     except (LexerError, ParseError) as e:
         # Use format_error for nice display with source context
@@ -545,6 +610,35 @@ examples:
                             choices=['parse', 'hir', 'typecheck', 'mir'],
                             help='Stop compilation after specified phase')
 
+    # Linter options
+    lint_group = parser.add_argument_group('linter options')
+
+    lint_group.add_argument('--lint',
+                           action='store_true',
+                           help='Run linter after type checking')
+
+    lint_group.add_argument('--lint-only',
+                           action='store_true',
+                           dest='lint_only',
+                           help='Run linter and exit (skips MIR and codegen)')
+
+    lint_group.add_argument('--lint-config',
+                           dest='lint_config',
+                           metavar='PATH',
+                           help='Explicit path to r65-lint.toml (default: auto-discover from source file directory)')
+
+    lint_group.add_argument('--allow',
+                           action='append',
+                           dest='lint_allow',
+                           metavar='CODE',
+                           help='Disable a lint code (can be used multiple times, or comma-separated)')
+
+    lint_group.add_argument('--deny',
+                           action='append',
+                           dest='lint_deny',
+                           metavar='CODE',
+                           help='Promote a lint code to error (can be used multiple times, or comma-separated)')
+
     args = parser.parse_args()
 
     # Read source
@@ -604,7 +698,10 @@ examples:
                        debug=args.generate_debug,
                        disable_scratch_params=args.disable_scratch_params,
                        disable_loop_promotion=args.disable_loop_promotion,
-                       abi_model=abi_model)
+                       abi_model=abi_model,
+                       lint=args.lint, lint_only=args.lint_only,
+                       lint_allow=args.lint_allow, lint_deny=args.lint_deny,
+                       lint_config_path=args.lint_config)
 
     except (LexerError, ParseError, PreprocessorError, MacroError, HIRError, TypeCheckError) as e:
         # These are already handled in dump/compile functions

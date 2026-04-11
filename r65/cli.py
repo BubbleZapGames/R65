@@ -80,6 +80,10 @@ class TemplateManager:
                 elif item.name == 'Makefile':
                     # Keep Makefile in project root
                     dst_item = dst.parent / item.name
+                elif item.suffix == '.toml':
+                    # Project-level config (r65-lint.toml, etc.) in project root
+                    # so auto-discovery from src/*.r65 finds it by walking up.
+                    dst_item = dst.parent / item.name
                 else:
                     # R65 source files go to src directory
                     dst_item = dst / item.name

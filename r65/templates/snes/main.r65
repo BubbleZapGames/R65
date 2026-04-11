@@ -21,11 +21,10 @@ fn nmi_handler() {
 // Program entry point
 #[entry]
 fn main() -> ! {
-    // Initialize SNES hardware
+    // Initialize SNES hardware (force-blank boot path; configure PPU / DMA
+    // inside snes_init or other functions listed in r65-lint.toml's
+    // exclude_subtrees).
     snes_init();
-
-    // Turn off screen
-    INIDISP = 0x0;
 
     // Main loop
     loop {

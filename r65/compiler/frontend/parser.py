@@ -50,6 +50,18 @@ class ASTBuilder(Transformer):
             included_from=self.included_from
         )
 
+    def _source_loc_from_token(self, token):
+        """Create a SourceLocation from a LarkToken's line/column."""
+        from r65.compiler.hir.errors import SourceLocation
+        if not isinstance(token, LarkToken):
+            return None
+        return SourceLocation(
+            file_path=self.filename,
+            line=getattr(token, 'line', 0) or 0,
+            column=getattr(token, 'column', 0) or 0,
+            included_from=self.included_from,
+        )
+
     _SUFFIXES = ('u16', 'i16', 'u8', 'i8')
 
     def _strip_integer_suffix(self, raw: str):
@@ -1488,7 +1500,8 @@ class ASTBuilder(Transformer):
             binding=binding,
             var_type=var_type,
             initializer=initializer,
-            pattern=tuple_pattern
+            pattern=tuple_pattern,
+            source_loc=self._make_source_loc(tree.meta)
         )
 
     @v_args(tree=True)
@@ -2332,7 +2345,10 @@ class ASTBuilder(Transformer):
         # Validate that this isn't a wrong-case register name
         if isinstance(token, LarkToken):
             self._validate_identifier_not_register(identifier, token)
-        return ast.Identifier(name=identifier)
+        return ast.Identifier(
+            name=identifier,
+            source_loc=self._source_loc_from_token(token),
+        )
 
     def lvalue_register(self, items):
         """Lvalue register."""

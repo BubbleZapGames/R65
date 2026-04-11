@@ -1,0 +1,48 @@
+# R65 project lint configuration.
+#
+# Auto-discovered by `r65c --lint` when compiling any source file under this
+# directory. Rules here enforce R65/SNES conventions that the compiler
+# cannot catch structurally.
+#
+# To override locally, pass --lint-config PATH, or use --allow / --deny on
+# the command line to toggle individual codes.
+
+[lint]
+# Built-in style/dead-code rules. All on by default; uncomment to silence.
+# disable = ["L004"]  # `* 2` → `<< 1` suggestion, sometimes too noisy
+
+# -------------------------------------------------------------------
+# C001: PPU registers may only be touched from the NMI handler subtree.
+#
+# Background: outside the vblank interval, writes to registers $2100-$213F
+# produce garbage on-screen. The convention is to do all PPU work inside
+# NMI, or inside an explicit force-blank window.
+#
+# `exclude_subtrees` lists functions whose entire call tree is exempt:
+#   - nmi_handler  — the primary vblank handler
+#   - snes_init    — stdlib boot init; SNES powers up in force-blank
+# Add your own force-blank helpers (e.g. boot_screen_setup) here as you
+# write them, otherwise the rule will flag their PPU writes.
+# -------------------------------------------------------------------
+[[rule]]
+code = "C001"
+kind = "reachability_forbidden_access"
+message = "PPU register accessed from non-NMI path — force-blank only outside vblank"
+severity = "warning"
+entry_points     = ["main"]
+exclude_subtrees = ["nmi_handler", "snes_init"]
+forbid_addr_range = { start = 0x2100, end = 0x2140 }
+
+# -------------------------------------------------------------------
+# C002: DMA control registers ($4300-$437F) should only be touched from
+# NMI (or from an explicit vblank/force-blank helper). Starting a DMA
+# outside vblank can corrupt VRAM or hang the display.
+# -------------------------------------------------------------------
+[[rule]]
+code = "C002"
+kind = "reachability_forbidden_access"
+message = "DMA register accessed from non-NMI path — DMA must run in vblank"
+severity = "warning"
+entry_points     = ["main"]
+exclude_subtrees = ["nmi_handler", "snes_init"]
+forbid_addr_range = { start = 0x4300, end = 0x4380 }
