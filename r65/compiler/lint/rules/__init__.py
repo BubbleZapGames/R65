@@ -3,9 +3,11 @@
 from r65.compiler.lint.rules.dead_static import DeadStaticMut
 from r65.compiler.lint.rules.empty_block import EmptyBlock
 from r65.compiler.lint.rules.missed_shift import MissedShift
+from r65.compiler.lint.rules.redundant_cast import RedundantCast
 from r65.compiler.lint.rules.unreachable import UnreachableCode
 from r65.compiler.lint.rules.unused_binding import UnusedBinding
 from r65.compiler.lint.rules.unused_mut import UnusedMut
+from r65.compiler.lint.rules.unused_param import UnusedParam
 
 BUILTIN_RULES = [
     UnusedMut,       # L001
@@ -14,6 +16,8 @@ BUILTIN_RULES = [
     MissedShift,     # L004
     DeadStaticMut,   # L005
     EmptyBlock,      # L006
+    RedundantCast,   # L007
+    UnusedParam,     # L008
 ]
 
 __all__ = [
@@ -24,4 +28,6 @@ __all__ = [
     "MissedShift",
     "DeadStaticMut",
     "EmptyBlock",
+    "RedundantCast",
+    "UnusedParam",
 ]

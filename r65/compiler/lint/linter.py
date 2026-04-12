@@ -208,6 +208,8 @@ class R65Linter:
         elif isinstance(expr, HIRAddressOf):
             self._walk_expr(expr.operand)
         elif isinstance(expr, HIRTypeCast):
+            for rule in self.rules:
+                rule.visit_type_cast(expr, self.ctx)
             self._walk_expr(expr.expr)
         elif isinstance(expr, HIRArrayLiteralExpr):
             for element in expr.elements:

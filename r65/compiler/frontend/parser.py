@@ -2232,10 +2232,15 @@ class ASTBuilder(Transformer):
             source_loc=self._make_source_loc(tree.meta)
         )
 
-    def type_cast(self, items):
+    @v_args(tree=True)
+    def type_cast(self, tree):
         """Type cast."""
-        items = self._filter_tokens(items)
-        return ast.TypeCast(expr=items[0], target_type=items[1])
+        items = self._filter_tokens(tree.children)
+        return ast.TypeCast(
+            expr=items[0],
+            target_type=items[1],
+            source_loc=self._make_source_loc(tree.meta),
+        )
 
     # Assignment
     @v_args(tree=True)

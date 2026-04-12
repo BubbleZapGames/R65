@@ -17,7 +17,9 @@
 #   L004  missed_shift      — `* C` / `/ C` where C is a power of 2
 #   L005  dead_static_mut   — `static mut` written but never read
 #   L006  empty_block       — empty `if` / `else` body
-enable = ["L001", "L002", "L003", "L004", "L005", "L006"]
+#   L007  redundant_cast    — `(x as T) as T` chain
+#   L008  unused_param      — function parameter never read (prefix with `_`)
+enable = ["L001", "L002", "L003", "L004", "L005", "L006", "L007", "L008"]
 
 # -------------------------------------------------------------------
 # C001: PPU registers that are unsafe to touch during active rendering.

@@ -29,6 +29,7 @@ if TYPE_CHECKING:
         HIRProgram,
         HIRReturnStmt,
         HIRStaticDecl,
+        HIRTypeCast,
         HIRWhileStmt,
     )
 
@@ -135,6 +136,9 @@ class LintRule:
         pass
 
     def visit_binary_op(self, expr: "HIRBinaryOp", ctx: LintContext) -> None:
+        pass
+
+    def visit_type_cast(self, expr: "HIRTypeCast", ctx: LintContext) -> None:
         pass
 
     def visit_static_decl(self, decl: "HIRStaticDecl", ctx: LintContext) -> None:
