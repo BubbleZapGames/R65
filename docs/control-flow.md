@@ -744,14 +744,16 @@ fn fatal_error() -> ! {
 - Compiler error if function can return
 
 **Code Generation**:
-- If control flow reaches a return point, `WAI` is emitted instead of `RTS`/`RTL`
+- If control flow reaches a return point, a branch-to-self infinite loop is emitted instead of `RTS`/`RTL`
 - This is a safety measure - properly written `-> !` functions should have infinite loops
-- The `WAI` instruction halts the CPU until an interrupt, providing a safe fallback
+- The tight `BRA` loop halts execution without requiring an interrupt, providing a safe fallback
 
 **Assembly Mapping**:
 ```rust
 fn infinite() -> ! {
-    // Emits: WAI
+    // Emits:
+    //   __halt:
+    //       BRA __halt
 }
 ```
 

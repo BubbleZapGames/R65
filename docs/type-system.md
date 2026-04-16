@@ -153,7 +153,7 @@ let (a, b) = get_pair();
 -> !           // Function never returns
 ```
 
-Used for functions that loop forever or halt the processor. The compiler omits `RTS`/`RTL` and emits `WAI` as a safety fallback.
+Used for functions that loop forever or halt the processor. The compiler omits `RTS`/`RTL` and emits a branch-to-self infinite loop (`BRA`) as a safety fallback.
 
 #### Pointer to Array
 
