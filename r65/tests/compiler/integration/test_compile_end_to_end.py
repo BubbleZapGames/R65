@@ -169,7 +169,7 @@ class TestEndToEnd:
         # Verify key elements are present
         assert ".65816" in assembly
         assert "main:" in assembly
-        assert "WAI" in assembly
+        assert "BRA" in assembly
         assert ".SNESHEADER" in assembly
         assert "RESET main" in assembly
 

@@ -606,10 +606,11 @@ class ControlFlowInstructionSelector(BaseSelector):
             self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "Restore m8 mode")
 
     def _emit_return_instruction(self):
-        """Emit appropriate return instruction (RTL, RTS, or WAI).
+        """Emit appropriate return instruction (RTL, RTS, or infinite loop).
 
-        For functions returning ! (never type) or entry functions, we emit WAI
-        instead of a return instruction since there's no valid return address.
+        For functions returning ! (never type) or entry functions, we emit a
+        branch-to-self infinite loop instead of a return instruction since
+        there's no valid return address.
 
         For functions with stack parameters, emits callee cleanup code before
         the return instruction.
@@ -621,7 +622,9 @@ class ControlFlowInstructionSelector(BaseSelector):
             isinstance(self.current_function.return_type, NeverTypeInfo)
             or self.current_function.is_entry
         ):
-            self._emit_implied(Opcode.WAI, "No return - wait for interrupt")
+            halt_label = self.parent._get_unique_label()
+            self.emitter.emit_label(halt_label)
+            self._emit_jump(Opcode.BRA, halt_label, "No return - halt")
             return
 
         # Emit callee cleanup for stack parameters before return
