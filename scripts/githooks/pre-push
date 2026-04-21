@@ -1,9 +1,33 @@
 #!/bin/bash
-# pre-push hook: run Python tests before allowing push
+# pre-push hook: run tests; on a push to the main branch, tag the pushed
+# commit as `release` once tests pass.
 
 set -e
+
+# Git calls this hook with one stdin line per ref being pushed:
+#   <local_ref> <local_sha> <remote_ref> <remote_sha>
+# Capture the sha we'd tag if master/main is in the push, then consume
+# the rest of stdin so it doesn't leak into test output.
+release_sha=""
+while read -r local_ref local_sha remote_ref remote_sha; do
+    case "$remote_ref" in
+        refs/heads/master|refs/heads/main)
+            # Skip branch deletes (local_sha is all zeros).
+            if ! [[ "$local_sha" =~ ^0+$ ]]; then
+                release_sha="$local_sha"
+            fi
+            ;;
+    esac
+done
 
 echo "Running tests before push..."
 python -m pytest r65/tests/ -x -q
 
 echo "All tests passed."
+
+if [ -n "$release_sha" ]; then
+    echo "Tagging $release_sha as 'release'..."
+    git tag -f release "$release_sha"
+    echo "Tag 'release' now points at $release_sha."
+    echo "(Push the tag separately with 'git push --tags' or 'git push origin release'.)"
+fi
