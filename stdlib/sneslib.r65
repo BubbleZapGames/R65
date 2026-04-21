@@ -1828,33 +1828,33 @@ macro_rules! set_virq($pos:expr) {
 // HELPER FUNCTIONS - Loops and Complex Operations
 // ============================================================================
 
-// Wait for VBlank (polling loop)
-fn wait_vblank() {
-    loop {
-        if HVBJOY & 0x80 != 0 {
-            break;
-        }
-    }
-}
-
-// Wait for NMI (clears NMI flag first)
-fn wait_nmi() {
-    A = RDNMI;
-    loop {
-        if RDNMI & 0x80 != 0 {
-            break;
-        }
-    }
+// Wait for VBlank
+macro_rules! wait_nmi() {
+    asm!("WAI");
 }
 
 // Wait for auto-joypad read to complete
-fn wait_autojoy() {
-    loop {
-        if HVBJOY & 0x01 == 0 {
-            break;
-        }
-    }
+macro_rules! wait_autojoy() {
+    while HVBJOY & 0x01 != 0 {}
 }
+
+// Sync main loop to NMI frame counter with drop-frame tolerance.
+// If the counter has not advanced past last_frame, WAI sleeps until NMI fires.
+// If one or more NMIs already fired during main work, falls through immediately
+// (no extra-frame penalty) and resyncs last_frame to the current count.
+//
+// Requires: frame_count is incremented by the NMI handler; last_frame is a
+// mutable integer owned by main code (persist across calls, do not touch from NMI).
+//
+// Usage:
+//   wait_vblank_sync!(FRAME_COUNTER, LAST_FRAME);
+macro_rules! wait_vblank_sync($frame_count:ident, $last_frame:ident) {
+    if $frame_count == $last_frame {
+        wait_nmi!();
+    }
+    $last_frame = $frame_count;
+}
+
 
 // Clear VRAM (fill with zeros) - slow but thorough
 fn clear_vram() {
@@ -1914,8 +1914,7 @@ fn init_ppu() {
     // BG scroll registers (write-twice each)
     let mut ptr: *u8 = 0x210D as *u8;
     for i in 0..16 {
-        *ptr = 0;
-        ptr = ptr + 1;
+        ptr[i] = 0;
     }
 
     VMAIN = VmainTrigger::High;
@@ -1975,7 +1974,7 @@ fn snes_init() {
 far fn delay(frames: u16) {
     let mut count: u16 = frames;
     loop {
-        wait_nmi();
+        wait_nmi!();
         count--;
         if count == 0 {
             break;
