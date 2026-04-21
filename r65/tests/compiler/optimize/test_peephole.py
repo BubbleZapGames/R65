@@ -161,3 +161,54 @@ class TestBranchThreadingRawAsm:
         # BNE should be threaded to epilogue
         assert result[0].opcode == Opcode.BNE
         assert result[0].operand.value == "epilogue"
+
+
+class TestBranchOverBranchEliminationSelfLoopGuard:
+    """Regression: `_eliminate_branch_over_branch` must not drop a BRA that
+    self-loops to a label in its `between` region. That pattern is the body
+    of a `-> !` / `#[entry]` halt loop — removing the BRA lets control fall
+    through past the label into whatever follows.
+
+    Bug reproducer: `loop { if X == 5 { break; } X++; }` in an entry fn
+    compiled to `BNE body / halt: BRA halt / body: INX / BRA loop`. The pass
+    rewrote BNE → BEQ halt and dropped `BRA halt`, letting X run unbounded.
+    """
+
+    def test_self_looping_halt_bra_preserved(self):
+        """BNE skipping a `halt: BRA halt` block must not eliminate the BRA."""
+        nodes = [
+            Instruction(opcode=Opcode.BNE, operand=Address("body")),
+            Label("halt_label"),
+            Instruction(opcode=Opcode.BRA, operand=Address("halt_label")),
+            Label("body"),
+            Instruction(opcode=Opcode.INX),
+        ]
+        opt = PeepholeOptimizer()
+        result = opt._eliminate_branch_over_branch(nodes)
+        # The halt self-loop must survive intact.
+        bra_nodes = [n for n in result
+                     if isinstance(n, Instruction) and n.opcode == Opcode.BRA]
+        assert len(bra_nodes) == 1
+        assert bra_nodes[0].operand.value == "halt_label"
+        # And the original BNE is untouched (no inversion-retarget happened).
+        bne_nodes = [n for n in result
+                     if isinstance(n, Instruction) and n.opcode == Opcode.BNE]
+        assert len(bne_nodes) == 1
+        assert bne_nodes[0].operand.value == "body"
+
+    def test_ordinary_branch_over_branch_still_eliminated(self):
+        """Sanity: pattern with a non-self-loop BRA is still optimized."""
+        nodes = [
+            Instruction(opcode=Opcode.BNE, operand=Address("skip")),
+            Instruction(opcode=Opcode.BRA, operand=Address("elsewhere")),
+            Label("skip"),
+            Instruction(opcode=Opcode.INX),
+            Label("elsewhere"),
+            Instruction(opcode=Opcode.RTS),
+        ]
+        opt = PeepholeOptimizer()
+        result = opt._eliminate_branch_over_branch(nodes)
+        # BNE → BEQ elsewhere (inverted + retargeted), BRA dropped.
+        first = [n for n in result if isinstance(n, Instruction)][0]
+        assert first.opcode == Opcode.BEQ
+        assert first.operand.value == "elsewhere"

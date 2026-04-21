@@ -1254,6 +1254,22 @@ class PeepholeOptimizer:
                     bra_node = nodes[j]
                     bra_target = bra_node.operand
 
+                    # Self-loop guard: if the BRA targets a label that appears
+                    # in `between` (i.e. `label: BRA label`), the BRA is its
+                    # own body — e.g. `#[entry]` / `-> !` halt loops. Dropping
+                    # the BRA would leave the label naked and let control fall
+                    # through into whatever follows. Leave this BRA alone.
+                    bra_target_name = (bra_target.value
+                                       if isinstance(bra_target.value, str)
+                                       else None)
+                    if bra_target_name is not None and any(
+                        isinstance(b, Label) and b.name == bra_target_name
+                        for b in between
+                    ):
+                        optimized.append(node)
+                        i += 1
+                        continue
+
                     # Look ahead past the BRA for the conditional target label,
                     # skipping directives/comments and non-target labels
                     k = j + 1
