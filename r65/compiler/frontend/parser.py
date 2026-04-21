@@ -2871,6 +2871,26 @@ class Parser:
                 return ("tuple literals are not supported in R65",
                         "R65 has no tuple type; use separate variables or a struct")
 
+        # Procedural macro / derive attributes on declarations that don't accept
+        # attributes in the grammar (e.g. `#[derive(Debug)] struct S { ... }`).
+        # The attribute parses as a stray `#`, and the next decl token is what
+        # trips the parser. Scan the preceding source for an unmatched
+        # #[derive(...)] / #[proc_macro...] and emit a targeted hint.
+        lines = source.splitlines(keepends=True)
+        prefix_offset = sum(len(l) for l in lines[:line - 1]) + max(0, token.column - 1)
+        prefix = source[:prefix_offset]
+        m = re.search(r'#\[\s*(derive|proc_macro|proc_macro_derive|proc_macro_attribute)\b[^\]]*\]\s*\Z',
+                      prefix, re.DOTALL)
+        if m:
+            name = m.group(1)
+            if name == 'derive':
+                return ("#[derive(...)] is not supported in R65",
+                        "derive macros are not supported; implement the behavior "
+                        "explicitly with free functions or `impl` blocks")
+            return (f"#[{name}] is not supported in R65",
+                    "procedural macros are not supported; use `macro_rules!` "
+                    "for declarative macros (see docs/macros.md)")
+
         return None
 
     def _check_macro_syntax_hints(self, source: str, error_str: str) -> str:

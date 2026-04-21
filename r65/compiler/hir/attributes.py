@@ -151,6 +151,26 @@ class StackAttribute(ProcessedAttribute):
 
 
 # =============================================================================
+# Unsupported Rust attribute hints
+# =============================================================================
+
+_PROC_MACRO_HINT = (
+    "procedural macros are not supported in R65 — use `macro_rules!` "
+    "for declarative macros (see docs/macros.md)"
+)
+
+_UNSUPPORTED_RUST_ATTRS = {
+    'proc_macro': _PROC_MACRO_HINT,
+    'proc_macro_derive': _PROC_MACRO_HINT,
+    'proc_macro_attribute': _PROC_MACRO_HINT,
+    'derive': (
+        "derive macros are not supported in R65 — traits do not auto-derive; "
+        "implement the behavior explicitly with free functions or `impl` blocks"
+    ),
+}
+
+
+# =============================================================================
 # Attribute Processor
 # =============================================================================
 
@@ -185,7 +205,12 @@ class AttributeProcessor:
             elif attr.name == 'inline':
                 processed.append(self._process_inline(attr, context))
             else:
-                raise HIRError(f"Unknown attribute '{attr.name}'", source_loc=attr.source_loc)
+                hint = _UNSUPPORTED_RUST_ATTRS.get(attr.name)
+                raise HIRError(
+                    f"Unknown attribute '{attr.name}'",
+                    source_loc=attr.source_loc,
+                    hint=hint,
+                )
 
         return processed
 
