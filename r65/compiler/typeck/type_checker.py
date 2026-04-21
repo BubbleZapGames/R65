@@ -843,6 +843,12 @@ class TypeChecker:
         # Phase 3: Type check function body
         self.check_block(func.body)
 
+        # Phase 3b: Validate XY16 (x8) regions — reject unsafe patterns inside
+        # `STATUS.XY16 = false` / `= true` pairs (calls, control flow, indexing,
+        # missing restore). See docs/status-flags.md §XY16 for the safety rules.
+        from r65.compiler.typeck.xy16_region import check_xy16_regions
+        check_xy16_regions(func)
+
         # Phase 4: Check register preservation
         if func.preserves_attr:
             preservation_checker = PreservationChecker(func)

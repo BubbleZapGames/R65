@@ -19,7 +19,8 @@
 #   L006  empty_block       — empty `if` / `else` body
 #   L007  redundant_cast    — `(x as T) as T` chain
 #   L008  unused_param      — function parameter never read (prefix with `_`)
-enable = ["L001", "L002", "L003", "L004", "L005", "L006", "L007", "L008"]
+#   L009  xy16_mode         — `STATUS.XY16 = false` (enters 8-bit index mode)
+enable = ["L001", "L002", "L003", "L004", "L005", "L006", "L007", "L008", "L009"]
 
 # -------------------------------------------------------------------
 # C001: PPU registers that are unsafe to touch during active rendering.

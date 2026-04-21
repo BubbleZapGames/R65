@@ -8,6 +8,7 @@ from r65.compiler.lint.rules.unreachable import UnreachableCode
 from r65.compiler.lint.rules.unused_binding import UnusedBinding
 from r65.compiler.lint.rules.unused_mut import UnusedMut
 from r65.compiler.lint.rules.unused_param import UnusedParam
+from r65.compiler.lint.rules.xy16_mode import Xy16Mode
 
 BUILTIN_RULES = [
     UnusedMut,       # L001
@@ -18,6 +19,7 @@ BUILTIN_RULES = [
     EmptyBlock,      # L006
     RedundantCast,   # L007
     UnusedParam,     # L008
+    Xy16Mode,        # L009
 ]
 
 __all__ = [
@@ -30,4 +32,5 @@ __all__ = [
     "EmptyBlock",
     "RedundantCast",
     "UnusedParam",
+    "Xy16Mode",
 ]
