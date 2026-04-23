@@ -20,14 +20,70 @@ from r65.compiler.mir.nodes import (
     BinaryOp, UnaryOp, Compare, TypeConvert, ToBool,
     InlineAsm, ReturnFromInterrupt, TraitDispatch,
     Argument, ArgumentMechanism,
+    MemoryFill, BlockCopy, BankByte, BitTest, Rotate,
+    StatusFlagTest, StatusFlagSet, StatusFlagRead,
+    SetMode, Push, Pull, SaveRegister, RestoreRegister,
 )
 from r65.compiler.hir import RegisterBinding, VariableBinding
 from r65.compiler.hir.attributes import InlineMode
+from r65.compiler.analysis.loop_analysis import compute_block_nesting
 
 
-# Size thresholds for inlining decisions
-INLINE_THRESHOLD_WITH_ATTR = 30   # Max instructions for #[inline] functions
-INLINE_THRESHOLD_NO_ATTR = 3      # Max instructions for unmarked functions (very conservative)
+# ---------------------------------------------------------------------------
+# Cycle-cost model
+# ---------------------------------------------------------------------------
+# Estimated 65816 cycles contributed by each MIR instruction type when
+# the function is inlined (Return costs 0 because it is eliminated).
+# Used in place of a flat instruction count so the threshold can be
+# compared directly against the JSR/RTS overhead being saved.
+
+_MIR_CYCLE_COSTS: Dict[type, int] = {
+    Move:             2,
+    Load:             3,
+    Store:            3,
+    LoadIndirect:     6,
+    StoreIndirect:    6,
+    BinaryOp:         3,
+    UnaryOp:          2,
+    Compare:          2,
+    BitTest:          2,
+    TypeConvert:      2,
+    ToBool:           3,
+    Rotate:           2,
+    BankByte:         2,
+    Jump:             3,
+    CondBranch:       3,
+    JumpTable:        6,
+    LookupTable:      5,
+    StatusFlagTest:   3,
+    StatusFlagSet:    2,
+    StatusFlagRead:   4,
+    Call:            12,   # nested JSR(6)+RTS(6) — counts against callee body
+    TraitDispatch:   16,
+    SetMode:          2,
+    Push:             3,
+    Pull:             4,
+    SaveRegister:     2,
+    RestoreRegister:  2,
+    MemoryFill:      20,
+    BlockCopy:       20,
+    Return:           0,   # eliminated by inlining
+    ReturnFromInterrupt: 0,
+}
+_DEFAULT_CYCLE_COST = 3
+
+# Cycle budget thresholds (compared against _estimate_cycle_cost())
+CALL_OVERHEAD_CYCLES     = 12   # JSR(6) + RTS(6)
+INLINE_COST_BREAK_EVEN   = 12   # body ≤ overhead → always worth inlining
+INLINE_COST_WITH_ATTR    = 60   # ~30 MIR instrs at avg 2 cycles
+INLINE_COST_NO_ATTR      = 12   # break-even for unmarked implicit inlining
+
+# Per-nesting-depth multiplier on INLINE_COST_NO_ATTR (index = clamped depth)
+_LOOP_DEPTH_MULTIPLIER = [1, 3, 6]
+
+# Backward-compatibility aliases (previously raw instruction counts)
+INLINE_THRESHOLD_WITH_ATTR = INLINE_COST_WITH_ATTR
+INLINE_THRESHOLD_NO_ATTR   = INLINE_COST_NO_ATTR
 
 
 class InlinabilityChecker:
@@ -66,8 +122,9 @@ class InlinabilityChecker:
         self.func_map: Dict[str, MIRFunction] = {f.name: f for f in mir_program.functions}
         self.call_graph: Dict[str, Set[str]] = {}
         self.call_counts: Dict[str, int] = {}
+        self.call_depths: Dict[str, int] = {}  # max loop nesting depth of any call site
         self._build_call_graph()
-        self._count_calls()
+        self._compute_call_site_depths()
         self._find_recursive_functions()
 
     def _build_call_graph(self):
@@ -80,15 +137,21 @@ class InlinabilityChecker:
                         called.add(instr.function)
             self.call_graph[func.name] = called
 
-    def _count_calls(self):
-        """Count how many times each function is called."""
+    def _compute_call_site_depths(self):
+        """Count call sites and record the maximum loop nesting depth of each."""
         self.call_counts = {f.name: 0 for f in self.mir_program.functions}
+        self.call_depths = {f.name: 0 for f in self.mir_program.functions}
         for func in self.mir_program.functions:
-            for block in func.blocks.values():
+            nesting = compute_block_nesting(func)
+            for block_id, block in func.blocks.items():
+                depth = nesting.get(block_id, 0)
                 for instr in block.instructions:
                     if isinstance(instr, Call) and isinstance(instr.function, str):
-                        if instr.function in self.call_counts:
-                            self.call_counts[instr.function] += 1
+                        name = instr.function
+                        if name in self.call_counts:
+                            self.call_counts[name] += 1
+                            if depth > self.call_depths.get(name, 0):
+                                self.call_depths[name] = depth
 
     def _find_recursive_functions(self):
         """Find all functions involved in recursion (direct or mutual)."""
@@ -116,12 +179,18 @@ class InlinabilityChecker:
 
                 stack.extend(self.call_graph.get(current, set()))
 
-    def _count_instructions(self, func: MIRFunction) -> int:
-        """Count the total number of instructions in a function."""
-        count = 0
+    def _estimate_cycle_cost(self, func: MIRFunction) -> int:
+        """Estimate the 65816 cycle cost of a function body when inlined.
+
+        Uses a per-instruction-type weight table. Return costs 0 because it is
+        eliminated by inlining. The result is compared against CALL_OVERHEAD_CYCLES
+        (12 for JSR/RTS) to decide whether inlining pays off.
+        """
+        cost = 0
         for block in func.blocks.values():
-            count += len(block.instructions)
-        return count
+            for instr in block.instructions:
+                cost += _MIR_CYCLE_COSTS.get(type(instr), _DEFAULT_CYCLE_COST)
+        return cost
 
     def _has_inline_asm(self, func: MIRFunction) -> bool:
         """Check if function contains inline assembly."""
@@ -180,26 +249,30 @@ class InlinabilityChecker:
             return False
 
         func = self.func_map[func_name]
-        instr_count = self._count_instructions(func)
+        body_cost = self._estimate_cycle_cost(func)
 
         # Check for #[inline(never)] - never inline these functions
         if func.inline_attr is not None and func.inline_attr.mode == InlineMode.NEVER:
             return False
 
-        # Marked #[inline] or #[inline(always)] → inline if under threshold (explicit inlining)
+        # Marked #[inline] or #[inline(always)] → inline if under cycle budget
         if func.inline_attr is not None:
-            return instr_count < INLINE_THRESHOLD_WITH_ATTR
+            return body_cost < INLINE_COST_WITH_ATTR
 
         # Below this point is implicit inlining - only allowed when implicit_inline=True
         if not self.implicit_inline:
             return False
 
-        # Called exactly once → always inline (unless #[inline(never)] which is handled above)
+        # Called exactly once → always inline (no code size increase)
         if self.call_counts.get(func_name, 0) == 1:
             return True
 
-        # No attribute → inline only if very small
-        return instr_count < INLINE_THRESHOLD_NO_ATTR
+        # Apply loop-depth multiplier: a call inside a loop is worth inlining
+        # at a larger budget since JSR/RTS overhead repeats every iteration.
+        depth = self.call_depths.get(func_name, 0)
+        factor = _LOOP_DEPTH_MULTIPLIER[min(depth, 2)]
+        limit = min(INLINE_COST_NO_ATTR * factor, INLINE_COST_WITH_ATTR)
+        return body_cost <= limit
 
 
 class BlockCloner:
@@ -479,7 +552,7 @@ class FunctionInliner:
                     if not isinstance(callee_name, str):
                         continue
 
-                    if not checker.should_inline(callee_name):
+                    if not self._should_inline_at_site(checker, call_instr):
                         continue
 
                     callee_func = checker.func_map.get(callee_name)
@@ -507,6 +580,49 @@ class FunctionInliner:
 
         return inlined_count
 
+    def _all_args_constant(self, call: Call) -> bool:
+        """Return True if every argument is a plain compile-time integer literal.
+
+        Symbolic Immediates (e.g. from &ARR[i]) carry a 'symbol' attribute
+        and are excluded — their .value is an offset, not an absolute address.
+        """
+        return bool(call.args) and all(
+            isinstance(arg.value, Immediate)
+            and not getattr(arg.value, 'symbol', None)
+            for arg in call.args
+        )
+
+    def _callee_has_no_calls(self, func: MIRFunction) -> bool:
+        """Return True if the callee body contains no nested Call instructions."""
+        return not any(
+            isinstance(instr, Call)
+            for block in func.blocks.values()
+            for instr in block.instructions
+        )
+
+    def _should_inline_at_site(self, checker: InlinabilityChecker, call: Call) -> bool:
+        """Decide whether to inline this specific call site.
+
+        Extends the function-level should_inline() heuristic with a call-site
+        bypass: when every argument is a compile-time constant and the callee
+        has no nested calls, inlining always pays off because the post-inline
+        peephole can constant-fold the body down to 1-2 instructions.
+        """
+        func_name = call.function
+        if not isinstance(func_name, str):
+            return False
+        if checker.should_inline(func_name):
+            return True
+        # Constant-arg bypass is an implicit heuristic — only at -O2
+        callee = checker.func_map.get(func_name)
+        if (checker.implicit_inline
+                and callee is not None
+                and checker.can_inline(func_name)
+                and self._all_args_constant(call)
+                and self._callee_has_no_calls(callee)):
+            return True
+        return False
+
     def _find_inline_candidates(
         self,
         func: MIRFunction,
@@ -527,7 +643,7 @@ class FunctionInliner:
         for block_id, block in func.blocks.items():
             for idx, instr in enumerate(block.instructions):
                 if isinstance(instr, Call) and isinstance(instr.function, str):
-                    if checker.should_inline(instr.function):
+                    if self._should_inline_at_site(checker, instr):
                         candidates.append((block_id, idx, instr))
 
         return candidates
@@ -630,8 +746,9 @@ class FunctionInliner:
         # In this case, the return value vreg's value is actually in A, not in memory
         # Default calling convention: integer types return in A unless explicitly bound elsewhere
         returns_via_a = (
-            callee.return_type is not None and
-            callee.return_type.name in ('u8', 'i8', 'u16', 'i16')
+            callee.return_type is not None
+            and hasattr(callee.return_type, 'name')
+            and callee.return_type.name in ('u8', 'i8', 'u16', 'i16')
         )
 
         # Collect REMAPPED callee parameter vregs — these may be hw-promoted to
