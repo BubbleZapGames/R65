@@ -215,12 +215,12 @@ fn get_index() -> u16 {
 ### Multiple Return Values
 
 ```rust
-fn divide(dividend @ A: u8, divisor @ X: u16) -> (u8, u8) {
+fn divide(dividend @ A: u8, divisor @ X: u16) -> rA, rX {
     // quotient in A, remainder in X
     return A, X;
 }
 
-let (q @ A, r @ X) = divide(100, 7);
+let q, r = divide(100, 7);
 ```
 
 **Convention**: First return in A, second in X (or B in m8), third in Y. No parentheses in `return` statement.
@@ -230,7 +230,7 @@ let (q @ A, r @ X) = divide(100, 7);
 In m8 mode, B can be returned alone or with other registers:
 
 ```rust
-fn unpack_word(value: u16) -> (u8, u8) {
+fn unpack_word(value: u16) -> rA, rB {
     A = value as u8;
     B = (value >> 8) as u8;
     return A, B;

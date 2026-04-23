@@ -152,19 +152,19 @@ fn get_high_byte(value: u16) -> u8 {
 }
 
 // Return A and B (m8 mode - default)
-fn unpack_word(value: u16) -> (u8, u8) {
+fn unpack_word(value: u16) -> rA, rB {
     A = value as u8;           // Low byte
     B = (value >> 8) as u8;    // High byte
     return A, B;
 }
 
 // Return B first, A second (m8 mode - default)
-fn swap_bytes(low @ A: u8, high @ B: u8) -> (u8, u8) {
+fn swap_bytes(low @ A: u8, high @ B: u8) -> rA, rB {
     return B, A;  // Swap order
 }
 
 // Return B and X (m8 mode - default)
-fn get_high_and_index(value: u16, index: u8) -> (u8, u16) {
+fn get_high_and_index(value: u16, index: u8) -> rB, rX {
     B = (value >> 8) as u8;
     X = index as u16;
     return B, X;  // A not returned - caller must preserve!
@@ -440,7 +440,7 @@ fn pack_word(low @ A: u8, high @ B: u8) -> u16 {
 }
 
 // Alternative: Return both bytes and let caller combine
-fn pack_word_v2(low @ A: u8, high @ B: u8) -> (u8, u8) {
+fn pack_word_v2(low @ A: u8, high @ B: u8) -> rA, rB {
     return A, B;  // Caller assembles into u16
 }
 ```
@@ -449,15 +449,15 @@ fn pack_word_v2(low @ A: u8, high @ B: u8) -> (u8, u8) {
 
 ```rust
 // m8 mode (default)
-fn unpack_word(value: u16) -> (u8, u8) {
+fn unpack_word(value: u16) -> rA, rB {
     A = value as u8;           // Low byte (truncate)
     B = (value >> 8) as u8;    // High byte (shift and truncate)
     return A, B;
 }
 
 // Caller:
-let (low @ A, high @ B) = unpack_word(0x1234);
-// A = 0x34, B = 0x12
+let low, high = unpack_word(0x1234);
+// A (low) = 0x34, B (high) = 0x12
 ```
 
 ### Pattern 3: Extract High Byte Only

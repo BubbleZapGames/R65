@@ -588,7 +588,7 @@ fn get_status() -> u8 {
 
 **Explicit register return**:
 ```rust
-fn get_xy() -> (u8, u8) {
+fn get_xy() -> rX, rY {
     X = PLAYER_X;
     Y = PLAYER_Y;
     return X, Y;

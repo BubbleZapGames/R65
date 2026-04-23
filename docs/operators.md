@@ -1117,7 +1117,7 @@ player.health--;
 ### Checked Operations
 ```rust
 // Possible future syntax:
-let (result, overflow) = checked_mul(a, b);
+let result, overflow = checked_mul(a, b);
 let result = saturating_add(a, b);  // Clamp to max
 ```
 
@@ -1125,7 +1125,7 @@ let result = saturating_add(a, b);  // Clamp to max
 ```rust
 // Return full result:
 let result: u16 = mul_wide(a: u8, b: u8);  // Full 16-bit result
-let (quotient, remainder) = divmod(a, b);  // Both results
+let quotient, remainder = divmod(a, b);  // Both results
 ```
 
 ### Intrinsic STATUS Flag Access

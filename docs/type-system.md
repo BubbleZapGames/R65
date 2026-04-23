@@ -135,16 +135,19 @@ far fn(params) -> return_type    // Far function (JSL/RTL)
 
 **Calling Convention**: Encoded in type
 
-#### Tuples (Multiple Return Values)
+#### Multiple Return Values
 
 ```rust
-(u8, u8)       // Two u8 values (returned in A, B in m8 mode)
-(u8, u16)      // Mixed sizes (returned in A, X)
+fn get_pair() -> rA, rB { return A, B; }   // Two u8 values in A, B (m8 mode)
+fn get_word() -> rA, rX { return A, X; }   // u8 + u16 in A, X
 ```
 
-Tuple types are used for multiple return values. They cannot be stored in variables — only destructured at call sites:
+Register names in the return type must appear in hardware order: A, B, X, Y. `rB` is only valid in m8 mode. The implied types are: `rA` → `u8` (m8) or `u16` (m16), `rB` → `u8`, `rX`/`rY` → `u16`.
+
+Caller captures return values with multi-binding:
 ```rust
-let (a, b) = get_pair();
+let a, b = get_pair();    // declare and bind
+a, b = get_pair();        // assign to existing variables
 ```
 
 #### Never Type
