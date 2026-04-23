@@ -135,6 +135,9 @@ class InstructionSelector:
         self._pending_sep_mask = 0
         self._pending_rep_mask = 0
 
+        # Constant pointer map: vreg.id → known integer address (for inlined constant ptrs)
+        self._vreg_const_map = self._build_vreg_const_map()
+
         # Dispatch table: map MIR instruction type → handler method
         # Built once per InstructionSelector instance; O(1) lookup vs O(n) isinstance chain
         self._dispatch = {
@@ -2183,3 +2186,40 @@ class InstructionSelector:
         # Store result to destination
         dest_loc = self._get_operand_location(instr.dest)
         self._emit_store('STA', dest_loc, comment=f"Store {instr.flag_name} flag value")
+
+    def _build_vreg_const_map(self) -> dict:
+        """Build vreg.id → constant integer value for provably-constant pointer vregs.
+
+        Scans MIR blocks for Move(dest=vreg, source=Immediate(X)) and propagates
+        through one level of copy moves — enough to cover the inliner's pattern
+        of Move(param_vreg, caller_vreg) where caller_vreg was set from an Immediate.
+        """
+        from r65.compiler.mir.nodes import Move, Immediate as MIRImmediate, VirtualRegister
+
+        const_map: dict = {}
+        if not self.current_function:
+            return const_map
+
+        # Pass 1: direct Immediate → vreg assignments.
+        # Only record plain integer Immediates (no 'symbol' attribute) — symbolic
+        # Immediates like `&ARR[2]` store a byte offset that the codegen combines
+        # with the variable's base address, so their raw .value is NOT the address.
+        for block in self.current_function.blocks.values():
+            for instr in block.instructions:
+                if (isinstance(instr, Move)
+                        and isinstance(instr.dest, VirtualRegister)
+                        and isinstance(instr.source, MIRImmediate)
+                        and not getattr(instr.source, 'symbol', None)):
+                    const_map[instr.dest.id] = instr.source.value
+
+        # Pass 2: propagate through vreg→vreg copies (one level)
+        for block in self.current_function.blocks.values():
+            for instr in block.instructions:
+                if (isinstance(instr, Move)
+                        and isinstance(instr.dest, VirtualRegister)
+                        and isinstance(instr.source, VirtualRegister)
+                        and instr.source.id in const_map
+                        and instr.dest.id not in const_map):
+                    const_map[instr.dest.id] = const_map[instr.source.id]
+
+        return const_map
