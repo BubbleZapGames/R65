@@ -14,7 +14,7 @@ from r65.compiler.hir import (
     HIRStructFieldInit, HIRStructLiteralExpr,
     HIRTypeCast, HIRFunctionCall,
     HIRMethodCall, HIRArrayIndex, HIRFieldAccess, HIRDereference, HIRAddressOf, HIRAssignment, HIRMultiAssignment,
-    HIRLetStmt, HIRTupleLetStmt, HIRExprStmt, HIRReturnStmt, HIRIfStmt, HIRWhileStmt, HIRBreakStmt, HIRBlock,
+    HIRLetStmt, HIRMultiLetStmt, HIRTupleLetStmt, HIRExprStmt, HIRReturnStmt, HIRIfStmt, HIRWhileStmt, HIRBreakStmt, HIRBlock,
     HIRStaticDecl, HIRConstDecl, HIRTypeAlias,
     HIRMatchExpression, HIRPattern, HIRLiteralPattern, HIREnumPattern, HIRWildcardPattern, HIRIdentifierPattern, HIROrPattern,
     HIRBlockExpression, HIRIfExpression, HIRLoopExpression,
@@ -867,8 +867,8 @@ class TypeChecker:
         if isinstance(stmt, HIRLetStmt):
             self.check_let_statement(stmt)
 
-        elif isinstance(stmt, HIRTupleLetStmt):
-            self.check_tuple_let_statement(stmt)
+        elif isinstance(stmt, HIRMultiLetStmt):
+            self.check_multi_let_statement(stmt)
 
         elif isinstance(stmt, HIRExprStmt):
             self.check_expression(stmt.expr)
@@ -1005,42 +1005,32 @@ class TypeChecker:
                     "let binding", stmt.source_loc, use_compatible=True
                 )
 
-    def check_tuple_let_statement(self, stmt: HIRTupleLetStmt):
-        """Type check tuple destructuring let binding.
+    def check_multi_let_statement(self, stmt: HIRMultiLetStmt):
+        """Type check multi-binding let statement: let a, b = multi_return_func();
 
-        Example: let (a, b) = func_returning_tuple();
-
-        Supports partial capture - binding fewer names than the tuple size.
-        Extra return values are discarded.
+        Supports partial capture — binding fewer names than the return count.
         """
-        # Check initializer type - must be a tuple
         init_type = self.check_expression(stmt.initializer)
 
         if not isinstance(init_type, TupleTypeInfo):
             raise TypeCheckError(
-                f"Tuple destructuring requires a tuple type, got {init_type}",
+                f"Multi-let binding requires a multi-return function call, got {init_type}",
                 source_loc=stmt.source_loc
             )
 
-        # Check we're not capturing more values than available
         if len(stmt.names) > len(init_type.element_types):
             raise TypeCheckError(
-                f"Cannot destructure {len(init_type.element_types)}-element tuple "
-                f"into {len(stmt.names)} bindings",
+                f"Cannot bind {len(stmt.names)} variables from a {len(init_type.element_types)}-value return",
                 source_loc=stmt.source_loc
             )
 
-        # Infer types for each binding from tuple element types
         var_types = []
         for i, name in enumerate(stmt.names):
             elem_type = init_type.element_types[i]
             var_types.append(elem_type)
-
-            # Update symbol with inferred type
             if i < len(stmt.symbols):
                 stmt.symbols[i].var_type = elem_type
 
-        # Store inferred types in statement
         stmt.var_types = var_types
 
     def check_expression(self, expr: HIRExpression, context_type: Optional[TypeInfo] = None) -> TypeInfo:

@@ -320,7 +320,15 @@ class MacroExpander:
                     binding=stmt.binding,
                     var_type=stmt.var_type,
                     initializer=new_init,
-                    pattern=getattr(stmt, 'pattern', None),
+                    source_loc=stmt.source_loc
+                )
+                result.append(new_stmt)
+            elif isinstance(stmt, ast.MultiLetStmt):
+                new_init = self._expand_expression(stmt.initializer) if stmt.initializer else None
+                new_stmt = ast.MultiLetStmt(
+                    names=stmt.names,
+                    is_mut=stmt.is_mut,
+                    initializer=new_init,
                     source_loc=stmt.source_loc
                 )
                 result.append(new_stmt)

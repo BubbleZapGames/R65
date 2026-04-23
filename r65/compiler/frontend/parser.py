@@ -1419,11 +1419,28 @@ class ASTBuilder(Transformer):
         binding = items[1] if len(items) > 1 else None
         return ('pointer', name, binding)
 
-    def tuple_pattern(self, items):
-        """Tuple pattern: (a, b, c)"""
-        items = self._filter_tokens(items)
-        names = [item.value for item in items if isinstance(item, LarkToken) and item.type == 'IDENT']
-        return ('tuple', names)
+    @v_args(tree=True)
+    def let_multi_stmt(self, tree):
+        """Multi-binding let statement: let [mut] a, b = expr;"""
+        items = self._filter_tokens(tree.children, keep_types={'IDENT', 'MUT'})
+        idx = 0
+        is_mut = False
+        if idx < len(items) and isinstance(items[idx], LarkToken) and items[idx].type == 'MUT':
+            is_mut = True
+            idx += 1
+        # Collect IDENT names until we hit the initializer (non-LarkToken AST node)
+        names = []
+        while idx < len(items) and isinstance(items[idx], LarkToken) and items[idx].type == 'IDENT':
+            names.append(items[idx].value)
+            idx += 1
+        # Remaining item is the initializer expression
+        initializer = items[idx] if idx < len(items) else None
+        return ast.MultiLetStmt(
+            names=names,
+            is_mut=is_mut,
+            initializer=initializer,
+            source_loc=self._make_source_loc(tree.meta)
+        )
 
     @v_args(tree=True)
     def let_stmt(self, tree):
@@ -1448,13 +1465,12 @@ class ASTBuilder(Transformer):
             is_mut = True
             idx += 1
 
-        # Get pattern (single, pointer, or tuple)
+        # Get pattern (single or pointer)
         pattern_item = items[idx]
         idx += 1
 
         name = None
         binding = None
-        tuple_pattern = None
         is_pointer = False
 
         if isinstance(pattern_item, tuple):
@@ -1465,8 +1481,6 @@ class ASTBuilder(Transformer):
                 name = pattern_item[1]
                 binding = pattern_item[2]
                 is_pointer = True
-            elif pattern_item[0] == 'tuple':
-                tuple_pattern = ast.TuplePattern(names=pattern_item[1])
         else:
             # Fallback for direct token (shouldn't happen with new grammar)
             name = pattern_item.value
@@ -1486,7 +1500,7 @@ class ASTBuilder(Transformer):
 
         # Require either type annotation or initializer (or both)
         if var_type is None and initializer is None:
-            var_name = name if name else (tuple_pattern.names[0] if tuple_pattern else "variable")
+            var_name = name if name else "variable"
             source_loc = self._make_source_loc(tree.meta) if hasattr(tree, 'meta') else None
             raise ParseError(
                 f"variable '{var_name}' requires either a type annotation or an initializer",
@@ -1500,7 +1514,6 @@ class ASTBuilder(Transformer):
             binding=binding,
             var_type=var_type,
             initializer=initializer,
-            pattern=tuple_pattern,
             source_loc=self._make_source_loc(tree.meta)
         )
 
@@ -2471,11 +2484,14 @@ class ASTBuilder(Transformer):
             return_type=return_type
         )
 
-    def type_tuple(self, items):
-        """Tuple type for multiple return values: (u8, u8)."""
-        # Filter out punctuation tokens (parentheses, commas)
-        element_types = [item for item in items if not isinstance(item, LarkToken)]
-        return ast.TupleType(element_types=element_types)
+    def multi_return_type(self, items):
+        """Multi-return type: rA, rB — explicit register names in return type."""
+        regs = [
+            str(tok).lstrip('rR').upper()
+            for tok in items
+            if isinstance(tok, LarkToken) and tok.type == 'RETURN_REG'
+        ]
+        return ast.MultiReturnType(register_names=regs)
 
     def type_list(self, items):
         """Type list."""

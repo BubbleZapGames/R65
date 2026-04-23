@@ -66,7 +66,9 @@ param: (FAR | NEAR)? STAR? IDENT ("@" binding)? ":" type_expr
 
 binding: REGISTER | IDENT
 
-return_type: "->" (type_tuple | type_expr | "!")
+return_type: "->" (multi_return_type | type_expr | "!")
+multi_return_type: RETURN_REG ("," RETURN_REG)+
+RETURN_REG.2: /r[AaBbXxYy]\b/
 
 // Static variable declaration
 // Uses initializer_expr to allow struct literals after =
@@ -160,7 +162,7 @@ macro_repetition: DOLLAR "(" macro_body_content+ ")" "," "*"    -> macro_rep_com
                 | DOLLAR "(" macro_body_content+ ")" "*"         -> macro_rep_no_sep
 
 // Any token that can appear in a macro body (excluding special macro syntax)
-macro_token: IDENT | REGISTER | TYPE_NAME | INTEGER | STRING | BOOLEAN
+macro_token: IDENT | REGISTER | RETURN_REG | TYPE_NAME | INTEGER | STRING | BOOLEAN
            | KEYWORD | INCLUDE | INCLUDE_BYTES | CONST | STATIC | LET | MUT | MACRO_RULES
            | FN | FAR | NEAR | IF | ELSE | LOOP | WHILE | MATCH | RETURN
            | BREAK | CONTINUE | ASM | STRUCT | ENUM | TYPE | AS | TRAIT | IMPL | SELF | FOR | IN | DYN
@@ -184,7 +186,7 @@ macro_args: macro_arg ("," macro_arg)* ","?
 // A single macro argument - balanced tokens
 macro_arg: macro_arg_token+
 
-macro_arg_token: IDENT | REGISTER | TYPE_NAME | INTEGER | STRING | BOOLEAN
+macro_arg_token: IDENT | REGISTER | RETURN_REG | TYPE_NAME | INTEGER | STRING | BOOLEAN
                | KEYWORD | MACRO_VAR | INCLUDE | INCLUDE_BYTES | CONST | STATIC | LET | MUT | MACRO_RULES
                | FN | FAR | NEAR | IF | ELSE | LOOP | WHILE | MATCH | RETURN
                | BREAK | CONTINUE | ASM | STRUCT | ENUM | TYPE | AS | TRAIT | IMPL | SELF | FOR | IN | DYN
@@ -232,6 +234,7 @@ block: "{" statement* "}"
 
 // Statements
 ?statement: let_stmt
+          | let_multi_stmt
           | tuple_assign_stmt
           | expr_stmt
           | return_stmt
@@ -254,17 +257,17 @@ tuple_assign_stmt: tuple_target "," tuple_target ("," tuple_target)* "=" expr ";
 tuple_target: IDENT    -> tuple_target_ident
             | REGISTER -> tuple_target_register
 
+// Multi-let statement: let [mut] a, b = multi_return_func();
+// Declares and binds multiple variables from a multi-return function call.
+let_multi_stmt: LET MUT? IDENT ("," IDENT)+ "=" expr ";"
+
 // Uses initializer_expr to allow struct literals after =
-// Supports both single binding and tuple destructuring:
-//   let x = expr;
-//   let (a, b) = tuple_expr;
 // Supports pointer declarations: let [far|near] [mut] *name: type = expr
-let_stmt: LET (FAR | NEAR)? MUT? (tuple_pattern | pointer_pattern | single_pattern) (":" type_expr)? ("=" initializer_expr)? ";"
+let_stmt: LET (FAR | NEAR)? MUT? (pointer_pattern | single_pattern) (":" type_expr)? ("=" initializer_expr)? ";"
         | LET (FAR | NEAR)? MUT? safe_ptr_pattern (":" type_expr)? ("=" initializer_expr)? ";"  -> let_stmt_safe_ptr_error
 single_pattern: IDENT ("@" binding)?
 pointer_pattern: STAR IDENT ("@" binding)?
 safe_ptr_pattern: AMPER IDENT ("@" binding)?
-tuple_pattern: "(" IDENT ("," IDENT)* ")"
 expr_stmt: expr ";"
 // Return statement - single value or tuple: return; | return x; | return a, b;
 return_stmt: RETURN (return_tuple | expr)?  ";"
@@ -462,9 +465,6 @@ type_array: "[" type_expr ";" expr "]"
 // With optional dyn keyword for trait pointers: *dyn Trait or far *dyn Trait
 type_pointer: (FAR | NEAR)? STAR DYN? type_expr
 type_fn: FAR? FN "(" type_list? ")" ("->" type_expr)?
-
-// Tuple type for multiple return values: (u8, u8)
-type_tuple: "(" type_expr ("," type_expr)+ ")"
 
 type_list: type_expr ("," type_expr)* ","?
 

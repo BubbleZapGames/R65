@@ -41,6 +41,7 @@ from r65.compiler.hir import (
     HIRStaticDecl,
     HIRStatement,
     HIRStructLiteralExpr,
+    HIRMultiLetStmt,
     HIRTupleLetStmt,
     HIRTypeCast,
     HIRUnaryOp,
@@ -109,7 +110,7 @@ class R65Linter:
                 rule.visit_let(stmt, self.ctx)
             if stmt.initializer is not None:
                 self._walk_expr(stmt.initializer)
-        elif isinstance(stmt, HIRTupleLetStmt):
+        elif isinstance(stmt, HIRMultiLetStmt):
             if stmt.initializer is not None:
                 self._walk_expr(stmt.initializer)
         elif isinstance(stmt, HIRExprStmt):

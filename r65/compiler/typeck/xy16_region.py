@@ -46,6 +46,7 @@ from r65.compiler.hir import (
     HIRReturnStmt,
     HIRStatement,
     HIRStatusFlagAccess,
+    HIRMultiLetStmt,
     HIRTupleLetStmt,
     HIRTypeCast,
     HIRUnaryOp,
@@ -153,7 +154,7 @@ class Xy16RegionChecker:
         if isinstance(stmt, HIRLetStmt):
             if stmt.initializer is not None and in_x8:
                 self._check_expr(stmt.initializer)
-        elif isinstance(stmt, HIRTupleLetStmt):
+        elif isinstance(stmt, HIRMultiLetStmt):
             if stmt.initializer is not None and in_x8:
                 self._check_expr(stmt.initializer)
         elif isinstance(stmt, HIRExprStmt):

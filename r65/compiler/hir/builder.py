@@ -475,10 +475,14 @@ class HIRBuilder:
         # Exit function scope
         self.symbol_table.exit_scope()
 
-        # Resolve return type
+        # Infer entry mode from parameters and validate X/Y are u16
+        # Must happen before return type resolution (MultiReturnType needs m_mode)
+        entry_m_mode = self._infer_entry_mode_and_validate(hir_params, func.name, func.source_loc)
+
+        # Resolve return type (MultiReturnType uses entry_m_mode to derive element types)
         ret_type = None
         if func.return_type:
-            ret_type = self.type_resolver.resolve_type(func.return_type)
+            ret_type = self._resolve_function_return_type(func.return_type, entry_m_mode)
 
         # Get function symbol
         func_symbol = self.symbol_table.lookup(func.name)
@@ -503,9 +507,6 @@ class HIRBuilder:
             not is_entry and
             self._is_trivial_getter_or_setter(hir_body)):
             inline_attr = InlineAttribute(name='inline')
-
-        # Infer entry mode from parameters and validate X/Y are u16
-        entry_m_mode = self._infer_entry_mode_and_validate(hir_params, func.name, func.source_loc)
 
         # Infer exit mode from return type
         exit_m_mode = self._infer_exit_mode(ret_type)
@@ -709,6 +710,49 @@ class HIRBuilder:
             )
 
         return entry_mode
+
+    def _resolve_function_return_type(self, ast_return_type, entry_m_mode) -> 'TypeInfo':
+        """Resolve function return type, handling MultiReturnType specially."""
+        from r65.compiler.frontend import ast as ast_mod
+        if isinstance(ast_return_type, ast_mod.MultiReturnType):
+            return self._multi_return_to_tuple(ast_return_type, entry_m_mode)
+        return self.type_resolver.resolve_type(ast_return_type)
+
+    def _multi_return_to_tuple(self, mrt, entry_m_mode) -> 'TupleTypeInfo':
+        """Convert MultiReturnType AST node to TupleTypeInfo using the function's m_mode."""
+        from r65.compiler.hir.types import TupleTypeInfo, BasicTypeInfo
+        from r65.compiler.typeck.processor_mode import ModeState
+
+        hw_order = ['A', 'B', 'X', 'Y']
+        reg_to_type = {
+            'A': 'u16' if entry_m_mode == ModeState.M16 else 'u8',
+            'B': 'u8',
+            'X': 'u16',
+            'Y': 'u16',
+        }
+
+        prev_idx = -1
+        for reg in mrt.register_names:
+            if reg not in hw_order:
+                raise HIRError(
+                    f"Invalid return register 'r{reg}'; must be one of rA, rB, rX, rY",
+                    source_loc=getattr(mrt, 'source_loc', None)
+                )
+            idx = hw_order.index(reg)
+            if idx <= prev_idx:
+                raise HIRError(
+                    f"Return registers must be in hardware order (rA, rB, rX, rY); got r{reg} out of order",
+                    source_loc=getattr(mrt, 'source_loc', None)
+                )
+            prev_idx = idx
+            if reg == 'B' and entry_m_mode == ModeState.M16:
+                raise HIRError(
+                    "Register B (rB) is not available in m16 mode",
+                    source_loc=getattr(mrt, 'source_loc', None)
+                )
+
+        element_types = [BasicTypeInfo(name=reg_to_type[r]) for r in mrt.register_names]
+        return TupleTypeInfo(element_types=element_types)
 
     def _infer_exit_mode(self, return_type: Optional[TypeInfo]) -> 'ModeState':
         """
@@ -1541,10 +1585,13 @@ class HIRBuilder:
         # Exit function scope
         self.symbol_table.exit_scope()
 
+        # Infer entry mode from parameters first (MultiReturnType needs m_mode)
+        entry_m_mode = self._infer_entry_mode_and_validate(hir_params, mangled_name, method.source_loc)
+
         # Resolve return type
         ret_type = None
         if method.return_type:
-            ret_type = self.type_resolver.resolve_type(method.return_type)
+            ret_type = self._resolve_function_return_type(method.return_type, entry_m_mode)
 
         # Get method symbol
         method_symbol = self.symbol_table.lookup(mangled_name)
@@ -1560,9 +1607,6 @@ class HIRBuilder:
             not is_entry and
             self._is_trivial_getter_or_setter(hir_body)):
             inline_attr = InlineAttribute(name='inline')
-
-        # Infer entry mode from parameters and validate X/Y are u16
-        entry_m_mode = self._infer_entry_mode_and_validate(hir_params, mangled_name, method.source_loc)
 
         # Infer exit mode from return type
         exit_m_mode = self._infer_exit_mode(ret_type)
@@ -1623,6 +1667,9 @@ class HIRBuilder:
 
         elif isinstance(stmt, ast.LetStmt):
             return self._build_let(stmt)
+
+        elif isinstance(stmt, ast.MultiLetStmt):
+            return self._build_multi_let(stmt)
 
         elif isinstance(stmt, ast.ExprStmt):
             return hir.HIRExprStmt(expr=self._build_expression(stmt.expr), source_loc=stmt.source_loc)
@@ -1730,16 +1777,12 @@ class HIRBuilder:
 
         return result
 
-    def _build_let(self, let: ast.LetStmt) -> Union[hir.HIRLetStmt, hir.HIRTupleLetStmt]:
+    def _build_let(self, let: ast.LetStmt) -> hir.HIRLetStmt:
         """Build HIR let statement from AST."""
         # Build initializer (may be None for uninitialized variables)
         initializer = None
         if let.initializer is not None:
             initializer = self._build_expression(let.initializer)
-
-        # Handle tuple destructuring pattern
-        if let.pattern:
-            return self._build_tuple_let(let, initializer)
 
         # Resolve type (may be inferred)
         var_type = None
@@ -1791,32 +1834,30 @@ class HIRBuilder:
             source_loc=let.source_loc
         )
 
-    def _build_tuple_let(self, let: ast.LetStmt, initializer: hir.HIRExpression) -> hir.HIRTupleLetStmt:
-        """Build HIR tuple let statement for destructuring patterns."""
-        names = let.pattern.names
+    def _build_multi_let(self, stmt: ast.MultiLetStmt) -> hir.HIRMultiLetStmt:
+        """Build HIR multi-let statement: let [mut] a, b = multi_return_func();"""
+        initializer = self._build_expression(stmt.initializer) if stmt.initializer is not None else None
         symbols = []
 
-        # Create a symbol for each binding
-        # Types will be inferred during type checking from the initializer's tuple type
-        for name in names:
+        for name in stmt.names:
             local_symbol = Symbol(
                 name=name,
                 kind=SymbolKind.LOCAL_VAR,
-                definition=let,
+                definition=stmt,
                 scope_id=self.symbol_table.current_scope_id,
-                var_type=None,  # Will be inferred
-                is_mutable=let.is_mut
+                var_type=None,  # Inferred during type checking
+                is_mutable=stmt.is_mut
             )
             self.symbol_table.declare(name, local_symbol)
             symbols.append(local_symbol)
 
-        return hir.HIRTupleLetStmt(
-            names=names,
-            is_mutable=let.is_mut,
-            var_types=[],  # Will be filled during type checking
+        return hir.HIRMultiLetStmt(
+            names=stmt.names,
+            is_mutable=stmt.is_mut,
+            var_types=[],  # Filled during type checking
             initializer=initializer,
             symbols=symbols,
-            source_loc=let.source_loc
+            source_loc=stmt.source_loc
         )
 
     def _build_if(self, if_stmt: ast.IfStmt) -> hir.HIRIfStmt:

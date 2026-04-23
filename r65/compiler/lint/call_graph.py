@@ -44,6 +44,7 @@ from r65.compiler.hir import (
     HIRReturnStmt,
     HIRStatement,
     HIRStructLiteralExpr,
+    HIRMultiLetStmt,
     HIRTupleLetStmt,
     HIRTypeCast,
     HIRUnaryOp,
@@ -214,7 +215,7 @@ class _CallGraphBuilder:
             self._walk_block(stmt)
         elif isinstance(stmt, HIRLetStmt):
             self._walk_expr(stmt.initializer)
-        elif isinstance(stmt, HIRTupleLetStmt):
+        elif isinstance(stmt, HIRMultiLetStmt):
             self._walk_expr(stmt.initializer)
         elif isinstance(stmt, HIRExprStmt):
             self._walk_expr(stmt.expr)

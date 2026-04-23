@@ -67,25 +67,23 @@ class TestFunctionTypes:
 
 
 class TestMultiReturnFunctions:
-    """Tests for functions returning multiple values."""
+    """Tests for functions returning multiple values via rA, rB, rX, rY syntax."""
 
-    def test_parse_tuple_return_type(self):
-        """Test parsing function with tuple return type."""
-        func = parse_function("fn get_pair() -> (u8, u8) { return A, X; }")
-        assert isinstance(func.return_type, ast.TupleType)
-        assert len(func.return_type.element_types) == 2
-        assert func.return_type.element_types[0].name == "u8"
-        assert func.return_type.element_types[1].name == "u8"
+    def test_parse_multi_return_type(self):
+        """Test parsing function with multi-return register type."""
+        func = parse_function("fn get_pair() -> rA, rX { return A, X; }")
+        assert isinstance(func.return_type, ast.MultiReturnType)
+        assert func.return_type.register_names == ['A', 'X']
 
     def test_parse_triple_return_type(self):
-        """Test parsing function with three return values."""
-        func = parse_function("fn get_triple() -> (u8, u8, u8) { return A, X, Y; }")
-        assert isinstance(func.return_type, ast.TupleType)
-        assert len(func.return_type.element_types) == 3
+        """Test parsing function with three return registers."""
+        func = parse_function("fn get_triple() -> rA, rX, rY { return A, X, Y; }")
+        assert isinstance(func.return_type, ast.MultiReturnType)
+        assert func.return_type.register_names == ['A', 'X', 'Y']
 
     def test_parse_multi_return_statement(self):
         """Test parsing return statement with multiple values."""
-        func = parse_function("fn get_pair() -> (u8, u8) { return A, X; }")
+        func = parse_function("fn get_pair() -> rA, rX { return A, X; }")
         ret_stmt = func.body.statements[0]
         assert isinstance(ret_stmt, ast.ReturnStmt)
         assert len(ret_stmt.values) == 2
@@ -99,14 +97,25 @@ class TestMultiReturnFunctions:
                 a, b = get_pair();
             }
         """)
-        # The multi-assignment should be in the body
         stmts = func.body.statements
         assert len(stmts) == 3
 
-    def test_hir_tuple_return_type(self):
-        """Test HIR building for tuple return type."""
+    def test_parse_let_multi_stmt(self):
+        """Test parsing let a, b = func() multi-let syntax."""
+        func = parse_function("""
+            fn test() {
+                let a, b = get_pair();
+            }
+        """)
+        stmts = func.body.statements
+        assert len(stmts) == 1
+        assert isinstance(stmts[0], ast.MultiLetStmt)
+        assert stmts[0].names == ['a', 'b']
+
+    def test_hir_multi_return_type(self):
+        """Test HIR building for multi-return type: TupleTypeInfo is produced internally."""
         hir_prog = build_hir("""
-            fn get_pair() -> (u8, u8) { return A, X; }
+            fn get_pair() -> rA, rX { return A, X; }
         """)
         func = hir_prog.functions[0]
         from r65.compiler.hir.types import TupleTypeInfo

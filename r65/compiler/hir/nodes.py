@@ -351,12 +351,10 @@ class HIRLetStmt(HIRStatement):
 
 
 @dataclass
-class HIRTupleLetStmt(HIRStatement):
-    """Tuple destructuring let binding.
+class HIRMultiLetStmt(HIRStatement):
+    """Multi-binding let statement: let [mut] a, b = multi_return_func();
 
-    Used for: let (a, b) = func_returning_tuple();
-
-    Supports partial capture - binding fewer names than the tuple size.
+    Supports partial capture — binding fewer names than the return count.
     Extra return values are discarded.
     """
     names: List[str] = field(default_factory=list)  # Variable names to bind
@@ -366,6 +364,10 @@ class HIRTupleLetStmt(HIRStatement):
 
     # Symbol references for each binding
     symbols: List[Any] = field(default_factory=list)  # Will be List[Symbol]
+
+
+# Backward-compat alias — remove once all call sites are updated
+HIRTupleLetStmt = HIRMultiLetStmt
 
 
 @dataclass

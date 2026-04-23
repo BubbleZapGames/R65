@@ -315,7 +315,7 @@ class TestTripleCallChainForwarding:
 
 
 class TestMultiReturnAXWithLiveY:
-    """(u8, u16) multi-return via A,X with Y preserved across the call."""
+    """rA, rX multi-return with Y preserved across the call."""
 
     def test_multi_return_a_x_with_live_y(self, e2e):
         """fn returns (21, 0x1600) in A,X. Caller has Y=0xAAAA with #[preserves(Y)]."""
@@ -328,7 +328,7 @@ class TestMultiReturnAXWithLiveY:
             static mut RET_X: u16;
 
             #[preserves(Y)]
-            fn make_pair(a_val @ A: u8) -> (u8, u16) {{
+            fn make_pair(a_val @ A: u8) -> rA, rX {{
                 X = 0x1600;
                 Y = 0xFFFF;  // trash Y, should be restored by #[preserves]
                 return A, X;
@@ -337,7 +337,9 @@ class TestMultiReturnAXWithLiveY:
             #[entry]
             fn main() {{
                 Y = 0xAAAA;
-                let (a, x) = make_pair(21);
+                let mut a: u8;
+                let mut x: u16;
+                a, x = make_pair(21);
                 RET_A = a;
                 RET_X = x;
             }}

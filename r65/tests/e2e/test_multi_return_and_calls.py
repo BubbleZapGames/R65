@@ -2,7 +2,7 @@
 """
 End-to-end tests for multi-return functions and nested calls.
 
-Tests (u8,u8) tuple returns via A/B, nested calls with spilling.
+Tests multi-return functions (rA, rB, rX, rY syntax), nested calls with spilling.
 """
 
 from pathlib import Path
@@ -239,14 +239,14 @@ class TestVariableBoundParams:
 
 
 class TestBRegister:
-    """Test B register parameter passing and (A,B) tuple returns."""
+    """Test B register parameter passing and rA,rB multi-returns."""
 
     def test_b_parameter_and_return(self, e2e):
         """Test B param passing and (u8,u8) return via A,B registers.
 
         Uses --cfg snes (always set by e2e framework) for XBA support.
         Verifies that B parameter is received correctly and can be
-        returned alongside A in a (u8, u8) tuple.
+        returned alongside A using rA, rB multi-return syntax.
         """
         result = e2e.run('''
             #[zeropage(0x10)]
@@ -254,14 +254,16 @@ class TestBRegister:
             #[zeropage(0x11)]
             static mut HI: u8;
 
-            fn add_and_keep(lo @ A: u8, hi @ B: u8) -> (u8, u8) {
+            fn add_and_keep(lo @ A: u8, hi @ B: u8) -> rA, rB {
                 A = lo + 1;
                 return A, B;
             }
 
             #[entry]
             fn main() {
-                let (a_val, b_val) = add_and_keep(0x10, 0x55);
+                let mut a_val: u8;
+                let mut b_val: u8;
+                a_val, b_val = add_and_keep(0x10, 0x55);
                 LO = a_val;
                 HI = b_val;
             }

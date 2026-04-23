@@ -256,9 +256,11 @@ class TypeResolver:
         elif isinstance(ast_type, ast.NeverType):
             return NeverTypeInfo()
 
-        elif isinstance(ast_type, ast.TupleType):
-            element_types = [self.resolve_type(t) for t in ast_type.element_types]
-            return TupleTypeInfo(element_types=element_types)
+        elif isinstance(ast_type, ast.MultiReturnType):
+            raise HIRError(
+                "Multi-return type (rA, rB, ...) can only appear as a function return type",
+                source_loc=getattr(ast_type, 'source_loc', None)
+            )
 
         else:
             raise HIRError(f"Unknown type node: {type(ast_type).__name__}", source_loc=getattr(ast_type, 'source_loc', None))

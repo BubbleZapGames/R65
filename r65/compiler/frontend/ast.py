@@ -100,9 +100,9 @@ class NeverType(Type):
 
 
 @dataclass
-class TupleType(Type):
-    """Tuple type: (T1, T2, ...) for multiple return values."""
-    element_types: List[Type]
+class MultiReturnType(Type):
+    """Multi-return register type: rA, rB — registers a function returns in."""
+    register_names: List[str]  # uppercase: ['A', 'B', 'X', 'Y']
 
 
 # ============================================================================
@@ -521,25 +521,21 @@ class Block(Statement):
 
 
 @dataclass
-class TuplePattern:
-    """Tuple pattern for destructuring: (a, b, c)"""
-    names: List[str]
-
-
-@dataclass
 class LetStmt(Statement):
-    """Let binding statement.
-
-    Supports both single binding and tuple destructuring:
-      let x = expr;           # name="x", pattern=None
-      let (a, b) = expr;      # name=None, pattern=TuplePattern(["a", "b"])
-    """
+    """Let binding statement: let [mut] name [@ binding] [: type] [= expr];"""
     is_mut: bool
-    name: Optional[str]  # Single binding name (None for tuple patterns)
+    name: Optional[str]
     binding: Optional[Union[str, 'Register']]  # Register or variable for aliasing
     var_type: Optional[Type]
     initializer: Expression
-    pattern: Optional[TuplePattern] = None  # Tuple pattern for destructuring
+
+
+@dataclass
+class MultiLetStmt(Statement):
+    """Multi-binding let statement: let [mut] a, b = multi_return_func();"""
+    names: List[str]
+    is_mut: bool
+    initializer: Expression
 
 
 @dataclass

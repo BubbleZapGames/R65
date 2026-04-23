@@ -9,7 +9,7 @@ from typing import Optional, Dict, Any, List, Union
 from r65.compiler.hir import (
     HIRProgram, HIRDeclaration, HIRFunctionDecl, HIRStaticDecl, HIRConstDecl,
     HIRStructDecl, HIREnumDecl,
-    HIRStatement, HIRBlock, HIRLetStmt, HIRTupleLetStmt, HIRExprStmt, HIRReturnStmt,
+    HIRStatement, HIRBlock, HIRLetStmt, HIRMultiLetStmt, HIRTupleLetStmt, HIRExprStmt, HIRReturnStmt,
     HIRIfStmt, HIRWhileStmt, HIRBreakStmt, HIRContinueStmt, HIRAsmStmt,
     HIRExpression, HIRIntegerLiteral, HIRBooleanLiteral, HIREnumVariantExpr, HIRIdentifier,
     HIRFunctionAddress, HIRRegister, HIRStatusFlagAccess, HIRBinaryOp, HIRUnaryOp, HIRTypeCast, HIRAssignment,
@@ -585,8 +585,8 @@ class MIRBuilder:
 
         if isinstance(stmt, HIRLetStmt):
             self.lower_let_statement(stmt)
-        elif isinstance(stmt, HIRTupleLetStmt):
-            self.lower_tuple_let_statement(stmt)
+        elif isinstance(stmt, HIRMultiLetStmt):
+            self.lower_multi_let_statement(stmt)
         elif isinstance(stmt, HIRExprStmt):
             self.lower_expression(stmt.expr)
         elif isinstance(stmt, HIRReturnStmt):
@@ -1062,15 +1062,13 @@ class MIRBuilder:
                     init_value = self.lower_expression(field_init.value)
                     self.emit(Move(dest=field_vreg, source=init_value, type_info=field_vreg.type_info))
 
-    def lower_tuple_let_statement(self, stmt: HIRTupleLetStmt):
+    def lower_multi_let_statement(self, stmt: HIRMultiLetStmt):
         """
-        Lower tuple destructuring let binding.
-
-        Example: let (a, b) = func_returning_tuple();
+        Lower multi-binding let statement: let a, b = multi_return_func();
 
         Return values are in registers determined by callee's return type.
-        For (u8, u8) tuples in m8 mode, uses A, B, X, Y order.
-        Otherwise uses A, X, Y order.
+        For (u8, u8) in m8 mode: A, B, X, Y order.
+        Otherwise: A, X, Y order.
         """
         # Evaluate the initializer (typically a function call)
         # This returns the first value; other values are in registers
