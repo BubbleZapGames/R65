@@ -78,6 +78,27 @@ macro_rules! without_irq($body:tt) {
     asm!("PLP");
 }
 
+// Enable IRQ handling by clearing the I flag.
+// Use once at startup after initialization is complete.
+// Usage: enable_irq!();
+macro_rules! enable_irq() {
+    asm!("CLI");
+}
+
+// Disable IRQ handling by setting the I flag.
+// NMI is unaffected. Prefer without_irq!() for temporary critical sections.
+// Usage: disable_irq!();
+macro_rules! disable_irq() {
+    asm!("SEI");
+}
+
+// Acknowledge a hardware IRQ by reading TIMEUP ($4211), which clears the
+// IRQ flag. Must be called at the start of every #[interrupt(irq)] handler.
+// Usage: irq_ack!();
+macro_rules! irq_ack() {
+    asm!("LDA $4211");
+}
+
 // ============================================================================
 // BCD Arithmetic
 // ============================================================================
