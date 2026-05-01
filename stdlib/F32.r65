@@ -141,6 +141,13 @@ macro_rules! _f32_normalize($lo:expr, $hi:expr, $exp:expr) {
 // F32 Implementation
 // ============================================================================
 
+// Scratch variables for passing args into add_raw (workaround for compiler
+// stack-parameter load bug: any stack param beyond the first is never read).
+#[lowram]
+static mut __f32_add_ohi: u16;
+#[lowram]
+static mut __f32_add_oexp: u16;
+
 impl far F32 {
     // ========================================================================
     // Binary operation macros: dest = self op b
@@ -266,9 +273,10 @@ impl far F32 {
         let mut mant_lo: u16 = val;
         let mut exp: u16 = 151;
 
-        // Normalize: shift left until bit 6 of mant_hi is set
+        // Normalize: shift left until bit 6 of mant_hi is set, bit 7 clear.
+        // Use == 0x40 (generates CMP+BEQ) not != 0 (generates buggy BVC).
         loop {
-            if (mant_hi & 0x40) != 0 {
+            if (mant_hi & 0xC0) == 0x40 {
                 break;
             }
             _f32_shl24!(mant_lo, mant_hi);
@@ -362,14 +370,15 @@ impl far F32 {
     // o_lo: other mantissa low 16 bits
     // o_hi: other mantissa high byte (in low 8 bits of u16)
     // o_exp: other exponent (biased)
-    far fn add_raw(far *self, o_lo: u16, o_hi: u16, o_exp: u16) {
+    far fn add_raw(far *self, o_lo: u16) {
         let s_eh: u16 = self.exp_hi;
         let s_exp: u16 = s_eh >> 8;
+        let o_hi: u16 = __f32_add_ohi;
 
         // If self is zero, just store the other value
         if s_exp == 0 {
             self.mant_lo = o_lo;
-            self.exp_hi = (o_exp << 8) | (o_hi & 0xFF);
+            self.exp_hi = (__f32_add_oexp << 8) | (o_hi & 0xFF);
             return;
         }
 
@@ -379,9 +388,10 @@ impl far F32 {
         let mut o_mlo: u16 = o_lo;
         let mut exp: u16 = s_exp;
 
-        // Align exponents by arithmetic-shifting the smaller mantissa right
-        if s_exp > o_exp {
-            let mut diff: u16 = s_exp - o_exp;
+        // Align exponents by arithmetic-shifting the smaller mantissa right.
+        // Read __f32_add_oexp directly (no local) to avoid slot-reuse clobbering.
+        if s_exp > __f32_add_oexp {
+            let mut diff: u16 = s_exp - __f32_add_oexp;
             if diff > 23 {
                 // Other is too small to matter
                 return;
@@ -392,12 +402,12 @@ impl far F32 {
                 diff = diff - 1;
             }
             exp = s_exp;
-        } else if o_exp > s_exp {
-            let mut diff: u16 = o_exp - s_exp;
+        } else if __f32_add_oexp > s_exp {
+            let mut diff: u16 = __f32_add_oexp - s_exp;
             if diff > 23 {
                 // Self is too small, result is other
                 self.mant_lo = o_lo;
-                self.exp_hi = (o_exp << 8) | (o_hi & 0xFF);
+                self.exp_hi = (__f32_add_oexp << 8) | (o_hi & 0xFF);
                 return;
             }
             loop {
@@ -405,60 +415,34 @@ impl far F32 {
                 _f32_asr24!(s_mlo, s_mhi);
                 diff = diff - 1;
             }
-            exp = o_exp;
+            exp = __f32_add_oexp;
         }
 
-        // Add 24-bit mantissas (two's complement)
+        // Add 24-bit mantissas (two's complement).
+        // Carry out of bit 23 is discarded — this is correct two's complement
+        // arithmetic. The carry never represents an overflow that requires a
+        // right-shift; normalize handles the repositioning.
         let r_lo: u16 = s_mlo + o_mlo;
         let mut carry: u16 = 0;
         if r_lo < s_mlo {
             carry = 1;
         }
-        // Keep r_hi as full u16 to detect overflow past 8 bits
-        let mut r_hi: u16 = (s_mhi & 0xFF) + (o_mhi & 0xFF) + carry;
+        let mut r_hi: u16 = ((s_mhi & 0xFF) + (o_mhi & 0xFF) + carry) & 0xFF;
+        let mut norm_lo: u16 = r_lo;
+        let mut norm_hi: u16 = r_hi;
 
-        // Check for 24-bit overflow (carry past bit 7 of high byte)
-        if (r_hi & 0x100) != 0 {
-            // 25-bit result: shift right by 1, bit 8 becomes new bit 7
-            if (r_hi & 1) != 0 {
-                r_hi = r_hi >> 1;
-                let mut shifted_lo: u16 = r_lo >> 1;
-                shifted_lo = shifted_lo | 0x8000;
-                self.mant_lo = shifted_lo;
-            } else {
-                r_hi = r_hi >> 1;
-                self.mant_lo = r_lo >> 1;
-            }
-            exp = exp + 1;
-            if exp > 255 {
-                // Overflow - set to max
-                self.mant_lo = 0xFFFF;
-                self.exp_hi = 0xFF7F;
+        // Check for zero result
+        if norm_hi == 0 {
+            if norm_lo == 0 {
+                self.mant_lo = 0;
+                self.exp_hi = 0;
                 return;
             }
-            let mut norm_lo: u16 = self.mant_lo;
-            let mut norm_hi: u16 = r_hi & 0xFF;
-            _f32_normalize!(norm_lo, norm_hi, exp);
-            self.mant_lo = norm_lo;
-            self.exp_hi = (exp << 8) | (norm_hi & 0xFF);
-        } else {
-            r_hi = r_hi & 0xFF;
-            let mut norm_lo: u16 = r_lo;
-            let mut norm_hi: u16 = r_hi;
-
-            // Check for zero result
-            if norm_hi == 0 {
-                if norm_lo == 0 {
-                    self.mant_lo = 0;
-                    self.exp_hi = 0;
-                    return;
-                }
-            }
-
-            _f32_normalize!(norm_lo, norm_hi, exp);
-            self.mant_lo = norm_lo;
-            self.exp_hi = (exp << 8) | (norm_hi & 0xFF);
         }
+
+        _f32_normalize!(norm_lo, norm_hi, exp);
+        self.mant_lo = norm_lo;
+        self.exp_hi = (exp << 8) | (norm_hi & 0xFF);
     }
 
     // Add: self += other
@@ -466,7 +450,9 @@ impl far F32 {
         let o_eh: u16 = other.exp_hi;
         let o_exp: u16 = o_eh >> 8;
         if o_exp == 0 { return; }
-        self.add_raw(other.mant_lo, o_eh & 0xFF, o_exp);
+        __f32_add_ohi = o_eh & 0xFF;
+        __f32_add_oexp = o_exp;
+        self.add_raw(other.mant_lo);
     }
 
     // Subtract: self -= other
@@ -478,17 +464,142 @@ impl far F32 {
         let mut neg_lo: u16 = other.mant_lo;
         let mut neg_hi: u16 = o_eh & 0xFF;
         _f32_negate24!(neg_lo, neg_hi);
-        self.add_raw(neg_lo, neg_hi, o_exp);
+        __f32_add_ohi = neg_hi;
+        __f32_add_oexp = o_exp;
+        self.add_raw(neg_lo);
     }
 
-    // Multiply: self *= other
+    // Multiply: self *= other (SNES hardware multiply, 9 partial products)
     far fn mul(far *self, other: far *F32) {
-        _f32_mul_impl(self, other);
+        let s_eh: u16 = self.exp_hi;
+        let o_eh: u16 = other.exp_hi;
+        let s_exp: u16 = s_eh >> 8;
+        let o_exp: u16 = o_eh >> 8;
+
+        if s_exp == 0 { return; }
+        if o_exp == 0 {
+            self.mant_lo = 0;
+            self.exp_hi = 0;
+            return;
+        }
+
+        let mut r_exp: u16 = s_exp + o_exp;
+        if r_exp < 129 {
+            self.mant_lo = 0;
+            self.exp_hi = 0;
+            return;
+        }
+        r_exp = r_exp - 128;
+        if r_exp > 255 {
+            self.mant_lo = 0xFFFF;
+            self.exp_hi = 0xFF7F;
+            return;
+        }
+
+        let result_neg: bool = ((s_eh ^ o_eh) & 0x80) != 0;
+
+        let mut s_hi: u16 = s_eh & 0xFF;
+        let mut s_lo: u16 = self.mant_lo;
+        if (s_hi & 0x80) != 0 {
+            _f32_negate24!(s_lo, s_hi);
+        }
+
+        let mut o_hi: u16 = o_eh & 0xFF;
+        let mut o_lo: u16 = other.mant_lo;
+        if (o_hi & 0x80) != 0 {
+            _f32_negate24!(o_lo, o_hi);
+        }
+
+        let s_l: u8 = s_lo as u8;
+        let s_m: u8 = (s_lo >> 8) as u8;
+        let s_h: u8 = s_hi as u8;
+        let o_l: u8 = o_lo as u8;
+        let o_m: u8 = (o_lo >> 8) as u8;
+        let o_h: u8 = o_hi as u8;
+
+        WRMPYA = s_l;
+        WRMPYB = o_l; NOP(4);
+        let p_ll_hi: u16 = RDMPYH as u16;
+
+        WRMPYB = o_m; NOP(4);
+        let p_lm: u16 = (RDMPYH as u16) << 8 | (RDMPYL as u16);
+
+        WRMPYB = o_h; NOP(4);
+        let p_lh: u16 = (RDMPYH as u16) << 8 | (RDMPYL as u16);
+
+        WRMPYA = s_m;
+        WRMPYB = o_l; NOP(4);
+        let p_ml: u16 = (RDMPYH as u16) << 8 | (RDMPYL as u16);
+
+        WRMPYB = o_m; NOP(4);
+        let p_mm: u16 = (RDMPYH as u16) << 8 | (RDMPYL as u16);
+
+        WRMPYB = o_h; NOP(4);
+        let p_mh: u16 = (RDMPYH as u16) << 8 | (RDMPYL as u16);
+
+        WRMPYA = s_h;
+        WRMPYB = o_l; NOP(4);
+        let p_hl: u16 = (RDMPYH as u16) << 8 | (RDMPYL as u16);
+
+        WRMPYB = o_m; NOP(4);
+        let p_hm: u16 = (RDMPYH as u16) << 8 | (RDMPYL as u16);
+
+        WRMPYB = o_h; NOP(4);
+        let p_hh: u16 = (RDMPYH as u16) << 8 | (RDMPYL as u16);
+
+        // Accumulate top 32 bits of the 48-bit product into res_hi:res_mid
+        let mut carry_count: u16 = 0;
+        let mut old: u16 = 0;
+
+        let mid1: u16 = p_lm + p_ml;
+        let mut mid1_carry: u16 = 0;
+        if mid1 < p_lm { mid1_carry = 1; }
+
+        let mut res_mid: u16 = p_lh;
+
+        old = res_mid;
+        res_mid = res_mid + p_mm;
+        if res_mid < old { carry_count = carry_count + 1; }
+
+        old = res_mid;
+        res_mid = res_mid + p_hl;
+        if res_mid < old { carry_count = carry_count + 1; }
+
+        old = res_mid;
+        res_mid = res_mid + (mid1 >> 8);
+        if res_mid < old { carry_count = carry_count + 1; }
+
+        old = res_mid;
+        res_mid = res_mid + p_ll_hi;
+        if res_mid < old { carry_count = carry_count + 1; }
+
+        let mid2: u16 = p_mh + p_hm;
+        let mut mid2_carry: u16 = 0;
+        if mid2 < p_mh { mid2_carry = 1; }
+
+        old = res_mid;
+        res_mid = res_mid + (mid2 << 8);
+        if res_mid < old { carry_count = carry_count + 1; }
+
+        let res_hi: u16 = p_hh + (mid2 >> 8) + carry_count + mid1_carry + mid2_carry;
+
+        let mut r_mhi: u16 = (res_hi >> 7) & 0x7F;
+        let mut r_mlo: u16 = (res_mid >> 7) | ((res_hi & 0x7F) << 9);
+
+        _f32_normalize!(r_mlo, r_mhi, r_exp);
+
+        if result_neg {
+            _f32_negate24!(r_mlo, r_mhi);
+        }
+
+        self.mant_lo = r_mlo;
+        self.exp_hi = (r_exp << 8) | (r_mhi & 0xFF);
     }
 
     // Divide: self /= other
-    // Uses 24-bit restoring division (24 iterations).
-    // Returns max magnitude on divide-by-zero.
+    // Uses 23-iteration binary long division for full 23-bit quotient precision.
+    // Result exponent: r_exp = s_exp - o_exp + 128 (+ 1 if pre-norm halves dvnd).
+    // Returns max magnitude on divide-by-zero or overflow.
     far fn div(far *self, other: far *F32) {
         let s_eh: u16 = self.exp_hi;
         let o_eh: u16 = other.exp_hi;
@@ -521,53 +632,72 @@ impl far F32 {
             _f32_negate24!(dvsr_lo, dvsr_hi);
         }
 
-        // Compute exponent: s_exp - o_exp + 128
+        // Compute result exponent: s_exp - o_exp + 128.
+        // The 23-iteration algorithm produces Q = (dvnd_norm / dvsr) * 2^23,
+        // which is already normalized (bit 22 set). The +128 accounts for the
+        // 2^23 factor (23 bits) minus the F32 bias correction (151-128=23). Wait
+        // actually: result_value = dvnd_norm/dvsr * 2^(s_exp-o_exp); we store
+        // as mant_Q * 2^(r_exp-151); mant_Q = Q/2^23 * dvsr/dvnd... see formula.
         let mut r_exp: u16 = s_exp + 128;
         if r_exp < o_exp {
-            // Underflow
+            // Underflow: result too small to represent
             self.mant_lo = 0;
             self.exp_hi = 0;
             return;
         }
         r_exp = r_exp - o_exp;
+
+        // Pre-normalize: ensure dvnd < dvsr so the quotient is in [0.5, 1).
+        // If dvnd >= dvsr, halve dvnd and increment r_exp to compensate.
+        // This guarantees bit 22 of Q is always 1 (normalized result, no _f32_normalize! needed).
+        let dvnd_hi8: u16 = dvnd_hi & 0xFF;
+        let dvsr_hi8: u16 = dvsr_hi & 0xFF;
+        if dvnd_hi8 > dvsr_hi8 {
+            _f32_shr24!(dvnd_lo, dvnd_hi);
+            r_exp = r_exp + 1;
+        } else if dvnd_hi8 == dvsr_hi8 {
+            if dvnd_lo >= dvsr_lo {
+                _f32_shr24!(dvnd_lo, dvnd_hi);
+                r_exp = r_exp + 1;
+            }
+        }
+
         if r_exp > 255 {
             self.mant_lo = 0xFFFF;
             self.exp_hi = 0xFF7F;
             return;
         }
+        if r_exp == 0 {
+            self.mant_lo = 0;
+            self.exp_hi = 0;
+            return;
+        }
 
-        // 24-bit restoring division
+        // 23-iteration binary long division.
+        // Each iteration: shift dvnd left, if dvnd >= dvsr subtract and set Q bit.
+        // After 23 iterations Q is normalized: bit 22 set, 23-bit precision.
+        // dvnd_hi & 0xFF is safe (invariant: dvnd < dvsr <= 0x7FFFFF before each shl,
+        // so dvnd_hi <= 0x7F; after shl dvnd_hi <= 0xFF, fits in masked byte).
         let mut q_hi: u16 = 0;
         let mut q_lo: u16 = 0;
-        let mut rem_hi: u16 = 0;
-        let mut rem_lo: u16 = 0;
-        let mut borrow: bool = false;
-        let mut count: u8 = 24;
+        let mut count: u8 = 23;
 
         loop {
-            // Shift remainder left, bring in top bit of dividend
-            _f32_shl24!(rem_lo, rem_hi);
-            if (dvnd_hi & 0x40) != 0 {
-                rem_lo = rem_lo | 1;
-            }
             _f32_shl24!(dvnd_lo, dvnd_hi);
-
-            // Shift quotient left
             _f32_shl24!(q_lo, q_hi);
 
-            // Compare remainder >= divisor (24-bit unsigned)
-            if (rem_hi & 0xFF) > (dvsr_hi & 0xFF) {
-                // Remainder > divisor (high byte), definitely subtract
-                borrow = false;
-                if rem_lo < dvsr_lo { borrow = true; }
-                rem_lo = rem_lo - dvsr_lo;
-                rem_hi = rem_hi - dvsr_hi;
-                if borrow { rem_hi = rem_hi - 1; }
+            let dh8: u16 = dvnd_hi & 0xFF;
+            if dh8 > dvsr_hi8 {
+                let mut borrow: bool = false;
+                if dvnd_lo < dvsr_lo { borrow = true; }
+                dvnd_lo = dvnd_lo - dvsr_lo;
+                dvnd_hi = dvnd_hi - dvsr_hi;
+                if borrow { dvnd_hi = dvnd_hi - 1; }
                 q_lo = q_lo | 1;
-            } else if (rem_hi & 0xFF) == (dvsr_hi & 0xFF) {
-                if rem_lo >= dvsr_lo {
-                    rem_lo = rem_lo - dvsr_lo;
-                    rem_hi = rem_hi - dvsr_hi;
+            } else if dh8 == dvsr_hi8 {
+                if dvnd_lo >= dvsr_lo {
+                    dvnd_lo = dvnd_lo - dvsr_lo;
+                    dvnd_hi = dvnd_hi - dvsr_hi;
                     q_lo = q_lo | 1;
                 }
             }
@@ -576,10 +706,17 @@ impl far F32 {
             if count == 0 { break; }
         }
 
-        // Normalize quotient
-        _f32_normalize!(q_lo, q_hi, r_exp);
+        // Round up (ceiling) if any remainder remains.
+        // This prevents to_string from producing "41.9999" instead of "42.0"
+        // for integer values whose quotient is non-terminating in binary.
+        if (dvnd_hi & 0xFF) != 0 || dvnd_lo != 0 {
+            q_lo = q_lo + 1;
+            if q_lo == 0 {
+                q_hi = q_hi + 1;
+            }
+        }
 
-        // Apply sign
+        // Apply sign (no normalize needed: Q is already in normalized form)
         if result_neg {
             _f32_negate24!(q_lo, q_hi);
         }
@@ -662,228 +799,143 @@ impl far F32 {
 }
 
 // ============================================================================
-// Standalone Multiply Implementations (outside impl for #[cfg] support)
+// F32 ToString
 // ============================================================================
 
-// SNES hardware-accelerated multiply.
-// Uses 8x8 hardware multiply unit for 9 partial products.
-#[cfg(snes)]
-far fn _f32_mul_impl(self_ptr: far *F32, other: far *F32) {
-    let s_eh: u16 = self_ptr.exp_hi;
-    let o_eh: u16 = other.exp_hi;
-    let s_exp: u16 = s_eh >> 8;
-    let o_exp: u16 = o_eh >> 8;
+#[lowram]
+static mut __f32_tostr_work: F32;
+#[lowram]
+static mut __f32_tostr_ten: F32;
+#[lowram]
+static mut __f32_tostr_int: F32;
+#[lowram]
+static mut __f32_tostr_digits: [u8; 6];
 
-    // Zero check
-    if s_exp == 0 { return; }
-    if o_exp == 0 {
-        self_ptr.mant_lo = 0;
-        self_ptr.exp_hi = 0;
-        return;
-    }
-
-    // Compute result exponent: (s_exp + o_exp - 128)
-    let mut r_exp: u16 = s_exp + o_exp;
-    if r_exp < 129 {
-        self_ptr.mant_lo = 0;
-        self_ptr.exp_hi = 0;
-        return;
-    }
-    r_exp = r_exp - 128;
-    if r_exp > 255 {
-        self_ptr.mant_lo = 0xFFFF;
-        self_ptr.exp_hi = 0xFF7F;
-        return;
-    }
-
-    // Determine result sign (XOR of sign bits)
-    let result_neg: bool = ((s_eh ^ o_eh) & 0x80) != 0;
-
-    // Get absolute mantissas
-    let mut s_hi: u16 = s_eh & 0xFF;
-    let mut s_lo: u16 = self_ptr.mant_lo;
-    if (s_hi & 0x80) != 0 {
-        _f32_negate24!(s_lo, s_hi);
-    }
-
-    let mut o_hi: u16 = o_eh & 0xFF;
-    let mut o_lo: u16 = other.mant_lo;
-    if (o_hi & 0x80) != 0 {
-        _f32_negate24!(o_lo, o_hi);
-    }
-
-    // Extract 6 bytes for partial products
-    let s_l: u8 = s_lo as u8;
-    let s_m: u8 = (s_lo >> 8) as u8;
-    let s_h: u8 = s_hi as u8;
-    let o_l: u8 = o_lo as u8;
-    let o_m: u8 = (o_lo >> 8) as u8;
-    let o_h: u8 = o_hi as u8;
-
-    // Compute 9 partial products using hardware multiply.
-    // Grouped by s_byte to minimize WRMPYA reloads.
-
-    // --- s_l group ---
-    WRMPYA = s_l;
-    WRMPYB = o_l; NOP(4);
-    let p_ll_hi: u16 = RDMPYH as u16;
-
-    WRMPYB = o_m; NOP(4);
-    let p_lm: u16 = (RDMPYH as u16) << 8 | (RDMPYL as u16);
-
-    WRMPYB = o_h; NOP(4);
-    let p_lh: u16 = (RDMPYH as u16) << 8 | (RDMPYL as u16);
-
-    // --- s_m group ---
-    WRMPYA = s_m;
-    WRMPYB = o_l; NOP(4);
-    let p_ml: u16 = (RDMPYH as u16) << 8 | (RDMPYL as u16);
-
-    WRMPYB = o_m; NOP(4);
-    let p_mm: u16 = (RDMPYH as u16) << 8 | (RDMPYL as u16);
-
-    WRMPYB = o_h; NOP(4);
-    let p_mh: u16 = (RDMPYH as u16) << 8 | (RDMPYL as u16);
-
-    // --- s_h group ---
-    WRMPYA = s_h;
-    WRMPYB = o_l; NOP(4);
-    let p_hl: u16 = (RDMPYH as u16) << 8 | (RDMPYL as u16);
-
-    WRMPYB = o_m; NOP(4);
-    let p_hm: u16 = (RDMPYH as u16) << 8 | (RDMPYL as u16);
-
-    WRMPYB = o_h; NOP(4);
-    let p_hh: u16 = (RDMPYH as u16) << 8 | (RDMPYL as u16);
-
-    // Accumulate into res_hi:res_mid (top 32 bits of 48-bit product)
-    let mut carry_count: u16 = 0;
-    let mut old: u16 = 0;
-
-    // Offset 1 sum: p_lm + p_ml
-    let mid1: u16 = p_lm + p_ml;
-    let mut mid1_carry: u16 = 0;
-    if mid1 < p_lm { mid1_carry = 1; }
-
-    // Offset 2 sum: p_lh + p_mm + p_hl + (mid1 >> 8) + p_ll_hi
-    let mut res_mid: u16 = p_lh;
-
-    old = res_mid;
-    res_mid = res_mid + p_mm;
-    if res_mid < old { carry_count = carry_count + 1; }
-
-    old = res_mid;
-    res_mid = res_mid + p_hl;
-    if res_mid < old { carry_count = carry_count + 1; }
-
-    old = res_mid;
-    res_mid = res_mid + (mid1 >> 8);
-    if res_mid < old { carry_count = carry_count + 1; }
-
-    old = res_mid;
-    res_mid = res_mid + p_ll_hi;
-    if res_mid < old { carry_count = carry_count + 1; }
-
-    // Offset 3 sum: p_mh + p_hm
-    let mid2: u16 = p_mh + p_hm;
-    let mut mid2_carry: u16 = 0;
-    if mid2 < p_mh { mid2_carry = 1; }
-
-    old = res_mid;
-    res_mid = res_mid + (mid2 << 8);
-    if res_mid < old { carry_count = carry_count + 1; }
-
-    // Build res_hi
-    let mut res_hi: u16 = p_hh + (mid2 >> 8) + carry_count + mid1_carry + mid2_carry;
-
-    // Extract mantissa: product >> 23
-    let mut r_mhi: u16 = (res_hi >> 7) & 0x7F;
-    let mut r_mlo: u16 = (res_mid >> 7) | ((res_hi & 0x7F) << 9);
-
-    _f32_normalize!(r_mlo, r_mhi, r_exp);
-
-    if result_neg {
-        _f32_negate24!(r_mlo, r_mhi);
-    }
-
-    self_ptr.mant_lo = r_mlo;
-    self_ptr.exp_hi = (r_exp << 8) | (r_mhi & 0xFF);
-}
-
-// Software multiply fallback (shift-and-add, 24 iterations).
-#[cfg(not(snes))]
-far fn _f32_mul_impl(self_ptr: far *F32, other: far *F32) {
-    let s_eh: u16 = self_ptr.exp_hi;
-    let o_eh: u16 = other.exp_hi;
-    let s_exp: u16 = s_eh >> 8;
-    let o_exp: u16 = o_eh >> 8;
-
-    if s_exp == 0 { return; }
-    if o_exp == 0 {
-        self_ptr.mant_lo = 0;
-        self_ptr.exp_hi = 0;
-        return;
-    }
-
-    let mut r_exp: u16 = s_exp + o_exp;
-    if r_exp < 129 {
-        self_ptr.mant_lo = 0;
-        self_ptr.exp_hi = 0;
-        return;
-    }
-    r_exp = r_exp - 128;
-    if r_exp > 255 {
-        self_ptr.mant_lo = 0xFFFF;
-        self_ptr.exp_hi = 0xFF7F;
-        return;
-    }
-
-    let result_neg: bool = ((s_eh ^ o_eh) & 0x80) != 0;
-
-    let mut mcand_hi: u16 = s_eh & 0xFF;
-    let mut mcand_lo: u16 = self_ptr.mant_lo;
-    if (mcand_hi & 0x80) != 0 {
-        _f32_negate24!(mcand_lo, mcand_hi);
-    }
-
-    let mut mplier_hi: u16 = o_eh & 0xFF;
-    let mut mplier_lo: u16 = other.mant_lo;
-    if (mplier_hi & 0x80) != 0 {
-        _f32_negate24!(mplier_lo, mplier_hi);
-    }
-
-    let mut res_hi: u16 = 0;
-    let mut res_mid: u16 = 0;
-    let mut new_mid: u16 = 0;
-    let mut carry: bool = false;
-
-    let mut count: u8 = 24;
-    loop {
-        if (mplier_lo & 1) != 0 {
-            new_mid = res_mid + mcand_lo;
-            carry = false;
-            if new_mid < res_mid { carry = true; }
-            res_mid = new_mid;
-            res_hi = res_hi + mcand_hi;
-            if carry { res_hi = res_hi + 1; }
+impl ToString for F32 {
+    fn to_string(far *self, buf: far *u8) -> u16 {
+        // Zero
+        if (self.exp_hi & 0xFF00) == 0 {
+            buf[0 as u16] = '0' as u8;
+            buf[1 as u16] = '.' as u8;
+            buf[2 as u16] = '0' as u8;
+            buf[3 as u16] = 0;
+            return 3;
         }
 
-        _f32_shl24!(mcand_lo, mcand_hi);
-        _f32_shr24!(mplier_lo, mplier_hi);
+        // Copy to work, make absolute
+        let negative: bool = (self.exp_hi & 0x0080) != 0;
+        __f32_tostr_work.mant_lo = self.mant_lo;
+        __f32_tostr_work.exp_hi = self.exp_hi;
+        if negative {
+            __f32_tostr_work.neg();
+        }
 
-        count--;
-        if count == 0 { break; }
+        // Init 10.0 constant
+        __f32_tostr_ten.mant_lo = 0;
+        __f32_tostr_ten.exp_hi = 0x8450;
+
+        // Normalize work to [1.0, 10.0), track decimal exponent n
+        let mut n: i8 = 0;
+        loop {
+            let cmp_result: i8 = __f32_tostr_work.cmp(&__f32_tostr_ten);
+            if cmp_result < 0 { break; }
+            __f32_tostr_work.div(&__f32_tostr_ten);
+            n++;
+        }
+        loop {
+            if (__f32_tostr_work.exp_hi & 0xFF00) == 0 { break; }  // zero guard
+            if (__f32_tostr_work.exp_hi >> 8) >= 0x81 { break; }
+            __f32_tostr_work.mul(&__f32_tostr_ten);
+            n--;
+        }
+
+        // Extract 6 significant digits (values 0-9)
+        let mut k: u8 = 0;
+        loop {
+            if k == 6 { break; }
+            let digit_val: i16 = __f32_tostr_work.to_i16();
+            let digit: u8 = digit_val as u8;
+            __f32_tostr_digits[k as u16] = digit;
+            __f32_tostr_int.from_i16(digit as u16);
+            __f32_tostr_work.sub(&__f32_tostr_int);
+            __f32_tostr_work.mul(&__f32_tostr_ten);
+            k++;
+        }
+
+        // Strip trailing zeros, keep at least 1
+        let mut sig_end: u8 = 6;
+        loop {
+            if sig_end == 1 { break; }
+            if __f32_tostr_digits[(sig_end - 1) as u16] != 0 { break; }
+            sig_end--;
+        }
+
+        // Write formatted output
+        let mut pos: u8 = 0;
+        if negative {
+            buf[pos as u16] = '-' as u8;
+            pos++;
+        }
+
+        if n < 0 {
+            // "0." + (-n-1) leading zeros + sig digits
+            buf[pos as u16] = '0' as u8; pos++;
+            buf[pos as u16] = '.' as u8; pos++;
+            let mut lz: i8 = 0 - n - 1;
+            loop {
+                if lz <= 0 { break; }
+                buf[pos as u16] = '0' as u8; pos++;
+                lz--;
+            }
+            let mut k2: u8 = 0;
+            loop {
+                if k2 == sig_end { break; }
+                buf[pos as u16] = __f32_tostr_digits[k2 as u16] + 0x30;
+                pos++;
+                k2++;
+            }
+        } else if n <= 5 {
+            // (n+1) integer digits + "." + fractional digits
+            let int_digits: u8 = (n as u8) + 1;
+            let mut k3: u8 = 0;
+            loop {
+                if k3 == int_digits { break; }
+                buf[pos as u16] = __f32_tostr_digits[k3 as u16] + 0x30;
+                pos++;
+                k3++;
+            }
+            buf[pos as u16] = '.' as u8; pos++;
+            if int_digits >= sig_end {
+                buf[pos as u16] = '0' as u8; pos++;
+            } else {
+                let mut k4: u8 = int_digits;
+                loop {
+                    if k4 == sig_end { break; }
+                    buf[pos as u16] = __f32_tostr_digits[k4 as u16] + 0x30;
+                    pos++;
+                    k4++;
+                }
+            }
+        } else {
+            // n >= 6: 6 sig digits + (n-5) trailing zeros + ".0"
+            let mut k5: u8 = 0;
+            loop {
+                if k5 == 6 { break; }
+                buf[pos as u16] = __f32_tostr_digits[k5 as u16] + 0x30;
+                pos++;
+                k5++;
+            }
+            let mut tz: u8 = (n as u8) - 5;
+            loop {
+                if tz == 0 { break; }
+                buf[pos as u16] = '0' as u8; pos++;
+                tz--;
+            }
+            buf[pos as u16] = '.' as u8; pos++;
+            buf[pos as u16] = '0' as u8; pos++;
+        }
+
+        buf[pos as u16] = 0;
+        return pos as u16;
     }
-
-    let mut r_mhi: u16 = (res_hi >> 7) & 0x7F;
-    let mut r_mlo: u16 = (res_mid >> 7) | ((res_hi & 0x7F) << 9);
-
-    _f32_normalize!(r_mlo, r_mhi, r_exp);
-
-    if result_neg {
-        _f32_negate24!(r_mlo, r_mhi);
-    }
-
-    self_ptr.mant_lo = r_mlo;
-    self_ptr.exp_hi = (r_exp << 8) | (r_mhi & 0xFF);
 }

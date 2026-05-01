@@ -427,6 +427,18 @@ class ControlFlowInstructionSelector(BaseSelector):
         if cond_loc.is_hw('A'):
             pass  # Z flag already set from previous operation
         else:
+            # Ensure accumulator mode matches the condition value's size before
+            # loading. Without this, loading a u8/bool variable in m16 mode reads
+            # 2 bytes — including garbage from the byte above the local frame —
+            # causing BEQ/BNE to branch on a corrupted 16-bit value.
+            from r65.compiler.codegen.type_utils import get_vreg_size
+            from r65.compiler.mir.nodes import VirtualRegister
+            if isinstance(instr.condition, VirtualRegister):
+                cond_size = get_vreg_size(instr.condition)
+                if cond_size == 1:
+                    self.parent._ensure_m8_mode()
+                elif cond_size == 2:
+                    self.parent._ensure_m16_mode()
             self.parent._emit_load('LDA', cond_loc)
 
         true_target = self._block_label(instr.true_target)
