@@ -141,13 +141,14 @@ class TestTraitHIR:
         assert symbol.kind.value == "trait"
 
     def test_type_id_assigned(self):
-        """Structs implementing traits get TypeId."""
+        """Structs implementing traits get TypeId when trait is used via *dyn."""
         source = """
             struct Player { x: u8 }
             struct Enemy { x: u8 }
             trait Drawable { fn draw(*self); }
             impl Drawable for Player { fn draw(*self) { } }
             impl Drawable for Enemy { fn draw(*self) { } }
+            fn use_dyn(d: *dyn Drawable) { d.draw(); }
         """
         hir = build_and_check(source)
 
@@ -166,6 +167,7 @@ class TestTraitHIR:
             struct Player { x: u8, y: u8 }
             trait Drawable { fn draw(*self); }
             impl Drawable for Player { fn draw(*self) { } }
+            fn use_dyn(d: *dyn Drawable) { d.draw(); }
         """
         hir = build_and_check(source)
 
@@ -188,6 +190,7 @@ class TestTraitHIR:
             struct Player { x: u8, y: u8 }
             trait Drawable { fn draw(*self); }
             impl Drawable for Player { fn draw(*self) { } }
+            fn use_dyn(d: *dyn Drawable) { d.draw(); }
         """
         hir = build_and_check(source)
 
@@ -446,6 +449,7 @@ class TestTraitMIR:
             impl Drawable for Player { fn draw(*self) { } }
             #[lowram]
             static mut PLAYER: Player = Player { x: 42, y: 10 };
+            fn use_dyn(d: *dyn Drawable) { d.draw(); }
         """
         asm = compile_to_asm(source)
 
