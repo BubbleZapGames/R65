@@ -230,6 +230,10 @@ class SymbolDefinitionGenerator:
                 # Fallback to 0 if not evaluated
                 value = 0
 
+            # Skip struct/dict constants — WLA-DX .EQU only accepts integers
+            if not isinstance(value, int):
+                continue
+
             self.emitter.emit_equ(const.name, value)
 
         self.emitter.emit_blank_line()

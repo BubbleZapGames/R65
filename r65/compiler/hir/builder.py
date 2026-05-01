@@ -8,7 +8,7 @@ Uses a two-pass algorithm:
 """
 
 import re
-from typing import List, Union, Optional, Dict
+from typing import List, Union, Optional, Dict, Set
 from pathlib import Path
 from r65.compiler.frontend import ast
 
@@ -61,6 +61,7 @@ class HIRBuilder:
         self._struct_type_ids: Dict[str, int] = {}  # struct_name -> type_id
         self._trait_impls: Dict[str, List[str]] = {}  # trait_name -> [struct_name, ...] ordered by TypeId
         self._struct_trait_kind: Dict[str, str] = {}  # struct_name -> 'near' or 'far'
+        self._dyn_used_traits: Set[str] = set()  # trait names used with *dyn
 
     def _process_snesrom_attribute(self, attr: ast.Attribute):
         """Process snesrom attribute that was mistakenly attached to a function."""
@@ -131,6 +132,11 @@ class HIRBuilder:
         # Track global attributes
         stack_attr = None
         snesrom_config = None
+
+        # Pass 0: Scan for *dyn Trait usages to determine which traits need TypeIds.
+        # TypeId injection changes struct layout, so it must only happen for traits
+        # actually used with dynamic dispatch (*dyn), not static dispatch.
+        self._dyn_used_traits = self._collect_dyn_traits(ast_program)
 
         # Pass 1: Declare all top-level symbols (filtered by cfg)
         # Also track bank directives to maintain ordering
@@ -209,6 +215,147 @@ class HIRBuilder:
             snesrom_config=snesrom_config,
             trait_dispatch_info=trait_dispatch_info
         )
+
+    def _collect_dyn_traits(self, program: ast.Program) -> Set[str]:
+        """Pre-pass: find all trait names used in *dyn Trait positions.
+
+        TypeId injection (which changes struct layout) must only happen for traits
+        used with dynamic dispatch. This scan determines which traits need it.
+        """
+        dyn_traits: Set[str] = set()
+
+        def scan_type(t) -> None:
+            if t is None:
+                return
+            if isinstance(t, ast.PointerType):
+                if t.is_dyn and isinstance(t.pointee_type, ast.BasicType):
+                    dyn_traits.add(t.pointee_type.name)
+                scan_type(t.pointee_type)
+            elif isinstance(t, ast.ArrayType):
+                scan_type(t.element_type)
+            elif isinstance(t, ast.FunctionType):
+                for pt in t.param_types:
+                    scan_type(pt)
+                scan_type(t.return_type)
+
+        def scan_expr(e) -> None:
+            if e is None:
+                return
+            if isinstance(e, ast.TypeCast):
+                scan_type(e.target_type)
+                scan_expr(e.expr)
+            elif isinstance(e, ast.BinaryOp):
+                scan_expr(e.left)
+                scan_expr(e.right)
+            elif isinstance(e, ast.UnaryOp):
+                scan_expr(e.operand)
+            elif isinstance(e, ast.FunctionCall):
+                scan_expr(e.func)
+                for arg in e.args:
+                    scan_expr(arg)
+            elif isinstance(e, ast.ArrayIndex):
+                scan_expr(e.array)
+                scan_expr(e.index)
+            elif isinstance(e, ast.FieldAccess):
+                scan_expr(e.base)
+            elif isinstance(e, ast.Dereference):
+                scan_expr(e.pointer)
+            elif isinstance(e, ast.AddressOf):
+                scan_expr(e.operand)
+            elif isinstance(e, (ast.Assignment, ast.CompoundAssignment)):
+                scan_expr(e.target)
+                scan_expr(e.value)
+            elif isinstance(e, ast.MultiAssignment):
+                for t in e.targets:
+                    scan_expr(t)
+                scan_expr(e.value)
+            elif isinstance(e, ast.ArrayLiteralExpr):
+                for elem in e.elements:
+                    scan_expr(elem)
+            elif isinstance(e, ast.StructLiteralExpr):
+                for fi in e.fields:
+                    scan_expr(fi.value)
+            elif isinstance(e, ast.BlockExpression):
+                for stmt in e.statements:
+                    scan_stmt(stmt)
+                scan_expr(e.final_expr)
+            elif isinstance(e, ast.IfExpression):
+                scan_expr(e.condition)
+                scan_expr(e.then_block)
+                scan_expr(e.else_block)
+            elif isinstance(e, ast.LoopExpression):
+                scan_block(e.body)
+            elif isinstance(e, ast.MatchExpression):
+                scan_expr(e.scrutinee)
+                for arm in e.arms:
+                    scan_expr(arm.body)
+            elif isinstance(e, ast.BreakStmt):
+                scan_expr(e.value)
+
+        def scan_block(block) -> None:
+            if block is None:
+                return
+            for stmt in block.statements:
+                scan_stmt(stmt)
+
+        def scan_stmt(s) -> None:
+            if s is None:
+                return
+            if isinstance(s, ast.Block):
+                scan_block(s)
+            elif isinstance(s, ast.LetStmt):
+                scan_type(s.var_type)
+                scan_expr(s.initializer)
+            elif isinstance(s, ast.MultiLetStmt):
+                scan_expr(s.initializer)
+            elif isinstance(s, ast.ExprStmt):
+                scan_expr(s.expr)
+            elif isinstance(s, ast.ReturnStmt):
+                for v in s.values:
+                    scan_expr(v)
+            elif isinstance(s, ast.IfStmt):
+                scan_expr(s.condition)
+                scan_block(s.then_block)
+                scan_stmt(s.else_block)
+            elif isinstance(s, ast.LoopStmt):
+                scan_block(s.body)
+            elif isinstance(s, ast.WhileStmt):
+                scan_expr(s.condition)
+                scan_block(s.body)
+            elif isinstance(s, ast.ForStmt):
+                scan_expr(s.start)
+                scan_expr(s.end)
+                scan_block(s.body)
+            elif isinstance(s, ast.BreakStmt):
+                scan_expr(s.value)
+            elif isinstance(s, ast.ConstAssertStmt):
+                scan_expr(s.condition)
+
+        def scan_params(params) -> None:
+            for p in params:
+                scan_type(p.param_type)
+
+        for decl in program.items:
+            if isinstance(decl, ast.FunctionDecl):
+                scan_params(decl.params)
+                scan_type(decl.return_type)
+                scan_block(decl.body)
+            elif isinstance(decl, ast.StaticDecl):
+                scan_type(decl.var_type)
+            elif isinstance(decl, ast.StructDecl):
+                for field in decl.fields:
+                    scan_type(field.field_type)
+            elif isinstance(decl, ast.TraitDecl):
+                for method in decl.methods:
+                    scan_params(method.params)
+                    scan_type(method.return_type)
+            elif isinstance(decl, ast.ImplDecl):
+                for method in decl.methods:
+                    scan_params(method.params)
+                    scan_type(method.return_type)
+                    scan_block(method.body)
+
+        return dyn_traits
 
     def _should_include_declaration(self, decl: ast.Declaration) -> bool:
         """
@@ -1337,8 +1484,10 @@ class HIRBuilder:
                 source_loc=impl.source_loc
             )
 
-        # Assign TypeId if struct doesn't have one yet
-        if impl.struct_name not in self._struct_type_ids:
+        # Assign TypeId only for traits used with *dyn (dynamic dispatch).
+        # TypeId injection inserts __type_id: u8 at offset 0, changing struct layout.
+        # Traits used only for static dispatch (direct method calls) must not alter layout.
+        if impl.trait_name in self._dyn_used_traits and impl.struct_name not in self._struct_type_ids:
             type_id = self._next_type_id
             self._next_type_id += 1
             self._struct_type_ids[impl.struct_name] = type_id
@@ -2232,9 +2381,12 @@ class HIRBuilder:
             # Determine if trait is far
             is_far = any(m.is_far for m in trait_def.methods) if trait_def.methods else False
 
-            # Build implementor list sorted by TypeId
+            # Build implementor list sorted by TypeId.
+            # Only include structs that have a TypeId (i.e., used with *dyn).
             implementors = []
             for struct_name in struct_names:
+                if struct_name not in self._struct_type_ids:
+                    continue  # static-dispatch only; no dispatch table entry needed
                 type_id = self._struct_type_ids[struct_name]
                 mangled_names = []
                 for method_name in method_names:
@@ -2250,6 +2402,10 @@ class HIRBuilder:
 
             # Sort by type_id for correct table indexing
             implementors.sort(key=lambda x: x['type_id'])
+
+            # Skip traits with no *dyn implementors (static dispatch only)
+            if not implementors:
+                continue
 
             info[trait_name] = {
                 'is_far': is_far,

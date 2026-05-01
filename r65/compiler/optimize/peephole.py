@@ -2494,7 +2494,7 @@ class PeepholeOptimizer:
                                 all_zn = False  # Needs V or C from CMP
                                 break
                             elif n.opcode in (Opcode.EOR_IMMEDIATE,
-                                              Opcode.JMP, Opcode.JMP_LONG):
+                                              Opcode.JMP_ABSOLUTE, Opcode.JMP_LONG):
                                 continue  # Part of signed compare / long branch pattern
                             else:
                                 break  # Non-branch instruction, stop scanning

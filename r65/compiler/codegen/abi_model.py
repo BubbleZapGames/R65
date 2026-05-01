@@ -346,6 +346,17 @@ class ABIModel(ABC):
                 elif arg.mechanism == ArgumentMechanism.SCRATCH_PARAM:
                     selector.emit_scratch_param_argument(arg, arg_loc)
 
+        # Handle SELF_Y argument last (after stack args are pushed).
+        # Loads Y = self addr and sets DBR = self bank via load_y_with_far_self,
+        # or just Y = self addr via load_y_with_self.
+        self_y_arg = next((a for a in instr.args if a.mechanism == ArgumentMechanism.SELF_Y), None)
+        if self_y_arg is not None:
+            from r65.compiler.hir.types import PointerTypeInfo
+            if isinstance(self_y_arg.param_type, PointerTypeInfo) and self_y_arg.param_type.is_far:
+                selector.load_y_with_far_self(self_y_arg, 0)
+            else:
+                selector.load_y_with_self(self_y_arg, 0)
+
         return stack_bytes_pushed
 
     def _reorder_scratch_params(self, selector, args):
@@ -1032,6 +1043,15 @@ class ABIDefault(ABIModel):
 
                 elif arg.mechanism == ArgumentMechanism.SCRATCH_PARAM:
                     selector.emit_scratch_param_argument(arg, arg_loc)
+
+        # Handle SELF_Y argument last (after stack args are pushed).
+        self_y_arg = next((a for a in instr.args if a.mechanism == ArgumentMechanism.SELF_Y), None)
+        if self_y_arg is not None:
+            from r65.compiler.hir.types import PointerTypeInfo
+            if isinstance(self_y_arg.param_type, PointerTypeInfo) and self_y_arg.param_type.is_far:
+                selector.load_y_with_far_self(self_y_arg, 0)
+            else:
+                selector.load_y_with_self(self_y_arg, 0)
 
         return stack_bytes_pushed
 

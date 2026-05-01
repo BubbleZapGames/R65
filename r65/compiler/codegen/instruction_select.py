@@ -1281,6 +1281,16 @@ class InstructionSelector:
         Returns:
             Address for temporary storage, or None if no scratch available
         """
+        # In D=S frames the Direct Page register points to the stack frame,
+        # so DP-relative addressing (STA $02) targets D+offset (a stack slot)
+        # rather than the scratch variable's physical address. Returning None
+        # here forces callers to use non-DP fallbacks (AND-based BIT tests,
+        # TXA/TYA-based compares, etc.) that are safe in D=S frames.
+        from r65.compiler.mir.nodes import FarPtrStrategy
+        if (self.current_function and
+                self.current_function.has_far_ptr_stack_params and
+                self.current_function.far_ptr_strategy != FarPtrStrategy.SET_DBR):
+            return None
         if self.reg_alloc.scratch_pool:
             for scratch in self.reg_alloc.scratch_pool.scratches:
                 if scratch.is_free:

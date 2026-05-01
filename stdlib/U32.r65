@@ -644,3 +644,41 @@ impl far U32 {
         self.hi = 0;
     }
 }
+
+// ============================================================================
+// U32 ToString
+// ============================================================================
+
+#[lowram]
+static mut __u32_tostr_tmp: U32;
+#[lowram]
+static mut __u32_tostr_digits: [u8; 11];
+
+impl ToString for U32 {
+    fn to_string(far *self, buf: far *u8) -> u16 {
+        __u32_tostr_tmp.lo = self.lo;
+        __u32_tostr_tmp.hi = self.hi;
+        if __u32_tostr_tmp.hi == 0 && __u32_tostr_tmp.lo == 0 {
+            buf[0 as u16] = 0x30;
+            buf[1 as u16] = 0;
+            return 1;
+        }
+        let mut count: u8 = 0;
+        loop {
+            let d: u8 = __u32_tostr_tmp.div_u8(10);
+            __u32_tostr_digits[count as u16] = d + 0x30;
+            count++;
+            if __u32_tostr_tmp.hi == 0 && __u32_tostr_tmp.lo == 0 { break; }
+        }
+        let mut i: u8 = count;
+        let mut j: u8 = 0;
+        loop {
+            if i == 0 { break; }
+            i--;
+            buf[j as u16] = __u32_tostr_digits[i as u16];
+            j++;
+        }
+        buf[count as u16] = 0;
+        return count as u16;
+    }
+}

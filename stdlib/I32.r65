@@ -866,15 +866,16 @@ impl far I32 {
         }
 
         // Get absolute value of divisor
-        A = X as u8;
-        if A & 0x80 != 0 {
+        // NOTE: must save to local first — the if-condition (AND #$80) destroys A,
+        // so we cannot rely on A after the branch.
+        abs_divisor = X as u8;
+        if abs_divisor >= 0x80 {
             negate_result = !negate_result;  // XOR sign flags
-            // Negate divisor
-            A = A ^ 0xFF;
-            A = A + 1;
+            // Negate divisor directly in local
+            abs_divisor = abs_divisor ^ 0xFF;
+            abs_divisor = abs_divisor + 1;
         }
-        abs_divisor = A;
-        X = A;
+        X = abs_divisor as u16;
 
         // Load words into locals
         hi_word = self.hi;
@@ -944,5 +945,66 @@ impl far I32 {
             self.lo = A as u16;
             self.hi = 0;
         }
+    }
+}
+
+// ============================================================================
+// I32 ToString
+// ============================================================================
+
+#[lowram]
+static mut __i32_tostr_tmp: I32;
+#[lowram]
+static mut __i32_tostr_digits: [u8; 11];
+
+impl ToString for I32 {
+    fn to_string(far *self, buf: far *u8) -> u16 {
+        // Special case: INT_MIN (-2147483648) cannot be negated
+        if self.hi == 0x8000 && self.lo == 0 {
+            buf[0 as u16] = '-' as u8;
+            buf[1 as u16] = '2' as u8;
+            buf[2 as u16] = '1' as u8;
+            buf[3 as u16] = '4' as u8;
+            buf[4 as u16] = '7' as u8;
+            buf[5 as u16] = '4' as u8;
+            buf[6 as u16] = '8' as u8;
+            buf[7 as u16] = '3' as u8;
+            buf[8 as u16] = '6' as u8;
+            buf[9 as u16] = '4' as u8;
+            buf[10 as u16] = '8' as u8;
+            buf[11 as u16] = 0;
+            return 11;
+        }
+        __i32_tostr_tmp.lo = self.lo;
+        __i32_tostr_tmp.hi = self.hi;
+        if __i32_tostr_tmp.hi == 0 && __i32_tostr_tmp.lo == 0 {
+            buf[0 as u16] = 0x30;
+            buf[1 as u16] = 0;
+            return 1;
+        }
+        let mut pos: u8 = 0;
+        if (__i32_tostr_tmp.hi & 0x8000) != 0 {
+            buf[0 as u16] = '-' as u8;
+            pos = 1;
+            _i32_negate!(__i32_tostr_tmp.lo, __i32_tostr_tmp.hi);
+        }
+        let mut count: u8 = 0;
+        loop {
+            let d: i8 = __i32_tostr_tmp.div_i8(10);
+            __i32_tostr_digits[count as u16] = (d as u8) + 0x30;
+            count++;
+            if __i32_tostr_tmp.hi == 0 && __i32_tostr_tmp.lo == 0 { break; }
+        }
+        let mut i: u8 = count;
+        let mut j: u8 = pos;
+        loop {
+            if i == 0 { break; }
+            i--;
+            buf[j as u16] = __i32_tostr_digits[i as u16];
+            j++;
+        }
+        let total: u8 = pos + count;
+        buf[total as u16] = 0;
+        return total as u16;
     }
 }

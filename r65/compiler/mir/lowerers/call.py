@@ -310,14 +310,27 @@ class CallLowerer:
         # Create argument list with self as first argument
         args = []
 
-        # Self parameter (always stack-passed)
+        # Self parameter: trait methods with far *self use SELF_Y mechanism
+        # (callee does PHB+PHY at entry expecting Y=addr, DBR=bank);
+        # all other methods push self on the stack.
         self_param = func_decl.parameters[0]  # First parameter is self
-        args.append(Argument(
-            value=self_vreg,
-            mechanism=ArgumentMechanism.STACK,
-            location=None,
-            param_type=self_param.param_type
-        ))
+        from r65.compiler.hir.types import PointerTypeInfo
+        _self_is_far = isinstance(self_param.param_type, PointerTypeInfo) and self_param.param_type.is_far
+        _is_trait = getattr(func_decl, 'is_trait_method', False)
+        if _is_trait and _self_is_far:
+            args.append(Argument(
+                value=self_vreg,
+                mechanism=ArgumentMechanism.SELF_Y,
+                location=HardwareRegister('Y'),
+                param_type=self_param.param_type
+            ))
+        else:
+            args.append(Argument(
+                value=self_vreg,
+                mechanism=ArgumentMechanism.STACK,
+                location=None,
+                param_type=self_param.param_type
+            ))
 
         # Lower remaining arguments
         for i, arg_expr in enumerate(call_expr.args):

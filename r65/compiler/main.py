@@ -127,25 +127,25 @@ def _inject_builtin_traits(program):
 
     These traits are always available without explicit include.
     Currently injects:
-      - ToString: fn to_string(*self, buf: *u8) -> u16
+      - ToString: fn to_string(*self, buf: far *u8) -> u16
     """
     from r65.compiler.frontend.ast import (
         TraitDecl, TraitMethod, Parameter, BasicType, PointerType,
     )
 
-    # trait ToString { fn to_string(*self, buf: *u8) -> u16; }
+    # trait ToString { fn to_string(far *self, buf: far *u8) -> u16; }
     toString_trait = TraitDecl(
         name='ToString',
         methods=[
             TraitMethod(
                 is_far=False,
                 name='to_string',
-                self_is_far=False,
+                self_is_far=True,
                 params=[
                     Parameter(
                         name='buf',
                         binding=None,
-                        param_type=PointerType(is_far=False, pointee_type=BasicType('u8')),
+                        param_type=PointerType(is_far=True, pointee_type=BasicType('u8')),
                     ),
                 ],
                 return_type=BasicType('u16'),
