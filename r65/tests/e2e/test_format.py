@@ -41,7 +41,7 @@ class TestFormatLiteral:
         result = e2e.run(f'''
             include!("{STRING_PATH}")
 
-            #[ram]
+            #[ram(0x7E2000)]
             static mut BUF: [u8; 32] = [0xFF; 32];
 
             #[zeropage(0x10)]
@@ -68,7 +68,7 @@ class TestFormatLiteral:
         result = e2e.run(f'''
             include!("{STRING_PATH}")
 
-            #[ram]
+            #[ram(0x7E2000)]
             static mut BUF: [u8; 8] = [0xFF; 8];
 
             #[zeropage(0x10)]
@@ -98,7 +98,7 @@ class TestFormatU8:
         result = e2e.run(f'''
             include!("{STRING_PATH}")
 
-            #[ram]
+            #[ram(0x7E2000)]
             static mut BUF: [u8; 32] = [0xFF; 32];
 
             #[zeropage(0x10)]
@@ -129,7 +129,7 @@ class TestFormatU16:
         result = e2e.run(f'''
             include!("{STRING_PATH}")
 
-            #[ram]
+            #[ram(0x7E2000)]
             static mut BUF: [u8; 32] = [0xFF; 32];
 
             #[zeropage(0x10)]
@@ -156,7 +156,7 @@ class TestFormatU16:
         result = e2e.run(f'''
             include!("{STRING_PATH}")
 
-            #[ram]
+            #[ram(0x7E2000)]
             static mut BUF: [u8; 32] = [0xFF; 32];
 
             #[zeropage(0x10)]
@@ -187,7 +187,7 @@ class TestFormatHex:
         result = e2e.run(f'''
             include!("{STRING_PATH}")
 
-            #[ram]
+            #[ram(0x7E2000)]
             static mut BUF: [u8; 32] = [0xFF; 32];
 
             #[zeropage(0x10)]
@@ -212,7 +212,7 @@ class TestFormatHex:
         result = e2e.run(f'''
             include!("{STRING_PATH}")
 
-            #[ram]
+            #[ram(0x7E2000)]
             static mut BUF: [u8; 32] = [0xFF; 32];
 
             #[zeropage(0x10)]
@@ -248,7 +248,7 @@ class TestFormatMixed:
         result = e2e.run(f'''
             include!("{STRING_PATH}")
 
-            #[ram]
+            #[ram(0x7E2000)]
             static mut BUF: [u8; 32] = [0xFF; 32];
 
             #[zeropage(0x10)]
@@ -289,7 +289,7 @@ class TestFormatChar:
         result = e2e.run(f'''
             include!("{STRING_PATH}")
 
-            #[ram]
+            #[ram(0x7E2000)]
             static mut BUF: [u8; 32] = [0xFF; 32];
 
             #[zeropage(0x10)]
@@ -322,9 +322,9 @@ class TestFormatString:
         result = e2e.run(f'''
             include!("{STRING_PATH}")
 
-            #[ram]
+            #[ram(0x7E2000)]
             static mut BUF: [u8; 32] = [0xFF; 32];
-            #[ram]
+            #[ram(0x7E2020)]
             static mut NAME: [u8; 8] = "World\\0";
 
             #[zeropage(0x10)]
@@ -361,9 +361,9 @@ class TestFormatToString:
             include!("{STRING_PATH}")
             include!("{u32_path}")
 
-            #[ram]
+            #[ram(0x7E2000)]
             static mut BUF: [u8; 32] = [0xFF; 32];
-            #[ram]
+            #[ram(0x7E2020)]
             static mut N: U32;
 
             #[zeropage(0x10)]
@@ -402,7 +402,7 @@ class TestFormatEscapedBraces:
         result = e2e.run(f'''
             include!("{STRING_PATH}")
 
-            #[ram]
+            #[ram(0x7E2000)]
             static mut BUF: [u8; 32] = [0xFF; 32];
 
             #[zeropage(0x10)]
@@ -440,7 +440,7 @@ class TestFormatPadded:
         result = e2e.run(f'''
             include!("{STRING_PATH}")
 
-            #[ram]
+            #[ram(0x7E2000)]
             static mut BUF: [u8; 32] = [0xFF; 32];
 
             #[zeropage(0x10)]
@@ -469,7 +469,7 @@ class TestFormatPadded:
         result = e2e.run(f'''
             include!("{STRING_PATH}")
 
-            #[ram]
+            #[ram(0x7E2000)]
             static mut BUF: [u8; 32] = [0xFF; 32];
 
             #[zeropage(0x10)]
@@ -496,7 +496,7 @@ class TestFormatPadded:
         result = e2e.run(f'''
             include!("{STRING_PATH}")
 
-            #[ram]
+            #[ram(0x7E2000)]
             static mut BUF: [u8; 32] = [0xFF; 32];
 
             #[zeropage(0x10)]
@@ -521,7 +521,7 @@ class TestFormatPadded:
         result = e2e.run(f'''
             include!("{STRING_PATH}")
 
-            #[ram]
+            #[ram(0x7E2000)]
             static mut BUF: [u8; 32] = [0xFF; 32];
 
             #[zeropage(0x10)]
@@ -554,7 +554,7 @@ class TestFormatBool:
         result = e2e.run(f'''
             include!("{STRING_PATH}")
 
-            #[ram]
+            #[ram(0x7E2000)]
             static mut BUF: [u8; 32] = [0xFF; 32];
 
             #[zeropage(0x10)]
@@ -576,7 +576,7 @@ class TestFormatBool:
         result = e2e.run(f'''
             include!("{STRING_PATH}")
 
-            #[ram]
+            #[ram(0x7E2000)]
             static mut BUF: [u8; 32] = [0xFF; 32];
 
             #[zeropage(0x10)]
@@ -606,7 +606,7 @@ class TestFormatSigned:
         result = e2e.run(f'''
             include!("{STRING_PATH}")
 
-            #[ram]
+            #[ram(0x7E2000)]
             static mut BUF: [u8; 32] = [0xFF; 32];
 
             #[zeropage(0x10)]
@@ -631,7 +631,7 @@ class TestFormatSigned:
         result = e2e.run(f'''
             include!("{STRING_PATH}")
 
-            #[ram]
+            #[ram(0x7E2000)]
             static mut BUF: [u8; 32] = [0xFF; 32];
 
             #[zeropage(0x10)]
@@ -656,7 +656,7 @@ class TestFormatSigned:
         result = e2e.run(f'''
             include!("{STRING_PATH}")
 
-            #[ram]
+            #[ram(0x7E2000)]
             static mut BUF: [u8; 32] = [0xFF; 32];
 
             #[zeropage(0x10)]
@@ -683,7 +683,7 @@ class TestFormatSigned:
         result = e2e.run(f'''
             include!("{STRING_PATH}")
 
-            #[ram]
+            #[ram(0x7E2000)]
             static mut BUF: [u8; 32] = [0xFF; 32];
 
             #[zeropage(0x10)]
@@ -718,7 +718,7 @@ class TestFormatLiteralInlining:
         result = e2e.run(f'''
             include!("{STRING_PATH}")
 
-            #[ram]
+            #[ram(0x7E2000)]
             static mut BUF: [u8; 32] = [0xFF; 32];
 
             #[zeropage(0x10)]
@@ -745,7 +745,7 @@ class TestFormatLiteralInlining:
         result = e2e.run(f'''
             include!("{STRING_PATH}")
 
-            #[ram]
+            #[ram(0x7E2000)]
             static mut BUF: [u8; 32] = [0xFF; 32];
 
             #[zeropage(0x10)]
@@ -775,7 +775,7 @@ class TestFormatMultipleCalls:
         result = e2e.run(f'''
             include!("{STRING_PATH}")
 
-            #[ram]
+            #[ram(0x7E2000)]
             static mut BUF: [u8; 32] = [0xFF; 32];
 
             #[zeropage(0x10)]
@@ -802,9 +802,9 @@ class TestFormatMultipleCalls:
         result = e2e.run(f'''
             include!("{STRING_PATH}")
 
-            #[ram]
+            #[ram(0x7E2000)]
             static mut BUF_A: [u8; 32] = [0xFF; 32];
-            #[ram]
+            #[ram(0x7E2020)]
             static mut BUF_B: [u8; 32] = [0xFF; 32];
 
             #[zeropage(0x10)]
@@ -835,7 +835,7 @@ class TestFormatMultipleCalls:
         result = e2e.run(f'''
             include!("{STRING_PATH}")
 
-            #[ram]
+            #[ram(0x7E2000)]
             static mut BUF: [u8; 32] = [0xFF; 32];
 
             #[zeropage(0x10)]
