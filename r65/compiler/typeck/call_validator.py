@@ -98,6 +98,12 @@ class CallValidator:
         - Built-in calls: expr.builtin_name is set
         - Method calls: expr.func is HIRFieldAccess on struct type
         """
+        # Special-case format! string-segment dispatch (emitted by the
+        # built-in format! macro for {s} specifiers). Rewrite to either
+        # strcpy(buf, val) or val.to_string(buf) based on val's type.
+        if expr.builtin_name == '__fmt_str':
+            return self._check_fmt_str_call(expr)
+
         # Check if this is a built-in function call
         if expr.builtin_name:
             return self._check_builtin_call(expr)
@@ -397,6 +403,84 @@ class CallValidator:
             expr.expr_type = BasicTypeInfo('void')
 
         return expr.expr_type
+
+    def _check_fmt_str_call(self, expr: HIRFunctionCall) -> TypeInfo:
+        """
+        Type check and rewrite an internal __fmt_str(buf, val) call emitted by
+        the format! macro for {s} specifiers.
+
+        Dispatches based on val's type:
+          - *u8 / far *u8 / [u8; N] -> rewrite to strcpy(buf, val)
+          - struct (or pointer-to-struct) implementing ToString
+              -> rewrite to val.to_string(buf)
+          - otherwise -> type error
+
+        Both branches return u16.
+        """
+        if len(expr.args) != 2:
+            raise TypeCheckError(
+                f"__fmt_str expects 2 arguments, got {len(expr.args)}",
+                source_loc=expr.source_loc
+            )
+        buf_arg, val_arg = expr.args
+        self.check_expression(buf_arg)
+        val_type = self.check_expression(val_arg)
+
+        # Detect u8 string-like types
+        is_u8_string = False
+        if isinstance(val_type, PointerTypeInfo):
+            pt = val_type.pointee_type
+            if isinstance(pt, BasicTypeInfo) and pt.name == 'u8':
+                is_u8_string = True
+        elif isinstance(val_type, ArrayTypeInfo):
+            et = val_type.element_type
+            if isinstance(et, BasicTypeInfo) and et.name == 'u8':
+                is_u8_string = True
+
+        # Detect struct (or pointer-to-struct)
+        struct_name: Optional[str] = None
+        if isinstance(val_type, StructTypeInfo):
+            struct_name = val_type.name
+        elif (isinstance(val_type, PointerTypeInfo)
+              and isinstance(val_type.pointee_type, StructTypeInfo)):
+            struct_name = val_type.pointee_type.name
+
+        if is_u8_string:
+            strcpy_sym = self.symbol_table.lookup('strcpy')
+            if not strcpy_sym or strcpy_sym.kind != SymbolKind.FUNCTION:
+                raise TypeCheckError(
+                    "format {s} for byte strings needs strcpy",
+                    source_loc=expr.source_loc,
+                    hint='include "string.r65" or use a ToString-implementing type'
+                )
+            expr.func = HIRIdentifier(
+                name='strcpy', symbol=strcpy_sym, source_loc=expr.source_loc
+            )
+            expr.builtin_name = None
+            return self.check_function_call(expr)
+
+        if struct_name is not None:
+            method_sym = self.symbol_table.lookup(f'{struct_name}.to_string')
+            if not method_sym or method_sym.kind != SymbolKind.METHOD:
+                raise TypeCheckError(
+                    f"format {{s}}: type '{struct_name}' does not implement ToString",
+                    source_loc=expr.source_loc,
+                    hint=f"add: impl ToString for {struct_name} {{ fn to_string(far *self, buf: far *u8) -> u16 {{...}} }}"
+                )
+            field_access = HIRFieldAccess(
+                base=val_arg,
+                field_name='to_string',
+                source_loc=expr.source_loc,
+            )
+            expr.func = field_access
+            expr.args = [buf_arg]
+            expr.builtin_name = None
+            return self.check_function_call(expr)
+
+        raise TypeCheckError(
+            f"format {{s}} requires a u8 string or a type implementing ToString, got {val_type}",
+            source_loc=val_arg.source_loc if hasattr(val_arg, 'source_loc') else expr.source_loc
+        )
 
     def _check_builtin_call(self, expr: HIRFunctionCall) -> TypeInfo:
         """Type check built-in function call."""

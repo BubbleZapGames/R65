@@ -261,6 +261,10 @@ class ExpressionBuilder:
 
                     # Mark this as a built-in function call
                     builtin_name = func_name
+                elif func_name == '__fmt_str':
+                    # Internal format! string-segment dispatch — type checker
+                    # rewrites this to strcpy() or .to_string() based on arg type.
+                    builtin_name = func_name
 
             # Try to const-fold calls to const fn with all-const arguments
             if isinstance(expr.func, ast.Identifier) and not builtin_name:

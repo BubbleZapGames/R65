@@ -1296,13 +1296,15 @@ class MacroExpander:
                     lines.append(f'u16_to_hex({p}, {arg});')
                     lines.append(f'{p} = {p} + 4;')
                 elif spec['type'] == 's':
-                    # Cast strcpy return (u16) to u8 then back to u16.
-                    # This forces a mode switch that prevents hw-coalescence
-                    # of the return value to A, avoiding a clobber when the
-                    # pointer address is loaded for the subsequent addition.
-                    # String lengths >255 are not expected on SNES.
+                    # Emit a __fmt_str() call; the type checker dispatches to
+                    # strcpy (for u8 strings) or to_string (for ToString impls)
+                    # based on the runtime type of {arg}.
+                    # Cast u16 return through u8 to force a mode switch that
+                    # blocks hw-coalescence of the return value to A (otherwise
+                    # the pointer load below clobbers it). String lengths >255
+                    # are not expected on SNES.
                     lines.append(
-                        f'let {n}: u8 = strcpy({p}, {arg}) as u8;'
+                        f'let {n}: u8 = __fmt_str({p}, {arg}) as u8;'
                     )
                     lines.append(
                         f'{p} = {p} + {n} as u16;'

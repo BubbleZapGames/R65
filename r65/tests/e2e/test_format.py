@@ -351,6 +351,45 @@ class TestFormatString:
         assert result.success, f"Failures: {result.failures}"
 
 
+class TestFormatToString:
+    """Test format! {s} dispatch to ToString impls."""
+
+    def test_format_tostring_u32(self, e2e):
+        """format! {s} on a U32 dispatches to its ToString impl."""
+        u32_path = STDLIB_DIR / "U32.r65"
+        result = e2e.run(f'''
+            include!("{STRING_PATH}")
+            include!("{u32_path}")
+
+            #[ram]
+            static mut BUF: [u8; 32] = [0xFF; 32];
+            #[lowram]
+            static mut N: U32;
+
+            #[zeropage(0x10)]
+            static mut RESULT: [u8; 8];
+
+            #[entry]
+            fn main() {{
+                N.lo = 12345;
+                N.hi = 0;
+                format!(BUF, "n={{s}}!", N);
+                RESULT[0] = BUF[0];
+                RESULT[1] = BUF[1];
+                RESULT[2] = BUF[2];
+                RESULT[3] = BUF[3];
+                RESULT[4] = BUF[4];
+                RESULT[5] = BUF[5];
+                RESULT[6] = BUF[6];
+                RESULT[7] = BUF[7];
+            }}
+        ''', ExpectedState(memory={
+            # "n=12345!\0"
+            result_addr(): [ord('n'), ord('='), ord('1'), ord('2'), ord('3'), ord('4'), ord('5'), ord('!')]
+        }))
+        assert result.success, f"Failures: {result.failures}"
+
+
 # ============================================================================
 # Escaped Brace Tests
 # ============================================================================
