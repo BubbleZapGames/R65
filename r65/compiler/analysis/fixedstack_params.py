@@ -201,7 +201,10 @@ def _reject_recursive_functions(mir_program: MIRProgram):
     """
     from r65.compiler.analysis.call_graph import CallGraphAnalyzer
 
-    analyzer = CallGraphAnalyzer(mir_program)
+    analyzer = CallGraphAnalyzer(
+        mir_program,
+        trait_dispatch_info=getattr(mir_program, 'trait_dispatch_info', None),
+    )
     analyzer.analyze()
     cycles = analyzer.find_cycles()
 

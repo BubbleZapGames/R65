@@ -62,8 +62,11 @@ class StackDepthAnalyzer:
         """
         self.func_map = {f.name: f for f in self.program.functions}
 
-        # Build call graph
-        cga = CallGraphAnalyzer(self.program)
+        # Build call graph (resolves TraitDispatch to impl set)
+        cga = CallGraphAnalyzer(
+            self.program,
+            trait_dispatch_info=getattr(self.program, 'trait_dispatch_info', None),
+        )
         self.graph = cga.analyze()
 
         # Detect and warn about recursive cycles (W004)

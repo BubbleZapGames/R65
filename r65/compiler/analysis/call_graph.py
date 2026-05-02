@@ -6,7 +6,7 @@ Builds a directed graph of function calls and detects cycles (recursion)
 to check for unsafe use of zero-page or register parameters.
 """
 
-from typing import Dict, List, Set, Optional
+from typing import Dict, List, Set, Optional, Tuple
 from dataclasses import dataclass, field
 from r65.compiler.mir.nodes import MIRProgram, MIRFunction, Call, TraitDispatch, Move
 from r65.compiler.errors import get_diagnostics
@@ -33,6 +33,12 @@ class CallGraph:
     # Functions that make indirect calls (via function pointers)
     indirect_callers: Set[str] = field(default_factory=set)
 
+    # Trait method -> set of implementor mangled function names.
+    # Keyed by (trait_name, method_name); valued by the set of implementor
+    # mangled function names that may be invoked by a TraitDispatch on
+    # that trait method. Populated from MIRProgram.trait_dispatch_info.
+    trait_impls: Dict[Tuple[str, str], Set[str]] = field(default_factory=dict)
+
     def add_edge(self, caller: str, callee: str):
         """Add a call edge from caller to callee."""
         if caller not in self.edges:
@@ -54,21 +60,38 @@ class CallGraph:
             functions.update(callees)
         return functions
 
+    def resolve_trait_method(self, trait_name: str, method_name: str) -> Set[str]:
+        """Return the set of implementor mangled function names for a trait
+        method, or an empty set if the trait/method is unknown.
+
+        Used by passes that need to reason conservatively about all functions
+        that a TraitDispatch may invoke at runtime.
+        """
+        return self.trait_impls.get((trait_name, method_name), set())
+
 
 class CallGraphAnalyzer:
     """
     Analyzes function calls to build a call graph.
     """
 
-    def __init__(self, mir_program: MIRProgram):
+    def __init__(self, mir_program: MIRProgram,
+                 trait_dispatch_info: Optional[dict] = None):
         """
         Initialize analyzer.
 
         Args:
             mir_program: MIR program to analyze
+            trait_dispatch_info: Trait dispatch info dict (typically
+                ``mir_program.trait_dispatch_info``) used to resolve
+                ``TraitDispatch`` instructions to their concrete impl set. If
+                None, falls back to ``mir_program.trait_dispatch_info``.
         """
         self.program = mir_program
         self.graph = CallGraph()
+        if trait_dispatch_info is None:
+            trait_dispatch_info = getattr(mir_program, 'trait_dispatch_info', None)
+        self.trait_dispatch_info = trait_dispatch_info
 
     def analyze(self) -> CallGraph:
         """
@@ -80,11 +103,32 @@ class CallGraphAnalyzer:
         # Build function name to function mapping
         func_map = {func.name: func for func in self.program.functions}
 
+        # Populate trait_impls map from trait_dispatch_info before scanning
+        # function bodies — _analyze_function needs it to add caller->impl edges.
+        self._populate_trait_impls()
+
         # Analyze each function
         for func in self.program.functions:
             self._analyze_function(func)
 
         return self.graph
+
+    def _populate_trait_impls(self):
+        """Build CallGraph.trait_impls from MIRProgram.trait_dispatch_info."""
+        info = self.trait_dispatch_info
+        if not info:
+            return
+        for trait_name, trait_info in info.items():
+            method_names = trait_info.get('methods', [])
+            implementors = trait_info.get('implementors', [])
+            for method_idx, method_name in enumerate(method_names):
+                impls: Set[str] = set()
+                for impl in implementors:
+                    mangled = impl.get('mangled', [])
+                    if method_idx < len(mangled):
+                        impls.add(mangled[method_idx])
+                if impls:
+                    self.graph.trait_impls[(trait_name, method_name)] = impls
 
     def _analyze_function(self, func: MIRFunction):
         """Analyze a single function to find calls and address-taken functions."""
@@ -104,6 +148,14 @@ class CallGraphAnalyzer:
                 elif isinstance(instr, TraitDispatch):
                     # Trait dispatch is an indirect call — track as indirect caller
                     self.graph.indirect_callers.add(func.name)
+                    # Also resolve to impl set: add a caller->impl edge for
+                    # every implementor of this trait method, so downstream
+                    # passes can reason about reachable code.
+                    impls = self.graph.resolve_trait_method(
+                        instr.trait_name, instr.method_name
+                    )
+                    for impl_name in impls:
+                        self.graph.add_edge(func.name, impl_name)
                 # Detect function address references (FN_PTR = some_func)
                 if isinstance(instr, Move) and isinstance(instr.source, FunctionPointer):
                     self.graph.add_address_taken(instr.source.function_name)
@@ -190,8 +242,11 @@ class RecursionChecker:
         Raises:
             RecursionError: If unsafe recursion is detected
         """
-        # Build call graph
-        analyzer = CallGraphAnalyzer(self.program)
+        # Build call graph (resolves TraitDispatch to impl set)
+        analyzer = CallGraphAnalyzer(
+            self.program,
+            trait_dispatch_info=getattr(self.program, 'trait_dispatch_info', None),
+        )
         graph = analyzer.analyze()
 
         # Find cycles
