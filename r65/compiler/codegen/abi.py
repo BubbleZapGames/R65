@@ -77,11 +77,24 @@ class ABIInfo:
         raise ValueError(f"Unknown register: {reg}")
 
     @property
-    def prologue_stack_bytes(self) -> int:
-        """Total bytes pushed by prologue (DBR + preserves + far-ptr PHD).
+    def pre_frame_prologue_bytes(self) -> int:
+        """Bytes pushed by prologue BEFORE frame allocation.
 
-        Does NOT include interrupt scratch saves (pushed before frame alloc)
-        or the return address itself.
+        These pushes sit deeper in the stack than locals (at higher ,S offsets),
+        so they must NOT shift the local stack base offset. They DO contribute to
+        param offsets (params are still deeper than these pushes).
+
+        Currently only PHB+PHY for self_far_uses_d_equals_s.
+        """
+        return 3 if self.self_far_uses_d_equals_s else 0
+
+    @property
+    def post_frame_prologue_bytes(self) -> int:
+        """Bytes pushed by prologue AFTER frame allocation.
+
+        These pushes sit on top of locals (at lower ,S offsets) and shift the
+        local stack base offset. Includes DBR inline, preserves, and the
+        post-frame far-ptr PHD/PHB.
         """
         from r65.compiler.hir.attributes import DataBankMode
 
@@ -95,10 +108,6 @@ class ABIInfo:
         for reg in self.preserves:
             total += self.push_size(reg)
 
-        # Far self D=S path: PHB (1 byte) + PHY (2 bytes) for self pointer on stack
-        if self.self_far_uses_d_equals_s:
-            total += 3
-
         # Far pointer stack params: PHD (2 bytes) for D=S, PHB (1 byte) for SET_DBR
         if self.has_far_ptr_stack_params:
             from r65.compiler.mir.nodes import FarPtrStrategy
@@ -108,6 +117,15 @@ class ABIInfo:
                 total += 2  # PHD (D_EQUALS_S or no strategy set yet)
 
         return total
+
+    @property
+    def prologue_stack_bytes(self) -> int:
+        """Total bytes pushed by prologue (DBR + preserves + far-ptr PHD).
+
+        Does NOT include interrupt scratch saves (pushed before frame alloc)
+        or the return address itself.
+        """
+        return self.pre_frame_prologue_bytes + self.post_frame_prologue_bytes
 
     @classmethod
     def from_mir_function(cls, mir_func: 'MIRFunction') -> 'ABIInfo':
@@ -158,11 +176,15 @@ class StackFrameLayout:
     def stack_base_offset(self) -> int:
         """Base offset for stack-allocated locals from SP.
 
-        Entry functions: 1; regular: prologue_bytes + 1.
+        Locals are shifted ONLY by prologue bytes pushed AFTER frame allocation
+        (post_frame_prologue_bytes). Pre-frame pushes (e.g., PHB+PHY for
+        far-self D=S) sit deeper than the frame and don't shift locals.
+
+        Entry functions: 1; regular: post_frame_prologue_bytes + 1.
         """
         if self.abi.is_entry:
             return 1
-        return self.abi.prologue_stack_bytes + 1
+        return self.abi.post_frame_prologue_bytes + 1
 
     def local_offset(self, slot_num: int) -> int:
         """Stack offset for a local variable slot (from SP after frame alloc)."""
