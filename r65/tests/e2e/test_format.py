@@ -363,7 +363,7 @@ class TestFormatToString:
 
             #[ram]
             static mut BUF: [u8; 32] = [0xFF; 32];
-            #[lowram]
+            #[ram]
             static mut N: U32;
 
             #[zeropage(0x10)]

@@ -900,9 +900,21 @@ class FunctionCodeGenerator:
         # For far self D=S path: push DBR (bank) and Y (addr) to stack BEFORE frame alloc
         # This places the 3-byte far self pointer on the stack where D=S can access it
         # Stack layout after PHB+PHY: [PHY_lo, PHY_hi, PHB_bank] (3 bytes)
+        #
+        # After PHB saves the caller's hijacked DBR=self_bank, we reset DBR to
+        # the program bank for the body. D=S accesses self via [dp],Y indirect
+        # long (self bank encoded in the on-stack pointer), so DBR isn't needed
+        # for self. Resetting DBR to PBR makes nested far-fn calls (e.g.
+        # U32::div_u8 from U32::to_string) inherit a sane DBR — otherwise the
+        # hijacked DBR=$7E propagates and nested HW-register absolute writes
+        # (STA $4204) hit WRAM at $7E:4204 instead of the HW divider.
+        # Epilogue's PLB pulls back the saved hijacked DBR (caller restores it
+        # in turn), so the protocol is preserved.
         if mir_func.self_far_uses_d_equals_s:
-            self._emit_instr(Opcode.PHB, comment="Push self bank byte (DBR = object's bank)")
+            self._emit_instr(Opcode.PHB, comment="Save caller's DBR (was hijacked to self bank)")
             self._emit_instr(Opcode.PHY, comment="Push self address (Y = object addr)")
+            self._emit_instr(Opcode.PHK, comment="Push program bank")
+            self._emit_instr(Opcode.PLB, comment="Reset DBR=PBR for body (nested calls inherit sane DBR)")
 
         # Detect which hardware registers hold parameters.
         from r65.compiler.hir import RegisterBinding
