@@ -50,16 +50,10 @@ class TestFormatLiteral:
             #[entry]
             fn main() {{
                 format!(BUF, "Hello");
-                RESULT[0] = BUF[0];
-                RESULT[1] = BUF[1];
-                RESULT[2] = BUF[2];
-                RESULT[3] = BUF[3];
-                RESULT[4] = BUF[4];
-                RESULT[5] = BUF[5];
             }}
         ''', ExpectedState(memory={
             # "Hello\0"
-            result_addr(): ascii_bytes_null("Hello")
+            0x7E2000: ascii_bytes_null("Hello")
         }))
         assert result.success, f"Failures: {result.failures}"
 
@@ -77,11 +71,9 @@ class TestFormatLiteral:
             #[entry]
             fn main() {{
                 format!(BUF, "");
-                RESULT[0] = BUF[0];
-                RESULT[1] = BUF[1];
             }}
         ''', ExpectedState(memory={
-            result_addr(): [0x00, 0xFF]
+            0x7E2000: [0x00, 0xFF]
         }))
         assert result.success, f"Failures: {result.failures}"
 
@@ -107,16 +99,10 @@ class TestFormatU8:
             #[entry]
             fn main() {{
                 format!(BUF, "N:{{u8}}", 42);
-                RESULT[0] = BUF[0];
-                RESULT[1] = BUF[1];
-                RESULT[2] = BUF[2];
-                RESULT[3] = BUF[3];
-                RESULT[4] = BUF[4];
-                RESULT[5] = BUF[5];
             }}
         ''', ExpectedState(memory={
             # "N:42\0"
-            result_addr(): ascii_bytes_null("N:42") + [0xFF]
+            0x7E2000: ascii_bytes_null("N:42") + [0xFF]
         }))
         assert result.success, f"Failures: {result.failures}"
 
@@ -138,16 +124,10 @@ class TestFormatU16:
             #[entry]
             fn main() {{
                 format!(BUF, "{{u16}}", 65535);
-                RESULT[0] = BUF[0];
-                RESULT[1] = BUF[1];
-                RESULT[2] = BUF[2];
-                RESULT[3] = BUF[3];
-                RESULT[4] = BUF[4];
-                RESULT[5] = BUF[5];
             }}
         ''', ExpectedState(memory={
             # "65535\0"
-            result_addr(): ascii_bytes_null("65535")
+            0x7E2000: ascii_bytes_null("65535")
         }))
         assert result.success, f"Failures: {result.failures}"
 
@@ -165,12 +145,10 @@ class TestFormatU16:
             #[entry]
             fn main() {{
                 format!(BUF, "{{u16}}", 0);
-                RESULT[0] = BUF[0];
-                RESULT[1] = BUF[1];
             }}
         ''', ExpectedState(memory={
             # "0\0"
-            result_addr(): ascii_bytes_null("0")
+            0x7E2000: ascii_bytes_null("0")
         }))
         assert result.success, f"Failures: {result.failures}"
 
@@ -196,14 +174,10 @@ class TestFormatHex:
             #[entry]
             fn main() {{
                 format!(BUF, "${{u8:x}}", 0xAB);
-                RESULT[0] = BUF[0];
-                RESULT[1] = BUF[1];
-                RESULT[2] = BUF[2];
-                RESULT[3] = BUF[3];
             }}
         ''', ExpectedState(memory={
             # "$AB\0"
-            result_addr(): ascii_bytes_null("$AB")
+            0x7E2000: ascii_bytes_null("$AB")
         }))
         assert result.success, f"Failures: {result.failures}"
 
@@ -221,17 +195,10 @@ class TestFormatHex:
             #[entry]
             fn main() {{
                 format!(BUF, "0x{{u16:x}}", 0xDEAD);
-                RESULT[0] = BUF[0];
-                RESULT[1] = BUF[1];
-                RESULT[2] = BUF[2];
-                RESULT[3] = BUF[3];
-                RESULT[4] = BUF[4];
-                RESULT[5] = BUF[5];
-                RESULT[6] = BUF[6];
             }}
         ''', ExpectedState(memory={
             # "0xDEAD\0"
-            result_addr(): ascii_bytes_null("0xDEAD")
+            0x7E2000: ascii_bytes_null("0xDEAD")
         }))
         assert result.success, f"Failures: {result.failures}"
 
@@ -257,22 +224,10 @@ class TestFormatMixed:
             #[entry]
             fn main() {{
                 format!(BUF, "HP:{{u8}} ${{u16:x}}", 99, 0x00AB);
-                RESULT[0] = BUF[0];
-                RESULT[1] = BUF[1];
-                RESULT[2] = BUF[2];
-                RESULT[3] = BUF[3];
-                RESULT[4] = BUF[4];
-                RESULT[5] = BUF[5];
-                RESULT[6] = BUF[6];
-                RESULT[7] = BUF[7];
-                RESULT[8] = BUF[8];
-                RESULT[9] = BUF[9];
-                RESULT[10] = BUF[10];
-                RESULT[11] = BUF[11];
             }}
         ''', ExpectedState(memory={
             # "HP:99 $00AB\0"
-            result_addr(): ascii_bytes_null("HP:99 $00AB")
+            0x7E2000: ascii_bytes_null("HP:99 $00AB")
         }))
         assert result.success, f"Failures: {result.failures}"
 
@@ -298,14 +253,10 @@ class TestFormatChar:
             #[entry]
             fn main() {{
                 format!(BUF, "A{{c}}B", 0x58);
-                RESULT[0] = BUF[0];
-                RESULT[1] = BUF[1];
-                RESULT[2] = BUF[2];
-                RESULT[3] = BUF[3];
             }}
         ''', ExpectedState(memory={
             # "AXB\0"
-            result_addr(): ascii_bytes_null("AXB")
+            0x7E2000: ascii_bytes_null("AXB")
         }))
         assert result.success, f"Failures: {result.failures}"
 
@@ -333,20 +284,10 @@ class TestFormatString:
             #[entry]
             fn main() {{
                 format!(BUF, "Hi {{s}}!", &NAME as far *u8);
-                RESULT[0] = BUF[0];
-                RESULT[1] = BUF[1];
-                RESULT[2] = BUF[2];
-                RESULT[3] = BUF[3];
-                RESULT[4] = BUF[4];
-                RESULT[5] = BUF[5];
-                RESULT[6] = BUF[6];
-                RESULT[7] = BUF[7];
-                RESULT[8] = BUF[8];
-                RESULT[9] = BUF[9];
             }}
         ''', ExpectedState(memory={
             # "Hi World!\0"
-            result_addr(): ascii_bytes_null("Hi World!")
+            0x7E2000: ascii_bytes_null("Hi World!")
         }))
         assert result.success, f"Failures: {result.failures}"
 
@@ -374,18 +315,10 @@ class TestFormatToString:
                 N.lo = 12345;
                 N.hi = 0;
                 format!(BUF, "n={{s}}!", N);
-                RESULT[0] = BUF[0];
-                RESULT[1] = BUF[1];
-                RESULT[2] = BUF[2];
-                RESULT[3] = BUF[3];
-                RESULT[4] = BUF[4];
-                RESULT[5] = BUF[5];
-                RESULT[6] = BUF[6];
-                RESULT[7] = BUF[7];
             }}
         ''', ExpectedState(memory={
             # "n=12345!\0"
-            result_addr(): [ord('n'), ord('='), ord('1'), ord('2'), ord('3'), ord('4'), ord('5'), ord('!')]
+            0x7E2000: [ord('n'), ord('='), ord('1'), ord('2'), ord('3'), ord('4'), ord('5'), ord('!')]
         }))
         assert result.success, f"Failures: {result.failures}"
 
@@ -411,19 +344,10 @@ class TestFormatEscapedBraces:
             #[entry]
             fn main() {{
                 format!(BUF, "{{{{braces}}}}");
-                RESULT[0] = BUF[0];
-                RESULT[1] = BUF[1];
-                RESULT[2] = BUF[2];
-                RESULT[3] = BUF[3];
-                RESULT[4] = BUF[4];
-                RESULT[5] = BUF[5];
-                RESULT[6] = BUF[6];
-                RESULT[7] = BUF[7];
-                RESULT[8] = BUF[8];
             }}
         ''', ExpectedState(memory={
             # "{braces}\0"
-            result_addr(): ascii_bytes_null("{braces}")
+            0x7E2000: ascii_bytes_null("{braces}")
         }))
         assert result.success, f"Failures: {result.failures}"
 
@@ -449,18 +373,10 @@ class TestFormatPadded:
             #[entry]
             fn main() {{
                 format!(BUF, "[{{u16:5d}}]", 42);
-                RESULT[0] = BUF[0];
-                RESULT[1] = BUF[1];
-                RESULT[2] = BUF[2];
-                RESULT[3] = BUF[3];
-                RESULT[4] = BUF[4];
-                RESULT[5] = BUF[5];
-                RESULT[6] = BUF[6];
-                RESULT[7] = BUF[7];
             }}
         ''', ExpectedState(memory={
             # "[   42]\0"
-            result_addr(): ascii_bytes_null("[   42]")
+            0x7E2000: ascii_bytes_null("[   42]")
         }))
         assert result.success, f"Failures: {result.failures}"
 
@@ -478,16 +394,10 @@ class TestFormatPadded:
             #[entry]
             fn main() {{
                 format!(BUF, "{{u16:05d}}", 42);
-                RESULT[0] = BUF[0];
-                RESULT[1] = BUF[1];
-                RESULT[2] = BUF[2];
-                RESULT[3] = BUF[3];
-                RESULT[4] = BUF[4];
-                RESULT[5] = BUF[5];
             }}
         ''', ExpectedState(memory={
             # "00042\0"
-            result_addr(): ascii_bytes_null("00042")
+            0x7E2000: ascii_bytes_null("00042")
         }))
         assert result.success, f"Failures: {result.failures}"
 
@@ -505,14 +415,10 @@ class TestFormatPadded:
             #[entry]
             fn main() {{
                 format!(BUF, "{{u8:3d}}", 7);
-                RESULT[0] = BUF[0];
-                RESULT[1] = BUF[1];
-                RESULT[2] = BUF[2];
-                RESULT[3] = BUF[3];
             }}
         ''', ExpectedState(memory={
             # "  7\0"
-            result_addr(): ascii_bytes_null("  7")
+            0x7E2000: ascii_bytes_null("  7")
         }))
         assert result.success, f"Failures: {result.failures}"
 
@@ -530,14 +436,10 @@ class TestFormatPadded:
             #[entry]
             fn main() {{
                 format!(BUF, "{{u8:03d}}", 7);
-                RESULT[0] = BUF[0];
-                RESULT[1] = BUF[1];
-                RESULT[2] = BUF[2];
-                RESULT[3] = BUF[3];
             }}
         ''', ExpectedState(memory={
             # "007\0"
-            result_addr(): ascii_bytes_null("007")
+            0x7E2000: ascii_bytes_null("007")
         }))
         assert result.success, f"Failures: {result.failures}"
 
@@ -563,11 +465,9 @@ class TestFormatBool:
             #[entry]
             fn main() {{
                 format!(BUF, "{{bool}}", true);
-                RESULT[0] = BUF[0];
-                RESULT[1] = BUF[1];
             }}
         ''', ExpectedState(memory={
-            result_addr(): ascii_bytes_null("1")
+            0x7E2000: ascii_bytes_null("1")
         }))
         assert result.success, f"Failures: {result.failures}"
 
@@ -585,11 +485,9 @@ class TestFormatBool:
             #[entry]
             fn main() {{
                 format!(BUF, "{{bool}}", false);
-                RESULT[0] = BUF[0];
-                RESULT[1] = BUF[1];
             }}
         ''', ExpectedState(memory={
-            result_addr(): ascii_bytes_null("0")
+            0x7E2000: ascii_bytes_null("0")
         }))
         assert result.success, f"Failures: {result.failures}"
 
@@ -616,13 +514,10 @@ class TestFormatSigned:
             fn main() {{
                 let v: i8 = 42;
                 format!(BUF, "{{i8}}", v);
-                RESULT[0] = BUF[0];
-                RESULT[1] = BUF[1];
-                RESULT[2] = BUF[2];
             }}
         ''', ExpectedState(memory={
             # "42\0"
-            result_addr(): ascii_bytes_null("42")
+            0x7E2000: ascii_bytes_null("42")
         }))
         assert result.success, f"Failures: {result.failures}"
 
@@ -641,13 +536,10 @@ class TestFormatSigned:
             fn main() {{
                 let v: i8 = 0 - 1;
                 format!(BUF, "{{i8}}", v);
-                RESULT[0] = BUF[0];
-                RESULT[1] = BUF[1];
-                RESULT[2] = BUF[2];
             }}
         ''', ExpectedState(memory={
             # "-1\0"
-            result_addr(): ascii_bytes_null("-1")
+            0x7E2000: ascii_bytes_null("-1")
         }))
         assert result.success, f"Failures: {result.failures}"
 
@@ -666,15 +558,10 @@ class TestFormatSigned:
             fn main() {{
                 let v: i16 = 1000;
                 format!(BUF, "{{i16}}", v);
-                RESULT[0] = BUF[0];
-                RESULT[1] = BUF[1];
-                RESULT[2] = BUF[2];
-                RESULT[3] = BUF[3];
-                RESULT[4] = BUF[4];
             }}
         ''', ExpectedState(memory={
             # "1000\0"
-            result_addr(): ascii_bytes_null("1000")
+            0x7E2000: ascii_bytes_null("1000")
         }))
         assert result.success, f"Failures: {result.failures}"
 
@@ -693,15 +580,10 @@ class TestFormatSigned:
             fn main() {{
                 let v: i16 = 0 - 42;
                 format!(BUF, "{{i16}}", v);
-                RESULT[0] = BUF[0];
-                RESULT[1] = BUF[1];
-                RESULT[2] = BUF[2];
-                RESULT[3] = BUF[3];
-                RESULT[4] = BUF[4];
             }}
         ''', ExpectedState(memory={
             # "-42\0"
-            result_addr(): ascii_bytes_null("-42")
+            0x7E2000: ascii_bytes_null("-42")
         }))
         assert result.success, f"Failures: {result.failures}"
 
@@ -727,16 +609,10 @@ class TestFormatLiteralInlining:
             #[entry]
             fn main() {{
                 format!(BUF, "X={{u8}}", 42);
-                RESULT[0] = BUF[0];
-                RESULT[1] = BUF[1];
-                RESULT[2] = BUF[2];
-                RESULT[3] = BUF[3];
-                RESULT[4] = BUF[4];
-                RESULT[5] = BUF[5];
             }}
         ''', ExpectedState(memory={
             # "X=42\0"
-            result_addr(): ascii_bytes_null("X=42") + [0xFF]
+            0x7E2000: ascii_bytes_null("X=42") + [0xFF]
         }))
         assert result.success, f"Failures: {result.failures}"
 
@@ -754,11 +630,9 @@ class TestFormatLiteralInlining:
             #[entry]
             fn main() {{
                 format!(BUF, "Z");
-                RESULT[0] = BUF[0];
-                RESULT[1] = BUF[1];
             }}
         ''', ExpectedState(memory={
-            result_addr(): ascii_bytes_null("Z")
+            0x7E2000: ascii_bytes_null("Z")
         }))
         assert result.success, f"Failures: {result.failures}"
 
@@ -785,15 +659,9 @@ class TestFormatMultipleCalls:
             fn main() {{
                 format!(BUF, "FIRST");
                 format!(BUF, "ABCDE");
-                RESULT[0] = BUF[0];
-                RESULT[1] = BUF[1];
-                RESULT[2] = BUF[2];
-                RESULT[3] = BUF[3];
-                RESULT[4] = BUF[4];
-                RESULT[5] = BUF[5];
             }}
         ''', ExpectedState(memory={
-            result_addr(): ascii_bytes_null("ABCDE")
+            0x7E2000: ascii_bytes_null("ABCDE")
         }))
         assert result.success, f"Failures: {result.failures}"
 
@@ -807,26 +675,14 @@ class TestFormatMultipleCalls:
             #[ram(0x7E2020)]
             static mut BUF_B: [u8; 32] = [0xFF; 32];
 
-            #[zeropage(0x10)]
-            static mut RESULT: [u8; 10];
-
             #[entry]
             fn main() {{
                 format!(BUF_A, "X:{{u16:04d}}", 123);
                 format!(BUF_B, "Y:{{u16:04d}}", 456);
-                RESULT[0] = BUF_A[0];
-                RESULT[1] = BUF_A[1];
-                RESULT[2] = BUF_A[2];
-                RESULT[3] = BUF_A[3];
-                RESULT[4] = BUF_A[4];
-                RESULT[5] = BUF_B[0];
-                RESULT[6] = BUF_B[1];
-                RESULT[7] = BUF_B[2];
-                RESULT[8] = BUF_B[3];
-                RESULT[9] = BUF_B[4];
             }}
         ''', ExpectedState(memory={
-            result_addr(): list(b"X:012") + list(b"Y:045"),
+            0x7E2000: list(b"X:0123"),
+            0x7E2020: list(b"Y:0456"),
         }))
         assert result.success, f"Failures: {result.failures}"
 

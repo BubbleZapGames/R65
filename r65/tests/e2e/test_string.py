@@ -116,24 +116,17 @@ class TestMemcpy:
         result = e2e.run(f'''
             include!("{STRING_PATH}")
 
-            #[ram]
+            #[ram(0x7E2000)]
             static mut SRC: [u8; 8] = "ABCD\\0";
-            #[ram]
+            #[ram(0x7E2010)]
             static mut DST: [u8; 8] = [0; 8];
-
-            #[zeropage(0x10)]
-            static mut RESULT: [u8; 4];
 
             #[entry]
             fn main() {{
                 memcpy(&DST as far *u8, &SRC as far *u8, 4);
-                RESULT[0] = DST[0];
-                RESULT[1] = DST[1];
-                RESULT[2] = DST[2];
-                RESULT[3] = DST[3];
             }}
         ''', ExpectedState(memory={
-            result_addr(): ascii_bytes("ABCD")
+            0x7E2010: ascii_bytes("ABCD")
         }))
         assert result.success, f"Failures: {result.failures}"
 
@@ -142,21 +135,18 @@ class TestMemcpy:
         result = e2e.run(f'''
             include!("{STRING_PATH}")
 
-            #[ram]
-            static mut SRC: [u8; 4] = "AB\\0";
-            #[ram]
-            static mut DST: [u8; 4] = [0xFF; 4];
+            #[ram(0x7E2020)]
 
-            #[zeropage(0x10)]
-            static mut RESULT: u8;
+            static mut SRC: [u8; 4] = "AB\\0";
+            #[ram(0x7E2000)]
+            static mut DST: [u8; 4] = [0xFF; 4];
 
             #[entry]
             fn main() {{
                 memcpy(&DST as far *u8, &SRC as far *u8, 0);
-                RESULT = DST[0];
             }}
         ''', ExpectedState(memory={
-            result_addr(): 0xFF
+            0x7E2000: 0xFF
         }))
         assert result.success, f"Failures: {result.failures}"
 
@@ -169,7 +159,8 @@ class TestMemset:
         result = e2e.run(f'''
             include!("{STRING_PATH}")
 
-            #[ram]
+            #[ram(0x7E2000)]
+
             static mut BUF: [u8; 8] = [0; 8];
 
             #[zeropage(0x10)]
@@ -178,13 +169,9 @@ class TestMemset:
             #[entry]
             fn main() {{
                 memset(&BUF as far *u8, 0xAA, 4);
-                RESULT[0] = BUF[0];
-                RESULT[1] = BUF[1];
-                RESULT[2] = BUF[2];
-                RESULT[3] = BUF[3];
             }}
         ''', ExpectedState(memory={
-            result_addr(): [0xAA, 0xAA, 0xAA, 0xAA]
+            0x7E2000: [0xAA, 0xAA, 0xAA, 0xAA]
         }))
         assert result.success, f"Failures: {result.failures}"
 
@@ -193,19 +180,16 @@ class TestMemset:
         result = e2e.run(f'''
             include!("{STRING_PATH}")
 
-            #[ram]
-            static mut BUF: [u8; 4] = [0xFF; 4];
+            #[ram(0x7E2000)]
 
-            #[zeropage(0x10)]
-            static mut RESULT: u8;
+            static mut BUF: [u8; 4] = [0xFF; 4];
 
             #[entry]
             fn main() {{
                 memset(&BUF as far *u8, 0x00, 0);
-                RESULT = BUF[0];
             }}
         ''', ExpectedState(memory={
-            result_addr(): 0xFF
+            0x7E2000: 0xFF
         }))
         assert result.success, f"Failures: {result.failures}"
 
@@ -864,7 +848,8 @@ class TestU8ToDec:
         result = e2e.run(f'''
             include!("{STRING_PATH}")
 
-            #[ram]
+            #[ram(0x7E2000)]
+
             static mut BUF: [u8; 4] = [0xFF; 4];
 
             #[zeropage(0x10)]
@@ -873,14 +858,10 @@ class TestU8ToDec:
             #[entry]
             fn main() {{
                 u8_to_dec(&BUF as far *u8, 255);
-                RESULT[0] = BUF[0];
-                RESULT[1] = BUF[1];
-                RESULT[2] = BUF[2];
-                RESULT[3] = BUF[3];
             }}
         ''', ExpectedState(memory={
             # "255\0"
-            result_addr(): [0x32, 0x35, 0x35, 0x00]
+            0x7E2000: [0x32, 0x35, 0x35, 0x00]
         }))
         assert result.success, f"Failures: {result.failures}"
 
@@ -889,7 +870,8 @@ class TestU8ToDec:
         result = e2e.run(f'''
             include!("{STRING_PATH}")
 
-            #[ram]
+            #[ram(0x7E2000)]
+
             static mut BUF: [u8; 4] = [0xFF; 4];
 
             #[zeropage(0x10)]
@@ -898,14 +880,10 @@ class TestU8ToDec:
             #[entry]
             fn main() {{
                 u8_to_dec(&BUF as far *u8, 100);
-                RESULT[0] = BUF[0];
-                RESULT[1] = BUF[1];
-                RESULT[2] = BUF[2];
-                RESULT[3] = BUF[3];
             }}
         ''', ExpectedState(memory={
             # "100\0"
-            result_addr(): [0x31, 0x30, 0x30, 0x00]
+            0x7E2000: [0x31, 0x30, 0x30, 0x00]
         }))
         assert result.success, f"Failures: {result.failures}"
 
@@ -1117,7 +1095,8 @@ class TestU8ToHex:
         result = e2e.run(f'''
             include!("{STRING_PATH}")
 
-            #[ram]
+            #[ram(0x7E2000)]
+
             static mut BUF: [u8; 4] = [0xFF; 4];
 
             #[zeropage(0x10)]
@@ -1126,12 +1105,9 @@ class TestU8ToHex:
             #[entry]
             fn main() {{
                 u8_to_hex(&BUF as far *u8, 0x3C);
-                RESULT[0] = BUF[0];
-                RESULT[1] = BUF[1];
-                RESULT[2] = BUF[2];
             }}
         ''', ExpectedState(memory={
-            result_addr(): [0x33, 0x43, 0x00]  # "3C\0"
+            0x7E2000: [0x33, 0x43, 0x00]  # "3C\0"
         }))
         assert result.success, f"Failures: {result.failures}"
 
@@ -1144,7 +1120,8 @@ class TestU16ToHex:
         result = e2e.run(f'''
             include!("{STRING_PATH}")
 
-            #[ram]
+            #[ram(0x7E2000)]
+
             static mut BUF: [u8; 8] = [0xFF; 8];
 
             #[zeropage(0x10)]
@@ -1153,14 +1130,9 @@ class TestU16ToHex:
             #[entry]
             fn main() {{
                 u16_to_hex(&BUF as far *u8, 0x1234);
-                RESULT[0] = BUF[0];
-                RESULT[1] = BUF[1];
-                RESULT[2] = BUF[2];
-                RESULT[3] = BUF[3];
-                RESULT[4] = BUF[4];
             }}
         ''', ExpectedState(memory={
-            result_addr(): ascii_bytes("1234") + [0x00]
+            0x7E2000: ascii_bytes("1234") + [0x00]
         }))
         assert result.success, f"Failures: {result.failures}"
 
@@ -1169,7 +1141,8 @@ class TestU16ToHex:
         result = e2e.run(f'''
             include!("{STRING_PATH}")
 
-            #[ram]
+            #[ram(0x7E2000)]
+
             static mut BUF: [u8; 8] = [0xFF; 8];
 
             #[zeropage(0x10)]
@@ -1178,14 +1151,9 @@ class TestU16ToHex:
             #[entry]
             fn main() {{
                 u16_to_hex(&BUF as far *u8, 0x0000);
-                RESULT[0] = BUF[0];
-                RESULT[1] = BUF[1];
-                RESULT[2] = BUF[2];
-                RESULT[3] = BUF[3];
-                RESULT[4] = BUF[4];
             }}
         ''', ExpectedState(memory={
-            result_addr(): [0x30, 0x30, 0x30, 0x30, 0x00]
+            0x7E2000: [0x30, 0x30, 0x30, 0x30, 0x00]
         }))
         assert result.success, f"Failures: {result.failures}"
 
@@ -1194,7 +1162,8 @@ class TestU16ToHex:
         result = e2e.run(f'''
             include!("{STRING_PATH}")
 
-            #[ram]
+            #[ram(0x7E2000)]
+
             static mut BUF: [u8; 8] = [0xFF; 8];
 
             #[zeropage(0x10)]
@@ -1203,14 +1172,9 @@ class TestU16ToHex:
             #[entry]
             fn main() {{
                 u16_to_hex(&BUF as far *u8, 0xFFFF);
-                RESULT[0] = BUF[0];
-                RESULT[1] = BUF[1];
-                RESULT[2] = BUF[2];
-                RESULT[3] = BUF[3];
-                RESULT[4] = BUF[4];
             }}
         ''', ExpectedState(memory={
-            result_addr(): ascii_bytes("FFFF") + [0x00]
+            0x7E2000: ascii_bytes("FFFF") + [0x00]
         }))
         assert result.success, f"Failures: {result.failures}"
 
@@ -1219,7 +1183,8 @@ class TestU16ToHex:
         result = e2e.run(f'''
             include!("{STRING_PATH}")
 
-            #[ram]
+            #[ram(0x7E2000)]
+
             static mut BUF: [u8; 8] = [0xFF; 8];
 
             #[zeropage(0x10)]
@@ -1228,13 +1193,8 @@ class TestU16ToHex:
             #[entry]
             fn main() {{
                 u16_to_hex(&BUF as far *u8, 0xDEAD);
-                RESULT[0] = BUF[0];
-                RESULT[1] = BUF[1];
-                RESULT[2] = BUF[2];
-                RESULT[3] = BUF[3];
-                RESULT[4] = BUF[4];
             }}
         ''', ExpectedState(memory={
-            result_addr(): ascii_bytes("DEAD") + [0x00]
+            0x7E2000: ascii_bytes("DEAD") + [0x00]
         }))
         assert result.success, f"Failures: {result.failures}"
