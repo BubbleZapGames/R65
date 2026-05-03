@@ -58,13 +58,26 @@ def analyze_far_ptr_strategy(mir_program):
 
 def _decide_fn_ptr_only_strategy(func: MIRFunction):
     """For Case II (only far fn pointer stack params, no far data pointer
-    stack params). Returns FarPtrStrategy.D_EQUALS_S if the cost model
-    favors entering D=S to unlock the JML [d] fast path; otherwise None.
+    stack params). Returns a strategy if it would unlock the JML [d]
+    fast path for far indirect calls; otherwise None.
 
-    SET_DBR is never returned: setting DBR to a code bank is useless for
-    fn pointer indirect calls (the JML target's bank is determined by the
-    target address, not DBR) and breaks RAM/$7E absolute access in the
-    function body.
+    Current implementation always returns None. The brief described a
+    D=S branch here that would convert STACK-resident far fn ptrs into
+    DP-addressable values for ``JML [d]``. That branch is currently
+    deferred — see ``_dp_offset_for_indirect_call`` for why the STACK
+    path doesn't fire today (PLD-before-call breaks the D=S invariant
+    at the JML site). When the STACK fast path is implemented, this
+    function should resurrect the D=S cost model.
+
+    The SCRATCH path remains effective: ``analyze_scratch_params`` runs
+    before this analysis and promotes eligible far fn ptr params into
+    zeropage scratch slots, where ``JML [<scratch_addr>]`` works with
+    no D-state coupling.
+
+    SET_DBR is never returned for Case II: setting DBR to a code bank
+    is useless for fn pointer indirect calls (the JML target's bank is
+    encoded in the target address, not DBR) and breaks RAM/$7E absolute
+    access in the body.
 
     Returns None when Case II doesn't apply (i.e. the function has data
     ptr params, or no far fn ptr params at all). Those cases are handled
@@ -77,33 +90,18 @@ def _decide_fn_ptr_only_strategy(func: MIRFunction):
         # No far stack stuff at all.
         return None
 
-    # If every far fn ptr param was promoted to scratch, the fast path
-    # already works via DP addressing without needing D=S. Don't enter
-    # D=S in that case — its prologue cost is wasted.
+    # SCRATCH path: if scratch_params already promoted every far fn ptr
+    # param, the fast path works via DP without needing D=S. Don't pay
+    # any prologue cost.
     remaining_stack_fn_ptr = (
         func.fn_ptr_param_indices - set(func.scratch_param_addrs.keys())
     )
     if not remaining_stack_fn_ptr:
         return None
 
-    n_indirect = _count_far_indirect_calls(func)
-    if n_indirect == 0:
-        # No indirect calls in the body — D=S would only add prologue cost.
-        return None
-
-    n_zp = _count_zeropage_accesses(func)
-
-    # Cost model (cycles, approximate):
-    #   no_strategy: each far indirect call ~78 cycles (existing trampoline).
-    #   D=S        : prologue ~18 cycles + 5 cycles per ZP access (ZP becomes
-    #                stack-relative under D=S, so a 3-cycle DP load becomes
-    #                an 8-cycle abs-long load — net ~5 extra) + 16 cycles per
-    #                far indirect call (PHK/PEA/JML [d] sequence).
-    cost_no_strategy = 78 * n_indirect
-    cost_d_equals_s = 18 + 5 * n_zp + 16 * n_indirect
-
-    if cost_d_equals_s < cost_no_strategy:
-        return FarPtrStrategy.D_EQUALS_S
+    # STACK path is currently deferred — see docstring. Stay no-strategy.
+    # Functions with stack-resident far fn ptr params keep the existing
+    # trampoline at indirect call sites.
     return None
 
 

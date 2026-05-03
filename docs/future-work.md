@@ -62,6 +62,89 @@ When a TraitDispatch's self_ptr is preceded by a `type_id() == X::TYPE_ID` compa
 
 ---
 
+## Indirect Call Lowering — Further Extensions
+
+The `JML [d]` fast path for far indirect calls landed in
+`r65/compiler/codegen/call_select.py::_emit_dp_indirect_far_call`. It
+fires only for SCRATCH-resident far function pointers today. Several
+adjacent cases remain on the trampoline.
+
+### STACK-resident far fn pointer under D=S
+
+The brief that introduced the fast path described a STACK + D=S variant
+where the param's stack offset doubles as a DP offset (because D=S).
+That branch is currently deferred.
+
+**Why deferred**: the call sequence in
+`call_select::_emit_call_instruction` emits `PLD` *before* every call
+in a D=S function (via `_emit_d_restore_before_call`) so the callee
+sees a sane D. By the time `_emit_indirect_call_trampoline` runs, D
+no longer equals S, and a stack-offset `JML [d]` would read from the
+wrong address. Re-establishing D=S immediately before the JML is
+possible but trades some of the savings, and worse, forces the callee
+to receive D=S — which is incorrect for callees that perform DP-
+relative loads.
+
+**Approach if revisited**: thread a flag through
+`_emit_call_instruction` indicating "this call will be lowered via the
+JML [d] fast path, skip the PLD". Then re-establish caller's D
+immediately after the call returns at `ret_label:`. The callee still
+sees D=S; this is acceptable only if we constrain the fast path to
+target functions known to either save D (`PHD`) or not touch DP. That
+constraint requires call-graph analysis at callsites with vreg-typed
+function pointers — non-trivial. An alternative: spill the stack-
+resident pointer to an ad-hoc scratch slot, then JML [scratch]. Costs
+~10 extra cycles vs the brief's ideal but is unconditionally safe and
+still beats the trampoline.
+
+When implemented, also resurrect the cost model in
+`analysis/far_ptr_strategy._decide_fn_ptr_only_strategy` (Case II,
+fn-pointer-only functions) — today that function always returns None
+because no benefit accrues without the STACK fast path.
+
+### Near indirect calls
+
+The `JML [d]` opcode is 24-bit. There is no analogous `JSR (d)` / `JMP
+(d)` form that synthesizes a 16-bit indirect *call* — only `JMP (addr)`
+which is a jump, not a subroutine call. Near indirect calls keep the
+trampoline.
+
+**Why deferred**: orthogonal — would require either a different
+synthesis (e.g. PEA <ret-1> ; JMP (d)`, but the relative cycle count
+needs measurement) or accepting that near indirect through a fn
+pointer is just rare and not worth optimizing.
+
+### JML [abs] for absolute-resident pointers
+
+Function pointers stored in static memory (e.g. `#[ram] static mut H:
+far fn();`) are not DP-addressable. The 65816 has a `JMP [addr]` form
+(opcode 0xDC, the same byte used for `JML [d]` — distinguished only
+by addressing-mode width), but R65 currently only emits the DP form.
+
+**Why deferred**: the SCRATCH path covers the common case where the
+caller has loaded the pointer into a scratch slot for performance. A
+direct memory-resident pointer is rarer and the SBC trampoline cost
+isn't dominant in those callsites.
+
+**Approach if revisited**: extend `_dp_offset_for_indirect_call` (or
+add a sibling helper) to recognize `MEMORY` locations whose
+`memory_addr` resolves to a label/absolute address. Emit
+`JMP [<absolute_addr>]`. The emitter already special-cases
+`Opcode.JMP_INDIRECT_LONG` to render as `JML [...]`; the same opcode
+in `INDIRECT_LONG` mode (vs `DP_INDIRECT_LONG`) would handle this. The
+opcode byte is the same; only the operand width differs.
+
+### Tail-call conversion for indirect calls
+
+A far indirect call in tail position could lower to plain `JML [d]`
+(no PHK/PEA, no synthetic return) saving 8 more cycles.
+
+**Why deferred**: orthogonal to the fast path — needs tail-call
+analysis machinery shared with direct calls. See the trait-dispatch
+tail-call entry above for the structural similarity.
+
+---
+
 ## Conventions
 
 When adding to this file:

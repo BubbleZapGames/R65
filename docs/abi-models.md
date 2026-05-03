@@ -519,6 +519,14 @@ call_trampoline:
     JMP (HANDLER)  ; Indirect jump
 ```
 
+**Far indirect fast path:** for `far fn(...)` indirect calls where the
+function pointer lives in a zeropage scratch slot (DP-addressable),
+the compiler skips the generic trampoline and emits a 4-instruction
+sequence using the 65816's `JML [d]` opcode (long indirect via DP).
+PHK / PEA / JML [d] saves ~62 cycles and ~24 bytes per call. See
+[register_memory_config.md §2.5](register_memory_config.md#25-indirect-call-lowering-jml-d-fast-path)
+for details and soundness.
+
 ---
 
 ## Mode Transitions

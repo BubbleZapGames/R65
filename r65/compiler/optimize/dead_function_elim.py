@@ -7,7 +7,9 @@ Entry points (marked with #[entry]) and interrupt handlers are always kept.
 """
 
 from typing import Set, List
-from r65.compiler.mir.nodes import MIRProgram, MIRFunction, Call, TraitDispatch
+from r65.compiler.mir.nodes import (
+    MIRProgram, MIRFunction, Call, TraitDispatch, Move, FunctionPointer,
+)
 
 
 class DeadFunctionEliminator:
@@ -130,21 +132,35 @@ class DeadFunctionEliminator:
         for func in functions:
             called_functions = set()
 
-            # Scan all blocks for Call instructions
+            # Scan all blocks for Call instructions and FunctionPointer references
             for block in func.blocks.values():
                 for instr in block.instructions:
                     if isinstance(instr, Call):
                         # Direct calls have function name as string
                         if isinstance(instr.function, str):
                             called_functions.add(instr.function)
-                        # Indirect calls through function pointers - can't determine
-                        # statically, so we can't eliminate any function that might
-                        # be called through a pointer. For now, we only handle direct calls.
+                        # Indirect calls (function field is a VirtualRegister) are
+                        # resolved via the FunctionPointer references picked up below.
+                        # Args may also carry FunctionPointer literals (e.g. as a
+                        # callback being passed to another function); count those
+                        # too.
+                        for arg in getattr(instr, 'args', []):
+                            if isinstance(getattr(arg, 'value', None), FunctionPointer):
+                                called_functions.add(arg.value.function_name)
                     elif isinstance(instr, TraitDispatch):
                         # Trait dispatch calls all implementor methods via jump table.
                         # Mark the dispatch wrapper and all implementors as called.
                         dispatch_name = f"{instr.trait_name}__{instr.method_name}__dispatch"
                         called_functions.add(dispatch_name)
+                        for arg in getattr(instr, 'args', []):
+                            if isinstance(getattr(arg, 'value', None), FunctionPointer):
+                                called_functions.add(arg.value.function_name)
+                    elif isinstance(instr, Move):
+                        # Move(dest, source=FunctionPointer(name)) — taking a fn
+                        # address into a vreg/static. The function may later be
+                        # invoked via indirect call; keep it alive.
+                        if isinstance(instr.source, FunctionPointer):
+                            called_functions.add(instr.source.function_name)
 
             call_graph[func.name] = called_functions
 

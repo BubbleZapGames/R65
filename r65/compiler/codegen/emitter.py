@@ -143,6 +143,18 @@ def _emit_instruction(opcode: Opcode, operand: Operand | None) -> str:
                     return f"{mnem} {operand}"
         return mnem
 
+    # JMP_INDIRECT_LONG (0xDC) is JML [addr] in WLA-DX. The mnemonic()
+    # helper strips the suffix and yields "JMP", but WLA-DX rejects
+    # `JMP [addr]` for 0xDC — it requires the explicit "JML" form.
+    if opcode == Opcode.JMP_INDIRECT_LONG:
+        if operand is not None:
+            match operand:
+                case Address(value):
+                    return f"JML [{_format_value(value)}]"
+                case _:
+                    return f"JML {operand}"
+        return "JML"
+
     # Accumulator mode instructions (need explicit 'A' operand in WLA-DX)
     ACCUMULATOR_OPCODES = {Opcode.ASL, Opcode.LSR, Opcode.ROL, Opcode.ROR, Opcode.INC, Opcode.DEC}
     if opcode in ACCUMULATOR_OPCODES:

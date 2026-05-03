@@ -1704,10 +1704,102 @@ class CallInstructionSelector(BaseSelector):
         else:
             raise InstructionSelectionError(f"Unknown function type in Call: {type(instr.function)}", source_loc=self.parent._current_source_loc)
 
+    def _dp_offset_for_indirect_call(self, func_ptr_vreg: VirtualRegister):
+        """Return the DP offset for a JML [d] far-indirect-call fast path,
+        or None if the fast path doesn't apply.
+
+        Fires only for SCRATCH locations: the fn pointer lives in zeropage
+        scratch slots (DP=$0000 by default), so JML [<scratch_addr>] reads
+        the 3-byte target directly from zeropage. No D-state coupling.
+
+        The brief also described a STACK-under-D=S variant. That case is
+        deferred — the existing call sequence emits a PLD before the call
+        (``_emit_d_restore_before_call``) which restores D to the caller's
+        original (non-S) value before we get to emit the call instruction.
+        At the JML [d] site, D is no longer S, so a stack-offset DP read
+        would point at the wrong memory. Re-establishing D=S before the
+        JML is possible but trades some of the savings for new prologue
+        and forces the callee to receive D=S (incorrect for callees that
+        perform DP-relative loads). Because real R65 code that calls into
+        a far fn pointer overwhelmingly does so through scratch promotion
+        (when scratch registers are available), the SCRATCH-only fast
+        path captures the common case; the STACK case stays on the
+        existing trampoline. See docs/future-work.md.
+
+        Hardware-resident pointers and MEMORY locations also return None.
+        """
+        ptr_loc = self.parent._get_operand_location(func_ptr_vreg)
+
+        if ptr_loc.kind == LocationKind.SCRATCH:
+            return ptr_loc.scratch_addr
+
+        return None
+
+    def _emit_dp_indirect_far_call(self, dp_offset: int, comment: str = ""):
+        """Emit the JML [d] fast-path sequence for a far indirect call.
+
+        Sequence (16 cycles total):
+
+            PHK                ; push current PBR              (3 cyc)
+            PEA <ret-1         ; push 16-bit return-1          (5 cyc)
+            JML [<dp_offset>]  ; long indirect through DP      (8 cyc)
+        ret:
+
+        The callee's RTL pops 3 bytes (lo, hi, pbr) and increments — control
+        returns to ``ret`` with the original PBR restored. Same calling
+        convention as a real JSL.
+
+        Stack-tracker bookkeeping: PHK + PEA push 3 bytes; the callee's RTL
+        pops 3 bytes. Net change at ``ret`` is 0. Mirrors the existing
+        trampoline, which also nets zero on the stack tracker.
+
+        Caller has already verified preconditions:
+          - is_far == True
+          - pointer is DP-addressable (SCRATCH, or STACK under D=S)
+        """
+        from r65.compiler.codegen.asm_nodes import Immediate, Address
+
+        ret_label = self.parent._get_unique_label()
+
+        # PHK pushes the current PBR (1 byte). No m-mode dependency: PHK
+        # always pushes 1 byte. The PEA below requires m=8 to push 2 bytes
+        # — wait, PEA is mode-independent (always pushes 16 bits). Good,
+        # no _ensure_m8_mode needed here.
+        phk_comment = (
+            f"Push PBR for far indirect call ({comment})"
+            if comment else "Push PBR for far indirect call"
+        )
+        self._emit_implied(Opcode.PHK, phk_comment)
+        # PEA expression: WLA-DX accepts `PEA label-1` directly. We avoid
+        # outer parens because PEA's syntax can be ambiguous with indirect
+        # forms, and the binary-minus has higher precedence than what
+        # follows in this emitter's token stream.
+        self._emit_instr(
+            Opcode.PEA,
+            Immediate(f"{ret_label}-1"),
+            "Push return address - 1",
+        )
+        self._emit_instr(
+            Opcode.JMP_INDIRECT_LONG,
+            Address(dp_offset),
+            f"Far indirect call via JML [${dp_offset:02X}]",
+        )
+        self.emitter.emit_label(ret_label)
+
     def _emit_indirect_call_trampoline(self, func_ptr_vreg: VirtualRegister, is_far: bool,
                                        stack_bytes_pushed: int = 0):
         """
         Generate trampoline for indirect function call through function pointer.
+
+        Far indirect calls have a fast path: when the pointer is DP-addressable
+        (a scratch slot, or a stack slot under D=S), the call lowers to
+        PHK / PEA / JML [d] (16 cycles, ~7 bytes). Otherwise, fall through to
+        the generic RTS/RTL trampoline below (~78 cycles, ~30 bytes).
+        Near indirect calls always use the generic trampoline (no JML [d] for
+        16-bit pointers; the existing JMP_INDIRECT only reads 2 bytes from the
+        current bank, which would not synthesize a proper near JSR).
+
+        See docs/register_memory_config.md §1.5 for the fast-path rationale.
 
         The 65816 RTS/RTL instructions pop an address and add 1 before jumping.
         For a proper call, we need TWO addresses on the stack:
@@ -1755,6 +1847,16 @@ class CallInstructionSelector(BaseSelector):
         """
         from r65.compiler.codegen.asm_nodes import StackOffset, Immediate, Address
         from r65.compiler.codegen.register_alloc import PhysicalLocation
+
+        # Fast path: PHK / PEA / JML [d] for far indirect calls when the
+        # pointer is DP-addressable. Saves ~62 cycles vs the trampoline.
+        if is_far:
+            dp_offset = self._dp_offset_for_indirect_call(func_ptr_vreg)
+            if dp_offset is not None:
+                self._emit_dp_indirect_far_call(
+                    dp_offset, comment=f"vreg {func_ptr_vreg}"
+                )
+                return
 
         ret_label = self.parent._get_unique_label()
 

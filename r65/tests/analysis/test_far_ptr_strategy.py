@@ -45,17 +45,25 @@ class TestFnPtrOnlyStrategy:
     data pointer params). New cost model decides D=S vs no-strategy;
     SET_DBR is never picked here."""
 
-    def test_thin_invoker_picks_d_equals_s(self):
-        """Function with one far fn ptr param, body is one indirect call,
-        no zp access — D=S wins (16 cycles + 18 prologue < 78 cycles)."""
+    def test_thin_invoker_no_scratch_stays_no_strategy(self):
+        """Function with one far fn ptr param, no scratch registers
+        available, body is one indirect call. The STACK fast path is
+        currently deferred (see _dp_offset_for_indirect_call), so the
+        Case II decision returns no-strategy and the function falls
+        back to the trampoline.
+
+        When the STACK path lands, this test should be updated to
+        assert FarPtrStrategy.D_EQUALS_S.
+        """
         source = """
             fn invoke(handler: far fn()) {
                 handler();
             }
         """
+        # No scratch promotion runs (default empty pool in _strategy_for).
         func = _strategy_for(source, 'invoke')
-        assert func.has_far_ptr_stack_params is True
-        assert func.far_ptr_strategy == FarPtrStrategy.D_EQUALS_S
+        assert func.has_far_ptr_stack_params is False
+        assert func.far_ptr_strategy is None
         assert 0 in func.fn_ptr_param_indices
         assert func.far_ptr_param_indices == set()
 
