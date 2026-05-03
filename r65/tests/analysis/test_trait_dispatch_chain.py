@@ -90,6 +90,41 @@ def _trait_info(trait='T', method='m', impls=None):
     }
 
 
+def _multi_method_trait_info(trait='T', methods=None, impls_per_method=None):
+    """Build a trait_dispatch_info dict for a trait with multiple methods.
+
+    Args:
+        trait: trait name
+        methods: list of method names, e.g. ['m1', 'm2']
+        impls_per_method: dict {method_name: [impl_func_name, ...]}.
+            All methods must have the same set of implementor structs.
+            We index by struct: implementor i gets mangled[k] from
+            impls_per_method[methods[k]][i].
+    """
+    if methods is None:
+        methods = ['m1', 'm2']
+    if impls_per_method is None:
+        impls_per_method = {m: [f'Impl1__{m}'] for m in methods}
+
+    n_impls = len(impls_per_method[methods[0]])
+    implementors = []
+    for i in range(n_impls):
+        mangled = [impls_per_method[m][i] for m in methods]
+        struct = mangled[0].split('__')[0]
+        implementors.append({
+            'struct': struct,
+            'type_id': i + 1,
+            'mangled': mangled,
+        })
+    return {
+        trait: {
+            'is_far': True,
+            'methods': list(methods),
+            'implementors': implementors,
+        }
+    }
+
+
 def _empty_impl_func(name):
     """A trivial leaf impl — passes _impl_is_dbr_independent."""
     return _make_func(name, {0: _make_block(0, [Return()])})
@@ -355,5 +390,94 @@ class TestCrossBlockChains:
         }
         prog = _build_program(blocks)
         _run_analysis(prog)
+        assert a.self_chain_role == ChainRole.SOLO
+        assert b.self_chain_role == ChainRole.SOLO
+
+
+class TestChainAcrossMethods:
+    """v1.5: chain extends across different methods of the same trait."""
+
+    def _build_two_method_program(self, caller_blocks, m1_impl_blocks=None,
+                                  m2_impl_blocks=None):
+        """Helper: program with trait T having methods m1 and m2, each
+        with one implementor (Impl1__m1 / Impl1__m2)."""
+        if m1_impl_blocks is None:
+            m1_impl_blocks = {0: _make_block(0, [Return()])}
+        if m2_impl_blocks is None:
+            m2_impl_blocks = {0: _make_block(0, [Return()])}
+        caller = _make_func('caller', caller_blocks)
+        impl_m1 = _make_func('Impl1__m1', m1_impl_blocks)
+        impl_m2 = _make_func('Impl1__m2', m2_impl_blocks)
+        return MIRProgram(
+            functions=[caller, impl_m1, impl_m2],
+            trait_dispatch_info=_multi_method_trait_info(
+                trait='T',
+                methods=['m1', 'm2'],
+                impls_per_method={
+                    'm1': ['Impl1__m1'],
+                    'm2': ['Impl1__m2'],
+                },
+            ),
+        )
+
+    def test_chain_different_methods_same_trait_coalesces(self):
+        """v1.5: two same-self dispatches to different methods of the
+        same trait coalesce into START + END."""
+        s = _make_self_vreg()
+        a = _make_dispatch(s, trait='T', method='m1')
+        b = _make_dispatch(s, trait='T', method='m2')
+        prog = self._build_two_method_program(
+            {0: _make_block(0, [a, b, Return()])}
+        )
+        _run_analysis(prog)
+        assert a.self_chain_role == ChainRole.START
+        assert b.self_chain_role == ChainRole.END
+
+    def test_chain_three_methods_mixed(self):
+        """v1.5: three dispatches with method pattern [m1, m2, m1]
+        produce START + MIDDLE + END."""
+        s = _make_self_vreg()
+        a = _make_dispatch(s, trait='T', method='m1')
+        b = _make_dispatch(s, trait='T', method='m2')
+        c = _make_dispatch(s, trait='T', method='m1')
+        prog = self._build_two_method_program(
+            {0: _make_block(0, [a, b, c, Return()])}
+        )
+        _run_analysis(prog)
+        assert a.self_chain_role == ChainRole.START
+        assert b.self_chain_role == ChainRole.MIDDLE
+        assert c.self_chain_role == ChainRole.END
+
+    def test_chain_breaks_when_one_method_has_dirty_impl(self):
+        """If one method's impl set fails DBR-independence, chain
+        rejects when that method appears in the run.
+
+        Verifies the union-of-impls accounting: when extending from m1
+        to m2, the new method's impls must also pass — and m2's impl
+        does a RAM access here, so the chain should fall back to SOLO.
+        """
+        s = _make_self_vreg()
+        a = _make_dispatch(s, trait='T', method='m1')
+        b = _make_dispatch(s, trait='T', method='m2')
+
+        # Bad m2 impl: writes to RAM.
+        ram_loc = MemoryLocation(
+            storage_type='ram', address=0x7E0400, symbol=None
+        )
+        bad_m2_blocks = {0: _make_block(0, [
+            Store(
+                source=Immediate(value=1),
+                dest=ram_loc,
+                type_info=BasicTypeInfo('u8'),
+            ),
+            Return(),
+        ])}
+        prog = self._build_two_method_program(
+            {0: _make_block(0, [a, b, Return()])},
+            m2_impl_blocks=bad_m2_blocks,
+        )
+        _run_analysis(prog)
+        # m1 alone is fine but the chain extension to m2 fails — so
+        # both end up SOLO.
         assert a.self_chain_role == ChainRole.SOLO
         assert b.self_chain_role == ChainRole.SOLO

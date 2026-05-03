@@ -167,7 +167,12 @@ Each `TraitDispatch` MIR instruction carries a `self_chain_role` field
 Y is reloaded for every chain member because argument setup or the
 prior dispatch may have clobbered it. Soundness conditions for fire:
 
-- Same trait, same method, same `self_ptr` vreg.
+- Same `self_ptr` vreg.
+- **v1.5**: methods may differ between dispatches, but the trait must
+  match. The DBR bracket itself is method-independent — only the
+  indirect JSR target (the dispatch wrapper) changes between calls.
+  The DBR-independence check runs over the union of impl sets across
+  every distinct `(trait, method)` pair reached in the chain.
 - Run lies within a *straight-line CFG path*: each block has exactly
   one successor, whose only predecessor is that block. Joins,
   branches, and back-edges break the chain.
@@ -178,10 +183,11 @@ prior dispatch may have clobbered it. Soundness conditions for fire:
   - call to a non-DBR-independent function (recursively checked)
   - nested `TraitDispatch` of any kind (would re-bracket DBR)
   - redefinition of the self vreg
-- Every implementor of the trait method (resolved via the
-  trait-impl-aware `CallGraph` from `analysis/call_graph.py`) is itself
-  DBR-independent. The predicate is `_impl_is_dbr_independent`,
-  memoized on `MIRFunction._chain_dbr_independent`.
+- Every implementor of every trait method invoked in the chain
+  (resolved via the trait-impl-aware `CallGraph` from
+  `analysis/call_graph.py`) is itself DBR-independent. The predicate is
+  `_function_is_dbr_independent`, memoized on
+  `MIRFunction._chain_dbr_independent`.
 - Functions that use `SET_DBR` for their own far-ptr stack params, or
   set `self_far_uses_d_equals_s`, or are in a recursive cycle in the
   call graph, are conservatively NOT DBR-independent.

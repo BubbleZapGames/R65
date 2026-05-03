@@ -229,7 +229,15 @@ def _straight_line_path(func, entry_block_id, visited_blocks):
 
 def _coalesce_chains_along_path(func, path, call_graph, func_map, cyclic_funcs):
     """Walk a straight-line block path in order; identify same-self runs of
-    far-self TraitDispatch and assign ChainRole."""
+    far-self TraitDispatch and assign ChainRole.
+
+    A run extends as long as every member shares the same trait_name and
+    self_ptr vreg as the chain head (method may differ — see v1.5). The
+    impl-set DBR-independence predicate is evaluated over the UNION of
+    impls across every (trait, method) pair in the chain so far plus the
+    new candidate; if adding a candidate would make any impl in the union
+    DBR-dependent, the chain is flushed before that candidate.
+    """
     # Flatten (block_idx, instr_idx, instr) for every TraitDispatch in path
     # AND track all instructions in order so we can check inter-dispatch
     # DBR-independence by walking the flat list between dispatch positions.
@@ -253,6 +261,14 @@ def _coalesce_chains_along_path(func, path, call_graph, func_map, cyclic_funcs):
             i += 1
             continue
 
+        # Track the union of (trait_name, method_name) pairs visited in the
+        # chain. v1.5: methods may differ, so the impl-set check has to
+        # cover every method seen so far. Re-checking impls per method (vs
+        # over the union) is equivalent because each method's impl set is
+        # independent of the others — but tracking the set explicitly makes
+        # the soundness rule readable and matches the brief.
+        chain_methods = {(instr.trait_name, instr.method_name)}
+
         # Try to extend the chain forward through `flat`.
         run_indices = [i]
         j = i + 1
@@ -269,11 +285,16 @@ def _coalesce_chains_along_path(func, path, call_graph, func_map, cyclic_funcs):
                 break
             if not _same_self_chain(instr, cand):
                 break
+            # Re-check the candidate's method's impls. If we've already
+            # accepted this (trait, method) earlier in the chain, the
+            # check is redundant but cheap (memoized via
+            # `_chain_dbr_independent`).
             if not _trait_method_impls_all_independent(
                 cand, call_graph, func_map, cyclic_funcs
             ):
                 break
 
+            chain_methods.add((cand.trait_name, cand.method_name))
             run_indices.append(j)
             j += 1
 
@@ -307,11 +328,12 @@ def _is_chainable_far_dispatch(instr):
 def _same_self_chain(a, b):
     """True if two TraitDispatches can chain DBR-bracket-wise.
 
-    v1 conservatism: same trait, same method, same self_ptr vreg.
+    v1.5: same trait + same self_ptr vreg. Methods may differ — the DBR
+    bracket itself is method-independent, only the dispatch wrapper
+    (jump table) changes between calls. Per-method impl-set DBR-
+    independence is verified separately by the chain extender.
     """
     if a.trait_name != b.trait_name:
-        return False
-    if a.method_name != b.method_name:
         return False
     if a.self_ptr is not b.self_ptr:
         # Compare vreg identity (id field) — defensive against fresh-clone

@@ -245,6 +245,83 @@ class TestFarSelfChainCoalescing:
         ))
         assert result.success, f"Failures: {result.failures}"
 
+    def test_chain_different_methods_runtime(self, e2e):
+        """v1.5: two methods of the same trait on the same self chain.
+
+        Mutates self.v via tick() and reads it via read(); the chain
+        coalesces both into one DBR bracket. Verify the runtime is
+        unaffected by the coalescing.
+        """
+        result = e2e.run(_PREAMBLE + '''
+            struct Counter { v: u8 }
+
+            trait Tickable {
+                far fn tick(far *self);
+                far fn read(far *self) -> u8;
+            }
+
+            impl Tickable for Counter {
+                far fn tick(far *self) {
+                    self.v = self.v + 1;
+                }
+                far fn read(far *self) -> u8 {
+                    return self.v;
+                }
+            }
+
+            #[ram]
+            static mut C: Counter = Counter { v: 5 };
+
+            #[entry]
+            fn main() {
+                let p: far *dyn Tickable = &C;
+                p.tick();
+                RESULT = p.read();
+            }
+        ''', ExpectedState(
+            memory={0x7E0200: 6}
+        ))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_chain_different_methods_asm_count(self):
+        """v1.5: 3-call chain with 3 different methods coalesces into one
+        PHB / one chain-end PLB pair (plus the DBR-set PLB).
+        """
+        source = _PREAMBLE + '''
+            struct Player { x: u8, y: u8, z: u8 }
+
+            trait HasPos {
+                far fn get_x(far *self) -> u8;
+                far fn get_y(far *self) -> u8;
+                far fn get_z(far *self) -> u8;
+            }
+
+            impl HasPos for Player {
+                far fn get_x(far *self) -> u8 { return self.x; }
+                far fn get_y(far *self) -> u8 { return self.y; }
+                far fn get_z(far *self) -> u8 { return self.z; }
+            }
+
+            #[ram]
+            static mut PLAYER: Player = Player { x: 1, y: 2, z: 3 };
+
+            #[entry]
+            fn main() {
+                let p: far *dyn HasPos = &PLAYER;
+                let a: u8 = p.get_x();
+                let b: u8 = p.get_y();
+                let c: u8 = p.get_z();
+                RESULT = a + b + c;
+            }
+        '''
+        asm = _compile_snes(source)
+        # Coalesced 3-call chain: 1 PHB total in main, 2 PLB
+        # (1 set-DBR PHA/PLB + 1 chain-end PLB).
+        phb = _count_in_function(asm, 'main', 'PHB')
+        plb = _count_in_function(asm, 'main', 'PLB')
+        assert phb == 1, f"Expected 1 PHB in main (3-method chain coalesced), got {phb}\n{asm}"
+        assert plb == 2, f"Expected 2 PLB in main (1 set-DBR + 1 chain-end), got {plb}\n{asm}"
+
     def test_chain_broken_by_call(self, e2e):
         """A regular function call between chain members breaks the chain.
 
