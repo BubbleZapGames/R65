@@ -81,6 +81,63 @@ class TestFarPointerStackParamDetection:
         assert 1 in func.far_ptr_param_indices
 
 
+class TestFarFnPointerStackParamDetection:
+    """Tests for tracking far function pointer stack parameters separately
+    from far data pointer parameters. Far fn pointer params land in
+    fn_ptr_param_indices; the cost-modeled strategy analysis decides whether
+    to flip has_far_ptr_stack_params later."""
+
+    def test_far_fn_pointer_stack_param_detected(self):
+        """Function with far fn pointer stack param populates fn_ptr_param_indices."""
+        source = """
+            fn caller(handler: far fn(u8)) {
+            }
+        """
+        mir = build_mir(source)
+        func = mir.functions[0]
+        assert 0 in func.fn_ptr_param_indices
+        # No far data pointer params, so this set stays empty.
+        assert func.far_ptr_param_indices == set()
+        # Strategy decision is deferred — the builder leaves the flag clear.
+        assert func.has_far_ptr_stack_params is False
+
+    def test_mixed_far_data_and_fn_pointer_params(self):
+        """Mix of far *T and far fn(...) params populates both sets."""
+        source = """
+            fn caller(buf: far *u8, handler: far fn()) {
+            }
+        """
+        mir = build_mir(source)
+        func = mir.functions[0]
+        assert 0 in func.far_ptr_param_indices
+        assert 1 in func.fn_ptr_param_indices
+        # Data pointer param trips has_far_ptr_stack_params immediately
+        assert func.has_far_ptr_stack_params is True
+
+    def test_no_far_params_both_sets_empty(self):
+        """Function with neither far pointer kind has both sets empty."""
+        source = """
+            fn caller(x: u8, y: u16) {
+            }
+        """
+        mir = build_mir(source)
+        func = mir.functions[0]
+        assert func.far_ptr_param_indices == set()
+        assert func.fn_ptr_param_indices == set()
+        assert func.has_far_ptr_stack_params is False
+
+    def test_near_fn_pointer_not_tracked(self):
+        """Near fn pointer params (no far) do not populate fn_ptr_param_indices."""
+        source = """
+            fn caller(handler: fn(u8)) {
+            }
+        """
+        mir = build_mir(source)
+        func = mir.functions[0]
+        assert func.fn_ptr_param_indices == set()
+        assert func.far_ptr_param_indices == set()
+
+
 class TestFarPointerModeValidation:
     """Tests for far pointer params with automatic x16 mode.
 

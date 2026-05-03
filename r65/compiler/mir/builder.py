@@ -409,7 +409,7 @@ class MIRBuilder:
         # Calculate stack parameter offsets for prologue generation
         # Stack-relative addressing: LDA offset,S
         if stack_params:
-            from r65.compiler.hir.types import PointerTypeInfo
+            from r65.compiler.hir.types import PointerTypeInfo, FunctionTypeInfo
             from r65.compiler.codegen.abi import ABIInfo
 
             abi = ABIInfo(is_far=hir_func.is_far)
@@ -441,6 +441,11 @@ class MIRBuilder:
                     if isinstance(param.param_type, PointerTypeInfo) and param.param_type.is_far:
                         mir_func.has_far_ptr_stack_params = True
                         mir_func.far_ptr_param_indices.add(idx)
+                    elif isinstance(param.param_type, FunctionTypeInfo) and param.param_type.is_far:
+                        # Track far fn pointer params separately. Do NOT flip
+                        # has_far_ptr_stack_params here — that decision is made
+                        # later by the cost-modeled strategy analysis.
+                        mir_func.fn_ptr_param_indices.add(idx)
 
                     param_size = self._get_type_size(param.param_type)
                     current_offset += param_size
@@ -473,6 +478,11 @@ class MIRBuilder:
                     if isinstance(param.param_type, PointerTypeInfo) and param.param_type.is_far:
                         mir_func.has_far_ptr_stack_params = True
                         mir_func.far_ptr_param_indices.add(idx)
+                    elif isinstance(param.param_type, FunctionTypeInfo) and param.param_type.is_far:
+                        # Track far fn pointer params separately. Do NOT flip
+                        # has_far_ptr_stack_params here — that decision is made
+                        # later by the cost-modeled strategy analysis.
+                        mir_func.fn_ptr_param_indices.add(idx)
 
                     # Advance offset by parameter size
                     param_size = self._get_type_size(param.param_type)

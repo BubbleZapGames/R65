@@ -938,7 +938,13 @@ class MIRFunction:
     # True if any stack parameters are far pointers (need D=S prologue or SET_DBR)
     has_far_ptr_stack_params: bool = False
     # Set of parameter indices that are far pointers on stack
+    # (data pointers — used by SET_DBR strategy and the existing far_ptr cost model)
     far_ptr_param_indices: Set[int] = field(default_factory=set)
+    # Set of parameter indices that are far function pointers on stack
+    # (FunctionTypeInfo with is_far=True). Tracked separately from far_ptr_param_indices
+    # so the cost model for D=S strategy can reason about indirect-call savings without
+    # conflating fn pointers with data pointers under SET_DBR semantics.
+    fn_ptr_param_indices: Set[int] = field(default_factory=set)
     # Strategy for far pointer access (D=S or SET_DBR), set by analysis pass
     far_ptr_strategy: Optional['FarPtrStrategy'] = None
 
