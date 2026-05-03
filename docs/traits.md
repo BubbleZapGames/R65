@@ -498,10 +498,24 @@ let width: u8 = obj.get_width();
 |------------|-------------------|
 | Near trait | ~10-12 cycles |
 | Far trait | ~20-25 cycles |
+| Far trait, chained (mid/end of chain) | ~10 cycles less than solo |
 
 Compare to direct call:
 - Near function call: ~12 cycles (JSR/RTS)
 - Far function call: ~18 cycles (JSL/RTL)
+
+When a function makes back-to-back trait calls on the same `far *self`,
+the compiler coalesces the per-call DBR bracket (PHB / load bank / PHA /
+PLB ... PLB) so that DBR is set to the object's bank once at the start
+of the chain and restored once at the end. Each chained call after the
+first saves roughly 10 cycles versus a standalone dispatch (one less
+PHB, one less load-bank, one less PHA/PLB pair). See
+[Register/Memory Configuration § Self-pointer reuse](register_memory_config.md#self-pointer-reuse)
+for the soundness rules.
+
+### Self Pointer Access
+
+Trait methods always receive `*self` in `Y`. For `far *self`, the compiler picks per-method between a fast **DBR:Y** path (leaf methods only) and a **D=S** fallback (when the body has any call, ROM access, or HW access). See [Register/Memory Configuration](register_memory_config.md) for the analysis rules, prologue shapes, and addressing modes.
 
 ---
 

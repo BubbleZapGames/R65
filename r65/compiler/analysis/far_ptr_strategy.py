@@ -16,9 +16,10 @@ SET_DBR wins when: N_zp > N_rom + N_hw + N_ram + N_calls + 6
 """
 
 from r65.compiler.mir.nodes import (
-    FarPtrStrategy, MIRFunction, BasicBlock,
+    FarPtrStrategy, ChainRole, MIRFunction, BasicBlock,
     Load, Store, LoadIndirect, StoreIndirect,
     Call, TraitDispatch, MemoryLocation, VirtualRegister,
+    Move,
 )
 
 
@@ -127,3 +128,351 @@ def _count_accesses(func: MIRFunction):
                 n_calls += 1
 
     return n_zp, n_rom, n_hw, n_ram, n_calls
+
+
+# ============================================================================
+# Trait dispatch chain coalescing
+# ============================================================================
+#
+# When a function makes back-to-back TraitDispatch calls on the same far-self
+# vreg, each dispatch redundantly re-emits the PHB / load-bank / PHA / PLB
+# bracket plus a Y reload. For chained calls on the same self, DBR can stay
+# set across the whole chain, saving ~10 cycles per chained dispatch.
+#
+# This v1 pass coalesces only the DBR bracket, leaves Y reload alone,
+# only handles same-trait/same-method runs, and only walks straight-line
+# CFG paths (each block in the chain has exactly one successor whose only
+# predecessor is that block). Soundness is verified using the trait-impl-
+# resolved CallGraph (see analysis/call_graph.py): every impl in the
+# trait's jump table must be DBR-independent for the chain to fire, and
+# every instruction between dispatches must be DBR-independent too.
+
+# Cache attribute name for DBR-independence (set on MIRFunction).
+_DBR_INDEP_ATTR = '_chain_dbr_independent'
+
+
+def analyze_trait_dispatch_chains(mir_program, call_graph):
+    """Detect runs of TraitDispatch on the same far-self vreg and assign
+    ChainRole values to coalesce DBR brackets.
+
+    Args:
+        mir_program: MIRProgram to analyze (mutated in place).
+        call_graph: CallGraph from CallGraphAnalyzer.analyze() with
+            trait_dispatch_info loaded.
+    """
+    func_map = {f.name: f for f in mir_program.functions}
+    # Track recursion via SCCs in the call graph. Functions in any cycle
+    # cannot be definitively proven DBR-independent without iteration to
+    # fixpoint; we treat them conservatively as NOT independent.
+    from r65.compiler.analysis.call_graph import CallGraphAnalyzer
+    # Build a temporary analyzer just to reuse find_cycles on this graph.
+    cga = CallGraphAnalyzer(mir_program)
+    cga.graph = call_graph
+    cycles = cga.find_cycles()
+    cyclic_funcs: set = set()
+    for cycle in cycles:
+        cyclic_funcs.update(cycle)
+
+    for func in mir_program.functions:
+        _analyze_function_chains(func, call_graph, func_map, cyclic_funcs)
+
+
+def _analyze_function_chains(func, call_graph, func_map, cyclic_funcs):
+    """Find chainable runs in a single function and assign ChainRole."""
+    # Build straight-line block paths starting at every block whose chain
+    # could produce a coalesceable run. We walk forward through fall-through
+    # successors only.
+    visited_blocks: set = set()
+
+    for entry_block_id in func.blocks:
+        if entry_block_id in visited_blocks:
+            continue
+        path = _straight_line_path(func, entry_block_id, visited_blocks)
+        if not path:
+            continue
+        _coalesce_chains_along_path(
+            func, path, call_graph, func_map, cyclic_funcs
+        )
+
+
+def _straight_line_path(func, entry_block_id, visited_blocks):
+    """Return the maximal forward path of blocks starting at entry_block_id
+    where each non-terminal block has exactly one successor whose only
+    predecessor is that block. Marks blocks as visited.
+
+    Returns a list of BasicBlock objects.
+    """
+    path = []
+    cur_id = entry_block_id
+    while cur_id is not None and cur_id not in visited_blocks:
+        block = func.blocks.get(cur_id)
+        if block is None:
+            break
+        visited_blocks.add(cur_id)
+        path.append(block)
+
+        succs = block.successors
+        if len(succs) != 1:
+            break
+        next_id = succs[0]
+        next_block = func.blocks.get(next_id)
+        if next_block is None:
+            break
+        if len(next_block.predecessors) != 1:
+            break
+        if next_block.predecessors[0] != cur_id:
+            break
+        cur_id = next_id
+
+    return path
+
+
+def _coalesce_chains_along_path(func, path, call_graph, func_map, cyclic_funcs):
+    """Walk a straight-line block path in order; identify same-self runs of
+    far-self TraitDispatch and assign ChainRole."""
+    # Flatten (block_idx, instr_idx, instr) for every TraitDispatch in path
+    # AND track all instructions in order so we can check inter-dispatch
+    # DBR-independence by walking the flat list between dispatch positions.
+    flat = []  # (block_idx, instr_idx, instr)
+    for b_idx, block in enumerate(path):
+        for i_idx, instr in enumerate(block.instructions):
+            flat.append((b_idx, i_idx, instr))
+
+    n = len(flat)
+    i = 0
+    while i < n:
+        instr = flat[i][2]
+        if not _is_chainable_far_dispatch(instr):
+            i += 1
+            continue
+
+        # Verify the impl set is DBR-independent for THIS dispatch.
+        if not _trait_method_impls_all_independent(
+            instr, call_graph, func_map, cyclic_funcs
+        ):
+            i += 1
+            continue
+
+        # Try to extend the chain forward through `flat`.
+        run_indices = [i]
+        j = i + 1
+        while j < n:
+            # Inter-dispatch instructions: from flat[run_indices[-1]+1] up
+            # to flat[j-1] (inclusive). Verify they are DBR-independent.
+            if not _between_is_dbr_independent(
+                flat, run_indices[-1], j, call_graph, func_map, cyclic_funcs
+            ):
+                break
+
+            cand = flat[j][2]
+            if not _is_chainable_far_dispatch(cand):
+                break
+            if not _same_self_chain(instr, cand):
+                break
+            if not _trait_method_impls_all_independent(
+                cand, call_graph, func_map, cyclic_funcs
+            ):
+                break
+
+            run_indices.append(j)
+            j += 1
+
+        # Assign roles
+        if len(run_indices) >= 2:
+            for k, run_idx in enumerate(run_indices):
+                td = flat[run_idx][2]
+                if k == 0:
+                    td.self_chain_role = ChainRole.START
+                elif k == len(run_indices) - 1:
+                    td.self_chain_role = ChainRole.END
+                else:
+                    td.self_chain_role = ChainRole.MIDDLE
+            i = run_indices[-1] + 1
+        else:
+            # Single dispatch — leave as SOLO (default)
+            i += 1
+
+
+def _is_chainable_far_dispatch(instr):
+    """True if instr is a far-self TraitDispatch with a vreg self_ptr."""
+    if not isinstance(instr, TraitDispatch):
+        return False
+    if not instr.self_is_far:
+        return False
+    if not isinstance(instr.self_ptr, VirtualRegister):
+        return False
+    return True
+
+
+def _same_self_chain(a, b):
+    """True if two TraitDispatches can chain DBR-bracket-wise.
+
+    v1 conservatism: same trait, same method, same self_ptr vreg.
+    """
+    if a.trait_name != b.trait_name:
+        return False
+    if a.method_name != b.method_name:
+        return False
+    if a.self_ptr is not b.self_ptr:
+        # Compare vreg identity (id field) — defensive against fresh-clone
+        # equality semantics.
+        if not (
+            isinstance(a.self_ptr, VirtualRegister)
+            and isinstance(b.self_ptr, VirtualRegister)
+            and a.self_ptr.id == b.self_ptr.id
+        ):
+            return False
+    return True
+
+
+def _between_is_dbr_independent(flat, prev_run_idx, next_idx,
+                                call_graph, func_map, cyclic_funcs):
+    """Check that all instructions strictly between flat[prev_run_idx]
+    (the previous TraitDispatch in the run) and flat[next_idx] (the next
+    candidate) preserve DBR-independence.
+
+    The previous self_ptr vreg must NOT be redefined in this range —
+    otherwise the value Y reads from on the next dispatch differs from
+    what's in DBR.
+    """
+    prev_td = flat[prev_run_idx][2]
+    self_vreg = prev_td.self_ptr
+    for k in range(prev_run_idx + 1, next_idx):
+        instr = flat[k][2]
+        if not _instr_is_dbr_independent(
+            instr, call_graph, func_map, cyclic_funcs
+        ):
+            return False
+        # Reject if self_ptr vreg is redefined.
+        if _instr_redefines_vreg(instr, self_vreg):
+            return False
+    return True
+
+
+def _instr_redefines_vreg(instr, vreg):
+    """True if instr writes to vreg (which would invalidate chained self)."""
+    # Most instruction classes have a `dest` field that is a register.
+    dest = getattr(instr, 'dest', None)
+    if isinstance(dest, VirtualRegister) and dest.id == vreg.id:
+        return True
+    # Move's dest covers most rebinds; Call/TraitDispatch returns lists.
+    returns = getattr(instr, 'returns', None)
+    if returns:
+        for r in returns:
+            if isinstance(r, VirtualRegister) and r.id == vreg.id:
+                return True
+    return False
+
+
+def _instr_is_dbr_independent(instr, call_graph, func_map, cyclic_funcs):
+    """True if `instr` is safe to execute while DBR is set to self's bank
+    (rather than the caller's DBR).
+
+    Disqualifiers (per docs/register_memory_config.md and the brief):
+      - non-LONG RAM access (DBR-relative absolute load/store of RAM)
+      - near pointer dereference
+      - call to a non-DBR-independent function
+      - nested far-self TraitDispatch on a DIFFERENT self vreg
+    """
+    if isinstance(instr, (Load, Store)):
+        loc = instr.source if isinstance(instr, Load) else instr.dest
+        if isinstance(loc, MemoryLocation):
+            st = loc.storage_type
+            if st == 'ram':
+                # RAM access uses DBR-relative absolute by default. ROM/HW
+                # are emitted as LONG already; zeropage uses DP. RAM is
+                # the disqualifier.
+                return False
+        return True
+
+    if isinstance(instr, (LoadIndirect, StoreIndirect)):
+        if not instr.is_far:
+            # Near pointer deref — DBR-dependent.
+            return False
+        return True
+
+    if isinstance(instr, Call):
+        # Direct calls: recurse into callee.
+        if isinstance(instr.function, str):
+            return _function_is_dbr_independent(
+                instr.function, call_graph, func_map, cyclic_funcs
+            )
+        # Indirect call via fn pointer: any function whose address is taken
+        # is a possibility — too broad to prove independent. Reject.
+        return False
+
+    if isinstance(instr, TraitDispatch):
+        # A nested TraitDispatch on the SAME self vreg is fine — it sets
+        # DBR to the same bank. A different self is a disqualifier.
+        # However, the "between" walker handles "same self" only at top
+        # level (the chain itself); a nested dispatch in between would
+        # re-bracket DBR. Conservatively reject any TraitDispatch inside
+        # the gap region.
+        return False
+
+    # Other instructions (arithmetic, compare, branch, mode set, push/pull,
+    # inline asm, save/restore reg, type convert, ...) are DBR-independent.
+    return True
+
+
+def _function_is_dbr_independent(func_name, call_graph, func_map, cyclic_funcs):
+    """Recursively determine whether `func_name`'s body executes DBR-
+    independently. Memoized on the MIRFunction.
+
+    Conservative rejections:
+      - Function not found in func_map (external/builtin) -> False
+      - Function in a recursive cycle -> False (without fixpoint we can't tell)
+      - Function uses SET_DBR for its own far-ptr stack params -> False
+        (its body assumes its OWN DBR; running it under our DBR is unsafe)
+      - Function has D=S far-ptr stack params -> conservatively False
+        (its prologue PHD/TSC/TCD changes D; complicated to reason about)
+    """
+    func = func_map.get(func_name)
+    if func is None:
+        return False  # external — can't analyze
+
+    cached = getattr(func, _DBR_INDEP_ATTR, None)
+    if cached is not None:
+        return cached
+
+    if func_name in cyclic_funcs:
+        setattr(func, _DBR_INDEP_ATTR, False)
+        return False
+
+    # Refuse functions that play their own DBR/D games.
+    if func.has_far_ptr_stack_params:
+        setattr(func, _DBR_INDEP_ATTR, False)
+        return False
+    if func.self_far_uses_d_equals_s:
+        setattr(func, _DBR_INDEP_ATTR, False)
+        return False
+
+    # Mark as True optimistically to break self-loops via memoization
+    # (cyclic_funcs already filters real cycles, this guards re-entry on
+    # same node within a single resolution).
+    setattr(func, _DBR_INDEP_ATTR, True)
+
+    for block in func.blocks.values():
+        for instr in block.instructions:
+            if not _instr_is_dbr_independent(
+                instr, call_graph, func_map, cyclic_funcs
+            ):
+                setattr(func, _DBR_INDEP_ATTR, False)
+                return False
+
+    return True
+
+
+def _trait_method_impls_all_independent(td, call_graph, func_map, cyclic_funcs):
+    """True if every implementor of (td.trait_name, td.method_name) is
+    DBR-independent. False if the impl set is empty/unknown — conservative.
+    """
+    impls = call_graph.resolve_trait_method(td.trait_name, td.method_name)
+    if not impls:
+        return False
+    for impl_name in impls:
+        if not _function_is_dbr_independent(
+            impl_name, call_graph, func_map, cyclic_funcs
+        ):
+            return False
+    return True

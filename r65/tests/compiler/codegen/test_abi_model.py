@@ -275,7 +275,7 @@ class TestEmitTraitDispatchArgs:
         assert selector.calls == []
 
     def test_self_y_arg(self):
-        """SELF_Y arg triggers load_y_with_self."""
+        """SELF_Y arg defers self loading to emit_trait_dispatch via pending fields."""
         from r65.compiler.mir.nodes import TraitDispatch
         args = [_make_arg('self_y')]
         instr = TraitDispatch(
@@ -284,7 +284,10 @@ class TestEmitTraitDispatchArgs:
         )
         selector = _MockSelector()
         ABI_DEFAULT.emit_trait_dispatch_args(selector, instr)
-        assert ('load_y_self',) in selector.calls
+        # Self-loading is now deferred — emit_trait_dispatch picks it up
+        # via _pending_self_y_arg so that chain-coalescing can choose
+        # whether to emit the DBR-set step.
+        assert getattr(selector, '_pending_self_y_arg', None) is args[0]
 
     def test_fixed_stack_abi_same_behavior(self):
         """FixedStack ABI uses the same concrete method."""
@@ -296,7 +299,7 @@ class TestEmitTraitDispatchArgs:
         )
         selector = _MockSelector()
         ABI_FIXED_STACK.emit_trait_dispatch_args(selector, instr)
-        assert ('load_y_self',) in selector.calls
+        assert getattr(selector, '_pending_self_y_arg', None) is args[0]
 
 
 # ---------------------------------------------------------------------------
@@ -819,7 +822,7 @@ class TestDefaultEmitTraitDispatchArgs:
         assert any(c[0] == 'pha_stack' for c in selector.calls)
 
     def test_self_y_arg(self):
-        """SELF_Y arg triggers load_y_with_self."""
+        """SELF_Y arg defers self loading to emit_trait_dispatch via pending fields."""
         from r65.compiler.mir.nodes import TraitDispatch
         args = [_make_arg('self_y')]
         instr = TraitDispatch(
@@ -828,7 +831,7 @@ class TestDefaultEmitTraitDispatchArgs:
         )
         selector = _MockSelector()
         ABI_DEFAULT.emit_trait_dispatch_args(selector, instr)
-        assert ('load_y_self',) in selector.calls
+        assert getattr(selector, '_pending_self_y_arg', None) is args[0]
 
 
 class TestDefaultFrameDealloc:

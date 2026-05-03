@@ -531,11 +531,18 @@ class ABIModel(ABC):
                     arg_size = get_type_size(arg.value.type_info)
                 outgoing_offset += arg_size
 
+        # Self loading (DBR set + Y load for far self, Y load for near) is
+        # delegated to the caller via emit_trait_dispatch so that chain
+        # coalescing can elide the DBR-set step on MIDDLE/END members.
+        # The stack-bytes-pushed adjustment is already applied centrally by
+        # the resolver via spill_offset (region_state.stack_tracker), so we
+        # pass 0 here — matches the pre-refactor behavior.
         if self_y_arg is not None:
-            if instr.self_is_far:
-                selector.load_y_with_far_self(self_y_arg, 0)
-            else:
-                selector.load_y_with_self(self_y_arg, 0)
+            selector._pending_self_y_arg = self_y_arg
+            selector._pending_self_y_stack_bytes = 0
+        else:
+            selector._pending_self_y_arg = None
+            selector._pending_self_y_stack_bytes = 0
 
         return stack_bytes_pushed
 
@@ -1093,11 +1100,15 @@ class ABIDefault(ABIModel):
                 stack_bytes_pushed += arg_size
                 selector.region_state.stack_tracker.push(arg_size)
 
+        # Self loading deferred to emit_trait_dispatch (chain-aware).
+        # stack_bytes_pushed is tracked via region_state.stack_tracker —
+        # the resolver applies it centrally; pass 0 to avoid double-count.
         if self_y_arg is not None:
-            if instr.self_is_far:
-                selector.load_y_with_far_self(self_y_arg, 0)
-            else:
-                selector.load_y_with_self(self_y_arg, 0)
+            selector._pending_self_y_arg = self_y_arg
+            selector._pending_self_y_stack_bytes = 0
+        else:
+            selector._pending_self_y_arg = None
+            selector._pending_self_y_stack_bytes = 0
 
         return stack_bytes_pushed
 

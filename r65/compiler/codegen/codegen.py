@@ -183,8 +183,21 @@ class ProgramCodeGenerator:
 
         # Analyze far pointer strategy (D=S vs SET_DBR) after param promotion
         # has set has_far_ptr_stack_params, before code generation
-        from r65.compiler.analysis.far_ptr_strategy import analyze_far_ptr_strategy
+        from r65.compiler.analysis.far_ptr_strategy import (
+            analyze_far_ptr_strategy, analyze_trait_dispatch_chains
+        )
         analyze_far_ptr_strategy(mir_program)
+
+        # Trait-dispatch chain coalescing: detect same-self runs of
+        # TraitDispatch and assign ChainRole values so codegen can emit
+        # the PHB/PLB DBR bracket once per run instead of per-call.
+        # Builds the trait-resolved call graph for soundness verification.
+        from r65.compiler.analysis.call_graph import CallGraphAnalyzer
+        _chain_call_graph = CallGraphAnalyzer(
+            mir_program,
+            trait_dispatch_info=getattr(mir_program, 'trait_dispatch_info', None),
+        ).analyze()
+        analyze_trait_dispatch_chains(mir_program, _chain_call_graph)
 
         # Run loop register promotion analysis (after scratch params)
         if not disable_loop_promotion:

@@ -622,6 +622,23 @@ class FarPtrStrategy(Enum):
     SET_DBR = "set_dbr"        # PHB/LDA/PHA/PLB: set DBR to ptr bank, use (d,S),Y
 
 
+class ChainRole(Enum):
+    """Position of a TraitDispatch within a same-self chain.
+
+    Chain coalescing detects runs of TraitDispatch instructions on the same
+    far-self vreg and emits the PHB/PLB DBR bracket once around the run
+    rather than once per call. ChainRole tells codegen which side of the
+    bracket (if any) each dispatch should emit.
+
+    SOLO is the default — preserves the pre-pass behavior for any
+    TraitDispatch the chain pass doesn't touch.
+    """
+    SOLO = "solo"      # Standalone dispatch — emit PHB and PLB
+    START = "start"    # First in chain — emit PHB + DBR set, no PLB
+    MIDDLE = "middle"  # Interior — emit neither PHB nor PLB
+    END = "end"        # Last in chain — emit PLB only, no PHB/DBR set
+
+
 class ArgumentMechanism(Enum):
     """Argument passing mechanism."""
     STACK = "stack"          # Pushed on stack
@@ -708,6 +725,12 @@ class TraitDispatch(MIRInstruction):
     is_far: bool = False
     self_is_far: bool = False  # True if self pointer is far (24-bit)
     callee_return_type: Optional[Any] = None
+    # Position of this dispatch within a same-self chain. Set by the
+    # analysis pass `analyze_trait_dispatch_chains` (analysis/far_ptr_strategy.py).
+    # Default SOLO preserves the pre-pass behavior.
+    self_chain_role: 'ChainRole' = field(
+        default_factory=lambda: ChainRole.SOLO
+    )
 
     def __repr__(self):
         args_str = ', '.join(str(arg) for arg in self.args)
