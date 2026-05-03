@@ -8,11 +8,16 @@ For functions with far pointer stack parameters, choose between two strategies:
 - SET_DBR: PHB/LDA/PHA/PLB sets DBR to pointer's bank, enables bare (d,S),Y
   addressing. Keeps DP intact, preserving scratch registers and zeropage access.
 
-Cost model:
+Cost model (data pointer params):
   D=S cost     = 13 + 1*N_zp + 13*N_calls
   SET_DBR cost = 19 + 1*N_rom + 1*N_hw + 1*N_ram + 14*N_calls
 
 SET_DBR wins when: N_zp > N_rom + N_hw + N_ram + N_calls + 6
+
+Far fn pointer-only functions go through a separate decision: D=S exposes a
+JML [d] fast path for far indirect calls (saves ~62 cycles per call vs the
+generic trampoline). SET_DBR is never picked here — DBR set to a code bank
+is meaningless for fn pointer indirection and breaks RAM/$7E absolute access.
 """
 
 from r65.compiler.mir.nodes import (
@@ -24,11 +29,112 @@ from r65.compiler.mir.nodes import (
 
 
 def analyze_far_ptr_strategy(mir_program):
-    """Analyze all functions and set far_ptr_strategy on those with far pointer stack params."""
+    """Analyze all functions and set far_ptr_strategy.
+
+    Three cases:
+      - Case I: function has far data ptr stack params (existing cost model).
+      - Case II: function has only far fn ptr stack params (new cost model;
+        may flip has_far_ptr_stack_params + pick D=S, or stay no-strategy).
+      - Case III: function has both kinds (existing cost model handles the
+        data ptr decision; fn ptr params just ride along).
+
+    Case II has a separate decision because SET_DBR is never useful for
+    fn pointer indirection; the only choice is D=S vs no-strategy.
+    """
     for func in mir_program.functions:
         if not func.has_far_ptr_stack_params:
+            # Case II candidate: no data ptr param promoted, but maybe a
+            # far fn ptr stack param remains. Decide whether D=S is worth
+            # entering for the JML [d] fast path. _decide_fn_ptr_only_strategy
+            # returns None when the cost model rejects D=S — we leave the
+            # function with no strategy in that case.
+            new_strategy = _decide_fn_ptr_only_strategy(func)
+            if new_strategy is not None:
+                func.has_far_ptr_stack_params = True
+                func.far_ptr_strategy = new_strategy
             continue
         func.far_ptr_strategy = _choose_strategy(func)
+
+
+def _decide_fn_ptr_only_strategy(func: MIRFunction):
+    """For Case II (only far fn pointer stack params, no far data pointer
+    stack params). Returns FarPtrStrategy.D_EQUALS_S if the cost model
+    favors entering D=S to unlock the JML [d] fast path; otherwise None.
+
+    SET_DBR is never returned: setting DBR to a code bank is useless for
+    fn pointer indirect calls (the JML target's bank is determined by the
+    target address, not DBR) and breaks RAM/$7E absolute access in the
+    function body.
+
+    Returns None when Case II doesn't apply (i.e. the function has data
+    ptr params, or no far fn ptr params at all). Those cases are handled
+    by the existing _choose_strategy flow in the caller.
+    """
+    if func.far_ptr_param_indices:
+        # Case I or III — handled by _choose_strategy.
+        return None
+    if not func.fn_ptr_param_indices:
+        # No far stack stuff at all.
+        return None
+
+    # If every far fn ptr param was promoted to scratch, the fast path
+    # already works via DP addressing without needing D=S. Don't enter
+    # D=S in that case — its prologue cost is wasted.
+    remaining_stack_fn_ptr = (
+        func.fn_ptr_param_indices - set(func.scratch_param_addrs.keys())
+    )
+    if not remaining_stack_fn_ptr:
+        return None
+
+    n_indirect = _count_far_indirect_calls(func)
+    if n_indirect == 0:
+        # No indirect calls in the body — D=S would only add prologue cost.
+        return None
+
+    n_zp = _count_zeropage_accesses(func)
+
+    # Cost model (cycles, approximate):
+    #   no_strategy: each far indirect call ~78 cycles (existing trampoline).
+    #   D=S        : prologue ~18 cycles + 5 cycles per ZP access (ZP becomes
+    #                stack-relative under D=S, so a 3-cycle DP load becomes
+    #                an 8-cycle abs-long load — net ~5 extra) + 16 cycles per
+    #                far indirect call (PHK/PEA/JML [d] sequence).
+    cost_no_strategy = 78 * n_indirect
+    cost_d_equals_s = 18 + 5 * n_zp + 16 * n_indirect
+
+    if cost_d_equals_s < cost_no_strategy:
+        return FarPtrStrategy.D_EQUALS_S
+    return None
+
+
+def _count_far_indirect_calls(func: MIRFunction) -> int:
+    """Count far indirect Call sites in the function.
+
+    Conservatively counts ALL far indirect calls (whether through a fn ptr
+    param or some other vreg). Per-vreg def-chain tracking would be tighter
+    but the overcount only makes the cost model slightly more eager — and
+    D=S has bounded downside when picked wrongly (a few extra prologue
+    cycles + ZP access cost, both already in the model).
+    """
+    n = 0
+    for block in func.blocks.values():
+        for instr in block.instructions:
+            if isinstance(instr, Call):
+                if isinstance(instr.function, VirtualRegister) and instr.is_far:
+                    n += 1
+    return n
+
+
+def _count_zeropage_accesses(func: MIRFunction) -> int:
+    """Count zeropage Load/Store ops (used by D=S vs no-strategy cost model)."""
+    n = 0
+    for block in func.blocks.values():
+        for instr in block.instructions:
+            if isinstance(instr, (Load, Store)):
+                loc = instr.source if isinstance(instr, Load) else instr.dest
+                if isinstance(loc, MemoryLocation) and loc.storage_type == 'zeropage':
+                    n += 1
+    return n
 
 
 def _choose_strategy(func: MIRFunction) -> FarPtrStrategy:
@@ -61,6 +167,15 @@ def _choose_strategy(func: MIRFunction) -> FarPtrStrategy:
 
 def _is_set_dbr_safe(func: MIRFunction) -> bool:
     """Check if SET_DBR strategy is safe for this function."""
+    # 0. Case II defensive check: a function with only far fn ptr params
+    # (no data ptr params) should never use SET_DBR. The fn pointer's bank
+    # is encoded in the target address, not DBR — setting DBR to a code
+    # bank is meaningless for indirect call lowering and breaks RAM/$7E
+    # absolute access in the body. Case II is supposed to reach
+    # _decide_fn_ptr_only_strategy first; this is belt-and-braces.
+    if not func.far_ptr_param_indices and func.fn_ptr_param_indices:
+        return False
+
     # 1. Multiple far pointer stack params — can't set DBR to two banks
     if len(func.far_ptr_param_indices) > 1:
         return False
