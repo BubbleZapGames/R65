@@ -322,6 +322,48 @@ class TestFarSelfChainCoalescing:
         assert phb == 1, f"Expected 1 PHB in main (3-method chain coalesced), got {phb}\n{asm}"
         assert plb == 2, f"Expected 2 PLB in main (1 set-DBR + 1 chain-end), got {plb}\n{asm}"
 
+    def test_chain_across_traits_runtime(self, e2e):
+        """v1.6: a struct implementing two traits, accessed via two
+        different trait pointer aliases of the same root, alternates
+        dispatches and verifies runtime state.
+
+        ``alias_a`` and ``alias_b`` are different *Trait pointers but
+        point to the same underlying object — the chain pass should
+        recognize them as same-self via cast-transparency.
+        """
+        result = e2e.run(_PREAMBLE + '''
+            struct Counter { v: u8 }
+
+            trait Inc { far fn inc(far *self); }
+            trait Read { far fn read(far *self) -> u8; }
+
+            impl Inc for Counter {
+                far fn inc(far *self) {
+                    self.v = self.v + 1;
+                }
+            }
+            impl Read for Counter {
+                far fn read(far *self) -> u8 {
+                    return self.v;
+                }
+            }
+
+            #[ram]
+            static mut C: Counter = Counter { v: 100 };
+
+            #[entry]
+            fn main() {
+                let pa: far *dyn Inc = &C;
+                let pb: far *dyn Read = &C;
+                pa.inc();
+                pa.inc();
+                RESULT = pb.read();
+            }
+        ''', ExpectedState(
+            memory={0x7E0200: 102}
+        ))
+        assert result.success, f"Failures: {result.failures}"
+
     def test_chain_broken_by_call(self, e2e):
         """A regular function call between chain members breaks the chain.
 

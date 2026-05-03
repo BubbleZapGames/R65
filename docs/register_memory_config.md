@@ -167,12 +167,23 @@ Each `TraitDispatch` MIR instruction carries a `self_chain_role` field
 Y is reloaded for every chain member because argument setup or the
 prior dispatch may have clobbered it. Soundness conditions for fire:
 
-- Same `self_ptr` vreg.
-- **v1.5**: methods may differ between dispatches, but the trait must
-  match. The DBR bracket itself is method-independent — only the
-  indirect JSR target (the dispatch wrapper) changes between calls.
-  The DBR-independence check runs over the union of impl sets across
-  every distinct `(trait, method)` pair reached in the chain.
+- Same self — compared via *cast-transparent root* (v1.6, see below).
+- **v1.5**: methods may differ between dispatches. The DBR bracket
+  itself is method-independent — only the indirect JSR target (the
+  dispatch wrapper) changes between calls. The DBR-independence
+  check runs over the union of impl sets across every distinct
+  `(trait, method)` pair reached in the chain.
+- **v1.6**: traits may also differ between dispatches, as long as the
+  self pointers resolve to the same root through trivial trait-
+  pointer casts. The `_chain_self_root` walker (in
+  `analysis/far_ptr_strategy.py`) walks back through `Move` (pure SSA
+  rename) and `TypeConvert` nodes whose source and target are both
+  `PointerTypeInfo` with matching `is_far` and matching `size_bytes`.
+  This covers `*Trait → *OtherTrait` and `*Struct → *Trait` casts
+  (zero-cost, address-preserving) and rejects far↔near casts and
+  pointer arithmetic / field-offset shifts (which produce a
+  `BinaryOp`, terminating the walk). Cached per-function via
+  `MIRFunction._chain_self_roots`.
 - Run lies within a *straight-line CFG path*: each block has exactly
   one successor, whose only predecessor is that block. Joins,
   branches, and back-edges break the chain.

@@ -19,7 +19,7 @@ from r65.compiler.mir.nodes import (
     FarPtrStrategy, ChainRole, MIRFunction, BasicBlock,
     Load, Store, LoadIndirect, StoreIndirect,
     Call, TraitDispatch, MemoryLocation, VirtualRegister,
-    Move,
+    Move, TypeConvert,
 )
 
 
@@ -150,6 +150,15 @@ def _count_accesses(func: MIRFunction):
 # Cache attribute name for DBR-independence (set on MIRFunction).
 _DBR_INDEP_ATTR = '_chain_dbr_independent'
 
+# Cache attribute names for v1.6 cast-transparency on MIRFunction:
+#   _chain_self_roots: Dict[VirtualRegister, VirtualRegister]
+#       memoizes the canonical root self vreg for each vreg encountered.
+#   _chain_vreg_def_map: Dict[int (vreg.id), MIRInstruction]
+#       lazy single-defining-instr map used by _chain_self_root to walk
+#       the def chain. Built once per function on first lookup.
+_SELF_ROOT_ATTR = '_chain_self_roots'
+_VREG_DEF_ATTR = '_chain_vreg_def_map'
+
 
 def analyze_trait_dispatch_chains(mir_program, call_graph):
     """Detect runs of TraitDispatch on the same far-self vreg and assign
@@ -276,14 +285,18 @@ def _coalesce_chains_along_path(func, path, call_graph, func_map, cyclic_funcs):
             # Inter-dispatch instructions: from flat[run_indices[-1]+1] up
             # to flat[j-1] (inclusive). Verify they are DBR-independent.
             if not _between_is_dbr_independent(
-                flat, run_indices[-1], j, call_graph, func_map, cyclic_funcs
+                flat, run_indices[-1], j, call_graph, func_map,
+                cyclic_funcs, func=func,
             ):
                 break
 
             cand = flat[j][2]
             if not _is_chainable_far_dispatch(cand):
                 break
-            if not _same_self_chain(instr, cand):
+            # v1.6: pass func so _same_self_chain can consult the
+            # cast-transparency walker; otherwise it falls back to
+            # plain vreg-identity equality.
+            if not _same_self_chain(instr, cand, func):
                 break
             # Re-check the candidate's method's impls. If we've already
             # accepted this (trait, method) earlier in the chain, the
@@ -325,30 +338,196 @@ def _is_chainable_far_dispatch(instr):
     return True
 
 
-def _same_self_chain(a, b):
+def _same_self_chain(a, b, func=None):
     """True if two TraitDispatches can chain DBR-bracket-wise.
 
-    v1.5: same trait + same self_ptr vreg. Methods may differ — the DBR
-    bracket itself is method-independent, only the dispatch wrapper
-    (jump table) changes between calls. Per-method impl-set DBR-
-    independence is verified separately by the chain extender.
+    v1.6: chain across different traits via cast-transparency. Two
+    dispatches share a self if walking back through trivial trait-
+    pointer-to-trait-pointer casts (Move and zero-shift TypeConvert)
+    leads to the same root vreg. The trait_name no longer needs to
+    match — different trait pointer aliases of the same underlying
+    object share bank+address, and the DBR bracket / Y reload work
+    identically for both.
+
+    Bank-compatibility is enforced via the cast walker
+    (`_chain_self_root`): only same-bank, same-size casts are followed.
+    Casts that change far/near or that involve pointer arithmetic
+    (e.g. ``&obj.weapon as *Trait``) terminate the walk early — they
+    yield distinct roots and therefore distinct chains.
+
+    `func` is the enclosing MIRFunction; if None, we fall back to the
+    pre-v1.6 vreg-identity comparison.
     """
-    if a.trait_name != b.trait_name:
+    if a.self_ptr is None or b.self_ptr is None:
         return False
-    if a.self_ptr is not b.self_ptr:
-        # Compare vreg identity (id field) — defensive against fresh-clone
-        # equality semantics.
-        if not (
-            isinstance(a.self_ptr, VirtualRegister)
-            and isinstance(b.self_ptr, VirtualRegister)
-            and a.self_ptr.id == b.self_ptr.id
-        ):
-            return False
-    return True
+    if not (isinstance(a.self_ptr, VirtualRegister)
+            and isinstance(b.self_ptr, VirtualRegister)):
+        return False
+
+    if func is not None:
+        root_a = _chain_self_root(a.self_ptr, func)
+        root_b = _chain_self_root(b.self_ptr, func)
+        return root_a.id == root_b.id
+
+    # Fallback: identity-based (pre-v1.6 behavior).
+    if a.self_ptr is b.self_ptr:
+        return True
+    return a.self_ptr.id == b.self_ptr.id
+
+
+def _chain_self_root(vreg: VirtualRegister, func: MIRFunction) -> VirtualRegister:
+    """Walk back through trivial trait-pointer casts to the root self
+    vreg.
+
+    A cast is "trivial" (transparent) if it preserves bank+address:
+      - `Move` from another VirtualRegister source — pure aliasing.
+      - `TypeConvert` between two pointer types where:
+          * source and target are both `PointerTypeInfo`
+          * `source_type.is_far == target_type.is_far` (same far/near)
+          * `source_type.size_bytes == target_type.size_bytes` (same
+            on-the-wire layout — implied by same is_far for pointers,
+            but we check both defensively)
+
+    This covers trait-pointer ↔ trait-pointer casts and trait-pointer
+    ↔ underlying struct-pointer casts. It does NOT cover:
+      - far ↔ near pointer casts (different bank semantics + size)
+      - pointer ↔ integer casts
+      - pointer arithmetic / field-offset casts (these are emitted as
+        BinaryOp / UnaryOp / different MIR shapes, not Move/TypeConvert,
+        and would terminate the walk on the first non-cast def)
+
+    Note on MIR shapes: HIRTypeCast lowering in
+    `mir/lowerers/expression.py` emits a plain `Move` for same-size
+    reinterpretation casts and a `TypeConvert` for size-changing or
+    pointer↔integer casts (see lower_type_cast at ~line 274).
+    Trait-pointer-to-trait-pointer casts are same-size and therefore
+    arrive as a `Move`, which the walker follows.
+
+    Termination: the walk stops on:
+      - non-Move, non-trivial-TypeConvert def (Load, Call, BinaryOp,
+        TraitDispatch return, etc.)
+      - a vreg with no def in the function (parameter or pre-existing)
+      - a vreg already visited (cycle guard — should never occur with
+        SSA-like single-def, but defensive)
+      - a Move/TypeConvert source that is not a VirtualRegister
+        (Immediate, MemoryLocation, hardware register, etc.)
+    """
+    cache = getattr(func, _SELF_ROOT_ATTR, None)
+    if cache is None:
+        cache = {}
+        setattr(func, _SELF_ROOT_ATTR, cache)
+
+    if vreg.id in cache:
+        return cache[vreg.id]
+
+    visited = set()
+    cur = vreg
+    while True:
+        if cur.id in visited:
+            break
+        visited.add(cur.id)
+        # Already-cached intermediate root short-circuits the walk.
+        if cur.id in cache and cache[cur.id].id != cur.id:
+            cur = cache[cur.id]
+            continue
+
+        defining = _chain_lookup_def(cur, func)
+        next_src = _trivial_cast_source(defining)
+        if next_src is None:
+            break
+        cur = next_src
+
+    # Cache every visited vreg as resolving to the same root for future
+    # walks.
+    for vid in visited:
+        cache[vid] = cur
+    return cur
+
+
+def _chain_lookup_def(vreg: VirtualRegister, func: MIRFunction):
+    """Return the (single) defining instruction of `vreg` in `func`, or
+    None if no def is found in the function. Builds and caches a
+    per-function vreg.id -> defining instr map on first call.
+
+    If a vreg has multiple defs (rare in trait-self contexts but
+    possible through phi-like structures or rebinding), we return None
+    to be conservative — a multiply-defined vreg cannot be safely
+    walked through.
+    """
+    def_map = getattr(func, _VREG_DEF_ATTR, None)
+    if def_map is None:
+        def_map = {}
+        # `multi` tracks vregs with more than one definition; for those
+        # we record None to signal "not safe to walk".
+        multi = set()
+        for block in func.blocks.values():
+            for instr in block.instructions:
+                # `dest` covers Move, TypeConvert, Load, BinaryOp, etc.
+                dest = getattr(instr, 'dest', None)
+                if isinstance(dest, VirtualRegister):
+                    if dest.id in def_map and def_map[dest.id] is not instr:
+                        multi.add(dest.id)
+                    def_map[dest.id] = instr
+                # `returns` covers Call/TraitDispatch return vregs.
+                returns = getattr(instr, 'returns', None) or []
+                for r in returns:
+                    if isinstance(r, VirtualRegister):
+                        if r.id in def_map and def_map[r.id] is not instr:
+                            multi.add(r.id)
+                        def_map[r.id] = instr
+        for vid in multi:
+            def_map[vid] = None
+        setattr(func, _VREG_DEF_ATTR, def_map)
+
+    return def_map.get(vreg.id)
+
+
+def _trivial_cast_source(instr):
+    """Return the VirtualRegister source of a trivial trait-pointer cast,
+    or None if `instr` is not a transparent cast.
+
+    A Move from a VirtualRegister source is always trivial (pure SSA
+    rename). A TypeConvert is trivial only if both source and target
+    are pointer types with matching is_far flags and matching sizes
+    — see `_chain_self_root` for the rationale and what this rejects.
+    """
+    if instr is None:
+        return None
+
+    if isinstance(instr, Move):
+        if isinstance(instr.source, VirtualRegister):
+            return instr.source
+        return None
+
+    if isinstance(instr, TypeConvert):
+        # Conservative: both types must be PointerTypeInfo with matching
+        # is_far AND matching size_bytes. We import lazily to avoid a
+        # circular dependency with the HIR types module.
+        try:
+            from r65.compiler.hir.types import PointerTypeInfo
+        except ImportError:
+            return None
+        st = instr.source_type
+        tt = instr.target_type
+        if not (isinstance(st, PointerTypeInfo) and isinstance(tt, PointerTypeInfo)):
+            return None
+        if st.is_far != tt.is_far:
+            return None
+        # Defensive: size_bytes derives from is_far for pointers, but
+        # check explicitly so future PointerTypeInfo extensions (e.g.
+        # tagged pointers) don't silently slip through.
+        if getattr(st, 'size_bytes', None) != getattr(tt, 'size_bytes', None):
+            return None
+        if isinstance(instr.source, VirtualRegister):
+            return instr.source
+        return None
+
+    return None
 
 
 def _between_is_dbr_independent(flat, prev_run_idx, next_idx,
-                                call_graph, func_map, cyclic_funcs):
+                                call_graph, func_map, cyclic_funcs,
+                                func=None):
     """Check that all instructions strictly between flat[prev_run_idx]
     (the previous TraitDispatch in the run) and flat[next_idx] (the next
     candidate) preserve DBR-independence.
@@ -356,9 +535,16 @@ def _between_is_dbr_independent(flat, prev_run_idx, next_idx,
     The previous self_ptr vreg must NOT be redefined in this range —
     otherwise the value Y reads from on the next dispatch differs from
     what's in DBR.
+
+    v1.6: when `func` is supplied, also reject redefinition of the
+    chain's *root* self vreg (the address-holder behind any
+    cast-transparency aliases).
     """
     prev_td = flat[prev_run_idx][2]
     self_vreg = prev_td.self_ptr
+    root_vreg = None
+    if func is not None and isinstance(self_vreg, VirtualRegister):
+        root_vreg = _chain_self_root(self_vreg, func)
     for k in range(prev_run_idx + 1, next_idx):
         instr = flat[k][2]
         if not _instr_is_dbr_independent(
@@ -368,6 +554,13 @@ def _between_is_dbr_independent(flat, prev_run_idx, next_idx,
         # Reject if self_ptr vreg is redefined.
         if _instr_redefines_vreg(instr, self_vreg):
             return False
+        # Also reject if the cast-transparency root is redefined.
+        # Defining a fresh trivial-cast alias of the root is safe
+        # (it's a Move/TypeConvert, dest is a different vreg), so
+        # this only fires when the root itself is rewritten.
+        if root_vreg is not None and root_vreg.id != self_vreg.id:
+            if _instr_redefines_vreg(instr, root_vreg):
+                return False
     return True
 
 
