@@ -147,69 +147,92 @@ frame and are reclaimed by `_emit_stack_param_cleanup`, which adds 3 to
 ### 1.4 Self-pointer reuse (chain coalescing)
 
 When the *caller* makes back-to-back `TraitDispatch` calls on the same
-far-self vreg, each dispatch redundantly re-emits the
-`PHB / LDA bank,S / PHA / PLB ... PLB` DBR bracket. The
+self vreg, each dispatch redundantly re-emits the per-call setup. For
+**far-self** chains the redundant work is the
+`PHB / LDA bank,S / PHA / PLB ... PLB` DBR bracket plus a Y reload;
+for **near-self** chains it is just the Y reload. The
 `analyze_trait_dispatch_chains` pass (folded into
 `analysis/far_ptr_strategy.py`) detects runs of dispatches and elides
-the redundant brackets so DBR is held at self's bank across the whole
-chain.
+the redundant work.
 
-Each `TraitDispatch` MIR instruction carries a `self_chain_role` field
-(default `ChainRole.SOLO`):
+Each `TraitDispatch` MIR instruction carries two independent fields
+set by the chain pass:
 
-| Role | PHB at start | DBR-set | Y reload | PLB at end |
-|------|-------------|---------|----------|-----------|
-| `SOLO` | yes | yes | yes | yes |
-| `START` | yes | yes | yes | no |
-| `MIDDLE` | no | no | yes | no |
-| `END` | no | no | yes | yes |
+- `self_chain_role: ChainRole` (default `SOLO`) — controls the DBR
+  bracket position for far-self dispatches AND the LDY position for
+  near-self dispatches.
+- `self_y_preloaded: bool` (default `False`, v2(C)) — set on
+  `MIDDLE`/`END` members of a far-self chain when every method's
+  impls and every gap instruction also pass the Y-preservation
+  predicate. The codegen then skips the Y reload on those members.
 
-Y is reloaded for every chain member because argument setup or the
-prior dispatch may have clobbered it. Soundness conditions for fire:
+| Self | Role | PHB at start | DBR-set | Y reload | PLB at end |
+|------|------|-------------|---------|----------|-----------|
+| far  | `SOLO`   | yes | yes | yes | yes |
+| far  | `START`  | yes | yes | yes | no  |
+| far  | `MIDDLE` | no  | no  | yes¹ | no  |
+| far  | `END`    | no  | no  | yes¹ | yes |
+| near | `SOLO`   | n/a | n/a | yes | n/a |
+| near | `START`  | n/a | n/a | yes | n/a |
+| near | `MIDDLE` | n/a | n/a | no  | n/a |
+| near | `END`    | n/a | n/a | no  | n/a |
+
+¹ Skipped when `self_y_preloaded` is True (v2 commit C).
+
+Soundness conditions for fire:
 
 - Same self — compared via *cast-transparent root* (v1.6, see below).
-- **v1.5**: methods may differ between dispatches. The DBR bracket
+- **v1.5**: methods may differ between dispatches. The bracket
   itself is method-independent — only the indirect JSR target (the
-  dispatch wrapper) changes between calls. The DBR-independence
-  check runs over the union of impl sets across every distinct
+  dispatch wrapper) changes between calls. The chain predicate runs
+  over the union of impl sets across every distinct
   `(trait, method)` pair reached in the chain.
 - **v1.6**: traits may also differ between dispatches, as long as the
   self pointers resolve to the same root through trivial trait-
-  pointer casts. The `_chain_self_root` walker (in
-  `analysis/far_ptr_strategy.py`) walks back through `Move` (pure SSA
-  rename) and `TypeConvert` nodes whose source and target are both
-  `PointerTypeInfo` with matching `is_far` and matching `size_bytes`.
-  This covers `*Trait → *OtherTrait` and `*Struct → *Trait` casts
-  (zero-cost, address-preserving) and rejects far↔near casts and
-  pointer arithmetic / field-offset shifts (which produce a
-  `BinaryOp`, terminating the walk). Cached per-function via
-  `MIRFunction._chain_self_roots`.
-- Run lies within a *straight-line CFG path*: each block has exactly
-  one successor, whose only predecessor is that block. Joins,
-  branches, and back-edges break the chain.
-- Every instruction between consecutive dispatches in the path is
-  *DBR-independent*. Disqualifiers:
-  - non-LONG RAM access (DBR-relative absolute load/store of RAM)
-  - near pointer dereference (`(d),Y` or `(zp)`)
-  - call to a non-DBR-independent function (recursively checked)
-  - nested `TraitDispatch` of any kind (would re-bracket DBR)
-  - redefinition of the self vreg
-- Every implementor of every trait method invoked in the chain
-  (resolved via the trait-impl-aware `CallGraph` from
-  `analysis/call_graph.py`) is itself DBR-independent. The predicate is
-  `_function_is_dbr_independent`, memoized on
-  `MIRFunction._chain_dbr_independent`.
-- Functions that use `SET_DBR` for their own far-ptr stack params, or
-  set `self_far_uses_d_equals_s`, or are in a recursive cycle in the
-  call graph, are conservatively NOT DBR-independent.
+  pointer casts. The `_chain_self_root` walker walks back through
+  `Move` (pure SSA rename) and `TypeConvert` nodes whose source and
+  target are both `PointerTypeInfo` with matching `is_far` and
+  matching `size_bytes`. This covers `*Trait → *OtherTrait` and
+  `*Struct → *Trait` casts (zero-cost, address-preserving) and
+  rejects far↔near casts and pointer arithmetic / field-offset
+  shifts. Cached per-function via `MIRFunction._chain_self_roots`.
+- **v2 commit A**: the chain pass extends across simple if/else CFG
+  diamonds when both arms are gap-safe and don't redefine the chain
+  root self vreg. Loops, multi-arm switches, and joins with more
+  complex topology remain unsupported. Diamond bridging is performed
+  by `_extended_path` / `_try_bridge_diamond` and applies to both far
+  and near chains.
+- **v2 commit B**: near-self chains are coalesced by a parallel pass
+  using the Y-preservation predicate `_function_preserves_y` (memoized
+  on `MIRFunction._chain_preserves_y`). Conservative rejections:
+  inline asm, recursion, calls to non-Y-preserving callees, vreg
+  with `register_hint='Y'` (loop register promotion target), explicit
+  Move-to-`Y`. The trait-method entry-point
+  `Move(dest=self_y_vreg, source=HW_Y)` is treated as a no-op
+  (Y already holds self at function entry).
+- **v2 commit C**: far-self chains additionally elide the Y reload
+  for MIDDLE/END members when every method's impls AND every gap
+  instruction pass the Y-preservation predicate. The flag and the
+  DBR bracket role are *orthogonal*: a chain may have DBR coalescing
+  only, Y elision only (rare; would imply near), or both.
+
+Predicates and their disqualifiers:
+
+| Predicate | Disqualifiers (gap instruction or function body) |
+|-----------|--------------------------------------------------|
+| DBR-independent (`_instr_is_dbr_independent` / `_function_is_dbr_independent`) | non-LONG RAM/lowram access; near pointer deref; inline `MemoryLocation` operands on Compare/BitTest/BinaryOp/UnaryOp pointing at RAM/lowram; nested `TraitDispatch`; call to non-DBR-independent function; functions that use `SET_DBR` / `self_far_uses_d_equals_s` / are in a call-graph cycle |
+| Y-preserving (`_instr_preserves_y` / `_function_preserves_y`) | inline asm; nested `TraitDispatch` (dispatch wrapper clobbers Y); call to non-Y-preserving function; vreg with `register_hint='Y'`; explicit Move/etc. with HW-Y dest; recursion |
+
+In addition every gap walker rejects redefinition of the chain's root
+self vreg (the address-holder behind any cast-transparency aliases).
 
 The chain pass runs after `analyze_far_ptr_strategy` so each impl's
-`far_ptr_strategy` is already known. It only mutates `self_chain_role`
-on `TraitDispatch` nodes.
+`far_ptr_strategy` is already known. It only mutates
+`self_chain_role` and `self_y_preloaded` on `TraitDispatch` nodes.
 
 The codegen side lives in `call_select.emit_trait_dispatch`, which
-inspects `self_chain_role` and skips the appropriate parts of the
-bracket. The DBR-bracket helpers were split into
+inspects both fields and skips the appropriate parts of the bracket
+or Y reload. The DBR-bracket helpers were split into
 `_set_dbr_from_far_self` and `_load_y_addr_from_far_self`; the
 single-shot `load_y_with_far_self` calls both.
 

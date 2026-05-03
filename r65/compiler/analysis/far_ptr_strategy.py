@@ -503,6 +503,18 @@ def _coalesce_chains_along_path(func, path, call_graph, func_map,
 
         # Assign roles
         if len(run_indices) >= 2:
+            # v2(C): for FAR-self chains, additionally compute the
+            # Y-elision flag. The DBR-bracket coalescing (set above by
+            # role) and Y elision are orthogonal — each chain may have
+            # both, only DBR coalescing, or neither (Y-only would imply
+            # near, handled by the near pass).
+            y_preloaded = False
+            if kind == 'far':
+                y_preloaded = _far_chain_can_elide_y(
+                    flat, run_indices, call_graph, func_map,
+                    cyclic_funcs, func,
+                )
+
             for k, run_idx in enumerate(run_indices):
                 td = flat[run_idx][2]
                 if k == 0:
@@ -511,6 +523,11 @@ def _coalesce_chains_along_path(func, path, call_graph, func_map,
                     td.self_chain_role = ChainRole.END
                 else:
                     td.self_chain_role = ChainRole.MIDDLE
+                # MIDDLE/END skip the Y reload only when the chain
+                # passes the Y predicate. START always loads Y (no
+                # prior dispatch put the address there).
+                if y_preloaded and k > 0:
+                    td.self_y_preloaded = True
             i = run_indices[-1] + 1
         else:
             # Single dispatch — leave as SOLO (default)
@@ -1081,6 +1098,41 @@ def _trait_method_impls_all_preserve_y(td, call_graph, func_map, cyclic_funcs):
     for impl_name in impls:
         if not _function_preserves_y(
             impl_name, call_graph, func_map, cyclic_funcs
+        ):
+            return False
+    return True
+
+
+def _far_chain_can_elide_y(flat, run_indices, call_graph, func_map,
+                           cyclic_funcs, func):
+    """v2(C): for a far-self chain, return True if every chain member's
+    method impls and every inter-dispatch gap instruction preserve Y.
+
+    The DBR-independence checks (from the chain assignment loop above)
+    do NOT imply Y-preservation: a function may be DBR-independent but
+    still clobber Y (e.g. with ``Y = 0``). Conversely, a function may
+    preserve Y but not be DBR-independent (e.g. it does a non-LONG RAM
+    read that requires DBR=$00). The two predicates are independent.
+    """
+    # Every method's impl set must preserve Y.
+    seen_methods: set = set()
+    for run_idx in run_indices:
+        td = flat[run_idx][2]
+        key = (td.trait_name, td.method_name)
+        if key in seen_methods:
+            continue
+        seen_methods.add(key)
+        if not _trait_method_impls_all_preserve_y(
+            td, call_graph, func_map, cyclic_funcs
+        ):
+            return False
+    # Every gap between consecutive members must preserve Y.
+    for k in range(len(run_indices) - 1):
+        prev_idx = run_indices[k]
+        next_idx = run_indices[k + 1]
+        if not _between_preserves_y(
+            flat, prev_idx, next_idx, call_graph, func_map,
+            cyclic_funcs, func=func,
         ):
             return False
     return True

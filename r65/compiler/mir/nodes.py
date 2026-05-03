@@ -731,6 +731,12 @@ class TraitDispatch(MIRInstruction):
     self_chain_role: 'ChainRole' = field(
         default_factory=lambda: ChainRole.SOLO
     )
+    # v2(C): for far-self chains, set on MIDDLE/END members when every
+    # method's impls and every gap instruction preserve Y at exit. The
+    # codegen then skips the Y reload for those members. Independent of
+    # ``self_chain_role`` — DBR-bracket coalescing and Y elision are two
+    # separate flags driven by independent predicates.
+    self_y_preloaded: bool = False
 
     def __repr__(self):
         args_str = ', '.join(str(arg) for arg in self.args)

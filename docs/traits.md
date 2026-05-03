@@ -497,21 +497,35 @@ let width: u8 = obj.get_width();
 | Trait Type | Dispatch Overhead |
 |------------|-------------------|
 | Near trait | ~10-12 cycles |
+| Near trait, chained mid/end (Y-preserving impls) | ~3-5 cycles less than solo |
 | Far trait | ~20-25 cycles |
-| Far trait, chained (mid/end of chain) | ~10 cycles less than solo |
+| Far trait, chained mid/end (DBR coalesced only) | ~10 cycles less than solo |
+| Far trait, chained mid/end (DBR + Y elision) | ~13-15 cycles less than solo |
 
 Compare to direct call:
 - Near function call: ~12 cycles (JSR/RTS)
 - Far function call: ~18 cycles (JSL/RTL)
 
-When a function makes back-to-back trait calls on the same `far *self`,
-the compiler coalesces the per-call DBR bracket (PHB / load bank / PHA /
-PLB ... PLB) so that DBR is set to the object's bank once at the start
-of the chain and restored once at the end. Each chained call after the
-first saves roughly 10 cycles versus a standalone dispatch (one less
-PHB, one less load-bank, one less PHA/PLB pair). See
-[Register/Memory Configuration § Self-pointer reuse](register_memory_config.md#self-pointer-reuse)
-for the soundness rules.
+When a function makes back-to-back trait calls on the same self, the
+compiler coalesces the redundant per-call setup. There are two
+independent optimizations driven by independent predicates (see
+[Register/Memory Configuration § 1.4](register_memory_config.md) for
+the soundness rules):
+
+- **DBR-bracket coalescing** (far self only): the
+  `PHB / load bank / PHA / PLB ... PLB` bracket is emitted once at
+  the chain start instead of per call. Saves ~10 cycles per chained
+  far call.
+- **Y-reload elision** (near and far): the LDY / TAY / TXY that
+  reloads the self address is emitted once at the chain start
+  instead of per call, when every impl in the trait method jump
+  tables and every gap instruction provably preserves Y at exit.
+  Saves ~3-5 cycles per chained call.
+
+For far chains both fire when their predicates pass, totalling
+~13-15 cycles per chained call. The chain pass can additionally
+extend across simple `if`/`else` CFG diamonds when both arms pass
+the chain predicate.
 
 ### Self Pointer Access
 

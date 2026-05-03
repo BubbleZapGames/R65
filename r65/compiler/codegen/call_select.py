@@ -466,15 +466,25 @@ class CallInstructionSelector(BaseSelector):
         # skip the LDY because the previous dispatch left Y holding the
         # same self pointer (predicate: every impl + every gap
         # instruction preserves Y).
+        # v2(C): for FAR-self chains, MIDDLE/END members may additionally
+        # skip the Y reload when ``self_y_preloaded`` is set — the chain
+        # passed an independent Y-preservation predicate. This is
+        # orthogonal to the DBR bracket: a chain may have DBR coalescing
+        # only, Y elision only, or both.
         role = getattr(instr, 'self_chain_role', ChainRole.SOLO)
         emit_phb = instr.self_is_far and role in (ChainRole.SOLO, ChainRole.START)
         emit_dbr_set = instr.self_is_far and role in (ChainRole.SOLO, ChainRole.START)
         emit_plb = instr.self_is_far and role in (ChainRole.SOLO, ChainRole.END)
         # Near-self Y reload: required for SOLO/START, skippable for
-        # MIDDLE/END. Far-self Y reload stays unconditional in this
-        # commit; commit C (v2 phase) drives that via self_y_preloaded.
+        # MIDDLE/END.
         emit_near_y_load = (not instr.self_is_far) and role in (
             ChainRole.SOLO, ChainRole.START
+        )
+        # Far-self Y reload: required unless the chain pass set
+        # ``self_y_preloaded`` AND this is a MIDDLE/END member.
+        far_y_preloaded = bool(getattr(instr, 'self_y_preloaded', False))
+        emit_far_y_load = instr.self_is_far and not (
+            far_y_preloaded and role in (ChainRole.MIDDLE, ChainRole.END)
         )
 
         if emit_phb:
@@ -495,9 +505,8 @@ class CallInstructionSelector(BaseSelector):
             if instr.self_is_far:
                 if emit_dbr_set:
                     self._set_dbr_from_far_self(self_y_arg, self_y_stack_bytes)
-                # Y is reloaded for every chain member (it may have been
-                # clobbered by argument setup or the previous dispatch).
-                self._load_y_addr_from_far_self(self_y_arg, self_y_stack_bytes)
+                if emit_far_y_load:
+                    self._load_y_addr_from_far_self(self_y_arg, self_y_stack_bytes)
             else:
                 if emit_near_y_load:
                     self.load_y_with_self(self_y_arg, self_y_stack_bytes)

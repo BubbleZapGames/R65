@@ -625,3 +625,123 @@ class TestNearSelfChainCoalescing:
             f"Expected 1 Y-load in main (solo dispatch), "
             f"got LDY={ldy} TAY={tay} TXY={txy}"
         )
+
+
+# ---------------------------------------------------------------------------
+# v2(C): Y elision in far-self chains
+# ---------------------------------------------------------------------------
+
+class TestFarSelfYElision:
+    """v2(C): far chains additionally elide the Y reload when impls
+    + gap all preserve Y. Combines with DBR coalescing."""
+
+    def test_far_chain_y_elision_runtime(self, e2e):
+        """Three back-to-back far-self leaf trait calls. Both DBR and
+        Y elision fire. Verify runtime correctness."""
+        result = e2e.run(_PREAMBLE + '''
+            struct Counter { v: u8 }
+
+            trait Tickable {
+                far fn tick(far *self);
+                far fn read(far *self) -> u8;
+            }
+
+            impl Tickable for Counter {
+                far fn tick(far *self) {
+                    self.v = self.v + 1;
+                }
+                far fn read(far *self) -> u8 {
+                    return self.v;
+                }
+            }
+
+            #[ram]
+            static mut C: Counter = Counter { v: 30 };
+
+            #[entry]
+            fn main() {
+                let p: far *dyn Tickable = &C;
+                p.tick();
+                p.tick();
+                p.tick();
+                RESULT = p.read();
+            }
+        ''', ExpectedState(
+            memory={0x7E0200: 33}
+        ))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_far_chain_y_elision_asm(self):
+        """A 3-call far-self chain with Y-preserving impls emits the
+        Y address load ONCE at the chain start. Without Y elision we'd
+        see the Y load repeated for every dispatch."""
+        source = _PREAMBLE + '''
+            struct Player { x: u8, y: u8, z: u8 }
+
+            trait HasPos {
+                far fn get_x(far *self) -> u8;
+                far fn get_y(far *self) -> u8;
+                far fn get_z(far *self) -> u8;
+            }
+
+            impl HasPos for Player {
+                far fn get_x(far *self) -> u8 { return self.x; }
+                far fn get_y(far *self) -> u8 { return self.y; }
+                far fn get_z(far *self) -> u8 { return self.z; }
+            }
+
+            #[ram]
+            static mut PLAYER: Player = Player { x: 1, y: 2, z: 3 };
+
+            #[entry]
+            fn main() {
+                let p: far *dyn HasPos = &PLAYER;
+                let a: u8 = p.get_x();
+                let b: u8 = p.get_y();
+                let c: u8 = p.get_z();
+                RESULT = a + b + c;
+            }
+        '''
+        asm = _compile_snes(source)
+        # Y address load count: with elision, 1 (at chain start);
+        # without elision, 3 (one per dispatch).
+        ldy = _count_in_function(asm, 'main', 'LDY')
+        tay = _count_in_function(asm, 'main', 'TAY')
+        txy = _count_in_function(asm, 'main', 'TXY')
+        # The far-self path uses LDA d,S; TAY (no LDY d,S on 65816).
+        # Count TAYs that are NOT for LDA-bank (the bank load goes
+        # PHA;PLB, no TAY). Conservatively, total Y-loads should equal 1.
+        total = ldy + tay + txy
+        assert total == 1, (
+            f"Expected 1 Y address load in main (3-call far chain "
+            f"with Y elision), got LDY={ldy} TAY={tay} TXY={txy}\n{asm}"
+        )
+
+    def test_far_chain_y_elision_two_calls_runtime(self, e2e):
+        """Two far-self calls with both DBR and Y elision firing —
+        runtime correctness."""
+        result = e2e.run(_PREAMBLE + '''
+            struct Counter { v: u8 }
+
+            trait Reader {
+                far fn get(far *self) -> u8;
+            }
+
+            impl Reader for Counter {
+                far fn get(far *self) -> u8 { return self.v; }
+            }
+
+            #[ram]
+            static mut C: Counter = Counter { v: 99 };
+
+            #[entry]
+            fn main() {
+                let p: far *dyn Reader = &C;
+                let a: u8 = p.get();
+                let b: u8 = p.get();
+                RESULT = a + b;
+            }
+        ''', ExpectedState(
+            memory={0x7E0200: 99 + 99}
+        ))
+        assert result.success, f"Failures: {result.failures}"

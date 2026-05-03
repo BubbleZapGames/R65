@@ -1211,3 +1211,133 @@ class TestNearChainCoalescing:
         # Neither pass sees a 2-dispatch run of the same kind.
         assert far.self_chain_role == ChainRole.SOLO
         assert near.self_chain_role == ChainRole.SOLO
+
+
+# ---------------------------------------------------------------------------
+# v2 commit C: Y elision for far-self chains
+# ---------------------------------------------------------------------------
+
+class TestFarChainYElision:
+    """v2(C): far-self chains may additionally elide the Y reload for
+    MIDDLE/END members when impls + gap all preserve Y."""
+
+    def test_far_chain_y_preloaded_when_impls_preserve_y(self):
+        """A far chain with leaf impls that preserve Y → MIDDLE/END
+        get self_y_preloaded=True. START never gets the flag."""
+        s = _make_self_vreg()
+        a = _make_dispatch(s)
+        b = _make_dispatch(s)
+        c = _make_dispatch(s)
+        # Default _empty_impl_func is a single-Return body — no Y
+        # writes, preserves Y.
+        prog = _build_program({0: _make_block(0, [a, b, c, Return()])})
+        _run_analysis(prog)
+        assert a.self_chain_role == ChainRole.START
+        assert b.self_chain_role == ChainRole.MIDDLE
+        assert c.self_chain_role == ChainRole.END
+        # START never gets the flag — it loads Y itself.
+        assert a.self_y_preloaded is False
+        assert b.self_y_preloaded is True
+        assert c.self_y_preloaded is True
+
+    def test_far_chain_y_not_preloaded_when_impl_clobbers_y(self):
+        """A far chain whose impl writes Y still gets DBR-bracket
+        coalescing (impls are DBR-independent) but NOT Y elision —
+        MIDDLE/END have self_y_preloaded=False."""
+        s = _make_self_vreg()
+        a = _make_dispatch(s)
+        b = _make_dispatch(s)
+
+        # Impl writes Y but is DBR-independent (no RAM access etc.).
+        clobber = Move(
+            dest=HardwareRegister('Y'),
+            source=Immediate(value=0),
+            type_info=BasicTypeInfo('u16'),
+        )
+        bad_impl_blocks = {0: _make_block(0, [clobber, Return()])}
+        bad_impl = _make_func('Impl1__m', bad_impl_blocks)
+        prog = MIRProgram(
+            functions=[
+                _make_func('caller', {0: _make_block(0, [a, b, Return()])}),
+                bad_impl,
+            ],
+            trait_dispatch_info=_trait_info(impls=['Impl1__m']),
+        )
+        _run_analysis(prog)
+        # DBR coalescing fires (impl is DBR-independent).
+        assert a.self_chain_role == ChainRole.START
+        assert b.self_chain_role == ChainRole.END
+        # Y elision does NOT fire (impl clobbers Y).
+        assert a.self_y_preloaded is False
+        assert b.self_y_preloaded is False
+
+    def test_far_chain_dbr_and_y_orthogonal(self):
+        """Two flags are independent: a chain with DBR-independent +
+        Y-preserving impls has both fire; a chain with DBR-independent +
+        Y-clobbering impls has only DBR fire."""
+        # Case 1: both fire.
+        s1 = _make_self_vreg(vid=10)
+        a1 = _make_dispatch(s1)
+        b1 = _make_dispatch(s1)
+        prog1 = _build_program({0: _make_block(0, [a1, b1, Return()])})
+        _run_analysis(prog1)
+        assert a1.self_chain_role == ChainRole.START  # DBR
+        assert b1.self_chain_role == ChainRole.END    # DBR
+        assert b1.self_y_preloaded is True            # Y elision
+
+        # Case 2: only DBR fires.
+        s2 = _make_self_vreg(vid=20)
+        a2 = _make_dispatch(s2)
+        b2 = _make_dispatch(s2)
+        clobber = Move(
+            dest=HardwareRegister('Y'),
+            source=Immediate(value=0),
+            type_info=BasicTypeInfo('u16'),
+        )
+        bad_impl = _make_func(
+            'Impl1__m', {0: _make_block(0, [clobber, Return()])}
+        )
+        prog2 = MIRProgram(
+            functions=[
+                _make_func('caller', {0: _make_block(0, [a2, b2, Return()])}),
+                bad_impl,
+            ],
+            trait_dispatch_info=_trait_info(impls=['Impl1__m']),
+        )
+        _run_analysis(prog2)
+        assert a2.self_chain_role == ChainRole.START  # DBR
+        assert b2.self_chain_role == ChainRole.END    # DBR
+        assert b2.self_y_preloaded is False           # Y elision off
+
+    def test_far_chain_y_not_preloaded_when_gap_clobbers_y(self):
+        """A gap instruction that writes Y disables Y elision but the
+        DBR coalescing decision is independent — DBR-independent gap
+        instructions still permit DBR coalescing."""
+        s = _make_self_vreg()
+        a = _make_dispatch(s)
+        b = _make_dispatch(s)
+        # Gap: a Move writing Y. This is DBR-independent (no memory
+        # access) but clobbers Y.
+        clobber = Move(
+            dest=HardwareRegister('Y'),
+            source=Immediate(value=0),
+            type_info=BasicTypeInfo('u16'),
+        )
+        prog = _build_program(
+            {0: _make_block(0, [a, clobber, b, Return()])}
+        )
+        _run_analysis(prog)
+        # DBR coalescing fires (gap is DBR-independent).
+        assert a.self_chain_role == ChainRole.START
+        assert b.self_chain_role == ChainRole.END
+        # Y elision does NOT fire (gap writes Y).
+        assert b.self_y_preloaded is False
+
+    def test_solo_dispatch_has_no_y_preloaded(self):
+        """Solo dispatches never carry self_y_preloaded."""
+        s = _make_self_vreg()
+        td = _make_dispatch(s)
+        prog = _build_program({0: _make_block(0, [td, Return()])})
+        _run_analysis(prog)
+        assert td.self_chain_role == ChainRole.SOLO
+        assert td.self_y_preloaded is False
