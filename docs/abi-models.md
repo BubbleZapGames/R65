@@ -473,6 +473,8 @@ caller:
     PLB            ; Restore DBR
 ```
 
+**Far pointer stack params**: When a function takes `far *T` as a stack parameter, the compiler picks per-function between **D_EQUALS_S** (PHD/TSC/TCD; enables `[dp],Y`) and **SET_DBR** (PHB/PLB to the param's bank; enables `(d,S),Y`) using a cost model. See [Register/Memory Configuration](register_memory_config.md) for the full decision tree, prologue/epilogue shapes, and per-strategy access costs.
+
 ### Cross-Bank Call Validation
 
 Near functions can only call near functions in the **same bank**. JSR uses a 16-bit address and cannot cross bank boundaries.
