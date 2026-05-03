@@ -766,3 +766,159 @@ class TestChainAcrossTraitCast:
         # Distinct roots — no chain.
         assert td_root.self_chain_role == ChainRole.SOLO
         assert td_off.self_chain_role == ChainRole.SOLO
+
+
+# ---------------------------------------------------------------------------
+# v2 commit A: cross-block extension via CFG diamonds
+# ---------------------------------------------------------------------------
+
+class TestDiamondChainExtension:
+    """v2(A): chain extends through if/else diamonds when both arms are
+    DBR-independent and don't redefine the chain root self vreg."""
+
+    def test_chain_extends_through_diamond(self):
+        """Dispatch in entry block, both arms are DBR-independent (each
+        does only a ROM-LONG read), dispatch in join block. The chain
+        should extend across the diamond."""
+        s = _make_self_vreg()
+        a = _make_dispatch(s)
+        b = _make_dispatch(s)
+        # Both arms read from ROM (DBR-independent).
+        rom_loc = MemoryLocation(
+            storage_type='rom', address=0x008000, symbol=None,
+        )
+        rom_dest_v1 = VirtualRegister(id=200, type_info=BasicTypeInfo('u8'))
+        rom_dest_v2 = VirtualRegister(id=201, type_info=BasicTypeInfo('u8'))
+        # Block layout:
+        #   0: a; branch to (1, 2)
+        #   1: load ROM; jump to 3
+        #   2: load ROM; jump to 3
+        #   3: b; return
+        blocks = {
+            0: _make_block(0, [a], succs=[1, 2]),
+            1: _make_block(1, [
+                Load(dest=rom_dest_v1, source=rom_loc,
+                     type_info=BasicTypeInfo('u8')),
+            ], preds=[0], succs=[3]),
+            2: _make_block(2, [
+                Load(dest=rom_dest_v2, source=rom_loc,
+                     type_info=BasicTypeInfo('u8')),
+            ], preds=[0], succs=[3]),
+            3: _make_block(3, [b, Return()], preds=[1, 2]),
+        }
+        prog = _build_program(blocks)
+        _run_analysis(prog)
+        assert a.self_chain_role == ChainRole.START
+        assert b.self_chain_role == ChainRole.END
+
+    def test_chain_breaks_when_one_arm_does_ram_access(self):
+        """Same diamond shape but one arm does a non-LONG RAM access.
+        The bridge must be rejected and both dispatches remain SOLO."""
+        s = _make_self_vreg()
+        a = _make_dispatch(s)
+        b = _make_dispatch(s)
+        ram_loc = MemoryLocation(
+            storage_type='ram', address=0x7E0800, symbol=None,
+        )
+        rom_loc = MemoryLocation(
+            storage_type='rom', address=0x008000, symbol=None,
+        )
+        d1 = VirtualRegister(id=210, type_info=BasicTypeInfo('u8'))
+        d2 = VirtualRegister(id=211, type_info=BasicTypeInfo('u8'))
+        blocks = {
+            0: _make_block(0, [a], succs=[1, 2]),
+            1: _make_block(1, [
+                Load(dest=d1, source=ram_loc,
+                     type_info=BasicTypeInfo('u8')),
+            ], preds=[0], succs=[3]),
+            2: _make_block(2, [
+                Load(dest=d2, source=rom_loc,
+                     type_info=BasicTypeInfo('u8')),
+            ], preds=[0], succs=[3]),
+            3: _make_block(3, [b, Return()], preds=[1, 2]),
+        }
+        prog = _build_program(blocks)
+        _run_analysis(prog)
+        assert a.self_chain_role == ChainRole.SOLO
+        assert b.self_chain_role == ChainRole.SOLO
+
+    def test_chain_breaks_when_arm_redefines_root(self):
+        """One arm reassigns the self vreg. The chain must break."""
+        s = _make_self_vreg()
+        a = _make_dispatch(s)
+        b = _make_dispatch(s)
+        # Arm 1 redefines s via a Move from Immediate (DBR-independent
+        # in itself, but invalidates the chain root).
+        redef = Move(
+            dest=s,
+            source=Immediate(value=0x1234),
+            type_info=BasicTypeInfo('u16'),
+        )
+        blocks = {
+            0: _make_block(0, [a], succs=[1, 2]),
+            1: _make_block(1, [redef], preds=[0], succs=[3]),
+            2: _make_block(2, [], preds=[0], succs=[3]),
+            3: _make_block(3, [b, Return()], preds=[1, 2]),
+        }
+        prog = _build_program(blocks)
+        _run_analysis(prog)
+        assert a.self_chain_role == ChainRole.SOLO
+        assert b.self_chain_role == ChainRole.SOLO
+
+    def test_chain_breaks_on_loop_back_edge(self):
+        """A back-edge from a candidate site rejects the diamond bridge."""
+        s = _make_self_vreg()
+        a = _make_dispatch(s)
+        b = _make_dispatch(s)
+        # Block 0 has 2 successors but block 2 is a back-edge into 0
+        # (so 0 has predecessor 2 — visited will not contain 2 when
+        # we first reach 0, but the arm shape is wrong). Actually the
+        # cleanest way: make 0 → 1 → 0 (a loop). The diamond walker
+        # rejects when arm targets are already in visited / when arm
+        # successors don't form a strict diamond.
+        blocks = {
+            0: _make_block(0, [a], preds=[1], succs=[1, 2]),
+            1: _make_block(1, [b], preds=[0], succs=[0]),  # back-edge
+            2: _make_block(2, [Return()], preds=[0]),
+        }
+        prog = _build_program(blocks)
+        _run_analysis(prog)
+        # Loops are rejected entirely; dispatches stay SOLO.
+        assert a.self_chain_role == ChainRole.SOLO
+        assert b.self_chain_role == ChainRole.SOLO
+
+    def test_chain_breaks_on_three_way_branch(self):
+        """A switch-like CFG with 3 successors is rejected outright."""
+        s = _make_self_vreg()
+        a = _make_dispatch(s)
+        b = _make_dispatch(s)
+        blocks = {
+            0: _make_block(0, [a], succs=[1, 2, 3]),
+            1: _make_block(1, [], preds=[0], succs=[4]),
+            2: _make_block(2, [], preds=[0], succs=[4]),
+            3: _make_block(3, [], preds=[0], succs=[4]),
+            4: _make_block(4, [b, Return()], preds=[1, 2, 3]),
+        }
+        prog = _build_program(blocks)
+        _run_analysis(prog)
+        assert a.self_chain_role == ChainRole.SOLO
+        assert b.self_chain_role == ChainRole.SOLO
+
+    def test_chain_breaks_when_arm_has_extra_successors(self):
+        """An arm whose own successor count != 1 is rejected (nested
+        branching is not a strict diamond)."""
+        s = _make_self_vreg()
+        a = _make_dispatch(s)
+        b = _make_dispatch(s)
+        blocks = {
+            0: _make_block(0, [a], succs=[1, 2]),
+            # Arm 1 has 2 successors of its own — nested diamond.
+            1: _make_block(1, [], preds=[0], succs=[3, 5]),
+            2: _make_block(2, [], preds=[0], succs=[3]),
+            3: _make_block(3, [b, Return()], preds=[1, 2, 5]),
+            5: _make_block(5, [], preds=[1], succs=[3]),
+        }
+        prog = _build_program(blocks)
+        _run_analysis(prog)
+        assert a.self_chain_role == ChainRole.SOLO
+        assert b.self_chain_role == ChainRole.SOLO

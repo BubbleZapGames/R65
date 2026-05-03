@@ -19,7 +19,7 @@ from r65.compiler.mir.nodes import (
     FarPtrStrategy, ChainRole, MIRFunction, BasicBlock,
     Load, Store, LoadIndirect, StoreIndirect,
     Call, TraitDispatch, MemoryLocation, VirtualRegister,
-    Move, TypeConvert,
+    Move, TypeConvert, Compare, BinaryOp, UnaryOp, BitTest,
 )
 
 
@@ -188,15 +188,18 @@ def analyze_trait_dispatch_chains(mir_program, call_graph):
 
 def _analyze_function_chains(func, call_graph, func_map, cyclic_funcs):
     """Find chainable runs in a single function and assign ChainRole."""
-    # Build straight-line block paths starting at every block whose chain
+    # Build extended block paths starting at every block whose chain
     # could produce a coalesceable run. We walk forward through fall-through
-    # successors only.
+    # successors and (v2) bridge across DBR-independent if/else diamonds.
     visited_blocks: set = set()
 
     for entry_block_id in func.blocks:
         if entry_block_id in visited_blocks:
             continue
-        path = _straight_line_path(func, entry_block_id, visited_blocks)
+        path = _extended_path(
+            func, entry_block_id, visited_blocks,
+            call_graph, func_map, cyclic_funcs,
+        )
         if not path:
             continue
         _coalesce_chains_along_path(
@@ -234,6 +237,155 @@ def _straight_line_path(func, entry_block_id, visited_blocks):
         cur_id = next_id
 
     return path
+
+
+def _extended_path(func, entry_block_id, visited_blocks,
+                   call_graph, func_map, cyclic_funcs):
+    """Like ``_straight_line_path`` but additionally bridges across simple
+    if/else diamonds where both arms are DBR-independent and don't
+    redefine the chain root self vreg.
+
+    The diamond rule: when the straight-line walk terminates at a block
+    ``A`` because ``A`` has two successors, accept the rejoin ``C`` as
+    the next block in the path iff:
+      - ``A`` has exactly two successors ``S1`` and ``S2``.
+      - ``S1`` and ``S2`` each have exactly one successor and that
+        successor is the SAME block ``C``.
+      - ``C`` has exactly two predecessors and they are exactly
+        ``{S1, S2}``.
+      - Neither ``S1`` nor ``S2`` has further branching (each is a
+        single-block arm) and each arm body is DBR-independent (no
+        RAM access, no near deref, no nested TraitDispatch, no call
+        to a non-DBR-independent function).
+      - Neither ``S1`` nor ``S2`` is a back-edge into earlier path
+        (we never revisit a block already in the path or
+        ``visited_blocks``).
+
+    The diamond's two arms are inserted into the path AFTER ``A`` and
+    BEFORE ``C`` (in arm order S1 then S2). When the chain pass walks
+    the resulting flat instruction list, instructions from BOTH arms
+    appear between any chain-head dispatch in or before ``A`` and any
+    chain-tail dispatch in ``C``. ``_between_is_dbr_independent``
+    already rejects any TraitDispatch, RAM access, near deref, or
+    self-vreg redef inside the gap — these constraints subsume the
+    soundness conditions for the diamond.
+
+    Loops, multi-arm switches, and any join with topology that doesn't
+    match the strict diamond pattern are rejected — the walker
+    terminates and returns the path so far.
+    """
+    path = []
+    cur_id = entry_block_id
+    while cur_id is not None and cur_id not in visited_blocks:
+        block = func.blocks.get(cur_id)
+        if block is None:
+            break
+        visited_blocks.add(cur_id)
+        path.append(block)
+
+        succs = block.successors
+        if len(succs) == 1:
+            next_id = succs[0]
+            next_block = func.blocks.get(next_id)
+            if next_block is None:
+                break
+            if len(next_block.predecessors) != 1:
+                # Try to bridge a diamond rejoin reached from another
+                # arm. Today the straight-line rule rejects any block
+                # with >1 predecessor; the diamond extension only
+                # applies when the *current* block has 2 successors.
+                break
+            if next_block.predecessors[0] != cur_id:
+                break
+            cur_id = next_id
+            continue
+
+        if len(succs) == 2:
+            bridged = _try_bridge_diamond(
+                func, block, visited_blocks, path,
+                call_graph, func_map, cyclic_funcs,
+            )
+            if bridged is None:
+                break
+            arm_blocks, rejoin_id = bridged
+            # Add arm blocks to path so their instructions participate in
+            # the inter-dispatch DBR-independence check via the flat
+            # walker. Mark them visited so the outer iteration doesn't
+            # restart a fresh path inside an arm.
+            for arm in arm_blocks:
+                visited_blocks.add(arm.block_id)
+                path.append(arm)
+            cur_id = rejoin_id
+            continue
+
+        # 0 successors (terminal) or 3+ (switch) — stop.
+        break
+
+    return path
+
+
+def _try_bridge_diamond(func, head_block, visited_blocks, path,
+                        call_graph, func_map, cyclic_funcs):
+    """Detect a strict if/else diamond rooted at ``head_block`` and return
+    ``(arm_blocks, rejoin_id)`` if bridgeable, else None.
+
+    See ``_extended_path`` for the diamond shape and arm soundness rules.
+    """
+    succs = head_block.successors
+    if len(succs) != 2:
+        return None
+    s1_id, s2_id = succs[0], succs[1]
+    if s1_id == s2_id:
+        return None
+    s1 = func.blocks.get(s1_id)
+    s2 = func.blocks.get(s2_id)
+    if s1 is None or s2 is None:
+        return None
+
+    # Reject loops / back-edges: arm blocks must not already be in the
+    # path or otherwise visited (which would mean we're looping back).
+    for arm_id in (s1_id, s2_id):
+        if arm_id in visited_blocks:
+            return None
+
+    # Each arm must have exactly the head as its sole predecessor.
+    if list(s1.predecessors) != [head_block.block_id]:
+        return None
+    if list(s2.predecessors) != [head_block.block_id]:
+        return None
+
+    # Each arm must have exactly one successor, and they must match.
+    if len(s1.successors) != 1 or len(s2.successors) != 1:
+        return None
+    rejoin_id = s1.successors[0]
+    if s2.successors[0] != rejoin_id:
+        return None
+
+    rejoin = func.blocks.get(rejoin_id)
+    if rejoin is None:
+        return None
+
+    # Rejoin block must have exactly the two arms as predecessors.
+    rejoin_preds = set(rejoin.predecessors)
+    if rejoin_preds != {s1_id, s2_id}:
+        return None
+
+    # Reject loops at the rejoin too.
+    if rejoin_id in visited_blocks:
+        return None
+
+    # Each arm body must be DBR-independent (every instruction). The
+    # arm's terminator (the unconditional branch back to the rejoin)
+    # is itself a control-flow op — not modeled in the MIR instruction
+    # stream as a DBR-relevant op, so we check every instruction.
+    for arm in (s1, s2):
+        for instr in arm.instructions:
+            if not _instr_is_dbr_independent(
+                instr, call_graph, func_map, cyclic_funcs
+            ):
+                return None
+
+    return [s1, s2], rejoin_id
 
 
 def _coalesce_chains_along_path(func, path, call_graph, func_map, cyclic_funcs):
@@ -278,21 +430,34 @@ def _coalesce_chains_along_path(func, path, call_graph, func_map, cyclic_funcs):
         # the soundness rule readable and matches the brief.
         chain_methods = {(instr.trait_name, instr.method_name)}
 
-        # Try to extend the chain forward through `flat`.
+        # Try to extend the chain forward through `flat`. Skip past any
+        # DBR-independent non-dispatch instructions that lie between
+        # adjacent chain candidates — the gap is verified by
+        # _between_is_dbr_independent so DBR-independent fillers (e.g.
+        # ROM/HW reads, arithmetic, mode switches, plus the diamond-arm
+        # instructions inserted by _extended_path) don't break the run.
         run_indices = [i]
         j = i + 1
         while j < n:
+            # Find the next chainable far-self dispatch at or after j.
+            cand_idx = j
+            while cand_idx < n and not _is_chainable_far_dispatch(
+                flat[cand_idx][2]
+            ):
+                cand_idx += 1
+            if cand_idx >= n:
+                break
+
             # Inter-dispatch instructions: from flat[run_indices[-1]+1] up
-            # to flat[j-1] (inclusive). Verify they are DBR-independent.
+            # to flat[cand_idx-1]. Verify they are DBR-independent and
+            # don't redefine the chain root self vreg.
             if not _between_is_dbr_independent(
-                flat, run_indices[-1], j, call_graph, func_map,
+                flat, run_indices[-1], cand_idx, call_graph, func_map,
                 cyclic_funcs, func=func,
             ):
                 break
 
-            cand = flat[j][2]
-            if not _is_chainable_far_dispatch(cand):
-                break
+            cand = flat[cand_idx][2]
             # v1.6: pass func so _same_self_chain can consult the
             # cast-transparency walker; otherwise it falls back to
             # plain vreg-identity equality.
@@ -308,8 +473,8 @@ def _coalesce_chains_along_path(func, path, call_graph, func_map, cyclic_funcs):
                 break
 
             chain_methods.add((cand.trait_name, cand.method_name))
-            run_indices.append(j)
-            j += 1
+            run_indices.append(cand_idx)
+            j = cand_idx + 1
 
         # Assign roles
         if len(run_indices) >= 2:
@@ -593,11 +758,27 @@ def _instr_is_dbr_independent(instr, call_graph, func_map, cyclic_funcs):
         loc = instr.source if isinstance(instr, Load) else instr.dest
         if isinstance(loc, MemoryLocation):
             st = loc.storage_type
-            if st == 'ram':
-                # RAM access uses DBR-relative absolute by default. ROM/HW
-                # are emitted as LONG already; zeropage uses DP. RAM is
-                # the disqualifier.
+            if st in ('ram', 'lowram'):
+                # RAM and lowram both use DBR-relative absolute addressing.
+                # ROM/HW are emitted as LONG already; zeropage uses DP.
+                # Lowram lives in bank $7E ($00-$1FFF) but the codegen
+                # emits absolute (not LONG), so under a non-default DBR
+                # it would address the wrong bank.
                 return False
+        return True
+
+    # Some MIR instructions accept a MemoryLocation directly as an
+    # operand (the codegen folds Load+Compare into a single CMP abs).
+    # Reject any direct memory operand whose storage type is DBR-
+    # dependent. Inline MemoryLocation operands are observed on
+    # Compare, BitTest, BinaryOp, UnaryOp.
+    if isinstance(instr, (Compare, BitTest, BinaryOp, UnaryOp)):
+        for attr in ('left', 'right', 'source', 'value'):
+            operand = getattr(instr, attr, None)
+            if isinstance(operand, MemoryLocation):
+                st = operand.storage_type
+                if st in ('ram', 'lowram'):
+                    return False
         return True
 
     if isinstance(instr, (LoadIndirect, StoreIndirect)):

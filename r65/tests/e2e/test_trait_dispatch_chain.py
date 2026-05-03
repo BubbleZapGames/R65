@@ -364,6 +364,107 @@ class TestFarSelfChainCoalescing:
         ))
         assert result.success, f"Failures: {result.failures}"
 
+    def test_chain_extends_through_if_else_runtime(self, e2e):
+        """v2(A): chain extends across an if/else diamond where both
+        arms are DBR-independent. Two trait dispatches on the same
+        far self bracket the diamond; the chain pass coalesces the
+        DBR bracket. Verifies runtime correctness AND single PHB."""
+        result = e2e.run(_PREAMBLE + '''
+            #[lowram]
+            static mut COND: u8 = 1;
+
+            struct Counter { v: u8 }
+
+            trait Tickable {
+                far fn tick(far *self);
+                far fn read(far *self) -> u8;
+            }
+
+            impl Tickable for Counter {
+                far fn tick(far *self) {
+                    self.v = self.v + 1;
+                }
+                far fn read(far *self) -> u8 {
+                    return self.v;
+                }
+            }
+
+            #[ram]
+            static mut C: Counter = Counter { v: 20 };
+
+            // ROM tables: branching reads from ROM are DBR-independent
+            // under far-self DBR (they emit LONG addressing).
+            static TBL_A: [u8; 1] = [7];
+            static TBL_B: [u8; 1] = [9];
+
+            #[entry]
+            fn main() {
+                let p: far *dyn Tickable = &C;
+                p.tick();
+                // ROM reads in both arms — DBR-independent.
+                let mut x: u8 = 0;
+                if COND != 0 {
+                    x = TBL_A[0];
+                } else {
+                    x = TBL_B[0];
+                }
+                RESULT = p.read() + x;
+            }
+        ''', ExpectedState(
+            memory={0x7E0200: 21 + 7}
+        ))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_chain_extends_through_if_else_asm(self):
+        """v2(A): the diamond-bridged chain emits exactly ONE PHB."""
+        source = _PREAMBLE + '''
+            #[lowram]
+            static mut COND: u8 = 1;
+
+            struct Counter { v: u8 }
+
+            trait Tickable {
+                far fn tick(far *self);
+                far fn read(far *self) -> u8;
+            }
+
+            impl Tickable for Counter {
+                far fn tick(far *self) {
+                    self.v = self.v + 1;
+                }
+                far fn read(far *self) -> u8 {
+                    return self.v;
+                }
+            }
+
+            #[ram]
+            static mut C: Counter = Counter { v: 0 };
+
+            static TBL_A: [u8; 1] = [1];
+            static TBL_B: [u8; 1] = [2];
+
+            #[entry]
+            fn main() {
+                let p: far *dyn Tickable = &C;
+                p.tick();
+                let mut x: u8 = 0;
+                if COND != 0 {
+                    x = TBL_A[0];
+                } else {
+                    x = TBL_B[0];
+                }
+                RESULT = p.read() + x;
+            }
+        '''
+        asm = _compile_snes(source)
+        # If the diamond bridges, main has 1 PHB total. If the chain
+        # was broken at the diamond, main would have 2 PHB.
+        phb = _count_in_function(asm, 'main', 'PHB')
+        assert phb == 1, (
+            f"Expected 1 PHB in main (chain coalesced across diamond), "
+            f"got {phb}\n{asm}"
+        )
+
     def test_chain_broken_by_call(self, e2e):
         """A regular function call between chain members breaks the chain.
 
