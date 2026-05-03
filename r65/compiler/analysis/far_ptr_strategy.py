@@ -16,10 +16,10 @@ SET_DBR wins when: N_zp > N_rom + N_hw + N_ram + N_calls + 6
 """
 
 from r65.compiler.mir.nodes import (
-    FarPtrStrategy, ChainRole, MIRFunction, BasicBlock,
+    FarPtrStrategy, ChainRole, MIRFunction, BasicBlock, HardwareRegister,
     Load, Store, LoadIndirect, StoreIndirect,
     Call, TraitDispatch, MemoryLocation, VirtualRegister,
-    Move, TypeConvert, Compare, BinaryOp, UnaryOp, BitTest,
+    Move, TypeConvert, Compare, BinaryOp, UnaryOp, BitTest, InlineAsm,
 )
 
 
@@ -188,23 +188,29 @@ def analyze_trait_dispatch_chains(mir_program, call_graph):
 
 def _analyze_function_chains(func, call_graph, func_map, cyclic_funcs):
     """Find chainable runs in a single function and assign ChainRole."""
-    # Build extended block paths starting at every block whose chain
-    # could produce a coalesceable run. We walk forward through fall-through
-    # successors and (v2) bridge across DBR-independent if/else diamonds.
-    visited_blocks: set = set()
-
-    for entry_block_id in func.blocks:
-        if entry_block_id in visited_blocks:
-            continue
-        path = _extended_path(
-            func, entry_block_id, visited_blocks,
-            call_graph, func_map, cyclic_funcs,
-        )
-        if not path:
-            continue
-        _coalesce_chains_along_path(
-            func, path, call_graph, func_map, cyclic_funcs
-        )
+    # Two passes per function:
+    #   - Far-self DBR-bracket coalescing (v1, v1.5, v1.6, plus v2 diamond).
+    #   - v2(B): near-self Y-reload coalescing on a Y-preservation
+    #     predicate.
+    # Each pass walks paths from every unvisited entry; a fresh
+    # visited_blocks set per pass lets diamond bridges fire for both
+    # without one pass blocking the other.
+    for kind in ('far', 'near'):
+        visited_blocks: set = set()
+        for entry_block_id in func.blocks:
+            if entry_block_id in visited_blocks:
+                continue
+            path = _extended_path(
+                func, entry_block_id, visited_blocks,
+                call_graph, func_map, cyclic_funcs,
+                kind=kind,
+            )
+            if not path:
+                continue
+            _coalesce_chains_along_path(
+                func, path, call_graph, func_map, cyclic_funcs,
+                kind=kind,
+            )
 
 
 def _straight_line_path(func, entry_block_id, visited_blocks):
@@ -240,10 +246,11 @@ def _straight_line_path(func, entry_block_id, visited_blocks):
 
 
 def _extended_path(func, entry_block_id, visited_blocks,
-                   call_graph, func_map, cyclic_funcs):
+                   call_graph, func_map, cyclic_funcs, kind='far'):
     """Like ``_straight_line_path`` but additionally bridges across simple
-    if/else diamonds where both arms are DBR-independent and don't
-    redefine the chain root self vreg.
+    if/else diamonds where both arms are DBR-independent (kind='far') or
+    Y-preserving (kind='near') and don't redefine the chain root self
+    vreg.
 
     The diamond rule: when the straight-line walk terminates at a block
     ``A`` because ``A`` has two successors, accept the rejoin ``C`` as
@@ -304,6 +311,7 @@ def _extended_path(func, entry_block_id, visited_blocks,
             bridged = _try_bridge_diamond(
                 func, block, visited_blocks, path,
                 call_graph, func_map, cyclic_funcs,
+                kind=kind,
             )
             if bridged is None:
                 break
@@ -325,7 +333,7 @@ def _extended_path(func, entry_block_id, visited_blocks,
 
 
 def _try_bridge_diamond(func, head_block, visited_blocks, path,
-                        call_graph, func_map, cyclic_funcs):
+                        call_graph, func_map, cyclic_funcs, kind='far'):
     """Detect a strict if/else diamond rooted at ``head_block`` and return
     ``(arm_blocks, rejoin_id)`` if bridgeable, else None.
 
@@ -374,51 +382,80 @@ def _try_bridge_diamond(func, head_block, visited_blocks, path,
     if rejoin_id in visited_blocks:
         return None
 
-    # Each arm body must be DBR-independent (every instruction). The
-    # arm's terminator (the unconditional branch back to the rejoin)
-    # is itself a control-flow op — not modeled in the MIR instruction
-    # stream as a DBR-relevant op, so we check every instruction.
+    # Each arm body must be safe to traverse without breaking the
+    # chain. For far-self chains the predicate is DBR-independence;
+    # for near-self chains it is Y-preservation. Either way we check
+    # every instruction; the arm's terminator (an unconditional branch
+    # back to the rejoin) is not modeled as a DBR/Y-relevant op.
+    if kind == 'far':
+        check = lambda i: _instr_is_dbr_independent(
+            i, call_graph, func_map, cyclic_funcs
+        )
+    else:
+        check = lambda i: _instr_preserves_y(
+            i, call_graph, func_map, cyclic_funcs
+        )
     for arm in (s1, s2):
         for instr in arm.instructions:
-            if not _instr_is_dbr_independent(
-                instr, call_graph, func_map, cyclic_funcs
-            ):
+            if not check(instr):
                 return None
 
     return [s1, s2], rejoin_id
 
 
-def _coalesce_chains_along_path(func, path, call_graph, func_map, cyclic_funcs):
-    """Walk a straight-line block path in order; identify same-self runs of
-    far-self TraitDispatch and assign ChainRole.
+def _coalesce_chains_along_path(func, path, call_graph, func_map,
+                                cyclic_funcs, kind='far'):
+    """Walk a path in order; identify same-self runs of TraitDispatch and
+    assign ChainRole (and, for far chains, ``self_y_preloaded``).
 
-    A run extends as long as every member shares the same trait_name and
-    self_ptr vreg as the chain head (method may differ — see v1.5). The
-    impl-set DBR-independence predicate is evaluated over the UNION of
-    impls across every (trait, method) pair in the chain so far plus the
-    new candidate; if adding a candidate would make any impl in the union
-    DBR-dependent, the chain is flushed before that candidate.
+    ``kind='far'``  — far-self DBR-bracket coalescing. The chain
+        instruction-impl predicate is DBR-independence. v2(C) also
+        sets ``self_y_preloaded`` on MIDDLE/END members when every
+        (trait, method) impl additionally preserves Y at exit.
+
+    ``kind='near'`` — near-self LDY-reload coalescing. The chain
+        predicate is Y-preservation: every gap instruction must
+        preserve Y, every impl must preserve Y. ChainRole alone
+        controls Y emission (no DBR work for near).
+
+    A run extends as long as every member shares the same chain root
+    self vreg as the chain head and is the right kind of dispatch.
+    Methods and traits may differ (v1.5/v1.6); the impl-set predicate
+    is re-evaluated per-method.
     """
-    # Flatten (block_idx, instr_idx, instr) for every TraitDispatch in path
-    # AND track all instructions in order so we can check inter-dispatch
-    # DBR-independence by walking the flat list between dispatch positions.
+    # Flatten (block_idx, instr_idx, instr) for every instruction in
+    # path. The walker uses the flat list so cross-block / cross-arm
+    # gaps can be checked uniformly.
     flat = []  # (block_idx, instr_idx, instr)
     for b_idx, block in enumerate(path):
         for i_idx, instr in enumerate(block.instructions):
             flat.append((b_idx, i_idx, instr))
 
+    if kind == 'far':
+        is_chainable = _is_chainable_far_dispatch
+        impls_pass = _trait_method_impls_all_independent
+        between_ok = lambda prev_idx, next_idx: _between_is_dbr_independent(
+            flat, prev_idx, next_idx, call_graph, func_map,
+            cyclic_funcs, func=func,
+        )
+    else:
+        is_chainable = _is_chainable_near_dispatch
+        impls_pass = _trait_method_impls_all_preserve_y
+        between_ok = lambda prev_idx, next_idx: _between_preserves_y(
+            flat, prev_idx, next_idx, call_graph, func_map,
+            cyclic_funcs, func=func,
+        )
+
     n = len(flat)
     i = 0
     while i < n:
         instr = flat[i][2]
-        if not _is_chainable_far_dispatch(instr):
+        if not is_chainable(instr):
             i += 1
             continue
 
-        # Verify the impl set is DBR-independent for THIS dispatch.
-        if not _trait_method_impls_all_independent(
-            instr, call_graph, func_map, cyclic_funcs
-        ):
+        # Verify the impl set passes the chain predicate for THIS dispatch.
+        if not impls_pass(instr, call_graph, func_map, cyclic_funcs):
             i += 1
             continue
 
@@ -431,30 +468,23 @@ def _coalesce_chains_along_path(func, path, call_graph, func_map, cyclic_funcs):
         chain_methods = {(instr.trait_name, instr.method_name)}
 
         # Try to extend the chain forward through `flat`. Skip past any
-        # DBR-independent non-dispatch instructions that lie between
-        # adjacent chain candidates — the gap is verified by
-        # _between_is_dbr_independent so DBR-independent fillers (e.g.
-        # ROM/HW reads, arithmetic, mode switches, plus the diamond-arm
-        # instructions inserted by _extended_path) don't break the run.
+        # gap-safe non-dispatch instructions that lie between adjacent
+        # chain candidates.
         run_indices = [i]
         j = i + 1
         while j < n:
-            # Find the next chainable far-self dispatch at or after j.
+            # Find the next chainable dispatch at or after j (matching
+            # the same kind — near vs far).
             cand_idx = j
-            while cand_idx < n and not _is_chainable_far_dispatch(
-                flat[cand_idx][2]
-            ):
+            while cand_idx < n and not is_chainable(flat[cand_idx][2]):
                 cand_idx += 1
             if cand_idx >= n:
                 break
 
             # Inter-dispatch instructions: from flat[run_indices[-1]+1] up
-            # to flat[cand_idx-1]. Verify they are DBR-independent and
-            # don't redefine the chain root self vreg.
-            if not _between_is_dbr_independent(
-                flat, run_indices[-1], cand_idx, call_graph, func_map,
-                cyclic_funcs, func=func,
-            ):
+            # to flat[cand_idx-1]. Verify they pass the chain predicate
+            # and don't redefine the chain root self vreg.
+            if not between_ok(run_indices[-1], cand_idx):
                 break
 
             cand = flat[cand_idx][2]
@@ -463,13 +493,8 @@ def _coalesce_chains_along_path(func, path, call_graph, func_map, cyclic_funcs):
             # plain vreg-identity equality.
             if not _same_self_chain(instr, cand, func):
                 break
-            # Re-check the candidate's method's impls. If we've already
-            # accepted this (trait, method) earlier in the chain, the
-            # check is redundant but cheap (memoized via
-            # `_chain_dbr_independent`).
-            if not _trait_method_impls_all_independent(
-                cand, call_graph, func_map, cyclic_funcs
-            ):
+            # Re-check the candidate's method's impls.
+            if not impls_pass(cand, call_graph, func_map, cyclic_funcs):
                 break
 
             chain_methods.add((cand.trait_name, cand.method_name))
@@ -497,6 +522,20 @@ def _is_chainable_far_dispatch(instr):
     if not isinstance(instr, TraitDispatch):
         return False
     if not instr.self_is_far:
+        return False
+    if not isinstance(instr.self_ptr, VirtualRegister):
+        return False
+    return True
+
+
+def _is_chainable_near_dispatch(instr):
+    """True if instr is a near-self TraitDispatch with a vreg self_ptr.
+
+    Mirrors ``_is_chainable_far_dispatch`` but for near-self chains.
+    """
+    if not isinstance(instr, TraitDispatch):
+        return False
+    if instr.self_is_far:
         return False
     if not isinstance(instr.self_ptr, VirtualRegister):
         return False
@@ -871,4 +910,203 @@ def _trait_method_impls_all_independent(td, call_graph, func_map, cyclic_funcs):
             impl_name, call_graph, func_map, cyclic_funcs
         ):
             return False
+    return True
+
+
+# ============================================================================
+# v2(B): Y-preservation predicate (used by near-self chain coalescing)
+# ============================================================================
+#
+# A function "preserves Y" iff Y at every exit holds the same value as
+# at entry. The chain pass uses this to elide LDY reloads in near-self
+# chains (commit B) and far-self chains (commit C).
+#
+# Pre-codegen we don't have register allocation results, so we use a
+# conservative MIR-level approximation:
+#
+#   - For a trait-method impl using the DBR:Y leaf path (self_y_vreg
+#     present, no D=S, no far-ptr-stack-params), the trait-method
+#     ABI guarantees Y holds self throughout the body. Field accesses
+#     read via $offset,Y (Y-USE only). Such methods preserve Y iff
+#     no other instruction writes Y or calls a non-Y-preserving
+#     function.
+#
+#   - For other functions, we conservatively reject any:
+#       * Move / TypeConvert / Load / LoadIndirect with HW-Y dest
+#       * vreg with register_hint == 'Y' (loop register promotion
+#         intends to allocate it to Y)
+#       * Call to a non-Y-preserving function
+#       * TraitDispatch (we don't model whether the dispatch wrapper
+#         preserves Y — conservatively reject)
+#       * InlineAsm (we don't analyze asm)
+#       * Recursive cycle (without fixpoint we can't tell)
+#
+# Memoized on `MIRFunction._chain_preserves_y`.
+
+_PRESERVES_Y_ATTR = '_chain_preserves_y'
+
+
+def _vreg_targets_y(vreg):
+    """True if a vreg is intended for Y allocation (register_hint='Y')."""
+    if not isinstance(vreg, VirtualRegister):
+        return False
+    return getattr(vreg, 'register_hint', None) == 'Y'
+
+
+def _instr_writes_y(instr, func):
+    """True if an instruction writes the Y register.
+
+    The MIR shapes that produce a Y write:
+      - dest is HardwareRegister('Y')
+      - dest is the function's self_y_vreg (pre-allocated to Y)
+      - dest is a vreg with register_hint='Y' (loop promotion target)
+      - returns list contains a HW Y or Y-hinted vreg
+
+    The trait-method entry-point Move(dest=self_y_vreg, source=HW_Y)
+    is a no-op at codegen time (move_select.py treats it as such),
+    but conceptually Y already holds self at function entry — so
+    treating it as a Y-write would incorrectly flag every trait
+    method as Y-clobbering. We therefore EXCLUDE that specific
+    instruction shape from the writes-Y check.
+    """
+    self_y_id = func.self_y_vreg.id if func.self_y_vreg else None
+
+    dest = getattr(instr, 'dest', None)
+    if isinstance(dest, HardwareRegister) and dest.name == 'Y':
+        return True
+    if isinstance(dest, VirtualRegister):
+        # The trait-method self_y_vreg is pre-allocated to Y but the
+        # entry-point Move(dest=self_y_vreg, source=HW_Y) is a no-op
+        # — Y already holds self. Subsequent writes to self_y_vreg
+        # WOULD clobber Y, but the parameter binding is the only
+        # such write in well-formed MIR, so excluding it is safe.
+        if self_y_id is not None and dest.id == self_y_id:
+            return False
+        if _vreg_targets_y(dest):
+            return True
+
+    returns = getattr(instr, 'returns', None) or []
+    for r in returns:
+        if isinstance(r, HardwareRegister) and r.name == 'Y':
+            return True
+        if isinstance(r, VirtualRegister) and _vreg_targets_y(r):
+            return True
+
+    return False
+
+
+def _instr_preserves_y(instr, call_graph, func_map, cyclic_funcs, func=None):
+    """True if `instr` is safe to execute in the gap of a Y-preserving
+    chain — Y is unchanged after `instr` runs.
+
+    Disqualifiers:
+      - any write to Y (see ``_instr_writes_y``)
+      - call to a non-Y-preserving function
+      - nested TraitDispatch (unconditionally clobbers Y in the
+        dispatch wrapper / impl)
+      - inline assembly (we don't analyze asm)
+    """
+    if isinstance(instr, InlineAsm):
+        return False
+
+    if isinstance(instr, TraitDispatch):
+        # Nested dispatches always reload Y for their own self.
+        return False
+
+    if isinstance(instr, Call):
+        if isinstance(instr.function, str):
+            if not _function_preserves_y(
+                instr.function, call_graph, func_map, cyclic_funcs
+            ):
+                return False
+        else:
+            # Indirect call via fn pointer — broad, conservatively no.
+            return False
+        # Even if the callee preserves Y, check that this call's
+        # returns list doesn't write Y.
+        if func is not None and _instr_writes_y(instr, func):
+            return False
+        return True
+
+    if func is not None and _instr_writes_y(instr, func):
+        return False
+    return True
+
+
+def _function_preserves_y(func_name, call_graph, func_map, cyclic_funcs):
+    """Recursively determine whether `func_name`'s body preserves Y at
+    every exit. Memoized on the MIRFunction.
+
+    Conservative rejections mirror ``_function_is_dbr_independent``:
+      - Function not found in func_map (external/builtin) -> False
+      - Function in a recursive cycle -> False
+      - Inline asm in body -> False
+      - Any instruction that writes Y -> False
+      - Call to a non-Y-preserving function -> False
+    """
+    func = func_map.get(func_name)
+    if func is None:
+        return False  # external
+
+    cached = getattr(func, _PRESERVES_Y_ATTR, None)
+    if cached is not None:
+        return cached
+
+    if func_name in cyclic_funcs:
+        setattr(func, _PRESERVES_Y_ATTR, False)
+        return False
+
+    # Optimistic memoization to break self-loops within a single
+    # resolution (cyclic_funcs already filters true cycles).
+    setattr(func, _PRESERVES_Y_ATTR, True)
+
+    for block in func.blocks.values():
+        for instr in block.instructions:
+            if not _instr_preserves_y(
+                instr, call_graph, func_map, cyclic_funcs, func=func
+            ):
+                setattr(func, _PRESERVES_Y_ATTR, False)
+                return False
+
+    return True
+
+
+def _trait_method_impls_all_preserve_y(td, call_graph, func_map, cyclic_funcs):
+    """True if every implementor of (td.trait_name, td.method_name)
+    preserves Y at exit. False if the impl set is empty/unknown.
+    """
+    impls = call_graph.resolve_trait_method(td.trait_name, td.method_name)
+    if not impls:
+        return False
+    for impl_name in impls:
+        if not _function_preserves_y(
+            impl_name, call_graph, func_map, cyclic_funcs
+        ):
+            return False
+    return True
+
+
+def _between_preserves_y(flat, prev_run_idx, next_idx, call_graph, func_map,
+                         cyclic_funcs, func=None):
+    """Y-preservation analogue of ``_between_is_dbr_independent``.
+
+    Verifies that all instructions strictly between two chain dispatches
+    preserve Y AND don't redefine the chain root self vreg.
+    """
+    prev_td = flat[prev_run_idx][2]
+    self_vreg = prev_td.self_ptr
+    root_vreg = None
+    if func is not None and isinstance(self_vreg, VirtualRegister):
+        root_vreg = _chain_self_root(self_vreg, func)
+    for k in range(prev_run_idx + 1, next_idx):
+        instr = flat[k][2]
+        if not _instr_preserves_y(
+            instr, call_graph, func_map, cyclic_funcs, func=func
+        ):
+            return False
+        if _instr_redefines_vreg(instr, self_vreg):
+            return False
+        if root_vreg is not None and root_vreg.id != self_vreg.id:
+            if _instr_redefines_vreg(instr, root_vreg):
+                return False
     return True

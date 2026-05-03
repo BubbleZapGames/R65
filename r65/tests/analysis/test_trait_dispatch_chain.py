@@ -14,7 +14,7 @@ from r65.compiler.mir.nodes import (
     MIRFunction, MIRProgram, BasicBlock, Return, TraitDispatch, ChainRole,
     Argument, ArgumentMechanism, VirtualRegister, Call, Load, Store,
     LoadIndirect, StoreIndirect, MemoryLocation, Move, Immediate,
-    TypeConvert, BinaryOp,
+    TypeConvert, BinaryOp, HardwareRegister, InlineAsm,
 )
 from r65.compiler.mir.virtual_registers import VirtualRegisterAllocator
 from r65.compiler.hir.types import BasicTypeInfo, PointerTypeInfo, TraitTypeInfo
@@ -22,6 +22,7 @@ from r65.compiler.analysis.call_graph import CallGraphAnalyzer
 from r65.compiler.analysis.far_ptr_strategy import (
     analyze_trait_dispatch_chains,
     _chain_self_root,
+    _function_preserves_y,
 )
 
 
@@ -922,3 +923,291 @@ class TestDiamondChainExtension:
         _run_analysis(prog)
         assert a.self_chain_role == ChainRole.SOLO
         assert b.self_chain_role == ChainRole.SOLO
+
+
+# ---------------------------------------------------------------------------
+# v2 commit B: near-self chain coalescing + Y-preservation predicate
+# ---------------------------------------------------------------------------
+
+def _make_near_dispatch(self_vreg, trait='T', method='m'):
+    """Build a near-self TraitDispatch (self_is_far=False)."""
+    arg = Argument(
+        value=self_vreg,
+        mechanism=ArgumentMechanism.SELF_Y,
+    )
+    return TraitDispatch(
+        trait_name=trait,
+        method_name=method,
+        method_index=0,
+        self_ptr=self_vreg,
+        args=[arg],
+        returns=[],
+        is_far=False,
+        self_is_far=False,
+    )
+
+
+def _trait_info_near(trait='T', method='m', impls=None):
+    """trait_dispatch_info dict with is_far=False."""
+    if impls is None:
+        impls = ['Impl1__m']
+    return {
+        trait: {
+            'is_far': False,
+            'methods': [method],
+            'implementors': [
+                {'struct': name.split('__')[0], 'type_id': i + 1,
+                 'mangled': [name]}
+                for i, name in enumerate(impls)
+            ],
+        }
+    }
+
+
+class TestFunctionPreservesY:
+    """v2(B): tests for _function_preserves_y predicate."""
+
+    def _empty_call_graph(self, prog):
+        return CallGraphAnalyzer(prog).analyze()
+
+    def test_simple_leaf_preserves_y(self):
+        """A leaf function with no Y writes preserves Y."""
+        f = _make_func('leaf', {0: _make_block(0, [Return()])})
+        prog = MIRProgram(functions=[f])
+        cg = self._empty_call_graph(prog)
+        assert _function_preserves_y('leaf', cg, {'leaf': f}, set())
+
+    def test_y_write_does_not_preserve(self):
+        """A function with a Move-to-Y does not preserve Y."""
+        # Move(dest=HW_Y, source=...) writes Y.
+        mv = Move(
+            dest=HardwareRegister('Y'),
+            source=Immediate(value=0x1234),
+            type_info=BasicTypeInfo('u16'),
+        )
+        f = _make_func('writes_y', {0: _make_block(0, [mv, Return()])})
+        prog = MIRProgram(functions=[f])
+        cg = self._empty_call_graph(prog)
+        assert not _function_preserves_y(
+            'writes_y', cg, {'writes_y': f}, set()
+        )
+
+    def test_y_hint_vreg_does_not_preserve(self):
+        """A function defining a vreg with register_hint='Y' does not
+        preserve Y (loop register promotion would clobber Y)."""
+        v = VirtualRegister(
+            id=300, type_info=BasicTypeInfo('u16'),
+            register_hint='Y',
+        )
+        mv = Move(
+            dest=v,
+            source=Immediate(value=0),
+            type_info=BasicTypeInfo('u16'),
+        )
+        f = _make_func('y_hint', {0: _make_block(0, [mv, Return()])})
+        prog = MIRProgram(functions=[f])
+        cg = self._empty_call_graph(prog)
+        assert not _function_preserves_y(
+            'y_hint', cg, {'y_hint': f}, set()
+        )
+
+    def test_inline_asm_does_not_preserve(self):
+        """A function with inline asm does not preserve Y (we don't
+        analyze asm)."""
+        asm = InlineAsm(instructions=['NOP'])
+        f = _make_func('asm', {0: _make_block(0, [asm, Return()])})
+        prog = MIRProgram(functions=[f])
+        cg = self._empty_call_graph(prog)
+        assert not _function_preserves_y('asm', cg, {'asm': f}, set())
+
+    def test_call_to_y_preserver_preserves(self):
+        """A function that only calls Y-preserving functions preserves Y."""
+        leaf = _make_func('leaf', {0: _make_block(0, [Return()])})
+        callsite = Call(function='leaf', args=[], returns=[])
+        caller = _make_func('caller', {0: _make_block(0, [callsite, Return()])})
+        prog = MIRProgram(functions=[caller, leaf])
+        cg = self._empty_call_graph(prog)
+        func_map = {'caller': caller, 'leaf': leaf}
+        assert _function_preserves_y('caller', cg, func_map, set())
+
+    def test_call_to_non_preserver_does_not_preserve(self):
+        """A function calling a Y-clobbering callee does not preserve Y."""
+        # Bad callee writes Y.
+        bad = _make_func('bad', {0: _make_block(0, [
+            Move(
+                dest=HardwareRegister('Y'),
+                source=Immediate(value=0),
+                type_info=BasicTypeInfo('u16'),
+            ),
+            Return(),
+        ])})
+        cs = Call(function='bad', args=[], returns=[])
+        caller = _make_func('caller', {0: _make_block(0, [cs, Return()])})
+        prog = MIRProgram(functions=[caller, bad])
+        cg = self._empty_call_graph(prog)
+        func_map = {'caller': caller, 'bad': bad}
+        assert not _function_preserves_y(
+            'caller', cg, func_map, set()
+        )
+
+    def test_recursion_does_not_preserve(self):
+        """A function in a recursive cycle is conservatively rejected."""
+        # 'a' calls 'b' calls 'a'.
+        cs_a = Call(function='b', args=[], returns=[])
+        cs_b = Call(function='a', args=[], returns=[])
+        a = _make_func('a', {0: _make_block(0, [cs_a, Return()])})
+        b = _make_func('b', {0: _make_block(0, [cs_b, Return()])})
+        prog = MIRProgram(functions=[a, b])
+        cg = self._empty_call_graph(prog)
+        # Manually identify cycle (caller does this in
+        # analyze_trait_dispatch_chains).
+        cyclic = {'a', 'b'}
+        func_map = {'a': a, 'b': b}
+        assert not _function_preserves_y('a', cg, func_map, cyclic)
+        assert not _function_preserves_y('b', cg, func_map, cyclic)
+
+    def test_trait_method_self_y_param_is_not_a_y_write(self):
+        """The trait-method entry-point Move(dest=self_y_vreg, source=HW_Y)
+        is treated as a no-op (Y already holds self at entry)."""
+        self_v = VirtualRegister(id=400, type_info=PointerTypeInfo(
+            is_far=False, pointee_type=BasicTypeInfo('Player'),
+        ))
+        entry_move = Move(
+            dest=self_v,
+            source=HardwareRegister('Y'),
+            type_info=self_v.type_info,
+        )
+        f = _make_func('m', {0: _make_block(0, [entry_move, Return()])})
+        f.is_trait_method = True
+        f.self_y_vreg = self_v
+        prog = MIRProgram(functions=[f])
+        cg = self._empty_call_graph(prog)
+        assert _function_preserves_y('m', cg, {'m': f}, set())
+
+
+class TestNearChainCoalescing:
+    """v2(B): near-self chain pass elides LDY reloads when impls and
+    gap instructions all preserve Y."""
+
+    def _build_near_program(self, caller_blocks, impl_blocks=None,
+                            trait='T', method='m', impl_name='Impl1__m'):
+        if impl_blocks is None:
+            impl_blocks = {0: _make_block(0, [Return()])}
+        caller = _make_func('caller', caller_blocks)
+        impl = _make_func(impl_name, impl_blocks)
+        return MIRProgram(
+            functions=[caller, impl],
+            trait_dispatch_info=_trait_info_near(trait, method, [impl_name]),
+        )
+
+    def test_near_chain_two_dispatches_coalesces(self):
+        """Two near-self dispatches → START + END."""
+        s = _make_self_vreg()
+        a = _make_near_dispatch(s)
+        b = _make_near_dispatch(s)
+        prog = self._build_near_program(
+            {0: _make_block(0, [a, b, Return()])}
+        )
+        _run_analysis(prog)
+        assert a.self_chain_role == ChainRole.START
+        assert b.self_chain_role == ChainRole.END
+
+    def test_near_chain_three_dispatches_coalesces(self):
+        """Three near-self dispatches → START + MIDDLE + END."""
+        s = _make_self_vreg()
+        a = _make_near_dispatch(s)
+        b = _make_near_dispatch(s)
+        c = _make_near_dispatch(s)
+        prog = self._build_near_program(
+            {0: _make_block(0, [a, b, c, Return()])}
+        )
+        _run_analysis(prog)
+        assert a.self_chain_role == ChainRole.START
+        assert b.self_chain_role == ChainRole.MIDDLE
+        assert c.self_chain_role == ChainRole.END
+
+    def test_near_chain_breaks_when_impl_clobbers_y(self):
+        """If the impl writes Y, the chain is rejected — both stay SOLO."""
+        s = _make_self_vreg()
+        a = _make_near_dispatch(s)
+        b = _make_near_dispatch(s)
+        # Impl that writes Y.
+        clobber = Move(
+            dest=HardwareRegister('Y'),
+            source=Immediate(value=0),
+            type_info=BasicTypeInfo('u16'),
+        )
+        bad_impl_blocks = {0: _make_block(0, [clobber, Return()])}
+        prog = self._build_near_program(
+            {0: _make_block(0, [a, b, Return()])},
+            impl_blocks=bad_impl_blocks,
+        )
+        _run_analysis(prog)
+        assert a.self_chain_role == ChainRole.SOLO
+        assert b.self_chain_role == ChainRole.SOLO
+
+    def test_near_chain_breaks_when_gap_writes_y(self):
+        """An instruction in the gap that writes Y rejects the chain."""
+        s = _make_self_vreg()
+        a = _make_near_dispatch(s)
+        b = _make_near_dispatch(s)
+        clobber = Move(
+            dest=HardwareRegister('Y'),
+            source=Immediate(value=0),
+            type_info=BasicTypeInfo('u16'),
+        )
+        prog = self._build_near_program(
+            {0: _make_block(0, [a, clobber, b, Return()])}
+        )
+        _run_analysis(prog)
+        assert a.self_chain_role == ChainRole.SOLO
+        assert b.self_chain_role == ChainRole.SOLO
+
+    def test_near_chain_breaks_on_inline_asm_in_gap(self):
+        """Inline asm in the gap rejects the chain (asm not analyzed)."""
+        s = _make_self_vreg()
+        a = _make_near_dispatch(s)
+        b = _make_near_dispatch(s)
+        asm = InlineAsm(instructions=['NOP'])
+        prog = self._build_near_program(
+            {0: _make_block(0, [a, asm, b, Return()])}
+        )
+        _run_analysis(prog)
+        assert a.self_chain_role == ChainRole.SOLO
+        assert b.self_chain_role == ChainRole.SOLO
+
+    def test_near_chain_far_and_near_do_not_mix(self):
+        """A far dispatch and a near dispatch on the same self do not
+        coalesce — the chain pass treats far and near as separate kinds.
+        """
+        s = _make_self_vreg()
+        far = _make_dispatch(s)         # self_is_far=True
+        near = _make_near_dispatch(s)   # self_is_far=False
+        # Each kind has its own impl; build a combined trait info.
+        impl_far = _empty_impl_func('Impl1__mfar')
+        impl_near = _empty_impl_func('Impl1__mnear')
+        info = {
+            'T': {
+                'is_far': True, 'methods': ['m'],
+                'implementors': [{'struct': 'Impl1', 'type_id': 1,
+                                  'mangled': ['Impl1__mfar']}],
+            },
+            'T2': {
+                'is_far': False, 'methods': ['m'],
+                'implementors': [{'struct': 'Impl1', 'type_id': 1,
+                                  'mangled': ['Impl1__mnear']}],
+            },
+        }
+        far.trait_name = 'T'
+        near.trait_name = 'T2'
+        prog = MIRProgram(
+            functions=[
+                _make_func('caller', {0: _make_block(0, [far, near, Return()])}),
+                impl_far, impl_near,
+            ],
+            trait_dispatch_info=info,
+        )
+        _run_analysis(prog)
+        # Neither pass sees a 2-dispatch run of the same kind.
+        assert far.self_chain_role == ChainRole.SOLO
+        assert near.self_chain_role == ChainRole.SOLO

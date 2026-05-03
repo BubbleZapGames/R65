@@ -511,3 +511,117 @@ class TestFarSelfChainCoalescing:
             memory={0x7E0200: 2}
         ))
         assert result.success, f"Failures: {result.failures}"
+
+
+# ---------------------------------------------------------------------------
+# v2(B): near-self chain coalescing
+# ---------------------------------------------------------------------------
+
+class TestNearSelfChainCoalescing:
+    """Verify the chain pass elides redundant LDY reloads in near-self chains."""
+
+    def test_near_chain_runtime(self, e2e):
+        """Three near-self trait calls on the same lowram object. Each
+        impl reads/writes self.x. Verify runtime correctness with the
+        chain pass enabled."""
+        result = e2e.run(_PREAMBLE + '''
+            struct Counter { v: u8 }
+
+            trait Tickable {
+                fn tick(*self);
+                fn read(*self) -> u8;
+            }
+
+            impl Tickable for Counter {
+                fn tick(*self) {
+                    self.v = self.v + 1;
+                }
+                fn read(*self) -> u8 {
+                    return self.v;
+                }
+            }
+
+            #[lowram]
+            static mut C: Counter = Counter { v: 50 };
+
+            #[entry]
+            fn main() {
+                let p: *dyn Tickable = &C;
+                p.tick();
+                p.tick();
+                p.tick();
+                RESULT = p.read();
+            }
+        ''', ExpectedState(
+            memory={0x7E0200: 53}
+        ))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_near_chain_asm_count(self):
+        """A 3-call near chain emits ONE Y-load at the chain start, not
+        three. The Y-load may be LDY (from memory) or TAY (from the A
+        register holding the self pointer); count both."""
+        source = _PREAMBLE + '''
+            struct Player { x: u8, y: u8, z: u8 }
+
+            trait HasPos {
+                fn get_x(*self) -> u8;
+                fn get_y(*self) -> u8;
+                fn get_z(*self) -> u8;
+            }
+
+            impl HasPos for Player {
+                fn get_x(*self) -> u8 { return self.x; }
+                fn get_y(*self) -> u8 { return self.y; }
+                fn get_z(*self) -> u8 { return self.z; }
+            }
+
+            #[lowram]
+            static mut PLAYER: Player = Player { x: 1, y: 2, z: 3 };
+
+            #[entry]
+            fn main() {
+                let p: *dyn HasPos = &PLAYER;
+                let a: u8 = p.get_x();
+                let b: u8 = p.get_y();
+                let c: u8 = p.get_z();
+                RESULT = a + b + c;
+            }
+        '''
+        asm = _compile_snes(source)
+        # Count Y-loads: LDY (any form) + TAY + TXY. Without coalescing
+        # we'd see 3; with coalescing we expect 1 (the chain start).
+        ldy = _count_in_function(asm, 'main', 'LDY')
+        tay = _count_in_function(asm, 'main', 'TAY')
+        txy = _count_in_function(asm, 'main', 'TXY')
+        total = ldy + tay + txy
+        assert total == 1, (
+            f"Expected 1 Y-load in main (3-call near chain coalesced), "
+            f"got LDY={ldy} TAY={tay} TXY={txy}\n{asm}"
+        )
+
+    def test_near_chain_solo_unchanged(self):
+        """Single near-self dispatch — chain pass shouldn't fire,
+        codegen unchanged."""
+        source = _PREAMBLE + '''
+            struct P { x: u8 }
+            trait HasX { fn get_x(*self) -> u8; }
+            impl HasX for P { fn get_x(*self) -> u8 { return self.x; } }
+            #[lowram]
+            static mut O: P = P { x: 42 };
+            #[entry]
+            fn main() {
+                let p: *dyn HasX = &O;
+                RESULT = p.get_x();
+            }
+        '''
+        asm = _compile_snes(source)
+        # Solo near dispatch: 1 Y-load (LDY/TAY/TXY) for the self load.
+        ldy = _count_in_function(asm, 'main', 'LDY')
+        tay = _count_in_function(asm, 'main', 'TAY')
+        txy = _count_in_function(asm, 'main', 'TXY')
+        total = ldy + tay + txy
+        assert total == 1, (
+            f"Expected 1 Y-load in main (solo dispatch), "
+            f"got LDY={ldy} TAY={tay} TXY={txy}"
+        )

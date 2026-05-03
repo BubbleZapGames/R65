@@ -460,10 +460,22 @@ class CallInstructionSelector(BaseSelector):
         # dispatches pull PLB. MIDDLE dispatches do neither — DBR is held
         # at self's bank across the whole run. See
         # analysis/far_ptr_strategy.analyze_trait_dispatch_chains.
+        #
+        # v2(B): for NEAR-self chains, the role determines LDY emission
+        # rather than the DBR bracket. SOLO/START emit LDY; MIDDLE/END
+        # skip the LDY because the previous dispatch left Y holding the
+        # same self pointer (predicate: every impl + every gap
+        # instruction preserves Y).
         role = getattr(instr, 'self_chain_role', ChainRole.SOLO)
         emit_phb = instr.self_is_far and role in (ChainRole.SOLO, ChainRole.START)
         emit_dbr_set = instr.self_is_far and role in (ChainRole.SOLO, ChainRole.START)
         emit_plb = instr.self_is_far and role in (ChainRole.SOLO, ChainRole.END)
+        # Near-self Y reload: required for SOLO/START, skippable for
+        # MIDDLE/END. Far-self Y reload stays unconditional in this
+        # commit; commit C (v2 phase) drives that via self_y_preloaded.
+        emit_near_y_load = (not instr.self_is_far) and role in (
+            ChainRole.SOLO, ChainRole.START
+        )
 
         if emit_phb:
             self._emit_push('B', "Save caller's DBR for far self dispatch")
@@ -487,7 +499,8 @@ class CallInstructionSelector(BaseSelector):
                 # clobbered by argument setup or the previous dispatch).
                 self._load_y_addr_from_far_self(self_y_arg, self_y_stack_bytes)
             else:
-                self.load_y_with_self(self_y_arg, self_y_stack_bytes)
+                if emit_near_y_load:
+                    self.load_y_with_self(self_y_arg, self_y_stack_bytes)
 
         # Emit the call to the dispatch wrapper
         if instr.is_far:
