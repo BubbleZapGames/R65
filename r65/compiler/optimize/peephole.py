@@ -217,6 +217,40 @@ class OptimizationStats:
 
 
 # ============================================================================
+# RawAsm Classification
+# ============================================================================
+
+# WLA-DX directives emit no code into the instruction stream and are safe to
+# skip when scanning for the next "real" instruction. `function_gen.py` emits
+# `.ACCU 8` / `.ACCU 16` (and similar mode-tracking directives) via
+# `emit_directive(text)`, which produces a `RawAsm` node — not a `Directive`
+# node — so passes that scan past `Directive` but stop at `RawAsm` would
+# otherwise treat the directive as opaque code and abandon the scan.
+_TRANSPARENT_RAWASM_PREFIXES = (
+    '.ACCU', '.INDEX', '.ASC', '.ASCII',  # mode/string directives
+)
+# RawAsm prefixes that emit bytes into the instruction stream — must be
+# treated as opaque (a BRA over inline data tables would execute the data).
+_OPAQUE_RAWASM_PREFIXES = ('.DB', '.DW', '.DL', '.DSB', '.DS')
+
+
+def _rawasm_is_transparent(node) -> bool:
+    """Return True if a RawAsm node carries a non-emitting WLA-DX directive
+    (e.g. `.ACCU 8`) and is therefore safe to skip when looking for the next
+    real instruction. Returns False for inline assembly and data directives.
+    """
+    from r65.compiler.codegen.asm_nodes import RawAsm
+    if not isinstance(node, RawAsm):
+        return False
+    text = node.text.lstrip().upper()
+    if any(text.startswith(prefix) for prefix in _OPAQUE_RAWASM_PREFIXES):
+        return False
+    if any(text.startswith(prefix) for prefix in _TRANSPARENT_RAWASM_PREFIXES):
+        return True
+    return False
+
+
+# ============================================================================
 # Peephole Optimizer
 # ============================================================================
 
@@ -1324,13 +1358,21 @@ class PeepholeOptimizer:
 
         # Build label -> BRA target map: for each label immediately followed
         # by a BRA (skipping other labels/directives), record the BRA target.
-        # RawAsm nodes (inline asm) count as executable code and stop the scan.
+        # RawAsm nodes (inline asm or data directives like .DB) count as
+        # executable code and stop the scan. WLA-DX mode-tracking directives
+        # like `.ACCU 8` (also emitted as RawAsm by function_gen.py) emit no
+        # code and are transparent.
         label_to_bra_target: dict[str, str] = {}
         for i, node in enumerate(nodes):
             if isinstance(node, Label):
-                # Find the first instruction after this label
+                # Find the first real instruction after this label
                 j = i + 1
-                while j < len(nodes) and not isinstance(nodes[j], (Instruction, RawAsm)):
+                while j < len(nodes):
+                    nj = nodes[j]
+                    if isinstance(nj, Instruction):
+                        break
+                    if isinstance(nj, RawAsm) and not _rawasm_is_transparent(nj):
+                        break
                     j += 1
                 if (j < len(nodes) and
                     isinstance(nodes[j], Instruction) and
@@ -2173,9 +2215,16 @@ class PeepholeOptimizer:
         label_to_return: dict[str, Opcode] = {}
         for i, node in enumerate(nodes):
             if isinstance(node, Label):
-                # Find first instruction after label (skip directives/labels/RawAsm)
+                # Find first instruction after label. Stop at inline asm /
+                # data directives (opaque RawAsm) but skip past WLA-DX mode
+                # directives like `.ACCU 8` (transparent RawAsm).
                 j = i + 1
-                while j < len(nodes) and not isinstance(nodes[j], (Instruction, RawAsm)):
+                while j < len(nodes):
+                    nj = nodes[j]
+                    if isinstance(nj, Instruction):
+                        break
+                    if isinstance(nj, RawAsm) and not _rawasm_is_transparent(nj):
+                        break
                     j += 1
                 if (j < len(nodes) and isinstance(nodes[j], Instruction) and
                         nodes[j].opcode in RETURN_OPCODES):

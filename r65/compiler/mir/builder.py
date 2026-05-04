@@ -1564,10 +1564,14 @@ class MIRBuilder:
         # Lower then branch
         self.current_block = then_block
         self.lower_block(stmt.then_block)
-        # Jump to merge (unless then block ends with return/break/continue)
+        # Jump to merge (unless then block ends with return/break/continue).
+        # The body may have created new blocks (nested ifs, etc.), so the
+        # block emitting the trailing Jump is `self.current_block`, NOT the
+        # original `then_block`. Adding the edge from `then_block` would
+        # leave the CFG out of sync with the emitted Jump.
         if not self._block_has_terminator():
             self.emit(Jump(target=merge_block.block_id))
-            self.cfg_builder.add_edge(then_block, merge_block)
+            self.cfg_builder.add_edge(self.current_block, merge_block)
 
         # Lower else branch if present
         if stmt.else_block:
@@ -1584,10 +1588,12 @@ class MIRBuilder:
                 self.lower_if_statement(stmt.else_block)
             else:
                 self.lower_block(stmt.else_block)
-            # Jump to merge
+            # Jump to merge: same rationale as the then-branch — use
+            # current_block, not the original else_block, since the body
+            # may have left us in a freshly-created block.
             if not self._block_has_terminator():
                 self.emit(Jump(target=merge_block.block_id))
-                self.cfg_builder.add_edge(else_block, merge_block)
+                self.cfg_builder.add_edge(self.current_block, merge_block)
 
         # At the merge point, invalidate cached vregs for symbols with
         # explicit memory locations (statics).  Either branch may have
