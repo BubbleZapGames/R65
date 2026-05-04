@@ -492,6 +492,20 @@ class StackSlotAllocator:
                         dest = instr.dest
                         src = instr.source
                         if not self.liveness_analyzer.interferes(dest, src):
+                            # Preassigned params have an implicit def at
+                            # function entry (the caller's value at the param
+                            # slot). If dest is preassigned, replacing it with
+                            # src would orphan the caller-set value — src
+                            # never gets initialized from the param slot.
+                            # If src is preassigned and dest has other defs,
+                            # later writes to dest would clobber the param.
+                            if dest.id in self._preassigned_vregs:
+                                i += 1
+                                continue
+                            if src.id in self._preassigned_vregs:
+                                if self._has_other_defs(dest, block_id, i):
+                                    i += 1
+                                    continue
                             # Don't coalesce if source is a pre-allocated
                             # scratch param AND dest has additional defs
                             # beyond this Move. If dest is re-defined (e.g.

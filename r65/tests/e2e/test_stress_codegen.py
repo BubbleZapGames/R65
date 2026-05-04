@@ -7,6 +7,9 @@ expected values stored in zeropage statics for precise verification.
 """
 
 from pathlib import Path
+
+import pytest
+
 from r65.tests.e2e import ExpectedState
 
 STDLIB_DIR = Path(__file__).parent.parent.parent.parent / "stdlib"
@@ -553,5 +556,79 @@ class TestCallReturnValueAcrossCall:
             }}
         ''', ExpectedState(memory={
             0x7E0010: 36,
+        }))
+        assert result.success, f"Failures: {result.failures}"
+
+
+class TestStackParamCopiedToMutLocal:
+    """Regression: `let mut v: u16 = value;` with `value` as a stack param.
+
+    Discovered while debugging the classickong port: put_num(pos: u16,
+    value: u16, digits: u8) opens with `let mut v: u16 = value;` and then
+    reads `v` inside a loop that calls mod16/div16. The compiler allocates
+    `v` to a frame slot but skips the parameter→local copy at function
+    entry, so `v` reads whatever the prologue's PHX pushed onto that slot.
+    The displayed number ends up unrelated to the input value.
+
+    Pattern: 3 stack params (u16, u16, u8), middle param copied into a
+    mutable local, local used across calls in a loop.
+    """
+
+    def test_mut_local_from_stack_param_used_in_loop(self, e2e):
+        """3-stack-arg function (u16, u16, u8) where the middle u16 is
+        copied into `let mut v: u16 = value;` and then read in a loop
+        whose body calls non-foldable helpers that take v as input.
+
+        Regression: the slot allocator's vreg coalescer would replace
+        the preassigned param vreg with a local that gets re-defined
+        in the loop, orphaning the caller-set value at the param slot.
+        v's frame slot was left as the prologue's PHX value instead of
+        the parameter, so each RESULTS[d] write stored 0 instead of
+        the expected halved cascade.
+        """
+        result = e2e.run(f'''
+            #[zeropage(0x10)]
+            static mut RESULTS: [u16; 4];
+            #[zeropage(0x20)]
+            static mut SINK: u8;
+
+            // Side effect on SINK keeps the optimizer from folding these
+            // away. The helpers don't touch A before the return so the
+            // u16 parameter survives the call body.
+            fn extract_low(val @ A: u16) -> u8 {{
+                SINK = SINK + 1;
+                return SINK;
+            }}
+
+            fn halve(val @ A: u16) -> u16 {{
+                SINK = SINK + 1;
+                return A >> 1;
+            }}
+
+            far fn write_halves(pos: u16, value: u16, digits: u8) {{
+                let mut d: u8 = digits;
+                let mut v: u16 = value;
+                loop {{
+                    if d == 0 {{ break; }}
+                    d--;
+                    let _digit: u8 = extract_low(v);
+                    v = halve(v);
+                    RESULTS[d as u16] = v;
+                }}
+            }}
+
+            #[entry]
+            fn main() -> ! {{
+                write_halves(0, 0xBEEF, 3);
+                loop {{ asm!("WAI"); }}
+            }}
+        ''', ExpectedState(memory={
+            # Successive halves of 0xBEEF written right-to-left:
+            #   d=2: v = 0xBEEF >> 1 = 0x5F77
+            #   d=1: v = 0x5F77 >> 1 = 0x2FBB
+            #   d=0: v = 0x2FBB >> 1 = 0x17DD
+            0x7E0010: [0xDD, 0x17],   # RESULTS[0]
+            0x7E0012: [0xBB, 0x2F],   # RESULTS[1]
+            0x7E0014: [0x77, 0x5F],   # RESULTS[2]
         }))
         assert result.success, f"Failures: {result.failures}"

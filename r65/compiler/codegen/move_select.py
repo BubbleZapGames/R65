@@ -446,6 +446,13 @@ class MoveOperationSelector(BaseSelector):
                 else:
                     self.parent._mark_a_modified()
             else:
+                # 16-bit store from A: ensure m16 mode. After a u16 callee
+                # returns, A holds the 16-bit return value but the emitter
+                # may have already restored m8 (exit-mode restore runs before
+                # the result-Move is lowered). The high byte is preserved in
+                # B during m8, so REP #$20 makes it accessible again.
+                if is_u16 and src_reg == 'A':
+                    self.parent._ensure_m16_mode()
                 self._emit_load_store(STORE_MNEMONICS[src_reg], dest_loc)
         elif src_reg == 'B':
             # B register: use XBA to swap B into A, store, then XBA to restore
