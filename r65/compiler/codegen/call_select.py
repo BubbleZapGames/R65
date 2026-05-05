@@ -461,13 +461,13 @@ class CallInstructionSelector(BaseSelector):
         # at self's bank across the whole run. See
         # analysis/trait_chain_coalesce.analyze_trait_dispatch_chains.
         #
-        # v2(B): for NEAR-self chains, the role determines LDY emission
-        # rather than the DBR bracket. SOLO/START emit LDY; MIDDLE/END
-        # skip the LDY because the previous dispatch left Y holding the
-        # same self pointer (predicate: every impl + every gap
-        # instruction preserves Y).
-        # v2(C): for FAR-self chains, MIDDLE/END members may additionally
-        # skip the Y reload when ``self_y_preloaded`` is set — the chain
+        # For NEAR-self chains, the role determines LDY emission rather
+        # than the DBR bracket. SOLO/START emit LDY; MIDDLE/END skip the
+        # LDY because the previous dispatch left Y holding the same self
+        # pointer (predicate: every impl + every gap instruction
+        # preserves Y).
+        # For FAR-self chains, MIDDLE/END members may additionally skip
+        # the Y reload when ``self_y_preloaded`` is set — the chain
         # passed an independent Y-preservation predicate. This is
         # orthogonal to the DBR bracket: a chain may have DBR coalescing
         # only, Y elision only, or both.

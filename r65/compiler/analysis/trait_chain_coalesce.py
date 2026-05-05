@@ -60,7 +60,7 @@ class ChainKind:
 # Cache attribute name for DBR-independence (set on MIRFunction).
 _DBR_INDEP_ATTR = '_chain_dbr_independent'
 
-# Cache attribute names for v1.6 cast-transparency on MIRFunction:
+# Cache attribute names for cast-transparency tracking on MIRFunction:
 #   _chain_self_roots: Dict[VirtualRegister, VirtualRegister]
 #       memoizes the canonical root self vreg for each vreg encountered.
 #   _chain_vreg_def_map: Dict[int (vreg.id), MIRInstruction]
@@ -347,11 +347,9 @@ def _coalesce_chains_along_path(func, path, call_graph, func_map,
             continue
 
         # Track the union of (trait_name, method_name) pairs visited in the
-        # chain. v1.5: methods may differ, so the impl-set check has to
-        # cover every method seen so far. Re-checking impls per method (vs
-        # over the union) is equivalent because each method's impl set is
-        # independent of the others — but tracking the set explicitly makes
-        # the soundness rule readable and matches the brief.
+        # chain. Methods may differ within a chain, so the impl-set check
+        # is re-evaluated for every member. Tracking the set explicitly
+        # makes the soundness rule readable.
         chain_methods = {(instr.trait_name, instr.method_name)}
 
         # Try to extend the chain forward through `flat`. Skip past any
@@ -375,9 +373,9 @@ def _coalesce_chains_along_path(func, path, call_graph, func_map,
                 break
 
             cand = flat[cand_idx][2]
-            # v1.6: pass func so _same_self_chain can consult the
-            # cast-transparency walker; otherwise it falls back to
-            # plain vreg-identity equality.
+            # Pass func so _same_self_chain can consult the cast-
+            # transparency walker; without it the comparison falls back
+            # to plain vreg-identity equality.
             if not _same_self_chain(instr, cand, func):
                 break
             # Re-check the candidate's method's impls.
@@ -449,22 +447,21 @@ def _is_chainable_near_dispatch(instr):
 def _same_self_chain(a, b, func=None):
     """True if two TraitDispatches can chain DBR-bracket-wise.
 
-    v1.6: chain across different traits via cast-transparency. Two
-    dispatches share a self if walking back through trivial trait-
-    pointer-to-trait-pointer casts (Move and zero-shift TypeConvert)
-    leads to the same root vreg. The trait_name no longer needs to
-    match — different trait pointer aliases of the same underlying
-    object share bank+address, and the DBR bracket / Y reload work
-    identically for both.
+    Cast-transparency: dispatches across different trait aliases of
+    the same underlying object share a self if walking back through
+    trivial trait-pointer-to-trait-pointer casts (Move and zero-shift
+    TypeConvert) leads to the same root vreg. The trait_name doesn't
+    need to match — different trait-pointer aliases share bank+address,
+    and the DBR bracket / Y reload work identically for both.
 
-    Bank-compatibility is enforced via the cast walker
-    (`_chain_self_root`): only same-bank, same-size casts are followed.
-    Casts that change far/near or that involve pointer arithmetic
-    (e.g. ``&obj.weapon as *Trait``) terminate the walk early — they
-    yield distinct roots and therefore distinct chains.
+    Bank-compatibility is enforced by the cast walker
+    (``_chain_self_root``): only same-bank, same-size casts are
+    followed. Casts that change far/near or that involve pointer
+    arithmetic (e.g. ``&obj.weapon as *Trait``) terminate the walk
+    early — they yield distinct roots and therefore distinct chains.
 
-    `func` is the enclosing MIRFunction; if None, we fall back to the
-    pre-v1.6 vreg-identity comparison.
+    ``func`` is the enclosing MIRFunction; if None, the comparison
+    falls back to plain vreg-identity equality.
     """
     if a.self_ptr is None or b.self_ptr is None:
         return False
@@ -477,7 +474,6 @@ def _same_self_chain(a, b, func=None):
         root_b = _chain_self_root(b.self_ptr, func)
         return root_a.id == root_b.id
 
-    # Fallback: identity-based (pre-v1.6 behavior).
     if a.self_ptr is b.self_ptr:
         return True
     return a.self_ptr.id == b.self_ptr.id
@@ -828,12 +824,12 @@ def _trait_method_impls_all_independent(td, call_graph, func_map, cyclic_funcs):
 
 
 # ============================================================================
-# v2(B): Y-preservation predicate (used by near-self chain coalescing)
+# Y-preservation predicate (used by chain coalescing)
 # ============================================================================
 #
 # A function "preserves Y" iff Y at every exit holds the same value as
-# at entry. The chain pass uses this to elide LDY reloads in near-self
-# chains (commit B) and far-self chains (commit C).
+# at entry. The chain pass uses this to elide LDY reloads in both
+# near-self and far-self chains.
 #
 # Pre-codegen we don't have register allocation results, so we use a
 # conservative MIR-level approximation:
@@ -973,8 +969,8 @@ def _trait_method_impls_all_preserve_y(td, call_graph, func_map, cyclic_funcs):
 
 def _far_chain_can_elide_y(flat, run_indices, call_graph, func_map,
                            cyclic_funcs, func):
-    """v2(C): for a far-self chain, return True if every chain member's
-    method impls and every inter-dispatch gap instruction preserve Y.
+    """For a far-self chain, return True if every chain member's method
+    impls and every inter-dispatch gap instruction preserve Y.
 
     The DBR-independence checks (from the chain assignment loop above)
     do NOT imply Y-preservation: a function may be DBR-independent but
