@@ -14,12 +14,30 @@ A stack parameter is promoted if:
 
 from typing import Dict, Set, List
 from r65.compiler.mir.nodes import (
-    MIRProgram, MIRFunction, Call, ArgumentMechanism, TraitDispatch, Move, VirtualRegister,
+    MIRProgram, MIRFunction, Call, ArgumentMechanism, Move, VirtualRegister,
 )
 from r65.compiler.codegen.register_alloc import ScratchRegisterPool
 from r65.compiler.codegen.type_utils import get_type_size
 from r65.compiler.analysis.param_utils import find_address_taken_functions, find_composite_scratch
 from r65.compiler.analysis.far_ptr_strategy import _is_set_dbr_safe
+
+
+def _param_bytes(func: MIRFunction, param_idx: int, base_addr: int) -> range:
+    """The byte addresses occupied by `param_idx` placed at `base_addr`."""
+    size = get_type_size(func.parameters[param_idx].param_type)
+    return range(base_addr, base_addr + size)
+
+
+def _is_eligible_for_any_promotion(func: MIRFunction, address_taken: Set[str]) -> bool:
+    """Whether `func` could have any of its params promoted to scratch."""
+    if func.name in address_taken:
+        return False  # Function pointer callers can't honor scratch ABI
+    if func.is_recursive:
+        return False  # Scratch DP slots are non-reentrant
+    # D=S moves DP onto the stack, leaving scratch DP addresses inaccessible
+    if func.has_far_ptr_stack_params and not _is_set_dbr_safe(func):
+        return False
+    return True
 
 
 def analyze_scratch_params(mir_program: MIRProgram, scratch_pool: ScratchRegisterPool):
@@ -46,17 +64,8 @@ def analyze_scratch_params(mir_program: MIRProgram, scratch_pool: ScratchRegiste
     promotions: Dict[str, Dict[int, int]] = {}
 
     for func in mir_program.functions:
-        if func.name in address_taken:
-            continue  # Skip functions whose address is taken
-
-        if func.is_recursive:
-            continue  # Scratch DP params are non-reentrant
-
-        # Skip functions with far ptr stack params that would need D=S.
-        # D=S moves DP to the stack, making scratch regs inaccessible.
-        if func.has_far_ptr_stack_params and not _is_set_dbr_safe(func):
+        if not _is_eligible_for_any_promotion(func, address_taken):
             continue
-
         func_promotions = _analyze_function(func, scratch_pool)
         if func_promotions:
             promotions[func.name] = func_promotions
@@ -110,13 +119,10 @@ def analyze_scratch_params(mir_program: MIRProgram, scratch_pool: ScratchRegiste
     # Step 3b: Collect global set of all scratch param addresses.
     # Any function's locals must avoid these addresses because a caller's
     # scratch params persist across calls while the callee runs.
-    # For multi-byte params, include ALL bytes in the range (e.g. u16 at $00 -> {$00, $01}).
     global_scratch_param_addrs: Set[int] = set()
     for func in mir_program.functions:
         for param_idx, base_addr in func.scratch_param_addrs.items():
-            param_size = get_type_size(func.parameters[param_idx].param_type)
-            for offset in range(param_size):
-                global_scratch_param_addrs.add(base_addr + offset)
+            global_scratch_param_addrs.update(_param_bytes(func, param_idx, base_addr))
     # Store on each function so function_gen.py can mark them as occupied
     for func in mir_program.functions:
         func._global_scratch_param_addrs = global_scratch_param_addrs
@@ -173,30 +179,22 @@ def _analyze_function(func: MIRFunction, scratch_pool: ScratchRegisterPool) -> D
         return {}
 
     # Assign eligible params to available scratches (greedy, matching by size)
-    # Use a copy of scratch availability so we don't mutate the pool
     available = [(s.address, s.size, s.name) for s in scratch_pool.scratches]
-    used_scratches: Set[int] = set()  # Track used scratch addresses
-
+    used_scratches: Set[int] = set()
     result: Dict[int, int] = {}
 
-    for param_idx, vreg, param_size in eligible:
-        placed = False
-        # Find a compatible scratch
-        for addr, size, name in available:
-            if addr in used_scratches:
-                continue
-            if size >= param_size:
+    for param_idx, _vreg, param_size in eligible:
+        # First try a single scratch that fits
+        for addr, size, _name in available:
+            if addr not in used_scratches and size >= param_size:
                 result[param_idx] = addr
                 used_scratches.add(addr)
-                placed = True
                 break
-
-        # Try composite: find adjacent free scratches that together cover param_size
-        if not placed:
+        else:
+            # Otherwise try a composite of adjacent free scratches
             composite = find_composite_scratch(available, used_scratches, param_size)
             if composite:
-                base_addr = composite[0][0]
-                result[param_idx] = base_addr
+                result[param_idx] = composite[0][0]
                 for addr, _, _ in composite:
                     used_scratches.add(addr)
 
@@ -220,45 +218,33 @@ def _find_war_conflicts(caller: MIRFunction,
     Returns set of caller param indices to demote.
     """
     conflicts: Set[int] = set()
-
-    # Build per-param byte ranges for caller's promotions
-    caller_param_ranges: Dict[int, Set[int]] = {}
-    for param_idx, base_addr in caller_promos.items():
-        size = get_type_size(caller.parameters[param_idx].param_type)
-        caller_param_ranges[param_idx] = set(range(base_addr, base_addr + size))
+    caller_param_bytes: Dict[int, Set[int]] = {
+        param_idx: set(_param_bytes(caller, param_idx, addr))
+        for param_idx, addr in caller_promos.items()
+    }
 
     for block in caller.blocks.values():
         for instr in block.instructions:
             if not isinstance(instr, Call) or not isinstance(instr.function, str):
                 continue
             callee_promos = all_promos.get(instr.function)
-            if not callee_promos:
-                continue
             callee = func_by_name.get(instr.function)
-            if callee is None:
+            if not callee_promos or callee is None:
                 continue
 
-            # Compute byte range overwritten by callee's scratch params
             overwritten: Set[int] = set()
             for cp_idx, cp_addr in callee_promos.items():
-                cp_size = get_type_size(callee.parameters[cp_idx].param_type)
-                overwritten.update(range(cp_addr, cp_addr + cp_size))
+                overwritten.update(_param_bytes(callee, cp_idx, cp_addr))
 
-            if not overwritten:
-                continue
-
-            # For each caller param used as a non-stack arg here, check overlap
-            for param_idx, byte_range in caller_param_ranges.items():
+            arg_vregs = {
+                arg.value for arg in instr.args
+                if isinstance(arg.value, VirtualRegister)
+            }
+            for param_idx, byte_range in caller_param_bytes.items():
                 if param_idx in conflicts:
                     continue
                 param_vreg = caller.param_to_vreg.get(param_idx)
-                if param_vreg is None:
-                    continue
-                used_as_arg = any(
-                    isinstance(arg.value, VirtualRegister) and arg.value == param_vreg
-                    for arg in instr.args
-                )
-                if used_as_arg and byte_range & overwritten:
+                if param_vreg in arg_vregs and not byte_range.isdisjoint(overwritten):
                     conflicts.add(param_idx)
 
     return conflicts
@@ -287,79 +273,37 @@ def _recompute_stack_offsets(func: MIRFunction):
     """
     Recompute stack_param_offsets after promoting some params to scratch.
 
-    Removes promoted params from stack_param_offsets and recomputes
-    offsets for remaining stack params (they shift down because fewer
-    bytes are pushed by the caller).
+    Removes promoted params (they no longer occupy stack space) and renumbers
+    the remainder. param_to_vreg is left intact — function_gen.py reads it
+    for scratch pre-allocation regardless of mechanism.
     """
-    promoted = func.scratch_param_addrs
-
-    # Remove promoted params from stack_param_offsets only
-    # (keep param_to_vreg intact - function_gen.py uses it for scratch pre-allocation)
-    for param_idx in promoted:
-        if param_idx in func.stack_param_offsets:
-            del func.stack_param_offsets[param_idx]
-
-    # Recompute offsets for remaining stack params
-    if not func.stack_param_offsets:
-        return  # No remaining stack params
-
     from r65.compiler.codegen.abi import ABIInfo
-    abi = ABIInfo(is_far=func.is_far)
-    current_offset = abi.return_addr_size + 1
 
-    # Get remaining stack param indices in order
-    remaining_indices = sorted(func.stack_param_offsets.keys())
+    promoted = set(func.scratch_param_addrs)
+    remaining = sorted(idx for idx in func.stack_param_offsets if idx not in promoted)
+    offset = ABIInfo(is_far=func.is_far).return_addr_size + 1
 
-    # Clear offsets and recompute (param_to_vreg stays unchanged)
-    func.stack_param_offsets.clear()
-
-    for idx in remaining_indices:
-        func.stack_param_offsets[idx] = current_offset
-        param_size = get_type_size(func.parameters[idx].param_type)
-        current_offset += param_size
+    func.stack_param_offsets = {}
+    for idx in remaining:
+        func.stack_param_offsets[idx] = offset
+        offset += get_type_size(func.parameters[idx].param_type)
 
 
 def _update_call_sites(func: MIRFunction, promotions: Dict[str, Dict[int, int]]):
-    """
-    Update Call instructions to use SCRATCH_PARAM mechanism for promoted params.
+    """Rewrite STACK args to SCRATCH_PARAM at calls whose callee has promotions.
 
-    For each Call to a function with promoted params, change the matching
-    Argument entries from STACK to SCRATCH_PARAM with the assigned scratch address.
-
-    Args:
-        func: MIR function containing call sites to update
-        promotions: Map of function_name -> {param_idx: scratch_addr}
+    Args in `instr.args` are in parameter order, so the arg index is the
+    parameter index. Indirect calls (`instr.function` is a vreg) and trait
+    dispatches have no static callee, so they're left alone.
     """
     for block in func.blocks.values():
         for instr in block.instructions:
-            if not isinstance(instr, (Call, TraitDispatch)):
+            if not isinstance(instr, Call) or not isinstance(instr.function, str):
                 continue
-
-            # TraitDispatch doesn't have a static callee — skip
-            if isinstance(instr, TraitDispatch):
-                continue
-
-            # Only direct calls (not indirect through function pointer)
-            if not isinstance(instr.function, str):
-                continue
-
             callee_promos = promotions.get(instr.function)
             if not callee_promos:
                 continue
-
-            # Build map from param position to promotion info
-            # We need to map argument positions to parameter indices.
-            # Arguments in instr.args correspond to parameters in order,
-            # but we need to identify which args are stack args and their
-            # parameter index.
-            #
-            # The args list contains all arguments in parameter order.
-            # Stack args have mechanism==STACK. We need to find which
-            # parameter index each arg corresponds to.
-            #
-            # Args are in parameter order (same index as parameters).
             for arg_idx, arg in enumerate(instr.args):
                 if arg.mechanism == ArgumentMechanism.STACK and arg_idx in callee_promos:
-                    scratch_addr = callee_promos[arg_idx]
                     arg.mechanism = ArgumentMechanism.SCRATCH_PARAM
-                    arg.scratch_addr = scratch_addr
+                    arg.scratch_addr = callee_promos[arg_idx]
