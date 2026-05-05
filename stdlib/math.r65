@@ -159,8 +159,8 @@ far fn mul16(multA @ A: u16, multB: u16) -> u16 {
 // Cycles: ~30 (16 wait + overhead)
 #[cfg(snes)]
 far fn div16(dividend @ A: u16, divisor: u8) -> u16 {
-    // Write 16-bit dividend
-    WRDIVL = dividend;
+    // Write 16-bit dividend (single 16-bit store covers $4204+$4205)
+    WRDIV = dividend;
 
     // Switch to 8-bit for hardware register writes
     STATUS.A16 = false;  // SEP #$20 - switch to 8-bit
@@ -173,7 +173,7 @@ far fn div16(dividend @ A: u16, divisor: u8) -> u16 {
     STATUS.A16 = true;  // REP #$20 - switch back to 16-bit
     NOP(6);
 
-    return RDDIVL;
+    return RDDIV;
 }
 
 // Hardware 8/8 -> 8 unsigned division (simplified)
@@ -200,8 +200,8 @@ far fn div8(dividend @ A: u8, divisor @ X: u16) -> u8 {
 // Cycles: ~30 (16 wait + overhead)
 #[cfg(snes)]
 far fn mod16(dividend @ A: u16, divisor: u8) -> u16 {
-    // Write 16-bit dividend
-    WRDIVL = dividend;
+    // Write 16-bit dividend (single 16-bit store covers $4204+$4205)
+    WRDIV = dividend;
 
     // Switch to 8-bit for hardware register writes
     STATUS.A16 = false;  // SEP #$20 - switch to 8-bit
@@ -212,7 +212,7 @@ far fn mod16(dividend @ A: u16, divisor: u8) -> u16 {
     STATUS.A16 = true;  // REP #$20 - switch back to 16-bit
     NOP(6);
 
-    return RDMPYL;
+    return RDMPY;
 }
 
 // Hardware 8/8 -> 8 modulo

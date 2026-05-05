@@ -362,6 +362,10 @@ static mut WRMPYA: u8;
 #[hw(0x4203)]
 static mut WRMPYB: u8;
 
+// Dividend (16-bit access — single STA writes both $4204 and $4205)
+#[hw(0x4204)]
+static mut WRDIV: u16;
+
 // Dividend (low byte)
 #[hw(0x4204)]
 static mut WRDIVL: u8;
