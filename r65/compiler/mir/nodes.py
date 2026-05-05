@@ -726,7 +726,7 @@ class TraitDispatch(MIRInstruction):
     self_is_far: bool = False  # True if self pointer is far (24-bit)
     callee_return_type: Optional[Any] = None
     # Position of this dispatch within a same-self chain. Set by the
-    # analysis pass `analyze_trait_dispatch_chains` (analysis/far_ptr_strategy.py).
+    # analysis pass `analyze_trait_dispatch_chains` (analysis/trait_chain_coalesce.py).
     # Default SOLO preserves the pre-pass behavior.
     self_chain_role: 'ChainRole' = field(
         default_factory=lambda: ChainRole.SOLO

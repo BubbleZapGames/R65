@@ -183,9 +183,8 @@ class ProgramCodeGenerator:
 
         # Analyze far pointer strategy (D=S vs SET_DBR) after param promotion
         # has set has_far_ptr_stack_params, before code generation
-        from r65.compiler.analysis.far_ptr_strategy import (
-            analyze_far_ptr_strategy, analyze_trait_dispatch_chains
-        )
+        from r65.compiler.analysis.far_ptr_strategy import analyze_far_ptr_strategy
+        from r65.compiler.analysis.trait_chain_coalesce import analyze_trait_dispatch_chains
         analyze_far_ptr_strategy(mir_program)
 
         # Trait-dispatch chain coalescing: detect same-self runs of

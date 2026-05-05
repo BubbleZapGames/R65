@@ -19,7 +19,7 @@ from r65.compiler.mir.nodes import (
 from r65.compiler.mir.virtual_registers import VirtualRegisterAllocator
 from r65.compiler.hir.types import BasicTypeInfo, PointerTypeInfo, TraitTypeInfo
 from r65.compiler.analysis.call_graph import CallGraphAnalyzer
-from r65.compiler.analysis.far_ptr_strategy import (
+from r65.compiler.analysis.trait_chain_coalesce import (
     analyze_trait_dispatch_chains,
     _chain_self_root,
     _function_preserves_y,

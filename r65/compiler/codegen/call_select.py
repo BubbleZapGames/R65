@@ -459,7 +459,7 @@ class CallInstructionSelector(BaseSelector):
         # Chain coalescing: SOLO and START dispatches push PHB; SOLO and END
         # dispatches pull PLB. MIDDLE dispatches do neither — DBR is held
         # at self's bank across the whole run. See
-        # analysis/far_ptr_strategy.analyze_trait_dispatch_chains.
+        # analysis/trait_chain_coalesce.analyze_trait_dispatch_chains.
         #
         # v2(B): for NEAR-self chains, the role determines LDY emission
         # rather than the DBR bracket. SOLO/START emit LDY; MIDDLE/END
