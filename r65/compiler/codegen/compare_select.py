@@ -412,11 +412,15 @@ class CompareSelector(BaseSelector):
         """
         value_loc = self.parent._get_operand_location(instr.value)
 
-        # BIT instruction doesn't support stack-relative addressing
-        # If value is on stack, use alternative approach
-        if value_loc.kind == LocationKind.STACK:
-            # Load stack value to A
-            self._emit_load_store('LDA', value_loc)
+        # BIT instruction requires a memory operand. If value is on the stack
+        # or in a hardware register (A — coalesced from a vreg), spill to a
+        # temp DP scratch so we can emit a real BIT (which sets N, V, and Z).
+        if value_loc.kind == LocationKind.STACK or (
+            value_loc.kind == LocationKind.HARDWARE and value_loc.hw_register == 'A'
+        ):
+            # Load value into A (skip when already there)
+            if value_loc.kind == LocationKind.STACK:
+                self._emit_load_store('LDA', value_loc)
 
             # Try to get a scratch for true BIT instruction
             temp_addr = self.parent._get_temp_address()
