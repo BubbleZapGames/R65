@@ -64,6 +64,31 @@ def analyze_scratch_params(mir_program: MIRProgram, scratch_pool: ScratchRegiste
     if not promotions:
         return
 
+    # Step 2b: Demote any caller param whose scratch addr would be
+    # overwritten by a callee's scratch param at a call where the caller
+    # param is used as an argument. Iterate to fixed point — demoting a
+    # promotion can free up addresses for other functions, but can't
+    # introduce new conflicts.
+    func_by_name = {f.name: f for f in mir_program.functions}
+    while True:
+        demoted_any = False
+        for caller in mir_program.functions:
+            caller_promos = promotions.get(caller.name)
+            if not caller_promos:
+                continue
+            conflicts = _find_war_conflicts(caller, caller_promos, promotions, func_by_name)
+            if conflicts:
+                for param_idx in conflicts:
+                    del caller_promos[param_idx]
+                if not caller_promos:
+                    del promotions[caller.name]
+                demoted_any = True
+        if not demoted_any:
+            break
+
+    if not promotions:
+        return
+
     # Step 3: Apply promotions to callee functions
     total_promoted = 0
     for func in mir_program.functions:
@@ -176,6 +201,67 @@ def _analyze_function(func: MIRFunction, scratch_pool: ScratchRegisterPool) -> D
                     used_scratches.add(addr)
 
     return result
+
+
+def _find_war_conflicts(caller: MIRFunction,
+                        caller_promos: Dict[int, int],
+                        all_promos: Dict[str, Dict[int, int]],
+                        func_by_name: Dict[str, MIRFunction]) -> Set[int]:
+    """Find caller params whose scratch addr would be overwritten at a call.
+
+    A WAR conflict exists when:
+    - caller's param P is at scratch addr X (size N).
+    - caller has a Call to G where P (its vreg) is used as a non-stack arg.
+    - G has a scratch param Q whose [addr, addr+size) overlaps [X, X+N).
+
+    Call-arg setup writes Q to that overlapping address before P is loaded
+    from X, so the value at X is the new Q — not P.
+
+    Returns set of caller param indices to demote.
+    """
+    conflicts: Set[int] = set()
+
+    # Build per-param byte ranges for caller's promotions
+    caller_param_ranges: Dict[int, Set[int]] = {}
+    for param_idx, base_addr in caller_promos.items():
+        size = get_type_size(caller.parameters[param_idx].param_type)
+        caller_param_ranges[param_idx] = set(range(base_addr, base_addr + size))
+
+    for block in caller.blocks.values():
+        for instr in block.instructions:
+            if not isinstance(instr, Call) or not isinstance(instr.function, str):
+                continue
+            callee_promos = all_promos.get(instr.function)
+            if not callee_promos:
+                continue
+            callee = func_by_name.get(instr.function)
+            if callee is None:
+                continue
+
+            # Compute byte range overwritten by callee's scratch params
+            overwritten: Set[int] = set()
+            for cp_idx, cp_addr in callee_promos.items():
+                cp_size = get_type_size(callee.parameters[cp_idx].param_type)
+                overwritten.update(range(cp_addr, cp_addr + cp_size))
+
+            if not overwritten:
+                continue
+
+            # For each caller param used as a non-stack arg here, check overlap
+            for param_idx, byte_range in caller_param_ranges.items():
+                if param_idx in conflicts:
+                    continue
+                param_vreg = caller.param_to_vreg.get(param_idx)
+                if param_vreg is None:
+                    continue
+                used_as_arg = any(
+                    isinstance(arg.value, VirtualRegister) and arg.value == param_vreg
+                    for arg in instr.args
+                )
+                if used_as_arg and byte_range & overwritten:
+                    conflicts.add(param_idx)
+
+    return conflicts
 
 
 def _any_move_target_live_across_call(func: MIRFunction, param_vreg, liveness) -> bool:
