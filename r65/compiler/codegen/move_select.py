@@ -369,6 +369,10 @@ class MoveOperationSelector(BaseSelector):
         elif is_u16:
             self.parent._emit_16bit_mem_to_mem(src_loc, dest_loc)
         else:
+            # u8 LDA/STA needs m8 — a preceding u16 Move may have left
+            # the emitter in m16, which would silently widen this copy
+            # to 2 bytes and clobber the byte after dest.
+            self.parent._ensure_m8_mode()
             self._emit_load_store('LDA', src_loc)
             self._emit_load_store('STA', dest_loc)
 
