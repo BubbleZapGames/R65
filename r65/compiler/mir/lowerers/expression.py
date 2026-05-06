@@ -17,6 +17,7 @@ from r65.compiler.hir.types import BasicTypeInfo, PointerTypeInfo
 from r65.compiler.mir.nodes import (
     VirtualRegister, HardwareRegister, Immediate, MemoryLocation,
     Move, Load, LoadIndirect, BinaryOp, UnaryOp, TypeConvert, ToBool,
+    Compare, CondBranch, Jump,
 )
 from r65.compiler.mir.lowerers.multiply import compute_array_field_offset, compute_scaled_index
 from r65.compiler.errors import MIRLoweringError
@@ -118,19 +119,57 @@ class ExpressionLowerer:
             )
 
         else:
-            # For <, <=, >, >=: use subtraction to set flags
-            temp = self.ctx.alloc_vreg(expr.left.expr_type, "cmp_temp")
-            self.emit(BinaryOp(
-                dest=temp,
-                left=left,
-                right=right,
-                op='-',
-                type_info=expr.left.expr_type
-            ))
-            return self.builder._emit_conditional_set(
-                temp, true_when_nonzero=True,
-                result_type=expr.expr_type, hint=f"{expr.op}_result"
+            # For <, <=, >, >=: emit Compare + flag-based branch.
+            # The previous implementation used `temp = left - right` then
+            # checked `temp != 0`, which actually computes `left != right` —
+            # a < returned 1 for ANY ordering except equality.
+            return self._emit_compare_to_bool(
+                left, right, expr.op,
+                left_type=expr.left.expr_type,
+                result_type=expr.expr_type,
+                hint=f"{expr.op}_result",
             )
+
+    def _emit_compare_to_bool(self, left, right, op: str,
+                               left_type, result_type, hint: str) -> VirtualRegister:
+        """Emit Compare + CondBranch + set 0/1 for a relational comparison.
+
+        Mirrors the if-condition path (condition.py) which uses Compare with
+        the comparison op so codegen picks BCC/BCS/BMI/BPL appropriately.
+        """
+        result = self.ctx.alloc_vreg(result_type, hint)
+
+        true_block = self.builder.cfg_builder.new_block()
+        false_block = self.builder.cfg_builder.new_block()
+        merge_block = self.builder.cfg_builder.new_block()
+
+        self.emit(Compare(
+            left=left,
+            right=right,
+            comparison=op,
+            type_info=left_type,
+        ))
+        self.emit(CondBranch(
+            condition=None,  # uses flags from Compare
+            true_target=true_block.block_id,
+            false_target=false_block.block_id,
+            comparison=op,
+        ))
+        self.builder.cfg_builder.add_edge(self.builder.current_block, true_block)
+        self.builder.cfg_builder.add_edge(self.builder.current_block, false_block)
+
+        self.builder.current_block = true_block
+        self.emit(Move(dest=result, source=Immediate(1), type_info=result_type))
+        self.emit(Jump(target=merge_block.block_id))
+        self.builder.cfg_builder.add_edge(true_block, merge_block)
+
+        self.builder.current_block = false_block
+        self.emit(Move(dest=result, source=Immediate(0), type_info=result_type))
+        self.emit(Jump(target=merge_block.block_id))
+        self.builder.cfg_builder.add_edge(false_block, merge_block)
+
+        self.builder.current_block = merge_block
+        return result
 
     def _lower_arithmetic_op(self, expr: HIRBinaryOp) -> VirtualRegister:
         """Lower arithmetic/bitwise binary operation."""
