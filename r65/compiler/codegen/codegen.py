@@ -516,9 +516,14 @@ class ProgramCodeGenerator:
         """
         Organize functions by bank number.
 
-        Functions with #[bank(n)] attribute go to bank n.
-        Functions in auto-bank mode (bank_number=None) are placed in bank 0 initially.
-        Future enhancement: auto-bank functions will be placed in remaining space.
+        - Functions with #[bank(n)] attribute go to bank n.
+        - Functions with no bank attribute default to bank 0.
+        - Functions with #[bank(auto)] (bank_attr present, bank_number=None,
+          guaranteed `far` by HIR validation) are placed in the bank above
+          the highest explicit bank, sequentially. wlalink will report a
+          per-bank overflow if the chosen bank is too small; the user can
+          then split with explicit #[bank(n)] directives or assign their
+          own larger banks.
 
         Args:
             functions: List of MIR functions
@@ -527,20 +532,26 @@ class ProgramCodeGenerator:
             Dictionary mapping bank number to list of functions
         """
         by_bank: Dict[int, List[MIRFunction]] = {}
+        auto_bank_funcs: List[MIRFunction] = []
 
         for func in functions:
-            # Determine bank number
-            if func.bank_attr and func.bank_attr.bank_number is not None:
-                bank_num = func.bank_attr.bank_number
+            if func.bank_attr is None:
+                # No bank attribute: default to bank 0
+                by_bank.setdefault(0, []).append(func)
+            elif func.bank_attr.bank_number is not None:
+                # Explicit bank
+                by_bank.setdefault(func.bank_attr.bank_number, []).append(func)
             else:
-                # Auto-bank mode or no bank attribute: default to bank 0
-                # These are always far functions, so cross-bank calls work
-                bank_num = 0
+                # #[bank(auto)] - defer placement until we know the explicit-bank max
+                auto_bank_funcs.append(func)
 
-            # Add to bank
-            if bank_num not in by_bank:
-                by_bank[bank_num] = []
-            by_bank[bank_num].append(func)
+        if auto_bank_funcs:
+            # Place auto-bank functions in the bank above the highest explicit bank,
+            # mirroring the data-side convention (auto-bank statics start at max+1
+            # with a floor of bank 4 — see symbol_gen.py).
+            explicit_max = max(by_bank.keys()) if by_bank else -1
+            auto_bank_num = max(explicit_max + 1, 4)
+            by_bank.setdefault(auto_bank_num, []).extend(auto_bank_funcs)
 
         return by_bank
 
