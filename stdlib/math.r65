@@ -53,9 +53,8 @@ far fn mul16(multA @ A: u16, multB: u16) -> u16 {
     WRMPYA = _a_lo;
     WRMPYB = _b_lo;
     NOP(4);
-    // Read 16-bit result with manual mode switch
-    STATUS.A16 = true;
-    let mut _result: u16 = RDMPYL;
+    // Read full 16-bit result via RDMPY (u16). Mode switch adds two cycles.
+    let mut _result: u16 = RDMPY;
 
     // Partial product 2: A_lo * B_hi -> add low byte << 8
     if _b_hi != 0 {
