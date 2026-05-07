@@ -821,6 +821,7 @@ class InstructionSelector:
         # --- Right-in-A conflict detection ---
         # If right operand is in A and left is NOT in A, loading left would clobber right.
         right_in_a = False
+        sub_pushed_right_operand = False
         if not isinstance(right_operand, (MIRImmediate, MemoryLocation)):
             _right_loc = self._get_operand_location(right_operand)
             right_in_a = _right_loc.is_hw('A')
@@ -832,16 +833,45 @@ class InstructionSelector:
                 right_operand = instr.left
                 left_loc = _right_loc  # HARDWARE A — load-left block will skip (already in A)
             elif op == '-':
-                # Save right (A) to scratch, replace right_operand with scratch location
-                temp_addr = self._get_temp_address()
-                if temp_addr:
-                    self.emitter.emit_instr(Opcode.STA_DP, temp_addr, "Save right operand (in A) to temp")
-                    right_operand = MemoryLocation(storage_type='zeropage', address=temp_addr.value, symbol=None)
+                # Save right (A) to scratch, replace right_operand with scratch location.
+                # The resolver picks DP-relative for normal frames and absolute
+                # addressing only when D=S is active (has_far_ptr_stack_params and
+                # strategy != SET_DBR), so we always emit through _emit_store/_emit_op.
+                try:
+                    temp_loc = self._get_temp_location(size=2 if is_u16 else 1)
+                except InstructionSelectionError:
+                    temp_loc = None
+
+                # Transient borrow: no call occurs between STA and SBC inside a
+                # single binop, so it's safe to reuse a globally-reserved scratch
+                # as long as it doesn't overlap this function's own live params.
+                if temp_loc is None:
+                    temp_loc = self._get_transient_temp_location(size=2 if is_u16 else 1)
+
+                if temp_loc is not None:
+                    self._emit_store("STA", temp_loc, "Save right operand (in A) to temp")
+                    right_operand = MemoryLocation(
+                        storage_type='zeropage',
+                        address=temp_loc.scratch_addr,
+                        symbol=None,
+                    )
                     # Normal flow: loads left into A, then SBC from scratch
                 else:
-                    raise InstructionSelectionError(
-                        "No scratch register available for non-commutative binary op with right operand in A",
-                        source_loc=self._current_source_loc)
+                    # Stack fallback: PHA the right value, then load left, SBC stack-relative,
+                    # write result back into the pushed slot, and PLA to restore A with result.
+                    # PHA/PLA size matches the current accumulator mode (1 byte in m8,
+                    # 2 in m16) which already matches is_u16 from the mode switch above.
+                    self._emit_implied(Opcode.PHA, "Save right operand (no scratch available)")
+                    # Register the push with the spill tracker so subsequent
+                    # stack-relative accesses to locals (e.g. left_loc) are
+                    # auto-adjusted by _get_opcode_for_location.
+                    pha_size = 2 if is_u16 else 1
+                    self.call_selector.region_state.stack_tracker.push(pha_size)
+                    sub_pushed_right_operand = True
+                    sub_pushed_size = pha_size
+                    # right_operand is unused for this path; the SBC and cleanup
+                    # are emitted inline below using a stack-relative location
+                    # AT OFFSET 0 (the displacement is auto-applied by the resolver).
 
         # Load left operand into A (if not already there)
         if left_loc.is_hw('A'):
@@ -869,7 +899,21 @@ class InstructionSelector:
         if op == '+':
             self._emit_add(right_operand, is_u16)
         elif op == '-':
-            self._emit_sub(right_operand, is_u16)
+            if sub_pushed_right_operand:
+                # Right was PHA'd to the stack; emit SEC + SBC stack-relative inline.
+                # The pushed value is at current "1,S". The resolver adds
+                # stack_tracker.displacement to STACK offsets, so we pre-subtract
+                # it to land at +1 after adjustment.
+                pushed_offset = 1 - sub_pushed_size
+                stack_loc = PhysicalLocation(
+                    kind=LocationKind.STACK,
+                    stack_offset=pushed_offset,
+                    size=sub_pushed_size,
+                )
+                self._emit_implied(Opcode.SEC)
+                self._emit_op("SBC", stack_loc)
+            else:
+                self._emit_sub(right_operand, is_u16)
         elif op == '&':
             self._emit_and(right_operand, is_u16)
         elif op == '|':
@@ -886,6 +930,18 @@ class InstructionSelector:
             self._emit_divide(right_operand, is_u16)
         else:
             raise unsupported_operation("binary operation", op, source_loc=self._current_source_loc)
+
+        # Clean up the stack slot used for the right operand (PHA fallback path).
+        # A holds the result; overwrite the pushed slot, then PLA pops it back into A.
+        if sub_pushed_right_operand:
+            cleanup_loc = PhysicalLocation(
+                kind=LocationKind.STACK,
+                stack_offset=1 - sub_pushed_size,
+                size=sub_pushed_size,
+            )
+            self._emit_store("STA", cleanup_loc, "Stash result into pushed slot")
+            self._emit_implied(Opcode.PLA, "Pop result back into A and balance stack")
+            self.call_selector.region_state.stack_tracker.pop(sub_pushed_size)
 
         # Store result from A (if destination is not A)
         if dest_loc.is_hw('A'):
@@ -1270,6 +1326,55 @@ class InstructionSelector:
             "Define a scratch register using: #[zeropage(addr, register)] static mut SCRATCH: u8;",
             source_loc=self._current_source_loc
         )
+
+    def _get_transient_temp_location(self, size: int = 1) -> PhysicalLocation | None:
+        """
+        Get a scratch for transient use within a single MIR instruction.
+
+        No call must occur between save and read, so the FixedStack global
+        reservation (other functions' scratch-promoted params) is not
+        load-bearing here and may be borrowed. The function's OWN
+        scratch-promoted params are still considered live and excluded.
+
+        Returns None when no suitable scratch can be borrowed.
+
+        Args:
+            size: Size in bytes (1 or 2).
+        """
+        if not self.reg_alloc or not self.reg_alloc.scratch_pool:
+            return None
+
+        # Pass 1: prefer truly-free scratches (same as _get_temp_location).
+        for scratch in self.reg_alloc.scratch_pool.scratches:
+            if scratch.is_free and scratch.size >= size:
+                return PhysicalLocation(
+                    kind=LocationKind.SCRATCH,
+                    scratch_addr=scratch.address,
+                    size=size,
+                )
+
+        # Pass 2: borrow a globally-reserved scratch, but never overlap this
+        # function's own live scratch-promoted params.
+        from r65.compiler.codegen.type_utils import get_type_size
+        own_param_bytes = set()
+        if self.current_function and self.current_function.scratch_param_addrs:
+            for idx, addr in self.current_function.scratch_param_addrs.items():
+                param_size = get_type_size(self.current_function.parameters[idx].param_type)
+                own_param_bytes.update(range(addr, addr + param_size))
+
+        for scratch in self.reg_alloc.scratch_pool.scratches:
+            if scratch.size < size:
+                continue
+            scratch_bytes = set(range(scratch.address, scratch.address + scratch.size))
+            if scratch_bytes & own_param_bytes:
+                continue
+            return PhysicalLocation(
+                kind=LocationKind.SCRATCH,
+                scratch_addr=scratch.address,
+                size=size,
+            )
+
+        return None
 
     def _get_temp_address(self) -> Address | None:
         """
