@@ -54,6 +54,10 @@ class FarToNearOptimizer:
         self.verbose = verbose
         self.func_map: Dict[str, MIRFunction] = {}
         self.bank_info: Dict[str, FunctionBankInfo] = {}
+        # Computed bank that auto-bank functions will land in. Filled in
+        # at the start of `optimize()`. Mirrors the placement rule used
+        # later by `ProgramCodeGenerator._organize_functions_by_bank`.
+        self._auto_bank_num: int = 0
 
     def optimize(self, mir_program: MIRProgram) -> int:
         """
@@ -67,6 +71,16 @@ class FarToNearOptimizer:
         """
         # Build function map
         self.func_map = {f.name: f for f in mir_program.functions}
+
+        # Pre-compute the bank that #[bank(auto)] functions will be
+        # placed in. Without this we'd treat auto-bank like bank 0 and
+        # incorrectly conclude that an auto-bank function and a no-bank
+        # caller are co-located — converting their JSL to JSR. The real
+        # placement (handled later by `_organize_functions_by_bank`)
+        # parks auto-bank functions at `max(explicit_bank)+1`, floor 4,
+        # so the JSR'd target ends up at a completely different address
+        # from where the call points.
+        self._auto_bank_num = self._compute_auto_bank_num(mir_program)
 
         # Analyze all functions
         self._analyze_functions(mir_program)
@@ -83,12 +97,36 @@ class FarToNearOptimizer:
 
         return len(convertible)
 
+    def _compute_auto_bank_num(self, mir_program: MIRProgram) -> int:
+        """Return the bank that auto-bank functions will be placed in.
+
+        Mirrors the rule in
+        `ProgramCodeGenerator._organize_functions_by_bank`:
+        auto-bank functions live in the bank above the highest explicit
+        bank, with a floor of bank 4. If the program has no auto-bank
+        functions this value isn't actually used; we still compute a
+        consistent number so the caller can compare freely.
+        """
+        explicit_max = -1
+        for func in mir_program.functions:
+            if func.bank_attr and func.bank_attr.bank_number is not None:
+                if func.bank_attr.bank_number > explicit_max:
+                    explicit_max = func.bank_attr.bank_number
+        return max(explicit_max + 1, 4)
+
     def _get_function_bank(self, func: MIRFunction) -> int:
         """
         Get the effective bank number for a function.
 
-        Functions with explicit #[bank(n)] go to bank n.
-        Functions without bank attribute or with #[bank(auto)] default to bank 0.
+        - Explicit `#[bank(n)]` → bank n.
+        - `#[bank(auto)]` (bank_attr present, bank_number=None) → the
+          bank that `_organize_functions_by_bank` will place auto-bank
+          functions in (`max(explicit) + 1`, floor 4). Treating these
+          as bank 0 — the previous behavior — silently
+          mis-categorized cross-bank calls as same-bank and led the
+          optimizer to emit JSR to a callee that the codegen later
+          parks in a different bank.
+        - No bank attribute → bank 0 (the default placement).
 
         Args:
             func: The MIR function
@@ -96,11 +134,11 @@ class FarToNearOptimizer:
         Returns:
             Bank number (0-255)
         """
-        if func.bank_attr and func.bank_attr.bank_number is not None:
-            return func.bank_attr.bank_number
-        else:
-            # Auto-bank or no attribute: defaults to bank 0
+        if func.bank_attr is None:
             return 0
+        if func.bank_attr.bank_number is not None:
+            return func.bank_attr.bank_number
+        return self._auto_bank_num
 
     def _analyze_functions(self, mir_program: MIRProgram):
         """
