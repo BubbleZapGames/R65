@@ -206,6 +206,18 @@ class ProgramCodeGenerator:
         # Compute max outgoing arg bytes for caller-owned outgoing args convention
         abi_model.compute_outgoing_args(mir_program, self._compute_outgoing_arg_bytes)
 
+        # Whether the program needs a shared interrupt-vector
+        # placeholder. The handler must live in bank $00 because the
+        # SNES interrupt vector table is 16-bit-only — when an
+        # interrupt fires the CPU loads PC from bank $00 with PB
+        # cleared to 0. A handler placed in any other bank would be
+        # jumped to at the WRONG bank's same offset, silently
+        # leaving whatever code happens to live at the matching
+        # bank-0 offset to handle BRK / COP / unused IRQ. (This was
+        # most visible at -O2 where m8/m16 mismatches let stray
+        # `00` bytes execute as BRK.)
+        needs_empty_handler = self._program_needs_interrupt_vectors(mir_program)
+
         # Generate code for each bank
         for bank_num in sorted(functions_by_bank.keys()):
             bank_functions = functions_by_bank[bank_num]
@@ -222,6 +234,23 @@ class ProgramCodeGenerator:
                     scratch_pool=scratch_pool,
                     abi_model=abi_model
                 )
+
+            # Anchor the empty interrupt handler at the END of
+            # bank 0's emission, after all bank-0 functions but
+            # before the next bank's directive. We must emit it
+            # inside the same bank-0 emission window because
+            # re-opening `.BANK 0 SLOT 0` later (e.g. after
+            # auto-bank functions in bank 8+) is unsafe in WLA-DX
+            # without explicit sections — it can place the handler
+            # at an address that overlaps existing bank-0 content.
+            # Emitting after bank-0 functions keeps the program's
+            # entry point as the first node in bank 0 so downstream
+            # asm-level dataflow analysis sees a connected CFG
+            # rooted at the entry; emitting before functions would
+            # leave the entry isolated past an `RTI` that has no
+            # successor.
+            if bank_num == 0 and needs_empty_handler:
+                self.emitter.emit_empty_interrupt_handler()
 
         # Phase 6.5: Trait dispatch tables (jump tables and wrapper functions)
         self._emit_trait_dispatch_tables(mir_program)
@@ -555,6 +584,16 @@ class ProgramCodeGenerator:
 
         return by_bank
 
+    def _program_needs_interrupt_vectors(self, mir_program: MIRProgram) -> bool:
+        """True iff the program needs an SNES vector table (and a
+        bank-0 placeholder handler for unused vectors)."""
+        for func in mir_program.functions:
+            if func.interrupt_attr is not None:
+                return True
+            if func.is_entry:
+                return True
+        return False
+
     def _emit_interrupt_vectors(self, mir_program: MIRProgram):
         """
         Emit SNES ROM header and interrupt vector table.
@@ -596,8 +635,9 @@ class ProgramCodeGenerator:
 
         # Emit SNES header and vectors if any handlers found
         if nmi_handler or irq_handler or reset_handler:
-            # Emit empty interrupt handler for unused vectors
-            self.emitter.emit_empty_interrupt_handler()
+            # The empty interrupt handler was already emitted into
+            # bank 0 alongside the other bank-0 functions; see the
+            # `needs_empty_handler` block in the bank-emission loop.
 
             # For HiROM, all interrupt vectors must point to addresses >= $8000
             # because the CPU reads vectors from bank $00 where only $8000-$FFFF
