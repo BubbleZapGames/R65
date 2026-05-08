@@ -953,232 +953,154 @@ class PeepholeOptimizer:
         return optimized
 
     def _eliminate_cross_block_mode_changes(self, nodes: List['AsmNode']) -> List['AsmNode']:
+        """Use the asm-mode dataflow to:
+
+        1. Eliminate SEP/REP at a label when every predecessor already
+           arrives in the target mode (single-mode merge — the SEP/REP
+           is a no-op).
+        2. Insert a 'Mode fix' SEP/REP at labels that are real CFG
+           join points (multiple physical predecessors) where the
+           predecessors disagree on mode and there is no existing
+           mode switch.
+
+        The mode information is computed by `compute_modes()` over the
+        full asm node list. SEP/REP/PLP/RTI are the only inputs that
+        drive the dataflow; `.ACCU` directives are advisory metadata
+        for WLA-DX and are deliberately not consulted here.
+
+        Insertions and eliminations are interleaved with re-computation
+        so that a fix at one join properly clears the linearly-
+        propagated 'mixed' state on downstream non-join labels.
         """
-        Eliminate SEP/REP at label targets when all predecessors arrive in the target mode.
+        from r65.compiler.codegen.asm_nodes import (
+            Instruction, Immediate, Directive, Label,
+        )
+        from r65.compiler.optimize.asm_mode_dataflow import (
+            compute_modes, first_constraining_mode_after, M_FLAG as _M_FLAG,
+        )
 
-        The linear mode tracker resets at labels (conservative). This pass collects
-        the mode at each branch source and fallthrough, then removes SEP/REP that
-        are provably redundant because all predecessors agree on the mode.
-        """
-        from r65.compiler.codegen.asm_nodes import Instruction, Immediate, Directive, Label
+        # Loop until no more rewrites apply. Each rewrite changes the
+        # node list, so we recompute the dataflow each pass. To keep
+        # progress monotonic we insert at most one mode-fix per outer
+        # iteration (eliminations are unbounded — they don't depend on
+        # later decisions).
+        any_change = True
+        while any_change:
+            any_change = False
+            info = compute_modes(nodes)
+            new_nodes: List = []
+            i = 0
+            n = len(nodes)
+            pending_fix_inserted = False
+            while i < n:
+                node = nodes[i]
+                if not isinstance(node, Label):
+                    new_nodes.append(node)
+                    i += 1
+                    continue
 
-        M_FLAG = 0x20
-
-        # Pass 1: Collect mode at each branch source and fallthrough to each label.
-        # label_arriving_modes[label_name] = set of modes (8, 16, or None for unknown)
-        label_arriving_modes: dict[str, set] = {}
-        current_mode = None
-        dead_fallthrough = False  # True after terminal instructions (RTS/RTL/RTI/BRA/JMP)
-
-        from r65.compiler.codegen.opcodes import RETURN_OPCODES
-        TERMINAL_OPCODES = RETURN_OPCODES | JUMP_OPCODES | frozenset({Opcode.BRA})
-
-        for i, node in enumerate(nodes):
-            if isinstance(node, Label):
-                # Only record fallthrough mode if control can actually fall through
-                if node.name not in label_arriving_modes:
-                    label_arriving_modes[node.name] = set()
-                if not dead_fallthrough:
-                    label_arriving_modes[node.name].add(current_mode)
-                dead_fallthrough = False
-                # Don't reset current_mode here — we still know the fallthrough mode
-                continue
-
-            if isinstance(node, Directive) and node.name == '.ACCU':
-                if node.args:
-                    if node.args[0] == '8':
-                        current_mode = 8
-                    elif node.args[0] == '16':
-                        current_mode = 16
-                continue
-
-            if not isinstance(node, Instruction):
-                continue
-
-            # Track mode changes
-            if node.opcode == Opcode.REP_IMMEDIATE and isinstance(node.operand, Immediate):
-                if isinstance(node.operand.value, int) and node.operand.value & M_FLAG:
-                    current_mode = 16
-            elif node.opcode == Opcode.SEP_IMMEDIATE and isinstance(node.operand, Immediate):
-                if isinstance(node.operand.value, int) and node.operand.value & M_FLAG:
-                    current_mode = 8
-            elif node.opcode in (Opcode.PLP, Opcode.RTI):
-                current_mode = None
-
-            # Branch: record mode at branch target
-            if node.opcode in BRANCH_OPCODES:
-                target = node.operand.value if hasattr(node.operand, 'value') else None
-                if target:
-                    if target not in label_arriving_modes:
-                        label_arriving_modes[target] = set()
-                    label_arriving_modes[target].add(current_mode)
-                # After unconditional branch, no fallthrough
-                if node.opcode == Opcode.BRA:
-                    current_mode = None
-                    dead_fallthrough = True
-            elif node.opcode in JUMP_OPCODES:
-                # Record source mode at jump target (same as branches)
-                target = node.operand.value if hasattr(node.operand, 'value') else None
-                if target:
-                    if target not in label_arriving_modes:
-                        label_arriving_modes[target] = set()
-                    label_arriving_modes[target].add(current_mode)
-                current_mode = None
-                dead_fallthrough = True
-
-            # Return instructions: no fallthrough to next label
-            if node.opcode in RETURN_OPCODES:
-                dead_fallthrough = True
-
-        # Pass 2: Remove SEP/REP at labels where all predecessors agree on mode
-        optimized = []
-        i = 0
-        while i < len(nodes):
-            node = nodes[i]
-
-            # Look for Label followed by SEP/REP (possibly with .ACCU between)
-            if isinstance(node, Label):
-                modes = label_arriving_modes.get(node.name, set())
-                # Check if next non-directive instruction is SEP or REP
+                # Find the next SEP/REP (skipping `.ACCU` and co-located labels).
                 j = i + 1
                 accu_idx = None
                 sep_rep_idx = None
-                while j < len(nodes):
-                    if isinstance(nodes[j], Directive) and nodes[j].name == '.ACCU':
+                while j < n:
+                    nj = nodes[j]
+                    if isinstance(nj, Directive) and nj.name == '.ACCU':
                         accu_idx = j
                         j += 1
                         continue
-                    if isinstance(nodes[j], Instruction):
-                        if (nodes[j].opcode == Opcode.SEP_IMMEDIATE and
-                                isinstance(nodes[j].operand, Immediate) and
-                                isinstance(nodes[j].operand.value, int) and
-                                nodes[j].operand.value & M_FLAG):
-                            sep_rep_idx = j
-                        elif (nodes[j].opcode == Opcode.REP_IMMEDIATE and
-                                isinstance(nodes[j].operand, Immediate) and
-                                isinstance(nodes[j].operand.value, int) and
-                                nodes[j].operand.value & M_FLAG):
-                            sep_rep_idx = j
-                    break
-                    # Labels or other nodes: stop looking
-                    break
-
-                if sep_rep_idx is not None:
-                    target_mode = 8 if nodes[sep_rep_idx].opcode == Opcode.SEP_IMMEDIATE else 16
-                    # All predecessors must arrive in target_mode (no None/unknown).
-                    # Function entry labels (after RTS/RTL) have no fallthrough
-                    # predecessors recorded, so labels with empty modes or all-matching
-                    # modes can be optimized.
-                    # Labels with NO predecessors at all (empty set) get an .ACCU
-                    # directive — trust it as the declared entry mode.
-                    accu_declares_mode = False
-                    if accu_idx is not None:
-                        accu_node = nodes[accu_idx]
-                        accu_val = int(accu_node.args[0]) if accu_node.args else None
-                        accu_declares_mode = (accu_val == target_mode)
-                    all_match = modes and all(m == target_mode for m in modes)
-                    no_preds_but_declared = (not modes and accu_declares_mode)
-                    # Never remove REQUIRED mode switches (codegen inserted
-                    # these for cross-block mode mismatches it detected)
-                    is_required = (hasattr(nodes[sep_rep_idx], 'comment') and
-                                 nodes[sep_rep_idx].comment and
-                                 'REQUIRED' in nodes[sep_rep_idx].comment)
-                    if not is_required and (all_match or no_preds_but_declared):
-                        # Eliminate the SEP/REP but KEEP the .ACCU directive.
-                        # WLA-DX tracks accumulator size linearly (not by control
-                        # flow), so the .ACCU directive is needed to inform the
-                        # assembler of the correct mode for subsequent instructions
-                        # even when the runtime SEP/REP is provably redundant.
-                        optimized.append(node)  # Keep the label
-                        # Keep the .ACCU directive before SEP/REP
-                        if accu_idx is not None:
-                            optimized.append(nodes[accu_idx])
-                        i = sep_rep_idx + 1
-                        # Keep trailing .ACCU directive after SEP/REP
-                        if (i < len(nodes) and isinstance(nodes[i], Directive) and
-                                nodes[i].name == '.ACCU'):
-                            optimized.append(nodes[i])
-                            i += 1
-                        self.stats.redundant_mode_changes_eliminated += 1
+                    if isinstance(nj, Label):
+                        # Co-located labels share arriving modes; their
+                        # SEP/REP (if any) belongs to the merged group.
+                        j += 1
                         continue
+                    if isinstance(nj, Instruction):
+                        op = nj.opcode
+                        if (op in (Opcode.SEP_IMMEDIATE, Opcode.REP_IMMEDIATE)
+                                and isinstance(nj.operand, Immediate)
+                                and isinstance(nj.operand.value, int)
+                                and nj.operand.value & _M_FLAG):
+                            sep_rep_idx = j
+                    break
 
-                # If label has no SEP/REP but predecessors arrive with mixed
-                # modes (some m8, some m16), insert a mode switch to match
-                # the .ACCU directive's declared mode.
-                from r65.compiler.codegen.asm_nodes import Immediate
-                if sep_rep_idx is None and modes and len(modes) > 1:
-                    has_8 = 8 in modes
-                    has_16 = 16 in modes
-                    if has_8 and has_16:
-                        # Find .ACCU directive to determine expected mode
-                        # Check both before and after the label (co-located labels
-                        # may have .ACCU before the first label in the group)
-                        expected_mode = None
-                        # Check after label
-                        for k in range(i + 1, min(i + 4, len(nodes))):
-                            if isinstance(nodes[k], Directive) and nodes[k].name == '.ACCU':
-                                expected_mode = int(nodes[k].args[0]) if nodes[k].args else None
-                                break
-                            if isinstance(nodes[k], Instruction):
-                                break  # Stop at first real instruction
-                            if isinstance(nodes[k], Label):
-                                continue  # Skip co-located labels
-                        # Check before label (up to 3 nodes back)
-                        if expected_mode is None:
-                            for k in range(i - 1, max(i - 4, -1), -1):
-                                if isinstance(nodes[k], Directive) and nodes[k].name == '.ACCU':
-                                    expected_mode = int(nodes[k].args[0]) if nodes[k].args else None
-                                    break
-                                if isinstance(nodes[k], Instruction):
-                                    break
-                                if isinstance(nodes[k], Label):
-                                    continue
-                        # If no .ACCU found, scan forward for the first
-                        # mode-sensitive instruction to infer the expected mode
-                        if expected_mode is None:
-                            for k in range(i + 1, min(i + 20, len(nodes))):
-                                if isinstance(nodes[k], Directive) and nodes[k].name == '.ACCU':
-                                    expected_mode = int(nodes[k].args[0]) if nodes[k].args else None
-                                    break
-                                if isinstance(nodes[k], Label):
-                                    continue
-                                if isinstance(nodes[k], Instruction):
-                                    # If we see a REP/SEP, that IS the mode switch
-                                    if nodes[k].opcode == Opcode.SEP_IMMEDIATE:
-                                        expected_mode = 8
-                                        break
-                                    elif nodes[k].opcode == Opcode.REP_IMMEDIATE:
-                                        expected_mode = 16
-                                        break
-                                    break
-                        # Ultimate default: assume m8
-                        if expected_mode is None:
-                            expected_mode = 8
-                        if expected_mode == 8:
-                            optimized.append(node)  # Label
-                            i += 1
-                            while i < len(nodes) and isinstance(nodes[i], Directive):
-                                optimized.append(nodes[i])
+                # ------------------------------------------------------
+                # 1. Eliminate redundant SEP/REP at this label.
+                # ------------------------------------------------------
+                if sep_rep_idx is not None:
+                    sep_rep = nodes[sep_rep_idx]
+                    target_mode = 8 if sep_rep.opcode == Opcode.SEP_IMMEDIATE else 16
+                    is_required = bool(getattr(sep_rep, 'comment', None)) and \
+                        'REQUIRED' in (sep_rep.comment or '')
+                    if not is_required:
+                        arriving = info.incoming_at(sep_rep_idx)
+                        defined = {m for m in arriving if m is not None}
+                        all_match = (
+                            defined == {target_mode} and None not in arriving
+                        )
+                        if all_match:
+                            new_nodes.append(node)  # the label
+                            if accu_idx is not None:
+                                new_nodes.append(nodes[accu_idx])
+                            i = sep_rep_idx + 1
+                            if (i < n and isinstance(nodes[i], Directive)
+                                    and nodes[i].name == '.ACCU'):
+                                new_nodes.append(nodes[i])
                                 i += 1
-                            sep = Instruction(Opcode.SEP_IMMEDIATE, Immediate(M_FLAG),
-                                            "Mode fix: predecessors disagree on A size")
-                            optimized.append(sep)
-                            continue
-                        elif expected_mode == 16:
-                            optimized.append(node)  # Label
-                            i += 1
-                            while i < len(nodes) and isinstance(nodes[i], Directive):
-                                optimized.append(nodes[i])
-                                i += 1
-                            rep = Instruction(Opcode.REP_IMMEDIATE, Immediate(M_FLAG),
-                                            "Mode fix: predecessors disagree on A size")
-                            optimized.append(rep)
+                            self.stats.redundant_mode_changes_eliminated += 1
+                            any_change = True
                             continue
 
-            optimized.append(node)
-            i += 1
+                # ------------------------------------------------------
+                # 2. Insert a Mode fix SEP/REP at the FIRST true join
+                #    where predecessors disagree on mode and there is
+                #    no existing switch.
+                #
+                #    We insert at most one fix per outer iteration so
+                #    the next iteration's dataflow re-computation can
+                #    update the modes of every label downstream — most
+                #    "mixed" labels are mixed only because m8 from a
+                #    back-edge propagates through them, and a single
+                #    fix at the dominating join cleans up the entire
+                #    chain. Labels with only fall-through predecessors
+                #    are never fixed directly: they inherit the mode
+                #    of whatever upstream join already covered them.
+                # ------------------------------------------------------
+                if (sep_rep_idx is None
+                        and not pending_fix_inserted
+                        and info.is_join(i)
+                        and info.has_mixed_known(i)):
+                    expected_mode = first_constraining_mode_after(
+                        nodes, info, i + 1
+                    )
+                    if expected_mode is None:
+                        # No m-determining op nearby; default to m8.
+                        expected_mode = 8
 
-        return optimized
+                    opcode = (Opcode.SEP_IMMEDIATE
+                              if expected_mode == 8
+                              else Opcode.REP_IMMEDIATE)
+                    fix = Instruction(
+                        opcode,
+                        Immediate(_M_FLAG),
+                        "Mode fix: predecessors disagree on A size",
+                    )
+
+                    new_nodes.append(node)  # the label
+                    i += 1
+                    while i < n and isinstance(nodes[i], Directive):
+                        new_nodes.append(nodes[i])
+                        i += 1
+                    new_nodes.append(fix)
+                    any_change = True
+                    pending_fix_inserted = True
+                    continue
+
+                new_nodes.append(node)
+                i += 1
+
+            nodes = new_nodes
+
+        return nodes
 
     def _eliminate_redundant_and_before_sep(self, nodes: List['AsmNode']) -> List['AsmNode']:
         """
