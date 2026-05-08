@@ -76,6 +76,58 @@ class TestInlinedLoopModeBackEdge:
         }))
         assert result.success, f"Failures: {result.failures}, error: {result.error}"
 
+    def test_inline_always_returns_value_after_loop_with_u8_counter(self, e2e):
+        """Inlined function returning a value computed before a u8-counter
+        loop tail must reload the value at the return point.
+
+        The inliner used to substitute `HardwareRegister('A')` as the
+        Return source on the assumption that "computed results live in
+        A at the Return" — but a loop whose tail does m8 work (here a
+        u8 `count--`) clobbers A's low byte before the Return is reached.
+        The result was that the caller stored whatever A happened to
+        hold (the counter, not the returned `x`).
+
+        Concretely for `shift_left_by(0x0123, 4)`:
+          start: x=0x0123, count=4
+          i=1: count=4!=0; x&0x8000=0; x*2=0x0246; count=3
+          i=2: count=3!=0; x*2=0x048C; count=2
+          i=3: count=2!=0; x*2=0x0918; count=1
+          i=4: count=1!=0; x*2=0x1230; count=0
+          i=5: count=0; break
+        Expected: 0x1230. With the bug A held 0x1200 because count's m8
+        decrement to 0 left A's low byte at 0 while B (the m16 high
+        byte) still carried 0x12 from the prior STA.
+        """
+        result = e2e.run('''
+            #[zeropage(0x14)]
+            static mut RESULT: u16;
+
+            #[inline(always)]
+            far fn shift_left_by(input @ A: u16, n: u8) -> u16 {
+                let mut x: u16 = input;
+                let mut count: u8 = n;
+                loop {
+                    if count == 0 { break; }
+                    if (x & 0x8000) != 0 {
+                        x = x ^ 0x8000;
+                    }
+                    x = x + x;
+                    count--;
+                }
+                return x;
+            }
+
+            #[entry]
+            far fn main() {
+                let result @ A: u16 = shift_left_by(0x0123, 4);
+                RESULT = A;
+            }
+        ''', ExpectedState(memory={
+            0x000014: 0x30,  # 0x1230 low
+            0x000015: 0x12,  # 0x1230 high
+        }))
+        assert result.success, f"Failures: {result.failures}, error: {result.error}"
+
     def test_inline_always_loop_with_xor_body(self, e2e):
         """Same back-edge mode bug, exercised through XOR (EOR #$8000).
 

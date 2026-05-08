@@ -86,6 +86,43 @@ INLINE_THRESHOLD_WITH_ATTR = INLINE_COST_WITH_ATTR
 INLINE_THRESHOLD_NO_ATTR   = INLINE_COST_NO_ATTR
 
 
+# Instructions that produce their result in the A register. When the
+# Return is preceded by such an instruction whose dest is the same vreg
+# we're about to return, A still holds that value and the inliner can
+# substitute HardwareRegister('A') for the vreg source, sparing the
+# caller a redundant Move (often nothing emits at all once the codegen
+# coalesces both endpoints to A).
+def _value_is_in_a_at_end_of(instrs: List[MIRInstruction],
+                              vreg: VirtualRegister) -> bool:
+    """Conservative check: does A hold `vreg` after `instrs` execute?
+
+    True iff the last MIR instruction in `instrs` produces `vreg` in A
+    via an ALU/load operation that the codegen lowers as
+    'compute-into-A then store to vreg's slot' (the common case for
+    BinaryOp / UnaryOp / Load with a simple result vreg).
+
+    Anything else — a Move from another vreg, a function call, a
+    SetMode, a CondBranch — is treated as "A unknown". Likewise if
+    there are no instructions, A's contents predate this block and
+    can't be assumed.
+
+    We deliberately keep this narrow. Loops, control flow that re-
+    enters the block, or any work between the producer and the Return
+    invalidates the assumption that the producer's result still lives
+    in A.
+    """
+    if not instrs:
+        return False
+    last = instrs[-1]
+    # The producing instruction must directly target the return-value
+    # vreg, and must be one of the instruction kinds whose codegen
+    # leaves the result in A en route to the destination slot.
+    if not isinstance(last, (BinaryOp, UnaryOp, Load, LoadIndirect,
+                              TypeConvert)):
+        return False
+    return getattr(last, 'dest', None) is vreg
+
+
 class InlinabilityChecker:
     """
     Determines whether a function can and should be inlined.
@@ -742,41 +779,25 @@ class FunctionInliner:
         # Replace Return instructions with Move + Jump to merge block
         return_blocks = []
 
-        # Determine if the function returns via A register (default for u8/i8/u16/i16)
-        # In this case, the return value vreg's value is actually in A, not in memory
-        # Default calling convention: integer types return in A unless explicitly bound elsewhere
-        returns_via_a = (
-            callee.return_type is not None
-            and hasattr(callee.return_type, 'name')
-            and callee.return_type.name in ('u8', 'i8', 'u16', 'i16')
-        )
-
-        # Collect REMAPPED callee parameter vregs — these may be hw-promoted to
-        # X/Y after inlining (FixedStack ABI), so we can't assume they'll be in A
-        # at return. Must use remapped vregs since cloned blocks have remapped values.
-        callee_param_vregs = set()
-        for vreg in callee.param_to_vreg.values():
-            callee_param_vregs.add(cloner._remap_vreg(vreg))
-
         for cloned_block in cloned_blocks.values():
             new_instructions = []
             for instr in cloned_block.instructions:
                 if isinstance(instr, Return):
-                    # Move return value to result vreg if needed
+                    # Decide where the return value comes from at the Return:
+                    # either A (because the immediately-preceding instruction
+                    # in this block produced the return-value vreg in A and
+                    # nothing has clobbered A since) or the vreg itself. The
+                    # A path keeps the ALU-result-stays-in-A optimization
+                    # that lets a `return a + b`-style function inline with
+                    # zero extra memory traffic, but doesn't apply when there
+                    # are intervening clobbers — most importantly, when a
+                    # loop's tail performs m8 work before reaching the Return.
                     if result_vreg and instr.values:
                         return_value = instr.values[0]
-
-                        # The return_value vreg is already remapped by clone_blocks().
-                        # Do NOT call _remap_operand again — that would create a
-                        # disconnected new vreg.
-                        if returns_via_a and isinstance(return_value, VirtualRegister):
-                            if return_value not in callee_param_vregs:
-                                # Computed result: ALU ops leave result in A
-                                return_value = HardwareRegister('A')
-                            # else: parameter passthrough — use remapped vreg directly.
-                            # With FixedStack ABI the param may be hw-promoted to X/Y
-                            # after inlining, so we can't assume it's in A.
-
+                        if (isinstance(return_value, VirtualRegister)
+                                and _value_is_in_a_at_end_of(
+                                    new_instructions, return_value)):
+                            return_value = HardwareRegister('A')
                         new_instructions.append(Move(
                             dest=result_vreg,
                             source=return_value,
