@@ -295,6 +295,11 @@ class PeepholeOptimizer:
         changed = True
         while changed:
             prev_total = self.stats.total
+            # Invalidate the mode-dataflow cache used by
+            # `_get_accu_mode_at`. Each pass below may produce a fresh
+            # `nodes` list, so caches keyed on `id(nodes)` from the
+            # previous iteration are stale and must not be reused.
+            self._accu_mode_cache = None
             nodes = self._fold_memory_inc_dec(nodes)
             nodes = self._eliminate_redundant_load_after_store(nodes)
             nodes = self._eliminate_identity_copies(nodes)
@@ -330,45 +335,34 @@ class PeepholeOptimizer:
             LDA dp; SEC; SBC #$01; STA dp  →  DEC dp  (same address)
 
         Also handles ABSOLUTE addressing. Skips volatile (hardware) addresses.
-        Only applies in m8 mode — INC/DEC on memory is always 8-bit width.
+        Only applies in m8 mode — INC/DEC on memory operate at the current
+        accumulator width, but the pattern we match (`LDA/CLC/ADC #1/STA`)
+        is the m8-specific shape; in m16 the codegen emits a different
+        sequence and folding here would change semantics.
+
+        Backed by the asm-mode dataflow for the m8 check. When the
+        dataflow can't prove m8 at the LDA (mode unknown or mixed),
+        the fold is conservatively skipped.
         """
         from r65.compiler.codegen.asm_nodes import Instruction, Directive, Address, Immediate as AsmImmediate
         from r65.compiler.codegen.constants import DP_BOUNDARY
+        from r65.compiler.optimize.asm_mode_dataflow import compute_modes
 
-        optimized = []
+        info = compute_modes(nodes)
+
+        optimized: List = []
         i = 0
-        in_m16 = False
-
-        while i < len(nodes):
+        n = len(nodes)
+        while i < n:
             node = nodes[i]
 
-            # Track accumulator mode via .ACCU directives
-            if isinstance(node, Directive) and node.name == '.ACCU':
-                if node.args and node.args[0] == '16':
-                    in_m16 = True
-                elif node.args and node.args[0] == '8':
-                    in_m16 = False
+            if i + 3 >= n or not isinstance(node, Instruction):
                 optimized.append(node)
                 i += 1
                 continue
 
-            # Track mode changes via REP/SEP
-            if isinstance(node, Instruction):
-                if node.opcode == Opcode.REP_IMMEDIATE and isinstance(node.operand, AsmImmediate):
-                    if isinstance(node.operand.value, int) and node.operand.value & 0x20:
-                        in_m16 = True
-                elif node.opcode == Opcode.SEP_IMMEDIATE and isinstance(node.operand, AsmImmediate):
-                    if isinstance(node.operand.value, int) and node.operand.value & 0x20:
-                        in_m16 = False
-
-            # Only fold in m8 mode (INC/DEC on memory operates at current A width,
-            # but the pattern we're matching — LDA/CLC/ADC #1/STA — is m8 specific)
-            if in_m16 or i + 3 >= len(nodes):
-                optimized.append(node)
-                i += 1
-                continue
-
-            if not isinstance(node, Instruction):
+            # Only fold when the dataflow proves m8 at this point.
+            if info.unique_mode_at(i) != 8:
                 optimized.append(node)
                 i += 1
                 continue
@@ -597,30 +591,28 @@ class PeepholeOptimizer:
         return False
 
     def _get_accu_mode_at(self, nodes: List['AsmNode'], idx: int) -> int:
+        """Determine accumulator width (8 or 16) at the given index.
+
+        Backed by the asm-mode dataflow: returns the unique mode that
+        all paths into nodes[idx] agree on. Falls back to m8 (the
+        SNES default) when the dataflow is inconclusive — either
+        because the index is at function entry (no incoming edges
+        seeded), because a path arrives in unknown mode (post-PLP/RTI),
+        or because two paths disagree.
+
+        Caches the dataflow result keyed on `id(nodes)`; callers in a
+        rewrite-heavy pass (e.g. `_eliminate_dead_stores`) should
+        invalidate `self._accu_mode_cache` whenever they hand in a
+        freshly-allocated node list.
         """
-        Determine accumulator width (8 or 16) at the given instruction index
-        by scanning backwards for the most recent SEP/REP or .ACCU directive.
-        Returns 8 (default/m8) or 16 (m16).
-        """
-        from r65.compiler.codegen.asm_nodes import Instruction, Directive
-        for i in range(idx - 1, -1, -1):
-            node = nodes[i]
-            if isinstance(node, Instruction):
-                if node.opcode == Opcode.SEP_IMMEDIATE:
-                    # SEP #$20 sets m8
-                    if isinstance(node.operand, int) and node.operand & 0x20:
-                        return 8
-                elif node.opcode == Opcode.REP_IMMEDIATE:
-                    # REP #$20 sets m16
-                    if isinstance(node.operand, int) and node.operand & 0x20:
-                        return 16
-            elif isinstance(node, Directive):
-                if node.name == '.ACCU':
-                    if node.args and node.args[0] == '16':
-                        return 16
-                    elif node.args and node.args[0] == '8':
-                        return 8
-        return 8  # default m8
+        from r65.compiler.optimize.asm_mode_dataflow import compute_modes
+
+        cache = getattr(self, '_accu_mode_cache', None)
+        if cache is None or cache[0] is not nodes:
+            self._accu_mode_cache = (nodes, compute_modes(nodes))
+        info = self._accu_mode_cache[1]
+        mode = info.unique_mode_at(idx)
+        return mode if mode is not None else 8
 
     def _is_dead_store(self, nodes: List['AsmNode'], store_idx: int, store_operand) -> bool:
         """
@@ -859,93 +851,57 @@ class PeepholeOptimizer:
         return optimized
 
     def _eliminate_redundant_mode_changes(self, nodes: List['AsmNode']) -> List['AsmNode']:
+        """Eliminate REP/SEP that don't change the actual CPU mode.
+
+        Drops the trailing `.ACCU` directive (if any) along with the
+        eliminated switch — it's advisory metadata for WLA-DX and is
+        meaningful only when the SEP/REP it annotates is real.
+
+        Backed by the asm-mode dataflow: a SEP #$20 at index i is
+        redundant iff every path into i already arrives in m8 (and
+        symmetrically for REP). The dataflow's CFG-aware mode tracking
+        catches non-adjacent redundancies (e.g. across label
+        boundaries) that the previous linear walk missed.
         """
-        Eliminate redundant processor mode changes using mode state tracking.
+        from r65.compiler.codegen.asm_nodes import Instruction, Immediate, Directive
+        from r65.compiler.optimize.asm_mode_dataflow import compute_modes, M_FLAG as _M_FLAG
 
-        Tracks the current m-flag state (8-bit or 16-bit accumulator) and
-        removes REP/SEP instructions that don't change the current mode.
-        Also removes .ACCU directives that follow eliminated mode switches.
+        info = compute_modes(nodes)
 
-        Handles non-adjacent redundancies: if we know the mode is already m16,
-        a REP #$20 several instructions later is redundant even with intervening
-        instructions (as long as no branch target or mode change occurs between).
-        """
-        from r65.compiler.codegen.asm_nodes import Instruction, Immediate, Directive, Label
-
-        optimized = []
+        optimized: List = []
         i = 0
-        # None = unknown, 8 = m8, 16 = m16
-        current_mode = None
-
-        while i < len(nodes):
+        n = len(nodes)
+        while i < n:
             node = nodes[i]
-
-            # Labels invalidate mode tracking (branch target could arrive in any mode)
-            if isinstance(node, Label):
-                current_mode = None
-                optimized.append(node)
-                i += 1
-                continue
-
-            # Track mode from .ACCU directives
-            if isinstance(node, Directive) and node.name == '.ACCU':
-                if node.args:
-                    if node.args[0] == '8':
-                        current_mode = 8
-                    elif node.args[0] == '16':
-                        current_mode = 16
-                optimized.append(node)
-                i += 1
-                continue
-
             if not isinstance(node, Instruction):
                 optimized.append(node)
                 i += 1
                 continue
 
-            # Branch/jump invalidates mode knowledge for what follows
-            if node.opcode in BRANCH_OPCODES or node.opcode in JUMP_OPCODES:
-                optimized.append(node)
-                current_mode = None
+            target_mode = None
+            if (node.opcode == Opcode.SEP_IMMEDIATE
+                    and isinstance(node.operand, Immediate)
+                    and isinstance(node.operand.value, int)
+                    and node.operand.value & _M_FLAG):
+                target_mode = 8
+            elif (node.opcode == Opcode.REP_IMMEDIATE
+                    and isinstance(node.operand, Immediate)
+                    and isinstance(node.operand.value, int)
+                    and node.operand.value & _M_FLAG):
+                target_mode = 16
+
+            if target_mode is not None and info.unique_mode_at(i) == target_mode:
+                # Already in the target mode on every path → SEP/REP is a
+                # no-op. Drop it and the trailing `.ACCU` directive that
+                # the codegen emitted alongside it.
+                self.stats.redundant_mode_changes_eliminated += 1
                 i += 1
+                if (i < n and isinstance(nodes[i], Directive)
+                        and nodes[i].name == '.ACCU' and nodes[i].args
+                        and ((target_mode == 8 and nodes[i].args[0] == '8')
+                             or (target_mode == 16 and nodes[i].args[0] == '16'))):
+                    i += 1
                 continue
-
-            # Check REP/SEP for redundancy
-            if node.opcode == Opcode.REP_IMMEDIATE and isinstance(node.operand, Immediate):
-                if isinstance(node.operand.value, int) and node.operand.value & 0x20:
-                    if current_mode == 16:
-                        # Already in m16 — skip REP and trailing .ACCU 16
-                        self.stats.redundant_mode_changes_eliminated += 1
-                        i += 1
-                        if (i < len(nodes) and isinstance(nodes[i], Directive)
-                                and nodes[i].name == '.ACCU' and nodes[i].args
-                                and nodes[i].args[0] == '16'):
-                            i += 1
-                        continue
-                    current_mode = 16
-                    optimized.append(node)
-                    i += 1
-                    continue
-
-            if node.opcode == Opcode.SEP_IMMEDIATE and isinstance(node.operand, Immediate):
-                if isinstance(node.operand.value, int) and node.operand.value & 0x20:
-                    if current_mode == 8:
-                        # Already in m8 — skip SEP and trailing .ACCU 8
-                        self.stats.redundant_mode_changes_eliminated += 1
-                        i += 1
-                        if (i < len(nodes) and isinstance(nodes[i], Directive)
-                                and nodes[i].name == '.ACCU' and nodes[i].args
-                                and nodes[i].args[0] == '8'):
-                            i += 1
-                        continue
-                    current_mode = 8
-                    optimized.append(node)
-                    i += 1
-                    continue
-
-            # PLP/RTI restore unknown mode
-            if node.opcode in (Opcode.PLP, Opcode.RTI):
-                current_mode = None
 
             optimized.append(node)
             i += 1
