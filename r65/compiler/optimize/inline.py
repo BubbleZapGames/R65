@@ -743,10 +743,43 @@ class FunctionInliner:
         call_block.instructions.append(Jump(target=inlined_entry_id))
         call_block.successors = [inlined_entry_id]
 
+        # Identify which hardware registers the callee observes. Two sources:
+        #   (a) Save Moves at the top of the entry block — the MIR builder
+        #       emits Move(saved_vreg, HW_REG) for every register-bound
+        #       parameter referenced by symbol in the body.
+        #   (b) Direct reads of the HW register anywhere in the body — the
+        #       source can refer to a register by its hardware name (e.g.
+        #       `self.lo = X` for `value @ X`), which never goes through the
+        #       saved vreg.
+        # If a param's HW register isn't observed by either path, the load is
+        # dead and the inliner can skip it.
+        inlined_entry = cloned_blocks[inlined_entry_id]
+        reg_save_count = 0
+        live_hw_regs: Set[str] = set()
+        for instr in inlined_entry.instructions:
+            if (isinstance(instr, Move) and
+                isinstance(instr.source, HardwareRegister) and
+                isinstance(instr.dest, VirtualRegister)):
+                live_hw_regs.add(instr.source.name)
+                reg_save_count += 1
+            else:
+                break
+        live_hw_regs.update(self._collect_read_hw_reg_names(cloned_blocks))
+
+        # Identify which stack-param vregs are actually read in the cloned
+        # body. A stack param vreg with no reads is dead — skip its setup
+        # Move too. We compute this on the cloned blocks, post-Return-rewrite
+        # below would obscure it, so do it before that pass touches Returns.
+        used_vreg_ids = self._collect_read_vreg_ids(cloned_blocks)
+
         # Set up parameter bindings for inlined code.
         # Returns two lists: register_instrs (set up hw regs) and stack_instrs
-        # (bind stack params to vregs).
-        register_instrs, stack_instrs = self._create_param_bindings(call, callee, cloner)
+        # (bind stack params to vregs). Unused params are skipped.
+        register_instrs, stack_instrs = self._create_param_bindings(
+            call, callee, cloner,
+            saved_hw_regs=live_hw_regs,
+            used_vreg_ids=used_vreg_ids,
+        )
 
         # Insert instructions in the correct order at the inlined entry block:
         #   1. register_instrs: Load argument values into hardware registers
@@ -756,15 +789,6 @@ class FunctionInliner:
         #   3. stack_instrs: Bind stack param arguments to callee vregs
         #      (e.g., Move(dest=ptr_vreg, source=Immediate(addr)) — may clobber A in codegen)
         #   4. Rest of callee body
-        inlined_entry = cloned_blocks[inlined_entry_id]
-        reg_save_count = 0
-        for instr in inlined_entry.instructions:
-            if (isinstance(instr, Move) and
-                isinstance(instr.source, HardwareRegister) and
-                isinstance(instr.dest, VirtualRegister)):
-                reg_save_count += 1
-            else:
-                break
         inlined_entry.instructions = (
             register_instrs +
             inlined_entry.instructions[:reg_save_count] +
@@ -838,8 +862,10 @@ class FunctionInliner:
         self,
         call: Call,
         callee: MIRFunction,
-        cloner: BlockCloner
-    ) -> List[MIRInstruction]:
+        cloner: BlockCloner,
+        saved_hw_regs: Optional[Set[str]] = None,
+        used_vreg_ids: Optional[Set[int]] = None,
+    ) -> Tuple[List[MIRInstruction], List[MIRInstruction]]:
         """
         Create instructions to bind call arguments to callee parameters.
 
@@ -847,10 +873,19 @@ class FunctionInliner:
         - register_instrs: Move arg value into hardware register (must run first)
         - stack_instrs: Move arg value into callee vreg (must run after reg saves)
 
+        Setup is skipped for parameters the inlined body never observes:
+        - Register params whose HW register isn't saved at entry (i.e., the
+          MIR builder elided the save Move because no use exists).
+        - Stack params whose vreg has no reads in the cloned body.
+
         Args:
             call: The Call instruction
             callee: Function being inlined
             cloner: Block cloner for vreg remapping
+            saved_hw_regs: Names of HW registers saved by the entry-block
+                leading Moves. Treated as "all live" when None (no pruning).
+            used_vreg_ids: IDs of vregs (in caller's space) that are read in
+                the cloned body. When None, all stack-param Moves are emitted.
 
         Returns:
             Tuple of (register_instrs, stack_instrs)
@@ -862,8 +897,12 @@ class FunctionInliner:
             if isinstance(param.binding, RegisterBinding):
                 # Register parameter: the call lowering would have set up the
                 # hardware register. After inlining, we must emit this setup
-                # explicitly since the Call instruction is removed.
+                # explicitly since the Call instruction is removed — unless
+                # the body never reads this register, in which case the load
+                # is dead. Detected via the absence of a save Move at entry.
                 hw_reg = HardwareRegister(param.binding.register_name)
+                if saved_hw_regs is not None and hw_reg.name not in saved_hw_regs:
+                    continue
                 register_instrs.append(Move(
                     dest=hw_reg,
                     source=arg.value,
@@ -882,6 +921,10 @@ class FunctionInliner:
                     callee_vreg = callee.param_to_vreg[param_idx]
                     # Get the remapped vreg
                     inlined_vreg = cloner._remap_vreg(callee_vreg)
+                    # Skip if the body never reads this vreg.
+                    if (used_vreg_ids is not None
+                            and inlined_vreg.id not in used_vreg_ids):
+                        continue
                     # Move argument value to inlined vreg
                     stack_instrs.append(Move(
                         dest=inlined_vreg,
@@ -890,3 +933,74 @@ class FunctionInliner:
                     ))
 
         return register_instrs, stack_instrs
+
+    def _collect_read_hw_reg_names(self, blocks: Dict[int, BasicBlock]) -> Set[str]:
+        """Return the set of HardwareRegister names read anywhere in `blocks`.
+
+        Liveness's _GET_USES table only tracks X/Y as HardwareRegisters (A is
+        too volatile to track that way), so we walk every operand position
+        explicitly. False positives — counting a HW reg that's redefined
+        before any read — are safe; they just keep the param load alive.
+        """
+        names: Set[str] = set()
+
+        def add(op):
+            if isinstance(op, HardwareRegister):
+                names.add(op.name)
+
+        for block in blocks.values():
+            for instr in block.instructions:
+                if isinstance(instr, Move):
+                    add(instr.source)
+                elif isinstance(instr, Store):
+                    add(instr.source)
+                elif isinstance(instr, BinaryOp):
+                    add(instr.left); add(instr.right)
+                elif isinstance(instr, UnaryOp):
+                    add(instr.operand)
+                elif isinstance(instr, Compare):
+                    add(instr.left); add(instr.right)
+                elif isinstance(instr, BitTest):
+                    add(instr.value)
+                elif isinstance(instr, (Rotate, TypeConvert, ToBool, BankByte)):
+                    add(instr.source)
+                elif isinstance(instr, StoreIndirect):
+                    add(instr.source); add(instr.pointer)
+                elif isinstance(instr, (LookupTable, JumpTable)):
+                    add(instr.scrutinee)
+                elif isinstance(instr, Call):
+                    if isinstance(instr.function, HardwareRegister):
+                        add(instr.function)
+                    for arg in instr.args:
+                        add(arg.value)
+                elif isinstance(instr, TraitDispatch):
+                    for arg in instr.args:
+                        add(arg.value)
+                    add(instr.self_ptr)
+                elif isinstance(instr, Return):
+                    for v in instr.values:
+                        add(v)
+                elif isinstance(instr, CondBranch):
+                    add(instr.condition)
+        return names
+
+    def _collect_read_vreg_ids(self, blocks: Dict[int, BasicBlock]) -> Set[int]:
+        """Return the set of VirtualRegister IDs that appear as a read operand
+        anywhere in `blocks`.
+
+        Pure write positions (Move.dest, Load.dest, BinaryOp.dest, …) are
+        excluded — only consumed operands count as a read. Used to detect
+        dead stack-param Moves: if the inlined body never reads the param's
+        vreg, the inserted setup Move is a dead store.
+        """
+        from r65.compiler.mir.liveness import _GET_USES
+        used: Set[int] = set()
+        for block in blocks.values():
+            for instr in block.instructions:
+                handler = _GET_USES.get(type(instr))
+                if handler is None:
+                    continue
+                for op in handler(instr):
+                    if isinstance(op, VirtualRegister):
+                        used.add(op.id)
+        return used
