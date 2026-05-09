@@ -329,7 +329,7 @@ class FunctionCodeGenerator:
                 if block.entry_mode is not None:
                     from r65.compiler.typeck.processor_mode import ModeState
                     accu_bits = 16 if block.entry_mode.m_mode == ModeState.M16 else 8
-                    self.emitter.emit_directive(f".ACCU {accu_bits}")
+                    self.emitter.emit_accu_mode(accu_bits)
 
             # Determine if we need to force a mode switch at block entry.
             # This is needed when:
@@ -841,13 +841,13 @@ class FunctionCodeGenerator:
 
         # Emit accumulator mode directive based on inferred entry mode
         if mir_func.entry_m_mode == ModeState.M16:
-            self.emitter.emit_directive("    .ACCU 16")
+            self.emitter.emit_accu_mode(16)
         else:
             # Default: m8 (8-bit accumulator)
-            self.emitter.emit_directive("    .ACCU 8")
+            self.emitter.emit_accu_mode(8)
 
         # Emit index mode directive - always 16-bit in R65
-        self.emitter.emit_directive("    .INDEX 16")
+        self.emitter.emit_index_mode(16)
 
     def emit_prologue(self, mir_func: MIRFunction, reg_alloc: RegisterAllocator, frame_size: int = 0):
         """
@@ -1262,7 +1262,7 @@ class FunctionCodeGenerator:
             # switched its internal state to 16-bit. The SEP #$20 switches it
             # back, but we emit .ACCU 8 explicitly to be safe — WLA-DX's
             # linear tracking can lose sync across branch targets.
-            self.emitter.emit_directive(".ACCU 8")
+            self.emitter.emit_accu_mode(8)
 
     def _emit_interrupt_scratch_saves(self, scratch_pool: ScratchRegisterPool):
         """

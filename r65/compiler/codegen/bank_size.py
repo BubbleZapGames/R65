@@ -14,7 +14,8 @@ from typing import List, Dict, Optional
 from dataclasses import dataclass
 
 from r65.compiler.codegen.asm_nodes import (
-    AsmNode, Instruction, Directive, Label, Comment, BlankLine, RawAsm
+    AsmNode, Instruction, Directive, ModeChange, Label, Comment, BlankLine,
+    RawAsm
 )
 from r65.compiler.errors import CompilerError
 
@@ -77,18 +78,21 @@ def calculate_bank_sizes(
     x16 = False
 
     for node in nodes:
+        if isinstance(node, ModeChange):
+            # Tells us the accumulator / index width WLA-DX believes is
+            # in effect for sizing immediates that follow.
+            if node.flag == 'ACCU':
+                m16 = node.bits == 16
+            elif node.flag == 'INDEX':
+                x16 = node.bits == 16
+            continue
+
         if isinstance(node, Directive):
             # Check for bank switch
             if node.name == ".BANK":
                 current_bank = int(node.args[0]) if node.args else 0
                 if current_bank not in bank_sizes:
                     bank_sizes[current_bank] = 0
-
-            # Check for mode changes (affects instruction sizes)
-            elif node.name == ".ACCU":
-                m16 = node.args[0] == "16" if node.args else False
-            elif node.name == ".INDEX":
-                x16 = node.args[0] == "16" if node.args else False
 
             # Data directives
             elif node.name == ".db":

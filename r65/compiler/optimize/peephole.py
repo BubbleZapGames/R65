@@ -220,14 +220,16 @@ class OptimizationStats:
 # RawAsm Classification
 # ============================================================================
 
-# WLA-DX directives emit no code into the instruction stream and are safe to
-# skip when scanning for the next "real" instruction. `function_gen.py` emits
-# `.ACCU 8` / `.ACCU 16` (and similar mode-tracking directives) via
-# `emit_directive(text)`, which produces a `RawAsm` node — not a `Directive`
-# node — so passes that scan past `Directive` but stop at `RawAsm` would
-# otherwise treat the directive as opaque code and abandon the scan.
+# Some WLA-DX directives emit no code into the instruction stream
+# (string literals like `.ASC` / `.ASCII`) and are safe to skip when
+# scanning for the next "real" instruction. `RawAsm` is the catch-all
+# inline-asm node, so we have to peek at the text to decide whether it
+# represents inert metadata or actual bytes.
+#
+# Mode directives (`.ACCU` / `.INDEX`) are carried by typed `ModeChange`
+# nodes; they don't appear inside RawAsm anymore.
 _TRANSPARENT_RAWASM_PREFIXES = (
-    '.ACCU', '.INDEX', '.ASC', '.ASCII',  # mode/string directives
+    '.ASC', '.ASCII',
 )
 # RawAsm prefixes that emit bytes into the instruction stream — must be
 # treated as opaque (a BRA over inline data tables would execute the data).
@@ -236,8 +238,9 @@ _OPAQUE_RAWASM_PREFIXES = ('.DB', '.DW', '.DL', '.DSB', '.DS')
 
 def _rawasm_is_transparent(node) -> bool:
     """Return True if a RawAsm node carries a non-emitting WLA-DX directive
-    (e.g. `.ACCU 8`) and is therefore safe to skip when looking for the next
-    real instruction. Returns False for inline assembly and data directives.
+    (e.g. `.ASCII "..."`) and is therefore safe to skip when looking for
+    the next real instruction. Returns False for inline assembly and
+    data directives.
     """
     from r65.compiler.codegen.asm_nodes import RawAsm
     if not isinstance(node, RawAsm):
@@ -291,6 +294,19 @@ class PeepholeOptimizer:
         Returns:
             Optimized node list
         """
+        from r65.compiler.optimize.mode_directive_rewrite import (
+            normalize_mode_directives,
+        )
+
+        # Strip and re-emit mode directives once up-front. This drops
+        # the mid-block `.ACCU` / `.INDEX` directives codegen pairs with
+        # SEP/REP/PLP/RTI and reduces them to a clean stream where the
+        # asm-mode dataflow is the sole source of truth. Individual
+        # passes below no longer need to keep `.ACCU` directives in
+        # sync when they rewrite SEP/REP — the final normalize call
+        # regenerates them after all optimizations settle.
+        nodes = normalize_mode_directives(nodes)
+
         # Apply optimization passes until no more changes
         changed = True
         while changed:
@@ -323,6 +339,12 @@ class PeepholeOptimizer:
             nodes = self._fold_inc_dec_accumulator(nodes)
             nodes = self._eliminate_redundant_cmp_zero(nodes)
             changed = self.stats.total > prev_total
+
+        # Final pass: regenerate `.ACCU` / `.INDEX` directives from the
+        # mode dataflow. The optimizations above may have left stale or
+        # missing directives; this guarantees the final stream is
+        # consistent without each pass having to maintain the pairing.
+        nodes = normalize_mode_directives(nodes)
 
         return nodes
 
@@ -853,15 +875,17 @@ class PeepholeOptimizer:
     def _eliminate_redundant_mode_changes(self, nodes: List['AsmNode']) -> List['AsmNode']:
         """Eliminate REP/SEP that don't change the actual CPU mode.
 
-        Drops the trailing `.ACCU` directive (if any) along with the
-        eliminated switch — it's advisory metadata for WLA-DX and is
-        meaningful only when the SEP/REP it annotates is real.
-
         Backed by the asm-mode dataflow: a SEP #$20 at index i is
         redundant iff every path into i already arrives in m8 (and
         symmetrically for REP). The dataflow's CFG-aware mode tracking
         catches non-adjacent redundancies (e.g. across label
         boundaries) that the previous linear walk missed.
+
+        Any trailing `.ACCU` directive codegen paired with the removed
+        SEP/REP is left in the stream — the final
+        ``normalize_mode_directives`` call rebuilds mid-block
+        directives from the dataflow result, so this pass doesn't have
+        to bookkeep the pairing.
         """
         from r65.compiler.codegen.asm_nodes import Instruction, Immediate, Directive
         from r65.compiler.optimize.asm_mode_dataflow import compute_modes, M_FLAG as _M_FLAG
@@ -891,16 +915,14 @@ class PeepholeOptimizer:
                 target_mode = 16
 
             if target_mode is not None and info.unique_mode_at(i) == target_mode:
-                # Already in the target mode on every path → SEP/REP is a
-                # no-op. Drop it and the trailing `.ACCU` directive that
-                # the codegen emitted alongside it.
+                # Already in the target mode on every path → SEP/REP is
+                # a no-op. Drop it. Any trailing `.ACCU` directive
+                # codegen paired with it is left in place; the final
+                # `normalize_mode_directives` call at the end of
+                # `optimize()` strips and regenerates mid-block
+                # directives from the asm-mode dataflow.
                 self.stats.redundant_mode_changes_eliminated += 1
                 i += 1
-                if (i < n and isinstance(nodes[i], Directive)
-                        and nodes[i].name == '.ACCU' and nodes[i].args
-                        and ((target_mode == 8 and nodes[i].args[0] == '8')
-                             or (target_mode == 16 and nodes[i].args[0] == '16'))):
-                    i += 1
                 continue
 
             optimized.append(node)
@@ -929,7 +951,7 @@ class PeepholeOptimizer:
         propagated 'mixed' state on downstream non-join labels.
         """
         from r65.compiler.codegen.asm_nodes import (
-            Instruction, Immediate, Directive, Label,
+            Instruction, Immediate, Directive, Label, ModeChange,
         )
         from r65.compiler.optimize.asm_mode_dataflow import (
             compute_modes, first_constraining_mode_after, M_FLAG as _M_FLAG,
@@ -955,13 +977,14 @@ class PeepholeOptimizer:
                     i += 1
                     continue
 
-                # Find the next SEP/REP (skipping `.ACCU` and co-located labels).
+                # Find the next SEP/REP, walking past mode-hint
+                # directives and co-located labels.
                 j = i + 1
                 accu_idx = None
                 sep_rep_idx = None
                 while j < n:
                     nj = nodes[j]
-                    if isinstance(nj, Directive) and nj.name == '.ACCU':
+                    if isinstance(nj, ModeChange) and nj.flag == 'ACCU':
                         accu_idx = j
                         j += 1
                         continue
@@ -997,11 +1020,12 @@ class PeepholeOptimizer:
                             new_nodes.append(node)  # the label
                             if accu_idx is not None:
                                 new_nodes.append(nodes[accu_idx])
+                            # Skip the SEP/REP itself. Any trailing
+                            # `.ACCU` directive codegen paired with it
+                            # is left untouched — the final
+                            # `normalize_mode_directives` call rebuilds
+                            # mid-block directives from the dataflow.
                             i = sep_rep_idx + 1
-                            if (i < n and isinstance(nodes[i], Directive)
-                                    and nodes[i].name == '.ACCU'):
-                                new_nodes.append(nodes[i])
-                                i += 1
                             self.stats.redundant_mode_changes_eliminated += 1
                             any_change = True
                             continue
@@ -1844,8 +1868,16 @@ class PeepholeOptimizer:
         it back), hoisting the SEP/REP before the label makes it execute once
         instead of every iteration. The cross-block mode pass then eliminates
         the now-redundant in-loop copy.
+
+        ``.ACCU`` / ``.INDEX`` directives that codegen paired with the
+        SEP/REP are not tracked here — they're regenerated from the
+        asm-mode dataflow by ``normalize_mode_directives`` at the end
+        of ``optimize()``, so any hoisted SEP/REP automatically gets a
+        fresh, correctly-positioned directive in the final output.
         """
-        from r65.compiler.codegen.asm_nodes import Instruction, Immediate, Directive, Label, Address
+        from r65.compiler.codegen.asm_nodes import (
+            Instruction, Immediate, Directive, Label, ModeChange, Address,
+        )
 
         M_FLAG = 0x20
         BACK_EDGE_OPCODES = {Opcode.BCC, Opcode.BNE, Opcode.BRA, Opcode.BCS, Opcode.BEQ,
@@ -1858,8 +1890,10 @@ class PeepholeOptimizer:
                 if hasattr(node.operand, 'value') and isinstance(node.operand.value, str):
                     label_refs[node.operand.value] = label_refs.get(node.operand.value, 0) + 1
 
-        # Find candidates: Label followed by SEP/REP (possibly with .ACCU between)
-        hoists = []  # (label_idx, sep_idx, accu_idx_or_none, target_mode)
+        # Find candidates: Label followed by SEP/REP (possibly with `.ACCU`
+        # / `.INDEX` directives between — those are inert hints we walk
+        # past to find the real instruction).
+        hoists = []  # (label_idx, sep_idx, target_mode)
 
         for i, node in enumerate(nodes):
             if not isinstance(node, Label):
@@ -1870,13 +1904,12 @@ class PeepholeOptimizer:
             if label_refs.get(label_name, 0) != 1:
                 continue
 
-            # Look for SEP/REP after label (skip .ACCU directives)
+            # Look for SEP/REP after label, skipping any inert mode-hint
+            # directives codegen / normalize emitted alongside it.
             j = i + 1
-            accu_before = None
             sep_idx = None
             while j < len(nodes):
-                if isinstance(nodes[j], Directive) and nodes[j].name == '.ACCU':
-                    accu_before = j
+                if isinstance(nodes[j], ModeChange):
                     j += 1
                     continue
                 if isinstance(nodes[j], Instruction):
@@ -1897,30 +1930,17 @@ class PeepholeOptimizer:
 
             target_mode = 8 if nodes[sep_idx].opcode == Opcode.SEP_IMMEDIATE else 16
 
-            # Find the .ACCU directive AFTER the SEP/REP
-            accu_after = None
-            if (sep_idx + 1 < len(nodes) and isinstance(nodes[sep_idx + 1], Directive) and
-                    nodes[sep_idx + 1].name == '.ACCU'):
-                accu_after = sep_idx + 1
-
-            # Find the back-edge branch that targets this label
-            # Track mode through the loop body to verify it arrives in target_mode
-            body_start = (accu_after + 1) if accu_after else sep_idx + 1
+            # Track mode through the loop body to verify the back-edge
+            # arrives in `target_mode`. SEP/REP/PLP/RTI are the only
+            # things that change runtime mode — we deliberately do not
+            # consult `.ACCU` directives, which are advisory metadata
+            # for WLA-DX, not the runtime CPU.
+            body_start = sep_idx + 1
             current_mode = target_mode  # After the SEP/REP, we're in target_mode
             found_back_edge = False
 
             for k in range(body_start, len(nodes)):
                 n = nodes[k]
-                if isinstance(n, Label):
-                    # Reached another label — might be fall-through from our loop
-                    continue
-                if isinstance(n, Directive) and n.name == '.ACCU':
-                    if n.args:
-                        if n.args[0] == '8':
-                            current_mode = 8
-                        elif n.args[0] == '16':
-                            current_mode = 16
-                    continue
                 if not isinstance(n, Instruction):
                     continue
 
@@ -1947,27 +1967,21 @@ class PeepholeOptimizer:
                     break
 
             if found_back_edge:
-                hoists.append((i, sep_idx, accu_after, target_mode))
+                hoists.append((i, sep_idx, target_mode))
 
         if not hoists:
             return nodes
 
-        # Apply hoists: insert SEP/REP before label, remove from inside loop
+        # Apply hoists: insert SEP/REP before label, remove from inside loop.
         hoist_set = {h[1] for h in hoists}  # SEP/REP indices to remove
-        accu_set = {h[2] for h in hoists if h[2] is not None}  # .ACCU indices to remove
-        insert_before = {}  # label_idx -> (sep_node, accu_node_or_none)
-        for label_idx, sep_idx, accu_idx, target_mode in hoists:
-            insert_before[label_idx] = (nodes[sep_idx], nodes[accu_idx] if accu_idx else None)
+        insert_before = {h[0]: nodes[h[1]] for h in hoists}
 
         optimized = []
         for i, node in enumerate(nodes):
             if i in insert_before:
-                sep_node, accu_node = insert_before[i]
-                optimized.append(sep_node)
-                if accu_node:
-                    optimized.append(accu_node)
+                optimized.append(insert_before[i])
                 self.stats.redundant_mode_changes_eliminated += 1
-            if i in hoist_set or i in accu_set:
+            if i in hoist_set:
                 continue
             optimized.append(node)
 

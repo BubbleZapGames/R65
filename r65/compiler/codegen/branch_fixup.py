@@ -33,7 +33,7 @@ from r65.compiler.codegen.opcodes import (
     Opcode, mnemonic, instruction_size,
 )
 from r65.compiler.codegen.asm_nodes import (
-    AsmNode, Instruction, Label, Directive, RawAsm,
+    AsmNode, Instruction, Label, Directive, ModeChange, RawAsm,
     Address, invert_branch,
 )
 from r65.compiler.errors import compiler_assert
@@ -235,12 +235,18 @@ class BranchFixup:
                         current_offset += LONG_CONDITIONAL_BRANCH_SIZE
                 else:
                     current_offset += instruction_size(node.opcode, acc_16, idx_16)
+            elif isinstance(node, ModeChange):
+                # No bytes, but tells our offset calc what width to use
+                # for sizing immediates that follow (matching WLA-DX's
+                # linear view).
+                if node.flag == 'ACCU':
+                    acc_16 = node.bits == 16
+                elif node.flag == 'INDEX':
+                    idx_16 = node.bits == 16
             elif isinstance(node, Directive):
-                if node.name == '.ACCU':
-                    acc_16 = '16' in ''.join(node.args)
-                elif node.name == '.INDEX':
-                    idx_16 = '16' in ''.join(node.args)
-                # Handle data directives
+                # Data directives (.db / .dw / .dl / .dsb / .dsw etc.).
+                # Mode directives go through `ModeChange` now and never
+                # reach this branch.
                 current_offset += self._directive_size(node)
             elif isinstance(node, RawAsm):
                 current_offset += self._raw_asm_size(node)

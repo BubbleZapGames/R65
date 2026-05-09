@@ -9,7 +9,8 @@ instruction addresses for source-level debugging.
 from typing import List, Dict, Tuple, Optional
 
 from r65.compiler.codegen.asm_nodes import (
-    AsmNode, Instruction, Label, Directive, BlankLine, Comment, RawAsm
+    AsmNode, Instruction, Label, Directive, ModeChange, BlankLine, Comment,
+    RawAsm
 )
 from r65.compiler.codegen.opcodes import instruction_size
 
@@ -57,13 +58,13 @@ class AddressCalculator:
         current_x16 = self.x16
 
         for i, node in enumerate(nodes):
-            # Check for mode-changing directives
-            if isinstance(node, Directive):
-                name_upper = node.name.upper()
-                if name_upper == '.ACCU' and node.args:
-                    current_m16 = node.args[0] == '16'
-                elif name_upper == '.INDEX' and node.args:
-                    current_x16 = node.args[0] == '16'
+            # Track mode-changing directives — sizing of accumulator
+            # / index immediate operands depends on m / x flag width.
+            if isinstance(node, ModeChange):
+                if node.flag == 'ACCU':
+                    current_m16 = node.bits == 16
+                elif node.flag == 'INDEX':
+                    current_x16 = node.bits == 16
 
             size = self._node_size_with_mode(node, current_m16, current_x16)
             if size > 0:
@@ -96,13 +97,13 @@ class AddressCalculator:
         current_x16 = self.x16
 
         for i, node in enumerate(nodes):
-            # Check for mode-changing directives
-            if isinstance(node, Directive):
-                name_upper = node.name.upper()
-                if name_upper == '.ACCU' and node.args:
-                    current_m16 = node.args[0] == '16'
-                elif name_upper == '.INDEX' and node.args:
-                    current_x16 = node.args[0] == '16'
+            # Track mode-changing directives — sizing of accumulator
+            # / index immediate operands depends on m / x flag width.
+            if isinstance(node, ModeChange):
+                if node.flag == 'ACCU':
+                    current_m16 = node.bits == 16
+                elif node.flag == 'INDEX':
+                    current_x16 = node.bits == 16
 
             # Record label address before processing
             if isinstance(node, Label):
@@ -160,7 +161,7 @@ class AddressCalculator:
                 return self._directive_size(name, args)
             case RawAsm(text):
                 return self._raw_asm_size(text)
-            case Label() | Comment() | BlankLine():
+            case Label() | Comment() | BlankLine() | ModeChange(_, _, _):
                 return 0
             case _:
                 return 0

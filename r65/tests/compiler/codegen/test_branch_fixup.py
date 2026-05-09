@@ -9,7 +9,7 @@ from r65.compiler.codegen.branch_fixup import (
     MAX_BRANCH_DISTANCE,
 )
 from r65.compiler.codegen.asm_nodes import (
-    Instruction, Label, Comment, Directive, BlankLine,
+    Instruction, Label, Comment, Directive, ModeChange, BlankLine,
     Address, invert_branch, BRANCH_INVERSIONS,
 )
 from r65.compiler.codegen.opcodes import Opcode
@@ -124,8 +124,8 @@ class TestIntegration:
         nodes = [
             Comment("Function with while loop"),
             Label("test_while"),
-            Directive(".ACCU", ["8"]),
-            Directive(".INDEX", ["8"]),
+            ModeChange("ACCU", 8),
+            ModeChange("INDEX", 8),
             Instruction(Opcode.LDA_IMMEDIATE, Address(0x0A)),
             Instruction(Opcode.STA_DP, Address(0x10)),
             Label("test_while__L1"),
@@ -232,7 +232,7 @@ class TestEdgeCases:
         """Directives should be preserved through fixup."""
         nodes = [
             Label("func"),
-            Directive(".ACCU", ["16"]),
+            ModeChange("ACCU", 16),
             Instruction(Opcode.BEQ, Address("far_target")),
         ]
         for _ in range(150):
@@ -245,9 +245,9 @@ class TestEdgeCases:
         fixed, num_fixups = fixup_nodes(nodes)
 
         assert num_fixups == 1
-        directives = [n for n in fixed if isinstance(n, Directive)]
-        assert len(directives) == 1
-        assert directives[0].name == ".ACCU"
+        modes = [n for n in fixed if isinstance(n, ModeChange)]
+        assert len(modes) == 1
+        assert modes[0].flag == "ACCU"
 
 
 class TestExactBoundaries:

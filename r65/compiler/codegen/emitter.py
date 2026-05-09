@@ -19,8 +19,8 @@ from r65.compiler.codegen.opcodes import (
     Opcode, mnemonic, addressing_mode, BRANCH_OPCODES,
 )
 from r65.compiler.codegen.asm_nodes import (
-    AsmNode, Instruction, Label, Comment, Directive, BlankLine, RawAsm,
-    Immediate, Address, StackOffset, BlockMove, Operand,
+    AsmNode, Instruction, Label, Comment, Directive, ModeChange, BlankLine,
+    RawAsm, Immediate, Address, StackOffset, BlockMove, Operand,
 )
 
 
@@ -82,6 +82,14 @@ def emit_node(node: AsmNode, indent: str = "    ") -> str:
             if args:
                 return f"{name} {', '.join(args)}"
             return name
+
+        case ModeChange(flag, bits):
+            # Indented to match the file-wide convention for mode
+            # directives. Column-0 directives are reserved for
+            # top-level forms (`.BANK`, `.ORG`, `.MEMORYMAP`); tests
+            # and section parsers (e.g. test_jml_d_indirect_call.py)
+            # use column-0 `.X` as a section boundary marker.
+            return f"{indent}.{flag} {bits}"
 
         case BlankLine():
             return ""
@@ -357,13 +365,13 @@ class AssemblyEmitter:
         self.nodes.append(Comment(text))
 
     def emit_accu_mode(self, bits: int):
-        """Emit .ACCU directive and update tracked mode."""
-        self.nodes.append(Directive(".ACCU", [str(bits)]))
+        """Emit a `.ACCU` mode-tracking directive and update tracked mode."""
+        self.nodes.append(ModeChange("ACCU", bits))
         self._current_accu_mode = bits
 
     def emit_index_mode(self, bits: int):
-        """Emit .INDEX directive and update tracked mode."""
-        self.nodes.append(Directive(".INDEX", [str(bits)]))
+        """Emit a `.INDEX` mode-tracking directive and update tracked mode."""
+        self.nodes.append(ModeChange("INDEX", bits))
         self._current_index_mode = bits
 
     def set_accu_mode_tracking(self, bits: 'int | None'):
