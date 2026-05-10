@@ -16,11 +16,12 @@ from r65.compiler.mir.nodes import (
     Move, BinaryOp, Jump, CondBranch, Return, Call,
     Load, Store, LoadIndirect, StoreIndirect, MemoryLocation,
     VirtualRegister, HardwareRegister, Immediate,
-    InlineAsm, Argument, ArgumentMechanism,
+    InlineAsm, Argument, ArgumentMechanism, SetMode,
 )
 from r65.compiler.hir.types import BasicTypeInfo
 from r65.compiler.hir.attributes import InlineAttribute, InlineMode, InterruptAttribute, InterruptVector
 from r65.compiler.mir.virtual_registers import VirtualRegisterAllocator
+from r65.compiler.typeck.processor_mode import ModeState, ProcessorMode, XModeState
 from r65.tests.language.common import make_mir_function
 
 
@@ -892,3 +893,198 @@ class TestFunctionInliner:
         assert inlined_count == 0
         # Both functions should still exist
         assert len(program.functions) == 2
+
+
+# =============================================================================
+# Boundary SetMode tests
+# =============================================================================
+
+def _make_callee_with_modes(name: str, entry_mode: ModeState, exit_mode: ModeState,
+                            return_type: str = 'u8') -> MIRFunction:
+    """Build a one-block callee with explicit entry/exit M modes.
+
+    The body is a stand-in (Move + Return) — its content doesn't matter for
+    boundary-SetMode shape tests; only the signature modes do.
+    """
+    func = make_mir_function(name, return_type=return_type, inline_attr=INLINE)
+    func.entry_m_mode = entry_mode
+    func.exit_m_mode = exit_mode
+    vreg = VirtualRegister(id=0, type_info=BasicTypeInfo(return_type), hint="r")
+    func.blocks[0] = BasicBlock(
+        block_id=0,
+        instructions=[
+            Move(dest=vreg, source=Immediate(1), type_info=BasicTypeInfo(return_type)),
+            Return(values=[vreg]),
+        ],
+        predecessors=[], successors=[],
+    )
+    # Pre-populate entry_mode so the inliner's "caller mode at call site"
+    # computation finds a non-None starting point in the cloned body.
+    func.blocks[0].entry_mode = ProcessorMode(entry_mode, XModeState.X16)
+    func.blocks[0].exit_mode = ProcessorMode(exit_mode, XModeState.X16)
+    return func
+
+
+def _make_caller_with_call(callee_name: str, caller_entry_mode: ModeState,
+                            return_type: str = 'u8') -> MIRFunction:
+    """Build a single-block caller in the given M mode that calls `callee_name`.
+
+    Mirrors create_caller_with_call but lets the test choose the caller's
+    entry mode, and seeds block 0's entry_mode (the inliner relies on it).
+    """
+    func = make_mir_function("main", return_type=return_type, is_entry=True)
+    func.entry_m_mode = caller_entry_mode
+    func.exit_m_mode = caller_entry_mode
+    vreg = VirtualRegister(id=0, type_info=BasicTypeInfo(return_type), hint="r")
+    func.blocks[0] = BasicBlock(
+        block_id=0,
+        instructions=[
+            Call(function=callee_name, args=[], returns=[vreg], is_far=False,
+                 callee_entry_m_mode=None, callee_exit_m_mode=None),
+            Return(values=[vreg]),
+        ],
+        predecessors=[], successors=[],
+    )
+    func.blocks[0].entry_mode = ProcessorMode(caller_entry_mode, XModeState.X16)
+    func.blocks[0].exit_mode = ProcessorMode(caller_entry_mode, XModeState.X16)
+    return func
+
+
+def _setmode_count(blocks) -> int:
+    return sum(
+        1
+        for b in blocks.values()
+        for i in b.instructions
+        if isinstance(i, SetMode)
+    )
+
+
+def _setmodes_in_block(block) -> list:
+    return [i for i in block.instructions if isinstance(i, SetMode)]
+
+
+class TestBoundarySetMode:
+    """Inliner inserts MIR-level SetMode at the inline boundary.
+
+    These tests assert MIR shape after `_inline_call` so they're cheap and
+    isolated from the codegen / assembler / emulator. They cover the same
+    behavior the e2e tests verify end-to-end, except for hardware-only
+    semantics (B-register preservation across SEP/REP).
+    """
+
+    def _run_inline(self, caller, callee):
+        program = MIRProgram(functions=[caller, callee])
+        FunctionInliner(verbose=False).run(program)
+        return caller
+
+    def test_inserts_entry_setmode_for_m16_callee_in_m8_caller(self):
+        """m8 caller → m16 callee: a REP #$20 must appear before the Jump
+        into the inlined entry so the body runs in the mode it expects."""
+        callee = _make_callee_with_modes("f", ModeState.M16, ModeState.M16, 'u16')
+        caller = _make_caller_with_call("f", ModeState.M8, 'u16')
+        self._run_inline(caller, callee)
+
+        call_block = caller.blocks[0]
+        # The original Call+Return are gone; the call block now ends with
+        # [..., SetMode(REP #$20), Jump(inlined_entry)].
+        assert isinstance(call_block.instructions[-1], Jump)
+        entry_setmode = call_block.instructions[-2]
+        assert isinstance(entry_setmode, SetMode)
+        assert entry_setmode.mask == 0x20
+        assert entry_setmode.is_set is False  # REP
+
+    def test_inserts_exit_setmode_on_each_return_path(self):
+        """m16 callee returning to m8 caller: every cloned return-block
+        gets a SEP #$20 between its result Move and the Jump-to-merge so
+        merge predecessors agree on mode."""
+        callee = _make_callee_with_modes("f", ModeState.M16, ModeState.M16, 'u16')
+        caller = _make_caller_with_call("f", ModeState.M8, 'u16')
+        self._run_inline(caller, callee)
+
+        # Every block that ends in Jump-to-merge (i.e., every former Return
+        # block) should have a SetMode SEP just before that Jump.
+        merge_block_id = max(caller.blocks.keys())
+        return_blocks = [
+            b for b in caller.blocks.values()
+            if b.successors == [merge_block_id]
+        ]
+        assert return_blocks, "expected at least one return-rewritten block"
+        for block in return_blocks:
+            assert isinstance(block.instructions[-1], Jump)
+            exit_setmode = block.instructions[-2]
+            assert isinstance(exit_setmode, SetMode), (
+                f"expected SetMode before Jump in return block, "
+                f"got {type(exit_setmode).__name__}"
+            )
+            assert exit_setmode.mask == 0x20
+            assert exit_setmode.is_set is True  # SEP back to m8
+
+    def test_no_boundary_setmode_when_modes_match(self):
+        """m8 caller + m8 callee: no entry or exit boundary SetMode.
+
+        The pre-fix behavior emitted nothing here; the post-fix behavior
+        should also emit nothing, since the explicit mode comparison
+        short-circuits when caller and callee agree.
+        """
+        callee = _make_callee_with_modes("f", ModeState.M8, ModeState.M8, 'u8')
+        caller = _make_caller_with_call("f", ModeState.M8, 'u8')
+        self._run_inline(caller, callee)
+
+        # The only SetMode the inliner could have inserted are at the
+        # entry boundary (call_block tail) and exit boundary (return-block
+        # tails). With matching modes there should be zero of either.
+        assert _setmode_count(caller.blocks) == 0
+
+    def test_inserts_entry_setmode_for_m8_callee_in_m16_caller(self):
+        """Reverse direction: m16 caller → m8 callee. Entry boundary must
+        be SEP #$20; exit boundary must be REP #$20 to restore the m16
+        the caller's continuation expects."""
+        callee = _make_callee_with_modes("f", ModeState.M8, ModeState.M8, 'u8')
+        caller = _make_caller_with_call("f", ModeState.M16, 'u8')
+        self._run_inline(caller, callee)
+
+        call_block = caller.blocks[0]
+        entry_setmode = call_block.instructions[-2]
+        assert isinstance(entry_setmode, SetMode)
+        assert entry_setmode.mask == 0x20
+        assert entry_setmode.is_set is True  # SEP into m8
+
+        merge_block_id = max(caller.blocks.keys())
+        return_blocks = [
+            b for b in caller.blocks.values()
+            if b.successors == [merge_block_id]
+        ]
+        for block in return_blocks:
+            exit_setmode = block.instructions[-2]
+            assert isinstance(exit_setmode, SetMode)
+            assert exit_setmode.mask == 0x20
+            assert exit_setmode.is_set is False  # REP back to m16
+
+    def test_no_exit_setmode_when_callee_exit_matches_caller(self):
+        """m8 caller → m16-entry / m8-exit callee: the entry boundary needs
+        a REP, but the exit boundary needs nothing because the callee
+        returns in the same mode the caller expects."""
+        callee = _make_callee_with_modes("f", ModeState.M16, ModeState.M8, 'u8')
+        caller = _make_caller_with_call("f", ModeState.M8, 'u8')
+        self._run_inline(caller, callee)
+
+        # Entry boundary: REP present.
+        call_block = caller.blocks[0]
+        entry_setmode = call_block.instructions[-2]
+        assert isinstance(entry_setmode, SetMode)
+        assert entry_setmode.is_set is False  # REP into m16
+
+        # Exit boundary: no SetMode in any return block (last instr is
+        # the Jump itself, not preceded by a SetMode).
+        merge_block_id = max(caller.blocks.keys())
+        for block in caller.blocks.values():
+            if block.successors != [merge_block_id]:
+                continue
+            assert isinstance(block.instructions[-1], Jump)
+            # second-to-last must NOT be a SetMode that touches M
+            penult = block.instructions[-2] if len(block.instructions) >= 2 else None
+            if isinstance(penult, SetMode):
+                assert not (penult.mask & 0x20), (
+                    "no exit-boundary M-flag SetMode expected when "
+                    "callee.exit_m_mode == caller's mode"
+                )

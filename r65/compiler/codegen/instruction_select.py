@@ -1145,13 +1145,24 @@ class InstructionSelector:
         """
         Generate code for SetMode instruction.
 
+        Also reflect the M-flag change in the emitter's tracked mode so
+        subsequent `_ensure_mX_mode` calls within this block see the new
+        mode. Without this the codegen kept tracking the pre-SetMode
+        mode and skipped a needed SEP/REP for the next mode-sensitive
+        op (notably u16 stores after an exit-boundary SEP inserted by
+        the inliner).
+
         Args:
             instr: SetMode instruction
         """
         if instr.is_set:
             self._emit_immediate(Opcode.SEP_IMMEDIATE, instr.mask)
+            if instr.mask & M_FLAG:
+                self.emitter.emit_accu_mode(8)
         else:
             self._emit_immediate(Opcode.REP_IMMEDIATE, instr.mask)
+            if instr.mask & M_FLAG:
+                self.emitter.emit_accu_mode(16)
 
     # ========================================================================
     # Register Save/Restore

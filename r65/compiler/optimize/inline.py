@@ -738,8 +738,27 @@ class FunctionInliner:
             successors=list(call_block.successors),
         )
 
-        # Update call block: keep pre-call instructions, add jump to inlined entry
+        # Compute the mode the caller is in at the call site. The non-inlined
+        # call path brackets JSR with SEP/REP to bridge caller→callee.entry
+        # and back; we need the same bridging in MIR so merge blocks see
+        # consistent predecessor modes. Walk pre_call_instrs and apply each
+        # SetMode's effect — no other MIR instruction in an inlinable
+        # function mutates the M flag (Push/Pull of STATUS only appears in
+        # interrupt handlers and asm wrappers, both non-inlinable).
+        caller_mode_at_call = self._compute_caller_mode_at_call(
+            caller, call_block, pre_call_instrs
+        )
+
+        # Update call block: keep pre-call instructions, add jump to inlined
+        # entry, and insert an entry-boundary SetMode just before the jump
+        # if the callee expects a different M mode.
         call_block.instructions = list(pre_call_instrs)
+        entry_setmode = self._make_boundary_setmode(
+            from_mode=caller_mode_at_call.m_mode,
+            to_mode=getattr(callee, 'entry_m_mode', None),
+        )
+        if entry_setmode is not None:
+            call_block.instructions.append(entry_setmode)
         call_block.instructions.append(Jump(target=inlined_entry_id))
         call_block.successors = [inlined_entry_id]
 
@@ -827,6 +846,17 @@ class FunctionInliner:
                             source=return_value,
                             type_info=callee.return_type
                         ))
+                    # Exit-boundary SetMode: switch back to the caller's mode
+                    # so every return path enters the merge block in the same
+                    # mode (mirrors call_select.py's _emit_exit_mode_restore).
+                    # Goes after the result Move so the A-substitution check
+                    # above still sees the original tail instruction.
+                    exit_setmode = self._make_boundary_setmode(
+                        from_mode=getattr(callee, 'exit_m_mode', None),
+                        to_mode=caller_mode_at_call.m_mode,
+                    )
+                    if exit_setmode is not None:
+                        new_instructions.append(exit_setmode)
                     # Jump to merge block
                     new_instructions.append(Jump(target=merge_block_id))
                     return_blocks.append(cloned_block.block_id)
@@ -857,6 +887,56 @@ class FunctionInliner:
                     succ_block.predecessors.append(merge_block_id)
 
         return True
+
+    def _compute_caller_mode_at_call(
+        self,
+        caller: MIRFunction,
+        call_block: BasicBlock,
+        pre_call_instrs: List[MIRInstruction],
+    ):
+        """Return the ProcessorMode the CPU is in when control reaches the
+        Call instruction.
+
+        Starts from `call_block.entry_mode` (set by MIRModeTracker during
+        MIR construction) and folds any SetMode in pre_call_instrs forward.
+        Falls back to a freshly-built mode from `caller.entry_m_mode` when
+        the block's entry_mode is None — that happens after a previous
+        inline mutated the caller and we don't re-run mode tracking.
+        """
+        from r65.compiler.typeck.processor_mode import (
+            ProcessorMode, ModeState, XModeState,
+        )
+
+        mode = call_block.entry_mode
+        if mode is None:
+            mode = ProcessorMode(
+                caller.entry_m_mode or ModeState.M8, XModeState.X16
+            )
+        for instr in pre_call_instrs:
+            if isinstance(instr, SetMode):
+                if instr.is_set:
+                    mode = mode.apply_sep(instr.mask)
+                else:
+                    mode = mode.apply_rep(instr.mask)
+        return mode
+
+    def _make_boundary_setmode(self, from_mode, to_mode):
+        """Return a SetMode that transitions M flag from `from_mode` to
+        `to_mode`, or None if no transition is needed.
+
+        Both arguments are ModeState (M8/M16) or None; None is treated as
+        ModeState.M8 to match MIRFunction's default. X is always X16 in
+        R65, so we only ever flip the M bit.
+        """
+        from r65.compiler.typeck.processor_mode import ModeState
+
+        from_m = from_mode or ModeState.M8
+        to_m = to_mode or ModeState.M8
+        if from_m == to_m:
+            return None
+        if to_m == ModeState.M8:
+            return SetMode(mask=0x20, is_set=True)   # SEP #$20
+        return SetMode(mask=0x20, is_set=False)      # REP #$20
 
     def _create_param_bindings(
         self,

@@ -350,3 +350,54 @@ if __name__ == "__main__":
     test_16bit_operations()
 
     print("🎉 All tests passed!")
+
+
+# =============================================================================
+# select_set_mode emitter-mode tracking
+# =============================================================================
+# Regression tests for the bug where select_set_mode emitted SEP/REP but
+# left the emitter's tracked accu_mode stale, causing a subsequent
+# _ensure_mX_mode check to skip a needed SEP/REP. Surfaced when the
+# inliner started inserting MIR-level SetMode at inline boundaries: a
+# u16 STA after an exit-boundary SEP silently dropped the high byte
+# because the codegen still believed it was in m16.
+
+def _fresh_selector():
+    emitter = AssemblyEmitter()
+    selector = InstructionSelector(emitter, RegisterAllocator(), MemoryAllocator())
+    return emitter, selector
+
+
+def test_select_set_mode_sep_m_flag_updates_accu_to_m8():
+    emitter, selector = _fresh_selector()
+    emitter.emit_accu_mode(16)
+    selector.select_instruction(SetMode(mask=0x20, is_set=True))
+    assert emitter.get_accu_mode() == 8
+
+
+def test_select_set_mode_rep_m_flag_updates_accu_to_m16():
+    emitter, selector = _fresh_selector()
+    emitter.emit_accu_mode(8)
+    selector.select_instruction(SetMode(mask=0x20, is_set=False))
+    assert emitter.get_accu_mode() == 16
+
+
+def test_select_set_mode_x_only_does_not_change_accu():
+    """SEP/REP touching only the X flag (mask=0x10) must not affect the
+    emitter's accu (M-flag) tracking. R65 keeps X always at x16, so the
+    M tracker should stay where it was."""
+    emitter, selector = _fresh_selector()
+    emitter.emit_accu_mode(16)
+    selector.select_instruction(SetMode(mask=0x10, is_set=True))
+    assert emitter.get_accu_mode() == 16
+    selector.select_instruction(SetMode(mask=0x10, is_set=False))
+    assert emitter.get_accu_mode() == 16
+
+
+def test_select_set_mode_combined_mx_mask_updates_accu():
+    """SEP #$30 sets both M and X — the M-flag effect must reach the
+    accu tracker even when the X bit is also present."""
+    emitter, selector = _fresh_selector()
+    emitter.emit_accu_mode(16)
+    selector.select_instruction(SetMode(mask=0x30, is_set=True))
+    assert emitter.get_accu_mode() == 8
