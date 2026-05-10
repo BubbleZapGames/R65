@@ -1,50 +1,20 @@
 # Copyright (c) 2026 Neutron Emulation, LLC. MIT licensed.
 """
-End-to-end tests for struct and pointer operations.
+End-to-end tests for struct and pointer runtime operations.
 
-Tests struct field access, pointer auto-deref, multi-byte fields, and arrays of structs.
+Field-offset/layout is unit-tested in compiler/hir/test_hir_builder.py.
+This file covers runtime codegen: field reads/writes, pointer auto-deref,
+struct initializers, arrays of structs, and pointer-loop indexed reads.
 """
 
 from r65.tests.e2e import ExpectedState
 
 
 class TestStructFieldAccess:
-    """Test struct field read/write operations."""
-
-    def test_struct_field_read_write(self, e2e):
-        """Test writing and reading struct fields in zeropage.
-
-        Note: X=field goes through A (65816 limitation), so load X first, then A.
-        """
-        result = e2e.run('''
-            struct Pos { x: u8, y: u8 }
-
-            #[zeropage(0x10)]
-            static mut POS: Pos;
-
-            #[zeropage(0x20)]
-            static mut RX: u8;
-            #[zeropage(0x21)]
-            static mut RY: u8;
-
-            #[entry]
-            fn main() {
-                POS.x = 100;
-                POS.y = 200;
-                // Store to memory to avoid A clobber issue
-                RX = POS.x;
-                RY = POS.y;
-            }
-        ''', ExpectedState(
-            memory={
-                0x7E0010: 100, 0x7E0011: 200,
-                0x7E0020: 100, 0x7E0021: 200,
-            }
-        ))
-        assert result.success, f"Failures: {result.failures}"
+    """Runtime read/write through struct field access."""
 
     def test_struct_with_u16_field(self, e2e):
-        """Test struct with mixed u8/u16 fields."""
+        """Multi-byte field offset writes correct bytes."""
         result = e2e.run('''
             struct Entity { kind: u8, health: u16 }
 
@@ -57,13 +27,13 @@ class TestStructFieldAccess:
                 ENT.health = 500;
             }
         ''', ExpectedState(memory={
-            0x7E0010: 0x01,            # kind
-            0x7E0011: [0xF4, 0x01],    # health=500 LE
+            0x7E0010: 0x01,
+            0x7E0011: [0xF4, 0x01],
         }))
         assert result.success, f"Failures: {result.failures}"
 
     def test_struct_init_literal(self, e2e):
-        """Test struct initialization with literal values."""
+        """Static struct with literal initializer + runtime field reads."""
         result = e2e.run('''
             struct Pos { x: u8, y: u8 }
 
@@ -80,16 +50,14 @@ class TestStructFieldAccess:
                 RX = POS.x;
                 RY = POS.y;
             }
-        ''', ExpectedState(
-            memory={
-                0x7E0010: 42, 0x7E0011: 99,
-                0x7E0020: 42, 0x7E0021: 99,
-            }
-        ))
+        ''', ExpectedState(memory={
+            0x7E0010: 42, 0x7E0011: 99,
+            0x7E0020: 42, 0x7E0021: 99,
+        }))
         assert result.success, f"Failures: {result.failures}"
 
     def test_struct_field_arithmetic(self, e2e):
-        """Test arithmetic on struct fields."""
+        """Arithmetic on struct fields round-trips correctly."""
         result = e2e.run('''
             struct Pos { x: u8, y: u8 }
 
@@ -106,38 +74,17 @@ class TestStructFieldAccess:
 
 
 class TestStructPointers:
-    """Test struct access through pointers."""
+    """Pointer auto-deref to struct fields."""
 
-    def test_struct_pointer_field_read(self, e2e):
-        """Test reading struct fields through a pointer."""
+    def test_struct_pointer_read_nonzero_offset(self, e2e):
+        """Reading the second field exercises non-zero offset codegen."""
         result = e2e.run('''
             struct Pos { x: u8, y: u8 }
 
             #[zeropage(0x10)]
             static mut POS: Pos = Pos { x: 55, y: 77 };
 
-            fn read_x(ptr: *Pos) -> u8 {
-                return ptr.x;
-            }
-
-            #[entry]
-            fn main() {
-                A = read_x(&POS);
-            }
-        ''', ExpectedState(A=55))
-        assert result.success, f"Failures: {result.failures}"
-
-    def test_struct_pointer_field_read_second(self, e2e):
-        """Test reading second field through a pointer (non-zero offset)."""
-        result = e2e.run('''
-            struct Pos { x: u8, y: u8 }
-
-            #[zeropage(0x10)]
-            static mut POS: Pos = Pos { x: 55, y: 77 };
-
-            fn read_y(ptr: *Pos) -> u8 {
-                return ptr.y;
-            }
+            fn read_y(ptr: *Pos) -> u8 { return ptr.y; }
 
             #[entry]
             fn main() {
@@ -147,20 +94,15 @@ class TestStructPointers:
         assert result.success, f"Failures: {result.failures}"
 
     def test_struct_pointer_field_write(self, e2e):
-        """Test writing struct fields through a pointer using A register."""
+        """Write through pointer; A-register binding."""
         result = e2e.run('''
             struct Pos { x: u8, y: u8 }
 
             #[zeropage(0x10)]
             static mut POS: Pos;
 
-            fn set_x(ptr: *Pos, val @ A: u8) {
-                ptr.x = val;
-            }
-
-            fn set_y(ptr: *Pos, val @ A: u8) {
-                ptr.y = val;
-            }
+            fn set_x(ptr: *Pos, val @ A: u8) { ptr.x = val; }
+            fn set_y(ptr: *Pos, val @ A: u8) { ptr.y = val; }
 
             #[entry]
             fn main() {
@@ -175,10 +117,10 @@ class TestStructPointers:
 
 
 class TestArrayOfStructs:
-    """Test arrays of structs with field access."""
+    """Array indexing × struct field offset."""
 
     def test_array_of_structs_write_read(self, e2e):
-        """Test writing and reading from an array of structs."""
+        """Array of 2-byte structs: indexed write and read."""
         result = e2e.run('''
             struct Item { id: u8, count: u8 }
 
@@ -198,7 +140,6 @@ class TestArrayOfStructs:
                 ITEMS[2].count = 30;
                 ITEMS[3].id = 4;
                 ITEMS[3].count = 40;
-                // Read back second item count
                 RESULT = ITEMS[1].count;
                 A = RESULT;
             }
@@ -210,32 +151,12 @@ class TestArrayOfStructs:
         ))
         assert result.success, f"Failures: {result.failures}"
 
-    def test_struct_three_fields(self, e2e):
-        """Test struct with 3 fields."""
-        result = e2e.run('''
-            struct RGB { r: u8, g: u8, b: u8 }
-
-            #[zeropage(0x10)]
-            static mut COLOR: RGB;
-
-            #[entry]
-            fn main() {
-                COLOR.r = 0xFF;
-                COLOR.g = 0x80;
-                COLOR.b = 0x00;
-            }
-        ''', ExpectedState(memory={
-            0x7E0010: [0xFF, 0x80, 0x00],
-        }))
-        assert result.success, f"Failures: {result.failures}"
-
     def test_pointer_loop_indexed_read(self, e2e):
-        """Regression: LoadIndirect via pointer uses Y as index register.
+        """Regression: LDA (dp),Y indirect indexed read with Y as loop counter.
 
-        LDA (dp),Y / LDA [dp],Y use Y as the index register. The compiler
-        must not coalesce other variables into Y when LoadIndirect/StoreIndirect
-        instructions exist in the same block, as the codegen uses Y for the
-        index operand.
+        The compiler must not coalesce other variables into Y when
+        LoadIndirect/StoreIndirect instructions exist in the same block,
+        as the codegen uses Y for the index operand.
         """
         result = e2e.run('''
             #[zeropage(0x10)]
@@ -264,7 +185,5 @@ class TestArrayOfStructs:
                 }
                 RESULT = acc;
             }
-        ''', ExpectedState(
-            memory={0x7E0300: 100}
-        ))
+        ''', ExpectedState(memory={0x7E0300: 100}))
         assert result.success, f"Failures: {result.failures}"

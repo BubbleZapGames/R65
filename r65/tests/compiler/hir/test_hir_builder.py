@@ -209,6 +209,27 @@ struct Point {
         assert struct.fields[0].field_type.name == "u16"
         assert struct.fields[1].field_type.name == "u16"
 
+    def test_struct_field_offsets_packed(self):
+        """Field offsets are packed (no alignment padding)."""
+        hir = build_hir("""
+struct Mixed { kind: u8, health: u16, count: u8 }
+""")
+        struct = hir.declarations[0]
+        offsets = {f.name: f.offset for f in struct.fields}
+        assert offsets == {'kind': 0, 'health': 1, 'count': 3}
+
+    def test_struct_field_offsets_all_u8(self):
+        """All-u8 struct: offsets advance by 1 each."""
+        hir = build_hir("struct RGB { r: u8, g: u8, b: u8 }")
+        offsets = [f.offset for f in hir.declarations[0].fields]
+        assert offsets == [0, 1, 2]
+
+    def test_struct_field_offsets_all_u16(self):
+        """All-u16 struct: offsets advance by 2 each."""
+        hir = build_hir("struct V2 { x: u16, y: u16 }")
+        offsets = [f.offset for f in hir.declarations[0].fields]
+        assert offsets == [0, 2]
+
 
 class TestEnumDeclarations:
     """Test enum declarations."""
