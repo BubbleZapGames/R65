@@ -25,6 +25,7 @@ from r65.compiler.hir.attributes import (
     InlineAttribute, InlineMode, InterruptAttribute, InterruptVector,
     BankAttribute, PreservesAttribute,
 )
+from r65.compiler.hir.nodes import HIRParameter, RegisterBinding
 from r65.compiler.mir.virtual_registers import VirtualRegisterAllocator
 from r65.compiler.typeck.processor_mode import ModeState, ProcessorMode, XModeState
 from r65.tests.language.common import make_mir_function
@@ -1514,3 +1515,336 @@ class TestNestedInlining:
             if isinstance(i, Call)
         ]
         assert remaining_calls == []
+
+
+# =============================================================================
+# Register-parameter setup ordering: when a callee has multiple register
+# parameters, any A-target Move must come LAST. Non-A loads (to B via XBA,
+# DBR via PHA/PLB, D via TCD) route through A in codegen and would clobber
+# the A param before the body reads it.
+# =============================================================================
+
+def _make_two_reg_param_callee(reg_a: str, reg_b: str):
+    """Callee with two register-bound parameters."""
+    func = make_mir_function("twoparams", inline_attr=INLINE)
+    p0 = HIRParameter(name='p0', param_type=BasicTypeInfo('u8'),
+                      binding=RegisterBinding(register_name=reg_a))
+    p1 = HIRParameter(name='p1', param_type=BasicTypeInfo('u8'),
+                      binding=RegisterBinding(register_name=reg_b))
+    func.parameters = [p0, p1]
+    v0 = VirtualRegister(id=0, type_info=BasicTypeInfo('u8'), hint='saved0')
+    v1 = VirtualRegister(id=1, type_info=BasicTypeInfo('u8'), hint='saved1')
+    # The MIR builder emits one save Move per register-bound param at the
+    # top of the entry block. The inliner uses these to detect which HW
+    # registers the body observes; without them the param loads are
+    # treated as dead and pruned.
+    func.blocks[0] = BasicBlock(
+        block_id=0,
+        instructions=[
+            Move(dest=v0, source=HardwareRegister(reg_a),
+                 type_info=BasicTypeInfo('u8')),
+            Move(dest=v1, source=HardwareRegister(reg_b),
+                 type_info=BasicTypeInfo('u8')),
+            Return(values=[v0]),
+        ],
+        predecessors=[], successors=[],
+    )
+    return func
+
+
+class TestRegisterParamOrdering:
+    """Item 1 from the review punch-list: register-param load ordering."""
+
+    def test_a_load_emitted_last(self):
+        """Callee `fn f(a @ A, b @ B)` called with two vreg sources. The
+        inserted register setup must end with a Move-to-A (so B's load —
+        which goes through A via XBA in codegen — doesn't clobber the
+        A param value)."""
+        callee = _make_two_reg_param_callee('A', 'B')
+        caller = make_mir_function("main", is_entry=True,
+                                   return_type=BasicTypeInfo('u8'))
+        arg_a = VirtualRegister(id=0, type_info=BasicTypeInfo('u8'),
+                                hint='arg_a')
+        arg_b = VirtualRegister(id=1, type_info=BasicTypeInfo('u8'),
+                                hint='arg_b')
+        caller.blocks[0] = BasicBlock(
+            block_id=0,
+            instructions=[
+                Call(function=callee.name, args=[
+                    Argument(value=arg_a, mechanism=ArgumentMechanism.REGISTER,
+                             location=HardwareRegister('A'),
+                             param_type=BasicTypeInfo('u8')),
+                    Argument(value=arg_b, mechanism=ArgumentMechanism.REGISTER,
+                             location=HardwareRegister('B'),
+                             param_type=BasicTypeInfo('u8')),
+                ], returns=[], is_far=False),
+                Return(values=[]),
+            ],
+            predecessors=[], successors=[],
+        )
+        program = MIRProgram(functions=[caller, callee])
+        assert FunctionInliner(verbose=False).run(program) == 1
+
+        # Register loads are inserted at the head of the inlined entry
+        # block (see _inline_call's `inlined_entry.instructions = ...`).
+        # Scan every block in the caller for Move-to-HardwareRegister
+        # instructions whose source is one of the call args; collect them
+        # in instruction order to verify the A-load comes last.
+        reg_loads = [
+            i for b in caller.blocks.values() for i in b.instructions
+            if isinstance(i, Move) and isinstance(i.dest, HardwareRegister)
+        ]
+        assert len(reg_loads) == 2, (
+            f"expected 2 register loads, got {len(reg_loads)}: {reg_loads}"
+        )
+        # Last register load must target A
+        assert reg_loads[-1].dest.name == 'A', (
+            f"A-load should be emitted last; got order: "
+            f"{[m.dest.name for m in reg_loads]}"
+        )
+
+    def test_a_first_in_callee_signature_still_emitted_last(self):
+        """Order in the callee signature shouldn't matter. `fn f(a @ A, x @ X)`
+        with the A param FIRST in the signature must still emit A LAST."""
+        callee = _make_two_reg_param_callee('A', 'X')
+        caller = make_mir_function("main", is_entry=True,
+                                   return_type=BasicTypeInfo('u8'))
+        caller.blocks[0] = BasicBlock(
+            block_id=0,
+            instructions=[
+                Call(function=callee.name, args=[
+                    Argument(value=Immediate(5),
+                             mechanism=ArgumentMechanism.REGISTER,
+                             location=HardwareRegister('A'),
+                             param_type=BasicTypeInfo('u8')),
+                    Argument(value=Immediate(7),
+                             mechanism=ArgumentMechanism.REGISTER,
+                             location=HardwareRegister('X'),
+                             param_type=BasicTypeInfo('u8')),
+                ], returns=[], is_far=False),
+                Return(values=[]),
+            ],
+            predecessors=[], successors=[],
+        )
+        program = MIRProgram(functions=[caller, callee])
+        assert FunctionInliner(verbose=False).run(program) == 1
+
+        reg_loads = [
+            i for b in caller.blocks.values() for i in b.instructions
+            if isinstance(i, Move) and isinstance(i.dest, HardwareRegister)
+        ]
+        assert reg_loads[-1].dest.name == 'A'
+
+
+# =============================================================================
+# exit_block_ids consistency: after inlining, the original call_block is
+# no longer a function exit (it ends with Jump into the inlined entry),
+# while the merge block — which holds the original post-call instructions
+# including the function's terminating Return — IS the new exit.
+# =============================================================================
+
+class TestExitBlockIdsUpdate:
+    """Item 2 from the review punch-list."""
+
+    def test_original_exit_block_removed_merge_added(self):
+        """Caller has one block, marked exit, ending in Call + Return.
+        After inlining, that block is no longer an exit and the new
+        merge block (containing Return) takes its place."""
+        callee = create_simple_callee()
+        caller = create_caller_with_call(callee.name)
+        caller.exit_block_ids = [0]  # caller's block 0 is the function exit
+        program = MIRProgram(functions=[caller, callee])
+
+        assert FunctionInliner(verbose=False).run(program) == 1
+
+        # Old block id (0) must no longer be in exit list.
+        assert 0 not in caller.exit_block_ids, (
+            "original call_block should be removed from exit_block_ids "
+            "after inlining — it now ends with a Jump, not a Return"
+        )
+        # Exactly one exit, and it must end with a Return.
+        assert len(caller.exit_block_ids) == 1
+        new_exit = caller.blocks[caller.exit_block_ids[0]]
+        assert isinstance(new_exit.instructions[-1], Return), (
+            f"new exit block must end in Return, got "
+            f"{type(new_exit.instructions[-1]).__name__}"
+        )
+
+    def test_non_exit_call_block_doesnt_get_added(self):
+        """If the original call_block was NOT an exit (e.g., the call
+        was mid-function with control continuing), inlining must not
+        spuriously add the merge block as an exit — it should keep
+        whatever successors the original call_block had."""
+        # Build a caller whose call_block has a successor (not an exit).
+        caller = make_mir_function("main", is_entry=True,
+                                   return_type=BasicTypeInfo('u8'))
+        vr = VirtualRegister(id=0, type_info=BasicTypeInfo('u8'),
+                             hint='r')
+        # Block 0: Call then Jump to block 1; Block 1: Return.
+        caller.blocks[0] = BasicBlock(
+            block_id=0,
+            instructions=[
+                Call(function='add_one', args=[], returns=[vr],
+                     is_far=False),
+                Jump(target=1),
+            ],
+            predecessors=[], successors=[1],
+        )
+        caller.blocks[1] = BasicBlock(
+            block_id=1,
+            instructions=[Return(values=[vr])],
+            predecessors=[0], successors=[],
+        )
+        caller.exit_block_ids = [1]
+
+        callee = create_simple_callee()
+        program = MIRProgram(functions=[caller, callee])
+        assert FunctionInliner(verbose=False).run(program) == 1
+
+        # Block 1 is still the function exit; the merge block is NOT an
+        # exit (it ends with a Jump, not a Return).
+        assert 1 in caller.exit_block_ids
+        for eid in caller.exit_block_ids:
+            assert isinstance(
+                caller.blocks[eid].instructions[-1], Return
+            ), "every exit block id must point to a Return-terminated block"
+
+
+# =============================================================================
+# A-substitution gating: when the exit boundary needs a SEP/REP, the
+# HardwareRegister('A') substitution on Return must be disabled to avoid
+# mode/width interactions in the substituted Move's codegen.
+# =============================================================================
+
+class TestASubstitutionGating:
+    """Item 3 from the review punch-list."""
+
+    def test_a_substitution_disabled_on_mode_boundary(self):
+        """m16 callee → m8 caller forces a SEP at exit. The return-value
+        Move in the cloned return block must NOT use HardwareRegister('A')
+        as source (the mode flip can re-interpret A's width).
+        """
+        # Callee: u16 BinaryOp result → Return. Producer's dest IS the
+        # returned vreg, so the substitution WOULD fire if not gated.
+        callee = make_mir_function("u16_add", inline_attr=INLINE,
+                                   return_type=BasicTypeInfo('u16'))
+        callee.entry_m_mode = ModeState.M16
+        callee.exit_m_mode = ModeState.M16
+        v = VirtualRegister(id=0, type_info=BasicTypeInfo('u16'), hint='r')
+        callee.blocks[0] = BasicBlock(
+            block_id=0,
+            instructions=[
+                BinaryOp(dest=v, left=Immediate(1), right=Immediate(2),
+                         op='+', type_info=BasicTypeInfo('u16')),
+                Return(values=[v]),
+            ],
+            predecessors=[], successors=[],
+        )
+        callee.blocks[0].entry_mode = ProcessorMode(ModeState.M16,
+                                                   XModeState.X16)
+        callee.blocks[0].exit_mode = ProcessorMode(ModeState.M16,
+                                                  XModeState.X16)
+
+        caller = make_mir_function("main", is_entry=True,
+                                   return_type=BasicTypeInfo('u16'))
+        caller.entry_m_mode = ModeState.M8
+        caller.exit_m_mode = ModeState.M8
+        ret = VirtualRegister(id=0, type_info=BasicTypeInfo('u16'),
+                              hint='ret')
+        caller.blocks[0] = BasicBlock(
+            block_id=0,
+            instructions=[
+                Call(function='u16_add', args=[], returns=[ret],
+                     is_far=False),
+                Return(values=[ret]),
+            ],
+            predecessors=[], successors=[],
+        )
+        caller.blocks[0].entry_mode = ProcessorMode(ModeState.M8,
+                                                   XModeState.X16)
+        caller.blocks[0].exit_mode = ProcessorMode(ModeState.M8,
+                                                   XModeState.X16)
+
+        program = MIRProgram(functions=[caller, callee])
+        assert FunctionInliner(verbose=False).run(program) == 1
+
+        # Find the return-block Move (the one whose dest is `ret`). Its
+        # source must be a VirtualRegister, NOT HardwareRegister('A').
+        ret_moves = [
+            instr for block in caller.blocks.values()
+            for instr in block.instructions
+            if isinstance(instr, Move)
+            and isinstance(instr.dest, VirtualRegister)
+            and (instr.dest.hint or '').startswith('ret')
+        ]
+        assert ret_moves, "expected at least one Move into the ret vreg"
+        for m in ret_moves:
+            assert not isinstance(m.source, HardwareRegister), (
+                f"A-substitution should be DISABLED when exit-boundary "
+                f"SetMode is pending, but got Move source = {m.source}"
+            )
+
+    def test_a_substitution_active_when_modes_match(self):
+        """Sanity check: when caller and callee modes agree (no exit
+        SetMode), the A-substitution optimization should still fire so
+        we don't regress the common path."""
+        callee = make_mir_function("u8_add", inline_attr=INLINE,
+                                   return_type=BasicTypeInfo('u8'))
+        callee.entry_m_mode = ModeState.M8
+        callee.exit_m_mode = ModeState.M8
+        v = VirtualRegister(id=0, type_info=BasicTypeInfo('u8'), hint='r')
+        callee.blocks[0] = BasicBlock(
+            block_id=0,
+            instructions=[
+                BinaryOp(dest=v, left=Immediate(1), right=Immediate(2),
+                         op='+', type_info=BasicTypeInfo('u8')),
+                Return(values=[v]),
+            ],
+            predecessors=[], successors=[],
+        )
+        callee.blocks[0].entry_mode = ProcessorMode(ModeState.M8,
+                                                   XModeState.X16)
+        callee.blocks[0].exit_mode = ProcessorMode(ModeState.M8,
+                                                  XModeState.X16)
+
+        caller = make_mir_function("main", is_entry=True,
+                                   return_type=BasicTypeInfo('u8'))
+        caller.entry_m_mode = ModeState.M8
+        caller.exit_m_mode = ModeState.M8
+        ret = VirtualRegister(id=0, type_info=BasicTypeInfo('u8'),
+                              hint='ret')
+        caller.blocks[0] = BasicBlock(
+            block_id=0,
+            instructions=[
+                Call(function='u8_add', args=[], returns=[ret],
+                     is_far=False),
+                Return(values=[ret]),
+            ],
+            predecessors=[], successors=[],
+        )
+        caller.blocks[0].entry_mode = ProcessorMode(ModeState.M8,
+                                                   XModeState.X16)
+        caller.blocks[0].exit_mode = ProcessorMode(ModeState.M8,
+                                                   XModeState.X16)
+
+        program = MIRProgram(functions=[caller, callee])
+        assert FunctionInliner(verbose=False).run(program) == 1
+
+        # In the same-mode path the substitution should fire — at least
+        # one Move into the ret vreg should have HardwareRegister('A')
+        # as its source.
+        ret_moves = [
+            instr for block in caller.blocks.values()
+            for instr in block.instructions
+            if isinstance(instr, Move)
+            and isinstance(instr.dest, VirtualRegister)
+            and (instr.dest.hint or '').startswith('ret')
+        ]
+        has_a_sub = any(
+            isinstance(m.source, HardwareRegister) and m.source.name == 'A'
+            for m in ret_moves
+        )
+        assert has_a_sub, (
+            "A-substitution should fire in the same-mode path so we "
+            "don't regress the common case"
+        )

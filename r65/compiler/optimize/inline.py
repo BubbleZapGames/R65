@@ -1188,6 +1188,15 @@ class FunctionInliner:
         # emitted, silently dropping the second value.
         result_vregs = list(call.returns)
 
+        # Exit-boundary SetMode: switches back to the caller's mode at
+        # every Return so the merge block has a single predecessor mode
+        # (mirrors call_select.py's _emit_exit_mode_restore). Computed
+        # once — every Return uses the same transition.
+        exit_setmode = self._make_boundary_setmode(
+            from_mode=getattr(callee, 'exit_m_mode', None),
+            to_mode=caller_mode_at_call.m_mode,
+        )
+
         # Replace Return instructions with Move + Jump to merge block
         return_blocks = []
 
@@ -1201,10 +1210,18 @@ class FunctionInliner:
                     # applies only to the primary return; subsequent
                     # values live in B/X/Y per the ABI's multi-return
                     # convention and aren't "in A" at the Return point.
+                    # And it's disabled when an exit-boundary SetMode is
+                    # pending: the mode change between this block and the
+                    # merge can re-interpret A's width, and the codegen
+                    # for the substituted Move may emit its own bracket
+                    # SEP/REP that interacts badly. Falling back to the
+                    # vreg path (LDA slot / STA dst) is always sound —
+                    # the slot holds the producer's full-width result.
                     pairs = list(zip(result_vregs, instr.values))
                     for i, (dst, src) in enumerate(pairs):
                         return_value = src
                         if (i == 0
+                                and exit_setmode is None
                                 and isinstance(return_value, VirtualRegister)
                                 and _value_is_in_a_at_end_of(
                                     new_instructions, return_value)):
@@ -1214,15 +1231,6 @@ class FunctionInliner:
                             source=return_value,
                             type_info=callee.return_type,
                         ))
-                    # Exit-boundary SetMode: switch back to the caller's mode
-                    # so every return path enters the merge block in the same
-                    # mode (mirrors call_select.py's _emit_exit_mode_restore).
-                    # Goes after the result Move so the A-substitution check
-                    # above still sees the original tail instruction.
-                    exit_setmode = self._make_boundary_setmode(
-                        from_mode=getattr(callee, 'exit_m_mode', None),
-                        to_mode=caller_mode_at_call.m_mode,
-                    )
                     if exit_setmode is not None:
                         new_instructions.append(exit_setmode)
                     # Jump to merge block
@@ -1253,6 +1261,20 @@ class FunctionInliner:
                     succ_block.predecessors.remove(block_id)
                 if merge_block_id not in succ_block.predecessors:
                     succ_block.predecessors.append(merge_block_id)
+
+        # Keep exit_block_ids consistent. The original call_block no longer
+        # terminates the function (it now ends with Jump to the inlined
+        # entry), so drop it. The merge block inherits the post-call
+        # instructions; if those end in Return / ReturnFromInterrupt it is
+        # now an exit. Downstream passes (frame teardown, mode analysis)
+        # rely on this list — stale entries cause silent miscompiles.
+        if block_id in caller.exit_block_ids:
+            caller.exit_block_ids.remove(block_id)
+        if (merge_block.instructions
+                and isinstance(merge_block.instructions[-1],
+                               (Return, ReturnFromInterrupt))
+                and merge_block_id not in caller.exit_block_ids):
+            caller.exit_block_ids.append(merge_block_id)
 
         return True
 
@@ -1408,6 +1430,17 @@ class FunctionInliner:
                         source=source,
                         type_info=param.param_type
                     ))
+
+        # Sort register loads so any A-targeted load comes LAST. Several
+        # non-A param loads route through A in codegen — Move to B uses
+        # XBA on A, Move to DBR uses PHA/PLB, Move to D uses TCD — so
+        # if we set A first then load another register through A, the
+        # A-param value is clobbered before the body uses it. Matches the
+        # non-inlined emit_call_args convention (see MEMORY.md "Call Arg
+        # A-Coalescence"). Stable sort: False (non-A) sorts before True (A).
+        register_instrs.sort(
+            key=lambda m: getattr(m.dest, 'name', '') == 'A'
+        )
 
         return register_instrs, stack_instrs
 
