@@ -136,3 +136,51 @@ class TestInlineModePreservation:
             memory={0x7E1401: 0x7E},
         ), max_instructions=100_000, extra_args=["-O2"])
         assert result.success, f"-O2 inline missed implicit u8→u16 widening: {result.failures}"
+
+    def test_address_of_rom_data_carries_symbol_through_inlining(self):
+        """The inliner's `_remap_vreg` must propagate `.symbol`
+        (set by the expression lowerer on address-of-ROM-data vregs)
+        from the source vreg to the cloned vreg. Otherwise the
+        near→far pointer codegen at type_conversion_select.py
+        falls back to bank $00 instead of `:rom_label`.
+
+        Asserted at the MIR level (the runtime symptom in classickong
+        was "PRESS START" rendered from a wild far-ptr read; the
+        underlying cause is checked here directly).
+        """
+        from r65.compiler.optimize.inline import BlockCloner
+        from r65.compiler.mir.nodes import (
+            VirtualRegister, MIRFunction, BasicBlock,
+        )
+        from r65.compiler.hir.types import BasicTypeInfo
+        from r65.compiler.mir.virtual_registers import VirtualRegisterAllocator
+
+        # Build a callee whose entry block uses a vreg carrying .symbol
+        # (mimicking what expression.py:909 does for `&ROM_STATIC`).
+        u8 = BasicTypeInfo('u8')
+        callee_alloc = VirtualRegisterAllocator()
+        addr_vreg = callee_alloc.alloc(u8, "addr_of_MSG")
+
+        class FakeSymbol:
+            name = "MSG"
+            rom_label = "__MSG_data"
+
+        addr_vreg.symbol = FakeSymbol()
+
+        callee = MIRFunction(name="callee", vreg_allocator=callee_alloc)
+        callee.blocks[0] = BasicBlock(block_id=0, instructions=[])
+        callee.entry_block_id = 0
+
+        caller_alloc = VirtualRegisterAllocator()
+        caller = MIRFunction(name="caller", vreg_allocator=caller_alloc)
+
+        cloner = BlockCloner(caller, callee)
+        remapped = cloner._remap_vreg(addr_vreg)
+
+        assert remapped is not addr_vreg, "should be a fresh vreg"
+        assert hasattr(remapped, 'symbol'), (
+            "remapped vreg dropped `.symbol` — far-pointer codegen will fall "
+            "back to bank $00. See _remap_vreg in inline.py."
+        )
+        assert remapped.symbol is addr_vreg.symbol
+        assert remapped.symbol.rom_label == "__MSG_data"

@@ -371,6 +371,16 @@ class BlockCloner:
                 vreg.type_info,
                 f"inlined_{vreg.hint}" if vreg.hint else None
             )
+            # Carry over dynamic attributes the expression lowerer sets on
+            # vregs that hold address-of-ROM-data values (`.symbol` →
+            # `rom_label`). Without this, the near→far codegen at
+            # type_conversion_select.py:425 sees a vreg with no `.symbol`,
+            # falls back to bank $00, and the resulting far pointer aims
+            # at bank 0 instead of bank 8 (classickong.r65 -O2:
+            # title_screen_press_start_str inlining → PRESS START
+            # rendered from a wild far-ptr read).
+            if hasattr(vreg, 'symbol') and vreg.symbol is not None:
+                new_vreg.symbol = vreg.symbol
             self.vreg_map[vreg.id] = new_vreg
         return self.vreg_map[vreg.id]
 
