@@ -507,6 +507,8 @@ class BlockCloner:
                 instructions=[self._clone_instruction(i) for i in block.instructions],
                 predecessors=[],  # Will be rebuilt
                 successors=[],    # Will be rebuilt
+                entry_mode=block.entry_mode,
+                exit_mode=block.exit_mode,
             )
 
             cloned_blocks[new_id] = new_block
@@ -1005,10 +1007,39 @@ class FunctionInliner:
                     if (used_vreg_ids is not None
                             and inlined_vreg.id not in used_vreg_ids):
                         continue
+                    # When the argument's type is narrower than the parameter's
+                    # type (e.g. u8 → u16), we need a TypeConvert so the high
+                    # bytes get zero/sign-extended properly. A plain Move does
+                    # a bit-copy and leaves the high byte garbage from whatever
+                    # was last in A — observed as bogus walkmap reads after
+                    # implicit inlining of test_map(x: u8, y: u16) in
+                    # classickong.r65. The non-inlined call path handles this
+                    # via emit_outgoing_stack_argument's source_size < param_size
+                    # branch; the inline path must mirror it.
+                    from r65.compiler.codegen.type_utils import get_type_size
+                    arg_type = getattr(arg.value, 'type_info', None)
+                    param_size = get_type_size(param.param_type) if param.param_type else None
+                    arg_size = get_type_size(arg_type) if arg_type else None
+                    if (arg_type is not None and param_size is not None
+                            and arg_size is not None
+                            and arg_size < param_size):
+                        widened = cloner.caller_func.vreg_allocator.alloc(
+                            param.param_type,
+                            f"widened_{getattr(arg.value, 'hint', 'arg')}"
+                        )
+                        stack_instrs.append(TypeConvert(
+                            dest=widened,
+                            source=arg.value,
+                            source_type=arg_type,
+                            target_type=param.param_type,
+                        ))
+                        source = widened
+                    else:
+                        source = arg.value
                     # Move argument value to inlined vreg
                     stack_instrs.append(Move(
                         dest=inlined_vreg,
-                        source=arg.value,
+                        source=source,
                         type_info=param.param_type
                     ))
 

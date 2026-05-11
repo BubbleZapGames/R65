@@ -109,12 +109,13 @@ class E2ETest:
         if missing:
             raise RuntimeError(f"Missing required tools: {', '.join(missing)}")
 
-    def compile(self, source: str) -> bytes:
+    def compile(self, source: str, extra_args: Optional[List[str]] = None) -> bytes:
         """
         Compile R65 source code to ROM bytes.
 
         Args:
             source: R65 source code
+            extra_args: Optional extra CLI args passed to the compiler (e.g. ["-O2"]).
 
         Returns:
             ROM binary data
@@ -142,6 +143,8 @@ class E2ETest:
             cmd = [sys.executable, "-m", "r65.compiler.main", str(src_path), "-o", str(asm_path), "--cfg", "snes"]
             if _abi_override:
                 cmd.extend(["--abi", _abi_override])
+            if extra_args:
+                cmd.extend(extra_args)
 
             result = subprocess.run(
                 cmd,
@@ -267,7 +270,8 @@ class E2ETest:
         return failures
 
     def run(self, source: str, expected: ExpectedState,
-            max_instructions: int = 10000) -> TestResult:
+            max_instructions: int = 10000,
+            extra_args: Optional[List[str]] = None) -> TestResult:
         """
         Compile, execute, and validate an R65 program.
 
@@ -275,12 +279,13 @@ class E2ETest:
             source: R65 source code
             expected: Expected state after execution
             max_instructions: Maximum instructions to execute
+            extra_args: Optional extra CLI args passed to the compiler (e.g. ["-O2"]).
 
         Returns:
             TestResult with success status and details
         """
         try:
-            rom_data = self.compile(source)
+            rom_data = self.compile(source, extra_args=extra_args)
         except CompilationError as e:
             return TestResult(success=False, error=str(e))
 

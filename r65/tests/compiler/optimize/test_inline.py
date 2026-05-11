@@ -719,6 +719,43 @@ class TestBlockCloner:
         # At minimum, check that we have the same number of blocks
         assert len(cloned_block_ids) == len(original_block_ids)
 
+    def test_clone_preserves_block_entry_exit_modes(self):
+        """Cloned blocks must carry entry_mode/exit_mode from the source.
+
+        Without this, downstream codegen sees entry_mode=None on every inlined
+        block and falls back to m8, which breaks bodies that need m16 — e.g.
+        a u16 stack-param load becomes a u8 load and silently truncates the
+        high byte. Regression test for the -O2 inliner bug found in
+        classickong.r65.
+        """
+        callee = create_simple_callee()
+        # Seed the callee's block with non-default modes so cloning can be
+        # observed. The MIRModeTracker would set these during MIR build, but
+        # we set them by hand here.
+        for block in callee.blocks.values():
+            block.entry_mode = ProcessorMode(ModeState.M16, XModeState.X16)
+            block.exit_mode = ProcessorMode(ModeState.M16, XModeState.X16)
+
+        caller = create_caller_with_call("add_one")
+        cloner = BlockCloner(caller, callee)
+        cloned_blocks = cloner.clone_blocks()
+
+        assert len(cloned_blocks) == len(callee.blocks)
+        for old_id, new_id in cloner.block_map.items():
+            src = callee.blocks[old_id]
+            dst = cloned_blocks[new_id]
+            assert dst.entry_mode is not None, (
+                f"cloned block {new_id} dropped entry_mode "
+                f"(source block {old_id} had {src.entry_mode})"
+            )
+            assert dst.entry_mode.m_mode == src.entry_mode.m_mode
+            assert dst.entry_mode.x_mode == src.entry_mode.x_mode
+            assert dst.exit_mode is not None, (
+                f"cloned block {new_id} dropped exit_mode"
+            )
+            assert dst.exit_mode.m_mode == src.exit_mode.m_mode
+            assert dst.exit_mode.x_mode == src.exit_mode.x_mode
+
 
 class TestFunctionInliner:
     """Tests for FunctionInliner."""
