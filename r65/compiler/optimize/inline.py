@@ -9,8 +9,6 @@ The inlining pass operates on MIR after HIR lowering, before code generation.
 """
 
 from typing import Dict, List, Set, Optional, Tuple
-from dataclasses import dataclass
-from copy import deepcopy
 
 from r65.compiler.mir.nodes import (
     MIRProgram, MIRFunction, BasicBlock,
@@ -23,6 +21,7 @@ from r65.compiler.mir.nodes import (
     MemoryFill, BlockCopy, BankByte, BitTest, Rotate,
     StatusFlagTest, StatusFlagSet, StatusFlagRead,
     SetMode, Push, Pull, SaveRegister, RestoreRegister,
+    FarPtrStrategy,
 )
 from r65.compiler.hir import RegisterBinding, VariableBinding
 from r65.compiler.hir.attributes import InlineMode
@@ -273,7 +272,70 @@ class InlinabilityChecker:
         if self._has_inline_asm(func):
             return False
 
+        # Trait methods receive self in Y register (`is_trait_method` plus
+        # `self_y_vreg` pre-allocated to HW Y). Splicing the body into a
+        # caller breaks the "self lives in Y" contract — the prologue setup
+        # is callee-specific and the body's self_y_vreg has no meaning in
+        # the caller's vreg space.
+        if func.is_trait_method:
+            return False
+
+        # Scratch-param promotion (analyze_scratch_params / fixedstack_params)
+        # reserves direct-page slots tied to the callee's signature. The
+        # caller's frame doesn't reflect those reservations, and the global
+        # scratch reservation set lives on the function being processed.
+        # Rather than merge the maps (and risk overlapping reservations),
+        # refuse to inline callees with promoted params. The expression
+        # lowerer never reaches them anyway except via the call ABI.
+        if func.scratch_param_addrs:
+            return False
+        if func.hw_param_regs:
+            return False
+
+        # Far-pointer access strategy (D=S vs SET_DBR) is chosen per-function
+        # by analysis/far_ptr_strategy.py based on body characteristics
+        # (prologue PHD/TSC/TCD vs PHB/PLB). LoadIndirect/StoreIndirect
+        # lowering reads `caller.far_ptr_strategy`, so splicing a callee
+        # configured for the opposite strategy yields wrong addressing.
+        # Reject any callee with a non-default strategy.
+        if func.far_ptr_strategy is not None:
+            return False
+
+        # Callee's #[preserves(...)] contract is enforced at the call boundary
+        # by codegen (save/restore around the JSR). Inlining removes the
+        # boundary; any caller continuation that observed the preserved
+        # registers across the call is now broken. The fix requires
+        # emitting equivalent SaveRegister/RestoreRegister around the
+        # inlined body — until that's implemented, refuse to inline.
+        if func.preserves_attr is not None:
+            return False
+
         return True
+
+    def _bank_compatible(self, caller: MIRFunction, callee: MIRFunction) -> bool:
+        """True iff the callee can be inlined into the caller without
+        crossing a ROM bank boundary.
+
+        Per CLAUDE.md, near functions can only call near functions in the
+        same bank. Inlining a callee whose `#[bank(n)]` differs from the
+        caller's would assemble the callee's instructions inside the
+        caller's bank, breaking any same-bank label reference the
+        original callee body relied on (and silently changing where the
+        code lives in ROM).
+
+        Auto-banked callees (`bank_attr.is_auto`) are permitted: the
+        linker places them with the caller.
+        """
+        callee_bank = callee.bank_attr
+        if callee_bank is None or callee_bank.is_auto:
+            return True
+        caller_bank = caller.bank_attr
+        if caller_bank is None or caller_bank.is_auto:
+            # Caller has no fixed bank; inlining a fixed-bank callee
+            # would pin the caller's containing block to that bank,
+            # which the caller didn't ask for. Conservative: reject.
+            return False
+        return callee_bank.bank_number == caller_bank.bank_number
 
     def should_inline(self, func_name: str) -> bool:
         """
@@ -423,9 +485,31 @@ class BlockCloner:
             self.block_map[block_id] = new_id
         return self.block_map[block_id]
 
+    def _clone_argument(self, arg: Argument) -> Argument:
+        """Construct a fresh Argument with the value operand remapped.
+
+        `location` / `param_type` / `scratch_addr` / `mechanism` are
+        pointer-stable descriptors and may be shared between original
+        and clone.
+        """
+        return Argument(
+            value=self._remap_operand(arg.value),
+            mechanism=arg.mechanism,
+            location=arg.location,
+            param_type=arg.param_type,
+            scratch_addr=arg.scratch_addr,
+        )
+
     def _clone_instruction(self, instr: MIRInstruction) -> MIRInstruction:
         """
         Clone an instruction with remapped operands.
+
+        Constructs a fresh instance for each known MIR instruction type so
+        that no part of the cloned instruction aliases the callee's
+        objects. Raises NotImplementedError for unknown types — the
+        previous `deepcopy` fallback silently preserved callee-side
+        VirtualRegister objects in nested fields and caused vreg-id
+        collisions; failing loudly is the right call.
 
         Args:
             instr: Original instruction from callee
@@ -433,82 +517,290 @@ class BlockCloner:
         Returns:
             Cloned instruction with remapped operands
         """
-        # Deep copy first to handle any nested structures
-        cloned = deepcopy(instr)
+        loc = instr.source_loc
 
-        # Remap based on instruction type
-        if isinstance(cloned, Move):
-            cloned.dest = self._remap_operand(cloned.dest)
-            cloned.source = self._remap_operand(cloned.source)
+        if isinstance(instr, Move):
+            return Move(
+                dest=self._remap_operand(instr.dest),
+                source=self._remap_operand(instr.source),
+                type_info=instr.type_info,
+                persist_16bit_mode=instr.persist_16bit_mode,
+                source_loc=loc,
+            )
 
-        elif isinstance(cloned, Load):
-            cloned.dest = self._remap_operand(cloned.dest)
-            # MemoryLocation passes through
+        if isinstance(instr, Load):
+            return Load(
+                dest=self._remap_operand(instr.dest),
+                source=instr.source,  # MemoryLocation: shared
+                type_info=instr.type_info,
+                source_loc=loc,
+            )
 
-        elif isinstance(cloned, Store):
-            cloned.source = self._remap_operand(cloned.source)
-            # MemoryLocation passes through
+        if isinstance(instr, Store):
+            return Store(
+                source=self._remap_operand(instr.source),
+                dest=instr.dest,  # MemoryLocation: shared
+                type_info=instr.type_info,
+                source_loc=loc,
+            )
 
-        elif isinstance(cloned, LoadIndirect):
-            cloned.dest = self._remap_operand(cloned.dest)
-            cloned.pointer = self._remap_operand(cloned.pointer)
+        if isinstance(instr, LoadIndirect):
+            return LoadIndirect(
+                dest=self._remap_operand(instr.dest),
+                pointer=self._remap_operand(instr.pointer),
+                is_far=instr.is_far,
+                index_register=instr.index_register,
+                type_info=instr.type_info,
+                offset=instr.offset,
+                source_loc=loc,
+            )
 
-        elif isinstance(cloned, StoreIndirect):
-            cloned.source = self._remap_operand(cloned.source)
-            cloned.pointer = self._remap_operand(cloned.pointer)
+        if isinstance(instr, StoreIndirect):
+            return StoreIndirect(
+                source=self._remap_operand(instr.source),
+                pointer=self._remap_operand(instr.pointer),
+                is_far=instr.is_far,
+                index_register=instr.index_register,
+                type_info=instr.type_info,
+                offset=instr.offset,
+                source_loc=loc,
+            )
 
-        elif isinstance(cloned, BinaryOp):
-            cloned.dest = self._remap_operand(cloned.dest)
-            cloned.left = self._remap_operand(cloned.left)
-            cloned.right = self._remap_operand(cloned.right)
+        if isinstance(instr, BinaryOp):
+            return BinaryOp(
+                dest=self._remap_operand(instr.dest),
+                left=self._remap_operand(instr.left),
+                right=self._remap_operand(instr.right),
+                op=instr.op,
+                type_info=instr.type_info,
+                source_loc=loc,
+            )
 
-        elif isinstance(cloned, UnaryOp):
-            cloned.dest = self._remap_operand(cloned.dest)
-            cloned.operand = self._remap_operand(cloned.operand)
+        if isinstance(instr, UnaryOp):
+            return UnaryOp(
+                dest=self._remap_operand(instr.dest),
+                operand=self._remap_operand(instr.operand),
+                op=instr.op,
+                type_info=instr.type_info,
+                source_loc=loc,
+            )
 
-        elif isinstance(cloned, Compare):
-            cloned.left = self._remap_operand(cloned.left)
-            cloned.right = self._remap_operand(cloned.right)
+        if isinstance(instr, Compare):
+            return Compare(
+                left=self._remap_operand(instr.left),
+                right=self._remap_operand(instr.right),
+                comparison=instr.comparison,
+                type_info=instr.type_info,
+                source_loc=loc,
+            )
 
-        elif isinstance(cloned, TypeConvert):
-            cloned.dest = self._remap_operand(cloned.dest)
-            cloned.source = self._remap_operand(cloned.source)
+        if isinstance(instr, TypeConvert):
+            return TypeConvert(
+                dest=self._remap_operand(instr.dest),
+                source=self._remap_operand(instr.source),
+                source_type=instr.source_type,
+                target_type=instr.target_type,
+                source_loc=loc,
+            )
 
-        elif isinstance(cloned, ToBool):
-            cloned.dest = self._remap_operand(cloned.dest)
-            cloned.source = self._remap_operand(cloned.source)
+        if isinstance(instr, BankByte):
+            return BankByte(
+                dest=self._remap_operand(instr.dest),
+                source=self._remap_operand(instr.source),
+                source_loc=loc,
+            )
 
-        elif isinstance(cloned, Jump):
-            cloned.target = self._remap_block_id(cloned.target)
+        if isinstance(instr, ToBool):
+            return ToBool(
+                dest=self._remap_operand(instr.dest),
+                source=self._remap_operand(instr.source),
+                source_type=instr.source_type,
+                source_loc=loc,
+            )
 
-        elif isinstance(cloned, CondBranch):
-            cloned.condition = self._remap_operand(cloned.condition)
-            cloned.true_target = self._remap_block_id(cloned.true_target)
-            cloned.false_target = self._remap_block_id(cloned.false_target)
+        if isinstance(instr, BitTest):
+            return BitTest(
+                value=self._remap_operand(instr.value),
+                test_bit=instr.test_bit,
+                type_info=instr.type_info,
+                source_loc=loc,
+            )
 
-        elif isinstance(cloned, JumpTable):
-            cloned.scrutinee = self._remap_operand(cloned.scrutinee)
-            cloned.targets = [self._remap_block_id(t) for t in cloned.targets]
-            cloned.default_target = self._remap_block_id(cloned.default_target)
+        if isinstance(instr, Rotate):
+            return Rotate(
+                dest=self._remap_operand(instr.dest),
+                source=self._remap_operand(instr.source),
+                direction=instr.direction,
+                count=instr.count,
+                type_info=instr.type_info,
+                source_loc=loc,
+            )
 
-        elif isinstance(cloned, LookupTable):
-            cloned.dest = self._remap_operand(cloned.dest)
-            cloned.scrutinee = self._remap_operand(cloned.scrutinee)
-            cloned.merge_target = self._remap_block_id(cloned.merge_target)
+        if isinstance(instr, Jump):
+            return Jump(
+                target=self._remap_block_id(instr.target),
+                source_loc=loc,
+            )
 
-        elif isinstance(cloned, Call):
-            # Remap arguments
-            for arg in cloned.args:
-                arg.value = self._remap_operand(arg.value)
-            # Remap return registers
-            cloned.returns = [self._remap_operand(r) for r in cloned.returns]
+        if isinstance(instr, CondBranch):
+            return CondBranch(
+                condition=self._remap_operand(instr.condition),
+                true_target=self._remap_block_id(instr.true_target),
+                false_target=self._remap_block_id(instr.false_target),
+                comparison=instr.comparison,
+                source_loc=loc,
+            )
 
-        elif isinstance(cloned, Return):
-            cloned.values = [self._remap_operand(v) for v in cloned.values]
+        if isinstance(instr, JumpTable):
+            return JumpTable(
+                scrutinee=self._remap_operand(instr.scrutinee),
+                base_value=instr.base_value,
+                targets=[self._remap_block_id(t) for t in instr.targets],
+                default_target=self._remap_block_id(instr.default_target),
+                type_info=instr.type_info,
+                source_loc=loc,
+            )
 
-        # Other instructions (SetMode, Push, Pull, etc.) pass through mostly unchanged
+        if isinstance(instr, LookupTable):
+            return LookupTable(
+                dest=self._remap_operand(instr.dest),
+                scrutinee=self._remap_operand(instr.scrutinee),
+                base_value=instr.base_value,
+                values=list(instr.values),
+                default_value=instr.default_value,
+                merge_target=self._remap_block_id(instr.merge_target),
+                type_info=instr.type_info,
+                source_loc=loc,
+            )
 
-        return cloned
+        if isinstance(instr, StatusFlagTest):
+            return StatusFlagTest(
+                flag_name=instr.flag_name,
+                bit_position=instr.bit_position,
+                bit_mask=instr.bit_mask,
+                source_loc=loc,
+            )
+
+        if isinstance(instr, StatusFlagSet):
+            return StatusFlagSet(
+                flag_name=instr.flag_name,
+                value=instr.value,
+                source_loc=loc,
+            )
+
+        if isinstance(instr, StatusFlagRead):
+            return StatusFlagRead(
+                dest=self._remap_operand(instr.dest),
+                flag_name=instr.flag_name,
+                bit_mask=instr.bit_mask,
+                source_loc=loc,
+            )
+
+        if isinstance(instr, Call):
+            return Call(
+                function=(self._remap_operand(instr.function)
+                          if isinstance(instr.function, VirtualRegister)
+                          else instr.function),
+                args=[self._clone_argument(a) for a in instr.args],
+                returns=[self._remap_operand(r) for r in instr.returns],
+                is_far=instr.is_far,
+                mode_attr=instr.mode_attr,
+                bank_attr=instr.bank_attr,
+                builtin_name=instr.builtin_name,
+                callee_entry_m_mode=instr.callee_entry_m_mode,
+                callee_exit_m_mode=instr.callee_exit_m_mode,
+                callee_return_type=instr.callee_return_type,
+                preserves_attr=instr.preserves_attr,
+                pascal_result_bytes=instr.pascal_result_bytes,
+                source_loc=loc,
+            )
+
+        if isinstance(instr, TraitDispatch):
+            # TraitDispatch shouldn't survive can_inline (callee is a trait
+            # method or contains a dispatch — both rejected). Cloned here
+            # only so a body containing a nested TraitDispatch to a
+            # different trait can be inlined safely if policy ever
+            # permits it.
+            return TraitDispatch(
+                trait_name=instr.trait_name,
+                method_name=instr.method_name,
+                method_index=instr.method_index,
+                self_ptr=(self._remap_operand(instr.self_ptr)
+                          if instr.self_ptr is not None else None),
+                args=[self._clone_argument(a) for a in instr.args],
+                returns=[self._remap_operand(r) for r in instr.returns],
+                is_far=instr.is_far,
+                self_is_far=instr.self_is_far,
+                callee_return_type=instr.callee_return_type,
+                self_chain_role=instr.self_chain_role,
+                self_y_preloaded=instr.self_y_preloaded,
+                source_loc=loc,
+            )
+
+        if isinstance(instr, Return):
+            return Return(
+                values=[self._remap_operand(v) for v in instr.values],
+                source_loc=loc,
+            )
+
+        if isinstance(instr, ReturnFromInterrupt):
+            return ReturnFromInterrupt(source_loc=loc)
+
+        if isinstance(instr, SetMode):
+            return SetMode(mask=instr.mask, is_set=instr.is_set, source_loc=loc)
+
+        if isinstance(instr, Push):
+            # register field is HardwareRegister (shareable)
+            return Push(register=instr.register, source_loc=loc)
+
+        if isinstance(instr, Pull):
+            return Pull(register=instr.register, source_loc=loc)
+
+        if isinstance(instr, SaveRegister):
+            return SaveRegister(
+                register=instr.register,
+                save_location=self._remap_operand(instr.save_location),
+                source_loc=loc,
+            )
+
+        if isinstance(instr, RestoreRegister):
+            return RestoreRegister(
+                register=instr.register,
+                save_location=self._remap_operand(instr.save_location),
+                source_loc=loc,
+            )
+
+        if isinstance(instr, MemoryFill):
+            return MemoryFill(
+                dest=instr.dest,  # MemoryLocation: shared
+                fill_value=instr.fill_value,
+                count=instr.count,
+                element_size=instr.element_size,
+                source_loc=loc,
+            )
+
+        if isinstance(instr, BlockCopy):
+            return BlockCopy(
+                dest=instr.dest,         # MemoryLocation: shared
+                rom_data=instr.rom_data, # ROMDataRef: shared
+                count=instr.count,
+                source_loc=loc,
+            )
+
+        if isinstance(instr, InlineAsm):
+            # can_inline() rejects callees containing InlineAsm; reaching
+            # here means that check was bypassed. Fail loudly rather than
+            # produce an aliased clone.
+            raise NotImplementedError(
+                "InlineAsm cannot be inlined; can_inline() should have "
+                "rejected this callee"
+            )
+
+        raise NotImplementedError(
+            f"FunctionInliner._clone_instruction: unhandled MIR instruction "
+            f"type {type(instr).__name__}. Add an explicit clone branch "
+            f"(or extend can_inline() to reject callees containing it)."
+        )
 
     def clone_blocks(self) -> Dict[int, BasicBlock]:
         """
@@ -616,55 +908,95 @@ class FunctionInliner:
         checker = InlinabilityChecker(mir_program, implicit_inline=self.implicit_inline)
         inlined_count = 0
 
-        # Process functions - we may need multiple passes as inlining
-        # can expose new inlining opportunities
-        # Limit iterations to prevent infinite loops
-        max_iterations = 100
-        iteration = 0
+        # Process callers in reverse-topological order on the static call
+        # graph (callees before their callers). This gives nested inlining
+        # in a single pass: by the time we process function A that calls B
+        # that calls C, B's body already has C expanded (if C was
+        # inlinable), so cloning B into A also picks up the C expansion.
+        # No need to iterate to a fixed point.
+        order = self._reverse_topo_order(checker)
 
-        changed = True
-        while changed and iteration < max_iterations:
-            changed = False
-            iteration += 1
+        for func_name in order:
+            caller_func = checker.func_map.get(func_name)
+            if caller_func is None:
+                continue
 
-            for caller_func in mir_program.functions:
-                # Find all call sites that should be inlined
-                call_sites = self._find_inline_candidates(caller_func, checker)
-
-                for block_id, instr_idx, call_instr in call_sites:
-                    callee_name = call_instr.function
-                    if not isinstance(callee_name, str):
-                        continue
-
-                    if not self._should_inline_at_site(checker, call_instr):
-                        continue
-
-                    callee_func = checker.func_map.get(callee_name)
-                    if callee_func is None:
-                        continue
-
-                    # Perform inlining
-                    if self._inline_call(caller_func, block_id, instr_idx,
-                                         call_instr, callee_func):
-                        inlined_count += 1
-                        changed = True
-                        # Record the caller as needing mode re-analysis.
-                        self.mutated_funcs.add(caller_func.name)
-
-                        if self.verbose:
-                            print(f"  Inlined {callee_name} into {caller_func.name}")
-
-                        # Rebuild checker since call counts changed
-                        checker = InlinabilityChecker(mir_program, implicit_inline=self.implicit_inline)
-                        break  # Restart the loop with updated function
-
-                if changed:
+            # Repeatedly inline call sites in this caller until none remain.
+            # Each successful inline mutates the caller's CFG (new blocks,
+            # shifted instruction indices), so we rescan the function rather
+            # than try to maintain a stable index. The inner loop terminates
+            # because each iteration either inlines a site (strictly reduces
+            # the count of inlinable call sites pointing at non-recursive
+            # callees) or finds no candidate.
+            while True:
+                site = self._find_first_inline_site(caller_func, checker)
+                if site is None:
                     break
+                block_id, instr_idx, call_instr = site
+                callee_name = call_instr.function
+                callee_func = checker.func_map.get(callee_name)
+                if callee_func is None:
+                    break
+                if not self._inline_call(caller_func, block_id, instr_idx,
+                                         call_instr, callee_func):
+                    break
+                inlined_count += 1
+                self.mutated_funcs.add(caller_func.name)
+                # Decrement the call count incrementally; this is a worklist
+                # bookkeeping update, not a full checker rebuild.
+                checker.call_counts[callee_name] = max(
+                    0, checker.call_counts.get(callee_name, 1) - 1
+                )
+                if self.verbose:
+                    print(f"  Inlined {callee_name} into {caller_func.name}")
 
         if self.verbose and inlined_count > 0:
             print(f"Function inlining: {inlined_count} call site(s) inlined")
 
         return inlined_count
+
+    def _reverse_topo_order(self, checker: InlinabilityChecker) -> List[str]:
+        """Return function names in reverse-topological order on the call
+        graph.
+
+        Postorder DFS: callees emit before callers. Cycles (recursive
+        functions) are broken by an `in_stack` guard — those callees can
+        never be inlined anyway (`can_inline` rejects them), so the order
+        of their callers doesn't affect correctness.
+        """
+        visited: Set[str] = set()
+        in_stack: Set[str] = set()
+        order: List[str] = []
+
+        def visit(name: str) -> None:
+            if name in visited or name in in_stack:
+                return
+            in_stack.add(name)
+            for callee in checker.call_graph.get(name, set()):
+                if callee in checker.func_map:
+                    visit(callee)
+            in_stack.discard(name)
+            visited.add(name)
+            order.append(name)
+
+        for func in checker.mir_program.functions:
+            visit(func.name)
+        return order
+
+    def _find_first_inline_site(
+        self,
+        func: MIRFunction,
+        checker: InlinabilityChecker,
+    ) -> Optional[Tuple[int, int, Call]]:
+        """Return the first (block_id, instr_idx, Call) the inliner wants
+        to expand in `func`, or None if no such site exists."""
+        for block_id, block in func.blocks.items():
+            for idx, instr in enumerate(block.instructions):
+                if (isinstance(instr, Call)
+                        and isinstance(instr.function, str)
+                        and self._should_inline_at_site(checker, func, instr)):
+                    return (block_id, idx, instr)
+        return None
 
     def _all_args_constant(self, call: Call) -> bool:
         """Return True if every argument is a plain compile-time integer literal.
@@ -686,7 +1018,12 @@ class FunctionInliner:
             for instr in block.instructions
         )
 
-    def _should_inline_at_site(self, checker: InlinabilityChecker, call: Call) -> bool:
+    def _should_inline_at_site(
+        self,
+        checker: InlinabilityChecker,
+        caller: MIRFunction,
+        call: Call,
+    ) -> bool:
         """Decide whether to inline this specific call site.
 
         Extends the function-level should_inline() heuristic with a call-site
@@ -697,42 +1034,22 @@ class FunctionInliner:
         func_name = call.function
         if not isinstance(func_name, str):
             return False
+        callee = checker.func_map.get(func_name)
+        if callee is None:
+            return False
+        # Bank compatibility is per-(caller,callee), not a property of the
+        # callee alone — must be checked at the call site.
+        if not checker._bank_compatible(caller, callee):
+            return False
         if checker.should_inline(func_name):
             return True
         # Constant-arg bypass is an implicit heuristic — only at -O2
-        callee = checker.func_map.get(func_name)
         if (checker.implicit_inline
-                and callee is not None
                 and checker.can_inline(func_name)
                 and self._all_args_constant(call)
                 and self._callee_has_no_calls(callee)):
             return True
         return False
-
-    def _find_inline_candidates(
-        self,
-        func: MIRFunction,
-        checker: InlinabilityChecker
-    ) -> List[Tuple[int, int, Call]]:
-        """
-        Find all call sites that are candidates for inlining.
-
-        Args:
-            func: Function to search
-            checker: Inlinability checker
-
-        Returns:
-            List of (block_id, instruction_index, Call) tuples
-        """
-        candidates = []
-
-        for block_id, block in func.blocks.items():
-            for idx, instr in enumerate(block.instructions):
-                if isinstance(instr, Call) and isinstance(instr.function, str):
-                    if self._should_inline_at_site(checker, instr):
-                        candidates.append((block_id, idx, instr))
-
-        return candidates
 
     def _inline_call(
         self,
@@ -865,8 +1182,11 @@ class FunctionInliner:
         )
         inlined_entry.predecessors.append(block_id)
 
-        # Create result vreg if call has return values
-        result_vreg = call.returns[0] if call.returns else None
+        # Result vregs in the caller's space — one per return value.
+        # Multi-return callees (e.g. `-> rA, rB` or `-> rA, rX`) plumb each
+        # Return.values[i] into call.returns[i]; previously only [0] was
+        # emitted, silently dropping the second value.
+        result_vregs = list(call.returns)
 
         # Replace Return instructions with Move + Jump to merge block
         return_blocks = []
@@ -875,25 +1195,24 @@ class FunctionInliner:
             new_instructions = []
             for instr in cloned_block.instructions:
                 if isinstance(instr, Return):
-                    # Decide where the return value comes from at the Return:
-                    # either A (because the immediately-preceding instruction
-                    # in this block produced the return-value vreg in A and
-                    # nothing has clobbered A since) or the vreg itself. The
-                    # A path keeps the ALU-result-stays-in-A optimization
-                    # that lets a `return a + b`-style function inline with
-                    # zero extra memory traffic, but doesn't apply when there
-                    # are intervening clobbers — most importantly, when a
-                    # loop's tail performs m8 work before reaching the Return.
-                    if result_vreg and instr.values:
-                        return_value = instr.values[0]
-                        if (isinstance(return_value, VirtualRegister)
+                    # Pair each Return value with its caller-side
+                    # destination. The A-substitution optimization
+                    # (return-value still in A from the tail instruction)
+                    # applies only to the primary return; subsequent
+                    # values live in B/X/Y per the ABI's multi-return
+                    # convention and aren't "in A" at the Return point.
+                    pairs = list(zip(result_vregs, instr.values))
+                    for i, (dst, src) in enumerate(pairs):
+                        return_value = src
+                        if (i == 0
+                                and isinstance(return_value, VirtualRegister)
                                 and _value_is_in_a_at_end_of(
                                     new_instructions, return_value)):
                             return_value = HardwareRegister('A')
                         new_instructions.append(Move(
-                            dest=result_vreg,
+                            dest=dst,
                             source=return_value,
-                            type_info=callee.return_type
+                            type_info=callee.return_type,
                         ))
                     # Exit-boundary SetMode: switch back to the caller's mode
                     # so every return path enters the merge block in the same

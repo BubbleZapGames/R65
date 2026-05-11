@@ -13,13 +13,18 @@ from r65.compiler.optimize.inline import (
 )
 from r65.compiler.mir.nodes import (
     MIRProgram, MIRFunction, BasicBlock,
-    Move, BinaryOp, Jump, CondBranch, Return, Call,
+    Move, BinaryOp, UnaryOp, Compare, Jump, CondBranch, Return, Call,
     Load, Store, LoadIndirect, StoreIndirect, MemoryLocation,
     VirtualRegister, HardwareRegister, Immediate,
     InlineAsm, Argument, ArgumentMechanism, SetMode,
+    BitTest, Rotate, Push, Pull, SaveRegister, RestoreRegister,
+    TraitDispatch, FarPtrStrategy,
 )
 from r65.compiler.hir.types import BasicTypeInfo
-from r65.compiler.hir.attributes import InlineAttribute, InlineMode, InterruptAttribute, InterruptVector
+from r65.compiler.hir.attributes import (
+    InlineAttribute, InlineMode, InterruptAttribute, InterruptVector,
+    BankAttribute, PreservesAttribute,
+)
 from r65.compiler.mir.virtual_registers import VirtualRegisterAllocator
 from r65.compiler.typeck.processor_mode import ModeState, ProcessorMode, XModeState
 from r65.tests.language.common import make_mir_function
@@ -1144,3 +1149,368 @@ class TestBoundarySetMode:
                     "no exit-boundary M-flag SetMode expected when "
                     "callee.exit_m_mode == caller's mode"
                 )
+
+
+# =============================================================================
+# Hard-rejection tests: properties that make a callee non-inlinable regardless
+# of size or call count. Each property exercises one of the can_inline()
+# guards added to prevent silent metadata loss when the callee carries
+# codegen-relevant state the inliner doesn't merge into the caller.
+# =============================================================================
+
+class TestCanInlineRejections:
+    """can_inline() must refuse callees whose body or metadata the inliner
+    can't safely splice into a caller."""
+
+    def _checker_for(self, callee):
+        caller = create_caller_with_call(callee.name)
+        program = MIRProgram(functions=[caller, callee])
+        return InlinabilityChecker(program), program
+
+    def test_rejects_trait_method(self):
+        """Trait methods receive self in Y with a pre-allocated self_y_vreg.
+        Splicing them into a caller breaks the Y-self contract."""
+        callee = create_simple_callee()
+        callee.is_trait_method = True
+        checker, _ = self._checker_for(callee)
+        assert checker.can_inline(callee.name) is False
+
+    def test_rejects_scratch_param_addrs(self):
+        """Callees with promoted scratch params reserve DP slots tied to
+        their signature; the caller's frame doesn't reflect those."""
+        callee = create_simple_callee()
+        callee.scratch_param_addrs = {0: 0x40}
+        checker, _ = self._checker_for(callee)
+        assert checker.can_inline(callee.name) is False
+
+    def test_rejects_hw_param_regs(self):
+        """Callees with hw-promoted params (FixedStack ABI) carry per-param
+        register pre-allocations the caller doesn't see."""
+        callee = create_simple_callee()
+        callee.hw_param_regs = {0: 'X'}
+        checker, _ = self._checker_for(callee)
+        assert checker.can_inline(callee.name) is False
+
+    def test_rejects_far_ptr_strategy(self):
+        """far_ptr_strategy is per-function (D=S vs SET_DBR); inlining a
+        callee under one strategy into a caller under the other breaks
+        LoadIndirect/StoreIndirect lowering."""
+        callee = create_simple_callee()
+        callee.far_ptr_strategy = FarPtrStrategy.D_EQUALS_S
+        checker, _ = self._checker_for(callee)
+        assert checker.can_inline(callee.name) is False
+
+    def test_rejects_preserves_attr(self):
+        """#[preserves(...)] contract is enforced at the call boundary; the
+        inliner removes the boundary without emitting equivalent
+        SaveRegister/RestoreRegister, so this is unsound today."""
+        callee = create_simple_callee()
+        callee.preserves_attr = PreservesAttribute(name='preserves',
+                                                   registers=['X'])
+        checker, _ = self._checker_for(callee)
+        assert checker.can_inline(callee.name) is False
+
+    def test_bank_mismatch_blocks_inlining_at_call_site(self):
+        """A #[bank(n)] callee called from a #[bank(m)] caller (m != n)
+        must not be inlined — assembling the callee inside the caller's
+        bank would change where its labels resolve. Verified via
+        FunctionInliner.run() because bank compatibility is a property
+        of the (caller, callee) pair, not the callee alone."""
+        callee = create_simple_callee()
+        callee.bank_attr = BankAttribute(name='bank', bank_number=2)
+        caller = create_caller_with_call(callee.name)
+        caller.bank_attr = BankAttribute(name='bank', bank_number=1)
+        program = MIRProgram(functions=[caller, callee])
+        inliner = FunctionInliner(verbose=False)
+        assert inliner.run(program) == 0
+
+    def test_same_bank_allows_inlining(self):
+        """Sanity check the bank-compatibility logic: matching bank
+        numbers should still inline."""
+        callee = create_simple_callee()
+        callee.bank_attr = BankAttribute(name='bank', bank_number=1)
+        caller = create_caller_with_call(callee.name)
+        caller.bank_attr = BankAttribute(name='bank', bank_number=1)
+        program = MIRProgram(functions=[caller, callee])
+        inliner = FunctionInliner(verbose=False)
+        assert inliner.run(program) == 1
+
+
+# =============================================================================
+# Multi-return: callees with -> rA, rB style signatures must plumb every
+# Return.values[i] into the matching call.returns[i]. Pre-fix, only [0]
+# was emitted, silently dropping secondary return values.
+# =============================================================================
+
+def _make_multi_return_callee(name: str = "two_returns"):
+    """Callee whose Return has two values, one per signature slot.
+
+    Models a `fn f() -> rA, rX` body that produces (a, b) and returns
+    both. The MIR shape is: load two vregs from immediates, then
+    `Return(values=[a, b])`.
+    """
+    func = make_mir_function(name, inline_attr=INLINE,
+                             return_type=BasicTypeInfo('u8'))
+    a = VirtualRegister(id=0, type_info=BasicTypeInfo('u8'), hint='a')
+    b = VirtualRegister(id=1, type_info=BasicTypeInfo('u8'), hint='b')
+    func.blocks[0] = BasicBlock(
+        block_id=0,
+        instructions=[
+            Move(dest=a, source=Immediate(7), type_info=BasicTypeInfo('u8')),
+            Move(dest=b, source=Immediate(9), type_info=BasicTypeInfo('u8')),
+            Return(values=[a, b]),
+        ],
+        predecessors=[], successors=[],
+    )
+    return func
+
+
+def _make_multi_return_caller(callee_name: str):
+    """Caller capturing both return values into separate caller-side vregs."""
+    func = make_mir_function("main", is_entry=True,
+                             return_type=BasicTypeInfo('u8'))
+    ret_a = VirtualRegister(id=0, type_info=BasicTypeInfo('u8'), hint='ret_a')
+    ret_b = VirtualRegister(id=1, type_info=BasicTypeInfo('u8'), hint='ret_b')
+    func.blocks[0] = BasicBlock(
+        block_id=0,
+        instructions=[
+            Call(function=callee_name, args=[],
+                 returns=[ret_a, ret_b], is_far=False),
+            Return(values=[ret_a]),
+        ],
+        predecessors=[], successors=[],
+    )
+    return func
+
+
+class TestMultiReturnInlining:
+    """The Return-to-Move rewrite must emit one Move per return slot, not
+    only the primary slot."""
+
+    def test_both_return_values_plumbed(self):
+        callee = _make_multi_return_callee()
+        caller = _make_multi_return_caller(callee.name)
+        program = MIRProgram(functions=[caller, callee])
+
+        inlined = FunctionInliner(verbose=False).run(program)
+        assert inlined == 1
+
+        # The inliner replaced the Return with Move(dst, src) pairs. Find
+        # the Moves whose destinations are the caller's ret_a and ret_b.
+        ret_a_id = caller.blocks[0].instructions[0]  # original placeholder
+        # The original Call is gone — pull the caller-side return vreg
+        # destinations directly from caller's vreg space.
+        ret_a_dst = None
+        ret_b_dst = None
+        for block in caller.blocks.values():
+            for instr in block.instructions:
+                if isinstance(instr, Move) and isinstance(instr.dest, VirtualRegister):
+                    if instr.dest.hint == 'ret_a':
+                        ret_a_dst = instr
+                    elif instr.dest.hint == 'ret_b':
+                        ret_b_dst = instr
+
+        assert ret_a_dst is not None, "primary return value not plumbed"
+        assert ret_b_dst is not None, (
+            "secondary return value not plumbed — multi-return broken"
+        )
+
+    def test_secondary_return_dropped_when_caller_ignores_it(self):
+        """If the caller's Call has only one returns slot, only that one
+        should be plumbed (the second source is discarded). Matches the
+        Pascal semantics of `_ , x = f()` where the caller doesn't bind."""
+        callee = _make_multi_return_callee()
+        # Caller with only one returns slot
+        caller = make_mir_function("main", is_entry=True,
+                                   return_type=BasicTypeInfo('u8'))
+        ret_a = VirtualRegister(id=0, type_info=BasicTypeInfo('u8'),
+                                hint='ret_a')
+        caller.blocks[0] = BasicBlock(
+            block_id=0,
+            instructions=[
+                Call(function=callee.name, args=[], returns=[ret_a],
+                     is_far=False),
+                Return(values=[ret_a]),
+            ],
+            predecessors=[], successors=[],
+        )
+        program = MIRProgram(functions=[caller, callee])
+        inlined = FunctionInliner(verbose=False).run(program)
+        assert inlined == 1
+
+        # Exactly one Move into a "ret_*" destination should exist (the
+        # secondary slot has no caller-side destination to plumb into).
+        ret_moves = [
+            instr for block in caller.blocks.values()
+            for instr in block.instructions
+            if isinstance(instr, Move)
+            and isinstance(instr.dest, VirtualRegister)
+            and (instr.dest.hint or '').startswith('ret_')
+        ]
+        assert len(ret_moves) == 1
+
+
+# =============================================================================
+# _clone_instruction: every MIR instruction type the inliner may encounter
+# must be cloned with operand remapping. Pre-fix, all but ~13 fell through
+# to deepcopy and silently preserved callee-side VirtualRegister objects.
+# =============================================================================
+
+class TestCloneInstructionCoverage:
+    """Coverage tests for the explicit-construction _clone_instruction."""
+
+    def _make_cloner(self):
+        callee = create_simple_callee()
+        caller = create_caller_with_call(callee.name)
+        return BlockCloner(caller, callee), callee, caller
+
+    def test_clone_bittest_remaps_vreg(self):
+        cloner, _, _ = self._make_cloner()
+        v = VirtualRegister(id=99, type_info=BasicTypeInfo('u8'), hint='x')
+        instr = BitTest(value=v, test_bit=7, type_info=BasicTypeInfo('u8'))
+        cloned = cloner._clone_instruction(instr)
+        assert isinstance(cloned, BitTest)
+        assert cloned is not instr
+        assert isinstance(cloned.value, VirtualRegister)
+        assert cloned.value is not v
+        # The id should be reissued from the caller's allocator
+        assert cloned.test_bit == 7
+
+    def test_clone_rotate_remaps_dest_and_source(self):
+        cloner, _, _ = self._make_cloner()
+        src = VirtualRegister(id=10, type_info=BasicTypeInfo('u8'), hint='s')
+        dst = VirtualRegister(id=11, type_info=BasicTypeInfo('u8'), hint='d')
+        instr = Rotate(dest=dst, source=src, direction='left', count=1,
+                       type_info=BasicTypeInfo('u8'))
+        cloned = cloner._clone_instruction(instr)
+        assert isinstance(cloned, Rotate)
+        assert cloned.dest is not dst
+        assert cloned.source is not src
+        assert cloned.direction == 'left'
+        assert cloned.count == 1
+
+    def test_clone_saverestore_remaps_save_location(self):
+        cloner, _, _ = self._make_cloner()
+        slot = VirtualRegister(id=20, type_info=BasicTypeInfo('u8'),
+                               hint='slot')
+        save = SaveRegister(register=HardwareRegister('X'), save_location=slot)
+        restore = RestoreRegister(register=HardwareRegister('X'),
+                                  save_location=slot)
+        cs = cloner._clone_instruction(save)
+        cr = cloner._clone_instruction(restore)
+        assert isinstance(cs, SaveRegister)
+        assert isinstance(cr, RestoreRegister)
+        assert cs.save_location is not slot
+        # Same callee vreg referenced twice must remap to the same caller
+        # vreg (cloner uses an id-keyed cache).
+        assert cs.save_location is cr.save_location
+
+    def test_clone_push_pull_preserve_register(self):
+        cloner, _, _ = self._make_cloner()
+        p = Push(register=HardwareRegister('A'))
+        q = Pull(register=HardwareRegister('A'))
+        cp = cloner._clone_instruction(p)
+        cq = cloner._clone_instruction(q)
+        assert isinstance(cp, Push)
+        assert isinstance(cq, Pull)
+        # HardwareRegister is a flyweight-style value, sharing is fine.
+        assert cp.register.name == 'A'
+        assert cq.register.name == 'A'
+
+    def test_clone_call_remaps_args_and_returns(self):
+        cloner, _, _ = self._make_cloner()
+        arg_v = VirtualRegister(id=30, type_info=BasicTypeInfo('u8'), hint='a')
+        ret_v = VirtualRegister(id=31, type_info=BasicTypeInfo('u8'), hint='r')
+        instr = Call(
+            function='other',
+            args=[Argument(value=arg_v, mechanism=ArgumentMechanism.STACK,
+                           param_type=BasicTypeInfo('u8'))],
+            returns=[ret_v],
+            is_far=False,
+        )
+        cloned = cloner._clone_instruction(instr)
+        assert isinstance(cloned, Call)
+        # Fresh argument object, not the original
+        assert cloned.args[0] is not instr.args[0]
+        assert cloned.args[0].value is not arg_v
+        assert isinstance(cloned.args[0].value, VirtualRegister)
+        assert cloned.returns[0] is not ret_v
+        # Scalar fields preserved
+        assert cloned.function == 'other'
+
+    def test_clone_unknown_raises(self):
+        """An unrecognized MIR instruction type must fail loudly rather
+        than fall through to a deepcopy that aliases callee operands."""
+        cloner, _, _ = self._make_cloner()
+
+        class FakeInstr:
+            source_loc = None
+
+        with pytest.raises(NotImplementedError):
+            cloner._clone_instruction(FakeInstr())
+
+    def test_clone_inlineasm_raises(self):
+        """InlineAsm callees are rejected by can_inline; reaching _clone
+        with one means a bypass somewhere — fail loudly."""
+        cloner, _, _ = self._make_cloner()
+        with pytest.raises(NotImplementedError):
+            cloner._clone_instruction(InlineAsm(instructions=["NOP"]))
+
+
+# =============================================================================
+# Worklist / topological ordering: nested inlining (A→B→C) should collapse
+# in a single run when C is small enough to be inlined into B, and B into
+# A. Pre-refactor this only worked via the fixed-point outer loop.
+# =============================================================================
+
+class TestNestedInlining:
+    """Verify reverse-topological processing handles A→B→C in one pass."""
+
+    def test_three_level_chain_inlines_fully(self):
+        # Leaf: trivial function returning a constant.
+        leaf = make_mir_function("leaf", inline_attr=INLINE)
+        v0 = VirtualRegister(id=0, type_info=BasicTypeInfo('u8'), hint='r')
+        leaf.blocks[0] = BasicBlock(
+            block_id=0,
+            instructions=[
+                Move(dest=v0, source=Immediate(1), type_info=BasicTypeInfo('u8')),
+                Return(values=[v0]),
+            ],
+            predecessors=[], successors=[],
+        )
+
+        # Middle: calls leaf, returns its result.
+        middle = make_mir_function("middle", inline_attr=INLINE)
+        m0 = VirtualRegister(id=0, type_info=BasicTypeInfo('u8'), hint='m')
+        middle.blocks[0] = BasicBlock(
+            block_id=0,
+            instructions=[
+                Call(function='leaf', args=[], returns=[m0], is_far=False),
+                Return(values=[m0]),
+            ],
+            predecessors=[], successors=[],
+        )
+
+        # Top: calls middle.
+        top = make_mir_function("main", is_entry=True)
+        t0 = VirtualRegister(id=0, type_info=BasicTypeInfo('u8'), hint='t')
+        top.blocks[0] = BasicBlock(
+            block_id=0,
+            instructions=[
+                Call(function='middle', args=[], returns=[t0], is_far=False),
+                Return(values=[t0]),
+            ],
+            predecessors=[], successors=[],
+        )
+
+        program = MIRProgram(functions=[top, middle, leaf])
+        inlined = FunctionInliner(verbose=False).run(program)
+
+        # Two call sites: leaf into middle, middle into top.
+        assert inlined == 2
+        # Top should have no remaining Call instructions.
+        remaining_calls = [
+            i for b in top.blocks.values() for i in b.instructions
+            if isinstance(i, Call)
+        ]
+        assert remaining_calls == []
