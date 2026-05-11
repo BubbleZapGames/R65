@@ -110,6 +110,28 @@ class ProgramCodeGenerator:
             if inlined_count > 0:
                 print(f"Function inlining: {inlined_count} call site(s) inlined")
 
+                # Re-run mode tracking on every function the inliner mutated.
+                # Cloned blocks intentionally arrive with entry_mode/exit_mode
+                # = None — the inliner's contract treats per-block mode
+                # metadata as invalidated by any inline (the LLVM /
+                # PreservedAnalyses::none() pattern). Skipping this step
+                # is exactly what allowed the join-point mode-fix in the
+                # peephole optimizer to default to m8 inside bodies that
+                # required m16 (classickong.r65 set_rect bug).
+                from r65.compiler.mir.mode_tracker import reanalyze_function
+                func_by_name = {f.name: f for f in mir_program.functions}
+                for caller_name in func_inliner.mutated_funcs:
+                    caller_func = func_by_name.get(caller_name)
+                    if caller_func is None:
+                        continue
+                    if not reanalyze_function(caller_func):
+                        from r65.compiler.errors import MIRLoweringError
+                        raise MIRLoweringError(
+                            f"Mode tracking failed for function '{caller_name}' "
+                            "after inlining: mode conflicts detected. The inliner "
+                            "produced an invalid CFG."
+                        )
+
                 # Re-run dead function elimination after inlining
                 # (inlined functions may now be unused)
                 dead_func_elim2 = DeadFunctionEliminator(verbose=False)

@@ -38,7 +38,7 @@ from r65.compiler.mir.nodes import (
 from r65.compiler.mir.virtual_registers import VirtualRegisterAllocator
 from r65.compiler.mir.register_tracker import RegisterAliasTracker
 from r65.compiler.mir.cfg import CFGBuilder
-from r65.compiler.mir.mode_tracker import MIRModeTracker
+from r65.compiler.mir.mode_tracker import MIRModeTracker, reanalyze_function as _reanalyze_modes
 from r65.compiler.mir.builder_helpers import TypeSizeCalculator, MemoryLocationBuilder
 from r65.compiler.mir.context import LoweringContext
 from r65.compiler.mir.lowerers.expression import ExpressionLowerer
@@ -556,9 +556,11 @@ class MIRBuilder:
         # Find exit blocks
         mir_func.exit_block_ids = self.cfg_builder.find_exit_blocks()
 
-        # Perform mode tracking analysis
-        mode_tracker = MIRModeTracker(mir_func)
-        success = mode_tracker.analyze()
+        # Perform mode tracking analysis. Going through the shared
+        # reanalyze_function helper keeps the post-build path and the
+        # post-inline path on the same code (clears any block.entry_mode
+        # left from a hypothetical earlier pass, then runs the fixpoint).
+        success = _reanalyze_modes(mir_func)
         if not success:
             raise MIRLoweringError(f"Mode tracking failed for function '{mir_func.name}': mode conflicts detected", source_loc=self._current_source_loc)
 

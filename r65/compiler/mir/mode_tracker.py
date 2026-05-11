@@ -181,3 +181,24 @@ class MIRModeTracker:
                     op_name = "SEP" if instr.is_set else "REP"
                     print(f"      {op_name} #${instr.mask:02X}")
             print()
+
+
+def reanalyze_function(mir_func: MIRFunction) -> bool:
+    """
+    Recompute per-block mode metadata for a function whose MIR has been
+    mutated since the last analysis (currently: by the inliner).
+
+    Called after MIR-mutating passes. Clears stale `entry_mode` /
+    `exit_mode` on every block, then re-runs the fixpoint via a fresh
+    `MIRModeTracker`. This is the canonical "invalidate analyses,
+    recompute lazily" pattern (cf. LLVM `PreservedAnalyses::none()`):
+    the inliner's job is to leave the CFG valid; this helper makes the
+    decorating metadata catch up.
+
+    Returns the same bool as `MIRModeTracker.analyze()` — True on
+    success, False on irreconcilable mode conflict at a merge point.
+    """
+    for block in mir_func.blocks.values():
+        block.entry_mode = None
+        block.exit_mode = None
+    return MIRModeTracker(mir_func).analyze()

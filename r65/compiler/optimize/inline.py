@@ -300,9 +300,24 @@ class InlinabilityChecker:
         if not self.implicit_inline:
             return False
 
-        # Called exactly once → always inline (no code size increase)
+        # Called exactly once → inline if not absurdly large. The "no code
+        # size increase" reasoning that lets us bypass the regular budget
+        # still applies, but huge called-once callees inflate the caller's
+        # frame past what the slot allocator can untangle (observed in
+        # classickong.r65 with unpack_level — a 700-line function whose
+        # locals collided with the caller's at slot $07,S). Capping at
+        # the same limit as explicitly-attributed functions keeps the win
+        # for small called-once helpers without breaking large ones.
+        #
+        # NOTE(slot-allocator-latent): the underlying liveness/slot-reuse
+        # bug is still there — synthetic small repros (one large called-
+        # once callee + caller with several u16 locals, see /tmp tests in
+        # the inlining session) do NOT trigger it, so a targeted fix
+        # would need a minimal reduction from the classickong.r65 case.
+        # The cap is the practical mitigation; revisit if a smaller repro
+        # surfaces.
         if self.call_counts.get(func_name, 0) == 1:
-            return True
+            return body_cost <= INLINE_COST_WITH_ATTR
 
         # Apply loop-depth multiplier: a call inside a loop is worth inlining
         # at a larger budget since JSR/RTS overhead repeats every iteration.
@@ -502,13 +517,20 @@ class BlockCloner:
         for old_id, block in self.callee_func.blocks.items():
             new_id = self.block_map[old_id]
 
+            # entry_mode / exit_mode are deliberately NOT cloned. The MIR
+            # built for the callee carried mode metadata computed from the
+            # callee's own entry mode (set by MIRModeTracker during MIR
+            # build). After splicing those blocks into the caller, the
+            # join points and mode flow may be entirely different, so the
+            # cached metadata is by definition stale. The caller side
+            # of FunctionInliner.run() invalidates this metadata and
+            # mode_tracker.reanalyze_function() recomputes it. See the
+            # inliner's `mutated_funcs` contract.
             new_block = BasicBlock(
                 block_id=new_id,
                 instructions=[self._clone_instruction(i) for i in block.instructions],
                 predecessors=[],  # Will be rebuilt
                 successors=[],    # Will be rebuilt
-                entry_mode=block.entry_mode,
-                exit_mode=block.exit_mode,
             )
 
             cloned_blocks[new_id] = new_block
@@ -557,6 +579,13 @@ class FunctionInliner:
         """
         self.verbose = verbose
         self.implicit_inline = implicit_inline
+        # Names of caller functions whose MIR was mutated by inlining. After
+        # run() returns, every name in this set has invalidated per-block
+        # metadata (entry_mode / exit_mode) and the caller must re-run any
+        # pass that decorates blocks — currently MIRModeTracker via
+        # `mode_tracker.reanalyze_function()`. Mirrors the LLVM /
+        # rustc convention of treating inlining as analysis-invalidating.
+        self.mutated_funcs: Set[str] = set()
 
     def run(self, mir_program: MIRProgram) -> int:
         """
@@ -566,7 +595,13 @@ class FunctionInliner:
             mir_program: The MIR program to optimize
 
         Returns:
-            Number of call sites inlined
+            Number of call sites inlined.
+
+        After this method returns, every function named in
+        `self.mutated_funcs` has invalidated per-block mode metadata.
+        Callers MUST invoke `mode_tracker.reanalyze_function()` on each
+        one before any pass that reads `BasicBlock.entry_mode` /
+        `BasicBlock.exit_mode` runs.
         """
         checker = InlinabilityChecker(mir_program, implicit_inline=self.implicit_inline)
         inlined_count = 0
@@ -603,6 +638,8 @@ class FunctionInliner:
                                          call_instr, callee_func):
                         inlined_count += 1
                         changed = True
+                        # Record the caller as needing mode re-analysis.
+                        self.mutated_funcs.add(caller_func.name)
 
                         if self.verbose:
                             print(f"  Inlined {callee_name} into {caller_func.name}")

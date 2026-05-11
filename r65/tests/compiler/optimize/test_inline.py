@@ -719,19 +719,20 @@ class TestBlockCloner:
         # At minimum, check that we have the same number of blocks
         assert len(cloned_block_ids) == len(original_block_ids)
 
-    def test_clone_preserves_block_entry_exit_modes(self):
-        """Cloned blocks must carry entry_mode/exit_mode from the source.
+    def test_clone_invalidates_block_mode_metadata(self):
+        """Cloned blocks must arrive with entry_mode/exit_mode = None.
 
-        Without this, downstream codegen sees entry_mode=None on every inlined
-        block and falls back to m8, which breaks bodies that need m16 — e.g.
-        a u16 stack-param load becomes a u8 load and silently truncates the
-        high byte. Regression test for the -O2 inliner bug found in
-        classickong.r65.
+        After Bug 1 was rediagnosed as a metadata-staleness issue, the
+        inliner's contract is to TREAT block-level mode metadata as
+        invalidated by any inline. Callers (codegen) re-run
+        MIRModeTracker on every function the inliner mutated. Preserving
+        the callee's stale mode info on cloned blocks was a workaround
+        that happened to work when callee and caller had compatible
+        mode flow but broke at general join points.
         """
         callee = create_simple_callee()
-        # Seed the callee's block with non-default modes so cloning can be
-        # observed. The MIRModeTracker would set these during MIR build, but
-        # we set them by hand here.
+        # Even if the callee carries mode info, the cloned blocks must
+        # not. (The MIR builder would normally set these.)
         for block in callee.blocks.values():
             block.entry_mode = ProcessorMode(ModeState.M16, XModeState.X16)
             block.exit_mode = ProcessorMode(ModeState.M16, XModeState.X16)
@@ -741,20 +742,38 @@ class TestBlockCloner:
         cloned_blocks = cloner.clone_blocks()
 
         assert len(cloned_blocks) == len(callee.blocks)
-        for old_id, new_id in cloner.block_map.items():
-            src = callee.blocks[old_id]
-            dst = cloned_blocks[new_id]
-            assert dst.entry_mode is not None, (
-                f"cloned block {new_id} dropped entry_mode "
-                f"(source block {old_id} had {src.entry_mode})"
+        for new_id, dst in cloned_blocks.items():
+            assert dst.entry_mode is None, (
+                f"cloned block {new_id} should NOT carry stale entry_mode "
+                f"(got {dst.entry_mode})"
             )
-            assert dst.entry_mode.m_mode == src.entry_mode.m_mode
-            assert dst.entry_mode.x_mode == src.entry_mode.x_mode
-            assert dst.exit_mode is not None, (
-                f"cloned block {new_id} dropped exit_mode"
+            assert dst.exit_mode is None, (
+                f"cloned block {new_id} should NOT carry stale exit_mode "
+                f"(got {dst.exit_mode})"
             )
-            assert dst.exit_mode.m_mode == src.exit_mode.m_mode
-            assert dst.exit_mode.x_mode == src.exit_mode.x_mode
+
+    def test_inliner_tracks_mutated_funcs(self):
+        """FunctionInliner.run() must populate self.mutated_funcs with the
+        names of every caller whose MIR was actually mutated by inlining.
+
+        This is the load-bearing handle the codegen uses to know which
+        functions need their mode metadata recomputed via
+        mode_tracker.reanalyze_function(). If the inliner forgets to
+        record a mutation, downstream passes see stale metadata.
+        """
+        callee = create_simple_callee()
+        caller = create_caller_with_call("add_one")
+        program = MIRProgram(functions=[caller, callee])
+
+        inliner = FunctionInliner(verbose=False)
+        inlined_count = inliner.run(program)
+
+        assert inlined_count == 1
+        assert "main" in inliner.mutated_funcs, (
+            f"expected caller 'main' in mutated_funcs, got {inliner.mutated_funcs}"
+        )
+        # The callee was not itself a caller of anything inlinable.
+        assert "add_one" not in inliner.mutated_funcs
 
 
 class TestFunctionInliner:
