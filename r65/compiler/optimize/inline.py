@@ -1355,6 +1355,13 @@ class FunctionInliner:
         )
         inlined_entry.predecessors.append(block_id)
 
+        # Tag the first MIR instruction of the inlined region so codegen
+        # attaches an "inline <name>" comment to the resulting asm output.
+        if inlined_entry.instructions:
+            first = inlined_entry.instructions[0]
+            tag = f"inline {callee.name}"
+            first.comment = f"{first.comment}; {tag}" if first.comment else tag
+
         # Result vregs in the caller's space — one per return value.
         # Multi-return callees (e.g. `-> rA, rB` or `-> rA, rX`) plumb each
         # Return.values[i] into call.returns[i]; previously only [0] was

@@ -56,7 +56,7 @@ from r65.compiler.codegen.location_resolver import (
     LocationResolver, StoreResolver, default_resolver
 )
 from r65.compiler.codegen.selector_context import SelectorContext
-from r65.compiler.codegen.asm_nodes import Immediate, Address, StackOffset
+from r65.compiler.codegen.asm_nodes import Immediate, Address, StackOffset, Instruction as AsmInstruction
 
 
 class InstructionSelector:
@@ -610,11 +610,25 @@ class InstructionSelector:
         if type(instr) is not StatusFlagSet:
             self._flush_pending_mode_flags()
 
+        nodes_before = len(self.emitter.nodes) if instr.comment else 0
+
         handler = self._dispatch.get(type(instr))
         if handler:
             handler(instr)
         else:
             raise InstructionSelectionError(f"Unsupported MIR instruction: {type(instr).__name__}", source_loc=self._current_source_loc)
+
+        # Attach the MIR comment to the first asm instruction emitted by this
+        # MIR instruction. Used by the inliner to mark the entry point of an
+        # inlined region.
+        if instr.comment:
+            for node in self.emitter.nodes[nodes_before:]:
+                if isinstance(node, AsmInstruction):
+                    node.comment = (
+                        f"{node.comment}; {instr.comment}"
+                        if node.comment else instr.comment
+                    )
+                    break
 
         # Advance instruction index for liveness tracking
         self._advance_instruction()

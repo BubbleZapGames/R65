@@ -130,6 +130,9 @@ class MemoryLocation:
 class MIRInstruction:
     """Base class for all MIR instructions."""
     source_loc: Optional[Any] = field(default=None, kw_only=True)  # Source location for debugging
+    # Comment attached to the first asm instruction emitted from this MIR
+    # instruction. Used by the inliner to mark inlined regions.
+    comment: Optional[str] = field(default=None, kw_only=True)
 
     def __repr__(self):
         return f"{self.__class__.__name__}"
