@@ -14,7 +14,7 @@ from r65.compiler.mir.nodes import (
     MIRProgram, MIRFunction, BasicBlock,
     MIRInstruction, VirtualRegister, HardwareRegister, Immediate,
     Move, Jump, Return, Call, CondBranch, JumpTable, LookupTable,
-    Load, Store, LoadIndirect, StoreIndirect,
+    Load, Store, LoadIndirect, StoreIndirect, MemoryLocation,
     BinaryOp, UnaryOp, Compare, TypeConvert, ToBool,
     InlineAsm, ReturnFromInterrupt, TraitDispatch,
     Argument, ArgumentMechanism,
@@ -128,10 +128,12 @@ class InlinabilityChecker:
 
     Hard requirements (must all be true):
     1. Not recursive (direct or mutual)
-    2. Not a far fn (cross-bank calls can't be inlined)
-    3. Not an interrupt handler
-    4. Not the entry point
-    5. No inline assembly (asm!())
+    2. Not an interrupt handler
+    3. Not the entry point
+    4. No inline assembly (asm!())
+    5. If far: body must be bank-independent (see `_far_body_is_bank_safe`).
+       Far fns whose bodies only use far indirects, DP / zeropage, or
+       WRAM long-addressing can be inlined into any-bank callers.
 
     Heuristics for inlining decisions:
     - Explicit inlining (always checked):
@@ -236,6 +238,135 @@ class InlinabilityChecker:
                     return True
         return False
 
+    def _far_body_is_bank_safe(self, func: MIRFunction) -> bool:
+        """True iff every instruction in a far function's body would
+        produce identical machine code if assembled in a different bank.
+
+        Used by `can_inline` to decide whether to allow inlining a far
+        callee into a caller in some other bank. Conservative — rejects
+        anything we can't statically prove bank-independent. The cases
+        that pass:
+
+        - **Far indirects** (LoadIndirect/StoreIndirect with is_far=True):
+          use [zp],Y / [zp] — fully bank-explicit via the pointer's bank
+          byte.
+        - **Zero-page Load/Store** (storage_type='zeropage'): DP-relative,
+          DBR-independent.
+        - **WRAM Load/Store with bank-resolved address ≥ $010000**
+          (storage_type='ram', address >= 0x010000): codegen always emits
+          long addressing because the address is wider than 16 bits.
+
+        Rejected:
+
+        - **Near indirects** (is_far=False): use DBR, which differs
+          between caller's and callee's banks.
+        - **Any Call** to a non-far function in the body — `JSR` targets
+          the current PBR; after inlining that PBR is the caller's, so
+          the JSR lands in the wrong bank.
+        - **`#[mode(databank=...)]`** other than NONE: the callee relies
+          on a prologue PHB/PLB to set DBR to its own bank, and may use
+          absolute addressing inside that bracket; we'd need to emit
+          equivalent MIR-level DBR management at the inline boundary,
+          which isn't implemented.
+        - **Anything else with a `MemoryLocation` operand** (Load/Store
+          to ROM/HW/unresolved RAM, BinaryOp on a MemoryLocation,
+          MemoryFill/BlockCopy): codegen may pick absolute or
+          DBR-relative addressing based on the callee's expected DBR;
+          inlining into a different bank could silently miscompile.
+
+        Returns False on any unrecognized instruction kind too — failing
+        closed is the right default for a cross-bank correctness check.
+        """
+        from r65.compiler.hir.attributes import DataBankMode
+
+        # databank=inline / databank=caller can't be replicated in
+        # body-only MIR without emitting explicit PHB/PLB sequences;
+        # reject for now.
+        if func.mode_attr is not None and getattr(
+                func.mode_attr, 'databank', DataBankMode.NONE) != DataBankMode.NONE:
+            return False
+
+        # Far-pointer stack params force the codegen to emit a prologue
+        # bracket (PHB / set DBR from ptr bank / PLB, or PHD/TSC/TCD)
+        # that the body's `(d,S),Y` or `[dp],Y` indirect derefs depend on
+        # for DBR. Inlining removes the prologue but the body's
+        # addressing is still relative to that bank. Until we model the
+        # DBR setup at the inline boundary, refuse. (Concretely: this
+        # blocks put_str / put_num / similar utilities. Lifting it
+        # requires emitting MIR-level Push DBR / set DBR / Pull DBR
+        # around the inlined body — left for a follow-up.)
+        if func.has_far_ptr_stack_params:
+            return False
+
+        for block in func.blocks.values():
+            for instr in block.instructions:
+                if not self._instr_is_bank_safe(instr):
+                    return False
+        return True
+
+    def _instr_is_bank_safe(self, instr: MIRInstruction) -> bool:
+        """Per-instruction bank-safety predicate; see `_far_body_is_bank_safe`."""
+        # Calls: only far calls are bank-explicit. Near calls would JSR
+        # in the caller's bank — wrong target.
+        if isinstance(instr, Call):
+            return instr.is_far
+        if isinstance(instr, TraitDispatch):
+            # Trait dispatch's bank semantics are complex and tied to
+            # self_is_far; refuse for now.
+            return False
+
+        # Indirect memory access: bank-explicit only if far.
+        if isinstance(instr, (LoadIndirect, StoreIndirect)):
+            return instr.is_far
+
+        # Direct memory access: bank-safe only when codegen will emit
+        # long addressing (address >= 0x010000) or DP (zeropage).
+        if isinstance(instr, (Load, Store)):
+            loc = instr.source if isinstance(instr, Load) else instr.dest
+            return self._mem_loc_is_bank_safe(loc)
+
+        # Operands that may carry MemoryLocation references. Reject if any
+        # bank-dependent location appears.
+        for op in self._maybe_memory_operands(instr):
+            if not self._mem_loc_is_bank_safe(op):
+                return False
+
+        # MemoryFill / BlockCopy: target is bank-pinned; codegen uses MVN
+        # with explicit dest_bank, but inlining into a different bank
+        # caller hasn't been validated. Refuse.
+        if isinstance(instr, (MemoryFill, BlockCopy)):
+            return False
+
+        # Everything else (BinaryOp/UnaryOp on registers, Move, Jump,
+        # CondBranch, SetMode, Return, etc.) is bank-independent at the
+        # body level.
+        return True
+
+    def _maybe_memory_operands(self, instr: MIRInstruction):
+        """Yield MemoryLocation operands of `instr`. Used to scan
+        BinaryOp/UnaryOp/Compare/etc. whose source slots can hold a
+        MemoryLocation directly (avoids loading into a temp vreg)."""
+        for field in ('left', 'right', 'operand', 'source', 'value'):
+            op = getattr(instr, field, None)
+            if isinstance(op, MemoryLocation):
+                yield op
+
+    def _mem_loc_is_bank_safe(self, loc) -> bool:
+        """Decide whether codegen will emit bank-independent addressing
+        for this MemoryLocation."""
+        if not isinstance(loc, MemoryLocation):
+            return True  # non-memory operand, irrelevant
+        if loc.storage_type == 'zeropage':
+            return True  # DP — bank-independent
+        if loc.storage_type == 'ram' and loc.address is not None and loc.address >= 0x010000:
+            # WRAM with a resolved address >= 64K → codegen always uses
+            # long addressing (the address itself is wider than the
+            # absolute mode can encode).
+            return True
+        # ROM / HW / lowram / unresolved RAM: may use abs (3-byte) which
+        # depends on DBR. Refuse.
+        return False
+
     def can_inline(self, func_name: str) -> bool:
         """
         Check if a function can be inlined (hard requirements).
@@ -252,8 +383,15 @@ class InlinabilityChecker:
         if func_name in self.recursive_functions:
             return False
 
-        # Not a far function
-        if func.is_far:
+        # Far functions: allowed when the body is bank-independent, i.e.
+        # every instruction would produce the same bytes regardless of
+        # which PBR/DBR is active at runtime. The blanket "no far fn
+        # inlining" rule was overly conservative — many far utilities
+        # (string copy, indexed nametable write, etc.) only touch far
+        # pointers or WRAM via long addressing, both of which work
+        # unchanged in any caller's bank. The detailed safety check is
+        # in `_far_body_is_bank_safe`.
+        if func.is_far and not self._far_body_is_bank_safe(func):
             return False
 
         # Not an interrupt handler
@@ -314,18 +452,24 @@ class InlinabilityChecker:
 
     def _bank_compatible(self, caller: MIRFunction, callee: MIRFunction) -> bool:
         """True iff the callee can be inlined into the caller without
-        crossing a ROM bank boundary.
+        breaking same-bank label assumptions.
 
         Per CLAUDE.md, near functions can only call near functions in the
-        same bank. Inlining a callee whose `#[bank(n)]` differs from the
-        caller's would assemble the callee's instructions inside the
-        caller's bank, breaking any same-bank label reference the
-        original callee body relied on (and silently changing where the
-        code lives in ROM).
+        same bank. Inlining a NEAR callee whose `#[bank(n)]` differs
+        from the caller's would assemble the body inside the caller's
+        bank, breaking same-bank references the body relied on.
 
-        Auto-banked callees (`bank_attr.is_auto`) are permitted: the
-        linker places them with the caller.
+        Far callees are exempt: cross-bank inlining is exactly the point
+        of relaxing the far-fn rule. `_far_body_is_bank_safe` has
+        already verified the body produces identical bytes in any bank.
+
+        Auto-banked callees (`bank_attr.is_auto`) are permitted for
+        near callees too: the linker places them with the caller.
         """
+        if callee.is_far:
+            # Body-level bank safety is enforced by _far_body_is_bank_safe;
+            # cross-bank is the whole point.
+            return True
         callee_bank = callee.bank_attr
         if callee_bank is None or callee_bank.is_auto:
             return True

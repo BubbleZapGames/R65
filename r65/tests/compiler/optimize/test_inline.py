@@ -23,7 +23,7 @@ from r65.compiler.mir.nodes import (
 from r65.compiler.hir.types import BasicTypeInfo
 from r65.compiler.hir.attributes import (
     InlineAttribute, InlineMode, InterruptAttribute, InterruptVector,
-    BankAttribute, PreservesAttribute,
+    BankAttribute, PreservesAttribute, ModeAttribute, DataBankMode,
 )
 from r65.compiler.hir.nodes import HIRParameter, RegisterBinding
 from r65.compiler.mir.virtual_registers import VirtualRegisterAllocator
@@ -323,14 +323,17 @@ class TestInlinabilityChecker:
         checker = InlinabilityChecker(program)
         assert checker.can_inline("factorial") is False
 
-    def test_cannot_inline_far_function(self):
-        """Far functions should not be inlinable."""
-        far_func = create_far_function()
+    def test_bank_safe_far_function_inlinable(self):
+        """Bank-safe far functions (no nested near calls, no databank attr,
+        all memory accesses bank-independent) ARE inlinable — the body
+        produces identical bytes regardless of caller's bank. Updated
+        from the older blanket-reject rule."""
+        far_func = create_far_function()  # trivial Move + Return body
         caller = create_caller_with_call("far_helper")
         program = MIRProgram(functions=[caller, far_func])
 
         checker = InlinabilityChecker(program)
-        assert checker.can_inline("far_helper") is False
+        assert checker.can_inline("far_helper") is True
 
     def test_cannot_inline_interrupt_handler(self):
         """Interrupt handlers should not be inlinable."""
@@ -820,8 +823,10 @@ class TestFunctionInliner:
 
         assert has_recursive_call is True
 
-    def test_far_function_not_inlined(self):
-        """Test that far functions are not inlined."""
+    def test_bank_safe_far_function_inlined(self):
+        """Bank-safe far functions ARE inlined under the relaxed rule
+        (no memory access, no nested calls → body is bank-independent).
+        """
         far_func = create_far_function()
         caller = create_caller_with_call("far_helper")
         program = MIRProgram(functions=[caller, far_func])
@@ -829,7 +834,7 @@ class TestFunctionInliner:
         inliner = FunctionInliner(verbose=False)
         inlined_count = inliner.run(program)
 
-        assert inlined_count == 0
+        assert inlined_count == 1
 
     def test_multiple_returns_inlined(self):
         """Test inlining a function with multiple return paths."""
@@ -1848,3 +1853,170 @@ class TestASubstitutionGating:
             "A-substitution should fire in the same-mode path so we "
             "don't regress the common case"
         )
+
+
+# =============================================================================
+# Far-function inlining: the blanket "no far fns" rule was over-conservative.
+# A far fn whose body produces identical bytes in any bank — only far indirects,
+# zero-page, or WRAM long-addressing — can be inlined into a different-bank
+# caller without further codegen work. Bank-dependent bodies are still rejected.
+# =============================================================================
+
+def _make_far_callee(name: str, body_instrs):
+    """Build a one-block far function with the given body."""
+    func = make_mir_function(name, is_far=True, inline_attr=INLINE)
+    func.blocks[0] = BasicBlock(
+        block_id=0,
+        instructions=body_instrs,
+        predecessors=[], successors=[],
+    )
+    return func
+
+
+class TestFarFunctionInlining:
+    """Tests for the relaxed far-fn rule."""
+
+    def test_far_with_wram_long_store_inlinable(self):
+        """The motivating case: a far fn that writes a #[ram] array at
+        $7E2400 (the put_str shape — long-addressable, bank-safe)."""
+        v = VirtualRegister(id=0, type_info=BasicTypeInfo('u8'), hint='v')
+        nametable = MemoryLocation(
+            storage_type='ram',
+            address=0x7E2400,
+            symbol=MockSymbol('nametable1'),
+        )
+        callee = _make_far_callee("write_tile", [
+            Move(dest=v, source=Immediate(0x21),
+                 type_info=BasicTypeInfo('u8')),
+            Store(source=v, dest=nametable,
+                  type_info=BasicTypeInfo('u8')),
+            Return(values=[]),
+        ])
+        checker = InlinabilityChecker(
+            MIRProgram(functions=[callee]),
+            implicit_inline=True,
+        )
+        assert checker.can_inline("write_tile") is True
+
+    def test_far_with_far_indirect_load_inlinable(self):
+        """LoadIndirect/StoreIndirect with is_far=True is bank-safe."""
+        ptr = VirtualRegister(id=0, type_info=BasicTypeInfo('u16'), hint='p')
+        out = VirtualRegister(id=1, type_info=BasicTypeInfo('u8'), hint='r')
+        callee = _make_far_callee("read_via_far_ptr", [
+            LoadIndirect(dest=out, pointer=ptr, is_far=True,
+                         index_register='Y', type_info=BasicTypeInfo('u8')),
+            Return(values=[out]),
+        ])
+        checker = InlinabilityChecker(MIRProgram(functions=[callee]))
+        assert checker.can_inline("read_via_far_ptr") is True
+
+    def test_far_with_near_indirect_rejected(self):
+        """Near indirect (`(zp),Y`) uses DBR; cross-bank inlining
+        would access whatever DBR happens to be — unsafe."""
+        ptr = VirtualRegister(id=0, type_info=BasicTypeInfo('u16'), hint='p')
+        out = VirtualRegister(id=1, type_info=BasicTypeInfo('u8'), hint='r')
+        callee = _make_far_callee("read_via_near_ptr", [
+            LoadIndirect(dest=out, pointer=ptr, is_far=False,
+                         index_register='Y', type_info=BasicTypeInfo('u8')),
+            Return(values=[out]),
+        ])
+        checker = InlinabilityChecker(MIRProgram(functions=[callee]))
+        assert checker.can_inline("read_via_near_ptr") is False
+
+    def test_far_with_rom_load_rejected(self):
+        """ROM data Load may be lowered as 3-byte absolute (DBR-relative);
+        cross-bank inlining could read the wrong bank."""
+        out = VirtualRegister(id=0, type_info=BasicTypeInfo('u8'), hint='r')
+        rom_loc = MemoryLocation(
+            storage_type='rom',
+            address=0x8000,  # in some bank, < $10000 so codegen may use abs
+            symbol=MockSymbol('lookup_table'),
+        )
+        callee = _make_far_callee("read_rom", [
+            Load(dest=out, source=rom_loc, type_info=BasicTypeInfo('u8')),
+            Return(values=[out]),
+        ])
+        checker = InlinabilityChecker(MIRProgram(functions=[callee]))
+        assert checker.can_inline("read_rom") is False
+
+    def test_far_with_nested_near_call_rejected(self):
+        """A near JSR in the body targets current PBR; after inlining
+        into a different-bank caller, PBR is the caller's, so the JSR
+        lands in the wrong bank."""
+        callee = _make_far_callee("with_near_call", [
+            Call(function='other_near_fn', args=[], returns=[],
+                 is_far=False),
+            Return(values=[]),
+        ])
+        checker = InlinabilityChecker(MIRProgram(functions=[callee]))
+        assert checker.can_inline("with_near_call") is False
+
+    def test_far_with_nested_far_call_allowed(self):
+        """A nested JSL is bank-explicit (24-bit target), so it stays
+        correct when inlined into any caller."""
+        callee = _make_far_callee("with_far_call", [
+            Call(function='other_far_fn', args=[], returns=[],
+                 is_far=True),
+            Return(values=[]),
+        ])
+        checker = InlinabilityChecker(MIRProgram(functions=[callee]))
+        assert checker.can_inline("with_far_call") is True
+
+    def test_far_with_databank_inline_rejected(self):
+        """`#[mode(databank=inline)]` relies on prologue PHB/PLB that
+        the inliner doesn't emit; the body may use absolute addressing
+        inside that bracket. Refuse until we model DBR management at
+        the inline boundary."""
+        callee = _make_far_callee("with_dbr", [Return(values=[])])
+        callee.mode_attr = ModeAttribute(name='mode',
+                                         databank=DataBankMode.INLINE)
+        checker = InlinabilityChecker(MIRProgram(functions=[callee]))
+        assert checker.can_inline("with_dbr") is False
+
+    def test_far_with_far_ptr_stack_param_rejected(self):
+        """Far fns with far-pointer stack params rely on their prologue
+        to set DBR = ptr bank (via PHB/PLA/PLB or PHD/TSC/TCD), and the
+        body's `(d,S),Y` / `[dp],Y` indirect derefs depend on that
+        setup. Inlining removes the prologue but keeps the body —
+        miscompile risk. Reject until we emit equivalent DBR
+        management at the inline boundary. (This is what blocks put_str
+        from being inlined today.)"""
+        callee = _make_far_callee("has_far_ptr_arg", [Return(values=[])])
+        callee.has_far_ptr_stack_params = True
+        checker = InlinabilityChecker(MIRProgram(functions=[callee]))
+        assert checker.can_inline("has_far_ptr_arg") is False
+
+    def test_far_inlining_crosses_bank_attr(self):
+        """End-to-end: caller in bank 7 inlines a far callee defined in
+        bank 0. Verifies _bank_compatible doesn't block cross-bank
+        inlining for far callees the way it does for near callees."""
+        v = VirtualRegister(id=0, type_info=BasicTypeInfo('u8'), hint='r')
+        callee = _make_far_callee("bank0_helper", [
+            Move(dest=v, source=Immediate(7),
+                 type_info=BasicTypeInfo('u8')),
+            Return(values=[v]),
+        ])
+        callee.bank_attr = BankAttribute(name='bank', bank_number=0)
+
+        caller_ret = VirtualRegister(id=0, type_info=BasicTypeInfo('u8'),
+                                     hint='out')
+        caller = make_mir_function("main", is_entry=True,
+                                   return_type=BasicTypeInfo('u8'))
+        caller.bank_attr = BankAttribute(name='bank', bank_number=7)
+        caller.blocks[0] = BasicBlock(
+            block_id=0,
+            instructions=[
+                Call(function='bank0_helper', args=[],
+                     returns=[caller_ret], is_far=True),
+                Return(values=[caller_ret]),
+            ],
+            predecessors=[], successors=[],
+        )
+        program = MIRProgram(functions=[caller, callee])
+        assert FunctionInliner(verbose=False).run(program) == 1
+        # No Call should remain in the caller.
+        remaining = [
+            i for b in caller.blocks.values() for i in b.instructions
+            if isinstance(i, Call)
+        ]
+        assert remaining == []

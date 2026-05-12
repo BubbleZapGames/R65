@@ -145,6 +145,55 @@ tail-call entry above for the structural similarity.
 
 ---
 
+## Function Inlining — Far Functions with Far-Pointer Stack Params
+
+The inliner's `_far_body_is_bank_safe` (`r65/compiler/optimize/inline.py`)
+admits far callees whose bodies produce identical bytes in any
+caller's bank — far indirects, zero-page, WRAM long-addressing. It
+rejects far callees with `has_far_ptr_stack_params=True`. Concretely
+this blocks `put_str` / `put_num` / similar utilities in
+classickong.r65, even at -O2, even though their bodies are otherwise
+ideal inline candidates (small, hot, called 20–30× each).
+
+The dependency the rejection guards against is real. A far function
+with a far-pointer stack parameter relies on its prologue to set DBR
+to the parameter's bank — either via `PHB / LDA bank,S / PHA / PLB`
+(SET_DBR strategy) or via `PHD / TSC / TCD` (D=S strategy). The body
+then uses `(d,S),Y` or `[dp],Y` indirect derefs whose effective bank
+is determined by that prologue setup. Inlining splices the body in
+but drops the prologue; the caller's DBR is whatever it happens to
+be, so the indirect dereferences read the wrong bank.
+
+**Why deferred**: the fix requires emitting equivalent MIR-level DBR
+(and possibly DP) management at the inline boundary — Push DBR /
+load bank byte / Pull DBR around the inlined body, plus careful
+coordination with `analyze_far_ptr_strategy` which currently picks
+per-function strategies and would need a per-call-site mode. The
+bracket needs to nest correctly with the caller's own DBR state, the
+caller's `far_ptr_strategy`, and any other inlined far callees in
+the same caller.
+
+**Approach if revisited**: extend `_inline_call` to detect far
+callees with far-pointer stack params and emit a MIR prologue/
+epilogue bracket around the cloned body. For SET_DBR strategy:
+`Push HW_DBR` / load bank byte from `arg.value` / `Move HW_DBR <-
+bank_byte` at entry, `Pull HW_DBR` at every exit. For D=S strategy:
+`Push HW_D` / `Move HW_D <- HW_S` at entry, `Pull HW_D` at exit. The
+choice of strategy should match the caller's `far_ptr_strategy` to
+avoid clashing prologues; if the caller doesn't yet have one, the
+analysis would need to run again post-inline. Tests should cover:
+(a) inlining a far-ptr-param callee into a SET_DBR caller, (b) into
+a D=S caller, (c) into a caller with no strategy yet, and (d)
+nested inlining where the inlined body itself contains another
+far-ptr-param call.
+
+The eligibility predicate would change from `if
+func.has_far_ptr_stack_params: return False` to a soundness check
+that the body uses only the indirect addressing modes the chosen
+bracket supports.
+
+---
+
 ## Conventions
 
 When adding to this file:
