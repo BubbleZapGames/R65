@@ -118,7 +118,8 @@ class EntryAttribute(ProcessedAttribute):
 # Inline attribute
 class InlineMode(Enum):
     """Inline attribute mode."""
-    ALWAYS = "always"  # #[inline] or #[inline(always)] - inline if under threshold
+    HINT = "hint"      # #[inline] - hint, size-gated by INLINE_COST_WITH_ATTR
+    ALWAYS = "always"  # #[inline(always)] - directive, bypass size budget
     NEVER = "never"    # #[inline(never)] - never inline this function
 
 
@@ -126,13 +127,16 @@ class InlineMode(Enum):
 class InlineAttribute(ProcessedAttribute):
     """#[inline], #[inline(always)], or #[inline(never)] - controls function inlining.
 
-    The compiler uses heuristics to decide when to inline marked functions:
-    - Functions called exactly once are always inlined (unless #[inline(never)])
-    - Functions marked #[inline] or #[inline(always)] are inlined if < 30 instructions
-    - Functions marked #[inline(never)] are never inlined
-    - Functions without attribute are inlined only if very small (< 3 instructions)
+    Modes:
+    - HINT (bare #[inline]): size-gated. Inlined if body cost < INLINE_COST_WITH_ATTR.
+    - ALWAYS (#[inline(always)]): directive. Inlined regardless of body size
+      (modulo can_inline soundness requirements). Matches Rust/LLVM semantics.
+    - NEVER (#[inline(never)]): never inlined.
+
+    Functions without any inline attribute use the implicit-inline heuristics
+    (called-once, small leaf, etc.) when -O2 is enabled.
     """
-    mode: InlineMode = InlineMode.ALWAYS
+    mode: InlineMode = InlineMode.HINT
 
 
 # CFG attribute
@@ -446,7 +450,9 @@ class AttributeProcessor:
         if context not in ['function']:
             raise HIRError(f"#[inline] attribute only valid on functions", source_loc=attr.source_loc)
 
-        mode = InlineMode.ALWAYS  # Default for bare #[inline]
+        # Bare #[inline] is HINT (size-gated); explicit #[inline(always)] /
+        # #[inline(never)] override that.
+        mode = InlineMode.HINT
 
         if len(attr.args) > 1:
             raise HIRError(f"#[inline] accepts at most one argument (always or never)", source_loc=attr.source_loc)

@@ -8,8 +8,8 @@ from r65.compiler.optimize.inline import (
     FunctionInliner,
     InlinabilityChecker,
     BlockCloner,
-    INLINE_THRESHOLD_WITH_ATTR,
-    INLINE_THRESHOLD_NO_ATTR,
+    INLINE_COST_WITH_ATTR,
+    INLINE_COST_NO_ATTR,
 )
 from r65.compiler.mir.nodes import (
     MIRProgram, MIRFunction, BasicBlock,
@@ -386,7 +386,7 @@ class TestInlinabilityChecker:
     def test_should_not_inline_large_function(self):
         """Large functions should not be inlined even with #[inline]."""
         # Create a function with many instructions
-        large_func = create_large_function(INLINE_THRESHOLD_WITH_ATTR + 10)
+        large_func = create_large_function(INLINE_COST_WITH_ATTR + 10)
         large_func.inline_attr = InlineAttribute(name='inline')
         caller = create_caller_with_call("large_func")
 
@@ -871,7 +871,7 @@ class TestFunctionInliner:
 
     def test_large_function_not_inlined(self):
         """Test that large functions are not inlined even with #[inline]."""
-        large_func = create_large_function(INLINE_THRESHOLD_WITH_ATTR + 10)
+        large_func = create_large_function(INLINE_COST_WITH_ATTR + 10)
         large_func.inline_attr = InlineAttribute(name='inline')
 
         # Create two callers so the function is called twice
@@ -914,8 +914,9 @@ class TestFunctionInliner:
 
         assert inlined_count == 0
 
-    def test_inline_always_behaves_like_inline(self):
-        """Test that #[inline(always)] behaves the same as #[inline]."""
+    def test_inline_always_small_function(self):
+        """Small #[inline(always)] function should be inlined (same as
+        plain #[inline] would be)."""
         callee = create_simple_callee()
         callee.inline_attr = InlineAttribute(name='inline', mode=InlineMode.ALWAYS)
         caller = create_caller_with_call("add_one")
@@ -923,6 +924,55 @@ class TestFunctionInliner:
 
         checker = InlinabilityChecker(program)
         assert checker.should_inline("add_one") is True
+
+    def test_inline_always_bypasses_size_budget(self):
+        """#[inline(always)] should inline regardless of size — that's
+        the difference from plain #[inline], which is size-gated. A
+        large body that plain #[inline] would refuse must still inline
+        under ALWAYS, matching Rust/LLVM semantics where ALWAYS is a
+        directive rather than a hint."""
+        # Build a body whose cycle cost exceeds INLINE_COST_WITH_ATTR
+        # by a comfortable margin.
+        large_func = create_large_function(INLINE_COST_WITH_ATTR + 40)
+        large_func.inline_attr = InlineAttribute(name='inline',
+                                                 mode=InlineMode.ALWAYS)
+        caller = create_caller_with_call("large_func")
+        program = MIRProgram(functions=[caller, large_func])
+
+        checker = InlinabilityChecker(program)
+        # Sanity: cost actually exceeds the size-gated budget.
+        assert checker._estimate_cycle_cost(large_func) > INLINE_COST_WITH_ATTR
+        # ALWAYS should still inline it.
+        assert checker.should_inline("large_func") is True
+
+    def test_plain_inline_hint_respects_size_budget(self):
+        """Counterpart to the ALWAYS bypass: bare #[inline] (HINT mode)
+        must NOT inline a body whose cost exceeds INLINE_COST_WITH_ATTR.
+        Pins the size-gating contract for the HINT mode."""
+        large_func = create_large_function(INLINE_COST_WITH_ATTR + 40)
+        # Bare #[inline] parses to HINT (size-gated).
+        large_func.inline_attr = InlineAttribute(name='inline',
+                                                 mode=InlineMode.HINT)
+        caller = create_caller_with_call("large_func")
+
+        # Add a second caller so the implicit "called-once" rule
+        # doesn't accidentally save us when implicit inlining is on.
+        caller2 = make_mir_function("caller2",
+                                    return_type=BasicTypeInfo('u8'))
+        vr = VirtualRegister(id=0, type_info=BasicTypeInfo('u8'), hint="r")
+        caller2.blocks[0] = BasicBlock(
+            block_id=0,
+            instructions=[
+                Call(function="large_func", args=[], returns=[vr],
+                     is_far=False),
+                Return(values=[vr]),
+            ],
+            predecessors=[], successors=[],
+        )
+        program = MIRProgram(functions=[caller, caller2, large_func])
+
+        checker = InlinabilityChecker(program, implicit_inline=False)
+        assert checker.should_inline("large_func") is False
 
     def test_inline_never_not_inlined_even_when_called_once(self):
         """Test that #[inline(never)] prevents inlining even when called exactly once."""

@@ -1103,7 +1103,7 @@ class TestInlineAttribute:
     """Test #[inline], #[inline(always)], and #[inline(never)] attribute parsing."""
 
     def test_inline_bare(self):
-        """Bare #[inline] should set mode to ALWAYS."""
+        """Bare #[inline] should set mode to HINT (size-gated)."""
         source = """
 #[inline]
 fn add_one(val @ A: u8) -> u8 {
@@ -1113,10 +1113,10 @@ fn add_one(val @ A: u8) -> u8 {
         hir = build_hir(source)
         func = hir.declarations[0]
         assert func.inline_attr is not None
-        assert func.inline_attr.mode == InlineMode.ALWAYS
+        assert func.inline_attr.mode == InlineMode.HINT
 
     def test_inline_always(self):
-        """#[inline(always)] should set mode to ALWAYS."""
+        """#[inline(always)] should set mode to ALWAYS (bypasses size)."""
         source = """
 #[inline(always)]
 fn add_one(val @ A: u8) -> u8 {

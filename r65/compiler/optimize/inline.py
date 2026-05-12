@@ -80,10 +80,6 @@ INLINE_COST_NO_ATTR      = 12   # break-even for unmarked implicit inlining
 # Per-nesting-depth multiplier on INLINE_COST_NO_ATTR (index = clamped depth)
 _LOOP_DEPTH_MULTIPLIER = [1, 3, 6]
 
-# Backward-compatibility aliases (previously raw instruction counts)
-INLINE_THRESHOLD_WITH_ATTR = INLINE_COST_WITH_ATTR
-INLINE_THRESHOLD_NO_ATTR   = INLINE_COST_NO_ATTR
-
 
 # Instructions that produce their result in the A register. When the
 # Return is preceded by such an instruction whose dest is the same vreg
@@ -161,6 +157,12 @@ class InlinabilityChecker:
         self.call_graph: Dict[str, Set[str]] = {}
         self.call_counts: Dict[str, int] = {}
         self.call_depths: Dict[str, int] = {}  # max loop nesting depth of any call site
+        # Cycle-cost cache keyed by function name. should_inline() and the
+        # constant-arg bypass both call _estimate_cycle_cost per-site; for
+        # a hot callee that means re-walking the same body once per call
+        # site. Cache invalidates implicitly when the program is mutated
+        # because the inliner rebuilds the checker for each new run().
+        self._cycle_cost_cache: Dict[str, int] = {}
         self._build_call_graph()
         self._compute_call_site_depths()
         self._find_recursive_functions()
@@ -223,11 +225,25 @@ class InlinabilityChecker:
         Uses a per-instruction-type weight table. Return costs 0 because it is
         eliminated by inlining. The result is compared against CALL_OVERHEAD_CYCLES
         (12 for JSR/RTS) to decide whether inlining pays off.
+
+        Memoized per function name. Safe because: (a) the worklist
+        processes each function in reverse-topo order so a callee's body
+        is finalized before any of its callers compute the callee's
+        cost, and (b) caller bodies are only inspected once we move on
+        to that caller (its predecessors-in-topo have already been
+        processed). The cost we cache is the cost AT FIRST ACCESS — the
+        only thing that could invalidate it is the caller itself being
+        further inlined into, which doesn't happen during its own
+        processing.
         """
+        cached = self._cycle_cost_cache.get(func.name)
+        if cached is not None:
+            return cached
         cost = 0
         for block in func.blocks.values():
             for instr in block.instructions:
                 cost += _MIR_CYCLE_COSTS.get(type(instr), _DEFAULT_CYCLE_COST)
+        self._cycle_cost_cache[func.name] = cost
         return cost
 
     def _has_inline_asm(self, func: MIRFunction) -> bool:
@@ -492,14 +508,21 @@ class InlinabilityChecker:
             return False
 
         func = self.func_map[func_name]
-        body_cost = self._estimate_cycle_cost(func)
 
-        # Check for #[inline(never)] - never inline these functions
+        # #[inline(never)] - never inline these functions
         if func.inline_attr is not None and func.inline_attr.mode == InlineMode.NEVER:
             return False
 
-        # Marked #[inline] or #[inline(always)] → inline if under cycle budget
-        if func.inline_attr is not None:
+        # #[inline(always)] bypasses the cycle budget entirely — matches
+        # Rust/LLVM semantics where ALWAYS is a directive, not a hint.
+        # can_inline()'s hard requirements still apply.
+        if func.inline_attr is not None and func.inline_attr.mode == InlineMode.ALWAYS:
+            return True
+
+        body_cost = self._estimate_cycle_cost(func)
+
+        # #[inline] (HINT) — size-gated. Inline if under cycle budget.
+        if func.inline_attr is not None and func.inline_attr.mode == InlineMode.HINT:
             return body_cost < INLINE_COST_WITH_ATTR
 
         # Below this point is implicit inlining - only allowed when implicit_inline=True
@@ -1172,8 +1195,11 @@ class FunctionInliner:
 
         Extends the function-level should_inline() heuristic with a call-site
         bypass: when every argument is a compile-time constant and the callee
-        has no nested calls, inlining always pays off because the post-inline
-        peephole can constant-fold the body down to 1-2 instructions.
+        has no nested calls, inlining usually pays off because the post-inline
+        peephole can constant-fold the body down to 1-2 instructions. The
+        bypass still respects INLINE_COST_WITH_ATTR as an upper bound —
+        without that ceiling, a 200-instruction helper called with all
+        literals would inline wholesale and defeat the cost model.
         """
         func_name = call.function
         if not isinstance(func_name, str):
@@ -1187,11 +1213,14 @@ class FunctionInliner:
             return False
         if checker.should_inline(func_name):
             return True
-        # Constant-arg bypass is an implicit heuristic — only at -O2
+        # Constant-arg bypass is an implicit heuristic — only at -O2.
+        # Cap at the same ceiling explicit #[inline] uses; the peephole
+        # can't be relied on to shrink an arbitrarily large body.
         if (checker.implicit_inline
                 and checker.can_inline(func_name)
                 and self._all_args_constant(call)
-                and self._callee_has_no_calls(callee)):
+                and self._callee_has_no_calls(callee)
+                and checker._estimate_cycle_cost(callee) <= INLINE_COST_WITH_ATTR):
             return True
         return False
 
