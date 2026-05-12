@@ -262,12 +262,22 @@ class ABIModel(ABC):
             selector._emit_implied(op, f"Restore A from {a_save_reg} after stack arg setup")
 
         # Process non-stack args. Stable-sort to prioritize A-resident
-        # non-register args (STA from A before other args' LDA clobbers it).
+        # args (STA/transfer from A before other args' LDA clobbers it).
+        # This includes REGISTER args targeting X/Y/B sourced from A —
+        # those need TAX/TAY/XBA emitted while A still holds the value.
+        # REGISTER args whose target IS A are already in place (no-op).
+        def _is_a_resident_priority(arg):
+            arg_loc = selector.parent._get_operand_location(arg.value)
+            if not arg_loc.is_hw('A'):
+                return False
+            if arg.mechanism != ArgumentMechanism.REGISTER:
+                return True
+            target = (arg.location.name if hasattr(arg.location, 'name')
+                      else str(arg.location))
+            return target != 'A'
+
         sorted_other_args = sorted(other_args, key=selector.arg_sort_key)
-        sorted_other_args.sort(key=lambda arg: (
-            0 if (arg.mechanism != ArgumentMechanism.REGISTER and
-                  selector.parent._get_operand_location(arg.value).is_hw('A'))
-            else 1))
+        sorted_other_args.sort(key=lambda arg: 0 if _is_a_resident_priority(arg) else 1)
 
         # Reorder scratch params to avoid WAR hazards: if a scratch param's
         # source value resides at another scratch param's target address,
@@ -606,7 +616,10 @@ class ABIModel(ABC):
             elif value_loc.is_hw():
                 selector.parent._emit_register_transfer(value_loc.hw_register, target_reg)
             elif target_reg in ('X', 'Y') and value_loc.kind == LocationKind.STACK:
-                # Handle stack-relative addressing: LDX/LDY don't support sr,S mode
+                # Handle stack-relative addressing: LDX/LDY don't support sr,S mode.
+                # Force m16 — TAX/TAY in m8/x16 transfers B:A (stale B) into a
+                # 16-bit index register, corrupting the high byte.
+                selector.parent._ensure_m16_mode()
                 selector.parent._emit_load('LDA', value_loc)
                 if target_reg == 'X':
                     selector._emit_implied(Opcode.TAX, "Transfer to X (no LDX sr,S)")
@@ -983,13 +996,23 @@ class ABIDefault(ABIModel):
             op = Opcode.TYA if a_save_reg == 'Y' else Opcode.TXA
             selector._emit_implied(op, f"Restore A from {a_save_reg} after stack arg setup")
 
-        # Non-stack args. Stable-sort to prioritize A-resident non-register
-        # args (STA from A before other args' LDA clobbers it).
+        # Non-stack args. Stable-sort to prioritize A-resident args
+        # (STA/transfer from A before other args' LDA clobbers it). This
+        # includes REGISTER args targeting X/Y/B sourced from A — those need
+        # TAX/TAY/XBA emitted while A still holds the value. REGISTER args
+        # whose target IS A are already in place (no transfer needed).
+        def _is_a_resident_priority(arg):
+            arg_loc = selector.parent._get_operand_location(arg.value)
+            if not arg_loc.is_hw('A'):
+                return False
+            if arg.mechanism != ArgumentMechanism.REGISTER:
+                return True
+            target = (arg.location.name if hasattr(arg.location, 'name')
+                      else str(arg.location))
+            return target != 'A'
+
         sorted_other_args = sorted(other_args, key=selector.arg_sort_key)
-        sorted_other_args.sort(key=lambda arg: (
-            0 if (arg.mechanism != ArgumentMechanism.REGISTER and
-                  selector.parent._get_operand_location(arg.value).is_hw('A'))
-            else 1))
+        sorted_other_args.sort(key=lambda arg: 0 if _is_a_resident_priority(arg) else 1)
 
         # Reorder scratch params to avoid WAR hazards
         sorted_other_args = self._reorder_scratch_params(selector, sorted_other_args)

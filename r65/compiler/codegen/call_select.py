@@ -231,6 +231,12 @@ class CallInstructionSelector(BaseSelector):
         """Emit a register transfer instruction."""
         opcode = TRANSFER_OPCODES.get((source, dest))
         if opcode:
+            # TAX/TAY in m8/x16 transfer B:A into the 16-bit index register.
+            # B may hold stale data from earlier 16-bit operations, so force
+            # m16 to transfer the full 16-bit accumulator (which is what we
+            # mean when targeting an x16 index register).
+            if source == 'A' and dest in ('X', 'Y'):
+                self.parent._ensure_m16_mode()
             self._emit_implied(opcode)
 
     def _emit_push(self, reg: str, comment: str = None):
@@ -1421,6 +1427,10 @@ class CallInstructionSelector(BaseSelector):
         """Load from memory into target register."""
         # Handle stack-relative addressing: LDX/LDY don't support sr,S mode
         if target_reg in ('X', 'Y') and arg_loc.kind == LocationKind.STACK:
+            # X/Y are 16-bit (x16). LDA + TAX/TAY must run in m16, otherwise
+            # LDA loads only the low byte and TAX in m8/x16 transfers B:A
+            # (with stale B) into the 16-bit index — corrupting the high byte.
+            self.parent._ensure_m16_mode()
             self.parent._emit_load('LDA', arg_loc)
             if target_reg == 'X':
                 self._emit_implied(Opcode.TAX, "Transfer to X (no LDX sr,S)")

@@ -632,3 +632,109 @@ class TestStackParamCopiedToMutLocal:
             0x7E0014: [0x77, 0x5F],   # RESULTS[2]
         }))
         assert result.success, f"Failures: {result.failures}"
+
+
+class TestACoalescedXArgWithFarSelfScratch:
+    """Regression: nested call where outer takes a far *self scratch param
+    and an `@ X: u16` arg whose value is the inner call's return value.
+
+    Discovered while debugging the classickong port: `score_tmp2.from_u16(
+    div16(n, 10))` was adding a huge bogus value to the score every frame.
+
+    Two interacting compiler bugs:
+
+    1. Argument ordering — the scratch-DP setup for the far self pointer
+       was emitted BEFORE moving the A-resident inner-call result into X.
+       By the time TAX ran, A had been clobbered with the bank byte of
+       the self pointer.
+
+    2. TAX in m8/x16 transfers `B:A` (not just A) into the 16-bit index.
+       Even after fixing the order, TAX in m8 mode would have pulled a
+       stale B from earlier 16-bit pointer loads, corrupting the high
+       byte of X.
+
+    Pattern: `Box.from_u16(produce(literal))` where produce returns u16.
+    """
+
+    def test_x_arg_from_call_return_with_far_self(self, e2e):
+        """`BOX.set(produce(0x42))` must put 0x43 into BOX.lo, not the
+        bank byte / high byte of BOX's address that the buggy ordering
+        leaves in A:B at TAX time.
+        """
+        result = e2e.run(f'''
+            {SCRATCH_DECLS}
+
+            struct Box {{
+                lo: u16,
+                hi: u16,
+            }}
+
+            impl far Box {{
+                far fn set(far *self, value @ X: u16) {{
+                    self.lo = X;
+                    self.hi = 0;
+                }}
+            }}
+
+            far fn produce(n @ A: u16) -> u16 {{
+                return A + 1;
+            }}
+
+            #[ram(0x7E2100)]
+            static mut BOX: Box;
+
+            #[entry]
+            fn main() -> ! {{
+                BOX.set(produce(0x42));
+                loop {{ asm!("WAI"); }}
+            }}
+        ''', ExpectedState(memory={
+            # produce(0x42) returns 0x43. set() writes 0x43 to B.lo and 0
+            # to B.hi. With the bug, B.lo would hold (B-bank << 8) | bank
+            # byte, e.g. $0021 or $7E00 — anything but $0043.
+            0x7E2100: [0x43, 0x00],   # B.lo (LE)
+            0x7E2102: [0x00, 0x00],   # B.hi (LE)
+        }))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_a_resident_x_arg_after_call_with_other_scratch_params(self, e2e):
+        """Stress variant: outer takes a far self ptr (scratch) AND an
+        additional non-far scratch param. Confirms the reorder still
+        protects the A-resident X arg when multiple scratch params
+        precede it in the original sort order.
+        """
+        result = e2e.run(f'''
+            {SCRATCH_DECLS}
+
+            struct Box {{
+                lo: u16,
+                hi: u16,
+            }}
+
+            impl far Box {{
+                // `extra: u8` is a scratch-promoted DP param; `value @ X`
+                // is the X-targeted register arg sourced from A.
+                far fn set_with_extra(far *self, extra: u8, value @ X: u16) {{
+                    self.lo = X;
+                    self.hi = (extra as u16);
+                }}
+            }}
+
+            far fn produce(n @ A: u16) -> u16 {{
+                return A + 0x100;
+            }}
+
+            #[ram(0x7E2110)]
+            static mut BOX: Box;
+
+            #[entry]
+            fn main() -> ! {{
+                BOX.set_with_extra(0x55, produce(0x1234));
+                loop {{ asm!("WAI"); }}
+            }}
+        ''', ExpectedState(memory={
+            # produce(0x1234) = 0x1334. self.lo = 0x1334, self.hi = 0x0055.
+            0x7E2110: [0x34, 0x13],
+            0x7E2112: [0x55, 0x00],
+        }))
+        assert result.success, f"Failures: {result.failures}"
