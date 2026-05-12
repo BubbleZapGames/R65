@@ -372,7 +372,18 @@ class TypeConversionSelector(BaseSelector):
             )
 
     def _emit_near_to_far_pointer(self, src_operand, dest_loc):
-        """Convert near pointer (2 bytes) to far pointer (3 bytes)."""
+        """Convert near pointer (2 bytes) to far pointer (3 bytes).
+
+        Forces m8 mode before emitting so the byte-by-byte LDA/STA pairs
+        below stay single-byte. If we entered with m16 active (e.g. after
+        a 16-bit near-pointer Move), each LDA/STA would read/write two
+        bytes and the high-byte store at dest+1 would (a) be redundant
+        with the first store, and (b) overlap dest+2 with src+2 — which
+        for variable sources is uninitialized memory, clobbering what
+        should become the bank byte.
+        """
+        self.parent._ensure_m8_mode()
+
         if isinstance(src_operand, MIRImmediate):
             # Immediate: load and store each byte
             value = src_operand.value & 0xFFFF
@@ -431,7 +442,12 @@ class TypeConversionSelector(BaseSelector):
         self._emit_load_store('STA', dest_bank)
 
     def _emit_far_to_near_pointer(self, src_operand, dest_loc):
-        """Convert far pointer (3 bytes) to near pointer (2 bytes)."""
+        """Convert far pointer (3 bytes) to near pointer (2 bytes).
+
+        Forces m8 mode — same rationale as _emit_near_to_far_pointer: the
+        byte-by-byte LDA/STA pairs below silently widen in m16 and overlap.
+        """
+        self.parent._ensure_m8_mode()
         if isinstance(src_operand, MIRImmediate):
             value = src_operand.value & 0xFFFF
             self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(value & 0xFF))
@@ -472,7 +488,12 @@ class TypeConversionSelector(BaseSelector):
                 self._emit_load_store('STA', dest_high)
 
     def _emit_pointer_to_u8(self, src_operand, dest_loc):
-        """Convert pointer to u8 (extract low byte)."""
+        """Convert pointer to u8 (extract low byte).
+
+        Forces m8 — a stray m16 leftover would widen the LDA #imm and the
+        STA dest, writing two bytes where only one was intended.
+        """
+        self.parent._ensure_m8_mode()
         if isinstance(src_operand, MIRImmediate):
             value = src_operand.value & 0xFF
             self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(value))
@@ -494,7 +515,13 @@ class TypeConversionSelector(BaseSelector):
         self._emit_load_store('STA', dest_loc)
 
     def _emit_pointer_copy(self, src_operand, dest_loc, size: int):
-        """Copy pointer of given size."""
+        """Copy pointer of given size.
+
+        Forces m8 — the per-byte LDA #imm / LDA src / STA dest loop only
+        works correctly in 8-bit accumulator mode. In m16 each load/store
+        widens to two bytes and the per-byte iterations overlap.
+        """
+        self.parent._ensure_m8_mode()
         if isinstance(src_operand, MIRImmediate):
             value = src_operand.value
             # Check if source has a symbol with ROM label (for address-of ROM data)
