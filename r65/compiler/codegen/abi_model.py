@@ -295,6 +295,39 @@ class ABIModel(ABC):
             for arg in sorted_other_args
         )
 
+        # Additionally: if there's a REGISTER A arg whose source is already in
+        # A (the no-op case) AND any SCRATCH_PARAM/VARIABLE arg will clobber A
+        # during setup, we have to save A around the clobbering work or the
+        # REGISTER A arg will be passing a stale value to the callee.
+        def _is_a_target_with_a_source(arg):
+            if arg.mechanism != ArgumentMechanism.REGISTER:
+                return False
+            target = (arg.location.name if hasattr(arg.location, 'name')
+                      else str(arg.location))
+            if target != 'A':
+                return False
+            arg_loc = selector.parent._get_operand_location(arg.value)
+            return arg_loc.is_hw('A')
+
+        if not has_war_with_a:
+            a_in_place_arg = next((a for a in sorted_other_args
+                                   if _is_a_target_with_a_source(a)), None)
+            if a_in_place_arg is not None:
+                clobbers_a = any(
+                    arg is not a_in_place_arg
+                    and arg.mechanism in (ArgumentMechanism.SCRATCH_PARAM,
+                                          ArgumentMechanism.VARIABLE)
+                    for arg in sorted_other_args
+                )
+                if clobbers_a:
+                    has_war_with_a = True
+                    # Mark all clobbering scratch params so the WAR branch
+                    # below brackets them with TAY/TYA around A.
+                    for arg in sorted_other_args:
+                        if (arg is not a_in_place_arg
+                                and arg.mechanism == ArgumentMechanism.SCRATCH_PARAM):
+                            arg._needs_a_save = True
+
         if has_war_with_a:
             # Split into: non-scratch args, non-A scratch, A-resident scratch
             non_scratch = []
@@ -318,6 +351,34 @@ class ABIModel(ABC):
                 elif arg.mechanism == ArgumentMechanism.VARIABLE:
                     selector.emit_variable_argument(arg, arg_loc)
 
+            # Determine if any arg needs A's full 16 bits preserved. TAY
+            # always transfers 16 bits in x16 mode, but TYA is sized by the M
+            # flag — if A is in m8 when TYA runs, the high byte is lost. We
+            # need to force m16 around the TYA when the in-place A arg is u16.
+            war_a_is_16bit = False
+            for _war_arg in sorted_other_args:
+                if _war_arg.mechanism != ArgumentMechanism.REGISTER:
+                    continue
+                _target = (_war_arg.location.name
+                           if hasattr(_war_arg.location, 'name')
+                           else str(_war_arg.location))
+                if _target != 'A':
+                    continue
+                _aloc = selector.parent._get_operand_location(_war_arg.value)
+                if not _aloc.is_hw('A'):
+                    continue
+                if (_war_arg.param_type is not None
+                        and get_type_size(_war_arg.param_type) == 2):
+                    war_a_is_16bit = True
+                    break
+
+            if war_a_is_16bit:
+                _cur = selector.parent.emitter.get_accu_mode()
+                if _cur != 16:
+                    selector._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG,
+                                             "m16 to preserve A across WAR save")
+                    selector.parent.emitter.emit_accu_mode(16)
+
             # Save A to Y (TAY always transfers 16 bits in x16 mode)
             selector._emit_implied(Opcode.TAY,
                                   "Save A (WAR hazard: non-A scratch before A-resident)")
@@ -330,7 +391,14 @@ class ABIModel(ABC):
                     arg_loc = selector.parent._offset_location(arg_loc, pre_arg_stack_adj)
                 selector.emit_scratch_param_argument(arg, arg_loc)
 
-            # Restore A from Y
+            # Restore A from Y. TYA is M-sized; if the saved A was 16-bit
+            # ensure we're in m16 so all 16 bits round-trip.
+            if war_a_is_16bit:
+                _cur = selector.parent.emitter.get_accu_mode()
+                if _cur != 16:
+                    selector._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG,
+                                             "m16 for TYA WAR restore")
+                    selector.parent.emitter.emit_accu_mode(16)
             selector._emit_implied(Opcode.TYA,
                                   "Restore A (WAR hazard resolved)")
 

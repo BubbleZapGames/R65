@@ -13,6 +13,7 @@ from typing import Dict, Set, List, Tuple
 from r65.compiler.mir.nodes import (
     MIRProgram, MIRFunction, Call, ArgumentMechanism,
     Move, VirtualRegister, HardwareRegister, TraitDispatch,
+    Load, Store, MemoryLocation,
 )
 from r65.compiler.codegen.register_alloc import ScratchRegisterPool
 from r65.compiler.codegen.type_utils import get_type_size
@@ -20,6 +21,7 @@ from r65.compiler.errors import CodegenError
 from r65.compiler.analysis.param_utils import (
     find_address_taken_functions, find_composite_scratch, find_trait_impl_groups,
 )
+from r65.compiler.hir.types import PointerTypeInfo
 
 
 def promote_all_stack_params(mir_program: MIRProgram, scratch_pool: ScratchRegisterPool):
@@ -87,6 +89,62 @@ def promote_all_stack_params(mir_program: MIRProgram, scratch_pool: ScratchRegis
         for name in impl_names:
             all_promotions[name] = promos
 
+    # Build the call graph so we can constrain scratch param promotion: a
+    # callee's scratch params must not collide with any caller's scratch params
+    # on the same call chain (the callee's prologue would overwrite the
+    # caller's param). We process functions in topological order with callers
+    # first; when promoting G we exclude scratches used by any function that
+    # transitively calls G.
+    from r65.compiler.analysis.call_graph import CallGraphAnalyzer
+    cg = CallGraphAnalyzer(
+        mir_program,
+        trait_dispatch_info=getattr(mir_program, 'trait_dispatch_info', None),
+    ).analyze()
+
+    def _transitive_callers(target: str) -> Set[str]:
+        """Functions that can transitively reach `target` via the call graph."""
+        callers: Set[str] = set()
+        # Reverse-DFS from target.
+        stack = [target]
+        seen = {target}
+        # Build reverse adjacency on demand.
+        for caller, callees in cg.edges.items():
+            if target in callees:
+                callers.add(caller)
+        # Iterative expansion: walk back through callers of callers.
+        frontier = list(callers)
+        seen |= callers
+        while frontier:
+            cur = frontier.pop()
+            for caller, callees in cg.edges.items():
+                if cur in callees and caller not in seen:
+                    seen.add(caller)
+                    callers.add(caller)
+                    frontier.append(caller)
+        return callers
+
+    # Per-function record of chosen scratch bytes.
+    func_scratch_bytes: Dict[str, Set[int]] = {}
+
+    # Seed with trait-method scratch addresses (dynamic dispatch coordination).
+    for promos in trait_method_promos.values():
+        for (tn, mi), impl_names in trait_impl_groups.items():
+            if trait_method_promos.get((tn, mi)) is not promos:
+                continue
+            for name in impl_names:
+                f = func_by_name.get(name)
+                if f is None:
+                    continue
+                bytes_for_f = func_scratch_bytes.setdefault(name, set())
+                for param_idx, (kind, base_addr) in promos.items():
+                    if kind != 'scratch':
+                        continue
+                    if param_idx >= len(f.parameters):
+                        continue
+                    param_size = get_type_size(f.parameters[param_idx].param_type)
+                    for offset in range(param_size):
+                        bytes_for_f.add(base_addr + offset)
+
     for func in mir_program.functions:
         if not func.stack_param_offsets:
             continue
@@ -103,9 +161,39 @@ def promote_all_stack_params(mir_program: MIRProgram, scratch_pool: ScratchRegis
                 source_loc=func.source_loc,
             )
 
-        promotions = _promote_function_params(func, scratch_pool)
+        # Exclude scratch bytes used by functions that may have this function
+        # on the active call stack (transitive callers) or be reached by this
+        # function (transitive callees) — either direction would let a callee
+        # prologue overwrite a still-live caller param.
+        reserved = set()
+        for related in _transitive_callers(func.name):
+            reserved |= func_scratch_bytes.get(related, set())
+        # Approximate callee reservation: walk callees we've already promoted.
+        stack_to_visit = list(cg.get_callees(func.name))
+        seen_callees: Set[str] = set()
+        while stack_to_visit:
+            cur = stack_to_visit.pop()
+            if cur in seen_callees:
+                continue
+            seen_callees.add(cur)
+            reserved |= func_scratch_bytes.get(cur, set())
+            stack_to_visit.extend(cg.get_callees(cur))
+
+        promotions = _promote_function_params(
+            func, scratch_pool,
+            reserved_scratch_bytes=reserved,
+        )
         if promotions:
             all_promotions[func.name] = promotions
+            chosen_bytes: Set[int] = set()
+            for param_idx, (kind, loc) in promotions.items():
+                if kind != 'scratch':
+                    continue
+                param_size = get_type_size(func.parameters[param_idx].param_type)
+                for offset in range(param_size):
+                    chosen_bytes.add(loc + offset)
+            if chosen_bytes:
+                func_scratch_bytes.setdefault(func.name, set()).update(chosen_bytes)
 
     if not all_promotions:
         # No stack params in the whole program — nothing to do
@@ -170,6 +258,13 @@ def promote_all_stack_params(mir_program: MIRProgram, scratch_pool: ScratchRegis
     # Two different trait methods CAN share the same scratch addresses since
     # a given caller only dispatches one at a time (liveness doesn't cross).
     _collect_trait_dispatch_scratch_addrs(mir_program, trait_method_promos)
+
+    # Step 4c: Allocate scratch slots for far-self trait methods that need to
+    # save self across calls/ROM. In FixedStack mode, self is never pushed to
+    # the stack — instead it lives in a 3-byte zeropage scratch slot, accessed
+    # via [scratch],Y. This keeps DP=0 so scratch params remain reachable.
+    _allocate_far_self_scratches(mir_program, scratch_pool, trait_impl_groups,
+                                  func_by_name, global_scratch_param_addrs)
 
     # Step 5: Update call sites
     for func in mir_program.functions:
@@ -237,9 +332,18 @@ def _reject_recursive_functions(mir_program: MIRProgram):
 def _promote_function_params(
     func: MIRFunction, scratch_pool: ScratchRegisterPool,
     scratch_only: bool = False,
+    reserved_scratch_bytes: Set[int] = None,
 ) -> Dict[int, Tuple[str, object]]:
     """
     Promote all stack parameters of a function to hw regs or scratch.
+
+    Args:
+        reserved_scratch_bytes: Set of zeropage bytes that must be avoided.
+            Each scratch whose [base, base+size) range overlaps this set is
+            excluded from the candidate pool. Used to prevent collisions
+            between a callee's params and an in-call caller's params (e.g.
+            trait method scratch params persist across calls and would be
+            overwritten if a callee uses the same scratch addresses).
 
     Returns:
         Dict mapping param_idx -> ('hw', reg_name) or ('scratch', scratch_addr)
@@ -252,6 +356,9 @@ def _promote_function_params(
 
     from r65.compiler.mir.liveness import InstructionLivenessAnalyzer
     from r65.compiler.hir.types import PointerTypeInfo
+
+    if reserved_scratch_bytes is None:
+        reserved_scratch_bytes = set()
 
     liveness = InstructionLivenessAnalyzer(func)
 
@@ -304,8 +411,12 @@ def _promote_function_params(
             available_hw_u8 = [r for r in available_hw_u8 if r != 'B']
         available_hw_u16 = [r for r in ['X', 'Y'] if r not in taken_hw_regs]
 
-    # Available scratch registers
-    scratch_available = [(s.address, s.size, s.name) for s in scratch_pool.scratches]
+    # Available scratch registers — exclude any that overlap reserved bytes.
+    scratch_available = []
+    for s in scratch_pool.scratches:
+        if any(b in reserved_scratch_bytes for b in range(s.address, s.address + s.size)):
+            continue
+        scratch_available.append((s.address, s.size, s.name))
     used_scratches: Set[int] = set()
 
     result: Dict[int, Tuple[str, object]] = {}
@@ -458,6 +569,146 @@ def _apply_promos_to_args(args, callee_promos: Dict[int, Tuple[str, object]]):
         elif kind == 'scratch':
             arg.mechanism = ArgumentMechanism.SCRATCH_PARAM
             arg.scratch_addr = loc
+
+
+def _far_self_needs_save(func: MIRFunction) -> bool:
+    """Return True if a far-self trait method needs self saved across calls/ROM.
+
+    Mirrors the non-leaf detection in function_gen._analyze_far_self_trait_method:
+    any Call/TraitDispatch or ROM/HW Load/Store means self must be saved before
+    the call (callee will normalize DBR) or before the access (DBR may not match).
+    """
+    if not func.is_trait_method or not func.self_y_vreg:
+        return False
+    self_type = func.self_y_vreg.type_info
+    if not isinstance(self_type, PointerTypeInfo) or not self_type.is_far:
+        return False
+
+    for block in func.blocks.values():
+        for instr in block.instructions:
+            if isinstance(instr, (Call, TraitDispatch)):
+                return True
+            if isinstance(instr, Load):
+                src = getattr(instr, 'source', None)
+                if isinstance(src, MemoryLocation) and src.storage_type in ('rom', 'hw'):
+                    return True
+            elif isinstance(instr, Store):
+                dst = getattr(instr, 'dest', None)
+                if isinstance(dst, MemoryLocation) and dst.storage_type in ('rom', 'hw'):
+                    return True
+    return False
+
+
+def _allocate_far_self_scratches(
+    mir_program: MIRProgram,
+    scratch_pool: ScratchRegisterPool,
+    trait_impl_groups: Dict[Tuple[str, int], List[str]],
+    func_by_name: Dict[str, MIRFunction],
+    global_scratch_param_addrs: Set[int],
+):
+    """Allocate 3-byte zeropage scratch slots for non-leaf far-self trait methods.
+
+    Per-function allocation: each impl picks a scratch slot independently for
+    static calls. For dynamically dispatched trait methods (those present in
+    trait_dispatch_info), all impls in the group share one address so the
+    dispatch wrapper sees a single, consistent layout.
+
+    Reserved bytes are added to the global scratch reservation set so callee
+    locals avoid them, and to the caller-side trait-dispatch reservation so
+    callers that dispatch a shared-address method also avoid those bytes.
+
+    Raises CodegenError if a far-self trait method needs saving but no 3-byte
+    scratch block is available.
+    """
+    # Reserved addresses = param scratches + already-used composite slots.
+    used_byte_addrs = set(global_scratch_param_addrs)
+
+    # Build the candidate list: each scratch as (addr, size, name).
+    # Mask out scratches whose any byte is already in used_byte_addrs.
+    scratch_available: List[Tuple[int, int, str]] = []
+    for s in scratch_pool.scratches:
+        overlaps = any(b in used_byte_addrs for b in range(s.address, s.address + s.size))
+        if not overlaps:
+            scratch_available.append((s.address, s.size, s.name))
+
+    # Build per-function reverse-lookup of trait_dispatch keys: name -> (trait, idx).
+    # Only impls present in this map share an address across the group.
+    impl_to_key: Dict[str, Tuple[str, int]] = {}
+    for key, names in trait_impl_groups.items():
+        for name in names:
+            impl_to_key[name] = key
+
+    # Track which scratch start addresses we've consumed in this pass.
+    consumed_starts: Set[int] = set()
+    # For dynamically-dispatched groups, remember the chosen address per key.
+    group_chosen_addr: Dict[Tuple[str, int], int] = {}
+    # Caller-side reservation: (trait, idx) -> {addr, addr+1, addr+2}.
+    trait_self_addrs_per_method: Dict[Tuple[str, int], Set[int]] = {}
+
+    def _pick_3_byte_slot(target_func: MIRFunction) -> int:
+        """Find or fail. Returns the base address of a fresh 3-byte block."""
+        for addr, size, name in scratch_available:
+            if addr in consumed_starts:
+                continue
+            if size >= 3:
+                consumed_starts.add(addr)
+                return addr
+        composite = find_composite_scratch(scratch_available, consumed_starts, 3)
+        if composite:
+            base = composite[0][0]
+            for caddr, _, _ in composite:
+                consumed_starts.add(caddr)
+            return base
+        raise CodegenError(
+            f"FixedStack ABI: trait method '{target_func.name}' has a far *self that must "
+            f"be saved across calls/ROM access, but no free 3-byte zeropage scratch "
+            f"register is available. Declare an additional `#[zeropage(addr, register)] "
+            f"static mut <name>: far *u8;` in your code.",
+            source_loc=target_func.source_loc,
+        )
+
+    for func in mir_program.functions:
+        if not _far_self_needs_save(func):
+            continue
+
+        # Shared-address branch for dynamic-dispatch groups.
+        key = impl_to_key.get(func.name)
+        if key is not None:
+            chosen_addr = group_chosen_addr.get(key)
+            if chosen_addr is None:
+                chosen_addr = _pick_3_byte_slot(func)
+                group_chosen_addr[key] = chosen_addr
+                global_scratch_param_addrs.add(chosen_addr)
+                global_scratch_param_addrs.add(chosen_addr + 1)
+                global_scratch_param_addrs.add(chosen_addr + 2)
+                trait_self_addrs_per_method[key] = {
+                    chosen_addr, chosen_addr + 1, chosen_addr + 2,
+                }
+        else:
+            # Static-only impl: allocate independently.
+            chosen_addr = _pick_3_byte_slot(func)
+            global_scratch_param_addrs.add(chosen_addr)
+            global_scratch_param_addrs.add(chosen_addr + 1)
+            global_scratch_param_addrs.add(chosen_addr + 2)
+
+        func.self_far_uses_scratch = True
+        func.self_scratch_addr = chosen_addr
+
+    # Add the trait-self scratch bytes to the caller-side reservation set.
+    if trait_self_addrs_per_method:
+        for func in mir_program.functions:
+            per_func: Set[int] = set()
+            for block in func.blocks.values():
+                for instr in block.instructions:
+                    if isinstance(instr, TraitDispatch):
+                        addrs = trait_self_addrs_per_method.get(
+                            (instr.trait_name, instr.method_index)
+                        )
+                        if addrs:
+                            per_func |= addrs
+            if per_func:
+                existing = getattr(func, '_trait_dispatch_scratch_addrs', None) or set()
+                func._trait_dispatch_scratch_addrs = existing | per_func
 
 
 def _collect_trait_dispatch_scratch_addrs(

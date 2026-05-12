@@ -203,7 +203,18 @@ class FunctionCodeGenerator:
 
         # Pre-allocate self pointer vreg for trait methods
         if mir_func.is_trait_method and mir_func.self_y_vreg:
-            if mir_func.self_far_uses_d_equals_s:
+            if mir_func.self_far_uses_scratch:
+                # FixedStack scratch path: self lives in a 3-byte zeropage scratch
+                # slot. Prologue copies Y (lo/hi) and saved DBR (bank) into this
+                # slot; body accesses self via [scratch],Y.
+                assert mir_func.self_scratch_addr is not None
+                location = PhysicalLocation(
+                    kind=LocationKind.SCRATCH,
+                    scratch_addr=mir_func.self_scratch_addr,
+                    size=3
+                )
+                reg_alloc.allocations[mir_func.self_y_vreg.id] = location
+            elif mir_func.self_far_uses_d_equals_s:
                 # D=S path: self pointer pushed to stack by PHB+PHY in prologue
                 # Offset computed after frame_size known — mark as pre-allocated
                 # with a placeholder so the slot allocator skips it
@@ -247,7 +258,10 @@ class FunctionCodeGenerator:
         # From SP after all prologue: offset = prologue_stack_bytes - 2 + frame_size
         # (prologue_stack_bytes includes the 3 bytes for PHB+PHY, minus those 3 gives
         # the bytes above the self ptr; + frame_size for the frame; +1 for SP+1 base)
-        if mir_func.self_far_uses_d_equals_s and mir_func.self_y_vreg:
+        # Skip for the FixedStack scratch path — that pre-allocates to SCRATCH and
+        # stays put.
+        if (mir_func.self_far_uses_d_equals_s and mir_func.self_y_vreg
+                and not mir_func.self_far_uses_scratch):
             self_offset = prologue_bytes - 3 + frame_size + 1
             location = PhysicalLocation(
                 kind=LocationKind.STACK,
@@ -916,6 +930,24 @@ class FunctionCodeGenerator:
             self._emit_instr(Opcode.PHK, comment="Push program bank")
             self._emit_instr(Opcode.PLB, comment="Reset DBR=PBR for body (nested calls inherit sane DBR)")
 
+        # For far self FixedStack scratch path: copy self (Y addr + caller DBR bank)
+        # into a 3-byte zeropage scratch slot. DP stays at 0 so other scratch
+        # params/registers remain reachable via [dp] addressing.
+        # Stack effect: PHB pushes 1 byte (saved for PLB at epilogue); STY/STA touch
+        # only zeropage. PHK+PLB then sets DBR=PB for the body.
+        if mir_func.self_far_uses_scratch:
+            scratch_addr = mir_func.self_scratch_addr
+            assert scratch_addr is not None
+            self._emit_instr(Opcode.PHB, comment="Save caller's DBR (was hijacked to self bank)")
+            self._emit_instr(Opcode.STY_DP, Address(scratch_addr),
+                             comment=f"Store self addr lo+hi to scratch ${scratch_addr:02X}")
+            self._emit_instr(Opcode.LDA_STACK, StackOffset(1),
+                             comment="Load self bank byte (= caller DBR just pushed)")
+            self._emit_instr(Opcode.STA_DP, Address(scratch_addr + 2),
+                             comment=f"Store self bank to scratch ${scratch_addr + 2:02X}")
+            self._emit_instr(Opcode.PHK, comment="Push program bank")
+            self._emit_instr(Opcode.PLB, comment="Set DBR=PBR for body (nested calls inherit sane DBR)")
+
         # Detect which hardware registers hold parameters.
         from r65.compiler.hir import RegisterBinding
         a_has_param = False
@@ -1447,6 +1479,11 @@ class FunctionCodeGenerator:
         if not isinstance(self_type, PointerTypeInfo) or not self_type.is_far:
             return
 
+        # FixedStack pre-pass already chose the scratch-slot strategy — don't
+        # also flip into D=S which would push self onto the stack.
+        if mir_func.self_far_uses_scratch:
+            return
+
         # Already has far ptr stack params from other sources
         if mir_func.has_far_ptr_stack_params:
             mir_func.self_far_uses_d_equals_s = True
@@ -1510,6 +1547,11 @@ class FunctionCodeGenerator:
         self._emit_preserved_register_restores(mir_func)
         self._emit_dbr_restore(mir_func)
         self._emit_mode_restore(mir_func)
+        # FixedStack far-self scratch path: the PHB byte sits between the
+        # frame and the return address; it's deallocated by the cleanup path
+        # (see control_flow_select._emit_stack_param_cleanup) — no PLB here.
+        # The caller is expected to manage its own DBR around the call, matching
+        # the D=S protocol.
 
         # Note: Frame deallocation is NOT done here - it's combined with
         # the SP adjustment in _emit_stack_param_cleanup (control_flow_select.py)

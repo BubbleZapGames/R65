@@ -759,11 +759,15 @@ class ControlFlowInstructionSelector(BaseSelector):
         if self.parent.reg_alloc and self.parent.reg_alloc.has_frame_allocation:
             frame_size = self.parent.reg_alloc.frame_size
 
-        # Include far self PHB+PHY bytes (3 bytes pushed before frame alloc)
-        # These sit between the frame and the return address on the stack
+        # Include far self bytes pushed before frame alloc.
+        # D=S path: PHB + PHY = 3 bytes (caller DBR + self addr).
+        # Scratch path: PHB = 1 byte (caller DBR; self addr lives in zeropage).
+        # These sit between the frame and the return address on the stack.
         far_self_bytes = 0
         if self.current_function and getattr(self.current_function, 'self_far_uses_d_equals_s', False):
-            far_self_bytes = 3  # PHB (1 byte) + PHY (2 bytes)
+            far_self_bytes = 3
+        elif self.current_function and getattr(self.current_function, 'self_far_uses_scratch', False):
+            far_self_bytes = 1
 
         # Total bytes to clean up: frame + far_self + stack parameters
         total_cleanup_bytes = frame_size + far_self_bytes + stack_param_bytes

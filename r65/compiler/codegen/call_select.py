@@ -1505,9 +1505,17 @@ class CallInstructionSelector(BaseSelector):
             self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "8-bit A for bank byte")
             self.parent.emitter.emit_accu_mode(8)
 
-            # Store bank byte
+            # Store bank byte. When the source vreg is narrower than the far
+            # pointer (e.g. a near pointer literal being promoted to far at
+            # the call site), reading byte+2 would fall outside the allocated
+            # location and pick up garbage from the adjacent slot. Zero-extend
+            # the bank byte in that case — for static refs whose bank is not
+            # bank 0, callers must use an explicit near→far conversion before
+            # the call.
             if isinstance(arg.value, MIRImmediate):
                 self._emit_load_immediate('A', (arg.value.value >> 16) & 0xFF)
+            elif source_size < 3:
+                self._emit_load_immediate('A', 0)
             else:
                 byte2_loc = self.parent._offset_location(arg_loc, 2)
                 self.parent._emit_load('LDA', byte2_loc)

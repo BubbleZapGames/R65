@@ -65,12 +65,15 @@ class MoveOperationSelector(BaseSelector):
         # SPECIAL CASE: Far self D=S path — prologue PHB+PHY already captured
         # the self pointer (Y addr + DBR bank) to the stack. The MIR
         # Move(dest=self_y_vreg, source=HW_Y) is a no-op.
+        # Same for the FixedStack scratch path: prologue copies Y + caller DBR
+        # into the zeropage scratch slot.
         func = self.parent.current_function
-        if (func and getattr(func, 'self_far_uses_d_equals_s', False)
+        if (func and (getattr(func, 'self_far_uses_d_equals_s', False)
+                      or getattr(func, 'self_far_uses_scratch', False))
                 and isinstance(src_operand, HardwareRegister) and src_operand.name == 'Y'
                 and isinstance(instr.dest, VirtualRegister)
                 and func.self_y_vreg and instr.dest.id == func.self_y_vreg.id):
-            return  # No-op: PHB+PHY in prologue already placed self on stack
+            return  # No-op: prologue already placed self in its final home
 
         # SPECIAL CASE: Destination is hardware register
         if dest_loc.is_hw():

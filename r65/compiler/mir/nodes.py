@@ -970,8 +970,18 @@ class MIRFunction:
     self_y_vreg: Optional['VirtualRegister'] = None
 
     # Far self D=S mode: True when trait method with far *self needs D=S prologue
-    # (methods with calls, ROM/HW access, or other far ptr params)
+    # (methods with calls, ROM/HW access, or other far ptr params).
+    # Used under Default/Pascal ABI only; FixedStack uses self_far_uses_scratch instead.
     self_far_uses_d_equals_s: bool = False
+
+    # Far self scratch mode: True when a FixedStack trait method with far *self
+    # needs to save self across calls/ROM. Self is copied to a 3-byte zeropage
+    # scratch slot in the prologue so DP stays at 0 and scratch params remain
+    # reachable. Mutually exclusive with self_far_uses_d_equals_s.
+    self_far_uses_scratch: bool = False
+    # Zeropage address of the reserved 3-byte scratch slot for self when
+    # self_far_uses_scratch is True. Holds (lo, hi, bank).
+    self_scratch_addr: Optional[int] = None
 
     # Scratch parameter tracking (populated by analyze_scratch_params pre-pass)
     # Maps parameter index to scratch zero-page address for promoted stack params

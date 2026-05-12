@@ -26,6 +26,7 @@ class ABIInfo:
         'is_far', 'is_entry', 'is_interrupt', 'is_trait_method',
         'entry_m_mode', 'preserves', 'databank_mode',
         'has_far_ptr_stack_params', 'self_far_uses_d_equals_s',
+        'self_far_uses_scratch',
         'far_ptr_strategy', 'skip_dbr_inline',
     )
 
@@ -40,6 +41,7 @@ class ABIInfo:
         databank_mode=None,
         has_far_ptr_stack_params: bool = False,
         self_far_uses_d_equals_s: bool = False,
+        self_far_uses_scratch: bool = False,
         far_ptr_strategy=None,
         skip_dbr_inline: bool = False,
     ):
@@ -52,6 +54,7 @@ class ABIInfo:
         self.databank_mode = databank_mode
         self.has_far_ptr_stack_params = has_far_ptr_stack_params
         self.self_far_uses_d_equals_s = self_far_uses_d_equals_s
+        self.self_far_uses_scratch = self_far_uses_scratch
         self.far_ptr_strategy = far_ptr_strategy
         self.skip_dbr_inline = skip_dbr_inline
 
@@ -85,8 +88,14 @@ class ABIInfo:
         param offsets (params are still deeper than these pushes).
 
         Currently only PHB+PHY for self_far_uses_d_equals_s.
+        For self_far_uses_scratch we push PHB only (1 byte) before frame alloc;
+        STY into the scratch slot does not touch the stack.
         """
-        return 3 if self.self_far_uses_d_equals_s else 0
+        if self.self_far_uses_d_equals_s:
+            return 3
+        if self.self_far_uses_scratch:
+            return 1
+        return 0
 
     @property
     def post_frame_prologue_bytes(self) -> int:
@@ -150,6 +159,7 @@ class ABIInfo:
             databank_mode=databank_mode,
             has_far_ptr_stack_params=mir_func.has_far_ptr_stack_params,
             self_far_uses_d_equals_s=mir_func.self_far_uses_d_equals_s,
+            self_far_uses_scratch=mir_func.self_far_uses_scratch,
             far_ptr_strategy=mir_func.far_ptr_strategy,
             skip_dbr_inline=getattr(mir_func, '_skip_dbr_inline', False),
         )
