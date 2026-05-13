@@ -88,10 +88,22 @@ class ControlFlowInstructionSelector(BaseSelector):
         self._emit_immediate(Opcode.CMP_IMMEDIATE, table_size, "Check upper bound")
         self._emit_branch(Opcode.BCS, default_label, "Out of bounds (>= size)")
 
-        # ASL A - multiply index by 2 for word-sized table entries
+        # Switch to m16 to compute the index. In m8 mode, TAX still transfers
+        # the FULL 16-bit accumulator (B:A_low) into X regardless of the m
+        # flag; if the caller left B nonzero, X gets `(B << 8) | (index*2)`
+        # and the indirect JMP reads from the wrong table entry. Going
+        # through m16 with AND #$00FF zeroes B, then ASL doubles the index,
+        # then SEP returns to m8 so the arm bodies start with the expected
+        # accumulator width.
+        from r65.compiler.codegen.constants import M_FLAG
+        self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "m16 to zero B before TAX")
+        self.parent.emitter.emit_accu_mode(16)
+        self._emit_immediate(Opcode.AND_IMMEDIATE, 0x00FF, "Zero B (clear high byte)")
         self._emit_implied(Opcode.ASL, "Index *= 2 for word table")
+        self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "Back to m8 for arm bodies")
+        self.parent.emitter.emit_accu_mode(8)
 
-        # TAX - move to X for indexed addressing
+        # TAX - move to X for indexed addressing (B is now 0, so X = index*2)
         self._emit_implied(Opcode.TAX)
 
         # JMP (table_label,X) - indirect indexed jump through table
@@ -139,16 +151,21 @@ class ControlFlowInstructionSelector(BaseSelector):
         self._emit_immediate(Opcode.CMP_IMMEDIATE, table_size, "Check upper bound")
         self._emit_branch(Opcode.BCS, default_label, "Out of bounds (>= size)")
 
-        # u16: ASL to double index for word entries
+        # Switch to m16 to compute the index. TAX in m8 still transfers the
+        # full 16-bit accumulator (B:A_low) into X; if B is nonzero on entry
+        # the index is corrupted. AND #$00FF in m16 zeroes B; ASL doubles
+        # the index in the same width for the u16 path. For the u8 path we
+        # immediately drop back to m8 so the absolute,X load width matches.
+        self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "m16 to zero B before TAX")
+        self.parent.emitter.emit_accu_mode(16)
+        self._emit_immediate(Opcode.AND_IMMEDIATE, 0x00FF, "Zero B (clear high byte)")
         if is_u16:
             self._emit_implied(Opcode.ASL, "Index *= 2 for word table")
+        if not is_u16:
+            self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "Back to m8 for byte LUT")
+            self.parent.emitter.emit_accu_mode(8)
 
         self._emit_implied(Opcode.TAX)
-
-        # u16: switch to m16 for 16-bit load
-        if is_u16:
-            self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "m16 for LUT word load")
-            self.parent.emitter.emit_accu_mode(16)
 
         self.emitter.emit_instr(Opcode.LDA_ABSOLUTE_X, Address(table_label), "LUT lookup")
         self._emit_jump(Opcode.BRA, merge_label)
