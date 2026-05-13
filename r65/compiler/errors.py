@@ -397,6 +397,16 @@ def format_error(message: str, source_loc: Optional[SourceLocation] = None,
             source_lines = source_text.splitlines()
             if 0 < source_loc.line <= len(source_lines):
                 source_line = source_lines[source_loc.line - 1]
+        if source_line is None and source_loc.file_path:
+            # Fallback: read the file directly. Needed when the error is in
+            # an included file but source_text is the top-level file only.
+            try:
+                with open(source_loc.file_path, 'r') as f:
+                    file_lines = f.read().splitlines()
+                if 0 < source_loc.line <= len(file_lines):
+                    source_line = file_lines[source_loc.line - 1]
+            except OSError:
+                pass
 
         if source_line is not None:
             # Calculate the width needed for line numbers

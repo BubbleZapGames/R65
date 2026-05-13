@@ -1229,13 +1229,15 @@ class ASTBuilder(Transformer):
         items = self._filter_tokens(items)
         return items[0]  # Just return the attribute_inner result
 
-    def attribute_inner(self, items):
+    @v_args(tree=True)
+    def attribute_inner(self, tree):
         """Attribute inner."""
-        items = self._filter_tokens(items)
+        items = self._filter_tokens(tree.children)
         name = items[0]  # Will be string from attr_name
         # args will be a list from attribute_args if present
         args = items[1] if len(items) > 1 and isinstance(items[1], list) else []
-        return ast.Attribute(name=name, args=args)
+        return ast.Attribute(name=name, args=args,
+                             source_loc=self._make_source_loc(tree.meta))
 
     def attr_name(self, items):
         """Attribute name - can be IDENT or literal keyword."""
@@ -1252,7 +1254,8 @@ class ASTBuilder(Transformer):
         items = self._filter_tokens(tree.children)
         # items[0] should be the cfg_condition
         condition = items[0]
-        return ast.Attribute(name='cfg', args=[ast.AttributeArg(name=None, value=condition)])
+        return ast.Attribute(name='cfg', args=[ast.AttributeArg(name=None, value=condition)],
+                             source_loc=self._make_source_loc(tree.meta))
 
     def cfg_condition(self, items):
         """Top-level cfg condition (cfg_any rule)."""
