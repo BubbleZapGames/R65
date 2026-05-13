@@ -572,12 +572,15 @@ class AssignmentLowerer:
         x_reg = HardwareRegister('X')
         self.emit(Move(dest=x_reg, source=offset_operand, type_info=offset_type))
 
-        # Create indexed memory location with X register
+        # Create indexed memory location with X register.
+        # Use base_memloc.symbol — get_memory_location may have redirected
+        # array_symbol to a synthetic static (for promoted aggregate locals);
+        # using array_symbol here would lose that redirection.
         base_memloc = self.builder.get_memory_location(array_symbol)
         indexed_memloc = MemoryLocation(
             storage_type=base_memloc.storage_type,
             address=base_memloc.address,
-            symbol=array_symbol,
+            symbol=base_memloc.symbol,
             is_volatile=base_memloc.is_volatile,
             index_register='X'  # Mark as indexed with X
         )
