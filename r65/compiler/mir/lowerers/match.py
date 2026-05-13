@@ -303,11 +303,16 @@ class MatchLowerer:
                 self.ctx.symbol_to_vreg[id(arm.pattern.symbol)] = binding_vreg
                 self.emit(Move(dest=binding_vreg, source=scrutinee_vreg, type_info=arm.pattern.symbol.var_type))
 
-            # Lower arm body - handle statement arms (return/break/continue)
+            # Lower arm body. Statement bodies (return/break/continue) usually
+            # terminate the block, but a plain `Block` statement is also a
+            # HIRStatement here and does NOT terminate — fall through into
+            # the next arm's label would corrupt control flow. Always check
+            # for a terminator and emit Jump-to-merge if missing.
             if isinstance(arm.body, HIRStatement):
                 self.builder.lower_statement(arm.body)
-                # Statement already terminates the block (return/break/continue)
-                # No need for Move or Jump to merge
+                if not self.builder._block_has_terminator():
+                    self.emit(Jump(target=merge_block.block_id))
+                    self.ctx.add_cfg_edge(arm_block, merge_block)
             else:
                 arm_result = self.builder.lower_expression(arm.body)
 
@@ -417,10 +422,18 @@ class MatchLowerer:
                 self.ctx.symbol_to_vreg[id(arm.pattern.symbol)] = binding_vreg
                 self.emit(Move(dest=binding_vreg, source=scrutinee_vreg, type_info=arm.pattern.symbol.var_type))
 
-            # Lower arm body - handle statement arms (return/break/continue)
+            # Lower arm body. Statement bodies (return/break/continue) usually
+            # terminate the block on their own. A plain `Block` statement is
+            # also classified as HIRStatement by the HIR builder, but does NOT
+            # terminate — its inner statements just lower into the current
+            # block. Always check `_block_has_terminator` after a statement
+            # body and emit a Jump-to-merge if the block is still open;
+            # otherwise the arm falls through into the next arm's label.
             if isinstance(arm.body, HIRStatement):
                 self.builder.lower_statement(arm.body)
-                # Statement already terminates the block
+                if not self.builder._block_has_terminator():
+                    self.emit(Jump(target=merge_block.block_id))
+                    self.ctx.add_cfg_edge(arm_block, merge_block)
             else:
                 arm_result = self.builder.lower_expression(arm.body)
 
