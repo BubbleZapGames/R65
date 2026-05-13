@@ -641,6 +641,10 @@ class CallInstructionSelector(BaseSelector):
 
         for reg_name in ['A', 'X', 'Y']:
             if reg_name in call_return_set:
+                # Region was entered at first call; clear it so we don't
+                # try to reload over the return value at region end.
+                if self.region_state.is_region_active(reg_name):
+                    self.region_state.clear_active_region(reg_name)
                 continue
 
             use_region_based = (
@@ -654,7 +658,7 @@ class CallInstructionSelector(BaseSelector):
                 if region is not None:
                     if self.region_state.is_last_call_in_region(reg_name, instr_idx):
                         reloads.append(SpillInfo(vreg=None, hw_reg=reg_name))
-                        self.region_state.mark_region_inactive(reg_name)
+                        self.region_state.clear_active_region(reg_name)
                     continue
 
             hw_alloc = reg_alloc.get_hw_alloc(reg_name)
@@ -677,6 +681,29 @@ class CallInstructionSelector(BaseSelector):
                     block_id, idx = pos
                     if reg_alloc.instr_liveness.is_hw_reg_live_after(reg_name, block_id, idx):
                         reloads.append(SpillInfo(vreg=None, hw_reg=reg_name))
+
+        # Per-call A spill fallback: _emit_hw_spills records pending_a_spill
+        # whenever it pushes A. If neither the region path nor the vreg-based
+        # path above already produced a reload, emit the matching PLA here so
+        # the stack stays balanced. Clear the marker in all cases so it does
+        # not leak to a later call.
+        if self.region_state.pending_a_spill is not None:
+            if 'A' in call_return_set or any(r.hw_reg == 'A' for r in reloads):
+                self.region_state.pending_a_spill = None
+            else:
+                reloads.append(self.region_state.pending_a_spill)
+
+        # Per-call X/Y spill fallback: same idea for PHX/PHY pushed without
+        # an active region. The vreg-based path above may already have queued
+        # a reload for this reg — skip the pending entry in that case.
+        for reg_name in ('X', 'Y'):
+            if reg_name not in self.region_state.pending_xy_spills:
+                continue
+            if reg_name in call_return_set or any(r.hw_reg == reg_name for r in reloads):
+                del self.region_state.pending_xy_spills[reg_name]
+                continue
+            reloads.append(self.region_state.pending_xy_spills[reg_name])
+            del self.region_state.pending_xy_spills[reg_name]
 
         return reloads
 
@@ -1301,25 +1328,35 @@ class CallInstructionSelector(BaseSelector):
                 source_size = get_type_size(arg.value.type_info)
 
             if source_size < 2:
-                # Zero-extend: push high byte (0) first, then low byte
-                self._ensure_m8_mode("8-bit A for zero-ext push")
-                self._emit_load_immediate('A', 0, "Zero high byte")
-                self._emit_push('A', "Push high byte (zero)")
-                # First PHA shifted SP by 1; adjust tracker so source reads are correct
-                self.region_state.stack_tracker.push(1)
+                # Zero-extend u8 → u16. Stack order requires high byte pushed
+                # first (deeper), low byte pushed last (top). When the source
+                # itself is in A, we can't do `LDA #0; PHA` first without
+                # destroying it — switch to m16 and mask instead so the single
+                # 16-bit PHA pushes high=0, low=source atomically.
                 if arg_loc.is_hw('A'):
-                    pass
-                elif arg_loc.is_hw('X'):
-                    self._emit_transfer('X', 'A')
-                elif arg_loc.is_hw('Y'):
-                    self._emit_transfer('Y', 'A')
-                elif isinstance(arg.value, MIRImmediate):
-                    self._emit_load_immediate('A', arg.value.value & 0xFF)
+                    self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG,
+                                         "16-bit A for zero-ext push (source in A)")
+                    self.parent.emitter.emit_accu_mode(16)
+                    self._emit_immediate(Opcode.AND_IMMEDIATE, 0x00FF,
+                                         "Mask high byte for zero-ext")
+                    self._emit_push('A', "Push u16 (high=0, low=source)")
                 else:
-                    self.parent._emit_load('LDA', arg_loc)
-                self._emit_push('A', "Push low byte")
-                # Undo temporary adjustment (caller adds full param_size after return)
-                self.region_state.stack_tracker.pop(1)
+                    self._ensure_m8_mode("8-bit A for zero-ext push")
+                    self._emit_load_immediate('A', 0, "Zero high byte")
+                    self._emit_push('A', "Push high byte (zero)")
+                    # First PHA shifted SP by 1; adjust tracker so source reads are correct
+                    self.region_state.stack_tracker.push(1)
+                    if arg_loc.is_hw('X'):
+                        self._emit_transfer('X', 'A')
+                    elif arg_loc.is_hw('Y'):
+                        self._emit_transfer('Y', 'A')
+                    elif isinstance(arg.value, MIRImmediate):
+                        self._emit_load_immediate('A', arg.value.value & 0xFF)
+                    else:
+                        self.parent._emit_load('LDA', arg_loc)
+                    self._emit_push('A', "Push low byte")
+                    # Undo temporary adjustment (caller adds full param_size after return)
+                    self.region_state.stack_tracker.pop(1)
             else:
                 # Use PEA for immediate u16 values — pushes 16-bit regardless
                 # of accumulator mode, no REP/SEP needed.
