@@ -194,6 +194,58 @@ bracket supports.
 
 ---
 
+## Match LookupTable — 3-byte (far pointer) result support
+
+`_analyze_for_lut` in `r65/compiler/mir/lowerers/match.py` accepts a
+match expression as a LookupTable candidate only when the result
+type is u8 (1 byte) or u16 (2 bytes); any other size returns `None`
+and falls back to JumpTable. Likewise `select_lookup_table` in
+`r65/compiler/codegen/control_flow_select.py` only emits `.DB` /
+`.DW` table entries — there is no 3-byte path.
+
+This means a match like
+```rust
+let frame: far *u16 = match anim_idx {
+    KONG_ANIM_FACE1 => &kong_face1 as far *u16,
+    ...
+};
+```
+where every arm body is a compile-time constant far-pointer cannot
+use the inline ROM table; it always lowers to the heavier
+JumpTable, which dispatches into per-arm code blocks that each
+materialise the same constant pointer into stack-resident bytes.
+
+**Why deferred**: existing `select_lookup_table` builds a single
+indexed `LDA table,X` (m8 for u8 or m16 for u16). 3-byte entries
+require either:
+- three indexed reads at `table_low,X` / `table_mid,X` /
+  `table_high,X` (three separate `.DB` tables), or
+- one m16 read for the low 16 bits plus a separate `.DB` table for
+  the bank byte.
+Plus a destination wider than A: the result has to land in a 3-byte
+stack slot (or scratch DP) rather than the accumulator, and the
+post-load `STA dest` and `BRA merge` shape changes. Also the
+`base_value` adjustment, the default path's immediate load, and the
+mode bookkeeping all need to be revisited for the 24-bit case.
+
+**Approach if revisited**: extend `_analyze_for_lut` to accept
+`result_size == 3` when the result type is a pointer (`*T` or
+`far *T`) and every arm body lowers to a constant address via
+`try_eval_const_addr` (a new helper alongside `try_eval_const_int`
+that recognises `&label as far *T`, `&label[const] as far *T`, and
+const-cast variants). In `LookupTable.values` store tuples
+`(low, high, bank)`. In `select_lookup_table` emit two indexed
+loads + a stack store sequence, mirroring the per-byte spill
+pattern used elsewhere for far pointers; the merge BRA stays.
+
+When this lands the kong-frame dispatch in `classickong.r65`'s
+`game_show_kong` shrinks from a ~21-arm JumpTable + 21 inline
+constant-pointer blocks (~600 bytes) to one indexed LUT + a single
+3-byte store (~150 bytes), at the cost of one extra indexed read
+per dispatch.
+
+---
+
 ## Conventions
 
 When adding to this file:
