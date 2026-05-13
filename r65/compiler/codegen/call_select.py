@@ -862,6 +862,20 @@ class CallInstructionSelector(BaseSelector):
         else:
             num_returns = len(instr.returns)
         call_return_set = set(return_regs[:num_returns])
+        # Also include the caller's *final destination* register for each
+        # return vreg. After the call, _emit_return_value_collection may
+        # emit a TAX/TAY to move the return value from the callee's return
+        # register (e.g. A) into the caller-allocated destination (e.g. X).
+        # That destination's prior value is dead — spilling it would PHX a
+        # value the TAX immediately overwrites, and the matching PLX at the
+        # region end would then clobber the just-captured return value.
+        # Seen in classickong.r65 level-4 fireball spawn: the X-allocated
+        # mod8() result was being PLX'd over after TAX, so the second
+        # fireball indexed `fireball_spawn_x[$DF52]` and read junk.
+        for return_vreg in instr.returns:
+            dest_loc = self.parent._get_operand_location(return_vreg)
+            if dest_loc.is_hw() and dest_loc.hw_register in ('A', 'X', 'Y'):
+                call_return_set.add(dest_loc.hw_register)
 
         for reg_name in ['A', 'X', 'Y']:
             # Skip if callee preserves this register
@@ -958,9 +972,37 @@ class CallInstructionSelector(BaseSelector):
 
         _, instr_idx = pos
 
+        # Build the same "do-not-reload" set used in _compute_hw_spills:
+        # callee return registers AND caller's final destination registers
+        # for the return values. Reloading a register whose value the TAX/TAY
+        # in _emit_return_value_collection just placed would PLX/PLY the
+        # restored caller value back over the return value.
+        return_regs = self._get_callee_return_registers(instr)
+        callee_return_type = getattr(instr, 'callee_return_type', None)
+        if callee_return_type is not None:
+            from r65.compiler.hir.types import TupleTypeInfo
+            if isinstance(callee_return_type, TupleTypeInfo):
+                num_returns = len(callee_return_type.element_types)
+            else:
+                num_returns = 1
+        else:
+            num_returns = len(instr.returns)
+        call_return_set = set(return_regs[:num_returns])
+        for return_vreg in instr.returns:
+            dest_loc = self.parent._get_operand_location(return_vreg)
+            if dest_loc.is_hw() and dest_loc.hw_register in ('A', 'X', 'Y'):
+                call_return_set.add(dest_loc.hw_register)
+
         # Check each active region for X/Y and A (when bound)
         regs_to_check = ('A', 'X', 'Y') if self._a_bound_to_vreg else ('X', 'Y')
         for hw_reg in regs_to_check:
+            if hw_reg in call_return_set:
+                # Don't reload — value just placed there is the return value.
+                # The matching spill was also skipped, so the stack stays
+                # balanced.
+                if self.region_state.is_region_active(hw_reg):
+                    self.region_state.clear_active_region(hw_reg)
+                continue
             if self.region_state.is_region_active(hw_reg):
                 if self.region_state.is_last_call_in_region(hw_reg, instr_idx):
                     # Last call in region - need to reload
@@ -975,8 +1017,11 @@ class CallInstructionSelector(BaseSelector):
         # by _emit_hw_reloads, so this won't double-reload.
         if self.region_state.pending_a_spill is not None:
             # Only add if not already handled by region reload above
-            if not any(r.hw_reg == 'A' for r in reloads):
+            if 'A' not in call_return_set and not any(r.hw_reg == 'A' for r in reloads):
                 reloads.append(self.region_state.pending_a_spill)
+            elif 'A' in call_return_set:
+                # Spill was skipped at the call site, clear the pending marker
+                self.region_state.pending_a_spill = None
 
         # X/Y per-call spilling: when a vreg allocated to X/Y is live across
         # a call but no clobber region was created (because the liveness analysis
@@ -985,6 +1030,10 @@ class CallInstructionSelector(BaseSelector):
         # an active region. Check pending per-call spills and emit PLY/PLX.
         for hw_reg in ('X', 'Y'):
             if hw_reg in self.region_state.pending_xy_spills:
+                if hw_reg in call_return_set:
+                    # Spill was skipped, drop the pending marker too.
+                    del self.region_state.pending_xy_spills[hw_reg]
+                    continue
                 reloads.append(self.region_state.pending_xy_spills[hw_reg])
                 del self.region_state.pending_xy_spills[hw_reg]
 
@@ -2094,6 +2143,12 @@ class CallInstructionSelector(BaseSelector):
             return
 
         return_registers = self._get_callee_return_registers(instr)
+        # Per-return-value size table (in bytes), parallel to instr.returns.
+        # u8 returns need zero-extension when transferred A→X/Y because the
+        # B register (high byte of A in m16) holds whatever stale value it
+        # had before the call — without an explicit AND #$00FF, TAX would
+        # place B-junk into the X high byte.
+        return_sizes = self._get_return_value_sizes(instr)
 
         for i, return_vreg in enumerate(instr.returns):
             if i >= len(return_registers):
@@ -2101,6 +2156,7 @@ class CallInstructionSelector(BaseSelector):
 
             source_reg = return_registers[i]
             dest_loc = self.parent._get_operand_location(return_vreg)
+            return_size = return_sizes[i] if i < len(return_sizes) else 1
 
             if dest_loc.is_hw(source_reg):
                 pass  # Already in correct location
@@ -2109,7 +2165,7 @@ class CallInstructionSelector(BaseSelector):
                 self.parent._access_b_value_in_a()
                 if dest_loc.is_hw():
                     if dest_loc.hw_register != 'A':
-                        self._emit_return_register_transfer('A', dest_loc.hw_register)
+                        self._emit_return_register_transfer('A', dest_loc.hw_register, return_size)
                         self.parent._ensure_xba_state_normal()
                     # If dest is A, the value is already there after XBA - just
                     # need to NOT swap back since we want A to hold the value
@@ -2117,9 +2173,30 @@ class CallInstructionSelector(BaseSelector):
                     self.parent._emit_store('STA', dest_loc)
                     self.parent._ensure_xba_state_normal()
             elif dest_loc.is_hw():
-                self._emit_return_register_transfer(source_reg, dest_loc.hw_register)
+                self._emit_return_register_transfer(source_reg, dest_loc.hw_register, return_size)
             else:
                 self._emit_return_store(source_reg, dest_loc)
+
+    def _get_return_value_sizes(self, instr: Call) -> List[int]:
+        """Return per-return-value byte sizes (parallel to instr.returns).
+
+        Falls back to [1] * len(returns) when the type info isn't available.
+        """
+        callee_return_type = getattr(instr, 'callee_return_type', None)
+        if callee_return_type is None:
+            return [1] * len(instr.returns)
+        from r65.compiler.hir.types import TupleTypeInfo, PointerTypeInfo
+        types = (callee_return_type.element_types
+                 if isinstance(callee_return_type, TupleTypeInfo)
+                 else [callee_return_type])
+        sizes = []
+        for t in types:
+            if isinstance(t, PointerTypeInfo):
+                sizes.append(3 if t.is_far else 2)
+            else:
+                name = str(t)
+                sizes.append(1 if name in ('u8', 'i8', 'bool') else 2)
+        return sizes
 
     def _emit_pascal_return_value_collection(self, instr: Call, result_bytes: int):
         """Pull return value from stack result space (Pascal convention).
@@ -2185,9 +2262,24 @@ class CallInstructionSelector(BaseSelector):
             self._emit_pull('A', "Pull Pascal result bank byte")
             self.parent._emit_store('STA', loc_bank)
 
-    def _emit_return_register_transfer(self, source_reg: str, dest_reg: str):
-        """Transfer return value between hardware registers."""
-        self._emit_transfer(source_reg, dest_reg)
+    def _emit_return_register_transfer(self, source_reg: str, dest_reg: str, source_size: int = 2):
+        """Transfer return value between hardware registers.
+
+        For u8 (source_size == 1) source from A to X/Y, AND #$00FF in m16
+        before TAX/TAY so the B register's stale contents don't leak into
+        the high byte of the index register. Without this, an x16 TAX of
+        a u8 return value produces X = (B << 8) | A, where B is whatever
+        the callee happened to leave it as — often non-zero. Symptom seen
+        in classickong.r65 level-4: the X-allocated mod8() result was
+        contaminated by B, sending `LDA $7ED5F2,X` to a random address.
+        """
+        if source_reg == 'A' and dest_reg in ('X', 'Y') and source_size == 1:
+            self.parent._ensure_m16_mode()
+            self._emit_immediate(Opcode.AND_IMMEDIATE, 0x00FF,
+                                 "Zero-extend u8 return for transfer to x16")
+            self._emit_transfer(source_reg, dest_reg)
+        else:
+            self._emit_transfer(source_reg, dest_reg)
 
     def _emit_return_store(self, source_reg: str, dest_loc):
         """Store return value from register to memory."""
