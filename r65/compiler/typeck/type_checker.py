@@ -1316,6 +1316,30 @@ class TypeChecker:
                     expr.left.expr_type = promoted_type
                     left_type = promoted_type
 
+            # Widen a non-literal left operand to the destination type when
+            # the assignment context is wider. Without this, the canonical
+            # `let base: u16 = n << 2;` (n is u8) computes the shift in m8
+            # and truncates for n >= 64 — the user wrote a u16 destination
+            # exactly to avoid that. Mirrors the runtime widening that array
+            # indexing already does in _compute_index_offset.
+            if (context_type is not None
+                    and isinstance(context_type, BasicTypeInfo)
+                    and isinstance(left_type, BasicTypeInfo)
+                    and TypeUtils.is_integer_type(context_type)
+                    and TypeUtils.is_integer_type(left_type)
+                    and not isinstance(expr.left, HIRIntegerLiteral)):
+                ctx_size = 2 if context_type.name in ('u16', 'i16') else 1
+                left_size = 2 if left_type.name in ('u16', 'i16') else 1
+                if ctx_size > left_size:
+                    cast_node = HIRTypeCast(
+                        expr=expr.left,
+                        target_type=context_type,
+                        source_loc=expr.left.source_loc
+                    )
+                    cast_node.expr_type = context_type
+                    expr.left = cast_node
+                    left_type = context_type
+
             expr.expr_type = left_type
             return left_type
 

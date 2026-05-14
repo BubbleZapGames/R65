@@ -831,6 +831,7 @@ class StackSlotAllocator:
 
         # Two-pass coalescence
         coalesceable: Dict[VirtualRegister, str] = {}
+        coalesced_id_to_hw: Dict[int, str] = {}
         noop_instrs: Set[int] = set()  # instruction ids treated as no-ops
 
         for pass_num in range(2):
@@ -839,6 +840,7 @@ class StackSlotAllocator:
                 if not uses:
                     # No uses - can be coalesceable (dead value)
                     self._mark_coalesceable(vreg_id, hw_reg, coalesceable)
+                    coalesced_id_to_hw[vreg_id] = hw_reg
                     continue
 
                 def_pos = instr_positions.get(id(def_instr))
@@ -847,9 +849,11 @@ class StackSlotAllocator:
                     continue
 
                 if self._is_hw_unclobbered_in_range(
-                    hw_reg, vreg_id, def_instr, uses, instr_positions, noop_instrs
+                    hw_reg, vreg_id, def_instr, uses, instr_positions,
+                    noop_instrs, coalesced_id_to_hw
                 ):
                     self._mark_coalesceable(vreg_id, hw_reg, coalesceable)
+                    coalesced_id_to_hw[vreg_id] = hw_reg
                     # Only add Move instructions to noop_instrs. The two-pass
                     # mechanism is designed for A/B interdependency where a
                     # coalesceable Move (e.g., XBA for B) becomes a no-op.
@@ -978,6 +982,7 @@ class StackSlotAllocator:
         uses: List,
         instr_positions: Dict[Any, Tuple[int, int]],
         noop_instrs: Set[int],
+        coalesced_id_to_hw: Optional[Dict[int, str]] = None,
     ) -> bool:
         """
         Check if a hardware register is unclobbered between def and all uses.
@@ -1034,7 +1039,8 @@ class StackSlotAllocator:
         # Check def block
         for i in range(def_idx + 1, scan_end):
             if self._instruction_clobbers_register(block.instructions[i], hw_reg,
-                                                    vreg_id, noop_instrs):
+                                                    vreg_id, noop_instrs,
+                                                    coalesced_id_to_hw):
                 return False
 
         if not cross_block_uses:
@@ -1073,13 +1079,15 @@ class StackSlotAllocator:
                 scan_end = len(blk.instructions) if vreg_live_out else use_block_max[block_id]
                 for i in range(0, scan_end):
                     if self._instruction_clobbers_register(blk.instructions[i], hw_reg,
-                                                            vreg_id, noop_instrs):
+                                                            vreg_id, noop_instrs,
+                                                            coalesced_id_to_hw):
                         return False
             else:
                 # Intermediate block (vreg is live but not used): check all instructions
                 for instr in blk.instructions:
                     if self._instruction_clobbers_register(instr, hw_reg,
-                                                            vreg_id, noop_instrs):
+                                                            vreg_id, noop_instrs,
+                                                            coalesced_id_to_hw):
                         return False
         return True
 
@@ -1089,6 +1097,7 @@ class StackSlotAllocator:
         hw_reg: str,
         vreg_id: int,
         noop_instrs: Set[int],
+        coalesced_id_to_hw: Optional[Dict[int, str]] = None,
     ) -> bool:
         """
         Check if an instruction clobbers a specific hardware register.
@@ -1125,7 +1134,7 @@ class StackSlotAllocator:
             return True
 
         if hw_reg == 'A':
-            return self._clobbers_a(instr, vreg_id)
+            return self._clobbers_a(instr, vreg_id, coalesced_id_to_hw)
         elif hw_reg == 'B':
             return self._clobbers_b(instr, vreg_id)
         elif hw_reg in ('X', 'Y'):
@@ -1133,7 +1142,8 @@ class StackSlotAllocator:
 
         return False
 
-    def _clobbers_a(self, instr: Any, vreg_id: int) -> bool:
+    def _clobbers_a(self, instr: Any, vreg_id: int,
+                    coalesced_id_to_hw: Optional[Dict[int, str]] = None) -> bool:
         """
         Check if an instruction clobbers the A register.
 
@@ -1173,9 +1183,20 @@ class StackSlotAllocator:
                     if type(instr.source) is VirtualRegister:
                         if instr.source.id == vreg_id:
                             return False  # TAX/TAY from our vreg — A preserved
-                        # Move to X/Y from a vreg with matching register_hint
-                        # is a no-op (value already in that register), no LDA needed
-                        if instr.source.register_hint == instr.dest.name:
+                        # If the source vreg is itself coalesced to the same hw
+                        # register as the Move's dest, the Move is a no-op
+                        # (both ends live in the same X/Y). Otherwise the Move
+                        # codegen emits `LDA src; TAX|TAY`, clobbering A.
+                        if (coalesced_id_to_hw is not None and
+                                coalesced_id_to_hw.get(instr.source.id) == instr.dest.name):
+                            return False
+                        # Loop-promoted vregs are pre-allocated to HARDWARE
+                        # (function_gen.py runs `_hint_conflicts_with_hw_defs`
+                        # before slot_allocator), so a Move whose source is one
+                        # of these is also a no-op when hint == dest.
+                        src_vr = instr.source
+                        if (src_vr in self.pre_allocated_vregs and
+                                src_vr.register_hint == instr.dest.name):
                             return False
                         return True
                     return False  # LDX #imm or LDX addr don't clobber A
