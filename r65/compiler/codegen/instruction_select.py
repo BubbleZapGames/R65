@@ -698,6 +698,10 @@ class InstructionSelector:
             src_opcode, src_operand = self._get_opcode_for_location('LDA', bank_loc)
             self.emitter.emit_instr(src_opcode, src_operand, comment="bank_byte")
 
+        # If dest is coalesced to A, the bank byte is already there — no STA needed.
+        if dest_loc.is_hw('A'):
+            return
+
         dest_opcode, dest_operand = self._get_opcode_for_location('STA', dest_loc)
         self.emitter.emit_instr(dest_opcode, dest_operand)
 

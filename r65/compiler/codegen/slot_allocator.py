@@ -141,7 +141,8 @@ class StackSlotAllocator:
         instr_liveness: Optional[Any] = None,
         pre_allocated_vregs: Optional[Set[VirtualRegister]] = None,
         outgoing_arg_bytes: int = 0,
-        layout: Optional['StackFrameLayout'] = None
+        layout: Optional['StackFrameLayout'] = None,
+        pre_allocated_hw: Optional[Dict[int, str]] = None,
     ):
         """
         Initialize unified slot allocator.
@@ -151,10 +152,17 @@ class StackSlotAllocator:
             preassigned: Stack parameters with their base offsets
             prologue_stack_bytes: Bytes pushed by prologue (return addr + saved regs)
             instr_liveness: Optional InstructionLivenessAnalyzer for call-liveness analysis
-            pre_allocated_vregs: Vregs already allocated externally (e.g. scratch params),
-                excluded from local slot allocation
+            pre_allocated_vregs: Vregs already allocated externally (scratch params,
+                loop-promoted hw vregs, ...), excluded from local slot allocation
             outgoing_arg_bytes: Caller-owned outgoing argument area size
             layout: Optional StackFrameLayout for offset computation
+            pre_allocated_hw: Subset of `pre_allocated_vregs` that the caller has
+                pinned to a hardware register (vreg_id -> 'A'/'X'/'Y'/'B'). Used by
+                `_clobbers_a` to recognize that a `Move X|Y, src_vreg` is a true
+                no-op when the source is one of these pinned vregs. `register_hint`
+                on a vreg is NOT sufficient — a hint can be propagated by Move
+                coalescing onto a scratch (zeropage) vreg, which still requires
+                `LDA zp; TAX|TAY` and so clobbers A.
         """
         self.func = mir_func
         self.preassigned = preassigned or []
@@ -162,6 +170,7 @@ class StackSlotAllocator:
         self.liveness_analyzer = LivenessAnalyzer(mir_func)
         self.instr_liveness = instr_liveness
         self.pre_allocated_vregs = pre_allocated_vregs or set()
+        self.pre_allocated_hw = pre_allocated_hw or {}
         self.outgoing_arg_bytes = outgoing_arg_bytes
         self.layout = layout
 
@@ -298,19 +307,24 @@ class StackSlotAllocator:
         local_ids = {v.id for v in local_vregs}
         for block in self.func.blocks.values():
             for instr in block.instructions:
-                # Collect all VirtualRegister operands in this instruction
+                # Collect all VirtualRegister operands in this instruction.
+                # Use the liveness analyzer's uses+defs so we cover list-valued
+                # operands (Call.args, Return.values, TraitDispatch.args, ...)
+                # that a manual attribute scan would miss.
+                operands = (self.liveness_analyzer._get_uses(instr)
+                            + self.liveness_analyzer._get_defs(instr))
                 vreg_ids = []
-                for attr_name in ('dest', 'source', 'left', 'right', 'pointer',
-                                  'condition', 'value'):
-                    op = getattr(instr, attr_name, None)
+                seen: Set[int] = set()
+                for op in operands:
                     if isinstance(op, VirtualRegister) and op.id in local_ids:
-                        vreg_ids.append(op.id)
+                        if op.id not in seen:
+                            seen.add(op.id)
+                            vreg_ids.append(op.id)
                 # All distinct pairs of local vregs in the same instruction
                 for i in range(len(vreg_ids)):
                     for j in range(i + 1, len(vreg_ids)):
                         a, b = vreg_ids[i], vreg_ids[j]
-                        if a != b:
-                            cooccur_pairs.add((min(a, b), max(a, b)))
+                        cooccur_pairs.add((min(a, b), max(a, b)))
 
         for vreg in sorted_vregs:
             size = local_sizes[vreg]
@@ -518,8 +532,15 @@ class StackSlotAllocator:
                                 if self._has_other_defs(dest, block_id, i):
                                     i += 1
                                     continue
-                            # Propagate register hint from dest to src
-                            if dest.register_hint and not src.register_hint:
+                            # Propagate register hint from dest to src, but
+                            # only when src is NOT pre-allocated. Pre-allocated
+                            # vregs are pinned (e.g. scratch param at $00, or
+                            # a loop-promoted X) and their physical home is
+                            # already decided; grafting a different hw hint
+                            # onto them would mislead later passes that read
+                            # `register_hint` to predict the vreg's location.
+                            if (dest.register_hint and not src.register_hint
+                                    and src not in self.pre_allocated_vregs):
                                 src.register_hint = dest.register_hint
                             # Replace dest with src everywhere in the MIR
                             self._replace_vreg_everywhere(dest, src)
@@ -736,6 +757,21 @@ class StackSlotAllocator:
                                 vreg_defs[vreg_id] = [(instr, 'A')]
 
                     # Track operand uses
+                    uses = self.liveness_analyzer._get_uses(instr)
+                    for var in uses:
+                        if type(var) is VirtualRegister:
+                            vreg_uses.setdefault(var.id, []).append(instr)
+
+                elif instr_type is BankByte:
+                    # BankByte emits `LDA #imm` or `LDA src+2` then `STA dest`,
+                    # so its result lives in A. Track for coalescence (u8 result).
+                    if type(instr.dest) is VirtualRegister:
+                        vreg_id = instr.dest.id
+                        if vreg_id not in vreg_defs:
+                            dest_size = get_vreg_size(instr.dest)
+                            if dest_size == 1:
+                                vreg_defs[vreg_id] = [(instr, 'A')]
+
                     uses = self.liveness_analyzer._get_uses(instr)
                     for var in uses:
                         if type(var) is VirtualRegister:
@@ -1190,13 +1226,14 @@ class StackSlotAllocator:
                         if (coalesced_id_to_hw is not None and
                                 coalesced_id_to_hw.get(instr.source.id) == instr.dest.name):
                             return False
-                        # Loop-promoted vregs are pre-allocated to HARDWARE
-                        # (function_gen.py runs `_hint_conflicts_with_hw_defs`
-                        # before slot_allocator), so a Move whose source is one
-                        # of these is also a no-op when hint == dest.
-                        src_vr = instr.source
-                        if (src_vr in self.pre_allocated_vregs and
-                                src_vr.register_hint == instr.dest.name):
+                        # Vregs pre-allocated to a hardware register (e.g.
+                        # loop-promoted counters) make the Move a true no-op.
+                        # We only trust the caller-provided `pre_allocated_hw`
+                        # map here — NOT `register_hint`, because the Move
+                        # coalescer can propagate hints onto scratch (zeropage)
+                        # vregs, which still need `LDA zp; TAX|TAY` and so
+                        # clobber A.
+                        if self.pre_allocated_hw.get(instr.source.id) == instr.dest.name:
                             return False
                         return True
                     return False  # LDX #imm or LDX addr don't clobber A
@@ -1329,6 +1366,23 @@ class StackSlotAllocator:
             # PLX/PLY restores clobber the register
             if instr.register.name == hw_reg:
                 return True
+            return False
+
+        # LoadIndirect / StoreIndirect: codegen sets Y to the field offset
+        # via `LDY #offset` (memory_select.py) whenever index_register is not
+        # already 'Y' AND we need an indexed access. When index_register == 'Y'
+        # and offset == 0, the Y already holds the right value (loaded by a
+        # prior Move) and no LDY is emitted — Y survives.
+        # X is not used for [dp],X or (dp),X addressing on the 65816, so X is
+        # never clobbered by these.
+        if instr_type is LoadIndirect or instr_type is StoreIndirect:
+            if hw_reg == 'Y':
+                idx_reg = getattr(instr, 'index_register', None)
+                offset = getattr(instr, 'offset', 0)
+                # Codegen emits LDY when either Y isn't already the index
+                # or there's a non-zero field offset to load into Y.
+                if idx_reg != 'Y' or offset != 0:
+                    return True
             return False
 
         # Other instructions don't modify X/Y

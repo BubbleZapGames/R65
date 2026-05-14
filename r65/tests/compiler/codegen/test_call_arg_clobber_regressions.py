@@ -147,16 +147,18 @@ class TestMoveToXYFromHintedVregClobbersA:
         )
 
     def test_pre_allocated_hinted_vreg_does_not_clobber_a(self):
-        """Sanity check: when the hinted vreg IS pre-allocated to its
-        hint, the Move IS a no-op and coalescence must succeed."""
+        """Sanity check: when the hinted vreg IS pre-allocated to HARDWARE,
+        the Move IS a no-op and coalescence must succeed."""
         func, vreg_idx, vreg_result = self._build_func()
         allocator = StackSlotAllocator(
-            func, pre_allocated_vregs={vreg_idx}
+            func,
+            pre_allocated_vregs={vreg_idx},
+            pre_allocated_hw={vreg_idx.id: 'X'},
         )
         allocation = allocator.allocate()
         assert vreg_result in allocation.hw_coalesceable, (
             "vreg_result should coalesce to A when the intervening "
-            "Move(X, vreg_idx) is a no-op (vreg_idx pre-allocated to X).\n"
+            "Move(X, vreg_idx) is a no-op (vreg_idx pinned to HARDWARE X).\n"
             f"hw_coalesceable: {allocation.hw_coalesceable}"
         )
         assert allocation.hw_coalesceable[vreg_result] == 'A'

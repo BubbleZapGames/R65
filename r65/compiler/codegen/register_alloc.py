@@ -715,8 +715,14 @@ class RegisterAllocator:
 
             # Collect vregs already allocated externally (e.g. scratch params,
             # pull-promoted hw regs) so the slot allocator doesn't reserve
-            # stack frame space for them
+            # stack frame space for them.
+            # `pre_allocated_hw` is a refined subset: vregs the register
+            # allocator has *pinned to a hardware register*. The slot
+            # allocator's clobber analysis uses this to recognize TAX/TAY
+            # no-ops; we cannot rely on `register_hint` for that decision
+            # because Move coalescing can propagate hints onto scratch vregs.
             pre_allocated_vregs = set()
+            pre_allocated_hw: Dict[int, str] = {}
             for vreg_id, loc in self.allocations.items():
                 if loc.kind in (LocationKind.SCRATCH, LocationKind.HARDWARE):
                     # Find the VirtualRegister object for this id
@@ -724,6 +730,8 @@ class RegisterAllocator:
                         if v.id == vreg_id:
                             pre_allocated_vregs.add(v)
                             break
+                    if loc.kind == LocationKind.HARDWARE and loc.hw_register:
+                        pre_allocated_hw[vreg_id] = loc.hw_register
 
             # Create unified allocator that handles params + locals together
             self.slot_allocator = StackSlotAllocator(
@@ -734,6 +742,7 @@ class RegisterAllocator:
                 pre_allocated_vregs=pre_allocated_vregs,
                 outgoing_arg_bytes=self.outgoing_arg_bytes,
                 layout=self.layout,
+                pre_allocated_hw=pre_allocated_hw,
             )
             self.slot_allocation = self.slot_allocator.allocate()
 
