@@ -499,9 +499,21 @@ class MacroExpander:
         elif isinstance(expr, ast.MatchExpression):
             new_arms = []
             for arm in expr.arms:
+                # Match arm bodies can be expressions OR statements (ast.Block,
+                # ast.ReturnStmt, etc — same set the HIR builder special-cases
+                # in _build_match_expression). Without dispatching on the
+                # body kind here, a Block arm body's nested macro invocations
+                # would survive expansion and surface later as
+                # "Unknown statement type: MacroInvocationStmtInner".
+                if isinstance(arm.body, ast.Block):
+                    new_body = self._expand_block(arm.body)
+                else:
+                    # Expressions, plus return/break/continue (which carry no
+                    # macros in practice) — pass through the expression path.
+                    new_body = self._expand_expression(arm.body)
                 new_arms.append(ast.MatchArm(
                     pattern=arm.pattern,
-                    body=self._expand_expression(arm.body),
+                    body=new_body,
                     source_loc=arm.source_loc
                 ))
             return ast.MatchExpression(
