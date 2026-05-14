@@ -54,17 +54,21 @@ class CallValidator:
             is_indirect: True if params are raw TypeInfo (function pointer call)
         """
         for i, (arg, param) in enumerate(zip(args, params)):
-            arg_type = self.check_expression(arg)
-            if isinstance(arg_type, NeverTypeInfo):
-                continue
-
-            # Get param type - handle both HIRParameter objects and raw TypeInfo
+            # Get param type up-front so we can pass it as context_type when
+            # checking the argument expression. This enables shift-operand
+            # widening (e.g. `oam_size(i << 2, 1)` with i:u8 and param:u16
+            # widens `i` to u16, computing the shift in m16 instead of
+            # truncating).
             if is_indirect:
                 param_type = param
                 param_name = None
             else:
                 param_type = param.param_type
                 param_name = param.name
+
+            arg_type = self.check_expression(arg, context_type=param_type)
+            if isinstance(arg_type, NeverTypeInfo):
+                continue
 
             if not TypeUtils.types_compatible(arg_type, param_type):
                 hint = (f"parameter '{param_name}' expects type {param_type}"
