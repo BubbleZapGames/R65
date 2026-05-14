@@ -68,9 +68,24 @@ class ControlFlowInstructionSelector(BaseSelector):
             instr: JumpTable instruction
         """
         table_size = len(instr.targets)
+        # The dispatch sequence below uses 8-bit immediates throughout
+        # (CMP #size, SBC #base, ASL byte index). table_size of 256+
+        # would emit `CMP #$00`, silently disabling the bounds check.
+        # The match analyser caps tables at MAX_JUMP_TABLE_SIZE = 128, so
+        # this should always hold; assert to fail loud if the cap shifts.
+        assert table_size <= 255, (
+            f"JumpTable size {table_size} exceeds 8-bit bounds-check capacity"
+        )
+
         scrutinee_loc = self.parent._get_operand_location(instr.scrutinee)
 
-        # Load scrutinee into A (if not already there)
+        # Load scrutinee into A in m8 so the bounds-check immediates and
+        # the AND/ASL below all operate on a single byte. Without this, an
+        # m16-on-entry caller would have LDA read 2 bytes from a u8 location
+        # and the CMP/SBC immediates would extend to 16-bit, silently
+        # corrupting the dispatch.
+        # Jump table dispatch expects m8 scrutinee
+        self.parent._ensure_m8_mode()
         if scrutinee_loc.is_hw('A'):
             pass  # Already in A
         else:
@@ -131,9 +146,27 @@ class ControlFlowInstructionSelector(BaseSelector):
         is_u16 = (result_size == 2)
 
         table_size = len(instr.values)
+        # Same 8-bit-immediate constraint as JumpTable's bounds check.
+        assert table_size <= 255, (
+            f"LookupTable size {table_size} exceeds 8-bit bounds-check capacity"
+        )
+        # For u8 LUTs, the default LDA #imm is emitted in m8 below and a
+        # default_value > $FF would be silently truncated. The analyzer
+        # builds u8 LUTs only when every arm body fits in u8, so this
+        # should always hold.
+        if not is_u16:
+            assert 0 <= instr.default_value <= 0xFF, (
+                f"u8 LookupTable default_value {instr.default_value:#x} "
+                f"exceeds 8-bit range"
+            )
+
         scrutinee_loc = self.parent._get_operand_location(instr.scrutinee)
 
-        # Load scrutinee into A (always 8-bit at this point)
+        # Load scrutinee into A in m8. Same rationale as select_jump_table:
+        # if m16 is live on entry the bounds check and SBC immediates run
+        # 16-bit and silently corrupt the dispatch.
+        # LUT dispatch expects m8 scrutinee
+        self.parent._ensure_m8_mode()
         if not scrutinee_loc.is_hw('A'):
             self.parent._emit_load('LDA', scrutinee_loc)
 
