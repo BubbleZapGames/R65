@@ -405,15 +405,27 @@ class ControlFlowInstructionSelector(BaseSelector):
 
         return False
 
+    # Signed branches:
+    #   CMP/CPX/CPY are NON-DESTRUCTIVE — after the compare A still holds the
+    #   LHS, not (LHS - RHS). The "EOR #$80 on overflow then test N" idiom
+    #   only works when A holds the difference (e.g. via SBC), so it is wrong
+    #   here. Instead we use a control-flow-only pattern that leaves A alone:
+    #   the V flag tells us whether N was inverted by signed overflow, and we
+    #   pick BMI or BPL accordingly. Same correctness as `N XOR V`, no A
+    #   touch.
+
     def _emit_less_than_branch(self, true_target: str, false_target: str, is_signed: bool):
         """Emit branch for < comparison."""
         if is_signed:
-            # Signed less than: N XOR V = 1
-            label = self.parent._get_unique_label()
-            self._emit_branch(Opcode.BVC, label, "Skip if no overflow")
-            self._emit_immediate(Opcode.EOR_IMMEDIATE, 0x80, "Flip sign bit if overflow")
-            self.emitter.emit_label(label)
-            self._emit_branch(Opcode.BMI, true_target, "Branch if less than (signed)")
+            # Signed less than: N XOR V = 1.
+            #   V=0 → N is correct → BMI taken means less
+            #   V=1 → N is inverted → BPL taken means less
+            v_set_label = self.parent._get_unique_label()
+            self._emit_branch(Opcode.BVS, v_set_label, "V=1 path: N is inverted")
+            self._emit_branch(Opcode.BMI, true_target, "V=0: less if N=1 (signed)")
+            self._emit_jump(Opcode.BRA, false_target)
+            self.emitter.emit_label(v_set_label)
+            self._emit_branch(Opcode.BPL, true_target, "V=1: less if N=0 (signed)")
             self._emit_jump(Opcode.BRA, false_target)
         else:
             # Unsigned less than: C flag clear
@@ -423,12 +435,15 @@ class ControlFlowInstructionSelector(BaseSelector):
     def _emit_greater_equal_branch(self, true_target: str, false_target: str, is_signed: bool):
         """Emit branch for >= comparison."""
         if is_signed:
-            # Signed >= : N XOR V = 0
-            label = self.parent._get_unique_label()
-            self._emit_branch(Opcode.BVC, label, "Skip if no overflow")
-            self._emit_immediate(Opcode.EOR_IMMEDIATE, 0x80, "Flip sign bit if overflow")
-            self.emitter.emit_label(label)
-            self._emit_branch(Opcode.BPL, true_target, "Branch if >= (signed)")
+            # Signed >=: N XOR V = 0.
+            #   V=0 → BPL taken means >=
+            #   V=1 → BMI taken means >= (N inverted by overflow)
+            v_set_label = self.parent._get_unique_label()
+            self._emit_branch(Opcode.BVS, v_set_label, "V=1 path: N is inverted")
+            self._emit_branch(Opcode.BPL, true_target, "V=0: >= if N=0 (signed)")
+            self._emit_jump(Opcode.BRA, false_target)
+            self.emitter.emit_label(v_set_label)
+            self._emit_branch(Opcode.BMI, true_target, "V=1: >= if N=1 (signed)")
             self._emit_jump(Opcode.BRA, false_target)
         else:
             # Unsigned >=: C flag set
@@ -438,13 +453,14 @@ class ControlFlowInstructionSelector(BaseSelector):
     def _emit_greater_than_branch(self, true_target: str, false_target: str, is_signed: bool):
         """Emit branch for > comparison."""
         if is_signed:
-            # Signed >: (N XOR V = 0) AND Z = 0
+            # Signed >: (N XOR V = 0) AND Z = 0.
             self._emit_branch(Opcode.BEQ, false_target, "Skip if equal")
-            label = self.parent._get_unique_label()
-            self._emit_branch(Opcode.BVC, label, "Skip if no overflow")
-            self._emit_immediate(Opcode.EOR_IMMEDIATE, 0x80, "Flip sign bit if overflow")
-            self.emitter.emit_label(label)
-            self._emit_branch(Opcode.BPL, true_target, "Branch if > (signed)")
+            v_set_label = self.parent._get_unique_label()
+            self._emit_branch(Opcode.BVS, v_set_label, "V=1 path: N is inverted")
+            self._emit_branch(Opcode.BPL, true_target, "V=0: > if N=0 (signed)")
+            self._emit_jump(Opcode.BRA, false_target)
+            self.emitter.emit_label(v_set_label)
+            self._emit_branch(Opcode.BMI, true_target, "V=1: > if N=1 (signed)")
             self._emit_jump(Opcode.BRA, false_target)
         else:
             # Unsigned >: (C set) AND (Z clear)
@@ -455,13 +471,14 @@ class ControlFlowInstructionSelector(BaseSelector):
     def _emit_less_equal_branch(self, true_target: str, false_target: str, is_signed: bool):
         """Emit branch for <= comparison."""
         if is_signed:
-            # Signed <=: (N XOR V = 1) OR Z = 1
+            # Signed <=: (N XOR V = 1) OR Z = 1.
             self._emit_branch(Opcode.BEQ, true_target, "Branch if equal")
-            label = self.parent._get_unique_label()
-            self._emit_branch(Opcode.BVC, label, "Skip if no overflow")
-            self._emit_immediate(Opcode.EOR_IMMEDIATE, 0x80, "Flip sign bit if overflow")
-            self.emitter.emit_label(label)
-            self._emit_branch(Opcode.BMI, true_target, "Branch if <= (signed)")
+            v_set_label = self.parent._get_unique_label()
+            self._emit_branch(Opcode.BVS, v_set_label, "V=1 path: N is inverted")
+            self._emit_branch(Opcode.BMI, true_target, "V=0: <= if N=1 (signed)")
+            self._emit_jump(Opcode.BRA, false_target)
+            self.emitter.emit_label(v_set_label)
+            self._emit_branch(Opcode.BPL, true_target, "V=1: <= if N=0 (signed)")
             self._emit_jump(Opcode.BRA, false_target)
         else:
             # Unsigned <=: (C clear) OR (Z set)
