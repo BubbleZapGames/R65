@@ -999,6 +999,12 @@ class ExpressionLowerer:
                 type_info=expr.expr_type
             ))
 
+        # Propagate the array's symbol onto the result so a downstream
+        # `as far *T` cast can recover the bank byte. Without this,
+        # _emit_near_to_far_pointer falls back to bank=0 and produces a
+        # bogus pointer (e.g. for ROM arrays in banks other than 0).
+        result.symbol = array_symbol
+
         return result
 
     def _lower_addressof_field_access(self, expr: HIRAddressOf) -> VirtualRegister:
