@@ -112,14 +112,14 @@ class TestSneslibConstants:
             #[entry]
             fn main() {{
                 // High bytes of button masks
-                RESULT[0] = (Joy::A as u16 >> 8) as u8;
-                RESULT[1] = (Joy::B as u16 >> 8) as u8;
-                RESULT[2] = (Joy::X as u16 >> 8) as u8;
-                RESULT[3] = (Joy::Y as u16 >> 8) as u8;
-                RESULT[4] = (Joy::L as u16 >> 8) as u8;
-                RESULT[5] = (Joy::R as u16 >> 8) as u8;
-                RESULT[6] = (Joy::Start as u16 >> 8) as u8;
-                RESULT[7] = (Joy::Select as u16 >> 8) as u8;
+                RESULT[0] = (JOY_A >> 8) as u8;
+                RESULT[1] = (JOY_B >> 8) as u8;
+                RESULT[2] = (JOY_X >> 8) as u8;
+                RESULT[3] = (JOY_Y >> 8) as u8;
+                RESULT[4] = (JOY_L >> 8) as u8;
+                RESULT[5] = (JOY_R >> 8) as u8;
+                RESULT[6] = (JOY_START >> 8) as u8;
+                RESULT[7] = (JOY_SELECT >> 8) as u8;
             }}
         '''
         result = e2e.run(source, ExpectedState(memory={

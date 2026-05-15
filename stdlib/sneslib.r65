@@ -997,20 +997,20 @@ enum Screen { BG1 = 0x01, BG2 = 0x02, BG3 = 0x04, BG4 = 0x08, Obj = 0x10 }
 // CONSTANTS - Joypad Button Masks
 // ============================================================================
 
-enum Joy {
-    B      = 0x8000,
-    Y      = 0x4000,
-    Select = 0x2000,
-    Start  = 0x1000,
-    Up     = 0x0800,
-    Down   = 0x0400,
-    Left   = 0x0200,
-    Right  = 0x0100,
-    A      = 0x0080,
-    X      = 0x0040,
-    L      = 0x0020,
-    R      = 0x0010
-}
+// u16 button-mask constants. Usable directly in bitwise tests against
+// pad_poll() results without an `as u16` cast.
+const JOY_B: u16      = 0x8000;
+const JOY_Y: u16      = 0x4000;
+const JOY_SELECT: u16 = 0x2000;
+const JOY_START: u16  = 0x1000;
+const JOY_UP: u16     = 0x0800;
+const JOY_DOWN: u16   = 0x0400;
+const JOY_LEFT: u16   = 0x0200;
+const JOY_RIGHT: u16  = 0x0100;
+const JOY_A: u16      = 0x0080;
+const JOY_X: u16      = 0x0040;
+const JOY_L: u16      = 0x0020;
+const JOY_R: u16      = 0x0010;
 
 
 // ============================================================================
