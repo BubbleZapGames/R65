@@ -246,6 +246,18 @@ per dispatch.
 
 ---
 
+## SoA Struct Arrays — `#[soa]` Attribute
+
+Lay a `static [T; N]` out as parallel per-field arrays so `arr[i].field`
+desugars to `arr_field[i]` — no per-access software `mul8` for
+non-power-of-2 struct sizes, while keeping struct syntax and a single
+`N` at the source level. Two intentional restrictions on `#[soa]`
+element types: **no `impl Trait`** (no contiguous `self` to point at)
+and **no `&arr[i]`** (the element has no single base address).
+Callers pass the index `i` instead of a reference.
+
+---
+
 ## Conventions
 
 When adding to this file:
