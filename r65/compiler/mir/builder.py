@@ -882,7 +882,7 @@ class MIRBuilder:
 
         label = f"__{label_prefix}_data"
         rom_data = ROMDataRef(label=label, data=data_bytes, element_size=element_size)
-        self._rom_data_sections.append(rom_data)
+        self.current_function.local_rom_data.append(rom_data)
         self.emit(BlockCopy(dest=mem_loc, rom_data=rom_data, count=len(data_bytes)))
 
     def _emit_inline_string_literal(self, stmt, mem_loc, string_literal, label_prefix):
@@ -901,7 +901,7 @@ class MIRBuilder:
 
         label = f"__{label_prefix}_data"
         rom_data = ROMDataRef(label=label, data=data_bytes, element_size=1)
-        self._rom_data_sections.append(rom_data)
+        self.current_function.local_rom_data.append(rom_data)
         self.emit(BlockCopy(dest=mem_loc, rom_data=rom_data, count=len(data_bytes)))
 
     def _emit_inline_struct_literal(self, stmt, mem_loc, struct_expr, label_prefix):
@@ -910,7 +910,7 @@ class MIRBuilder:
 
         label = f"__{label_prefix}_data"
         rom_data = ROMDataRef(label=label, data=data_bytes, element_size=1)
-        self._rom_data_sections.append(rom_data)
+        self.current_function.local_rom_data.append(rom_data)
         self.emit(BlockCopy(dest=mem_loc, rom_data=rom_data, count=len(data_bytes)))
 
     def _is_stack_eligible_struct(self, stmt: HIRLetStmt) -> bool:

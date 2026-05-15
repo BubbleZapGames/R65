@@ -170,7 +170,7 @@ def _emit_instruction(opcode: Opcode, operand: Operand | None) -> str:
 
     # Block move instructions (MVN/MVP) - special operand format
     if isinstance(operand, BlockMove):
-        return f"{mnem} ${operand.src_bank:02X}, ${operand.dst_bank:02X}"
+        return f"{mnem} {BlockMove._fmt(operand.src_bank)}, {BlockMove._fmt(operand.dst_bank)}"
 
     # Implied addressing (no operand)
     if mode is None:
@@ -245,8 +245,8 @@ def _emit_instruction(opcode: Opcode, operand: Operand | None) -> str:
             return f"{mnem} ({_format_value(offset)},S),Y"
 
         # Block Move
-        case (_, BlockMove(src, dst)):
-            return f"{mnem} ${src:02X}, ${dst:02X}"
+        case (_, BlockMove() as bm):
+            return f"{mnem} {BlockMove._fmt(bm.src_bank)}, {BlockMove._fmt(bm.dst_bank)}"
 
         case _:
             # Fallback for unhandled cases

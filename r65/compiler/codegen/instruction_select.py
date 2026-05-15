@@ -2140,10 +2140,11 @@ class InstructionSelector:
         # Load destination address
         self._emit_immediate(Opcode.LDY_IMMEDIATE, dest_loc.memory_addr & WORD_MASK)
 
-        # Perform block move
-        # MVN src_bank, dst_bank
-        # Assuming ROM is in bank 0 and RAM destination bank is $7E
-        # For now, use bank 0 for ROM and calculate destination bank from address
+        # Perform block move: MVN src_bank, dst_bank
+        # Source bank is the ROM data label's own bank, resolved by WLA-DX
+        # via the `:label` operator. The data table is emitted adjacent to
+        # the owning function (same ROM bank) by codegen, so a hardcoded
+        # bank would be wrong whenever the function isn't in bank 0.
         dest_addr = dest_loc.memory_addr
         if dest_addr >= WRAM_BANK2_START:
             dest_bank = WRAM_BANK2
@@ -2152,7 +2153,7 @@ class InstructionSelector:
         else:
             dest_bank = 0x00  # Low RAM or zeropage
 
-        self.emitter.emit_instr(Opcode.MVN, BlockMove(0x00, dest_bank))
+        self.emitter.emit_instr(Opcode.MVN, BlockMove(rom_label, dest_bank))
 
         # Restore 8-bit A mode only; X/Y must remain 16-bit (x16 convention)
         self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "Restore 8-bit A")

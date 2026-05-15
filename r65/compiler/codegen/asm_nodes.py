@@ -72,12 +72,21 @@ class StackOffset:
 
 @dataclass(frozen=True)
 class BlockMove:
-    """Block move operand for MVN/MVP (src_bank, dst_bank)."""
-    src_bank: int
-    dst_bank: int
+    """Block move operand for MVN/MVP (src_bank, dst_bank).
+
+    A bank may be an int (literal bank byte) or a str (a symbol name whose
+    bank is resolved by WLA-DX via the `:label` operator). The str form is
+    used for ROM data tables whose final bank is decided by the linker.
+    """
+    src_bank: object  # int | str
+    dst_bank: object  # int | str
+
+    @staticmethod
+    def _fmt(bank) -> str:
+        return f":{bank}" if isinstance(bank, str) else f"${bank:02X}"
 
     def __repr__(self) -> str:
-        return f"BlockMove(${self.src_bank:02X}, ${self.dst_bank:02X})"
+        return f"BlockMove({self._fmt(self.src_bank)}, {self._fmt(self.dst_bank)})"
 
 
 # Union of all operand types

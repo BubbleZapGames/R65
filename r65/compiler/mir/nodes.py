@@ -954,6 +954,12 @@ class MIRFunction:
     # Source location for debugging (from HIR)
     source_loc: Optional[Any] = None  # SourceLocation
 
+    # ROM data tables for this function's local array/string/struct literal
+    # initializers. Emitted adjacent to the function body (same ROM bank) so
+    # the inlined MVN block-copy can reach them; NOT routed through the global
+    # __init_start ROM data sections.
+    local_rom_data: List['ROMDataRef'] = field(default_factory=list)
+
     # Virtual register allocator
     vreg_allocator: Optional[Any] = None  # VirtualRegisterAllocator
 
