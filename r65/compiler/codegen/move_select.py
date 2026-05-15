@@ -108,8 +108,27 @@ class MoveOperationSelector(BaseSelector):
         if isinstance(src_operand, MIRImmediate):
             self._load_immediate_to_hw_register(dest_loc.hw_register, src_operand.value, is_u16, persist_mode)
         else:
+            from r65.compiler.codegen.type_utils import get_vreg_size
             src_loc = self.parent._get_operand_location(src_operand)
             if src_loc.is_hw():
+                # A → X/Y: TAX/TAY transfers the FULL 16-bit accumulator
+                # (B:A_low). If the source value is u8 (a freshly computed
+                # BinaryOp result, a u8 scratch param coalesced to A, …),
+                # B may hold stale bits and contaminate X/Y. Detect this
+                # via the source operand's nominal size and emit an
+                # explicit zero-extend before the transfer.
+                if (src_loc.hw_register == 'A'
+                        and dest_loc.hw_register in ('X', 'Y')
+                        and isinstance(src_operand, VirtualRegister)
+                        and get_vreg_size(src_operand) < 2):
+                    self.parent._ensure_m16_mode()
+                    self._emit_instr(Opcode.AND_IMMEDIATE, Immediate(0x00FF),
+                                     "Zero-extend u8 in A to 16-bit X/Y")
+                    if dest_loc.hw_register == 'X':
+                        self._emit_instr(Opcode.TAX, comment="Transfer (zero-extended)")
+                    else:
+                        self._emit_instr(Opcode.TAY, comment="Transfer (zero-extended)")
+                    return
                 # X/Y ↔ A transfers are mode-sensitive: TXA/TYA/TAX/TAY in m8
                 # mode only copy the low 8 bits. Ensure m16 for 16-bit values.
                 if is_u16 and (
@@ -155,9 +174,19 @@ class MoveOperationSelector(BaseSelector):
         Args:
             hw_register: Target register ('A', 'X', 'Y', 'B')
             src_loc: Source memory location
-            is_u16: Whether this is a 16-bit load
+            is_u16: Whether this is a 16-bit load (DEST type)
             persist_16bit_mode: If True and loading to A, stay in m16 mode after load
         """
+        # X and Y are always 16-bit registers in R65, so the Move's nominal
+        # `is_u16` (derived from the dest type) is always True for X/Y dest —
+        # which would route every load to a plain LDX/LDY in x16 mode and
+        # read 2 bytes from the source. For a u8 source (e.g. an `@ A: u8`
+        # scratch param) that picks up the adjacent byte as the high byte of
+        # X/Y. Re-derive `is_u16` from the SOURCE size so the zero-extend
+        # path runs whenever the source is 8 bits.
+        if hw_register in ('X', 'Y'):
+            is_u16 = (src_loc.size >= 2)
+
         # Handle 16-bit A register loads
         if hw_register == 'A' and is_u16:
             self.parent._ensure_m16_mode()
