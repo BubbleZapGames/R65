@@ -49,6 +49,12 @@ def analyze_loop_promotion(mir_program: MIRProgram):
         promoted = _promote_local_loop_counters(func)
         total_local_promoted += promoted
 
+    # Safety: a jump/lookup-table dispatch clobbers X. Relocate or drop any
+    # X hint on a loop counter whose loop body contains such a dispatch
+    # (covers both promotion above and the HIR depth-1 for-loop X hint).
+    for func in mir_program.functions:
+        _enforce_x_clobber_safety(func)
+
     # Eliminate temp copies in ALL functions with loops, even if no
     # promotion happened. This collapses `%T = %V + 1; %V = Move %T`
     # into `%V = %V + 1`, enabling INX/INY/DEX/DEY pattern matching
@@ -316,6 +322,62 @@ def _promote_local_loop_counters(func: MIRFunction) -> int:
         _eliminate_temp_copies(func)
 
     return promoted
+
+
+def _enforce_x_clobber_safety(func: MIRFunction) -> int:
+    """
+    select_jump_table / select_lookup_table use ``TAX`` to index the
+    dispatch table, which clobbers X. A loop counter pinned to X — via the
+    HIR depth-1 for-loop hint or loop promotion — is live across the entire
+    loop body, so a JumpTable / LookupTable anywhere in that body destroys
+    the counter, producing a corrupted array index and a runaway loop.
+
+    X is the *only* register the dispatch touches; Y is untouched and still
+    supports ``addr,Y`` indexed addressing. Relocate an unsafe X hint to Y
+    when Y is free, otherwise drop the hint so the counter falls back to a
+    stack slot (always correct, just slower).
+
+    Returns the number of hints rewritten.
+    """
+    loops = _find_loops(func)
+    if not loops:
+        return 0
+
+    unsafe_blocks: Set[int] = set()
+    for _header, body in loops:
+        has_table = any(
+            isinstance(instr, (JumpTable, LookupTable))
+            for bid in body
+            for instr in func.blocks[bid].instructions
+        )
+        if has_table:
+            unsafe_blocks |= body
+    if not unsafe_blocks:
+        return 0
+
+    all_vregs: Dict[int, VirtualRegister] = {}
+    for block in func.blocks.values():
+        for instr in block.instructions:
+            for vreg in _get_vregs_from_instr(instr):
+                all_vregs[vreg.id] = vreg
+
+    y_claimed = any(v.register_hint == 'Y' for v in all_vregs.values())
+
+    rewritten = 0
+    for vid in sorted(_find_vregs_used_in_blocks(func, unsafe_blocks)):
+        vreg = all_vregs.get(vid)
+        if vreg is None or vreg.register_hint != 'X':
+            continue
+        if func.loop_promoted_hw_vregs.get('X') is vreg:
+            del func.loop_promoted_hw_vregs['X']
+        if not y_claimed:
+            vreg.register_hint = 'Y'
+            y_claimed = True
+            func.loop_promoted_hw_vregs['Y'] = vreg
+        else:
+            vreg.register_hint = None
+        rewritten += 1
+    return rewritten
 
 
 def _prefers_x_register(vreg_id: int, uses: list) -> bool:
