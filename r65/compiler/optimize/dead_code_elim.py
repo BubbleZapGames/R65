@@ -11,7 +11,7 @@ from r65.compiler.mir.nodes import (
     VirtualRegister, HardwareRegister,
     Move, Load, Store, BinaryOp, UnaryOp, Compare, TypeConvert, ToBool,
     Jump, CondBranch, Return, ReturnFromInterrupt, Call,
-    LoadIndirect, StoreIndirect, Rotate, BitTest, JumpTable,
+    LoadIndirect, StoreIndirect, Rotate, BitTest, JumpTable, BankByte,
     Push, Pull, SaveRegister, RestoreRegister, InlineAsm, SetMode,
     MemoryFill, BlockCopy, LookupTable, TraitDispatch,
 )
@@ -35,6 +35,7 @@ _READ_FIELDS = {
     Compare: ('left', 'right'),
     TypeConvert: ('source',),
     ToBool: ('source',),
+    BankByte: ('source',),
     CondBranch: ('condition',),
     Rotate: ('source',),
     BitTest: ('value',),
