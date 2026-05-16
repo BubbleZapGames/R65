@@ -300,7 +300,7 @@ match_arm: pattern "=>" match_arm_body
               | match_arm_continue
               | match_arm_block
               | expr
-match_arm_block: "{" statement+ "}"
+match_arm_block: "{" statement* "}"
 match_arm_return: RETURN expr?
 match_arm_break: BREAK LABEL_REF?
 match_arm_continue: CONTINUE LABEL_REF?

@@ -49,6 +49,23 @@ class TestMatchExpression:
         match_expr = func.body.statements[0].initializer
         assert isinstance(match_expr.scrutinee, ast.BinaryOp)
 
+    def test_empty_arm_block(self):
+        """An empty `{}` arm body is a valid no-op (statement-form match)."""
+        func = parse_function("""
+            fn test(x @ A: u8) {
+                match x {
+                    0 => { A = 1; },
+                    _ => {},
+                };
+            }
+        """)
+        match_expr = func.body.statements[0].expr
+        assert isinstance(match_expr, ast.MatchExpression)
+        assert len(match_expr.arms) == 2
+        wildcard_body = match_expr.arms[1].body
+        assert isinstance(wildcard_body, ast.Block)
+        assert wildcard_body.statements == []
+
 
 class TestMatchPatterns:
     """Tests for match patterns."""
