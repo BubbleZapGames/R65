@@ -444,6 +444,15 @@ class ConditionLowerer:
         if not self._all_operands_safe(expr):
             return False
 
+        # The accumulator chain (LDA op0; ORA op1; ...) is only correct when
+        # every operand can be applied directly without disturbing a value the
+        # chain still needs. Bail to the generic path otherwise — e.g. a nested
+        # different-operator operand `a | (b & c)` would be lowered mid-chain
+        # and clobber the accumulated value, and a register operand after the
+        # first (`X | A`) would read A *after* op0's load overwrote it.
+        if not self._is_chain_safe(expr):
+            return False
+
         # Emit optimized bitwise chain
         result = self._emit_bitwise_chain(expr)
 
@@ -525,6 +534,47 @@ class ConditionLowerer:
 
         # Everything else is not safe for this optimization
         return False
+
+    def _operand_kind(self, expr: HIRExpression) -> str:
+        """
+        Classify a flattened chain operand by how it reaches the accumulator.
+
+        - 'imm'     : integer literal           → ORA #imm
+        - 'mem'     : static with a fixed addr   → ORA addr
+        - 'reg'     : hardware register / alias  → only safe as op0 (a load
+                       into A); after op0 its value has been clobbered
+        - 'complex' : needs lower_expression()   → would emit A-clobbering
+                       code mid-chain
+        """
+        if isinstance(expr, HIRIntegerLiteral):
+            return 'imm'
+        if isinstance(expr, HIRRegister):
+            return 'reg'
+        if isinstance(expr, HIRIdentifier):
+            symbol = expr.symbol
+            if self.ctx.current_function.alias_tracker.get_alias(symbol):
+                return 'reg'
+            if self.builder.has_explicit_location(symbol):
+                return 'mem'
+        return 'complex'
+
+    def _is_chain_safe(self, expr: HIRExpression) -> bool:
+        """
+        True iff the flattened bitwise chain can be emitted as a pure
+        accumulator chain without clobbering an operand it still needs.
+
+        Safe: every operand is a direct memory/immediate operand; a register
+        operand is allowed only in the first position (loaded into A, which
+        the chain is establishing anyway).
+        """
+        operands = self._flatten_bitwise_chain(expr, expr.op)
+        for i, operand in enumerate(operands):
+            kind = self._operand_kind(operand)
+            if kind == 'complex':
+                return False
+            if kind == 'reg' and i >= 1:
+                return False
+        return True
 
     def _get_direct_operand(self, expr: HIRExpression):
         """
