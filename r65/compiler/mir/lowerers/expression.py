@@ -788,9 +788,12 @@ class ExpressionLowerer:
                 index_operand, struct_size, struct_type, self.ctx, self.emit
             )
 
-            # Move scaled index to X register for indexed addressing
+            # Move scaled index to X register for indexed addressing.
+            # The scaled index is a byte offset (u16), NOT the struct type —
+            # sizing the Move as the struct corrupts the index high byte.
             x_reg = HardwareRegister('X')
-            self.emit(Move(dest=x_reg, source=scaled_operand, type_info=struct_type))
+            self.emit(Move(dest=x_reg, source=scaled_operand,
+                           type_info=BasicTypeInfo('u16')))
 
             # Create indexed memory location with field_offset folded into address
             base_memloc = self.builder.get_memory_location(array_symbol)

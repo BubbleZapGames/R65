@@ -7,7 +7,13 @@ This file covers runtime codegen: field reads/writes, pointer auto-deref,
 struct initializers, arrays of structs, and pointer-loop indexed reads.
 """
 
+from pathlib import Path
+
 from r65.tests.e2e import ExpectedState
+
+STDLIB_DIR = Path(__file__).parent.parent.parent.parent / "stdlib"
+SNESLIB_PATH = STDLIB_DIR / "sneslib.r65"
+MATH_PATH = STDLIB_DIR / "math.r65"
 
 
 class TestStructFieldAccess:
@@ -149,6 +155,64 @@ class TestArrayOfStructs:
                 0x7E0010: [1, 10, 2, 20, 3, 30, 4, 40],
             }
         ))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_large_struct_variable_index(self, e2e):
+        """Regression: >16-byte struct array with a VARIABLE index.
+
+        Structs larger than 16 bytes use the mul16() runtime multiply for
+        the index. The scaled index (index * struct_size) is a byte offset
+        that can exceed 255 (16 * 18 = 288), so it must be u16 — NOT the
+        struct element type. Previously the offset vreg was sized as the
+        struct, producing an 8-bit store / 16-bit load mismatch: the index
+        high byte was garbage and the access landed at a random address.
+
+        Mirrors the classickong enemy[i].field pattern (18-byte struct,
+        u8 index parameter, compound read-modify-write, call with a
+        field argument).
+        """
+        result = e2e.run(f'''
+            include!("{SNESLIB_PATH}")
+            include!("{MATH_PATH}")
+
+            struct E {{
+                a: u8, b: u8, c: u8, d: i8,
+                e: u8, f: u8, g: u8, h: u8,
+                i0: u16, i1: u16, i2: u16,
+                j: u8, k: u8, l: u8, m: u8
+            }}
+
+            #[lowram(0x400)]
+            static mut arr: [E; 16];
+
+            #[lowram(0x300)]
+            static mut OUT: [u8; 8];
+
+            fn touch(v @ A: u8) -> u8 {{ return v + 1; }}
+
+            fn proc(i: u8) {{
+                arr[i].d = 5;
+                arr[i].d = 0 - arr[i].d;        // compound RMW -> 251
+                let t: u8 = touch(arr[i].a);    // call w/ indexed-field arg
+                arr[i].b = t;
+                arr[i].c = arr[i].b;            // field-to-field, two indexes
+            }}
+
+            #[entry]
+            fn main() {{
+                arr[15].a = 10;   // last slot: index*18 = 270 > 255 (needs u16)
+                proc(15);
+                OUT[0] = arr[15].d;
+                OUT[1] = arr[15].b;
+                OUT[2] = arr[15].c;
+                OUT[3] = arr[15].a;
+            }}
+        ''', ExpectedState(memory={
+            # arr base 0x7E0400, arr[15] = +15*18 = +270 => 0x7E050E
+            0x7E0300: [251, 11, 11, 10],
+            0x7E050E: 10,    # arr[15].a
+            0x7E0511: 251,   # arr[15].d (offset 3)
+        }), max_instructions=300000)
         assert result.success, f"Failures: {result.failures}"
 
     def test_pointer_loop_indexed_read(self, e2e):

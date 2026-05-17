@@ -296,17 +296,39 @@ def compute_scaled_index(
     """
     if struct_size == 1:
         return index_operand
-    elif struct_size <= 16:
+
+    # A scaled index is a byte offset (index * struct_size). It can exceed 255
+    # (e.g. 16 elements * 18 bytes = 288), so it is intrinsically u16 and must
+    # NOT be sized by the caller's type_info (which is the struct/element type).
+    # Sizing it as the struct type produces an 8-bit store / 16-bit load
+    # mismatch in codegen, corrupting the index. Widen a u8/i8 index to u16
+    # first so the multiply input and result widths agree.
+    from r65.compiler.hir.types import BasicTypeInfo
+    from r65.compiler.mir.nodes import TypeConvert
+    from r65.compiler.mir.nodes import VirtualRegister
+    u8_type = BasicTypeInfo('u8')
+    u16_type = BasicTypeInfo('u16')
+
+    if (isinstance(index_operand, VirtualRegister) and
+            isinstance(index_operand.type_info, BasicTypeInfo) and
+            index_operand.type_info.name in ('u8', 'i8')):
+        extended = ctx.alloc_vreg(u16_type, "idx_ext")
+        emit(TypeConvert(
+            dest=extended,
+            source=index_operand,
+            source_type=index_operand.type_info,
+            target_type=u16_type,
+        ))
+        index_operand = extended
+
+    if struct_size <= 16:
         return emit_shift_and_add_multiply(
-            index_operand, struct_size, type_info, ctx, emit
+            index_operand, struct_size, u16_type, ctx, emit
         )
     else:
         _check_runtime_mul_available(ctx, struct_size)
-        from r65.compiler.hir.types import BasicTypeInfo
-        u8_type = BasicTypeInfo('u8')
-        u16_type = BasicTypeInfo('u16')
 
-        scaled_index = ctx.alloc_vreg(type_info, "scaled_index")
+        scaled_index = ctx.alloc_vreg(u16_type, "scaled_index")
         emit(Call(
             function='mul16',
             args=[
