@@ -724,63 +724,93 @@ class AssignmentLowerer:
 
     def _emit_moves_with_cycle_handling(self, assignments: list):
         """
-        Emit register moves handling potential cycles.
+        Sequentialize a set of parallel register copies (dest <- source).
 
-        When assignments form a cycle (e.g., A->X, X->A), we need to use
-        a temporary register to break the cycle.
+        Tuple-return destructuring produces copies that are semantically
+        simultaneous, so emitting them in list order can clobber a value
+        another copy still needs. This affects both cycles (X<->A) AND
+        chains (X<-A then Y<-X reads the already-overwritten X).
+
+        Standard parallel-copy sequentialization: repeatedly emit any copy
+        whose destination is not still needed as a source — this drains
+        chains and the tails of cycles. When only cycles remain, break one
+        by parking a source in a temporary (a free register, or the stack
+        when A/X/Y are all occupied) and repointing its reader at the temp.
 
         Args:
-            assignments: List of (target_reg, source_reg, elem_type) tuples
+            assignments: List of (dest_reg, source_reg, elem_type) tuples.
+                Sources are distinct (separate return registers) and
+                destinations are distinct; identity copies are pre-filtered.
         """
         if not assignments:
             return
 
-        # Build sets of targets and sources
-        targets = {a[0].name for a in assignments}
-        sources = {a[1].name for a in assignments}
+        # Mutable [dest, source, type]; source may be rewritten to a temp
+        # register or to STACK (parked on the hardware stack) when a cycle
+        # is broken.
+        moves = [[d, s, t] for (d, s, t) in assignments]
 
-        # Check for cycles: a cycle exists if any target is also a source
-        # in a different assignment
-        has_cycle = False
-        for target, source, _ in assignments:
-            # Check if this target is used as a source in another assignment
-            for other_target, other_source, _ in assignments:
-                if target.name == other_source.name and source.name == other_target.name:
-                    has_cycle = True
-                    break
-            if has_cycle:
-                break
+        # A register is safe to use as a scratch temp only if no copy ever
+        # writes it (so we cannot clobber an already-produced result) AND it
+        # is not currently needed as a source. The first half is static; the
+        # second is recomputed at each break (a register frees up once the
+        # copies reading it have drained).
+        result_regs = {m[0].name for m in moves}
 
-        if not has_cycle:
-            # No cycle - emit moves in order
-            for target_reg, source_reg, elem_type in assignments:
-                self.emit(Move(dest=target_reg, source=source_reg, type_info=elem_type))
-        else:
-            # Cycle detected - need to use a temporary
-            # Find a register not involved in the assignments to use as temp
-            all_regs = {'A', 'X', 'Y'}
-            involved_regs = targets | sources
-            available_temps = all_regs - involved_regs
+        STACK = object()  # sentinel: value parked on the hardware stack
 
-            if available_temps:
-                # Use an available register as temp
-                temp_reg = HardwareRegister(next(iter(available_temps)))
-                # For a simple 2-way swap (A<->X):
-                # 1. temp = A
-                # 2. A = X
-                # 3. X = temp
-                first_target, first_source, first_type = assignments[0]
-                self.emit(Move(dest=temp_reg, source=first_source, type_info=first_type))
-                # Emit other moves
-                for target_reg, source_reg, elem_type in assignments[1:]:
-                    self.emit(Move(dest=target_reg, source=source_reg, type_info=elem_type))
-                # Complete the swap
-                self.emit(Move(dest=first_target, source=temp_reg, type_info=first_type))
+        def needed_as_source(name, exclude):
+            return any(
+                o[1] is not STACK and o[1].name == name
+                for o in moves if o is not exclude
+            )
+
+        while moves:
+            # Drain every copy that is safe now: its destination is not
+            # needed as a source by any other remaining copy.
+            progressed = True
+            while progressed:
+                progressed = False
+                for mv in list(moves):
+                    dest, src, ty = mv
+                    if not needed_as_source(dest.name, mv):
+                        if src is STACK:
+                            self.emit(Pull(register=dest))
+                        else:
+                            self.emit(Move(dest=dest, source=src, type_info=ty))
+                        moves.remove(mv)
+                        progressed = True
+            if not moves:
+                return
+
+            # Only cycles remain (every dest is still some copy's source).
+            # Break one cycle with a temporary.
+            rem_srcs = {m[1].name for m in moves if m[1] is not STACK}
+            free_regs = [r for r in ('A', 'X', 'Y')
+                         if r not in result_regs and r not in rem_srcs]
+            if free_regs:
+                # Park the picked copy's source in a free register and
+                # repoint that copy (the unique reader of the source) at it.
+                d0, s0, ty0 = moves[0]
+                temp = HardwareRegister(free_regs[0])
+                self.emit(Move(dest=temp, source=s0, type_info=ty0))
+                moves[0][1] = temp
             else:
-                # All registers involved - use stack as temp
-                # This is rare (all 3 registers in a cycle)
-                first_target, first_source, first_type = assignments[0]
-                self.emit(Push(register=first_source))
-                for target_reg, source_reg, elem_type in assignments[1:]:
-                    self.emit(Move(dest=target_reg, source=source_reg, type_info=elem_type))
-                self.emit(Pull(register=first_target))
+                # No free register => A, X and Y are all involved, so the
+                # cycle necessarily contains an X<->Y edge. Park that
+                # 16-bit source on the stack so push/pull widths match
+                # (PHA/PLA would mismatch PHX/PLX on a u8/u16 cycle).
+                break_mv = next(
+                    (m for m in moves
+                     if m[0].name in ('X', 'Y') and m[1].name in ('X', 'Y')),
+                    None
+                )
+                if break_mv is None:
+                    raise MIRLoweringError(
+                        "Unsupported register permutation in tuple "
+                        "destructuring: cyclic move with no free temporary "
+                        "register",
+                        source_loc=self.builder._current_source_loc
+                    )
+                self.emit(Push(register=break_mv[1]))
+                break_mv[1] = STACK
