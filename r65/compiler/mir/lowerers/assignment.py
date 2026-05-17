@@ -478,29 +478,14 @@ class AssignmentLowerer:
             if isinstance(index_operand, Immediate):
                 index_operand = Immediate(index_operand.value * element_size)
             else:
-                offset_vreg = self.ctx.alloc_vreg(index_type, "ptr_idx_offset")
-                if element_size & (element_size - 1) == 0:
-                    shift_amount = 0
-                    temp = element_size
-                    while temp > 1:
-                        shift_amount += 1
-                        temp >>= 1
-                    self.emit(BinaryOp(
-                        dest=offset_vreg,
-                        left=index_operand,
-                        right=Immediate(shift_amount),
-                        op='<<',
-                        type_info=index_type
-                    ))
-                else:
-                    self.emit(BinaryOp(
-                        dest=offset_vreg,
-                        left=index_operand,
-                        right=Immediate(element_size),
-                        op='*',
-                        type_info=index_type
-                    ))
-                index_operand = offset_vreg
+                # Delegate to the read path's _compute_index_offset so writes
+                # stay symmetric with reads: it widens a u8/i8 index to u16
+                # before the shift. A raw `index << log2(size)` sized as the
+                # u8 index overflows whenever index * element_size > 255
+                # (e.g. ptr[150] of u16), corrupting the store address.
+                index_operand = self.builder.expr_lowerer._compute_index_offset(
+                    index_operand, element_size, index_type
+                )
 
         # Lower the pointer expression to get the pointer value
         ptr_operand = self.builder.lower_expression(array_index.array)
@@ -570,37 +555,16 @@ class AssignmentLowerer:
         # reuse cache says X is still valid.
         if not self.builder.x_index_cache_hit(reuse_key):
             offset_operand = index_operand
-            # If element size > 1, multiply index by element_size
+            # If element size > 1, scale the index. Delegate to the read path's
+            # _compute_index_offset so writes stay symmetric with reads: it
+            # widens a u8/i8 index to u16 before the shift. A raw
+            # `index << log2(size)` sized as the u8 index overflows whenever
+            # index * element_size > 255 (e.g. arr[150] in a [u16; N]),
+            # corrupting the store address.
             if element_size > 1:
-                offset_vreg = self.ctx.alloc_vreg(offset_type, "array_offset")
-                # Check if element_size is power of 2 - use shift instead of multiply
-                if element_size & (element_size - 1) == 0:  # Is power of 2
-                    # Calculate shift amount: log2(element_size)
-                    shift_amount = 0
-                    temp = element_size
-                    while temp > 1:
-                        shift_amount += 1
-                        temp >>= 1
-                    shift_immediate = Immediate(shift_amount)
-                    # offset = index << shift_amount
-                    self.emit(BinaryOp(
-                        dest=offset_vreg,
-                        left=index_operand,
-                        right=shift_immediate,
-                        op='<<',
-                        type_info=offset_type
-                    ))
-                else:
-                    # Non-power-of-2: use multiplication
-                    size_immediate = Immediate(element_size)
-                    self.emit(BinaryOp(
-                        dest=offset_vreg,
-                        left=index_operand,
-                        right=size_immediate,
-                        op='*',
-                        type_info=offset_type
-                    ))
-                offset_operand = offset_vreg
+                offset_operand = self.builder.expr_lowerer._compute_index_offset(
+                    index_operand, element_size, offset_type
+                )
 
             self.emit(Move(dest=HardwareRegister('X'), source=offset_operand, type_info=offset_type))
             self.builder.x_index_cache_set(reuse_key)
