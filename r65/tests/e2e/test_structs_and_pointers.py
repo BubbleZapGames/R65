@@ -263,6 +263,43 @@ class TestArrayOfStructs:
         }), max_instructions=300000)
         assert result.success, f"Failures: {result.failures}"
 
+    def test_index_reuse_invalidated_by_memory_fill(self, e2e):
+        """Regression: a MemoryFill between two same-index struct accesses
+        clobbers X (LDX/DEX fill-loop counter), so the reuse cache MUST
+        recompute the scaled index for the second access — it cannot keep
+        the now-stale X. Without invalidating on MemoryFill the second
+        store lands at a garbage address.
+        """
+        result = e2e.run(f'''
+            include!("{SNESLIB_PATH}")
+            include!("{MATH_PATH}")
+
+            struct E {{
+                a: u8, b: u8, c: u8, d: u8, e: u8, f: u8, g: u8, h: u8,
+                i0: u16, i1: u16, i2: u16, j: u8, k: u8, l: u8, m: u8
+            }}
+            #[lowram(0x400)] static mut arr: [E; 16];
+            #[lowram(0x300)] static mut OUT: [u8; 4];
+
+            fn work(i: u8) {{
+                arr[i].a = 0xAA;
+                let buf: [u8; 40] = [7; 40];   // MemoryFill -> clobbers X
+                arr[i].b = 0xBB;               // must recompute X (not reuse)
+                arr[i].c = buf[0];             // 7; also keeps buf live
+            }}
+
+            #[entry]
+            fn main() {{
+                work(15);                      // arr[15], offset 15*18=270 > 255
+                OUT[0] = arr[15].a;
+                OUT[1] = arr[15].b;
+                OUT[2] = arr[15].c;
+            }}
+        ''', ExpectedState(memory={
+            0x7E0300: [0xAA, 0xBB, 7],
+        }), max_instructions=300000)
+        assert result.success, f"Failures: {result.failures}"
+
     def test_pointer_loop_indexed_read(self, e2e):
         """Regression: LDA (dp),Y indirect indexed read with Y as loop counter.
 

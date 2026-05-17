@@ -294,15 +294,14 @@ def compute_scaled_index(
     Returns:
         Operand containing index * struct_size
     """
-    if struct_size == 1:
-        return index_operand
-
     # A scaled index is a byte offset (index * struct_size). It can exceed 255
     # (e.g. 16 elements * 18 bytes = 288), so it is intrinsically u16 and must
     # NOT be sized by the caller's type_info (which is the struct/element type).
     # Sizing it as the struct type produces an 8-bit store / 16-bit load
     # mismatch in codegen, corrupting the index. Widen a u8/i8 index to u16
-    # first so the multiply input and result widths agree.
+    # first so the result is consistently u16 for ALL struct sizes — including
+    # size 1, whose callers still Move it into X with a u16 type_info (an
+    # un-widened u8 there would read 2 bytes from a 1-byte slot).
     from r65.compiler.hir.types import BasicTypeInfo
     from r65.compiler.mir.nodes import TypeConvert
     from r65.compiler.mir.nodes import VirtualRegister
@@ -320,6 +319,9 @@ def compute_scaled_index(
             target_type=u16_type,
         ))
         index_operand = extended
+
+    if struct_size == 1:
+        return index_operand
 
     if struct_size <= 16:
         return emit_shift_and_add_multiply(

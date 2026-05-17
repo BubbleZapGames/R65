@@ -2041,20 +2041,34 @@ class MIRBuilder:
         if self.current_block is not None:
             self.current_block.instructions.append(instruction)
 
+    # MIR node types whose codegen is known to clobber the X register.
+    # MAINTENANCE HAZARD: this list must stay in sync with which selectors
+    # in codegen emit X-touching code. Missing one here = a stale X is reused
+    # and an indexed store/load lands at a garbage address (silent memory
+    # corruption — the same drift-bug class as DCE _READ_FIELDS vs liveness
+    # _GET_USES). When adding a new MIR node or changing a selector to use X,
+    # update this list. Verified clobberers:
+    #   Call / TraitDispatch ...... ABI: A/X/Y volatile across the call
+    #   JumpTable / LookupTable ... emit TAX to index the dispatch table
+    #   MemoryFill ................ LDX/DEX/INX fill loop counter
+    #   BlockCopy ................. MVN/MVP decrements X (and Y, A)
+    #   InlineAsm ................. black box, assumes all registers clobbered
+    #   RestoreRegister/SaveRegister X ... PLX/PHX
+    #   any instruction with dest == X ... Move/BinaryOp/Load/... into X
     @staticmethod
     def _instr_clobbers_x(instr) -> bool:
         """True if `instr` may change the X register.
 
-        Conservative: anything that writes X or is known to trash it (calls,
-        trait dispatch, jump/lookup tables which TAX, register restores).
         Indexed Load/Store (index_register='X') only READ X, so they do not
         count — that is exactly what the reuse cache relies on.
         """
         from r65.compiler.mir.nodes import (
             Call, TraitDispatch, JumpTable, LookupTable,
+            MemoryFill, BlockCopy, InlineAsm,
             RestoreRegister, SaveRegister, HardwareRegister,
         )
-        if isinstance(instr, (Call, TraitDispatch, JumpTable, LookupTable)):
+        if isinstance(instr, (Call, TraitDispatch, JumpTable, LookupTable,
+                              MemoryFill, BlockCopy, InlineAsm)):
             return True
         if isinstance(instr, (RestoreRegister, SaveRegister)):
             reg = getattr(instr, 'register', None)
