@@ -215,6 +215,54 @@ class TestArrayOfStructs:
         }), max_instructions=300000)
         assert result.success, f"Failures: {result.failures}"
 
+    def test_sequential_same_index_reuses_x(self, e2e):
+        """X-index reuse: consecutive accesses to the same (array, index)
+        keep X live instead of recomputing index*size + Move-to-X.
+
+        Correctness is the contract here (the codegen win is verified
+        separately). Covers the cases the reuse cache must get right:
+          - 3 sequential field stores reuse one scaled index
+          - read-after-write on the same element
+          - a call between accesses (clobbers X -> must recompute)
+          - reassigning the index (i = i + 1 -> must recompute, hit new slot)
+          - the 16-byte shift-and-add path, not just the mul16 path
+        """
+        result = e2e.run(f'''
+            include!("{SNESLIB_PATH}")
+            include!("{MATH_PATH}")
+
+            struct E {{
+                a: u8, b: u8, c: u8, d: u8, e: u8, f: u8, g: u8, h: u8,
+                i0: u16, i1: u16, i2: u16, j: u8, k: u8, l: u8, m: u8
+            }}
+            #[lowram(0x400)] static mut arr: [E; 16];
+            #[lowram(0x300)] static mut OUT: [u8; 8];
+
+            fn bump(v @ A: u8) -> u8 {{ return v + 7; }}
+
+            fn work(i: u8) {{
+                arr[i].a = 11; arr[i].b = 22; arr[i].c = 33;  // reuse X x3
+                arr[i].e = arr[i].a;                          // read-after-write
+                let t: u8 = bump(arr[i].a);                   // call clobbers X
+                arr[i].f = t;                                 // must recompute
+                arr[i].h = 1; i = i + 1; arr[i].j = 2;        // index changed
+            }}
+
+            #[entry]
+            fn main() {{
+                work(3);                       // touches arr[3].* and arr[4].j
+                OUT[0] = arr[3].a;             // 11
+                OUT[1] = arr[3].c;             // 33
+                OUT[2] = arr[3].e;             // 11 (== arr[3].a)
+                OUT[3] = arr[3].f;             // 18 (bump(11))
+                OUT[4] = arr[3].h;             // 1
+                OUT[5] = arr[4].j;             // 2  (post-increment index)
+            }}
+        ''', ExpectedState(memory={
+            0x7E0300: [11, 33, 11, 18, 1, 2],
+        }), max_instructions=300000)
+        assert result.success, f"Failures: {result.failures}"
+
     def test_pointer_loop_indexed_read(self, e2e):
         """Regression: LDA (dp),Y indirect indexed read with Y as loop counter.
 

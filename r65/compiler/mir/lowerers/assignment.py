@@ -72,6 +72,14 @@ class AssignmentLowerer:
         Returns:
             VirtualRegister or HardwareRegister with assigned value
         """
+        # Reassigning the index variable (i = ..., i++, i += 1, for-increment —
+        # all desugar to HIRAssignment with an HIRIdentifier target) invalidates
+        # any X-index reuse cached for it. Field/element stores have a
+        # HIRFieldAccess/HIRArrayIndex target, so they do not trip this.
+        if isinstance(expr.target, HIRIdentifier):
+            self.builder.x_index_cache_invalidate_symbol(
+                getattr(expr.target, 'symbol', None))
+
         # OPTIMIZATION: Detect pattern `target = target op value` for hardware registers
         # Generate BinaryOp(dest=target, left=target, op, right=value) directly
         # instead of temp = target op value; target = temp
@@ -363,22 +371,14 @@ class AssignmentLowerer:
             field_memloc = self.builder._create_offset_memloc(base_memloc, total_offset, array_symbol)
             self.emit(Store(source=value, dest=field_memloc, type_info=type_info))
         else:
-            # Variable index: compute scaled index (index * struct_size)
-            # Field offset is folded into the address constant instead of
-            # being added at runtime, saving CLC+ADC per non-zero field access
-            scaled_operand = compute_scaled_index(
-                index_operand, struct_size, struct_type, self.ctx, self.emit
-            )
+            # Variable index. The scaled index (index * struct_size) goes in X;
+            # the field offset is folded into the address constant. So X is
+            # identical for every field of the same element — consecutive
+            # `arr[i].a = ..; arr[i].b = ..` can reuse X (skip the recompute
+            # and the Move) when the reuse cache says X is still valid.
+            reuse_key = self.builder.x_index_reuse_key(
+                array_symbol, array_index_expr.index)
 
-            # Move scaled index to X register for indexed addressing.
-            # The scaled index is a byte offset (u16), NOT the struct type —
-            # sizing the Move as the struct corrupts the index high byte.
-            from r65.compiler.hir.types import BasicTypeInfo
-            x_reg = HardwareRegister('X')
-            self.emit(Move(dest=x_reg, source=scaled_operand,
-                           type_info=BasicTypeInfo('u16')))
-
-            # Create indexed memory location with field_offset folded into address
             base_memloc = self.builder.get_memory_location(array_symbol)
             if base_memloc.address is not None:
                 indexed_memloc = MemoryLocation(
@@ -397,6 +397,18 @@ class AssignmentLowerer:
                     index_register='X',
                     offset=base_memloc.offset + field_offset
                 )
+
+            if not self.builder.x_index_cache_hit(reuse_key):
+                # compute scaled index (index * struct_size) and load X.
+                # The scaled index is a byte offset (u16), NOT the struct type —
+                # sizing the Move as the struct corrupts the index high byte.
+                scaled_operand = compute_scaled_index(
+                    index_operand, struct_size, struct_type, self.ctx, self.emit
+                )
+                from r65.compiler.hir.types import BasicTypeInfo
+                self.emit(Move(dest=HardwareRegister('X'), source=scaled_operand,
+                               type_info=BasicTypeInfo('u16')))
+                self.builder.x_index_cache_set(reuse_key)
 
             self.emit(Store(source=value, dest=indexed_memloc, type_info=type_info))
 
@@ -442,7 +454,8 @@ class AssignmentLowerer:
         if isinstance(index_operand, Immediate):
             return self._lower_constant_index_assignment(value, base_symbol, index_operand.value, element_size, element_type)
         else:
-            return self._lower_variable_index_assignment(value, base_symbol, index_operand, element_size, element_type, index_type)
+            reuse_key = self.builder.x_index_reuse_key(base_symbol, array_index.index)
+            return self._lower_variable_index_assignment(value, base_symbol, index_operand, element_size, element_type, index_type, reuse_key)
 
     def _lower_pointer_index_assignment(self, expr: HIRAssignment, value, pointer_type):
         """Lower assignment through indexed pointer (ptr[i] = x)."""
@@ -532,49 +545,12 @@ class AssignmentLowerer:
         self.emit(Store(source=value, dest=elem_memloc, type_info=element_type))
         return value
 
-    def _lower_variable_index_assignment(self, value, array_symbol, index_operand, element_size, element_type, index_type=None):
+    def _lower_variable_index_assignment(self, value, array_symbol, index_operand, element_size, element_type, index_type=None, reuse_key=None):
         """Lower variable array index assignment with indexed addressing."""
         # Use the index type (not element type) for offset computation and X register load.
         # The index type determines the bit width: u16 indices must load as 16-bit
         # to avoid truncation when index >= 256.
         offset_type = index_type if index_type is not None else element_type
-        offset_operand = index_operand
-
-        # If element size > 1, multiply index by element_size
-        if element_size > 1:
-            offset_vreg = self.ctx.alloc_vreg(offset_type, "array_offset")
-            # Check if element_size is power of 2 - use shift instead of multiply
-            if element_size & (element_size - 1) == 0:  # Is power of 2
-                # Calculate shift amount: log2(element_size)
-                shift_amount = 0
-                temp = element_size
-                while temp > 1:
-                    shift_amount += 1
-                    temp >>= 1
-                shift_immediate = Immediate(shift_amount)
-                # offset = index << shift_amount
-                self.emit(BinaryOp(
-                    dest=offset_vreg,
-                    left=index_operand,
-                    right=shift_immediate,
-                    op='<<',
-                    type_info=offset_type
-                ))
-            else:
-                # Non-power-of-2: use multiplication
-                size_immediate = Immediate(element_size)
-                self.emit(BinaryOp(
-                    dest=offset_vreg,
-                    left=index_operand,
-                    right=size_immediate,
-                    op='*',
-                    type_info=offset_type
-                ))
-            offset_operand = offset_vreg
-
-        # Move offset to X register for indexed addressing
-        x_reg = HardwareRegister('X')
-        self.emit(Move(dest=x_reg, source=offset_operand, type_info=offset_type))
 
         # Create indexed memory location with X register.
         # Use base_memloc.symbol — get_memory_location may have redirected
@@ -588,6 +564,46 @@ class AssignmentLowerer:
             is_volatile=base_memloc.is_volatile,
             index_register='X'  # Mark as indexed with X
         )
+
+        # X holds index * element_size. Consecutive arr[i] accesses with the
+        # same (array, index) can reuse it (skip the scale + Move) when the
+        # reuse cache says X is still valid.
+        if not self.builder.x_index_cache_hit(reuse_key):
+            offset_operand = index_operand
+            # If element size > 1, multiply index by element_size
+            if element_size > 1:
+                offset_vreg = self.ctx.alloc_vreg(offset_type, "array_offset")
+                # Check if element_size is power of 2 - use shift instead of multiply
+                if element_size & (element_size - 1) == 0:  # Is power of 2
+                    # Calculate shift amount: log2(element_size)
+                    shift_amount = 0
+                    temp = element_size
+                    while temp > 1:
+                        shift_amount += 1
+                        temp >>= 1
+                    shift_immediate = Immediate(shift_amount)
+                    # offset = index << shift_amount
+                    self.emit(BinaryOp(
+                        dest=offset_vreg,
+                        left=index_operand,
+                        right=shift_immediate,
+                        op='<<',
+                        type_info=offset_type
+                    ))
+                else:
+                    # Non-power-of-2: use multiplication
+                    size_immediate = Immediate(element_size)
+                    self.emit(BinaryOp(
+                        dest=offset_vreg,
+                        left=index_operand,
+                        right=size_immediate,
+                        op='*',
+                        type_info=offset_type
+                    ))
+                offset_operand = offset_vreg
+
+            self.emit(Move(dest=HardwareRegister('X'), source=offset_operand, type_info=offset_type))
+            self.builder.x_index_cache_set(reuse_key)
 
         # Emit store using indexed addressing (e.g., STA $20,X)
         self.emit(Store(source=value, dest=indexed_memloc, type_info=element_type))

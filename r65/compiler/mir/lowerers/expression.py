@@ -483,8 +483,10 @@ class ExpressionLowerer:
                 result, array_symbol, index_operand.value, element_size, element_type
             )
         else:
+            reuse_key = self.builder.x_index_reuse_key(array_symbol, expr.index)
             return self._lower_variable_index(
-                result, array_symbol, index_operand, element_size, element_type, index_type
+                result, array_symbol, index_operand, element_size, element_type,
+                index_type, reuse_key
             )
 
     def _lower_pointer_index(self, expr: HIRArrayIndex, index_operand, element_size, element_type, ptr_type: PointerTypeInfo) -> VirtualRegister:
@@ -555,21 +557,12 @@ class ExpressionLowerer:
         self.emit(Load(dest=result, source=elem_memloc, type_info=element_type))
         return result
 
-    def _lower_variable_index(self, result, array_symbol, index_operand, element_size, element_type, index_type=None):
+    def _lower_variable_index(self, result, array_symbol, index_operand, element_size, element_type, index_type=None, reuse_key=None):
         """Lower variable array index with indexed addressing."""
         # Use the index type (not element type) for offset computation and X register load.
         # The index type determines the bit width: u16 indices must load as 16-bit
         # to avoid truncation when index >= 256.
         offset_type = index_type if index_type is not None else element_type
-        offset_operand = index_operand
-
-        # Multiply index by element_size if > 1
-        if element_size > 1:
-            offset_operand = self._compute_index_offset(index_operand, element_size, offset_type)
-
-        # Move offset to X register for indexed addressing
-        x_reg = HardwareRegister('X')
-        self.emit(Move(dest=x_reg, source=offset_operand, type_info=offset_type))
 
         # Create indexed memory location.
         # Use base_memloc.symbol — get_memory_location may have redirected
@@ -583,6 +576,16 @@ class ExpressionLowerer:
             is_volatile=base_memloc.is_volatile,
             index_register='X'
         )
+
+        # X holds index * element_size. Consecutive arr[i] accesses with the
+        # same (array, index) can reuse it (skip the scale + Move) when the
+        # reuse cache says X is still valid.
+        if not self.builder.x_index_cache_hit(reuse_key):
+            offset_operand = index_operand
+            if element_size > 1:
+                offset_operand = self._compute_index_offset(index_operand, element_size, offset_type)
+            self.emit(Move(dest=HardwareRegister('X'), source=offset_operand, type_info=offset_type))
+            self.builder.x_index_cache_set(reuse_key)
 
         self.emit(Load(dest=result, source=indexed_memloc, type_info=element_type))
         return result
@@ -781,21 +784,14 @@ class ExpressionLowerer:
             field_memloc = self.builder._create_offset_memloc(base_memloc, total_offset, array_symbol)
             self.emit(Load(dest=result, source=field_memloc, type_info=expr.expr_type))
         else:
-            # Variable index: compute scaled index (index * struct_size)
-            # Field offset is folded into the address constant instead of
-            # being added at runtime, saving CLC+ADC per non-zero field access
-            scaled_operand = compute_scaled_index(
-                index_operand, struct_size, struct_type, self.ctx, self.emit
-            )
+            # Variable index. X holds index * struct_size (the field offset is
+            # folded into the address constant), so it is identical for every
+            # field of the same element — a consecutive `arr[i].a; arr[i].b`
+            # can reuse X (skip the recompute + Move) when the reuse cache
+            # says X is still valid.
+            reuse_key = self.builder.x_index_reuse_key(
+                array_symbol, array_index_expr.index)
 
-            # Move scaled index to X register for indexed addressing.
-            # The scaled index is a byte offset (u16), NOT the struct type —
-            # sizing the Move as the struct corrupts the index high byte.
-            x_reg = HardwareRegister('X')
-            self.emit(Move(dest=x_reg, source=scaled_operand,
-                           type_info=BasicTypeInfo('u16')))
-
-            # Create indexed memory location with field_offset folded into address
             base_memloc = self.builder.get_memory_location(array_symbol)
             if base_memloc.address is not None:
                 indexed_memloc = MemoryLocation(
@@ -814,6 +810,17 @@ class ExpressionLowerer:
                     index_register='X',
                     offset=base_memloc.offset + field_offset
                 )
+
+            if not self.builder.x_index_cache_hit(reuse_key):
+                # compute scaled index (index * struct_size) and load X.
+                # The scaled index is a byte offset (u16), NOT the struct type —
+                # sizing the Move as the struct corrupts the index high byte.
+                scaled_operand = compute_scaled_index(
+                    index_operand, struct_size, struct_type, self.ctx, self.emit
+                )
+                self.emit(Move(dest=HardwareRegister('X'), source=scaled_operand,
+                               type_info=BasicTypeInfo('u16')))
+                self.builder.x_index_cache_set(reuse_key)
 
             self.emit(Load(dest=result, source=indexed_memloc, type_info=expr.expr_type))
 

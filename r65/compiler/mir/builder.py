@@ -79,6 +79,16 @@ class MIRBuilder:
         self.cond_lowerer = ConditionLowerer(self)
         self.static_init_lowerer = StaticInitLowerer(self)
 
+        # X-index reuse cache: when consecutive accesses target the same
+        # (array, index) — e.g. `enemy[i].x = ex; enemy[i].y = ey;` — X already
+        # holds `index * element/struct size` (the field offset is folded into
+        # the address constant, not X), so the scaled-index computation and the
+        # Move-into-X can be skipped for the 2nd..Nth access. Holds
+        # (id(array_symbol), id(index_symbol)) for which X is currently valid,
+        # or None. Conservatively invalidated (block change, any X clobber,
+        # write to the index variable).
+        self._x_index_cache: Optional[tuple] = None
+
         # ROM data section tracking for array literals
         self._rom_data_counter = 0
         self._rom_data_sections: List[ROMDataRef] = []
@@ -125,6 +135,11 @@ class MIRBuilder:
 
     @current_block.setter
     def current_block(self, value: Optional[BasicBlock]):
+        # The X-index reuse cache is only valid within a single basic block:
+        # crossing any block boundary (branch, loop header/latch, merge) means
+        # X may no longer hold the cached scaled index.
+        if value is not self.ctx.current_block:
+            self._x_index_cache = None
         self.ctx.current_block = value
 
     @property
@@ -633,6 +648,11 @@ class MIRBuilder:
         Args:
             stmt: HIR let statement
         """
+        # Defensive: if a binding reuses the cached index symbol, the cache
+        # is stale. (Register-bound lets that touch X are already caught by
+        # the emit-time X-clobber check.)
+        self.x_index_cache_invalidate_symbol(getattr(stmt, 'symbol', None))
+
         if isinstance(stmt.binding, RegisterLetBinding):
             # Register alias: track in alias tracker with binding type
             hw_reg = HardwareRegister(stmt.binding.register_name)
@@ -2015,8 +2035,65 @@ class MIRBuilder:
         if instruction.source_loc is None and self._current_source_loc is not None:
             instruction.source_loc = self._current_source_loc
 
+        if self._x_index_cache is not None and self._instr_clobbers_x(instruction):
+            self._x_index_cache = None
+
         if self.current_block is not None:
             self.current_block.instructions.append(instruction)
+
+    @staticmethod
+    def _instr_clobbers_x(instr) -> bool:
+        """True if `instr` may change the X register.
+
+        Conservative: anything that writes X or is known to trash it (calls,
+        trait dispatch, jump/lookup tables which TAX, register restores).
+        Indexed Load/Store (index_register='X') only READ X, so they do not
+        count — that is exactly what the reuse cache relies on.
+        """
+        from r65.compiler.mir.nodes import (
+            Call, TraitDispatch, JumpTable, LookupTable,
+            RestoreRegister, SaveRegister, HardwareRegister,
+        )
+        if isinstance(instr, (Call, TraitDispatch, JumpTable, LookupTable)):
+            return True
+        if isinstance(instr, (RestoreRegister, SaveRegister)):
+            reg = getattr(instr, 'register', None)
+            return getattr(reg, 'name', reg) == 'X'
+        dest = getattr(instr, 'dest', None)
+        if isinstance(dest, HardwareRegister) and dest.name == 'X':
+            return True
+        return False
+
+    def x_index_reuse_key(self, array_symbol, index_hir):
+        """Reuse key for `array[index]` if it is safe to keep X live across
+        consecutive accesses, else None.
+
+        Conservative: the index must be a bare identifier bound to a
+        variable/parameter (pure, no side effects, stable until explicitly
+        reassigned). Complex index expressions are never reused.
+        """
+        if array_symbol is None or index_hir is None:
+            return None
+        if not isinstance(index_hir, HIRIdentifier):
+            return None
+        sym = getattr(index_hir, 'symbol', None)
+        if sym is None:
+            return None
+        return (id(array_symbol), id(sym))
+
+    def x_index_cache_hit(self, key) -> bool:
+        return key is not None and self._x_index_cache == key
+
+    def x_index_cache_set(self, key):
+        # key is None for non-reusable indices: X now holds an unkeyable
+        # scaled index, so the cache must be cleared, not left stale.
+        self._x_index_cache = key
+
+    def x_index_cache_invalidate_symbol(self, symbol):
+        """Drop the cache if `symbol` is the cached index variable."""
+        if (self._x_index_cache is not None and symbol is not None
+                and id(symbol) == self._x_index_cache[1]):
+            self._x_index_cache = None
 
     def has_explicit_location(self, symbol) -> bool:
         """
