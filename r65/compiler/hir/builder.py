@@ -197,6 +197,24 @@ class HIRBuilder:
                 continue
             if isinstance(decl, ast.SnesRomDirective):
                 continue  # Skip snesrom directives, already processed
+            if isinstance(decl, ast.IncludeAsmStmt):
+                bank_num = None if self.auto_bank_mode else self.current_bank
+                # Resolve path relative to the including .r65 file so WLA-DX
+                # gets an unambiguous location regardless of where it's run.
+                resolved = self._resolve_include_asm_path(decl.path)
+                if resolved is None:
+                    searched = [str(self.source_dir)] + [str(p) for p in self.include_paths]
+                    raise HIRError(
+                        f"include_asm!: file not found: '{decl.path}'\n"
+                        f"  searched in: {', '.join(searched)}",
+                        source_loc=decl.source_loc,
+                    )
+                hir_decls.append(hir.HIRIncludeAsm(
+                    path=str(resolved),
+                    bank_number=bank_num,
+                    source_loc=decl.source_loc,
+                ))
+                continue
             if self._should_include_declaration(decl):
                 hir_decl = self._build_declaration(decl)
                 hir_decls.append(hir_decl)
@@ -561,8 +579,106 @@ class HIRBuilder:
         else:
             raise HIRError(f"Unknown declaration type: {type(decl).__name__}", source_loc=getattr(decl, 'source_loc', None))
 
+    def _resolve_include_asm_path(self, path: str) -> Optional[Path]:
+        """Resolve an include_asm! path relative to the source file or -I paths."""
+        candidate = (self.source_dir / path).resolve()
+        if candidate.exists() and candidate.is_file():
+            return candidate
+        for inc_dir in self.include_paths:
+            candidate = (inc_dir / path).resolve()
+            if candidate.exists() and candidate.is_file():
+                return candidate
+        return None
+
+    def _build_extern_function(self, func: ast.FunctionDecl) -> hir.HIRFunctionDecl:
+        """Build HIR for an `extern fn` declaration (no body).
+
+        The body lives in an asm file included via `include_asm!`. We still need
+        a complete signature (params, return type, bank, mode) so call sites can
+        be type-checked and lowered to JSR/JSL with correct argument passing.
+
+        Defaults to all-clobbered; user opts into preservation with
+        `#[preserves(...)]`. Near extern (`extern fn`) must inherit a concrete
+        bank from `#[bank(n)]`; auto-bank requires `extern far fn`.
+        """
+        processed_attrs = self.attr_processor.process_attributes(
+            func.attributes,
+            context='function'
+        )
+        attrs = self._extract_attributes(processed_attrs)
+        mode_attr = attrs['mode']
+        preserves_attr = attrs['preserves']
+        interrupt_attr = attrs['interrupt']
+        is_entry = attrs['is_entry']
+
+        if interrupt_attr is not None:
+            raise HIRError(
+                f"extern fn '{func.name}' cannot be declared `#[interrupt(...)]`",
+                source_loc=func.source_loc,
+                hint="interrupt handlers must have a body — implement the handler in R65 or use an entirely asm-side vector",
+            )
+        if is_entry:
+            raise HIRError(
+                f"extern fn '{func.name}' cannot be marked entry",
+                source_loc=func.source_loc,
+            )
+
+        if self.auto_bank_mode:
+            if not func.is_far:
+                raise HIRError(
+                    f"extern fn '{func.name}' in auto-bank mode must be declared `extern far fn`",
+                    source_loc=func.source_loc,
+                )
+            bank_attr = BankAttribute(name='bank', bank_number=None)
+        else:
+            bank_attr = BankAttribute(name='bank', bank_number=self.current_bank)
+
+        if mode_attr and mode_attr.databank != DataBankMode.NONE and not func.is_far:
+            raise HIRError(
+                f"extern fn '{func.name}' uses databank={mode_attr.databank.value} "
+                "but is not a far function; DBR management requires `extern far fn`.",
+                source_loc=func.source_loc,
+            )
+
+        self.symbol_table.enter_scope(ScopeKind.FUNCTION)
+        try:
+            hir_params = [self._build_parameter(p) for p in func.params]
+            self._validate_no_duplicate_register_bindings(hir_params, func.name)
+        finally:
+            self.symbol_table.exit_scope()
+
+        entry_m_mode = self._infer_entry_mode_and_validate(hir_params, func.name, func.source_loc)
+        ret_type = None
+        if func.return_type:
+            ret_type = self._resolve_function_return_type(func.return_type, entry_m_mode)
+        exit_m_mode = self._infer_exit_mode(ret_type)
+
+        func_symbol = self.symbol_table.lookup(func.name)
+        return hir.HIRFunctionDecl(
+            name=func.name,
+            is_far=func.is_far,
+            is_const=False,
+            is_extern=True,
+            parameters=hir_params,
+            return_type=ret_type,
+            body=None,
+            mode_attr=mode_attr,
+            preserves_attr=preserves_attr,
+            bank_attr=bank_attr,
+            interrupt_attr=None,
+            inline_attr=None,
+            is_entry=False,
+            symbol=func_symbol,
+            returns_status_flag=None,
+            entry_m_mode=entry_m_mode,
+            exit_m_mode=exit_m_mode,
+            source_loc=func.source_loc,
+        )
+
     def _build_function(self, func: ast.FunctionDecl) -> hir.HIRFunctionDecl:
         """Build HIR function from AST."""
+        if func.is_extern:
+            return self._build_extern_function(func)
         # Filter out snesrom attributes (they're program-level, not function-level)
         # This can happen due to parser ambiguity when #[snesrom(...)] is followed by function
         func_attrs = []
@@ -1160,6 +1276,8 @@ class HIRBuilder:
 
     def _build_static(self, static: ast.StaticDecl) -> hir.HIRStaticDecl:
         """Build HIR static declaration from AST."""
+        if static.is_extern:
+            return self._build_extern_static(static)
         # Process attributes
         processed_attrs = self.attr_processor.process_attributes(
             static.attributes,
@@ -1232,6 +1350,47 @@ class HIRBuilder:
         # Update symbol's definition to point to HIR node (not AST node)
         static_symbol.definition = hir_static
 
+        return hir_static
+
+    def _build_extern_static(self, static: ast.StaticDecl) -> hir.HIRStaticDecl:
+        """Build HIR for an `extern static` declaration.
+
+        Carries the declared type so address-of, indexing, and pointer math
+        type-check, but never gets allocated or emitted as data — the bytes
+        live in an asm file included via `include_asm!`. Storage attributes
+        (`#[ram]`, `#[zeropage]`, etc.) are not permitted: the asm file owns
+        placement.
+        """
+        if static.attributes:
+            raise HIRError(
+                f"extern static '{static.name}' cannot have storage attributes "
+                "— placement is owned by the included asm file",
+                source_loc=static.source_loc,
+            )
+        if static.var_type is None:
+            raise HIRError(
+                f"extern static '{static.name}' requires a type annotation",
+                source_loc=static.source_loc,
+            )
+        var_type = self.type_resolver.resolve_type(static.var_type)
+        static_symbol = self.symbol_table.lookup(static.name)
+        # The symbol resolves to a bare label in the included asm file —
+        # codegen's label-based ROM addressing path is the right vehicle for
+        # this whether the data is mutable or not.
+        static_symbol.rom_label = static.name
+
+        hir_static = hir.HIRStaticDecl(
+            name=static.name,
+            is_mutable=static.is_mut,
+            is_extern=True,
+            var_type=var_type,
+            initializer=None,
+            storage_attr=None,
+            bank_attr=None,
+            symbol=static_symbol,
+            source_loc=static.source_loc,
+        )
+        static_symbol.definition = hir_static
         return hir_static
 
     def _build_const(self, const: ast.ConstDecl) -> hir.HIRConstDecl:

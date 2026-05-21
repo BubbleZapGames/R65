@@ -493,6 +493,10 @@ class MemoryAllocator:
         auto_decls = []
 
         for decl in static_decls:
+            if getattr(decl, 'is_extern', False):
+                # extern statics own their address in the included asm file —
+                # no allocation, no symbol_gen emission.
+                continue
             if decl.storage_attr and decl.storage_attr.address is not None:
                 explicit_decls.append(decl)
             else:

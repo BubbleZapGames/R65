@@ -206,6 +206,8 @@ class MacroExpander:
                     name=item.name,
                     var_type=item.var_type,
                     initializer=new_init,
+                    is_extern=item.is_extern,
+                    doc=item.doc,
                     source_loc=item.source_loc
                 )
                 result.append(new_item)
@@ -262,7 +264,8 @@ class MacroExpander:
 
     def _expand_function(self, func: ast.FunctionDecl) -> ast.FunctionDecl:
         """Expand macros inside a function body."""
-        new_body = self._expand_block(func.body)
+        # extern fn has no body — nothing to expand
+        new_body = self._expand_block(func.body) if func.body is not None else None
         return ast.FunctionDecl(
             attributes=func.attributes,
             is_far=func.is_far,
@@ -271,7 +274,8 @@ class MacroExpander:
             return_type=func.return_type,
             body=new_body,
             source_loc=func.source_loc,
-            is_const=func.is_const
+            is_const=func.is_const,
+            is_extern=func.is_extern,
         )
 
     def _expand_block(self, block: ast.Block) -> ast.Block:

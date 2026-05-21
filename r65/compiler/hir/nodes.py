@@ -40,6 +40,17 @@ class HIRDeclaration(HIRNode):
     pass
 
 
+@dataclass
+class HIRIncludeAsm(HIRDeclaration):
+    """include_asm! directive — lowered to WLA-DX `.INCLUDE` at codegen.
+
+    Carries the bank context active at the point of the macro so codegen
+    can place the `.INCLUDE` inside the surrounding bank/section.
+    """
+    path: str = ""
+    bank_number: Optional[int] = None  # None = auto-bank mode
+
+
 # =============================================================================
 # Program Configuration
 # =============================================================================
@@ -177,6 +188,7 @@ class HIRFunctionDecl(HIRDeclaration):
     is_far: bool = False
     is_const: bool = False
     is_trait_method: bool = False  # True for trait impl methods (self passed in Y)
+    is_extern: bool = False  # `extern fn` — implemented in an included .s file
     parameters: List[HIRParameter] = field(default_factory=list)
     return_type: Optional[Any] = None  # Will be TypeInfo or None
     body: Optional['HIRBlock'] = None
@@ -208,6 +220,7 @@ class HIRStaticDecl(HIRDeclaration):
     """Static variable declaration."""
     name: str = ""
     is_mutable: bool = False
+    is_extern: bool = False  # `extern static` — data lives in an included .s file
     var_type: Any = None  # Will be TypeInfo
     initializer: Optional[HIRExpression] = None
 

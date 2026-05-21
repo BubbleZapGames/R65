@@ -185,8 +185,9 @@ class FunctionDecl(Declaration):
     name: str
     params: List[Parameter]
     return_type: Optional[Union[Type, NeverType]]
-    body: 'Block'
+    body: Optional['Block']  # None for extern fn declarations
     is_const: bool = False
+    is_extern: bool = False  # `extern fn` — body lives in an included .s file
     doc: Optional[str] = None
 
 
@@ -199,6 +200,7 @@ class StaticDecl(Declaration):
     name: str
     var_type: Optional[Type]  # None when type is inferred (e.g., include_bytes!)
     initializer: Optional[Expression]
+    is_extern: bool = False  # `extern static` — data lives in an included .s file
     doc: Optional[str] = None
 
 
@@ -353,6 +355,16 @@ class TypeAlias(Declaration):
 @dataclass
 class IncludeStmt(Declaration):
     """Include statement."""
+    path: str
+
+
+@dataclass
+class IncludeAsmStmt(Declaration):
+    """Include-assembly statement: `include_asm!("file.s")`.
+
+    Lowered to a WLA-DX `.INCLUDE "file.s"` directive at codegen time,
+    inheriting the surrounding bank/section.
+    """
     path: str
 
 

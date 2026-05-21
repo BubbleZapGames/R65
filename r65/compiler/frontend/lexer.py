@@ -43,6 +43,7 @@ class Lexer:
         # Keywords (explicit terminals in grammar)
         'CONTINUE': TokenType.KEYWORD,
         'INCLUDE': TokenType.KEYWORD,
+        'INCLUDE_ASM': TokenType.KEYWORD,
         'RETURN': TokenType.KEYWORD,
         'STRUCT': TokenType.KEYWORD,
         'STATIC': TokenType.KEYWORD,

@@ -63,11 +63,14 @@ class TestReservedKeywordErrors:
         assert exc.value.hint is not None
         assert "include!" in exc.value.hint
 
-    def test_extern(self):
-        """extern should produce a targeted error."""
-        with pytest.raises(ParseError) as exc:
+    def test_extern_fn_requires_no_body(self):
+        """extern fn declarations are body-less — using `{ }` is a parse error."""
+        # extern fn is supported (resolves to a symbol in an included .s file)
+        # but it must end in `;`, not have a body block.
+        with pytest.raises(ParseError):
             parse("extern fn test() { }")
-        assert "'extern'" in str(exc.value)
+        # Sanity: the body-less form parses cleanly.
+        parse("extern fn test();")
 
     def test_crate(self):
         """crate should produce a targeted error."""

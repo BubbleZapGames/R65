@@ -1049,6 +1049,7 @@ class MIRProgram:
     snesrom_config: Optional[Any] = None  # SnesRomConfig from #[snesrom(...)]
     rom_data_sections: List['ROMDataRef'] = field(default_factory=list)  # Array literal data
     trait_dispatch_info: Optional[dict] = None  # Trait dispatch tables from HIR
+    asm_includes: List[Any] = field(default_factory=list)  # HIRIncludeAsm list — emitted as .INCLUDE per bank
 
     def __repr__(self):
         return f"MIRProgram({len(self.functions)} functions, {len(self.statics)} statics)"

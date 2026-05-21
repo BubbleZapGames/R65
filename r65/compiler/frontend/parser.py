@@ -892,6 +892,81 @@ class ASTBuilder(Transformer):
         path = items[0].value.strip('"')  # Remove quotes
         return ast.IncludeStmt(path=path, source_loc=self._make_source_loc(tree.meta))
 
+    @v_args(tree=True)
+    def include_asm_stmt(self, tree):
+        """include_asm! statement: `include_asm!("file.s");`"""
+        items = self._filter_tokens(tree.children, keep_types={'STRING'})
+        path = items[0].value.strip('"')
+        return ast.IncludeAsmStmt(path=path, source_loc=self._make_source_loc(tree.meta))
+
+    @v_args(tree=True)
+    def extern_fn_decl(self, tree):
+        """Extern function declaration: `extern [far] fn name(...) -> ret;`"""
+        items = self._filter_tokens(tree.children, keep_types={'IDENT', 'FAR', 'INTEGER', 'STRING', 'BOOLEAN', 'REGISTER'})
+
+        doc, idx = self._collect_doc_comments(items, 0)
+        attrs, idx = self._collect_attributes(items, idx)
+
+        is_far = False
+        if idx < len(items) and isinstance(items[idx], LarkToken) and items[idx].type == 'FAR':
+            is_far = True
+            idx += 1
+
+        name = items[idx]
+        idx += 1
+
+        params = []
+        if idx < len(items) and isinstance(items[idx], list):
+            params = items[idx]
+            idx += 1
+
+        return_type = None
+        if idx < len(items):
+            return_type = items[idx]
+
+        return ast.FunctionDecl(
+            attributes=attrs,
+            is_far=is_far,
+            name=name.value if isinstance(name, LarkToken) else name,
+            params=params,
+            return_type=return_type,
+            body=None,
+            is_const=False,
+            is_extern=True,
+            doc=doc,
+            source_loc=self._make_source_loc(tree.meta)
+        )
+
+    @v_args(tree=True)
+    def extern_static_decl(self, tree):
+        """Extern static declaration: `extern static [mut] NAME: Type;`"""
+        items = self._filter_tokens(tree.children, keep_types={'IDENT', 'MUT', 'INTEGER', 'STRING', 'BOOLEAN', 'REGISTER'})
+
+        doc, idx = self._collect_doc_comments(items, 0)
+        attrs, idx = self._collect_attributes(items, idx)
+
+        is_mut = False
+        if idx < len(items) and isinstance(items[idx], LarkToken) and items[idx].type == 'MUT':
+            is_mut = True
+            idx += 1
+
+        name = items[idx]
+        idx += 1
+
+        var_type = items[idx]
+
+        return ast.StaticDecl(
+            attributes=attrs,
+            is_far=False,
+            is_mut=is_mut,
+            name=name.value if isinstance(name, LarkToken) else name,
+            var_type=var_type,
+            initializer=None,
+            is_extern=True,
+            doc=doc,
+            source_loc=self._make_source_loc(tree.meta)
+        )
+
     def stack_directive(self, items):
         """Stack directive: #[stack(lower, upper)]"""
         items = self._filter_tokens(items, keep_types={'INTEGER'})

@@ -19,6 +19,9 @@ start: (DOC_INNER | DOC_BLOCK_INNER)* item*
      | trait_decl
      | type_alias
      | include_stmt
+     | include_asm_stmt
+     | extern_fn_decl
+     | extern_static_decl
      | stack_directive
      | bank_directive
      | snesrom_directive
@@ -135,6 +138,17 @@ type_alias: TYPE IDENT "=" type_expr ";"
 
 // Include statement
 include_stmt: INCLUDE "!" "(" STRING ")"
+
+// Include assembly file - emits a WLA-DX .INCLUDE directive at this position
+// The asm file inherits the surrounding bank/section
+include_asm_stmt: INCLUDE_ASM "!" "(" STRING ")" ";"?
+
+// Extern function declaration - body-less; symbol resolved at link time
+// Defaults to all-clobbered; use #[preserves(...)] to opt into preservation
+extern_fn_decl: doc_comment* attribute* EXTERN FAR? FN IDENT "(" param_list? ")" return_type? ";"
+
+// Extern static declaration - data defined in an included asm file
+extern_static_decl: doc_comment* attribute* EXTERN STATIC MUT? IDENT ":" type_expr ";"
 
 // Macro definition
 // macro_rules! name($param:fragment, ...) { body }
@@ -479,7 +493,9 @@ type_list: type_expr ("," type_expr)* ","?
 // Keywords used in parser rules - priority .10 to match before IDENT
 // Order: longer keywords first to avoid partial matches
 INCLUDE_BYTES.10: /include_bytes\b/
+INCLUDE_ASM.10: /include_asm\b/
 CONTINUE.10: /continue\b/
+EXTERN.10: /extern\b/
 INCLUDE.10: /include\b/
 RETURN.10: /return\b/
 STRUCT.10: /struct\b/
@@ -532,7 +548,7 @@ FRAGMENT_TYPE.10: /expr\b/ | /ident\b/ | /literal\b/ | /ty\b/ | /reg\b/ | /tt\b/
 // Note: 'macro' removed - now a first-class keyword
 // Note: 'for' and 'in' removed - now first-class keywords for for loops
 // Note: 'impl' and 'self' removed - now first-class keywords for impl blocks
-KEYWORD.10: /abstract\b/ | /override\b/ | /unsized\b/ | /virtual\b/ | /typeof\b/ | /unsafe\b/ | /extern\b/ | /become\b/ | /async\b/ | /await\b/ | /where\b/ | /super\b/ | /yield\b/ | /crate\b/ | /final\b/ | /move\b/ | /priv\b/ | /Self\b/ | /box\b/ | /pub\b/ | /ref\b/ | /try\b/ | /use\b/ | /do\b/
+KEYWORD.10: /abstract\b/ | /override\b/ | /unsized\b/ | /virtual\b/ | /typeof\b/ | /unsafe\b/ | /become\b/ | /async\b/ | /await\b/ | /where\b/ | /super\b/ | /yield\b/ | /crate\b/ | /final\b/ | /move\b/ | /priv\b/ | /Self\b/ | /box\b/ | /pub\b/ | /ref\b/ | /try\b/ | /use\b/ | /do\b/
 
 // Booleans
 BOOLEAN.10: /true\b/ | /false\b/
@@ -618,7 +634,7 @@ DOLLAR: "$"
 // the contextual lexer needs to match register names as IDENT in certain parser contexts
 // (e.g., asm_named_arg: IDENT "=" ...). Actual disambiguation is via terminal priorities.
 // Note: Builtin functions (mul, div, SEP, REP, etc.) are NOT excluded - they are valid identifiers
-IDENT.1: /(?!(include_bytes|macro_rules|continue|include|return|struct|static|break|const|while|enum|impl|self|loop|type|else|near|let|mut|asm|far|fn|if|as|abstract|override|unsized|virtual|typeof|unsafe|extern|become|async|await|match|where|super|trait|yield|crate|final|move|priv|Self|box|dyn|for|mod|pub|ref|try|use|in|do|expr|ident|literal|ty|reg|tt|STATUS|DBR|PBR|bool|u16|i16|u8|i8|true|false|[ABXYDS])$)[a-zA-Z_][a-zA-Z0-9_]*/
+IDENT.1: /(?!(include_bytes|include_asm|macro_rules|continue|include|return|struct|static|break|const|while|enum|impl|self|loop|type|else|near|let|mut|asm|far|fn|if|as|abstract|override|unsized|virtual|typeof|unsafe|extern|become|async|await|match|where|super|trait|yield|crate|final|move|priv|Self|box|dyn|for|mod|pub|ref|try|use|in|do|expr|ident|literal|ty|reg|tt|STATUS|DBR|PBR|bool|u16|i16|u8|i8|true|false|[ABXYDS])$)[a-zA-Z_][a-zA-Z0-9_]*/
 
 // Imports and ignores
 %import common.ESCAPED_STRING

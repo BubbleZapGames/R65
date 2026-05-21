@@ -63,7 +63,7 @@ Currently unused but reserved for future implementation:
 | `await` | Await async value | Reserved (not planned for 65816) |
 | `move` | Move closure | Reserved (closures not planned) |
 | `ref` | Reference binding | Reserved (no lifetimes) |
-| `extern` | External linkage | Reserved for future FFI |
+| `extern` | External linkage | **In use** — `extern fn` / `extern static` for asm interop (see [Assembly Interop](#assembly-interop)) |
 | `unsafe` | Unsafe code block | Reserved (but **not used** - all R65 code has direct hardware access) |
 
 ## Strict Reserved Keywords (13)
@@ -92,6 +92,35 @@ Reserved by Rust for future use - we reserve them for compatibility:
 |---------|---------|
 | `far` | Far function call (JSL/RTL) or far pointer type |
 | `near` | Near function call (JSR/RTS) or near pointer type |
+
+## Assembly Interop
+
+`extern` declares a symbol implemented in an included `.s` file. Pair it with
+`include_asm!("file.s")` to bring the asm into the build.
+
+```rust
+// Brings the .s file's contents into the current bank/section
+include_asm!("vendor/sound.s");
+
+// Body-less declarations — symbols resolved at link time
+extern fn sound_tick(a @ A: u8) -> u8;
+extern far fn sound_play_song(id @ A: u8);
+extern static SONG_TABLE: [u8; 64];
+extern static mut SOUND_RAM: [u8; 256];
+```
+
+Rules:
+- `extern fn` is body-less and ends in `;`. A body block (`{ }`) is a parse error.
+- Defaults to all-clobbered. Add `#[preserves(X, Y)]` to assert what the asm
+  callee preserves — the compiler trusts the annotation.
+- `extern fn` lowers to `JSR symbol` (near, current bank); `extern far fn`
+  lowers to `JSL symbol` (24-bit).
+- `extern static` cannot carry storage attributes (`#[ram]`, `#[zeropage]`,
+  etc.) — the asm file owns placement. Reads/writes resolve to the bare label.
+- `include_asm!` paths resolve relative to the including `.r65` file (same
+  search rules as `include_bytes!`). The expansion lands inside the surrounding
+  `.BANK`/`.SECTION` window, so the included file should not carry its own
+  `.BANK` directives.
 
 ## Total Count
 

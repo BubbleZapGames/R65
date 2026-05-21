@@ -6,7 +6,7 @@ Main code generation orchestrator that transforms a complete MIR program
 into WLA-DX assembly output.
 """
 
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Any
 from r65.compiler.mir import MIRProgram, MIRFunction
 from r65.compiler.codegen.emitter import AssemblyEmitter
 from r65.compiler.codegen.memory_alloc import MemoryAllocator
@@ -240,6 +240,13 @@ class ProgramCodeGenerator:
         # `00` bytes execute as BRK.)
         needs_empty_handler = self._program_needs_interrupt_vectors(mir_program)
 
+        # Group include_asm! directives by bank for placement inside .BANK windows
+        asm_includes_by_bank: Dict[int, List[Any]] = {}
+        for inc in getattr(mir_program, 'asm_includes', []):
+            bank_for_inc = 0 if inc.bank_number is None else inc.bank_number
+            asm_includes_by_bank.setdefault(bank_for_inc, []).append(inc)
+            functions_by_bank.setdefault(bank_for_inc, [])  # ensure bank window opens
+
         # Generate code for each bank
         for bank_num in sorted(functions_by_bank.keys()):
             bank_functions = functions_by_bank[bank_num]
@@ -248,6 +255,10 @@ class ProgramCodeGenerator:
             # ROM data is emitted before code by symbol_gen and can leave assembler in different bank
             self.emitter.emit_section_header(f"Bank {bank_num}")
             self.emitter.emit_bank_directive(bank_num)
+
+            # WLA-DX .INCLUDE pulls the asm file contents into the current bank/section
+            for inc in asm_includes_by_bank.get(bank_num, []):
+                self.emitter.emit_directive(f'.INCLUDE "{inc.path}"')
 
             # Generate functions in this bank
             for mir_func in bank_functions:

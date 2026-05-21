@@ -32,6 +32,7 @@ from r65.compiler.hir.nodes import (
     HIREnumVariant,
     HIRTypeAlias,
     HIRImplDecl,
+    HIRIncludeAsm,
 
     # Statements
     HIRBlock,
@@ -125,6 +126,7 @@ __all__ = [
     'HIREnumVariant',
     'HIRTypeAlias',
     'HIRImplDecl',
+    'HIRIncludeAsm',
 
     # Statements
     'HIRBlock',

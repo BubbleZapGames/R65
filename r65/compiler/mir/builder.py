@@ -239,6 +239,8 @@ class MIRBuilder:
         # Create MIR program (keep HIR declarations for statics, etc.)
         # Include any synthetic statics from promoted aggregate locals
         all_statics = list(hir_program.statics) + self._promoted_statics
+        from r65.compiler.hir import HIRIncludeAsm
+        asm_includes = [d for d in hir_program.declarations if isinstance(d, HIRIncludeAsm)]
         return MIRProgram(
             functions=mir_functions,
             statics=all_statics,
@@ -249,7 +251,8 @@ class MIRBuilder:
             stack_attr=hir_program.stack_attr,
             snesrom_config=hir_program.snesrom_config,
             rom_data_sections=self._rom_data_sections,
-            trait_dispatch_info=hir_program.trait_dispatch_info
+            trait_dispatch_info=hir_program.trait_dispatch_info,
+            asm_includes=asm_includes,
         )
 
     def lower_function(self, hir_func: HIRFunctionDecl) -> MIRFunction:
@@ -2152,6 +2155,15 @@ class MIRBuilder:
         # Get storage attribute from symbol's definition
         if symbol.kind == SymbolKind.STATIC_VAR:
             static_decl = symbol.definition
+            # extern statics resolve to a label in an included .s file —
+            # route through the label path regardless of mutability.
+            if getattr(static_decl, 'is_extern', False):
+                return MemoryLocation(
+                    storage_type='rom',
+                    address=None,
+                    symbol=symbol,
+                    is_volatile=False,
+                )
             # Check if definition has storage_attr (HIR node)
             if hasattr(static_decl, 'storage_attr') and static_decl.storage_attr:
                 storage_attr = static_decl.storage_attr
