@@ -303,6 +303,32 @@ def test_extern_static_rejects_storage_attribute(tmp_with_asm):
         )
 
 
+def test_address_of_extern_static(tmp_with_asm):
+    """`&extern_static[i]` compiles without falling into the allocator path.
+
+    Earlier, `_emit_variable_address` required `mem_alloc.get_allocation()`
+    to return non-None, which failed on extern statics (they have no
+    allocation by design). Now it falls back to the `rom_label` path.
+    """
+    d, src_path = tmp_with_asm
+    asm = _compile(
+        '#[snesrom(name="T", lorom)]\n'
+        '#[stack(0x0100, 0x01FF)]\n'
+        'extern static PALETTE: [u8; 4];\n'
+        'include_asm!("helpers.s");\n'
+        'fn read(p: far *u8, idx @ Y: u16) -> u8 { A = p[Y]; return A; }\n'
+        '#[entry]\n'
+        'fn main() {\n'
+        '    let ptr: far *u8 = &PALETTE[0];\n'
+        '    A = read(ptr, 2);\n'
+        '}\n',
+        src_path,
+    )
+    # The label must appear in the address load — not a literal address.
+    assert "PALETTE" in asm
+    assert "JSR read" in asm
+
+
 def test_near_extern_cross_bank_call_rejected(tmp_with_asm):
     """Near `extern fn` declared in one bank cannot be called from another.
 

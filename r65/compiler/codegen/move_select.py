@@ -339,12 +339,16 @@ class MoveOperationSelector(BaseSelector):
     def _emit_variable_address(self, symbol, dest_loc, is_u16: bool, is_far_ptr: bool = False, offset: int = 0):
         """Emit code to store a variable's address, with optional byte offset for array indexing."""
         alloc = self.parent.mem_alloc.get_allocation(symbol)
-        if not alloc:
+        has_rom_label = hasattr(symbol, 'rom_label') and symbol.rom_label
+        # Extern statics have no allocation — their address lives in the .s
+        # file and is reached via rom_label. Only require alloc for the
+        # numeric-address fallback.
+        if not alloc and not has_rom_label:
             raise InstructionSelectionError(f"No allocation for symbol: {symbol.name}", source_loc=self.parent._current_source_loc)
 
         # For ROM data, use the label name instead of numeric address
         # ROM data has a rom_label attribute set during MIR building
-        if hasattr(symbol, 'rom_label') and symbol.rom_label:
+        if has_rom_label:
             addr_ref = f"{symbol.rom_label} + {offset}" if offset else symbol.rom_label
         else:
             addr_ref = f"${alloc.address + offset:04X}"
