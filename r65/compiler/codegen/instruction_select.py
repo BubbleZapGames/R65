@@ -1702,9 +1702,15 @@ class InstructionSelector:
                 hasattr(operand.symbol, 'rom_label') and
                 operand.symbol.rom_label and
                 operand.storage_type == 'rom'):
+                # Fold a non-zero compile-time offset into the label so
+                # `TABLE[3]` / `extern_static[3]` reads the right byte.
+                offset = getattr(operand, 'offset', 0) or 0
+                label = operand.symbol.rom_label
+                if offset:
+                    label = f"{label}+{offset}"
                 return PhysicalLocation(
                     kind=LocationKind.MEMORY,
-                    memory_label=operand.symbol.rom_label,
+                    memory_label=label,
                     size=1,  # Size determined by context
                     index_register=operand.index_register,
                     storage_type=operand.storage_type,
