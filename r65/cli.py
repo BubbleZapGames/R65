@@ -68,8 +68,9 @@ class TemplateManager:
         """Copy directory with template substitution."""
         for item in src.iterdir():
             # Skip hidden files (vim swap files, .DS_Store, .git, etc.) —
-            # they should never end up in a user's new project.
-            if item.name.startswith('.'):
+            # they should never end up in a user's new project. Exception:
+            # .gitattributes is a real project file we want to ship.
+            if item.name.startswith('.') and item.name != '.gitattributes':
                 continue
             if item.is_file():
                 # Read and substitute template variables
@@ -81,8 +82,8 @@ class TemplateManager:
                 if item.suffix == '.md':
                     # Keep README.md in project root
                     dst_item = dst.parent / item.name
-                elif item.name == 'Makefile':
-                    # Keep Makefile in project root
+                elif item.name in ('Makefile', '.gitattributes'):
+                    # Keep these in project root
                     dst_item = dst.parent / item.name
                 elif item.suffix == '.toml':
                     # Project-level config (r65-lint.toml, etc.) in project root

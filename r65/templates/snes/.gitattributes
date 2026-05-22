@@ -1,0 +1,2 @@
+# Highlight R65 source files as Rust
+*.r65 linguist-language=Rust
