@@ -1,2 +1,5 @@
 # Enforce LF line endings for all text files
 * text=auto eol=lf
+
+# Highlight R65 source files as Rust
+*.r65 linguist-language=Rust
