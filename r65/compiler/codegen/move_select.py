@@ -87,7 +87,10 @@ class MoveOperationSelector(BaseSelector):
 
         # Handle label references (string literals, etc.)
         if isinstance(src_operand, LabelRef):
-            self._emit_near_function_pointer(src_operand.label_name, dest_loc)
+            if is_far_ptr:
+                self._emit_far_function_pointer(src_operand.label_name, dest_loc)
+            else:
+                self._emit_near_function_pointer(src_operand.label_name, dest_loc)
             return
 
         # Handle immediate values (including symbolic addresses)

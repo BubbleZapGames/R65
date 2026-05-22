@@ -32,22 +32,26 @@ class StringValidator:
         Returns:
             ArrayTypeInfo with u8 element type
         """
-        # Check for inline string literal context (no context or *u8 pointer context)
-        # Inline string literals evaluate to *u8 (near pointer to ROM data)
+        # Check for inline string literal context (no context or *u8 pointer context).
+        # Inline string literals are promoted to an anonymous ROM byte array and
+        # evaluate to a pointer to that data. The pointer inherits the context's
+        # far-ness: a `far *u8` parameter yields a 24-bit far pointer, a near
+        # `*u8` (or no context) yields a near pointer.
         is_inline = False
+        is_far = False
         if context_type is None:
             is_inline = True
         elif isinstance(context_type, PointerTypeInfo):
-            if (not context_type.is_far and
-                isinstance(context_type.pointee_type, BasicTypeInfo) and
+            if (isinstance(context_type.pointee_type, BasicTypeInfo) and
                 context_type.pointee_type.name == 'u8'):
                 is_inline = True
+                is_far = context_type.is_far
 
         if is_inline:
             # Process escape sequences and validate characters
             byte_values = StringValidator.process_string_to_bytes(expr.value, expr.source_loc)
             expr.processed_bytes = byte_values
-            ptr_type = PointerTypeInfo(is_far=False, pointee_type=BasicTypeInfo('u8'))
+            ptr_type = PointerTypeInfo(is_far=is_far, pointee_type=BasicTypeInfo('u8'))
             expr.expr_type = ptr_type
             return ptr_type
 

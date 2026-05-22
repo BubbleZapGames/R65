@@ -366,6 +366,80 @@ fn test() {
         assert string_expr.expr_type.pointee_type.name == 'u8'
 
 
+class TestInlineStringFarPointer:
+    """Inline string literal in a `far *u8` context auto-promotes to a far pointer.
+
+    Regression coverage for console-style APIs that take `far *u8` parameters
+    (e.g. `console.println("Hello")`). The string is lowered to an anonymous
+    ROM byte array and its 24-bit address is passed by value.
+    """
+
+    def test_far_context_yields_far_pointer_type(self):
+        """A string in a `far *u8` let binding types as a far pointer."""
+        from r65.compiler.hir.types import PointerTypeInfo, BasicTypeInfo
+        source = '''
+fn test() {
+    let ptr: far *u8 = "test";
+}
+'''
+        hir = type_check(source)
+        func = hir.declarations[0]
+        string_expr = func.body.statements[0].initializer
+        assert isinstance(string_expr.expr_type, PointerTypeInfo)
+        assert string_expr.expr_type.is_far is True
+        assert string_expr.expr_type.pointee_type.name == 'u8'
+
+    def test_far_string_arg_compiles(self):
+        """A string literal passed to a `far *u8` parameter is accepted."""
+        source = '''
+fn print_msg(msg: far *u8) {}
+fn test() {
+    print_msg("Hi");
+}
+'''
+        # Previously raised: "String literal cannot be assigned to non-array
+        # type 'far *u8'". Should now compile cleanly.
+        hir, mir = compile_to_mir(source)
+        rom = mir.rom_data_sections[0]
+        assert rom.data == [0x48, 0x69]  # "Hi"
+        assert rom.label.startswith("__str_")
+
+    def test_far_string_arg_emits_24bit_pointer(self):
+        """Codegen stores a 3-byte far pointer including the `:label` bank byte."""
+        from r65.compiler.main import compile_string
+        source = '''
+fn takes_far(s: far *u8) -> u8 { return s[0]; }
+#[entry]
+fn main() -> ! {
+    A = takes_far("Hi\\0");
+    loop {}
+}
+'''
+        asm = compile_string(source)
+        # Far pointer: low (<), high (>), and bank (:) bytes of the str label.
+        assert "#<__str_0" in asm
+        assert "#>__str_0" in asm
+        assert "#:__str_0" in asm, "far string pointer must load the bank byte"
+        # The string bytes are emitted as ROM data.
+        assert ".db $48, $69, $00" in asm
+
+    def test_near_string_arg_stays_2_bytes(self):
+        """Near `*u8` context must NOT emit a bank byte (regression guard)."""
+        from r65.compiler.main import compile_string
+        source = '''
+fn takes_near(s: *u8) -> u8 { return s[0]; }
+#[entry]
+fn main() -> ! {
+    A = takes_near("Hi\\0");
+    loop {}
+}
+'''
+        asm = compile_string(source)
+        assert "#<__str_0" in asm
+        assert "#>__str_0" in asm
+        assert "#:__str_0" not in asm, "near string pointer must not load a bank byte"
+
+
 class TestExtendedASCII:
     """Extended ASCII (0x80-0xFF) support."""
 

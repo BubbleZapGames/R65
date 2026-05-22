@@ -1198,3 +1198,26 @@ class TestU16ToHex:
             0x7E2000: ascii_bytes("DEAD") + [0x00]
         }))
         assert result.success, f"Failures: {result.failures}"
+
+
+class TestInlineStringFarArg:
+    """Inline string literal auto-promoted to a far pointer at a far *u8 call site."""
+
+    def test_inline_string_passed_to_far_param(self, e2e):
+        """A bare string literal handed to strlen (far *u8) reads correctly at runtime."""
+        result = e2e.run(f'''
+            include!("{STRING_PATH}")
+
+            #[zeropage(0x10)]
+            static mut RESULT: [u8; 2];
+
+            #[entry]
+            fn main() {{
+                let mut len: u16 = strlen("Hello\\0");
+                RESULT[0] = len as u8;
+                RESULT[1] = (len >> 8) as u8;
+            }}
+        ''', ExpectedState(memory={
+            result_addr(): [0x05, 0x00]
+        }))
+        assert result.success, f"Failures: {result.failures}"
