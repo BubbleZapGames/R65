@@ -142,6 +142,7 @@ def main():
     from r65.tools.fontgen import register_parser as fontgen_register, fontgen_command
     from r65.tools.packer import register_parser as packer_register, packer_command
     from r65.tools.bmp2chr import register_parser as bmp2chr_register, bmp2chr_command
+    from r65.tools.brr import register_parser as brr_register, brr_command
 
     parser = argparse.ArgumentParser(
         prog='r65x',
@@ -154,6 +155,7 @@ examples:
   r65x fontgen --font path/to/font.ttf  Generate from custom font
   r65x packer pack data.bin -o data.lz5 -x lz5
   r65x bmp2chr sprites.bmp -o sprites.chr -b4
+  r65x brr encode sample.wav -o sample.brr
         """
     )
 
@@ -177,6 +179,9 @@ examples:
     # bmp2chr command
     bmp2chr_register(subparsers)
 
+    # brr command
+    brr_register(subparsers)
+
     args = parser.parse_args()
 
     if not args.command:
@@ -192,6 +197,8 @@ examples:
         packer_command(args)
     elif args.command == 'bmp2chr':
         bmp2chr_command(args)
+    elif args.command == 'brr':
+        brr_command(args)
 
 
 if __name__ == '__main__':
