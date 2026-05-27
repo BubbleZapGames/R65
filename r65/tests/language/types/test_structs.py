@@ -160,3 +160,131 @@ class TestStructArrayTypeCheck:
         hir_prog = hir_builder.build_program(ast_prog)
         type_checker = TypeChecker(hir_prog)
         type_checker.check()
+
+
+class TestNestedStructArrayCodegen:
+    """Codegen for an array-of-struct that is itself a field of a struct.
+
+    Regression: MIR lowering required the array base of `arr[i]` /
+    `arr[i].field` to be a bare static identifier, so it rejected
+    `BUF.sprites[i].x = v` (array is a struct field) with
+    "Array field assignment requires static array, got: HIRFieldAccess".
+    The fix resolves the array base through `resolve_array_base_memloc`,
+    folding the array field's offset into the base memory location.
+    """
+
+    def test_nested_array_field_const_index(self):
+        """BUF.sprites[3].x = v writes at struct_base + 3*elem + field_off."""
+        import re
+        from r65.compiler.main import compile_string
+
+        source = """
+            struct OamEntry { x: u8, y: u8, tile: u8, attr: u8 }
+            struct OamBuffer { sprites: [OamEntry; 128], ext: [u8; 32] }
+            #[lowram] static mut BUF: OamBuffer;
+
+            fn main() {
+                BUF.sprites[3].x = 10;
+                BUF.sprites[3].attr = 1;
+            }
+        """
+        asm = compile_string(source, "test.r65")
+        # sprites at field offset 0; sprites[3] = base + 3*4 = base + 12.
+        # x is +0, attr is +3. The two stores land 3 bytes apart.
+        addrs = [int(m, 16) for m in re.findall(r"STA \$([0-9A-Fa-f]{4})\b", asm)]
+        assert len(addrs) >= 2, f"expected absolute stores, got: {addrs}"
+        assert addrs[1] - addrs[0] == 3, f"attr should be 3 bytes past x: {addrs}"
+
+    def test_nested_u8_array_field_const_index(self):
+        """BUF.ext[2] = v must fold the ext field's offset into the address."""
+        import re
+        from r65.compiler.main import compile_string
+
+        source = """
+            struct OamEntry { x: u8, y: u8, tile: u8, attr: u8 }
+            struct OamBuffer { sprites: [OamEntry; 128], ext: [u8; 32] }
+            #[lowram] static mut BUF: OamBuffer;
+
+            fn main() {
+                BUF.sprites[0].x = 1;
+                BUF.ext[2] = 0xFF;
+            }
+        """
+        asm = compile_string(source, "test.r65")
+        # sprites[0].x is at the struct base; ext[2] is at base + 128*4 + 2 = base + 514.
+        addrs = [int(m, 16) for m in re.findall(r"STA \$([0-9A-Fa-f]{4})\b", asm)]
+        assert len(addrs) >= 2, f"expected absolute stores, got: {addrs}"
+        assert addrs[1] - addrs[0] == 514, f"ext[2] offset wrong: {addrs}"
+
+    def test_nested_array_field_variable_index(self):
+        """BUF.sprites[i].x = v uses X indexing off the resolved base."""
+        import re
+        from r65.compiler.main import compile_string
+
+        source = """
+            struct OamEntry { x: u8, y: u8, tile: u8, attr: u8 }
+            struct OamBuffer { sprites: [OamEntry; 128], ext: [u8; 32] }
+            #[lowram] static mut BUF: OamBuffer;
+
+            fn main() {
+                let i: u8 = 5;
+                BUF.sprites[i].x = 7;
+            }
+        """
+        asm = compile_string(source, "test.r65")
+        # i*4 scaled into X (two ASL), then an X-indexed store.
+        assert "ASL A" in asm
+        assert "TAX" in asm
+        assert re.search(r"STA \$[0-9A-Fa-f]{4},X", asm), \
+            "expected X-indexed absolute store for BUF.sprites[i].x"
+
+    def test_nested_array_field_reuses_x_index(self):
+        """Consecutive writes to the same struct-field element reuse X.
+
+        The scaled index (i * elem_size) in X is identical for every field of
+        BUF.sprites[i], so the second/third writes must not recompute it — even
+        though the array sits inside a struct.
+        """
+        from r65.compiler.main import compile_string
+
+        source = """
+            struct OamEntry { x: u8, y: u8, tile: u8, attr: u8 }
+            struct OamBuffer { sprites: [OamEntry; 128], ext: [u8; 32] }
+            #[lowram] static mut BUF: OamBuffer;
+
+            fn main() {
+                let i: u8 = 5;
+                BUF.sprites[i].x = 0;
+                BUF.sprites[i].y = 9;
+                BUF.sprites[i].attr = 3;
+            }
+        """
+        asm = compile_string(source, "test.r65")
+        # X computed exactly once (one i*4 scale = two ASL, one TAX) and shared.
+        assert asm.count("ASL A") == 2, f"expected one i*4 scale, got:\n{asm}"
+        assert asm.count("TAX") == 1, f"expected X loaded once, got:\n{asm}"
+
+    def test_different_field_arrays_dont_share_x_index(self):
+        """sprites[i] (elem 4) and ext[i] (elem 1) must not share X.
+
+        Distinct field paths get distinct reuse keys, so the scaled index is
+        never falsely reused across arrays of different element size.
+        """
+        from r65.compiler.main import compile_string
+
+        source = """
+            struct OamEntry { x: u8, y: u8, tile: u8, attr: u8 }
+            struct OamBuffer { sprites: [OamEntry; 128], ext: [u8; 32] }
+            #[lowram] static mut BUF: OamBuffer;
+
+            fn main() {
+                let i: u8 = 5;
+                BUF.sprites[i].x = 0;
+                BUF.ext[i] = 1;
+                BUF.sprites[i].y = 2;
+            }
+        """
+        asm = compile_string(source, "test.r65")
+        # sprites scale i*4 twice (recomputed after ext clobbers X) → 4 ASL.
+        # ext scales i*1 (no ASL). Reusing X here would corrupt addresses.
+        assert asm.count("ASL A") == 4, f"expected sprites scale recomputed, got:\n{asm}"

@@ -462,30 +462,25 @@ class ExpressionLowerer:
         index_operand = self.builder.lower_expression(expr.index)
         index_type = expr.index.expr_type  # Type of the index (u8 or u16)
 
-        if not isinstance(expr.array, HIRIdentifier):
-            raise MIRLoweringError(
-                f"Array indexing only supports identifiers, got: {type(expr.array)}",
-                source_loc=expr.source_loc
-            )
-
         # Check if this is pointer indexing (ptr[index]) vs array indexing (array[index])
         array_type = expr.array.expr_type
         if isinstance(array_type, PointerTypeInfo):
             # Pointer indexing: load through pointer with indirect addressing
             return self._lower_pointer_index(expr, index_operand, element_size, element_type, array_type)
 
-        # Regular array indexing
-        array_symbol = expr.array.symbol
+        # Regular array indexing — resolve the array base (a bare static array
+        # or an array that is a field of a statically-located struct).
+        base_memloc, reuse_base_key = self.builder.resolve_array_base_memloc(expr.array)
         result = self.ctx.alloc_vreg(element_type, "array_elem")
 
         if isinstance(index_operand, Immediate):
             return self._lower_constant_index(
-                result, array_symbol, index_operand.value, element_size, element_type
+                result, base_memloc, index_operand.value, element_size, element_type
             )
         else:
-            reuse_key = self.builder.x_index_reuse_key(array_symbol, expr.index)
+            reuse_key = self.builder.x_index_reuse_key(reuse_base_key, expr.index)
             return self._lower_variable_index(
-                result, array_symbol, index_operand, element_size, element_type,
+                result, base_memloc, index_operand, element_size, element_type,
                 index_type, reuse_key
             )
 
@@ -548,33 +543,31 @@ class ExpressionLowerer:
 
         return result
 
-    def _lower_constant_index(self, result, array_symbol, index_value, element_size, element_type):
+    def _lower_constant_index(self, result, base_memloc, index_value, element_size, element_type):
         """Lower constant array index with compile-time offset."""
         offset = index_value * element_size
-        base_memloc = self.builder.get_memory_location(array_symbol)
-        elem_memloc = self.builder._create_offset_memloc(base_memloc, offset, array_symbol)
+        elem_memloc = self.builder._create_offset_memloc(base_memloc, offset, base_memloc.symbol)
 
         self.emit(Load(dest=result, source=elem_memloc, type_info=element_type))
         return result
 
-    def _lower_variable_index(self, result, array_symbol, index_operand, element_size, element_type, index_type=None, reuse_key=None):
+    def _lower_variable_index(self, result, base_memloc, index_operand, element_size, element_type, index_type=None, reuse_key=None):
         """Lower variable array index with indexed addressing."""
         # Use the index type (not element type) for offset computation and X register load.
         # The index type determines the bit width: u16 indices must load as 16-bit
         # to avoid truncation when index >= 256.
         offset_type = index_type if index_type is not None else element_type
 
-        # Create indexed memory location.
-        # Use base_memloc.symbol — get_memory_location may have redirected
-        # array_symbol to a synthetic static (for promoted aggregate locals);
-        # using array_symbol here would lose that redirection.
-        base_memloc = self.builder.get_memory_location(array_symbol)
+        # Create indexed memory location. Preserve base_memloc.offset so an
+        # array that is a struct field (address=None, offset=field_offset)
+        # still resolves at codegen time.
         indexed_memloc = MemoryLocation(
             storage_type=base_memloc.storage_type,
             address=base_memloc.address,
             symbol=base_memloc.symbol,
             is_volatile=base_memloc.is_volatile,
-            index_register='X'
+            index_register='X',
+            offset=base_memloc.offset
         )
 
         # X holds index * element_size. Consecutive arr[i] accesses with the
@@ -764,13 +757,10 @@ class ExpressionLowerer:
         """
         array_index_expr = expr.base  # HIRArrayIndex
 
-        if not isinstance(array_index_expr.array, HIRIdentifier):
-            raise MIRLoweringError(
-                f"Array field access requires static array, got: {type(array_index_expr.array)}",
-                source_loc=expr.source_loc
-            )
-
-        array_symbol = array_index_expr.array.symbol
+        # Resolve the array base — a bare static array or an array that is a
+        # field of a statically-located struct (STRUCT.array_field[i].field).
+        base_memloc, reuse_base_key = self.builder.resolve_array_base_memloc(
+            array_index_expr.array)
         struct_type = array_index_expr.expr_type  # The struct type (element type of array)
         struct_size = self.builder._get_type_size(struct_type)
 
@@ -780,8 +770,7 @@ class ExpressionLowerer:
         if isinstance(index_operand, Immediate):
             # Constant index: compute offset at compile time
             total_offset = (index_operand.value * struct_size) + field_offset
-            base_memloc = self.builder.get_memory_location(array_symbol)
-            field_memloc = self.builder._create_offset_memloc(base_memloc, total_offset, array_symbol)
+            field_memloc = self.builder._create_offset_memloc(base_memloc, total_offset, base_memloc.symbol)
             self.emit(Load(dest=result, source=field_memloc, type_info=expr.expr_type))
         else:
             # Variable index. X holds index * struct_size (the field offset is
@@ -790,9 +779,8 @@ class ExpressionLowerer:
             # can reuse X (skip the recompute + Move) when the reuse cache
             # says X is still valid.
             reuse_key = self.builder.x_index_reuse_key(
-                array_symbol, array_index_expr.index)
+                reuse_base_key, array_index_expr.index)
 
-            base_memloc = self.builder.get_memory_location(array_symbol)
             if base_memloc.address is not None:
                 indexed_memloc = MemoryLocation(
                     storage_type=base_memloc.storage_type,

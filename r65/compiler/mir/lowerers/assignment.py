@@ -351,13 +351,10 @@ class AssignmentLowerer:
         """
         array_index_expr = field_access.base  # HIRArrayIndex
 
-        if not isinstance(array_index_expr.array, HIRIdentifier):
-            raise MIRLoweringError(
-                f"Array field assignment requires static array, got: {type(array_index_expr.array)}",
-                source_loc=self.builder._current_source_loc
-            )
-
-        array_symbol = array_index_expr.array.symbol
+        # Resolve the array base — a bare static array or an array that is a
+        # field of a statically-located struct (STRUCT.array_field[i].field = x).
+        base_memloc, reuse_base_key = self.builder.resolve_array_base_memloc(
+            array_index_expr.array)
         struct_type = array_index_expr.expr_type  # The struct type (element type of array)
         struct_size = self.builder._get_type_size(struct_type)
 
@@ -367,8 +364,7 @@ class AssignmentLowerer:
         if isinstance(index_operand, Immediate):
             # Constant index: compute offset at compile time
             total_offset = (index_operand.value * struct_size) + field_offset
-            base_memloc = self.builder.get_memory_location(array_symbol)
-            field_memloc = self.builder._create_offset_memloc(base_memloc, total_offset, array_symbol)
+            field_memloc = self.builder._create_offset_memloc(base_memloc, total_offset, base_memloc.symbol)
             self.emit(Store(source=value, dest=field_memloc, type_info=type_info))
         else:
             # Variable index. The scaled index (index * struct_size) goes in X;
@@ -377,9 +373,8 @@ class AssignmentLowerer:
             # `arr[i].a = ..; arr[i].b = ..` can reuse X (skip the recompute
             # and the Move) when the reuse cache says X is still valid.
             reuse_key = self.builder.x_index_reuse_key(
-                array_symbol, array_index_expr.index)
+                reuse_base_key, array_index_expr.index)
 
-            base_memloc = self.builder.get_memory_location(array_symbol)
             if base_memloc.address is not None:
                 indexed_memloc = MemoryLocation(
                     storage_type=base_memloc.storage_type,
@@ -435,16 +430,17 @@ class AssignmentLowerer:
         element_type = expr.expr_type
         element_size = self.builder._get_type_size(element_type)
 
-        # Get the base (array or pointer)
-        if not isinstance(array_index.array, HIRIdentifier):
-            raise MIRLoweringError(f"Array indexing only supports identifiers currently, got: {type(array_index.array)}", source_loc=expr.source_loc)
-
-        base_symbol = array_index.array.symbol
         base_type = array_index.array.expr_type
 
-        # Check if base is a pointer type (ptr[i] = x) vs array type (arr[i] = x)
+        # Check if base is a pointer type (ptr[i] = x) vs array type (arr[i] = x).
+        # The pointer path lowers array_index.array as a value expression, so it
+        # already supports a pointer that is itself a struct field.
         if isinstance(base_type, PointerTypeInfo):
             return self._lower_pointer_index_assignment(expr, value, base_type)
+
+        # Resolve the array base — a bare static array or an array that is a
+        # field of a statically-located struct (STRUCT.array_field[i] = x).
+        base_memloc, reuse_base_key = self.builder.resolve_array_base_memloc(array_index.array)
 
         # Lower index expression for array indexing
         index_operand = self.builder.lower_expression(array_index.index)
@@ -452,10 +448,10 @@ class AssignmentLowerer:
 
         # Calculate offset and create memory location
         if isinstance(index_operand, Immediate):
-            return self._lower_constant_index_assignment(value, base_symbol, index_operand.value, element_size, element_type)
+            return self._lower_constant_index_assignment(value, base_memloc, index_operand.value, element_size, element_type)
         else:
-            reuse_key = self.builder.x_index_reuse_key(base_symbol, array_index.index)
-            return self._lower_variable_index_assignment(value, base_symbol, index_operand, element_size, element_type, index_type, reuse_key)
+            reuse_key = self.builder.x_index_reuse_key(reuse_base_key, array_index.index)
+            return self._lower_variable_index_assignment(value, base_memloc, index_operand, element_size, element_type, index_type, reuse_key)
 
     def _lower_pointer_index_assignment(self, expr: HIRAssignment, value, pointer_type):
         """Lower assignment through indexed pointer (ptr[i] = x)."""
@@ -518,36 +514,34 @@ class AssignmentLowerer:
         ))
         return value
 
-    def _lower_constant_index_assignment(self, value, array_symbol, index_value, element_size, element_type):
+    def _lower_constant_index_assignment(self, value, base_memloc, index_value, element_size, element_type):
         """Lower constant array index assignment with compile-time offset."""
         offset = index_value * element_size
-        base_memloc = self.builder.get_memory_location(array_symbol)
 
         # Create offset memory location
-        elem_memloc = self.builder._create_offset_memloc(base_memloc, offset, array_symbol)
+        elem_memloc = self.builder._create_offset_memloc(base_memloc, offset, base_memloc.symbol)
 
         # Emit store to the element location
         self.emit(Store(source=value, dest=elem_memloc, type_info=element_type))
         return value
 
-    def _lower_variable_index_assignment(self, value, array_symbol, index_operand, element_size, element_type, index_type=None, reuse_key=None):
+    def _lower_variable_index_assignment(self, value, base_memloc, index_operand, element_size, element_type, index_type=None, reuse_key=None):
         """Lower variable array index assignment with indexed addressing."""
         # Use the index type (not element type) for offset computation and X register load.
         # The index type determines the bit width: u16 indices must load as 16-bit
         # to avoid truncation when index >= 256.
         offset_type = index_type if index_type is not None else element_type
 
-        # Create indexed memory location with X register.
-        # Use base_memloc.symbol — get_memory_location may have redirected
-        # array_symbol to a synthetic static (for promoted aggregate locals);
-        # using array_symbol here would lose that redirection.
-        base_memloc = self.builder.get_memory_location(array_symbol)
+        # Create indexed memory location with X register. Preserve
+        # base_memloc.offset so an array that is a struct field
+        # (address=None, offset=field_offset) still resolves at codegen time.
         indexed_memloc = MemoryLocation(
             storage_type=base_memloc.storage_type,
             address=base_memloc.address,
             symbol=base_memloc.symbol,
             is_volatile=base_memloc.is_volatile,
-            index_register='X'  # Mark as indexed with X
+            index_register='X',  # Mark as indexed with X
+            offset=base_memloc.offset
         )
 
         # X holds index * element_size. Consecutive arr[i] accesses with the

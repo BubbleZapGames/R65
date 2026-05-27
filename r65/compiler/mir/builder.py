@@ -1891,14 +1891,60 @@ class MIRBuilder:
             )
         else:
             # Address not known at MIR time (auto-allocated) -
-            # keep address=None and store offset for codegen resolution
+            # keep address=None and store offset for codegen resolution.
+            # Add to any existing base offset so nested aggregate accesses
+            # (e.g. STRUCT.inner_arr[i]) accumulate correctly.
             return MemoryLocation(
                 storage_type=base_memloc.storage_type,
                 address=None,
                 symbol=alloc_symbol,
                 is_volatile=base_memloc.is_volatile,
-                offset=offset
+                offset=base_memloc.offset + offset
             )
+
+    def resolve_array_base_memloc(self, array_expr):
+        """Resolve an array lvalue expression to (base_memloc, reuse_base_key).
+
+        Supports:
+          - HIRIdentifier: a bare static array symbol.
+          - HIRFieldAccess: an array that is a field of a statically-located
+            aggregate, e.g. STRUCT.array_field (including nested
+            STRUCT.inner.array_field). The field offset is folded into the
+            base memory location.
+
+        reuse_base_key is a stable, hashable identity for the array base — the
+        "array" half of an x-index reuse key (see x_index_reuse_key). It is
+        derived structurally, not from node identity, so two separate accesses
+        to the same array base (`s.arr[i].x = ..; s.arr[i].y = ..`) produce
+        equal keys and can share the scaled index in X. The scaled index
+        (index * element_size) is identical whether the array is top-level or a
+        struct field — the differing base address is folded into the absolute
+        address, leaving X reusable. Distinct field paths get distinct keys, so
+        same-struct arrays of different element size (sprites[i] vs ext[i])
+        never falsely share X. None disables reuse.
+        """
+        if isinstance(array_expr, HIRIdentifier):
+            sym = array_expr.symbol
+            # id(sym) preserves the exact pre-existing top-level key.
+            return self.get_memory_location(sym), id(sym)
+
+        if isinstance(array_expr, HIRFieldAccess) and not getattr(array_expr, 'auto_deref', False):
+            field_offset = array_expr.field_offset
+            if field_offset is None:
+                raise MIRLoweringError(
+                    f"Field offset not computed for array field: {array_expr.field_name}",
+                    source_loc=getattr(array_expr, 'source_loc', None)
+                )
+            base_memloc, base_key = self.resolve_array_base_memloc(array_expr.base)
+            offset_memloc = self._create_offset_memloc(
+                base_memloc, field_offset, base_memloc.symbol)
+            reuse_base_key = ('field', base_key, field_offset) if base_key is not None else None
+            return offset_memloc, reuse_base_key
+
+        raise MIRLoweringError(
+            f"Array base must be a static array or struct field, got: {type(array_expr)}",
+            source_loc=getattr(array_expr, 'source_loc', None)
+        )
 
     def _count_param_usages(self, hir_func: HIRFunctionDecl) -> Dict[int, int]:
         """
@@ -2081,22 +2127,28 @@ class MIRBuilder:
             return True
         return False
 
-    def x_index_reuse_key(self, array_symbol, index_hir):
+    def x_index_reuse_key(self, reuse_base_key, index_hir):
         """Reuse key for `array[index]` if it is safe to keep X live across
         consecutive accesses, else None.
 
+        `reuse_base_key` is the array-base identity from
+        resolve_array_base_memloc (an int for a top-level array, a tuple for a
+        struct-field array, or None to disable reuse).
+
         Conservative: the index must be a bare identifier bound to a
         variable/parameter (pure, no side effects, stable until explicitly
-        reassigned). Complex index expressions are never reused.
+        reassigned). Complex index expressions are never reused. The index
+        symbol id stays at position [1] so x_index_cache_invalidate_symbol can
+        clear the cache when the index variable is reassigned.
         """
-        if array_symbol is None or index_hir is None:
+        if reuse_base_key is None or index_hir is None:
             return None
         if not isinstance(index_hir, HIRIdentifier):
             return None
         sym = getattr(index_hir, 'symbol', None)
         if sym is None:
             return None
-        return (id(array_symbol), id(sym))
+        return (reuse_base_key, id(sym))
 
     def x_index_cache_hit(self, key) -> bool:
         return key is not None and self._x_index_cache == key
