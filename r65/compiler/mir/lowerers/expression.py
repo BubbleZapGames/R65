@@ -917,6 +917,15 @@ class ExpressionLowerer:
 
         Computes: base_address + index * element_size
 
+        Three array-base shapes are supported:
+          1. Bare static array: &ARR[i]
+          2. Static struct field array: &AGG.field[i] (incl. nested), folded
+             through resolve_array_base_memloc so the field offset rides on
+             the symbolic base.
+          3. Pointer-relative field array: &ptr.field[i] / &self.field[i] —
+             auto-deref field access. The base is a runtime pointer; the
+             field offset and scaled index are added to it at runtime.
+
         Args:
             expr: HIR address-of expression with HIRArrayIndex operand
 
@@ -926,21 +935,52 @@ class ExpressionLowerer:
         from r65.compiler.hir.types import ArrayTypeInfo, BasicTypeInfo
 
         array_index = expr.operand
-        if not isinstance(array_index.array, HIRIdentifier):
-            raise MIRLoweringError(
-                f"Address-of array index requires static array, got: {type(array_index.array)}",
-                source_loc=expr.source_loc
-            )
+        array_expr = array_index.array
 
-        array_symbol = array_index.array.symbol
-        self.builder.get_memory_location(array_symbol)  # Validate symbol has location
-
-        # Get element size
-        array_type = array_index.array.expr_type
+        # Element size from the array's type (same source as the read/write paths).
+        array_type = array_expr.expr_type
         if isinstance(array_type, ArrayTypeInfo):
             element_size = self.builder._get_type_size(array_type.element_type)
         else:
             element_size = 1
+
+        # Case 3: &ptr.field[index] — auto-deref field access over a pointer.
+        # The base address only exists at runtime, so emit a runtime add
+        # rather than a symbolic Immediate.
+        if (isinstance(array_expr, HIRFieldAccess) and
+                getattr(array_expr, 'auto_deref', False)):
+            return self._lower_addressof_array_index_via_pointer(
+                expr, array_expr, array_index.index, element_size
+            )
+
+        # Cases 1 and 2 share the symbolic-base path. For a struct-field array,
+        # walk the HIRFieldAccess chain summing field offsets so we end at the
+        # bare identifier (the static symbol) plus a single folded offset. We
+        # do this directly rather than via resolve_array_base_memloc because
+        # that helper bakes the field offset into the memloc's *address* (not
+        # its *offset* field) when the address is already known, leaving us no
+        # way to recover the per-field contribution for a symbolic Immediate.
+        base_offset = 0
+        cursor = array_expr
+        while (isinstance(cursor, HIRFieldAccess) and
+                not getattr(cursor, 'auto_deref', False)):
+            if cursor.field_offset is None:
+                raise MIRLoweringError(
+                    f"Field offset not computed for &{cursor.field_name}[..]",
+                    source_loc=expr.source_loc
+                )
+            base_offset += cursor.field_offset
+            cursor = cursor.base
+
+        if isinstance(cursor, HIRIdentifier):
+            array_symbol = cursor.symbol
+            self.builder.get_memory_location(array_symbol)
+        else:
+            raise MIRLoweringError(
+                f"Address-of array index requires a static array or struct field, "
+                f"got: {type(array_expr)}",
+                source_loc=expr.source_loc
+            )
 
         result = self.ctx.alloc_vreg(expr.expr_type, f"addr_of_{array_symbol.name}_elem")
 
@@ -949,7 +989,7 @@ class ExpressionLowerer:
 
         if isinstance(index_operand, Immediate):
             # Constant index: compute offset at compile time
-            offset = index_operand.value * element_size
+            offset = base_offset + index_operand.value * element_size
 
             # Create symbolic address with offset (resolved in codegen)
             addr_immediate = Immediate(offset)
@@ -959,10 +999,11 @@ class ExpressionLowerer:
             self.emit(Move(dest=result, source=addr_immediate, type_info=expr.expr_type))
         else:
             # Variable index: compute base + index * element_size at runtime
-            # First, load base address
+            # First, load base address (folded field offset rides on the symbol)
             base_addr = self.ctx.alloc_vreg(expr.expr_type, f"base_addr_{array_symbol.name}")
-            addr_immediate = Immediate(0)
+            addr_immediate = Immediate(base_offset)
             addr_immediate.symbol = array_symbol
+            addr_immediate.symbol_offset = base_offset
 
             self.emit(Move(dest=base_addr, source=addr_immediate, type_info=expr.expr_type))
 
@@ -1003,6 +1044,94 @@ class ExpressionLowerer:
         # bogus pointer (e.g. for ROM arrays in banks other than 0).
         result.symbol = array_symbol
 
+        return result
+
+    def _lower_addressof_array_index_via_pointer(
+        self, expr, field_access, index_expr, element_size
+    ):
+        """Lower &ptr.field[index] — pointer-relative array address.
+
+        Produces: base_ptr + field_offset + index * element_size, all at
+        runtime, since the pointer's value is only known dynamically.
+
+        field_access is an auto-deref HIRFieldAccess whose .base lowers to a
+        pointer vreg. element_size comes from the array field's element type.
+        """
+        from r65.compiler.hir.types import BasicTypeInfo
+
+        field_offset = field_access.field_offset or 0
+        ptr_type = expr.expr_type
+
+        result = self.ctx.alloc_vreg(
+            ptr_type, f"addr_of_{field_access.field_name}_elem"
+        )
+
+        # Lower base pointer once. Same lowering path that
+        # _lower_addressof_field_access uses for &ptr.field.
+        base_ptr = self.builder.lower_expression(field_access.base)
+
+        index_operand = self.builder.lower_expression(index_expr)
+
+        # Fast paths for constant index: fold everything into one immediate
+        # add (or a plain Move when total offset is zero, e.g. &self.field[0]
+        # with field at offset 0).
+        if isinstance(index_operand, Immediate):
+            total_offset = field_offset + index_operand.value * element_size
+            if total_offset == 0:
+                self.emit(Move(dest=result, source=base_ptr, type_info=ptr_type))
+            else:
+                self.emit(BinaryOp(
+                    dest=result,
+                    op='+',
+                    left=base_ptr,
+                    right=Immediate(total_offset),
+                    type_info=ptr_type
+                ))
+            return result
+
+        # Variable index: scale to byte offset, then add to (base + field_offset).
+        if element_size > 1:
+            offset_type = BasicTypeInfo('u16')
+            offset_vreg = self._compute_index_offset(
+                index_operand, element_size, offset_type
+            )
+        else:
+            offset_vreg = index_operand
+            # Match the u8→u16 widening done on the static-array path: a m16
+            # ADC against a 1-byte stack slot would read junk in the high byte.
+            if (isinstance(offset_vreg, VirtualRegister) and
+                    isinstance(offset_vreg.type_info, BasicTypeInfo) and
+                    offset_vreg.type_info.name in ('u8', 'i8')):
+                from r65.compiler.mir.nodes import TypeConvert
+                extended = self.ctx.alloc_vreg(BasicTypeInfo('u16'), "idx_ext")
+                self.emit(TypeConvert(
+                    dest=extended,
+                    source=offset_vreg,
+                    source_type=offset_vreg.type_info,
+                    target_type=BasicTypeInfo('u16')
+                ))
+                offset_vreg = extended
+
+        # Fold the field offset into the base pointer first so the final add
+        # is a single (vreg + vreg) op — no triple-add MIR node exists.
+        if field_offset != 0:
+            shifted = self.ctx.alloc_vreg(ptr_type, "ptr_field_base")
+            self.emit(BinaryOp(
+                dest=shifted,
+                op='+',
+                left=base_ptr,
+                right=Immediate(field_offset),
+                type_info=ptr_type
+            ))
+            base_ptr = shifted
+
+        self.emit(BinaryOp(
+            dest=result,
+            op='+',
+            left=base_ptr,
+            right=offset_vreg,
+            type_info=ptr_type
+        ))
         return result
 
     def _lower_addressof_field_access(self, expr: HIRAddressOf) -> VirtualRegister:

@@ -288,3 +288,179 @@ class TestNestedStructArrayCodegen:
         # sprites scale i*4 twice (recomputed after ext clobbers X) → 4 ASL.
         # ext scales i*1 (no ASL). Reusing X here would corrupt addresses.
         assert asm.count("ASL A") == 4, f"expected sprites scale recomputed, got:\n{asm}"
+
+
+class TestAddressOfNestedArrayElement:
+    """Address-of an array element when the array is a struct field.
+
+    Regression: MIR lowering of `&array[i]` required the array operand to be
+    a bare static identifier (HIRIdentifier). `&self.sprites[0]` in a method
+    impl, and `&AGG.field[i]` on a static aggregate, both failed with
+    "Address-of array index requires static array, got: HIRFieldAccess".
+    The fix routes static struct fields through resolve_array_base_memloc
+    (folding the field offset into the symbolic base) and handles the
+    auto-deref pointer case with a runtime add against the lowered base
+    pointer.
+    """
+
+    def test_addressof_static_struct_field_array_const(self):
+        """&AGG.field[k] folds field offset + k*elem into the symbolic address."""
+        from r65.compiler.main import compile_string
+
+        # Pinning BUF makes the immediate addresses predictable: BUF=$1000,
+        # sprites at field offset 0 → sprites[2] = $1008,
+        # ext at field offset 128*4=512 → ext[3] = $1000+515 = $1203.
+        source = """
+            struct OamEntry { x: u8, y: u8, tile: u8, attr: u8 }
+            struct OamBuffer { sprites: [OamEntry; 128], ext: [u8; 32] }
+            #[lowram(0x1000)] static mut BUF: OamBuffer;
+            #[zeropage] static mut P: *OamEntry;
+            #[zeropage] static mut E: *u8;
+
+            fn main() {
+                P = &BUF.sprites[2];
+                E = &BUF.ext[3];
+            }
+        """
+        asm = compile_string(source, "test.r65")
+        # Address-of must emit a single immediate load of the folded address,
+        # not an ASL/CLC/ADC sequence for the constant index.
+        assert "LDA #$1008" in asm, \
+            f"expected #$1008 (BUF+0+2*4) for &BUF.sprites[2]:\n{asm}"
+        assert "LDA #$1203" in asm, \
+            f"expected #$1203 (BUF+512+3) for &BUF.ext[3]:\n{asm}"
+        assert "ASL" not in asm, \
+            f"constant index should not emit a runtime scale:\n{asm}"
+
+    def test_addressof_static_struct_field_array_variable(self):
+        """&AGG.field[i] with a variable index uses base+scaled_index."""
+        from r65.compiler.main import compile_string
+
+        # Pin BUF + ext to make the field-offset add visible as a literal.
+        # ext sits at field offset 128*4 = 512 = $0200. With element_size 1
+        # there's no ASL — just (BUF+512) loaded as the base then added to i.
+        source = """
+            struct OamEntry { x: u8, y: u8, tile: u8, attr: u8 }
+            struct OamBuffer { sprites: [OamEntry; 128], ext: [u8; 32] }
+            #[lowram(0x1000)] static mut BUF: OamBuffer;
+            #[zeropage] static mut PTR: *u8;
+
+            fn main() {
+                let i: u8 = 5;
+                PTR = &BUF.ext[i];
+            }
+        """
+        asm = compile_string(source, "test.r65")
+        # Base address = BUF + ext field offset = $1000 + 512 = $1200.
+        # If the field offset were dropped, we'd see #$1000 instead.
+        assert "LDA #$1200" in asm, \
+            f"expected base #$1200 (BUF+ext_offset) for &BUF.ext[i]:\n{asm}"
+
+    def test_addressof_pointer_field_array_const_zero(self):
+        """&self.field[0] with field offset 0 is just the self pointer."""
+        from r65.compiler.main import compile_string
+
+        source = """
+            struct OamEntry { x: u8, y: u8, tile: u8, attr: u8 }
+            struct OamBuffer { sprites: [OamEntry; 128], ext: [u8; 32] }
+            #[lowram] static mut BUF: OamBuffer;
+
+            impl OamBuffer {
+                fn first(*self) -> *OamEntry {
+                    return &self.sprites[0];
+                }
+            }
+        """
+        asm = compile_string(source, "test.r65")
+        # field_offset=0, index=0 → no CLC/ADC added by the address-of itself.
+        # (The method body has no other arithmetic, so the lowered &self.sprites[0]
+        # collapses to passing self through.)
+        body = asm.split("OamBuffer__first:")[1].split("RTS")[0]
+        assert "ADC" not in body, \
+            f"&self.sprites[0] should not emit ADC (offset 0):\n{body}"
+
+    def test_addressof_pointer_field_array_const_nonzero(self):
+        """&self.ext[k] adds field_offset + k*elem to the pointer at runtime."""
+        from r65.compiler.main import compile_string
+
+        # ext sits at offset 128*4 = 512 within OamBuffer, so &self.ext[3]
+        # is self + 515. The constant must appear as a single immediate add.
+        source = """
+            struct OamEntry { x: u8, y: u8, tile: u8, attr: u8 }
+            struct OamBuffer { sprites: [OamEntry; 128], ext: [u8; 32] }
+
+            impl OamBuffer {
+                fn ext3(*self) -> *u8 {
+                    return &self.ext[3];
+                }
+            }
+        """
+        asm = compile_string(source, "test.r65")
+        body = asm.split("OamBuffer__ext3:")[1].split("RTS")[0]
+        # 128 * 4 + 3 = 515 = $0203. m16 ADC with the full 16-bit immediate.
+        assert "ADC #$0203" in body, \
+            f"expected single add of #$0203 (=512+3) to self ptr:\n{body}"
+
+    def test_addressof_pointer_field_array_variable(self):
+        """&self.sprites[i] with variable i: base_ptr + i*4 (no field offset add)."""
+        from r65.compiler.main import compile_string
+
+        # sprites is the first field (offset 0), so only the scaled-index add
+        # should remain — no constant fold for a zero field offset.
+        source = """
+            struct OamEntry { x: u8, y: u8, tile: u8, attr: u8 }
+            struct OamBuffer { sprites: [OamEntry; 128], ext: [u8; 32] }
+
+            impl OamBuffer {
+                fn at(*self, i @ Y: u16) -> *OamEntry {
+                    return &self.sprites[i];
+                }
+            }
+        """
+        asm = compile_string(source, "test.r65")
+        body = asm.split("OamBuffer__at:")[1].split("RTS")[0]
+        # i*4 scaled (two ASL) + one add of the result to the base pointer.
+        assert body.count("ASL") == 2, \
+            f"expected i*4 scale (two ASL) for &self.sprites[i]:\n{body}"
+        # No constant-offset add: field offset is 0 for sprites.
+        assert "ADC #$00" not in body, \
+            f"unexpected zero-offset add for offset-0 field:\n{body}"
+
+    def test_addressof_loop_walks_array_field(self):
+        """The original repro: walk a pointer through a struct-field array.
+
+        Regression check for /tmp/t_alts.r65 — `&self.sprites[0]` and
+        `&self.ext[0]` as the seed of a pointer-walk loop. Pre-fix this raised
+        "Address-of array index requires static array, got: HIRFieldAccess".
+        """
+        from r65.compiler.main import compile_string
+
+        source = """
+            struct OamEntry { x: u8, y: u8, tile: u8, attr: u8 }
+            struct OamBuffer { sprites: [OamEntry; 128], ext: [u8; 32] }
+            #[lowram] static mut oam_buffer: OamBuffer;
+
+            impl OamBuffer {
+                fn clear_a(*self) {
+                    let mut p: *OamEntry = &self.sprites[0];
+                    for n in 0..128 {
+                        (*p).x = 0;
+                        (*p).y = 240;
+                        (*p).tile = 0;
+                        (*p).attr = 0;
+                        p = p + 1;
+                    }
+                    let mut e: *u8 = &self.ext[0];
+                    for i in 0..32 {
+                        *e = 0;
+                        e = e + 1;
+                    }
+                }
+            }
+        """
+        asm = compile_string(source, "test.r65")
+        # ext lives at field offset 128*4 = 512 = $0200; the seed pointer for
+        # the second loop must add that constant to self once before the loop.
+        # (The first loop seeds at offset 0, so no constant add there.)
+        assert "ADC #$0200" in asm, \
+            f"expected ext field-offset add (#$0200) before second loop:\n{asm}"
