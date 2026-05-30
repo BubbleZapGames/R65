@@ -364,7 +364,7 @@ class FunctionCodeGenerator:
                         # mode-changing operations, it will exit in the
                         # same mode as our expected mode.
                         if self._back_edge_may_change_mode(
-                            mir_func, pred_id, expected_is_m16
+                            mir_func, pred_id, expected_is_m16, reg_alloc
                         ):
                             force_mode = True
                             break
@@ -530,7 +530,8 @@ class FunctionCodeGenerator:
         return order
 
     def _back_edge_may_change_mode(
-        self, mir_func: MIRFunction, pred_id: int, expected_is_m16: bool
+        self, mir_func: MIRFunction, pred_id: int, expected_is_m16: bool,
+        reg_alloc=None
     ) -> bool:
         """
         Check if a back-edge predecessor might exit in a different mode
@@ -548,6 +549,7 @@ class FunctionCodeGenerator:
         from r65.compiler.mir.nodes import (
             BinaryOp, UnaryOp, Compare, Return, TypeConvert, Call,
             TraitDispatch, LoadIndirect, Load, Store, VirtualRegister,
+            Immediate as MIRImmediate,
         )
         from r65.compiler.codegen.type_utils import get_type_size
 
@@ -566,26 +568,85 @@ class FunctionCodeGenerator:
         # Operations on u16 values switch to m16; returns may switch for
         # return value setup. Calls can leave mode in any state.
         #
-        # Exception: operations targeting X/Y hardware registers (INX/DEX/INY/DEY,
-        # CPX/CPY) don't touch accumulator mode even though they're u16.
-        # At MIR level, X/Y-targeted ops may use VirtualRegisters with
-        # register_hint='X'/'Y' (not yet lowered to HardwareRegister).
+        # Exception: operations targeting X/Y hardware registers don't touch
+        # accumulator mode even though they're u16 — but only when codegen
+        # actually emits INX/DEX/INY/DEY (or CPX/CPY). For BinaryOp the
+        # INC/DEC path requires the (possibly pointer-scaled) immediate to
+        # be exactly 1; otherwise codegen emits TXA/TYA + CLC + ADC + TAX/TAY
+        # which switches A to m16. CPX/CPY always preserves mode.
         from r65.compiler.mir.nodes import HardwareRegister
 
-        def _is_xy(operand):
-            """Check if operand targets X or Y (HW register or hinted vreg)."""
+        def _xy_register(operand):
+            """If `operand` will resolve to X or Y at runtime, return the name; else None.
+
+            Mirrors what InstructionSelector's INC/DEC fast path checks:
+              - HardwareRegister: trust its name.
+              - VirtualRegister: must be ALLOCATED to X or Y, not merely hinted.
+                A hint='X' vreg that the allocator spilled to stack / scratch /
+                A would NOT take INC/INX path in codegen.
+
+            Returns None when allocation is unknown (no reg_alloc passed, or
+            vreg not yet allocated) — caller treats unknown as not-X/Y, which
+            is conservative (forces a possibly-redundant SEP at the loop head).
+            """
             if isinstance(operand, HardwareRegister):
-                return operand.name in ('X', 'Y')
+                return operand.name if operand.name in ('X', 'Y') else None
             if isinstance(operand, VirtualRegister):
-                return operand.register_hint in ('X', 'Y')
-            return False
+                if reg_alloc is None:
+                    return None
+                loc = reg_alloc.allocations.get(operand.id)
+                if loc is not None and loc.is_hw() and loc.hw_register in ('X', 'Y'):
+                    return loc.hw_register
+                return None
+            return None
+
+        def _is_xy(operand):
+            return _xy_register(operand) is not None
+
+        def _get_pointer_elem_size(type_info):
+            """Mirror of InstructionSelector._get_pointer_element_size."""
+            if hasattr(type_info, 'pointee_type') and type_info.pointee_type is not None:
+                from r65.compiler.hir.unified_type_utils import get_unified_type_size
+                try:
+                    return get_unified_type_size(type_info.pointee_type)
+                except Exception:
+                    return 0
+            return 0
+
+        def _binary_op_preserves_a_mode(instr):
+            """True iff codegen for this BinaryOp emits INX/INY/DEX/DEY.
+
+            Mirrors the INC/DEC fast-path in InstructionSelector.select_binary_op:
+            requires op +/-, immediate RHS that scales to exactly 1, and
+            dest == left both resolving to the same X or Y register.
+            """
+            if instr.op not in ('+', '-'):
+                return False
+            dest_reg = _xy_register(instr.dest)
+            if dest_reg is None:
+                return False
+            if not isinstance(instr.right, MIRImmediate):
+                return False
+            # Apply pointer-element-size scaling (matches codegen).
+            elem_size = _get_pointer_elem_size(instr.type_info)
+            scaled = instr.right.value * elem_size if elem_size > 1 else instr.right.value
+            if scaled != 1:
+                return False  # Will use TXA/TYA + ADC, switches to m16
+            # left and dest must resolve to the SAME register for the INC/DEC
+            # in-place pattern. _xy_register handles the hw/vreg→allocation
+            # resolution uniformly.
+            return _xy_register(instr.left) == dest_reg
 
         for instr in pred_block.instructions:
-            if isinstance(instr, (BinaryOp, UnaryOp)):
+            if isinstance(instr, BinaryOp):
                 if instr.type_info and get_type_size(instr.type_info) >= 2:
-                    # INX/DEX/INY/DEY: dest is X or Y — no mode change
-                    if _is_xy(instr.dest):
+                    if _binary_op_preserves_a_mode(instr):
                         continue
+                    return True
+            elif isinstance(instr, UnaryOp):
+                if instr.type_info and get_type_size(instr.type_info) >= 2:
+                    # UnaryOp ops are '!', '~', '-' — none emit INX/INY.
+                    # Even with X/Y dest the codegen uses m16 arithmetic.
                     return True
             elif isinstance(instr, Compare):
                 if instr.type_info and get_type_size(instr.type_info) >= 2:
