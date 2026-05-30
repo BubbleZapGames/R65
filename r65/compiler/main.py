@@ -302,7 +302,7 @@ def compile_source(source: str, filename: str, output_file: str = None,
 
         # Build MIR
         if verbose:
-            log(f"  [6/8] Building MIR...")
+            log(f"  [6/9] Building MIR...")
         from r65.compiler.codegen.abi_model import ABIKind
         mir_abi_kind = abi_model.kind if abi_model else ABIKind.DEFAULT
         mir_builder = MIRBuilder(abi_kind=mir_abi_kind)
@@ -310,7 +310,7 @@ def compile_source(source: str, filename: str, output_file: str = None,
 
         # Check for unsafe recursion
         if verbose:
-            log(f"  [7/8] Checking for unsafe recursion...")
+            log(f"  [7/9] Checking for unsafe recursion...")
         from r65.compiler.analysis import RecursionChecker
         from r65.compiler.errors import get_diagnostics
         recursion_checker = RecursionChecker(mir_program)
@@ -325,14 +325,30 @@ def compile_source(source: str, filename: str, output_file: str = None,
                 print(f"  hint: {diag.hint}", file=sys.stderr)
         analysis_diagnostics.clear()
 
-        # Generate assembly
+        # Generate assembly. Pass output_file=None to defer disk writes until
+        # after the stack-usage analyzer in step 9 has had a chance to fail.
         if verbose:
-            log(f"  [8/8] Generating assembly...")
+            log(f"  [8/9] Generating assembly...")
         codegen = ProgramCodeGenerator()
-        assembly = codegen.generate(mir_program, output_file=output_file, opt_level=opt_level, debug=debug,
+        assembly = codegen.generate(mir_program, output_file=None, opt_level=opt_level, debug=debug,
                                     disable_scratch_params=disable_scratch_params,
                                     disable_loop_promotion=disable_loop_promotion,
                                     abi_model=abi_model)
+
+        # Static stack-usage bound: walk the (acyclic) call graph and refuse
+        # to write the ROM if the high-water mark exceeds the declared
+        # #[stack(...)] region (default $0100..$01FF, 256 bytes).
+        if verbose:
+            log(f"  [9/9] Analyzing stack usage...")
+        from r65.compiler.analysis.stack_usage import analyze_stack_usage
+        stack_budget = analyze_stack_usage(mir_program)
+        if verbose:
+            log(f"      Stack: {stack_budget.total}/{stack_budget.capacity} bytes "
+                f"(sync {stack_budget.entry_use}, irq {stack_budget.interrupt_extra})")
+
+        # Stack-usage check passed — commit assembly + sidecar files to disk.
+        if output_file:
+            codegen.write_outputs(output_file, debug=debug)
 
         # Print codegen warnings (always printed, not gated by quiet mode)
         if codegen.warnings:
@@ -488,7 +504,14 @@ def compile_string(source: str, filename: str = "<string>", abi_model=None,
     get_diagnostics().clear()  # Clear analysis warnings for test path
 
     codegen = ProgramCodeGenerator()
-    return codegen.generate(mir_program, abi_model=abi_model)
+    assembly = codegen.generate(mir_program, abi_model=abi_model)
+
+    # Static stack-usage budget check — same gate as the CLI's step 9/9.
+    # Runs after generate() so the codegen_*-populated fields are live.
+    from r65.compiler.analysis.stack_usage import analyze_stack_usage
+    analyze_stack_usage(mir_program)
+
+    return assembly
 
 
 def main():

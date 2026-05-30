@@ -404,6 +404,13 @@ class FunctionCodeGenerator:
             self.emit_epilogue(mir_func, reg_alloc)
             instr_selector.control_flow_selector._emit_return_instruction()
 
+        # Record region-spill high-water for the static stack-usage analyzer.
+        # StackStateTracker.reset() runs per-block but the peak survives, so
+        # this is the function-wide max across all PHA/PHX/PHY/PHD displacements.
+        mir_func.codegen_max_region_spill_bytes = (
+            instr_selector.call_selector.region_state.stack_tracker.peak_displacement
+        )
+
         # Blank line after function
         self.emitter.emit_blank_line()
 

@@ -221,21 +221,34 @@ class StackStateTracker:
 
     At any point: actual_SP = frame_SP - displacement.
     All stack-relative addresses need +displacement adjustment.
+
+    Also records the peak (high-water) displacement seen across the
+    tracker's lifetime — used by the static stack-usage analyzer to bound
+    region-spill cost per function. `reset()` clears current displacement
+    (block boundary) but preserves the peak.
     """
 
-    __slots__ = ('_displacement',)
+    __slots__ = ('_displacement', '_peak')
 
     def __init__(self):
         self._displacement: int = 0
+        self._peak: int = 0
 
     @property
     def displacement(self) -> int:
         """Current SP displacement (bytes pushed since frame base)."""
         return self._displacement
 
+    @property
+    def peak_displacement(self) -> int:
+        """Max displacement observed since construction (survives reset)."""
+        return self._peak
+
     def push(self, n_bytes: int) -> None:
         """Record n_bytes pushed onto stack (PHx, PHA for args)."""
         self._displacement += n_bytes
+        if self._displacement > self._peak:
+            self._peak = self._displacement
 
     def pop(self, n_bytes: int) -> None:
         """Record n_bytes popped from stack (PLx, cleanup).
@@ -251,5 +264,5 @@ class StackStateTracker:
         return static_offset + self._displacement
 
     def reset(self) -> None:
-        """Reset displacement to 0 (new block boundary)."""
+        """Reset displacement to 0 (new block boundary). Peak survives."""
         self._displacement = 0

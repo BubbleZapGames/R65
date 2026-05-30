@@ -42,6 +42,12 @@ class ProgramCodeGenerator:
         self.func_gen: Optional[ProgramFunctionGenerator] = None
         self.warnings: List[str] = []
         self.debug_info: Optional[DebugInfoCollector] = None
+        # Last-run state, retained so callers can defer file writes (e.g. to
+        # run the stack-usage analyzer between assembly emission and disk I/O)
+        # and replay them via write_outputs().
+        self._last_assembly: Optional[str] = None
+        self._last_mir_program: Optional[MIRProgram] = None
+        self._last_final_nodes: Optional[list] = None
 
     def generate(self, mir_program: MIRProgram, output_file: Optional[str] = None,
                  opt_level: int = 1, debug: bool = False,
@@ -292,8 +298,10 @@ class ProgramCodeGenerator:
         # Phase 6.5: Trait dispatch tables (jump tables and wrapper functions)
         self._emit_trait_dispatch_tables(mir_program)
 
-        # Stack depth analysis (post-codegen, uses codegen_frame_size/codegen_prologue_bytes)
-        self._analyze_stack_depth(mir_program)
+        # Stack-usage check is now main.py step [9/9] — it consumes the
+        # codegen_*-populated MIRFunctions and raises CodegenError on
+        # overflow (vs. this in-codegen pass's print-only warnings).
+        # self._analyze_stack_depth(mir_program)  # superseded by stack_usage
 
         # Phase 7: ROM data sections (for array literal initialization)
         self._emit_rom_data_sections(mir_program)
@@ -331,19 +339,34 @@ class ProgramCodeGenerator:
         # Convert nodes to assembly string
         assembly = emit_nodes(final_nodes)
 
+        # Retain so callers can defer disk I/O (run the stack-usage analyzer
+        # between emit and write) and later call write_outputs().
+        self._last_assembly = assembly
+        self._last_mir_program = mir_program
+        self._last_final_nodes = final_nodes
+
         # Write to file if specified
         if output_file:
-            with open(output_file, 'w') as f:
-                f.write(assembly)
-
-            # Generate linkfile alongside assembly
-            self._generate_linkfile(output_file)
-
-        # Generate debug file if requested
-        if debug and output_file:
-            self._generate_debug_file(mir_program, final_nodes, output_file)
+            self.write_outputs(output_file, debug=debug)
 
         return assembly
+
+    def write_outputs(self, output_file: str, debug: bool = False) -> None:
+        """Write the most recent generate() result to disk.
+
+        Splits the file I/O from generate() so callers can interpose checks
+        (e.g. stack-usage analysis) between assembly emission and writes.
+        Must be called after a successful generate().
+        """
+        if self._last_assembly is None:
+            raise RuntimeError("write_outputs() called before generate()")
+        with open(output_file, 'w') as f:
+            f.write(self._last_assembly)
+        self._generate_linkfile(output_file)
+        if debug and self._last_mir_program is not None and self._last_final_nodes is not None:
+            self._generate_debug_file(
+                self._last_mir_program, self._last_final_nodes, output_file
+            )
 
     # ========================================================================
     # Helper Methods

@@ -1022,6 +1022,7 @@ class MIRFunction:
     codegen_prologue_bytes: int = 0       # Bytes pushed by prologue (preserves, DBR, etc.)
     codegen_max_live_frame_bytes_at_calls: int = 0  # Max live locals at any call site
     codegen_frame_dead_before_calls: bool = False    # True if frame was partially deallocated
+    codegen_max_region_spill_bytes: int = 0  # Peak PHA/PHX/PHY region-spill depth across calls
 
     def __repr__(self):
         return f"MIRFunction({self.name}, {len(self.blocks)} blocks)"
