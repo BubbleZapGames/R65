@@ -1616,6 +1616,10 @@ class CallInstructionSelector(BaseSelector):
                 self._ensure_m8_mode("8-bit A for zero-ext scratch param")
                 if arg_loc.is_hw('A'):
                     pass  # Already in A low byte
+                elif arg_loc.is_hw('X'):
+                    self._emit_transfer('X', 'A')
+                elif arg_loc.is_hw('Y'):
+                    self._emit_transfer('Y', 'A')
                 elif isinstance(arg.value, MIRImmediate):
                     self._emit_load_immediate('A', arg.value.value & 0xFF)
                 else:
@@ -1633,6 +1637,17 @@ class CallInstructionSelector(BaseSelector):
                     if current_mode != 16:
                         self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "16-bit A for scratch param")
                         self.parent.emitter.emit_accu_mode(16)
+                    self.emitter.emit_instr(Opcode.STA_DP, Address(scratch_addr),
+                                           f"Scratch param ${scratch_addr:02X}")
+                    self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "Restore 8-bit A")
+                    self.parent.emitter.emit_accu_mode(8)
+                elif arg_loc.is_hw('X') or arg_loc.is_hw('Y'):
+                    # Source is 16-bit X or Y: switch to m16 so TXA/TYA
+                    # transfers the full 16-bit register into A.
+                    self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "16-bit A for scratch param")
+                    self.parent.emitter.emit_accu_mode(16)
+                    src_reg = 'X' if arg_loc.is_hw('X') else 'Y'
+                    self._emit_transfer(src_reg, 'A')
                     self.emitter.emit_instr(Opcode.STA_DP, Address(scratch_addr),
                                            f"Scratch param ${scratch_addr:02X}")
                     self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "Restore 8-bit A")
