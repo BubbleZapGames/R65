@@ -351,6 +351,25 @@ class AssignmentLowerer:
         """
         array_index_expr = field_access.base  # HIRArrayIndex
 
+        # Pointer-deref'd array base (`self.sprites[i].field = v` via
+        # auto-deref, or `(*p)[i].field = v`). resolve_array_base_memloc
+        # only handles statics; emit_pointer_deref_array_access folds the
+        # outer (array within struct) and inner (target field) offsets
+        # into Y and stores indirect through the underlying pointer.
+        deref = self.builder.try_pointer_deref_array_base(array_index_expr.array)
+        if deref is not None:
+            ptr_expr, base_field_offset = deref
+            self.builder.emit_pointer_deref_array_access(
+                ptr_expr=ptr_expr,
+                index_expr=array_index_expr.index,
+                element_size=self.builder._get_type_size(array_index_expr.expr_type),
+                element_type=array_index_expr.expr_type,
+                const_offset=base_field_offset + field_offset,
+                result_type=type_info,
+                is_load=False, source=value,
+            )
+            return value
+
         # Resolve the array base — a bare static array or an array that is a
         # field of a statically-located struct (STRUCT.array_field[i].field = x).
         base_memloc, reuse_base_key = self.builder.resolve_array_base_memloc(
@@ -437,6 +456,23 @@ class AssignmentLowerer:
         # already supports a pointer that is itself a struct field.
         if isinstance(base_type, PointerTypeInfo):
             return self._lower_pointer_index_assignment(expr, value, base_type)
+
+        # Pointer-deref'd array base (`self.bytes[i] = v` via auto-deref,
+        # or `(*p)[i] = v`). Folds the outer field offset into Y and stores
+        # indirect through the pointer (see emit_pointer_deref_array_access).
+        deref = self.builder.try_pointer_deref_array_base(array_index.array)
+        if deref is not None:
+            ptr_expr, base_field_offset = deref
+            self.builder.emit_pointer_deref_array_access(
+                ptr_expr=ptr_expr,
+                index_expr=array_index.index,
+                element_size=element_size,
+                element_type=element_type,
+                const_offset=base_field_offset,
+                result_type=element_type,
+                is_load=False, source=value,
+            )
+            return value
 
         # Resolve the array base — a bare static array or an array that is a
         # field of a statically-located struct (STRUCT.array_field[i] = x).

@@ -1946,6 +1946,129 @@ class MIRBuilder:
             source_loc=getattr(array_expr, 'source_loc', None)
         )
 
+    def try_pointer_deref_array_base(self, array_expr):
+        """Recognise `(*p).arr` / `(*p)` array bases that need indirect codegen.
+
+        Returns `(ptr_expr, base_field_offset)` when *array_expr* is a
+        pointer-deref'd array — either an auto_deref ``HIRFieldAccess``
+        (`self.arr[..]`) or an explicit ``HIRDereference`` (`(*p)[..]`).
+        Returns ``None`` for any other shape (caller falls through to the
+        static-base path via :py:meth:`resolve_array_base_memloc`).
+        """
+        if isinstance(array_expr, HIRFieldAccess) and array_expr.auto_deref:
+            base_field_offset = (
+                array_expr.field_offset
+                if array_expr.field_offset is not None
+                else 0
+            )
+            return array_expr.base, base_field_offset
+        if isinstance(array_expr, HIRDereference):
+            return array_expr.pointer, 0
+        return None
+
+    def emit_pointer_deref_array_access(
+        self,
+        *,
+        ptr_expr,
+        index_expr,
+        element_size: int,
+        element_type,
+        const_offset: int,
+        result_type,
+        is_load: bool,
+        source=None,
+        dest=None,
+    ):
+        """Emit a Load/StoreIndirect against a pointer-deref'd array element.
+
+        Used by both lowerers when :py:meth:`resolve_array_base_memloc`
+        can't fold the base into a ``MemoryLocation`` because the array is
+        reached through a pointer (auto-deref `self.arr[i]` or explicit
+        `(*p)[i]`). Folds the compile-time `const_offset` (= outer field
+        offset within the pointee struct + any inner ``.field`` offset
+        within the element) and the runtime ``index * element_size`` into
+        Y, then emits the indirect instruction against the pointer.
+
+        Args:
+            ptr_expr: HIR node yielding the pointer (e.g. ``self`` for
+                auto-deref, the operand of an explicit ``*p``).
+            index_expr: HIR expression for the array index.
+            element_size: Byte size of one array element.
+            element_type: Element type, passed to :func:`compute_scaled_index`
+                so it can widen narrow indices before scaling.
+            const_offset: Compile-time byte offset to add to the base
+                address — outer field + any inner field offset.
+            result_type: ``type_info`` for the emitted Load/Store; usually
+                equals ``element_type`` for plain element access, or the
+                field type for ``arr[i].field`` access.
+            is_load: ``True`` to emit ``LoadIndirect``, ``False`` to emit
+                ``StoreIndirect``.
+            source: For stores, the value being written.
+            dest: For loads, the destination vreg (caller-allocated so it
+                carries the right type metadata).
+
+        Returns:
+            ``dest`` (for loads) or ``source`` (for stores).
+        """
+        from r65.compiler.mir.lowerers.multiply import compute_scaled_index
+        from r65.compiler.mir.nodes import (
+            BinaryOp, HardwareRegister, Immediate, LoadIndirect, Move,
+            StoreIndirect,
+        )
+        from r65.compiler.hir.types import BasicTypeInfo, PointerTypeInfo
+
+        ptr_vreg = self.lower_expression(ptr_expr)
+        ptr_type = ptr_expr.expr_type
+        is_far = isinstance(ptr_type, PointerTypeInfo) and ptr_type.is_far
+
+        index_operand = self.lower_expression(index_expr)
+
+        # Fully constant index: fold the whole byte offset, no Y needed.
+        if isinstance(index_operand, Immediate):
+            total_offset = const_offset + index_operand.value * element_size
+            if is_load:
+                self.emit(LoadIndirect(
+                    dest=dest, pointer=ptr_vreg, is_far=is_far,
+                    type_info=result_type, offset=total_offset,
+                ))
+            else:
+                self.emit(StoreIndirect(
+                    source=source, pointer=ptr_vreg, is_far=is_far,
+                    type_info=result_type, offset=total_offset,
+                ))
+            return dest if is_load else source
+
+        # Variable index → Y = scaled_index + const_offset. memory_select
+        # doesn't combine an explicit `offset` with an existing
+        # index_register, so the constant lives inside the Y value.
+        # compute_scaled_index widens narrow indices to u16 and handles
+        # non-power-of-2 sizes, always returning a u16 operand.
+        scaled = compute_scaled_index(
+            index_operand, element_size, element_type, self.ctx, self.emit,
+        )
+        u16 = BasicTypeInfo('u16')
+        if const_offset != 0:
+            sum_vreg = self.ctx.alloc_vreg(u16, 'arr_off')
+            self.emit(BinaryOp(
+                dest=sum_vreg, left=scaled, right=Immediate(const_offset),
+                op='+', type_info=u16,
+            ))
+            y_source = sum_vreg
+        else:
+            y_source = scaled
+        self.emit(Move(dest=HardwareRegister('Y'), source=y_source, type_info=u16))
+        if is_load:
+            self.emit(LoadIndirect(
+                dest=dest, pointer=ptr_vreg, is_far=is_far,
+                index_register='Y', type_info=result_type, offset=0,
+            ))
+        else:
+            self.emit(StoreIndirect(
+                source=source, pointer=ptr_vreg, is_far=is_far,
+                index_register='Y', type_info=result_type, offset=0,
+            ))
+        return dest if is_load else source
+
     def _count_param_usages(self, hir_func: HIRFunctionDecl) -> Dict[int, int]:
         """
         Count how many times each parameter symbol is used in the function body.

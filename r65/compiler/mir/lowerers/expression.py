@@ -468,6 +468,23 @@ class ExpressionLowerer:
             # Pointer indexing: load through pointer with indirect addressing
             return self._lower_pointer_index(expr, index_operand, element_size, element_type, array_type)
 
+        # Pointer-deref'd array base (`self.bytes[i]` via auto-deref, or
+        # `(*p)[i]`). Folds the outer field offset into Y and loads indirect
+        # through the pointer (see emit_pointer_deref_array_access).
+        deref = self.builder.try_pointer_deref_array_base(expr.array)
+        if deref is not None:
+            ptr_expr, base_field_offset = deref
+            result = self.ctx.alloc_vreg(element_type, "deref_arr_elem")
+            return self.builder.emit_pointer_deref_array_access(
+                ptr_expr=ptr_expr,
+                index_expr=expr.index,
+                element_size=element_size,
+                element_type=element_type,
+                const_offset=base_field_offset,
+                result_type=element_type,
+                is_load=True, dest=result,
+            )
+
         # Regular array indexing — resolve the array base (a bare static array
         # or an array that is a field of a statically-located struct).
         base_memloc, reuse_base_key = self.builder.resolve_array_base_memloc(expr.array)
@@ -756,6 +773,22 @@ class ExpressionLowerer:
         Computes: array_base + (index * struct_size) + field_offset
         """
         array_index_expr = expr.base  # HIRArrayIndex
+
+        # Pointer-deref'd array base (`self.sprites[i].field` via auto-deref,
+        # or `(*p)[i].field`). Folds outer and inner field offsets into Y
+        # and loads indirect through the pointer.
+        deref = self.builder.try_pointer_deref_array_base(array_index_expr.array)
+        if deref is not None:
+            ptr_expr, base_field_offset = deref
+            return self.builder.emit_pointer_deref_array_access(
+                ptr_expr=ptr_expr,
+                index_expr=array_index_expr.index,
+                element_size=self.builder._get_type_size(array_index_expr.expr_type),
+                element_type=array_index_expr.expr_type,
+                const_offset=base_field_offset + field_offset,
+                result_type=expr.expr_type,
+                is_load=True, dest=result,
+            )
 
         # Resolve the array base — a bare static array or an array that is a
         # field of a statically-located struct (STRUCT.array_field[i].field).
