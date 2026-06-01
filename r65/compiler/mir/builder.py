@@ -1951,19 +1951,32 @@ class MIRBuilder:
 
         Returns `(ptr_expr, base_field_offset)` when *array_expr* is a
         pointer-deref'd array — either an auto_deref ``HIRFieldAccess``
-        (`self.arr[..]`) or an explicit ``HIRDereference`` (`(*p)[..]`).
+        (`self.arr[..]`) or an explicit ``HIRDereference`` (`(*p)[..]`),
+        possibly wrapped in intermediate static (non-auto_deref)
+        ``HIRFieldAccess`` nodes. The latter handles chained shapes like
+        ``self.outer.inner_arr[..]`` where the pointer-deref happens at an
+        inner field-access (`.outer`) and the array is reached through
+        further inline struct fields (`.inner_arr`); each wrapper's
+        ``field_offset`` is folded into the returned constant.
+
         Returns ``None`` for any other shape (caller falls through to the
         static-base path via :py:meth:`resolve_array_base_memloc`).
         """
-        if isinstance(array_expr, HIRFieldAccess) and array_expr.auto_deref:
-            base_field_offset = (
-                array_expr.field_offset
-                if array_expr.field_offset is not None
-                else 0
-            )
-            return array_expr.base, base_field_offset
-        if isinstance(array_expr, HIRDereference):
-            return array_expr.pointer, 0
+        offset = 0
+        node = array_expr
+        # Peel non-deref'd HIRFieldAccess nodes, summing each field_offset
+        # into the running constant. Stops at the first auto_deref'd
+        # field-access (the pointer is its `.base`) or an explicit
+        # HIRDereference, or bails out (returns None) for a purely static
+        # chain so the static path keeps its existing handling.
+        while isinstance(node, HIRFieldAccess) and not node.auto_deref:
+            offset += node.field_offset if node.field_offset is not None else 0
+            node = node.base
+        if isinstance(node, HIRFieldAccess) and node.auto_deref:
+            own = node.field_offset if node.field_offset is not None else 0
+            return node.base, offset + own
+        if isinstance(node, HIRDereference):
+            return node.pointer, offset
         return None
 
     def emit_pointer_deref_array_access(
