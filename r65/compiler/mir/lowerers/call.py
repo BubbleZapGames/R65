@@ -140,8 +140,8 @@ class CallLowerer:
         if return_type:
             # Skip vreg allocation for tuple returns - lower_multi_assignment handles
             # tuple destructuring directly from A, X, Y registers
-            from r65.compiler.hir.types import TupleTypeInfo
-            if isinstance(return_type, TupleTypeInfo):
+            from r65.compiler.hir.types import MultiReturnTypeInfo
+            if isinstance(return_type, MultiReturnTypeInfo):
                 is_tuple_return = True
             else:
                 call_name = func_decl.name if func_decl else "indirect_call"
@@ -358,8 +358,8 @@ class CallLowerer:
         # Allocate virtual register for return value
         returns = []
         if func_decl.return_type:
-            from r65.compiler.hir.types import TupleTypeInfo
-            if not isinstance(func_decl.return_type, TupleTypeInfo):
+            from r65.compiler.hir.types import MultiReturnTypeInfo
+            if not isinstance(func_decl.return_type, MultiReturnTypeInfo):
                 result_vreg = self.ctx.alloc_vreg(
                     func_decl.return_type,
                     f"call_{mangled_name}_result"
@@ -458,8 +458,8 @@ class CallLowerer:
         returns = []
         return_type = call_expr.expr_type if hasattr(call_expr, 'expr_type') else None
         if return_type:
-            from r65.compiler.hir.types import TupleTypeInfo
-            if isinstance(return_type, TupleTypeInfo):
+            from r65.compiler.hir.types import MultiReturnTypeInfo
+            if isinstance(return_type, MultiReturnTypeInfo):
                 pass  # Tuple returns handled by caller
             elif return_type != BasicTypeInfo('void'):
                 result_vreg = self.ctx.alloc_vreg(

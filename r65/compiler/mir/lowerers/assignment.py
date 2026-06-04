@@ -13,7 +13,7 @@ from r65.compiler.hir import (
     HIRFieldAccess, HIRArrayIndex, HIRDereference, HIRStatusFlagAccess, HIRBooleanLiteral,
     HIRTypeCast, HIRIntegerLiteral,
 )
-from r65.compiler.hir.types import TupleTypeInfo
+from r65.compiler.hir.types import MultiReturnTypeInfo
 from r65.compiler.mir.nodes import (
     VirtualRegister, HardwareRegister, Immediate, MemoryLocation,
     Move, Store, StoreIndirect, BinaryOp, StatusFlagSet, Push, Pull,
@@ -158,9 +158,9 @@ class AssignmentLowerer:
         # lower_function_call returns None (it skips vreg allocation for tuple returns).
         # The first element of the tuple is in the A register.
         if value is None:
-            from r65.compiler.hir.types import TupleTypeInfo
+            from r65.compiler.hir.types import MultiReturnTypeInfo
             value_type = getattr(expr.value, 'expr_type', None)
-            if isinstance(value_type, TupleTypeInfo):
+            if isinstance(value_type, MultiReturnTypeInfo):
                 value = HardwareRegister('A')
 
         # Lower target
@@ -695,7 +695,7 @@ class AssignmentLowerer:
 
         # Get the tuple type from the expression
         value_type = expr.value.expr_type
-        if not isinstance(value_type, TupleTypeInfo):
+        if not isinstance(value_type, MultiReturnTypeInfo):
             raise MIRLoweringError(f"Multi-assignment requires tuple type, got: {value_type}", source_loc=expr.source_loc)
 
         num_elements = len(value_type.element_types)

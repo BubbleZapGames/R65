@@ -158,16 +158,16 @@ def get_return_registers(return_type, entry_m_mode=None):
     instead of X, which avoids TAX and allows more direct value flow.
 
     Args:
-        return_type: The function's return type (TupleTypeInfo or other)
+        return_type: The function's return type (MultiReturnTypeInfo or other)
         entry_m_mode: The function's entry M mode (ModeState.M8/M16 or None)
 
     Returns:
         List of register names in order: ['A', 'B', 'X', 'Y'] or ['A', 'X', 'Y']
     """
-    from r65.compiler.hir.types import TupleTypeInfo, BasicTypeInfo
+    from r65.compiler.hir.types import MultiReturnTypeInfo, BasicTypeInfo
     from r65.compiler.typeck.processor_mode import ModeState
 
-    if (isinstance(return_type, TupleTypeInfo)
+    if (isinstance(return_type, MultiReturnTypeInfo)
             and len(return_type.element_types) >= 2
             and _is_8bit_type(return_type.element_types[1])
             and entry_m_mode != ModeState.M16):

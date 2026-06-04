@@ -1044,8 +1044,8 @@ class ClobberRegionAnalyzer:
         return_regs = get_return_registers(callee_return_type, callee_entry_mode)
 
         # Determine how many registers the callee actually sets from its return type
-        from r65.compiler.hir.types import TupleTypeInfo
-        if isinstance(callee_return_type, TupleTypeInfo):
+        from r65.compiler.hir.types import MultiReturnTypeInfo
+        if isinstance(callee_return_type, MultiReturnTypeInfo):
             num_returns = len(callee_return_type.element_types)
         else:
             # Non-tuple: single return value in A

@@ -18,7 +18,7 @@ from r65.compiler.hir import (
     HIRStaticDecl, HIRConstDecl, HIRTypeAlias,
     HIRMatchExpression, HIRPattern, HIRLiteralPattern, HIREnumPattern, HIRWildcardPattern, HIRIdentifierPattern, HIROrPattern,
     HIRBlockExpression, HIRIfExpression, HIRLoopExpression,
-    BasicTypeInfo, TypeInfo, SymbolKind, NeverTypeInfo, TupleTypeInfo,
+    BasicTypeInfo, TypeInfo, SymbolKind, NeverTypeInfo, MultiReturnTypeInfo,
     RegisterLetBinding, ArrayTypeInfo, StructTypeInfo, EnumTypeInfo,
     HIRError,
 )
@@ -937,7 +937,7 @@ class TypeChecker:
                 # This allows `let x @ X = 100;` to work - literal 100 infers as u16
                 init_type = self.check_expression(stmt.initializer, context_type=register_type)
                 # Handle tuple: use first element type
-                if isinstance(init_type, TupleTypeInfo):
+                if isinstance(init_type, MultiReturnTypeInfo):
                     init_type = init_type.element_types[0]
                 # Validate the inferred type is valid for the register
                 if isinstance(init_type, BasicTypeInfo) and self._is_valid_register_type(reg_name, init_type.name):
@@ -959,7 +959,7 @@ class TypeChecker:
         elif stmt.initializer:
             # No explicit type — infer from initializer expression
             init_type = self.check_expression(stmt.initializer)
-            if isinstance(init_type, TupleTypeInfo):
+            if isinstance(init_type, MultiReturnTypeInfo):
                 init_type = init_type.element_types[0]
             var_type = init_type
             inferred_from_initializer = True
@@ -985,7 +985,7 @@ class TypeChecker:
         if stmt.initializer and not inferred_from_initializer:
             init_type = self.check_expression(stmt.initializer, var_type)
             # Handle tuple-to-scalar: let x: u8 = tuple_func() drops extra return values
-            if isinstance(init_type, TupleTypeInfo) and not isinstance(var_type, TupleTypeInfo):
+            if isinstance(init_type, MultiReturnTypeInfo) and not isinstance(var_type, MultiReturnTypeInfo):
                 first_elem_type = init_type.element_types[0]
                 self._check_type_match(
                     var_type, first_elem_type, stmt.initializer,
@@ -1012,7 +1012,7 @@ class TypeChecker:
         """
         init_type = self.check_expression(stmt.initializer)
 
-        if not isinstance(init_type, TupleTypeInfo):
+        if not isinstance(init_type, MultiReturnTypeInfo):
             raise TypeCheckError(
                 f"Multi-let binding requires a multi-return function call, got {init_type}",
                 source_loc=stmt.source_loc
@@ -1806,7 +1806,7 @@ class TypeChecker:
             )
 
         # Handle tuple-to-scalar: A = tuple_func() drops extra return values
-        if isinstance(value_type, TupleTypeInfo) and not isinstance(target_type, TupleTypeInfo):
+        if isinstance(value_type, MultiReturnTypeInfo) and not isinstance(target_type, MultiReturnTypeInfo):
             first_elem_type = value_type.element_types[0]
             self._check_type_match(
                 target_type, first_elem_type, expr.value,
@@ -1856,7 +1856,7 @@ class TypeChecker:
         value_type = self.check_expression(expr.value)
 
         # Value must be a tuple type
-        if not isinstance(value_type, TupleTypeInfo):
+        if not isinstance(value_type, MultiReturnTypeInfo):
             raise TypeCheckError(
                 f"Multi-assignment requires a tuple value, got '{value_type}'",
                 source_loc=expr.source_loc

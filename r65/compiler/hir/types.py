@@ -162,8 +162,10 @@ class NeverTypeInfo(TypeInfo):
 
 
 @dataclass
-class TupleTypeInfo(TypeInfo):
-    """Tuple type: (T1, T2, ...) for multiple return values."""
+class MultiReturnTypeInfo(TypeInfo):
+    """The list of value types a function returns when it returns more than one
+    value, e.g. `-> u8, u16`. This is a return-position-only representation —
+    R65 has no general-purpose tuple type."""
     element_types: List[TypeInfo]
 
     @property

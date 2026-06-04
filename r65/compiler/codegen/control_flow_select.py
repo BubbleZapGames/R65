@@ -747,7 +747,7 @@ class ControlFlowInstructionSelector(BaseSelector):
         if not self.current_function or not self.current_function.return_type:
             return 0
 
-        from r65.compiler.hir.types import NeverTypeInfo, TupleTypeInfo, BasicTypeInfo
+        from r65.compiler.hir.types import NeverTypeInfo, MultiReturnTypeInfo, BasicTypeInfo
 
         ret_type = self.current_function.return_type
 
@@ -758,7 +758,7 @@ class ControlFlowInstructionSelector(BaseSelector):
             return 0
 
         # Tuple types return multiple values
-        if isinstance(ret_type, TupleTypeInfo):
+        if isinstance(ret_type, MultiReturnTypeInfo):
             return len(ret_type.element_types)
 
         # Single value return

@@ -981,15 +981,15 @@ class HIRBuilder:
             return self._multi_return_to_tuple(ast_return_type, entry_m_mode)
         return self.type_resolver.resolve_type(ast_return_type)
 
-    def _multi_return_to_tuple(self, mrt, entry_m_mode) -> 'TupleTypeInfo':
-        """Convert a multi-return type list (e.g. `u8, u16`) to a TupleTypeInfo.
+    def _multi_return_to_tuple(self, mrt, entry_m_mode) -> 'MultiReturnTypeInfo':
+        """Convert a multi-return type list (e.g. `u8, u16`) to a MultiReturnTypeInfo.
 
         Values are assigned to hardware registers in order — A, then B (m8 only)
         or X, then Y — by `get_return_registers`. This validates that the value
         count and each value's width are expressible in the chosen registers
         given the function's accumulator mode.
         """
-        from r65.compiler.hir.types import TupleTypeInfo
+        from r65.compiler.hir.types import MultiReturnTypeInfo
         from r65.compiler.typeck.processor_mode import ModeState
         from r65.compiler.codegen.constants import get_return_registers
 
@@ -1003,7 +1003,7 @@ class HIRBuilder:
                 source_loc=loc,
             )
 
-        tuple_info = TupleTypeInfo(element_types=element_types)
+        tuple_info = MultiReturnTypeInfo(element_types=element_types)
         regs = get_return_registers(tuple_info, entry_m_mode)
         is_m16 = entry_m_mode == ModeState.M16
 

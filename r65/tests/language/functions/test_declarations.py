@@ -113,13 +113,13 @@ class TestMultiReturnFunctions:
         assert stmts[0].names == ['a', 'b']
 
     def test_hir_multi_return_type(self):
-        """Test HIR building for multi-return type: TupleTypeInfo is produced internally."""
+        """Test HIR building for multi-return type: MultiReturnTypeInfo is produced internally."""
         hir_prog = build_hir("""
             fn get_pair() -> u8, u16 { return A, X; }
         """)
         func = hir_prog.functions[0]
-        from r65.compiler.hir.types import TupleTypeInfo
-        assert isinstance(func.return_type, TupleTypeInfo)
+        from r65.compiler.hir.types import MultiReturnTypeInfo
+        assert isinstance(func.return_type, MultiReturnTypeInfo)
         assert len(func.return_type.element_types) == 2
 
     def test_hir_multi_return_m16(self):
@@ -127,9 +127,9 @@ class TestMultiReturnFunctions:
         hir_prog = build_hir("""
             fn split(value @ A: u16) -> u16, u16 { return A, X; }
         """)
-        from r65.compiler.hir.types import TupleTypeInfo
+        from r65.compiler.hir.types import MultiReturnTypeInfo
         ret = hir_prog.functions[0].return_type
-        assert isinstance(ret, TupleTypeInfo)
+        assert isinstance(ret, MultiReturnTypeInfo)
         assert [str(t) for t in ret.element_types] == ['u16', 'u16']
 
     def test_hir_multi_return_four_values(self):
@@ -137,9 +137,9 @@ class TestMultiReturnFunctions:
         hir_prog = build_hir("""
             fn quad(a @ A: u8, b @ B: u8) -> u8, u8, u16, u16 { return A, B, X, Y; }
         """)
-        from r65.compiler.hir.types import TupleTypeInfo
+        from r65.compiler.hir.types import MultiReturnTypeInfo
         ret = hir_prog.functions[0].return_type
-        assert isinstance(ret, TupleTypeInfo)
+        assert isinstance(ret, MultiReturnTypeInfo)
         assert len(ret.element_types) == 4
 
     def test_legacy_register_syntax_rejected(self):

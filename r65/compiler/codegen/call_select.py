@@ -562,8 +562,8 @@ class CallInstructionSelector(BaseSelector):
         return_regs = self._get_callee_return_registers(instr)
         callee_return_type = getattr(instr, 'callee_return_type', None)
         if callee_return_type is not None:
-            from r65.compiler.hir.types import TupleTypeInfo
-            if isinstance(callee_return_type, TupleTypeInfo):
+            from r65.compiler.hir.types import MultiReturnTypeInfo
+            if isinstance(callee_return_type, MultiReturnTypeInfo):
                 num_returns = len(callee_return_type.element_types)
             else:
                 num_returns = 1
@@ -624,8 +624,8 @@ class CallInstructionSelector(BaseSelector):
         return_regs = self._get_callee_return_registers(instr)
         callee_return_type = getattr(instr, 'callee_return_type', None)
         if callee_return_type is not None:
-            from r65.compiler.hir.types import TupleTypeInfo
-            if isinstance(callee_return_type, TupleTypeInfo):
+            from r65.compiler.hir.types import MultiReturnTypeInfo
+            if isinstance(callee_return_type, MultiReturnTypeInfo):
                 num_returns = len(callee_return_type.element_types)
             else:
                 num_returns = 1
@@ -881,8 +881,8 @@ class CallInstructionSelector(BaseSelector):
         return_regs = self._get_callee_return_registers(instr)
         callee_return_type = getattr(instr, 'callee_return_type', None)
         if callee_return_type is not None:
-            from r65.compiler.hir.types import TupleTypeInfo
-            if isinstance(callee_return_type, TupleTypeInfo):
+            from r65.compiler.hir.types import MultiReturnTypeInfo
+            if isinstance(callee_return_type, MultiReturnTypeInfo):
                 num_returns = len(callee_return_type.element_types)
             else:
                 num_returns = 1
@@ -1007,8 +1007,8 @@ class CallInstructionSelector(BaseSelector):
         return_regs = self._get_callee_return_registers(instr)
         callee_return_type = getattr(instr, 'callee_return_type', None)
         if callee_return_type is not None:
-            from r65.compiler.hir.types import TupleTypeInfo
-            if isinstance(callee_return_type, TupleTypeInfo):
+            from r65.compiler.hir.types import MultiReturnTypeInfo
+            if isinstance(callee_return_type, MultiReturnTypeInfo):
                 num_returns = len(callee_return_type.element_types)
             else:
                 num_returns = 1
@@ -2174,8 +2174,8 @@ class CallInstructionSelector(BaseSelector):
         return_regs = self._get_callee_return_registers(instr)
         callee_return_type = getattr(instr, 'callee_return_type', None)
         if callee_return_type is not None:
-            from r65.compiler.hir.types import TupleTypeInfo
-            if isinstance(callee_return_type, TupleTypeInfo):
+            from r65.compiler.hir.types import MultiReturnTypeInfo
+            if isinstance(callee_return_type, MultiReturnTypeInfo):
                 num_returns = len(callee_return_type.element_types)
             else:
                 num_returns = 1
@@ -2237,9 +2237,9 @@ class CallInstructionSelector(BaseSelector):
         callee_return_type = getattr(instr, 'callee_return_type', None)
         if callee_return_type is None:
             return [1] * len(instr.returns)
-        from r65.compiler.hir.types import TupleTypeInfo, PointerTypeInfo
+        from r65.compiler.hir.types import MultiReturnTypeInfo, PointerTypeInfo
         types = (callee_return_type.element_types
-                 if isinstance(callee_return_type, TupleTypeInfo)
+                 if isinstance(callee_return_type, MultiReturnTypeInfo)
                  else [callee_return_type])
         sizes = []
         for t in types:
