@@ -70,8 +70,10 @@ param: (FAR | NEAR)? STAR? IDENT ("@" binding)? ":" type_expr
 binding: REGISTER | IDENT
 
 return_type: "->" (multi_return_type | type_expr | "!")
-multi_return_type: RETURN_REG ("," RETURN_REG)+
-RETURN_REG.2: /r[AaBbXxYy]\b/
+// Multiple return values are declared as a type list (e.g. `-> u8, u16`); the
+// compiler assigns each value to a register. There is no register-name return
+// syntax — `rA`/`rB`/`rX`/`rY` lex as ordinary identifiers.
+multi_return_type: type_expr ("," type_expr)+
 
 // Static variable declaration
 // Uses initializer_expr to allow struct literals after =
@@ -176,7 +178,7 @@ macro_repetition: DOLLAR "(" macro_body_content+ ")" "," "*"    -> macro_rep_com
                 | DOLLAR "(" macro_body_content+ ")" "*"         -> macro_rep_no_sep
 
 // Any token that can appear in a macro body (excluding special macro syntax)
-macro_token: IDENT | REGISTER | RETURN_REG | TYPE_NAME | INTEGER | STRING | BOOLEAN
+macro_token: IDENT | REGISTER | TYPE_NAME | INTEGER | STRING | BOOLEAN
            | KEYWORD | INCLUDE | INCLUDE_BYTES | CONST | STATIC | LET | MUT | MACRO_RULES
            | FN | FAR | NEAR | IF | ELSE | LOOP | WHILE | MATCH | RETURN
            | BREAK | CONTINUE | ASM | STRUCT | ENUM | TYPE | AS | TRAIT | IMPL | SELF | FOR | IN | DYN
@@ -200,7 +202,7 @@ macro_args: macro_arg ("," macro_arg)* ","?
 // A single macro argument - balanced tokens
 macro_arg: macro_arg_token+
 
-macro_arg_token: IDENT | REGISTER | RETURN_REG | TYPE_NAME | INTEGER | STRING | BOOLEAN
+macro_arg_token: IDENT | REGISTER | TYPE_NAME | INTEGER | STRING | BOOLEAN
                | KEYWORD | MACRO_VAR | INCLUDE | INCLUDE_BYTES | CONST | STATIC | LET | MUT | MACRO_RULES
                | FN | FAR | NEAR | IF | ELSE | LOOP | WHILE | MATCH | RETURN
                | BREAK | CONTINUE | ASM | STRUCT | ENUM | TYPE | AS | TRAIT | IMPL | SELF | FOR | IN | DYN

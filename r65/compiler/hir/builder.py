@@ -982,40 +982,59 @@ class HIRBuilder:
         return self.type_resolver.resolve_type(ast_return_type)
 
     def _multi_return_to_tuple(self, mrt, entry_m_mode) -> 'TupleTypeInfo':
-        """Convert MultiReturnType AST node to TupleTypeInfo using the function's m_mode."""
-        from r65.compiler.hir.types import TupleTypeInfo, BasicTypeInfo
+        """Convert a multi-return type list (e.g. `u8, u16`) to a TupleTypeInfo.
+
+        Values are assigned to hardware registers in order — A, then B (m8 only)
+        or X, then Y — by `get_return_registers`. This validates that the value
+        count and each value's width are expressible in the chosen registers
+        given the function's accumulator mode.
+        """
+        from r65.compiler.hir.types import TupleTypeInfo
         from r65.compiler.typeck.processor_mode import ModeState
+        from r65.compiler.codegen.constants import get_return_registers
 
-        hw_order = ['A', 'B', 'X', 'Y']
-        reg_to_type = {
-            'A': 'u16' if entry_m_mode == ModeState.M16 else 'u8',
-            'B': 'u8',
-            'X': 'u16',
-            'Y': 'u16',
-        }
+        loc = getattr(mrt, 'source_loc', None)
+        element_types = [self.type_resolver.resolve_type(t) for t in mrt.element_types]
 
-        prev_idx = -1
-        for reg in mrt.register_names:
-            if reg not in hw_order:
+        if len(element_types) < 2:
+            raise HIRError(
+                "A multi-return type needs at least two types; "
+                "use a single type for one return value",
+                source_loc=loc,
+            )
+
+        tuple_info = TupleTypeInfo(element_types=element_types)
+        regs = get_return_registers(tuple_info, entry_m_mode)
+        is_m16 = entry_m_mode == ModeState.M16
+
+        if len(element_types) > len(regs):
+            raise HIRError(
+                f"Too many return values: {len(element_types)} types declared but "
+                f"only {len(regs)} return registers ({', '.join(regs)}) are "
+                f"available. Four values are possible only when the second value "
+                f"is 8-bit (u8/i8/bool) in m8 mode, which frees the B register; "
+                f"otherwise the maximum is three.",
+                source_loc=loc,
+            )
+
+        for et, reg in zip(element_types, regs):
+            if reg == 'A':
+                want = 2 if is_m16 else 1
+            elif reg == 'B':
+                want = 1
+            else:  # X and Y are always 16-bit
+                want = 2
+            if et.size_bytes != want:
                 raise HIRError(
-                    f"Invalid return register 'r{reg}'; must be one of rA, rB, rX, rY",
-                    source_loc=getattr(mrt, 'source_loc', None)
-                )
-            idx = hw_order.index(reg)
-            if idx <= prev_idx:
-                raise HIRError(
-                    f"Return registers must be in hardware order (rA, rB, rX, rY); got r{reg} out of order",
-                    source_loc=getattr(mrt, 'source_loc', None)
-                )
-            prev_idx = idx
-            if reg == 'B' and entry_m_mode == ModeState.M16:
-                raise HIRError(
-                    "Register B (rB) is not available in m16 mode",
-                    source_loc=getattr(mrt, 'source_loc', None)
+                    f"Return value of type '{et}' ({et.size_bytes}-byte) does not "
+                    f"fit return register {reg}, which holds {want} byte(s) in "
+                    f"{'m16' if is_m16 else 'm8'} mode. Returns map to A "
+                    f"(mode-width), then B (1-byte, m8 only) or X, then Y "
+                    f"(both 2-byte).",
+                    source_loc=loc,
                 )
 
-        element_types = [BasicTypeInfo(name=reg_to_type[r]) for r in mrt.register_names]
-        return TupleTypeInfo(element_types=element_types)
+        return tuple_info
 
     def _infer_exit_mode(self, return_type: Optional[TypeInfo]) -> 'ModeState':
         """

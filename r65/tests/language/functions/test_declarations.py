@@ -67,23 +67,23 @@ class TestFunctionTypes:
 
 
 class TestMultiReturnFunctions:
-    """Tests for functions returning multiple values via rA, rB, rX, rY syntax."""
+    """Tests for functions returning multiple values via a return type list (e.g. `-> u8, u16`)."""
 
     def test_parse_multi_return_type(self):
-        """Test parsing function with multi-return register type."""
-        func = parse_function("fn get_pair() -> rA, rX { return A, X; }")
+        """Test parsing function with multi-return type list."""
+        func = parse_function("fn get_pair() -> u8, u16 { return A, X; }")
         assert isinstance(func.return_type, ast.MultiReturnType)
-        assert func.return_type.register_names == ['A', 'X']
+        assert [t.name for t in func.return_type.element_types] == ['u8', 'u16']
 
     def test_parse_triple_return_type(self):
-        """Test parsing function with three return registers."""
-        func = parse_function("fn get_triple() -> rA, rX, rY { return A, X, Y; }")
+        """Test parsing function with three return values."""
+        func = parse_function("fn get_triple() -> u8, u16, u16 { return A, X, Y; }")
         assert isinstance(func.return_type, ast.MultiReturnType)
-        assert func.return_type.register_names == ['A', 'X', 'Y']
+        assert [t.name for t in func.return_type.element_types] == ['u8', 'u16', 'u16']
 
     def test_parse_multi_return_statement(self):
         """Test parsing return statement with multiple values."""
-        func = parse_function("fn get_pair() -> rA, rX { return A, X; }")
+        func = parse_function("fn get_pair() -> u8, u16 { return A, X; }")
         ret_stmt = func.body.statements[0]
         assert isinstance(ret_stmt, ast.ReturnStmt)
         assert len(ret_stmt.values) == 2
@@ -115,10 +115,48 @@ class TestMultiReturnFunctions:
     def test_hir_multi_return_type(self):
         """Test HIR building for multi-return type: TupleTypeInfo is produced internally."""
         hir_prog = build_hir("""
-            fn get_pair() -> rA, rX { return A, X; }
+            fn get_pair() -> u8, u16 { return A, X; }
         """)
         func = hir_prog.functions[0]
         from r65.compiler.hir.types import TupleTypeInfo
         assert isinstance(func.return_type, TupleTypeInfo)
         assert len(func.return_type.element_types) == 2
+
+    def test_hir_multi_return_m16(self):
+        """A function in m16 mode returns u16 in A; the type list reflects that."""
+        hir_prog = build_hir("""
+            fn split(value @ A: u16) -> u16, u16 { return A, X; }
+        """)
+        from r65.compiler.hir.types import TupleTypeInfo
+        ret = hir_prog.functions[0].return_type
+        assert isinstance(ret, TupleTypeInfo)
+        assert [str(t) for t in ret.element_types] == ['u16', 'u16']
+
+    def test_hir_multi_return_four_values(self):
+        """Four values are allowed when the second is 8-bit in m8 mode (B is free)."""
+        hir_prog = build_hir("""
+            fn quad(a @ A: u8, b @ B: u8) -> u8, u8, u16, u16 { return A, B, X, Y; }
+        """)
+        from r65.compiler.hir.types import TupleTypeInfo
+        ret = hir_prog.functions[0].return_type
+        assert isinstance(ret, TupleTypeInfo)
+        assert len(ret.element_types) == 4
+
+    def test_legacy_register_syntax_rejected(self):
+        """The old `-> rA, rB` register spelling is no longer valid syntax."""
+        from r65.compiler.errors import HIRError
+        with pytest.raises(HIRError, match="Undefined type: rA"):
+            build_hir("fn pair() -> rA, rB { return A, B; }")
+
+    def test_too_many_return_values_rejected(self):
+        """A third value forced into X must be 16-bit; three u8s cannot be returned."""
+        from r65.compiler.errors import HIRError
+        with pytest.raises(HIRError, match="register X"):
+            build_hir("fn three(a @ A: u8, b @ B: u8) -> u8, u8, u8 { return A, B, X; }")
+
+    def test_u16_in_a_under_m8_rejected(self):
+        """In m8 mode register A holds one byte; a leading u16 return is rejected."""
+        from r65.compiler.errors import HIRError
+        with pytest.raises(HIRError, match="register A"):
+            build_hir("fn bad() -> u16, u8 { return X, A; }")
 

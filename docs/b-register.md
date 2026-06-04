@@ -142,93 +142,53 @@ caller:
 
 ### Returning B
 
-B can be returned alone or with other registers (in m8 mode):
+B serves as the **second** return register when a function returns two 8-bit values in m8 mode. You declare it by listing the value types — `-> u8, u8` — and the compiler places the first value in A and the second in B:
 
 ```rust
-// Return B only (m8 mode - default)
-fn get_high_byte(value: u16) -> u8 {
-    B = (value >> 8) as u8;
-    return B;  // A is NOT restored!
-}
-
-// Return A and B (m8 mode - default)
-fn unpack_word(value: u16) -> rA, rB {
-    A = value as u8;           // Low byte
-    B = (value >> 8) as u8;    // High byte
+// Two u8 values: first in A, second in B (m8 mode - default)
+fn unpack_word(value: u16) -> u8, u8 {
+    A = value as u8;           // Low byte  → A
+    B = (value >> 8) as u8;    // High byte → B
     return A, B;
 }
 
-// Return B first, A second (m8 mode - default)
-fn swap_bytes(low @ A: u8, high @ B: u8) -> rA, rB {
-    return B, A;  // Swap order
-}
-
-// Return B and X (m8 mode - default)
-fn get_high_and_index(value: u16, index: u8) -> rB, rX {
-    B = (value >> 8) as u8;
-    X = index as u16;
-    return B, X;  // A not returned - caller must preserve!
+// The return statement just orders the values: `return B, A` returns B's
+// value first (register A) and A's value second (register B).
+fn swap_bytes(low @ A: u8, high @ B: u8) -> u8, u8 {
+    return B, A;
 }
 ```
+
+A single return value always comes back in **A**. Returning the B register from a one-value function is fine — the compiler transfers B into A (an `XBA`) before returning, so the caller reads the result from A like any other `-> u8`:
+
+```rust
+fn get_high_byte(value: u16) -> u8 {
+    B = (value >> 8) as u8;
+    return B;   // delivered in A
+}
+```
+
+There is no return type that delivers a value in B *without* also using A — the first value always lands in A.
 
 ### Return Conventions
 
-| Return Statement | First Return | Second Return | Third Return | A Preserved? |
-|-----------------|--------------|---------------|--------------|--------------|
-| `return B;` | B | - | - | **NO** |
-| `return A;` | A | - | - | Yes |
-| `return A, B;` | A | B | - | Yes |
-| `return B, A;` | B | A | - | Yes (but as 2nd) |
-| `return B, X;` | B | X | - | **NO** |
-| `return A, B, X;` | A | B | X | Yes |
+Registers are assigned from the return type list, in order: A, then B (8-bit, m8 only) or X, then Y.
 
-### Critical Rule: Caller Must Preserve A
+| Return Type      | Register 1 | Register 2 | Register 3 |
+|------------------|------------|------------|------------|
+| `-> u8`          | A          | –          | –          |
+| `-> u8, u8`      | A          | B          | –          |
+| `-> u8, u16`     | A          | X          | –          |
+| `-> u8, u8, u16` | A          | B          | X          |
 
-**When a function returns only B (or B without A), the callee does NOT restore A.**
+### Reading the B Return Value
 
-```rust
-// m8 mode (default)
-fn get_high_byte(value: u16) -> u8 {
-    B = (value >> 8) as u8;
-    return B;  // A is clobbered!
-}
-
-// WRONG: A is lost
-fn bad_caller() {
-    A = 0x42;  // Important value in A
-    let high = get_high_byte(0x1234);
-    // A is now undefined! Lost 0x42
-}
-
-// CORRECT: Preserve A
-fn good_caller() {
-    A = 0x42;  // Important value in A
-    let saved_a = A;
-    let high = get_high_byte(0x1234);
-    A = saved_a;  // Restore A
-    // A is 0x42 again, high is in B
-}
-```
-
-### Reading B Return Value
-
-After calling a function that returns B, the caller must read the B value:
+Multi-binding captures every return value, including the one held in B — the compiler reads B for you:
 
 ```rust
-// m8 mode (default)
 fn caller() {
-    let high = get_high_byte(0x1234);  // Returns in B
-
-    // Option 1: Read via XBA
-    asm!("XBA");     // Exchange: B → A
-    let value = A;   // Read from A
-    asm!("XBA");     // Exchange back
-
-    // Option 2: Assign from B directly
-    let value @ B = B;  // Alias B register
-
-    // Option 3: Use B value immediately
-    B = B & 0xF0;   // Mask high nibble
+    let low, high = unpack_word(0x1234);  // low ← A, high ← B
+    // ...use low and high...
 }
 ```
 
@@ -440,7 +400,7 @@ fn pack_word(low @ A: u8, high @ B: u8) -> u16 {
 }
 
 // Alternative: Return both bytes and let caller combine
-fn pack_word_v2(low @ A: u8, high @ B: u8) -> rA, rB {
+fn pack_word_v2(low @ A: u8, high @ B: u8) -> u8, u8 {
     return A, B;  // Caller assembles into u16
 }
 ```
@@ -449,7 +409,7 @@ fn pack_word_v2(low @ A: u8, high @ B: u8) -> rA, rB {
 
 ```rust
 // m8 mode (default)
-fn unpack_word(value: u16) -> rA, rB {
+fn unpack_word(value: u16) -> u8, u8 {
     A = value as u8;           // Low byte (truncate)
     B = (value >> 8) as u8;    // High byte (shift and truncate)
     return A, B;

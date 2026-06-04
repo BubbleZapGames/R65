@@ -2,7 +2,7 @@
 """
 End-to-end tests for multi-return functions and nested calls.
 
-Tests multi-return functions (rA, rB, rX, rY syntax), nested calls with spilling.
+Tests multi-return functions (return type lists, e.g. -> u8, u16), nested calls with spilling.
 """
 
 from pathlib import Path
@@ -239,14 +239,15 @@ class TestVariableBoundParams:
 
 
 class TestBRegister:
-    """Test B register parameter passing and rA,rB multi-returns."""
+    """Test B register parameter passing and (u8, u8) multi-returns."""
 
     def test_b_parameter_and_return(self, e2e):
         """Test B param passing and (u8,u8) return via A,B registers.
 
         Uses --cfg snes (always set by e2e framework) for XBA support.
         Verifies that B parameter is received correctly and can be
-        returned alongside A using rA, rB multi-return syntax.
+        returned alongside A using a `-> u8, u8` return type (the two u8
+        values map to A and B automatically).
         """
         result = e2e.run('''
             #[zeropage(0x10)]
@@ -254,7 +255,7 @@ class TestBRegister:
             #[zeropage(0x11)]
             static mut HI: u8;
 
-            fn add_and_keep(lo @ A: u8, hi @ B: u8) -> rA, rB {
+            fn add_and_keep(lo @ A: u8, hi @ B: u8) -> u8, u8 {
                 A = lo + 1;
                 return A, B;
             }
@@ -270,5 +271,34 @@ class TestBRegister:
         ''', ExpectedState(memory={
             0x7E0010: 0x11,
             0x7E0011: 0x55,
+        }))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_mixed_width_return(self, e2e):
+        """A `-> u8, u16` return maps the u8 to A and the u16 to X."""
+        result = e2e.run('''
+            #[zeropage(0x10)]
+            static mut LO: u8;
+            #[zeropage(0x12)]
+            static mut WORD: u16;
+
+            fn split(seed @ A: u8) -> u8, u16 {
+                A = seed + 1;
+                X = 0x1234;
+                return A, X;
+            }
+
+            #[entry]
+            fn main() {
+                let mut a_val: u8;
+                let mut x_val: u16;
+                a_val, x_val = split(0x20);
+                LO = a_val;
+                WORD = x_val;
+            }
+        ''', ExpectedState(memory={
+            0x7E0010: 0x21,
+            0x7E0012: 0x34,
+            0x7E0013: 0x12,
         }))
         assert result.success, f"Failures: {result.failures}"

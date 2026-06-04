@@ -271,7 +271,7 @@ fn calculate(a: u8, b: u8) -> u8 { }               // Stack (must come first)
 
 **Note**: X/Y register parameters must be u16 (always 16-bit in R65).
 
-**Returns**: Implicit A return, explicit `return X`, multiple `return A, X;` (no parentheses), or via zero-page variables. Multi-return type written as `-> rA, rB` or `-> rA, rX` (register names in hardware order: A, B, X, Y). Caller captures values with `let a, b = f();` or `a, b = f();`. All return paths must have identical signatures. Use `-> !` for functions that never return (e.g., the main game loop); the compiler omits `RTS`/`RTL` and skips implicit return generation.
+**Returns**: Implicit A return, explicit `return X`, multiple `return A, X;` (no parentheses), or via zero-page variables. Multi-return type written as a type list, e.g. `-> u8, u8` or `-> u8, u16`; the compiler maps each value to a register (A, then B or X, then Y) from its type and the mode. Caller captures values with `let a, b = f();` or `a, b = f();`. All return paths must have identical signatures. Use `-> !` for functions that never return (e.g., the main game loop); the compiler omits `RTS`/`RTL` and skips implicit return generation.
 
 **Function pointers**: `fn()` (near JSR/RTS), `far fn()` (cross-bank JSL/RTL).
 

@@ -1293,7 +1293,7 @@ class TestCanInlineRejections:
 
 
 # =============================================================================
-# Multi-return: callees with -> rA, rB style signatures must plumb every
+# Multi-return: callees with -> u8, u8 style signatures must plumb every
 # Return.values[i] into the matching call.returns[i]. Pre-fix, only [0]
 # was emitted, silently dropping secondary return values.
 # =============================================================================
@@ -1301,7 +1301,7 @@ class TestCanInlineRejections:
 def _make_multi_return_callee(name: str = "two_returns"):
     """Callee whose Return has two values, one per signature slot.
 
-    Models a `fn f() -> rA, rX` body that produces (a, b) and returns
+    Models a `fn f() -> u8, u16` body that produces (a, b) and returns
     both. The MIR shape is: load two vregs from immediates, then
     `Return(values=[a, b])`.
     """

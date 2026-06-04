@@ -2563,13 +2563,13 @@ class ASTBuilder(Transformer):
         )
 
     def multi_return_type(self, items):
-        """Multi-return type: rA, rB — explicit register names in return type."""
-        regs = [
-            str(tok).lstrip('rR').upper()
-            for tok in items
-            if isinstance(tok, LarkToken) and tok.type == 'RETURN_REG'
-        ]
-        return ast.MultiReturnType(register_names=regs)
+        """Multi-return type: a comma-separated type list, e.g. `u8, u16`.
+
+        Registers are assigned to each value at codegen time from the types and
+        the function's mode, so no register names appear in the source.
+        """
+        element_types = [item for item in items if not isinstance(item, LarkToken)]
+        return ast.MultiReturnType(element_types=element_types)
 
     def type_list(self, items):
         """Type list."""

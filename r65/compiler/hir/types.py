@@ -258,7 +258,7 @@ class TypeResolver:
 
         elif isinstance(ast_type, ast.MultiReturnType):
             raise HIRError(
-                "Multi-return type (rA, rB, ...) can only appear as a function return type",
+                "Multi-return type list (e.g. u8, u16) can only appear as a function return type",
                 source_loc=getattr(ast_type, 'source_loc', None)
             )
 

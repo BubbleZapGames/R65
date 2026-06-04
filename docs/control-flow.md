@@ -586,9 +586,9 @@ fn get_status() -> u8 {
 }
 ```
 
-**Explicit register return**:
+**Multiple return values** (listed by type):
 ```rust
-fn get_xy() -> rX, rY {
+fn get_xy() -> u16, u16 {
     X = PLAYER_X;
     Y = PLAYER_Y;
     return X, Y;

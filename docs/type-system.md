@@ -138,11 +138,11 @@ far fn(params) -> return_type    // Far function (JSL/RTL)
 #### Multiple Return Values
 
 ```rust
-fn get_pair() -> rA, rB { return A, B; }   // Two u8 values in A, B (m8 mode)
-fn get_word() -> rA, rX { return A, X; }   // u8 + u16 in A, X
+fn get_pair() -> u8, u8 { return A, B; }   // Two u8 values in A, B (m8 mode)
+fn get_word() -> u8, u16 { return A, X; }  // u8 + u16 in A, X
 ```
 
-Register names in the return type must appear in hardware order: A, B, X, Y. `rB` is only valid in m8 mode. The implied types are: `rA` → `u8` (m8) or `u16` (m16), `rB` → `u8`, `rX`/`rY` → `u16`.
+The return type lists the value types; the compiler assigns registers in hardware order. The first value goes to `A` (one byte in m8, two in m16), the second to `B` when it is 8-bit in m8 mode (otherwise `X`), then `X` and `Y` (both 16-bit). Register names are not used in the return type.
 
 Caller captures return values with multi-binding:
 ```rust

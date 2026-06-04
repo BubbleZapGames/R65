@@ -101,8 +101,13 @@ class NeverType(Type):
 
 @dataclass
 class MultiReturnType(Type):
-    """Multi-return register type: rA, rB — registers a function returns in."""
-    register_names: List[str]  # uppercase: ['A', 'B', 'X', 'Y']
+    """Multi-return type: the element types a function returns, e.g. ``-> u8, u16``.
+
+    Each value is mapped to a hardware register (A, then B or X, then Y) at code
+    generation time based on its size and the function's accumulator mode. There
+    is no register-name spelling — the types alone determine the registers.
+    """
+    element_types: List[Type]  # e.g. [u8, u16] (2-4 elements)
 
 
 # ============================================================================

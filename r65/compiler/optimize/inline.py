@@ -1363,7 +1363,7 @@ class FunctionInliner:
             first.comment = f"{first.comment}; {tag}" if first.comment else tag
 
         # Result vregs in the caller's space — one per return value.
-        # Multi-return callees (e.g. `-> rA, rB` or `-> rA, rX`) plumb each
+        # Multi-return callees (e.g. `-> u8, u8` or `-> u8, u16`) plumb each
         # Return.values[i] into call.returns[i]; previously only [0] was
         # emitted, silently dropping the second value.
         result_vregs = list(call.returns)

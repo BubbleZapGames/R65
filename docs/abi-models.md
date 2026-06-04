@@ -215,7 +215,7 @@ fn get_index() -> u16 {
 ### Multiple Return Values
 
 ```rust
-fn divide(dividend @ A: u8, divisor @ X: u16) -> rA, rX {
+fn divide(dividend @ A: u8, divisor @ X: u16) -> u8, u16 {
     // quotient in A, remainder in X
     return A, X;
 }
@@ -223,35 +223,28 @@ fn divide(dividend @ A: u8, divisor @ X: u16) -> rA, rX {
 let q, r = divide(100, 7);
 ```
 
-**Convention**: First return in A, second in X (or B in m8), third in Y. No parentheses in `return` statement.
+**Convention**: The return type lists the value types (`-> u8, u16`); the compiler assigns registers from those types and the mode. First return in A, second in X (or B in m8), third in Y. No parentheses in the `return` statement.
 
 ### B Register Returns (m8 Only)
 
-In m8 mode, B can be returned alone or with other registers:
+In m8 mode, B is the second return register when a function returns two 8-bit values. Declare it with a `-> u8, u8` return type — the first value lands in A, the second in B:
 
 ```rust
-fn unpack_word(value: u16) -> rA, rB {
+fn unpack_word(value: u16) -> u8, u8 {
     A = value as u8;
     B = (value >> 8) as u8;
     return A, B;
 }
 ```
 
-| Return Statement | A Status | B Status |
-|-----------------|----------|----------|
-| `return B;` | Caller must preserve A | Returns in B |
-| `return A, B;` | Returns in A | Returns in B |
-| `return B, A;` | Returns in A (2nd value) | Returns in B (1st value) |
-| `return B, X;` | Caller must preserve A | Returns in B |
+The `return` statement supplies the values in declared order; the registers they happen to be read from are independent of the registers they are returned in. For example, `return B, A;` against `-> u8, u8` returns B's value first (in register A) and A's value second (in register B). The first value always lands in A — there is no return type that places a value in B without also using A.
 
 **Caller reads B** via XBA:
 ```asm
 JSR get_high_byte
 XBA                ; Exchange B into A
-STA result         ; Store returned value
+STA result         ; Store the second return value
 ```
-
-When a function returns only B (or B + non-A registers), the callee does **not** restore A. The caller must preserve A if needed.
 
 ### Zero-Page Returns
 
