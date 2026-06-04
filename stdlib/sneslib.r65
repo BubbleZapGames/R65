@@ -1154,6 +1154,105 @@ impl OamEntry {
     }
 }
 
+
+// ============================================================================
+// OAM BUFFER - 128 sprite entries + 32-byte extended OAM (X-high & size bits)
+// ============================================================================
+
+// 544-byte SNES OAM buffer (DMA'd to PPU during VBlank). Layout matches the
+// hardware shadow: 128 OamEntry sprites followed by the 32-byte extended table
+// where each byte packs (X-high, size) bits for 4 sprites (2 bits per sprite,
+// X-high on even bit, size on odd bit).
+struct OamBuffer {
+    sprites: [OamEntry; 128],
+    ext: [u8; 32]
+}
+
+// Bit-mask lookup so the macros don't need a runtime variable-shift.
+static OAM_BIT_MASKS: [u8; 8] = [0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80];
+
+// Per-sprite operations are macros (inlined at the call site) for speed —
+// each call expands to ~16-20 cycles of direct STAs instead of a ~70-cycle
+// JSL into a shared body. `clear()` stays a real method because its body
+// is a 128-entry loop where JSL overhead is negligible.
+//
+// set_full!/set_size! wrap their `let` bindings in `{ ... }` so multiple
+// invocations in the same scope don't collide on the local name.
+impl OamBuffer {
+    // Fast write — sprite X is 8-bit, `chr` packs (tile | attr << 8).
+    // Usage: oam_buffer.set!(OAM_PLAYER, sx, sy, tile | ATR);
+    macro_rules! set($idx:expr, $sx:expr, $sy:expr, $chr:expr) {
+        self.sprites[$idx].x = $sx;
+        self.sprites[$idx].y = $sy;
+        self.sprites[$idx].tile = ($chr) as u8;
+        self.sprites[$idx].attr = (($chr) >> 8) as u8;
+    }
+
+    // Full write — sprite X is 9-bit (u16); also updates the X-high bit
+    // in `ext`. Usage: oam_buffer.set_full!(OAM_KONG, sx_u16, sy, tile | ATR);
+    macro_rules! set_full($idx:expr, $sx:expr, $sy:expr, $chr:expr) {
+        self.sprites[$idx].x = ($sx) as u8;
+        self.sprites[$idx].y = $sy;
+        self.sprites[$idx].tile = ($chr) as u8;
+        self.sprites[$idx].attr = (($chr) >> 8) as u8;
+        {
+            let ext_idx: u16 = ($idx as u16) >> 2;
+            let mask: u8 = OAM_BIT_MASKS[(($idx as u8) & 3) << 1];
+            if ((($sx) as u16) >> 8) & 1 != 0 {
+                self.ext[ext_idx] = self.ext[ext_idx] | mask;
+            } else {
+                self.ext[ext_idx] = self.ext[ext_idx] & ~mask;
+            }
+        }
+    }
+
+    // Set the per-sprite size bit (0 = small, 1 = large per OBSEL).
+    // Usage: oam_buffer.set_size!(idx, 1);
+    macro_rules! set_size($idx:expr, $sz:expr) {
+        {
+            let ext_idx: u16 = ($idx as u16) >> 2;
+            let mask: u8 = OAM_BIT_MASKS[((($idx as u8) & 3) << 1) + 1];
+            if ($sz) != 0 {
+                self.ext[ext_idx] = self.ext[ext_idx] | mask;
+            } else {
+                self.ext[ext_idx] = self.ext[ext_idx] & ~mask;
+            }
+        }
+    }
+
+    // Hide one sprite (Y off-screen, leaves tile/attr alone).
+    // Usage: oam_buffer.hide!(OAM_HAMMER);
+    macro_rules! hide($idx:expr) {
+        self.sprites[$idx].y = 240;
+    }
+
+    // DMA the whole buffer to OAM on the given channel. Size folds to
+    // sizeof OamBuffer (544) at compile time via size_of().
+    // Usage: oam_buffer.dma_copy!(7);
+    macro_rules! dma_copy($channel:literal) {
+        dma_copy_oam_const!($channel, self, size_of(OamBuffer));
+    }
+
+    // Clear all sprites (Y=240) and zero the extended OAM bytes.
+    // Kept as `far fn` — body is a 128-iteration loop; inlining at the
+    // 8 call sites would add ~480 bytes for zero per-call benefit.
+    far fn clear(*self) {
+        let mut p: *OamEntry = &self.sprites[0];
+        for n in 0..128 {
+            (*p).x = 0;
+            (*p).y = 240;
+            (*p).tile = 0;
+            (*p).attr = 0;
+            p = p + 1;
+        }
+        let mut e: *u8 = &self.ext[0];
+        for i in 0..32 {
+            *e = 0;
+            e = e + 1;
+        }
+    }
+}
+
 // SPC700 transfer states
 const SPC_READY: u8 = 0xAA;
 const SPC_BEGIN: u8 = 0xCC;
