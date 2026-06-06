@@ -5,7 +5,7 @@
 R65 provides a simplified macro system inspired by Rust's `macro_rules!` but designed for the constraints and use cases of 6502/65816 development. The goal is to cover ~80% of macro use cases with ~30% of Rust's complexity.
 
 **Design Philosophy**:
-- **Simple pattern matching**: One pattern per macro (no multiple arms)
+- **Two definition forms**: a concise R65 shorthand (single arm) and Rust-style multiple arms
 - **Basic repetition**: Comma-separated repetition only (`$(...),*`)
 - **No hygiene**: Like C macros, generated names can collide (programmer's responsibility)
 - **AST-based**: Operates on parsed AST nodes (expansion happens after parsing)
@@ -17,11 +17,25 @@ R65 provides a simplified macro system inspired by Rust's `macro_rules!` but des
 
 ### Macro Definition
 
+R65 accepts two equivalent forms. The **shorthand** carries a single pattern:
+
 ```rust
 macro_rules! name($param1:fragment, $param2:fragment) {
     // body with $param1 and $param2 substituted
 }
 ```
+
+The **multi-arm** form (Rust-style) carries several `(pattern) => { body }` arms,
+separated by `;` (the final `;` is optional):
+
+```rust
+macro_rules! name {
+    ($param:fragment)             => { /* body for one argument */ };
+    ($a:fragment, $b:fragment)    => { /* body for two arguments */ };
+}
+```
+
+The shorthand is exactly a single-arm macro; see [Multiple Arms](#multiple-arms) below.
 
 ### Macro Invocation
 
@@ -242,6 +256,72 @@ $($x:expr),*     // Comma-separated
 $($x:expr);*     // Semicolon-separated (use different pattern)
 $($x:expr)*      // No separator
 ```
+
+---
+
+## Multiple Arms
+
+A macro may define several arms, each with its own pattern and body. At a call
+site the compiler picks the **first arm that matches** the arguments (top to bottom).
+
+```rust
+macro_rules! use_var {
+    ($name:ident)              => { $name = 0; };
+    ($name:ident, $v:literal)  => { $name = $v; };
+}
+
+fn main() {
+    use_var!(score);       // arm 1 -> score = 0;
+    use_var!(score, 5);    // arm 2 -> score = 5;
+}
+```
+
+Arms are separated by `;`; the semicolon after the last arm is optional. Each arm
+body is wrapped in `{ }` (after the `=>`), and each arm may use its own fragment
+types and `$(...),*` repetition.
+
+### How an Arm Is Selected
+
+An arm matches when **both** hold:
+
+1. **Argument count** fits the arm's parameters (exact for fixed arms;
+   "at least the leading count" for an arm ending in `$(...),*`).
+2. **Fragment type** of each argument is compatible with the corresponding
+   parameter. This lets arms of the *same* arity be distinguished:
+
+   ```rust
+   macro_rules! load {
+       ($r:reg)     => { A = $r; };   // load!(X)   -> A = X;
+       ($v:literal) => { A = $v; };   // load!(42)  -> A = 42;
+       ($n:ident)   => { A = $n; };   // load!(foo) -> A = foo;
+   }
+   ```
+
+   Argument classification follows the lexer: `reg` matches a hardware register
+   (`A`, `X`, `Y`, `B`, `D`, `S`, `STATUS`, `DBR`, `PBR`); `literal` matches a
+   single integer/string/char/boolean literal; `ident` matches a non-register
+   identifier; `ty` matches a type; `expr` and `tt` match anything.
+
+Because the first compatible arm wins, **order specific arms before catch-all
+arms**. An `($x:expr)` or `($x:tt)` arm matches any single argument, so place it
+last:
+
+```rust
+macro_rules! describe {
+    ($r:reg)  => { /* register case */ };
+    ($x:expr) => { /* everything else */ };   // catch-all goes last
+}
+```
+
+If no arm matches, compilation fails with an error listing every arm's signature.
+
+### Relationship to the Shorthand
+
+The shorthand `macro_rules! name(params) { body }` is exactly a single-arm macro —
+it is sugar for `macro_rules! name { (params) => { body } }`. Fragment types are
+only consulted to choose **between** arms, so a single-arm macro matches on
+argument count alone (its fragment types are documentation only). This keeps every
+existing single-arm macro behaving exactly as before.
 
 ---
 
@@ -709,7 +789,6 @@ r65c game.r65 --dump-hir
 
 | Feature | Rust | R65 | Reason |
 |---------|------|-----|--------|
-| Multiple patterns | ✅ | ❌ | Complexity |
 | `$x:stmt` fragment | ✅ | ❌ | Hard to parse; use `$x:tt` with `{...}` |
 | Nested repetition | `$($($x)*)` | ❌ | Rarely needed |
 | Repetition separators | `;`, `:`, etc. | `,` only | Simplicity |
@@ -721,13 +800,6 @@ r65c game.r65 --dump-hir
 | Variadic without separator | `$($x)*` | ❌ | Ambiguity |
 
 ### Workarounds
-
-**Multiple patterns** → Define separate macros:
-```rust
-// Instead of multiple arms:
-macro_rules! foo($x:expr) { ... }
-macro_rules! foo_pair($x:expr, $y:expr) { ... }
-```
 
 **Statement fragment** → Use `tt` with braces:
 ```rust
@@ -781,9 +853,13 @@ Source → Lexer → Parser → AST → [Macro Collection] → [Macro Expansion]
 @dataclass
 class MacroDefinition:
     name: str
-    params: List[MacroParam]      # [(name, fragment_type, is_repeated)]
-    body_tokens: List[Token]      # Raw token stream
+    arms: List[MacroArmDef]       # One arm for the shorthand; many for multi-arm
     source_loc: SourceLocation
+
+@dataclass
+class MacroArmDef:
+    params: List[MacroParam]      # [(name, fragment_type, is_repeated)]
+    body_tokens: List[Token]      # Raw token stream for this arm
 
 @dataclass
 class MacroParam:
@@ -800,10 +876,11 @@ class MacroExpander:
 ### Expansion Algorithm
 
 1. **Parse**: Source is fully parsed into AST (macros are parsed as AST nodes)
-2. **Collect**: First pass collects all `macro_rules!` definitions from AST
-3. **Match**: For each invocation, match arguments against parameters
-4. **Capture**: Extract AST subtrees for each parameter
-5. **Substitute**: Replace `$param` with captured AST nodes
+2. **Collect**: First pass collects all `macro_rules!` definitions (with their arms) from AST
+3. **Select**: For each invocation, pick the first arm whose argument count and
+   (for multi-arm macros) fragment types match
+4. **Capture**: Extract AST subtrees for each parameter of the selected arm
+5. **Substitute**: Replace `$param` with captured AST nodes in that arm's body
 6. **Recurse**: Re-scan result for nested macro invocations
 7. **Limit**: Track depth, error if > 64
 
@@ -819,7 +896,8 @@ class MacroExpander:
 
 | Aspect | Rust `macro_rules!` | R65 `macro_rules!` |
 |--------|---------------------|--------------|
-| Patterns per macro | Multiple (with `=>`) | One |
+| Patterns per macro | Multiple (with `=>`) | Multiple (with `=>`), or single via shorthand |
+| Arm selection | Full pattern matching | Argument count + fragment type |
 | Repetition forms | `*`, `+`, `?` | `*` only |
 | Repetition separators | Any token | Comma only |
 | Fragment types | 10+ | 6 |

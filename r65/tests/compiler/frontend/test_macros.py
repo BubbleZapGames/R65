@@ -50,10 +50,10 @@ class TestMacroDefinitionParsing:
         macro = program.items[0]
         assert isinstance(macro, ast.MacroDecl)
         assert macro.name == "inc"
-        assert len(macro.params) == 1
-        assert macro.params[0].name == "reg"
-        assert macro.params[0].fragment_type == "reg"
-        assert macro.params[0].is_repeated is False
+        assert len(macro.arms[0].params) == 1
+        assert macro.arms[0].params[0].name == "reg"
+        assert macro.arms[0].params[0].fragment_type == "reg"
+        assert macro.arms[0].params[0].is_repeated is False
 
     def test_macro_with_multiple_params(self):
         """Test parsing a macro with multiple parameters."""
@@ -65,11 +65,11 @@ class TestMacroDefinitionParsing:
         program = parse(source, "<test>")
 
         macro = program.items[0]
-        assert len(macro.params) == 2
-        assert macro.params[0].name == "dest"
-        assert macro.params[0].fragment_type == "reg"
-        assert macro.params[1].name == "val"
-        assert macro.params[1].fragment_type == "expr"
+        assert len(macro.arms[0].params) == 2
+        assert macro.arms[0].params[0].name == "dest"
+        assert macro.arms[0].params[0].fragment_type == "reg"
+        assert macro.arms[0].params[1].name == "val"
+        assert macro.arms[0].params[1].fragment_type == "expr"
 
     def test_macro_with_repeated_param(self):
         """Test parsing a macro with repeated parameter."""
@@ -81,10 +81,10 @@ class TestMacroDefinitionParsing:
         program = parse(source, "<test>")
 
         macro = program.items[0]
-        assert len(macro.params) == 1
-        assert macro.params[0].name == "reg"
-        assert macro.params[0].fragment_type == "reg"
-        assert macro.params[0].is_repeated is True
+        assert len(macro.arms[0].params) == 1
+        assert macro.arms[0].params[0].name == "reg"
+        assert macro.arms[0].params[0].fragment_type == "reg"
+        assert macro.arms[0].params[0].is_repeated is True
 
     def test_macro_with_ident_fragment(self):
         """Test macro with ident fragment type."""
@@ -96,7 +96,7 @@ class TestMacroDefinitionParsing:
         program = parse(source, "<test>")
 
         macro = program.items[0]
-        assert macro.params[0].fragment_type == "ident"
+        assert macro.arms[0].params[0].fragment_type == "ident"
 
     def test_macro_with_literal_fragment(self):
         """Test macro with literal fragment type."""
@@ -108,7 +108,7 @@ class TestMacroDefinitionParsing:
         program = parse(source, "<test>")
 
         macro = program.items[0]
-        assert macro.params[0].fragment_type == "literal"
+        assert macro.arms[0].params[0].fragment_type == "literal"
 
     def test_macro_with_ty_fragment(self):
         """Test macro with ty (type) fragment type."""
@@ -120,7 +120,7 @@ class TestMacroDefinitionParsing:
         program = parse(source, "<test>")
 
         macro = program.items[0]
-        assert macro.params[1].fragment_type == "ty"
+        assert macro.arms[0].params[1].fragment_type == "ty"
 
     def test_macro_with_tt_fragment(self):
         """Test macro with tt (token tree) fragment type."""
@@ -132,7 +132,219 @@ class TestMacroDefinitionParsing:
         program = parse(source, "<test>")
 
         macro = program.items[0]
-        assert macro.params[0].fragment_type == "tt"
+        assert macro.arms[0].params[0].fragment_type == "tt"
+
+    def test_shorthand_is_single_arm(self):
+        """Shorthand `macro_rules! name(params) { body }` produces exactly one arm."""
+        source = """
+        macro_rules! inc($reg:reg) { $reg++; }
+        """
+        macro = parse(source, "<test>").items[0]
+        assert isinstance(macro, ast.MacroDecl)
+        assert len(macro.arms) == 1
+        assert macro.arms[0].params[0].name == "reg"
+
+
+# ============================================================================
+# Multi-Arm Macro Tests
+# ============================================================================
+
+class TestMultiArmMacros:
+    """Tests for Rust-style multi-arm macros: macro_rules! name { (pat) => {body}; ... }."""
+
+    def test_multi_arm_parsing(self):
+        """A multi-arm macro parses into one MacroDecl with several arms."""
+        source = """
+        macro_rules! use_var {
+            ($name:ident)              => { $name = 0; };
+            ($name:ident, $v:literal)  => { $name = $v; };
+        }
+        """
+        macro = parse(source, "<test>").items[0]
+        assert isinstance(macro, ast.MacroDecl)
+        assert macro.name == "use_var"
+        assert len(macro.arms) == 2
+        # Arm 0: one ident param
+        assert [(p.name, p.fragment_type) for p in macro.arms[0].params] == [("name", "ident")]
+        # Arm 1: ident + literal
+        assert [(p.name, p.fragment_type) for p in macro.arms[1].params] == \
+            [("name", "ident"), ("v", "literal")]
+
+    def test_trailing_semicolon_optional(self):
+        """The semicolon after the final arm is optional."""
+        source = """
+        macro_rules! m {
+            ($a:ident) => { $a = 1; };
+            ($a:ident, $b:ident) => { $a = 2; }
+        }
+        """
+        macro = parse(source, "<test>").items[0]
+        assert len(macro.arms) == 2
+
+    def test_select_by_arity(self):
+        """The arm whose argument count matches is selected (user's example)."""
+        source = """
+        macro_rules! use_var {
+            ($name:ident)              => { $name = 0; };
+            ($name:ident, $v:literal)  => { $name = $v; };
+        }
+        fn main() {
+            use_var!(P);
+            use_var!(P, 5);
+        }
+        """
+        expanded = expand_macros(parse(source, "<test>"))
+        func = [i for i in expanded.items if isinstance(i, ast.FunctionDecl)][0]
+        stmts = func.body.statements
+        assert len(stmts) == 2
+        # use_var!(P)    -> P = 0  (arm 1)
+        assert stmts[0].expr.value.value == 0
+        # use_var!(P, 5) -> P = 5  (arm 2)
+        assert stmts[1].expr.value.value == 5
+
+    def test_select_by_fragment_type(self):
+        """Same-arity arms are disambiguated by fragment type, first match wins."""
+        source = """
+        macro_rules! pick {
+            ($x:reg)     => { $x = 1; };
+            ($x:literal) => { A = $x; };
+            ($x:ident)   => { $x = 9; };
+        }
+        fn main() {
+            pick!(X);
+            pick!(42);
+            pick!(foo);
+        }
+        """
+        expanded = expand_macros(parse(source, "<test>"))
+        func = [i for i in expanded.items if isinstance(i, ast.FunctionDecl)][0]
+        stmts = func.body.statements
+        assert len(stmts) == 3
+        # pick!(X)   -> reg arm     -> X = 1
+        assert isinstance(stmts[0].expr.target, ast.Register)
+        assert stmts[0].expr.target.name == "X"
+        assert stmts[0].expr.value.value == 1
+        # pick!(42)  -> literal arm -> A = 42
+        assert isinstance(stmts[1].expr.target, ast.Register)
+        assert stmts[1].expr.target.name == "A"
+        assert stmts[1].expr.value.value == 42
+        # pick!(foo) -> ident arm   -> foo = 9
+        assert isinstance(stmts[2].expr.target, ast.Identifier)
+        assert stmts[2].expr.target.name == "foo"
+        assert stmts[2].expr.value.value == 9
+
+    def test_no_matching_arm_error(self):
+        """An invocation matching no arm raises a MacroError listing the arms."""
+        source = """
+        macro_rules! pick {
+            ($x:reg)     => { $x = 1; };
+            ($x:literal) => { A = $x; };
+        }
+        fn main() {
+            pick!(foo);
+        }
+        """
+        program = parse(source, "<test>")
+        with pytest.raises(MacroError) as excinfo:
+            expand_macros(program)
+        msg = str(excinfo.value)
+        assert "no matching arm" in msg
+        assert "pick" in msg
+        # Both arm signatures appear in the diagnostic
+        assert "$x:reg" in msg
+        assert "$x:literal" in msg
+
+    def test_repetition_arm(self):
+        """A repetition arm expands across a varargs call; ordering picks it after the empty arm."""
+        source = """
+        macro_rules! sum_to_a {
+            ()             => { A = 0; };
+            ($($v:expr),*) => { $(A = A + $v;)* };
+        }
+        fn main() {
+            sum_to_a!();
+            sum_to_a!(1, 2, 3);
+        }
+        """
+        expanded = expand_macros(parse(source, "<test>"))
+        func = [i for i in expanded.items if isinstance(i, ast.FunctionDecl)][0]
+        # sum_to_a!()      -> 1 statement (A = 0)
+        # sum_to_a!(1,2,3) -> 3 statements (A = A + 1; A = A + 2; A = A + 3)
+        assert len(func.body.statements) == 4
+
+    def test_fragment_type_only_for_multi_arm(self):
+        """A single-arm macro matches on arity alone (register names allowed as idents)."""
+        # `define!` is single-arm, so the strict fragment check is skipped — this
+        # preserves the historical behavior where any token works as an $x:ident.
+        source = """
+        macro_rules! define($name:ident) {
+            static mut $name: u8;
+        }
+        define!(X);
+        """
+        # Should expand without a fragment-type error even though X is a register name.
+        expanded = expand_macros(parse(source, "<test>"))
+        statics = [i for i in expanded.items if isinstance(i, ast.StaticDecl)]
+        assert any(s.name == "X" for s in statics)
+
+    def test_compile_multi_arm_selects_different_code(self):
+        """End-to-end: different arms generate different assembly."""
+        from r65.compiler.main import compile_string
+
+        source = """
+        macro_rules! load {
+            ($v:literal) => { A = $v; };
+            ($r:reg)     => { A = $r; };
+        }
+        fn main() {
+            load!(5);
+            load!(X);
+        }
+        """
+        assembly = compile_string(source)
+        assert "LDA #$05" in assembly   # literal arm
+        assert "TXA" in assembly        # reg arm
+
+    def test_impl_block_multi_arm(self):
+        """A multi-arm macro inside an impl block selects arms via method-macro calls."""
+        source = """
+        struct Console { x: u8 }
+
+        impl Console {
+            macro_rules! emit {
+                ($v:literal) => { self.x = $v; };
+                ($r:reg)     => { self.x = $r; };
+            }
+        }
+
+        #[ram]
+        static mut CON: Console;
+
+        fn main() {
+            CON.emit!(5);
+            CON.emit!(X);
+        }
+        """
+        program = parse(source, "<test>")
+
+        # Parses into one impl macro carrying two arms.
+        impl = [i for i in program.items if isinstance(i, ast.ImplDecl)][0]
+        emit = impl.macros[0]
+        assert emit.name == "emit"
+        assert len(emit.arms) == 2
+
+        expanded = expand_macros(program)
+        func = [i for i in expanded.items if isinstance(i, ast.FunctionDecl)][0]
+        stmts = func.body.statements
+        assert len(stmts) == 2
+        # CON.emit!(5) -> literal arm -> CON.x = 5
+        assert isinstance(stmts[0].expr.target, ast.FieldAccess)
+        assert stmts[0].expr.target.field == "x"
+        assert stmts[0].expr.value.value == 5
+        # CON.emit!(X) -> reg arm -> CON.x = X
+        assert isinstance(stmts[1].expr.target, ast.FieldAccess)
+        assert isinstance(stmts[1].expr.value, ast.Register)
+        assert stmts[1].expr.value.name == "X"
 
 
 # ============================================================================
@@ -364,8 +576,13 @@ class TestMacroExpansion:
 class TestMacroErrors:
     """Tests for macro error handling."""
 
-    def test_rust_arrow_syntax_error(self):
-        """Test helpful error for Rust's => syntax."""
+    def test_malformed_arrow_without_braces_error(self):
+        """An arm-style `=>` body must be wrapped in `{ }`; the bare form is a parse error.
+
+        Multi-arm macros are now supported via `macro_rules! name { (pat) => {...}; }`,
+        but `macro_rules! name(params) => {...}` (no enclosing braces) is neither the
+        shorthand nor the multi-arm form and fails as a generic parse error.
+        """
         from r65.compiler.frontend import ParseError
 
         source = """
@@ -375,9 +592,7 @@ class TestMacroErrors:
         """
         with pytest.raises(ParseError) as excinfo:
             parse(source, "<test>")
-        error_msg = str(excinfo.value)
-        assert "=>" in error_msg or "simplified macro syntax" in error_msg
-        assert "R65 syntax" in error_msg
+        assert "=>" in str(excinfo.value)
 
     def test_unsupported_fragment_error(self):
         """Test helpful error for unsupported fragment types."""

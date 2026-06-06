@@ -450,18 +450,35 @@ class MacroParam(ASTNode):
 
 
 @dataclass
+class MacroArm(ASTNode):
+    """One arm of a macro: a parameter pattern paired with a body.
+
+    The shorthand `macro_rules! name(params) { body }` is a single-arm macro.
+    The multi-arm form `macro_rules! name { (p) => { b }; ... }` has several.
+    """
+    params: List[MacroParam]
+    body_tokens: List[str]  # Raw token strings for this arm's body
+
+
+@dataclass
 class MacroDecl(Declaration):
     """Macro definition.
 
-    Example:
-        macro! inc_twice($reg:reg) {
+    Examples:
+        // Shorthand (single arm):
+        macro_rules! inc_twice($reg:reg) {
             $reg++;
             $reg++;
         }
+
+        // Multi-arm:
+        macro_rules! use_var {
+            ($name:ident)             => { $name = 0; };
+            ($name:ident, $v:literal) => { $name = $v; };
+        }
     """
     name: str
-    params: List[MacroParam]
-    body_tokens: List[str]  # Raw token strings for the body
+    arms: List[MacroArm]  # One or more pattern/body arms (shorthand => single arm)
 
 
 @dataclass
@@ -480,8 +497,7 @@ class ImplMacro(ASTNode):
         }
     """
     name: str
-    params: List[MacroParam]
-    body_tokens: List[str]
+    arms: List[MacroArm]
 
 
 @dataclass

@@ -727,8 +727,8 @@ class ASTBuilder(Transformer):
         return ast.ImplConst(name=name, const_type=const_type, value=value)
 
     @v_args(tree=True)
-    def impl_macro(self, tree):
-        """Macro definition inside impl block: macro_rules! name($param:type, ...) { body }"""
+    def impl_macro_short(self, tree):
+        """Shorthand impl macro: macro_rules! name($param:type, ...) { body } (single arm)"""
         items = tree.children
         name = None
         params = []
@@ -746,8 +746,26 @@ class ASTBuilder(Transformer):
 
         return ast.ImplMacro(
             name=name,
-            params=params,
-            body_tokens=body_tokens,
+            arms=[ast.MacroArm(params=params, body_tokens=body_tokens)],
+            source_loc=self._make_source_loc(tree.meta)
+        )
+
+    @v_args(tree=True)
+    def impl_macro_multi(self, tree):
+        """Multi-arm impl macro: macro_rules! name { (pat) => { body }; ... }"""
+        items = tree.children
+        name = None
+        arms = []
+
+        for item in items:
+            if isinstance(item, LarkToken) and item.type == 'IDENT':
+                name = item.value
+            elif isinstance(item, ast.MacroArm):
+                arms.append(item)
+
+        return ast.ImplMacro(
+            name=name,
+            arms=arms,
             source_loc=self._make_source_loc(tree.meta)
         )
 
@@ -1076,10 +1094,9 @@ class ASTBuilder(Transformer):
     # ========================================================================
 
     @v_args(tree=True)
-    def macro_decl(self, tree):
-        """Macro definition: macro! name($param:type, ...) { body }"""
+    def macro_decl_short(self, tree):
+        """Shorthand macro: macro_rules! name($param:type, ...) { body } (single arm)"""
         items = tree.children
-        # Filter to get name and params
         name = None
         params = []
         body_tokens = []
@@ -1096,10 +1113,43 @@ class ASTBuilder(Transformer):
 
         return ast.MacroDecl(
             name=name,
-            params=params,
-            body_tokens=body_tokens,
+            arms=[ast.MacroArm(params=params, body_tokens=body_tokens)],
             source_loc=self._make_source_loc(tree.meta)
         )
+
+    @v_args(tree=True)
+    def macro_decl_multi(self, tree):
+        """Multi-arm macro: macro_rules! name { (pat) => { body }; ... }"""
+        items = tree.children
+        name = None
+        arms = []
+
+        for item in items:
+            if isinstance(item, LarkToken) and item.type == 'IDENT':
+                name = item.value
+            elif isinstance(item, ast.MacroArm):
+                arms.append(item)
+
+        return ast.MacroDecl(
+            name=name,
+            arms=arms,
+            source_loc=self._make_source_loc(tree.meta)
+        )
+
+    def macro_arm(self, items):
+        """One arm of a multi-arm macro: (params) => { body }"""
+        params = []
+        body_tokens = []
+
+        for item in items:
+            if isinstance(item, list):  # macro_params result
+                params = item
+            elif isinstance(item, ast.MacroParam):
+                params.append(item)
+            elif isinstance(item, tuple) and item[0] == 'macro_body':
+                body_tokens = item[1]
+
+        return ast.MacroArm(params=params, body_tokens=body_tokens)
 
     def macro_params(self, items):
         """Macro parameter list."""
@@ -2991,16 +3041,6 @@ class Parser:
         """Check for common Rust macro syntax mistakes and return helpful error message."""
         import re
 
-        # Check for Rust's => syntax in macros
-        if '=>' in source and 'macro_rules!' in source:
-            if re.search(r'macro_rules!\s*\w+\s*\{', source) or re.search(r'\)\s*=>\s*\{', source):
-                return (
-                    "R65 uses simplified macro syntax without '=>' and without pattern matching.\n"
-                    "  Rust syntax:   macro_rules! name { ($x:expr) => { ... }; }\n"
-                    "  R65 syntax:    macro_rules! name($x:expr) { ... }\n"
-                    "See docs/macros.md for the complete macro syntax."
-                )
-
         # Check for unsupported fragment types
         unsupported_fragments = ['stmt', 'block', 'item', 'meta', 'pat', 'path', 'vis', 'lifetime']
         for frag in unsupported_fragments:
@@ -3010,15 +3050,6 @@ class Parser:
                     "  Supported fragment types: expr, ident, literal, ty, reg, tt\n"
                     "See docs/macros.md for details on each fragment type."
                 )
-
-        # Check for multiple macro arms (Rust uses { } with multiple arms)
-        if 'macro_rules!' in source and re.search(r'macro_rules!\s*\w+\s*\{[^}]*;\s*\(', source):
-            return (
-                "R65 macros support only a single pattern (no multiple arms).\n"
-                "  Rust syntax:   macro_rules! name { (pat1) => {...}; (pat2) => {...}; }\n"
-                "  R65 syntax:    macro_rules! name(params) { body }\n"
-                "See docs/macros.md for the complete macro syntax."
-            )
 
         # Check for + repetition (we only support *)
         if re.search(r'\$\([^)]+\)\s*[,;]?\s*\+', source):

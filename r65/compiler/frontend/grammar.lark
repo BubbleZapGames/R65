@@ -118,7 +118,8 @@ impl_decl: doc_comment* IMPL FAR? IDENT "{" impl_item* "}"
           | impl_macro
 
 // Macro definition inside impl block (same syntax as top-level macro_rules!)
-impl_macro: MACRO_RULES "!" IDENT "(" macro_params? ")" macro_body
+impl_macro: MACRO_RULES "!" IDENT "(" macro_params? ")" macro_body          -> impl_macro_short
+          | MACRO_RULES "!" IDENT "{" macro_arm (";" macro_arm)* ";"? "}"   -> impl_macro_multi
 
 // Method declaration in impl block
 // fn name(*self, ...) or fn name(far *self, ...) for explicit far self
@@ -153,8 +154,13 @@ extern_fn_decl: doc_comment* attribute* EXTERN FAR? FN IDENT "(" param_list? ")"
 extern_static_decl: doc_comment* attribute* EXTERN STATIC MUT? IDENT ":" type_expr ";"
 
 // Macro definition
-// macro_rules! name($param:fragment, ...) { body }
-macro_decl: MACRO_RULES "!" IDENT "(" macro_params? ")" macro_body
+// Shorthand (single arm):  macro_rules! name($param:fragment, ...) { body }
+// Multi-arm (Rust-style):  macro_rules! name { (pat) => { body }; (pat) => { body }; }
+macro_decl: MACRO_RULES "!" IDENT "(" macro_params? ")" macro_body          -> macro_decl_short
+          | MACRO_RULES "!" IDENT "{" macro_arm (";" macro_arm)* ";"? "}"   -> macro_decl_multi
+
+// One arm of a multi-arm macro: (params) => { body }
+macro_arm: "(" macro_params? ")" "=>" macro_body
 
 macro_params: macro_param ("," macro_param)* ","?
 

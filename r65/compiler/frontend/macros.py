@@ -5,8 +5,9 @@ Macro expander for R65.
 Handles macro definition collection and invocation expansion.
 Works at the AST level, expanding macro invocations into AST nodes.
 """
+import re
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Set, Union, Callable, TypeVar
+from typing import Dict, List, Optional, Set, Tuple, Union, Callable, TypeVar
 from copy import deepcopy
 
 T = TypeVar('T')
@@ -17,11 +18,17 @@ from r65.compiler.errors import MacroError, SourceLocation
 
 
 @dataclass
-class MacroDefinition:
-    """Stored macro definition."""
-    name: str
+class MacroArmDef:
+    """One pattern/body arm of a stored macro definition."""
     params: List[ast.MacroParam]
     body_tokens: List[str]
+
+
+@dataclass
+class MacroDefinition:
+    """Stored macro definition (one or more arms; shorthand => single arm)."""
+    name: str
+    arms: List[MacroArmDef]
     source_loc: Optional[SourceLocation] = None
 
 
@@ -109,11 +116,11 @@ class MacroExpander:
         self._expanding.add(name)
 
         try:
-            # Match arguments to parameters
-            bindings = self._match_params(macro, args, source_loc)
+            # Pick the first arm whose arity and fragment types match the args
+            arm, bindings = self._select_arm(macro, args, source_loc)
 
-            # Substitute parameters in body
-            expanded_tokens = self._substitute(macro.body_tokens, bindings)
+            # Substitute parameters in the selected arm's body
+            expanded_tokens = self._substitute(arm.body_tokens, bindings)
 
             # Process string operations (stringify!, string concatenation)
             expanded_tokens = self._process_string_operations(expanded_tokens)
@@ -156,20 +163,28 @@ class MacroExpander:
 
         return ast.Program(items=new_items, source_loc=program.source_loc)
 
+    @staticmethod
+    def _strip_arm_braces(body: List[str]) -> List[str]:
+        """Remove the outer { } wrapping an arm body, if present."""
+        if body and body[0] == '{' and body[-1] == '}':
+            return body[1:-1]
+        return body
+
+    def _make_definition(self, name, arms, source_loc) -> MacroDefinition:
+        """Build a MacroDefinition from a list of ast.MacroArm (body braces stripped)."""
+        return MacroDefinition(
+            name=name,
+            arms=[MacroArmDef(params=a.params, body_tokens=self._strip_arm_braces(a.body_tokens))
+                  for a in arms],
+            source_loc=source_loc,
+        )
+
     def _collect_macros(self, program: ast.Program):
         """Collect all macro definitions from the program."""
         for item in program.items:
             if isinstance(item, ast.MacroDecl):
-                # Clean up body tokens - remove outer braces if present
-                body = item.body_tokens
-                if body and body[0] == '{' and body[-1] == '}':
-                    body = body[1:-1]
-
-                self.macros[item.name] = MacroDefinition(
-                    name=item.name,
-                    params=item.params,
-                    body_tokens=body,
-                    source_loc=item.source_loc
+                self.macros[item.name] = self._make_definition(
+                    item.name, item.arms, item.source_loc
                 )
             elif isinstance(item, ast.ImplDecl):
                 # Collect impl macros
@@ -606,18 +621,11 @@ class MacroExpander:
 
     def _register_impl_macro(self, struct_name: str, macro: 'ast.ImplMacro'):
         """Register a macro defined inside an impl block."""
-        body = macro.body_tokens
-        if body and body[0] == '{' and body[-1] == '}':
-            body = body[1:-1]
-
         if struct_name not in self._impl_macros:
             self._impl_macros[struct_name] = {}
 
-        self._impl_macros[struct_name][macro.name] = MacroDefinition(
-            name=macro.name,
-            params=macro.params,
-            body_tokens=body,
-            source_loc=macro.source_loc
+        self._impl_macros[struct_name][macro.name] = self._make_definition(
+            macro.name, macro.arms, macro.source_loc
         )
 
     def _resolve_receiver_type(self, receiver: ast.Expression) -> Optional[str]:
@@ -705,14 +713,19 @@ class MacroExpander:
         # Resolve which impl macro to use
         macro = self._resolve_impl_macro(mm.receiver, mm.name, mm.source_loc)
 
-        # Replace 'self' with receiver text in body tokens
-        body_tokens = [receiver_text if t == 'self' else t for t in macro.body_tokens]
+        # Replace 'self' with receiver text in each arm's body tokens
+        temp_arms = [
+            MacroArmDef(
+                params=arm.params,
+                body_tokens=[receiver_text if t == 'self' else t for t in arm.body_tokens],
+            )
+            for arm in macro.arms
+        ]
 
-        # Build a temporary MacroDefinition with the substituted body
+        # Build a temporary MacroDefinition with the substituted bodies
         temp_macro = MacroDefinition(
             name=mm.name,
-            params=macro.params,
-            body_tokens=body_tokens,
+            arms=temp_arms,
             source_loc=macro.source_loc
         )
 
@@ -754,14 +767,8 @@ class MacroExpander:
                     result.extend(nested)
                 elif isinstance(item, ast.MacroDecl):
                     # Register any new macro definitions from expansion
-                    body = item.body_tokens
-                    if body and body[0] == '{' and body[-1] == '}':
-                        body = body[1:-1]
-                    self.macros[item.name] = MacroDefinition(
-                        name=item.name,
-                        params=item.params,
-                        body_tokens=body,
-                        source_loc=item.source_loc
+                    self.macros[item.name] = self._make_definition(
+                        item.name, item.arms, item.source_loc
                     )
                 elif isinstance(item, ast.FunctionDecl):
                     # Expand macros inside function bodies
@@ -819,56 +826,170 @@ class MacroExpander:
 
         return self._invoke_macro(name, args, source_loc, parse_as_statements)
 
-    def _match_params(
+    # Fragment-type classification sets (faithful to the lexer terminals).
+    _REG_NAMES = frozenset({'STATUS', 'DBR', 'PBR', 'A', 'B', 'X', 'Y', 'D', 'S'})
+    _TYPE_NAMES = frozenset({'bool', 'u16', 'i16', 'u8', 'i8'})
+    _BOOL_LITERALS = frozenset({'true', 'false'})
+    _TY_PREFIXES = frozenset({'*', 'far', 'near', '[', 'fn'})
+    _IDENT_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
+    _INT_RE = re.compile(r'^(0[xX][0-9A-Fa-f_]+|0[bB][01_]+|[0-9][0-9_]*)$')
+
+    def _arg_matches_fragment(self, arg: str, frag: str) -> bool:
+        """Check whether an argument token string satisfies a fragment type.
+
+        Args are space-joined token strings (e.g. "1 + 2", "X", "u8", '"hi there"').
+        `expr` and `tt` are catch-alls; `reg`/`literal`/`ident`/`ty` are specific.
+        """
+        arg = arg.strip()
+        if not arg:
+            return False
+        if frag in ('expr', 'tt'):
+            return True  # catch-all — broad like Rust's $x:expr / $x:tt
+
+        toks = arg.split()
+
+        if frag == 'reg':
+            return arg in self._REG_NAMES
+
+        if frag == 'literal':
+            # String / char literals may contain spaces — check the whole arg.
+            if len(arg) >= 2 and arg[0] == '"' and arg[-1] == '"':
+                return True
+            if len(arg) >= 2 and arg[0] == "'" and arg[-1] == "'":
+                return True
+            if len(arg) >= 3 and arg.startswith("b'") and arg[-1] == "'":
+                return True
+            if len(toks) != 1:
+                return False
+            t = toks[0]
+            return bool(self._INT_RE.match(t)) or t in self._BOOL_LITERALS
+
+        if frag == 'ident':
+            if len(toks) != 1:
+                return False
+            t = toks[0]
+            return (bool(self._IDENT_RE.match(t))
+                    and t not in self._REG_NAMES
+                    and t not in self._TYPE_NAMES
+                    and t not in self._BOOL_LITERALS)
+
+        if frag == 'ty':
+            if len(toks) == 1:
+                t = toks[0]
+                return (t in self._TYPE_NAMES
+                        or (bool(self._IDENT_RE.match(t))
+                            and t not in self._REG_NAMES
+                            and t not in self._BOOL_LITERALS))
+            # Multi-token type: pointer / array / fn type
+            return toks[0] in self._TY_PREFIXES
+
+        # Unknown fragment type — be permissive rather than silently rejecting.
+        return True
+
+    def _arm_signature(self, arm: MacroArmDef) -> str:
+        """Render an arm's parameter pattern for diagnostics, e.g. ($x:ident, $($y:expr),*)."""
+        parts = []
+        for p in arm.params:
+            if p.is_repeated:
+                parts.append(f"$(${p.name}:{p.fragment_type}),*")
+            else:
+                parts.append(f"${p.name}:{p.fragment_type}")
+        return "(" + ", ".join(parts) + ")"
+
+    def _match_arm(
+        self,
+        macro_name: str,
+        arm: MacroArmDef,
+        args: List[str],
+        source_loc: Optional[SourceLocation],
+        check_fragments: bool
+    ) -> Tuple[Optional[Dict[str, List[str]]], Optional[str]]:
+        """
+        Try to bind args to a single arm.
+
+        Returns (bindings, None) on success, or (None, reason) when the arm's
+        arity (or, when `check_fragments`, fragment types) don't fit the args.
+
+        Fragment types are only consulted to disambiguate between multiple arms;
+        a single-arm macro matches on arity alone, preserving the historical
+        no-validation behavior for all existing macros.
+        """
+        simple_params = [p for p in arm.params if not p.is_repeated]
+        repeated_params = [p for p in arm.params if p.is_repeated]
+
+        # Multiple repeated params is a malformed-macro error, not an arm mismatch.
+        if len(repeated_params) > 1:
+            raise MacroError(
+                f"macro '{macro_name}' has multiple repeated parameters (not supported)",
+                source_loc
+            )
+
+        bindings: Dict[str, List[str]] = {}
+
+        if repeated_params:
+            n_simple = len(simple_params)
+            if len(args) < n_simple:
+                return None, f"expects at least {n_simple} arguments, got {len(args)}"
+            rep = repeated_params[0]
+            if check_fragments:
+                for i, (param, arg) in enumerate(zip(simple_params, args[:n_simple])):
+                    if not self._arg_matches_fragment(arg, param.fragment_type):
+                        return None, f"argument {i + 1} ('{arg}') is not a '{param.fragment_type}'"
+                for arg in args[n_simple:]:
+                    if not self._arg_matches_fragment(arg, rep.fragment_type):
+                        return None, f"argument ('{arg}') is not a '{rep.fragment_type}'"
+            for param, arg in zip(simple_params, args[:n_simple]):
+                bindings[param.name] = [arg]
+            bindings[rep.name] = args[n_simple:]
+        else:
+            if len(args) != len(simple_params):
+                return None, f"expects {len(simple_params)} arguments, got {len(args)}"
+            if check_fragments:
+                for i, (param, arg) in enumerate(zip(simple_params, args)):
+                    if not self._arg_matches_fragment(arg, param.fragment_type):
+                        return None, f"argument {i + 1} ('{arg}') is not a '{param.fragment_type}'"
+            for param, arg in zip(simple_params, args):
+                bindings[param.name] = [arg]
+
+        return bindings, None
+
+    def _select_arm(
         self,
         macro: MacroDefinition,
         args: List[str],
         source_loc: Optional[SourceLocation]
-    ) -> Dict[str, List[str]]:
+    ) -> Tuple[MacroArmDef, Dict[str, List[str]]]:
         """
-        Match arguments to macro parameters.
+        Pick the first arm whose arity (and, for multi-arm macros, fragment
+        types) match the arguments.
 
-        Args:
-            macro: The macro definition
-            args: List of argument token strings
-            source_loc: Source location for error reporting
-
-        Returns:
-            Dictionary mapping parameter names to their values (as token lists)
+        Returns (arm, bindings). Raises MacroError if no arm matches.
         """
-        bindings: Dict[str, List[str]] = {}
+        # Fragment types only matter when there is more than one arm to choose
+        # between; single-arm macros match on arity alone (backward compatible).
+        check_fragments = len(macro.arms) > 1
 
-        # Handle simple case: no repetition
-        simple_params = [p for p in macro.params if not p.is_repeated]
-        repeated_params = [p for p in macro.params if p.is_repeated]
+        reasons: List[Tuple[MacroArmDef, str]] = []
+        for arm in macro.arms:
+            bindings, reason = self._match_arm(
+                macro.name, arm, args, source_loc, check_fragments
+            )
+            if bindings is not None:
+                return arm, bindings
+            reasons.append((arm, reason))
 
-        if repeated_params:
-            if len(repeated_params) > 1:
-                raise MacroError(
-                    f"macro '{macro.name}' has multiple repeated parameters (not supported)",
-                    source_loc
-                )
-            # Bind leading simple params first, remaining args go to repeated param
-            n_simple = len(simple_params)
-            if len(args) < n_simple:
-                raise MacroError(
-                    f"macro '{macro.name}' expects at least {n_simple} arguments, got {len(args)}",
-                    source_loc
-                )
-            for param, arg in zip(simple_params, args[:n_simple]):
-                bindings[param.name] = [arg]
-            bindings[repeated_params[0].name] = args[n_simple:]
-        else:
-            # Simple matching: each arg to each param
-            if len(args) != len(simple_params):
-                raise MacroError(
-                    f"macro '{macro.name}' expects {len(simple_params)} arguments, got {len(args)}",
-                    source_loc
-                )
-            for param, arg in zip(simple_params, args):
-                bindings[param.name] = [arg]
+        # No arm matched. Single-arm macros keep the precise legacy diagnostic.
+        if len(macro.arms) == 1:
+            raise MacroError(f"macro '{macro.name}' {reasons[0][1]}", source_loc)
 
-        return bindings
+        plural = 's' if len(args) != 1 else ''
+        detail = '\n'.join(
+            f"    {self._arm_signature(arm)}  ({reason})" for arm, reason in reasons
+        )
+        raise MacroError(
+            f"no matching arm for macro '{macro.name}' ({len(args)} argument{plural}). Arms:\n{detail}",
+            source_loc
+        )
 
     def _substitute(
         self,
