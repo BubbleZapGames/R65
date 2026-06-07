@@ -350,21 +350,18 @@ class CallValidator:
                 source_loc=expr.source_loc
             )
 
-        # Find the method in the trait's method list
-        method_index = None
-        trait_method = None
-        for i, m in enumerate(trait_def.methods):
-            if m.name == method_name:
-                method_index = i
-                trait_method = m
-                break
-
-        if trait_method is None:
+        # Find the method in the trait or any of its (transitive) supertraits.
+        # Resolution returns the DECLARING trait so dispatch goes through that
+        # trait's own jump table (inherited methods reuse the supertrait's table).
+        found = self._find_trait_method(trait_name, method_name)
+        if found is None:
+            available = self._all_trait_method_names(trait_name)
             raise TypeCheckError(
                 f"trait '{trait_name}' has no method '{method_name}'",
                 source_loc=expr.source_loc,
-                hint=f"available methods: {', '.join(m.name for m in trait_def.methods)}"
+                hint=f"available methods: {', '.join(available)}"
             )
+        declaring_trait, method_index, trait_method = found
 
         # Validate argument count (excluding self)
         expected_args = len(trait_method.params)
@@ -390,10 +387,11 @@ class CallValidator:
         # Determine if trait methods are far
         trait_is_far = trait_method.is_far
 
-        # Store dispatch info for codegen
+        # Store dispatch info for codegen. Dispatch through the DECLARING trait's
+        # table so inherited supertrait methods reuse that trait's wrapper.
         expr.method_call_info = {
             'is_trait_dispatch': True,
-            'trait_name': trait_name,
+            'trait_name': declaring_trait,
             'method_name': method_name,
             'method_index': method_index,
             'self_arg': self_arg,
@@ -407,6 +405,48 @@ class CallValidator:
             expr.expr_type = BasicTypeInfo('void')
 
         return expr.expr_type
+
+    def _find_trait_method(self, trait_name, method_name, _seen=None):
+        """Search a trait and its transitive supertraits for a method.
+
+        Returns (declaring_trait_name, method_index_within_declaring_trait, method)
+        or None. No-shadowing validation guarantees the first match is unique.
+        """
+        if _seen is None:
+            _seen = set()
+        if trait_name in _seen:
+            return None
+        _seen.add(trait_name)
+
+        sym = self.symbol_table.lookup(trait_name)
+        if not sym or sym.kind != SymbolKind.TRAIT or not sym.definition:
+            return None
+        trait_def = sym.definition
+
+        for i, m in enumerate(trait_def.methods):
+            if m.name == method_name:
+                return (trait_name, i, m)
+
+        for supertrait in getattr(trait_def, 'supertraits', []):
+            found = self._find_trait_method(supertrait, method_name, _seen)
+            if found is not None:
+                return found
+        return None
+
+    def _all_trait_method_names(self, trait_name, _seen=None):
+        """All method names declared by a trait and its transitive supertraits."""
+        if _seen is None:
+            _seen = set()
+        if trait_name in _seen:
+            return []
+        _seen.add(trait_name)
+        sym = self.symbol_table.lookup(trait_name)
+        if not sym or sym.kind != SymbolKind.TRAIT or not sym.definition:
+            return []
+        names = [m.name for m in sym.definition.methods]
+        for supertrait in getattr(sym.definition, 'supertraits', []):
+            names.extend(self._all_trait_method_names(supertrait, _seen))
+        return names
 
     def _check_fmt_str_call(self, expr: HIRFunctionCall) -> TypeInfo:
         """

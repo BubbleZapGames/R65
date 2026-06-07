@@ -816,11 +816,14 @@ class ASTBuilder(Transformer):
         name = items[idx].value if isinstance(items[idx], LarkToken) else items[idx]
         idx += 1
 
-        # Collect methods and constants
+        # Collect supertraits, methods, and constants
+        supertraits = []
         methods = []
         constants = []
         for item in items[idx:]:
-            if isinstance(item, ast.TraitMethod):
+            if isinstance(item, tuple) and item and item[0] == 'trait_bounds':
+                supertraits = item[1]
+            elif isinstance(item, ast.TraitMethod):
                 methods.append(item)
             elif isinstance(item, ast.TraitConst):
                 constants.append(item)
@@ -829,9 +832,16 @@ class ASTBuilder(Transformer):
             name=name,
             methods=methods,
             constants=constants,
+            supertraits=supertraits,
             doc=doc,
             source_loc=self._make_source_loc(tree.meta)
         )
+
+    def trait_bounds(self, items):
+        """Supertrait bounds: : Super1 + Super2"""
+        names = [item.value for item in items
+                 if isinstance(item, LarkToken) and item.type == 'IDENT']
+        return ('trait_bounds', names)
 
     @v_args(tree=True)
     def trait_method(self, tree):

@@ -60,8 +60,10 @@ class HIRBuilder:
         self._next_type_id = 1  # TypeId 0 is reserved (invalid/error)
         self._struct_type_ids: Dict[str, int] = {}  # struct_name -> type_id
         self._trait_impls: Dict[str, List[str]] = {}  # trait_name -> [struct_name, ...] ordered by TypeId
+        self._trait_impl_locs: Dict[tuple, Any] = {}  # (trait_name, struct_name) -> source_loc
         self._struct_trait_kind: Dict[str, str] = {}  # struct_name -> 'near' or 'far'
         self._dyn_used_traits: Set[str] = set()  # trait names used with *dyn
+        self._trait_supertraits: Dict[str, List[str]] = {}  # trait_name -> declared supertrait names
 
     def _process_snesrom_attribute(self, attr: ast.Attribute):
         """Process snesrom attribute that was mistakenly attached to a function."""
@@ -133,9 +135,23 @@ class HIRBuilder:
         stack_attr = None
         snesrom_config = None
 
+        # Map each trait to its declared supertraits (for inheritance validation
+        # and supertrait-aware resolution).
+        self._trait_supertraits = {
+            d.name: list(d.supertraits)
+            for d in ast_program.items if isinstance(d, ast.TraitDecl)
+        }
+
         # Pass 0: Scan for *dyn Trait usages to determine which traits need TypeIds.
         # TypeId injection changes struct layout, so it must only happen for traits
         # actually used with dynamic dispatch (*dyn), not static dispatch.
+        #
+        # Supertraits are deliberately NOT force-marked dyn-used. A struct implementing a
+        # *dyn-used subtrait already gets a TypeId from that subtrait, and
+        # _build_trait_dispatch_info builds a supertrait's table/wrapper from any implementor
+        # that has a TypeId — so inherited dispatch and upcast work without it. Marking
+        # supertraits dyn-used would only inject a TypeId byte (a layout change) into structs
+        # that implement *only* a supertrait and are never dynamically dispatched.
         self._dyn_used_traits = self._collect_dyn_traits(ast_program)
 
         # Pass 1: Declare all top-level symbols (filtered by cfg)
@@ -178,6 +194,10 @@ class HIRBuilder:
             else:
                 if self._should_include_declaration(decl):
                     self._declare_toplevel(decl)
+
+        # Validate trait inheritance now that all traits and impls are declared.
+        self._validate_trait_hierarchy()
+        self._validate_supertrait_impls()
 
         # Pass 2: Build HIR nodes with resolved references (filtered by cfg)
         hir_decls = []
@@ -1611,6 +1631,116 @@ class HIRBuilder:
             )
             self.symbol_table.declare(method_key, method_info_symbol)
 
+    def _supertrait_closure(self, trait_name: str) -> List[str]:
+        """Transitive supertraits of `trait_name`, de-duplicated, excluding itself.
+
+        Cycle-safe (a `seen` guard prevents infinite loops); cycle *reporting* is
+        handled separately by _validate_trait_hierarchy.
+        """
+        result: List[str] = []
+        seen: Set[str] = set()
+        stack = list(self._trait_supertraits.get(trait_name, []))
+        while stack:
+            s = stack.pop(0)
+            if s in seen:
+                continue
+            seen.add(s)
+            result.append(s)
+            stack.extend(self._trait_supertraits.get(s, []))
+        return result
+
+    def _validate_trait_hierarchy(self):
+        """Validate supertrait references, acyclicity, near/far uniformity, and no shadowing."""
+        # 1. Every supertrait must exist and be a trait.
+        for name, supers in self._trait_supertraits.items():
+            for s in supers:
+                sym = self.symbol_table.lookup(s)
+                if sym is None:
+                    raise HIRError(f"trait '{name}' lists unknown supertrait '{s}'",
+                                   source_loc=self._trait_decl_loc(name))
+                if sym.kind != SymbolKind.TRAIT:
+                    raise HIRError(f"trait '{name}': supertrait '{s}' is not a trait",
+                                   source_loc=self._trait_decl_loc(name))
+
+        # 2. The supertrait graph must be acyclic.
+        WHITE, GRAY, BLACK = 0, 1, 2
+        color: Dict[str, int] = {}
+
+        def dfs(n: str, path: List[str]):
+            color[n] = GRAY
+            for s in self._trait_supertraits.get(n, []):
+                if color.get(s) == GRAY:
+                    cycle = ' -> '.join(path + [s])
+                    raise HIRError(f"trait inheritance cycle: {cycle}",
+                                   source_loc=self._trait_decl_loc(n))
+                if color.get(s, WHITE) == WHITE:
+                    dfs(s, path + [s])
+            color[n] = BLACK
+
+        for n in self._trait_supertraits:
+            if color.get(n, WHITE) == WHITE:
+                dfs(n, [n])
+
+        # 3 & 4. Per trait: uniform near/far across the hierarchy, and no method/const
+        #        name appears in more than one trait of the closure (incl. the trait itself).
+        for name in self._trait_supertraits:
+            trait_ast = self.symbol_table.lookup(name).definition  # ast.TraitDecl
+            chain = [name] + self._supertrait_closure(name)
+
+            own_far = self._trait_far_kind(trait_ast)
+            seen_methods: Dict[str, str] = {}
+            seen_consts: Dict[str, str] = {}
+            for t in chain:
+                t_ast = self.symbol_table.lookup(t).definition
+                t_far = self._trait_far_kind(t_ast)
+                if own_far is not None and t_far is not None and own_far != t_far:
+                    raise HIRError(
+                        f"trait '{name}' is {'far' if own_far else 'near'} but supertrait "
+                        f"'{t}' is {'far' if t_far else 'near'}; a trait and its supertraits "
+                        f"must share the same calling convention",
+                        source_loc=self._trait_decl_loc(name))
+                for m in t_ast.methods:
+                    if m.name in seen_methods and seen_methods[m.name] != t:
+                        raise HIRError(
+                            f"trait '{name}' inherits conflicting method '{m.name}' from both "
+                            f"'{seen_methods[m.name]}' and '{t}'",
+                            source_loc=self._trait_decl_loc(name))
+                    seen_methods[m.name] = t
+                for c in t_ast.constants:
+                    if c.name in seen_consts and seen_consts[c.name] != t:
+                        raise HIRError(
+                            f"trait '{name}' inherits conflicting const '{c.name}' from both "
+                            f"'{seen_consts[c.name]}' and '{t}'",
+                            source_loc=self._trait_decl_loc(name))
+                    seen_consts[c.name] = t
+
+    def _validate_supertrait_impls(self):
+        """Every struct implementing a trait must also implement all transitive supertraits."""
+        for trait_name, struct_names in list(self._trait_impls.items()):
+            supers = self._supertrait_closure(trait_name)
+            if not supers:
+                continue
+            for struct in struct_names:
+                for s in supers:
+                    if struct not in self._trait_impls.get(s, []):
+                        raise HIRError(
+                            f"impl '{trait_name}' for '{struct}' requires '{struct}' to also "
+                            f"implement supertrait '{s}'",
+                            source_loc=self._trait_impl_locs.get((trait_name, struct)))
+
+    @staticmethod
+    def _trait_far_kind(trait_ast) -> Optional[bool]:
+        """True if the trait's methods are far, False if near, None if it has no methods."""
+        if not trait_ast.methods:
+            return None
+        return any(m.is_far for m in trait_ast.methods)
+
+    def _trait_decl_loc(self, trait_name: str):
+        """Source location of a trait declaration, if available."""
+        sym = self.symbol_table.lookup(trait_name)
+        defn = sym.definition if sym else None
+        return getattr(defn, 'source_loc', None)
+
     def _declare_trait_impl(self, impl: ast.ImplDecl):
         """First pass: declare trait implementation methods and validate against trait definition."""
         trait_symbol = self.symbol_table.lookup(impl.trait_name)
@@ -1686,6 +1816,7 @@ class HIRBuilder:
         if impl.trait_name not in self._trait_impls:
             self._trait_impls[impl.trait_name] = []
         self._trait_impls[impl.trait_name].append(impl.struct_name)
+        self._trait_impl_locs[(impl.trait_name, impl.struct_name)] = impl.source_loc
 
         # Declare associated constants with qualified names
         for const in impl.constants:
@@ -1794,6 +1925,7 @@ class HIRBuilder:
             name=trait.name,
             methods=hir_methods,
             constants=hir_constants,
+            supertraits=list(trait.supertraits),
             symbol=trait_symbol
         )
 

@@ -134,7 +134,12 @@ class TypeUtils:
                 if isinstance(t1.pointee_type, TraitTypeInfo) and isinstance(t2.pointee_type, StructTypeInfo):
                     if TypeUtils._struct_implements_trait(t2.pointee_type.name, t1.pointee_type.name):
                         return True
-                # *Trait -> *Trait is already handled by types_equal (name equality)
+                # *dyn Sub -> *dyn Super upcast (no-op): same object + TypeId, so the
+                # bit pattern is identical. t1 = expected (*dyn Super), t2 = actual (*dyn Sub).
+                if isinstance(t1.pointee_type, TraitTypeInfo) and isinstance(t2.pointee_type, TraitTypeInfo):
+                    if TypeUtils._trait_extends(t2.pointee_type.name, t1.pointee_type.name):
+                        return True
+                # *Trait -> *Trait of the same trait is handled by types_equal above
 
         # Integer type compatibility for comparisons
         # Allow comparing different-size integers (e.g., u16 vs u8)
@@ -173,6 +178,23 @@ class TypeUtils:
                     dispatch_key = f"{trait_name}.{first_method}.{struct_name}"
                     return TypeUtils._symbol_table.lookup(dispatch_key) is not None
         return False
+
+    @staticmethod
+    def _trait_extends(sub_name: str, super_name: str, _seen=None) -> bool:
+        """True if `sub_name` (transitively) lists `super_name` as a supertrait."""
+        if TypeUtils._symbol_table is None:
+            return False
+        if _seen is None:
+            _seen = set()
+        if sub_name in _seen:
+            return False
+        _seen.add(sub_name)
+        sym = TypeUtils._symbol_table.lookup(sub_name)
+        defn = sym.definition if sym else None
+        supers = getattr(defn, 'supertraits', None) or []
+        if super_name in supers:
+            return True
+        return any(TypeUtils._trait_extends(s, super_name, _seen) for s in supers)
 
     # Class variable to hold symbol table reference for trait impl checking
     _symbol_table = None

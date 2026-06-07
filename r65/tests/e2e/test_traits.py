@@ -666,3 +666,157 @@ class TestFarSelfTraitDispatch:
         ))
         assert result.success, f"Failures: {result.failures}"
 
+
+
+class TestTraitInheritance:
+    """End-to-end tests for trait inheritance (supertraits)."""
+
+    # Inherited dispatch selects the concrete impl by TypeId. Tested with one
+    # trait pointer per program (two simultaneous live trait pointers trip an
+    # unrelated, pre-existing dispatch bug).
+    _INHERIT_NEAR = '''
+        #[zeropage(0x10, register)]
+        static mut SCRATCH0: u8;
+        #[zeropage(0x12, register)]
+        static mut SCRATCH1: u16;
+
+        #[lowram]
+        static mut RESULT: u8;
+
+        struct Player {{ x: u8, y: u8 }}
+        struct Enemy  {{ x: u8, y: u8 }}
+
+        trait Tag {{ fn tag(*self); }}
+        trait Drawable: Tag {{ fn draw(*self); }}
+
+        impl Tag for Player {{ fn tag(*self) {{ RESULT = 42; }} }}
+        impl Drawable for Player {{ fn draw(*self) {{ }} }}
+        impl Tag for Enemy {{ fn tag(*self) {{ RESULT = 99; }} }}
+        impl Drawable for Enemy {{ fn draw(*self) {{ }} }}
+
+        #[lowram]
+        static mut PLAYER: Player = Player {{ x: 1, y: 2 }};
+        #[lowram]
+        static mut ENEMY: Enemy = Enemy {{ x: 3, y: 4 }};
+
+        #[entry]
+        fn main() {{
+            let d: *dyn Drawable = &{obj};
+            d.tag();
+        }}
+    '''
+
+    def test_inherited_dispatch_selects_first_impl(self, e2e):
+        """Inherited Tag::tag on *dyn Drawable dispatches to Player."""
+        result = e2e.run(self._INHERIT_NEAR.format(obj="PLAYER"),
+                         ExpectedState(memory={0x7E0200: 42}))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_inherited_dispatch_selects_second_impl(self, e2e):
+        """Inherited Tag::tag on *dyn Drawable dispatches to Enemy by its TypeId."""
+        result = e2e.run(self._INHERIT_NEAR.format(obj="ENEMY"),
+                         ExpectedState(memory={0x7E0200: 99}))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_upcast_then_inherited_dispatch(self, e2e):
+        """*dyn Sub upcast to *dyn Super still dispatches to the concrete impl."""
+        src = '''
+            #[zeropage(0x10, register)]
+            static mut SCRATCH0: u8;
+            #[zeropage(0x12, register)]
+            static mut SCRATCH1: u16;
+
+            #[lowram]
+            static mut RESULT: u8;
+
+            struct Player { x: u8, y: u8 }
+            struct Enemy  { x: u8, y: u8 }
+
+            trait Tag { fn tag(*self); }
+            trait Drawable: Tag { fn draw(*self); }
+
+            impl Tag for Player { fn tag(*self) { RESULT = 42; } }
+            impl Drawable for Player { fn draw(*self) { } }
+            impl Tag for Enemy { fn tag(*self) { RESULT = 99; } }
+            impl Drawable for Enemy { fn draw(*self) { } }
+
+            #[lowram]
+            static mut ENEMY: Enemy = Enemy { x: 3, y: 4 };
+
+            #[entry]
+            fn main() {
+                let d: *dyn Drawable = &ENEMY;
+                let t: *dyn Tag = d;   // upcast (no-op)
+                t.tag();               // -> Enemy -> 99
+            }
+        '''
+        result = e2e.run(src, ExpectedState(memory={0x7E0200: 99}))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_own_and_inherited_on_same_pointer(self, e2e):
+        """Both the subtrait's own method and an inherited method work on one pointer."""
+        src = '''
+            #[zeropage(0x10, register)]
+            static mut SCRATCH0: u8;
+            #[zeropage(0x12, register)]
+            static mut SCRATCH1: u16;
+
+            #[lowram]
+            static mut OWN: u8;
+            #[lowram]
+            static mut INHERITED: u8;
+
+            struct Player { x: u8, y: u8 }
+
+            trait Tag { fn tag(*self); }
+            trait Drawable: Tag { fn draw(*self); }
+
+            impl Tag for Player { fn tag(*self) { INHERITED = 7; } }
+            impl Drawable for Player { fn draw(*self) { OWN = 5; } }
+
+            #[lowram]
+            static mut PLAYER: Player = Player { x: 1, y: 2 };
+
+            #[entry]
+            fn main() {
+                let d: *dyn Drawable = &PLAYER;
+                d.draw();   // own -> OWN = 5
+                d.tag();    // inherited -> INHERITED = 7
+            }
+        '''
+        result = e2e.run(src, ExpectedState(memory={0x7E0200: 5, 0x7E0201: 7}))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_inherited_method_dispatch_far(self, e2e):
+        """Inherited dispatch works for a far trait hierarchy (JML trampolines)."""
+        src = '''
+            #[zeropage(0x10, register)]
+            static mut SCRATCH0: u8;
+            #[zeropage(0x12, register)]
+            static mut SCRATCH1: u16;
+
+            #[lowram]
+            static mut RESULT: u8;
+
+            struct Player { x: u8, y: u8 }
+            struct Enemy  { x: u8, y: u8 }
+
+            trait Tag { far fn tag(*self); }
+            trait Drawable: Tag { far fn draw(*self); }
+
+            impl Tag for Player { far fn tag(*self) { RESULT = 42; } }
+            impl Drawable for Player { far fn draw(*self) { } }
+            impl Tag for Enemy { far fn tag(*self) { RESULT = 99; } }
+            impl Drawable for Enemy { far fn draw(*self) { } }
+
+            #[lowram]
+            static mut ENEMY: Enemy = Enemy { x: 3, y: 4 };
+
+            #[entry]
+            fn main() {
+                let d: *dyn Drawable = &ENEMY;
+                d.tag();   // inherited far Tag::tag -> Enemy -> 99
+            }
+        '''
+        result = e2e.run(src, ExpectedState(memory={0x7E0200: 99}))
+        assert result.success, f"Failures: {result.failures}"

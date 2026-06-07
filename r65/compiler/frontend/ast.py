@@ -279,7 +279,7 @@ class TraitDecl(Declaration):
     """Trait declaration.
 
     Example:
-        trait Drawable {
+        trait Drawable: Position + Sprite {
             const WIDTH: u8;
             fn draw(*self);
             fn get_x(*self) -> u8;
@@ -288,6 +288,7 @@ class TraitDecl(Declaration):
     name: str
     methods: List[TraitMethod]
     constants: List[TraitConst]
+    supertraits: List[str] = field(default_factory=list)  # Inherited trait names
     doc: Optional[str] = None
 
 

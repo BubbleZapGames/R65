@@ -199,6 +199,69 @@ impl FarTrait for MyStruct { /* ... */ }   // ERROR: MyStruct already has near t
 
 ---
 
+## Trait Inheritance (Supertraits)
+
+A trait can require ("inherit from") one or more **supertraits**, listed after a `:`:
+
+```rust
+trait Position { fn px(*self) -> u8; }
+trait Sprite   { fn tile(*self) -> u8; }
+
+trait Drawable: Position + Sprite {
+    fn draw(*self);
+}
+```
+
+### Requirement
+
+Implementing a subtrait requires implementing every transitive supertrait. The
+implementor still writes one `impl` block per trait:
+
+```rust
+struct Player { x: u8 }
+
+impl Position for Player { fn px(*self) -> u8 { return self.x; } }
+impl Sprite   for Player { fn tile(*self) -> u8 { return 7; } }
+impl Drawable for Player { fn draw(*self) { /* ... */ } }
+// Omitting impl Position or impl Sprite is a compile error.
+```
+
+### Calling Inherited Methods
+
+A `*dyn Drawable` can call `Drawable`'s own methods **and** all inherited supertrait
+methods. An inherited method dispatches through the supertrait's own jump table:
+
+```rust
+let d: *dyn Drawable = &PLAYER;
+d.draw();   // Drawable's own method
+d.px();     // inherited from Position (dispatched by TypeId)
+```
+
+### Upcasting
+
+Because every implementor carries a single TypeId byte at offset 0, a `*dyn Sub` and a
+`*dyn Super` to the same object are bit-identical. Upcasting is therefore a zero-cost,
+representation-preserving coercion:
+
+```rust
+let d: *dyn Drawable = &PLAYER;
+let p: *dyn Position = d;   // upcast, no runtime cost
+p.px();
+```
+
+### Rules
+
+- Supertraits are named only on the trait declaration, never on `impl`.
+- The supertrait graph must be acyclic.
+- A subtrait may not redeclare a method or constant name already declared by any
+  transitive supertrait (keeps dispatch unambiguous).
+- A trait and all its supertraits must share the same near/far calling convention.
+- Default method bodies are still not supported; a subtrait's own behavior lives in its
+  `impl` blocks (where `self` is the concrete type, so supertrait methods are callable
+  directly).
+
+---
+
 ## TypeId System
 
 ### Automatic Insertion
@@ -758,11 +821,12 @@ Traits provide:
 
 1. **No generics** - Cannot parameterize traits with types
 2. **No default implementations** - Must implement all methods
-3. **No supertraits** - Cannot extend other traits
-4. **No associated types** - Cannot define type aliases in traits (associated constants are supported)
-5. **No trait bounds** - Cannot require traits in function signatures
-6. **Near/far exclusivity** - Struct cannot mix near and far traits
-7. **No `self` by value** - Methods must take `*self` pointer
+3. **No associated types** - Cannot define type aliases in traits (associated constants are supported)
+4. **No trait bounds** - Cannot require traits in function signatures
+5. **Near/far exclusivity** - Struct cannot mix near and far traits
+6. **No `self` by value** - Methods must take `*self` pointer
+
+Supertraits (trait inheritance) **are** supported — see [Trait Inheritance](#trait-inheritance-supertraits).
 
 ---
 

@@ -100,7 +100,9 @@ enum_decl: doc_comment* ENUM IDENT "{" enum_variant ("," enum_variant)* ","? "}"
 enum_variant: var_name ("=" expr)?
 
 // Trait declaration
-trait_decl: doc_comment* TRAIT IDENT "{" trait_item* "}"
+// Optional supertraits: trait Sub: Super1 + Super2 { ... }
+trait_decl: doc_comment* TRAIT IDENT trait_bounds? "{" trait_item* "}"
+trait_bounds: ":" IDENT ("+" IDENT)*
 ?trait_item: trait_method | trait_const
 trait_method: FAR? FN IDENT "(" trait_param_list ")" return_type? ";"
 trait_param_list: self_param ("," param)* ","?

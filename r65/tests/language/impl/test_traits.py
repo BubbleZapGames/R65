@@ -638,3 +638,217 @@ class TestDynSyntax:
             }
         """
         build_and_check(source)  # Should not raise
+
+
+class TestTraitInheritance:
+    """Tests for trait inheritance (supertraits)."""
+
+    def test_parse_single_supertrait(self):
+        """trait Sub: Super { ... } records the supertrait."""
+        program = parse("trait Drawable: Entity { fn draw(*self); }", "test.r65")
+        trait = program.items[0]
+        assert trait.supertraits == ["Entity"]
+
+    def test_parse_multiple_supertraits(self):
+        """trait C: A + B { ... } records all supertraits in order."""
+        program = parse("trait Drawable: Position + Sprite { fn draw(*self); }", "test.r65")
+        assert program.items[0].supertraits == ["Position", "Sprite"]
+
+    def test_parse_no_supertrait(self):
+        """A plain trait has an empty supertrait list."""
+        program = parse("trait Drawable { fn draw(*self); }", "test.r65")
+        assert program.items[0].supertraits == []
+
+    def test_unknown_supertrait_fails(self):
+        with pytest.raises(HIRError, match="unknown supertrait 'Ghost'"):
+            build_and_check("trait Drawable: Ghost { fn draw(*self); }")
+
+    def test_supertrait_not_a_trait_fails(self):
+        source = """
+            struct NotATrait { x: u8 }
+            trait Drawable: NotATrait { fn draw(*self); }
+        """
+        with pytest.raises(HIRError, match="is not a trait"):
+            build_and_check(source)
+
+    def test_supertrait_cycle_fails(self):
+        source = """
+            trait Foo: Bar { fn foo(*self); }
+            trait Bar: Foo { fn bar(*self); }
+        """
+        with pytest.raises(HIRError, match="cycle"):
+            build_and_check(source)
+
+    def test_method_shadowing_fails(self):
+        source = """
+            trait Base { fn m(*self); }
+            trait Sub: Base { fn m(*self); }
+        """
+        with pytest.raises(HIRError, match="conflicting method 'm'"):
+            build_and_check(source)
+
+    def test_near_far_mismatch_fails(self):
+        source = """
+            trait NearT { fn n(*self); }
+            trait FarT: NearT { far fn f(far *self); }
+        """
+        with pytest.raises(HIRError, match="same calling convention"):
+            build_and_check(source)
+
+    def test_missing_supertrait_impl_fails(self):
+        """Implementing a subtrait requires implementing its supertraits."""
+        source = """
+            struct Player { x: u8 }
+            trait Position { fn px(*self) -> u8; }
+            trait Drawable: Position { fn draw(*self); }
+            impl Drawable for Player { fn draw(*self) { } }
+        """
+        with pytest.raises(HIRError, match="supertrait 'Position'"):
+            build_and_check(source)
+
+    def test_full_hierarchy_type_checks(self):
+        """A complete hierarchy with all impls type checks."""
+        source = """
+            #[zeropage(0x10, register)]
+            static mut SCRATCH0: u8;
+            #[zeropage(0x12, register)]
+            static mut SCRATCH1: u16;
+            struct Player { x: u8 }
+            trait Position { fn px(*self) -> u8; }
+            trait Sprite   { fn tile(*self) -> u8; }
+            trait Drawable: Position + Sprite { fn draw(*self); }
+            impl Position for Player { fn px(*self) -> u8 { return self.x; } }
+            impl Sprite   for Player { fn tile(*self) -> u8 { return 1; } }
+            impl Drawable for Player { fn draw(*self) { } }
+            #[lowram]
+            static mut PLAYER: Player;
+            fn test() {
+                let d: *dyn Drawable = &PLAYER;
+                d.draw();
+            }
+        """
+        build_and_check(source)  # Should not raise
+
+    def test_inherited_method_call_type_checks(self):
+        """A supertrait method is callable on a *dyn Sub pointer."""
+        source = """
+            #[zeropage(0x10, register)]
+            static mut SCRATCH0: u8;
+            #[zeropage(0x12, register)]
+            static mut SCRATCH1: u16;
+            struct Player { x: u8 }
+            trait Position { fn px(*self) -> u8; }
+            trait Drawable: Position { fn draw(*self); }
+            impl Position for Player { fn px(*self) -> u8 { return self.x; } }
+            impl Drawable for Player { fn draw(*self) { } }
+            #[lowram]
+            static mut PLAYER: Player;
+            #[lowram]
+            static mut R: u8;
+            fn test() {
+                let d: *dyn Drawable = &PLAYER;
+                R = d.px();   // inherited from Position
+            }
+        """
+        build_and_check(source)  # Should not raise
+
+    def test_inherited_dispatch_targets_declaring_trait(self):
+        """An inherited call resolves to the supertrait's dispatch wrapper."""
+        source = """
+            #[zeropage(0x10, register)]
+            static mut SCRATCH0: u8;
+            #[zeropage(0x12, register)]
+            static mut SCRATCH1: u16;
+            struct Player { x: u8 }
+            trait Position { fn px(*self) -> u8; }
+            trait Drawable: Position { fn draw(*self); }
+            impl Position for Player { fn px(*self) -> u8 { return self.x; } }
+            impl Drawable for Player { fn draw(*self) { } }
+            #[lowram]
+            static mut PLAYER: Player;
+            #[lowram]
+            static mut R: u8;
+            #[entry]
+            fn main() {
+                let d: *dyn Drawable = &PLAYER;
+                R = d.px();
+            }
+        """
+        asm = compile_to_asm(source)
+        # Inherited px() dispatches through Position's own table, not Drawable's.
+        assert "Position__px__dispatch" in asm
+
+    def test_upcast_subtrait_to_supertrait(self):
+        """*dyn Sub coerces to *dyn Super (no-op upcast)."""
+        source = """
+            #[zeropage(0x10, register)]
+            static mut SCRATCH0: u8;
+            #[zeropage(0x12, register)]
+            static mut SCRATCH1: u16;
+            struct Player { x: u8 }
+            trait Position { fn px(*self) -> u8; }
+            trait Drawable: Position { fn draw(*self); }
+            impl Position for Player { fn px(*self) -> u8 { return self.x; } }
+            impl Drawable for Player { fn draw(*self) { } }
+            #[lowram]
+            static mut PLAYER: Player;
+            fn test() {
+                let d: *dyn Drawable = &PLAYER;
+                let p: *dyn Position = d;   // upcast
+            }
+        """
+        build_and_check(source)  # Should not raise
+
+    def test_unknown_method_lists_inherited_methods(self):
+        """An undefined method error includes inherited supertrait methods in the hint."""
+        source = """
+            #[zeropage(0x10, register)]
+            static mut SCRATCH0: u8;
+            #[zeropage(0x12, register)]
+            static mut SCRATCH1: u16;
+            struct Player { x: u8 }
+            trait Position { fn px(*self) -> u8; }
+            trait Drawable: Position { fn draw(*self); }
+            impl Position for Player { fn px(*self) -> u8 { return self.x; } }
+            impl Drawable for Player { fn draw(*self) { } }
+            #[lowram]
+            static mut PLAYER: Player;
+            fn test() {
+                let d: *dyn Drawable = &PLAYER;
+                d.nope();
+            }
+        """
+        with pytest.raises(TypeCheckError, match="no method 'nope'"):
+            build_and_check(source)
+
+    def test_supertrait_only_struct_gets_no_typeid(self):
+        """A struct implementing only a supertrait gets no TypeId (no layout byte).
+
+        Regression: dyn-used propagation previously force-marked supertraits dyn-used,
+        injecting a __type_id byte into structs that implement only a supertrait and are
+        never dynamically dispatched.
+        """
+        source = """
+            #[zeropage(0x10, register)]
+            static mut SCRATCH0: u8;
+            #[zeropage(0x12, register)]
+            static mut SCRATCH1: u16;
+            struct Player { x: u8 }
+            struct Wall   { x: u8 }
+            trait Position { fn px(*self) -> u8; }
+            trait Drawable: Position { fn draw(*self); }
+            impl Position for Player { fn px(*self) -> u8 { return self.x; } }
+            impl Drawable for Player { fn draw(*self) { } }
+            impl Position for Wall   { fn px(*self) -> u8 { return self.x; } }
+            #[lowram]
+            static mut PLAYER: Player;
+            #[lowram]
+            static mut R: u8;
+            #[entry]
+            fn main() { let d: *dyn Drawable = &PLAYER; R = d.px(); }
+        """
+        hir = build_and_check(source)
+        # Player implements the *dyn-used subtrait -> has a TypeId.
+        assert hir.symbol_table.lookup("Player::TYPE_ID") is not None
+        # Wall implements only the supertrait and is never dispatched -> no TypeId/layout byte.
+        assert hir.symbol_table.lookup("Wall::TYPE_ID") is None

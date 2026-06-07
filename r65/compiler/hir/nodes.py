@@ -320,6 +320,7 @@ class HIRTraitDecl(HIRDeclaration):
     name: str = ""
     methods: List[HIRTraitMethod] = field(default_factory=list)
     constants: List[HIRTraitConst] = field(default_factory=list)
+    supertraits: List[str] = field(default_factory=list)  # Inherited trait names
 
     # Symbol reference
     symbol: Optional[Any] = None  # Will be Symbol
