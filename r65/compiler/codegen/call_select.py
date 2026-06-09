@@ -560,15 +560,7 @@ class CallInstructionSelector(BaseSelector):
 
         # Determine return registers
         return_regs = self._get_callee_return_registers(instr)
-        callee_return_type = getattr(instr, 'callee_return_type', None)
-        if callee_return_type is not None:
-            from r65.compiler.hir.types import MultiReturnTypeInfo
-            if isinstance(callee_return_type, MultiReturnTypeInfo):
-                num_returns = len(callee_return_type.element_types)
-            else:
-                num_returns = 1
-        else:
-            num_returns = len(instr.returns)
+        num_returns = self._call_num_returns(instr)
         call_return_set = set(return_regs[:num_returns])
 
         for reg_name in ['A', 'X', 'Y']:
@@ -622,15 +614,7 @@ class CallInstructionSelector(BaseSelector):
 
         # Skip return registers — they hold the call result, not the spilled value
         return_regs = self._get_callee_return_registers(instr)
-        callee_return_type = getattr(instr, 'callee_return_type', None)
-        if callee_return_type is not None:
-            from r65.compiler.hir.types import MultiReturnTypeInfo
-            if isinstance(callee_return_type, MultiReturnTypeInfo):
-                num_returns = len(callee_return_type.element_types)
-            else:
-                num_returns = 1
-        else:
-            num_returns = len(instr.returns)
+        num_returns = self._call_num_returns(instr)
         call_return_set = set(return_regs[:num_returns])
 
         instr_idx = None
@@ -879,15 +863,7 @@ class CallInstructionSelector(BaseSelector):
         # Note: instr.returns may be empty (return values captured by separate Move
         # instructions), so we determine the count from callee_return_type.
         return_regs = self._get_callee_return_registers(instr)
-        callee_return_type = getattr(instr, 'callee_return_type', None)
-        if callee_return_type is not None:
-            from r65.compiler.hir.types import MultiReturnTypeInfo
-            if isinstance(callee_return_type, MultiReturnTypeInfo):
-                num_returns = len(callee_return_type.element_types)
-            else:
-                num_returns = 1
-        else:
-            num_returns = len(instr.returns)
+        num_returns = self._call_num_returns(instr)
         call_return_set = set(return_regs[:num_returns])
         # Also include the caller's *final destination* register for each
         # return vreg. After the call, _emit_return_value_collection may
@@ -1005,15 +981,7 @@ class CallInstructionSelector(BaseSelector):
         # in _emit_return_value_collection just placed would PLX/PLY the
         # restored caller value back over the return value.
         return_regs = self._get_callee_return_registers(instr)
-        callee_return_type = getattr(instr, 'callee_return_type', None)
-        if callee_return_type is not None:
-            from r65.compiler.hir.types import MultiReturnTypeInfo
-            if isinstance(callee_return_type, MultiReturnTypeInfo):
-                num_returns = len(callee_return_type.element_types)
-            else:
-                num_returns = 1
-        else:
-            num_returns = len(instr.returns)
+        num_returns = self._call_num_returns(instr)
         call_return_set = set(return_regs[:num_returns])
         for return_vreg in instr.returns:
             dest_loc = self.parent._get_operand_location(return_vreg)
@@ -2153,6 +2121,21 @@ class CallInstructionSelector(BaseSelector):
         if callee_return_type is not None:
             return get_return_registers(callee_return_type, callee_entry_mode)
         return ['A', 'X', 'Y']
+
+    def _call_num_returns(self, instr) -> int:
+        """Number of values a Call/TraitDispatch returns.
+
+        The `returns` list is often empty for tuple destructuring (values are
+        captured by separate Move instructions), so callee_return_type is the
+        source of truth when present.
+        """
+        from r65.compiler.hir.types import MultiReturnTypeInfo
+        callee_return_type = getattr(instr, 'callee_return_type', None)
+        if callee_return_type is not None:
+            if isinstance(callee_return_type, MultiReturnTypeInfo):
+                return len(callee_return_type.element_types)
+            return 1
+        return len(instr.returns)
 
     def _call_returns_in_a(self, instr) -> bool:
         """Check if a call returns a value in A (i.e., is not void)."""

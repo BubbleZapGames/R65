@@ -261,30 +261,11 @@ class MoveOperationSelector(BaseSelector):
 
     def _emit_far_function_pointer(self, func_name: str, dest_loc):
         """Emit code to store a far function pointer (3 bytes)."""
-        # Low byte
-        self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(f"<{func_name}"), "Load function address low byte")
-        self._emit_load_store('STA', dest_loc)
-
-        # High byte
-        dest_high = self.parent._offset_location(dest_loc, 1)
-        self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(f">{func_name}"), "Load function address high byte")
-        self._emit_load_store('STA', dest_high)
-
-        # Bank byte
-        dest_bank = self.parent._offset_location(dest_loc, 2)
-        self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(f":{func_name}"), "Load function bank byte")
-        self._emit_load_store('STA', dest_bank)
+        self._emit_label_pointer_store(func_name, dest_loc, 3)
 
     def _emit_near_function_pointer(self, func_name: str, dest_loc):
         """Emit code to store a near function pointer (2 bytes)."""
-        # Low byte
-        self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(f"<{func_name}"), "Load function address low byte")
-        self._emit_load_store('STA', dest_loc)
-
-        # High byte
-        dest_high = self.parent._offset_location(dest_loc, 1)
-        self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(f">{func_name}"), "Load function address high byte")
-        self._emit_load_store('STA', dest_high)
+        self._emit_label_pointer_store(func_name, dest_loc, 2)
 
     # ========================================================================
     # Immediate Value Handling
@@ -408,19 +389,7 @@ class MoveOperationSelector(BaseSelector):
 
     def _emit_far_pointer_mem_to_mem(self, src_loc, dest_loc):
         """Copy a 3-byte far pointer from source to destination."""
-        # Low byte
-        self._emit_load_store('LDA', src_loc)
-        self._emit_load_store('STA', dest_loc)
-        # High byte
-        src_high = self.parent._offset_location(src_loc, 1)
-        dest_high = self.parent._offset_location(dest_loc, 1)
-        self._emit_load_store('LDA', src_high)
-        self._emit_load_store('STA', dest_high)
-        # Bank byte
-        src_bank = self.parent._offset_location(src_loc, 2)
-        dest_bank = self.parent._offset_location(dest_loc, 2)
-        self._emit_load_store('LDA', src_bank)
-        self._emit_load_store('STA', dest_bank)
+        self._emit_pointer_mem_copy(src_loc, dest_loc, 3)
 
     def _store_hw_register_to_memory(self, src_reg: str, dest_loc, is_u16: bool):
         """Store a hardware register to memory."""

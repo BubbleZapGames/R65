@@ -1865,6 +1865,40 @@ class InstructionSelector:
         opcode = Opcode.STZ_DP_X if base_addr < DP_BOUNDARY else Opcode.STZ_ABSOLUTE_X
         self.emitter.emit_instr(opcode, Address(base_addr), comment)
 
+    def _emit_fill_loop(self, base_addr: int, total_bytes: int, count: int,
+                        element_size: int, loop_label: str, use_stz: bool):
+        """Emit the indexed fill loop shared by every MemoryFill strategy.
+
+        Picks a countdown BPL loop for <=256 bytes, else a forward DEY/BNE
+        loop. `use_stz` selects STZ base,X over STA base,X; the per-element
+        step (and extra DEX/INX) follows element_size.
+        """
+        def store():
+            if use_stz:
+                self._emit_indexed_stz(base_addr)
+            else:
+                self._emit_indexed_store(base_addr, 'X')
+
+        wide = element_size == 2
+        if total_bytes <= 256:
+            self._emit_immediate(Opcode.LDX_IMMEDIATE, total_bytes - element_size)
+            self.emitter.emit_label(loop_label)
+            store()
+            self._emit_implied(Opcode.DEX)
+            if wide:
+                self._emit_implied(Opcode.DEX)
+            self._emit_branch(Opcode.BPL, loop_label)
+        else:
+            self._emit_immediate(Opcode.LDX_IMMEDIATE, 0x00)
+            self._emit_immediate(Opcode.LDY_IMMEDIATE, count if wide else (total_bytes & 0xFFFF))
+            self.emitter.emit_label(loop_label)
+            store()
+            self._emit_implied(Opcode.INX)
+            if wide:
+                self._emit_implied(Opcode.INX)
+            self._emit_implied(Opcode.DEY)
+            self._emit_branch(Opcode.BNE, loop_label)
+
     def _emit_mvn_zero_fill(self, base_addr: int, total_bytes: int):
         """Emit MVN self-copy to zero-fill a large memory region.
 
@@ -1945,122 +1979,36 @@ class InstructionSelector:
             if element_size == 2 and not is_wram:
                 # 16-bit STZ loop (non-WRAM only)
                 self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "16-bit A for STZ")
-                if total_bytes <= 256:
-                    self._emit_immediate(Opcode.LDX_IMMEDIATE, total_bytes - 2)
-                    self.emitter.emit_label(loop_label)
-                    self._emit_indexed_stz(base_addr)
-                    self._emit_implied(Opcode.DEX)
-                    self._emit_implied(Opcode.DEX)
-                    self._emit_branch(Opcode.BPL, loop_label)
-                else:
-                    self._emit_immediate(Opcode.LDX_IMMEDIATE, 0x00)
-                    self._emit_immediate(Opcode.LDY_IMMEDIATE, count)
-                    self.emitter.emit_label(loop_label)
-                    self._emit_indexed_stz(base_addr)
-                    self._emit_implied(Opcode.INX)
-                    self._emit_implied(Opcode.INX)
-                    self._emit_implied(Opcode.DEY)
-                    self._emit_branch(Opcode.BNE, loop_label)
+                self._emit_fill_loop(base_addr, total_bytes, count, element_size, loop_label, use_stz=True)
                 self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "Restore 8-bit A")
 
             elif element_size == 2 and is_wram:
                 # 16-bit LDA #0 + STA loop (WRAM: no STZ long)
                 self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "16-bit A")
                 self._emit_immediate(Opcode.LDA_IMMEDIATE, 0x0000)
-                if total_bytes <= 256:
-                    self._emit_immediate(Opcode.LDX_IMMEDIATE, total_bytes - 2)
-                    self.emitter.emit_label(loop_label)
-                    self._emit_indexed_store(base_addr, 'X')
-                    self._emit_implied(Opcode.DEX)
-                    self._emit_implied(Opcode.DEX)
-                    self._emit_branch(Opcode.BPL, loop_label)
-                else:
-                    self._emit_immediate(Opcode.LDX_IMMEDIATE, 0x00)
-                    self._emit_immediate(Opcode.LDY_IMMEDIATE, count)
-                    self.emitter.emit_label(loop_label)
-                    self._emit_indexed_store(base_addr, 'X')
-                    self._emit_implied(Opcode.INX)
-                    self._emit_implied(Opcode.INX)
-                    self._emit_implied(Opcode.DEY)
-                    self._emit_branch(Opcode.BNE, loop_label)
+                self._emit_fill_loop(base_addr, total_bytes, count, element_size, loop_label, use_stz=False)
                 self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "Restore 8-bit A")
 
             elif not is_wram:
                 # 8-bit STZ loop (non-WRAM)
-                if total_bytes <= 256:
-                    self._emit_immediate(Opcode.LDX_IMMEDIATE, total_bytes - 1)
-                    self.emitter.emit_label(loop_label)
-                    self._emit_indexed_stz(base_addr)
-                    self._emit_implied(Opcode.DEX)
-                    self._emit_branch(Opcode.BPL, loop_label)
-                else:
-                    self._emit_immediate(Opcode.LDX_IMMEDIATE, 0x00)
-                    self._emit_immediate(Opcode.LDY_IMMEDIATE, total_bytes & 0xFFFF)
-                    self.emitter.emit_label(loop_label)
-                    self._emit_indexed_stz(base_addr)
-                    self._emit_implied(Opcode.INX)
-                    self._emit_implied(Opcode.DEY)
-                    self._emit_branch(Opcode.BNE, loop_label)
+                self._emit_fill_loop(base_addr, total_bytes, count, element_size, loop_label, use_stz=True)
 
             else:
                 # 8-bit LDA #0 + STA loop (WRAM: no STZ long)
                 self._emit_immediate(Opcode.LDA_IMMEDIATE, 0x00)
-                if total_bytes <= 256:
-                    self._emit_immediate(Opcode.LDX_IMMEDIATE, total_bytes - 1)
-                    self.emitter.emit_label(loop_label)
-                    self._emit_indexed_store(base_addr, 'X')
-                    self._emit_implied(Opcode.DEX)
-                    self._emit_branch(Opcode.BPL, loop_label)
-                else:
-                    self._emit_immediate(Opcode.LDX_IMMEDIATE, 0x00)
-                    self._emit_immediate(Opcode.LDY_IMMEDIATE, total_bytes & 0xFFFF)
-                    self.emitter.emit_label(loop_label)
-                    self._emit_indexed_store(base_addr, 'X')
-                    self._emit_implied(Opcode.INX)
-                    self._emit_implied(Opcode.DEY)
-                    self._emit_branch(Opcode.BNE, loop_label)
+                self._emit_fill_loop(base_addr, total_bytes, count, element_size, loop_label, use_stz=False)
 
         elif element_size == 2:
             # === Non-zero u16 fill: 16-bit A mode ===
             self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "16-bit A")
             self._emit_immediate(Opcode.LDA_IMMEDIATE, fill_value & WORD_MASK)
-            if total_bytes <= 256:
-                # Countdown with BPL
-                self._emit_immediate(Opcode.LDX_IMMEDIATE, total_bytes - 2)
-                self.emitter.emit_label(loop_label)
-                self._emit_indexed_store(base_addr, 'X')
-                self._emit_implied(Opcode.DEX)
-                self._emit_implied(Opcode.DEX)
-                self._emit_branch(Opcode.BPL, loop_label)
-            else:
-                # Forward with Y counter
-                self._emit_immediate(Opcode.LDX_IMMEDIATE, 0x00)
-                self._emit_immediate(Opcode.LDY_IMMEDIATE, count)
-                self.emitter.emit_label(loop_label)
-                self._emit_indexed_store(base_addr, 'X')
-                self._emit_implied(Opcode.INX)
-                self._emit_implied(Opcode.INX)
-                self._emit_implied(Opcode.DEY)
-                self._emit_branch(Opcode.BNE, loop_label)
+            self._emit_fill_loop(base_addr, total_bytes, count, element_size, loop_label, use_stz=False)
             self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "Restore 8-bit A")
 
         else:
             # === Non-zero u8 fill: current 8-bit loop (unchanged) ===
             self._emit_immediate(Opcode.LDA_IMMEDIATE, fill_value & BYTE_MASK)
-            if total_bytes <= 256:
-                self._emit_immediate(Opcode.LDX_IMMEDIATE, total_bytes - 1)
-                self.emitter.emit_label(loop_label)
-                self._emit_indexed_store(base_addr, 'X')
-                self._emit_implied(Opcode.DEX)
-                self._emit_branch(Opcode.BPL, loop_label)
-            else:
-                self._emit_immediate(Opcode.LDX_IMMEDIATE, 0x00)
-                self._emit_immediate(Opcode.LDY_IMMEDIATE, total_bytes & 0xFFFF)
-                self.emitter.emit_label(loop_label)
-                self._emit_indexed_store(base_addr, 'X')
-                self._emit_implied(Opcode.INX)
-                self._emit_implied(Opcode.DEY)
-                self._emit_branch(Opcode.BNE, loop_label)
+            self._emit_fill_loop(base_addr, total_bytes, count, element_size, loop_label, use_stz=False)
 
     def select_block_copy(self, instr: BlockCopy):
         """
@@ -2245,22 +2193,16 @@ class InstructionSelector:
         action = "Set" if instr.value else "Clear"
         self.emitter.emit_comment(f"StatusFlag{action} {instr.flag_name}")
 
-        if instr.value:
-            # Set the flag
-            if instr.flag_name == 'Carry':
-                self.emitter.emit_instr(Opcode.SEC, comment="Set Carry flag")
-            elif instr.flag_name == 'Irq':
-                self.emitter.emit_instr(Opcode.SEI, comment="Set Interrupt disable flag")
-            elif instr.flag_name == 'Decimal':
-                self.emitter.emit_instr(Opcode.SED, comment="Set Decimal mode flag")
-        else:
-            # Clear the flag
-            if instr.flag_name == 'Carry':
-                self.emitter.emit_instr(Opcode.CLC, comment="Clear Carry flag")
-            elif instr.flag_name == 'Irq':
-                self.emitter.emit_instr(Opcode.CLI, comment="Clear Interrupt disable flag")
-            elif instr.flag_name == 'Decimal':
-                self.emitter.emit_instr(Opcode.CLD, comment="Clear Decimal mode flag")
+        # (set_opcode, clear_opcode, description) per directly-settable flag.
+        ops = {
+            'Carry':   (Opcode.SEC, Opcode.CLC, "Carry"),
+            'Irq':     (Opcode.SEI, Opcode.CLI, "Interrupt disable"),
+            'Decimal': (Opcode.SED, Opcode.CLD, "Decimal mode"),
+        }.get(instr.flag_name)
+        if ops:
+            set_op, clear_op, desc = ops
+            self.emitter.emit_instr(set_op if instr.value else clear_op,
+                                    comment=f"{action} {desc} flag")
 
     def select_status_flag_read(self, instr: StatusFlagRead):
         """

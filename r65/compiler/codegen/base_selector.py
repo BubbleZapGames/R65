@@ -167,6 +167,37 @@ class BaseSelector(ABC):
         self._emit_instr(opcode, operand, comment)
 
     # ========================================================================
+    # Pointer Store Helpers
+    # ========================================================================
+
+    def _emit_label_pointer_store(self, label: str, dest_loc, n_bytes: int, noun: str = "function"):
+        """Store a label's address as low/high[/bank] immediate bytes.
+
+        n_bytes=2 for a near pointer, 3 for far. Emits LDA #<label>/STA,
+        LDA #>label/STA, and (when far) LDA #:label/STA. `noun` selects the
+        comment wording ("function" or "label").
+        """
+        byte_info = [("<", f"Load {noun} address low byte"),
+                     (">", f"Load {noun} address high byte"),
+                     (":", f"Load {noun} bank byte")]
+        for i in range(n_bytes):
+            prefix, comment = byte_info[i]
+            loc = dest_loc if i == 0 else self.parent._offset_location(dest_loc, i)
+            self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(f"{prefix}{label}"), comment)
+            self._emit_load_store('STA', loc)
+
+    def _emit_pointer_mem_copy(self, src_loc, dest_loc, n_bytes: int):
+        """Copy an n_bytes pointer from src to dest as byte-by-byte LDA/STA pairs.
+
+        Caller is responsible for ensuring 8-bit accumulator mode beforehand.
+        """
+        for i in range(n_bytes):
+            s = src_loc if i == 0 else self.parent._offset_location(src_loc, i)
+            d = dest_loc if i == 0 else self.parent._offset_location(dest_loc, i)
+            self._emit_load_store('LDA', s)
+            self._emit_load_store('STA', d)
+
+    # ========================================================================
     # Operand Location Helpers
     # ========================================================================
 

@@ -264,19 +264,7 @@ class MemoryOperationSelector(BaseSelector):
         """Store a 3-byte far pointer from source to destination."""
         # Far pointer copies are byte-by-byte, need 8-bit mode
         self._ensure_m8_mode()
-        # Low byte
-        self._emit_load_store('LDA', src_loc)
-        self._emit_load_store('STA', dest_loc)
-        # High byte
-        src_high = self.parent._offset_location(src_loc, 1)
-        dest_high = self.parent._offset_location(dest_loc, 1)
-        self._emit_load_store('LDA', src_high)
-        self._emit_load_store('STA', dest_high)
-        # Bank byte
-        src_bank = self.parent._offset_location(src_loc, 2)
-        dest_bank = self.parent._offset_location(dest_loc, 2)
-        self._emit_load_store('LDA', src_bank)
-        self._emit_load_store('STA', dest_bank)
+        self._emit_pointer_mem_copy(src_loc, dest_loc, 3)
 
     def _store_from_hardware_register(self, src_loc, dest_loc, is_u16: bool):
         """Store from a hardware register to memory."""
@@ -331,37 +319,13 @@ class MemoryOperationSelector(BaseSelector):
         if type_info and isinstance(type_info, FunctionTypeInfo):
             is_far = type_info.is_far
 
-        if is_far:
-            # Far pointer: 3 bytes (low, high, bank)
-            self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(f"<{func_name}"), "Load function address low byte")
-            self._emit_load_store('STA', dest_loc)
-
-            dest_high = self.parent._offset_location(dest_loc, 1)
-            self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(f">{func_name}"), "Load function address high byte")
-            self._emit_load_store('STA', dest_high)
-
-            dest_bank = self.parent._offset_location(dest_loc, 2)
-            self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(f":{func_name}"), "Load function bank byte")
-            self._emit_load_store('STA', dest_bank)
-        else:
-            # Near pointer: 2 bytes (low, high)
-            self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(f"<{func_name}"), "Load function address low byte")
-            self._emit_load_store('STA', dest_loc)
-
-            dest_high = self.parent._offset_location(dest_loc, 1)
-            self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(f">{func_name}"), "Load function address high byte")
-            self._emit_load_store('STA', dest_high)
+        # Far pointer is 3 bytes (low, high, bank); near is 2 (low, high).
+        self._emit_label_pointer_store(func_name, dest_loc, 3 if is_far else 2)
 
     def _store_label_ref(self, label_ref: LabelRef, dest_loc):
         """Store a label reference address (near pointer) directly to memory."""
-        label = label_ref.label_name
         # Near pointer: 2 bytes (low, high) — same pattern as near function pointers
-        self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(f"<{label}"), "Load label address low byte")
-        self._emit_load_store('STA', dest_loc)
-
-        dest_high = self.parent._offset_location(dest_loc, 1)
-        self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(f">{label}"), "Load label address high byte")
-        self._emit_load_store('STA', dest_high)
+        self._emit_label_pointer_store(label_ref.label_name, dest_loc, 2, noun="label")
 
     # ========================================================================
     # Indirect Memory Operations
@@ -1197,296 +1161,135 @@ class MemoryOperationSelector(BaseSelector):
             self._emit_load_store('LDA', src_high)
         self._emit_instr(opcode_store, operand, "Store high byte through pointer")
 
+    def _emit_indirect_store_bytes(self, n_bytes, src_loc, source, index_register, emit_store):
+        """Byte-by-byte indirect store loop shared by the 24-bit store variants.
+
+        For each byte i: load the value byte into A (immediate or src+i), then
+        call emit_store(i) to emit the actual indirect store. INY is inserted
+        between bytes; Y is zeroed first unless the caller already set it.
+        Caller must have ensured 8-bit accumulator mode.
+        """
+        if index_register != 'Y':
+            self._emit_instr(Opcode.LDY_IMMEDIATE, Immediate(0), "Set Y=0 for indirect")
+        for i in range(n_bytes):
+            if i:
+                self._emit_instr(Opcode.INY, None)
+            if isinstance(source, MIRImmediate):
+                self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate((source.value >> (8 * i)) & 0xFF))
+            else:
+                self._emit_load_store('LDA', src_loc if i == 0 else self.parent._offset_location(src_loc, i))
+            emit_store(i)
+
+    def _emit_indirect_load_bytes(self, n_bytes, dest_loc, index_register, emit_load):
+        """Byte-by-byte indirect load loop shared by the 24-bit load variants.
+
+        For each byte i: call emit_load(i) to load the byte through the pointer
+        into A, then store it to dest+i. INY is inserted between bytes; Y is
+        zeroed first unless the caller already set it. Caller must have ensured
+        8-bit accumulator mode.
+        """
+        if index_register != 'Y':
+            self._emit_instr(Opcode.LDY_IMMEDIATE, Immediate(0), "Set Y=0 for indirect")
+        for i in range(n_bytes):
+            if i:
+                self._emit_instr(Opcode.INY, None)
+            emit_load(i)
+            self._emit_load_store('STA', dest_loc if i == 0 else self.parent._offset_location(dest_loc, i))
+
+    # Byte index -> comment word, for the indirect load/store helpers below.
+    _PTR_BYTE_WORDS = ("low", "high", "bank")
+
     def _emit_24bit_indirect_store(self, ptr_loc, src_loc, source, is_far: bool, index_register: str = None):
         """Emit 24-bit far pointer indirect store (three 8-bit operations)."""
         self._ensure_m8_mode()
         opcode_store, operand = self._get_indirect_opcode('STA', ptr_loc, is_far, 'Y')
-
-        if index_register != 'Y':
-            self._emit_instr(Opcode.LDY_IMMEDIATE, Immediate(0), "Set Y=0 for indirect")
-
-        # Low byte
-        if isinstance(source, MIRImmediate):
-            self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(source.value & 0xFF))
-        else:
-            self._emit_load_store('LDA', src_loc)
-        self._emit_instr(opcode_store, operand, "Store low byte through pointer")
-
-        # High byte
-        self._emit_instr(Opcode.INY, None)
-        if isinstance(source, MIRImmediate):
-            self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate((source.value >> 8) & 0xFF))
-        else:
-            src_high = self.parent._offset_location(src_loc, 1)
-            self._emit_load_store('LDA', src_high)
-        self._emit_instr(opcode_store, operand, "Store high byte through pointer")
-
-        # Bank byte
-        self._emit_instr(Opcode.INY, None)
-        if isinstance(source, MIRImmediate):
-            self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate((source.value >> 16) & 0xFF))
-        else:
-            src_bank = self.parent._offset_location(src_loc, 2)
-            self._emit_load_store('LDA', src_bank)
-        self._emit_instr(opcode_store, operand, "Store bank byte through pointer")
+        words = self._PTR_BYTE_WORDS
+        self._emit_indirect_store_bytes(
+            3, src_loc, source, index_register,
+            lambda i: self._emit_instr(opcode_store, operand, f"Store {words[i]} byte through pointer"))
 
     def _emit_24bit_far_ptr_store_via_d_equals_s(self, ptr_loc, src_loc, source, index_register: str = None):
         """Emit 24-bit far pointer store using [dp],Y addressing (D=S mode)."""
         self._ensure_m8_mode()
-        stack_offset = ptr_loc.stack_offset
-        operand = Address(stack_offset)
-
-        if index_register != 'Y':
-            self._emit_instr(Opcode.LDY_IMMEDIATE, Immediate(0), "Set Y=0 for indirect")
-
-        # Low byte
-        if isinstance(source, MIRImmediate):
-            self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(source.value & 0xFF))
-        else:
-            self._emit_load_store('LDA', src_loc)
-        self._emit_instr(Opcode.STA_DP_INDIRECT_LONG_Y, operand, "Store low byte through far pointer [dp],Y")
-
-        # High byte
-        self._emit_instr(Opcode.INY, None)
-        if isinstance(source, MIRImmediate):
-            self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate((source.value >> 8) & 0xFF))
-        else:
-            src_high = self.parent._offset_location(src_loc, 1)
-            self._emit_load_store('LDA', src_high)
-        self._emit_instr(Opcode.STA_DP_INDIRECT_LONG_Y, operand, "Store high byte through far pointer [dp],Y")
-
-        # Bank byte
-        self._emit_instr(Opcode.INY, None)
-        if isinstance(source, MIRImmediate):
-            self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate((source.value >> 16) & 0xFF))
-        else:
-            src_bank = self.parent._offset_location(src_loc, 2)
-            self._emit_load_store('LDA', src_bank)
-        self._emit_instr(Opcode.STA_DP_INDIRECT_LONG_Y, operand, "Store bank byte through far pointer [dp],Y")
+        operand = Address(ptr_loc.stack_offset)
+        words = self._PTR_BYTE_WORDS
+        self._emit_indirect_store_bytes(
+            3, src_loc, source, index_register,
+            lambda i: self._emit_instr(Opcode.STA_DP_INDIRECT_LONG_Y, operand,
+                                       f"Store {words[i]} byte through far pointer [dp],Y"))
 
     def _emit_24bit_far_ptr_store_via_set_dbr(self, ptr_loc, src_loc, source, index_register: str = None):
         """Emit 24-bit far pointer store using bare (d,S),Y when DBR is set."""
         self._ensure_m8_mode()
-        stack_offset = ptr_loc.stack_offset
-
-        if index_register != 'Y':
-            self._emit_instr(Opcode.LDY_IMMEDIATE, Immediate(0), "Set Y=0 for indirect")
-
-        # Low byte
-        if isinstance(source, MIRImmediate):
-            self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(source.value & 0xFF))
-        else:
-            self._emit_load_store('LDA', src_loc)
-        self._emit_instr(Opcode.STA_STACK_INDIRECT_Y, StackOffset(stack_offset),
-                        "Store low byte through far pointer (d,S),Y")
-
-        # High byte
-        self._emit_instr(Opcode.INY, None)
-        if isinstance(source, MIRImmediate):
-            self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate((source.value >> 8) & 0xFF))
-        else:
-            src_high = self.parent._offset_location(src_loc, 1)
-            self._emit_load_store('LDA', src_high)
-        self._emit_instr(Opcode.STA_STACK_INDIRECT_Y, StackOffset(stack_offset),
-                        "Store high byte through far pointer (d,S),Y")
-
-        # Bank byte
-        self._emit_instr(Opcode.INY, None)
-        if isinstance(source, MIRImmediate):
-            self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate((source.value >> 16) & 0xFF))
-        else:
-            src_bank = self.parent._offset_location(src_loc, 2)
-            self._emit_load_store('LDA', src_bank)
-        self._emit_instr(Opcode.STA_STACK_INDIRECT_Y, StackOffset(stack_offset),
-                        "Store bank byte through far pointer (d,S),Y")
+        operand = StackOffset(ptr_loc.stack_offset)
+        words = self._PTR_BYTE_WORDS
+        self._emit_indirect_store_bytes(
+            3, src_loc, source, index_register,
+            lambda i: self._emit_instr(Opcode.STA_STACK_INDIRECT_Y, operand,
+                                       f"Store {words[i]} byte through far pointer (d,S),Y"))
 
     def _emit_24bit_far_ptr_store_via_dbr(self, ptr_loc, src_loc, source, index_register: str = None):
         """Emit 24-bit far pointer store using DBR manipulation."""
         self._ensure_m8_mode()
-
-        if index_register != 'Y':
-            self._emit_instr(Opcode.LDY_IMMEDIATE, Immediate(0), "Set Y=0 for indirect")
-
-        # Low byte
-        if isinstance(source, MIRImmediate):
-            self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(source.value & 0xFF))
-        else:
-            self._emit_load_store('LDA', src_loc)
-        self._emit_far_ptr_access_via_dbr('STA', ptr_loc, index_register)
-
-        # High byte
-        self._emit_instr(Opcode.INY, None)
-        if isinstance(source, MIRImmediate):
-            self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate((source.value >> 8) & 0xFF))
-        else:
-            src_high = self.parent._offset_location(src_loc, 1)
-            self._emit_load_store('LDA', src_high)
-        self._emit_far_ptr_access_via_dbr('STA', ptr_loc, 'Y')
-
-        # Bank byte
-        self._emit_instr(Opcode.INY, None)
-        if isinstance(source, MIRImmediate):
-            self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate((source.value >> 16) & 0xFF))
-        else:
-            src_bank = self.parent._offset_location(src_loc, 2)
-            self._emit_load_store('LDA', src_bank)
-        self._emit_far_ptr_access_via_dbr('STA', ptr_loc, 'Y')
+        # Low byte uses the caller's index register; high/bank bytes use Y.
+        self._emit_indirect_store_bytes(
+            3, src_loc, source, index_register,
+            lambda i: self._emit_far_ptr_access_via_dbr('STA', ptr_loc, index_register if i == 0 else 'Y'))
 
     def _emit_24bit_stack_indirect_store(self, ptr_loc, src_loc, source, index_register: str = None):
         """Emit 24-bit far pointer store through near stack pointer using (d,S),Y addressing."""
         self._ensure_m8_mode()
         opcode_store, operand = self._get_stack_indirect_opcode('STA', ptr_loc, False, 'Y')
-
-        if index_register != 'Y':
-            self._emit_instr(Opcode.LDY_IMMEDIATE, Immediate(0), "Set Y=0 for indirect")
-
-        # Low byte
-        if isinstance(source, MIRImmediate):
-            self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(source.value & 0xFF))
-        else:
-            self._emit_load_store('LDA', src_loc)
-        self._emit_instr(opcode_store, operand, "Store low byte through pointer")
-
-        # High byte
-        self._emit_instr(Opcode.INY, None)
-        if isinstance(source, MIRImmediate):
-            self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate((source.value >> 8) & 0xFF))
-        else:
-            src_high = self.parent._offset_location(src_loc, 1)
-            self._emit_load_store('LDA', src_high)
-        self._emit_instr(opcode_store, operand, "Store high byte through pointer")
-
-        # Bank byte
-        self._emit_instr(Opcode.INY, None)
-        if isinstance(source, MIRImmediate):
-            self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate((source.value >> 16) & 0xFF))
-        else:
-            src_bank = self.parent._offset_location(src_loc, 2)
-            self._emit_load_store('LDA', src_bank)
-        self._emit_instr(opcode_store, operand, "Store bank byte through pointer")
+        words = self._PTR_BYTE_WORDS
+        self._emit_indirect_store_bytes(
+            3, src_loc, source, index_register,
+            lambda i: self._emit_instr(opcode_store, operand, f"Store {words[i]} byte through pointer"))
 
     def _emit_24bit_indirect_load(self, ptr_loc, dest_loc, is_far: bool, index_register: str = None):
         """Emit 24-bit far pointer indirect load (three 8-bit operations)."""
         self._ensure_m8_mode()
         opcode_load, operand = self._get_indirect_opcode('LDA', ptr_loc, is_far, 'Y')
-
-        if index_register != 'Y':
-            self._emit_instr(Opcode.LDY_IMMEDIATE, Immediate(0), "Set Y=0 for indirect")
-
-        # Low byte
-        self._emit_instr(opcode_load, operand, "Load low byte through far pointer")
-        self._emit_load_store('STA', dest_loc)
-
-        # High byte
-        self._emit_instr(Opcode.INY, None)
-        self._emit_instr(opcode_load, operand, "Load high byte through far pointer")
-        dest_high = self.parent._offset_location(dest_loc, 1)
-        self._emit_load_store('STA', dest_high)
-
-        # Bank byte
-        self._emit_instr(Opcode.INY, None)
-        self._emit_instr(opcode_load, operand, "Load bank byte through far pointer")
-        dest_bank = self.parent._offset_location(dest_loc, 2)
-        self._emit_load_store('STA', dest_bank)
+        words = self._PTR_BYTE_WORDS
+        self._emit_indirect_load_bytes(
+            3, dest_loc, index_register,
+            lambda i: self._emit_instr(opcode_load, operand, f"Load {words[i]} byte through far pointer"))
 
     def _emit_24bit_far_ptr_load_via_d_equals_s(self, ptr_loc, dest_loc, index_register: str = None):
         """Emit 24-bit far pointer load using [dp],Y addressing (D=S mode)."""
         self._ensure_m8_mode()
-        stack_offset = ptr_loc.stack_offset
-        operand = Address(stack_offset)
-
-        if index_register != 'Y':
-            self._emit_instr(Opcode.LDY_IMMEDIATE, Immediate(0), "Set Y=0 for indirect")
-
-        # Low byte
-        self._emit_instr(Opcode.LDA_DP_INDIRECT_LONG_Y, operand, "Load low byte through far pointer [dp],Y")
-        self._emit_load_store('STA', dest_loc)
-
-        # High byte
-        self._emit_instr(Opcode.INY, None)
-        self._emit_instr(Opcode.LDA_DP_INDIRECT_LONG_Y, operand, "Load high byte through far pointer [dp],Y")
-        dest_high = self.parent._offset_location(dest_loc, 1)
-        self._emit_load_store('STA', dest_high)
-
-        # Bank byte
-        self._emit_instr(Opcode.INY, None)
-        self._emit_instr(Opcode.LDA_DP_INDIRECT_LONG_Y, operand, "Load bank byte through far pointer [dp],Y")
-        dest_bank = self.parent._offset_location(dest_loc, 2)
-        self._emit_load_store('STA', dest_bank)
+        operand = Address(ptr_loc.stack_offset)
+        words = self._PTR_BYTE_WORDS
+        self._emit_indirect_load_bytes(
+            3, dest_loc, index_register,
+            lambda i: self._emit_instr(Opcode.LDA_DP_INDIRECT_LONG_Y, operand,
+                                       f"Load {words[i]} byte through far pointer [dp],Y"))
 
     def _emit_24bit_far_ptr_load_via_set_dbr(self, ptr_loc, dest_loc, index_register: str = None):
         """Emit 24-bit far pointer load using bare (d,S),Y when DBR is set."""
         self._ensure_m8_mode()
-        stack_offset = ptr_loc.stack_offset
-
-        if index_register != 'Y':
-            self._emit_instr(Opcode.LDY_IMMEDIATE, Immediate(0), "Set Y=0 for indirect")
-
-        # Low byte
-        self._emit_instr(Opcode.LDA_STACK_INDIRECT_Y, StackOffset(stack_offset),
-                        "Load low byte through far pointer (d,S),Y")
-        self._emit_load_store('STA', dest_loc)
-
-        # High byte
-        self._emit_instr(Opcode.INY, None)
-        self._emit_instr(Opcode.LDA_STACK_INDIRECT_Y, StackOffset(stack_offset),
-                        "Load high byte through far pointer (d,S),Y")
-        dest_high = self.parent._offset_location(dest_loc, 1)
-        self._emit_load_store('STA', dest_high)
-
-        # Bank byte
-        self._emit_instr(Opcode.INY, None)
-        self._emit_instr(Opcode.LDA_STACK_INDIRECT_Y, StackOffset(stack_offset),
-                        "Load bank byte through far pointer (d,S),Y")
-        dest_bank = self.parent._offset_location(dest_loc, 2)
-        self._emit_load_store('STA', dest_bank)
+        operand = StackOffset(ptr_loc.stack_offset)
+        words = self._PTR_BYTE_WORDS
+        self._emit_indirect_load_bytes(
+            3, dest_loc, index_register,
+            lambda i: self._emit_instr(Opcode.LDA_STACK_INDIRECT_Y, operand,
+                                       f"Load {words[i]} byte through far pointer (d,S),Y"))
 
     def _emit_24bit_far_ptr_load_via_dbr(self, ptr_loc, dest_loc, index_register: str = None):
         """Emit 24-bit far pointer load using DBR manipulation."""
         self._ensure_m8_mode()
-
-        if index_register != 'Y':
-            self._emit_instr(Opcode.LDY_IMMEDIATE, Immediate(0), "Set Y=0 for indirect")
-
-        # Low byte
-        self._emit_far_ptr_access_via_dbr('LDA', ptr_loc, index_register)
-        self._emit_load_store('STA', dest_loc)
-
-        # High byte
-        self._emit_instr(Opcode.INY, None)
-        self._emit_far_ptr_access_via_dbr('LDA', ptr_loc, 'Y')
-        dest_high = self.parent._offset_location(dest_loc, 1)
-        self._emit_load_store('STA', dest_high)
-
-        # Bank byte
-        self._emit_instr(Opcode.INY, None)
-        self._emit_far_ptr_access_via_dbr('LDA', ptr_loc, 'Y')
-        dest_bank = self.parent._offset_location(dest_loc, 2)
-        self._emit_load_store('STA', dest_bank)
+        # Low byte uses the caller's index register; high/bank bytes use Y.
+        self._emit_indirect_load_bytes(
+            3, dest_loc, index_register,
+            lambda i: self._emit_far_ptr_access_via_dbr('LDA', ptr_loc, index_register if i == 0 else 'Y'))
 
     def _emit_24bit_stack_indirect_load(self, ptr_loc, dest_loc, index_register: str = None):
         """Emit 24-bit far pointer load through near stack pointer using (d,S),Y addressing."""
         self._ensure_m8_mode()
         opcode_load, operand = self._get_stack_indirect_opcode('LDA', ptr_loc, False, 'Y')
-
-        if index_register != 'Y':
-            self._emit_instr(Opcode.LDY_IMMEDIATE, Immediate(0), "Set Y=0 for indirect")
-
-        # Low byte
-        self._emit_instr(opcode_load, operand, "Load low byte through pointer")
-        self._emit_load_store('STA', dest_loc)
-
-        # High byte
-        self._emit_instr(Opcode.INY, None)
-        self._emit_instr(opcode_load, operand, "Load high byte through pointer")
-        dest_high = self.parent._offset_location(dest_loc, 1)
-        self._emit_load_store('STA', dest_high)
-
-        # Bank byte
-        self._emit_instr(Opcode.INY, None)
-        self._emit_instr(opcode_load, operand, "Load bank byte through pointer")
-        dest_bank = self.parent._offset_location(dest_loc, 2)
-        self._emit_load_store('STA', dest_bank)
+        words = self._PTR_BYTE_WORDS
+        self._emit_indirect_load_bytes(
+            3, dest_loc, index_register,
+            lambda i: self._emit_instr(opcode_load, operand, f"Load {words[i]} byte through pointer"))
 
     def _emit_16bit_stack_indirect_load(self, ptr_loc, dest_loc, index_register: str = None):
         """
