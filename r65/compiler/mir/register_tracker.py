@@ -74,28 +74,6 @@ class RegisterAliasTracker:
         alias = self.aliases.get(id(symbol))
         return alias.hardware_reg if alias else None
 
-    def is_aliased(self, symbol: Any) -> bool:
-        """
-        Check if symbol is aliased to a hardware register.
-
-        Args:
-            symbol: HIR Symbol
-
-        Returns:
-            True if symbol is aliased, False otherwise
-        """
-        return id(symbol) in self.aliases
-
-    def remove_alias(self, symbol: Any):
-        """
-        Remove alias (when exiting scope).
-
-        Args:
-            symbol: HIR Symbol
-        """
-        symbol_id = id(symbol)
-        if symbol_id in self.aliases:
-            del self.aliases[symbol_id]
 
     def clear(self):
         """Clear all aliases (for new function)."""

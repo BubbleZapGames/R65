@@ -6,7 +6,7 @@ Evaluates cfg conditions at compile time based on provided configuration.
 Supports identifier, comparison, and logical operations (all, any, not).
 """
 
-from typing import Dict, Set, Union
+from typing import Dict, Set
 from r65.compiler.frontend.ast import (
     CfgCondition, CfgIdentifier, CfgNot, CfgAny, CfgAll, CfgComparison
 )
@@ -97,14 +97,3 @@ class CfgEvaluator:
         return cls(features, values)
 
 
-def parse_cfg_string(cfg_str: str) -> Dict[str, Union[Set[str], Dict[str, str]]]:
-    """
-    Parse a single cfg string into features and values.
-    
-    This is a convenience function for testing.
-    """
-    evaluator = CfgEvaluator.from_string_list([cfg_str])
-    return {
-        'features': evaluator.cfg_features,
-        'values': evaluator.cfg_values
-    }

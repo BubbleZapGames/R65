@@ -24,15 +24,6 @@ class MoveOperationSelector(BaseSelector):
     """
 
     # ========================================================================
-    # Emission Helpers
-    # ========================================================================
-
-    def _emit_load_store(self, mnemonic: str, location, comment: str = None):
-        """Emit a load/store instruction using parent's opcode selection."""
-        opcode, operand = self.parent._get_opcode_for_location(mnemonic, location)
-        self._emit_instr(opcode, operand, comment)
-
-    # ========================================================================
     # Main Move Selection
     # ========================================================================
 

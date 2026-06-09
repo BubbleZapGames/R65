@@ -608,17 +608,6 @@ class AssemblyEmitter:
         self.nodes.append(Label(label_name, source_loc))
         self.nz_valid_for = None  # Labels are merge points; flags ambiguous
 
-    def emit_local_label(self, label: str):
-        """
-        Emit a local label with indentation.
-
-        Args:
-            label: Label name
-
-        Generated:
-            __L1:
-        """
-        self.emit_label(label)
 
     # ========================================================================
     # N/Z Flag Tracking

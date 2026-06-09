@@ -11,14 +11,14 @@ from typing import TYPE_CHECKING, Union
 from r65.compiler.hir import (
     HIRAssignment, HIRMultiAssignment, HIRBinaryOp, HIRRegister, HIRIdentifier,
     HIRFieldAccess, HIRArrayIndex, HIRDereference, HIRStatusFlagAccess, HIRBooleanLiteral,
-    HIRTypeCast, HIRIntegerLiteral,
+    HIRTypeCast,
 )
 from r65.compiler.hir.types import MultiReturnTypeInfo
 from r65.compiler.mir.nodes import (
     VirtualRegister, HardwareRegister, Immediate, MemoryLocation,
     Move, Store, StoreIndirect, BinaryOp, StatusFlagSet, Push, Pull,
 )
-from r65.compiler.mir.lowerers.multiply import compute_array_field_offset, compute_scaled_index
+from r65.compiler.mir.lowerers.multiply import compute_scaled_index
 from r65.compiler.errors import MIRLoweringError
 
 if TYPE_CHECKING:
@@ -426,16 +426,6 @@ class AssignmentLowerer:
 
             self.emit(Store(source=value, dest=indexed_memloc, type_info=type_info))
 
-    def _compute_array_field_offset(self, index_operand, struct_size: int, field_offset: int, type_info):
-        """
-        Compute byte offset for array[index].field access.
-
-        Delegates to shared multiply module. See docs/struct-array-indexing.md.
-        """
-        return compute_array_field_offset(
-            index_operand, struct_size, field_offset, type_info,
-            self.ctx, self.emit
-        )
 
     # ========================================================================
     # Array Assignment
@@ -491,7 +481,6 @@ class AssignmentLowerer:
 
     def _lower_pointer_index_assignment(self, expr: HIRAssignment, value, pointer_type):
         """Lower assignment through indexed pointer (ptr[i] = x)."""
-        from r65.compiler.hir.types import PointerTypeInfo
 
         array_index = expr.target
         element_type = expr.expr_type

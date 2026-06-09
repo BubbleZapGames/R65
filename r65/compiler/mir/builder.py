@@ -7,18 +7,14 @@ Transforms type-checked HIR into MIR suitable for code generation.
 
 from typing import Optional, Dict, Any, List, Union
 from r65.compiler.hir import (
-    HIRProgram, HIRDeclaration, HIRFunctionDecl, HIRStaticDecl, HIRConstDecl,
-    HIRStructDecl, HIREnumDecl,
-    HIRStatement, HIRBlock, HIRLetStmt, HIRMultiLetStmt, HIRTupleLetStmt, HIRExprStmt, HIRReturnStmt,
+    HIRProgram, HIRFunctionDecl, HIRStaticDecl, HIRStatement, HIRBlock, HIRLetStmt, HIRMultiLetStmt, HIRExprStmt, HIRReturnStmt,
     HIRIfStmt, HIRWhileStmt, HIRBreakStmt, HIRContinueStmt, HIRAsmStmt,
     HIRExpression, HIRIntegerLiteral, HIRBooleanLiteral, HIREnumVariantExpr, HIRIdentifier,
     HIRFunctionAddress, HIRRegister, HIRStatusFlagAccess, HIRBinaryOp, HIRUnaryOp, HIRTypeCast, HIRAssignment,
     HIRFunctionCall, HIRMethodCall, HIRArrayIndex, HIRFieldAccess, HIRDereference, HIRAddressOf, HIRMultiAssignment,
     HIRArrayFillExpr, HIRArrayLiteralExpr, HIRStringLiteral, HIRStructLiteralExpr,
-    HIRMatchExpression, HIRPattern, HIRLiteralPattern, HIREnumPattern, HIRWildcardPattern, HIRIdentifierPattern, HIROrPattern,
-    HIRBlockExpression, HIRIfExpression, HIRLoopExpression,
-    RegisterLetBinding, VariableLetBinding,
-    RegisterBinding, VariableBinding,
+    HIRMatchExpression, HIRBlockExpression, HIRIfExpression, HIRLoopExpression,
+    RegisterLetBinding, RegisterBinding, VariableBinding,
     SymbolKind,
 )
 from r65.compiler.hir.attributes import StorageKind
@@ -26,20 +22,16 @@ from r65.compiler.hir.attributes import StorageKind
 from r65.compiler.mir.nodes import (
     MIRInstruction, MIRProgram, MIRFunction, BasicBlock,
     VirtualRegister, HardwareRegister, Immediate, FunctionPointer, LabelRef, MemoryLocation,
-    Load, Store, LoadIndirect, StoreIndirect, Move, TypeConvert, BinaryOp, UnaryOp, Compare, BitTest,
-    Jump, CondBranch, JumpTable, LookupTable, Return, ReturnFromInterrupt, Call, Argument, ArgumentMechanism,
-    StatusFlagRead,
-    SetMode, SaveRegister, RestoreRegister,
-    Push, Pull,
-    MemoryFill, BlockCopy, ROMDataRef,
+    Load, Store, Move, Jump, CondBranch, Return, ReturnFromInterrupt, Call, StatusFlagRead,
+    SetMode, MemoryFill, BlockCopy, ROMDataRef,
     InlineAsm,
 )
 
 from r65.compiler.mir.virtual_registers import VirtualRegisterAllocator
 from r65.compiler.mir.register_tracker import RegisterAliasTracker
 from r65.compiler.mir.cfg import CFGBuilder
-from r65.compiler.mir.mode_tracker import MIRModeTracker, reanalyze_function as _reanalyze_modes
-from r65.compiler.mir.builder_helpers import TypeSizeCalculator, MemoryLocationBuilder
+from r65.compiler.mir.mode_tracker import reanalyze_function as _reanalyze_modes
+from r65.compiler.mir.builder_helpers import TypeSizeCalculator
 from r65.compiler.mir.context import LoweringContext
 from r65.compiler.mir.lowerers.expression import ExpressionLowerer
 from r65.compiler.mir.lowerers.match import MatchLowerer
@@ -775,7 +767,6 @@ class MIRBuilder:
         Args:
             stmt: HIR let statement with aggregate type
         """
-        from r65.compiler.hir.types import ArrayTypeInfo, StructTypeInfo
         from r65.compiler.hir.attributes import StorageAttribute, StorageKind
         from r65.compiler.hir.symbol_table import Symbol, SymbolKind
 
@@ -1194,7 +1185,6 @@ class MIRBuilder:
 
             # Check if this is a constant - return immediate value
             from r65.compiler.hir.symbol_table import SymbolKind
-            from r65.compiler.hir.types import FunctionTypeInfo
             if symbol.kind == SymbolKind.CONST and symbol.const_value is not None:
                 if isinstance(symbol.const_value, dict):
                     raise MIRLoweringError(

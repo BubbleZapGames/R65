@@ -6,7 +6,7 @@ Handles binary ops, unary ops, type casts, array indexing,
 field access, dereference, and address-of operations.
 """
 
-from typing import TYPE_CHECKING, Union, Optional
+from typing import TYPE_CHECKING, Optional
 
 from r65.compiler.hir import (
     HIRBinaryOp, HIRUnaryOp, HIRTypeCast,
@@ -19,7 +19,7 @@ from r65.compiler.mir.nodes import (
     Move, Load, LoadIndirect, BinaryOp, UnaryOp, TypeConvert, ToBool,
     Compare, CondBranch, Jump,
 )
-from r65.compiler.mir.lowerers.multiply import compute_array_field_offset, compute_scaled_index
+from r65.compiler.mir.lowerers.multiply import compute_scaled_index
 from r65.compiler.errors import MIRLoweringError
 
 if TYPE_CHECKING:
@@ -173,8 +173,6 @@ class ExpressionLowerer:
 
     def _lower_arithmetic_op(self, expr: HIRBinaryOp) -> VirtualRegister:
         """Lower arithmetic/bitwise binary operation."""
-        from r65.compiler.hir import HIRRegister
-        from r65.compiler.mir.nodes import MemoryLocation
 
         left = self.builder.lower_expression(expr.left)
 
@@ -845,16 +843,6 @@ class ExpressionLowerer:
 
             self.emit(Load(dest=result, source=indexed_memloc, type_info=expr.expr_type))
 
-    def _compute_array_field_offset(self, index_operand, struct_size: int, field_offset: int, type_info):
-        """
-        Compute byte offset for array[index].field access.
-
-        Delegates to shared multiply module. See docs/struct-array-indexing.md.
-        """
-        return compute_array_field_offset(
-            index_operand, struct_size, field_offset, type_info,
-            self.ctx, self.emit
-        )
 
     # ========================================================================
     # Dereference
@@ -1176,7 +1164,6 @@ class ExpressionLowerer:
         For static variables: static_address + field_offset
         For pointer auto-deref: pointer_value + field_offset
         """
-        from r65.compiler.hir.types import BasicTypeInfo
 
         field_access = expr.operand
         field_offset = field_access.field_offset or 0

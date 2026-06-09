@@ -5,11 +5,11 @@ Parser for R65 using Lark.
 Transforms Lark parse trees into our custom AST.
 """
 from pathlib import Path
-from lark import Lark, Transformer, Token as LarkToken, Tree, v_args
+from lark import Lark, Transformer, Token as LarkToken, v_args
 from lark.exceptions import UnexpectedToken, UnexpectedCharacters, UnexpectedEOF, VisitError
 from r65.compiler.frontend import ast
 from r65.compiler.errors import ParseError, SourceLocation, get_source_line
-from typing import List, Union, Optional
+from typing import List
 
 
 # Load the grammar
@@ -88,6 +88,27 @@ class ASTBuilder(Transformer):
         except ValueError as e:
             # Raise ValueError, not ParseError - let the VisitError handler add source location
             raise ValueError(f"invalid integer literal '{value}': {e}")
+
+    def _take(self, items, idx, tok_type):
+        """Consume items[idx] if it is a LarkToken of tok_type.
+
+        Returns (present, new_idx). Collapses the recurring optional-modifier
+        scan (FAR/NEAR/MUT/CONST/STAR/DYN) into one call.
+        """
+        if idx < len(items) and isinstance(items[idx], LarkToken) and items[idx].type == tok_type:
+            return True, idx + 1
+        return False, idx
+
+    def _take_far_near(self, items, idx):
+        """Consume an optional FAR or NEAR pointer modifier (mutually exclusive).
+
+        Returns (is_far, is_near, new_idx).
+        """
+        is_far, idx = self._take(items, idx, 'FAR')
+        if is_far:
+            return True, False, idx
+        is_near, idx = self._take(items, idx, 'NEAR')
+        return False, is_near, idx
 
     def _filter_tokens(self, items, keep_types=None):
         """
@@ -271,16 +292,10 @@ class ASTBuilder(Transformer):
         attrs, idx = self._collect_attributes(items, idx)
 
         # Check for const
-        is_const = False
-        if idx < len(items) and isinstance(items[idx], LarkToken) and items[idx].type == 'CONST':
-            is_const = True
-            idx += 1
+        is_const, idx = self._take(items, idx, 'CONST')
 
         # Check for far
-        is_far = False
-        if idx < len(items) and isinstance(items[idx], LarkToken) and items[idx].type == 'FAR':
-            is_far = True
-            idx += 1
+        is_far, idx = self._take(items, idx, 'FAR')
 
         name = items[idx]
         idx += 1
@@ -324,20 +339,10 @@ class ASTBuilder(Transformer):
         idx = 0
 
         # Check for far/near modifier (for pointer parameters)
-        is_far = False
-        is_near = False
-        if idx < len(items) and isinstance(items[idx], LarkToken) and items[idx].type == 'FAR':
-            is_far = True
-            idx += 1
-        elif idx < len(items) and isinstance(items[idx], LarkToken) and items[idx].type == 'NEAR':
-            is_near = True
-            idx += 1
+        is_far, is_near, idx = self._take_far_near(items, idx)
 
         # Check for pointer (*) prefix
-        is_pointer = False
-        if idx < len(items) and isinstance(items[idx], LarkToken) and items[idx].type == 'STAR':
-            is_pointer = True
-            idx += 1
+        is_pointer, idx = self._take(items, idx, 'STAR')
 
         # Name
         name = items[idx].value if isinstance(items[idx], LarkToken) else items[idx]
@@ -412,26 +417,13 @@ class ASTBuilder(Transformer):
         attrs, idx = self._collect_attributes(items, idx)
 
         # Check for far/near modifier (for pointer declarations)
-        is_far = False
-        is_near = False
-        if idx < len(items) and isinstance(items[idx], LarkToken) and items[idx].type == 'FAR':
-            is_far = True
-            idx += 1
-        elif idx < len(items) and isinstance(items[idx], LarkToken) and items[idx].type == 'NEAR':
-            is_near = True
-            idx += 1
+        is_far, is_near, idx = self._take_far_near(items, idx)
 
         # Check for mut token
-        is_mut = False
-        if idx < len(items) and isinstance(items[idx], LarkToken) and items[idx].type == 'MUT':
-            is_mut = True
-            idx += 1
+        is_mut, idx = self._take(items, idx, 'MUT')
 
         # Check for pointer (*) prefix
-        is_pointer = False
-        if idx < len(items) and isinstance(items[idx], LarkToken) and items[idx].type == 'STAR':
-            is_pointer = True
-            idx += 1
+        is_pointer, idx = self._take(items, idx, 'STAR')
 
         # Name
         name = items[idx].value if isinstance(items[idx], LarkToken) else items[idx]
@@ -521,20 +513,10 @@ class ASTBuilder(Transformer):
         idx = 0
 
         # Check for far/near modifier (for pointer fields)
-        is_far = False
-        is_near = False
-        if idx < len(items) and isinstance(items[idx], LarkToken) and items[idx].type == 'FAR':
-            is_far = True
-            idx += 1
-        elif idx < len(items) and isinstance(items[idx], LarkToken) and items[idx].type == 'NEAR':
-            is_near = True
-            idx += 1
+        is_far, is_near, idx = self._take_far_near(items, idx)
 
         # Check for pointer (*) prefix
-        is_pointer = False
-        if idx < len(items) and isinstance(items[idx], LarkToken) and items[idx].type == 'STAR':
-            is_pointer = True
-            idx += 1
+        is_pointer, idx = self._take(items, idx, 'STAR')
 
         # Name
         name = items[idx].value if isinstance(items[idx], LarkToken) else items[idx]
@@ -591,10 +573,7 @@ class ASTBuilder(Transformer):
         doc, idx = self._collect_doc_comments(items, 0)
 
         # Check for far modifier
-        is_far = False
-        if idx < len(items) and isinstance(items[idx], LarkToken) and items[idx].type == 'FAR':
-            is_far = True
-            idx += 1
+        is_far, idx = self._take(items, idx, 'FAR')
 
         # Struct name
         struct_name = items[idx].value if isinstance(items[idx], LarkToken) else items[idx]
@@ -631,16 +610,10 @@ class ASTBuilder(Transformer):
         attrs, idx = self._collect_attributes(items, 0)
 
         # Check for const
-        is_const = False
-        if idx < len(items) and isinstance(items[idx], LarkToken) and items[idx].type == 'CONST':
-            is_const = True
-            idx += 1
+        is_const, idx = self._take(items, idx, 'CONST')
 
         # Check for far fn
-        is_far = False
-        if idx < len(items) and isinstance(items[idx], LarkToken) and items[idx].type == 'FAR':
-            is_far = True
-            idx += 1
+        is_far, idx = self._take(items, idx, 'FAR')
 
         # Method name
         name = items[idx].value if isinstance(items[idx], LarkToken) else items[idx]
@@ -851,10 +824,7 @@ class ASTBuilder(Transformer):
         idx = 0
 
         # Check for far fn
-        is_far = False
-        if idx < len(items) and isinstance(items[idx], LarkToken) and items[idx].type == 'FAR':
-            is_far = True
-            idx += 1
+        is_far, idx = self._take(items, idx, 'FAR')
 
         # Method name
         name = items[idx].value if isinstance(items[idx], LarkToken) else items[idx]
@@ -935,10 +905,7 @@ class ASTBuilder(Transformer):
         doc, idx = self._collect_doc_comments(items, 0)
         attrs, idx = self._collect_attributes(items, idx)
 
-        is_far = False
-        if idx < len(items) and isinstance(items[idx], LarkToken) and items[idx].type == 'FAR':
-            is_far = True
-            idx += 1
+        is_far, idx = self._take(items, idx, 'FAR')
 
         name = items[idx]
         idx += 1
@@ -973,10 +940,7 @@ class ASTBuilder(Transformer):
         doc, idx = self._collect_doc_comments(items, 0)
         attrs, idx = self._collect_attributes(items, idx)
 
-        is_mut = False
-        if idx < len(items) and isinstance(items[idx], LarkToken) and items[idx].type == 'MUT':
-            is_mut = True
-            idx += 1
+        is_mut, idx = self._take(items, idx, 'MUT')
 
         name = items[idx]
         idx += 1
@@ -1562,10 +1526,7 @@ class ASTBuilder(Transformer):
         """Multi-binding let statement: let [mut] a, b = expr;"""
         items = self._filter_tokens(tree.children, keep_types={'IDENT', 'MUT'})
         idx = 0
-        is_mut = False
-        if idx < len(items) and isinstance(items[idx], LarkToken) and items[idx].type == 'MUT':
-            is_mut = True
-            idx += 1
+        is_mut, idx = self._take(items, idx, 'MUT')
         # Collect IDENT names until we hit the initializer (non-LarkToken AST node)
         names = []
         while idx < len(items) and isinstance(items[idx], LarkToken) and items[idx].type == 'IDENT':
@@ -1588,20 +1549,10 @@ class ASTBuilder(Transformer):
         idx = 0
 
         # Check for far/near modifier (for pointer declarations)
-        is_far = False
-        is_near = False
-        if idx < len(items) and isinstance(items[idx], LarkToken) and items[idx].type == 'FAR':
-            is_far = True
-            idx += 1
-        elif idx < len(items) and isinstance(items[idx], LarkToken) and items[idx].type == 'NEAR':
-            is_near = True
-            idx += 1
+        is_far, is_near, idx = self._take_far_near(items, idx)
 
         # Check for mut
-        is_mut = False
-        if idx < len(items) and isinstance(items[idx], LarkToken) and items[idx].type == 'MUT':
-            is_mut = True
-            idx += 1
+        is_mut, idx = self._take(items, idx, 'MUT')
 
         # Get pattern (single or pointer)
         pattern_item = items[idx]
@@ -2457,31 +2408,6 @@ class ASTBuilder(Transformer):
 
         return ast.MultiAssignment(targets=targets, value=value)
 
-    @v_args(tree=True)
-    def multi_assign_stmt(self, tree):
-        """Multi-assignment statement: (a, b) = tuple_expr;"""
-        items = self._filter_tokens(tree.children)
-        # All items except the last are targets, the last is the expression
-        targets = list(items[:-1])
-        value = items[-1]
-        source_loc = self._make_source_loc(tree.meta)
-
-        multi_assign = ast.MultiAssignment(targets=targets, value=value, source_loc=source_loc)
-        return ast.ExprStmt(expr=multi_assign, source_loc=source_loc)
-
-    def multi_assign_ident(self, items):
-        """Multi-assignment target identifier."""
-        items = self._filter_tokens(items)
-        token = items[0]
-        identifier = token.value if isinstance(token, LarkToken) else token
-        if isinstance(token, LarkToken):
-            self._validate_identifier_not_register(identifier, token)
-        return ast.Identifier(name=identifier)
-
-    def multi_assign_register(self, items):
-        """Multi-assignment target register."""
-        items = self._filter_tokens(items, keep_types={'REGISTER'})
-        return ast.Register(name=items[0].value if isinstance(items[0], LarkToken) else items[0])
 
     def compound_op(self, items):
         """Compound operator."""

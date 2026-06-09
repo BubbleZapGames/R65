@@ -428,20 +428,6 @@ class HIRBuilder:
 
         return False  # All cfg attributes evaluated to false
 
-    def _evaluate_cfg_condition(self, condition: ast.CfgCondition) -> hir.HIRBooleanLiteral:
-        """
-        Evaluate a cfg condition and convert to boolean literal.
-
-        Args:
-            condition: AST cfg condition
-
-        Returns:
-            HIRBooleanLiteral with true/false value
-        """
-        # Use provided evaluator or empty one (cfg conditions false by default)
-        evaluator = self.cfg_evaluator or CfgEvaluator(set(), {})
-        result = evaluator.evaluate(condition)
-        return hir.HIRBooleanLiteral(value=result)
 
     # =========================================================================
     # Pass 1: Declare Top-Level Symbols

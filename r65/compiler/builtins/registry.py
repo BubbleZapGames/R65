@@ -215,30 +215,3 @@ class BuiltinRegistry:
         """Get list of all built-in function names."""
         return list(cls.BUILTINS.keys())
 
-    @classmethod
-    def validate_call(cls, name: str, arg_count: int) -> tuple[bool, Optional[str]]:
-        """
-        Validate a built-in function call.
-
-        Args:
-            name: Function name
-            arg_count: Number of arguments provided
-
-        Returns:
-            (is_valid, error_message)
-        """
-        builtin = cls.get_builtin(name)
-        if not builtin:
-            return False, f"Unknown built-in function: {name}"
-
-        # Check if argument count is in valid range
-        min_params = builtin.param_count
-        max_params = builtin.max_param_count if builtin.max_param_count is not None else builtin.param_count
-
-        if arg_count < min_params or arg_count > max_params:
-            if min_params == max_params:
-                return False, f"{name}() takes {min_params} argument(s), got {arg_count}"
-            else:
-                return False, f"{name}() takes {min_params}-{max_params} argument(s), got {arg_count}"
-
-        return True, None

@@ -30,11 +30,6 @@ class MemoryOperationSelector(BaseSelector):
     # Emission Helpers
     # ========================================================================
 
-    def _emit_load_store(self, mnemonic: str, location, comment: str = None):
-        """Emit a load/store instruction using parent's emit_load/emit_store."""
-        opcode, operand = self.parent._get_opcode_for_location(mnemonic, location)
-        self._emit_instr(opcode, operand, comment)
-
     def _ensure_m16_mode(self):
         """Ensure 16-bit accumulator mode. Delegates to parent for mode tracking."""
         self.parent._ensure_m16_mode()

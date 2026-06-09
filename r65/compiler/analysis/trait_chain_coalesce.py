@@ -122,38 +122,6 @@ def _analyze_function_chains(func, call_graph, func_map, cyclic_funcs):
             )
 
 
-def _straight_line_path(func, entry_block_id, visited_blocks):
-    """Return the maximal forward path of blocks starting at entry_block_id
-    where each non-terminal block has exactly one successor whose only
-    predecessor is that block. Marks blocks as visited.
-
-    Returns a list of BasicBlock objects.
-    """
-    path = []
-    cur_id = entry_block_id
-    while cur_id is not None and cur_id not in visited_blocks:
-        block = func.blocks.get(cur_id)
-        if block is None:
-            break
-        visited_blocks.add(cur_id)
-        path.append(block)
-
-        succs = block.successors
-        if len(succs) != 1:
-            break
-        next_id = succs[0]
-        next_block = func.blocks.get(next_id)
-        if next_block is None:
-            break
-        if len(next_block.predecessors) != 1:
-            break
-        if next_block.predecessors[0] != cur_id:
-            break
-        cur_id = next_id
-
-    return path
-
-
 def _extended_path(func, entry_block_id, visited_blocks,
                    call_graph, func_map, cyclic_funcs, kind):
     """Like ``_straight_line_path`` but additionally bridges across simple
@@ -1000,8 +968,6 @@ def _far_chain_can_elide_y(flat, run_indices, call_graph, func_map,
         ):
             return False
     return True
-
-
 
 
 # ChainKind singletons. Defined at module bottom so the predicate

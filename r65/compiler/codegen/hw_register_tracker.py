@@ -10,7 +10,7 @@ to enable optimizations like:
 """
 
 from dataclasses import dataclass, field
-from typing import Optional, Dict, Set, Any
+from typing import Optional, Dict, Any
 from enum import Enum
 
 
@@ -167,98 +167,6 @@ class HardwareRegisterTracker:
                 if instruction_index > state.last_use_index:
                     state.is_live = False
 
-    def mark_clobbered(self, reg_name: str):
-        """
-        Mark a register as clobbered (contents unknown).
-
-        Called when an instruction modifies a register.
-
-        Args:
-            reg_name: Register name ('A', 'X', or 'Y')
-        """
-        state = self.get_state(reg_name)
-        if state:
-            state.clear()
-
-    def mark_contains_vreg(self, reg_name: str, vreg, last_use: int = -1):
-        """
-        Mark that a register now contains a virtual register value.
-
-        Args:
-            reg_name: Register name
-            vreg: VirtualRegister that was loaded
-            last_use: Last instruction index where vreg is used
-        """
-        state = self.get_state(reg_name)
-        if state:
-            state.set_vreg(vreg, last_use)
-
-    def mark_contains_immediate(self, reg_name: str, value: int):
-        """
-        Mark that a register now contains an immediate value.
-
-        Args:
-            reg_name: Register name
-            value: Immediate value
-        """
-        state = self.get_state(reg_name)
-        if state:
-            state.set_immediate(value)
-
-    def contains_vreg(self, reg_name: str, vreg) -> bool:
-        """
-        Check if a register currently contains a specific virtual register.
-
-        Args:
-            reg_name: Register name to check
-            vreg: VirtualRegister to look for
-
-        Returns:
-            True if register contains that vreg value
-        """
-        state = self.get_state(reg_name)
-        if not state:
-            return False
-        if state.contents != RegisterContents.VREG:
-            return False
-        # Compare by id for VirtualRegister
-        if hasattr(vreg, 'id') and hasattr(state.value, 'id'):
-            return vreg.id == state.value.id
-        return state.value == vreg
-
-    def contains_parameter(self, reg_name: str, symbol) -> bool:
-        """
-        Check if a register currently contains a specific parameter.
-
-        Args:
-            reg_name: Register name to check
-            symbol: Parameter symbol to look for
-
-        Returns:
-            True if register contains that parameter value
-        """
-        state = self.get_state(reg_name)
-        if not state:
-            return False
-        if state.contents != RegisterContents.PARAMETER:
-            return False
-        return id(state.value) == id(symbol)
-
-    def contains_immediate(self, reg_name: str, value: int) -> bool:
-        """
-        Check if a register currently contains a specific immediate.
-
-        Args:
-            reg_name: Register name to check
-            value: Immediate value to look for
-
-        Returns:
-            True if register contains that immediate value
-        """
-        state = self.get_state(reg_name)
-        if not state:
-            return False
-        return state.contents == RegisterContents.IMMEDIATE and state.value == value
 
     def is_free(self, reg_name: str) -> bool:
         """
@@ -294,19 +202,6 @@ class HardwareRegisterTracker:
                         return reg_name
                 elif state.value == vreg:
                     return reg_name
-        return None
-
-    def get_free_index_register(self) -> Optional[str]:
-        """
-        Get a free index register (X or Y) for scratch use.
-
-        Returns:
-            'X' or 'Y' if one is free, None otherwise
-        """
-        if self.is_free('X'):
-            return 'X'
-        if self.is_free('Y'):
-            return 'Y'
         return None
 
 

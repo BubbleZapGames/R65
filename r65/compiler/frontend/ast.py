@@ -6,7 +6,6 @@ Each node represents a syntactic construct in the language.
 """
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Union, TYPE_CHECKING
-from enum import Enum
 
 if TYPE_CHECKING:
     from r65.compiler.hir.errors import SourceLocation
@@ -74,7 +73,6 @@ class ArrayType(Type):
     """Array type: [T; N]"""
     element_type: Type
     size: Expression
-
 
 
 @dataclass
@@ -629,13 +627,6 @@ class ForStmt(Statement):
     body: Block
     label: Optional[str] = None  # Loop label for break/continue
     inclusive: bool = False  # True for ..=, False for ..
-
-
-@dataclass
-class AsmNamedArg:
-    """Named argument for asm! format string."""
-    name: str
-    value: Union[str, int, 'Expression']  # String literal, integer, or const expression
 
 
 @dataclass

@@ -16,7 +16,6 @@ from r65.compiler.optimize.peephole import optimize_nodes
 from r65.compiler.codegen.branch_fixup import fixup_nodes
 from r65.compiler.codegen.emitter import emit_nodes
 from r65.compiler.codegen.constants import DEFAULT_STACK_LOWER, DEFAULT_STACK_UPPER, calculate_rom_size
-from r65.compiler.codegen.bank_size import validate_bank_sizes
 from r65.compiler.codegen.debug_info import DebugInfoCollector
 from r65.compiler.codegen.debug_writer import Cc65DebugWriter
 from r65.compiler.codegen.address_calc import AddressCalculator
@@ -525,25 +524,6 @@ class ProgramCodeGenerator:
 
         self.emitter.emit_blank_line()
 
-    def _analyze_stack_depth(self, mir_program: MIRProgram):
-        """
-        Run stack depth analysis and collect warnings.
-
-        Uses codegen-populated frame_size and prologue_bytes on each
-        MIRFunction to compute worst-case stack depth across all call
-        paths from entry points and interrupt handlers.
-        """
-        from r65.compiler.analysis.stack_depth import StackDepthAnalyzer
-
-        analyzer = StackDepthAnalyzer(
-            mir_program,
-            self.allocator.stack_lower,
-            self.allocator.stack_upper,
-        )
-        warnings = analyzer.analyze()
-        for w in warnings:
-            print(w)
-        self.warnings.extend(warnings)
 
     def _collect_volatile_registers(self, mir_program: MIRProgram) -> tuple:
         """
@@ -876,7 +856,6 @@ class ProgramCodeGenerator:
             nodes: Final assembly nodes
             output_file: Assembly output path (used to derive .dbg path)
         """
-        from r65.compiler.codegen.asm_nodes import Label, Instruction, Directive
 
         # Determine ROM type for address calculation
         is_hirom = False
@@ -956,7 +935,6 @@ class ProgramCodeGenerator:
             nodes: Assembly nodes
             base_address: Base address for the segment
         """
-        from r65.compiler.codegen.asm_nodes import Label
 
         # Calculate label addresses
         calc = AddressCalculator(base_address)
@@ -1085,7 +1063,7 @@ class ProgramCodeGenerator:
             nodes: Assembly nodes
             base_address: Base address
         """
-        from r65.compiler.codegen.asm_nodes import Instruction, Label
+        from r65.compiler.codegen.asm_nodes import Instruction
 
         # Calculate addresses for all nodes
         calc = AddressCalculator(base_address)

@@ -15,7 +15,7 @@ consecutive slots and tracking the full range for interference checking.
 """
 
 from typing import Dict, Set, List, Optional, Tuple, Any
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from r65.compiler.mir.nodes import (
     VirtualRegister, MIRFunction, Move, Return, HardwareRegister, Call,
     Store, Load, BinaryOp, UnaryOp, TypeConvert, Compare, BitTest, Rotate,
@@ -1407,15 +1407,3 @@ class StackSlotAllocator:
 
         return sorted(vregs, key=lambda v: v.id)
 
-    def get_slot_for_register(self, vreg: VirtualRegister, allocation: SlotAllocation) -> Optional[int]:
-        """
-        Get the slot number for a virtual register.
-
-        Args:
-            vreg: Virtual register
-            allocation: Slot allocation result
-
-        Returns:
-            Slot number, or None if not allocated
-        """
-        return allocation.register_to_slot.get(vreg)

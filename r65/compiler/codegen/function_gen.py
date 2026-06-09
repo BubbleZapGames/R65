@@ -5,10 +5,9 @@ Function code generation: MIR functions → assembly.
 Generates complete function bodies with headers, labels, and instructions.
 """
 
-from typing import List, Set, Optional
+from typing import List, Set
 from r65.compiler.mir.nodes import (
-    MIRFunction, Return, Call, TraitDispatch, ArgumentMechanism,
-    VirtualRegister, MemoryLocation,
+    MIRFunction, Return, Call, TraitDispatch, VirtualRegister, MemoryLocation,
     Load, Store, Move, BinaryOp, UnaryOp, Compare, BitTest, Rotate,
     Jump, JumpTable, LookupTable, CondBranch, TypeConvert, ToBool,
     LoadIndirect, StoreIndirect, StatusFlagRead, StatusFlagSet, StatusFlagTest,
@@ -20,7 +19,7 @@ from r65.compiler.codegen.instruction_select import InstructionSelector
 from r65.compiler.codegen.register_alloc import ScratchRegisterPool, RegisterAllocator, PhysicalLocation, LocationKind
 from r65.compiler.codegen.memory_alloc import MemoryAllocator
 from r65.compiler.codegen.type_utils import get_type_size
-from r65.compiler.codegen.constants import DEFAULT_STACK_UPPER, M_FLAG, X_FLAG
+from r65.compiler.codegen.constants import DEFAULT_STACK_UPPER, M_FLAG
 from r65.compiler.codegen.opcodes import Opcode, PUSH_OPCODES, PULL_OPCODES
 from r65.compiler.codegen.asm_nodes import Immediate, Address, StackOffset
 from r65.compiler.codegen.abi import ABIInfo, StackFrameLayout
@@ -1215,10 +1214,9 @@ class FunctionCodeGenerator:
         Calls, TraitDispatch, and asm! blocks conservatively clobber everything.
         """
         from r65.compiler.mir.nodes import (
-            BinaryOp, UnaryOp, Move, TypeConvert, ToBool, Compare,
-            Call, TraitDispatch, Load, Store, LoadIndirect, StoreIndirect,
+            Move, Call, TraitDispatch, Load, Store, StoreIndirect,
             SaveRegister, RestoreRegister, HardwareRegister, VirtualRegister,
-            Rotate, InlineAsm, MemoryFill, BlockCopy,
+            InlineAsm, MemoryFill, BlockCopy,
         )
 
         modified = set()  # subset of {'A', 'X', 'Y', 'D', 'DBR'}
@@ -1420,45 +1418,6 @@ class FunctionCodeGenerator:
         """
         self.abi_model.emit_frame_alloc(self._emit_instr, frame_size, force_direct_stack)
 
-    def _emit_frame_deallocation(self, frame_size: int):
-        """
-        Emit stack frame deallocation code.
-
-        Uses TSC/ADC/TCS to add to stack pointer. We avoid PLB because frame
-        bytes get overwritten by local variables during function execution,
-        and PLB would load those garbage bytes into DBR.
-
-        Args:
-            frame_size: Number of bytes to deallocate
-        """
-        if frame_size <= 0:
-            return
-
-        # Always use TSC/ADC/TCS - PLB would corrupt DBR with overwritten frame data
-        self._emit_instr(Opcode.REP_IMMEDIATE, Immediate(M_FLAG), "16-bit A for frame cleanup")
-        self._emit_instr(Opcode.TSC, comment="Get stack pointer")
-        self._emit_instr(Opcode.CLC, comment="Clear carry for addition")
-        self._emit_instr(Opcode.ADC_IMMEDIATE, Immediate(frame_size), f"Deallocate {frame_size} bytes")
-        self._emit_instr(Opcode.TCS, comment="Update stack pointer")
-        self._emit_instr(Opcode.SEP_IMMEDIATE, Immediate(M_FLAG), "Restore 8-bit A")
-
-    def _get_prologue_stack_bytes(self, mir_func: MIRFunction,
-                                   scratch_pool: ScratchRegisterPool = None) -> int:
-        """
-        Calculate bytes pushed by prologue that affect stack parameter offsets.
-
-        Delegates to ABIInfo.prologue_stack_bytes for the actual computation.
-        Kept for backward compatibility with any callers outside generate_function().
-
-        Args:
-            mir_func: MIR function
-            scratch_pool: Optional scratch register pool (unused, kept for API compat)
-
-        Returns:
-            Number of bytes pushed by prologue
-        """
-        abi = ABIInfo.from_mir_function(mir_func)
-        return abi.prologue_stack_bytes
 
     def _offset_location(self, location, offset: int):
         """Create new location offset from given location."""
@@ -1694,39 +1653,4 @@ class ProgramFunctionGenerator:
         self.mem_alloc = memory_allocator
         self.func_gen = FunctionCodeGenerator(emitter, memory_allocator)
 
-    def generate_all_functions(self, mir_program):
-        """
-        Generate all functions in MIR program.
 
-        Args:
-            mir_program: MIRProgram to generate
-        """
-        # Create scratch pool from user-defined register variables
-        scratch_pool = self.func_gen._create_scratch_pool(mir_program)
-
-        # Emit section header
-        self.emitter.emit_section_header("Functions")
-
-        # Generate each function with the same scratch pool
-        for mir_func in mir_program.functions:
-            self.func_gen.generate_function(mir_func, scratch_pool=scratch_pool)
-
-        # Blank line after all functions
-        self.emitter.emit_blank_line()
-
-    def generate_initialization_function(self, mir_program):
-        """
-        Generate __init_start function if needed.
-
-        Args:
-            mir_program: MIR program
-        """
-        # Check if __init_start exists in functions
-        init_func = None
-        for func in mir_program.functions:
-            if func.name == "__init_start":
-                init_func = func
-                break
-
-        if init_func:
-            self.func_gen.generate_function(init_func)

@@ -11,7 +11,6 @@ from r65.compiler.errors import InstructionSelectionError
 from r65.compiler.codegen.opcodes import Opcode
 from r65.compiler.codegen.asm_nodes import Immediate, Address
 from r65.compiler.codegen.base_selector import BaseSelector
-from r65.compiler.codegen.register_alloc import LocationKind
 from r65.compiler.hir.types import PointerTypeInfo
 
 
@@ -26,11 +25,6 @@ class TypeConversionSelector(BaseSelector):
     # ========================================================================
     # Emission Helpers
     # ========================================================================
-
-    def _emit_load_store(self, mnemonic: str, location, comment: str = None):
-        """Emit a load/store instruction using parent's opcode selection."""
-        opcode, operand = self.parent._get_opcode_for_location(mnemonic, location)
-        self._emit_instr(opcode, operand, comment)
 
     def _emit_label(self, name: str):
         """Emit a label."""

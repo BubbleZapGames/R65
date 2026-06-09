@@ -16,10 +16,9 @@ from r65.compiler.hir import (
 from r65.compiler.mir.nodes import (
     VirtualRegister, HardwareRegister, Immediate,
     Move, Store, Call, Argument, ArgumentMechanism, Rotate, BankByte,
-    SetMode, Push, Pull, TraitDispatch, LoadIndirect,
+    TraitDispatch, LoadIndirect,
 )
 from r65.compiler.hir.types import ArrayTypeInfo, BasicTypeInfo
-from r65.compiler.typeck.processor_mode import ProcessorMode, ModeState
 from r65.compiler.errors import MIRLoweringError
 
 if TYPE_CHECKING:
@@ -490,35 +489,6 @@ class CallLowerer:
     # Mode Transition Helpers
     # ========================================================================
 
-    def _emit_mode_transition(self, from_mode: ProcessorMode, to_mode: ProcessorMode):
-        """
-        Emit instructions to transition from one processor mode to another.
-
-        Generates SEP/REP instructions to change M and X flags.
-
-        Args:
-            from_mode: Current processor mode
-            to_mode: Target processor mode
-        """
-        if from_mode == to_mode:
-            return  # No transition needed
-
-        # Build mask for mode changes
-        sep_mask = 0  # Bits to set (8-bit mode)
-        rep_mask = 0  # Bits to clear (16-bit mode)
-
-        # M flag (bit 5, 0x20) - X is always x16, no need to check
-        if from_mode.m_mode != to_mode.m_mode:
-            if to_mode.m_mode == ModeState.M8:
-                sep_mask |= 0x20  # SEP #$20 for M8
-            elif to_mode.m_mode == ModeState.M16:
-                rep_mask |= 0x20  # REP #$20 for M16
-
-        # Emit instructions
-        if sep_mask:
-            self.emit(SetMode(mask=sep_mask, is_set=True))
-        if rep_mask:
-            self.emit(SetMode(mask=rep_mask, is_set=False))
 
     def _emit_call_with_mode_transition(
         self,

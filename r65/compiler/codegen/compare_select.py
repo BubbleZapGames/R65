@@ -26,11 +26,6 @@ class CompareSelector(BaseSelector):
     # Emission Helpers
     # ========================================================================
 
-    def _emit_load_store(self, mnemonic: str, location, comment: str = None):
-        """Emit a load/store instruction using parent's opcode selection."""
-        opcode, operand = self.parent._get_opcode_for_location(mnemonic, location)
-        self._emit_instr(opcode, operand, comment)
-
     def _emit_cmp(self, mnemonic: str, operand, is_immediate: bool):
         """Emit a comparison instruction (CMP, CPX, CPY)."""
         if is_immediate:

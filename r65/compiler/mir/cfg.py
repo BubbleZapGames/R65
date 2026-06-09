@@ -48,18 +48,6 @@ class CFGBuilder:
         if from_block.block_id not in to_block.predecessors:
             to_block.predecessors.append(from_block.block_id)
 
-    def remove_edge(self, from_block: BasicBlock, to_block: BasicBlock):
-        """
-        Remove a control flow edge between two blocks.
-
-        Args:
-            from_block: Source block
-            to_block: Destination block
-        """
-        if to_block.block_id in from_block.successors:
-            from_block.successors.remove(to_block.block_id)
-        if from_block.block_id in to_block.predecessors:
-            to_block.predecessors.remove(from_block.block_id)
 
     def get_block(self, block_id: int) -> BasicBlock:
         """
@@ -73,22 +61,6 @@ class CFGBuilder:
         """
         return self.function.blocks[block_id]
 
-    def compute_predecessors(self):
-        """
-        Recompute predecessor lists from successor lists.
-
-        Useful after manually modifying successor lists.
-        """
-        # Clear all predecessor lists
-        for block in self.function.blocks.values():
-            block.predecessors.clear()
-
-        # Rebuild from successors
-        for block in self.function.blocks.values():
-            for succ_id in block.successors:
-                succ_block = self.function.blocks[succ_id]
-                if block.block_id not in succ_block.predecessors:
-                    succ_block.predecessors.append(block.block_id)
 
     def find_exit_blocks(self) -> List[int]:
         """

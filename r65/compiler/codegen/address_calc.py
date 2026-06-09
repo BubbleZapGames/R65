@@ -6,7 +6,7 @@ Provides address calculation for generating debug info with accurate
 instruction addresses for source-level debugging.
 """
 
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple
 
 from r65.compiler.codegen.asm_nodes import (
     AsmNode, Instruction, Label, Directive, ModeChange, BlankLine, Comment,
@@ -116,17 +116,6 @@ class AddressCalculator:
 
         return node_addresses, label_addresses
 
-    def get_total_size(self, nodes: List[AsmNode]) -> int:
-        """
-        Calculate total size of all nodes.
-
-        Args:
-            nodes: List of AsmNode objects
-
-        Returns:
-            Total size in bytes
-        """
-        return sum(self._node_size(node) for node in nodes)
 
     def _node_size(self, node: AsmNode) -> int:
         """
@@ -316,19 +305,3 @@ class AddressCalculator:
             return int(value)
 
 
-def calculate_function_addresses(nodes: List[AsmNode], base_address: int) -> Dict[str, int]:
-    """
-    Calculate addresses of all function labels in the nodes.
-
-    Convenience function for extracting function entry points.
-
-    Args:
-        nodes: List of AsmNode objects
-        base_address: Starting address
-
-    Returns:
-        Dict mapping function names to addresses
-    """
-    calc = AddressCalculator(base_address)
-    _, label_addresses = calc.calculate_with_labels(nodes)
-    return label_addresses

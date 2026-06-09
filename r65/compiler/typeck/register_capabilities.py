@@ -93,19 +93,6 @@ def _get_caps_or_none(register_name: str) -> dict:
     return REGISTER_CAPABILITIES.get(register_name)
 
 
-def get_register_capabilities(register_name: str) -> dict:
-    """
-    Get the capabilities for a register.
-
-    Args:
-        register_name: Name of the register (A, X, Y, B)
-
-    Returns:
-        Dict with 'binary_ops', 'inc', 'dec' keys, or None for unrestricted
-    """
-    return _get_caps_or_none(register_name)
-
-
 def can_register_do_binary_op(register_name: str, op: str) -> bool:
     """Check if a register supports a binary operator (+, -, &, |, ^, <<, >>)."""
     caps = _get_caps_or_none(register_name)

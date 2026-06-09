@@ -11,8 +11,8 @@ Performs dataflow analysis to track processor M mode (M8/M16)
 through the control flow graph.
 """
 
-from typing import Dict, List, Set, Optional
-from r65.compiler.typeck.processor_mode import ProcessorMode, ModeState, XModeState
+from typing import Set, Optional
+from r65.compiler.typeck.processor_mode import ProcessorMode, XModeState
 from r65.compiler.mir.nodes import *
 
 
@@ -162,25 +162,6 @@ class MIRModeTracker:
                     current_mode = current_mode.apply_rep(instr.mask)
 
         return current_mode
-
-    def print_mode_info(self):
-        """Print mode information for debugging."""
-        print(f"Mode tracking for function '{self.mir_func.name}':")
-        print(f"  Function mode attribute: {self.mir_func.mode_attr}")
-        print()
-
-        for block_id in sorted(self.mir_func.blocks.keys()):
-            block = self.mir_func.blocks[block_id]
-            print(f"  Block {block_id}:")
-            print(f"    Entry mode:  {block.entry_mode}")
-            print(f"    Exit mode:   {block.exit_mode}")
-
-            # Show SetMode instructions
-            for instr in block.instructions:
-                if isinstance(instr, SetMode):
-                    op_name = "SEP" if instr.is_set else "REP"
-                    print(f"      {op_name} #${instr.mask:02X}")
-            print()
 
 
 def reanalyze_function(mir_func: MIRFunction) -> bool:

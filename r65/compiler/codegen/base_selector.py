@@ -9,15 +9,15 @@ Provides common functionality shared across all selector classes:
 - Abstract interface for selector composition
 """
 
-from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Optional
+from abc import ABC
+from typing import TYPE_CHECKING
 
 from r65.compiler.codegen.opcodes import Opcode
 from r65.compiler.codegen.asm_nodes import Immediate, Address
 from r65.compiler.codegen.location_resolver import (
     LocationResolver, StoreResolver, default_resolver
 )
-from r65.compiler.codegen.register_alloc import PhysicalLocation, LocationKind
+from r65.compiler.codegen.register_alloc import PhysicalLocation
 
 if TYPE_CHECKING:
     from r65.compiler.codegen.instruction_select import InstructionSelector
@@ -157,20 +157,14 @@ class BaseSelector(ABC):
             self._emit_instr(opcode, operand, comment)
 
     def _emit_load_store(self, mnemonic: str, location: PhysicalLocation, comment: str = None):
-        """
-        Emit a load or store instruction based on the mnemonic.
+        """Emit a load/store instruction using the parent's opcode selection.
 
-        Convenience method that routes to _emit_load or _emit_store.
-
-        Args:
-            mnemonic: Instruction mnemonic
-            location: Memory location
-            comment: Optional comment
+        Routes through parent._get_opcode_for_location, which applies the
+        D=S / SET_DBR / spill-offset addressing adjustments. (The resolver-only
+        path in _emit_load/_emit_store bypasses those, so callers must use this.)
         """
-        if mnemonic.startswith('ST'):
-            self._emit_store(mnemonic, location, comment)
-        else:
-            self._emit_load(mnemonic, location, comment)
+        opcode, operand = self.parent._get_opcode_for_location(mnemonic, location)
+        self._emit_instr(opcode, operand, comment)
 
     # ========================================================================
     # Operand Location Helpers
@@ -191,19 +185,3 @@ class BaseSelector(ABC):
         return self.parent._get_operand_location(operand)
 
 
-
-class SelectorComponent:
-    """
-    Mixin for selector components that can be composed.
-
-    Provides a standard interface for selectors that can be combined
-    or used independently within the instruction selection pipeline.
-    """
-
-    def set_parent(self, parent: 'InstructionSelector'):
-        """Set the parent instruction selector."""
-        self.parent = parent
-
-    def set_resolver(self, resolver: LocationResolver):
-        """Set the location resolver."""
-        self._resolver = resolver

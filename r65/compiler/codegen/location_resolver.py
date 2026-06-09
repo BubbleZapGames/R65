@@ -18,7 +18,7 @@ from typing import Optional, Tuple
 from r65.compiler.codegen.register_alloc import PhysicalLocation, LocationKind
 from r65.compiler.codegen.opcodes import Opcode, OPCODE_VARIANTS
 from r65.compiler.codegen.asm_nodes import Address, StackOffset, Immediate
-from r65.compiler.codegen.constants import DP_BOUNDARY, BYTE_MASK, WORD_MASK
+from r65.compiler.codegen.constants import DP_BOUNDARY
 from r65.compiler.codegen.errors import unsupported_addressing_mode
 from r65.compiler.errors import InstructionSelectionError
 
@@ -312,16 +312,6 @@ class LocationResolver:
                 return False  # Labels are always absolute
             return location.memory_addr < self.dp_boundary
         return False
-
-    def get_address(self, location: PhysicalLocation) -> int | str | None:
-        """Extract the address or label from a location."""
-        if location.kind == LocationKind.MEMORY:
-            return location.memory_label or location.memory_addr
-        elif location.kind == LocationKind.SCRATCH:
-            return location.scratch_addr
-        elif location.kind == LocationKind.STACK:
-            return location.stack_offset
-        return None
 
 
 # ============================================================================

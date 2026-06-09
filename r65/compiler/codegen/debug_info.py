@@ -11,7 +11,7 @@ from typing import Dict, List, Optional, TYPE_CHECKING
 import os
 
 if TYPE_CHECKING:
-    from r65.compiler.errors import SourceLocation
+    pass
 
 
 @dataclass
@@ -264,17 +264,3 @@ class DebugInfoCollector:
                 return span
         return self.add_span(seg_id, start, size)
 
-    def get_segment_for_address(self, address: int) -> Optional[DbgSegment]:
-        """
-        Find segment containing an address.
-
-        Args:
-            address: CPU address
-
-        Returns:
-            DbgSegment or None if not found
-        """
-        for seg in self.segments:
-            if seg.start <= address < seg.start + seg.size:
-                return seg
-        return None

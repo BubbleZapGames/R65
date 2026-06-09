@@ -53,7 +53,7 @@ from r65.compiler.codegen.constants import (
     WRAM_BANK, WRAM_BANK2, WRAM_BANK_START, WRAM_BANK2_START
 )
 from r65.compiler.codegen.location_resolver import (
-    LocationResolver, StoreResolver, default_resolver
+    StoreResolver, default_resolver
 )
 from r65.compiler.codegen.selector_context import SelectorContext
 from r65.compiler.codegen.asm_nodes import Immediate, Address, StackOffset, Instruction as AsmInstruction
@@ -320,7 +320,7 @@ class InstructionSelector:
             elif location.kind == LocationKind.MEMORY and location.memory_addr is not None and location.memory_addr < 0x100:
                 # Zeropage memory location - force absolute addressing
                 # by using a resolver that treats it as non-DP
-                from r65.compiler.codegen.location_resolver import ResolvedLocation, AddressingMode
+                from r65.compiler.codegen.location_resolver import ResolvedLocation
                 resolved = ResolvedLocation(
                     mode=self._resolver._get_indexed_mode(location.index_register, is_dp=False),
                     operand=Address(location.memory_addr),
@@ -337,7 +337,7 @@ class InstructionSelector:
         if (self.current_function and
             self.current_function.far_ptr_strategy == FarPtrStrategy.SET_DBR):
             if location.kind == LocationKind.MEMORY:
-                from r65.compiler.codegen.location_resolver import ResolvedLocation, AddressingMode
+                from r65.compiler.codegen.location_resolver import ResolvedLocation
                 if location.memory_label and location.storage_type == 'rom':
                     # ROM label: force LONG addressing (label is in code bank, not DBR bank)
                     resolved = ResolvedLocation(
@@ -1748,51 +1748,6 @@ class InstructionSelector:
         else:
             raise InstructionSelectionError(f"Unknown operand type: {type(operand)}", source_loc=self._current_source_loc)
 
-    def _format_operand(self, location: PhysicalLocation) -> str:
-        """
-        Format physical location as assembly operand.
-
-        Args:
-            location: Physical location
-
-        Returns:
-            Formatted operand string
-        """
-        if location.is_hw():
-            # Hardware register - can't be used as memory operand
-            # This shouldn't happen in normal code generation
-            raise InstructionSelectionError(f"Cannot use hardware register as memory operand: {location.hw_register}", source_loc=self._current_source_loc)
-        elif location.kind == LocationKind.SCRATCH:
-            base = f"${location.scratch_addr:02X}"
-            if location.index_register:
-                return f"{base},{location.index_register}"
-            return base
-        elif location.kind == LocationKind.MEMORY:
-            # Check if using a ROM label (for #[rom] data accessed directly)
-            if location.memory_label:
-                base = location.memory_label
-            elif location.memory_addr is not None:
-                if location.memory_addr < DP_BOUNDARY:
-                    # Zero-page
-                    base = f"${location.memory_addr:02X}"
-                else:
-                    # Absolute
-                    base = f"${location.memory_addr:04X}"
-            else:
-                raise InstructionSelectionError("Memory location has neither address nor label", source_loc=self._current_source_loc)
-            # Add index register if present (e.g., "$20,X" or "LABEL,X")
-            if location.index_register:
-                return f"{base},{location.index_register}"
-            return base
-        elif location.kind == LocationKind.STACK:
-            # Stack-relative addressing using 65816 stack-relative mode
-            # Format: $XX,S where XX is the offset from stack pointer
-            return f"${location.stack_offset:02X},S"
-        elif location.kind == LocationKind.IMMEDIATE:
-            # Immediate value
-            return f"#{location.immediate_value}"
-        else:
-            raise InstructionSelectionError(f"Unknown location kind: {location.kind}", source_loc=self._current_source_loc)
 
     def _offset_location(self, location: PhysicalLocation, offset: int) -> PhysicalLocation:
         """

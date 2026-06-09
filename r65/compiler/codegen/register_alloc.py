@@ -11,12 +11,12 @@ Variables live across calls always spill to stack (scratches are not
 callee-saved, so any callee could clobber them).
 """
 
-from typing import Any, Dict, List, Optional, Set, Tuple, TYPE_CHECKING
-from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
+from dataclasses import dataclass
 from enum import Enum
 from r65.compiler.mir.nodes import VirtualRegister, HardwareRegister, MIRFunction
 from r65.compiler.codegen.slot_allocator import StackSlotAllocator, SlotAllocation, PreassignedSlot
-from r65.compiler.codegen.type_utils import get_type_size, get_vreg_size
+from r65.compiler.codegen.type_utils import get_vreg_size
 from r65.compiler.codegen.abi import StackFrameLayout
 from r65.compiler.errors import MemoryAllocationError
 
@@ -608,17 +608,6 @@ class RegisterAllocator:
 
         return None
 
-    def bind_vreg_to_hw(self, vreg: VirtualRegister, hw_reg: str):
-        """
-        Bind a virtual register to a hardware register.
-
-        Used for explicit @ bindings like `let x @ A = ...`
-
-        Args:
-            vreg: Virtual register
-            hw_reg: Hardware register name ('A', 'X', or 'Y')
-        """
-        self.hw_bindings[vreg.id] = hw_reg
 
     def get_location(self, vreg: VirtualRegister) -> PhysicalLocation:
         """
@@ -663,39 +652,6 @@ class RegisterAllocator:
         """
         return self.hw_allocs.get(hw_reg, HardwareRegAllocation(hw_reg, size=1))
 
-    def free_hw_register(self, hw_reg: str):
-        """
-        Free a hardware register (mark as available for reuse).
-
-        Called when a bound variable's liveness ends.
-
-        Args:
-            hw_reg: Hardware register name to free
-        """
-        if hw_reg in self.hw_allocs:
-            alloc = self.hw_allocs[hw_reg]
-            if alloc.allocated_vreg:
-                vreg_id = alloc.allocated_vreg.id
-                if vreg_id in self.hw_bindings:
-                    del self.hw_bindings[vreg_id]
-            alloc.allocated_vreg = None
-            alloc.is_bound = False
-
-    def is_vreg_in_hw_register(self, vreg: VirtualRegister) -> Optional[str]:
-        """
-        Check if a vreg is currently allocated to a hardware register.
-
-        Args:
-            vreg: Virtual register to check
-
-        Returns:
-            Hardware register name if allocated, None otherwise
-        """
-        if vreg.id in self.allocations:
-            loc = self.allocations[vreg.id]
-            if loc.is_hw():
-                return loc.hw_register
-        return None
 
     def allocate_all(self, vregs: List[VirtualRegister]):
         """

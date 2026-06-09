@@ -794,45 +794,6 @@ class InstructionLivenessAnalyzer:
         self._live_across_calls_cache[vreg.id] = calls
         return calls
 
-    def get_live_vregs_at_call(self, call_instr: Call) -> Set[VirtualRegister]:
-        """
-        Get all virtual registers that are live across a specific call.
-
-        Args:
-            call_instr: The Call instruction
-
-        Returns:
-            Set of VirtualRegisters live across this call
-        """
-        pos = self.get_instruction_position(call_instr)
-        if not pos:
-            return set()
-
-        block_id, instr_idx = pos
-
-        # Get vregs live after the call
-        live_after = self._get_live_after(block_id, instr_idx)
-
-        # Filter to only those defined before the call
-        result = set()
-        block = self.func.blocks[block_id]
-        info = self.liveness.get(block_id)
-
-        for vreg in live_after:
-            # Check if vreg was defined before this call
-            vreg_defined = vreg in info.live_in if info else False
-
-            for i in range(instr_idx):
-                defs = self.block_analyzer._get_defs(block.instructions[i])
-                if vreg in defs:
-                    vreg_defined = True
-                    break
-
-            if vreg_defined:
-                result.add(vreg)
-
-        return result
-
 
 @dataclass
 class ClobberRegion:

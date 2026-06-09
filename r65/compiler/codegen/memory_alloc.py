@@ -557,18 +557,6 @@ class MemoryAllocator:
         """
         return self.allocations.get(symbol.name)
 
-    def get_address(self, symbol: Symbol) -> Optional[int]:
-        """
-        Get address for a symbol.
-
-        Args:
-            symbol: Symbol to query
-
-        Returns:
-            Address or None if not allocated
-        """
-        alloc = self.allocations.get(symbol.name)
-        return alloc.address if alloc else None
 
     def get_all_allocations(self) -> list[AllocationInfo]:
         """
@@ -607,18 +595,3 @@ class MemoryAllocator:
         """True if address is in zeropage / direct page range."""
         return 0 <= address <= self.zeropage_end
 
-    def get_addressing_mode(self, address: int, size: int = 1) -> str:
-        """Suggest optimal addressing mode for an address.
-
-        Args:
-            address: Memory address
-            size: Size of the access in bytes (unused, reserved for future)
-
-        Returns:
-            'direct' for DP addressing, 'absolute' for 16-bit, 'long' for 24-bit
-        """
-        if self.is_direct_page(address):
-            return 'direct'
-        if address <= 0xFFFF:
-            return 'absolute'
-        return 'long'

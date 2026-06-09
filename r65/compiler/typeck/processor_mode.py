@@ -14,12 +14,12 @@ Mode inference:
 """
 
 from dataclasses import dataclass
-from typing import Optional, List, TYPE_CHECKING
+from typing import Optional, TYPE_CHECKING
 from enum import Enum
 from r65.compiler.hir import *
 
 if TYPE_CHECKING:
-    from r65.compiler.hir.nodes import HIRParameter
+    pass
 
 
 class ModeState(Enum):
@@ -53,34 +53,6 @@ class ProcessorMode:
         """Create the default mode: m8 (8-bit A), x16 (16-bit X/Y)."""
         return ProcessorMode(ModeState.M8, XModeState.X16)
 
-    @staticmethod
-    def for_function(parameters: List['HIRParameter']) -> 'ProcessorMode':
-        """
-        Infer entry mode from function parameters.
-
-        Rules:
-        - If any parameter is bound to A with type u16 -> m16 entry
-        - Otherwise -> m8 entry (default)
-        - X/Y are always x16
-
-        Args:
-            parameters: List of HIR function parameters
-
-        Returns:
-            ProcessorMode for function entry
-        """
-        from r65.compiler.hir.nodes import RegisterBinding
-
-        for param in parameters:
-            if isinstance(param.binding, RegisterBinding):
-                if param.binding.register_name == "A":
-                    # Check if A parameter is u16
-                    if param.param_type and isinstance(param.param_type, BasicTypeInfo):
-                        if param.param_type.name in ('u16', 'i16'):
-                            return ProcessorMode(ModeState.M16, XModeState.X16)
-
-        # Default: m8 entry mode
-        return ProcessorMode.default()
 
     def is_fully_known(self) -> bool:
         """Check if mode is fully known (always True in new design)."""

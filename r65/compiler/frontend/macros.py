@@ -6,9 +6,8 @@ Handles macro definition collection and invocation expansion.
 Works at the AST level, expanding macro invocations into AST nodes.
 """
 import re
-from dataclasses import dataclass
-from typing import Dict, List, Optional, Set, Tuple, Union, Callable, TypeVar
-from copy import deepcopy
+from dataclasses import dataclass, replace
+from typing import Dict, List, Optional, Set, Tuple, Callable, TypeVar
 
 T = TypeVar('T')
 
@@ -214,63 +213,22 @@ class MacroExpander:
                 new_init = None
                 if item.initializer:
                     new_init = self._expand_expression(item.initializer)
-                new_item = ast.StaticDecl(
-                    attributes=item.attributes,
-                    is_far=item.is_far,
-                    is_mut=item.is_mut,
-                    name=item.name,
-                    var_type=item.var_type,
-                    initializer=new_init,
-                    is_extern=item.is_extern,
-                    doc=item.doc,
-                    source_loc=item.source_loc
-                )
-                result.append(new_item)
+                result.append(replace(item, initializer=new_init))
             elif isinstance(item, ast.ConstDecl):
                 # Expand macros in const value
-                new_value = self._expand_expression(item.value)
-                new_item = ast.ConstDecl(
-                    name=item.name,
-                    const_type=item.const_type,
-                    value=new_value,
-                    source_loc=item.source_loc
-                )
-                result.append(new_item)
+                result.append(replace(item, value=self._expand_expression(item.value)))
             elif isinstance(item, ast.ImplDecl):
                 # Expand macros inside impl method bodies
-                new_methods = []
-                for method in item.methods:
-                    new_body = self._expand_block(method.body)
-                    new_methods.append(ast.ImplMethod(
-                        attributes=method.attributes,
-                        is_far=method.is_far,
-                        name=method.name,
-                        self_is_far=method.self_is_far,
-                        params=method.params,
-                        return_type=method.return_type,
-                        body=new_body,
-                        source_loc=method.source_loc,
-                        is_const=method.is_const,
-                    ))
-                new_constants = []
-                for const in item.constants:
-                    new_value = self._expand_expression(const.value)
-                    new_constants.append(ast.ImplConst(
-                        name=const.name,
-                        const_type=const.const_type,
-                        value=new_value,
-                        source_loc=const.source_loc,
-                    ))
+                new_methods = [
+                    replace(method, body=self._expand_block(method.body))
+                    for method in item.methods
+                ]
+                new_constants = [
+                    replace(const, value=self._expand_expression(const.value))
+                    for const in item.constants
+                ]
                 # Impl macros are already collected; don't need to expand them
-                result.append(ast.ImplDecl(
-                    struct_name=item.struct_name,
-                    is_far=item.is_far,
-                    methods=new_methods,
-                    constants=new_constants,
-                    trait_name=item.trait_name,
-                    macros=item.macros,
-                    source_loc=item.source_loc,
-                ))
+                result.append(replace(item, methods=new_methods, constants=new_constants))
             else:
                 # Keep other declarations as-is
                 result.append(item)
@@ -279,24 +237,14 @@ class MacroExpander:
 
     def _expand_function(self, func: ast.FunctionDecl) -> ast.FunctionDecl:
         """Expand macros inside a function body."""
-        # extern fn has no body — nothing to expand
+        # extern fn has no body — nothing to expand. replace() copies every
+        # field, so new FunctionDecl fields can't be silently dropped here.
         new_body = self._expand_block(func.body) if func.body is not None else None
-        return ast.FunctionDecl(
-            attributes=func.attributes,
-            is_far=func.is_far,
-            name=func.name,
-            params=func.params,
-            return_type=func.return_type,
-            body=new_body,
-            source_loc=func.source_loc,
-            is_const=func.is_const,
-            is_extern=func.is_extern,
-        )
+        return replace(func, body=new_body)
 
     def _expand_block(self, block: ast.Block) -> ast.Block:
         """Expand macros inside a block."""
-        new_statements = self._expand_statements(block.statements)
-        return ast.Block(statements=new_statements, source_loc=block.source_loc)
+        return replace(block, statements=self._expand_statements(block.statements))
 
     def _expand_statements(self, statements: List[ast.Statement]) -> List[ast.Statement]:
         """Expand macro invocations in a list of statements."""
@@ -313,44 +261,23 @@ class MacroExpander:
                 new_stmt = self._expand_if(stmt)
                 result.append(new_stmt)
             elif isinstance(stmt, ast.LoopStmt):
-                new_stmt = ast.LoopStmt(
-                    body=self._expand_block(stmt.body),
-                    label=getattr(stmt, 'label', None),
-                    source_loc=stmt.source_loc
-                )
-                result.append(new_stmt)
+                result.append(replace(stmt, body=self._expand_block(stmt.body)))
             elif isinstance(stmt, ast.WhileStmt):
-                new_stmt = ast.WhileStmt(
+                result.append(replace(
+                    stmt,
                     condition=self._expand_expression(stmt.condition),
                     body=self._expand_block(stmt.body),
-                    label=getattr(stmt, 'label', None),
-                    source_loc=stmt.source_loc
-                )
-                result.append(new_stmt)
+                ))
             elif isinstance(stmt, ast.Block):
                 new_stmt = self._expand_block(stmt)
                 result.append(new_stmt)
             elif isinstance(stmt, ast.LetStmt):
                 # Expand macros in let statement initializer
                 new_init = self._expand_expression(stmt.initializer) if stmt.initializer else None
-                new_stmt = ast.LetStmt(
-                    is_mut=stmt.is_mut,
-                    name=stmt.name,
-                    binding=stmt.binding,
-                    var_type=stmt.var_type,
-                    initializer=new_init,
-                    source_loc=stmt.source_loc
-                )
-                result.append(new_stmt)
+                result.append(replace(stmt, initializer=new_init))
             elif isinstance(stmt, ast.MultiLetStmt):
                 new_init = self._expand_expression(stmt.initializer) if stmt.initializer else None
-                new_stmt = ast.MultiLetStmt(
-                    names=stmt.names,
-                    is_mut=stmt.is_mut,
-                    initializer=new_init,
-                    source_loc=stmt.source_loc
-                )
-                result.append(new_stmt)
+                result.append(replace(stmt, initializer=new_init))
             elif isinstance(stmt, ast.ExprStmt):
                 # Check if this is a macro invocation at statement level
                 if isinstance(stmt.expr, ast.MacroInvocation):
@@ -365,32 +292,21 @@ class MacroExpander:
                     result.extend(expanded)
                 else:
                     # Expand macros in expression
-                    new_expr = self._expand_expression(stmt.expr)
-                    result.append(ast.ExprStmt(expr=new_expr, source_loc=stmt.source_loc))
+                    result.append(replace(stmt, expr=self._expand_expression(stmt.expr)))
             elif isinstance(stmt, ast.ReturnStmt):
                 # Expand macros in return values
                 new_values = [self._expand_expression(v) for v in stmt.values]
-                result.append(ast.ReturnStmt(values=new_values, source_loc=stmt.source_loc))
+                result.append(replace(stmt, values=new_values))
             elif isinstance(stmt, ast.ForStmt):
-                new_stmt = ast.ForStmt(
-                    variable=stmt.variable,
+                result.append(replace(
+                    stmt,
                     start=self._expand_expression(stmt.start),
                     end=self._expand_expression(stmt.end),
                     body=self._expand_block(stmt.body),
-                    label=getattr(stmt, 'label', None),
-                    inclusive=getattr(stmt, 'inclusive', False),
-                    source_loc=stmt.source_loc
-                )
-                result.append(new_stmt)
+                ))
             elif isinstance(stmt, ast.BreakStmt):
                 if stmt.value is not None:
-                    new_value = self._expand_expression(stmt.value)
-                    new_stmt = ast.BreakStmt(
-                        label=stmt.label,
-                        value=new_value,
-                        source_loc=stmt.source_loc
-                    )
-                    result.append(new_stmt)
+                    result.append(replace(stmt, value=self._expand_expression(stmt.value)))
                 else:
                     result.append(stmt)
             else:
@@ -432,88 +348,51 @@ class MacroExpander:
                     source_loc=expr.source_loc
                 )
 
-            return ast.BinaryOp(
-                op=expr.op,
-                left=left,
-                right=right,
-                source_loc=expr.source_loc
-            )
+            return replace(expr, left=left, right=right)
 
         elif isinstance(expr, ast.UnaryOp):
-            return ast.UnaryOp(
-                op=expr.op,
-                operand=self._expand_expression(expr.operand),
-                source_loc=expr.source_loc
-            )
+            return replace(expr, operand=self._expand_expression(expr.operand))
 
         elif isinstance(expr, ast.FunctionCall):
             new_args = [self._expand_expression(arg) for arg in expr.args]
-            return ast.FunctionCall(
-                func=self._expand_expression(expr.func),
-                args=new_args,
-                source_loc=expr.source_loc
-            )
+            return replace(expr, func=self._expand_expression(expr.func), args=new_args)
 
         elif isinstance(expr, ast.ArrayIndex):
-            return ast.ArrayIndex(
+            return replace(
+                expr,
                 array=self._expand_expression(expr.array),
                 index=self._expand_expression(expr.index),
-                source_loc=expr.source_loc
             )
 
         elif isinstance(expr, ast.FieldAccess):
-            return ast.FieldAccess(
-                base=self._expand_expression(expr.base),
-                field=expr.field,
-                source_loc=expr.source_loc
-            )
+            return replace(expr, base=self._expand_expression(expr.base))
 
         elif isinstance(expr, ast.TypeCast):
-            return ast.TypeCast(
-                expr=self._expand_expression(expr.expr),
-                target_type=expr.target_type,
-                source_loc=expr.source_loc
-            )
+            return replace(expr, expr=self._expand_expression(expr.expr))
 
         elif isinstance(expr, ast.Dereference):
-            return ast.Dereference(
-                pointer=self._expand_expression(expr.pointer),
-                source_loc=expr.source_loc
-            )
+            return replace(expr, pointer=self._expand_expression(expr.pointer))
 
         elif isinstance(expr, ast.AddressOf):
-            return ast.AddressOf(
-                operand=self._expand_expression(expr.operand),
-                source_loc=expr.source_loc
-            )
+            return replace(expr, operand=self._expand_expression(expr.operand))
 
         elif isinstance(expr, ast.ArrayLiteralExpr):
             new_elements = [self._expand_expression(e) for e in expr.elements]
-            return ast.ArrayLiteralExpr(
-                elements=new_elements,
-                source_loc=expr.source_loc
-            )
+            return replace(expr, elements=new_elements)
 
         elif isinstance(expr, ast.ArrayFillExpr):
-            return ast.ArrayFillExpr(
+            return replace(
+                expr,
                 value=self._expand_expression(expr.value),
                 count=self._expand_expression(expr.count),
-                source_loc=expr.source_loc
             )
 
         elif isinstance(expr, ast.StructLiteralExpr):
-            new_fields = []
-            for field in expr.fields:
-                new_fields.append(ast.StructFieldInit(
-                    name=field.name,
-                    value=self._expand_expression(field.value),
-                    source_loc=field.source_loc
-                ))
-            return ast.StructLiteralExpr(
-                struct_name=expr.struct_name,
-                fields=new_fields,
-                source_loc=expr.source_loc
-            )
+            new_fields = [
+                replace(field, value=self._expand_expression(field.value))
+                for field in expr.fields
+            ]
+            return replace(expr, fields=new_fields)
 
         elif isinstance(expr, ast.MatchExpression):
             new_arms = []
@@ -530,37 +409,28 @@ class MacroExpander:
                     # Expressions, plus return/break/continue (which carry no
                     # macros in practice) — pass through the expression path.
                     new_body = self._expand_expression(arm.body)
-                new_arms.append(ast.MatchArm(
-                    pattern=arm.pattern,
-                    body=new_body,
-                    source_loc=arm.source_loc
-                ))
-            return ast.MatchExpression(
+                new_arms.append(replace(arm, body=new_body))
+            return replace(
+                expr,
                 scrutinee=self._expand_expression(expr.scrutinee),
                 arms=new_arms,
-                source_loc=expr.source_loc
             )
 
         elif isinstance(expr, ast.LoopExpression):
-            return ast.LoopExpression(
-                body=self._expand_block(expr.body),
-                label=getattr(expr, 'label', None),
-                source_loc=expr.source_loc
-            )
+            return replace(expr, body=self._expand_block(expr.body))
 
         elif isinstance(expr, ast.Assignment):
-            return ast.Assignment(
+            return replace(
+                expr,
                 target=self._expand_expression(expr.target),
                 value=self._expand_expression(expr.value),
-                source_loc=expr.source_loc
             )
 
         elif isinstance(expr, ast.CompoundAssignment):
-            return ast.CompoundAssignment(
+            return replace(
+                expr,
                 target=self._expand_expression(expr.target),
-                operator=expr.operator,
                 value=self._expand_expression(expr.value),
-                source_loc=expr.source_loc
             )
 
         # Leaf expressions don't need transformation
@@ -608,12 +478,7 @@ class MacroExpander:
             else:
                 new_else = self._expand_block(stmt.else_block)
 
-        return ast.IfStmt(
-            condition=new_condition,
-            then_block=new_then,
-            else_block=new_else,
-            source_loc=stmt.source_loc
-        )
+        return replace(stmt, condition=new_condition, then_block=new_then, else_block=new_else)
 
     # =========================================================================
     # Impl (Method) Macros
@@ -1305,7 +1170,6 @@ class MacroExpander:
         Returns:
             List of statements implementing the format operation
         """
-        import re as _re
 
         if len(args) < 2:
             raise MacroError(

@@ -4,9 +4,8 @@ Token definitions for R65 lexer.
 """
 from dataclasses import dataclass
 from enum import Enum, auto
-from typing import Optional
 
-from r65.compiler.errors import LexerError
+from r65.compiler.errors import LexerError  # noqa: F401  (re-exported via frontend/__init__)
 
 
 class TokenType(Enum):
@@ -112,20 +111,6 @@ class Token:
     def is_keyword(self, keyword: str) -> bool:
         """Check if this token is a specific keyword."""
         return self.type == TokenType.KEYWORD and self.value == keyword
-
-    def is_type(self, token_type: TokenType) -> bool:
-        """Check if this token is of a specific type."""
-        return self.type == token_type
-
-    def is_operator(self) -> bool:
-        """Check if this token is an operator."""
-        return self.type in {
-            TokenType.PLUS, TokenType.MINUS, TokenType.STAR, TokenType.SLASH,
-            TokenType.AMPERSAND, TokenType.PIPE, TokenType.CARET,
-            TokenType.TILDE, TokenType.LSHIFT, TokenType.RSHIFT, TokenType.EQ,
-            TokenType.NE, TokenType.LT, TokenType.LE, TokenType.GT, TokenType.GE,
-            TokenType.AND, TokenType.OR, TokenType.NOT,
-        }
 
 
 # LexerError is now imported from r65.compiler.errors
