@@ -619,73 +619,79 @@ def _find_vregs_used_in_blocks(func: MIRFunction, block_ids: Set[int]) -> Set[in
     return used
 
 
-def _get_vregs_from_instr(instr) -> List[VirtualRegister]:
-    """Extract all VirtualRegister references from an instruction."""
-    vregs = []
+# MIR node type → the operand slots that hold a single VirtualRegister (read or
+# write position). Return / Call / TraitDispatch carry list and nested slots and
+# are handled explicitly by the walkers below. Both walkers — collection and
+# in-place replacement — share this table so they can never drift apart when a
+# node type or field is added.
+_VREG_FIELDS = {
+    Move: ('dest', 'source'),
+    BinaryOp: ('dest', 'left', 'right'),
+    UnaryOp: ('dest', 'operand'),
+    Compare: ('left', 'right'),
+    Store: ('source',),
+    StoreIndirect: ('source', 'pointer'),
+    Load: ('dest',),
+    LoadIndirect: ('dest', 'pointer'),
+    CondBranch: ('condition',),
+    TypeConvert: ('dest', 'source'),
+    ToBool: ('dest', 'source'),
+    SaveRegister: ('save_location',),
+    RestoreRegister: ('save_location',),
+    BitTest: ('value',),
+    Rotate: ('dest', 'source'),
+    JumpTable: ('scrutinee',),
+    LookupTable: ('dest', 'scrutinee'),
+    StatusFlagRead: ('dest',),
+}
 
-    def _collect(val):
-        if isinstance(val, VirtualRegister):
-            vregs.append(val)
 
-    if isinstance(instr, Move):
-        _collect(instr.dest)
-        _collect(instr.source)
-    elif isinstance(instr, BinaryOp):
-        _collect(instr.dest)
-        _collect(instr.left)
-        _collect(instr.right)
-    elif isinstance(instr, UnaryOp):
-        _collect(instr.dest)
-        _collect(instr.operand)
-    elif isinstance(instr, Compare):
-        _collect(instr.left)
-        _collect(instr.right)
-    elif isinstance(instr, Store):
-        _collect(instr.source)
-    elif isinstance(instr, StoreIndirect):
-        _collect(instr.source)
-        _collect(instr.pointer)
-    elif isinstance(instr, Load):
-        _collect(instr.dest)
-    elif isinstance(instr, LoadIndirect):
-        _collect(instr.dest)
-        _collect(instr.pointer)
+def _iter_vregs(instr):
+    """Yield every VirtualRegister operand of instr (read and write positions)."""
+    fields = _VREG_FIELDS.get(type(instr))
+    if fields is not None:
+        for f in fields:
+            v = getattr(instr, f)
+            if isinstance(v, VirtualRegister):
+                yield v
     elif isinstance(instr, Return):
         for v in instr.values:
-            _collect(v)
+            if isinstance(v, VirtualRegister):
+                yield v
     elif isinstance(instr, (Call, TraitDispatch)):
         for ret in instr.returns:
-            _collect(ret)
+            if isinstance(ret, VirtualRegister):
+                yield ret
         for arg in instr.args:
-            _collect(arg.value)
-        if isinstance(instr, TraitDispatch) and instr.self_ptr:
-            _collect(instr.self_ptr)
-    elif isinstance(instr, CondBranch):
-        _collect(instr.condition)
-    elif isinstance(instr, TypeConvert):
-        _collect(instr.dest)
-        _collect(instr.source)
-    elif isinstance(instr, ToBool):
-        _collect(instr.dest)
-        _collect(instr.source)
-    elif isinstance(instr, SaveRegister):
-        _collect(instr.save_location)
-    elif isinstance(instr, RestoreRegister):
-        _collect(instr.save_location)
-    elif isinstance(instr, BitTest):
-        _collect(instr.value)
-    elif isinstance(instr, Rotate):
-        _collect(instr.dest)
-        _collect(instr.source)
-    elif isinstance(instr, JumpTable):
-        _collect(instr.scrutinee)
-    elif isinstance(instr, LookupTable):
-        _collect(instr.dest)
-        _collect(instr.scrutinee)
-    elif isinstance(instr, StatusFlagRead):
-        _collect(instr.dest)
+            if isinstance(arg.value, VirtualRegister):
+                yield arg.value
+        if isinstance(instr, TraitDispatch) and isinstance(instr.self_ptr, VirtualRegister):
+            yield instr.self_ptr
 
-    return vregs
+
+def _map_vregs(instr, fn):
+    """Apply fn to every VirtualRegister-bearing operand slot, writing it back.
+
+    Non-register slot values pass through fn unchanged (fn is a no-op on them).
+    Shares _VREG_FIELDS with _iter_vregs so the two stay in lockstep.
+    """
+    fields = _VREG_FIELDS.get(type(instr))
+    if fields is not None:
+        for f in fields:
+            setattr(instr, f, fn(getattr(instr, f)))
+    elif isinstance(instr, Return):
+        instr.values = [fn(v) for v in instr.values]
+    elif isinstance(instr, (Call, TraitDispatch)):
+        instr.returns = [fn(ret) for ret in instr.returns]
+        for arg in instr.args:
+            arg.value = fn(arg.value)
+        if isinstance(instr, TraitDispatch) and instr.self_ptr:
+            instr.self_ptr = fn(instr.self_ptr)
+
+
+def _get_vregs_from_instr(instr) -> List[VirtualRegister]:
+    """Extract all VirtualRegister references from an instruction."""
+    return list(_iter_vregs(instr))
 
 
 def _find_loop_counters(func: MIRFunction, loop_blocks: Set[int]) -> Set[int]:
@@ -804,58 +810,4 @@ def _replace_vreg(val, replacements: Dict[int, VirtualRegister]):
 
 def _replace_in_instr(instr, replacements: Dict[int, VirtualRegister]):
     """Replace VirtualRegister references in a single instruction."""
-    if isinstance(instr, Move):
-        instr.dest = _replace_vreg(instr.dest, replacements)
-        instr.source = _replace_vreg(instr.source, replacements)
-    elif isinstance(instr, BinaryOp):
-        instr.dest = _replace_vreg(instr.dest, replacements)
-        instr.left = _replace_vreg(instr.left, replacements)
-        instr.right = _replace_vreg(instr.right, replacements)
-    elif isinstance(instr, UnaryOp):
-        instr.dest = _replace_vreg(instr.dest, replacements)
-        instr.operand = _replace_vreg(instr.operand, replacements)
-    elif isinstance(instr, Compare):
-        instr.left = _replace_vreg(instr.left, replacements)
-        instr.right = _replace_vreg(instr.right, replacements)
-    elif isinstance(instr, Store):
-        instr.source = _replace_vreg(instr.source, replacements)
-    elif isinstance(instr, StoreIndirect):
-        instr.source = _replace_vreg(instr.source, replacements)
-        instr.pointer = _replace_vreg(instr.pointer, replacements)
-    elif isinstance(instr, Load):
-        instr.dest = _replace_vreg(instr.dest, replacements)
-    elif isinstance(instr, LoadIndirect):
-        instr.dest = _replace_vreg(instr.dest, replacements)
-        instr.pointer = _replace_vreg(instr.pointer, replacements)
-    elif isinstance(instr, Return):
-        instr.values = [_replace_vreg(v, replacements) for v in instr.values]
-    elif isinstance(instr, (Call, TraitDispatch)):
-        instr.returns = [_replace_vreg(r, replacements) for r in instr.returns]
-        for arg in instr.args:
-            arg.value = _replace_vreg(arg.value, replacements)
-        if isinstance(instr, TraitDispatch) and instr.self_ptr:
-            instr.self_ptr = _replace_vreg(instr.self_ptr, replacements)
-    elif isinstance(instr, CondBranch):
-        instr.condition = _replace_vreg(instr.condition, replacements)
-    elif isinstance(instr, TypeConvert):
-        instr.dest = _replace_vreg(instr.dest, replacements)
-        instr.source = _replace_vreg(instr.source, replacements)
-    elif isinstance(instr, ToBool):
-        instr.dest = _replace_vreg(instr.dest, replacements)
-        instr.source = _replace_vreg(instr.source, replacements)
-    elif isinstance(instr, SaveRegister):
-        instr.save_location = _replace_vreg(instr.save_location, replacements)
-    elif isinstance(instr, RestoreRegister):
-        instr.save_location = _replace_vreg(instr.save_location, replacements)
-    elif isinstance(instr, BitTest):
-        instr.value = _replace_vreg(instr.value, replacements)
-    elif isinstance(instr, Rotate):
-        instr.dest = _replace_vreg(instr.dest, replacements)
-        instr.source = _replace_vreg(instr.source, replacements)
-    elif isinstance(instr, JumpTable):
-        instr.scrutinee = _replace_vreg(instr.scrutinee, replacements)
-    elif isinstance(instr, LookupTable):
-        instr.dest = _replace_vreg(instr.dest, replacements)
-        instr.scrutinee = _replace_vreg(instr.scrutinee, replacements)
-    elif isinstance(instr, StatusFlagRead):
-        instr.dest = _replace_vreg(instr.dest, replacements)
+    _map_vregs(instr, lambda v: _replace_vreg(v, replacements))
