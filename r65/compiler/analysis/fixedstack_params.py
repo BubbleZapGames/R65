@@ -20,6 +20,7 @@ from r65.compiler.codegen.type_utils import get_type_size
 from r65.compiler.errors import CodegenError
 from r65.compiler.analysis.param_utils import (
     find_address_taken_functions, find_composite_scratch, find_trait_impl_groups,
+    param_bytes, clear_far_ptr_flag_if_all_promoted,
 )
 from r65.compiler.hir.types import PointerTypeInfo
 
@@ -225,11 +226,7 @@ def promote_all_stack_params(mir_program: MIRProgram, scratch_pool: ScratchRegis
                 del func.stack_param_offsets[param_idx]
 
         # Clear far pointer stack param flag if all far ptrs promoted off stack
-        if func.far_ptr_param_indices:
-            remaining_far = func.far_ptr_param_indices - set(func_promos.keys())
-            if not remaining_far:
-                func.has_far_ptr_stack_params = False
-                func.far_ptr_param_indices.clear()
+        clear_far_ptr_flag_if_all_promoted(func, func_promos.keys())
 
     # Step 4: Collect global set of all scratch param addresses.
     # Any function's locals must avoid these addresses because a caller's
@@ -244,9 +241,7 @@ def promote_all_stack_params(mir_program: MIRProgram, scratch_pool: ScratchRegis
         if func.name in trait_promoted_funcs:
             continue  # Trait impl scratches are caller-scoped, not global
         for param_idx, base_addr in func.scratch_param_addrs.items():
-            param_size = get_type_size(func.parameters[param_idx].param_type)
-            for offset in range(param_size):
-                global_scratch_param_addrs.add(base_addr + offset)
+            global_scratch_param_addrs.update(param_bytes(func, param_idx, base_addr))
     # Store on each function so function_gen.py can access it
     for func in mir_program.functions:
         func._global_scratch_param_addrs = global_scratch_param_addrs

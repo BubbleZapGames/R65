@@ -8,8 +8,28 @@ and fixedstack_params.py (FixedStack ABI).
 
 from typing import Dict, Set, List, Optional, Tuple, Sequence
 from r65.compiler.mir.nodes import (
-    MIRProgram, Call, FunctionPointer, Move, TraitDispatch,
+    MIRProgram, MIRFunction, Call, FunctionPointer, Move, TraitDispatch,
 )
+from r65.compiler.codegen.type_utils import get_type_size
+
+
+def param_bytes(func: MIRFunction, param_idx: int, base_addr: int) -> range:
+    """The byte addresses occupied by `param_idx` placed at `base_addr`."""
+    size = get_type_size(func.parameters[param_idx].param_type)
+    return range(base_addr, base_addr + size)
+
+
+def clear_far_ptr_flag_if_all_promoted(func: MIRFunction, promoted_param_indices) -> None:
+    """Clear the far-ptr-stack-param flag when every far-ptr param was promoted.
+
+    Shared by both ABI promotion passes: once no far-pointer parameter remains
+    on the stack, the function no longer needs far-ptr stack-param handling.
+    """
+    if func.far_ptr_param_indices:
+        remaining_far = func.far_ptr_param_indices - set(promoted_param_indices)
+        if not remaining_far:
+            func.has_far_ptr_stack_params = False
+            func.far_ptr_param_indices.clear()
 
 
 def find_address_taken_functions(mir_program: MIRProgram) -> Set[str]:

@@ -18,14 +18,11 @@ from r65.compiler.mir.nodes import (
 )
 from r65.compiler.codegen.register_alloc import ScratchRegisterPool
 from r65.compiler.codegen.type_utils import get_type_size
-from r65.compiler.analysis.param_utils import find_address_taken_functions, find_composite_scratch
+from r65.compiler.analysis.param_utils import (
+    find_address_taken_functions, find_composite_scratch,
+    param_bytes, clear_far_ptr_flag_if_all_promoted,
+)
 from r65.compiler.analysis.far_ptr_strategy import _is_set_dbr_safe
-
-
-def _param_bytes(func: MIRFunction, param_idx: int, base_addr: int) -> range:
-    """The byte addresses occupied by `param_idx` placed at `base_addr`."""
-    size = get_type_size(func.parameters[param_idx].param_type)
-    return range(base_addr, base_addr + size)
 
 
 def _is_eligible_for_any_promotion(func: MIRFunction, address_taken: Set[str]) -> bool:
@@ -110,11 +107,7 @@ def analyze_scratch_params(mir_program: MIRProgram, scratch_pool: ScratchRegiste
             _recompute_stack_offsets(func)
 
             # Clear far pointer flag if all far ptrs promoted
-            if func.far_ptr_param_indices:
-                remaining_far = func.far_ptr_param_indices - set(func_promos.keys())
-                if not remaining_far:
-                    func.has_far_ptr_stack_params = False
-                    func.far_ptr_param_indices.clear()
+            clear_far_ptr_flag_if_all_promoted(func, func_promos.keys())
 
     # Step 3b: Collect global set of all scratch param addresses.
     # Any function's locals must avoid these addresses because a caller's
@@ -122,7 +115,7 @@ def analyze_scratch_params(mir_program: MIRProgram, scratch_pool: ScratchRegiste
     global_scratch_param_addrs: Set[int] = set()
     for func in mir_program.functions:
         for param_idx, base_addr in func.scratch_param_addrs.items():
-            global_scratch_param_addrs.update(_param_bytes(func, param_idx, base_addr))
+            global_scratch_param_addrs.update(param_bytes(func, param_idx, base_addr))
     # Store on each function so function_gen.py can mark them as occupied
     for func in mir_program.functions:
         func._global_scratch_param_addrs = global_scratch_param_addrs
@@ -219,7 +212,7 @@ def _find_war_conflicts(caller: MIRFunction,
     """
     conflicts: Set[int] = set()
     caller_param_bytes: Dict[int, Set[int]] = {
-        param_idx: set(_param_bytes(caller, param_idx, addr))
+        param_idx: set(param_bytes(caller, param_idx, addr))
         for param_idx, addr in caller_promos.items()
     }
 
@@ -234,7 +227,7 @@ def _find_war_conflicts(caller: MIRFunction,
 
             overwritten: Set[int] = set()
             for cp_idx, cp_addr in callee_promos.items():
-                overwritten.update(_param_bytes(callee, cp_idx, cp_addr))
+                overwritten.update(param_bytes(callee, cp_idx, cp_addr))
 
             arg_vregs = {
                 arg.value for arg in instr.args

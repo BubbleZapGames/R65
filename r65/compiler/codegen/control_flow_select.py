@@ -282,6 +282,26 @@ class ControlFlowInstructionSelector(BaseSelector):
                 return self.last_comparison_type.name.startswith('i')
         return False
 
+    # comparison kind -> (branch opcode, comment); each also emits BRA to false.
+    _FLAG_BRANCH_OPS = {
+        'bit7_set':              (Opcode.BMI, "Branch if bit 7 set"),
+        'bit7_clear':            (Opcode.BPL, "Branch if bit 7 clear"),
+        'bit6_set':              (Opcode.BVS, "Branch if bit 6 set"),
+        'bit6_clear':            (Opcode.BVC, "Branch if bit 6 clear"),
+        'status_carry_set':      (Opcode.BCS, "Branch if Carry set"),
+        'status_carry_clear':    (Opcode.BCC, "Branch if Carry clear"),
+        'status_zero_set':       (Opcode.BEQ, "Branch if Zero set"),
+        'status_zero_clear':     (Opcode.BNE, "Branch if Zero clear"),
+        'status_overflow_set':   (Opcode.BVS, "Branch if Overflow set"),
+        'status_overflow_clear': (Opcode.BVC, "Branch if Overflow clear"),
+        'status_negative_set':   (Opcode.BMI, "Branch if Negative set"),
+        'status_negative_clear': (Opcode.BPL, "Branch if Negative clear"),
+        'status_nonbranch_set':  (Opcode.BNE, "Branch if flag set (AND result != 0)"),
+        'status_nonbranch_clear': (Opcode.BEQ, "Branch if flag clear (AND result == 0)"),
+        '==':                    (Opcode.BEQ, "Branch if equal"),
+        '!=':                    (Opcode.BNE, "Branch if not equal"),
+    }
+
     def _emit_flag_based_branch(self, instr: CondBranch, is_signed: bool,
                                 comparison: str = None,
                                 compare_rhs_zero: bool = False):
@@ -303,58 +323,14 @@ class ControlFlowInstructionSelector(BaseSelector):
             if result:
                 return
 
-        # Handle BIT-based comparisons
-        if comparison == 'bit7_set':
-            self._emit_branch(Opcode.BMI, true_target, "Branch if bit 7 set")
+        # BIT-based, STATUS-flag, and ==/!= comparisons all emit a single
+        # conditional branch to true plus a BRA to false — table-driven.
+        flag_branch = self._FLAG_BRANCH_OPS.get(comparison)
+        if flag_branch is not None:
+            opcode, comment = flag_branch
+            self._emit_branch(opcode, true_target, comment)
             self._emit_jump(Opcode.BRA, false_target)
-        elif comparison == 'bit7_clear':
-            self._emit_branch(Opcode.BPL, true_target, "Branch if bit 7 clear")
-            self._emit_jump(Opcode.BRA, false_target)
-        elif comparison == 'bit6_set':
-            self._emit_branch(Opcode.BVS, true_target, "Branch if bit 6 set")
-            self._emit_jump(Opcode.BRA, false_target)
-        elif comparison == 'bit6_clear':
-            self._emit_branch(Opcode.BVC, true_target, "Branch if bit 6 clear")
-            self._emit_jump(Opcode.BRA, false_target)
-        # Handle STATUS flag comparisons (branchable flags)
-        elif comparison == 'status_carry_set':
-            self._emit_branch(Opcode.BCS, true_target, "Branch if Carry set")
-            self._emit_jump(Opcode.BRA, false_target)
-        elif comparison == 'status_carry_clear':
-            self._emit_branch(Opcode.BCC, true_target, "Branch if Carry clear")
-            self._emit_jump(Opcode.BRA, false_target)
-        elif comparison == 'status_zero_set':
-            self._emit_branch(Opcode.BEQ, true_target, "Branch if Zero set")
-            self._emit_jump(Opcode.BRA, false_target)
-        elif comparison == 'status_zero_clear':
-            self._emit_branch(Opcode.BNE, true_target, "Branch if Zero clear")
-            self._emit_jump(Opcode.BRA, false_target)
-        elif comparison == 'status_overflow_set':
-            self._emit_branch(Opcode.BVS, true_target, "Branch if Overflow set")
-            self._emit_jump(Opcode.BRA, false_target)
-        elif comparison == 'status_overflow_clear':
-            self._emit_branch(Opcode.BVC, true_target, "Branch if Overflow clear")
-            self._emit_jump(Opcode.BRA, false_target)
-        elif comparison == 'status_negative_set':
-            self._emit_branch(Opcode.BMI, true_target, "Branch if Negative set")
-            self._emit_jump(Opcode.BRA, false_target)
-        elif comparison == 'status_negative_clear':
-            self._emit_branch(Opcode.BPL, true_target, "Branch if Negative clear")
-            self._emit_jump(Opcode.BRA, false_target)
-        # Handle STATUS flag comparisons (non-branchable flags after PHP; PLA; AND #mask)
-        elif comparison == 'status_nonbranch_set':
-            self._emit_branch(Opcode.BNE, true_target, "Branch if flag set (AND result != 0)")
-            self._emit_jump(Opcode.BRA, false_target)
-        elif comparison == 'status_nonbranch_clear':
-            self._emit_branch(Opcode.BEQ, true_target, "Branch if flag clear (AND result == 0)")
-            self._emit_jump(Opcode.BRA, false_target)
-        # Handle comparison operators
-        elif comparison == '==':
-            self._emit_branch(Opcode.BEQ, true_target, "Branch if equal")
-            self._emit_jump(Opcode.BRA, false_target)
-        elif comparison == '!=':
-            self._emit_branch(Opcode.BNE, true_target, "Branch if not equal")
-            self._emit_jump(Opcode.BRA, false_target)
+        # Relational comparisons need signed/unsigned-aware multi-branch helpers.
         elif comparison == '<':
             self._emit_less_than_branch(true_target, false_target, is_signed)
         elif comparison == '>=':

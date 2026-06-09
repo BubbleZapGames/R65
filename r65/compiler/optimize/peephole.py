@@ -431,6 +431,31 @@ class PeepholeOptimizer:
 
         return optimized
 
+    def _rewrite_adjacent_pairs(self, nodes: List['AsmNode'], match) -> List['AsmNode']:
+        """Scan for adjacent Instruction pairs and rewrite matches.
+
+        match(n0, n1) returns the replacement node list for the pair — [n0] to
+        keep only the first, [] to drop both — or None to leave n0 untouched.
+        Non-Instruction nodes and a trailing instruction are passed through.
+        The match callback is responsible for any stat bookkeeping.
+        """
+        from r65.compiler.codegen.asm_nodes import Instruction
+
+        optimized = []
+        i = 0
+        while i < len(nodes):
+            node = nodes[i]
+            if (isinstance(node, Instruction) and i + 1 < len(nodes)
+                    and isinstance(nodes[i + 1], Instruction)):
+                replacement = match(node, nodes[i + 1])
+                if replacement is not None:
+                    optimized.extend(replacement)
+                    i += 2
+                    continue
+            optimized.append(node)
+            i += 1
+        return optimized
+
     def _eliminate_redundant_load_after_store(self, nodes: List['AsmNode']) -> List['AsmNode']:
         """
         Eliminate redundant load immediately after store to same location.
@@ -440,40 +465,16 @@ class PeepholeOptimizer:
             STX $XX; LDX $XX -> STX $XX
             STY $XX; LDY $XX -> STY $XX
         """
-        from r65.compiler.codegen.asm_nodes import Instruction
+        def match(node, next_node):
+            if (node.opcode in STORE_TO_LOAD_MAP and
+                    next_node.opcode in STORE_TO_LOAD_MAP[node.opcode] and
+                    node.operand == next_node.operand and
+                    self._same_addressing_mode(node.opcode, next_node.opcode)):
+                self.stats.redundant_loads_eliminated += 1
+                return [node]  # keep store, drop redundant load
+            return None
 
-        optimized = []
-        i = 0
-
-        while i < len(nodes):
-            node = nodes[i]
-
-            if not isinstance(node, Instruction):
-                optimized.append(node)
-                i += 1
-                continue
-
-            # Check if this is a store opcode with a corresponding load set
-            if node.opcode in STORE_TO_LOAD_MAP and i + 1 < len(nodes):
-                next_node = nodes[i + 1]
-
-                if isinstance(next_node, Instruction):
-                    load_opcodes = STORE_TO_LOAD_MAP[node.opcode]
-
-                    # Check if next is corresponding load with same operand
-                    if (next_node.opcode in load_opcodes and
-                        node.operand == next_node.operand and
-                        self._same_addressing_mode(node.opcode, next_node.opcode)):
-                        # Redundant load - skip it
-                        optimized.append(node)
-                        i += 2
-                        self.stats.redundant_loads_eliminated += 1
-                        continue
-
-            optimized.append(node)
-            i += 1
-
-        return optimized
+        return self._rewrite_adjacent_pairs(nodes, match)
 
     def _same_addressing_mode(self, op1: Opcode, op2: Opcode) -> bool:
         """Check if two opcodes use the same addressing mode."""
@@ -488,31 +489,16 @@ class PeepholeOptimizer:
             LDA $NN; STA $NN -> (removed)  — DP identity copy
             LDA $NN,S; STA $NN,S -> (removed)  — Stack-relative identity copy
         """
-        from r65.compiler.codegen.asm_nodes import Instruction
+        def match(node, next_node):
+            if (node.opcode in LOAD_A_OPCODES and
+                    next_node.opcode in STORE_A_OPCODES and
+                    node.operand == next_node.operand and
+                    self._same_addressing_mode(node.opcode, next_node.opcode)):
+                self.stats.identity_copies_eliminated += 1
+                return []  # identity copy — drop both
+            return None
 
-        optimized = []
-        i = 0
-
-        while i < len(nodes):
-            node = nodes[i]
-
-            if (isinstance(node, Instruction) and
-                    node.opcode in LOAD_A_OPCODES and
-                    i + 1 < len(nodes)):
-                next_node = nodes[i + 1]
-                if (isinstance(next_node, Instruction) and
-                        next_node.opcode in STORE_A_OPCODES and
-                        node.operand == next_node.operand and
-                        self._same_addressing_mode(node.opcode, next_node.opcode)):
-                    # Identity copy — skip both instructions
-                    i += 2
-                    self.stats.identity_copies_eliminated += 1
-                    continue
-
-            optimized.append(node)
-            i += 1
-
-        return optimized
+        return self._rewrite_adjacent_pairs(nodes, match)
 
     def _eliminate_dead_stores(self, nodes: List['AsmNode']) -> List['AsmNode']:
         """
@@ -796,8 +782,6 @@ class PeepholeOptimizer:
             TXY; TYX -> TXY
             TYX; TXY -> TYX
         """
-        from r65.compiler.codegen.asm_nodes import Instruction
-
         # Map transfer to its reverse
         reverse_transfers = {
             Opcode.TAX: Opcode.TXA,
@@ -808,32 +792,14 @@ class PeepholeOptimizer:
             Opcode.TYX: Opcode.TXY,
         }
 
-        optimized = []
-        i = 0
-
-        while i < len(nodes):
-            node = nodes[i]
-
-            if not isinstance(node, Instruction):
-                optimized.append(node)
-                i += 1
-                continue
-
-            if node.opcode in reverse_transfers and i + 1 < len(nodes):
-                next_node = nodes[i + 1]
-
-                if (isinstance(next_node, Instruction) and
+        def match(node, next_node):
+            if (node.opcode in reverse_transfers and
                     next_node.opcode == reverse_transfers[node.opcode]):
-                    # Redundant reverse transfer - keep first, skip second
-                    optimized.append(node)
-                    i += 2
-                    self.stats.redundant_transfers_eliminated += 1
-                    continue
+                self.stats.redundant_transfers_eliminated += 1
+                return [node]  # keep first, drop redundant reverse transfer
+            return None
 
-            optimized.append(node)
-            i += 1
-
-        return optimized
+        return self._rewrite_adjacent_pairs(nodes, match)
 
     def _eliminate_redundant_stack_ops(self, nodes: List['AsmNode']) -> List['AsmNode']:
         """
@@ -843,34 +809,14 @@ class PeepholeOptimizer:
 
         Note: This is conservative - only removes immediately adjacent pairs.
         """
-        from r65.compiler.codegen.asm_nodes import Instruction
+        def match(node, next_node):
+            if (node.opcode in PUSH_PULL_PAIRS and
+                    next_node.opcode == PUSH_PULL_PAIRS[node.opcode]):
+                self.stats.redundant_stack_ops_eliminated += 1
+                return []  # adjacent push/pull pair — remove both
+            return None
 
-        optimized = []
-        i = 0
-
-        while i < len(nodes):
-            node = nodes[i]
-
-            if not isinstance(node, Instruction):
-                optimized.append(node)
-                i += 1
-                continue
-
-            if node.opcode in PUSH_PULL_PAIRS and i + 1 < len(nodes):
-                next_node = nodes[i + 1]
-                expected_pull = PUSH_PULL_PAIRS[node.opcode]
-
-                if (isinstance(next_node, Instruction) and
-                    next_node.opcode == expected_pull):
-                    # Adjacent push/pull pair - remove both
-                    i += 2
-                    self.stats.redundant_stack_ops_eliminated += 1
-                    continue
-
-            optimized.append(node)
-            i += 1
-
-        return optimized
+        return self._rewrite_adjacent_pairs(nodes, match)
 
     def _eliminate_redundant_mode_changes(self, nodes: List['AsmNode']) -> List['AsmNode']:
         """Eliminate REP/SEP that don't change the actual CPU mode.

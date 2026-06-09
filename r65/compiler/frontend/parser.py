@@ -176,26 +176,12 @@ class ASTBuilder(Transformer):
             return text[3:]  # Strip ///
         elif text.startswith('//!'):
             return text[3:]  # Strip //!
-        elif text.startswith('/**'):
-            # Block doc comment: strip /** and */
+        elif text.startswith(('/**', '/*!')):
+            # Block doc comment (outer /** or inner /*!): strip delimiters and
+            # the common leading "* " from each line.
             inner = text[3:-2]
-            # Strip leading * from each line (common formatting)
-            lines = inner.split('\n')
             stripped = []
-            for line in lines:
-                s = line.lstrip()
-                if s.startswith('* '):
-                    stripped.append(s[2:])
-                elif s.startswith('*') and (len(s) == 1 or not s[1:].strip()):
-                    stripped.append('')
-                else:
-                    stripped.append(line)
-            return '\n'.join(stripped)
-        elif text.startswith('/*!'):
-            inner = text[3:-2]
-            lines = inner.split('\n')
-            stripped = []
-            for line in lines:
+            for line in inner.split('\n'):
                 s = line.lstrip()
                 if s.startswith('* '):
                     stripped.append(s[2:])
@@ -370,22 +356,38 @@ class ASTBuilder(Transformer):
         return ast.Parameter(name=name, binding=binding, param_type=param_type)
 
     @v_args(tree=True)
-    def param_safe_ptr_error(self, tree):
-        """Error handler for safe pointer syntax in parameters."""
-        # Extract the name for a helpful error message
-        items = self._filter_tokens(tree.children, keep_types={'IDENT', 'AMPER'})
+    def _safe_ptr_error_parts(self, tree, *, with_mut=False):
+        """Extract (name_str, mut_str, source_loc) for a safe-pointer error hint.
+
+        Shared by the param/static/struct-field/let safe-pointer error rules.
+        with_mut also recognizes a leading MUT token (static declarations).
+        """
+        keep = {'IDENT', 'AMPER', 'MUT'} if with_mut else {'IDENT', 'AMPER'}
+        items = self._filter_tokens(tree.children, keep_types=keep)
         name = None
+        is_mut = False
         for item in items:
-            if isinstance(item, LarkToken) and item.type == 'IDENT':
-                name = item.value
+            if isinstance(item, LarkToken):
+                if item.type == 'MUT':
+                    is_mut = True
+                elif item.type == 'IDENT':
+                    name = item.value
+                    break
+            elif isinstance(item, tuple) and len(item) >= 2:
+                # safe_ptr_pattern returns a tuple (let statements)
+                name = item[1]
                 break
         name_str = name if name else "name"
+        mut_str = "mut " if is_mut else ""
         source_loc = self._make_source_loc(tree.meta) if hasattr(tree, 'meta') else None
+        return name_str, mut_str, source_loc
+
+    def param_safe_ptr_error(self, tree):
+        """Error handler for safe pointer syntax in parameters."""
+        name, _, loc = self._safe_ptr_error_parts(tree)
         raise ParseError(
-            f"safe pointers are not supported in R65",
-            source_loc=source_loc,
-            hint=f"use '{name_str}: *type' instead of '&{name_str}: type' for pointer parameters"
-        )
+            "safe pointers are not supported in R65", source_loc=loc,
+            hint=f"use '{name}: *type' instead of '&{name}: type' for pointer parameters")
 
     def binding(self, items):
         """Binding for @ operator."""
@@ -467,20 +469,7 @@ class ASTBuilder(Transformer):
     @v_args(tree=True)
     def static_decl_safe_ptr_error(self, tree):
         """Error handler for safe pointer syntax in static declarations."""
-        # Extract the name for a helpful error message
-        items = self._filter_tokens(tree.children, keep_types={'IDENT', 'AMPER', 'MUT'})
-        name = None
-        is_mut = False
-        for item in items:
-            if isinstance(item, LarkToken):
-                if item.type == 'MUT':
-                    is_mut = True
-                elif item.type == 'IDENT':
-                    name = item.value
-                    break
-        name_str = name if name else "name"
-        mut_str = "mut " if is_mut else ""
-        source_loc = self._make_source_loc(tree.meta) if hasattr(tree, 'meta') else None
+        name_str, mut_str, source_loc = self._safe_ptr_error_parts(tree, with_mut=True)
         raise ParseError(
             f"safe pointers are not supported in R65",
             source_loc=source_loc,
@@ -534,20 +523,10 @@ class ASTBuilder(Transformer):
     @v_args(tree=True)
     def struct_field_safe_ptr_error(self, tree):
         """Error handler for safe pointer syntax in struct fields."""
-        # Extract the name for a helpful error message
-        items = self._filter_tokens(tree.children, keep_types={'IDENT', 'AMPER'})
-        name = None
-        for item in items:
-            if isinstance(item, LarkToken) and item.type == 'IDENT':
-                name = item.value
-                break
-        name_str = name if name else "name"
-        source_loc = self._make_source_loc(tree.meta) if hasattr(tree, 'meta') else None
+        name, _, loc = self._safe_ptr_error_parts(tree)
         raise ParseError(
-            f"safe pointers are not supported in R65",
-            source_loc=source_loc,
-            hint=f"use '{name_str}: *type' instead of '&{name_str}: type' for struct fields"
-        )
+            "safe pointers are not supported in R65", source_loc=loc,
+            hint=f"use '{name}: *type' instead of '&{name}: type' for struct fields")
 
     def enum_decl(self, items):
         """Enum declaration."""
@@ -1210,62 +1189,35 @@ class ASTBuilder(Transformer):
             return str(item)
         return ''
 
-    @v_args(tree=True)
-    def macro_invocation_stmt(self, tree):
-        """Top-level macro invocation: name!(args);"""
-        items = tree.children
+    def _macro_invocation(self, tree, node_cls):
+        """Build a macro-invocation node (name + args) from a Lark tree.
+
+        Shared by the statement/inner/expression invocation rules, which differ
+        only in the node class produced.
+        """
         name = None
         args = []
-
-        for item in items:
+        for item in tree.children:
             if isinstance(item, LarkToken) and item.type == 'IDENT':
                 name = item.value
             elif isinstance(item, list):  # macro_args result
                 args = item
+        return node_cls(name=name, args=args, source_loc=self._make_source_loc(tree.meta))
 
-        return ast.MacroInvocationStmt(
-            name=name,
-            args=args,
-            source_loc=self._make_source_loc(tree.meta)
-        )
+    @v_args(tree=True)
+    def macro_invocation_stmt(self, tree):
+        """Top-level macro invocation: name!(args);"""
+        return self._macro_invocation(tree, ast.MacroInvocationStmt)
 
     @v_args(tree=True)
     def macro_invocation_stmt_inner(self, tree):
         """Statement-level macro invocation: name!(args);"""
-        items = tree.children
-        name = None
-        args = []
-
-        for item in items:
-            if isinstance(item, LarkToken) and item.type == 'IDENT':
-                name = item.value
-            elif isinstance(item, list):  # macro_args result
-                args = item
-
-        return ast.MacroInvocationStmtInner(
-            name=name,
-            args=args,
-            source_loc=self._make_source_loc(tree.meta)
-        )
+        return self._macro_invocation(tree, ast.MacroInvocationStmtInner)
 
     @v_args(tree=True)
     def macro_invocation_expr(self, tree):
         """Expression-level macro invocation: name!(args)"""
-        items = tree.children
-        name = None
-        args = []
-
-        for item in items:
-            if isinstance(item, LarkToken) and item.type == 'IDENT':
-                name = item.value
-            elif isinstance(item, list):  # macro_args result
-                args = item
-
-        return ast.MacroInvocation(
-            name=name,
-            args=args,
-            source_loc=self._make_source_loc(tree.meta)
-        )
+        return self._macro_invocation(tree, ast.MacroInvocation)
 
     def macro_args(self, items):
         """Macro arguments - list of token strings."""
@@ -1609,23 +1561,10 @@ class ASTBuilder(Transformer):
     @v_args(tree=True)
     def let_stmt_safe_ptr_error(self, tree):
         """Error handler for safe pointer syntax in let statements."""
-        items = self._filter_tokens(tree.children, keep_types={'IDENT', 'AMPER'})
-        name = None
-        for item in items:
-            if isinstance(item, LarkToken) and item.type == 'IDENT':
-                name = item.value
-                break
-            elif isinstance(item, tuple) and len(item) >= 2:
-                # safe_ptr_pattern returns a tuple
-                name = item[1]
-                break
-        name_str = name if name else "name"
-        source_loc = self._make_source_loc(tree.meta) if hasattr(tree, 'meta') else None
+        name, _, loc = self._safe_ptr_error_parts(tree)
         raise ParseError(
-            f"safe pointers are not supported in R65",
-            source_loc=source_loc,
-            hint=f"use 'let {name_str}: *type' instead of 'let &{name_str}: type' for pointer variables"
-        )
+            "safe pointers are not supported in R65", source_loc=loc,
+            hint=f"use 'let {name}: *type' instead of 'let &{name}: type' for pointer variables")
 
     def safe_ptr_pattern(self, items):
         """Safe pointer pattern: &name or &name @ binding (for error handling)."""

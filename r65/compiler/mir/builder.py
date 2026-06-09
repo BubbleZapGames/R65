@@ -2072,6 +2072,122 @@ class MIRBuilder:
             ))
         return dest if is_load else source
 
+    def emit_indirect_field_access(
+        self, ptr_expr, *, field_offset, result_type, is_load, dest=None, source=None,
+    ):
+        """Emit a Load/StoreIndirect for ``(ptr).field`` access.
+
+        ptr_expr is the HIR node yielding the pointer — the auto-deref base for
+        ``self.field`` or the operand of an explicit ``(*p).field``; is_far is
+        derived from its type. Shared by the pointer-field and deref-field
+        load/store lowerers (which differ only in load-vs-store and whether the
+        pointer is reached directly or through an HIRDereference).
+        """
+        from r65.compiler.mir.nodes import LoadIndirect, StoreIndirect
+        from r65.compiler.hir.types import PointerTypeInfo
+
+        ptr_vreg = self.lower_expression(ptr_expr)
+        ptr_type = ptr_expr.expr_type
+        is_far = isinstance(ptr_type, PointerTypeInfo) and ptr_type.is_far
+        if is_load:
+            self.emit(LoadIndirect(
+                dest=dest, pointer=ptr_vreg, is_far=is_far,
+                type_info=result_type, offset=field_offset,
+            ))
+        else:
+            self.emit(StoreIndirect(
+                source=source, pointer=ptr_vreg, is_far=is_far,
+                type_info=result_type, offset=field_offset,
+            ))
+        return dest if is_load else source
+
+    def emit_static_array_field_access(
+        self, array_index_expr, *, field_offset, result_type, is_load, dest=None, source=None,
+    ):
+        """Emit a Load/Store for ``arr[i].field`` where ``arr`` resolves to a static base.
+
+        Handles the pointer-deref'd-base fast path, constant-index folding, and
+        the variable-index X-reuse path. Shared by the array-field load and
+        store lowerers, which differ only in load-vs-store and which type drives
+        ``result_type`` (element field type for loads, assigned type for stores).
+        """
+        from r65.compiler.mir.lowerers.multiply import compute_scaled_index
+        from r65.compiler.mir.nodes import (
+            HardwareRegister, Immediate, Load, MemoryLocation, Move, Store,
+        )
+        from r65.compiler.hir.types import BasicTypeInfo
+
+        # Pointer-deref'd array base (`self.sprites[i].field` via auto-deref,
+        # or `(*p)[i].field`). Folds outer and inner field offsets into Y and
+        # accesses indirect through the pointer.
+        deref = self.try_pointer_deref_array_base(array_index_expr.array)
+        if deref is not None:
+            ptr_expr, base_field_offset = deref
+            return self.emit_pointer_deref_array_access(
+                ptr_expr=ptr_expr,
+                index_expr=array_index_expr.index,
+                element_size=self._get_type_size(array_index_expr.expr_type),
+                element_type=array_index_expr.expr_type,
+                const_offset=base_field_offset + field_offset,
+                result_type=result_type,
+                is_load=is_load, dest=dest, source=source,
+            )
+
+        # Static array base — a bare static array or an array field of a
+        # statically-located struct (STRUCT.array_field[i].field).
+        base_memloc, reuse_base_key = self.resolve_array_base_memloc(array_index_expr.array)
+        struct_type = array_index_expr.expr_type  # element (struct) type of the array
+        struct_size = self._get_type_size(struct_type)
+        index_operand = self.lower_expression(array_index_expr.index)
+
+        if isinstance(index_operand, Immediate):
+            # Constant index: compute the byte offset at compile time.
+            total_offset = (index_operand.value * struct_size) + field_offset
+            field_memloc = self._create_offset_memloc(base_memloc, total_offset, base_memloc.symbol)
+            if is_load:
+                self.emit(Load(dest=dest, source=field_memloc, type_info=result_type))
+            else:
+                self.emit(Store(source=source, dest=field_memloc, type_info=result_type))
+            return dest if is_load else source
+
+        # Variable index. X holds index * struct_size (the field offset is folded
+        # into the address constant), so it is identical for every field of the
+        # same element — consecutive `arr[i].a; arr[i].b` can reuse X when the
+        # reuse cache says X is still valid.
+        reuse_key = self.x_index_reuse_key(reuse_base_key, array_index_expr.index)
+        if base_memloc.address is not None:
+            indexed_memloc = MemoryLocation(
+                storage_type=base_memloc.storage_type,
+                address=base_memloc.address + field_offset,
+                symbol=base_memloc.symbol,
+                is_volatile=base_memloc.is_volatile,
+                index_register='X',
+            )
+        else:
+            indexed_memloc = MemoryLocation(
+                storage_type=base_memloc.storage_type,
+                address=None,
+                symbol=base_memloc.symbol,
+                is_volatile=base_memloc.is_volatile,
+                index_register='X',
+                offset=base_memloc.offset + field_offset,
+            )
+
+        if not self.x_index_cache_hit(reuse_key):
+            # The scaled index is a byte offset (u16), NOT the struct type —
+            # sizing the Move as the struct corrupts the index high byte.
+            scaled_operand = compute_scaled_index(
+                index_operand, struct_size, struct_type, self.ctx, self.emit)
+            self.emit(Move(dest=HardwareRegister('X'), source=scaled_operand,
+                           type_info=BasicTypeInfo('u16')))
+            self.x_index_cache_set(reuse_key)
+
+        if is_load:
+            self.emit(Load(dest=dest, source=indexed_memloc, type_info=result_type))
+        else:
+            self.emit(Store(source=source, dest=indexed_memloc, type_info=result_type))
+        return dest if is_load else source
+
     def _count_param_usages(self, hir_func: HIRFunctionDecl) -> Dict[int, int]:
         """
         Count how many times each parameter symbol is used in the function body.

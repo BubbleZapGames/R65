@@ -13,6 +13,97 @@ from r65.compiler.hir.unified_type_utils import get_unified_type_size
 from r65.compiler.hir.types import ArrayTypeInfo
 from r65.compiler.builtins.registry import BuiltinRegistry
 from r65.compiler.frontend.ast import CfgIdentifier
+import math as _math
+
+
+# =============================================================================
+# Fixed-point const math — single source of truth.
+#
+# Used both by const-expression evaluation (_eval_const_math, which wraps the
+# raised ZeroDivisionError/ValueError in an HIRError) and by const-fn execution
+# (_build_const_fn_namespace, which exposes these directly to transpiled code).
+# =============================================================================
+
+def _clamp_i16(v):
+    v = int(round(v))
+    return max(-32768, min(32767, v))
+
+
+def _clamp_u16(v):
+    v = int(round(v))
+    return max(0, min(65535, v))
+
+
+def _fixed_sin(index, table_size, amplitude):
+    if table_size == 0:
+        raise ZeroDivisionError("fixed_sin: table_size must not be zero")
+    return _clamp_i16(_math.sin(2 * _math.pi * index / table_size) * amplitude)
+
+
+def _fixed_cos(index, table_size, amplitude):
+    if table_size == 0:
+        raise ZeroDivisionError("fixed_cos: table_size must not be zero")
+    return _clamp_i16(_math.cos(2 * _math.pi * index / table_size) * amplitude)
+
+
+def _fixed_atan2(y, x, table_size):
+    if table_size == 0:
+        raise ZeroDivisionError("fixed_atan2: table_size must not be zero")
+    if y == 0 and x == 0:
+        return 0
+    angle = _math.atan2(y, x)
+    if angle < 0:
+        angle += 2 * _math.pi
+    return _clamp_u16(angle / (2 * _math.pi) * table_size)
+
+
+def _fixed_sqrt(value, scale):
+    if value < 0:
+        raise ValueError("fixed_sqrt: value must not be negative")
+    return _clamp_u16(_math.sqrt(value) * scale)
+
+
+def _fixed_log2(value, scale):
+    if value <= 0:
+        raise ValueError("fixed_log2: value must be positive")
+    return _clamp_i16(_math.log2(value) * scale)
+
+
+def _fixed_exp2(value, in_scale, out_scale):
+    if in_scale == 0:
+        raise ZeroDivisionError("fixed_exp2: in_scale must not be zero")
+    return _clamp_u16(_math.pow(2, value / in_scale) * out_scale)
+
+
+def _fixed_lerp(a, b, t, t_max):
+    if t_max == 0:
+        raise ZeroDivisionError("fixed_lerp: t_max must not be zero")
+    return _clamp_i16(a + (b - a) * t / t_max)
+
+
+def _fixed_clamp(value, min_val, max_val):
+    if min_val > max_val:
+        raise ValueError("fixed_clamp: min must not be greater than max")
+    return _clamp_i16(max(min_val, min(max_val, value)))
+
+
+def _fixed_color_bgr(red, green, blue):
+    for name, val in [('red', red), ('green', green), ('blue', blue)]:
+        if val < 0 or val > 255:
+            raise ValueError(f"fixed_color_bgr: {name} must be 0-255, got {val}")
+    r5 = (red >> 3) & 0x1F
+    g5 = (green >> 3) & 0x1F
+    b5 = (blue >> 3) & 0x1F
+    return (b5 << 10) | (g5 << 5) | r5
+
+
+_FIXED_MATH_FNS = {
+    'fixed_sin': _fixed_sin, 'fixed_cos': _fixed_cos,
+    'fixed_atan2': _fixed_atan2, 'fixed_sqrt': _fixed_sqrt,
+    'fixed_log2': _fixed_log2, 'fixed_exp2': _fixed_exp2,
+    'fixed_lerp': _fixed_lerp, 'fixed_clamp': _fixed_clamp,
+    'fixed_color_bgr': _fixed_color_bgr,
+}
 
 
 class ConstEvaluator:
@@ -454,81 +545,13 @@ class ConstEvaluator:
 
     def _eval_const_math(self, func_name: str, args: list, source_loc) -> int:
         """Evaluate a const math builtin (fixed_sin, fixed_cos, etc.)."""
-        import math
-
-        def _clamp_i16(v):
-            v = int(round(v))
-            return max(-32768, min(32767, v))
-
-        def _clamp_u16(v):
-            v = int(round(v))
-            return max(0, min(65535, v))
-
-        if func_name == 'fixed_sin':
-            index, table_size, amplitude = args
-            if table_size == 0:
-                raise HIRError("fixed_sin: table_size must not be zero", source_loc=source_loc)
-            return _clamp_i16(math.sin(2 * math.pi * index / table_size) * amplitude)
-
-        elif func_name == 'fixed_cos':
-            index, table_size, amplitude = args
-            if table_size == 0:
-                raise HIRError("fixed_cos: table_size must not be zero", source_loc=source_loc)
-            return _clamp_i16(math.cos(2 * math.pi * index / table_size) * amplitude)
-
-        elif func_name == 'fixed_atan2':
-            y, x, table_size = args
-            if table_size == 0:
-                raise HIRError("fixed_atan2: table_size must not be zero", source_loc=source_loc)
-            if y == 0 and x == 0:
-                return 0
-            angle = math.atan2(y, x)
-            if angle < 0:
-                angle += 2 * math.pi
-            return _clamp_u16(angle / (2 * math.pi) * table_size)
-
-        elif func_name == 'fixed_sqrt':
-            value, scale = args
-            if value < 0:
-                raise HIRError("fixed_sqrt: value must not be negative", source_loc=source_loc)
-            return _clamp_u16(math.sqrt(value) * scale)
-
-        elif func_name == 'fixed_log2':
-            value, scale = args
-            if value <= 0:
-                raise HIRError("fixed_log2: value must be positive", source_loc=source_loc)
-            return _clamp_i16(math.log2(value) * scale)
-
-        elif func_name == 'fixed_exp2':
-            value, in_scale, out_scale = args
-            if in_scale == 0:
-                raise HIRError("fixed_exp2: in_scale must not be zero", source_loc=source_loc)
-            return _clamp_u16(math.pow(2, value / in_scale) * out_scale)
-
-        elif func_name == 'fixed_lerp':
-            a, b, t, t_max = args
-            if t_max == 0:
-                raise HIRError("fixed_lerp: t_max must not be zero", source_loc=source_loc)
-            return _clamp_i16(a + (b - a) * t / t_max)
-
-        elif func_name == 'fixed_clamp':
-            value, min_val, max_val = args
-            if min_val > max_val:
-                raise HIRError("fixed_clamp: min must not be greater than max", source_loc=source_loc)
-            return _clamp_i16(max(min_val, min(max_val, value)))
-
-        elif func_name == 'fixed_color_bgr':
-            red, green, blue = args
-            for name, val in [('red', red), ('green', green), ('blue', blue)]:
-                if val < 0 or val > 255:
-                    raise HIRError(f"fixed_color_bgr: {name} must be 0-255, got {val}", source_loc=source_loc)
-            r5 = (red >> 3) & 0x1F
-            g5 = (green >> 3) & 0x1F
-            b5 = (blue >> 3) & 0x1F
-            return (b5 << 10) | (g5 << 5) | r5
-
-        else:
+        fn = _FIXED_MATH_FNS.get(func_name)
+        if fn is None:
             raise HIRError(f"Unknown const math function: {func_name}", source_loc=source_loc)
+        try:
+            return fn(*args)
+        except (ZeroDivisionError, ValueError) as e:
+            raise HIRError(str(e), source_loc=source_loc)
 
     def _ensure_int(self, value: Any) -> int:
         """Ensure value is an integer."""
@@ -725,78 +748,10 @@ class ConstEvaluator:
                 raise ZeroDivisionError("modulo by zero")
             return int(a) % int(b)
 
-        import math as _math
-
-        def _clamp_i16(v):
-            v = int(round(v))
-            return max(-32768, min(32767, v))
-
-        def _clamp_u16(v):
-            v = int(round(v))
-            return max(0, min(65535, v))
-
-        def _fixed_sin(index, table_size, amplitude):
-            if table_size == 0:
-                raise ZeroDivisionError("fixed_sin: table_size must not be zero")
-            return _clamp_i16(_math.sin(2 * _math.pi * index / table_size) * amplitude)
-
-        def _fixed_cos(index, table_size, amplitude):
-            if table_size == 0:
-                raise ZeroDivisionError("fixed_cos: table_size must not be zero")
-            return _clamp_i16(_math.cos(2 * _math.pi * index / table_size) * amplitude)
-
-        def _fixed_atan2(y, x, table_size):
-            if table_size == 0:
-                raise ZeroDivisionError("fixed_atan2: table_size must not be zero")
-            if y == 0 and x == 0:
-                return 0
-            angle = _math.atan2(y, x)
-            if angle < 0:
-                angle += 2 * _math.pi
-            return _clamp_u16(angle / (2 * _math.pi) * table_size)
-
-        def _fixed_sqrt(value, scale):
-            if value < 0:
-                raise ValueError("fixed_sqrt: value must not be negative")
-            return _clamp_u16(_math.sqrt(value) * scale)
-
-        def _fixed_log2(value, scale):
-            if value <= 0:
-                raise ValueError("fixed_log2: value must be positive")
-            return _clamp_i16(_math.log2(value) * scale)
-
-        def _fixed_exp2(value, in_scale, out_scale):
-            if in_scale == 0:
-                raise ZeroDivisionError("fixed_exp2: in_scale must not be zero")
-            return _clamp_u16(_math.pow(2, value / in_scale) * out_scale)
-
-        def _fixed_lerp(a, b, t, t_max):
-            if t_max == 0:
-                raise ZeroDivisionError("fixed_lerp: t_max must not be zero")
-            return _clamp_i16(a + (b - a) * t / t_max)
-
-        def _fixed_clamp(value, min_val, max_val):
-            if min_val > max_val:
-                raise ValueError("fixed_clamp: min must not be greater than max")
-            return _clamp_i16(max(min_val, min(max_val, value)))
-
-        def _fixed_color_bgr(red, green, blue):
-            for name, val in [('red', red), ('green', green), ('blue', blue)]:
-                if val < 0 or val > 255:
-                    raise ValueError(f"fixed_color_bgr: {name} must be 0-255, got {val}")
-            r5 = (red >> 3) & 0x1F
-            g5 = (green >> 3) & 0x1F
-            b5 = (blue >> 3) & 0x1F
-            return (b5 << 10) | (g5 << 5) | r5
-
         ns = {
             '_u8': _u8, '_u16': _u16, '_i8': _i8, '_i16': _i16, '_bool': _bool,
             '_idiv': _idiv, '_imod': _imod,
-            'fixed_sin': _fixed_sin, 'fixed_cos': _fixed_cos,
-            'fixed_atan2': _fixed_atan2, 'fixed_sqrt': _fixed_sqrt,
-            'fixed_log2': _fixed_log2, 'fixed_exp2': _fixed_exp2,
-            'fixed_lerp': _fixed_lerp, 'fixed_clamp': _fixed_clamp,
-            'fixed_color_bgr': _fixed_color_bgr,
+            **_FIXED_MATH_FNS,
         }
 
         # Add all compiled const fns to namespace so they can call each other
