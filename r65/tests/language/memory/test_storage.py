@@ -68,11 +68,13 @@ class TestImplicitRom:
         # Should have bank_attr since it's ROM
         assert static.bank_attr is not None
 
-    def test_mutable_static_requires_attribute(self):
-        """Mutable static without attribute should error."""
-        with pytest.raises(HIRError) as exc_info:
-            build_hir("static mut VAR: u8;")
-        assert "requires explicit storage attribute" in str(exc_info.value)
+    def test_mutable_static_defaults_to_ram(self):
+        """Mutable static without attribute defaults to auto-allocated RAM."""
+        hir_prog = build_hir("static mut VAR: u8;")
+        static = hir_prog.statics[0]
+        assert static.storage_attr is not None
+        assert static.storage_attr.storage_kind.value == "ram"
+        assert static.storage_attr.address is None  # auto-allocated
 
     def test_immutable_static_ram_error(self):
         """Immutable static with #[ram] should error."""

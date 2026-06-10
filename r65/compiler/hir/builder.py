@@ -1290,13 +1290,13 @@ class HIRBuilder:
     ) -> Optional[StorageAttribute]:
         """Validate storage class based on mutability. Returns None for ROM."""
         if static.is_mut:
-            # Mutable: must have explicit storage attribute
+            # Mutable with no explicit attribute → auto-allocated RAM ($7E2000+).
+            # Equivalent to writing `#[ram]`: `&` of it is a far pointer and
+            # access uses long addressing. An explicit attribute is still the way
+            # to get zeropage/lowram speed or near pointers.
             if storage_attr is None:
-                raise HIRError(
-                    f"mutable static '{static.name}' requires explicit storage attribute",
-                    source_loc=static.source_loc,
-                    hint="add #[zeropage], #[lowram], #[ram], or #[hw(addr)]"
-                )
+                return StorageAttribute(
+                    name='ram', storage_kind=StorageKind.RAM, address=None)
             return storage_attr
         else:
             # Immutable: no storage attr = ROM, #[hw] allowed for read-only regs

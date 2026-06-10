@@ -181,10 +181,11 @@ loop { if HVBJOY & 0x01 != 0 { break; } }  // Always reads hardware
 
 **Storage class is determined by mutability:**
 - `static` (immutable) → automatically ROM, no attribute needed
-- `static mut` → requires explicit storage attribute (`#[zeropage]`, `#[lowram]`, `#[ram]`, or `#[hw]`)
+- `static mut` → may declare a storage attribute (`#[zeropage]`, `#[lowram]`, `#[ram]`, or `#[hw]`); **with no attribute it defaults to auto-allocated `#[ram]`** (equivalent to writing `#[ram]`: `&` of it is a far pointer, accessed via long addressing). Add an explicit attribute when you want zeropage/lowram speed or near pointers.
 
 ```rust
 static MESSAGE: [u8; 12] = "Hello";     // Immutable = ROM (no attribute)
+static mut SCORE: u16;                   // No attribute = auto-allocated RAM
 #[zeropage(0x42)]
 static mut TEMP: u8;                     // Explicit zeropage address
 #[zeropage]
