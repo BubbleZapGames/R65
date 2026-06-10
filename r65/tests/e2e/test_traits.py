@@ -820,3 +820,40 @@ class TestTraitInheritance:
         '''
         result = e2e.run(src, ExpectedState(memory={0x7E0200: 99}))
         assert result.success, f"Failures: {result.failures}"
+
+    def test_dispatch_in_loop_preserves_counter(self, e2e):
+        """A trait dispatch in a loop body must not corrupt a hardware-pinned loop
+        counter. The dispatch clobbers X (TAX into the jump table) and Y (self),
+        but the clobber-region analysis treats TraitDispatch as a call and spills
+        X/Y around it. depth-1 for-loops pin the counter to X, depth-2 to Y."""
+        result = e2e.run('''
+            #[zeropage(0x10, register)] static mut SCRATCH0: u8;
+            #[zeropage(0x12, register)] static mut SCRATCH1: u16;
+
+            struct Counter { v: u8 }
+            trait Tick { fn tick(*self); }
+            impl Tick for Counter { fn tick(*self) { self.v = self.v + 1; } }
+
+            #[lowram] static mut OBJ: Counter = Counter { v: 0 };
+            #[lowram(0x0280)] static mut BUFX: [u8; 8];
+            #[lowram(0x0290)] static mut BUFY: [u8; 8];
+
+            #[entry]
+            fn main() {
+                let p: *dyn Tick = &OBJ;
+                for i in 0..5 {                 // i pinned to X
+                    p.tick();
+                    BUFX[i] = (i as u8) + 1;
+                }
+                for a in 0..1 {
+                    for j in 0..5 {             // j pinned to Y
+                        p.tick();
+                        BUFY[j] = (j as u8) + 1;
+                    }
+                }
+            }
+        ''', ExpectedState(memory={
+            0x7E0280: [1, 2, 3, 4, 5, 0, 0, 0],
+            0x7E0290: [1, 2, 3, 4, 5, 0, 0, 0],
+        }))
+        assert result.success, f"Failures: {result.failures}"
