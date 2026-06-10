@@ -83,3 +83,37 @@ class TestF32Operators:
         assert read_u8(cpu, 0x24) == 1, "3 < 4"
         assert read_u8(cpu, 0x25) == 0, "3 >= 4 is false"
         assert read_u8(cpu, 0x26) == 1, "3 != 4"
+
+
+# Regression for the same-sign mantissa-overflow bug: adding two equal-magnitude
+# operands (x + x) carries into the sign bit and must renormalize (>>1, exp++).
+_EQADD = '''
+    include!("{snes}")
+    include!("{f32}")
+    #[zeropage(0x02, register)] static mut S0: u8;
+    #[zeropage(0x04, register)] static mut S1: u16;
+    #[lowram(0x0300)] static mut V: F32;
+    #[lowram(0x0304)] static mut W: F32;
+    #[lowram(0x0308)] static mut EXP: F32;
+    #[zeropage(0x20)] static mut R0: u8;   // 100 + 100
+    #[zeropage(0x21)] static mut R1: u8;   // -50 + -50
+    #[zeropage(0x22)] static mut R2: u8;   // 1 + 1
+    #[entry]
+    fn main() {{
+        V.from_i16(100 as i16); W.from_i16(100 as i16); V += W; EXP.from_i16(200 as i16);
+        if V == EXP {{ R0 = 1; }} else {{ R0 = 0; }}
+        V.from_i16(-50 as i16); W.from_i16(-50 as i16); V += W; EXP.from_i16(-100 as i16);
+        if V == EXP {{ R1 = 1; }} else {{ R1 = 0; }}
+        V.from_i16(1 as i16); W.from_i16(1 as i16); V += W; EXP.from_i16(2 as i16);
+        if V == EXP {{ R2 = 1; }} else {{ R2 = 0; }}
+    }}
+'''.format(snes=SNESLIB_PATH, f32=F32_PATH)
+
+
+class TestF32EqualOperandAdd:
+    def test_x_plus_x(self):
+        e2e = E2ETest()
+        cpu = e2e.execute(e2e.compile(_EQADD), max_instructions=2_000_000)
+        assert read_u8(cpu, 0x20) == 1, "100 + 100 == 200"
+        assert read_u8(cpu, 0x21) == 1, "-50 + -50 == -100"
+        assert read_u8(cpu, 0x22) == 1, "1 + 1 == 2"

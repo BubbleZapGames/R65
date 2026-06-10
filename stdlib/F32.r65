@@ -369,9 +369,6 @@ impl far F32 {
         }
 
         // Add 24-bit mantissas (two's complement).
-        // Carry out of bit 23 is discarded — this is correct two's complement
-        // arithmetic. The carry never represents an overflow that requires a
-        // right-shift; normalize handles the repositioning.
         let r_lo: u16 = s_mlo + o_mlo;
         let mut carry: u16 = 0;
         if r_lo < s_mlo {
@@ -387,6 +384,22 @@ impl far F32 {
                 self.mant_lo = 0;
                 self.exp_hi = 0;
                 return;
+            }
+        }
+
+        // Same-sign overflow: adding two equal-sign mantissas carried into the
+        // sign bit (e.g. x + x). Shift right one, reinsert the operands' common
+        // sign, and bump the exponent to renormalize.
+        let s_sign: u16 = s_mhi & 0x80;
+        if s_sign == (o_mhi & 0x80) {
+            if (norm_hi & 0x80) != s_sign {
+                _f32_shr24!(norm_lo, norm_hi);
+                if s_sign != 0 {
+                    norm_hi = norm_hi | 0x80;
+                } else {
+                    norm_hi = norm_hi & 0x7F;
+                }
+                exp = exp + 1;
             }
         }
 
