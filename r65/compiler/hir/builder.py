@@ -1624,11 +1624,11 @@ class HIRBuilder:
                 kind=SymbolKind.METHOD,
                 definition=method,
                 scope_id=0,
-                # Store impl block info for self type resolution
+                # Store impl block info for self type resolution.
+                # Near/far comes from the method's own self pointer.
                 type_info={
                     'struct_name': impl.struct_name,
                     'mangled_name': mangled_name,
-                    'impl_is_far': impl.is_far,
                     'method_self_is_far': method.self_is_far
                 }
             )
@@ -2055,7 +2055,6 @@ class HIRBuilder:
 
         return hir.HIRImplDecl(
             struct_name=impl.struct_name,
-            is_far=impl.is_far,
             methods=hir_methods,
             constants=hir_constants,
             trait_name=impl.trait_name,
@@ -2095,11 +2094,9 @@ class HIRBuilder:
         # Enter function scope
         func_scope_id = self.symbol_table.enter_scope(ScopeKind.FUNCTION)
 
-        # Determine self pointer type
-        # impl far StructName -> far *self
-        # impl StructName -> *self (near)
-        # Method can override with explicit far *self or near *self
-        self_is_far = impl.is_far or method.self_is_far
+        # Determine self pointer type from the method's own self pointer:
+        # `far *self` -> far, `*self` -> near.
+        self_is_far = method.self_is_far
 
         # Build self parameter
         struct_type = StructTypeInfo(name=impl.struct_name)

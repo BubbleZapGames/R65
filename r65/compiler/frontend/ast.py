@@ -325,15 +325,15 @@ class ImplConst(ASTNode):
 class ImplDecl(Declaration):
     """Impl block declaration.
 
+    Near/far is per-method, driven by each method's self pointer
+    (`*self` vs `far *self`) — there is no impl-level qualifier.
+
     Example:
         impl Player {
             const MAX_HEALTH: u8 = 100;
 
-            fn take_damage(*self, amount @ A: u8) { ... }
-        }
-
-        impl far Player {
-            fn update(far *self) { ... }
+            fn take_damage(*self, amount @ A: u8) { ... }  // near self
+            fn update(far *self) { ... }                   // far self
         }
 
         impl Drawable for Player {
@@ -341,7 +341,6 @@ class ImplDecl(Declaration):
         }
     """
     struct_name: str
-    is_far: bool  # True for `impl far StructName`
     methods: List[ImplMethod]
     constants: List[ImplConst]
     trait_name: Optional[str] = None  # Set for `impl TraitName for StructName`
@@ -488,7 +487,7 @@ class ImplMacro(ASTNode):
     Body uses bare 'self' to reference the receiver.
 
     Example:
-        impl far Console {
+        impl Console {
             macro_rules! cprint($fmt:literal, $($args:expr),*) {
                 format!(__buf, $fmt, $($args),*);
                 self.print(&__buf as far *u8);

@@ -321,9 +321,9 @@ class CallValidator:
                 source_loc=expr.source_loc
             )
 
-        # Check self pointer compatibility
-        # impl far StructName -> expects far *self
-        # impl StructName -> expects near *self
+        # Check self pointer compatibility. Near/far is driven by the method's
+        # own self pointer (`far *self` vs `*self`); trait/lang-item methods may
+        # additionally carry it via their `far fn` calling convention.
         expected_far_self = impl_is_far or method_self_is_far
 
         # If receiver is a pointer, check far/near compatibility
@@ -332,13 +332,13 @@ class CallValidator:
                 raise TypeCheckError(
                     f"method '{method_name}' expects far pointer but got near pointer",
                     source_loc=expr.source_loc,
-                    hint=f"method is defined in 'impl far {struct_name}'"
+                    hint=f"method '{method_name}' declares 'far *self'"
                 )
             elif not expected_far_self and pointer_is_far:
                 raise TypeCheckError(
                     f"method '{method_name}' expects near pointer but got far pointer",
                     source_loc=expr.source_loc,
-                    hint=f"use 'impl far {struct_name}' for far pointer methods"
+                    hint=f"declare the method's self as 'far *self' to accept a far pointer"
                 )
 
         # Transform: receiver.method(args) -> mangled_name(&receiver, args)

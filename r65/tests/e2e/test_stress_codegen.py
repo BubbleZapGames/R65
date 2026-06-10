@@ -669,7 +669,7 @@ class TestACoalescedXArgWithFarSelfScratch:
                 hi: u16,
             }}
 
-            impl far Box {{
+            impl Box {{
                 far fn set(far *self, value @ X: u16) {{
                     self.lo = X;
                     self.hi = 0;
@@ -711,7 +711,7 @@ class TestACoalescedXArgWithFarSelfScratch:
                 hi: u16,
             }}
 
-            impl far Box {{
+            impl Box {{
                 // `extra: u8` is a scratch-promoted DP param; `value @ X`
                 // is the X-targeted register arg sourced from A.
                 far fn set_with_extra(far *self, extra: u8, value @ X: u16) {{

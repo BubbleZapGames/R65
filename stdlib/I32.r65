@@ -89,7 +89,7 @@ macro_rules! _hwdiv_first() {
 // I32 Implementation
 // ============================================================================
 
-impl far I32 {
+impl I32 {
     // ========================================================================
     // Conversion and Copy Methods
     // ========================================================================
@@ -615,7 +615,7 @@ impl DivAssign for I32 {
     }
 }
 
-impl far I32 {
+impl I32 {
     // Modulo: self %= other (remainder has same sign as dividend)
     // Unchanged if other == 0
     far fn mod(far *self, other: far *I32) {
@@ -731,7 +731,7 @@ impl PartialOrd for I32 {
     }
 }
 
-impl far I32 {
+impl I32 {
     // ========================================================================
     // Bitwise Shift Methods
     // ========================================================================

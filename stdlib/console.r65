@@ -57,7 +57,7 @@ static mut __console_fmt_buf: [u8; 128];
 // Console Implementation
 // ============================================================================
 
-impl far Console {
+impl Console {
 
     // ========================================================================
     // Initialization

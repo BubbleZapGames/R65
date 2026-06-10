@@ -78,7 +78,7 @@ macro_rules! _hwdiv_first() {
 // U32 Implementation
 // ============================================================================
 
-impl far U32 {
+impl U32 {
     // ========================================================================
     // Conversion and Copy Methods
     // ========================================================================
@@ -422,7 +422,7 @@ impl DivAssign for U32 {
     }
 }
 
-impl far U32 {
+impl U32 {
     // Modulo: self %= other (unchanged if other == 0)
     // Long division algorithm, keeps remainder
     far fn mod(far *self, other: far *U32) {
@@ -501,7 +501,7 @@ impl PartialOrd for U32 {
     }
 }
 
-impl far U32 {
+impl U32 {
     // ========================================================================
     // Bitwise Shift Methods
     // ========================================================================

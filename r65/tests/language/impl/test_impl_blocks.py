@@ -38,18 +38,18 @@ class TestImplBlockParsing:
         assert len(impl_decl.methods) == 1
         assert impl_decl.methods[0].name == "get_x"
 
-    def test_impl_far_block(self):
-        """impl far block parses."""
+    def test_far_self_method_parses(self):
+        """A `far *self` method drives the far self pointer (no impl-level qualifier)."""
         source = """
             struct Player { x: u8 }
-            impl far Player {
+            impl Player {
                                 fn update(far *self) {
                 }
             }
         """
         program = parse(source, "test.r65")
         impl_decl = program.items[1]
-        assert impl_decl.is_far is True
+        assert impl_decl.methods[0].self_is_far is True
 
     def test_impl_with_constants(self):
         """impl block with associated constants parses."""
@@ -142,10 +142,10 @@ class TestImplBlockHIR:
         assert param_type.is_far is False  # Near pointer for impl Player
 
     def test_far_self_parameter_type(self):
-        """Far self parameter has far pointer type."""
+        """Far self parameter has far pointer type, driven by `far *self`."""
         source = """
             struct Player { x: u8 }
-            impl far Player {
+            impl Player {
                                 fn update(far *self) {
                 }
             }

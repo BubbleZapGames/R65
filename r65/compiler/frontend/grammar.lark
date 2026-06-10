@@ -109,10 +109,10 @@ trait_param_list: self_param ("," param)* ","?
 trait_const: CONST IDENT ":" type_expr ";"
 
 // Impl block declaration
-// impl StructName { ... } for near *self
-// impl far StructName { ... } for far *self
+// impl StructName { ... } — each method's self pointer drives near/far
+//   (fn m(*self) for near, fn m(far *self) for far)
 // impl TraitName for StructName { ... } for trait implementation
-impl_decl: doc_comment* IMPL FAR? IDENT "{" impl_item* "}"
+impl_decl: doc_comment* IMPL IDENT "{" impl_item* "}"
           | doc_comment* IMPL IDENT FOR IDENT "{" impl_item* "}"  -> impl_trait_decl
 
 ?impl_item: impl_method

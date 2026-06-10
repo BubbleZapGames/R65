@@ -334,7 +334,6 @@ class HIRImplDecl(HIRDeclaration):
     Methods are desugared to regular functions with mangled names (StructName__method).
     """
     struct_name: str = ""
-    is_far: bool = False  # True for `impl far StructName`
     methods: List['HIRFunctionDecl'] = field(default_factory=list)
     constants: List['HIRConstDecl'] = field(default_factory=list)
     trait_name: Optional[str] = None  # Set for trait impls

@@ -545,14 +545,15 @@ class ASTBuilder(Transformer):
 
     @v_args(tree=True)
     def impl_decl(self, tree):
-        """Impl block declaration: impl [far] StructName { methods and constants }"""
-        items = self._filter_tokens(tree.children, keep_types={'IDENT', 'FAR'})
+        """Impl block declaration: impl StructName { methods and constants }
+
+        Near/far is per-method, driven by each method's self pointer
+        (`*self` vs `far *self`).
+        """
+        items = self._filter_tokens(tree.children, keep_types={'IDENT'})
 
         # Collect doc comments
         doc, idx = self._collect_doc_comments(items, 0)
-
-        # Check for far modifier
-        is_far, idx = self._take(items, idx, 'FAR')
 
         # Struct name
         struct_name = items[idx].value if isinstance(items[idx], LarkToken) else items[idx]
@@ -572,7 +573,6 @@ class ASTBuilder(Transformer):
 
         return ast.ImplDecl(
             struct_name=struct_name,
-            is_far=is_far,
             methods=methods,
             constants=constants,
             macros=macros,
@@ -748,7 +748,6 @@ class ASTBuilder(Transformer):
 
         return ast.ImplDecl(
             struct_name=struct_name,
-            is_far=False,
             methods=methods,
             constants=constants,
             trait_name=trait_name,
