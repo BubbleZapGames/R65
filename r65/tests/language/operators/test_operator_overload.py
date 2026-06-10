@@ -133,3 +133,51 @@ class TestPrimitiveCompoundAssignUnchanged:
                 #[zeropage(0x10)] static mut C: u8;
                 fn main() { C = 5; C *= 3; }
             ''')
+
+
+_ADD_IMPL = '''
+    struct V { a: u8 }
+    impl AddAssign for V { fn add_assign(*self, other: *V) { self.a = self.a; } }
+    #[lowram] static mut P: V;
+    #[lowram] static mut Q: V;
+    #[zeropage(0x10)] static mut N: u16;
+'''
+
+
+class TestCompoundAssignWrongRhs:
+    """E-OVL-002: `a OP= b` where b is not the same struct as a."""
+
+    def test_scalar_literal_rhs_rejected(self):
+        # `P += 5` — the leaky "cannot take address of non-lvalue" must NOT surface.
+        with pytest.raises(TypeCheckError, match="expects a 'V' operand"):
+            build_and_check(_ADD_IMPL + 'fn main() { P += 5; }')
+
+    def test_scalar_variable_rhs_rejected(self):
+        # `P += N` where N is a u16 — the exact "add a scalar to a wide int" mistake.
+        with pytest.raises(TypeCheckError, match="expects a 'V' operand"):
+            build_and_check(_ADD_IMPL + 'fn main() { P += N; }')
+
+    def test_error_names_both_types(self):
+        try:
+            build_and_check(_ADD_IMPL + 'fn main() { P += N; }')
+            assert False, "expected TypeCheckError"
+        except TypeCheckError as e:
+            msg = str(e)
+            assert "'V'" in msg and "u16" in msg          # expected vs found
+            assert "add_assign" not in msg                # no desugar-internal leak
+
+    def test_matching_struct_rhs_accepted(self):
+        build_and_check(_ADD_IMPL + 'fn main() { P += Q; }')
+
+
+class TestValueProducingOperatorsRejected:
+    """E-OVL-003: value-producing arithmetic on aggregates is not overloadable."""
+
+    @pytest.mark.parametrize("op", ['+', '-', '*', '/', '&', '|', '^', '<<', '>>'])
+    def test_value_binary_op_rejected(self, op):
+        # `R = P OP Q` must report the operator, not "cannot assign by value".
+        # `*`,`/`,`<<`,`>>` also prove the power-of-2 / constant-shift validator
+        # does not mask the aggregate diagnostic.
+        with pytest.raises(TypeCheckError, match="not overloadable for aggregate"):
+            build_and_check(
+                _ADD_IMPL + f'#[lowram] static mut R: V;\nfn main() {{ R = P {op} Q; }}')

@@ -1336,10 +1336,6 @@ class TypeChecker:
 
     def check_binary_op(self, expr: HIRBinaryOp, context_type: Optional[TypeInfo] = None) -> TypeInfo:
         """Type check binary operation."""
-        # Validate operator restrictions (skip for const fn - evaluated at compile time)
-        if not (self.current_function and self.current_function.is_const):
-            OperatorValidator.validate_binary_op(expr)
-
         # Propagate context type ONLY for shift operators — needed so `const X: u16 = 0 << 2`
         # infers `0` as u16. Do NOT propagate for arithmetic/bitwise (+, -, *, etc.) because
         # intermediate values commonly exceed the target type (e.g., `let x: u8 = 256 - 200`).
@@ -1350,11 +1346,31 @@ class TypeChecker:
         right_context = left_type if expr.op in ['==', '!=', '<', '<=', '>', '>='] else None
         right_type = self.check_expression(expr.right, right_context)
 
+        operands_aggregate = (TypeUtils.is_aggregate_type(left_type)
+                              or TypeUtils.is_aggregate_type(right_type))
+
         # Operator overloading (Tier B): comparisons on aggregate operands dispatch
         # to PartialEq::eq (== / !=) or PartialOrd::cmp (< <= > >=).
-        if expr.op in ('==', '!=', '<', '<=', '>', '>=') and (
-                TypeUtils.is_aggregate_type(left_type) or TypeUtils.is_aggregate_type(right_type)):
+        if expr.op in ('==', '!=', '<', '<=', '>', '>=') and operands_aggregate:
             return self._check_overloaded_comparison(expr, left_type, right_type)
+
+        # E-OVL-003: value-producing arithmetic/bitwise/shift on an aggregate is not
+        # supported. Only compound-assignment (`OP=`) and comparison overloads exist;
+        # `let c = a + b` would have to return a struct by value, which R65 forbids.
+        if expr.op in ('+', '-', '*', '/', '%', '&', '|', '^', '<<', '>>') and operands_aggregate:
+            agg = left_type if TypeUtils.is_aggregate_type(left_type) else right_type
+            raise TypeCheckError(
+                f"operator '{expr.op}' is not overloadable for aggregate type '{agg}'",
+                source_loc=expr.source_loc,
+                hint=f"value-producing operators on structs are not supported; "
+                     f"use the in-place form '{expr.op}=' instead"
+            )
+
+        # Validate primitive operator restrictions (power-of-2 mul/div, constant
+        # shift). Skipped for aggregate operands (handled above) and for const fns
+        # (evaluated at compile time).
+        if not (self.current_function and self.current_function.is_const):
+            OperatorValidator.validate_binary_op(expr)
 
         # Type rules for binary operators
         if expr.op in ['<<', '>>']:
@@ -1851,6 +1867,23 @@ class TypeChecker:
 
         # The compound-assign desugar set value = (target OP rhs); recover rhs.
         rhs = expr.value.right if isinstance(expr.value, HIRBinaryOp) else expr.value
+
+        # E-OVL-002: the operator method takes the same struct by reference, so the
+        # right operand must be that same struct. A scalar/literal (e.g. `score += 5`
+        # or `score += n` where n is a u16, on a U32) is not addable through the
+        # operator — reject it here with an actionable message instead of letting the
+        # synthesized `&rhs` call fail with a confusing lower-level error.
+        rhs_type = self.check_expression(rhs)
+        if not (isinstance(rhs_type, StructTypeInfo) and rhs_type.name == struct_name):
+            raise TypeCheckError(
+                f"operator '{op}=' on '{struct_name}' expects a '{struct_name}' "
+                f"operand, found '{rhs_type}'",
+                source_loc=expr.source_loc,
+                hint=f"the right side of '{op}=' must be a '{struct_name}'; widen the "
+                     f"value to '{struct_name}' first, or call a type-specific method "
+                     f"directly (e.g. a scalar add/sub helper)"
+            )
+
         arg = HIRAddressOf(operand=rhs, source_loc=getattr(rhs, 'source_loc', None))
         call = HIRFunctionCall(
             func=HIRFieldAccess(base=expr.target, field_name=method_name,
