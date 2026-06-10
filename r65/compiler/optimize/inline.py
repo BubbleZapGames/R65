@@ -8,6 +8,8 @@ Replaces call sites with inlined function bodies to eliminate JSR/RTS overhead
 The inlining pass operates on MIR after HIR lowering, before code generation.
 """
 
+import copy
+from dataclasses import replace
 from typing import Dict, List, Set, Optional, Tuple
 
 from r65.compiler.mir.nodes import (
@@ -17,11 +19,10 @@ from r65.compiler.mir.nodes import (
     Load, Store, LoadIndirect, StoreIndirect, MemoryLocation,
     BinaryOp, UnaryOp, Compare, TypeConvert, ToBool,
     InlineAsm, ReturnFromInterrupt, TraitDispatch,
-    Argument, ArgumentMechanism,
     MemoryFill, BlockCopy, BankByte, BitTest, Rotate,
     StatusFlagTest, StatusFlagSet, StatusFlagRead,
     SetMode, Push, Pull, SaveRegister, RestoreRegister,
-    FarPtrStrategy,
+    OPERAND_SPECS, OperandContainer, map_operands,
 )
 from r65.compiler.hir import RegisterBinding, VariableBinding
 from r65.compiler.hir.attributes import InlineMode
@@ -652,322 +653,63 @@ class BlockCloner:
             self.block_map[block_id] = new_id
         return self.block_map[block_id]
 
-    def _clone_argument(self, arg: Argument) -> Argument:
-        """Construct a fresh Argument with the value operand remapped.
-
-        `location` / `param_type` / `scratch_addr` / `mechanism` are
-        pointer-stable descriptors and may be shared between original
-        and clone.
-        """
-        return Argument(
-            value=self._remap_operand(arg.value),
-            mechanism=arg.mechanism,
-            location=arg.location,
-            param_type=arg.param_type,
-            scratch_addr=arg.scratch_addr,
-        )
+    # Control-flow nodes carry block-id targets (not register operands); these
+    # are remapped into the caller's block space during inlining. A new node
+    # with jump targets must be added here.
+    _BLOCK_ID_SCALAR_FIELDS = {
+        Jump: ('target',),
+        CondBranch: ('true_target', 'false_target'),
+        JumpTable: ('default_target',),
+        LookupTable: ('merge_target',),
+    }
+    _BLOCK_ID_LIST_FIELDS = {
+        JumpTable: ('targets',),
+    }
 
     def _clone_instruction(self, instr: MIRInstruction) -> MIRInstruction:
+        """Clone an instruction with all operands and block-ids remapped.
+
+        Shallow-copies the node (sharing pointer-stable descriptors such as
+        MemoryLocation / ROMDataRef / type_info), then: deep-clones Argument
+        lists so the in-place operand remap can't touch the callee's
+        instruction; remaps every register operand via the shared operand
+        registry (mir/nodes.py); remaps block-id targets into the caller's block
+        space; and copies the one constant list field (LookupTable.values).
+
+        InlineAsm and any node missing from the operand registry raise — the old
+        deepcopy fallback silently aliased callee vregs and caused id collisions,
+        so failing loudly is the right call.
         """
-        Clone an instruction with remapped operands.
-
-        Constructs a fresh instance for each known MIR instruction type so
-        that no part of the cloned instruction aliases the callee's
-        objects. Raises NotImplementedError for unknown types — the
-        previous `deepcopy` fallback silently preserved callee-side
-        VirtualRegister objects in nested fields and caused vreg-id
-        collisions; failing loudly is the right call.
-
-        Args:
-            instr: Original instruction from callee
-
-        Returns:
-            Cloned instruction with remapped operands
-        """
-        loc = instr.source_loc
-
-        if isinstance(instr, Move):
-            return Move(
-                dest=self._remap_operand(instr.dest),
-                source=self._remap_operand(instr.source),
-                type_info=instr.type_info,
-                persist_16bit_mode=instr.persist_16bit_mode,
-                source_loc=loc,
-            )
-
-        if isinstance(instr, Load):
-            return Load(
-                dest=self._remap_operand(instr.dest),
-                source=instr.source,  # MemoryLocation: shared
-                type_info=instr.type_info,
-                source_loc=loc,
-            )
-
-        if isinstance(instr, Store):
-            return Store(
-                source=self._remap_operand(instr.source),
-                dest=instr.dest,  # MemoryLocation: shared
-                type_info=instr.type_info,
-                source_loc=loc,
-            )
-
-        if isinstance(instr, LoadIndirect):
-            return LoadIndirect(
-                dest=self._remap_operand(instr.dest),
-                pointer=self._remap_operand(instr.pointer),
-                is_far=instr.is_far,
-                index_register=instr.index_register,
-                type_info=instr.type_info,
-                offset=instr.offset,
-                source_loc=loc,
-            )
-
-        if isinstance(instr, StoreIndirect):
-            return StoreIndirect(
-                source=self._remap_operand(instr.source),
-                pointer=self._remap_operand(instr.pointer),
-                is_far=instr.is_far,
-                index_register=instr.index_register,
-                type_info=instr.type_info,
-                offset=instr.offset,
-                source_loc=loc,
-            )
-
-        if isinstance(instr, BinaryOp):
-            return BinaryOp(
-                dest=self._remap_operand(instr.dest),
-                left=self._remap_operand(instr.left),
-                right=self._remap_operand(instr.right),
-                op=instr.op,
-                type_info=instr.type_info,
-                source_loc=loc,
-            )
-
-        if isinstance(instr, UnaryOp):
-            return UnaryOp(
-                dest=self._remap_operand(instr.dest),
-                operand=self._remap_operand(instr.operand),
-                op=instr.op,
-                type_info=instr.type_info,
-                source_loc=loc,
-            )
-
-        if isinstance(instr, Compare):
-            return Compare(
-                left=self._remap_operand(instr.left),
-                right=self._remap_operand(instr.right),
-                comparison=instr.comparison,
-                type_info=instr.type_info,
-                source_loc=loc,
-            )
-
-        if isinstance(instr, TypeConvert):
-            return TypeConvert(
-                dest=self._remap_operand(instr.dest),
-                source=self._remap_operand(instr.source),
-                source_type=instr.source_type,
-                target_type=instr.target_type,
-                source_loc=loc,
-            )
-
-        if isinstance(instr, BankByte):
-            return BankByte(
-                dest=self._remap_operand(instr.dest),
-                source=self._remap_operand(instr.source),
-                source_loc=loc,
-            )
-
-        if isinstance(instr, ToBool):
-            return ToBool(
-                dest=self._remap_operand(instr.dest),
-                source=self._remap_operand(instr.source),
-                source_type=instr.source_type,
-                source_loc=loc,
-            )
-
-        if isinstance(instr, BitTest):
-            return BitTest(
-                value=self._remap_operand(instr.value),
-                test_bit=instr.test_bit,
-                type_info=instr.type_info,
-                source_loc=loc,
-            )
-
-        if isinstance(instr, Rotate):
-            return Rotate(
-                dest=self._remap_operand(instr.dest),
-                source=self._remap_operand(instr.source),
-                direction=instr.direction,
-                count=instr.count,
-                type_info=instr.type_info,
-                source_loc=loc,
-            )
-
-        if isinstance(instr, Jump):
-            return Jump(
-                target=self._remap_block_id(instr.target),
-                source_loc=loc,
-            )
-
-        if isinstance(instr, CondBranch):
-            return CondBranch(
-                condition=self._remap_operand(instr.condition),
-                true_target=self._remap_block_id(instr.true_target),
-                false_target=self._remap_block_id(instr.false_target),
-                comparison=instr.comparison,
-                source_loc=loc,
-            )
-
-        if isinstance(instr, JumpTable):
-            return JumpTable(
-                scrutinee=self._remap_operand(instr.scrutinee),
-                base_value=instr.base_value,
-                targets=[self._remap_block_id(t) for t in instr.targets],
-                default_target=self._remap_block_id(instr.default_target),
-                type_info=instr.type_info,
-                source_loc=loc,
-            )
-
-        if isinstance(instr, LookupTable):
-            return LookupTable(
-                dest=self._remap_operand(instr.dest),
-                scrutinee=self._remap_operand(instr.scrutinee),
-                base_value=instr.base_value,
-                values=list(instr.values),
-                default_value=instr.default_value,
-                merge_target=self._remap_block_id(instr.merge_target),
-                type_info=instr.type_info,
-                source_loc=loc,
-            )
-
-        if isinstance(instr, StatusFlagTest):
-            return StatusFlagTest(
-                flag_name=instr.flag_name,
-                bit_position=instr.bit_position,
-                bit_mask=instr.bit_mask,
-                source_loc=loc,
-            )
-
-        if isinstance(instr, StatusFlagSet):
-            return StatusFlagSet(
-                flag_name=instr.flag_name,
-                value=instr.value,
-                source_loc=loc,
-            )
-
-        if isinstance(instr, StatusFlagRead):
-            return StatusFlagRead(
-                dest=self._remap_operand(instr.dest),
-                flag_name=instr.flag_name,
-                bit_mask=instr.bit_mask,
-                source_loc=loc,
-            )
-
-        if isinstance(instr, Call):
-            return Call(
-                function=(self._remap_operand(instr.function)
-                          if isinstance(instr.function, VirtualRegister)
-                          else instr.function),
-                args=[self._clone_argument(a) for a in instr.args],
-                returns=[self._remap_operand(r) for r in instr.returns],
-                is_far=instr.is_far,
-                mode_attr=instr.mode_attr,
-                bank_attr=instr.bank_attr,
-                builtin_name=instr.builtin_name,
-                callee_entry_m_mode=instr.callee_entry_m_mode,
-                callee_exit_m_mode=instr.callee_exit_m_mode,
-                callee_return_type=instr.callee_return_type,
-                preserves_attr=instr.preserves_attr,
-                pascal_result_bytes=instr.pascal_result_bytes,
-                source_loc=loc,
-            )
-
-        if isinstance(instr, TraitDispatch):
-            # TraitDispatch shouldn't survive can_inline (callee is a trait
-            # method or contains a dispatch — both rejected). Cloned here
-            # only so a body containing a nested TraitDispatch to a
-            # different trait can be inlined safely if policy ever
-            # permits it.
-            return TraitDispatch(
-                trait_name=instr.trait_name,
-                method_name=instr.method_name,
-                method_index=instr.method_index,
-                self_ptr=(self._remap_operand(instr.self_ptr)
-                          if instr.self_ptr is not None else None),
-                args=[self._clone_argument(a) for a in instr.args],
-                returns=[self._remap_operand(r) for r in instr.returns],
-                is_far=instr.is_far,
-                self_is_far=instr.self_is_far,
-                callee_return_type=instr.callee_return_type,
-                self_chain_role=instr.self_chain_role,
-                self_y_preloaded=instr.self_y_preloaded,
-                source_loc=loc,
-            )
-
-        if isinstance(instr, Return):
-            return Return(
-                values=[self._remap_operand(v) for v in instr.values],
-                source_loc=loc,
-            )
-
-        if isinstance(instr, ReturnFromInterrupt):
-            return ReturnFromInterrupt(source_loc=loc)
-
-        if isinstance(instr, SetMode):
-            return SetMode(mask=instr.mask, is_set=instr.is_set, source_loc=loc)
-
-        if isinstance(instr, Push):
-            # register field is HardwareRegister (shareable)
-            return Push(register=instr.register, source_loc=loc)
-
-        if isinstance(instr, Pull):
-            return Pull(register=instr.register, source_loc=loc)
-
-        if isinstance(instr, SaveRegister):
-            return SaveRegister(
-                register=instr.register,
-                save_location=self._remap_operand(instr.save_location),
-                source_loc=loc,
-            )
-
-        if isinstance(instr, RestoreRegister):
-            return RestoreRegister(
-                register=instr.register,
-                save_location=self._remap_operand(instr.save_location),
-                source_loc=loc,
-            )
-
-        if isinstance(instr, MemoryFill):
-            return MemoryFill(
-                dest=instr.dest,  # MemoryLocation: shared
-                fill_value=instr.fill_value,
-                count=instr.count,
-                element_size=instr.element_size,
-                source_loc=loc,
-            )
-
-        if isinstance(instr, BlockCopy):
-            return BlockCopy(
-                dest=instr.dest,         # MemoryLocation: shared
-                rom_data=instr.rom_data, # ROMDataRef: shared
-                count=instr.count,
-                source_loc=loc,
-            )
-
         if isinstance(instr, InlineAsm):
-            # can_inline() rejects callees containing InlineAsm; reaching
-            # here means that check was bypassed. Fail loudly rather than
-            # produce an aliased clone.
             raise NotImplementedError(
                 "InlineAsm cannot be inlined; can_inline() should have "
                 "rejected this callee"
             )
+        specs = OPERAND_SPECS.get(type(instr))
+        if specs is None:
+            raise NotImplementedError(
+                f"FunctionInliner._clone_instruction: unhandled MIR instruction "
+                f"type {type(instr).__name__}. Add it to OPERAND_SPECS "
+                f"(or extend can_inline() to reject callees containing it)."
+            )
 
-        raise NotImplementedError(
-            f"FunctionInliner._clone_instruction: unhandled MIR instruction "
-            f"type {type(instr).__name__}. Add an explicit clone branch "
-            f"(or extend can_inline() to reject callees containing it)."
-        )
+        new = copy.copy(instr)
+        # Fresh Argument objects (descriptors stay shared) so the in-place
+        # arg.value remap below mutates the clone, not the callee's Arguments.
+        for spec in specs:
+            if spec.container is OperandContainer.ARG_LIST:
+                setattr(new, spec.field, [replace(a) for a in getattr(instr, spec.field)])
+        # Remap register operands (scalars, operand lists, arg.value).
+        map_operands(new, self._remap_operand)
+        # Remap block-id targets into the caller's block space.
+        for f in self._BLOCK_ID_SCALAR_FIELDS.get(type(instr), ()):
+            setattr(new, f, self._remap_block_id(getattr(new, f)))
+        for f in self._BLOCK_ID_LIST_FIELDS.get(type(instr), ()):
+            setattr(new, f, [self._remap_block_id(t) for t in getattr(new, f)])
+        # Defensive copy of the one constant (non-operand) list field.
+        if isinstance(instr, LookupTable):
+            new.values = list(instr.values)
+        return new
 
     def clone_blocks(self) -> Dict[int, BasicBlock]:
         """
