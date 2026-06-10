@@ -31,7 +31,7 @@ def compile_to_asm(source: str) -> str:
 
 
 class TestCloneIntrinsic:
-    def test_auto_struct_clone_emits_block_move(self):
+    def test_auto_struct_clone_small_is_unrolled(self):
         asm = compile_to_asm('''
             struct Vec2 { x: u8, y: u8 }
             impl Clone for Vec2 {}
@@ -39,9 +39,20 @@ class TestCloneIntrinsic:
             #[lowram] static mut DST: Vec2;
             fn main() { DST.clone_from(&SRC); }
         ''')
-        assert "MVN" in asm
+        # Small (<=4B) auto clone: unrolled LDA/STA copy, not the MVN block move.
+        assert "MVN" not in asm
+        assert "STA" in asm
         # Auto impl generates no method function.
         assert "Vec2__clone_from" not in asm
+
+    def test_large_aggregate_clone_uses_mvn(self):
+        asm = compile_to_asm('''
+            #[lowram] static mut SRC: [u8; 16];
+            #[lowram] static mut DST: [u8; 16];
+            fn main() { DST.clone_from(&SRC); }
+        ''')
+        # > 4 bytes uses the MVN block move.
+        assert "MVN" in asm
 
     def test_clone_sugar_resolves(self):
         asm = compile_to_asm('''
@@ -50,7 +61,7 @@ class TestCloneIntrinsic:
             #[lowram] static mut SRC: Vec2;
             fn main() { let c = SRC.clone(); let unused = c.x; }
         ''')
-        assert "MVN" in asm
+        assert "STA" in asm  # sugar compiles to a copy
 
     def test_array_clone_needs_no_impl(self):
         asm = compile_to_asm('''

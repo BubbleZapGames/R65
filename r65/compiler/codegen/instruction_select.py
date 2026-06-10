@@ -2068,24 +2068,50 @@ class InstructionSelector:
         # Restore 8-bit A mode only; X/Y must remain 16-bit (x16 convention)
         self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "Restore 8-bit A")
 
+    # At/below this size, an unrolled LDA/STA copy beats the MVN block-move:
+    # fewer instructions and it touches only A (MVN clobbers X/Y and DBR), so a
+    # clone of a small struct (I32/U32/F32) in a loop can't corrupt a
+    # hardware-promoted loop counter.
+    _AGGREGATE_COPY_UNROLL_MAX = 4
+
     def select_aggregate_copy(self, instr: AggregateCopy):
         """
-        Generate code for AggregateCopy (RAM->RAM fixed-size copy) via MVN.
+        Generate code for AggregateCopy (RAM->RAM fixed-size copy).
 
         Used by Clone (`dst.clone_from(&src)`, `let c = a.clone()`). Both ends are
-        static addresses. MVN sets DBR to the destination bank as a side effect, so
-        we bracket it with PHB/PLB to preserve the caller's data bank.
+        static addresses.
 
-            PHB
-            REP #$30 ; LDA #count-1 ; LDX #src ; LDY #dst ; MVN src_bank,dst_bank
-            SEP #$20
-            PLB
+        - count <= _AGGREGATE_COPY_UNROLL_MAX: unrolled 16-bit word (+ trailing
+          odd byte) LDA/STA copy. Clobbers only A.
+        - larger: MVN block move, bracketed by PHB/PLB to preserve DBR (MVN sets
+          DBR to the destination bank as a side effect).
         """
-        from r65.compiler.codegen.asm_nodes import BlockMove
-
         dest_loc = self._get_operand_location(instr.dest)
         src_loc = self._get_operand_location(instr.src)
         count = instr.count
+        ms = self.memory_selector
+
+        if count <= self._AGGREGATE_COPY_UNROLL_MAX:
+            self.emitter.emit_comment(f"Clone copy {count} bytes (unrolled)")
+
+            def loc_at(base, off):
+                return base if off == 0 else ms._offset_location(base, off)
+
+            off = 0
+            if count - off >= 2:
+                self._ensure_m16_mode()
+                while count - off >= 2:  # 16-bit word moves for the aligned bulk
+                    ms._emit_load_store('LDA', loc_at(src_loc, off))
+                    ms._emit_load_store('STA', loc_at(dest_loc, off))
+                    off += 2
+            if off < count:  # 8-bit move for a trailing odd byte
+                self._ensure_m8_mode()
+                ms._emit_load_store('LDA', loc_at(src_loc, off))
+                ms._emit_load_store('STA', loc_at(dest_loc, off))
+            return
+
+        from r65.compiler.codegen.asm_nodes import BlockMove
+
         dest_addr = dest_loc.memory_addr
         src_addr = src_loc.memory_addr
 
