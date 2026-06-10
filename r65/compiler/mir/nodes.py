@@ -288,14 +288,21 @@ class BlockCopy(MIRInstruction):
         return f"BlockCopy {self.rom_data.label} -> {self.dest} ({self.count} bytes)"
 
 
+# At/below this byte count, codegen unrolls an AggregateCopy into A-only LDA/STA
+# moves; above it, an MVN block move is used (which clobbers A/X/Y). Shared by the
+# codegen selector and the loop-register-promotion clobber analysis so the two
+# agree on when a clone is X/Y-safe.
+AGGREGATE_COPY_UNROLL_MAX = 4
+
+
 @dataclass
 class AggregateCopy(MIRInstruction):
     """
     Copy a fixed-size block of bytes from one memory location to another (RAM->RAM).
 
     Emitted for Clone: `dst.clone_from(&src)` and `let c = a.clone()` on auto/array
-    aggregates. Both ends are static addresses (clone operands are force-promoted),
-    so codegen can use MVN. `count` is the compile-time aggregate size in bytes.
+    aggregates. Both ends are static addresses (clone operands are force-promoted).
+    count <= AGGREGATE_COPY_UNROLL_MAX unrolls to A-only LDA/STA; larger uses MVN.
     """
     dest: MemoryLocation   # destination address
     src: MemoryLocation    # source address

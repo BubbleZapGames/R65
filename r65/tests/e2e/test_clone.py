@@ -91,6 +91,38 @@ class TestCloneE2E:
         }))
         assert result.success, f"Failures: {result.failures}"
 
+    def test_large_clone_in_loop_preserves_counter(self, e2e):
+        """A large (MVN) clone in a loop must not corrupt a hardware-pinned loop
+        counter: depth-1 for-loops pin to X, depth-2 to Y, and MVN clobbers both.
+        loop-register-promotion must drop those hints."""
+        result = e2e.run('''
+            struct Big { a: u16, b: u16, c: u16, d: u16 }   // 8 bytes -> MVN clone
+            impl Clone for Big {}
+            #[lowram] static mut SRC: Big;
+            #[lowram] static mut DST: Big;
+            #[lowram(0x0280)] static mut BUFX: [u8; 8];
+            #[lowram(0x0290)] static mut BUFY: [u8; 8];
+
+            #[entry]
+            fn main() {
+                SRC.a = 0xAA;
+                for i in 0..5 {                 // i pinned to X
+                    DST.clone_from(&SRC);
+                    BUFX[i] = (i as u8) + 1;
+                }
+                for a in 0..1 {
+                    for j in 0..5 {             // j pinned to Y
+                        DST.clone_from(&SRC);
+                        BUFY[j] = (j as u8) + 1;
+                    }
+                }
+            }
+        ''', ExpectedState(memory={
+            0x7E0280: [1, 2, 3, 4, 5, 0, 0, 0],
+            0x7E0290: [1, 2, 3, 4, 5, 0, 0, 0],
+        }))
+        assert result.success, f"Failures: {result.failures}"
+
     def test_manual_clone_from_override_runs(self, e2e):
         """A custom `clone_from` body runs instead of a bitwise copy."""
         result = e2e.run('''

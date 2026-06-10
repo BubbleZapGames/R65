@@ -18,7 +18,7 @@ from r65.compiler.mir.nodes import (
     BankByte,
     Push, Pull, SaveRegister, RestoreRegister, ReturnFromInterrupt,
     StatusFlagTest, StatusFlagSet, StatusFlagRead,
-    MemoryFill, BlockCopy, AggregateCopy, InlineAsm, TraitDispatch,
+    MemoryFill, BlockCopy, AggregateCopy, AGGREGATE_COPY_UNROLL_MAX, InlineAsm, TraitDispatch,
     VirtualRegister, HardwareRegister, Immediate as MIRImmediate, MemoryLocation
 )
 from r65.compiler.codegen.emitter import AssemblyEmitter
@@ -2068,11 +2068,11 @@ class InstructionSelector:
         # Restore 8-bit A mode only; X/Y must remain 16-bit (x16 convention)
         self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "Restore 8-bit A")
 
-    # At/below this size, an unrolled LDA/STA copy beats the MVN block-move:
-    # fewer instructions and it touches only A (MVN clobbers X/Y and DBR), so a
-    # clone of a small struct (I32/U32/F32) in a loop can't corrupt a
-    # hardware-promoted loop counter.
-    _AGGREGATE_COPY_UNROLL_MAX = 4
+    # Shared with loop-register-promotion (see mir/nodes.py): at/below this size an
+    # unrolled LDA/STA copy beats the MVN block-move — fewer instructions and it
+    # touches only A (MVN clobbers X/Y and DBR), so a clone of a small struct
+    # (I32/U32/F32) in a loop can't corrupt a hardware-promoted loop counter.
+    _AGGREGATE_COPY_UNROLL_MAX = AGGREGATE_COPY_UNROLL_MAX
 
     def select_aggregate_copy(self, instr: AggregateCopy):
         """

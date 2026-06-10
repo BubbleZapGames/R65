@@ -18,6 +18,7 @@ from r65.compiler.mir.nodes import (
     Call, TraitDispatch, CondBranch, Jump, TypeConvert, ToBool,
     Rotate,
     JumpTable, LookupTable, iter_operands, map_operands,
+    BlockCopy, MemoryFill, AggregateCopy, AGGREGATE_COPY_UNROLL_MAX,
 )
 from r65.compiler.hir.types import PointerTypeInfo
 from r65.compiler.codegen.type_utils import get_type_size
@@ -47,11 +48,11 @@ def analyze_loop_promotion(mir_program: MIRProgram):
         promoted = _promote_local_loop_counters(func)
         total_local_promoted += promoted
 
-    # Safety: a jump/lookup-table dispatch clobbers X. Relocate or drop any
-    # X hint on a loop counter whose loop body contains such a dispatch
-    # (covers both promotion above and the HIR depth-1 for-loop X hint).
+    # Safety: drop/relocate loop-counter hints whose loop body clobbers the index
+    # register — jump/lookup-table dispatch (X), or MVN block moves / fills (X and
+    # Y). Covers both promotion above and the HIR depth-1/2 for-loop X/Y hints.
     for func in mir_program.functions:
-        _enforce_x_clobber_safety(func)
+        _enforce_index_clobber_safety(func)
 
     # Eliminate temp copies in ALL functions with loops, even if no
     # promotion happened. This collapses `%T = %V + 1; %V = Move %T`
@@ -322,18 +323,20 @@ def _promote_local_loop_counters(func: MIRFunction) -> int:
     return promoted
 
 
-def _enforce_x_clobber_safety(func: MIRFunction) -> int:
+def _enforce_index_clobber_safety(func: MIRFunction) -> int:
     """
-    select_jump_table / select_lookup_table use ``TAX`` to index the
-    dispatch table, which clobbers X. A loop counter pinned to X — via the
-    HIR depth-1 for-loop hint or loop promotion — is live across the entire
-    loop body, so a JumpTable / LookupTable anywhere in that body destroys
-    the counter, producing a corrupted array index and a runaway loop.
+    Some instructions clobber index registers across a loop body, which would
+    corrupt a loop counter pinned to that register (via the depth-1 for-loop hint
+    or loop promotion):
 
-    X is the *only* register the dispatch touches; Y is untouched and still
-    supports ``addr,Y`` indexed addressing. Relocate an unsafe X hint to Y
-    when Y is free, otherwise drop the hint so the counter falls back to a
-    stack slot (always correct, just slower).
+    - JumpTable / LookupTable use ``TAX`` to index the dispatch table — they
+      clobber **X only**. Y is untouched and still supports ``addr,Y`` indexing,
+      so an unsafe X hint can be relocated to Y (when free) or dropped to a stack
+      slot.
+    - MVN block moves (BlockCopy, large AggregateCopy clones) and MemoryFill loops
+      clobber **both X and Y**. A counter pinned to either must be dropped — there
+      is no safe index register. (Small AggregateCopy clones unroll to A-only
+      moves and are safe; see AGGREGATE_COPY_UNROLL_MAX.)
 
     Returns the number of hints rewritten.
     """
@@ -341,16 +344,22 @@ def _enforce_x_clobber_safety(func: MIRFunction) -> int:
     if not loops:
         return 0
 
-    unsafe_blocks: Set[int] = set()
+    def clobbers_xy(instr) -> bool:
+        if isinstance(instr, (BlockCopy, MemoryFill)):
+            return True
+        if isinstance(instr, AggregateCopy):
+            return instr.count > AGGREGATE_COPY_UNROLL_MAX
+        return False
+
+    x_only_blocks: Set[int] = set()   # tables: X clobbered, Y safe
+    xy_blocks: Set[int] = set()       # block moves / fills: X and Y clobbered
     for _header, body in loops:
-        has_table = any(
-            isinstance(instr, (JumpTable, LookupTable))
-            for bid in body
-            for instr in func.blocks[bid].instructions
-        )
-        if has_table:
-            unsafe_blocks |= body
-    if not unsafe_blocks:
+        instrs = [instr for bid in body for instr in func.blocks[bid].instructions]
+        if any(clobbers_xy(instr) for instr in instrs):
+            xy_blocks |= body          # subsumes any table in the same loop
+        elif any(isinstance(instr, (JumpTable, LookupTable)) for instr in instrs):
+            x_only_blocks |= body
+    if not x_only_blocks and not xy_blocks:
         return 0
 
     all_vregs: Dict[int, VirtualRegister] = {}
@@ -359,16 +368,31 @@ def _enforce_x_clobber_safety(func: MIRFunction) -> int:
             for vreg in _get_vregs_from_instr(instr):
                 all_vregs[vreg.id] = vreg
 
-    y_claimed = any(v.register_hint == 'Y' for v in all_vregs.values())
-
     rewritten = 0
-    for vid in sorted(_find_vregs_used_in_blocks(func, unsafe_blocks)):
+
+    # X+Y clobbered: no safe index register, so drop any X or Y hint used here.
+    for vid in sorted(_find_vregs_used_in_blocks(func, xy_blocks)):
+        vreg = all_vregs.get(vid)
+        if vreg is None or vreg.register_hint not in ('X', 'Y'):
+            continue
+        reg = vreg.register_hint
+        if func.loop_promoted_hw_vregs.get(reg) is vreg:
+            del func.loop_promoted_hw_vregs[reg]
+        vreg.register_hint = None
+        rewritten += 1
+
+    # X-only clobbered: relocate X->Y when free, else drop. Only relocate when no
+    # block move exists anywhere in the function (otherwise Y may be clobbered by
+    # one). Vregs already cleared above are skipped (hint no longer 'X').
+    y_claimed = any(v.register_hint == 'Y' for v in all_vregs.values())
+    can_use_y = not xy_blocks
+    for vid in sorted(_find_vregs_used_in_blocks(func, x_only_blocks)):
         vreg = all_vregs.get(vid)
         if vreg is None or vreg.register_hint != 'X':
             continue
         if func.loop_promoted_hw_vregs.get('X') is vreg:
             del func.loop_promoted_hw_vregs['X']
-        if not y_claimed:
+        if can_use_y and not y_claimed:
             vreg.register_hint = 'Y'
             y_claimed = True
             func.loop_promoted_hw_vregs['Y'] = vreg
