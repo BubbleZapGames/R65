@@ -6,7 +6,7 @@ Provides a 3-address-code style IR for code generation.
 """
 
 from dataclasses import dataclass, field
-from typing import Optional, List, Dict, Set, Any, Union
+from typing import Optional, List, Dict, Set, Any, Union, Tuple, NamedTuple
 from enum import Enum
 
 
@@ -865,6 +865,147 @@ class InlineAsm(MIRInstruction):
 
     def __repr__(self):
         return f"InlineAsm({', '.join(self.instructions)})"
+
+
+# ============================================================================
+# Operand registry — single source of truth for "which fields of each MIR node
+# are register operands". Every operand walker (liveness use/def, loop-promotion
+# vreg collect/replace, the inliner's HW-read scan) derives from this table, so
+# adding a node or field is a one-line change here instead of an edit to every
+# walker. The registry self-test (tests/compiler/mir) asserts coverage of all
+# MIRInstruction subclasses so a new node can't silently fall out.
+# ============================================================================
+
+_REG_TYPES = (VirtualRegister, HardwareRegister)
+
+
+class OperandRole(Enum):
+    READ = "read"      # operand is consumed (a use)
+    WRITE = "write"    # operand is produced (a def)
+
+
+class OperandContainer(Enum):
+    SCALAR = "scalar"      # getattr(instr, field) is one operand
+    LIST = "list"          # getattr(instr, field) is a list of operands
+    ARG_LIST = "arg_list"  # list of Argument; the operand is arg.value
+
+
+class OperandSpec(NamedTuple):
+    field: str
+    role: OperandRole
+    container: OperandContainer
+    accepts_hr: bool  # True => the slot's type union includes HardwareRegister
+
+
+_R, _W = OperandRole.READ, OperandRole.WRITE
+_SCALAR = OperandContainer.SCALAR
+
+
+def _is_reg_operand(v, accepts_hr):
+    """A value counts as a register operand if it is a VirtualRegister, or a
+    HardwareRegister in a slot whose type union admits one (accepts_hr)."""
+    return isinstance(v, VirtualRegister) or (accepts_hr and isinstance(v, HardwareRegister))
+
+
+def _read_vr(f): return OperandSpec(f, _R, _SCALAR, False)
+def _read_rr(f): return OperandSpec(f, _R, _SCALAR, True)
+def _write_vr(f): return OperandSpec(f, _W, _SCALAR, False)
+def _write_rr(f): return OperandSpec(f, _W, _SCALAR, True)
+
+
+# node type -> its register-operand fields. accepts_hr reflects the field's
+# declared type union (e.g. Load.source/LoadIndirect.pointer/Call.function/
+# TraitDispatch.self_ptr never hold a HardwareRegister). Nodes whose only
+# register field is a HardwareRegister flyweight (Push/Pull.register) or that
+# have no register operands map to (); they are listed so the coverage self-test
+# treats them as intentional, not forgotten.
+OPERAND_SPECS: Dict[type, Tuple[OperandSpec, ...]] = {
+    Load:           (_write_rr('dest'), _read_vr('source')),
+    Store:          (_read_rr('source'),),
+    LoadIndirect:   (_write_vr('dest'), _read_vr('pointer')),
+    StoreIndirect:  (_read_rr('source'), _read_vr('pointer')),
+    Move:           (_write_rr('dest'), _read_rr('source')),
+    TypeConvert:    (_write_rr('dest'), _read_rr('source')),
+    BankByte:       (_write_rr('dest'), _read_rr('source')),
+    ToBool:         (_write_rr('dest'), _read_rr('source')),
+    Rotate:         (_write_rr('dest'), _read_rr('source')),
+    BinaryOp:       (_write_rr('dest'), _read_rr('left'), _read_rr('right')),
+    UnaryOp:        (_write_rr('dest'), _read_rr('operand')),
+    Compare:        (_read_rr('left'), _read_rr('right')),
+    BitTest:        (_read_rr('value'),),
+    CondBranch:     (_read_rr('condition'),),
+    JumpTable:      (_read_rr('scrutinee'),),
+    LookupTable:    (_write_vr('dest'), _read_rr('scrutinee')),
+    StatusFlagRead: (_write_rr('dest'),),
+    SaveRegister:   (_write_vr('save_location'),),
+    RestoreRegister: (_read_vr('save_location'),),
+    Return:         (OperandSpec('values', _R, OperandContainer.LIST, True),),
+    Call:           (OperandSpec('returns', _W, OperandContainer.LIST, False),
+                     OperandSpec('function', _R, _SCALAR, False),
+                     OperandSpec('args', _R, OperandContainer.ARG_LIST, True)),
+    TraitDispatch:  (OperandSpec('returns', _W, OperandContainer.LIST, False),
+                     OperandSpec('self_ptr', _R, _SCALAR, False),
+                     OperandSpec('args', _R, OperandContainer.ARG_LIST, True)),
+    # No register operands (constants / block-ids / HR flyweights only):
+    Jump:           (),
+    StatusFlagTest: (),
+    StatusFlagSet:  (),
+    SetMode:        (),
+    ReturnFromInterrupt: (),
+    MemoryFill:     (),
+    BlockCopy:      (),
+    InlineAsm:      (),
+    Push:           (),
+    Pull:           (),
+}
+
+
+def iter_operands(instr, *, role=None, accepts_hr=None):
+    """Yield (spec, value) for each VirtualRegister/HardwareRegister operand of
+    instr, optionally filtered by role (READ/WRITE) and accepts_hr.
+
+    Non-register slot values (None, Immediate, MemoryLocation, str) are skipped.
+    Unknown node types yield nothing (callers decide whether that's expected).
+    """
+    specs = OPERAND_SPECS.get(type(instr))
+    if specs is None:
+        return
+    for spec in specs:
+        if role is not None and spec.role is not role:
+            continue
+        if accepts_hr is not None and spec.accepts_hr is not accepts_hr:
+            continue
+        if spec.container is _SCALAR:
+            v = getattr(instr, spec.field)
+            if _is_reg_operand(v, spec.accepts_hr):
+                yield spec, v
+        elif spec.container is OperandContainer.LIST:
+            for v in getattr(instr, spec.field):
+                if _is_reg_operand(v, spec.accepts_hr):
+                    yield spec, v
+        else:  # ARG_LIST
+            for arg in getattr(instr, spec.field):
+                if _is_reg_operand(arg.value, spec.accepts_hr):
+                    yield spec, arg.value
+
+
+def map_operands(instr, fn):
+    """In place, apply fn to every register-operand slot of instr, writing the
+    result back. fn receives the raw slot value (possibly None/Immediate/str)
+    and must return it unchanged for non-register values. Mirrors the historical
+    per-node replace walkers; unknown node types are left untouched.
+    """
+    specs = OPERAND_SPECS.get(type(instr))
+    if specs is None:
+        return
+    for spec in specs:
+        if spec.container is _SCALAR:
+            setattr(instr, spec.field, fn(getattr(instr, spec.field)))
+        elif spec.container is OperandContainer.LIST:
+            setattr(instr, spec.field, [fn(v) for v in getattr(instr, spec.field)])
+        else:  # ARG_LIST
+            for arg in getattr(instr, spec.field):
+                arg.value = fn(arg.value)
 
 
 # ============================================================================

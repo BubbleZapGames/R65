@@ -1627,51 +1627,18 @@ class FunctionInliner:
     def _collect_read_hw_reg_names(self, blocks: Dict[int, BasicBlock]) -> Set[str]:
         """Return the set of HardwareRegister names read anywhere in `blocks`.
 
-        Liveness's _GET_USES table only tracks X/Y as HardwareRegisters (A is
-        too volatile to track that way), so we walk every operand position
-        explicitly. False positives — counting a HW reg that's redefined
-        before any read — are safe; they just keep the param load alive.
+        Derives from the shared operand registry: every READ operand slot whose
+        type union includes a HardwareRegister. False positives — counting a HW
+        reg that's redefined before any read — are safe; they just keep the
+        param load alive.
         """
+        from r65.compiler.mir.nodes import iter_operands, OperandRole
         names: Set[str] = set()
-
-        def add(op):
-            if isinstance(op, HardwareRegister):
-                names.add(op.name)
-
         for block in blocks.values():
             for instr in block.instructions:
-                if isinstance(instr, Move):
-                    add(instr.source)
-                elif isinstance(instr, Store):
-                    add(instr.source)
-                elif isinstance(instr, BinaryOp):
-                    add(instr.left); add(instr.right)
-                elif isinstance(instr, UnaryOp):
-                    add(instr.operand)
-                elif isinstance(instr, Compare):
-                    add(instr.left); add(instr.right)
-                elif isinstance(instr, BitTest):
-                    add(instr.value)
-                elif isinstance(instr, (Rotate, TypeConvert, ToBool, BankByte)):
-                    add(instr.source)
-                elif isinstance(instr, StoreIndirect):
-                    add(instr.source); add(instr.pointer)
-                elif isinstance(instr, (LookupTable, JumpTable)):
-                    add(instr.scrutinee)
-                elif isinstance(instr, Call):
-                    if isinstance(instr.function, HardwareRegister):
-                        add(instr.function)
-                    for arg in instr.args:
-                        add(arg.value)
-                elif isinstance(instr, TraitDispatch):
-                    for arg in instr.args:
-                        add(arg.value)
-                    add(instr.self_ptr)
-                elif isinstance(instr, Return):
-                    for v in instr.values:
-                        add(v)
-                elif isinstance(instr, CondBranch):
-                    add(instr.condition)
+                for _, v in iter_operands(instr, role=OperandRole.READ, accepts_hr=True):
+                    if isinstance(v, HardwareRegister):
+                        names.add(v.name)
         return names
 
     def _collect_read_vreg_ids(self, blocks: Dict[int, BasicBlock]) -> Set[int]:

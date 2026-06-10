@@ -14,12 +14,10 @@ A stack parameter is promoted if:
 
 from typing import Dict, Set, List, Tuple, Optional
 from r65.compiler.mir.nodes import (
-    MIRProgram, MIRFunction, BasicBlock,
-    VirtualRegister, HardwareRegister, Immediate, MemoryLocation,
-    Move, BinaryOp, UnaryOp, Compare, Store, StoreIndirect, Load, LoadIndirect,
-    Return, Call, TraitDispatch, CondBranch, Jump, TypeConvert, ToBool,
-    SaveRegister, RestoreRegister, Argument, BitTest, Rotate,
-    JumpTable, LookupTable, StatusFlagRead, InlineAsm,
+    MIRProgram, MIRFunction, VirtualRegister, HardwareRegister, Immediate, Move, BinaryOp, UnaryOp, Compare, Store, StoreIndirect, LoadIndirect,
+    Call, TraitDispatch, CondBranch, Jump, TypeConvert, ToBool,
+    Rotate,
+    JumpTable, LookupTable, iter_operands, map_operands,
 )
 from r65.compiler.hir.types import PointerTypeInfo
 from r65.compiler.codegen.type_utils import get_type_size
@@ -619,74 +617,21 @@ def _find_vregs_used_in_blocks(func: MIRFunction, block_ids: Set[int]) -> Set[in
     return used
 
 
-# MIR node type → the operand slots that hold a single VirtualRegister (read or
-# write position). Return / Call / TraitDispatch carry list and nested slots and
-# are handled explicitly by the walkers below. Both walkers — collection and
-# in-place replacement — share this table so they can never drift apart when a
-# node type or field is added.
-_VREG_FIELDS = {
-    Move: ('dest', 'source'),
-    BinaryOp: ('dest', 'left', 'right'),
-    UnaryOp: ('dest', 'operand'),
-    Compare: ('left', 'right'),
-    Store: ('source',),
-    StoreIndirect: ('source', 'pointer'),
-    Load: ('dest',),
-    LoadIndirect: ('dest', 'pointer'),
-    CondBranch: ('condition',),
-    TypeConvert: ('dest', 'source'),
-    ToBool: ('dest', 'source'),
-    SaveRegister: ('save_location',),
-    RestoreRegister: ('save_location',),
-    BitTest: ('value',),
-    Rotate: ('dest', 'source'),
-    JumpTable: ('scrutinee',),
-    LookupTable: ('dest', 'scrutinee'),
-    StatusFlagRead: ('dest',),
-}
-
-
 def _iter_vregs(instr):
     """Yield every VirtualRegister operand of instr (read and write positions)."""
-    fields = _VREG_FIELDS.get(type(instr))
-    if fields is not None:
-        for f in fields:
-            v = getattr(instr, f)
-            if isinstance(v, VirtualRegister):
-                yield v
-    elif isinstance(instr, Return):
-        for v in instr.values:
-            if isinstance(v, VirtualRegister):
-                yield v
-    elif isinstance(instr, (Call, TraitDispatch)):
-        for ret in instr.returns:
-            if isinstance(ret, VirtualRegister):
-                yield ret
-        for arg in instr.args:
-            if isinstance(arg.value, VirtualRegister):
-                yield arg.value
-        if isinstance(instr, TraitDispatch) and isinstance(instr.self_ptr, VirtualRegister):
-            yield instr.self_ptr
+    for _, v in iter_operands(instr):
+        if isinstance(v, VirtualRegister):
+            yield v
 
 
 def _map_vregs(instr, fn):
-    """Apply fn to every VirtualRegister-bearing operand slot, writing it back.
+    """Replace every VirtualRegister-bearing operand slot in place.
 
-    Non-register slot values pass through fn unchanged (fn is a no-op on them).
-    Shares _VREG_FIELDS with _iter_vregs so the two stay in lockstep.
+    fn passes non-register values through unchanged (_replace_vreg is a no-op on
+    them). Operand coverage comes from the shared registry (mir/nodes.py), so it
+    can never drift from liveness / the inliner.
     """
-    fields = _VREG_FIELDS.get(type(instr))
-    if fields is not None:
-        for f in fields:
-            setattr(instr, f, fn(getattr(instr, f)))
-    elif isinstance(instr, Return):
-        instr.values = [fn(v) for v in instr.values]
-    elif isinstance(instr, (Call, TraitDispatch)):
-        instr.returns = [fn(ret) for ret in instr.returns]
-        for arg in instr.args:
-            arg.value = fn(arg.value)
-        if isinstance(instr, TraitDispatch) and instr.self_ptr:
-            instr.self_ptr = fn(instr.self_ptr)
+    map_operands(instr, fn)
 
 
 def _get_vregs_from_instr(instr) -> List[VirtualRegister]:

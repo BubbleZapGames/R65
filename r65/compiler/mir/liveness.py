@@ -14,192 +14,41 @@ from r65.compiler.mir.nodes import (
     Load, Store, Move, BinaryOp, UnaryOp, Compare, BitTest, Rotate,
     Call, Return, Jump, CondBranch, JumpTable, LookupTable, TypeConvert, ToBool,
     LoadIndirect, StoreIndirect, StatusFlagRead, TraitDispatch, BankByte,
+    iter_operands, OperandRole,
 )
 
-# Types that count as register operands for liveness
-_REG_TYPES = (VirtualRegister, HardwareRegister)
-
-
 # ============================================================================
-# _get_uses dispatch helpers
-# ============================================================================
-
-def _uses_load(instr):
-    """Load: only VR source (not HR)."""
-    s = instr.source
-    return [s] if isinstance(s, VirtualRegister) else []
-
-def _uses_source_vr_hr(instr):
-    """Store, Move: source may be VR or HR."""
-    s = instr.source
-    return [s] if isinstance(s, _REG_TYPES) else []
-
-def _uses_left_right(instr):
-    """BinaryOp, Compare: left and right may be VR or HR."""
-    uses = []
-    if isinstance(instr.left, _REG_TYPES):
-        uses.append(instr.left)
-    if isinstance(instr.right, _REG_TYPES):
-        uses.append(instr.right)
-    return uses
-
-def _uses_operand(instr):
-    """UnaryOp: operand may be VR or HR."""
-    o = instr.operand
-    return [o] if isinstance(o, _REG_TYPES) else []
-
-def _uses_value(instr):
-    """BitTest: value may be VR or HR."""
-    v = instr.value
-    return [v] if isinstance(v, _REG_TYPES) else []
-
-def _uses_rotate_source(instr):
-    """Rotate, TypeConvert, ToBool: source may be VR or HR."""
-    s = instr.source
-    return [s] if isinstance(s, _REG_TYPES) else []
-
-def _uses_load_indirect(instr):
-    """LoadIndirect: pointer (VR only)."""
-    p = instr.pointer
-    return [p] if isinstance(p, VirtualRegister) else []
-
-def _uses_store_indirect(instr):
-    """StoreIndirect: pointer (VR) + source (VR or HR)."""
-    uses = []
-    if isinstance(instr.pointer, VirtualRegister):
-        uses.append(instr.pointer)
-    if isinstance(instr.source, _REG_TYPES):
-        uses.append(instr.source)
-    return uses
-
-def _uses_scrutinee(instr):
-    """LookupTable, JumpTable: scrutinee may be VR or HR."""
-    s = instr.scrutinee
-    return [s] if isinstance(s, _REG_TYPES) else []
-
-def _uses_call(instr):
-    """Call: argument values (VR or HR), plus function pointer if indirect."""
-    uses = []
-    if isinstance(instr.function, _REG_TYPES):
-        uses.append(instr.function)
-    for arg in instr.args:
-        if isinstance(arg.value, _REG_TYPES):
-            uses.append(arg.value)
-    return uses
-
-def _uses_trait_dispatch(instr):
-    """TraitDispatch: argument values + self_ptr."""
-    uses = []
-    for arg in instr.args:
-        if isinstance(arg.value, _REG_TYPES):
-            uses.append(arg.value)
-    if isinstance(instr.self_ptr, VirtualRegister):
-        uses.append(instr.self_ptr)
-    return uses
-
-def _uses_return(instr):
-    """Return: return values (VR or HR)."""
-    uses = []
-    for val in instr.values:
-        if isinstance(val, _REG_TYPES):
-            uses.append(val)
-    return uses
-
-def _uses_condbranch(instr):
-    """CondBranch: condition may be a VirtualRegister."""
-    c = instr.condition
-    return [c] if isinstance(c, _REG_TYPES) else []
-
-def _uses_none(instr):
-    return []
-
-
-# Dispatch table: instruction type → uses extractor
-_GET_USES = {
-    Load: _uses_load,
-    Store: _uses_source_vr_hr,
-    Move: _uses_source_vr_hr,
-    BinaryOp: _uses_left_right,
-    UnaryOp: _uses_operand,
-    Compare: _uses_left_right,
-    BitTest: _uses_value,
-    Rotate: _uses_rotate_source,
-    TypeConvert: _uses_rotate_source,
-    ToBool: _uses_rotate_source,
-    BankByte: _uses_rotate_source,
-    LoadIndirect: _uses_load_indirect,
-    StoreIndirect: _uses_store_indirect,
-    LookupTable: _uses_scrutinee,
-    JumpTable: _uses_scrutinee,
-    Call: _uses_call,
-    TraitDispatch: _uses_trait_dispatch,
-    Return: _uses_return,
-    StatusFlagRead: _uses_none,
-    CondBranch: _uses_condbranch,
-    Jump: _uses_none,
-}
-
-
-# ============================================================================
-# _get_defs dispatch helpers
+# Use/def extraction — derived from the shared operand registry (mir/nodes.py).
+#
+# Liveness tracks the operands of a fixed set of node types; _LIVENESS_NODES is
+# that frozen set. Restricting to it keeps nodes the registry knows about but
+# that liveness historically ignored (SaveRegister/RestoreRegister, Push/Pull)
+# from leaking into use/def — preserving exact behavior. _get_uses/_get_defs
+# return both VirtualRegister and HardwareRegister; the analyzer routes VRs into
+# the vreg sets and X/Y into the hw sets (A is never tracked).
 # ============================================================================
 
-def _defs_dest_vr_hr(instr):
-    """Load, Move, BinaryOp, UnaryOp, Rotate, TypeConvert, ToBool: dest may be VR or HR."""
-    d = instr.dest
-    return [d] if isinstance(d, _REG_TYPES) else []
-
-def _defs_load_indirect(instr):
-    """LoadIndirect: dest (VR only)."""
-    d = instr.dest
-    return [d] if isinstance(d, VirtualRegister) else []
-
-def _defs_lookup_table(instr):
-    """LookupTable: dest (VR only)."""
-    d = instr.dest
-    return [d] if isinstance(d, VirtualRegister) else []
-
-def _defs_call(instr):
-    """Call, TraitDispatch: return registers (VR only)."""
-    defs = []
-    for ret in instr.returns:
-        if isinstance(ret, VirtualRegister):
-            defs.append(ret)
-    return defs
-
-def _defs_status_flag_read(instr):
-    """StatusFlagRead: dest (VR or HR)."""
-    d = instr.dest
-    return [d] if isinstance(d, _REG_TYPES) else []
-
-def _defs_none(instr):
-    return []
+_LIVENESS_NODES = frozenset({
+    Load, Store, Move, BinaryOp, UnaryOp, Compare, BitTest, Rotate,
+    TypeConvert, ToBool, BankByte, LoadIndirect, StoreIndirect,
+    LookupTable, JumpTable, Call, TraitDispatch, Return, StatusFlagRead,
+    CondBranch, Jump,
+})
 
 
-# Dispatch table: instruction type → defs extractor
-_GET_DEFS = {
-    Load: _defs_dest_vr_hr,
-    Move: _defs_dest_vr_hr,
-    BinaryOp: _defs_dest_vr_hr,
-    UnaryOp: _defs_dest_vr_hr,
-    Rotate: _defs_dest_vr_hr,
-    TypeConvert: _defs_dest_vr_hr,
-    ToBool: _defs_dest_vr_hr,
-    BankByte: _defs_dest_vr_hr,
-    LoadIndirect: _defs_load_indirect,
-    LookupTable: _defs_lookup_table,
-    Call: _defs_call,
-    TraitDispatch: _defs_call,
-    StatusFlagRead: _defs_status_flag_read,
-    Store: _defs_none,
-    StoreIndirect: _defs_none,
-    Compare: _defs_none,
-    BitTest: _defs_none,
-    Return: _defs_none,
-    Jump: _defs_none,
-    CondBranch: _defs_none,
-    JumpTable: _defs_none,
-}
+def _uses_of(instr):
+    return [v for _, v in iter_operands(instr, role=OperandRole.READ)]
+
+
+def _defs_of(instr):
+    return [v for _, v in iter_operands(instr, role=OperandRole.WRITE)]
+
+
+# Compat shim: optimize/inline.py imports _GET_USES and calls
+# _GET_USES.get(type(instr))(instr) to collect read vreg ids. Keying on the
+# frozen node set reproduces the old dict's .get() -> (handler or None).
+_GET_USES = {t: _uses_of for t in _LIVENESS_NODES}
+_GET_DEFS = {t: _defs_of for t in _LIVENESS_NODES}
 
 
 @dataclass
