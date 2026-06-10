@@ -81,64 +81,101 @@ A_IMM_OPCODES = frozenset({
 # stack).
 Mode = Optional[int]
 
+# The set of modes that may hold at a node is a tiny lattice — any subset
+# of {8, 16, None} — so it is stored as a 3-bit mask rather than a Python
+# set. This removes ~2M set allocations per classickong compile (the mode
+# dataflow ran as ~38% of compile time, dominated by per-node set() calls).
+# A mask of 0 is the empty set (⊥ — unreachable / not yet reached).
+_BIT_M8 = 1
+_BIT_M16 = 2
+_BIT_UNK = 4            # the "unknown" mode (None)
+_BIT_KNOWN = _BIT_M8 | _BIT_M16
+
+
+def _mode_bit(mode: Mode) -> int:
+    """Encode a single mode (8 / 16 / None) as its lattice bit."""
+    if mode == 8:
+        return _BIT_M8
+    if mode == 16:
+        return _BIT_M16
+    return _BIT_UNK
+
+
+def _bits_to_set(bits: int) -> Set[Mode]:
+    """Decode a lattice bitmask back to a set of modes (query-boundary helper)."""
+    s: Set[Mode] = set()
+    if bits & _BIT_M8:
+        s.add(8)
+    if bits & _BIT_M16:
+        s.add(16)
+    if bits & _BIT_UNK:
+        s.add(None)
+    return s
+
+
+def _unique_of_bits(bits: int) -> Mode:
+    """The single definite mode iff the mask is exactly {8} or {16}, else None.
+
+    Matches the old _unique: a value is unique only when exactly one known
+    mode is present and "unknown" is not — i.e. the mask is _BIT_M8 or _BIT_M16.
+    """
+    if bits == _BIT_M8:
+        return 8
+    if bits == _BIT_M16:
+        return 16
+    return None
+
 
 @dataclass
 class ModeInfo:
     """Per-node mode information from the dataflow analysis.
 
-    Internal representation: `incoming[i]` is the set of m-flag modes
+    Internal representation: `incoming[i]` is the bitmask of m-flag modes
     (accumulator width) that may hold immediately *before* nodes[i]
-    executes; `x_incoming[i]` is the parallel set for the x-flag
-    (index-register width). Each set may contain integers 8 or 16, or
-    None for "unknown". `pred_count[i]` is the number of distinct
-    physical predecessor edges into nodes[i] (fall-through plus
-    branch/jump sources).
+    executes; `x_incoming[i]` is the parallel mask for the x-flag
+    (index-register width). Bits are _BIT_M8 / _BIT_M16 / _BIT_UNK; 0 is
+    the empty set. `pred_count[i]` is the number of distinct physical
+    predecessor edges into nodes[i] (fall-through plus branch/jump sources).
 
-    The two flag dimensions are tracked in parallel rather than as a
-    Cartesian product because SEP/REP can update them independently and
-    callers ask about them independently.
+    All four are dense lists indexed by node position (filled by
+    compute_modes). The two flag dimensions are tracked in parallel rather
+    than as a Cartesian product because SEP/REP can update them
+    independently and callers ask about them independently.
     """
 
-    incoming: Dict[int, Set[Mode]] = field(default_factory=dict)
-    x_incoming: Dict[int, Set[Mode]] = field(default_factory=dict)
-    required: Dict[int, Mode] = field(default_factory=dict)
-    pred_count: Dict[int, int] = field(default_factory=dict)
+    incoming: List[int] = field(default_factory=list)
+    x_incoming: List[int] = field(default_factory=list)
+    required: List[Mode] = field(default_factory=list)
+    pred_count: List[int] = field(default_factory=list)
 
     # ------------------------------------------------------------------
     # Query helpers — preferred read API for consumers.
     # ------------------------------------------------------------------
 
     def incoming_at(self, idx: int) -> Set[Mode]:
-        return self.incoming.get(idx, set())
+        return _bits_to_set(self.incoming[idx]) if 0 <= idx < len(self.incoming) else set()
 
     def x_incoming_at(self, idx: int) -> Set[Mode]:
-        return self.x_incoming.get(idx, set())
+        return _bits_to_set(self.x_incoming[idx]) if 0 <= idx < len(self.x_incoming) else set()
 
     def required_at(self, idx: int) -> Mode:
-        return self.required.get(idx)
+        return self.required[idx] if 0 <= idx < len(self.required) else None
 
     def unique_mode_at(self, idx: int) -> Mode:
         """Return the m-flag mode if all paths agree on a definite value, else None."""
-        return self._unique(self.incoming.get(idx, set()))
+        return _unique_of_bits(self.incoming[idx]) if 0 <= idx < len(self.incoming) else None
 
     def unique_x_mode_at(self, idx: int) -> Mode:
         """Return the x-flag mode if all paths agree on a definite value, else None."""
-        return self._unique(self.x_incoming.get(idx, set()))
-
-    @staticmethod
-    def _unique(modes: Set[Mode]) -> Mode:
-        defined = {m for m in modes if m is not None}
-        if len(defined) == 1 and None not in modes:
-            return next(iter(defined))
-        return None
+        return _unique_of_bits(self.x_incoming[idx]) if 0 <= idx < len(self.x_incoming) else None
 
     def has_mixed_known(self, idx: int) -> bool:
         """True iff some path arrives in m8 and some in m16."""
-        modes = self.incoming.get(idx, set())
-        return 8 in modes and 16 in modes
+        bits = self.incoming[idx] if 0 <= idx < len(self.incoming) else 0
+        return (bits & _BIT_KNOWN) == _BIT_KNOWN
 
     def is_reachable(self, idx: int) -> bool:
-        return bool(self.incoming.get(idx))
+        return 0 <= idx < len(self.incoming) and self.incoming[idx] != 0
 
     def is_join(self, idx: int) -> bool:
         """True iff this node has more than one physical predecessor edge.
@@ -147,7 +184,7 @@ class ModeInfo:
         predecessor is NOT a join; mode-fix coercion at such a label is
         always redundant with whatever coercion was applied upstream.
         """
-        return self.pred_count.get(idx, 0) > 1
+        return (self.pred_count[idx] if 0 <= idx < len(self.pred_count) else 0) > 1
 
 
 # ----------------------------------------------------------------------
@@ -179,8 +216,8 @@ def _required_mode_of(node) -> Mode:
     return None
 
 
-def _transfer(in_modes: Set[Mode], node, *, flag: int = M_FLAG) -> Set[Mode]:
-    """Compute the OUT mode set for a node given its IN mode set.
+def _transfer(in_bits: int, node, *, flag: int = M_FLAG) -> int:
+    """Compute the OUT mode bitmask for a node given its IN bitmask.
 
     `flag` selects which P-flag to track (M_FLAG for the accumulator,
     X_FLAG for index registers). The transfer function is identical
@@ -190,21 +227,21 @@ def _transfer(in_modes: Set[Mode], node, *, flag: int = M_FLAG) -> Set[Mode]:
 
     if not isinstance(node, Instruction):
         # Labels, directives, comments — pass mode through unchanged.
-        return set(in_modes)
+        return in_bits
 
     op = node.opcode
     if op == Opcode.SEP_IMMEDIATE:
         if isinstance(node.operand, Immediate) and isinstance(node.operand.value, int):
             if node.operand.value & flag:
-                return {8}
+                return _BIT_M8
     elif op == Opcode.REP_IMMEDIATE:
         if isinstance(node.operand, Immediate) and isinstance(node.operand.value, int):
             if node.operand.value & flag:
-                return {16}
+                return _BIT_M16
     elif op in (Opcode.PLP, Opcode.RTI):
-        return {None}
+        return _BIT_UNK
 
-    return set(in_modes)
+    return in_bits
 
 
 def _branch_target(node) -> Optional[str]:
@@ -267,6 +304,10 @@ def compute_modes(
     entry_x_modes = entry_x_modes or {}
     n = len(nodes)
     info = ModeInfo()
+    info.incoming = [0] * n
+    info.x_incoming = [0] * n
+    info.required = [None] * n
+    info.pred_count = [0] * n
 
     # Pre-pass: index labels and stash required-mode per instruction.
     label_idx: Dict[str, int] = {}
@@ -275,11 +316,6 @@ def compute_modes(
             # First occurrence wins if (somehow) duplicated.
             label_idx.setdefault(node.name, i)
         info.required[i] = _required_mode_of(node)
-
-    for i in range(n):
-        info.incoming[i] = set()
-        info.x_incoming[i] = set()
-        info.pred_count[i] = 0
 
     # Count physical predecessors (fall-through + branch/jump sources).
     # The fall-through count is fixed by source order: every node has at
@@ -311,35 +347,38 @@ def compute_modes(
     frozen_m: Set[int] = set()
     frozen_x: Set[int] = set()
     if n > 0:
-        info.incoming[0].add(entry_modes.get('__entry__', None))
+        info.incoming[0] |= _mode_bit(entry_modes.get('__entry__', None))
         if '__entry__' in entry_x_modes:
-            info.x_incoming[0].add(entry_x_modes['__entry__'])
+            info.x_incoming[0] |= _mode_bit(entry_x_modes['__entry__'])
             frozen_x.add(0)
     for label, mode in entry_modes.items():
         if label in label_idx:
             idx = label_idx[label]
-            info.incoming[idx] = {mode}
+            info.incoming[idx] = _mode_bit(mode)
             frozen_m.add(idx)
     for label, mode in entry_x_modes.items():
         if label in label_idx:
             idx = label_idx[label]
-            info.x_incoming[idx] = {mode}
+            info.x_incoming[idx] = _mode_bit(mode)
             frozen_x.add(idx)
 
-    # Worklist iteration. Lattice height is small (≤3 distinct values
-    # in any incoming set), so this converges in O(n) iterations of the
-    # full pass for any realistic program.
+    # Worklist iteration. Lattice height is small (≤3 distinct modes in any
+    # incoming mask), so this converges in O(n) iterations of the full pass
+    # for any realistic program. Modes are 3-bit masks: union is `|`, the
+    # "already a subset" test is `cur | out == cur` (i.e. union doesn't grow).
+    inc = info.incoming
+    xinc = info.x_incoming
     changed = True
     while changed:
         changed = False
         for i in range(n):
-            in_set = info.incoming[i]
-            in_x_set = info.x_incoming[i]
-            if not in_set and not in_x_set:
-                continue  # unreachable so far — don't propagate ⊥-only sets
-            out_set = _transfer(in_set, nodes[i], flag=M_FLAG) if in_set else set()
-            out_x_set = _transfer(in_x_set, nodes[i], flag=X_FLAG) if in_x_set else set()
+            in_bits = inc[i]
+            in_x_bits = xinc[i]
+            if not in_bits and not in_x_bits:
+                continue  # unreachable so far — don't propagate ⊥
             node = nodes[i]
+            out_bits = _transfer(in_bits, node, flag=M_FLAG) if in_bits else 0
+            out_x_bits = _transfer(in_x_bits, node, flag=X_FLAG) if in_x_bits else 0
 
             # Fall-through successor (next index), unless this node
             # unconditionally transfers control elsewhere. Frozen
@@ -347,23 +386,31 @@ def compute_modes(
             # incoming propagation — their mode is authoritative.
             if not _is_unconditional_terminator(node) and i + 1 < n:
                 nxt = i + 1
-                if out_set and nxt not in frozen_m and not out_set.issubset(info.incoming[nxt]):
-                    info.incoming[nxt] |= out_set
-                    changed = True
-                if out_x_set and nxt not in frozen_x and not out_x_set.issubset(info.x_incoming[nxt]):
-                    info.x_incoming[nxt] |= out_x_set
-                    changed = True
+                if out_bits and nxt not in frozen_m:
+                    merged = inc[nxt] | out_bits
+                    if merged != inc[nxt]:
+                        inc[nxt] = merged
+                        changed = True
+                if out_x_bits and nxt not in frozen_x:
+                    merged = xinc[nxt] | out_x_bits
+                    if merged != xinc[nxt]:
+                        xinc[nxt] = merged
+                        changed = True
 
             # Branch / jump successor.
             target = _branch_target(node)
             if target is not None and target in label_idx:
                 tgt_idx = label_idx[target]
-                if out_set and tgt_idx not in frozen_m and not out_set.issubset(info.incoming[tgt_idx]):
-                    info.incoming[tgt_idx] |= out_set
-                    changed = True
-                if out_x_set and tgt_idx not in frozen_x and not out_x_set.issubset(info.x_incoming[tgt_idx]):
-                    info.x_incoming[tgt_idx] |= out_x_set
-                    changed = True
+                if out_bits and tgt_idx not in frozen_m:
+                    merged = inc[tgt_idx] | out_bits
+                    if merged != inc[tgt_idx]:
+                        inc[tgt_idx] = merged
+                        changed = True
+                if out_x_bits and tgt_idx not in frozen_x:
+                    merged = xinc[tgt_idx] | out_x_bits
+                    if merged != xinc[tgt_idx]:
+                        xinc[tgt_idx] = merged
+                        changed = True
 
     return info
 
