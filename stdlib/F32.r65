@@ -141,55 +141,7 @@ macro_rules! _f32_normalize($lo:expr, $hi:expr, $exp:expr) {
 // F32 Implementation
 // ============================================================================
 
-// Scratch variables for passing args into add_raw (workaround for compiler
-// stack-parameter load bug: any stack param beyond the first is never read).
-#[lowram]
-static mut __f32_add_ohi: u16;
-#[lowram]
-static mut __f32_add_oexp: u16;
-
 impl far F32 {
-    // ========================================================================
-    // Binary operation macros: dest = self op b
-    // Usage: a.add_to!(b, dest)  ->  dest = a + b
-    // ========================================================================
-
-    // dest = self + b
-    macro_rules! add_to($b:ident, $dest:ident) {
-        $dest.copy(self);
-        $dest.add($b);
-    }
-
-    // dest = self - b
-    macro_rules! sub_to($b:ident, $dest:ident) {
-        $dest.copy(self);
-        $dest.sub($b);
-    }
-
-    // dest = self * b
-    macro_rules! mul_to($b:ident, $dest:ident) {
-        $dest.copy(self);
-        $dest.mul($b);
-    }
-
-    // dest = self / b
-    macro_rules! div_to($b:ident, $dest:ident) {
-        $dest.copy(self);
-        $dest.div($b);
-    }
-
-    // dest = -self
-    macro_rules! neg_to($dest:ident) {
-        $dest.copy(self);
-        $dest.neg();
-    }
-
-    // dest = |self|
-    macro_rules! abs_to($dest:ident) {
-        $dest.copy(self);
-        $dest.abs();
-    }
-
     // ========================================================================
     // Copy and Query Methods
     // ========================================================================
@@ -370,15 +322,14 @@ impl far F32 {
     // o_lo: other mantissa low 16 bits
     // o_hi: other mantissa high byte (in low 8 bits of u16)
     // o_exp: other exponent (biased)
-    far fn add_raw(far *self, o_lo: u16) {
+    far fn add_raw(far *self, o_lo: u16, o_hi: u16, o_exp: u16) {
         let s_eh: u16 = self.exp_hi;
         let s_exp: u16 = s_eh >> 8;
-        let o_hi: u16 = __f32_add_ohi;
 
         // If self is zero, just store the other value
         if s_exp == 0 {
             self.mant_lo = o_lo;
-            self.exp_hi = (__f32_add_oexp << 8) | (o_hi & 0xFF);
+            self.exp_hi = (o_exp << 8) | (o_hi & 0xFF);
             return;
         }
 
@@ -389,9 +340,8 @@ impl far F32 {
         let mut exp: u16 = s_exp;
 
         // Align exponents by arithmetic-shifting the smaller mantissa right.
-        // Read __f32_add_oexp directly (no local) to avoid slot-reuse clobbering.
-        if s_exp > __f32_add_oexp {
-            let mut diff: u16 = s_exp - __f32_add_oexp;
+        if s_exp > o_exp {
+            let mut diff: u16 = s_exp - o_exp;
             if diff > 23 {
                 // Other is too small to matter
                 return;
@@ -402,12 +352,12 @@ impl far F32 {
                 diff = diff - 1;
             }
             exp = s_exp;
-        } else if __f32_add_oexp > s_exp {
-            let mut diff: u16 = __f32_add_oexp - s_exp;
+        } else if o_exp > s_exp {
+            let mut diff: u16 = o_exp - s_exp;
             if diff > 23 {
                 // Self is too small, result is other
                 self.mant_lo = o_lo;
-                self.exp_hi = (__f32_add_oexp << 8) | (o_hi & 0xFF);
+                self.exp_hi = (o_exp << 8) | (o_hi & 0xFF);
                 return;
             }
             loop {
@@ -415,7 +365,7 @@ impl far F32 {
                 _f32_asr24!(s_mlo, s_mhi);
                 diff = diff - 1;
             }
-            exp = __f32_add_oexp;
+            exp = o_exp;
         }
 
         // Add 24-bit mantissas (two's complement).
@@ -444,19 +394,21 @@ impl far F32 {
         self.mant_lo = norm_lo;
         self.exp_hi = (exp << 8) | (norm_hi & 0xFF);
     }
+}
 
-    // Add: self += other
-    far fn add(far *self, other: far *F32) {
+impl AddAssign for F32 {
+    // self += other
+    far fn add_assign(far *self, other: far *F32) {
         let o_eh: u16 = other.exp_hi;
         let o_exp: u16 = o_eh >> 8;
         if o_exp == 0 { return; }
-        __f32_add_ohi = o_eh & 0xFF;
-        __f32_add_oexp = o_exp;
-        self.add_raw(other.mant_lo);
+        self.add_raw(other.mant_lo, o_eh & 0xFF, o_exp);
     }
+}
 
-    // Subtract: self -= other
-    far fn sub(far *self, other: far *F32) {
+impl SubAssign for F32 {
+    // self -= other
+    far fn sub_assign(far *self, other: far *F32) {
         let o_eh: u16 = other.exp_hi;
         let o_exp: u16 = o_eh >> 8;
         if o_exp == 0 { return; }
@@ -464,13 +416,13 @@ impl far F32 {
         let mut neg_lo: u16 = other.mant_lo;
         let mut neg_hi: u16 = o_eh & 0xFF;
         _f32_negate24!(neg_lo, neg_hi);
-        __f32_add_ohi = neg_hi;
-        __f32_add_oexp = o_exp;
-        self.add_raw(neg_lo);
+        self.add_raw(neg_lo, neg_hi, o_exp);
     }
+}
 
-    // Multiply: self *= other (SNES hardware multiply, 9 partial products)
-    far fn mul(far *self, other: far *F32) {
+impl MulAssign for F32 {
+    // self *= other (SNES hardware multiply, 9 partial products)
+    far fn mul_assign(far *self, other: far *F32) {
         let s_eh: u16 = self.exp_hi;
         let o_eh: u16 = other.exp_hi;
         let s_exp: u16 = s_eh >> 8;
@@ -595,12 +547,14 @@ impl far F32 {
         self.mant_lo = r_mlo;
         self.exp_hi = (r_exp << 8) | (r_mhi & 0xFF);
     }
+}
 
-    // Divide: self /= other
+impl DivAssign for F32 {
+    // self /= other
     // Uses 23-iteration binary long division for full 23-bit quotient precision.
     // Result exponent: r_exp = s_exp - o_exp + 128 (+ 1 if pre-norm halves dvnd).
     // Returns max magnitude on divide-by-zero or overflow.
-    far fn div(far *self, other: far *F32) {
+    far fn div_assign(far *self, other: far *F32) {
         let s_eh: u16 = self.exp_hi;
         let o_eh: u16 = other.exp_hi;
         let s_exp: u16 = s_eh >> 8;
@@ -724,11 +678,13 @@ impl far F32 {
         self.mant_lo = q_lo;
         self.exp_hi = (r_exp << 8) | (q_hi & 0xFF);
     }
+}
 
-    // ========================================================================
-    // Comparison
-    // ========================================================================
+// ========================================================================
+// Comparison
+// ========================================================================
 
+impl PartialOrd for F32 {
     // Compare self with other.
     // Returns: 1 if self > other, 0 if equal, 0xFF (-1 as i8) if self < other.
     far fn cmp(far *self, other: far *F32) -> i8 {
@@ -799,20 +755,29 @@ impl far F32 {
 }
 
 // ============================================================================
+// F32 Operator Overloading: equality
+// ============================================================================
+// Arithmetic (`+=` `-=` `*=` `/=`) lives in the AddAssign/SubAssign/MulAssign/
+// DivAssign impls above; ordering (`<` `<=` `>` `>=`) in PartialOrd::cmp. The
+// methods *are* the implementation (no forwarders). PartialEq derives `==`/`!=`
+// from cmp.
+
+impl PartialEq for F32 { far fn eq(far *self, other: far *F32) -> bool { return self.cmp(other) == 0; } }
+
+// F32 is plain old data (4 packed bytes) — an empty Clone impl gives an auto
+// bitwise copy, enabling `let c = a.clone()` and `dst.clone_from(&src)`.
+impl Clone for F32 {}
+
+// ============================================================================
 // F32 ToString
 // ============================================================================
 
-#[lowram]
-static mut __f32_tostr_work: F32;
-#[lowram]
-static mut __f32_tostr_ten: F32;
-#[lowram]
-static mut __f32_tostr_int: F32;
-#[lowram]
-static mut __f32_tostr_digits: [u8; 6];
-
 impl ToString for F32 {
     fn to_string(far *self, buf: far *u8) -> u16 {
+        let mut __f32_tostr_work: F32;
+        let mut __f32_tostr_ten: F32;
+        let mut __f32_tostr_int: F32;
+        let mut __f32_tostr_digits: [u8; 6];
         // Zero
         if (self.exp_hi & 0xFF00) == 0 {
             buf[0 as u16] = '0' as u8;
@@ -839,13 +804,13 @@ impl ToString for F32 {
         loop {
             let cmp_result: i8 = __f32_tostr_work.cmp(&__f32_tostr_ten);
             if cmp_result < 0 { break; }
-            __f32_tostr_work.div(&__f32_tostr_ten);
+            __f32_tostr_work /= __f32_tostr_ten;
             n++;
         }
         loop {
             if (__f32_tostr_work.exp_hi & 0xFF00) == 0 { break; }  // zero guard
             if (__f32_tostr_work.exp_hi >> 8) >= 0x81 { break; }
-            __f32_tostr_work.mul(&__f32_tostr_ten);
+            __f32_tostr_work *= __f32_tostr_ten;
             n--;
         }
 
@@ -857,8 +822,8 @@ impl ToString for F32 {
             let digit: u8 = digit_val as u8;
             __f32_tostr_digits[k as u16] = digit;
             __f32_tostr_int.from_i16(digit as u16);
-            __f32_tostr_work.sub(&__f32_tostr_int);
-            __f32_tostr_work.mul(&__f32_tostr_ten);
+            __f32_tostr_work -= __f32_tostr_int;
+            __f32_tostr_work *= __f32_tostr_ten;
             k++;
         }
 

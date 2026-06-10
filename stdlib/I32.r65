@@ -91,53 +91,6 @@ macro_rules! _hwdiv_first() {
 
 impl far I32 {
     // ========================================================================
-    // Binary operation macros: dest = self op b
-    // Usage: a.add_to!(b, dest)  →  dest = a + b
-    // ========================================================================
-
-    // dest = self + b
-    macro_rules! add_to($b:ident, $dest:ident) {
-        $dest.copy(self);
-        $dest.add($b);
-    }
-
-    // dest = self - b
-    macro_rules! sub_to($b:ident, $dest:ident) {
-        $dest.copy(self);
-        $dest.sub($b);
-    }
-
-    // dest = self * b
-    macro_rules! mul_to($b:ident, $dest:ident) {
-        $dest.copy(self);
-        $dest.mul($b);
-    }
-
-    // dest = self / b
-    macro_rules! div_to($b:ident, $dest:ident) {
-        $dest.copy(self);
-        $dest.div($b);
-    }
-
-    // dest = self % b
-    macro_rules! mod_to($b:ident, $dest:ident) {
-        $dest.copy(self);
-        $dest.mod($b);
-    }
-
-    // dest = -self
-    macro_rules! neg_to($dest:ident) {
-        $dest.copy(self);
-        $dest.neg();
-    }
-
-    // dest = |self|
-    macro_rules! abs_to($dest:ident) {
-        $dest.copy(self);
-        $dest.abs();
-    }
-
-    // ========================================================================
     // Conversion and Copy Methods
     // ========================================================================
 
@@ -454,10 +407,12 @@ impl far I32 {
             self.neg();
         }
     }
+}
 
+impl AddAssign for I32 {
     // Add: self += other (with overflow wrapping)
     // Two's complement addition is identical to unsigned
-    far fn add(far *self, other: far *I32) {
+    far fn add_assign(far *self, other: far *I32) {
         let s_lo: u16 = self.lo;
         let s_hi: u16 = self.hi;
         let o_lo: u16 = other.lo;
@@ -471,10 +426,12 @@ impl far I32 {
         self.lo = r_lo;
         self.hi = r_hi;
     }
+}
 
+impl SubAssign for I32 {
     // Subtract: self -= other (with underflow wrapping)
     // Two's complement subtraction is identical to unsigned
-    far fn sub(far *self, other: far *I32) {
+    far fn sub_assign(far *self, other: far *I32) {
         let s_lo: u16 = self.lo;
         let s_hi: u16 = self.hi;
         let o_lo: u16 = other.lo;
@@ -488,10 +445,12 @@ impl far I32 {
         self.lo = r_lo;
         self.hi = r_hi;
     }
+}
 
+impl MulAssign for I32 {
     // Multiply: self *= other (32x32 -> 32, lower 32 bits only)
     // Signed multiplication: track signs, multiply magnitudes, fix sign
-    far fn mul(far *self, other: far *I32) {
+    far fn mul_assign(far *self, other: far *I32) {
         let mut negate_result: bool = false;
 
         // Determine if result should be negative (signs differ)
@@ -556,10 +515,12 @@ impl far I32 {
             self.neg();
         }
     }
+}
 
+impl DivAssign for I32 {
     // Divide: self /= other (rounds toward zero, returns MIN_I32 if other == 0)
     // Signed division: track signs, divide magnitudes, fix sign
-    far fn div(far *self, other: far *I32) {
+    far fn div_assign(far *self, other: far *I32) {
         let o_lo: u16 = other.lo;
         let mut o_hi: u16 = other.hi;
 
@@ -652,7 +613,9 @@ impl far I32 {
             self.neg();
         }
     }
+}
 
+impl far I32 {
     // Modulo: self %= other (remainder has same sign as dividend)
     // Unchanged if other == 0
     far fn mod(far *self, other: far *I32) {
@@ -738,11 +701,9 @@ impl far I32 {
             self.neg();
         }
     }
+}
 
-    // ========================================================================
-    // Comparison Method
-    // ========================================================================
-
+impl PartialOrd for I32 {
     // Compare self with other (signed comparison).
     // Returns: 1 if self > other, 0 if equal, -1 if self < other
     far fn cmp(far *self, other: far *I32) -> i8 {
@@ -768,7 +729,9 @@ impl far I32 {
         A = 0;
         return A;
     }
+}
 
+impl far I32 {
     // ========================================================================
     // Bitwise Shift Methods
     // ========================================================================
@@ -949,16 +912,26 @@ impl far I32 {
 }
 
 // ============================================================================
+// I32 Operator Overloading: equality
+// ============================================================================
+// Arithmetic (`+=` `-=` `*=` `/=`) lives in the AddAssign/SubAssign/MulAssign/
+// DivAssign impls above; ordering (`<` `<=` `>` `>=`) in PartialOrd::cmp. The
+// methods *are* the implementation (no forwarders). PartialEq derives `==`/`!=`.
+
+impl PartialEq for I32 { far fn eq(far *self, other: far *I32) -> bool { return self.cmp(other) == 0; } }
+
+// I32 is plain old data (two u16 words) — an empty Clone impl gives an auto
+// bitwise copy, enabling `let c = a.clone()` and `dst.clone_from(&src)`.
+impl Clone for I32 {}
+
+// ============================================================================
 // I32 ToString
 // ============================================================================
 
-#[lowram]
-static mut __i32_tostr_tmp: I32;
-#[lowram]
-static mut __i32_tostr_digits: [u8; 11];
-
 impl ToString for I32 {
     fn to_string(far *self, buf: far *u8) -> u16 {
+        let mut __i32_tostr_tmp: I32;
+        let mut __i32_tostr_digits: [u8; 11];
         // Special case: INT_MIN (-2147483648) cannot be negated
         if self.hi == 0x8000 && self.lo == 0 {
             buf[0 as u16] = '-' as u8;

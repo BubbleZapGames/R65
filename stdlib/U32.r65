@@ -80,41 +80,6 @@ macro_rules! _hwdiv_first() {
 
 impl far U32 {
     // ========================================================================
-    // Binary operation macros: dest = self op b
-    // Usage: a.add_to!(b, dest)  →  dest = a + b
-    // ========================================================================
-
-    // dest = self + b
-    macro_rules! add_to($b:ident, $dest:ident) {
-        $dest.copy(self);
-        $dest.add($b);
-    }
-
-    // dest = self - b
-    macro_rules! sub_to($b:ident, $dest:ident) {
-        $dest.copy(self);
-        $dest.sub($b);
-    }
-
-    // dest = self * b
-    macro_rules! mul_to($b:ident, $dest:ident) {
-        $dest.copy(self);
-        $dest.mul($b);
-    }
-
-    // dest = self / b
-    macro_rules! div_to($b:ident, $dest:ident) {
-        $dest.copy(self);
-        $dest.div($b);
-    }
-
-    // dest = self % b
-    macro_rules! mod_to($b:ident, $dest:ident) {
-        $dest.copy(self);
-        $dest.mod($b);
-    }
-
-    // ========================================================================
     // Conversion and Copy Methods
     // ========================================================================
 
@@ -299,9 +264,11 @@ impl far U32 {
         self.lo = rem_lo;
         self.hi = rem_hi;
     }
+}
 
+impl AddAssign for U32 {
     // Add: self += other (with overflow wrapping)
-    far fn add(far *self, other: far *U32) {
+    far fn add_assign(far *self, other: far *U32) {
         let s_lo: u16 = self.lo;
         let s_hi: u16 = self.hi;
         let o_lo: u16 = other.lo;
@@ -315,9 +282,11 @@ impl far U32 {
         self.lo = r_lo;
         self.hi = r_hi;
     }
+}
 
+impl SubAssign for U32 {
     // Subtract: self -= other (with underflow wrapping)
-    far fn sub(far *self, other: far *U32) {
+    far fn sub_assign(far *self, other: far *U32) {
         let s_lo: u16 = self.lo;
         let s_hi: u16 = self.hi;
         let o_lo: u16 = other.lo;
@@ -331,10 +300,12 @@ impl far U32 {
         self.lo = r_lo;
         self.hi = r_hi;
     }
+}
 
+impl MulAssign for U32 {
     // Multiply: self *= other (32x32 -> 32, lower 32 bits only)
     // Software shift-and-add algorithm
-    far fn mul(far *self, other: far *U32) {
+    far fn mul_assign(far *self, other: far *U32) {
         let mut result_lo: u16 = 0;
         let mut result_hi: u16 = 0;
         let mut mcand_lo: u16 = self.lo;
@@ -376,10 +347,12 @@ impl far U32 {
         self.lo = result_lo;
         self.hi = result_hi;
     }
+}
 
+impl DivAssign for U32 {
     // Divide: self /= other (returns 0xFFFFFFFF if other == 0)
     // Long division algorithm
-    far fn div(far *self, other: far *U32) {
+    far fn div_assign(far *self, other: far *U32) {
         let o_lo: u16 = other.lo;
         let o_hi: u16 = other.hi;
 
@@ -447,7 +420,9 @@ impl far U32 {
         self.lo = quot_lo;
         self.hi = quot_hi;
     }
+}
 
+impl far U32 {
     // Modulo: self %= other (unchanged if other == 0)
     // Long division algorithm, keeps remainder
     far fn mod(far *self, other: far *U32) {
@@ -507,11 +482,9 @@ impl far U32 {
         self.lo = rem_lo;
         self.hi = rem_hi;
     }
+}
 
-    // ========================================================================
-    // Comparison Method
-    // ========================================================================
-
+impl PartialOrd for U32 {
     // Compare self with other.
     // Returns: 1 if self > other, 0 if equal, -1 if self < other
     far fn cmp(far *self, other: far *U32) -> i8 {
@@ -526,7 +499,9 @@ impl far U32 {
         A = 0;
         return A;
     }
+}
 
+impl far U32 {
     // ========================================================================
     // Bitwise Shift Methods
     // ========================================================================
@@ -646,16 +621,26 @@ impl far U32 {
 }
 
 // ============================================================================
+// U32 Operator Overloading: equality
+// ============================================================================
+// Arithmetic (`+=` `-=` `*=` `/=`) lives in the AddAssign/SubAssign/MulAssign/
+// DivAssign impls above; ordering (`<` `<=` `>` `>=`) in PartialOrd::cmp. The
+// methods *are* the implementation (no forwarders). PartialEq derives `==`/`!=`.
+
+impl PartialEq for U32 { far fn eq(far *self, other: far *U32) -> bool { return self.cmp(other) == 0; } }
+
+// U32 is plain old data (two u16 words) — an empty Clone impl gives an auto
+// bitwise copy, enabling `let c = a.clone()` and `dst.clone_from(&src)`.
+impl Clone for U32 {}
+
+// ============================================================================
 // U32 ToString
 // ============================================================================
 
-#[lowram]
-static mut __u32_tostr_tmp: U32;
-#[lowram]
-static mut __u32_tostr_digits: [u8; 11];
-
 impl ToString for U32 {
     fn to_string(far *self, buf: far *u8) -> u16 {
+        let mut __u32_tostr_tmp: U32;
+        let mut __u32_tostr_digits: [u8; 11];
         __u32_tostr_tmp.lo = self.lo;
         __u32_tostr_tmp.hi = self.hi;
         if __u32_tostr_tmp.hi == 0 && __u32_tostr_tmp.lo == 0 {

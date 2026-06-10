@@ -201,42 +201,44 @@ FAST_SOURCE_2 = COMMON_HEADER + f'''
     #[lowram(0x022C)] static mut SA1: I32;
     #[lowram(0x0230)] static mut SA2: I32;
 
-    // Scalar: cmp
+    // Scalar: comparison operators
     #[zeropage(0x20)] static mut CMP_EQ: u8;
-    #[zeropage(0x21)] static mut CMP_GT: u8;
-    #[zeropage(0x22)] static mut CMP_LT: u8;
-    #[zeropage(0x23)] static mut CMP_NEG: u8;
+    #[zeropage(0x21)] static mut CMP_NE: u8;
+    #[zeropage(0x22)] static mut CMP_GT: u8;
+    #[zeropage(0x23)] static mut CMP_GE: u8;
+    #[zeropage(0x24)] static mut CMP_LT: u8;
+    #[zeropage(0x25)] static mut CMP_LE: u8;
 
     #[entry]
     fn main() {{
         // === mul (first to avoid state interaction) ===
-        V.from_i16(100 as i16); W.from_i16(200 as i16); V.mul(&W);
+        V.from_i16(100 as i16); W.from_i16(200 as i16); V *= W;
         MU0.lo = V.lo; MU0.hi = V.hi;
 
-        V.from_i16(100 as i16); W.from_i16(-5 as i16); V.mul(&W);
+        V.from_i16(100 as i16); W.from_i16(-5 as i16); V *= W;
         MU1.lo = V.lo; MU1.hi = V.hi;
 
-        V.from_i16(-10 as i16); W.from_i16(-20 as i16); V.mul(&W);
+        V.from_i16(-10 as i16); W.from_i16(-20 as i16); V *= W;
         MU2.lo = V.lo; MU2.hi = V.hi;
 
-        V.from_i16(100 as i16); W.from_i16(0 as i16); V.mul(&W);
+        V.from_i16(100 as i16); W.from_i16(0 as i16); V *= W;
         MU3.lo = V.lo; MU3.hi = V.hi;
 
         // === add ===
-        V.from_i16(100 as i16); W.from_i16(200 as i16); V.add(&W);
+        V.from_i16(100 as i16); W.from_i16(200 as i16); V += W;
         AD0.lo = V.lo; AD0.hi = V.hi;
 
-        V.from_i16(100 as i16); W.from_i16(-50 as i16); V.add(&W);
+        V.from_i16(100 as i16); W.from_i16(-50 as i16); V += W;
         AD1.lo = V.lo; AD1.hi = V.hi;
 
-        V.from_i16(-100 as i16); W.from_i16(-200 as i16); V.add(&W);
+        V.from_i16(-100 as i16); W.from_i16(-200 as i16); V += W;
         AD2.lo = V.lo; AD2.hi = V.hi;
 
         // === sub ===
-        V.from_i16(300 as i16); W.from_i16(100 as i16); V.sub(&W);
+        V.from_i16(300 as i16); W.from_i16(100 as i16); V -= W;
         SU0.lo = V.lo; SU0.hi = V.hi;
 
-        V.from_i16(100 as i16); W.from_i16(200 as i16); V.sub(&W);
+        V.from_i16(100 as i16); W.from_i16(200 as i16); V -= W;
         SU1.lo = V.lo; SU1.hi = V.hi;
 
         // === shl ===
@@ -253,18 +255,18 @@ FAST_SOURCE_2 = COMMON_HEADER + f'''
         V.from_i16(-1 as i16); V.sar(1);
         SA2.lo = V.lo; SA2.hi = V.hi;
 
-        // === cmp ===
+        // === comparison operators ===
         V.from_i16(100 as i16); W.from_i16(100 as i16);
-        A = V.cmp(&W); CMP_EQ = A;
+        if V == W {{ CMP_EQ = 1; }} else {{ CMP_EQ = 0; }}
+        if V != W {{ CMP_NE = 1; }} else {{ CMP_NE = 0; }}
 
         V.from_i16(100 as i16); W.from_i16(-100 as i16);
-        A = V.cmp(&W); CMP_GT = A;
+        if V > W  {{ CMP_GT = 1; }} else {{ CMP_GT = 0; }}
+        if V >= W {{ CMP_GE = 1; }} else {{ CMP_GE = 0; }}
 
         V.from_i16(-100 as i16); W.from_i16(100 as i16);
-        A = V.cmp(&W); CMP_LT = A;
-
-        V.from_i16(-10 as i16); W.from_i16(-100 as i16);
-        A = V.cmp(&W); CMP_NEG = A;
+        if V < W  {{ CMP_LT = 1; }} else {{ CMP_LT = 0; }}
+        if V <= W {{ CMP_LE = 1; }} else {{ CMP_LE = 0; }}
     }}
 '''
 
@@ -294,22 +296,22 @@ SLOW_SOURCE = COMMON_HEADER + f'''
     #[entry]
     fn main() {{
         // === div ===
-        V.from_i16(1000 as i16); W.from_i16(10 as i16); V.div(&W);
+        V.from_i16(1000 as i16); W.from_i16(10 as i16); V /= W;
         DV0.lo = V.lo; DV0.hi = V.hi;
 
-        V.from_i16(-1000 as i16); W.from_i16(10 as i16); V.div(&W);
+        V.from_i16(-1000 as i16); W.from_i16(10 as i16); V /= W;
         DV1.lo = V.lo; DV1.hi = V.hi;
 
-        V.from_i16(1000 as i16); W.from_i16(-10 as i16); V.div(&W);
+        V.from_i16(1000 as i16); W.from_i16(-10 as i16); V /= W;
         DV2.lo = V.lo; DV2.hi = V.hi;
 
-        V.from_i16(-1000 as i16); W.from_i16(-10 as i16); V.div(&W);
+        V.from_i16(-1000 as i16); W.from_i16(-10 as i16); V /= W;
         DV3.lo = V.lo; DV3.hi = V.hi;
 
-        V.from_i16(7 as i16); W.from_i16(2 as i16); V.div(&W);
+        V.from_i16(7 as i16); W.from_i16(2 as i16); V /= W;
         DV4.lo = V.lo; DV4.hi = V.hi;
 
-        V.from_i16(1000 as i16); W.from_i16(0 as i16); V.div(&W);
+        V.from_i16(1000 as i16); W.from_i16(0 as i16); V /= W;
         DV5.lo = V.lo; DV5.hi = V.hi;
 
         // === mod ===
@@ -427,12 +429,14 @@ class TestI32FastOps2:
         assert read_i32(cpu, 0x022C) == i32_bytes(-4), "-16>>2 (sign preserved)"
         assert read_i32(cpu, 0x0230) == i32_bytes(-1), "-1>>1 (all bits set)"
 
-    def test_cmp(self, cpu):
-        """I32 signed comparison returns 0/1/0xFF."""
-        assert read_u8(cpu, 0x20) == 0, "100 == 100 -> 0"
-        assert read_u8(cpu, 0x21) == 1, "100 > -100 -> 1"
-        assert read_u8(cpu, 0x22) == 0xFF, "-100 < 100 -> 0xFF"
-        assert read_u8(cpu, 0x23) == 1, "-10 > -100 -> 1"
+    def test_comparison_operators(self, cpu):
+        """I32 comparison operators (==, !=, <, <=, >, >=), signed."""
+        assert read_u8(cpu, 0x20) == 1, "100 == 100"
+        assert read_u8(cpu, 0x21) == 0, "100 != 100 is false"
+        assert read_u8(cpu, 0x22) == 1, "100 > -100"
+        assert read_u8(cpu, 0x23) == 1, "100 >= -100"
+        assert read_u8(cpu, 0x24) == 1, "-100 < 100"
+        assert read_u8(cpu, 0x25) == 1, "-100 <= 100"
 
 
 class TestI32SlowOps:

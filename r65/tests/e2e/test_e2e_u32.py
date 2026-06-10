@@ -129,16 +129,16 @@ FAST_SOURCE_1 = COMMON_HEADER + f'''
         CP0.lo = V.lo; CP0.hi = V.hi;
 
         // === add ===
-        V.from_u16(100); W.from_u16(200); V.add(&W);
+        V.from_u16(100); W.from_u16(200); V += W;
         AD0.lo = V.lo; AD0.hi = V.hi;
 
-        V.from_u16(65535); W.from_u16(1); V.add(&W);
+        V.from_u16(65535); W.from_u16(1); V += W;
         AD1.lo = V.lo; AD1.hi = V.hi;
 
-        V.from_u16(40000); W.from_u16(30000); V.add(&W);
+        V.from_u16(40000); W.from_u16(30000); V += W;
         AD2.lo = V.lo; AD2.hi = V.hi;
 
-        V.from_u16(1000); W.from_u16(0); V.add(&W);
+        V.from_u16(1000); W.from_u16(0); V += W;
         AD3.lo = V.lo; AD3.hi = V.hi;
     }}
 '''
@@ -167,34 +167,37 @@ FAST_SOURCE_2 = COMMON_HEADER + f'''
     #[lowram(0x0234)] static mut CO0: U32;
 
     #[zeropage(0x20)] static mut CMP_EQ: u8;
-    #[zeropage(0x21)] static mut CMP_GT: u8;
-    #[zeropage(0x22)] static mut CMP_LT: u8;
+    #[zeropage(0x21)] static mut CMP_NE: u8;
+    #[zeropage(0x22)] static mut CMP_GT: u8;
+    #[zeropage(0x23)] static mut CMP_GE: u8;
+    #[zeropage(0x24)] static mut CMP_LT: u8;
+    #[zeropage(0x25)] static mut CMP_LE: u8;
 
     #[entry]
     fn main() {{
         // === sub ===
-        V.from_u16(300); W.from_u16(100); V.sub(&W);
+        V.from_u16(300); W.from_u16(100); V -= W;
         SU0.lo = V.lo; SU0.hi = V.hi;
 
-        V.from_u16(100); W.from_u16(100); V.sub(&W);
+        V.from_u16(100); W.from_u16(100); V -= W;
         SU1.lo = V.lo; SU1.hi = V.hi;
 
         // 65536 - 1 = 65535 (borrow from hi to lo)
-        V.from_u16(65535); W.from_u16(1); V.add(&W);
-        W.from_u16(1); V.sub(&W);
+        V.from_u16(65535); W.from_u16(1); V += W;
+        W.from_u16(1); V -= W;
         SU2.lo = V.lo; SU2.hi = V.hi;
 
         // === mul ===
-        V.from_u16(100); W.from_u16(200); V.mul(&W);
+        V.from_u16(100); W.from_u16(200); V *= W;
         MU0.lo = V.lo; MU0.hi = V.hi;
 
-        V.from_u16(12345); W.from_u16(0); V.mul(&W);
+        V.from_u16(12345); W.from_u16(0); V *= W;
         MU1.lo = V.lo; MU1.hi = V.hi;
 
-        V.from_u16(12345); W.from_u16(1); V.mul(&W);
+        V.from_u16(12345); W.from_u16(1); V *= W;
         MU2.lo = V.lo; MU2.hi = V.hi;
 
-        V.from_u16(1000); W.from_u16(100); V.mul(&W);
+        V.from_u16(1000); W.from_u16(100); V *= W;
         MU3.lo = V.lo; MU3.hi = V.hi;
 
         // === shl ===
@@ -217,19 +220,22 @@ FAST_SOURCE_2 = COMMON_HEADER + f'''
         V.from_u16(1); V.shl(16); V.shr(16);
         SR2.lo = V.lo; SR2.hi = V.hi;
 
-        // === cmp ===
+        // === comparison operators ===
         V.from_u16(100); W.from_u16(100);
-        A = V.cmp(&W); CMP_EQ = A;
+        if V == W {{ CMP_EQ = 1; }} else {{ CMP_EQ = 0; }}
+        if V != W {{ CMP_NE = 1; }} else {{ CMP_NE = 0; }}
 
         V.from_u16(200); W.from_u16(100);
-        A = V.cmp(&W); CMP_GT = A;
+        if V > W  {{ CMP_GT = 1; }} else {{ CMP_GT = 0; }}
+        if V >= W {{ CMP_GE = 1; }} else {{ CMP_GE = 0; }}
 
         V.from_u16(100); W.from_u16(200);
-        A = V.cmp(&W); CMP_LT = A;
+        if V < W  {{ CMP_LT = 1; }} else {{ CMP_LT = 0; }}
+        if V <= W {{ CMP_LE = 1; }} else {{ CMP_LE = 0; }}
 
         // === combined: (100+200)-200 = 100 ===
         V.from_u16(100); W.from_u16(200);
-        V.add(&W); V.sub(&W);
+        V += W; V -= W;
         CO0.lo = V.lo; CO0.hi = V.hi;
     }}
 '''
@@ -260,19 +266,19 @@ SLOW_SOURCE = COMMON_HEADER + f'''
     #[entry]
     fn main() {{
         // === div ===
-        V.from_u16(1000); W.from_u16(10); V.div(&W);
+        V.from_u16(1000); W.from_u16(10); V /= W;
         DV0.lo = V.lo; DV0.hi = V.hi;
 
-        V.from_u16(1000); W.from_u16(7); V.div(&W);
+        V.from_u16(1000); W.from_u16(7); V /= W;
         DV1.lo = V.lo; DV1.hi = V.hi;
 
-        V.from_u16(42); W.from_u16(1); V.div(&W);
+        V.from_u16(42); W.from_u16(1); V /= W;
         DV2.lo = V.lo; DV2.hi = V.hi;
 
-        V.from_u16(0); W.from_u16(5); V.div(&W);
+        V.from_u16(0); W.from_u16(5); V /= W;
         DV3.lo = V.lo; DV3.hi = V.hi;
 
-        V.from_u16(1000); W.from_u16(0); V.div(&W);
+        V.from_u16(1000); W.from_u16(0); V /= W;
         DV4.lo = V.lo; DV4.hi = V.hi;
 
         // === mod ===
@@ -304,7 +310,7 @@ SLOW_SOURCE = COMMON_HEADER + f'''
 
         // === combined: (100*10)/10 = 100 ===
         V.from_u16(100); W.from_u16(10);
-        V.mul(&W); V.div(&W);
+        V *= W; V /= W;
         CO0.lo = V.lo; CO0.hi = V.hi;
     }}
 '''
@@ -388,11 +394,14 @@ class TestU32FastOps2:
         assert read_u32(cpu, 0x022C) == u32_bytes(0), "1>>1"
         assert read_u32(cpu, 0x0230) == u32_bytes(1), "65536>>16 (cross-word)"
 
-    def test_cmp(self, cpu):
-        """U32 comparison returns 0/1/0xFF."""
-        assert read_u8(cpu, 0x20) == 0, "100 == 100 -> 0"
-        assert read_u8(cpu, 0x21) == 1, "200 > 100 -> 1"
-        assert read_u8(cpu, 0x22) == 0xFF, "100 < 200 -> 0xFF"
+    def test_comparison_operators(self, cpu):
+        """U32 comparison operators (==, !=, <, <=, >, >=), unsigned."""
+        assert read_u8(cpu, 0x20) == 1, "100 == 100"
+        assert read_u8(cpu, 0x21) == 0, "100 != 100 is false"
+        assert read_u8(cpu, 0x22) == 1, "200 > 100"
+        assert read_u8(cpu, 0x23) == 1, "200 >= 100"
+        assert read_u8(cpu, 0x24) == 1, "100 < 200"
+        assert read_u8(cpu, 0x25) == 1, "100 <= 200"
 
     def test_combined_add_sub(self, cpu):
         """(100+200)-200 = 100."""
