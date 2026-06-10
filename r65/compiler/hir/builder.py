@@ -20,6 +20,9 @@ from r65.compiler.hir.ast_const_eval import *
 from r65.compiler.hir.cfg import CfgEvaluator
 from r65.compiler.hir.expression_builder import ExpressionBuilder
 from r65.compiler.hir.errors import *
+from r65.compiler.hir.lang_items import (
+    LANG_ITEM_TRAITS, CLONE_TRAIT, CLONE_METHOD, is_lang_item_trait,
+)
 
 
 class HIRBuilder:
@@ -64,6 +67,8 @@ class HIRBuilder:
         self._struct_trait_kind: Dict[str, str] = {}  # struct_name -> 'near' or 'far'
         self._dyn_used_traits: Set[str] = set()  # trait names used with *dyn
         self._trait_supertraits: Dict[str, List[str]] = {}  # trait_name -> declared supertrait names
+        # Lang-item Clone impls: struct_name -> {'auto': bool, 'mangled': str|None, 'is_far': bool}
+        self._clone_impls: Dict[str, Dict[str, Any]] = {}
 
     def _process_snesrom_attribute(self, attr: ast.Attribute):
         """Process snesrom attribute that was mistakenly attached to a function."""
@@ -267,7 +272,14 @@ class HIRBuilder:
                 return
             if isinstance(t, ast.PointerType):
                 if t.is_dyn and isinstance(t.pointee_type, ast.BasicType):
-                    dyn_traits.add(t.pointee_type.name)
+                    name = t.pointee_type.name
+                    if is_lang_item_trait(name):
+                        raise HIRError(
+                            f"'{name}' is a built-in operator/clone trait and cannot be "
+                            f"used as a trait object (*dyn {name})",
+                            source_loc=getattr(t, 'source_loc', None)
+                        )
+                    dyn_traits.add(name)
                 scan_type(t.pointee_type)
             elif isinstance(t, ast.ArrayType):
                 scan_type(t.element_type)
@@ -1567,6 +1579,11 @@ class HIRBuilder:
 
         # Handle trait impl validation and registration
         if impl.trait_name is not None:
+            # Compiler lang-item traits (Clone, operator traits) need no source
+            # `trait` declaration and are static-dispatch only.
+            if is_lang_item_trait(impl.trait_name):
+                self._declare_lang_item_impl(impl)
+                return
             self._declare_trait_impl(impl)
             return
 
@@ -1726,6 +1743,96 @@ class HIRBuilder:
         sym = self.symbol_table.lookup(trait_name)
         defn = sym.definition if sym else None
         return getattr(defn, 'source_loc', None)
+
+    def _declare_lang_item_impl(self, impl: ast.ImplDecl):
+        """First pass: declare a compiler lang-item trait impl (Clone, operator traits).
+
+        Lang-item traits are known to the compiler and need no source `trait`
+        declaration. They are static-dispatch only: no TypeId, no `*dyn`, and they
+        do NOT participate in the near/far trait-consistency constraint (each method
+        is called directly with its own calling convention). Methods are registered
+        exactly like any other impl method so that explicit calls
+        (`recv.method(args)`) resolve through the existing static-dispatch path.
+        """
+        # Calling convention comes from the impl's own methods (no trait decl).
+        impl_is_far = any(m.is_far for m in impl.methods) if impl.methods else False
+
+        if impl.trait_name == CLONE_TRAIT:
+            self._declare_clone_impl(impl, impl_is_far)
+
+        for method in impl.methods:
+            self._register_lang_item_method(impl.struct_name, method, impl_is_far,
+                                            impl.trait_name)
+
+    def _declare_clone_impl(self, impl: ast.ImplDecl, impl_is_far: bool):
+        """Validate and record a `Clone` impl. Empty body => auto bitwise copy."""
+        for method in impl.methods:
+            if method.name != CLONE_METHOD:
+                raise HIRError(
+                    f"impl Clone for '{impl.struct_name}': only a '{CLONE_METHOD}' "
+                    f"method is allowed, found '{method.name}'",
+                    source_loc=method.source_loc
+                )
+            if len(method.params) != 1:
+                raise HIRError(
+                    f"Clone::{CLONE_METHOD} for '{impl.struct_name}' must take exactly "
+                    f"one parameter (the source) besides self",
+                    source_loc=method.source_loc
+                )
+        is_auto = len(impl.methods) == 0
+        info = {
+            'auto': is_auto,
+            'mangled': None if is_auto else f"{impl.struct_name}__{CLONE_METHOD}",
+            'is_far': impl_is_far,
+        }
+        self._clone_impls[impl.struct_name] = info
+
+        # Register a marker symbol so the type checker (which shares this symbol
+        # table) can resolve "does T implement Clone, and is it auto or manual".
+        marker_key = f"{impl.struct_name}$Clone"
+        if self.symbol_table.lookup(marker_key) is None:
+            self.symbol_table.declare(marker_key, Symbol(
+                name=marker_key,
+                kind=SymbolKind.METHOD,
+                definition=None,
+                scope_id=0,
+                type_info={
+                    'clone_auto': is_auto,
+                    'clone_mangled': info['mangled'],
+                    'clone_is_far': impl_is_far,
+                }
+            ))
+
+    def _register_lang_item_method(self, struct_name: str, method, impl_is_far: bool,
+                                   trait_name: str):
+        """Register `Struct__method` + the `Struct.method` lookup symbol.
+
+        Mirrors trait-impl method registration (without the `*dyn` dispatch-key,
+        which lang-item traits never need).
+        """
+        mangled_name = f"{struct_name}__{method.name}"
+        self.symbol_table.declare(mangled_name, Symbol(
+            name=mangled_name,
+            kind=SymbolKind.METHOD,
+            definition=method,
+            scope_id=0
+        ))
+
+        method_key = f"{struct_name}.{method.name}"
+        if self.symbol_table.lookup(method_key) is None:
+            self.symbol_table.declare(method_key, Symbol(
+                name=method_key,
+                kind=SymbolKind.METHOD,
+                definition=method,
+                scope_id=0,
+                type_info={
+                    'struct_name': struct_name,
+                    'mangled_name': mangled_name,
+                    'impl_is_far': impl_is_far,
+                    'method_self_is_far': method.self_is_far,
+                    'trait_name': trait_name,
+                }
+            ))
 
     def _declare_trait_impl(self, impl: ast.ImplDecl):
         """First pass: declare trait implementation methods and validate against trait definition."""
@@ -2064,7 +2171,9 @@ class HIRBuilder:
             name=mangled_name,
             is_far=method.is_far,
             is_const=method.is_const,
-            is_trait_method=bool(impl.trait_name),
+            # Lang-item traits (Clone, operator traits) are static-dispatch only:
+            # self is a normal stack arg, not the dyn-dispatch self-in-Y convention.
+            is_trait_method=bool(impl.trait_name) and not is_lang_item_trait(impl.trait_name),
             parameters=hir_params,
             return_type=ret_type,
             body=hir_body,

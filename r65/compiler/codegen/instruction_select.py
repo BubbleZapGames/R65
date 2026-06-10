@@ -18,7 +18,7 @@ from r65.compiler.mir.nodes import (
     BankByte,
     Push, Pull, SaveRegister, RestoreRegister, ReturnFromInterrupt,
     StatusFlagTest, StatusFlagSet, StatusFlagRead,
-    MemoryFill, BlockCopy, InlineAsm, TraitDispatch,
+    MemoryFill, BlockCopy, AggregateCopy, InlineAsm, TraitDispatch,
     VirtualRegister, HardwareRegister, Immediate as MIRImmediate, MemoryLocation
 )
 from r65.compiler.codegen.emitter import AssemblyEmitter
@@ -169,6 +169,7 @@ class InstructionSelector:
             ReturnFromInterrupt: self.select_return_from_interrupt,
             MemoryFill: self.select_memory_fill,
             BlockCopy: self.select_block_copy,
+            AggregateCopy: self.select_aggregate_copy,
             InlineAsm: self.select_inline_asm,
             StatusFlagTest: self.select_status_flag_test,
             StatusFlagSet: self.select_status_flag_set,
@@ -2066,6 +2067,44 @@ class InstructionSelector:
 
         # Restore 8-bit A mode only; X/Y must remain 16-bit (x16 convention)
         self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "Restore 8-bit A")
+
+    def select_aggregate_copy(self, instr: AggregateCopy):
+        """
+        Generate code for AggregateCopy (RAM->RAM fixed-size copy) via MVN.
+
+        Used by Clone (`dst.clone_from(&src)`, `let c = a.clone()`). Both ends are
+        static addresses. MVN sets DBR to the destination bank as a side effect, so
+        we bracket it with PHB/PLB to preserve the caller's data bank.
+
+            PHB
+            REP #$30 ; LDA #count-1 ; LDX #src ; LDY #dst ; MVN src_bank,dst_bank
+            SEP #$20
+            PLB
+        """
+        from r65.compiler.codegen.asm_nodes import BlockMove
+
+        dest_loc = self._get_operand_location(instr.dest)
+        src_loc = self._get_operand_location(instr.src)
+        count = instr.count
+        dest_addr = dest_loc.memory_addr
+        src_addr = src_loc.memory_addr
+
+        def bank_of(addr):
+            if addr >= WRAM_BANK2_START:
+                return WRAM_BANK2
+            if addr >= WRAM_BANK_START:
+                return WRAM_BANK
+            return 0x00  # Low RAM / zeropage
+
+        self.emitter.emit_comment(f"Clone copy {count} bytes")
+        self.emitter.emit_instr(Opcode.PHB)  # preserve DBR (MVN clobbers it)
+        self._emit_immediate(Opcode.REP_IMMEDIATE, MX_FLAGS, "16-bit A and index")
+        self._emit_immediate(Opcode.LDA_IMMEDIATE, count - 1)
+        self._emit_immediate(Opcode.LDX_IMMEDIATE, src_addr & WORD_MASK)
+        self._emit_immediate(Opcode.LDY_IMMEDIATE, dest_addr & WORD_MASK)
+        self.emitter.emit_instr(Opcode.MVN, BlockMove(bank_of(src_addr), bank_of(dest_addr)))
+        self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "Restore 8-bit A")
+        self.emitter.emit_instr(Opcode.PLB)  # restore DBR
 
     # ========================================================================
     # Inline Assembly

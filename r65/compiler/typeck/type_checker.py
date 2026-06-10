@@ -912,6 +912,13 @@ class TypeChecker:
             # Multi-assignment statement
             self.check_multi_assignment(stmt)
 
+    def _is_direct_clone(self, expr) -> bool:
+        """True if expr is a `.clone()` sugar call (0-arg clone on a receiver)."""
+        return (isinstance(expr, HIRFunctionCall)
+                and isinstance(expr.func, HIRFieldAccess)
+                and expr.func.field_name == 'clone'
+                and len(expr.args) == 0)
+
     def check_let_statement(self, stmt: HIRLetStmt):
         """Type check let binding."""
         # Get mode at this statement
@@ -958,7 +965,11 @@ class TypeChecker:
             stmt.var_type = var_type  # Fill in inferred type
         elif stmt.initializer:
             # No explicit type — infer from initializer expression
-            init_type = self.check_expression(stmt.initializer)
+            self.call_validator._clone_sugar_allowed = self._is_direct_clone(stmt.initializer)
+            try:
+                init_type = self.check_expression(stmt.initializer)
+            finally:
+                self.call_validator._clone_sugar_allowed = False
             if isinstance(init_type, MultiReturnTypeInfo):
                 init_type = init_type.element_types[0]
             var_type = init_type
@@ -983,7 +994,11 @@ class TypeChecker:
 
         # Check initializer type matches (skip if already checked during type inference)
         if stmt.initializer and not inferred_from_initializer:
-            init_type = self.check_expression(stmt.initializer, var_type)
+            self.call_validator._clone_sugar_allowed = self._is_direct_clone(stmt.initializer)
+            try:
+                init_type = self.check_expression(stmt.initializer, var_type)
+            finally:
+                self.call_validator._clone_sugar_allowed = False
             # Handle tuple-to-scalar: let x: u8 = tuple_func() drops extra return values
             if isinstance(init_type, MultiReturnTypeInfo) and not isinstance(var_type, MultiReturnTypeInfo):
                 first_elem_type = init_type.element_types[0]
@@ -1269,6 +1284,56 @@ class TypeChecker:
                 source_loc=expr.source_loc
             )
 
+    def _check_overloaded_comparison(self, expr: HIRBinaryOp, left_type, right_type) -> TypeInfo:
+        """Rewrite an aggregate comparison `a OP b` into a primitive compare of a
+        PartialEq::eq / PartialOrd::cmp call result against 0 (or 1)."""
+        from r65.compiler.hir.lang_items import EQ_TRAIT, EQ_METHOD, ORD_TRAIT, ORD_METHOD
+        from r65.compiler.hir.nodes import (
+            HIRFunctionCall, HIRFieldAccess, HIRAddressOf, HIRIntegerLiteral)
+
+        if not (isinstance(left_type, StructTypeInfo) and isinstance(right_type, StructTypeInfo)
+                and left_type.name == right_type.name):
+            raise TypeCheckError(
+                f"cannot compare '{left_type}' with '{right_type}'",
+                source_loc=expr.source_loc,
+                hint="overloaded comparison requires both operands to be the same struct type"
+            )
+        struct_name = left_type.name
+        op = expr.op
+        if op in ('==', '!='):
+            trait, method = EQ_TRAIT, EQ_METHOD          # eq(*self, other) -> bool
+            cmp_op = '=='
+            literal_val, literal_type, ret = (1 if op == '==' else 0), 'bool', 'bool'
+        else:
+            trait, method = ORD_TRAIT, ORD_METHOD        # cmp(*self, other) -> i8 (sign)
+            cmp_op = op
+            literal_val, literal_type, ret = 0, 'i8', 'i8'
+
+        if self.symbol_table.lookup(f"{struct_name}.{method}") is None:
+            raise TypeCheckError(
+                f"type '{struct_name}' does not implement '{op}' (trait {trait})",
+                source_loc=expr.source_loc,
+                hint=f"add `impl {trait} for {struct_name} {{ fn {method}(*self, other: *{struct_name}) -> {ret} {{ ... }} }}`"
+            )
+
+        arg = HIRAddressOf(operand=expr.right, source_loc=getattr(expr.right, 'source_loc', None))
+        call = HIRFunctionCall(
+            func=HIRFieldAccess(base=expr.left, field_name=method, source_loc=expr.source_loc),
+            args=[arg],
+            source_loc=expr.source_loc,
+        )
+        self.call_validator.check_function_call(call)  # sets method_call_info + expr_type
+
+        # Rewrite this node in place into `call cmp_op <literal>` so the existing
+        # primitive comparison lowering/codegen handles it (signed for cmp's i8).
+        lit = HIRIntegerLiteral(value=literal_val, source_loc=expr.source_loc)
+        lit.expr_type = BasicTypeInfo(literal_type)
+        expr.left = call
+        expr.right = lit
+        expr.op = cmp_op
+        expr.expr_type = BasicTypeInfo('bool')
+        return expr.expr_type
+
     def check_binary_op(self, expr: HIRBinaryOp, context_type: Optional[TypeInfo] = None) -> TypeInfo:
         """Type check binary operation."""
         # Validate operator restrictions (skip for const fn - evaluated at compile time)
@@ -1284,6 +1349,12 @@ class TypeChecker:
         # This ensures `off >= 32 * 32` (where off is u16) evaluates 32*32 as u16 (1024), not u8 (0)
         right_context = left_type if expr.op in ['==', '!=', '<', '<=', '>', '>='] else None
         right_type = self.check_expression(expr.right, right_context)
+
+        # Operator overloading (Tier B): comparisons on aggregate operands dispatch
+        # to PartialEq::eq (== / !=) or PartialOrd::cmp (< <= > >=).
+        if expr.op in ('==', '!=', '<', '<=', '>', '>=') and (
+                TypeUtils.is_aggregate_type(left_type) or TypeUtils.is_aggregate_type(right_type)):
+            return self._check_overloaded_comparison(expr, left_type, right_type)
 
         # Type rules for binary operators
         if expr.op in ['<<', '>>']:
@@ -1752,6 +1823,47 @@ class TypeChecker:
         expr.expr_type = BasicTypeInfo(name='bool')
         return expr.expr_type
 
+    def _check_overloaded_compound_assign(self, expr: HIRAssignment, target_type) -> TypeInfo:
+        """Redirect `a OP= b` on an aggregate to `a.<op>_assign(&b)`."""
+        from r65.compiler.hir.lang_items import BINOP_ASSIGN
+        from r65.compiler.hir.nodes import HIRFunctionCall, HIRFieldAccess, HIRAddressOf
+
+        op = expr.compound_op
+        if op not in BINOP_ASSIGN:
+            raise TypeCheckError(
+                f"operator '{op}=' cannot be overloaded for '{target_type}'",
+                source_loc=expr.source_loc
+            )
+        trait_name, method_name = BINOP_ASSIGN[op]
+
+        if not isinstance(target_type, StructTypeInfo):
+            raise TypeCheckError(
+                f"'{op}=' is not supported for type '{target_type}'",
+                source_loc=expr.source_loc
+            )
+        struct_name = target_type.name
+        if self.symbol_table.lookup(f"{struct_name}.{method_name}") is None:
+            raise TypeCheckError(
+                f"type '{struct_name}' does not implement '{op}=' (trait {trait_name})",
+                source_loc=expr.source_loc,
+                hint=f"add `impl {trait_name} for {struct_name} {{ fn {method_name}(*self, other: *{struct_name}) {{ ... }} }}`"
+            )
+
+        # The compound-assign desugar set value = (target OP rhs); recover rhs.
+        rhs = expr.value.right if isinstance(expr.value, HIRBinaryOp) else expr.value
+        arg = HIRAddressOf(operand=rhs, source_loc=getattr(rhs, 'source_loc', None))
+        call = HIRFunctionCall(
+            func=HIRFieldAccess(base=expr.target, field_name=method_name,
+                                source_loc=expr.source_loc),
+            args=[arg],
+            source_loc=expr.source_loc,
+        )
+        # Resolves via _try_method_call -> sets call.method_call_info.
+        self.call_validator.check_function_call(call)
+        expr.opassign_call = call
+        expr.expr_type = BasicTypeInfo('void')
+        return expr.expr_type
+
     def check_assignment(self, expr: HIRAssignment) -> TypeInfo:
         """Type check assignment."""
         # Special handling for STATUS flag assignments
@@ -1762,6 +1874,12 @@ class TypeChecker:
         self._check_target_mutable(expr.target, expr.source_loc)
 
         target_type = self.check_expression(expr.target)
+
+        # Operator overloading (Tier A): an aggregate compound assignment
+        # `a OP= b` is redirected to the operator-trait method `a.<op>_assign(&b)`
+        # instead of the by-value primitive path (which structs cannot take).
+        if getattr(expr, 'compound_op', None) and TypeUtils.is_aggregate_type(target_type):
+            return self._check_overloaded_compound_assign(expr, target_type)
 
         # For register targets (A, X, Y, B, aliases), the compiler auto-widens the
         # operation (e.g., REP #$20 for 16-bit A). Do not propagate target_type as

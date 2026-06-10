@@ -114,6 +114,13 @@ class CallValidator:
 
         # Check if this is a method call (receiver.method(args))
         if isinstance(expr.func, HIRFieldAccess):
+            # Clone lang-item: .clone() / .clone_from() on aggregates. For a manual
+            # (user-bodied) clone_from this returns None and falls through to normal
+            # static method resolution below.
+            if expr.func.field_name in ('clone', 'clone_from'):
+                clone_result = self._try_clone_call(expr)
+                if clone_result is not None:
+                    return clone_result
             method_result = self._try_method_call(expr)
             if method_result is not None:
                 return method_result
@@ -175,6 +182,83 @@ class CallValidator:
             else:
                 expr.expr_type = BasicTypeInfo('void')
 
+        return expr.expr_type
+
+    def _try_clone_call(self, expr: HIRFunctionCall) -> Optional[TypeInfo]:
+        """Resolve a Clone lang-item call: `a.clone()` or `dst.clone_from(&src)`.
+
+        Returns the result type if handled, or None to defer to normal method
+        resolution (the manual/user-bodied `clone_from` case).
+        """
+        from r65.compiler.hir.types import ArrayTypeInfo, StructTypeInfo, PointerTypeInfo, BasicTypeInfo
+
+        field_access = expr.func
+        method_name = field_access.field_name
+
+        try:
+            receiver_type = self.check_expression(field_access.base)
+        except TypeCheckError:
+            return None
+
+        # Identify the aggregate type being cloned.
+        receiver_is_pointer = isinstance(receiver_type, PointerTypeInfo)
+        agg_type = receiver_type.pointee_type if receiver_is_pointer else receiver_type
+        if not isinstance(agg_type, (StructTypeInfo, ArrayTypeInfo)):
+            return None  # not clonable; let the normal path report it
+
+        is_array = isinstance(agg_type, ArrayTypeInfo)
+
+        # Classify intrinsic (array / auto-struct) vs manual (user clone_from body).
+        if is_array:
+            kind = 'intrinsic'
+        else:
+            marker = self.symbol_table.lookup(f"{agg_type.name}$Clone")
+            if marker is None:
+                raise TypeCheckError(
+                    f"type '{agg_type.name}' does not implement Clone",
+                    source_loc=expr.source_loc,
+                    hint=f"add `impl Clone for {agg_type.name} {{}}` (empty body = bitwise copy)"
+                )
+            kind = 'intrinsic' if marker.type_info.get('clone_auto') else 'call'
+
+        # Runtime-pointer operands need an indirect copy (deferred); the place-based
+        # path requires a static address for both ends.
+        if receiver_is_pointer:
+            raise TypeCheckError(
+                "clone through a runtime pointer is not yet supported",
+                source_loc=expr.source_loc,
+                hint="clone named aggregate variables/statics, e.g. `dst.clone_from(&src)`"
+            )
+
+        if method_name == 'clone_from':
+            if len(expr.args) != 1:
+                raise TypeCheckError("clone_from takes exactly 1 argument (the source)",
+                                     source_loc=expr.source_loc)
+            self.check_expression(expr.args[0])
+            if kind == 'call':
+                return None  # manual: resolve as an ordinary static method call
+            expr.clone_info = {'kind': 'intrinsic', 'agg_type': agg_type, 'method': 'clone_from'}
+            expr.expr_type = BasicTypeInfo('void')
+            return expr.expr_type
+
+        # method_name == 'clone' (0-arg sugar)
+        if len(expr.args) != 0:
+            raise TypeCheckError("clone takes no arguments", source_loc=expr.source_loc)
+        if not getattr(self, '_clone_sugar_allowed', False):
+            raise TypeCheckError(
+                "`.clone()` is only allowed as the direct initializer of a let or "
+                "assignment to an aggregate place",
+                source_loc=expr.source_loc
+            )
+        if kind == 'call':
+            raise TypeCheckError(
+                f"`let x = a.clone()` is not yet supported for '{agg_type.name}' "
+                f"(it has a custom Clone impl)",
+                source_loc=expr.source_loc,
+                hint=f"call `x.clone_from(&a)` explicitly"
+            )
+        expr.clone_info = {'kind': 'intrinsic', 'agg_type': agg_type, 'method': 'clone'}
+        expr.expr_type = agg_type
         return expr.expr_type
 
     def _try_method_call(self, expr: HIRFunctionCall) -> Optional[TypeInfo]:

@@ -80,6 +80,10 @@ class CallLowerer:
         Returns:
             VirtualRegister or HardwareRegister holding return value, or None for void
         """
+        # Intrinsic Clone: dst.clone_from(&src) on an auto-struct / array.
+        if getattr(call_expr, 'clone_info', None):
+            return self.builder._lower_intrinsic_clone_from(call_expr)
+
         # Check if this is a method call (set by type checker)
         if call_expr.method_call_info:
             if call_expr.method_call_info.get('is_type_id'):

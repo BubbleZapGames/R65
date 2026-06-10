@@ -23,7 +23,7 @@ from r65.compiler.mir.nodes import (
     MIRInstruction, MIRProgram, MIRFunction, BasicBlock,
     VirtualRegister, HardwareRegister, Immediate, FunctionPointer, LabelRef, MemoryLocation,
     Load, Store, Move, Jump, CondBranch, Return, ReturnFromInterrupt, Call, StatusFlagRead,
-    SetMode, MemoryFill, BlockCopy, ROMDataRef,
+    SetMode, MemoryFill, BlockCopy, AggregateCopy, ROMDataRef,
     InlineAsm,
 )
 
@@ -684,7 +684,11 @@ class MIRBuilder:
             # addressing modes needed for variable-index array access on stack
             from r65.compiler.hir.types import ArrayTypeInfo, StructTypeInfo
             if isinstance(stmt.var_type, (ArrayTypeInfo, StructTypeInfo)):
-                if self._is_stack_eligible_struct(stmt):
+                # A clone initializer (`let c = a.clone()`) needs a real memory
+                # location to copy into, so force promotion (skip decomposition).
+                if stmt.initializer is not None and getattr(stmt.initializer, 'clone_info', None):
+                    self._promote_aggregate_local(stmt)
+                elif self._is_stack_eligible_struct(stmt):
                     self._decompose_struct_local(stmt)
                 else:
                     self._promote_aggregate_local(stmt)
@@ -827,6 +831,11 @@ class MIRBuilder:
         """
         initializer = stmt.initializer
 
+        # Clone initializer: `let c = a.clone()` — copy the source aggregate's bytes.
+        if getattr(initializer, 'clone_info', None):
+            self._emit_clone_init(stmt, mem_loc, initializer)
+            return
+
         if isinstance(initializer, HIRArrayFillExpr):
             # Array fill: [0; 16] → MemoryFill
             from r65.compiler.hir.types import ArrayTypeInfo
@@ -927,6 +936,47 @@ class MIRBuilder:
         self.current_function.local_rom_data.append(rom_data)
         self.emit(BlockCopy(dest=mem_loc, rom_data=rom_data, count=len(data_bytes)))
 
+    def _clone_place_memloc(self, expr) -> Optional[MemoryLocation]:
+        """Resolve a clone operand (a place, or &place) to a static MemoryLocation.
+
+        Clone operands are force-promoted, so identifiers resolve to a static or a
+        promoted-local static. Returns None for forms not yet supported.
+        """
+        if isinstance(expr, HIRAddressOf):
+            expr = expr.operand
+        if isinstance(expr, HIRIdentifier):
+            symbol = expr.symbol
+            if id(symbol) in self._promoted_locals:
+                symbol = self._promoted_locals[id(symbol)]
+            return self.get_memory_location(symbol)
+        return None
+
+    def _emit_clone_init(self, stmt: HIRLetStmt, dest_loc: MemoryLocation, clone_expr):
+        """Emit the copy for `let c = a.clone()` (intrinsic auto-struct / array)."""
+        info = clone_expr.clone_info
+        src_loc = self._clone_place_memloc(clone_expr.func.base)
+        if src_loc is None:
+            raise MIRError(
+                "clone source must be a named aggregate variable or static",
+                source_loc=getattr(clone_expr, 'source_loc', None)
+            )
+        count = self._get_type_size(info['agg_type'])
+        self.emit(AggregateCopy(dest=dest_loc, src=src_loc, count=count))
+
+    def _lower_intrinsic_clone_from(self, call_expr):
+        """Lower `dst.clone_from(&src)` for intrinsic (auto-struct / array) clones."""
+        info = call_expr.clone_info
+        dest_loc = self._clone_place_memloc(call_expr.func.base)
+        src_loc = self._clone_place_memloc(call_expr.args[0])
+        if dest_loc is None or src_loc is None:
+            raise MIRError(
+                "clone_from operands must be named aggregate variables or statics",
+                source_loc=getattr(call_expr, 'source_loc', None)
+            )
+        count = self._get_type_size(info['agg_type'])
+        self.emit(AggregateCopy(dest=dest_loc, src=src_loc, count=count))
+        return None
+
     def _is_stack_eligible_struct(self, stmt: HIRLetStmt) -> bool:
         """
         Check if a local struct can be decomposed into per-field vregs.
@@ -989,9 +1039,23 @@ class MIRBuilder:
             elif isinstance(expr, HIRTypeCast):
                 return check_expr(expr.expr)
             elif isinstance(expr, HIRAssignment):
+                if getattr(expr, 'opassign_call', None):
+                    if check_expr(expr.opassign_call):
+                        return True
+                    if isinstance(expr.target, HIRIdentifier) and id(expr.target.symbol) == target_id:
+                        return True
                 return check_expr(expr.target) or check_expr(expr.value)
             elif isinstance(expr, HIRFunctionCall):
-                return any(check_expr(a) for a in expr.args)
+                if any(check_expr(a) for a in expr.args):
+                    return True
+                # A method-style call (x.method(...), x.clone()/.clone_from(...))
+                # passes / copies the receiver by address, so its receiver is pinned
+                # and must be promoted to a static (codegen needs a memory location).
+                if isinstance(expr.func, HIRFieldAccess):
+                    base = expr.func.base
+                    if isinstance(base, HIRIdentifier) and id(base.symbol) == target_id:
+                        return True
+                return False
             elif isinstance(expr, HIRMethodCall):
                 return check_expr(expr.receiver) or any(check_expr(a) for a in expr.args)
             elif isinstance(expr, HIRArrayIndex):
@@ -1033,6 +1097,11 @@ class MIRBuilder:
             elif isinstance(stmt, HIRWhileStmt):
                 return check_expr(stmt.condition) or check_block(stmt.body)
             elif isinstance(stmt, HIRAssignment):
+                if getattr(stmt, 'opassign_call', None):
+                    if check_expr(stmt.opassign_call):
+                        return True
+                    if isinstance(stmt.target, HIRIdentifier) and id(stmt.target.symbol) == target_id:
+                        return True
                 return check_expr(stmt.target) or check_expr(stmt.value)
             elif isinstance(stmt, HIRMultiAssignment):
                 return check_expr(stmt.value)

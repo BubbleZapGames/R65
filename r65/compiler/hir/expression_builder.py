@@ -401,7 +401,12 @@ class ExpressionBuilder:
             )
 
             # Create assignment: target = (target op value)
-            return hir.HIRAssignment(target=target, value=binary_op, source_loc=src_loc)
+            # Tag with the base operator so the type checker can redirect an
+            # aggregate compound-assign (a += b) to an operator-trait method
+            # (a.add_assign(&b)) instead of the by-value primitive path.
+            assignment = hir.HIRAssignment(target=target, value=binary_op, source_loc=src_loc)
+            assignment.compound_op = expr.operator
+            return assignment
 
         elif isinstance(expr, ast.MultiAssignment):
             # Multiple assignment: lo, hi = func()

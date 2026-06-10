@@ -289,6 +289,23 @@ class BlockCopy(MIRInstruction):
 
 
 @dataclass
+class AggregateCopy(MIRInstruction):
+    """
+    Copy a fixed-size block of bytes from one memory location to another (RAM->RAM).
+
+    Emitted for Clone: `dst.clone_from(&src)` and `let c = a.clone()` on auto/array
+    aggregates. Both ends are static addresses (clone operands are force-promoted),
+    so codegen can use MVN. `count` is the compile-time aggregate size in bytes.
+    """
+    dest: MemoryLocation   # destination address
+    src: MemoryLocation    # source address
+    count: int             # number of bytes to copy
+
+    def __repr__(self):
+        return f"AggregateCopy {self.src} -> {self.dest} ({self.count} bytes)"
+
+
+@dataclass
 class Move(MIRInstruction):
     """
     Move between registers or load immediate.
@@ -954,6 +971,7 @@ OPERAND_SPECS: Dict[type, Tuple[OperandSpec, ...]] = {
     ReturnFromInterrupt: (),
     MemoryFill:     (),
     BlockCopy:      (),
+    AggregateCopy:  (),  # dest/src are MemoryLocation, not register operands
     InlineAsm:      (),
     Push:           (),
     Pull:           (),

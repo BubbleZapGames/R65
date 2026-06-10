@@ -71,6 +71,11 @@ class AssignmentLowerer:
         Returns:
             VirtualRegister or HardwareRegister with assigned value
         """
+        # Operator overloading (Tier A): `a OP= b` on an aggregate was redirected by
+        # the type checker to a `a.<op>_assign(&b)` method call.
+        if getattr(expr, 'opassign_call', None):
+            return self.builder.lower_expression(expr.opassign_call)
+
         # Reassigning the index variable (i = ..., i++, i += 1, for-increment —
         # all desugar to HIRAssignment with an HIRIdentifier target) invalidates
         # any X-index reuse cached for it. Field/element stores have a
