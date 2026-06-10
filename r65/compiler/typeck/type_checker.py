@@ -919,6 +919,19 @@ class TypeChecker:
                 and expr.func.field_name == 'clone'
                 and len(expr.args) == 0)
 
+    def _is_legal_aggregate_initializer(self, expr) -> bool:
+        """Initializers that may legally produce an aggregate local.
+
+        These are the forms MIR's `_emit_aggregate_init` can actually copy: a
+        fresh literal (struct/array/string/array-fill) or an explicit `.clone()`.
+        A bare aggregate *place* (identifier, field, index, deref) is NOT here —
+        it would fall through to a scalar Store and silently leave the local
+        uninitialized, so it must be rejected with clone guidance.
+        """
+        return (self._is_direct_clone(expr)
+                or isinstance(expr, (HIRArrayFillExpr, HIRArrayLiteralExpr,
+                                     HIRStringLiteral, HIRStructLiteralExpr)))
+
     def check_let_statement(self, stmt: HIRLetStmt):
         """Type check let binding."""
         # Get mode at this statement
@@ -1019,6 +1032,29 @@ class TypeChecker:
                     var_type, init_type, stmt.initializer,
                     "let binding", stmt.source_loc, use_compatible=True
                 )
+
+        # Aggregates are not copied by a bare `let x = <place>`. Only a fresh
+        # literal or an explicit `.clone()` may initialize an aggregate local;
+        # a bare aggregate value (identifier/field/index/deref) would otherwise
+        # fall through to a scalar Store in MIR and silently leave the local
+        # uninitialized. Reject it here with the same clone guidance as
+        # assignment-by-value. (Register bindings are never aggregate.)
+        if (stmt.initializer is not None
+                and TypeUtils.is_aggregate_type(var_type)
+                and not self._is_legal_aggregate_initializer(stmt.initializer)):
+            type_name = str(var_type)
+            if isinstance(var_type, StructTypeInfo):
+                clone_note = f"add `impl Clone for {var_type.name} {{}}` if the struct has none"
+            else:  # array — clone is a built-in, no impl needed
+                clone_note = "arrays clone built-in"
+            src = (stmt.initializer.name
+                   if isinstance(stmt.initializer, HIRIdentifier) else "src")
+            raise TypeCheckError(
+                f"cannot initialize '{stmt.name}' by copying a '{type_name}' by value\n"
+                f"  structs and arrays are not copied by a bare 'let ='\n"
+                f"  Suggestion: clone explicitly — `let {stmt.name} = {src}.clone()` ({clone_note})",
+                source_loc=stmt.source_loc
+            )
 
     def check_multi_let_statement(self, stmt: HIRMultiLetStmt):
         """Type check multi-binding let statement: let a, b = multi_return_func();
@@ -1945,14 +1981,22 @@ class TypeChecker:
                     hint=hint
                 )
 
-        # Arrays and structs cannot be assigned by value
-        # Note: Using specific message here since assignment has unique suggestion
+        # Arrays and structs are not copied by a bare `=` (copy cost stays
+        # explicit). Point the developer at the clone assignment — `Clone` is the
+        # sanctioned aggregate-copy primitive — instead of the old "copy fields /
+        # use a pointer" advice.
         if TypeUtils.is_aggregate_type(target_type):
             type_name = str(target_type)
+            if isinstance(target_type, StructTypeInfo):
+                clone_hint = (
+                    f"use a clone assignment `dst.clone_from(&src)` "
+                    f"(add `impl Clone for {target_type.name} {{}}` if the struct has none)")
+            else:  # array — clone is a built-in, no impl needed
+                clone_hint = "use a clone assignment `dst.clone_from(&src)` (arrays clone built-in)"
             raise TypeCheckError(
                 f"Cannot assign '{type_name}' by value\n"
-                f"  Arrays and structs cannot be copied by value\n"
-                f"  Suggestion: Copy fields individually or use a pointer",
+                f"  structs and arrays are not copied by a bare '='\n"
+                f"  Suggestion: {clone_hint}, or copy fields/elements individually",
                 source_loc=expr.source_loc
             )
 

@@ -218,6 +218,9 @@ class TestAggregateAssignmentRestriction:
         error_msg = str(exc_info.value)
         assert "Entity" in error_msg
         assert "cannot" in error_msg.lower()
+        # Points at the clone assignment, and how to make the struct cloneable.
+        assert "clone_from" in error_msg
+        assert "impl Clone for Entity" in error_msg
 
     def test_array_assignment_by_value_error(self):
         """Assigning an array by value should produce a compile error."""
@@ -238,6 +241,9 @@ class TestAggregateAssignmentRestriction:
         error_msg = str(exc_info.value)
         assert "[u8; 256]" in error_msg
         assert "cannot" in error_msg.lower()
+        # Arrays clone built-in (no impl), so the hint must not demand an impl.
+        assert "clone_from" in error_msg
+        assert "impl Clone" not in error_msg
 
     def test_struct_field_assignment_ok(self):
         """Assigning individual struct fields should be allowed."""
@@ -276,6 +282,59 @@ class TestAggregateAssignmentRestriction:
         """
         result = compile_string(source)
         assert result is not None
+
+
+class TestAggregateLetInitRestriction:
+    """A `let` binding may not copy an aggregate *place* by value.
+
+    Regression: `let c = src` (src a struct/array place) used to type-check and
+    then silently miscompile — MIR fell through to a scalar Store and left `c`
+    uninitialized (no copy emitted). It must be a hard error pointing at `.clone()`.
+    """
+
+    _STRUCT = """
+        struct P { x: u8, y: u8 }
+        impl Clone for P {}
+        #[lowram] static mut SRC: P;
+        #[lowram] static mut OUT: u8;
+    """
+
+    def test_let_struct_from_identifier_rejected(self):
+        with pytest.raises(Exception) as exc:
+            compile_string(self._STRUCT + "fn main() { let c = SRC; OUT = c.x; }")
+        msg = str(exc.value)
+        assert "cannot" in msg.lower() and "by value" in msg
+        assert "SRC.clone()" in msg                      # actionable, source-named
+
+    def test_let_array_from_identifier_rejected(self):
+        with pytest.raises(Exception) as exc:
+            compile_string(
+                "#[lowram] static mut ARR: [u8; 4];\n"
+                "#[lowram] static mut OUT: u8;\n"
+                "fn main() { let c: [u8; 4] = ARR; OUT = c[0]; }")
+        msg = str(exc.value)
+        assert "[u8; 4]" in msg and ".clone()" in msg
+        assert "arrays clone built-in" in msg            # no impl demanded for arrays
+
+    def test_let_struct_from_deref_rejected(self):
+        with pytest.raises(Exception) as exc:
+            compile_string("struct P { x: u8 }\nfn f(p: *P) { let c = *p; }")
+        assert "by value" in str(exc.value)
+
+    def test_let_struct_clone_accepted(self):
+        # The suggested fix must actually compile.
+        assert compile_string(
+            self._STRUCT + "fn main() { let c = SRC.clone(); OUT = c.x; }") is not None
+
+    def test_let_struct_literal_accepted(self):
+        # Fresh literals are still legal aggregate initializers.
+        assert compile_string(
+            self._STRUCT + "fn main() { let c = P { x: 1, y: 2 }; OUT = c.x; }") is not None
+
+    def test_let_array_fill_accepted(self):
+        assert compile_string(
+            "#[lowram] static mut OUT: u8;\n"
+            "fn main() { let c: [u8; 4] = [0; 4]; OUT = c[0]; }") is not None
 
 
 class TestPrimitiveTypesStillWork:
