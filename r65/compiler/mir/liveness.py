@@ -95,6 +95,7 @@ class LivenessAnalyzer:
         self.func = mir_func
         self.liveness: Dict[int, LivenessInfo] = {}
         self._live_ranges_cache: Optional[Dict[VirtualRegister, Set[int]]] = None
+        self._relevant_blocks_cache: Optional[Dict[VirtualRegister, Set[int]]] = None
 
     def analyze(self) -> Dict[int, LivenessInfo]:
         """
@@ -278,6 +279,30 @@ class LivenessAnalyzer:
         self._live_ranges_cache = live_ranges
         return live_ranges
 
+    def _relevant_blocks(self) -> Dict[VirtualRegister, Set[int]]:
+        """Map each vreg to the block IDs where it is use/define/live_in.
+
+        This is the exact set of blocks a precise interference check must
+        examine for a vreg: `interferes` only matters in a block where the
+        variable is read, written, or live on entry. Cached like live ranges.
+
+        Note `ranges[v] ⊆ relevant[v]`: a var live_out of a block but not
+        live_in must be defined there (so it's in `define`), and live_in is
+        included directly — so the old `interferes` candidate set
+        (shared-live-blocks ∪ both-relevant-blocks) equals
+        `relevant[v1] & relevant[v2]`.
+        """
+        if self._relevant_blocks_cache is not None:
+            return self._relevant_blocks_cache
+
+        relevant: Dict[VirtualRegister, Set[int]] = {}
+        for block_id, info in self.liveness.items():
+            for var in info.use | info.define | info.live_in:
+                relevant.setdefault(var, set()).add(block_id)
+
+        self._relevant_blocks_cache = relevant
+        return relevant
+
     def interferes(self, var1: VirtualRegister, var2: VirtualRegister) -> bool:
         """
         Check if two variables interfere (have overlapping live ranges).
@@ -292,21 +317,13 @@ class LivenessAnalyzer:
         Returns:
             True if variables interfere, False otherwise
         """
-        ranges = self.get_live_ranges()
-
-        # Fast non-interference check: if the block-level live ranges are
-        # completely disjoint, the variables cannot interfere.
-        var1_blocks = ranges.get(var1, set())
-        var2_blocks = ranges.get(var2, set())
-        shared_blocks = var1_blocks & var2_blocks
-        # Also include blocks where either variable is defined or used
-        # (a var may not be in live_in/live_out but still appear in the block)
-        candidate_blocks = set(shared_blocks)
-        for block_id, info in self.liveness.items():
-            var1_relevant = var1 in info.use or var1 in info.define or var1 in info.live_in
-            var2_relevant = var2 in info.use or var2 in info.define or var2 in info.live_in
-            if var1_relevant and var2_relevant:
-                candidate_blocks.add(block_id)
+        # Blocks a precise check must examine: those where BOTH vars are
+        # use/define/live_in. This is exactly the old candidate set (the
+        # shared-live-blocks term is subsumed — see _relevant_blocks), but
+        # computed from a cached per-vreg map instead of scanning every block
+        # on every call (the dominant cost of register allocation).
+        relevant = self._relevant_blocks()
+        candidate_blocks = relevant.get(var1, set()) & relevant.get(var2, set())
 
         if not candidate_blocks:
             return False
