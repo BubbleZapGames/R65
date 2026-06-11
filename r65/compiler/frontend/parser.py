@@ -499,7 +499,8 @@ class ASTBuilder(Transformer):
         """Struct field."""
         items = self._filter_tokens(items, keep_types={'IDENT', 'FAR', 'NEAR', 'STAR'})
 
-        idx = 0
+        # Collect doc comments
+        doc, idx = self._collect_doc_comments(items, 0)
 
         # Check for far/near modifier (for pointer fields)
         is_far, is_near, idx = self._take_far_near(items, idx)
@@ -518,7 +519,7 @@ class ASTBuilder(Transformer):
         if is_pointer:
             field_type = ast.PointerType(is_far=is_far, pointee_type=field_type)
 
-        return ast.StructField(name=name, field_type=field_type)
+        return ast.StructField(name=name, field_type=field_type, doc=doc)
 
     @v_args(tree=True)
     def struct_field_safe_ptr_error(self, tree):
@@ -585,8 +586,9 @@ class ASTBuilder(Transformer):
         """Method declaration in impl block."""
         items = self._filter_tokens(tree.children, keep_types={'IDENT', 'FAR', 'CONST'})
 
-        # Collect attributes
-        attrs, idx = self._collect_attributes(items, 0)
+        # Collect doc comments, then attributes
+        doc, idx = self._collect_doc_comments(items, 0)
+        attrs, idx = self._collect_attributes(items, idx)
 
         # Check for const
         is_const, idx = self._take(items, idx, 'CONST')
@@ -630,6 +632,7 @@ class ASTBuilder(Transformer):
             return_type=return_type,
             body=body,
             is_const=is_const,
+            doc=doc,
             source_loc=self._make_source_loc(tree.meta)
         )
 
@@ -1049,6 +1052,7 @@ class ASTBuilder(Transformer):
     def macro_decl_short(self, tree):
         """Shorthand macro: macro_rules! name($param:type, ...) { body } (single arm)"""
         items = tree.children
+        doc, _ = self._collect_doc_comments(items, 0)
         name = None
         params = []
         body_tokens = []
@@ -1066,6 +1070,7 @@ class ASTBuilder(Transformer):
         return ast.MacroDecl(
             name=name,
             arms=[ast.MacroArm(params=params, body_tokens=body_tokens)],
+            doc=doc,
             source_loc=self._make_source_loc(tree.meta)
         )
 
@@ -1073,6 +1078,7 @@ class ASTBuilder(Transformer):
     def macro_decl_multi(self, tree):
         """Multi-arm macro: macro_rules! name { (pat) => { body }; ... }"""
         items = tree.children
+        doc, _ = self._collect_doc_comments(items, 0)
         name = None
         arms = []
 
@@ -1085,6 +1091,7 @@ class ASTBuilder(Transformer):
         return ast.MacroDecl(
             name=name,
             arms=arms,
+            doc=doc,
             source_loc=self._make_source_loc(tree.meta)
         )
 

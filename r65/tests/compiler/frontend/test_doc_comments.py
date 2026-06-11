@@ -63,6 +63,67 @@ class TestOuterDocComments:
         program = parse(source, '<test>')
         assert program.items[0].doc == 'Player methods'
 
+    def test_macro_doc(self):
+        """/// before a shorthand macro_rules! attaches to the macro."""
+        source = '/// Builds a value\nmacro_rules! MK($v:expr) { $v }'
+        program = parse(source, '<test>')
+        assert program.items[0].doc == 'Builds a value'
+
+    def test_macro_multi_arm_doc(self):
+        """/// before a multi-arm macro_rules! attaches to the macro."""
+        source = '/// Sets a var\nmacro_rules! SET { ($n:ident) => { $n = 0; }; }'
+        program = parse(source, '<test>')
+        assert program.items[0].doc == 'Sets a var'
+
+    def test_macro_no_doc(self):
+        """A macro without a doc comment has doc=None."""
+        program = parse('macro_rules! MK($v:expr) { $v }', '<test>')
+        assert program.items[0].doc is None
+
+    def test_struct_field_doc(self):
+        """/// before a struct field attaches to the field."""
+        source = '''struct P {
+            /// X position
+            x: u8,
+            /// Y position
+            y: u8
+        }'''
+        program = parse(source, '<test>')
+        fields = program.items[0].fields
+        assert fields[0].doc == 'X position'
+        assert fields[1].doc == 'Y position'
+
+    def test_impl_method_doc(self):
+        """/// before a method inside an impl attaches to the method."""
+        source = 'struct P { x: u8 }\nimpl P { /// Gets x\n fn get(*self) -> u8 { return self.x; } }'
+        program = parse(source, '<test>')
+        assert program.items[1].methods[0].doc == 'Gets x'
+
+    def test_multiple_impl_method_docs(self):
+        """Every method in an impl may carry its own doc (not just the first)."""
+        source = ('struct P { x: u8, y: u8 }\n'
+                  'impl P {\n'
+                  '  /// First\n'
+                  '  fn a(*self) { self.x = 0; }\n'
+                  '  /// Second\n'
+                  '  fn b(*self) { self.y = 0; }\n'
+                  '}')
+        program = parse(source, '<test>')
+        methods = program.items[1].methods
+        assert methods[0].doc == 'First'
+        assert methods[1].doc == 'Second'
+
+    def test_impl_method_doc_before_attribute(self):
+        """A method's doc may precede its attributes."""
+        source = ('struct P { x: u8 }\n'
+                  'impl P {\n'
+                  '  /// Doc then attr\n'
+                  '  #[inline(always)]\n'
+                  '  far fn s(far *self) { self.x = 0; }\n'
+                  '}')
+        program = parse(source, '<test>')
+        assert program.items[1].methods[0].doc == 'Doc then attr'
+
     def test_no_doc(self):
         """Declarations without doc comments have doc=None."""
         program = parse('fn test() { }', '<test>')

@@ -92,7 +92,7 @@ const_decl: doc_comment* CONST IDENT ":" type_expr "=" initializer_expr ";"
 // Struct declaration
 struct_decl: doc_comment* STRUCT IDENT "{" struct_field* "}"
 // Supports pointer fields: [far|near] *name: type
-struct_field: (FAR | NEAR)? STAR? IDENT ":" type_expr ","?
+struct_field: doc_comment* (FAR | NEAR)? STAR? IDENT ":" type_expr ","?
             | (FAR | NEAR)? AMPER IDENT ":" type_expr ","?  -> struct_field_safe_ptr_error
 
 // Enum declaration
@@ -125,7 +125,7 @@ impl_macro: MACRO_RULES "!" IDENT "(" macro_params? ")" macro_body          -> i
 
 // Method declaration in impl block
 // fn name(*self, ...) or fn name(far *self, ...) for explicit far self
-impl_method: attribute* CONST? FAR? FN IDENT "(" impl_param_list? ")" return_type? function_body
+impl_method: doc_comment* attribute* CONST? FAR? FN IDENT "(" impl_param_list? ")" return_type? function_body
 
 // Parameters for impl methods - self parameter comes first
 impl_param_list: self_param ("," param)* ","?
@@ -158,8 +158,8 @@ extern_static_decl: doc_comment* attribute* EXTERN STATIC MUT? IDENT ":" type_ex
 // Macro definition
 // Shorthand (single arm):  macro_rules! name($param:fragment, ...) { body }
 // Multi-arm (Rust-style):  macro_rules! name { (pat) => { body }; (pat) => { body }; }
-macro_decl: MACRO_RULES "!" IDENT "(" macro_params? ")" macro_body          -> macro_decl_short
-          | MACRO_RULES "!" IDENT "{" macro_arm (";" macro_arm)* ";"? "}"   -> macro_decl_multi
+macro_decl: doc_comment* MACRO_RULES "!" IDENT "(" macro_params? ")" macro_body          -> macro_decl_short
+          | doc_comment* MACRO_RULES "!" IDENT "{" macro_arm (";" macro_arm)* ";"? "}"   -> macro_decl_multi
 
 // One arm of a multi-arm macro: (params) => { body }
 macro_arm: "(" macro_params? ")" "=>" macro_body

@@ -221,6 +221,7 @@ class StructField(ASTNode):
     """Field in a struct."""
     name: str
     field_type: Type
+    doc: Optional[str] = None
 
 
 @dataclass
@@ -307,6 +308,7 @@ class ImplMethod(ASTNode):
     return_type: Optional[Union[Type, NeverType]]
     body: 'Block'
     is_const: bool = False
+    doc: Optional[str] = None
 
 
 @dataclass
@@ -477,6 +479,7 @@ class MacroDecl(Declaration):
     """
     name: str
     arms: List[MacroArm]  # One or more pattern/body arms (shorthand => single arm)
+    doc: Optional[str] = None
 
 
 @dataclass
