@@ -1,21 +1,24 @@
-// R65 Standard Library - F32 (32-bit Floating Point) Support
-//
-// Woz/Rankin floating point format (Dr. Dobb's Journal, August 1976)
-// adapted for the 65816 with 16-bit register optimizations and
-// SNES hardware multiply acceleration.
-//
-// Format: 4 bytes (1-byte exponent + 3-byte two's complement mantissa)
-//   - Exponent: excess-128 bias ($00=-128, $80=0, $81=+1, $FF=+127)
-//   - Mantissa: 24-bit two's complement, sign in MSB (bit 23)
-//   - Normalized: bit 22 set for positive (01xxxxxx), clear for negative (10xxxxxx)
-//   - Value = mantissa_int / 2^23 * 2^(exponent - 128)
-//   - Zero: exponent byte = 0
-//
-// Precision: 6-7 significant decimal digits
-// Range: ~10^-38 to 10^+38
-//
-// Usage:
-//   include!("lib/F32.r65")
+//! 32-bit floating point (`F32`) for the 65816.
+//!
+//! `F32` uses the Woz/Rankin format (Dr. Dobb's Journal, 1976): a 1-byte
+//! excess-128 exponent plus a 24-bit two's-complement mantissa, packed into
+//! 4 bytes. Precision is ~6–7 significant decimal digits over a range of roughly
+//! 10^-38 to 10^38; zero is represented by an exponent byte of `0`.
+//!
+//! Arithmetic is exposed through the operators (`+=`, `-=`, `*=`, `/=`) and the
+//! comparison operators — there are no named `add`/`sub` methods. Values come
+//! from `from_i16`, the predefined constants (`F32_ONE`, `F32_PI`, …), or the
+//! `F32_RAW!` macro.
+//!
+//! ```
+//! include!("lib/F32.r65")
+//!
+//! #[ram] static mut V: F32 = F32_RAW!(0x00, 0x00, 0x0000);   // 0.0
+//!
+//! fn step() { V.from_i16(3 as i16); V *= F32_TWO; }
+//! ```
+//!
+//! See also `U32` (unsigned) and `I32` (signed integer).
 
 include!("math.r65")
 
@@ -23,18 +26,33 @@ include!("math.r65")
 // F32 (32-bit Floating Point) Support
 // ============================================================================
 
-// 32-bit floating point (Woz format, u16-native byte order)
-// Size: 4 bytes, packed
+/// A 32-bit floating-point number in Woz/Rankin format.
+///
+/// Packed into 4 bytes: a low mantissa word plus a high word holding the
+/// mantissa's high byte (sign + 7 bits) and the excess-128 exponent. Build one
+/// with `from_i16`, a predefined constant, or the `F32_RAW!` macro.
 struct F32 {
-    mant_lo: u16,   // Offset 0-1: Mantissa low 16 bits (little-endian native)
-    exp_hi: u16     // Offset 2-3: Low byte = mantissa high (sign + 7 bits),
-                    //             High byte = exponent (excess-128)
+    /// Mantissa low 16 bits (byte offset 0).
+    mant_lo: u16,
+    /// Low byte holds the mantissa high byte (sign in bit 7); high byte holds the
+    /// excess-128 exponent (byte offset 2).
+    exp_hi: u16
 }
 
-// Construct an F32 from raw pre-computed components.
-// exp: excess-128 exponent byte
-// mant_hi: mantissa high byte (sign bit in bit 7, normalized bit in bit 6)
-// mant_lo_word: mantissa low 16 bits
+/// Builds an `F32` from its raw encoded components.
+///
+/// The low-level constructor — `F32` has no decimal-literal macro. Every
+/// predefined constant is defined with it, and it can initialize a `static`.
+///
+/// # Parameters
+/// - `exp` — excess-128 exponent byte
+/// - `mant_hi` — mantissa high byte (sign in bit 7, normalized bit in bit 6)
+/// - `mant_lo_word` — mantissa low 16 bits
+///
+/// # Example
+/// ```
+/// #[ram] static mut HALF: F32 = F32_RAW!(0x80, 0x40, 0x0000);   // 0.5
+/// ```
 macro_rules! F32_RAW($exp:expr, $mant_hi:expr, $mant_lo_word:expr) {
     F32 {
         mant_lo: ($mant_lo_word) as u16,
@@ -49,15 +67,24 @@ macro_rules! F32_RAW($exp:expr, $mant_hi:expr, $mant_lo_word:expr) {
 // For positive normalized: mantissa high byte = 0x40..0x7F (bit 6 set, bit 7 clear)
 // Derived with: fraction = value / 2^(exp-128), mantissa = round(fraction * 2^23)
 
-const F32_ZERO:    F32 = F32_RAW!(0x00, 0x00, 0x0000);  // 0.0
-const F32_ONE:     F32 = F32_RAW!(0x81, 0x40, 0x0000);  // 1.0
-const F32_NEG_ONE: F32 = F32_RAW!(0x81, 0xC0, 0x0000);  // -1.0
-const F32_HALF:    F32 = F32_RAW!(0x80, 0x40, 0x0000);  // 0.5
-const F32_TWO:     F32 = F32_RAW!(0x82, 0x40, 0x0000);  // 2.0
-const F32_TEN:     F32 = F32_RAW!(0x84, 0x50, 0x0000);  // 10.0
-const F32_HUNDRED: F32 = F32_RAW!(0x87, 0x64, 0x0000);  // 100.0
-const F32_PI:      F32 = F32_RAW!(0x82, 0x64, 0x87ED);  // 3.14159
-const F32_E:       F32 = F32_RAW!(0x82, 0x56, 0xFC2A);  // 2.71828
+/// The constant `0.0`.
+const F32_ZERO:    F32 = F32_RAW!(0x00, 0x00, 0x0000);
+/// The constant `1.0`.
+const F32_ONE:     F32 = F32_RAW!(0x81, 0x40, 0x0000);
+/// The constant `-1.0`.
+const F32_NEG_ONE: F32 = F32_RAW!(0x81, 0xC0, 0x0000);
+/// The constant `0.5`.
+const F32_HALF:    F32 = F32_RAW!(0x80, 0x40, 0x0000);
+/// The constant `2.0`.
+const F32_TWO:     F32 = F32_RAW!(0x82, 0x40, 0x0000);
+/// The constant `10.0`.
+const F32_TEN:     F32 = F32_RAW!(0x84, 0x50, 0x0000);
+/// The constant `100.0`.
+const F32_HUNDRED: F32 = F32_RAW!(0x87, 0x64, 0x0000);
+/// Pi, approximately `3.14159`.
+const F32_PI:      F32 = F32_RAW!(0x82, 0x64, 0x87ED);
+/// Euler's number, approximately `2.71828`.
+const F32_E:       F32 = F32_RAW!(0x82, 0x56, 0xFC2A);
 
 // ============================================================================
 // Internal Macros
@@ -146,14 +173,14 @@ impl F32 {
     // Copy and Query Methods
     // ========================================================================
 
-    // Copy another F32 into self
+    /// Copies `src` into `self`.
     #[inline(always)]
     far fn copy(far *self, src: far *F32) {
         self.mant_lo = src.mant_lo;
         self.exp_hi = src.exp_hi;
     }
 
-    // Check if the value is zero (exponent byte is 0)
+    /// Returns `true` if `self` is zero (its exponent byte is `0`).
     #[inline(always)]
     far fn is_zero(far *self) -> bool {
         if (self.exp_hi & 0xFF00) == 0 {
@@ -162,7 +189,7 @@ impl F32 {
         return false;
     }
 
-    // Check if the value is negative (sign bit = bit 7 of mantissa high byte)
+    /// Returns `true` if `self` is negative (the mantissa sign bit is set).
     #[inline(always)]
     far fn is_negative(far *self) -> bool {
         if (self.exp_hi & 0x0080) != 0 {
@@ -175,7 +202,8 @@ impl F32 {
     // Sign Operations
     // ========================================================================
 
-    // Negate the value (flip mantissa sign, preserve exponent)
+    /// Negates `self` in place, flipping the mantissa sign and preserving the
+    /// exponent.
     #[inline(always)]
     far fn neg(far *self) {
         let eh: u16 = self.exp_hi;
@@ -190,7 +218,7 @@ impl F32 {
         self.exp_hi = exp_byte | (mhi & 0xFF);
     }
 
-    // Absolute value: if negative, negate
+    /// Replaces `self` with its absolute value (negates if negative).
     #[inline(always)]
     far fn abs(far *self) {
         if (self.exp_hi & 0x0080) != 0 {
@@ -202,8 +230,10 @@ impl F32 {
     // Conversion Methods
     // ========================================================================
 
-    // Convert a signed 16-bit integer to floating point (FLOAT).
-    // Normalizes the integer into Woz FP format.
+    /// Sets `self` to the floating-point value of a signed 16-bit integer.
+    ///
+    /// # Parameters
+    /// - `value` — the signed 16-bit integer to convert
     far fn from_i16(far *self, value: u16) {
         if value == 0 {
             self.mant_lo = 0;
@@ -244,9 +274,11 @@ impl F32 {
         self.exp_hi = (exp << 8) | (mant_hi & 0xFF);
     }
 
-    // Convert floating point to signed 16-bit integer (FIX).
-    // Truncates toward zero. Returns 0 for values < 1.0.
-    // Clamps to -32768/32767 on overflow.
+    /// Converts `self` to a signed 16-bit integer, truncating toward zero.
+    ///
+    /// # Returns
+    /// The integer value. A magnitude `< 1.0` returns `0`; results outside the
+    /// `i16` range are clamped to `-32768`/`32767`.
     far fn to_i16(far *self) -> i16 {
         let eh: u16 = self.exp_hi;
         let mut exp: u16 = eh >> 8;
@@ -409,6 +441,7 @@ impl F32 {
     }
 }
 
+/// Powers the `+=` operator — adds another `F32` into `self`.
 impl AddAssign for F32 {
     // self += other
     far fn add_assign(far *self, other: far *F32) {
@@ -419,6 +452,7 @@ impl AddAssign for F32 {
     }
 }
 
+/// Powers the `-=` operator — subtracts another `F32` from `self`.
 impl SubAssign for F32 {
     // self -= other
     far fn sub_assign(far *self, other: far *F32) {
@@ -433,6 +467,7 @@ impl SubAssign for F32 {
     }
 }
 
+/// Powers the `*=` operator — multiplies `self` by another `F32`.
 impl MulAssign for F32 {
     // self *= other (SNES hardware multiply, 9 partial products)
     far fn mul_assign(far *self, other: far *F32) {
@@ -562,6 +597,7 @@ impl MulAssign for F32 {
     }
 }
 
+/// Powers the `/=` operator. Divide-by-zero or overflow yields the maximum magnitude.
 impl DivAssign for F32 {
     // self /= other
     // Uses 23-iteration binary long division for full 23-bit quotient precision.
@@ -697,9 +733,10 @@ impl DivAssign for F32 {
 // Comparison
 // ========================================================================
 
+/// Powers the ordering operators (`<`, `<=`, `>`, `>=`) through a three-way `cmp`.
 impl PartialOrd for F32 {
-    // Compare self with other.
-    // Returns: 1 if self > other, 0 if equal, 0xFF (-1 as i8) if self < other.
+    /// Compares `self` with `other`, returning `1` if `self > other`, `0` if
+    /// equal, or `-1` if `self < other`.
     far fn cmp(far *self, other: far *F32) -> i8 {
         let s_eh: u16 = self.exp_hi;
         let o_eh: u16 = other.exp_hi;
@@ -775,17 +812,24 @@ impl PartialOrd for F32 {
 // methods *are* the implementation (no forwarders). PartialEq derives `==`/`!=`
 // from cmp.
 
+/// Powers the equality operators (`==`, `!=`) by comparing the encoded values.
 impl PartialEq for F32 { far fn eq(far *self, other: far *F32) -> bool { return self.cmp(other) == 0; } }
 
-// F32 is plain old data (4 packed bytes) — an empty Clone impl gives an auto
-// bitwise copy, enabling `let c = a.clone()` and `dst.clone_from(&src)`.
+/// Enables `Clone` for `F32` — `let c = a.clone()` and `dst.clone_from(&src)` copy
+/// all four bytes. The empty body selects the compiler's automatic bitwise copy.
 impl Clone for F32 {}
 
 // ============================================================================
 // F32 ToString
 // ============================================================================
 
+/// Formats `self` as a decimal ASCII string (used by `format!`'s `{}`).
 impl ToString for F32 {
+    /// Writes the NUL-terminated decimal representation of `self` into `buf` and
+    /// returns the character count.
+    ///
+    /// # Parameters
+    /// - `buf` — destination buffer for the formatted digits
     fn to_string(far *self, buf: far *u8) -> u16 {
         let mut __f32_tostr_work: F32;
         let mut __f32_tostr_ten: F32;

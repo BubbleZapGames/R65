@@ -1,11 +1,22 @@
-// R65 Standard Library - I32 (32-bit Signed Integer) Support
-//
-// Provides 32-bit signed integer arithmetic, comparisons, and conversions.
-// Uses two's complement representation.
-// All methods avoid explicit A register usage for correct codegen in m8 mode.
-//
-// Usage:
-//   include!("lib/I32.r65")
+//! 32-bit signed integer (`I32`) for the 65816.
+//!
+//! `I32` is a 4-byte value held as two little-endian 16-bit words in two's
+//! complement (range `-2147483648` to `2147483647`). It supports the
+//! compound-assignment operators (`+=`, `-=`, `*=`, `/=`), the comparison
+//! operators (`==`, `!=`, `<`, `<=`, `>`, `>=`), and `Clone`. Operations with a
+//! plain `i16` are available through the `*_i16` methods. All methods avoid
+//! explicit `A`-register use for correct m8-mode codegen.
+//!
+//! ```
+//! include!("lib/I32.r65")
+//!
+//! #[ram] static mut POSITION: I32 = I32!(10000);
+//! #[ram] static mut VELOCITY: I32 = I32!(-256);
+//!
+//! fn step() { POSITION += VELOCITY; }
+//! ```
+//!
+//! See also `U32` (unsigned) and `F32` (floating point).
 
 include!("math.r65")
 
@@ -13,15 +24,28 @@ include!("math.r65")
 // I32 (32-bit Signed Integer) Support
 // ============================================================================
 
-// 32-bit signed integer (little-endian, two's complement)
-// Size: 4 bytes, packed
+/// A 32-bit signed integer in two's complement (range `-2147483648` to
+/// `2147483647`).
+///
+/// Stored as two little-endian 16-bit words for a packed 4-byte layout; bit 15
+/// of the high word is the sign bit. Construct one with the `I32!` macro,
+/// `from_i16`, or `from_u16`.
 struct I32 {
-    lo: u16,    // Offset 0-1: Low 16 bits
-    hi: u16     // Offset 2-3: High 16 bits (bit 15 = sign bit)
+    /// Low 16 bits (byte offset 0).
+    lo: u16,
+    /// High 16 bits (byte offset 2); bit 15 is the sign bit.
+    hi: u16
 }
 
-// Initialize an I32 from a compile-time constant value.
-// Usage: static mut OFFSET: I32 = I32!(-42);
+/// Builds an `I32` from a compile-time constant.
+///
+/// Splits the constant — including negatives, in two's complement — into its low
+/// and high 16-bit words at compile time, so it can initialize a `static`.
+///
+/// # Example
+/// ```
+/// #[ram] static mut OFFSET: I32 = I32!(-42);
+/// ```
 macro_rules! I32($value:expr) {
     I32 { lo: (($value) & 0xFFFF) as u16, hi: ((($value) >> 16) & 0xFFFF) as u16 }
 }
@@ -94,15 +118,19 @@ impl I32 {
     // Conversion and Copy Methods
     // ========================================================================
 
-    // Copy another I32 into self
+    /// Copies `src` into `self`.
     #[inline(always)]
     far fn copy(far *self, src: far *I32) {
         self.lo = src.lo;
         self.hi = src.hi;
     }
 
-    // Initialize from i16 (sign-extend)
-    // If value is negative, extends 0xFFFF to high word
+    /// Sets `self` to an `i16` value, sign-extended to 32 bits.
+    ///
+    /// A negative value fills the high word with `0xFFFF`.
+    ///
+    /// # Parameters
+    /// - `value` — the signed 16-bit value
     #[inline(always)]
     far fn from_i16(far *self, value: u16) {
         self.lo = value;
@@ -116,14 +144,17 @@ impl I32 {
         }
     }
 
-    // Initialize from u16 (zero-extend, for positive values only)
+    /// Sets `self` to a `u16` value, zero-extended (positive values only).
+    ///
+    /// # Parameters
+    /// - `value` — the unsigned 16-bit value
     #[inline(always)]
     far fn from_u16(far *self, value: u16) {
         self.lo = value;
         self.hi = 0;
     }
 
-    // Convert to i16 (truncate, keeps low 16 bits)
+    /// Returns the low 16 bits of `self` as an `i16`, truncating the high word.
     #[inline(always)]
     far fn to_i16(far *self) -> i16 {
         return self.lo as i16;
@@ -133,8 +164,8 @@ impl I32 {
     // Sign-Related Methods
     // ========================================================================
 
-    // Check if the value is negative (sign bit set)
-    // Returns true if negative, false if zero or positive
+    /// Returns `true` if `self` is negative (sign bit set), `false` if zero or
+    /// positive.
     #[inline(always)]
     far fn is_negative(far *self) -> bool {
         let mut hi: u16 = self.hi;
@@ -144,7 +175,7 @@ impl I32 {
         return false;
     }
 
-    // Negate the value (two's complement: ~self + 1)
+    /// Negates `self` in place (two's complement, `~self + 1`).
     #[inline(always)]
     far fn neg(far *self) {
         let mut lo: u16 = self.lo;
@@ -154,7 +185,7 @@ impl I32 {
         self.hi = hi;
     }
 
-    // Absolute value: if negative, negate
+    /// Replaces `self` with its absolute value (negates if negative).
     #[inline(always)]
     far fn abs(far *self) {
         let mut hi: u16 = self.hi;
@@ -167,7 +198,12 @@ impl I32 {
     // Arithmetic Methods (all modify self in-place)
     // ========================================================================
 
-    // Add a i16 value: self += value (sign-extends value to 32 bits)
+    /// Adds an `i16` to `self` in place (`self += value`).
+    ///
+    /// The value is sign-extended to 32 bits; the result wraps on overflow.
+    ///
+    /// # Parameters
+    /// - `value` — signed amount to add (passed in `A`)
     far fn add_i16(far *self, value @ A: u16) {
         // Sign-extend: if bit 15 set, hi = 0xFFFF; else hi = 0
         let o_lo: u16 = A;
@@ -185,7 +221,12 @@ impl I32 {
         self.hi = r_hi;
     }
 
-    // Subtract a i16 value: self -= value (sign-extends value to 32 bits)
+    /// Subtracts an `i16` from `self` in place (`self -= value`).
+    ///
+    /// The value is sign-extended to 32 bits; the result wraps on underflow.
+    ///
+    /// # Parameters
+    /// - `value` — signed amount to subtract (passed in `A`)
     far fn sub_i16(far *self, value @ A: u16) {
         // Sign-extend: if bit 15 set, hi = 0xFFFF; else hi = 0
         let o_lo: u16 = A;
@@ -204,7 +245,12 @@ impl I32 {
         self.hi = r_hi;
     }
 
-    // Multiply by a i16 value: self *= value (sign-extends value to 32 bits)
+    /// Multiplies `self` by an `i16` in place (`self *= value`).
+    ///
+    /// Signed multiply keeping the low 32 bits (wraps on overflow).
+    ///
+    /// # Parameters
+    /// - `value` — signed multiplier (passed in `A`)
     far fn mul_i16(far *self, value @ A: u16) {
         let mut mplier: u16 = A;
         let mut negate_result: bool = false;
@@ -260,8 +306,13 @@ impl I32 {
         }
     }
 
-    // Divide by a i16 value: self /= value (rounds toward zero)
-    // Returns MIN_I32 if value == 0.
+    /// Divides `self` by an `i16` in place (`self /= value`), rounding toward zero.
+    ///
+    /// # Parameters
+    /// - `value` — signed divisor (passed in `A`)
+    ///
+    /// # Edge cases
+    /// If `value` is `0`, `self` is set to `MIN_I32` (`-2147483648`).
     far fn div_i16(far *self, value @ A: u16) {
         if A == 0 {
             self.lo = 0;
@@ -335,8 +386,15 @@ impl I32 {
         }
     }
 
-    // Modulo by a i16 value: self %= value (remainder has same sign as dividend)
-    // Unchanged if value == 0.
+    /// Sets `self` to `self % value` for an `i16` divisor.
+    ///
+    /// The remainder takes the sign of the dividend.
+    ///
+    /// # Parameters
+    /// - `value` — signed divisor (passed in `A`)
+    ///
+    /// # Edge cases
+    /// If `value` is `0`, `self` is left unchanged.
     far fn mod_i16(far *self, value @ A: u16) {
         let mut divisor_lo: u16 = A;
         if divisor_lo == 0 {
@@ -408,8 +466,12 @@ impl I32 {
         }
     }
 
-    // Modulo: self %= other (remainder has same sign as dividend)
-    // Unchanged if other == 0
+    /// Sets `self` to `self % other` for a full `I32` divisor.
+    ///
+    /// The remainder takes the sign of the dividend.
+    ///
+    /// # Edge cases
+    /// If `other` is `0`, `self` is left unchanged.
     far fn mod(far *self, other: far *I32) {
         let o_lo: u16 = other.lo;
         let mut o_hi: u16 = other.hi;
@@ -498,7 +560,10 @@ impl I32 {
     // Bitwise Shift Methods
     // ========================================================================
 
-    // Shift left by n bits (in place) - identical to unsigned
+    /// Shifts `self` left by `count` bits in place.
+    ///
+    /// # Parameters
+    /// - `count` — number of bit positions (passed in `X`)
     far fn shl(far *self, count @ X: u16) {
         let mut lo: u16 = self.lo;
         let mut hi: u16 = self.hi;
@@ -520,7 +585,11 @@ impl I32 {
         self.hi = hi;
     }
 
-    // Arithmetic shift right by n bits (in place) - preserves sign bit
+    /// Arithmetic-shifts `self` right by `count` bits in place, preserving the
+    /// sign bit.
+    ///
+    /// # Parameters
+    /// - `count` — number of bit positions (passed in `X`)
     far fn sar(far *self, count @ X: u16) {
         let mut lo: u16 = self.lo;
         let mut hi: u16 = self.hi;
@@ -556,10 +625,20 @@ impl I32 {
     // SNES Hardware-Accelerated Division
     // ========================================================================
 
-    // Divide by signed 8-bit value using SNES hardware divider.
-    // self /= divisor, returns remainder.
-    // Signed version: handles sign conversion.
-    // If divisor is 0, sets self to MIN_I32 and returns 0.
+    /// Divides `self` by a signed 8-bit value in place using the SNES hardware
+    /// divider, returning the remainder.
+    ///
+    /// Handles sign conversion. Available only on the `snes` target
+    /// (`#[cfg(snes)]`).
+    ///
+    /// # Parameters
+    /// - `divisor` — signed 8-bit divisor (passed in `X`)
+    ///
+    /// # Returns
+    /// The remainder, `self % divisor`.
+    ///
+    /// # Edge cases
+    /// If `divisor` is `0`, `self` is set to `MIN_I32` and `0` is returned.
     #[cfg(snes)]
     far fn div_i8(far *self, divisor @ X: u16) -> i8 {
         let mut remainder: u8;
@@ -646,9 +725,14 @@ impl I32 {
         return A as i8;
     }
 
-    // Modulo by signed 8-bit value using SNES hardware divider.
-    // self %= divisor (self becomes remainder, which fits in 8 bits).
-    // If divisor is 0, self is unchanged.
+    /// Sets `self` to `self % divisor` for a signed 8-bit divisor, using the SNES
+    /// hardware divider.
+    ///
+    /// The remainder fits in 8 bits and takes the sign of the dividend. Available
+    /// only on the `snes` target (`#[cfg(snes)]`).
+    ///
+    /// # Parameters
+    /// - `divisor` — signed 8-bit divisor (passed in `X`)
     #[cfg(snes)]
     far fn mod_i8(far *self, divisor @ X: u16) {
         // Handle zero divisor
@@ -673,6 +757,7 @@ impl I32 {
     }
 }
 
+/// Powers the `+=` operator — adds another `I32` into `self`, wrapping on overflow.
 impl AddAssign for I32 {
     // Add: self += other (with overflow wrapping)
     // Two's complement addition is identical to unsigned
@@ -692,6 +777,7 @@ impl AddAssign for I32 {
     }
 }
 
+/// Powers the `-=` operator — subtracts another `I32` from `self`, wrapping on underflow.
 impl SubAssign for I32 {
     // Subtract: self -= other (with underflow wrapping)
     // Two's complement subtraction is identical to unsigned
@@ -711,6 +797,7 @@ impl SubAssign for I32 {
     }
 }
 
+/// Powers the `*=` operator — signed multiply of `self` by another `I32`, keeping the low 32 bits.
 impl MulAssign for I32 {
     // Multiply: self *= other (32x32 -> 32, lower 32 bits only)
     // Signed multiplication: track signs, multiply magnitudes, fix sign
@@ -781,6 +868,7 @@ impl MulAssign for I32 {
     }
 }
 
+/// Powers the `/=` operator (rounds toward zero). A zero divisor sets `self` to `MIN_I32`.
 impl DivAssign for I32 {
     // Divide: self /= other (rounds toward zero, returns MIN_I32 if other == 0)
     // Signed division: track signs, divide magnitudes, fix sign
@@ -879,9 +967,10 @@ impl DivAssign for I32 {
     }
 }
 
+/// Powers the ordering operators (`<`, `<=`, `>`, `>=`) through a signed three-way `cmp`.
 impl PartialOrd for I32 {
-    // Compare self with other (signed comparison).
-    // Returns: 1 if self > other, 0 if equal, -1 if self < other
+    /// Compares `self` with `other` (signed), returning `1` if `self > other`,
+    /// `0` if equal, or `-1` if `self < other`.
     far fn cmp(far *self, other: far *I32) -> i8 {
         let s_hi: u16 = self.hi;
         let mut o_hi: u16 = other.hi;
@@ -914,17 +1003,24 @@ impl PartialOrd for I32 {
 // DivAssign impls above; ordering (`<` `<=` `>` `>=`) in PartialOrd::cmp. The
 // methods *are* the implementation (no forwarders). PartialEq derives `==`/`!=`.
 
+/// Powers the equality operators (`==`, `!=`) by comparing all 32 bits.
 impl PartialEq for I32 { far fn eq(far *self, other: far *I32) -> bool { return self.cmp(other) == 0; } }
 
-// I32 is plain old data (two u16 words) — an empty Clone impl gives an auto
-// bitwise copy, enabling `let c = a.clone()` and `dst.clone_from(&src)`.
+/// Enables `Clone` for `I32` — `let c = a.clone()` and `dst.clone_from(&src)` copy
+/// all four bytes. The empty body selects the compiler's automatic bitwise copy.
 impl Clone for I32 {}
 
 // ============================================================================
 // I32 ToString
 // ============================================================================
 
+/// Formats `self` as a signed decimal ASCII string (used by `format!`'s `{}`).
 impl ToString for I32 {
+    /// Writes the NUL-terminated decimal representation of `self` (with a leading
+    /// `-` when negative) into `buf` and returns the character count.
+    ///
+    /// # Parameters
+    /// - `buf` — destination buffer (needs room for sign + up to 10 digits + NUL)
     fn to_string(far *self, buf: far *u8) -> u16 {
         let mut __i32_tostr_tmp: I32;
         let mut __i32_tostr_digits: [u8; 11];

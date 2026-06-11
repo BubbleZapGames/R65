@@ -1,10 +1,21 @@
-// R65 Standard Library - U32 (32-bit Unsigned Integer) Support
-//
-// Provides 32-bit unsigned integer arithmetic, comparisons, and conversions.
-// All methods avoid explicit A register usage for correct codegen in m8 mode.
-//
-// Usage:
-//   include!("lib/U32.r65")
+//! 32-bit unsigned integer (`U32`) for the 65816.
+//!
+//! `U32` is a 4-byte value held as two little-endian 16-bit words. It supports the
+//! compound-assignment operators (`+=`, `-=`, `*=`, `/=`), the comparison
+//! operators (`==`, `!=`, `<`, `<=`, `>`, `>=`), and `Clone`. Operations with a
+//! plain `u16` are available through the `*_u16` methods. All methods avoid
+//! explicit `A`-register use for correct m8-mode codegen.
+//!
+//! ```
+//! include!("lib/U32.r65")
+//!
+//! #[ram] static mut SCORE: U32 = U32!(100000);
+//! #[ram] static mut BONUS: U32 = U32!(500);
+//!
+//! fn award() { SCORE += BONUS; }
+//! ```
+//!
+//! See also `I32` (signed) and `F32` (floating point).
 
 include!("math.r65")
 
@@ -12,15 +23,26 @@ include!("math.r65")
 // U32 (32-bit Unsigned Integer) Support
 // ============================================================================
 
-// 32-bit unsigned integer (little-endian)
-// Size: 4 bytes, packed
+/// A 32-bit unsigned integer (range `0` to `4294967295`).
+///
+/// Stored as two little-endian 16-bit words for a packed 4-byte layout.
+/// Construct one with the `U32!` macro or `from_u16`.
 struct U32 {
-    lo: u16,    // Offset 0-1: Low 16 bits
-    hi: u16     // Offset 2-3: High 16 bits
+    /// Low 16 bits (byte offset 0).
+    lo: u16,
+    /// High 16 bits (byte offset 2).
+    hi: u16
 }
 
-// Initialize a U32 from a compile-time constant value.
-// Usage: static mut SCORE: U32 = U32!(100000);
+/// Builds a `U32` from a compile-time constant.
+///
+/// Splits the constant into its low and high 16-bit words at compile time, so it
+/// can initialize a `static`.
+///
+/// # Example
+/// ```
+/// #[ram] static mut SCORE: U32 = U32!(100000);
+/// ```
 macro_rules! U32($value:expr) {
     U32 { lo: (($value) & 0xFFFF) as u16, hi: ((($value) >> 16) & 0xFFFF) as u16 }
 }
@@ -83,23 +105,26 @@ impl U32 {
     // Conversion and Copy Methods
     // ========================================================================
 
-    // Copy another U32 into self
+    /// Copies `src` into `self`.
     #[inline(always)]
     far fn copy(far *self, src: far *U32) {
         self.lo = src.lo;
         self.hi = src.hi;
     }
 
-    // Initialize from u16 (zero-extend)
-    // NOTE: Uses @ X because @ A is clobbered by far fn prologue (TSC/TCD)
+    /// Sets `self` to a `u16` value, zero-extended to 32 bits.
+    ///
+    /// # Parameters
+    /// - `value` — the 16-bit value (passed in `X`; `A` is clobbered by the far
+    ///   prologue, so `X` is used instead)
     #[inline(always)]
     far fn from_u16(far *self, value @ X: u16) {
         self.lo = X;
         self.hi = 0;
     }
 
+    /// Returns the low 16 bits of `self`, truncating the high word.
     #[inline(always)]
-    // Convert to u16 (truncate, keeps low 16 bits)
     far fn to_u16(far *self) -> u16 {
         return self.lo;
     }
@@ -108,7 +133,17 @@ impl U32 {
     // Arithmetic Methods (all modify self in-place)
     // ========================================================================
 
-    // Add a u16 value: self += value (zero-extends value to 32 bits)
+    /// Adds a `u16` to `self` in place (`self += value`).
+    ///
+    /// The value is zero-extended to 32 bits; the result wraps on overflow.
+    ///
+    /// # Parameters
+    /// - `value` — amount to add (passed in `A`)
+    ///
+    /// # Example
+    /// ```
+    /// SCORE.add_u16(points);
+    /// ```
     #[inline(always)]
     far fn add_u16(far *self, value @ A: u16) {
         let s_lo: u16 = self.lo;
@@ -121,7 +156,12 @@ impl U32 {
         self.hi = r_hi;
     }
 
-    // Subtract a u16 value: self -= value (zero-extends value to 32 bits)
+    /// Subtracts a `u16` from `self` in place (`self -= value`).
+    ///
+    /// The value is zero-extended to 32 bits; the result wraps on underflow.
+    ///
+    /// # Parameters
+    /// - `value` — amount to subtract (passed in `A`)
     #[inline(always)]
     far fn sub_u16(far *self, value @ A: u16) {
         let s_lo: u16 = self.lo;
@@ -134,7 +174,13 @@ impl U32 {
         self.hi = r_hi;
     }
 
-    // Multiply by a u16 value: self *= value (zero-extends value to 32 bits)
+    /// Multiplies `self` by a `u16` in place (`self *= value`).
+    ///
+    /// Keeps the low 32 bits of the product (wraps on overflow). Uses a software
+    /// shift-and-add loop.
+    ///
+    /// # Parameters
+    /// - `value` — multiplier (passed in `A`)
     far fn mul_u16(far *self, value @ A: u16) {
         let mut mplier: u16 = A;
         let mut result_lo: u16 = 0;
@@ -168,7 +214,13 @@ impl U32 {
         self.hi = result_hi;
     }
 
-    // Divide by a u16 value: self /= value (returns 0xFFFFFFFF if value == 0)
+    /// Divides `self` by a `u16` in place (`self /= value`).
+    ///
+    /// # Parameters
+    /// - `value` — divisor (passed in `A`)
+    ///
+    /// # Edge cases
+    /// If `value` is `0`, `self` is set to `0xFFFFFFFF`.
     far fn div_u16(far *self, value @ A: u16) {
         if A == 0 {
             self.lo = 0xFFFF;
@@ -220,7 +272,13 @@ impl U32 {
         self.hi = quot_hi;
     }
 
-    // Modulo by a u16 value: self %= value (unchanged if value == 0)
+    /// Sets `self` to `self % value` for a `u16` divisor.
+    ///
+    /// # Parameters
+    /// - `value` — divisor (passed in `A`)
+    ///
+    /// # Edge cases
+    /// If `value` is `0`, `self` is left unchanged.
     far fn mod_u16(far *self, value @ A: u16) {
         if A == 0 {
             return;
@@ -265,8 +323,12 @@ impl U32 {
         self.hi = rem_hi;
     }
 
-    // Modulo: self %= other (unchanged if other == 0)
-    // Long division algorithm, keeps remainder
+    /// Sets `self` to `self % other` for a full `U32` divisor.
+    ///
+    /// Uses a long-division loop that keeps the remainder.
+    ///
+    /// # Edge cases
+    /// If `other` is `0`, `self` is left unchanged.
     far fn mod(far *self, other: far *U32) {
         let o_lo: u16 = other.lo;
         let o_hi: u16 = other.hi;
@@ -329,7 +391,10 @@ impl U32 {
     // Bitwise Shift Methods
     // ========================================================================
 
-    // Shift left by n bits (in place)
+    /// Shifts `self` left by `count` bits in place.
+    ///
+    /// # Parameters
+    /// - `count` — number of bit positions (passed in `X`)
     far fn shl(far *self, count @ X: u16) {
         let mut lo: u16 = self.lo;
         let mut hi: u16 = self.hi;
@@ -351,7 +416,10 @@ impl U32 {
         self.hi = hi;
     }
 
-    // Shift right by n bits (in place)
+    /// Shifts `self` right (logical) by `count` bits in place.
+    ///
+    /// # Parameters
+    /// - `count` — number of bit positions (passed in `X`)
     far fn shr(far *self, count @ X: u16) {
         let mut lo: u16 = self.lo;
         let mut hi: u16 = self.hi;
@@ -377,10 +445,20 @@ impl U32 {
     // SNES Hardware-Accelerated Division
     // ========================================================================
 
-    // Divide by 8-bit value using SNES hardware divider.
-    // self /= divisor, returns remainder.
-    // Much faster than software div when dividing by small values.
-    // If divisor is 0, sets self to 0xFFFFFFFF and returns 0.
+    /// Divides `self` by an 8-bit value in place using the SNES hardware divider,
+    /// returning the remainder.
+    ///
+    /// Much faster than the software divide for small divisors. Available only on
+    /// the `snes` target (`#[cfg(snes)]`).
+    ///
+    /// # Parameters
+    /// - `divisor` — 8-bit divisor (passed in `X`)
+    ///
+    /// # Returns
+    /// The remainder, `self % divisor`.
+    ///
+    /// # Edge cases
+    /// If `divisor` is `0`, `self` is set to `0xFFFFFFFF` and `0` is returned.
     #[cfg(snes)]
     far fn div_u8(far *self, divisor @ X: u16) -> u8 {
         let mut remainder: u8;
@@ -432,9 +510,14 @@ impl U32 {
         return A;
     }
 
-    // Modulo by 8-bit value using SNES hardware divider.
-    // self %= divisor (self becomes remainder, which fits in 8 bits).
-    // If divisor is 0, self is unchanged.
+    /// Sets `self` to `self % divisor` for an 8-bit divisor, using the SNES
+    /// hardware divider.
+    ///
+    /// The remainder fits in 8 bits, so the high word becomes `0`. Available only
+    /// on the `snes` target (`#[cfg(snes)]`).
+    ///
+    /// # Parameters
+    /// - `divisor` — 8-bit divisor (passed in `X`)
     #[cfg(snes)]
     far fn mod_u8(far *self, divisor @ X: u16) {
         let mut remainder: u8 = self.div_u8(X);
@@ -443,6 +526,7 @@ impl U32 {
     }
 }
 
+/// Powers the `+=` operator — adds another `U32` into `self`, wrapping on overflow.
 impl AddAssign for U32 {
     // Add: self += other (with overflow wrapping)
     far fn add_assign(far *self, other: far *U32) {
@@ -461,6 +545,7 @@ impl AddAssign for U32 {
     }
 }
 
+/// Powers the `-=` operator — subtracts another `U32` from `self`, wrapping on underflow.
 impl SubAssign for U32 {
     // Subtract: self -= other (with underflow wrapping)
     far fn sub_assign(far *self, other: far *U32) {
@@ -479,6 +564,7 @@ impl SubAssign for U32 {
     }
 }
 
+/// Powers the `*=` operator — multiplies `self` by another `U32`, keeping the low 32 bits.
 impl MulAssign for U32 {
     // Multiply: self *= other (32x32 -> 32, lower 32 bits only)
     // Software shift-and-add algorithm
@@ -526,6 +612,7 @@ impl MulAssign for U32 {
     }
 }
 
+/// Powers the `/=` operator. A zero divisor sets `self` to `0xFFFFFFFF`.
 impl DivAssign for U32 {
     // Divide: self /= other (returns 0xFFFFFFFF if other == 0)
     // Long division algorithm
@@ -599,9 +686,10 @@ impl DivAssign for U32 {
     }
 }
 
+/// Powers the ordering operators (`<`, `<=`, `>`, `>=`) through a three-way `cmp`.
 impl PartialOrd for U32 {
-    // Compare self with other.
-    // Returns: 1 if self > other, 0 if equal, -1 if self < other
+    /// Compares `self` with `other`, returning `1` if `self > other`, `0` if
+    /// equal, or `-1` if `self < other`.
     far fn cmp(far *self, other: far *U32) -> i8 {
         let s_hi: u16 = self.hi;
         let o_hi: u16 = other.hi;
@@ -623,17 +711,24 @@ impl PartialOrd for U32 {
 // DivAssign impls above; ordering (`<` `<=` `>` `>=`) in PartialOrd::cmp. The
 // methods *are* the implementation (no forwarders). PartialEq derives `==`/`!=`.
 
+/// Powers the equality operators (`==`, `!=`) by comparing all 32 bits.
 impl PartialEq for U32 { far fn eq(far *self, other: far *U32) -> bool { return self.cmp(other) == 0; } }
 
-// U32 is plain old data (two u16 words) — an empty Clone impl gives an auto
-// bitwise copy, enabling `let c = a.clone()` and `dst.clone_from(&src)`.
+/// Enables `Clone` for `U32` — `let c = a.clone()` and `dst.clone_from(&src)` copy
+/// all four bytes. The empty body selects the compiler's automatic bitwise copy.
 impl Clone for U32 {}
 
 // ============================================================================
 // U32 ToString
 // ============================================================================
 
+/// Formats `self` as a decimal ASCII string (used by `format!`'s `{}`).
 impl ToString for U32 {
+    /// Writes the NUL-terminated decimal digits of `self` into `buf` and returns
+    /// the digit count.
+    ///
+    /// # Parameters
+    /// - `buf` — destination buffer (needs room for up to 10 digits + NUL)
     fn to_string(far *self, buf: far *u8) -> u16 {
         let mut __u32_tostr_tmp: U32;
         let mut __u32_tostr_digits: [u8; 11];
