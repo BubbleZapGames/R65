@@ -264,6 +264,183 @@ impl U32 {
         self.lo = rem_lo;
         self.hi = rem_hi;
     }
+
+    // Modulo: self %= other (unchanged if other == 0)
+    // Long division algorithm, keeps remainder
+    far fn mod(far *self, other: far *U32) {
+        let o_lo: u16 = other.lo;
+        let o_hi: u16 = other.hi;
+
+        // Handle division by zero - leave self unchanged
+        if o_lo == 0 {
+            if o_hi == 0 {
+                return;
+            }
+        }
+
+        let mut rem_lo: u16 = 0;
+        let mut rem_hi: u16 = 0;
+        let mut div_lo: u16 = self.lo;
+        let mut div_hi: u16 = self.hi;
+        let mut bit_count: u8 = 32;
+        let mut borrow: bool = false;
+
+        loop {
+            // Shift remainder left by 1
+            _u32_shl1!(rem_lo, rem_hi);
+
+            // Get MSB of dividend into remainder
+            if (div_hi & 0x8000) != 0 {
+                rem_lo = rem_lo | 1;
+            }
+
+            // Shift dividend left
+            _u32_shl1!(div_lo, div_hi);
+
+            // Compare remainder >= divisor
+            if rem_hi > o_hi {
+                borrow = false;
+                if rem_lo < o_lo {
+                    borrow = true;
+                }
+                rem_lo = rem_lo - o_lo;
+                rem_hi = rem_hi - o_hi;
+                if borrow {
+                    rem_hi = rem_hi - 1;
+                }
+            } else if rem_hi == o_hi {
+                if rem_lo >= o_lo {
+                    rem_lo = rem_lo - o_lo;
+                    rem_hi = rem_hi - o_hi;
+                }
+            }
+
+            bit_count--;
+            if bit_count == 0 {
+                break;
+            }
+        }
+
+        self.lo = rem_lo;
+        self.hi = rem_hi;
+    }
+
+    // ========================================================================
+    // Bitwise Shift Methods
+    // ========================================================================
+
+    // Shift left by n bits (in place)
+    far fn shl(far *self, count @ X: u16) {
+        let mut lo: u16 = self.lo;
+        let mut hi: u16 = self.hi;
+        loop {
+            if X == 0 {
+                break;
+            }
+            if (lo & 0x8000) != 0 {
+                lo = lo + lo;
+                hi = hi + hi;
+                hi = hi | 1;
+            } else {
+                lo = lo + lo;
+                hi = hi + hi;
+            }
+            X--;
+        }
+        self.lo = lo;
+        self.hi = hi;
+    }
+
+    // Shift right by n bits (in place)
+    far fn shr(far *self, count @ X: u16) {
+        let mut lo: u16 = self.lo;
+        let mut hi: u16 = self.hi;
+        loop {
+            if X == 0 {
+                break;
+            }
+            if (hi & 1) != 0 {
+                hi = hi >> 1;
+                lo = lo >> 1;
+                lo = lo | 0x8000;
+            } else {
+                hi = hi >> 1;
+                lo = lo >> 1;
+            }
+            X--;
+        }
+        self.lo = lo;
+        self.hi = hi;
+    }
+
+    // ========================================================================
+    // SNES Hardware-Accelerated Division
+    // ========================================================================
+
+    // Divide by 8-bit value using SNES hardware divider.
+    // self /= divisor, returns remainder.
+    // Much faster than software div when dividing by small values.
+    // If divisor is 0, sets self to 0xFFFFFFFF and returns 0.
+    #[cfg(snes)]
+    far fn div_u8(far *self, divisor @ X: u16) -> u8 {
+        let mut remainder: u8;
+        let mut q3: u8;
+        let mut q2: u8;
+        let mut q1: u8;
+        let mut q0: u8;
+        let mut hi_word: u16;
+        let mut lo_word: u16;
+
+        // Handle division by zero
+        if X == 0 {
+            self.lo = 0xFFFF;
+            self.hi = 0xFFFF;
+            A = 0;
+            return A;
+        }
+
+        // Load words into locals
+        hi_word = self.hi;
+        lo_word = self.lo;
+
+        // Process 4 bytes from MSB to LSB using hardware divider
+        A = (hi_word >> 8) as u8;
+        _hwdiv_first!();
+        q3 = RDDIVL;
+        remainder = RDMPYL;
+
+        A = hi_word as u8;
+        _hwdiv_step!(remainder);
+        q2 = RDDIVL;
+        remainder = RDMPYL;
+
+        A = (lo_word >> 8) as u8;
+        _hwdiv_step!(remainder);
+        q1 = RDDIVL;
+        remainder = RDMPYL;
+
+        A = lo_word as u8;
+        _hwdiv_step!(remainder);
+        q0 = RDDIVL;
+        remainder = RDMPYL;
+
+        // Reassemble quotient into self
+        self.lo = ((q1 as u16) << 8) | (q0 as u16);
+        self.hi = ((q3 as u16) << 8) | (q2 as u16);
+
+        A = remainder;
+        return A;
+    }
+
+    // Modulo by 8-bit value using SNES hardware divider.
+    // self %= divisor (self becomes remainder, which fits in 8 bits).
+    // If divisor is 0, self is unchanged.
+    #[cfg(snes)]
+    far fn mod_u8(far *self, divisor @ X: u16) {
+        let mut remainder: u8 = self.div_u8(X);
+        self.lo = remainder as u16;
+        self.hi = 0;
+    }
 }
 
 impl AddAssign for U32 {
@@ -422,68 +599,6 @@ impl DivAssign for U32 {
     }
 }
 
-impl U32 {
-    // Modulo: self %= other (unchanged if other == 0)
-    // Long division algorithm, keeps remainder
-    far fn mod(far *self, other: far *U32) {
-        let o_lo: u16 = other.lo;
-        let o_hi: u16 = other.hi;
-
-        // Handle division by zero - leave self unchanged
-        if o_lo == 0 {
-            if o_hi == 0 {
-                return;
-            }
-        }
-
-        let mut rem_lo: u16 = 0;
-        let mut rem_hi: u16 = 0;
-        let mut div_lo: u16 = self.lo;
-        let mut div_hi: u16 = self.hi;
-        let mut bit_count: u8 = 32;
-        let mut borrow: bool = false;
-
-        loop {
-            // Shift remainder left by 1
-            _u32_shl1!(rem_lo, rem_hi);
-
-            // Get MSB of dividend into remainder
-            if (div_hi & 0x8000) != 0 {
-                rem_lo = rem_lo | 1;
-            }
-
-            // Shift dividend left
-            _u32_shl1!(div_lo, div_hi);
-
-            // Compare remainder >= divisor
-            if rem_hi > o_hi {
-                borrow = false;
-                if rem_lo < o_lo {
-                    borrow = true;
-                }
-                rem_lo = rem_lo - o_lo;
-                rem_hi = rem_hi - o_hi;
-                if borrow {
-                    rem_hi = rem_hi - 1;
-                }
-            } else if rem_hi == o_hi {
-                if rem_lo >= o_lo {
-                    rem_lo = rem_lo - o_lo;
-                    rem_hi = rem_hi - o_hi;
-                }
-            }
-
-            bit_count--;
-            if bit_count == 0 {
-                break;
-            }
-        }
-
-        self.lo = rem_lo;
-        self.hi = rem_hi;
-    }
-}
-
 impl PartialOrd for U32 {
     // Compare self with other.
     // Returns: 1 if self > other, 0 if equal, -1 if self < other
@@ -498,125 +613,6 @@ impl PartialOrd for U32 {
         if s_lo < o_lo { A = 0xFF; return A; }
         A = 0;
         return A;
-    }
-}
-
-impl U32 {
-    // ========================================================================
-    // Bitwise Shift Methods
-    // ========================================================================
-
-    // Shift left by n bits (in place)
-    far fn shl(far *self, count @ X: u16) {
-        let mut lo: u16 = self.lo;
-        let mut hi: u16 = self.hi;
-        loop {
-            if X == 0 {
-                break;
-            }
-            if (lo & 0x8000) != 0 {
-                lo = lo + lo;
-                hi = hi + hi;
-                hi = hi | 1;
-            } else {
-                lo = lo + lo;
-                hi = hi + hi;
-            }
-            X--;
-        }
-        self.lo = lo;
-        self.hi = hi;
-    }
-
-    // Shift right by n bits (in place)
-    far fn shr(far *self, count @ X: u16) {
-        let mut lo: u16 = self.lo;
-        let mut hi: u16 = self.hi;
-        loop {
-            if X == 0 {
-                break;
-            }
-            if (hi & 1) != 0 {
-                hi = hi >> 1;
-                lo = lo >> 1;
-                lo = lo | 0x8000;
-            } else {
-                hi = hi >> 1;
-                lo = lo >> 1;
-            }
-            X--;
-        }
-        self.lo = lo;
-        self.hi = hi;
-    }
-
-    // ========================================================================
-    // SNES Hardware-Accelerated Division
-    // ========================================================================
-
-    // Divide by 8-bit value using SNES hardware divider.
-    // self /= divisor, returns remainder.
-    // Much faster than software div when dividing by small values.
-    // If divisor is 0, sets self to 0xFFFFFFFF and returns 0.
-    #[cfg(snes)]
-    far fn div_u8(far *self, divisor @ X: u16) -> u8 {
-        let mut remainder: u8;
-        let mut q3: u8;
-        let mut q2: u8;
-        let mut q1: u8;
-        let mut q0: u8;
-        let mut hi_word: u16;
-        let mut lo_word: u16;
-
-        // Handle division by zero
-        if X == 0 {
-            self.lo = 0xFFFF;
-            self.hi = 0xFFFF;
-            A = 0;
-            return A;
-        }
-
-        // Load words into locals
-        hi_word = self.hi;
-        lo_word = self.lo;
-
-        // Process 4 bytes from MSB to LSB using hardware divider
-        A = (hi_word >> 8) as u8;
-        _hwdiv_first!();
-        q3 = RDDIVL;
-        remainder = RDMPYL;
-
-        A = hi_word as u8;
-        _hwdiv_step!(remainder);
-        q2 = RDDIVL;
-        remainder = RDMPYL;
-
-        A = (lo_word >> 8) as u8;
-        _hwdiv_step!(remainder);
-        q1 = RDDIVL;
-        remainder = RDMPYL;
-
-        A = lo_word as u8;
-        _hwdiv_step!(remainder);
-        q0 = RDDIVL;
-        remainder = RDMPYL;
-
-        // Reassemble quotient into self
-        self.lo = ((q1 as u16) << 8) | (q0 as u16);
-        self.hi = ((q3 as u16) << 8) | (q2 as u16);
-
-        A = remainder;
-        return A;
-    }
-
-    // Modulo by 8-bit value using SNES hardware divider.
-    // self %= divisor (self becomes remainder, which fits in 8 bits).
-    // If divisor is 0, self is unchanged.
-    #[cfg(snes)]
-    far fn mod_u8(far *self, divisor @ X: u16) {
-        let mut remainder: u8 = self.div_u8(X);
-        self.lo = remainder as u16;
-        self.hi = 0;
     }
 }
 
