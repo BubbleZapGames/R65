@@ -977,6 +977,21 @@ class MIRBuilder:
         self.emit(AggregateCopy(dest=dest_loc, src=src_loc, count=count))
         return None
 
+    def _lower_clone_assignment(self, expr):
+        """Lower `dst = src.clone()` to an aggregate copy into the target place."""
+        clone_expr = expr.value
+        info = clone_expr.clone_info
+        dest_loc = self._clone_place_memloc(expr.target)
+        src_loc = self._clone_place_memloc(clone_expr.func.base)
+        if dest_loc is None or src_loc is None:
+            raise MIRError(
+                "clone assignment operands must be named aggregate variables or statics",
+                source_loc=getattr(expr, 'source_loc', None)
+            )
+        count = self._get_type_size(info['agg_type'])
+        self.emit(AggregateCopy(dest=dest_loc, src=src_loc, count=count))
+        return None
+
     def _is_stack_eligible_struct(self, stmt: HIRLetStmt) -> bool:
         """
         Check if a local struct can be decomposed into per-field vregs.

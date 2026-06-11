@@ -91,6 +91,33 @@ class TestCloneE2E:
         }))
         assert result.success, f"Failures: {result.failures}"
 
+    def test_clone_assignment_between_statics(self, e2e):
+        """`dst = src.clone()` (assignment form) copies the representation."""
+        result = e2e.run('''
+            struct Pair { a: u8, b: u8 }
+            impl Clone for Pair {}
+
+            #[lowram] static mut PSRC: Pair;
+            #[lowram] static mut PDST: Pair;
+            #[zeropage(0x20)] static mut RA: u8;
+            #[zeropage(0x21)] static mut RB: u8;
+
+            #[entry]
+            fn main() {
+                PSRC.a = 55;
+                PSRC.b = 66;
+                PDST.a = 0;
+                PDST.b = 0;
+                PDST = PSRC.clone();
+                RA = PDST.a;
+                RB = PDST.b;
+            }
+        ''', ExpectedState(memory={
+            0x7E0020: 55,
+            0x7E0021: 66,
+        }))
+        assert result.success, f"Failures: {result.failures}"
+
     def test_large_clone_in_loop_preserves_counter(self, e2e):
         """A large (MVN) clone in a loop must not corrupt a hardware-pinned loop
         counter: depth-1 for-loops pin to X, depth-2 to Y, and MVN clobbers both.

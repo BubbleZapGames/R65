@@ -76,6 +76,10 @@ class AssignmentLowerer:
         if getattr(expr, 'opassign_call', None):
             return self.builder.lower_expression(expr.opassign_call)
 
+        # Clone assignment: `dst = src.clone()` copies an aggregate in place.
+        if getattr(expr.value, 'clone_info', None):
+            return self.builder._lower_clone_assignment(expr)
+
         # Reassigning the index variable (i = ..., i++, i += 1, for-increment —
         # all desugar to HIRAssignment with an HIRIdentifier target) invalidates
         # any X-index reuse cached for it. Field/element stores have a

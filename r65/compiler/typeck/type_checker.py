@@ -1955,7 +1955,14 @@ class TypeChecker:
         # context to avoid spurious overflow errors for constants like `A = 0x1234`.
         target_register = self._get_target_register(expr.target)
         value_context = None if target_register else target_type
-        value_type = self.check_expression(expr.value, value_context)
+        # `dst = src.clone()` is the sanctioned aggregate-copy assignment; permit the
+        # clone sugar while checking the value so it records its clone_info.
+        self.call_validator._clone_sugar_allowed = (
+            TypeUtils.is_aggregate_type(target_type) and self._is_direct_clone(expr.value))
+        try:
+            value_type = self.check_expression(expr.value, value_context)
+        finally:
+            self.call_validator._clone_sugar_allowed = False
 
         # Validate register-specific operator restrictions
         # If target is a register (or register-aliased) and value is a binary op using that register,
@@ -1986,13 +1993,18 @@ class TypeChecker:
         # sanctioned aggregate-copy primitive — instead of the old "copy fields /
         # use a pointer" advice.
         if TypeUtils.is_aggregate_type(target_type):
+            # `dst = src.clone()` — sanctioned aggregate copy. The value carries
+            # clone_info; MIR lowers it to an AggregateCopy into the target.
+            if getattr(expr.value, 'clone_info', None):
+                expr.expr_type = target_type
+                return target_type
             type_name = str(target_type)
             if isinstance(target_type, StructTypeInfo):
                 clone_hint = (
-                    f"use a clone assignment `dst.clone_from(&src)` "
+                    f"use `dst = src.clone()` or `dst.clone_from(&src)` "
                     f"(add `impl Clone for {target_type.name} {{}}` if the struct has none)")
             else:  # array — clone is a built-in, no impl needed
-                clone_hint = "use a clone assignment `dst.clone_from(&src)` (arrays clone built-in)"
+                clone_hint = "use `dst = src.clone()` or `dst.clone_from(&src)` (arrays clone built-in)"
             raise TypeCheckError(
                 f"Cannot assign '{type_name}' by value\n"
                 f"  structs and arrays are not copied by a bare '='\n"
