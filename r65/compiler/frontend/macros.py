@@ -43,6 +43,12 @@ class MacroExpander:
 
     MAX_EXPANSION_DEPTH = 64
 
+    # format!: literals up to this many bytes are emitted as inline immediate
+    # stores (buf[off] = imm) while the write offset is statically known.
+    # Longer literals fall back to a ROM array + indexed copy loop to bound ROM
+    # growth. See _expand_format_macro.
+    FORMAT_LITERAL_INLINE_MAX = 8
+
     # Hints for common Rust macros that don't exist in R65
     _RUST_MACRO_HINTS = {
         'println':       "use format!() to write to a buffer, then output via hardware",
@@ -1206,161 +1212,183 @@ class MacroExpander:
         # Check if output can fit in target buffer
         self._check_format_buffer_overflow(buf, segments, source_loc)
 
-        # Generate R65 source code with unique variable names per invocation
+        # Generate R65 source code with unique variable names per invocation.
+        #
+        # Two-phase state machine over `off`, the write offset from the buffer
+        # base. While `off` is a known constant (Phase A) we write literal bytes
+        # as direct indexed immediate stores (buf[off] = imm -> LDA #imm; STA
+        # $7E....) and pass &buf[off] to formatters — no running pointer, no
+        # 24-bit pointer arithmetic. The far pointer `p` is declared lazily only
+        # when a variable-length specifier (plain decimal, signed, string) makes
+        # the offset unknown (Phase B), after which behaviour matches the old
+        # pointer-threaded codegen.
         fmt_id = self._format_invocation_counter
         self._format_invocation_counter += 1
-        p = f'__fmtptr{fmt_id}'  # unique pointer name
-        lines = [f"let mut {p}: far *u8 = &{buf} as far *u8;"]
+        p = f'__fmtptr{fmt_id}'  # unique pointer name (declared lazily, Phase B)
+        lines: List[str] = []
         arg_idx = 0
         var_idx = 0
+        off = 0  # Phase A: known offset from buffer base; None once in Phase B
+
+        def at_ptr() -> str:
+            # Far-pointer expression for the current write position (formatter arg).
+            # In Phase A this is an immediate &buf[off]; in Phase B the live cursor.
+            return p if off is None else f'&{buf}[{off}] as far *u8'
+
+        def at_lvalue() -> str:
+            # Lvalue for a direct single-byte write at the current position.
+            return f'*{p}' if off is None else f'{buf}[{off}]'
+
+        def advance(k) -> None:
+            nonlocal off
+            if off is None:
+                lines.append(f'{p} = {p} + {k};')
+            else:
+                off += k
+
+        def enter_phase_b() -> None:
+            # Materialise the running far pointer at the current known offset and
+            # switch to pointer mode. No-op if already in Phase B.
+            nonlocal off
+            if off is not None:
+                lines.append(f'let mut {p}: far *u8 = &{buf}[{off}] as far *u8;')
+                off = None
+
+        def inject_literal_static(text: str, byte_len: int) -> str:
+            # Inject a ROM array holding the literal bytes; return its name.
+            escaped = self._escape_format_literal(text)
+            lit_id = self._format_literal_counter
+            self._format_literal_counter += 1
+            static_name = f'__fmtstr_{lit_id}'
+            static_decl = ast.StaticDecl(
+                attributes=[],
+                is_far=False,
+                is_mut=False,
+                name=static_name,
+                var_type=ast.ArrayType(
+                    element_type=ast.BasicType(name='u8'),
+                    size=ast.IntegerLiteral(value=byte_len),
+                ),
+                initializer=ast.StringLiteral(value=escaped),
+            )
+            if source_loc:
+                static_decl.source_loc = source_loc
+            self._program_items.append(static_decl)
+            return static_name
 
         for seg_type, seg_data in segments:
             if seg_type == 'literal':
                 text = seg_data['text']
                 byte_len = self._compute_literal_byte_length(text)
-                if byte_len > 0:
-                    if byte_len <= 3:
-                        # Inline byte writes for small literals
-                        for b in self._literal_to_bytes(text):
-                            lines.append(f'*{p} = {hex(b)};')
-                            lines.append(f'{p} = {p} + 1;')
-                    else:
-                        # Emit a static ROM array and for-loop copy
-                        escaped = self._escape_format_literal(text)
-                        lit_id = self._format_literal_counter
-                        self._format_literal_counter += 1
-                        static_name = f'__fmtstr_{lit_id}'
-                        idx_var = f'__fmti{fmt_id}_{var_idx}'
-                        # Inject static into program items
-                        static_decl = ast.StaticDecl(
-                            attributes=[],
-                            is_far=False,
-                            is_mut=False,
-                            name=static_name,
-                            var_type=ast.ArrayType(
-                                element_type=ast.BasicType(name='u8'),
-                                size=ast.IntegerLiteral(value=byte_len),
-                            ),
-                            initializer=ast.StringLiteral(value=escaped),
-                        )
-                        if source_loc:
-                            static_decl.source_loc = source_loc
-                        self._program_items.append(static_decl)
+                if byte_len == 0:
+                    continue
+                if byte_len <= self.FORMAT_LITERAL_INLINE_MAX:
+                    # Inline immediate stores (direct in Phase A, *p in Phase B)
+                    for b in self._literal_to_bytes(text):
+                        lines.append(f'{at_lvalue()} = {hex(b)};')
+                        advance(1)
+                else:
+                    # Long literal: ROM array + indexed copy loop to bound ROM
+                    static_name = inject_literal_static(text, byte_len)
+                    idx_var = f'__fmti{fmt_id}_{var_idx}'
+                    if off is None:
                         lines.append(
                             f'for {idx_var} in 0..{byte_len} {{ {p}[{idx_var}] = {static_name}[{idx_var}]; }}'
                         )
                         lines.append(f'{p} = {p} + {byte_len};')
-                        var_idx += 1
+                    else:
+                        lines.append(
+                            f'for {idx_var} in 0..{byte_len} {{ {buf}[{off} + {idx_var}] = {static_name}[{idx_var}]; }}'
+                        )
+                        off += byte_len
+                    var_idx += 1
             elif seg_type == 'specifier':
                 spec = seg_data
                 arg = format_args[arg_idx].strip()
+                t = spec['type']
+                f = spec.get('format')
 
                 n = f'__fmtn{fmt_id}_{var_idx}'
                 s = f'__fmts{fmt_id}_{var_idx}'
 
-                if spec['type'] == 'u8' and spec.get('format') == 'd':
-                    if spec.get('width'):
-                        w = spec['width']
-                        fill = '0x30' if spec.get('zero_pad') else '0x20'
-                        lines.append(
-                            f'u8_to_dec_pad({p}, {arg}, {w}, {fill});'
-                        )
-                        lines.append(f'{p} = {p} + {w};')
-                    else:
-                        lines.append(
-                            f'let {n}: u8 = u8_to_dec({p}, {arg});'
-                        )
-                        lines.append(
-                            f'{p} = {p} + {n} as u16;'
-                        )
-                        var_idx += 1
-                elif spec['type'] == 'u16' and spec.get('format') == 'd':
-                    if spec.get('width'):
-                        w = spec['width']
-                        fill = '0x30' if spec.get('zero_pad') else '0x20'
-                        lines.append(
-                            f'u16_to_dec_pad({p}, {arg}, {w}, {fill});'
-                        )
-                        lines.append(f'{p} = {p} + {w};')
-                    else:
-                        lines.append(
-                            f'let {n}: u8 = u16_to_dec({p}, {arg});'
-                        )
-                        lines.append(
-                            f'{p} = {p} + {n} as u16;'
-                        )
-                        var_idx += 1
-                elif spec['type'] == 'u8' and spec.get('format') == 'x':
-                    lines.append(f'u8_to_hex({p}, {arg});')
-                    lines.append(f'{p} = {p} + 2;')
-                elif spec['type'] == 'u16' and spec.get('format') == 'x':
-                    lines.append(f'u16_to_hex({p}, {arg});')
-                    lines.append(f'{p} = {p} + 4;')
-                elif spec['type'] == 's':
-                    # Emit a __fmt_str() call; the type checker dispatches to
-                    # strcpy (for u8 strings) or to_string (for ToString impls)
-                    # based on the runtime type of {arg}.
-                    # Cast u16 return through u8 to force a mode switch that
-                    # blocks hw-coalescence of the return value to A (otherwise
-                    # the pointer load below clobbers it). String lengths >255
-                    # are not expected on SNES.
+                # --- Fixed-width specifiers: offset stays statically known ---
+                if t == 'u8' and f == 'd' and spec.get('width'):
+                    w = spec['width']
+                    fill = '0x30' if spec.get('zero_pad') else '0x20'
+                    lines.append(f'u8_to_dec_pad({at_ptr()}, {arg}, {w}, {fill});')
+                    advance(w)
+                elif t == 'u16' and f == 'd' and spec.get('width'):
+                    w = spec['width']
+                    fill = '0x30' if spec.get('zero_pad') else '0x20'
+                    lines.append(f'u16_to_dec_pad({at_ptr()}, {arg}, {w}, {fill});')
+                    advance(w)
+                elif t == 'u8' and f == 'x':
+                    lines.append(f'u8_to_hex({at_ptr()}, {arg});')
+                    advance(2)
+                elif t == 'u16' and f == 'x':
+                    lines.append(f'u16_to_hex({at_ptr()}, {arg});')
+                    advance(4)
+                elif t == 'c':
+                    lines.append(f'{at_lvalue()} = {arg};')
+                    advance(1)
+                elif t == 'bool':
+                    dst = at_lvalue()
                     lines.append(
-                        f'let {n}: u8 = __fmt_str({p}, {arg}) as u8;'
+                        f'if {arg} {{ {dst} = 0x31; }} else {{ {dst} = 0x30; }}'
                     )
-                    lines.append(
-                        f'{p} = {p} + {n} as u16;'
-                    )
+                    advance(1)
+                # --- Variable-width specifiers: force Phase B, then advance p ---
+                elif t == 'u8' and f == 'd':
+                    enter_phase_b()
+                    lines.append(f'let {n}: u8 = u8_to_dec({p}, {arg});')
+                    lines.append(f'{p} = {p} + {n} as u16;')
                     var_idx += 1
-                elif spec['type'] == 'c':
-                    lines.append(f'*{p} = {arg};')
-                    lines.append(f'{p} = {p} + 1;')
-                elif spec['type'] == 'bool':
-                    lines.append(
-                        f'if {arg} {{ *{p} = 0x31; }}'
-                        f' else {{ *{p} = 0x30; }}'
-                    )
-                    lines.append(f'{p} = {p} + 1;')
-                elif spec['type'] == 'i8' and spec.get('format') == 'd':
+                elif t == 'u16' and f == 'd':
+                    enter_phase_b()
+                    lines.append(f'let {n}: u8 = u16_to_dec({p}, {arg});')
+                    lines.append(f'{p} = {p} + {n} as u16;')
+                    var_idx += 1
+                elif t == 's':
+                    # __fmt_str() is dispatched by the type checker to strcpy (u8
+                    # strings) or to_string (ToString impls) on the arg's type.
+                    # The `as u8` cast forces a mode switch that blocks
+                    # hw-coalescing the return into A (the pointer load below
+                    # would clobber it). String lengths >255 aren't expected.
+                    enter_phase_b()
+                    lines.append(f'let {n}: u8 = __fmt_str({p}, {arg}) as u8;')
+                    lines.append(f'{p} = {p} + {n} as u16;')
+                    var_idx += 1
+                elif t == 'i8' and f == 'd':
                     # Inline sign check: if negative, write '-' and negate
-                    lines.append(
-                        f'let mut {s}: u8 = {arg} as u8;'
-                    )
+                    enter_phase_b()
+                    lines.append(f'let mut {s}: u8 = {arg} as u8;')
                     lines.append(
                         f'if {s} & 0x80 != 0 {{'
                         f' *{p} = 0x2D; {p} = {p} + 1;'
                         f' {s} = 0 - {s};'
                         f' }}'
                     )
-                    lines.append(
-                        f'let {n}: u8 = u8_to_dec({p}, {s});'
-                    )
-                    lines.append(
-                        f'{p} = {p} + {n} as u16;'
-                    )
+                    lines.append(f'let {n}: u8 = u8_to_dec({p}, {s});')
+                    lines.append(f'{p} = {p} + {n} as u16;')
                     var_idx += 1
-                elif spec['type'] == 'i16' and spec.get('format') == 'd':
+                elif t == 'i16' and f == 'd':
                     # Inline sign check: if negative, write '-' and negate
-                    lines.append(
-                        f'let mut {s}: u16 = {arg} as u16;'
-                    )
+                    enter_phase_b()
+                    lines.append(f'let mut {s}: u16 = {arg} as u16;')
                     lines.append(
                         f'if {s} & 0x8000 != 0 {{'
                         f' *{p} = 0x2D; {p} = {p} + 1;'
                         f' {s} = 0 - {s};'
                         f' }}'
                     )
-                    lines.append(
-                        f'let {n}: u8 = u16_to_dec({p}, {s});'
-                    )
-                    lines.append(
-                        f'{p} = {p} + {n} as u16;'
-                    )
+                    lines.append(f'let {n}: u8 = u16_to_dec({p}, {s});')
+                    lines.append(f'{p} = {p} + {n} as u16;')
                     var_idx += 1
 
                 arg_idx += 1
 
-        # Null terminate
-        lines.append(f"*{p} = 0;")
+        # Null terminate (direct store in Phase A, *p in Phase B)
+        lines.append(f'{at_lvalue()} = 0;')
 
         # Wrap in function, parse, extract statements
         source_code = ' '.join(lines)

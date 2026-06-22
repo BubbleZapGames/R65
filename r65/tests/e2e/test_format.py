@@ -77,6 +77,44 @@ class TestFormatLiteral:
         }))
         assert result.success, f"Failures: {result.failures}"
 
+    def test_format_long_literal_rom_loop(self, e2e):
+        """Literal longer than the inline threshold (8 bytes) copies via a ROM
+        array + indexed loop (no far pointer) and still produces correct bytes."""
+        result = e2e.run(f'''
+            include!("{STRING_PATH}")
+
+            #[ram(0x7E2000)]
+            static mut BUF: [u8; 32] = [0xFF; 32];
+
+            #[entry]
+            fn main() {{
+                format!(BUF, "Hello, World!");
+            }}
+        ''', ExpectedState(memory={
+            0x7E2000: ascii_bytes_null("Hello, World!")
+        }))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_format_all_fixed_width_no_pointer(self, e2e):
+        """An all-fixed-width format (literals + hex) is written entirely with
+        direct stores / immediate-address formatter args — no running far
+        pointer is ever materialised. Exercises the pure Phase-A path."""
+        result = e2e.run(f'''
+            include!("{STRING_PATH}")
+
+            #[ram(0x7E2000)]
+            static mut BUF: [u8; 32] = [0xFF; 32];
+
+            #[entry]
+            fn main() {{
+                format!(BUF, "[{{u8:x}}-{{u16:x}}]", 0xAB, 0xDEAD);
+            }}
+        ''', ExpectedState(memory={
+            # "[AB-DEAD]\0"
+            0x7E2000: ascii_bytes_null("[AB-DEAD]")
+        }))
+        assert result.success, f"Failures: {result.failures}"
+
 
 # ============================================================================
 # Numeric Format Tests

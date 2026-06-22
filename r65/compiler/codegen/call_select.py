@@ -1741,7 +1741,18 @@ class CallInstructionSelector(BaseSelector):
             # Callee returned in m16 mode, switch back to m8
             self._emit_immediate(Opcode.SEP_IMMEDIATE, 0x20, "Restore m8 after u16 return")
             self.emitter.emit_accu_mode(8)
-        # If callee exited in m8, we're already in the right mode
+        elif instr.callee_entry_m_mode == ModeState.M16:
+            # Caller switched to m16 to pass a u16 @ A argument; the callee
+            # returns in m8 (already m8 at runtime via its own epilogue), but the
+            # caller's asm-tracked mode is still m16 — the entry REP is
+            # propagated across the JSR by the asm-mode dataflow, which can't see
+            # the callee's exit mode. Emit a SEP so the dataflow and the WLA
+            # `.ACCU` directive agree with the m8 runtime mode. Without it a
+            # following m8 `LDA #imm` is assembled 3 bytes wide and the trailing
+            # $00 byte executes as BRK. Runtime no-op (mode is already m8).
+            self._emit_immediate(Opcode.SEP_IMMEDIATE, 0x20, "Resync m8 after u16-arg call")
+            self.emitter.emit_accu_mode(8)
+        # If callee exited in m8 with an m8 entry, we're already in m8
 
     def _update_mode_after_call(self, instr: Call):
         """

@@ -30,6 +30,18 @@ def get_macro_invocation(stmt):
         raise AssertionError(f"Expected macro invocation, got {type(stmt)}")
 
 
+def _declares_fmtptr(stmts):
+    """True if any statement is a `let __fmtptr...` far-pointer binding.
+
+    format! emits the running far pointer lazily, only once a variable-width
+    specifier forces Phase B. Pure Phase-A formats declare no pointer.
+    """
+    return any(
+        isinstance(s, ast.LetStmt) and s.name and s.name.startswith('__fmtptr')
+        for s in stmts
+    )
+
+
 # ============================================================================
 # Macro Definition Parsing Tests
 # ============================================================================
@@ -1446,8 +1458,12 @@ class TestFormatMacro:
         funcs = [i for i in expanded.items if isinstance(i, ast.FunctionDecl) and i.name == 'test']
         assert len(funcs) == 1
         stmts = funcs[0].body.statements
-        # Should have: let __fmtptr, let __fmtlit0, for loop, ptr advance, null terminate
-        assert len(stmts) >= 3
+        # Phase A: "Hello" (5 <= inline max) -> 5 direct stores + null terminate,
+        # no far pointer, no ROM static.
+        assert len(stmts) == 6
+        assert not _declares_fmtptr(stmts)
+        assert not [i for i in expanded.items
+                    if isinstance(i, ast.StaticDecl) and i.name.startswith('__fmtstr_')]
 
     def test_format_with_u8(self):
         """format! with {u8} specifier generates u8_to_dec call."""
@@ -1466,8 +1482,16 @@ class TestFormatMacro:
 
         funcs = [i for i in expanded.items if isinstance(i, ast.FunctionDecl) and i.name == 'test']
         stmts = funcs[0].body.statements
-        # Should have: let __fmtptr, 2x inline byte write (N:), let __fmtn0 = u8_to_dec, advance, null term
-        assert len(stmts) >= 5
+        # "N:" -> 2 direct stores (Phase A); "{u8}" forces Phase B: let __fmtptr,
+        # let __fmtn0 = u8_to_dec, ptr advance, null terminate = 6
+        assert len(stmts) == 6
+        assert _declares_fmtptr(stmts)
+        assert any(
+            isinstance(s, ast.LetStmt)
+            and isinstance(s.initializer, ast.FunctionCall)
+            and getattr(s.initializer.func, 'name', None) == 'u8_to_dec'
+            for s in stmts
+        )
 
     def test_format_wrong_arg_count(self):
         """format! with wrong number of args raises error."""
@@ -1560,8 +1584,10 @@ class TestFormatMacro:
 
         funcs = [i for i in expanded.items if isinstance(i, ast.FunctionDecl) and i.name == 'test']
         stmts = funcs[0].body.statements
-        # Should have: let __fmtptr, *__fmtptr = 0
-        assert len(stmts) == 2
+        # No pointer needed: just the null terminator written direct (BUF[0] = 0)
+        assert len(stmts) == 1
+        # No far pointer declared for a pure Phase-A format
+        assert not _declares_fmtptr(stmts)
 
     def test_format_compile_with_all_specifiers(self):
         """format! with all specifier types compiles without error."""
@@ -1869,7 +1895,7 @@ class TestFormatLiteralInlining:
         assert exp._literal_to_bytes("A\\nB") == [0x41, 0x0A, 0x42]
 
     def test_small_literal_inlines(self):
-        """Small literals emit inline byte writes."""
+        """Short literals emit direct indexed immediate stores, no far pointer."""
         source = '''
         #[ram]
         static mut BUF: [u8; 32] = [0; 32];
@@ -1883,18 +1909,28 @@ class TestFormatLiteralInlining:
 
         funcs = [i for i in expanded.items if isinstance(i, ast.FunctionDecl) and i.name == 'test']
         stmts = funcs[0].body.statements
-        # Should have: let __fmtptr, 2x (*__fmtptr=byte + ptr advance), null terminate
-        # That's: 1 let + 2*(deref + advance) + 1 null = 6 stmts
-        assert len(stmts) == 6
+        # Phase A: BUF[0]='H'; BUF[1]='i'; BUF[2]=0; -> 3 stmts, no pointer
+        assert len(stmts) == 3
+        assert not _declares_fmtptr(stmts)
+        # Every statement is a direct store into BUF[const] (no deref/advance)
+        assert all(
+            isinstance(s, ast.ExprStmt)
+            and isinstance(s.expr, ast.Assignment)
+            and isinstance(s.expr.target, ast.ArrayIndex)
+            for s in stmts
+        )
+        # No ROM literal static injected for an inlined literal
+        assert not [i for i in expanded.items
+                    if isinstance(i, ast.StaticDecl) and i.name.startswith('__fmtstr_')]
 
     def test_large_literal_uses_for_loop(self):
-        """4+ byte literals use for loop copy from static ROM array."""
+        """Literals > FORMAT_LITERAL_INLINE_MAX use a ROM array + indexed copy loop."""
         source = '''
         #[ram]
         static mut BUF: [u8; 32] = [0; 32];
 
         fn test() {
-            __format!(BUF, "Hello");
+            __format!(BUF, "Hello, World!");
         }
         '''
         program = parse(source, "<test>")
@@ -1902,8 +1938,9 @@ class TestFormatLiteralInlining:
 
         funcs = [i for i in expanded.items if isinstance(i, ast.FunctionDecl) and i.name == 'test']
         stmts = funcs[0].body.statements
-        # Should have: let __fmtptr, for loop, ptr advance, null terminate = 4
-        assert len(stmts) == 4
+        # Phase A long literal: copy loop + null terminate, still no far pointer
+        assert len(stmts) == 2
+        assert not _declares_fmtptr(stmts)
 
         # Should have injected a static declaration for the literal
         statics = [i for i in expanded.items if isinstance(i, ast.StaticDecl) and i.name.startswith('__fmtstr_')]
@@ -1929,8 +1966,10 @@ class TestFormatNewSpecifiers:
 
         funcs = [i for i in expanded.items if isinstance(i, ast.FunctionDecl) and i.name == 'test']
         stmts = funcs[0].body.statements
-        # Should have: let __fmtptr, if/else, ptr advance, null terminate = 4
-        assert len(stmts) == 4
+        # Phase A fixed-width: if/else writing BUF[0], null terminate = 2; no pointer
+        assert len(stmts) == 2
+        assert not _declares_fmtptr(stmts)
+        assert any('If' in type(s).__name__ for s in stmts)
 
     def test_format_with_i8(self):
         """format! with {i8} generates inline sign check + u8_to_dec call."""
@@ -1991,8 +2030,16 @@ class TestFormatNewSpecifiers:
 
         funcs = [i for i in expanded.items if isinstance(i, ast.FunctionDecl) and i.name == 'test']
         stmts = funcs[0].body.statements
-        # Should have: let __fmtptr, u8_to_dec_pad call, ptr advance, null terminate = 4
-        assert len(stmts) == 4
+        # Phase A fixed-width: u8_to_dec_pad(&BUF[0], ...) + null terminate = 2;
+        # no far pointer (the formatter gets an immediate &BUF[off]).
+        assert len(stmts) == 2
+        assert not _declares_fmtptr(stmts)
+        assert any(
+            isinstance(s, ast.ExprStmt)
+            and isinstance(s.expr, ast.FunctionCall)
+            and getattr(s.expr.func, 'name', None) == 'u8_to_dec_pad'
+            for s in stmts
+        )
 
     def test_format_with_u16_zero_padded(self):
         """format! with {u16:05d} generates u16_to_dec_pad with zero fill."""
@@ -2011,5 +2058,13 @@ class TestFormatNewSpecifiers:
 
         funcs = [i for i in expanded.items if isinstance(i, ast.FunctionDecl) and i.name == 'test']
         stmts = funcs[0].body.statements
-        # Should have: let __fmtptr, u16_to_dec_pad call, ptr advance, null terminate = 4
-        assert len(stmts) == 4
+        # Phase A fixed-width: u16_to_dec_pad(&BUF[0], ...) + null terminate = 2;
+        # no far pointer.
+        assert len(stmts) == 2
+        assert not _declares_fmtptr(stmts)
+        assert any(
+            isinstance(s, ast.ExprStmt)
+            and isinstance(s.expr, ast.FunctionCall)
+            and getattr(s.expr.func, 'name', None) == 'u16_to_dec_pad'
+            for s in stmts
+        )
