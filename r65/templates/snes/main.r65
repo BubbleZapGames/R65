@@ -3,6 +3,8 @@
 
 #[snesrom(name="{{PROJECT_NAME_UPPER}}")]
 
+#[stack(0x0100, 0x01FF)]
+
 // Include standard libraries
 include!("lib/65816.r65")
 include!("lib/sneslib.r65")
