@@ -1593,6 +1593,12 @@ def _make_two_reg_param_callee(reg_a: str, reg_b: str):
     # top of the entry block. The inliner uses these to detect which HW
     # registers the body observes; without them the param loads are
     # treated as dead and pruned.
+    #
+    # Both params are mutated (p += 1) so the inliner's copy-propagation
+    # (operand substitution) does NOT elide the register loads: a written
+    # param vreg is not a pure copy of the caller's arg, so the binding load
+    # is still emitted. This keeps the A-load-last ordering path — the whole
+    # point of these tests — exercised.
     func.blocks[0] = BasicBlock(
         block_id=0,
         instructions=[
@@ -1600,6 +1606,10 @@ def _make_two_reg_param_callee(reg_a: str, reg_b: str):
                  type_info=BasicTypeInfo('u8')),
             Move(dest=v1, source=HardwareRegister(reg_b),
                  type_info=BasicTypeInfo('u8')),
+            BinaryOp(dest=v0, left=v0, right=Immediate(1), op='+',
+                     type_info=BasicTypeInfo('u8')),
+            BinaryOp(dest=v1, left=v1, right=Immediate(1), op='+',
+                     type_info=BasicTypeInfo('u8')),
             Return(values=[v0]),
         ],
         predecessors=[], successors=[],
@@ -1689,6 +1699,275 @@ class TestRegisterParamOrdering:
             if isinstance(i, Move) and isinstance(i.dest, HardwareRegister)
         ]
         assert reg_loads[-1].dest.name == 'A'
+
+
+# =============================================================================
+# Parameter substitution (copy-propagation at inline time): the inliner
+# splices the caller's arg operand directly into the body instead of emitting
+# a bridge Move, when it is safe to do so. These tests exercise conditions
+# 1-4 from _compute_param_substitution.
+# =============================================================================
+
+def _all_instrs(func):
+    return [i for b in func.blocks.values() for i in b.instructions]
+
+
+def _make_reg_param_callee(body_instrs, reg='A'):
+    """Callee with one register-bound param whose entry save Move is v0."""
+    func = make_mir_function("callee", inline_attr=INLINE)
+    func.parameters = [HIRParameter(name='v', param_type=BasicTypeInfo('u8'),
+                                    binding=RegisterBinding(register_name=reg))]
+    v0 = VirtualRegister(id=0, type_info=BasicTypeInfo('u8'), hint='saved')
+    save = Move(dest=v0, source=HardwareRegister(reg), type_info=BasicTypeInfo('u8'))
+    func.blocks[0] = BasicBlock(block_id=0, instructions=[save] + body_instrs,
+                               predecessors=[], successors=[])
+    return func, v0
+
+
+def _caller_calling(callee_name, arg_value, mechanism, *, ret_id=90):
+    caller = make_mir_function("main", is_entry=True)
+    ret = VirtualRegister(id=ret_id, type_info=BasicTypeInfo('u8'), hint='ret')
+    caller.blocks[0] = BasicBlock(
+        block_id=0,
+        instructions=[
+            Call(function=callee_name,
+                 args=[Argument(value=arg_value, mechanism=mechanism,
+                                location=None, param_type=BasicTypeInfo('u8'))],
+                 returns=[ret], is_far=False),
+            Return(values=[ret]),
+        ],
+        predecessors=[], successors=[],
+    )
+    return caller
+
+
+class TestParamSubstitution:
+    def test_stack_param_vreg_substituted(self):
+        """f(v){ res = v + v } called with a vreg arg: the arg vreg is spliced
+        into the body and no bridge Move copying it into the param vreg remains."""
+        # Build explicitly so left/right reference the param vreg object.
+        pv = VirtualRegister(id=0, type_info=BasicTypeInfo('u8'), hint='v')
+        res = VirtualRegister(id=1, type_info=BasicTypeInfo('u8'), hint='res')
+        callee = make_mir_function("dbl", inline_attr=INLINE)
+        callee.parameters = [HIRParameter(name='v', param_type=BasicTypeInfo('u8'),
+                                          binding=None)]
+        callee.param_to_vreg = {0: pv}
+        callee.blocks[0] = BasicBlock(
+            block_id=0,
+            instructions=[
+                BinaryOp(dest=res, left=pv, right=pv, op='+',
+                         type_info=BasicTypeInfo('u8')),
+                Return(values=[res]),
+            ],
+            predecessors=[], successors=[],
+        )
+        arg = VirtualRegister(id=42, type_info=BasicTypeInfo('u8'), hint='arg')
+        caller = _caller_calling("dbl", arg, ArgumentMechanism.STACK)
+        program = MIRProgram(functions=[caller, callee])
+        assert FunctionInliner(verbose=False).run(program) == 1
+
+        binops = [i for i in _all_instrs(caller) if isinstance(i, BinaryOp)]
+        assert any(isinstance(bo.left, VirtualRegister) and bo.left.id == arg.id
+                   for bo in binops), "arg vreg should be spliced into the body"
+        # No Move copies the arg into a fresh vreg (bridge eliminated).
+        bridges = [i for i in _all_instrs(caller)
+                   if isinstance(i, Move) and isinstance(i.dest, VirtualRegister)
+                   and isinstance(i.source, VirtualRegister) and i.source.id == arg.id]
+        assert bridges == [], f"unexpected bridge Move(s): {bridges}"
+
+    def test_register_param_vreg_substituted(self):
+        """f(x @ A){ res = x + 1 } called with a vreg: no A-load and no entry
+        save Move survive — the arg vreg is used directly."""
+        res = VirtualRegister(id=1, type_info=BasicTypeInfo('u8'), hint='res')
+        callee, v0 = _make_reg_param_callee([
+            BinaryOp(dest=res, left=None, right=Immediate(1), op='+',
+                     type_info=BasicTypeInfo('u8')),
+            Return(values=[res]),
+        ])
+        # Fix up the body's left operand to reference the saved param vreg.
+        callee.blocks[0].instructions[1].left = v0
+        arg = VirtualRegister(id=42, type_info=BasicTypeInfo('u8'), hint='arg')
+        caller = _caller_calling("callee", arg, ArgumentMechanism.REGISTER)
+        program = MIRProgram(functions=[caller, callee])
+        assert FunctionInliner(verbose=False).run(program) == 1
+
+        instrs = _all_instrs(caller)
+        # No register LOAD (Move into A) — the arg is used in place instead.
+        assert not any(isinstance(i, Move) and isinstance(i.dest, HardwareRegister)
+                       for i in instrs), "no register load should remain"
+        # The arg vreg is spliced directly into the body ALU op (proving the
+        # entry save Move -> param-vreg chain was replaced by copy-propagation).
+        binops = [i for i in instrs if isinstance(i, BinaryOp)]
+        assert any(isinstance(bo.left, VirtualRegister) and bo.left.id == arg.id
+                   for bo in binops)
+
+    def test_reassigned_param_not_substituted(self):
+        """f(v){ v = v + 1; return v } — the param is written, so substitution
+        is refused and the bridge Move is retained."""
+        pv = VirtualRegister(id=0, type_info=BasicTypeInfo('u8'), hint='v')
+        callee = make_mir_function("inc", inline_attr=INLINE)
+        callee.parameters = [HIRParameter(name='v', param_type=BasicTypeInfo('u8'),
+                                          binding=None)]
+        callee.param_to_vreg = {0: pv}
+        callee.blocks[0] = BasicBlock(
+            block_id=0,
+            instructions=[
+                BinaryOp(dest=pv, left=pv, right=Immediate(1), op='+',
+                         type_info=BasicTypeInfo('u8')),   # writes pv
+                Return(values=[pv]),
+            ],
+            predecessors=[], successors=[],
+        )
+        arg = VirtualRegister(id=42, type_info=BasicTypeInfo('u8'), hint='arg')
+        caller = _caller_calling("inc", arg, ArgumentMechanism.STACK)
+        program = MIRProgram(functions=[caller, callee])
+        assert FunctionInliner(verbose=False).run(program) == 1
+
+        bridges = [i for i in _all_instrs(caller)
+                   if isinstance(i, Move) and isinstance(i.dest, VirtualRegister)
+                   and isinstance(i.source, VirtualRegister) and i.source.id == arg.id]
+        assert len(bridges) == 1, "written param must keep its bridge Move"
+
+    def test_direct_hw_read_keeps_register_load(self):
+        """f(x @ A){ y = A; ... } — the body reads A directly, so the A-load
+        must be kept (substitution refused)."""
+        res = VirtualRegister(id=1, type_info=BasicTypeInfo('u8'), hint='res')
+        callee, v0 = _make_reg_param_callee([
+            Move(dest=res, source=HardwareRegister('A'),
+                 type_info=BasicTypeInfo('u8')),   # direct HW read of A
+            Return(values=[res]),
+        ])
+        arg = VirtualRegister(id=42, type_info=BasicTypeInfo('u8'), hint='arg')
+        caller = _caller_calling("callee", arg, ArgumentMechanism.REGISTER)
+        program = MIRProgram(functions=[caller, callee])
+        assert FunctionInliner(verbose=False).run(program) == 1
+
+        a_loads = [i for i in _all_instrs(caller)
+                   if isinstance(i, Move) and isinstance(i.dest, HardwareRegister)
+                   and i.dest.name == 'A']
+        assert len(a_loads) == 1, "A-load must be kept when body reads A directly"
+
+    def test_immediate_into_pointer_not_substituted(self):
+        """f(p){ *p = 1 } called with a constant pointer: an Immediate must NOT
+        land in StoreIndirect.pointer, so the bridge Move is retained."""
+        pv = VirtualRegister(id=0, type_info=BasicTypeInfo('u8'), hint='p')
+        callee = make_mir_function("wr", inline_attr=INLINE)
+        callee.parameters = [HIRParameter(name='p', param_type=BasicTypeInfo('u8'),
+                                          binding=None)]
+        callee.param_to_vreg = {0: pv}
+        callee.blocks[0] = BasicBlock(
+            block_id=0,
+            instructions=[
+                StoreIndirect(source=Immediate(1), pointer=pv, is_far=False,
+                              type_info=BasicTypeInfo('u8')),
+                Return(values=[]),
+            ],
+            predecessors=[], successors=[],
+        )
+        caller = _caller_calling("wr", Immediate(0x2000), ArgumentMechanism.STACK)
+        program = MIRProgram(functions=[caller, callee])
+        assert FunctionInliner(verbose=False).run(program) == 1
+
+        stores = [i for i in _all_instrs(caller) if isinstance(i, StoreIndirect)]
+        assert stores, "expected the inlined StoreIndirect"
+        assert all(isinstance(s.pointer, VirtualRegister) for s in stores), \
+            "pointer must stay a vreg, not become an Immediate"
+        bridges = [i for i in _all_instrs(caller)
+                   if isinstance(i, Move) and isinstance(i.dest, VirtualRegister)
+                   and isinstance(i.source, Immediate) and i.source.value == 0x2000]
+        assert len(bridges) == 1, "immediate pointer must keep its bridge Move"
+
+    def test_immediate_into_alu_substituted(self):
+        """f(v){ res = v + 1 } called with an Immediate: the constant lands in
+        BinaryOp.left (immediate-legal), so it is substituted and no bridge remains."""
+        pv = VirtualRegister(id=0, type_info=BasicTypeInfo('u8'), hint='v')
+        res = VirtualRegister(id=1, type_info=BasicTypeInfo('u8'), hint='res')
+        callee = make_mir_function("addone", inline_attr=INLINE)
+        callee.parameters = [HIRParameter(name='v', param_type=BasicTypeInfo('u8'),
+                                          binding=None)]
+        callee.param_to_vreg = {0: pv}
+        callee.blocks[0] = BasicBlock(
+            block_id=0,
+            instructions=[
+                BinaryOp(dest=res, left=pv, right=Immediate(1), op='+',
+                         type_info=BasicTypeInfo('u8')),
+                Return(values=[res]),
+            ],
+            predecessors=[], successors=[],
+        )
+        caller = _caller_calling("addone", Immediate(9), ArgumentMechanism.STACK)
+        program = MIRProgram(functions=[caller, callee])
+        assert FunctionInliner(verbose=False).run(program) == 1
+
+        binops = [i for i in _all_instrs(caller) if isinstance(i, BinaryOp)]
+        assert any(isinstance(bo.left, Immediate) and bo.left.value == 9
+                   for bo in binops), "immediate arg should be spliced into ALU op"
+        bridges = [i for i in _all_instrs(caller)
+                   if isinstance(i, Move) and isinstance(i.dest, VirtualRegister)
+                   and isinstance(i.source, Immediate) and i.source.value == 9]
+        assert bridges == [], "no bridge Move for the substituted immediate"
+
+    def test_width_mismatch_not_substituted(self):
+        """u8 vreg arg into a u16 param needs zero-extension, so substitution is
+        refused (the TypeConvert+Move widening path is kept)."""
+        pv = VirtualRegister(id=0, type_info=BasicTypeInfo('u16'), hint='v')
+        res = VirtualRegister(id=1, type_info=BasicTypeInfo('u16'), hint='res')
+        callee = make_mir_function("wide", inline_attr=INLINE)
+        callee.parameters = [HIRParameter(name='v', param_type=BasicTypeInfo('u16'),
+                                          binding=None)]
+        callee.param_to_vreg = {0: pv}
+        callee.blocks[0] = BasicBlock(
+            block_id=0,
+            instructions=[
+                BinaryOp(dest=res, left=pv, right=Immediate(1), op='+',
+                         type_info=BasicTypeInfo('u16')),
+                Return(values=[res]),
+            ],
+            predecessors=[], successors=[],
+        )
+        arg = VirtualRegister(id=42, type_info=BasicTypeInfo('u8'), hint='narrow')
+        caller = _caller_calling("wide", arg, ArgumentMechanism.STACK)
+        program = MIRProgram(functions=[caller, callee])
+        assert FunctionInliner(verbose=False).run(program) == 1
+
+        binops = [i for i in _all_instrs(caller) if isinstance(i, BinaryOp)]
+        # The narrow arg must NOT be spliced directly into the u16 op.
+        assert not any(isinstance(bo.left, VirtualRegister) and bo.left.id == arg.id
+                       for bo in binops), "narrow arg must not be substituted into wide param"
+
+    def test_symbolic_immediate_not_substituted(self):
+        """An Immediate carrying a `.symbol` (e.g. &ARR[2]) stores a byte OFFSET
+        in .value that codegen combines with the symbol base — not a
+        self-contained constant. It must keep its bridge Move, never be spliced
+        directly into an operand slot."""
+        pv = VirtualRegister(id=0, type_info=BasicTypeInfo('u8'), hint='v')
+        res = VirtualRegister(id=1, type_info=BasicTypeInfo('u8'), hint='res')
+        callee = make_mir_function("addoff", inline_attr=INLINE)
+        callee.parameters = [HIRParameter(name='v', param_type=BasicTypeInfo('u8'),
+                                          binding=None)]
+        callee.param_to_vreg = {0: pv}
+        callee.blocks[0] = BasicBlock(
+            block_id=0,
+            instructions=[
+                BinaryOp(dest=res, left=pv, right=Immediate(1), op='+',
+                         type_info=BasicTypeInfo('u8')),
+                Return(values=[res]),
+            ],
+            predecessors=[], successors=[],
+        )
+        sym_imm = Immediate(2)
+        sym_imm.symbol = MockSymbol("ARR")   # symbolic immediate (address+offset)
+        caller = _caller_calling("addoff", sym_imm, ArgumentMechanism.STACK)
+        program = MIRProgram(functions=[caller, callee])
+        assert FunctionInliner(verbose=False).run(program) == 1
+
+        binops = [i for i in _all_instrs(caller) if isinstance(i, BinaryOp)]
+        assert not any(isinstance(bo.left, Immediate) and getattr(bo.left, 'symbol', None)
+                       for bo in binops), "symbolic immediate must not be spliced into ALU op"
+        bridges = [i for i in _all_instrs(caller)
+                   if isinstance(i, Move) and isinstance(i.dest, VirtualRegister)
+                   and isinstance(i.source, Immediate) and getattr(i.source, 'symbol', None)]
+        assert len(bridges) == 1, "symbolic immediate must keep its bridge Move"
 
 
 # =============================================================================

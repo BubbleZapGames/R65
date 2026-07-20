@@ -29,6 +29,29 @@ from r65.compiler.hir.attributes import InlineMode
 from r65.compiler.analysis.loop_analysis import compute_block_nesting
 
 
+# Operand slots (keyed by (instr_type, field)) where codegen legally accepts an
+# Immediate — it loads/uses the value via `LDA #imm` / `ADC #imm` / etc. An
+# Immediate must NOT be substituted into a pointer slot (LoadIndirect.pointer,
+# StoreIndirect.pointer), a switch scrutinee, a branch condition, or a return
+# value: those are register/DP-typed at codegen and a constant there silently
+# corrupts output. Caller VirtualRegister args are unconstrained (a vreg is
+# legal in every slot) and skip this whitelist. Used by
+# FunctionInliner._compute_param_substitution.
+_IMMEDIATE_SAFE_SLOTS: Set[Tuple[type, str]] = {
+    (Move, 'source'),
+    (Store, 'source'),
+    (StoreIndirect, 'source'),
+    (BinaryOp, 'left'), (BinaryOp, 'right'),
+    (UnaryOp, 'operand'),
+    (Compare, 'left'), (Compare, 'right'),
+    (TypeConvert, 'source'),
+    (BankByte, 'source'),
+    (ToBool, 'source'),
+    (Rotate, 'source'),
+    (BitTest, 'value'),
+}
+
+
 # ---------------------------------------------------------------------------
 # Cycle-cost model
 # ---------------------------------------------------------------------------
@@ -579,6 +602,13 @@ class BlockCloner:
         self.callee_func = callee_func
         self.vreg_map: Dict[int, VirtualRegister] = {}
         self.block_map: Dict[int, int] = {}
+        # Copy-propagation at inline time: callee-space vreg id -> caller
+        # operand (VirtualRegister/Immediate) to splice in place of that
+        # parameter vreg. When populated, uses of the param vreg become the
+        # caller's argument value directly during cloning, so the bridge Move
+        # that would otherwise bind arg->param is never emitted (and cannot
+        # survive a coalescence miss). See FunctionInliner._compute_param_substitution.
+        self.substitution_map: Dict[int, object] = {}
 
     def _get_next_block_id(self) -> int:
         """Get the next available block ID in the caller function."""
@@ -625,6 +655,10 @@ class BlockCloner:
             Remapped operand
         """
         if isinstance(operand, VirtualRegister):
+            # Copy-propagation: if this param vreg has a caller argument bound
+            # to it, splice the argument operand in directly (no bridge Move).
+            if operand.id in self.substitution_map:
+                return self.substitution_map[operand.id]
             return self._remap_vreg(operand)
         elif isinstance(operand, (HardwareRegister, Immediate)):
             return operand
@@ -989,8 +1023,16 @@ class FunctionInliner:
         """
         call_block = caller.blocks[block_id]
 
+        # Decide (pre-clone, in callee vreg space) which params can be bound by
+        # substituting the caller's arg operand directly into the body instead
+        # of emitting a bridge Move. Seed the map before cloning so
+        # _remap_operand can consult it as the body is cloned.
+        (sub_map, substituted_idx, dropped_save_hw,
+         reg_save_count_pre, save_hw_names) = self._compute_param_substitution(call, callee)
+
         # Clone callee's blocks
         cloner = BlockCloner(caller, callee)
+        cloner.substitution_map = sub_map
         cloned_blocks = cloner.clone_blocks()
         inlined_entry_id = cloner.get_entry_block_id()
 
@@ -1054,16 +1096,13 @@ class FunctionInliner:
         # If a param's HW register isn't observed by either path, the load is
         # dead and the inliner can skip it.
         inlined_entry = cloned_blocks[inlined_entry_id]
-        reg_save_count = 0
-        live_hw_regs: Set[str] = set()
-        for instr in inlined_entry.instructions:
-            if (isinstance(instr, Move) and
-                isinstance(instr.source, HardwareRegister) and
-                isinstance(instr.dest, VirtualRegister)):
-                live_hw_regs.add(instr.source.name)
-                reg_save_count += 1
-            else:
-                break
+        # Use the PRE-CLONE leading-save count and HW names: substitution may
+        # have rewritten a save Move's dest to an Immediate, which would make
+        # the post-clone `isinstance(dest, VirtualRegister)` scan stop early and
+        # miscount. HW names are clone-invariant, so seeding from the pre-clone
+        # scan is equivalent for the non-substituted case.
+        reg_save_count = reg_save_count_pre
+        live_hw_regs: Set[str] = set(save_hw_names)
         live_hw_regs.update(self._collect_read_hw_reg_names(cloned_blocks))
 
         # Identify which stack-param vregs are actually read in the cloned
@@ -1079,6 +1118,7 @@ class FunctionInliner:
             call, callee, cloner,
             saved_hw_regs=live_hw_regs,
             used_vreg_ids=used_vreg_ids,
+            substituted_idx=substituted_idx,
         )
 
         # Insert instructions in the correct order at the inlined entry block:
@@ -1089,9 +1129,21 @@ class FunctionInliner:
         #   3. stack_instrs: Bind stack param arguments to callee vregs
         #      (e.g., Move(dest=ptr_vreg, source=Immediate(addr)) — may clobber A in codegen)
         #   4. Rest of callee body
+        # Drop the save Moves for substituted register params — their dest was
+        # rewritten to the substituted operand during cloning (making them
+        # meaningless), and the load that fed them is skipped in
+        # _create_param_bindings. Identify by the (unchanged) HW source name.
+        leading_saves = inlined_entry.instructions[:reg_save_count]
+        if dropped_save_hw:
+            leading_saves = [
+                m for m in leading_saves
+                if not (isinstance(m, Move) and
+                        isinstance(m.source, HardwareRegister) and
+                        m.source.name in dropped_save_hw)
+            ]
         inlined_entry.instructions = (
             register_instrs +
-            inlined_entry.instructions[:reg_save_count] +
+            leading_saves +
             stack_instrs +
             inlined_entry.instructions[reg_save_count:]
         )
@@ -1257,6 +1309,7 @@ class FunctionInliner:
         cloner: BlockCloner,
         saved_hw_regs: Optional[Set[str]] = None,
         used_vreg_ids: Optional[Set[int]] = None,
+        substituted_idx: Optional[Set[int]] = None,
     ) -> Tuple[List[MIRInstruction], List[MIRInstruction]]:
         """
         Create instructions to bind call arguments to callee parameters.
@@ -1269,6 +1322,8 @@ class FunctionInliner:
         - Register params whose HW register isn't saved at entry (i.e., the
           MIR builder elided the save Move because no use exists).
         - Stack params whose vreg has no reads in the cloned body.
+        - Params in `substituted_idx`: the arg operand was spliced directly into
+          the body (copy-propagation), so no binding Move is needed at all.
 
         Args:
             call: The Call instruction
@@ -1278,6 +1333,8 @@ class FunctionInliner:
                 leading Moves. Treated as "all live" when None (no pruning).
             used_vreg_ids: IDs of vregs (in caller's space) that are read in
                 the cloned body. When None, all stack-param Moves are emitted.
+            substituted_idx: Parameter indices whose arg was substituted directly
+                into the body — no binding Move is emitted for these.
 
         Returns:
             Tuple of (register_instrs, stack_instrs)
@@ -1286,6 +1343,9 @@ class FunctionInliner:
         stack_instrs = []
 
         for i, (arg, param) in enumerate(zip(call.args, callee.parameters)):
+            if substituted_idx is not None and i in substituted_idx:
+                # Arg was spliced directly into the body; no bridge Move needed.
+                continue
             if isinstance(param.binding, RegisterBinding):
                 # Register parameter: the call lowering would have set up the
                 # hardware register. After inlining, we must emit this setup
@@ -1365,6 +1425,176 @@ class FunctionInliner:
         )
 
         return register_instrs, stack_instrs
+
+    def _leading_save_moves(self, callee: MIRFunction):
+        """Pre-clone scan of the callee entry block's leading register-save run
+        (`Move(dest=vreg, source=HardwareRegister)`), emitted by the MIR builder
+        for every register-bound parameter referenced by symbol in the body.
+
+        Returns `(count, {hw_name: saved_vreg}, {hw_names})`. Run pre-clone so the
+        count is authoritative even after substitution rewrites a save Move's
+        dest (which would break the post-clone `isinstance(dest, VirtualRegister)`
+        scan).
+        """
+        count = 0
+        hw_to_saved: Dict[str, VirtualRegister] = {}
+        hw_names: Set[str] = set()
+        entry = callee.blocks.get(callee.entry_block_id)
+        if entry is None:
+            return count, hw_to_saved, hw_names
+        # Only genuine param saves count: the MIR builder emits exactly one
+        # per register-bound parameter, each for a distinct HW register. A body
+        # `let y = A` also lowers to Move(vreg, A) and, if it sits right after
+        # the saves, is structurally identical — but it is NOT a save. Bound the
+        # scan to the params' registers, first occurrence per register. Absorbing
+        # a body HW-read here would both hide it from _direct_hw_reads (skip)
+        # and let the drop filter delete a live instruction.
+        reg_param_names = {
+            p.binding.register_name for p in callee.parameters
+            if isinstance(p.binding, RegisterBinding)
+        }
+        for instr in entry.instructions:
+            if (isinstance(instr, Move) and
+                    isinstance(instr.source, HardwareRegister) and
+                    isinstance(instr.dest, VirtualRegister) and
+                    instr.source.name in reg_param_names and
+                    instr.source.name not in hw_names):
+                hw_to_saved[instr.source.name] = instr.dest
+                hw_names.add(instr.source.name)
+                count += 1
+            else:
+                break
+        return count, hw_to_saved, hw_names
+
+    def _written_vreg_ids(self, callee: MIRFunction, skip_entry_leading: int) -> Set[int]:
+        """IDs of vregs written (def) anywhere in the callee body, EXCLUDING the
+        first `skip_entry_leading` instructions of the entry block (the register-
+        save Moves, whose dests are the param vregs themselves). A param whose
+        vreg is written cannot be substituted — the body mutates it (params are
+        mutable in R65), so the caller's value is not what later uses observe."""
+        from r65.compiler.mir.nodes import iter_operands, OperandRole
+        written: Set[int] = set()
+        for bid, block in callee.blocks.items():
+            instrs = block.instructions
+            if bid == callee.entry_block_id:
+                instrs = instrs[skip_entry_leading:]
+            for instr in instrs:
+                for _, v in iter_operands(instr, role=OperandRole.WRITE):
+                    if isinstance(v, VirtualRegister):
+                        written.add(v.id)
+        return written
+
+    def _direct_hw_reads(self, callee: MIRFunction, skip_entry_leading: int) -> Set[str]:
+        """HW register names read directly in the callee body, EXCLUDING the
+        first `skip_entry_leading` entry instructions — so a save Move's own
+        `source=A` read is not miscounted as a body read. A register param read
+        as a bare HW register (e.g. `self.lo = X` for `value @ X`) must keep its
+        register load and cannot be substituted."""
+        from r65.compiler.mir.nodes import iter_operands, OperandRole
+        names: Set[str] = set()
+        for bid, block in callee.blocks.items():
+            instrs = block.instructions
+            if bid == callee.entry_block_id:
+                instrs = instrs[skip_entry_leading:]
+            for instr in instrs:
+                for _, v in iter_operands(instr, role=OperandRole.READ, accepts_hr=True):
+                    if isinstance(v, HardwareRegister):
+                        names.add(v.name)
+        return names
+
+    def _param_vreg_use_slots(self, callee: MIRFunction, vreg_id: int) -> Set[Tuple[type, str]]:
+        """Return the `(instr_type, field)` READ slots in which the given callee
+        vreg is used. An Immediate may be substituted for the vreg only if every
+        slot is in `_IMMEDIATE_SAFE_SLOTS`."""
+        from r65.compiler.mir.nodes import iter_operands, OperandRole
+        slots: Set[Tuple[type, str]] = set()
+        for block in callee.blocks.values():
+            for instr in block.instructions:
+                # No accepts_hr filter: the vreg-only slots (e.g. pointer,
+                # scrutinee) are exactly the ones an Immediate must NOT enter,
+                # so they must be visible to the whitelist check.
+                for spec, v in iter_operands(instr, role=OperandRole.READ):
+                    if isinstance(v, VirtualRegister) and v.id == vreg_id:
+                        slots.add((type(instr), spec.field))
+        return slots
+
+    def _compute_param_substitution(self, call: Call, callee: MIRFunction):
+        """Decide which parameters can have their bridge Move eliminated by
+        substituting the caller's argument operand directly into the cloned body.
+
+        Returns `(substitution_map, substituted_idx, dropped_save_hw,
+        reg_save_count, save_hw_names)` where substitution_map is callee-vreg-id
+        -> caller operand (seeded into BlockCloner before cloning).
+
+        A parameter P (bound to callee vreg V) is substituted with arg `a` iff:
+          1. V is never written in the callee body (excluding entry save Moves).
+          2. `a` is a caller VirtualRegister (always operand-legal), or an
+             Immediate used only in immediate-legal slots.
+          3. (register params) the HW register is not read directly in the body.
+          4. no u8->u16 widening is needed (else keep the TypeConvert+Move path).
+        """
+        from r65.compiler.codegen.type_utils import get_type_size
+
+        count, hw_to_saved, save_hw_names = self._leading_save_moves(callee)
+        substitution_map: Dict[int, object] = {}
+        substituted_idx: Set[int] = set()
+        dropped_save_hw: Set[str] = set()
+
+        written = self._written_vreg_ids(callee, count)
+        direct_hw = self._direct_hw_reads(callee, count)
+
+        for i, (arg, param) in enumerate(zip(call.args, callee.parameters)):
+            a = arg.value
+            is_vreg = isinstance(a, VirtualRegister)
+            # Only PLAIN integer immediates: a symbolic Immediate (`&ARR[2]`,
+            # `&ROM_DATA`) stores a byte offset in `.value` that codegen combines
+            # with the symbol's base address, so its raw operand is not a
+            # self-contained value safe to splice into arbitrary slots. Keep the
+            # bridge Move for those (matches instruction_select._build_vreg_const_map).
+            is_imm = isinstance(a, Immediate) and not getattr(a, 'symbol', None)
+            if not (is_vreg or is_imm):
+                continue  # HardwareRegister / MemoryLocation / symbolic imm: keep the Move
+
+            # Locate the callee vreg this parameter binds to.
+            if isinstance(param.binding, RegisterBinding):
+                reg_name = param.binding.register_name
+                cv = hw_to_saved.get(reg_name)
+                if cv is None:
+                    continue  # unused param / no save Move -> nothing to bind
+                if reg_name in direct_hw:
+                    continue  # condition 3: body reads the bare HW register
+            elif isinstance(param.binding, VariableBinding):
+                continue  # caller already stored to the variable
+            else:
+                cv = callee.param_to_vreg.get(i)
+                if cv is None:
+                    continue
+
+            # Condition 1: V must not be reassigned in the body.
+            if cv.id in written:
+                continue
+
+            # Condition 4: never substitute a narrower value into a wider param
+            # (needs zero/sign-extension). Immediates are width-agnostic.
+            if is_vreg:
+                arg_t = getattr(a, 'type_info', None)
+                p_size = get_type_size(param.param_type) if param.param_type else None
+                a_size = get_type_size(arg_t) if arg_t else None
+                if a_size is not None and p_size is not None and a_size < p_size:
+                    continue
+
+            # Condition 2 (immediates only): all use slots must accept an immediate.
+            if is_imm:
+                slots = self._param_vreg_use_slots(callee, cv.id)
+                if any(slot not in _IMMEDIATE_SAFE_SLOTS for slot in slots):
+                    continue
+
+            substitution_map[cv.id] = a
+            substituted_idx.add(i)
+            if isinstance(param.binding, RegisterBinding):
+                dropped_save_hw.add(param.binding.register_name)
+
+        return substitution_map, substituted_idx, dropped_save_hw, count, save_hw_names
 
     def _collect_read_hw_reg_names(self, blocks: Dict[int, BasicBlock]) -> Set[str]:
         """Return the set of HardwareRegister names read anywhere in `blocks`.
