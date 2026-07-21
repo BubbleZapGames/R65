@@ -1335,8 +1335,8 @@ macro_rules! set_cgram_addr($index:expr) {
 // Usage: write_color!(0x7FFF);  // White
 macro_rules! write_color($color:expr) {
     A = $color as u16;
-    CGDATA = A as u8
-    CGDATA = B
+    CGDATA = A as u8;
+    CGDATA = B;
 }
 
 // Write RGB color to CGRAM (each component 0-31)
@@ -1499,7 +1499,7 @@ macro_rules! set_obj_sel($size:expr, $base:expr, $gap:expr) {
 // Enable NMI
 // Usage: enable_nmi!();
 macro_rules! enable_nmi() {
-    NMITIMEN = NMITIMEN | Interrupt::Nmi;
+    NMITIMEN |= Interrupt::Nmi as u8;
 }
 
 // Disable NMI
@@ -1511,7 +1511,7 @@ macro_rules! disable_nmi() {
 // Enable auto-joypad read
 // Usage: enable_autojoy!();
 macro_rules! enable_autojoy() {
-    NMITIMEN |= Interrupt::AutoJoy;
+    NMITIMEN |= Interrupt::AutoJoy as u8;
 }
 
 // Set all interrupt flags at once
