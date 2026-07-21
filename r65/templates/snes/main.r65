@@ -31,6 +31,6 @@ fn nmi_handler() {
 // Game loop: runs forever after init_reset() hands off. Edit this.
 fn main() -> ! {
     loop {
-        wait_nmi();
+        wait_nmi!();
     }
 }
