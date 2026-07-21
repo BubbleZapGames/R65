@@ -8,6 +8,7 @@ into WLA-DX assembly output.
 
 from typing import Optional, Dict, List, Any
 from r65.compiler.mir import MIRProgram, MIRFunction
+from r65.compiler.mir.nodes import SymbolByte
 from r65.compiler.codegen.emitter import AssemblyEmitter
 from r65.compiler.codegen.memory_alloc import MemoryAllocator
 from r65.compiler.codegen.symbol_gen import SymbolDefinitionGenerator
@@ -721,7 +722,10 @@ class ProgramCodeGenerator:
         data = rom_data.data
         for i in range(0, len(data), 16):
             chunk = data[i:i+16]
-            bytes_str = ', '.join(f'${b:02X}' for b in chunk)
+            bytes_str = ', '.join(
+                b.render() if isinstance(b, SymbolByte) else f'${b:02X}'
+                for b in chunk
+            )
             self.emitter.emit_directive(f".db {bytes_str}")
 
     def _emit_function_local_rom_data(self, mir_func: MIRFunction):

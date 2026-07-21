@@ -249,6 +249,25 @@ class MemoryFill(MIRInstruction):
         return f"MemoryFill {self.dest} with #{self.fill_value} x {self.count} ({self.element_size}B each)"
 
 
+@dataclass(frozen=True)
+class SymbolByte:
+    """
+    One byte of another symbol's address, resolved by the assembler.
+
+    Lets a static initializer hold `&OTHER_STATIC` — the address is not known
+    until link time, so the byte is emitted as a WLA-DX operator on the target
+    label (`<label` low, `>label` high, `:label` bank) instead of a literal.
+    """
+    label: str            # Target data label (e.g. "__AREA0_TEXT_data")
+    part: str             # 'low' | 'high' | 'bank'
+
+    # WLA-DX prefix operators for each byte of a 24-bit address.
+    PREFIX = {'low': '<', 'high': '>', 'bank': ':'}
+
+    def render(self) -> str:
+        return f"{self.PREFIX[self.part]}{self.label}"
+
+
 @dataclass
 class ROMDataRef:
     """
@@ -256,9 +275,9 @@ class ROMDataRef:
 
     Used by BlockCopy to reference ROM data by label.
     """
-    label: str            # Label for the ROM data section
-    data: List[int]       # Raw bytes to store in ROM
-    element_size: int     # Size of each element (for display)
+    label: str                          # Label for the ROM data section
+    data: List[Union[int, SymbolByte]]  # Raw bytes, or link-time symbol bytes
+    element_size: int                   # Size of each element (for display)
 
     def __repr__(self):
         return f"ROMDataRef({self.label}, {len(self.data)} bytes)"

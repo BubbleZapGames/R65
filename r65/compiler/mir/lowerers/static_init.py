@@ -11,7 +11,7 @@ from r65.compiler.hir import (
     HIRStaticDecl, HIRFunctionDecl, HIRStructDecl,
     HIRExpression, HIRIntegerLiteral, HIRBooleanLiteral, HIREnumVariantExpr, HIRTypeCast,
     HIRArrayFillExpr, HIRArrayLiteralExpr, HIRStringLiteral, HIRStructLiteralExpr,
-    HIRIdentifier, HIRFunctionAddress,
+    HIRIdentifier, HIRFunctionAddress, HIRAddressOf,
     SymbolKind,
 )
 from r65.compiler.hir.attributes import StorageKind
@@ -20,7 +20,7 @@ from r65.compiler.mir.nodes import (
     MIRFunction, BasicBlock,
     VirtualRegister, FunctionPointer, MemoryLocation,
     Store, Return,
-    MemoryFill, BlockCopy, ROMDataRef,
+    MemoryFill, BlockCopy, ROMDataRef, SymbolByte,
 )
 
 from r65.compiler.mir.virtual_registers import VirtualRegisterAllocator
@@ -214,6 +214,78 @@ class StaticInitLowerer:
             element_size=element_size
         ))
 
+    def _extract_symbol_address_bytes(
+        self, expr: HIRExpression, size: int
+    ) -> Optional[List[SymbolByte]]:
+        """
+        Lower `&SOME_STATIC` (with any surrounding casts) into link-time
+        address bytes, for use inside a static initializer.
+
+        Returns None if `expr` is not an address-of a ROM static, so callers
+        can fall through to their own error reporting. Only immutable statics
+        are supported: their data label is known to the assembler, whereas a
+        RAM static's address is assigned after MIR lowering.
+        """
+        # Peel casts: `&FOO as far *u8` is the idiomatic spelling.
+        inner = expr
+        while isinstance(inner, HIRTypeCast):
+            inner = inner.expr
+
+        if not isinstance(inner, HIRAddressOf) or inner.operand is None:
+            return None
+        target = inner.operand
+        if not isinstance(target, HIRIdentifier):
+            return None
+
+        symbol = target.symbol
+        if symbol is None:
+            symbol = self.builder._hir_program.symbol_table.lookup(target.name)
+        if symbol is None or symbol.kind != SymbolKind.STATIC_VAR:
+            return None
+
+        # Mutable statics live in RAM; their address is not a link-time label.
+        if symbol.is_mutable:
+            raise MIRLoweringError(
+                f"cannot take the address of mutable static `{target.name}` in a "
+                f"static initializer (only immutable statics have a link-time address)",
+                source_loc=self.builder._current_source_loc
+            )
+
+        label = getattr(symbol, 'rom_label', None) or f"__{target.name}_data"
+
+        parts = ['low', 'high', 'bank']
+        if size < 2 or size > 3:
+            raise MIRLoweringError(
+                f"cannot store the address of `{target.name}` in a {size}-byte field; "
+                f"use a near pointer (2 bytes) or far pointer (3 bytes)",
+                source_loc=self.builder._current_source_loc
+            )
+        return [SymbolByte(label, part) for part in parts[:size]]
+
+    def _extract_initializer_bytes(
+        self, expr: HIRExpression, size: int, what: str
+    ) -> List:
+        """
+        Lower one static-initializer element to `size` little-endian bytes.
+
+        Accepts compile-time integers and `&IMMUTABLE_STATIC` address-of
+        expressions. Anything else is a hard error — silently substituting
+        zero here produces a ROM that links cleanly and misbehaves at runtime.
+        """
+        value = self._extract_constant_value(expr)
+        if value is not None:
+            return [(value >> (i * 8)) & 0xFF for i in range(size)]
+
+        symbol_bytes = self._extract_symbol_address_bytes(expr, size)
+        if symbol_bytes is not None:
+            return symbol_bytes
+
+        raise MIRLoweringError(
+            f"{what} must be a compile-time constant or the address of an "
+            f"immutable static",
+            source_loc=self.builder._current_source_loc
+        )
+
     def _extract_constant_value(self, expr: HIRExpression) -> Optional[int]:
         """
         Extract constant value from expression without emitting instructions.
@@ -256,20 +328,10 @@ class StaticInitLowerer:
                 struct_bytes = self._extract_struct_literal_bytes(elem)
                 data_bytes.extend(struct_bytes)
             else:
-                value = self._extract_constant_value(elem)
-                if value is None:
-                    value = 0  # Fallback for non-constant
-
-                # Store as little-endian bytes
-                if element_size == 1:
-                    data_bytes.append(value & 0xFF)
-                elif element_size == 2:
-                    data_bytes.append(value & 0xFF)
-                    data_bytes.append((value >> 8) & 0xFF)
-                else:
-                    # Handle larger types if needed
-                    for i in range(element_size):
-                        data_bytes.append((value >> (i * 8)) & 0xFF)
+                data_bytes.extend(self._extract_initializer_bytes(
+                    elem, element_size,
+                    f"element of static array `{static_decl.name}`"
+                ))
 
         # Create ROM data reference using variable name
         label = f"__{static_decl.name}_data"
@@ -349,13 +411,14 @@ class StaticInitLowerer:
                 continue
 
             offset, field_size = field_info[field_init.name]
-            value = self._extract_constant_value(field_init.value)
-            if value is None:
-                value = 0  # Fallback for non-constant
+            field_bytes = self._extract_initializer_bytes(
+                field_init.value, field_size,
+                f"initializer for field `{struct_expr.struct_name}.{field_init.name}`"
+            )
 
             # Store as little-endian bytes at the field's offset
             for i in range(field_size):
-                data_bytes[offset + i] = (value >> (i * 8)) & 0xFF
+                data_bytes[offset + i] = field_bytes[i]
 
         # Auto-initialize __type_id for structs implementing traits
         if '__type_id' in field_info:
@@ -487,13 +550,14 @@ class StaticInitLowerer:
                 continue
 
             offset, field_size = field_info[field_init.name]
-            value = self._extract_constant_value(field_init.value)
-            if value is None:
-                value = 0  # Fallback for non-constant
+            field_bytes = self._extract_initializer_bytes(
+                field_init.value, field_size,
+                f"initializer for field `{struct_expr.struct_name}.{field_init.name}`"
+            )
 
             # Store as little-endian bytes at the field's offset
             for i in range(field_size):
-                data_bytes[offset + i] = (value >> (i * 8)) & 0xFF
+                data_bytes[offset + i] = field_bytes[i]
 
         # Auto-initialize __type_id for structs implementing traits
         if '__type_id' in field_info:
