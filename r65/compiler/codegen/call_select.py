@@ -2591,36 +2591,66 @@ class CallInstructionSelector(BaseSelector):
 
     def _has_far_ptr_derefs_after_call(self, call_instr: Call) -> bool:
         """
-        Check if there are far pointer dereferences after this call.
+        Check whether any far pointer dereference is reachable from this call.
 
-        Uses simple scan approach: checks all remaining instructions in the
-        function for LoadIndirect/StoreIndirect with is_far=True.
+        "Reachable" is a CFG question, not a listing-order one. A loop like
+
+            loop { let c = s[i]; if c == 0 { break; } sink(c); i++; }
+
+        dereferences `s` in the header block, which sits *before* the call's
+        block in the block map but *after* it across the back edge. Walking
+        the block map linearly answers "no more derefs", the caller then emits
+        PHD without TSC/TCD, and D stays at the caller's value for every
+        remaining iteration — so the next `[dp],Y` reads direct page instead
+        of the frame slot.
 
         Args:
             call_instr: The current Call instruction
 
         Returns:
-            True if far pointer dereferences exist after this call
+            True if a far pointer dereference is reachable after this call
         """
         from r65.compiler.mir.nodes import LoadIndirect, StoreIndirect
 
-        if not self.parent.current_function:
+        func = self.parent.current_function
+        if not func:
             return False
 
-        # Find the call instruction's position and scan forward
-        found_call = False
+        def has_far_deref(instructions) -> bool:
+            return any(
+                isinstance(i, (LoadIndirect, StoreIndirect)) and i.is_far
+                for i in instructions
+            )
 
-        for block in self.parent.current_function.blocks.values():
-            for instr in block.instructions:
+        # Locate the call, then check the tail of its own block.
+        home_id = None
+        for block_id, block in func.blocks.items():
+            for idx, instr in enumerate(block.instructions):
                 if instr is call_instr:
-                    found_call = True
-                    continue
+                    if has_far_deref(block.instructions[idx + 1:]):
+                        return True
+                    home_id = block_id
+                    break
+            if home_id is not None:
+                break
 
-                if found_call:
-                    # Check for far pointer indirect operations
-                    if isinstance(instr, (LoadIndirect, StoreIndirect)):
-                        if instr.is_far:
-                            return True
+        if home_id is None:
+            return False
+
+        # Then every block reachable from it, back edges included.
+        seen = set()
+        queue = list(func.blocks[home_id].successors)
+        while queue:
+            block_id = queue.pop()
+            if block_id in seen:
+                continue
+            seen.add(block_id)
+            block = func.blocks.get(block_id)
+            if block is None:
+                continue
+            if has_far_deref(block.instructions):
+                return True
+            queue.extend(block.successors)
 
         return False
 
