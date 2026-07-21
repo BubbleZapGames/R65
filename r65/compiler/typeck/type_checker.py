@@ -391,6 +391,38 @@ class TypeChecker:
                 source_loc=source_loc
             )
 
+    def _check_return_fits_a_register(self, func):
+        """
+        Reject return values wider than one register.
+
+        The return ABI hands each value back in a register (A, then B or X,
+        then Y), so a value has at most 2 bytes to travel in. A `far *T` is
+        3 bytes: the callee would build it in its stack frame and return only
+        the low byte, leaving the caller to read the other two out of the
+        frame it just deallocated. That links cleanly and produces a wild
+        pointer, so it is rejected here rather than miscompiled.
+
+        Raises:
+            TypeCheckError: If any returned value needs more than 2 bytes.
+        """
+        from r65.compiler.hir.types import MultiReturnTypeInfo
+
+        ret_type = func.return_type
+        parts = (ret_type.element_types
+                 if isinstance(ret_type, MultiReturnTypeInfo) else [ret_type])
+
+        for part in parts:
+            size = getattr(part, 'size_bytes', None)
+            if isinstance(size, int) and size > 2:
+                raise TypeCheckError(
+                    f"Function '{func.name}' returns '{part}', which is {size} bytes "
+                    f"and does not fit in a return register\n"
+                    f"  Return values travel in A, B/X, or Y - at most 2 bytes each\n"
+                    f"  Suggestion: return a near pointer, or write the value "
+                    f"through an output parameter instead of returning it",
+                    source_loc=func.source_loc
+                )
+
     def _check_type_match(self, expected_type: TypeInfo, actual_type: TypeInfo,
                           expr: HIRExpression, context: str, source_loc=None,
                           use_compatible: bool = False):
@@ -807,6 +839,7 @@ class TypeChecker:
                 suggestion_suffix="\n  Or write to a pre-allocated output parameter",
                 verb="returned"
             )
+            self._check_return_fits_a_register(func)
 
         # Interrupt handlers use automatic mode management (mode is saved/restored by RTI)
         # No validation needed since mode is now inferred automatically
