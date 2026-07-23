@@ -494,6 +494,10 @@ def _uses_compatible_with_hw(vreg_id: int, uses: list) -> bool:
             # These need value in A
             if hasattr(use, 'source') and isinstance(use.source, VirtualRegister) and use.source.id == vreg_id:
                 return False
+            # The result is written with STA (memory operand), so a
+            # hw-register dest can't be resolved either.
+            if hasattr(use, 'dest') and isinstance(use.dest, VirtualRegister) and use.dest.id == vreg_id:
+                return False
     return True
 
 

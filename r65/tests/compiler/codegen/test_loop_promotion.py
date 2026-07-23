@@ -162,3 +162,31 @@ class TestStrlenCodegen:
         frame_alloc = [i for i in prologue if i in ('PHX', 'PHY', 'PHA')]
         assert not frame_alloc, (
             f"Should not allocate stack frame, found: {frame_alloc}\n{func}")
+
+
+class TestTypeConvertDestNotPromoted:
+    """
+    A vreg that is the DEST of a widening TypeConvert must not be promoted
+    to X/Y: codegen writes the conversion result with STA, which cannot
+    resolve a hardware register as memory operand (regression: raised
+    "Cannot resolve hardware register X as memory operand").
+    """
+
+    SOURCE = """
+    #[lowram]
+    static mut DIGITS: [u8; 6];
+
+    fn bump(pos: u8, n: u8) {
+        let mut p: u16 = pos as u16;
+        DIGITS[p] += n;
+        while DIGITS[p] >= 10 {
+            if p == 0 { return; }
+            DIGITS[p] -= 10;
+            p--;
+            DIGITS[p] += 1;
+        }
+    }
+    """
+
+    def test_compiles(self):
+        compile_string(self.SOURCE)
