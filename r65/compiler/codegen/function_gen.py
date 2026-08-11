@@ -23,6 +23,7 @@ from r65.compiler.codegen.constants import DEFAULT_STACK_UPPER, M_FLAG
 from r65.compiler.codegen.opcodes import Opcode, PUSH_OPCODES, PULL_OPCODES
 from r65.compiler.codegen.asm_nodes import Immediate, Address, StackOffset
 from r65.compiler.codegen.abi import ABIInfo, StackFrameLayout
+from r65.compiler.errors import CodegenError
 
 
 class FunctionCodeGenerator:
@@ -391,7 +392,11 @@ class FunctionCodeGenerator:
 
             # Emit instructions in block
             for instr in block.instructions:
-                instr_selector.select_instruction(instr)
+                try:
+                    instr_selector.select_instruction(instr)
+                except CodegenError as e:
+                    self._annotate_codegen_error(e, mir_func, instr)
+                    raise
 
             # Record this block's codegen exit mode
             codegen_exit_modes[block_id] = self.emitter.get_accu_mode()
@@ -412,6 +417,42 @@ class FunctionCodeGenerator:
 
         # Blank line after function
         self.emitter.emit_blank_line()
+
+    @staticmethod
+    def _annotate_codegen_error(error: CodegenError,
+                                mir_func: MIRFunction,
+                                instr) -> None:
+        """
+        Attach codegen-context to a CodegenError raised during instruction
+        selection so it points at the offending source and MIR instruction.
+
+        Errors from instruction selection (e.g. "Cannot resolve hardware
+        register X as memory operand") are frequently raised with no source
+        location, which forced callers to instrument the compiler just to
+        learn which function failed. This fills in, when missing:
+          - source_loc: the failing instruction's location, falling back to
+            the enclosing function's definition location.
+          - message: the enclosing function name.
+          - hint: the MIR instruction being selected.
+
+        Annotation is applied at most once, so re-raising through nested
+        codegen layers does not stack duplicate context.
+        """
+        if getattr(error, '_codegen_annotated', False):
+            return
+        error._codegen_annotated = True
+
+        if error.source_loc is None:
+            error.source_loc = getattr(instr, 'source_loc', None) or mir_func.source_loc
+
+        error.message = f"{error.message} (in function '{mir_func.name}')"
+
+        if not error.hint:
+            error.hint = f"while selecting MIR instruction: {instr!r}"
+
+        # Refresh the Exception's own str() so tracebacks (e.g. under -v)
+        # show the enriched message, not the original bare one.
+        error.args = (error._format_message(),)
 
     # ========================================================================
     # Function Header
