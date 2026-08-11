@@ -200,6 +200,9 @@ class HIRFunctionDecl(HIRDeclaration):
     interrupt_attr: Optional[Any] = None  # Will be InterruptAttribute
     inline_attr: Optional[Any] = None  # Will be InlineAttribute
     is_entry: bool = False
+    # Lint codes suppressed on this function via #[allow(...)]. The sentinel
+    # "*" (attributes.ALLOW_ALL) means every code.
+    allow_lints: frozenset = field(default_factory=frozenset)
 
     # Symbol reference
     symbol: Optional[Any] = None  # Will be Symbol
@@ -227,6 +230,8 @@ class HIRStaticDecl(HIRDeclaration):
     # Processed attributes
     storage_attr: Optional[Any] = None  # Will be StorageAttribute (None = ROM)
     bank_attr: Optional[Any] = None  # Will be BankAttribute (for ROM statics only)
+    # Lint codes suppressed on this static via #[allow(...)]; "*" means all.
+    allow_lints: frozenset = field(default_factory=frozenset)
 
     # Symbol reference
     symbol: Optional[Any] = None  # Will be Symbol

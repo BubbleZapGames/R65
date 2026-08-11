@@ -154,6 +154,22 @@ class StackAttribute(ProcessedAttribute):
     upper: int = 0x1FFF  # Upper bound of stack region
 
 
+# Allow attribute (lint suppression)
+ALLOW_ALL = "*"  # sentinel in a codes set meaning "every lint code"
+
+
+@dataclass
+class AllowAttribute(ProcessedAttribute):
+    """#[allow(CODE, ...)] - suppress the named lint codes for this item.
+
+    Rust-style, lexically scoped: the codes are suppressed for diagnostics
+    arising inside the annotated item (a function's body, a static's decl), not
+    transitively through calls. ``#[allow(all)]`` stores the ``ALLOW_ALL``
+    sentinel, which suppresses every code.
+    """
+    codes: frozenset = field(default_factory=frozenset)
+
+
 # =============================================================================
 # Unsupported Rust attribute hints
 # =============================================================================
@@ -208,6 +224,8 @@ class AttributeProcessor:
                 processed.append(self._process_entry(attr, context))
             elif attr.name == 'inline':
                 processed.append(self._process_inline(attr, context))
+            elif attr.name == 'allow':
+                processed.append(self._process_allow(attr, context))
             else:
                 hint = _UNSUPPORTED_RUST_ATTRS.get(attr.name)
                 raise HIRError(
@@ -472,6 +490,32 @@ class AttributeProcessor:
                 raise HIRError(f"Invalid #[inline] argument: {value_str}. Expected 'always' or 'never'", source_loc=attr.source_loc)
 
         return InlineAttribute(name='inline', mode=mode)
+
+    def _process_allow(self, attr: ast.Attribute, context: str) -> AllowAttribute:
+        """Process #[allow(CODE, ...)] — lint suppression for this item.
+
+        Each positional argument is a lint code identifier (e.g. ``C001``,
+        ``L001``); the special identifier ``all`` suppresses every code. Named
+        arguments are rejected. Codes are not validated against the enabled
+        rule set here — an allow for an unknown code is simply inert, matching
+        the leniency of Rust's ``#[allow]``.
+        """
+        if not attr.args:
+            raise HIRError(
+                "#[allow(...)] requires at least one lint code (or `all`)",
+                source_loc=attr.source_loc,
+                hint="e.g. #[allow(C001)] or #[allow(C001, L001)]",
+            )
+        codes = set()
+        for arg in attr.args:
+            if arg.name is not None:
+                raise HIRError(
+                    "#[allow] does not accept named arguments",
+                    source_loc=attr.source_loc,
+                )
+            code = self._get_arg_identifier(arg.value)
+            codes.add(ALLOW_ALL if code == 'all' else code)
+        return AllowAttribute(name='allow', codes=frozenset(codes))
 
     def _process_stack(self, attr: ast.Attribute, context: str) -> StackAttribute:
         """Process #[stack(lower, upper)] attribute."""

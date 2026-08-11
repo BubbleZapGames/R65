@@ -686,6 +686,7 @@ class HIRBuilder:
             interrupt_attr=None,
             inline_attr=None,
             is_entry=False,
+            allow_lints=attrs['allow'],
             symbol=func_symbol,
             returns_status_flag=None,
             entry_m_mode=entry_m_mode,
@@ -809,6 +810,7 @@ class HIRBuilder:
             interrupt_attr=interrupt_attr,
             inline_attr=inline_attr,
             is_entry=is_entry,
+            allow_lints=attrs['allow'],
             symbol=func_symbol,
             returns_status_flag=returns_status_flag,
             entry_m_mode=entry_m_mode,
@@ -1322,9 +1324,12 @@ class HIRBuilder:
         )
 
         raw_storage_attr = None
+        allow_lints = frozenset()
         for attr in processed_attrs:
             if isinstance(attr, StorageAttribute):
                 raw_storage_attr = attr
+            elif isinstance(attr, AllowAttribute):
+                allow_lints = attr.codes
 
         # Validate storage class based on mutability
         storage_attr = self._validate_static_storage(static, raw_storage_attr)
@@ -1380,6 +1385,7 @@ class HIRBuilder:
             initializer=initializer,
             storage_attr=storage_attr,
             bank_attr=bank_attr,
+            allow_lints=allow_lints,
             symbol=static_symbol,
             source_loc=static.source_loc
         )
@@ -2701,7 +2707,8 @@ class HIRBuilder:
             'preserves': None,
             'interrupt': None,
             'inline': None,
-            'is_entry': False
+            'is_entry': False,
+            'allow': frozenset(),
         }
 
         for attr in processed_attrs:
@@ -2715,6 +2722,8 @@ class HIRBuilder:
                 result['inline'] = attr
             elif isinstance(attr, EntryAttribute):
                 result['is_entry'] = True
+            elif isinstance(attr, AllowAttribute):
+                result['allow'] = attr.codes
 
         return result
 
