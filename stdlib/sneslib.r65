@@ -1387,9 +1387,9 @@ macro_rules! set_bgmode($mode:expr, $sizes:expr) {
 }
 
 // Set BG1 tilemap address and size
-// addr: tilemap address in 2KB units (0-31)
+// addr: tilemap address in 2KB-byte / $400-word units (0-31)
 // size: 0=32x32, 1=64x32, 2=32x64, 3=64x64
-// Usage: set_bg1_map!(0x38, 0);  // $7000 word addr, 32x32
+// Usage: set_bg1_map!(0x1C, 0);  // $7000 word addr, 32x32
 macro_rules! set_bg1_map($addr:expr, $size:expr) {
     BG1SC = ($addr << 2) | ($size & 0x03);
 }
