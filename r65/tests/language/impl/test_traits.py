@@ -852,3 +852,129 @@ class TestTraitInheritance:
         assert hir.symbol_table.lookup("Player::TYPE_ID") is not None
         # Wall implements only the supertrait and is never dispatched -> no TypeId/layout byte.
         assert hir.symbol_table.lookup("Wall::TYPE_ID") is None
+
+
+class TestTraitDefaultMethods:
+    """Tests for default method bodies in trait declarations."""
+
+    def test_default_body_parses(self):
+        """A trait method may end in a body instead of ';'."""
+        source = """
+            trait Drawable {
+                fn draw(*self);
+                fn hide(*self) -> u8 { return 0; }
+            }
+        """
+        trait = parse(source, "test.r65").items[0]
+        assert trait.methods[0].default_body is None
+        assert trait.methods[1].default_body is not None
+
+    def test_default_used_when_impl_omits_method(self):
+        """An impl that omits a defaulted method still type checks."""
+        source = """
+            struct Player { x: u8 }
+            trait Drawable {
+                fn draw(*self);
+                fn width(*self) -> u8 { return 8; }
+            }
+            impl Drawable for Player {
+                fn draw(*self) { }
+            }
+        """
+        hir = build_and_check(source)
+        assert hir.symbol_table.lookup("Player__width") is not None
+
+    def test_impl_override_wins_over_default(self):
+        """An impl's own method replaces the trait default."""
+        source = """
+            struct Player { x: u8 }
+            struct Rock { x: u8 }
+            trait Drawable {
+                fn draw(*self);
+                fn width(*self) -> u8 { return 8; }
+            }
+            impl Drawable for Player {
+                fn draw(*self) { }
+                fn width(*self) -> u8 { return 42; }
+            }
+            impl Drawable for Rock {
+                fn draw(*self) { }
+            }
+            #[lowram]
+            static mut R: u8;
+            #[lowram]
+            static mut P: Player;
+            #[lowram]
+            static mut K: Rock;
+            #[entry]
+            fn main() { R = P.width() + K.width(); }
+        """
+        asm = compile_to_asm(source)
+        # Each implementor gets its own copy of the body.
+        assert "Player__width:" in asm
+        assert "Rock__width:" in asm
+        assert "LDA #$2A" in asm  # Player's override, 42
+        assert "LDA #$08" in asm  # Rock's inherited default, 8
+
+    def test_default_body_calls_other_methods_on_self(self):
+        """A default body binds self.method() to the implementing struct's method."""
+        source = """
+            struct Player { x: u8 }
+            trait Positioned {
+                fn px(*self) -> u8;
+                fn double_x(*self) -> u8 { return self.px() + self.px(); }
+            }
+            impl Positioned for Player {
+                fn px(*self) -> u8 { return self.x; }
+            }
+            #[lowram]
+            static mut R: u8;
+            #[lowram]
+            static mut P: Player;
+            #[entry]
+            fn main() { R = P.double_x(); }
+        """
+        asm = compile_to_asm(source)
+        assert "Player__double_x:" in asm
+        assert "Player__px" in asm
+
+    def test_defaulted_method_in_dispatch_table(self):
+        """A defaulted method is dynamically dispatchable like any other."""
+        source = """
+            #[zeropage(0x10, register)]
+            static mut SCRATCH0: u8;
+            #[zeropage(0x12, register)]
+            static mut SCRATCH1: u16;
+            struct Player { x: u8 }
+            trait Drawable {
+                fn draw(*self);
+                fn width(*self) -> u8 { return 8; }
+            }
+            impl Drawable for Player {
+                fn draw(*self) { }
+            }
+            #[lowram]
+            static mut R: u8;
+            #[lowram]
+            static mut P: Player;
+            #[entry]
+            fn main() { let d: *dyn Drawable = &P; R = d.width(); }
+        """
+        asm = compile_to_asm(source)
+        assert "Drawable__width__table:" in asm
+        assert "Player__width" in asm
+
+    def test_missing_method_without_default_still_fails(self):
+        """Only defaulted methods may be omitted."""
+        source = """
+            struct Player { x: u8 }
+            trait Drawable {
+                fn draw(*self);
+                fn width(*self) -> u8 { return 8; }
+            }
+            impl Drawable for Player {
+                fn width(*self) -> u8 { return 4; }
+            }
+        """
+        with pytest.raises(HIRError, match="missing methods: draw"):
+            build_and_check(source)

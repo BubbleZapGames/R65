@@ -28,9 +28,56 @@ trait Drawable {
 - All methods must take `*self` as the first parameter
 - Methods can have additional parameters using standard R65 calling conventions
 - Methods can return values
-- No default implementations
 - No associated types
-- No supertraits
+
+### Default Method Bodies
+
+A trait method may supply a body instead of ending in `;`. Implementors that omit
+the method inherit that body:
+
+```rust
+trait Drawable {
+    fn get_width(*self) -> u8;
+    fn get_height(*self) -> u8;
+
+    // Default implementation — override it or inherit it
+    fn get_perimeter(*self) -> u16 {
+        return ((self.get_width() as u16) + (self.get_height() as u16)) << 1;
+    }
+}
+
+impl Drawable for Player {
+    fn get_width(*self) -> u8 { return 16; }
+    fn get_height(*self) -> u8 { return 24; }
+    // get_perimeter inherited
+}
+
+impl Drawable for Bullet {
+    fn get_width(*self) -> u8 { return 4; }
+    fn get_height(*self) -> u8 { return 4; }
+    fn get_perimeter(*self) -> u16 { return 16; }   // overrides the default
+}
+```
+
+**Rules**:
+- The body is **copied into each implementor** that omits the method, then compiled
+  as an ordinary method (`Player__get_perimeter`). There is no shared
+  copy and no extra indirection — a defaulted method costs exactly what writing it
+  out by hand costs.
+- Because each copy is compiled against a concrete struct, `self.field` and
+  `self.method()` inside a default body resolve to **that implementor's** fields and
+  methods, statically. Calls in a default body are direct `JSR`/`JSL`, not dispatch.
+- A method with no default body is still mandatory — omitting it is an error.
+- Type errors in a default body are reported per implementor (a body that reads
+  `self.hp` only compiles for structs that have an `hp` field).
+- Defaulted methods behave normally under `*dyn` dispatch: each implementor's copy
+  gets its own dispatch table entry.
+- Default bodies carry no attributes; `far` and `far *self` are taken from the trait
+  method's own declaration.
+
+**Code size note**: N implementors inheriting one default body produce N copies of
+that code. For a large default shared by many types, call a free function from the
+default body so only the call site is duplicated.
 
 ### Associated Constants
 
@@ -155,7 +202,8 @@ impl Drawable for Player {
 
 ### Implementation Rules
 
-1. **All methods required** - Must implement every method in the trait
+1. **All methods required** - Must implement every method in the trait that has no
+   [default body](#default-method-bodies)
 2. **Exact signature match** - Method signatures must match trait definition exactly
 3. **TypeId insertion** - Compiler automatically adds TypeId field at offset 0
 
@@ -820,13 +868,13 @@ Traits provide:
 ## Limitations
 
 1. **No generics** - Cannot parameterize traits with types
-2. **No default implementations** - Must implement all methods
-3. **No associated types** - Cannot define type aliases in traits (associated constants are supported)
-4. **No trait bounds** - Cannot require traits in function signatures
-5. **Near/far exclusivity** - Struct cannot mix near and far traits
-6. **No `self` by value** - Methods must take `*self` pointer
+2. **No associated types** - Cannot define type aliases in traits (associated constants are supported)
+3. **No trait bounds** - Cannot require traits in function signatures
+4. **Near/far exclusivity** - Struct cannot mix near and far traits
+5. **No `self` by value** - Methods must take `*self` pointer
 
 Supertraits (trait inheritance) **are** supported — see [Trait Inheritance](#trait-inheritance-supertraits).
+Default method bodies **are** supported — see [Default Method Bodies](#default-method-bodies).
 
 ---
 

@@ -826,8 +826,14 @@ class ASTBuilder(Transformer):
 
         # Return type (optional)
         return_type = None
-        if idx < len(items):
+        if idx < len(items) and not isinstance(items[idx], ast.Block):
             return_type = items[idx]
+            idx += 1
+
+        # Default body (optional) - present when the trait method has `{ ... }`
+        default_body = None
+        if idx < len(items) and isinstance(items[idx], ast.Block):
+            default_body = items[idx]
             idx += 1
 
         return ast.TraitMethod(
@@ -836,6 +842,7 @@ class ASTBuilder(Transformer):
             self_is_far=self_is_far,
             params=params,
             return_type=return_type,
+            default_body=default_body,
             source_loc=self._make_source_loc(tree.meta)
         )
 

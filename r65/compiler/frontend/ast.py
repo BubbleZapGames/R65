@@ -249,17 +249,19 @@ class EnumDecl(Declaration):
 
 @dataclass
 class TraitMethod(ASTNode):
-    """Method signature in a trait declaration (no body).
+    """Method signature in a trait declaration, with an optional default body.
 
     Example:
         fn draw(*self);
         far fn render(far *self, offset @ X: u16);
+        fn hide(*self) { self.visible = false; }   // default implementation
     """
     is_far: bool
     name: str
     self_is_far: bool  # True if self param is `far *self`
     params: List[Parameter]  # Parameters after self
     return_type: Optional[Union[Type, NeverType]]
+    default_body: Optional['Block'] = None  # Present when the trait supplies a body
 
 
 @dataclass

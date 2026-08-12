@@ -7,6 +7,7 @@ Uses a two-pass algorithm:
 2. Second pass: Build HIR nodes with resolved references
 """
 
+import copy
 import re
 from typing import List, Union, Optional, Dict, Set
 from pathlib import Path
@@ -1871,9 +1872,18 @@ class HIRBuilder:
                 )
         self._struct_trait_kind[impl.struct_name] = kind
 
-        # Validate all trait methods are implemented
+        # Copy in default bodies for trait methods this impl omits. Each implementor
+        # gets its own copy of the body, so from here on a defaulted method is
+        # indistinguishable from one written out in the impl block.
         trait_method_names = {m.name for m in trait_ast.methods}
         impl_method_names = {m.name for m in impl.methods}
+        for trait_method in trait_ast.methods:
+            if trait_method.name in impl_method_names or trait_method.default_body is None:
+                continue
+            impl.methods.append(self._instantiate_default_method(trait_method))
+            impl_method_names.add(trait_method.name)
+
+        # Validate all remaining trait methods are implemented
         missing = trait_method_names - impl_method_names
         if missing:
             raise HIRError(
@@ -1975,6 +1985,23 @@ class HIRBuilder:
                 type_info={'mangled_name': mangled_name}
             )
             self.symbol_table.declare(dispatch_key, dispatch_symbol)
+
+    def _instantiate_default_method(self, trait_method: ast.TraitMethod) -> ast.ImplMethod:
+        """Build an ImplMethod from a trait method's default body.
+
+        The body is deep-copied because each implementor lowers its own instance
+        (mangled StructName__method) and the HIR/typeck passes annotate AST nodes.
+        """
+        return ast.ImplMethod(
+            attributes=[],
+            is_far=trait_method.is_far,
+            name=trait_method.name,
+            self_is_far=trait_method.self_is_far,
+            params=copy.deepcopy(trait_method.params),
+            return_type=copy.deepcopy(trait_method.return_type),
+            body=copy.deepcopy(trait_method.default_body),
+            source_loc=trait_method.source_loc
+        )
 
     def _build_trait(self, trait: ast.TraitDecl) -> hir.HIRTraitDecl:
         """Build HIR trait declaration from AST."""

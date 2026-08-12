@@ -104,7 +104,10 @@ enum_variant: var_name ("=" expr)?
 trait_decl: doc_comment* TRAIT IDENT trait_bounds? "{" trait_item* "}"
 trait_bounds: ":" IDENT ("+" IDENT)*
 ?trait_item: trait_method | trait_const
+// Ends in ';' for a required method, or a body block for a default implementation
+// (the body is copied into every impl that omits the method).
 trait_method: FAR? FN IDENT "(" trait_param_list ")" return_type? ";"
+            | FAR? FN IDENT "(" trait_param_list ")" return_type? function_body
 trait_param_list: self_param ("," param)* ","?
 trait_const: CONST IDENT ":" type_expr ";"
 
