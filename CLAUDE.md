@@ -395,6 +395,7 @@ Hardware-aware operators with restrictions for expensive operations:
 - ❌ Tuple structs / newtypes (`struct TileId(u8);`) — use a named field
 - ❌ Closures, async/await
 - ❌ Procedural macros
+- ❌ `#[derive(...)]` — write the `impl` explicitly; `impl Clone for T {}` (empty body) is the one compiler-generated trait
 - ❌ String types, dynamic collections
 - ❌ Module system (`mod`, `pub`)
 - ❌ `unsafe` keyword

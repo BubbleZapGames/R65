@@ -140,6 +140,56 @@ class TestTupleStructs:
         parse_succeeds("fn f() { let a: u8 = x.value; }")
 
 
+class TestDeriveAttribute:
+    """#[derive(...)] is unsupported and must point at the R65 equivalent."""
+
+    def test_names_the_feature(self):
+        with pytest.raises(ParseError, match=r"#\[derive\(\.\.\.\)\] is not supported"):
+            parse("#[derive(Clone)]\nstruct Point { x: u8 }")
+
+    def test_hint_uses_the_real_type_name(self):
+        with pytest.raises(ParseError) as exc:
+            parse("#[derive(Clone)]\nstruct Point { x: u8 }")
+        assert "impl Clone for Point {}" in exc.value.hint
+
+    def test_hint_covers_each_derived_trait(self):
+        with pytest.raises(ParseError) as exc:
+            parse("#[derive(Clone, PartialEq)]\nstruct Point { x: u8 }")
+        assert "Clone:" in exc.value.hint
+        assert "PartialEq:" in exc.value.hint
+        assert "fn eq(*self, other: *Point) -> bool" in exc.value.hint
+
+    def test_traits_with_no_equivalent_say_so(self):
+        for trait, expected in [
+            ("Copy", "pass-by-reference"),
+            ("Debug", "ToString"),
+            ("Default", "initialize explicitly"),
+            ("Serialize", "no R65 equivalent"),
+        ]:
+            with pytest.raises(ParseError) as exc:
+                parse(f"#[derive({trait})]\nstruct Point {{ x: u8 }}")
+            assert expected in exc.value.hint, f"{trait}: {exc.value.hint}"
+
+    def test_bare_derive_without_arguments(self):
+        with pytest.raises(ParseError) as exc:
+            parse("#[derive]\nstruct Point { x: u8 }")
+        assert "no derive macros" in exc.value.hint
+
+    def test_derive_on_union_and_enum(self):
+        for decl in ["union W { a: u8, b: u8 }", "enum E { A, B }"]:
+            with pytest.raises(ParseError, match="derive"):
+                parse(f"#[derive(Clone)]\n{decl}")
+
+    def test_derive_on_a_function_reaches_the_hir_path(self):
+        """Functions do take attributes, so this is caught during HIR building."""
+        from r65.compiler.hir import HIRBuilder
+        from r65.compiler.errors import HIRError
+
+        program = parse("#[derive(Clone)]\nfn foo() { }")
+        with pytest.raises(HIRError, match=r"#\[derive\(\.\.\.\)\] is not supported"):
+            HIRBuilder(source_file="test.r65").build_program(program)
+
+
 class TestValidEdgeCases:
     """Tests for valid edge cases that should NOT error."""
 

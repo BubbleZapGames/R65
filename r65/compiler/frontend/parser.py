@@ -8,6 +8,7 @@ from pathlib import Path
 from lark import Lark, Transformer, Token as LarkToken, v_args
 from lark.exceptions import UnexpectedToken, UnexpectedCharacters, UnexpectedEOF, VisitError
 from r65.compiler.frontend import ast
+from r65.compiler.frontend.derive_compat import derive_hint
 from r65.compiler.errors import ParseError, SourceLocation, get_source_line
 from typing import List
 
@@ -2970,14 +2971,17 @@ class Parser:
         lines = source.splitlines(keepends=True)
         prefix_offset = sum(len(l) for l in lines[:line - 1]) + max(0, token.column - 1)
         prefix = source[:prefix_offset]
-        m = re.search(r'#\[\s*(derive|proc_macro|proc_macro_derive|proc_macro_attribute)\b[^\]]*\]\s*\Z',
+        m = re.search(r'#\[\s*(derive|proc_macro|proc_macro_derive|proc_macro_attribute)\b([^\]]*)\]\s*\Z',
                       prefix, re.DOTALL)
         if m:
             name = m.group(1)
             if name == 'derive':
+                traits = re.findall(r'\w+', m.group(2) or '')
+                # The declaration the attribute was meant for follows the error token
+                decl = re.search(r'\b(?:struct|union|enum|trait|type)\s+(\w+)',
+                                 source[prefix_offset:])
                 return ("#[derive(...)] is not supported in R65",
-                        "derive macros are not supported; implement the behavior "
-                        "explicitly with free functions or `impl` blocks")
+                        derive_hint(traits, decl.group(1) if decl else None))
             return (f"#[{name}] is not supported in R65",
                     "procedural macros are not supported; use `macro_rules!` "
                     "for declarative macros (see docs/macros.md)")

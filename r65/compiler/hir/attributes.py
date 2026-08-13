@@ -11,6 +11,7 @@ from enum import Enum
 
 from r65.compiler.frontend import ast
 from r65.compiler.frontend.ast import CfgCondition
+from r65.compiler.frontend.derive_compat import derive_hint
 from r65.compiler.hir.errors import *
 
 
@@ -183,11 +184,20 @@ _UNSUPPORTED_RUST_ATTRS = {
     'proc_macro': _PROC_MACRO_HINT,
     'proc_macro_derive': _PROC_MACRO_HINT,
     'proc_macro_attribute': _PROC_MACRO_HINT,
-    'derive': (
-        "derive macros are not supported in R65 — traits do not auto-derive; "
-        "implement the behavior explicitly with free functions or `impl` blocks"
-    ),
 }
+
+
+def _derive_trait_names(attr: ast.Attribute) -> List[str]:
+    """Pull the trait names out of a `#[derive(A, B)]` attribute's arguments."""
+    names = []
+    for arg in attr.args:
+        value = arg.value
+        name = getattr(value, 'name', None) or (value if isinstance(value, str) else None)
+        if name:
+            names.append(str(name))
+        elif arg.name:
+            names.append(str(arg.name))
+    return names
 
 
 # =============================================================================
@@ -226,6 +236,14 @@ class AttributeProcessor:
                 processed.append(self._process_inline(attr, context))
             elif attr.name == 'allow':
                 processed.append(self._process_allow(attr, context))
+            elif attr.name == 'derive':
+                # Reached for declarations that do take attributes (functions,
+                # statics). Types are caught earlier, in the parser.
+                raise HIRError(
+                    "#[derive(...)] is not supported in R65",
+                    source_loc=attr.source_loc,
+                    hint=derive_hint(_derive_trait_names(attr)),
+                )
             else:
                 hint = _UNSUPPORTED_RUST_ATTRS.get(attr.name)
                 raise HIRError(
