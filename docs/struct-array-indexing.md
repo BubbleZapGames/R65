@@ -173,9 +173,17 @@ The shift-and-add implementation is in `r65/compiler/mir/lowerers/multiply.py`, 
 
 - **MIR lowering (expression):** `r65/compiler/mir/lowerers/expression.py`
   - `_lower_array_field_access()` - handles `array[index].field` reads
+  - `_lower_nested_field_access()` - handles `outer.inner.field` reads
 
 - **MIR lowering (assignment):** `r65/compiler/mir/lowerers/assignment.py`
   - `_lower_array_field_assignment()` - handles `array[index].field = value` writes
+  - `_lower_nested_field_assignment()` - handles `outer.inner.field = value` writes
+
+- **Nested field chains:** `r65/compiler/mir/builder.py`
+  - `peel_field_chain()` - folds `outer.inner.leaf` into `(base, total_offset)`.
+    Struct and union fields are laid out inline, so every link but the innermost
+    contributes only a compile-time constant; `array[i].inner.leaf` and
+    `ptr.inner.leaf` reuse the array/pointer paths with the folded offset.
 
 - **Liveness analysis:** `r65/compiler/mir/liveness.py`
   - `interferes()` - precise per-instruction liveness for stack slot reuse

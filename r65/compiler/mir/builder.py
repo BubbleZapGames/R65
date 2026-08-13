@@ -1012,7 +1012,12 @@ class MIRBuilder:
         struct_decl = stmt.var_type.definition
         if struct_decl is None:
             return False
-        # Check total size < 16 bytes
+        # Unions are never decomposed: their fields deliberately share storage, and
+        # giving each one its own vreg would break the aliasing that is the whole
+        # point of a union.
+        if getattr(struct_decl, 'is_union', False):
+            return False
+        # Check total size < 16 bytes (struct layout — see layout_fields)
         total_size = sum(self._get_type_size(f.field_type) for f in struct_decl.fields)
         if total_size >= 16:
             return False
@@ -2019,6 +2024,55 @@ class MIRBuilder:
             f"Array base must be a static array or struct field, got: {type(array_expr)}",
             source_loc=getattr(array_expr, 'source_loc', None)
         )
+
+    def require_addressable_aggregate(self, symbol, expr):
+        """Assert *symbol* has a memory location rather than per-field vregs.
+
+        Nested field access (`outer.inner.leaf`) computes one address off the
+        base, which only works if the base actually lives in memory. Today it
+        always does: `_is_stack_eligible_struct` refuses to decompose any
+        aggregate with a non-scalar field, and a chain can only exist through
+        such a field. This guard exists so that relaxing that rule fails loudly
+        here instead of silently addressing storage nothing else maintains —
+        `get_memory_location` knows about promoted locals but not decomposed
+        ones, so it would hand back an unrelated location.
+        """
+        if id(symbol) in self._decomposed_structs:
+            raise MIRLoweringError(
+                f"nested field access on decomposed local '{getattr(symbol, 'name', '?')}' "
+                f"— the base has no address",
+                source_loc=getattr(expr, 'source_loc', None)
+            )
+
+    def peel_field_chain(self, field_expr):
+        """Fold a chain of inline field accesses into ``(base, total_offset)``.
+
+        ``outer.inner.leaf`` is a single address computation: every link but the
+        innermost contributes only a constant offset within its parent, because
+        struct and union fields are laid out inline (no indirection between
+        levels). Summing those constants leaves one base that needs real code.
+
+        Peeling stops at an ``auto_deref``'d field access — there the parent is
+        reached through a pointer, so the returned base is that node and the
+        caller loads through ``node.base``.
+
+        Args:
+            field_expr: The outermost HIRFieldAccess node.
+
+        Returns:
+            (base, total_offset) where base is the innermost non-inline node.
+        """
+        offset = 0
+        node = field_expr
+        while isinstance(node, HIRFieldAccess) and not node.auto_deref:
+            if node.field_offset is None:
+                raise MIRLoweringError(
+                    f"Field offset not computed for field: {node.field_name}",
+                    source_loc=getattr(node, 'source_loc', None)
+                )
+            offset += node.field_offset
+            node = node.base
+        return node, offset
 
     def try_pointer_deref_array_base(self, array_expr):
         """Recognise `(*p).arr` / `(*p)` array bases that need indirect codegen.

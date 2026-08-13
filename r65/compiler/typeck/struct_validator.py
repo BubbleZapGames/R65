@@ -100,15 +100,26 @@ class StructValidator:
                 f"field '{field_init.name}'", expr.source_loc, use_compatible=True
             )
 
-        # Check for missing fields
-        missing_fields = set(expected_fields.keys()) - provided_fields
-        if missing_fields:
-            missing_list = ', '.join(sorted(missing_fields))
-            raise TypeCheckError(
-                f"missing field(s) in struct literal: {missing_list}",
-                source_loc=expr.source_loc,
-                hint=f"add: {missing_list}"
-            )
+        # A union literal names exactly one field — the other fields alias the same
+        # bytes, so initializing two of them would be contradictory. A struct literal
+        # must name all of them.
+        if getattr(struct_def, 'is_union', False):
+            if len(provided_fields) != 1:
+                raise TypeCheckError(
+                    f"union literal for '{expr.struct_name}' must initialize exactly "
+                    f"one field, found {len(provided_fields)}",
+                    source_loc=expr.source_loc,
+                    hint=f"union fields overlap; pick one of: {', '.join(sorted(expected_fields.keys()))}"
+                )
+        else:
+            missing_fields = set(expected_fields.keys()) - provided_fields
+            if missing_fields:
+                missing_list = ', '.join(sorted(missing_fields))
+                raise TypeCheckError(
+                    f"missing field(s) in struct literal: {missing_list}",
+                    source_loc=expr.source_loc,
+                    hint=f"add: {missing_list}"
+                )
 
         # Create struct type
         struct_type = StructTypeInfo(

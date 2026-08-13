@@ -505,7 +505,13 @@ class HIRBuilder:
             self.symbol_table.declare(decl.name, symbol)
 
         elif isinstance(decl, ast.StructDecl):
-            # Create struct type symbol
+            # Create struct/union type symbol
+            if decl.is_union and not decl.fields:
+                raise HIRError(
+                    f"union '{decl.name}' must declare at least one field",
+                    source_loc=decl.source_loc,
+                    hint="a union's size is that of its largest field; with no fields it has no layout"
+                )
             symbol = Symbol(
                 name=decl.name,
                 kind=SymbolKind.STRUCT,
@@ -1459,10 +1465,14 @@ class HIRBuilder:
         )
 
     def _build_struct(self, struct: ast.StructDecl) -> hir.HIRStructDecl:
-        """Build HIR struct declaration from AST."""
-        # Build fields with offsets
+        """Build HIR struct or union declaration from AST."""
+        from .unified_type_utils import layout_fields
+
+        # Build fields with offsets. Unions never carry a TypeId: the byte would sit
+        # at offset 0 on top of field data, which is why unions cannot implement
+        # traits (see _declare_trait_impl).
         hir_fields = []
-        has_type_id = struct.name in self._struct_type_ids
+        has_type_id = not struct.is_union and struct.name in self._struct_type_ids
 
         if has_type_id:
             # Insert synthetic __type_id: u8 field at offset 0
@@ -1472,22 +1482,22 @@ class HIRBuilder:
                 offset=0
             )
             hir_fields.append(type_id_field)
-            current_offset = 1  # User fields start after TypeId byte
+            base_offset = 1  # User fields start after TypeId byte
         else:
-            current_offset = 0
+            base_offset = 0
 
-        for field in struct.fields:
-            field_type = self.type_resolver.resolve_type(field.field_type)
+        field_types = [self.type_resolver.resolve_type(f.field_type) for f in struct.fields]
+        offsets, _ = layout_fields(
+            [self._get_type_size(t) for t in field_types],
+            struct.is_union
+        )
 
-            hir_field = hir.HIRStructField(
+        for field, field_type, offset in zip(struct.fields, field_types, offsets):
+            hir_fields.append(hir.HIRStructField(
                 name=field.name,
                 field_type=field_type,
-                offset=current_offset
-            )
-            hir_fields.append(hir_field)
-
-            # Calculate offset for next field (packed layout)
-            current_offset += self._get_type_size(field_type)
+                offset=base_offset + offset
+            ))
 
         # Get struct symbol
         struct_symbol = self.symbol_table.lookup(struct.name)
@@ -1495,6 +1505,7 @@ class HIRBuilder:
         hir_struct = hir.HIRStructDecl(
             name=struct.name,
             fields=hir_fields,
+            is_union=struct.is_union,
             symbol=struct_symbol
         )
 
@@ -1761,6 +1772,12 @@ class HIRBuilder:
         exactly like any other impl method so that explicit calls
         (`recv.method(args)`) resolve through the existing static-dispatch path.
         """
+        # Clone is the one trait a union may implement: it is a bitwise copy of
+        # size_bytes, so it neither reads fields nor changes layout. The operator
+        # traits are rejected — arithmetic on an untagged overlay has no meaning.
+        if impl.trait_name != CLONE_TRAIT:
+            self._reject_union_trait_impl(impl)
+
         # Calling convention comes from the impl's own methods (no trait decl).
         impl_is_far = any(m.is_far for m in impl.methods) if impl.methods else False
 
@@ -1843,6 +1860,8 @@ class HIRBuilder:
 
     def _declare_trait_impl(self, impl: ast.ImplDecl):
         """First pass: declare trait implementation methods and validate against trait definition."""
+        self._reject_union_trait_impl(impl)
+
         trait_symbol = self.symbol_table.lookup(impl.trait_name)
         if not trait_symbol:
             raise HIRError(
@@ -1985,6 +2004,27 @@ class HIRBuilder:
                 type_info={'mangled_name': mangled_name}
             )
             self.symbol_table.declare(dispatch_key, dispatch_symbol)
+
+    def _is_union(self, type_name: str) -> bool:
+        """True if *type_name* names a union (AST or HIR definition)."""
+        symbol = self.symbol_table.lookup(type_name)
+        definition = getattr(symbol, 'definition', None) if symbol else None
+        return bool(getattr(definition, 'is_union', False))
+
+    def _reject_union_trait_impl(self, impl: ast.ImplDecl):
+        """Unions cannot implement traits.
+
+        Dynamic dispatch injects a `__type_id: u8` at offset 0 to identify the
+        concrete type, and in a union offset 0 is live field data — the TypeId and
+        the fields would alias. Inherent `impl` blocks are fine; they add no layout.
+        """
+        if self._is_union(impl.struct_name):
+            raise HIRError(
+                f"union '{impl.struct_name}' cannot implement trait '{impl.trait_name}'",
+                source_loc=impl.source_loc,
+                hint="trait dispatch stores a __type_id byte at offset 0, which would "
+                     "overlap union field data; use an inherent `impl` block instead"
+            )
 
     def _instantiate_default_method(self, trait_method: ast.TraitMethod) -> ast.ImplMethod:
         """Build an ImplMethod from a trait method's default body.

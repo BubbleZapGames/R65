@@ -2,7 +2,7 @@
 
 R65 reserves all Rust keywords to maintain compatibility and prevent future conflicts. This document lists all reserved keywords organized by category.
 
-## Currently Implemented Keywords (22)
+## Currently Implemented Keywords (27)
 
 These keywords are actively used in R65:
 
@@ -24,6 +24,7 @@ These keywords are actively used in R65:
 | `continue` | Skip to next iteration |
 | `return` | Return from function |
 | `struct` | Structure definition |
+| `union` | Union definition (overlaid fields) |
 | `enum` | Enumeration definition |
 | `type` | Type alias |
 | `include` | File inclusion |

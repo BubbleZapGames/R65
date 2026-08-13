@@ -226,10 +226,16 @@ class StructField(ASTNode):
 
 @dataclass
 class StructDecl(Declaration):
-    """Struct declaration."""
+    """Struct or union declaration.
+
+    A union has the same shape as a struct — named, typed fields — and differs
+    only in layout: every field sits at offset 0 and the size is that of the
+    largest field. See `hir/unified_type_utils.py: layout_fields`.
+    """
     name: str
     fields: List[StructField]
     doc: Optional[str] = None
+    is_union: bool = False
 
 
 @dataclass

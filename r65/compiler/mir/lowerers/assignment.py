@@ -264,6 +264,13 @@ class AssignmentLowerer:
             self._lower_pointer_field_assignment(field_access, value, field_offset, expr.expr_type)
             return value
 
+        # Nested inline aggregate: outer.inner.leaf = value. Fold the chain's
+        # constant offsets and store against the innermost base.
+        if isinstance(field_access.base, HIRFieldAccess):
+            base, total_offset = self.builder.peel_field_chain(field_access)
+            self._lower_nested_field_assignment(base, total_offset, value, expr)
+            return value
+
         if isinstance(field_access.base, HIRIdentifier):
             struct_symbol = field_access.base.symbol
             # Check if this struct is decomposed into per-field vregs
@@ -299,6 +306,43 @@ class AssignmentLowerer:
             )
 
         return value
+
+    def _lower_nested_field_assignment(self, base, total_offset: int, value, expr):
+        """Store to `outer.inner.leaf` using the peeled base and folded offset.
+
+        Mirrors :py:meth:`ExpressionLowerer._lower_nested_field_access` on the
+        write side.
+        """
+        type_info = expr.expr_type
+
+        if isinstance(base, HIRFieldAccess) and base.auto_deref:
+            # Chain bottoms out at a pointer: self.inner.leaf = value
+            self.builder.emit_indirect_field_access(
+                base.base, field_offset=total_offset + (base.field_offset or 0),
+                result_type=type_info, is_load=False, source=value)
+
+        elif isinstance(base, HIRDereference):
+            self.builder.emit_indirect_field_access(
+                base.pointer, field_offset=total_offset,
+                result_type=type_info, is_load=False, source=value)
+
+        elif isinstance(base, HIRArrayIndex):
+            self.builder.emit_static_array_field_access(
+                base, field_offset=total_offset,
+                result_type=type_info, is_load=False, source=value)
+
+        elif isinstance(base, HIRIdentifier):
+            symbol = base.symbol
+            self.builder.require_addressable_aggregate(symbol, expr)
+            base_memloc = self.builder.get_memory_location(symbol)
+            field_memloc = self.builder._create_offset_memloc(base_memloc, total_offset, symbol)
+            self.emit(Store(source=value, dest=field_memloc, type_info=type_info))
+
+        else:
+            raise MIRLoweringError(
+                f"Nested field access base unsupported: {type(base)}",
+                source_loc=expr.source_loc
+            )
 
     def _lower_pointer_field_assignment(self, field_access: HIRFieldAccess, value, field_offset: int, type_info):
         """Lower pointer-based field assignment (auto-deref): self.field = value where self is *Struct."""

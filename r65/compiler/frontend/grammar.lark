@@ -14,6 +14,7 @@ start: (DOC_INNER | DOC_BLOCK_INNER)* item*
      | static_decl
      | const_decl
      | struct_decl
+     | union_decl
      | enum_decl
      | impl_decl
      | trait_decl
@@ -91,6 +92,8 @@ const_decl: doc_comment* CONST IDENT ":" type_expr "=" initializer_expr ";"
 
 // Struct declaration
 struct_decl: doc_comment* STRUCT IDENT "{" struct_field* "}"
+// Union declaration — same field syntax as a struct; every field sits at offset 0
+union_decl: doc_comment* UNION IDENT "{" struct_field* "}"
 // Supports pointer fields: [far|near] *name: type
 struct_field: doc_comment* (FAR | NEAR)? STAR? IDENT ":" type_expr ","?
             | (FAR | NEAR)? AMPER IDENT ":" type_expr ","?  -> struct_field_safe_ptr_error
@@ -192,7 +195,7 @@ macro_repetition: DOLLAR "(" macro_body_content+ ")" "," "*"    -> macro_rep_com
 macro_token: IDENT | REGISTER | TYPE_NAME | INTEGER | STRING | BOOLEAN
            | KEYWORD | INCLUDE | INCLUDE_BYTES | CONST | STATIC | LET | MUT | MACRO_RULES
            | FN | FAR | NEAR | IF | ELSE | LOOP | WHILE | MATCH | RETURN
-           | BREAK | CONTINUE | ASM | STRUCT | ENUM | TYPE | AS | TRAIT | IMPL | SELF | FOR | IN | DYN
+           | BREAK | CONTINUE | ASM | STRUCT | UNION | ENUM | TYPE | AS | TRAIT | IMPL | SELF | FOR | IN | DYN
            | CFG | CFG_NOT
            | "(" | ")" | "[" | "]" | ";" | ":" | "," | "." | "#"
            | "+" | "-" | "*" | "/" | "&" | "|" | "^" | "~" | "!"
@@ -216,7 +219,7 @@ macro_arg: macro_arg_token+
 macro_arg_token: IDENT | REGISTER | TYPE_NAME | INTEGER | STRING | BOOLEAN
                | KEYWORD | MACRO_VAR | INCLUDE | INCLUDE_BYTES | CONST | STATIC | LET | MUT | MACRO_RULES
                | FN | FAR | NEAR | IF | ELSE | LOOP | WHILE | MATCH | RETURN
-               | BREAK | CONTINUE | ASM | STRUCT | ENUM | TYPE | AS | TRAIT | IMPL | SELF | FOR | IN | DYN
+               | BREAK | CONTINUE | ASM | STRUCT | UNION | ENUM | TYPE | AS | TRAIT | IMPL | SELF | FOR | IN | DYN
                | CFG | CFG_NOT
                | "(" macro_arg_token* ")"    // Nested parens
                | "[" macro_arg_token* "]"    // Nested brackets
@@ -513,6 +516,7 @@ INCLUDE.10: /include\b/
 RETURN.10: /return\b/
 STRUCT.10: /struct\b/
 STATIC.10: /static\b/
+UNION.10: /union\b/
 BREAK.10: /break\b/
 CONST.10: /const\b/
 WHILE.10: /while\b/
@@ -647,7 +651,7 @@ DOLLAR: "$"
 // the contextual lexer needs to match register names as IDENT in certain parser contexts
 // (e.g., asm_named_arg: IDENT "=" ...). Actual disambiguation is via terminal priorities.
 // Note: Builtin functions (mul, div, SEP, REP, etc.) are NOT excluded - they are valid identifiers
-IDENT.1: /(?!(include_bytes|include_asm|macro_rules|continue|include|return|struct|static|break|const|while|enum|impl|self|loop|type|else|near|let|mut|asm|far|fn|if|as|abstract|override|unsized|virtual|typeof|unsafe|extern|become|async|await|match|where|super|trait|yield|crate|final|move|priv|Self|box|dyn|for|mod|pub|ref|try|use|in|do|expr|ident|literal|ty|reg|tt|STATUS|DBR|PBR|bool|u16|i16|u8|i8|true|false|[ABXYDS])$)[a-zA-Z_][a-zA-Z0-9_]*/
+IDENT.1: /(?!(include_bytes|include_asm|macro_rules|continue|include|return|struct|static|break|const|while|union|enum|impl|self|loop|type|else|near|let|mut|asm|far|fn|if|as|abstract|override|unsized|virtual|typeof|unsafe|extern|become|async|await|match|where|super|trait|yield|crate|final|move|priv|Self|box|dyn|for|mod|pub|ref|try|use|in|do|expr|ident|literal|ty|reg|tt|STATUS|DBR|PBR|bool|u16|i16|u8|i8|true|false|[ABXYDS])$)[a-zA-Z_][a-zA-Z0-9_]*/
 
 // Imports and ignores
 %import common.ESCAPED_STRING

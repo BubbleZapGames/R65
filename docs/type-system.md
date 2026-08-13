@@ -96,6 +96,23 @@ struct Name {
 **Size**: Sum of field sizes
 **Alignment**: No requirement
 
+#### Unions
+
+```rust
+union Name {
+    field1: T1,
+    field2: T2,
+    // ...
+}
+```
+
+**Layout**: All fields at offset 0 — they share the same bytes
+**Size**: Largest field size
+**Alignment**: No requirement
+**Tag**: None — no record of which field was last written
+
+See [unions.md](unions.md) for initialization rules and restrictions.
+
 #### Enums
 
 ```rust

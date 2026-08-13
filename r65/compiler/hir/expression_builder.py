@@ -539,12 +539,15 @@ class ExpressionBuilder:
                 field_types[field.name] = field.field_type
         elif isinstance(struct_decl, ast.StructDecl):
             # Need to calculate offsets
-            current_offset = 0
-            for field in struct_decl.fields:
-                field_type = self.type_resolver.resolve_type(field.field_type)
-                field_offsets[field.name] = current_offset
+            from r65.compiler.hir.unified_type_utils import layout_fields
+            resolved = [self.type_resolver.resolve_type(f.field_type) for f in struct_decl.fields]
+            offsets, _ = layout_fields(
+                [get_unified_type_size(t, self.symbol_table) for t in resolved],
+                struct_decl.is_union
+            )
+            for field, field_type, offset in zip(struct_decl.fields, resolved, offsets):
+                field_offsets[field.name] = offset
                 field_types[field.name] = field_type
-                current_offset += get_unified_type_size(field_type, self.symbol_table)
 
         # Build field initializers
         hir_fields = []

@@ -259,9 +259,15 @@ class HIRStructField(HIRNode):
 
 @dataclass
 class HIRStructDecl(HIRDeclaration):
-    """Struct declaration."""
+    """Struct or union declaration.
+
+    `is_union` only affects field offsets and total size (see
+    `unified_type_utils.layout_fields`); everything downstream reads
+    `HIRStructField.offset` and treats both alike.
+    """
     name: str = ""
     fields: List[HIRStructField] = field(default_factory=list)
+    is_union: bool = False
 
     # Symbol reference
     symbol: Optional[Any] = None  # Will be Symbol

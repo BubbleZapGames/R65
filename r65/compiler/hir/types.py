@@ -114,7 +114,10 @@ class StructTypeInfo(TypeInfo):
         elif self.definition is not None:
             defn = self.definition
         if defn is not None and hasattr(defn, 'fields'):
-            return sum(f.field_type.size_bytes for f in defn.fields)
+            from r65.compiler.hir.unified_type_utils import layout_fields
+            sizes = [f.field_type.size_bytes for f in defn.fields]
+            _, total = layout_fields(sizes, getattr(defn, 'is_union', False))
+            return total
         raise HIRError(f"Cannot determine size of struct '{self.name}': no definition", source_loc=None)
 
     def __str__(self):

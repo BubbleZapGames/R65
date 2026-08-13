@@ -360,6 +360,46 @@ class StaticInitLowerer:
                 count=len(data_bytes)
             ))
 
+    def _aggregate_field_info(self, struct_decl):
+        """Map an aggregate's fields to (offset, size) and return its total size.
+
+        Handles both HIR declarations (offsets already computed) and AST ones
+        (reached when a literal is lowered before the symbol is rewritten in pass 2).
+        Union layout comes from `layout_fields`, so a union's fields all land at
+        offset 0 and its size is that of its largest field.
+        """
+        from r65.compiler.frontend import ast
+
+        field_info = {}  # name -> (offset, size)
+
+        if isinstance(struct_decl, HIRStructDecl):
+            total_size = 0
+            for field in struct_decl.fields:
+                field_size = self.builder._get_type_size(field.field_type)
+                field_info[field.name] = (field.offset, field_size)
+                total_size = max(total_size, field.offset + field_size)
+            return field_info, total_size
+
+        if isinstance(struct_decl, ast.StructDecl):
+            from r65.compiler.hir.types import TypeResolver
+            from r65.compiler.hir.ast_const_eval import ConstEvaluator
+            from r65.compiler.hir.unified_type_utils import layout_fields
+            symbol_table = self.builder._hir_program.symbol_table
+            type_resolver = TypeResolver(symbol_table, ConstEvaluator(symbol_table))
+            sizes = [
+                self.builder._get_type_size(type_resolver.resolve_type(f.field_type))
+                for f in struct_decl.fields
+            ]
+            offsets, total_size = layout_fields(sizes, struct_decl.is_union)
+            for field, offset, size in zip(struct_decl.fields, offsets, sizes):
+                field_info[field.name] = (offset, size)
+            return field_info, total_size
+
+        raise MIRLoweringError(
+            f"Unexpected struct definition type: {type(struct_decl).__name__}",
+            source_loc=self.builder._current_source_loc
+        )
+
     def _extract_struct_literal_bytes(self, struct_expr: HIRStructLiteralExpr) -> List[int]:
         """
         Extract constant bytes from a struct literal expression.
@@ -379,28 +419,7 @@ class StaticInitLowerer:
         if struct_decl is None:
             raise MIRLoweringError(f"Cannot find struct definition for {struct_expr.struct_name}", source_loc=self.builder._current_source_loc)
 
-        # Calculate field offsets and sizes
-        total_size = 0
-        field_info = {}  # name -> (offset, size)
-
-        if isinstance(struct_decl, HIRStructDecl):
-            for field in struct_decl.fields:
-                field_size = self.builder._get_type_size(field.field_type)
-                field_info[field.name] = (field.offset, field_size)
-                total_size = max(total_size, field.offset + field_size)
-        elif isinstance(struct_decl, ast.StructDecl):
-            from r65.compiler.hir.types import TypeResolver
-            from r65.compiler.hir.ast_const_eval import ConstEvaluator
-            type_resolver = TypeResolver(self.builder._hir_program.symbol_table, ConstEvaluator(self.builder._hir_program.symbol_table))
-            current_offset = 0
-            for field in struct_decl.fields:
-                field_type = type_resolver.resolve_type(field.field_type)
-                field_size = self.builder._get_type_size(field_type)
-                field_info[field.name] = (current_offset, field_size)
-                current_offset += field_size
-            total_size = current_offset
-        else:
-            raise MIRLoweringError(f"Unexpected struct definition type: {type(struct_decl).__name__}", source_loc=self.builder._current_source_loc)
+        field_info, total_size = self._aggregate_field_info(struct_decl)
 
         # Create byte array for struct data
         data_bytes = [0] * total_size
@@ -515,31 +534,7 @@ class StaticInitLowerer:
         if struct_decl is None:
             raise MIRLoweringError(f"Cannot find struct definition for {struct_expr.struct_name}", source_loc=self.builder._current_source_loc)
 
-        # Calculate total size of struct and field offsets
-        # Handle both HIR and AST struct declarations
-        total_size = 0
-        field_info = {}  # name -> (offset, size)
-
-        if isinstance(struct_decl, HIRStructDecl):
-            # HIR struct has pre-computed offsets
-            for field in struct_decl.fields:
-                field_size = self.builder._get_type_size(field.field_type)
-                field_info[field.name] = (field.offset, field_size)
-                total_size = max(total_size, field.offset + field_size)
-        elif isinstance(struct_decl, ast.StructDecl):
-            # AST struct - need to compute offsets
-            from r65.compiler.hir.types import TypeResolver
-            from r65.compiler.hir.ast_const_eval import ConstEvaluator
-            type_resolver = TypeResolver(self.builder._hir_program.symbol_table, ConstEvaluator(self.builder._hir_program.symbol_table))
-            current_offset = 0
-            for field in struct_decl.fields:
-                field_type = type_resolver.resolve_type(field.field_type)
-                field_size = self.builder._get_type_size(field_type)
-                field_info[field.name] = (current_offset, field_size)
-                current_offset += field_size
-            total_size = current_offset
-        else:
-            raise MIRLoweringError(f"Unexpected struct definition type: {type(struct_decl).__name__}", source_loc=self.builder._current_source_loc)
+        field_info, total_size = self._aggregate_field_info(struct_decl)
 
         # Create byte array for struct data
         data_bytes = [0] * total_size

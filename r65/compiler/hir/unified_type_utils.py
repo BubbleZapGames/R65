@@ -101,11 +101,38 @@ def get_unified_type_size(type_obj: Any, symbol_table=None) -> int:
     return 1
 
 
-def _get_ast_struct_size(struct_obj: Any, symbol_table=None) -> int:
-    """Calculate size of an AST struct by summing field sizes."""
+def layout_fields(field_sizes, is_union: bool):
+    """Compute packed field offsets and total size for a struct or union.
+
+    Structs lay fields out end to end (packed, no padding); unions overlay every
+    field at offset 0 and take the size of their largest field. This is the single
+    definition of aggregate layout — every site that needs offsets or a total size
+    must go through here, because a site that keeps summing sizes for a union
+    produces silent memory corruption rather than a compile error.
+
+    Args:
+        field_sizes: iterable of field sizes in bytes, in declaration order
+        is_union: True to overlay fields, False to pack them
+
+    Returns:
+        (offsets, total_size) - offsets is a list parallel to field_sizes
+    """
+    offsets = []
     total = 0
-    for field in struct_obj.fields:
-        total += get_unified_type_size(field.field_type, symbol_table)
+    for size in field_sizes:
+        if is_union:
+            offsets.append(0)
+            total = max(total, size)
+        else:
+            offsets.append(total)
+            total += size
+    return offsets, total
+
+
+def _get_ast_struct_size(struct_obj: Any, symbol_table=None) -> int:
+    """Calculate size of an AST struct or union from its field sizes."""
+    sizes = [get_unified_type_size(f.field_type, symbol_table) for f in struct_obj.fields]
+    _, total = layout_fields(sizes, getattr(struct_obj, 'is_union', False))
     return total
 
 

@@ -489,11 +489,19 @@ class ASTBuilder(Transformer):
 
     def struct_decl(self, items):
         """Struct declaration."""
+        return self._aggregate_decl(items, is_union=False)
+
+    def union_decl(self, items):
+        """Union declaration - same field syntax as a struct, overlaid layout."""
+        return self._aggregate_decl(items, is_union=True)
+
+    def _aggregate_decl(self, items, is_union: bool):
+        """Build a StructDecl from struct_decl/union_decl children."""
         items = self._filter_tokens(items)
         doc, idx = self._collect_doc_comments(items, 0)
         name = items[idx].value if isinstance(items[idx], LarkToken) else items[idx]
         fields = [item for item in items[idx + 1:] if isinstance(item, ast.StructField)]
-        return ast.StructDecl(name=name, fields=fields, doc=doc)
+        return ast.StructDecl(name=name, fields=fields, doc=doc, is_union=is_union)
 
     def struct_field(self, items):
         """Struct field."""

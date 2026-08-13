@@ -139,7 +139,7 @@ const PLAYER_TILE: u16 = tile_offset(5, 3);
 static BUFFER: [u8; tile_offset(0, 8)] = [0; tile_offset(0, 8)];
 ```
 
-### Enums and Structs
+### Enums, Structs, and Unions
 
 **Enums**: C-style with explicit or auto-increment values. No data-carrying variants.
 
@@ -157,7 +157,22 @@ PLAYER.x = 10;
 let p = Player { x: 10, y: 20, health: 100 };
 ```
 
-**Pass-by-reference only**: Structs cannot be passed by value or directly assigned. Use pointers.
+Nested aggregates are accessed with `outer.inner.field`; the chain folds to a single constant offset, so it costs the same as a one-level access.
+
+**Unions**: Same field syntax as a struct, but all fields sit at offset 0 and the size is that of the largest field. No tag, no `unsafe` — reading a field you never wrote yields whatever bytes are there.
+
+```rust
+union Pixel { raw: u16, bytes: [u8; 2] }     // 2 bytes total
+PIXEL.raw = 0x1234;
+let hi: u8 = PIXEL.bytes[1];                  // 0x12 - same memory
+static mut P: Pixel = Pixel { raw: 0x1234 };  // literal names exactly one field
+```
+
+Unions support inherent `impl` blocks but cannot implement traits (dispatch stores a TypeId byte at offset 0, which would overlap field data); `impl Clone` is the one exception.
+
+**Pass-by-reference only**: Structs and unions cannot be passed by value or directly assigned. Use pointers.
+
+*(See [docs/unions.md](docs/unions.md) for complete union documentation)*
 
 ### Volatile Semantics
 
@@ -451,6 +466,7 @@ r65x init --platform snes my_project  # Create test project
 - [Control Flow Structures](docs/control-flow.md)
 - [Pointers and Memory Model](docs/pointers-memory.md)
 - [Type System](docs/type-system.md)
+- [Unions](docs/unions.md)
 - [B Register](docs/b-register.md)
 - [STATUS Flags](docs/status-flags.md)
 - [Array Bounds Checking](docs/array-bounds-checking.md)
