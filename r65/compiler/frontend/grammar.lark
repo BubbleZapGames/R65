@@ -92,6 +92,8 @@ const_decl: doc_comment* CONST IDENT ":" type_expr "=" initializer_expr ";"
 
 // Struct declaration
 struct_decl: doc_comment* STRUCT IDENT "{" struct_field* "}"
+// Tuple structs / newtypes are unsupported; matched so the error names the feature
+           | doc_comment* STRUCT IDENT "(" (type_expr ("," type_expr)* ","?)? ")" ";"  -> struct_tuple_error
 // Union declaration — same field syntax as a struct; every field sits at offset 0
 union_decl: doc_comment* UNION IDENT "{" struct_field* "}"
 // Supports pointer fields: [far|near] *name: type
@@ -428,6 +430,7 @@ lvalue: IDENT                                   -> lvalue_ident
         | postfix "[" expr "]"                  -> array_index
         | postfix "." IDENT "!" "(" macro_args? ")"  -> method_macro
         | postfix "." IDENT                     -> field_access
+        | postfix "." INTEGER                   -> tuple_field_error
 
 arg_list: expr ("," expr)* ","?
 

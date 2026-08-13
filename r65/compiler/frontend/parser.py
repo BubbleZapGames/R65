@@ -18,6 +18,20 @@ with open(GRAMMAR_PATH) as f:
     GRAMMAR = f.read()
 
 
+def render_ast_type(node) -> str:
+    """Render an AST type node back to source form, for use in error hints."""
+    if isinstance(node, ast.BasicType):
+        return node.name
+    if isinstance(node, ast.PointerType):
+        return ('far *' if node.is_far else '*') + render_ast_type(node.pointee_type)
+    if isinstance(node, ast.ArrayType):
+        size = getattr(node.size, 'value', None)
+        return f"[{render_ast_type(node.element_type)}; {size if size is not None else 'N'}]"
+    if isinstance(node, ast.Identifier):
+        return node.name
+    return '<type>'
+
+
 class ASTBuilder(Transformer):
     """
     Lark Transformer that builds our AST from the parse tree.
@@ -494,6 +508,43 @@ class ASTBuilder(Transformer):
     def union_decl(self, items):
         """Union declaration - same field syntax as a struct, overlaid layout."""
         return self._aggregate_decl(items, is_union=True)
+
+    @v_args(tree=True)
+    def struct_tuple_error(self, tree):
+        """Error handler for tuple structs / newtypes: struct Name(u8);"""
+        items = self._filter_tokens(tree.children, keep_types={'IDENT'})
+        _, idx = self._collect_doc_comments(items, 0)
+        name = items[idx].value if isinstance(items[idx], LarkToken) else items[idx]
+        types = [item for item in items[idx + 1:] if not isinstance(item, LarkToken)]
+
+        # Single field is the newtype case — suggest one named field. Multiple
+        # fields get positional names the author can rename.
+        if len(types) == 1:
+            fields = f"value: {render_ast_type(types[0])}"
+        elif types:
+            fields = ', '.join(
+                f"field{i}: {render_ast_type(t)}" for i, t in enumerate(types))
+        else:
+            fields = "value: <type>"
+
+        raise ParseError(
+            "tuple structs (newtypes) are not supported in R65",
+            source_loc=self._make_source_loc(tree.meta),
+            hint=f"give each field a name: 'struct {name} {{ {fields} }}'"
+        )
+
+    @v_args(tree=True)
+    def tuple_field_error(self, tree):
+        """Error handler for tuple field access: value.0"""
+        index = None
+        for item in tree.children:
+            if isinstance(item, LarkToken) and item.type == 'INTEGER':
+                index = item.value
+        raise ParseError(
+            f"tuple field access '.{index}' is not supported in R65",
+            source_loc=self._make_source_loc(tree.meta),
+            hint="R65 has no tuple structs; access struct fields by name (e.g. '.value')"
+        )
 
     def _aggregate_decl(self, items, is_union: bool):
         """Build a StructDecl from struct_decl/union_decl children."""

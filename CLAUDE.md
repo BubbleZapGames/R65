@@ -392,6 +392,7 @@ Hardware-aware operators with restrictions for expensive operations:
 - ❌ Generics
 - ❌ Error handling types (`Result`, `Option`, `panic!()`)
 - ❌ Advanced enums (data-carrying variants)
+- ❌ Tuple structs / newtypes (`struct TileId(u8);`) — use a named field
 - ❌ Closures, async/await
 - ❌ Procedural macros
 - ❌ String types, dynamic collections

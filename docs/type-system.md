@@ -96,6 +96,10 @@ struct Name {
 **Size**: Sum of field sizes
 **Alignment**: No requirement
 
+Tuple structs (`struct TileId(u8);`) are not supported — every field must be
+named. The compiler rejects the tuple form with a suggested named-field
+declaration.
+
 #### Unions
 
 ```rust
