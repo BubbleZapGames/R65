@@ -13,9 +13,7 @@ include!("lib/math.r65")
 // Bank 0 - Main code
 #[bank(0)]
 
-// Reset handler — runs once at power-on. Initializes SNES hardware, then
-// hands off to main(). Listed in r65-lint.toml's exclude_subtrees so the
-// PPU/DMA writes inside snes_init() are recognized as force-blank boot.
+// Initialization handler runs at power-on, does setup then hands off to main()
 #[entry]
 fn init_reset() -> ! {
     snes_init();
