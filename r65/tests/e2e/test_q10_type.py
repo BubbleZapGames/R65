@@ -24,6 +24,12 @@ def program(body: str, statics: str = "#[zeropage(0x10)]\nstatic mut OUT: Q10;")
     return f"{PRELUDE}\n{statics}\n\n#[entry]\nfn main() {{\n{body}\n}}"
 
 
+def raw(v: int):
+    """Little-endian bytes of a Q10's raw i16 payload."""
+    v &= 0xFFFF
+    return [v & 0xFF, v >> 8]
+
+
 class TestQ10Storage:
     """A Q10 is two bytes, like the i16 it wraps."""
 
@@ -63,6 +69,47 @@ class TestQ10Conversions:
         result = e2e.run(program("OUT = Q10::from(1, 32);"),
                          ExpectedState(memory={0x7E0010: [96, 0]}))
         assert result.success, f"Failures: {result.failures}"
+
+    def test_from_with_a_negative_whole_part(self, e2e):
+        """The sign lives in the whole part; `f` is unsigned. -1 + 32/64."""
+        result = e2e.run(program("OUT = Q10::from(0 - 1, 32);"),
+                         ExpectedState(memory={0x7E0010: raw(-32)}))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_fraction_at_the_top_of_its_range(self, e2e):
+        result = e2e.run(program("OUT = Q10::from(0, 63);"),
+                         ExpectedState(memory={0x7E0010: [63, 0]}))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_from_with_runtime_values(self, e2e):
+        """`f` is a 1-byte stack slot read in m16, so the high byte comes from
+        whatever sits next to it — GUARD proves the mask handles that."""
+        result = e2e.run(f'''{PRELUDE}
+            #[zeropage(0x10)] static mut OUT: Q10;
+            #[zeropage(0x20)] static mut NV: i16;
+            #[zeropage(0x22)] static mut FV: u8;
+            #[zeropage(0x23)] static mut GUARD: u8;
+            #[entry]
+            fn main() {{
+                GUARD = 0xEE;
+                NV = 3;
+                FV = 48;
+                OUT = Q10::from(NV, FV);
+            }}
+        ''', ExpectedState(memory={0x7E0010: raw(240), 0x7E0023: 0xEE}))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_negative_fraction_is_rejected(self, e2e):
+        """`f` is u8, so a negative numerator is a compile error rather than
+        being masked into 59."""
+        result = e2e.run(program("OUT = Q10::from(1, -5);"), ExpectedState(memory={}))
+        assert not result.success, "expected a compile error for a negative fraction"
+        assert "does not fit in type u8" in (result.error or ""), result.error
+
+    def test_oversized_fraction_is_rejected(self, e2e):
+        result = e2e.run(program("OUT = Q10::from(1, 300);"), ExpectedState(memory={}))
+        assert not result.success, "expected a compile error for f > 255"
+        assert "does not fit in type u8" in (result.error or ""), result.error
 
     def test_to_int(self, e2e):
         result = e2e.run(
@@ -259,3 +306,75 @@ class TestQ10IsNominal:
         Q10 multiply does not quietly compile either."""
         self._rejects(e2e, "OUT = Q10::from_int(3) * Q10::from_int(4);", "power-of-2")
 
+
+class TestQ10Lerp:
+    """Linear interpolation. `t` of Q10_ONE yields `b`; `t` is not clamped."""
+
+    def test_t_zero_gives_a(self, e2e):
+        r = e2e.run(program("OUT = Q10::lerp(Q10(64), Q10(192), Q10(0));"),
+                    ExpectedState(memory={0x7E0010: raw(64)}))
+        assert r.success, f"{r.error} {r.failures}"
+
+    def test_t_one_gives_b(self, e2e):
+        r = e2e.run(program("OUT = Q10::lerp(Q10(64), Q10(192), Q10_ONE);"),
+                    ExpectedState(memory={0x7E0010: raw(192)}))
+        assert r.success, f"{r.error} {r.failures}"
+
+    def test_midpoint(self, e2e):
+        """1.0 -> 3.0 at t=0.5 is 2.0 (128)."""
+        r = e2e.run(program("OUT = Q10::lerp(Q10(64), Q10(192), Q10_HALF);"),
+                    ExpectedState(memory={0x7E0010: raw(128)}))
+        assert r.success, f"{r.error} {r.failures}"
+
+    def test_across_zero(self, e2e):
+        """-1.0 -> 1.0 at t=0.5 is 0.0."""
+        r = e2e.run(program("OUT = Q10::lerp(Q10(0 - 64), Q10(64), Q10_HALF);"),
+                    ExpectedState(memory={0x7E0010: raw(0)}))
+        assert r.success, f"{r.error} {r.failures}"
+
+    def test_descending(self, e2e):
+        """b < a: 3.0 -> 1.0 at t=0.5 is 2.0."""
+        r = e2e.run(program("OUT = Q10::lerp(Q10(192), Q10(64), Q10_HALF);"),
+                    ExpectedState(memory={0x7E0010: raw(128)}))
+        assert r.success, f"{r.error} {r.failures}"
+
+    def test_negative_result(self, e2e):
+        """1.0 -> -3.0 at t=0.5 is -1.0 (-64)."""
+        r = e2e.run(program("OUT = Q10::lerp(Q10(64), Q10(0 - 192), Q10_HALF);"),
+                    ExpectedState(memory={0x7E0010: raw(-64)}))
+        assert r.success, f"{r.error} {r.failures}"
+
+    def test_extrapolates_past_b(self, e2e):
+        """t = 2.0 is not clamped: 0.0 -> 1.0 at t=2 is 2.0."""
+        r = e2e.run(program("OUT = Q10::lerp(Q10(0), Q10(64), Q10(128));"),
+                    ExpectedState(memory={0x7E0010: raw(128)}))
+        assert r.success, f"{r.error} {r.failures}"
+
+    def test_quarter_step(self, e2e):
+        """0.0 -> 4.0 at t=0.25 is 1.0 (64)."""
+        r = e2e.run(program("OUT = Q10::lerp(Q10(0), Q10(256), Q10(16));"),
+                    ExpectedState(memory={0x7E0010: raw(64)}))
+        assert r.success, f"{r.error} {r.failures}"
+
+    def test_truncates_rather_than_rounds(self, e2e):
+        """0.0 -> 1.5 at t=21/64 is 31.5 raw, truncated to 31."""
+        r = e2e.run(program("OUT = Q10::lerp(Q10(0), Q10(96), Q10(21));"),
+                    ExpectedState(memory={0x7E0010: raw(31)}))
+        assert r.success, f"{r.error} {r.failures}"
+
+    def test_runtime_values_not_just_literals(self, e2e):
+        """Through statics, so nothing const-folds."""
+        r = e2e.run(f'''{PRELUDE}
+            #[zeropage(0x10)] static mut OUT: Q10;
+            #[zeropage(0x20)] static mut AV: Q10;
+            #[zeropage(0x22)] static mut BV: Q10;
+            #[zeropage(0x24)] static mut TV: Q10;
+            #[entry]
+            fn main() {{
+                AV = Q10(0 - 128);
+                BV = Q10(384);
+                TV = Q10(48);
+                OUT = Q10::lerp(AV, BV, TV);
+            }}
+        ''', ExpectedState(memory={0x7E0010: raw(256)}))
+        assert r.success, f"{r.error} {r.failures}"

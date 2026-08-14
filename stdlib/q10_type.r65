@@ -30,6 +30,9 @@
 //
 //       // Extract fractional part (0-63)
 //       let frac: i16 = player_x.to_frac();     // 0
+//
+//       // Interpolate a quarter of the way from here to the target
+//       player_x = Q10::lerp(player_x, TARGET_X, Q10(16));
 //   }
 //
 // Scaling multiply is `q10_mul`, not `*`: `a * b` on two Q10 values would be a
@@ -52,9 +55,12 @@ impl Q10 {
         return Q10(n << 6);
     }
 
-    // Whole and fractional parts to Q10.6, where `f` is in 1/64 units (0-63)
-    fn from(n: i16, f: i16) -> Q10 {
-        return Q10((n << 6) | (f & Q10_FRAC_MASK));
+    // Whole and fractional parts to Q10.6, where `f` is in 1/64 units (0-63).
+    // `f` is u8 because a fractional numerator is never negative and never
+    // exceeds 63 — the narrower type rejects `Q10::from(1, -5)` outright rather
+    // than masking it into 59. Values above 63 still wrap, as the mask implies.
+    fn from(n: i16, f: u8) -> Q10 {
+        return Q10((n << 6) | ((f as i16) & Q10_FRAC_MASK));
     }
 
     // Integer part, rounding toward negative infinity
@@ -65,6 +71,27 @@ impl Q10 {
     // Fractional part, in 1/64 units (0-63)
     fn to_frac(self) -> i16 {
         return self.0 & Q10_FRAC_MASK;
+    }
+
+    // Linear interpolation from `a` toward `b`. `t` of Q10_ONE yields `b`
+    // exactly, `t` of 0 yields `a`.
+    //
+    //     result = a + (b - a) * t
+    //
+    // One multiply, not the two of `a*(1-t) + b*t`: q10_mul drives the hardware
+    // unit four times, so halving the multiplies outweighs the wider
+    // intermediate range the two-multiply form would tolerate.
+    //
+    // `t` is not clamped — above Q10_ONE it extrapolates past `b`, below zero
+    // past `a`. That is often what you want for easing; clamp at the call site
+    // if not.
+    //
+    // Precondition: `b - a` must fit the Q10 range (|b - a| < 512.0).
+    // Endpoints spanning more than the whole range wrap.
+    // Requires: include!("lib/sneslib.r65")
+    #[cfg(snes)]
+    fn lerp(a: Q10, b: Q10, t: Q10) -> Q10 {
+        return a + q10_mul(b - a, t);
     }
 
     // Absolute value
