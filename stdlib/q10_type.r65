@@ -1,60 +1,101 @@
 // Q10.6 Fixed-Point Type Library
 // 16-bit signed: 10 integer bits (-512 to +511), 6 fractional bits (1/64 precision)
 //
+// Q10 is a newtype over i16: a distinct type at compile time, an ordinary
+// 16-bit value at runtime. The generated code is identical to using a bare i16.
+//
+// The distinction is one-directional. A Q10 will not pass where an i16 is
+// wanted, and will not mix with another newtype — so a scaled value cannot
+// silently be consumed as a raw count. An i16 flowing the other way, *into* a
+// Q10, is still accepted: `q10_mul(raw, x)` compiles. Wrap deliberately at the
+// point a raw number becomes a fixed-point one.
+//
 // Example usage:
 //
 //   include!("lib/q10_type.r65")
 //
-//   static mut velocity: q10;    // Q10.6 velocity
+//   #[zeropage]
+//   static mut VELOCITY: Q10;
 //
 //   fn update() {
 //       // Create fixed-point values
-//       let player_x : q10 = q10_from_int!(100);   // 100.0
-//       velocity = q10_from!(0, 32);     // 0.5 (32/64)
+//       let player_x: Q10 = q10_from_int(100);  // 100.0
+//       VELOCITY = q10_from(0, 32);             // 0.5 (32/64)
+//
+//       // Addition and comparison are inherited from i16
+//       let next: Q10 = player_x + VELOCITY;
 //
 //       // Extract integer for screen position
-//       let screen_x: i16 = q10_to_int!(player_x);  // 100
+//       let screen_x: i16 = player_x.to_int();  // 100
 //
 //       // Extract fractional part (0-63)
-//       let frac: i16 = q10_to_frac!(player_x);     // 0
+//       let frac: i16 = player_x.to_frac();     // 0
 //   }
+//
+// Scaling multiply is `q10_mul`, not `*`: `a * b` on two Q10 values would be a
+// raw integer multiply, off by a factor of 64. It stays a named function
+// because the operator traits cannot yet be implemented for a newtype.
 
-type q10 = i16;
+struct Q10(i16);
 
-const Q10_ONE: q10 = 64;
-const Q10_HALF: q10 = 32;
-const Q10_FRAC_MASK: q10 = 0x3F;
-const Q10_1_64TH: u8 = 1;
+const Q10_ONE: Q10 = 64;
+const Q10_HALF: Q10 = 32;
+const Q10_1_64TH: Q10 = 1;
 
-macro_rules! q10_from_int($n:expr) { $n << 6 }
-macro_rules! q10_from($n:expr, $f:expr) { ($n << 6) | ($f & Q10_FRAC_MASK) }
-macro_rules! q10_to_int($q:expr) { $q >> 6 }
-macro_rules! q10_to_frac($q:expr) { $q & Q10_FRAC_MASK }
-macro_rules! q10_neg($val:expr) { 0 - $val }
+// Mask for the fractional bits. Plain i16 — it selects bits, it is not a value
+// on the Q10.6 scale.
+const Q10_FRAC_MASK: i16 = 0x3F;
 
-// Absolute value of a Q10.6 value
-fn q10_abs(val: q10) -> q10 {
-    if val < 0 {
-        return 0 - val;
+impl Q10 {
+    // Integer part, rounding toward negative infinity
+    fn to_int(self) -> i16 {
+        return self.0 >> 6;
     }
-    return val;
+
+    // Fractional part, in 1/64 units (0-63)
+    fn to_frac(self) -> i16 {
+        return self.0 & Q10_FRAC_MASK;
+    }
+
+    // Absolute value
+    fn abs(self) -> Q10 {
+        if self.0 < 0 {
+            return Q10(0 - self.0);
+        }
+        return self;
+    }
+}
+
+// Whole number to Q10.6
+fn q10_from_int(n: i16) -> Q10 {
+    return Q10(n << 6);
+}
+
+// Whole and fractional parts to Q10.6, where `f` is in 1/64 units (0-63)
+fn q10_from(n: i16, f: i16) -> Q10 {
+    return Q10((n << 6) | (f & Q10_FRAC_MASK));
 }
 
 // Multiply two Q10.6 values: result = (a * b) >> 6
 // Uses SNES hardware 8x8 multiply unit (4 partial products)
 // Requires: include!("lib/sneslib.r65")
 #[cfg(snes)]
-fn q10_mul(a @ A: q10, b: q10) -> q10 {
-    let mut ua: u16 = A as u16;
-    let mut ub: u16 = b as u16;
+fn q10_mul(a @ A: Q10, b: Q10) -> Q10 {
+    // Unwrap once: each `.0` is free at runtime but materializes its own
+    // temporary, and this function is already frame-heavy.
+    let av: i16 = a.0;
+    let bv: i16 = b.0;
+
+    let mut ua: u16 = av as u16;
+    let mut ub: u16 = bv as u16;
     let mut neg: u8 = 0;
 
-    if a < 0 {
-        ua = (0 - a) as u16;
+    if av < 0 {
+        ua = (0 - av) as u16;
         neg = 1;
     }
-    if b < 0 {
-        ub = (0 - b) as u16;
+    if bv < 0 {
+        ub = (0 - bv) as u16;
         neg = neg ^ 1;
     }
 
@@ -96,7 +137,7 @@ fn q10_mul(a @ A: q10, b: q10) -> q10 {
     let mut result: u16 = (lo >> 6) | (hi << 10);
 
     if neg != 0 {
-        return 0 - (result as q10);
+        return Q10(0 - (result as i16));
     }
-    return result as q10;
+    return Q10(result as i16);
 }

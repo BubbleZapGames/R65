@@ -1,9 +1,10 @@
 # Copyright (c) 2026 Neutron Emulation, LLC. MIT licensed.
 """
-End-to-end tests for the q10 type alias and Q10.6 fixed-point operations.
+End-to-end tests for the Q10.6 fixed-point library.
 
-Verifies that the `type q10 = i16;` alias and q10_neg, q10_abs, q10_mul
-work through the full pipeline.
+`Q10` is a newtype over `i16`, so these check two things at once: that the
+fixed-point arithmetic is right, and that wrapping it in a distinct type costs
+nothing — values still live in two bytes and ride in registers.
 """
 
 from pathlib import Path
@@ -13,352 +14,248 @@ STDLIB_DIR = Path(__file__).parent.parent.parent.parent / "stdlib"
 SNESLIB_PATH = STDLIB_DIR / "sneslib.r65"
 Q10_PATH = STDLIB_DIR / "q10_type.r65"
 
-
-class TestQ10TypeAlias:
-    """Test the q10 type alias from q10_type.r65."""
-
-    def test_q10_static_variable(self, e2e):
-        """Declare a static variable with the q10 type alias."""
-        result = e2e.run('''
-            type q10 = i16;
-
-            #[zeropage(0x10)]
-            static mut VELOCITY: q10;
-
-            #[entry]
-            fn main() {
-                VELOCITY = 64;
-            }
-        ''', ExpectedState(memory={
-            0x7E0010: 64,
-            0x7E0011: 0,
-        }))
-        assert result.success, f"Failures: {result.failures}"
-
-    def test_q10_function_param_and_return(self, e2e):
-        """Use q10 type alias in function parameter (stack) and return type."""
-        result = e2e.run('''
-            type q10 = i16;
-
-            #[zeropage(0x10)]
-            static mut RESULT: q10;
-
-            fn add_one(val: q10) -> q10 {
-                return val + 1;
-            }
-
-            #[entry]
-            fn main() {
-                RESULT = add_one(63);
-            }
-        ''', ExpectedState(memory={
-            0x7E0010: 64,
-            0x7E0011: 0,
-        }))
-        assert result.success, f"Failures: {result.failures}"
-
-    def test_q10_let_binding(self, e2e):
-        """Use q10 type alias in let binding type annotation."""
-        result = e2e.run('''
-            type q10 = i16;
-
-            #[zeropage(0x10)]
-            static mut OUT: q10;
-
-            #[entry]
-            fn main() {
-                let val: q10 = 128;
-                OUT = val;
-            }
-        ''', ExpectedState(memory={
-            0x7E0010: 128,
-            0x7E0011: 0,
-        }))
-        assert result.success, f"Failures: {result.failures}"
-
-    def test_q10_with_macros(self, e2e):
-        """Use q10 type alias together with Q10 macros."""
-        result = e2e.run('''
-            type q10 = i16;
-
-            const Q10_FRAC_MASK: q10 = 0x3F;
-
-            macro_rules! q10_from_int($n:expr) { $n << 6 }
-            macro_rules! q10_to_int($q:expr) { $q >> 6 }
-
-            #[zeropage(0x10)]
-            static mut POS: q10;
-            #[zeropage(0x12)]
-            static mut INT_PART: i16;
-
-            #[entry]
-            fn main() {
-                POS = q10_from_int!(3);
-                INT_PART = q10_to_int!(POS);
-            }
-        ''', ExpectedState(memory={
-            0x7E0010: 192,  # 3 << 6 = 192
-            0x7E0011: 0,
-            0x7E0012: 3,    # 192 >> 6 = 3
-            0x7E0013: 0,
-        }))
-        assert result.success, f"Failures: {result.failures}"
-
-
-class TestQ10Neg:
-    """Test q10_neg macro."""
-
-    def test_neg_positive(self, e2e):
-        """Negate a positive Q10.6 value: neg(3.0) = -3.0."""
-        result = e2e.run(f'''
+PRELUDE = f'''
             include!("{SNESLIB_PATH}")
             include!("{Q10_PATH}")
+'''
 
-            #[zeropage(0x10)]
-            static mut OUT: q10;
 
-            #[entry]
-            fn main() {{
-                OUT = q10_neg!(192);
-            }}
-        ''', ExpectedState(memory={
-            # -192 as u16 = 0xFF40
-            0x7E0010: 0x40,
-            0x7E0011: 0xFF,
-        }))
+def program(body: str, statics: str = "#[zeropage(0x10)]\nstatic mut OUT: Q10;") -> str:
+    return f"{PRELUDE}\n{statics}\n\n#[entry]\nfn main() {{\n{body}\n}}"
+
+
+class TestQ10Storage:
+    """A Q10 is two bytes, like the i16 it wraps."""
+
+    def test_static_variable(self, e2e):
+        result = e2e.run(program("OUT = Q10(64);"),
+                         ExpectedState(memory={0x7E0010: [64, 0]}))
         assert result.success, f"Failures: {result.failures}"
 
-    def test_neg_negative(self, e2e):
-        """Negate a negative Q10.6 value: neg(-2.0) = 2.0."""
-        result = e2e.run(f'''
-            include!("{SNESLIB_PATH}")
-            include!("{Q10_PATH}")
+    def test_let_binding(self, e2e):
+        result = e2e.run(program("let v: Q10 = Q10(128);\nOUT = v;"),
+                         ExpectedState(memory={0x7E0010: [128, 0]}))
+        assert result.success, f"Failures: {result.failures}"
 
+    def test_constant(self, e2e):
+        """`const Q10_ONE: Q10 = 64;` — a payload literal flows into the newtype."""
+        result = e2e.run(program("OUT = Q10_ONE;"),
+                         ExpectedState(memory={0x7E0010: [64, 0]}))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_negative_value(self, e2e):
+        result = e2e.run(program("OUT = Q10(0 - 192);"),
+                         ExpectedState(memory={0x7E0010: [0x40, 0xFF]}))
+        assert result.success, f"Failures: {result.failures}"
+
+
+class TestQ10Conversions:
+    """q10_from_int / q10_from and the accessor methods."""
+
+    def test_from_int(self, e2e):
+        """3.0 -> 3 << 6 = 192."""
+        result = e2e.run(program("OUT = q10_from_int(3);"),
+                         ExpectedState(memory={0x7E0010: [192, 0]}))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_from_whole_and_fraction(self, e2e):
+        """1.5 -> (1 << 6) | 32 = 96."""
+        result = e2e.run(program("OUT = q10_from(1, 32);"),
+                         ExpectedState(memory={0x7E0010: [96, 0]}))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_to_int(self, e2e):
+        result = e2e.run(
+            program("OUT = q10_from_int(3).to_int();",
+                    statics="#[zeropage(0x10)]\nstatic mut OUT: i16;"),
+            ExpectedState(memory={0x7E0010: [3, 0]}))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_to_frac(self, e2e):
+        """The fractional part of 1.5 is 32/64."""
+        result = e2e.run(
+            program("OUT = q10_from(1, 32).to_frac();",
+                    statics="#[zeropage(0x10)]\nstatic mut OUT: i16;"),
+            ExpectedState(memory={0x7E0010: [32, 0]}))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_round_trip_through_a_function(self, e2e):
+        result = e2e.run(f'''{PRELUDE}
             #[zeropage(0x10)]
-            static mut OUT: q10;
+            static mut OUT: Q10;
+
+            fn add_one(val: Q10) -> Q10 {{ return val + 1; }}
 
             #[entry]
-            fn main() {{
-                let val: q10 = q10_neg!(128);
-                OUT = q10_neg!(val);
-            }}
-        ''', ExpectedState(memory={
-            0x7E0010: 128,  # 2.0 in Q10.6
-            0x7E0011: 0,
-        }))
+            fn main() {{ OUT = add_one(Q10(63)); }}
+        ''', ExpectedState(memory={0x7E0010: [64, 0]}))
+        assert result.success, f"Failures: {result.failures}"
+
+
+class TestQ10InheritedOperators:
+    """Addition, subtraction and comparison come from i16 and stay Q10."""
+
+    def test_addition(self, e2e):
+        result = e2e.run(program("OUT = q10_from_int(3) + q10_from(0, 32);"),
+                         ExpectedState(memory={0x7E0010: [224, 0]}))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_subtraction(self, e2e):
+        result = e2e.run(program("OUT = q10_from_int(3) - q10_from_int(1);"),
+                         ExpectedState(memory={0x7E0010: [128, 0]}))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_negation(self, e2e):
+        """Unary minus is inherited: -3.0 is 0xFF40."""
+        result = e2e.run(program("OUT = -q10_from_int(3);"),
+                         ExpectedState(memory={0x7E0010: [0x40, 0xFF]}))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_signed_comparison(self, e2e):
+        """A negative Q10 must compare as signed, not as a large unsigned."""
+        result = e2e.run(
+            program("if q10_from_int(0 - 2) < Q10(0) { OUT = 1; } else { OUT = 2; }",
+                    statics="#[zeropage(0x10)]\nstatic mut OUT: u8;"),
+            ExpectedState(memory={0x7E0010: 1}))
         assert result.success, f"Failures: {result.failures}"
 
 
 class TestQ10Abs:
-    """Test q10_abs function."""
-
     def test_abs_positive(self, e2e):
-        """Absolute value of positive: abs(5.0) = 5.0."""
-        result = e2e.run(f'''
-            include!("{SNESLIB_PATH}")
-            include!("{Q10_PATH}")
-
-            #[zeropage(0x10)]
-            static mut OUT: q10;
-
-            #[entry]
-            fn main() {{
-                OUT = q10_abs(320);
-            }}
-        ''', ExpectedState(memory={
-            # 320 = 5.0 in Q10.6 = 0x0140
-            0x7E0010: 0x40,
-            0x7E0011: 0x01,
-        }))
+        result = e2e.run(program("OUT = q10_from_int(5).abs();"),
+                         ExpectedState(memory={0x7E0010: [0x40, 0x01]}))
         assert result.success, f"Failures: {result.failures}"
 
     def test_abs_negative(self, e2e):
-        """Absolute value of negative: abs(-3.0) = 3.0."""
-        result = e2e.run(f'''
-            include!("{SNESLIB_PATH}")
-            include!("{Q10_PATH}")
-
-            #[zeropage(0x10)]
-            static mut OUT: q10;
-
-            #[entry]
-            fn main() {{
-                let val: q10 = q10_neg!(192);
-                OUT = q10_abs(val);
-            }}
-        ''', ExpectedState(memory={
-            0x7E0010: 192,  # 3.0 in Q10.6
-            0x7E0011: 0,
-        }))
+        result = e2e.run(program("OUT = q10_from_int(0 - 5).abs();"),
+                         ExpectedState(memory={0x7E0010: [0x40, 0x01]}))
         assert result.success, f"Failures: {result.failures}"
 
     def test_abs_zero(self, e2e):
-        """Absolute value of zero: abs(0) = 0."""
-        result = e2e.run(f'''
-            include!("{SNESLIB_PATH}")
-            include!("{Q10_PATH}")
-
-            #[zeropage(0x10)]
-            static mut OUT: q10;
-
-            #[entry]
-            fn main() {{
-                OUT = q10_abs(0);
-            }}
-        ''', ExpectedState(memory={
-            0x7E0010: 0,
-            0x7E0011: 0,
-        }))
+        result = e2e.run(program("OUT = Q10(0).abs();"),
+                         ExpectedState(memory={0x7E0010: [0, 0]}))
         assert result.success, f"Failures: {result.failures}"
 
 
 class TestQ10Mul:
-    """Test q10_mul function (SNES hardware multiply)."""
+    """Scaling multiply via the SNES hardware 8x8 unit."""
 
     def test_mul_integers(self, e2e):
-        """3.0 * 4.0 = 12.0."""
-        # 3.0 = 192, 4.0 = 256, 12.0 = 768
-        result = e2e.run(f'''
-            include!("{SNESLIB_PATH}")
-            include!("{Q10_PATH}")
-
-            #[zeropage(0x10)]
-            static mut OUT: q10;
-
-            #[entry]
-            fn main() {{
-                OUT = q10_mul(192, 256);
-            }}
-        ''', ExpectedState(memory={
-            # 768 = 0x0300
-            0x7E0010: 0x00,
-            0x7E0011: 0x03,
-        }))
+        """3.0 * 4.0 = 12.0 (192 * 256 -> 768)."""
+        result = e2e.run(program("OUT = q10_mul(Q10(192), Q10(256));"),
+                         ExpectedState(memory={0x7E0010: [0x00, 0x03]}))
         assert result.success, f"Failures: {result.failures}"
 
     def test_mul_fractional(self, e2e):
-        """1.5 * 2.0 = 3.0."""
-        # 1.5 = 1*64+32 = 96, 2.0 = 128, 3.0 = 192
-        result = e2e.run(f'''
-            include!("{SNESLIB_PATH}")
-            include!("{Q10_PATH}")
-
-            #[zeropage(0x10)]
-            static mut OUT: q10;
-
-            #[entry]
-            fn main() {{
-                OUT = q10_mul(96, 128);
-            }}
-        ''', ExpectedState(memory={
-            0x7E0010: 192,
-            0x7E0011: 0,
-        }))
+        """1.5 * 2.0 = 3.0 (96 * 128 -> 192)."""
+        result = e2e.run(program("OUT = q10_mul(Q10(96), Q10(128));"),
+                         ExpectedState(memory={0x7E0010: [192, 0]}))
         assert result.success, f"Failures: {result.failures}"
 
     def test_mul_larger_values(self, e2e):
-        """100.0 * 5.0 = 500.0."""
-        # 100.0 = 6400, 5.0 = 320, 500.0 = 32000
-        result = e2e.run(f'''
-            include!("{SNESLIB_PATH}")
-            include!("{Q10_PATH}")
-
-            #[zeropage(0x10)]
-            static mut OUT: q10;
-
-            #[entry]
-            fn main() {{
-                OUT = q10_mul(6400, 320);
-            }}
-        ''', ExpectedState(memory={
-            # 32000 = 0x7D00
-            0x7E0010: 0x00,
-            0x7E0011: 0x7D,
-        }))
+        """100.0 * 5.0 = 500.0 (6400 * 320 -> 32000)."""
+        result = e2e.run(program("OUT = q10_mul(Q10(6400), Q10(320));"),
+                         ExpectedState(memory={0x7E0010: [0x00, 0x7D]}))
         assert result.success, f"Failures: {result.failures}"
 
     def test_mul_negative(self, e2e):
-        """(-2.0) * 3.5 = -7.0."""
-        # -2.0 = -128 (0xFF80), 3.5 = 224, -7.0 = -448 (0xFE40)
-        result = e2e.run(f'''
-            include!("{SNESLIB_PATH}")
-            include!("{Q10_PATH}")
-
+        """-2.0 * 3.5 = -7.0 (-128 * 224 -> -448 = 0xFE40)."""
+        result = e2e.run(f'''{PRELUDE}
             #[zeropage(0x10)]
-            static mut OUT: q10;
+            static mut OUT: Q10;
 
             #[entry]
             fn main() {{
-                let a: q10 = q10_neg!(128);
-                OUT = q10_mul(a, 224);
+                let a: Q10 = Q10(0 - 128);
+                OUT = q10_mul(a, Q10(224));
             }}
-        ''', ExpectedState(memory={
-            # -448 = 0xFE40
-            0x7E0010: 0x40,
-            0x7E0011: 0xFE,
-        }))
+        ''', ExpectedState(memory={0x7E0010: [0x40, 0xFE]}))
         assert result.success, f"Failures: {result.failures}"
 
     def test_mul_both_negative(self, e2e):
-        """(-3.0) * (-4.0) = 12.0."""
-        # -3.0 = -192 (0xFF40), -4.0 = -256 (0xFF00), 12.0 = 768
-        result = e2e.run(f'''
-            include!("{SNESLIB_PATH}")
-            include!("{Q10_PATH}")
-
+        """-2.0 * -3.5 = 7.0 (448 = 0x01C0)."""
+        result = e2e.run(f'''{PRELUDE}
             #[zeropage(0x10)]
-            static mut OUT: q10;
+            static mut OUT: Q10;
 
             #[entry]
             fn main() {{
-                let a: q10 = q10_neg!(192);
-                let b: q10 = q10_neg!(256);
+                let a: Q10 = Q10(0 - 128);
+                let b: Q10 = Q10(0 - 224);
                 OUT = q10_mul(a, b);
             }}
-        ''', ExpectedState(memory={
-            # 768 = 0x0300
-            0x7E0010: 0x00,
-            0x7E0011: 0x03,
-        }))
+        ''', ExpectedState(memory={0x7E0010: [0xC0, 0x01]}))
         assert result.success, f"Failures: {result.failures}"
 
     def test_mul_by_zero(self, e2e):
-        """5.0 * 0 = 0."""
-        result = e2e.run(f'''
-            include!("{SNESLIB_PATH}")
-            include!("{Q10_PATH}")
-
-            #[zeropage(0x10)]
-            static mut OUT: q10;
-
-            #[entry]
-            fn main() {{
-                OUT = q10_mul(320, 0);
-            }}
-        ''', ExpectedState(memory={
-            0x7E0010: 0,
-            0x7E0011: 0,
-        }))
+        result = e2e.run(program("OUT = q10_mul(Q10(192), Q10(0));"),
+                         ExpectedState(memory={0x7E0010: [0, 0]}))
         assert result.success, f"Failures: {result.failures}"
 
     def test_mul_carry_path(self, e2e):
-        """5.75 * 5.75 = 33.0625 — exercises carry in p0 + mid<<8."""
-        # 5.75 in Q10.6 = 5*64+48 = 368 = 0x0170
-        # 33.0625 in Q10.6 = 33*64+4 = 2116 = 0x0844
-        result = e2e.run(f'''
-            include!("{SNESLIB_PATH}")
-            include!("{Q10_PATH}")
+        """Large operands exercise the 32-bit accumulate carry."""
+        result = e2e.run(program("OUT = q10_mul(Q10(16384), Q10(128));"),
+                         ExpectedState(memory={0x7E0010: [0x00, 0x80]}))
+        assert result.success, f"Failures: {result.failures}"
 
+
+class TestQ10IsNominal:
+    """What the newtype does and does not guarantee.
+
+    `Q10` is transparent in and opaque out, so the protection is one-directional:
+    a Q10 result cannot silently be consumed as a raw i16, and cannot be confused
+    with a different newtype. An unscaled i16 flowing *in* is still accepted by
+    design — see `test_an_unscaled_i16_still_flows_in`, which pins that.
+
+    Under the old `type q10 = i16;` alias neither direction was checked.
+    """
+
+    def _rejects(self, e2e, body, expect):
+        result = e2e.run(program(body), ExpectedState(memory={}))
+        assert not result.success, f"expected a compile error, got none for: {body}"
+        assert expect in (result.error or ""), \
+            f"expected {expect!r} in error, got:\n{result.error}"
+
+    def test_q10_does_not_pass_as_an_i16(self, e2e):
+        self._rejects(e2e, "let n: i16 = q10_from_int(3);", "found Q10")
+
+    def test_q10_does_not_pass_into_an_i16_parameter(self, e2e):
+        result = e2e.run(f'''{PRELUDE}
             #[zeropage(0x10)]
-            static mut OUT: q10;
+            static mut OUT: i16;
+
+            fn takes_raw(n: i16) -> i16 {{ return n; }}
 
             #[entry]
-            fn main() {{
-                OUT = q10_mul(368, 368);
-            }}
-        ''', ExpectedState(memory={
-            # 2116 = 0x0844
-            0x7E0010: 0x44,
-            0x7E0011: 0x08,
-        }))
+            fn main() {{ OUT = takes_raw(q10_from_int(3)); }}
+        ''', ExpectedState(memory={}))
+        assert not result.success, "expected a compile error, got none"
+        assert "found Q10" in (result.error or ""), result.error
+
+    def test_an_unscaled_i16_still_flows_in(self, e2e):
+        """Transparent-in is deliberate and not width-limited: any value
+        assignable to the payload — a literal or a typed i16 — is a valid Q10.
+        The newtype tracks the type of results; it does not force every call
+        site to spell out the constructor.
+        """
+        result = e2e.run(program("let raw: i16 = 192;\nOUT = q10_mul(raw, Q10(256));"),
+                         ExpectedState(memory={0x7E0010: [0x00, 0x03]}))
         assert result.success, f"Failures: {result.failures}"
+
+    def test_q10_does_not_mix_with_another_newtype(self, e2e):
+        result = e2e.run(f'''{PRELUDE}
+            struct Ticks(i16);
+            #[zeropage(0x10)]
+            static mut OUT: Q10;
+
+            #[entry]
+            fn main() {{ let t: Ticks = 4; OUT = q10_from_int(1) + t; }}
+        ''', ExpectedState(memory={}))
+        assert not result.success, "expected a compile error, got none"
+        assert "mismatched types" in (result.error or ""), result.error
+
+    def test_unscaled_multiply_is_still_rejected(self, e2e):
+        """`*` is restricted to power-of-2 constants, so the wrong spelling of a
+        Q10 multiply does not quietly compile either."""
+        self._rejects(e2e, "OUT = q10_from_int(3) * q10_from_int(4);", "power-of-2")
+

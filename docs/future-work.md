@@ -328,4 +328,10 @@ Two small deliberate restrictions, each easy to lift but each needing a decision
 - **Nested newtypes** (`struct Celsius(Temp);`) are rejected. `size_bytes` already recurses, so the mechanics are free — what needs deciding is whether the transparent-in rule reaches through the nesting (does `Celsius` accept a bare `i16`, or only a `Temp`?).
 - **`.0` is read-only.** `V.0 = 5` would be a natural spelling, but struct field writes deliberately do not require `mut`, so allowing it would let `let t: TileId = ...; t.0 = 9;` mutate an immutable binding. Revisit only with a story for that.
 
-Also: `stdlib/q10_type.r65` is still `type q10 = i16;` with macro accessors. Porting it to `struct Q10(i16)` is the obvious demonstration — the generated code is identical — but it is a breaking change for existing users and is best done alongside Tier C above, which is what would make the ported version strictly better rather than merely equivalent.
+### `#[cfg(...)]` on impl methods
+
+`#[cfg(snes)]` parses on an impl method and is then ignored — both arms of a `#[cfg(snes)]`/`#[cfg(nes)]` pair are built. Conditional compilation is applied to top-level declarations only, and `impl` blocks themselves take no attributes either.
+
+**Why deferred**: found while porting `stdlib/q10_type.r65` to a newtype. It forced `q10_mul` to stay a free function rather than becoming a `Q10` method, since it touches SNES multiply registers — a workable outcome, so nothing was blocked.
+
+**Approach if revisited**: run `_should_include_declaration` over `impl.methods` in `_declare_impl`/`_build_impl`, and allow `attribute*` on `impl_decl` in the grammar so a whole block can be gated at once. Silently dropping an attribute is the bad part — rejecting `#[cfg]` on a method would be better than today's behaviour even without support.
