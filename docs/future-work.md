@@ -4,6 +4,17 @@ Items deliberately scoped out of prior implementations. Each entry records *why*
 
 ---
 
+## Conventions
+
+When adding to this file:
+
+- Keep entries scoped to *concrete* deferred items, not vague aspirations.
+- For each, capture: what it does, why it was deferred, sketch of the approach if revisited.
+- If an item lands, delete its entry (don't strike it through — git history preserves the past).
+- Group related items under a heading describing the area of work.
+
+---
+
 ## Trait Dispatch Chain Coalescing — Further Extensions
 
 The chain-coalescing pass landed in stages: v1 (far-self DBR bracket elision, straight-line paths), v1.5 (cross-method on same trait), v1.6 (cross-trait via cast-transparency), v2 (CFG diamonds, near-self chaining, Y-reload elision).
@@ -258,11 +269,63 @@ Callers pass the index `i` instead of a reference.
 
 ---
 
-## Conventions
+## Far Pointer Return Values (`-> far *T`)
 
-When adding to this file:
+A function returning a `far *T` is currently a type error (`type_checker.py::_check_return_fits_a_register`).
 
-- Keep entries scoped to *concrete* deferred items, not vague aspirations.
-- For each, capture: what it does, why it was deferred, sketch of the approach if revisited.
-- If an item lands, delete its entry (don't strike it through — git history preserves the past).
-- Group related items under a heading describing the area of work.
+The return ABI is register-count based — each returned value rides back in A, then B or X, then Y — so a value has at most 2 bytes to travel in. A far pointer is 3. Before the check landed, the callee materialised the pointer in its stack frame, kept only the low byte in A, and deallocated the frame; the caller read the remaining two bytes out of dead stack. That worked or not depending on whether an unrelated later call had overwritten the region, which is exactly how it presented during the DERELICT text-adventure evaluation (see `docs/r65-evaluation.md`).
+
+**Why deferred**: a correct fix is an ABI change, not a codegen patch. It needs a defined register triple (e.g. A = low 16 bits, X = bank), caller-side reassembly, and interaction with `#[preserves(...)]`, frame teardown ordering, and the existing multi-return register assignment (`_get_return_register_order`). The hard error is sound in the meantime, and the workaround — index the table at the use site, or write through an output parameter — costs nothing at runtime.
+
+**Approach if revisited**: extend `_get_return_register_count` to return a byte budget rather than a register count, define the triple in `abi_model.py`, and emit reassembly in `_emit_return_value_collection`. Tests should cover the near/far callee cross product and a returned pointer that is used after a subsequent call — the shape that exposed the original bug.
+
+---
+
+## Stdlib Macro Coverage
+
+`write_color!`, `enable_nmi!`, and `enable_autojoy!` in `stdlib/sneslib.r65` had never compiled — a missing semicolon and two `u8`-vs-`Interrupt` type errors respectively. Macro bodies are only parsed when expanded, so a macro nothing calls is never validated.
+
+**Why deferred**: fixed in place, but the class of problem remains — any unused stdlib macro is unverified.
+
+**Approach if revisited**: a test source that expands every stdlib macro once, compiled as part of the suite. Cheap to write, and it turns "unused" into "at least syntactically live". Related: `enable_nmi!`/`disable_nmi!`/`enable_autojoy!` read-modify-write `NMITIMEN` ($4200), which is write-only — they fold open bus into the value and need a shadow variable to be correct.
+
+---
+
+## Newtypes
+
+Deferred work on `struct TileId(u8);` — see [type-system.md](type-system.md#newtypes).
+
+### Operator Overloading (Tier C)
+
+A newtype inherits its payload's operators (`TileId + 1` is a `TileId`) but cannot *override* them. `struct Q10(i16)` therefore gets integer multiply, when its multiply is semantically `(a * b) >> 6` — and `*` on a primitive is restricted to power-of-2 constants, so the correct operation cannot even be written as an operator today.
+
+**Why deferred**: the existing operator traits all take `*self` (`docs/operator-overloading.md`), which a newtype does not have. Supporting them means a by-value variant of the trait shapes — `fn mul(self, rhs: Q10) -> Q10` — plus a resolution rule where a user `impl` wins over the inherited primitive operator, and lifting the power-of-2 `*`/`/` restriction for the overloaded type.
+
+Worth noting that the *hard* part of Tier C is already gone. Value-producing operators were deferred because `let c = a + b` had to materialise an aggregate and copy into it, which needed destination-passing. A register-sized newtype returns in a register, so nothing needs materialising — what remains is the trait plumbing, not an ABI change.
+
+**Approach if revisited**: add by-value operator lang items alongside the `*_assign` set in `hir/lang_items.py`; resolve them in `type_checker.py::_newtype_binop_result` *before* falling through to the inherited primitive path; reuse the existing static-dispatch call lowering, which already handles a register-bound `self` (`hir/builder.py::_impl_self_is_by_value`). Tests should cover a `Q10` multiply against a hand-written `q10_mul` for cycle parity, and confirm the inherited operator still applies to a newtype with no impl.
+
+### Far-Pointer Payloads
+
+`struct Handle(far *Sprite);` is rejected — the payload is 3 bytes and a newtype must fit in a register.
+
+**Why deferred**: the same return-register budget as *Far Pointer Return Values* above. A newtype is only worth having if it is free, and a 3-byte payload is not.
+
+**Approach if revisited**: lands with the far-pointer return ABI. Relax the size check in `hir/builder.py::_validate_newtype_inner` once a 3-byte value has a defined register triple.
+
+### Register Bindings for Bare Enums
+
+`_validate_register_binding_type` (`hir/builder.py`) maps a near pointer to `u16` so it can bind `A`/`X`/`Y`, but rejects a bare enum with "must have a primitive type". Newtypes over enums are allowed through as `u8` because a newtype is a value type by design; a plain `enum Direction` still cannot bind a register, which is why every test passes enums as `dir @ A: u8` and casts at the call site.
+
+**Why deferred**: relaxing it for bare enums is a language-wide change to the register-binding rules, not a newtype one, and nothing forced the question.
+
+**Approach if revisited**: extend the allowed-type table to accept `EnumTypeInfo` as `u8` unconditionally, and drop the newtype special case next to it.
+
+### Deliberate Restrictions
+
+Two small deliberate restrictions, each easy to lift but each needing a decision first:
+
+- **Nested newtypes** (`struct Celsius(Temp);`) are rejected. `size_bytes` already recurses, so the mechanics are free — what needs deciding is whether the transparent-in rule reaches through the nesting (does `Celsius` accept a bare `i16`, or only a `Temp`?).
+- **`.0` is read-only.** `V.0 = 5` would be a natural spelling, but struct field writes deliberately do not require `mut`, so allowing it would let `let t: TileId = ...; t.0 = 9;` mutate an immutable binding. Revisit only with a story for that.
+
+Also: `stdlib/q10_type.r65` is still `type q10 = i16;` with macro accessors. Porting it to `struct Q10(i16)` is the obvious demonstration — the generated code is identical — but it is a breaking change for existing users and is best done alongside Tier C above, which is what would make the ported version strictly better rather than merely equivalent.
