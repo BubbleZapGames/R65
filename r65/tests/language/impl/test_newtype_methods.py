@@ -183,8 +183,32 @@ class TestAssociatedFunctions:
         with pytest.raises(TypeCheckError, match="found Q10"):
             build_and_check(self.DECL + "fn main() { let n: i16 = Q10::from_int(5); }")
 
-    def test_unknown_associated_function(self):
-        with pytest.raises(HIRError):
+    def test_cfg_filters_impl_methods(self):
+        """`#[cfg]` was parsed on impl methods and then ignored, so both arms of
+        a cfg pair were built. A method gated on a disabled flag must not exist."""
+        from r65.compiler.hir.cfg import CfgEvaluator
+        src = ("struct Q10(i16);\n"
+               "impl Q10 {\n"
+               "    #[cfg(snes)] fn hw(self) -> i16 { return self.0; }\n"
+               "    #[cfg(nes)]  fn other(self) -> i16 { return self.0; }\n"
+               "    fn plain(self) -> i16 { return self.0; }\n"
+               "}\nfn main() {}")
+
+        def built(flags):
+            builder = HIRBuilder(source_file="test.r65",
+                                 cfg_evaluator=CfgEvaluator(flags, {}))
+            prog = builder.build_program(parse(src, "test.r65"))
+            return {m.name for d in prog.declarations
+                    for m in (getattr(d, "methods", []) or [])}
+
+        assert built({"snes"}) == {"Q10__hw", "Q10__plain"}
+        assert built({"nes"}) == {"Q10__other", "Q10__plain"}
+        assert built(set()) == {"Q10__plain"}
+
+    def test_missing_associated_function_names_the_member(self):
+        """`Name::member` is shared with enum variants, so an unresolved member
+        used to report 'Q10 is not an enum' — which names the wrong thing."""
+        with pytest.raises(HIRError, match="has no associated function or constant"):
             build_and_check(self.DECL + "fn main() { let q: Q10 = Q10::nope(5); }")
 
     def test_enum_variants_still_resolve(self):

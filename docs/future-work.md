@@ -328,10 +328,10 @@ Two small deliberate restrictions, each easy to lift but each needing a decision
 - **Nested newtypes** (`struct Celsius(Temp);`) are rejected. `size_bytes` already recurses, so the mechanics are free — what needs deciding is whether the transparent-in rule reaches through the nesting (does `Celsius` accept a bare `i16`, or only a `Temp`?).
 - **`.0` is read-only.** `V.0 = 5` would be a natural spelling, but struct field writes deliberately do not require `mut`, so allowing it would let `let t: TileId = ...; t.0 = 9;` mutate an immutable binding. Revisit only with a story for that.
 
-### `#[cfg(...)]` on impl methods
+### `#[cfg(...)]` on impl blocks
 
-`#[cfg(snes)]` parses on an impl method and is then ignored — both arms of a `#[cfg(snes)]`/`#[cfg(nes)]` pair are built. Conditional compilation is applied to top-level declarations only, and `impl` blocks themselves take no attributes either.
+Individual methods honour `#[cfg(...)]`, but an `impl` block as a whole cannot be gated — `impl_decl` takes no `attribute*` in the grammar, so a block whose every method is hardware-dependent needs the attribute repeated on each one.
 
-**Why deferred**: found while porting `stdlib/q10_type.r65` to a newtype. It forces `q10_mul` to stay a free function rather than becoming a `Q10` method, since it touches SNES multiply registers — a workable outcome, so nothing is blocked.
+**Why deferred**: per-method filtering covers the cases that came up (`Q10::lerp`, `q10_mul`), so what is left is ergonomics rather than capability.
 
-**Approach if revisited**: run `_should_include_declaration` over `impl.methods` in `_declare_impl`/`_build_impl`, and allow `attribute*` on `impl_decl` in the grammar so a whole block can be gated at once. Silently dropping an attribute is the bad part — rejecting `#[cfg]` on a method would be better than today's behaviour even without support.
+**Approach if revisited**: allow `attribute*` on `impl_decl` and fold the block's cfg into each method's, so an outer disable wins over an inner enable.

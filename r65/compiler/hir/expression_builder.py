@@ -111,6 +111,18 @@ class ExpressionBuilder:
             if not enum_symbol:
                 raise HIRError(f"Undefined type: {expr.enum_name}", source_loc=src_loc)
             if enum_symbol.kind != SymbolKind.ENUM:
+                # `Name::member` also spells associated functions and constants.
+                # Reaching here means the member did not resolve, so complain
+                # about the member rather than about `Name` not being an enum —
+                # which is what a cfg'd-out method or a typo looks like.
+                if enum_symbol.kind in (SymbolKind.STRUCT, SymbolKind.NEWTYPE):
+                    raise HIRError(
+                        f"'{expr.enum_name}' has no associated function or "
+                        f"constant named '{expr.variant_name}'",
+                        source_loc=src_loc,
+                        hint=f"check the spelling, or whether "
+                             f"'{expr.enum_name}::{expr.variant_name}' is behind "
+                             f"a #[cfg(...)] that is not enabled")
                 raise HIRError(f"{expr.enum_name} is not an enum", source_loc=src_loc)
 
             if not qualified_symbol:

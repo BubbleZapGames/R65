@@ -418,9 +418,9 @@ class HIRBuilder:
         Returns:
             True if declaration should be included, False otherwise
         """
-        # Get attributes from declaration (only FunctionDecl and StaticDecl have attributes)
+        # Get attributes from declaration (only these node types carry them)
         attributes = []
-        if isinstance(decl, (ast.FunctionDecl, ast.StaticDecl)):
+        if isinstance(decl, (ast.FunctionDecl, ast.StaticDecl, ast.ImplMethod)):
             attributes = decl.attributes
 
         # Check for cfg attributes
@@ -1659,6 +1659,12 @@ class HIRBuilder:
 
     def _declare_impl(self, impl: ast.ImplDecl):
         """First pass: declare impl block methods and constants."""
+        # Apply #[cfg(...)] to the methods before anything reads them. Done once,
+        # in place, because impl.methods is walked from five separate places —
+        # filtering at each would risk them disagreeing about what exists.
+        impl.methods = [m for m in impl.methods
+                        if self._should_include_declaration(m)]
+
         # Validate struct exists
         struct_symbol = self.symbol_table.lookup(impl.struct_name)
         if not struct_symbol:
