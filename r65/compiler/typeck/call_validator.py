@@ -130,8 +130,11 @@ class CallValidator:
             if method_result is not None:
                 return method_result
 
-        # Handle direct call vs indirect call
-        if isinstance(expr.func, HIRIdentifier) and expr.func.symbol.kind == SymbolKind.FUNCTION:
+        # Handle direct call vs indirect call. An associated function
+        # (`Q10::from_int(5)`) resolves to a METHOD symbol but has no receiver,
+        # so it takes the ordinary direct-call path.
+        if (isinstance(expr.func, HIRIdentifier)
+                and expr.func.symbol.kind in (SymbolKind.FUNCTION, SymbolKind.METHOD)):
             # Direct call to a function
             func_symbol = expr.func.symbol
             func_decl = self.lookup_function_decl(func_symbol.name, expr.source_loc)

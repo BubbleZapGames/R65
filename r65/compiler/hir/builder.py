@@ -2329,18 +2329,19 @@ class HIRBuilder:
         # `far *self` -> far, `*self` -> near.
         self_is_far = method.self_is_far
 
+        # An associated function declares no self, so none is synthesized: it is
+        # an ordinary function that happens to be namespaced by the type. A
+        # synthetic self here would take a parameter slot the caller never
+        # passes, and (bound to A) would drag a 2-byte payload into m16 entry.
+        has_self = getattr(method, 'has_self', True)
+
         # Build self parameter. A newtype takes `self` by value in the
         # accumulator — the payload is one or two bytes, so there is nothing to
         # point at and a trivial accessor costs nothing.
         self_by_value = self._impl_self_is_by_value(impl, method)
         if self_by_value:
             self_type = self.type_resolver.resolve_named_type(impl.struct_name)
-            # An associated function declares no self; one is still synthesized
-            # (pre-existing) but must not claim a register. Binding it to A would
-            # make a 2-byte payload infer m16 entry — emitting a REP #$20 into,
-            # say, an #[interrupt] handler that takes no arguments at all.
-            self_binding = (hir.RegisterBinding(register_name='A')
-                            if getattr(method, 'has_self', True) else None)
+            self_binding = hir.RegisterBinding(register_name='A')
         else:
             struct_type = StructTypeInfo(name=impl.struct_name)
             self_type = PointerTypeInfo(pointee_type=struct_type, is_far=self_is_far)
@@ -2354,17 +2355,17 @@ class HIRBuilder:
             var_type=self_type,
             is_mutable=True
         )
-        self.symbol_table.declare('self', self_param_symbol)
-
-        hir_self_param = hir.HIRParameter(
-            name='self',
-            param_type=self_type,
-            binding=self_binding,
-            symbol=self_param_symbol
-        )
+        hir_params = []
+        if has_self:
+            self.symbol_table.declare('self', self_param_symbol)
+            hir_params.append(hir.HIRParameter(
+                name='self',
+                param_type=self_type,
+                binding=self_binding,
+                symbol=self_param_symbol
+            ))
 
         # Process additional parameters
-        hir_params = [hir_self_param]
         for param in method.params:
             hir_param = self._build_parameter(param)
             hir_params.append(hir_param)

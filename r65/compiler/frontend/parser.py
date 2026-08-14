@@ -730,8 +730,16 @@ class ASTBuilder(Transformer):
             params = [item for item in items[1:] if isinstance(item, ast.Parameter)]
             return ('impl_params', self_is_far, params, self_by_value)
         else:
-            # No self param - just regular parameters
-            params = [item for item in items if isinstance(item, ast.Parameter)]
+            # No self param — an associated function. This alternative reduces to
+            # `param_list`, which is itself a list, so `items` is [[Parameter, ...]]
+            # and needs flattening; filtering it directly silently drops every
+            # parameter.
+            params = []
+            for item in items:
+                if isinstance(item, ast.Parameter):
+                    params.append(item)
+                elif isinstance(item, list):
+                    params.extend(p for p in item if isinstance(p, ast.Parameter))
             return params
 
     def self_param(self, items):

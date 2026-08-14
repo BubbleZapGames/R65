@@ -50,23 +50,23 @@ class TestQ10Storage:
 
 
 class TestQ10Conversions:
-    """q10_from_int / q10_from and the accessor methods."""
+    """Q10::from_int / Q10::from and the accessor methods."""
 
     def test_from_int(self, e2e):
         """3.0 -> 3 << 6 = 192."""
-        result = e2e.run(program("OUT = q10_from_int(3);"),
+        result = e2e.run(program("OUT = Q10::from_int(3);"),
                          ExpectedState(memory={0x7E0010: [192, 0]}))
         assert result.success, f"Failures: {result.failures}"
 
     def test_from_whole_and_fraction(self, e2e):
         """1.5 -> (1 << 6) | 32 = 96."""
-        result = e2e.run(program("OUT = q10_from(1, 32);"),
+        result = e2e.run(program("OUT = Q10::from(1, 32);"),
                          ExpectedState(memory={0x7E0010: [96, 0]}))
         assert result.success, f"Failures: {result.failures}"
 
     def test_to_int(self, e2e):
         result = e2e.run(
-            program("OUT = q10_from_int(3).to_int();",
+            program("OUT = Q10::from_int(3).to_int();",
                     statics="#[zeropage(0x10)]\nstatic mut OUT: i16;"),
             ExpectedState(memory={0x7E0010: [3, 0]}))
         assert result.success, f"Failures: {result.failures}"
@@ -74,7 +74,7 @@ class TestQ10Conversions:
     def test_to_frac(self, e2e):
         """The fractional part of 1.5 is 32/64."""
         result = e2e.run(
-            program("OUT = q10_from(1, 32).to_frac();",
+            program("OUT = Q10::from(1, 32).to_frac();",
                     statics="#[zeropage(0x10)]\nstatic mut OUT: i16;"),
             ExpectedState(memory={0x7E0010: [32, 0]}))
         assert result.success, f"Failures: {result.failures}"
@@ -96,25 +96,25 @@ class TestQ10InheritedOperators:
     """Addition, subtraction and comparison come from i16 and stay Q10."""
 
     def test_addition(self, e2e):
-        result = e2e.run(program("OUT = q10_from_int(3) + q10_from(0, 32);"),
+        result = e2e.run(program("OUT = Q10::from_int(3) + Q10::from(0, 32);"),
                          ExpectedState(memory={0x7E0010: [224, 0]}))
         assert result.success, f"Failures: {result.failures}"
 
     def test_subtraction(self, e2e):
-        result = e2e.run(program("OUT = q10_from_int(3) - q10_from_int(1);"),
+        result = e2e.run(program("OUT = Q10::from_int(3) - Q10::from_int(1);"),
                          ExpectedState(memory={0x7E0010: [128, 0]}))
         assert result.success, f"Failures: {result.failures}"
 
     def test_negation(self, e2e):
         """Unary minus is inherited: -3.0 is 0xFF40."""
-        result = e2e.run(program("OUT = -q10_from_int(3);"),
+        result = e2e.run(program("OUT = -Q10::from_int(3);"),
                          ExpectedState(memory={0x7E0010: [0x40, 0xFF]}))
         assert result.success, f"Failures: {result.failures}"
 
     def test_signed_comparison(self, e2e):
         """A negative Q10 must compare as signed, not as a large unsigned."""
         result = e2e.run(
-            program("if q10_from_int(0 - 2) < Q10(0) { OUT = 1; } else { OUT = 2; }",
+            program("if Q10::from_int(0 - 2) < Q10(0) { OUT = 1; } else { OUT = 2; }",
                     statics="#[zeropage(0x10)]\nstatic mut OUT: u8;"),
             ExpectedState(memory={0x7E0010: 1}))
         assert result.success, f"Failures: {result.failures}"
@@ -122,12 +122,12 @@ class TestQ10InheritedOperators:
 
 class TestQ10Abs:
     def test_abs_positive(self, e2e):
-        result = e2e.run(program("OUT = q10_from_int(5).abs();"),
+        result = e2e.run(program("OUT = Q10::from_int(5).abs();"),
                          ExpectedState(memory={0x7E0010: [0x40, 0x01]}))
         assert result.success, f"Failures: {result.failures}"
 
     def test_abs_negative(self, e2e):
-        result = e2e.run(program("OUT = q10_from_int(0 - 5).abs();"),
+        result = e2e.run(program("OUT = Q10::from_int(0 - 5).abs();"),
                          ExpectedState(memory={0x7E0010: [0x40, 0x01]}))
         assert result.success, f"Failures: {result.failures}"
 
@@ -217,7 +217,7 @@ class TestQ10IsNominal:
             f"expected {expect!r} in error, got:\n{result.error}"
 
     def test_q10_does_not_pass_as_an_i16(self, e2e):
-        self._rejects(e2e, "let n: i16 = q10_from_int(3);", "found Q10")
+        self._rejects(e2e, "let n: i16 = Q10::from_int(3);", "found Q10")
 
     def test_q10_does_not_pass_into_an_i16_parameter(self, e2e):
         result = e2e.run(f'''{PRELUDE}
@@ -227,7 +227,7 @@ class TestQ10IsNominal:
             fn takes_raw(n: i16) -> i16 {{ return n; }}
 
             #[entry]
-            fn main() {{ OUT = takes_raw(q10_from_int(3)); }}
+            fn main() {{ OUT = takes_raw(Q10::from_int(3)); }}
         ''', ExpectedState(memory={}))
         assert not result.success, "expected a compile error, got none"
         assert "found Q10" in (result.error or ""), result.error
@@ -249,7 +249,7 @@ class TestQ10IsNominal:
             static mut OUT: Q10;
 
             #[entry]
-            fn main() {{ let t: Ticks = 4; OUT = q10_from_int(1) + t; }}
+            fn main() {{ let t: Ticks = 4; OUT = Q10::from_int(1) + t; }}
         ''', ExpectedState(memory={}))
         assert not result.success, "expected a compile error, got none"
         assert "mismatched types" in (result.error or ""), result.error
@@ -257,5 +257,5 @@ class TestQ10IsNominal:
     def test_unscaled_multiply_is_still_rejected(self, e2e):
         """`*` is restricted to power-of-2 constants, so the wrong spelling of a
         Q10 multiply does not quietly compile either."""
-        self._rejects(e2e, "OUT = q10_from_int(3) * q10_from_int(4);", "power-of-2")
+        self._rejects(e2e, "OUT = Q10::from_int(3) * Q10::from_int(4);", "power-of-2")
 

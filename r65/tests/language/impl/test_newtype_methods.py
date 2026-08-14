@@ -110,17 +110,17 @@ class TestByValueSelf:
                "fn main() {}")
         build_and_check(src)
 
-    def test_associated_function_self_claims_no_register(self):
-        """A synthetic self is still injected (pre-existing), but binding it to A
-        would make a 2-byte payload infer m16 — emitting a REP into a handler
-        that takes no arguments."""
+    def test_associated_function_gets_no_self_parameter(self):
+        """No self was written, so none is synthesized. A synthetic one would
+        take a slot the caller never passes, and bound to A would drag a 2-byte
+        payload into m16 entry."""
         from r65.compiler.typeck.processor_mode import ModeState
         src = ("struct Addr(u16);\n"
                "impl Addr { fn zero() -> Addr { return Addr(0); } }\n"
                "fn main() {}")
         hir_prog = build_and_check(src)
         method = find_method(hir_prog, "Addr__zero")
-        assert method.parameters[0].binding is None
+        assert method.parameters == []
         assert method.entry_m_mode == ModeState.M8
 
     def test_interrupt_handler_has_no_spurious_mode_switch(self):
@@ -139,6 +139,61 @@ class TestByValueSelf:
                "fn main() {}")
         hir_prog = build_and_check(src)
         assert find_method(hir_prog, "Q10__doubled").entry_m_mode == ModeState.M16
+
+
+class TestAssociatedFunctions:
+    """`Q10::from_int(5)` — a function namespaced by the type, with no receiver."""
+
+    DECL = ("struct Q10(i16);\n"
+            "impl Q10 {\n"
+            "    fn from_int(n: i16) -> Q10 { return Q10(n << 6); }\n"
+            "    fn from(n: i16, f: i16) -> Q10 { return Q10((n << 6) | (f & 0x3F)); }\n"
+            "}\n")
+
+    def test_parameters_are_not_dropped(self):
+        """The no-self branch of `impl_param_list` reduces to a nested list, so
+        filtering it directly used to discard every parameter — and the body
+        then failed with 'Undefined identifier'."""
+        hir_prog = build_and_check(self.DECL + "fn main() {}")
+        params = find_method(hir_prog, "Q10__from_int").parameters
+        assert [p.name for p in params] == ["n"]
+
+    def test_is_callable(self):
+        build_and_check(self.DECL + "fn main() { let q: Q10 = Q10::from_int(5); }")
+
+    def test_multiple_parameters(self):
+        build_and_check(self.DECL + "fn main() { let q: Q10 = Q10::from(1, 32); }")
+
+    def test_result_chains_into_a_method(self):
+        src = (self.DECL + "impl Q10 { fn to_int(self) -> i16 { return self.0 >> 6; } }\n"
+               "fn main() { let n: i16 = Q10::from_int(5).to_int(); }")
+        build_and_check(src)
+
+    def test_argument_count_is_checked(self):
+        with pytest.raises(TypeCheckError, match="expects 1 argument"):
+            build_and_check(self.DECL + "fn main() { let q: Q10 = Q10::from_int(); }")
+
+    def test_argument_type_is_checked(self):
+        src = self.DECL + ("struct Other(u8);\n"
+                           "fn main() { let o: Other = Other(1); let q: Q10 = Q10::from_int(o); }")
+        with pytest.raises(TypeCheckError, match="wrong type"):
+            build_and_check(src)
+
+    def test_result_is_opaque(self):
+        with pytest.raises(TypeCheckError, match="found Q10"):
+            build_and_check(self.DECL + "fn main() { let n: i16 = Q10::from_int(5); }")
+
+    def test_unknown_associated_function(self):
+        with pytest.raises(HIRError):
+            build_and_check(self.DECL + "fn main() { let q: Q10 = Q10::nope(5); }")
+
+    def test_enum_variants_still_resolve(self):
+        """`Name::member` is shared with enum variants and impl consts."""
+        build_and_check("enum Dir { North, East }\nfn main() { let d: Dir = Dir::East; }")
+
+    def test_impl_constants_still_resolve(self):
+        build_and_check("struct P { x: u8 }\nimpl P { const W: u8 = 7; }\n"
+                        "fn main() { let n: u8 = P::W; }")
 
 
 class TestSelfRegisterConflict:

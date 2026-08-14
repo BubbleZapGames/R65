@@ -183,9 +183,12 @@ struct TileId(u8);
 struct Q10(i16);
 
 impl TileId {
+    fn zero() -> TileId       { TileId(0) }       // associated fn, no receiver
     fn raw(self) -> u8        { self.0 }          // self arrives in A
     fn bumped(self) -> TileId { TileId(self.0 + 1) }
 }
+
+let t = TileId::zero();
 
 let t: TileId = 5;      // payload flows in implicitly
 let u: TileId = t + 1;  // operators inherited, result stays TileId

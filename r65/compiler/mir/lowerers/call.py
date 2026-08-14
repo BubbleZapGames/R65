@@ -96,7 +96,12 @@ class CallLowerer:
         # func is usually HIRIdentifier for direct calls
         # For indirect calls (function pointers), func is an expression with FunctionTypeInfo
         from r65.compiler.hir.symbol_table import SymbolKind
-        is_direct_call = isinstance(call_expr.func, HIRIdentifier) and call_expr.func.symbol.kind == SymbolKind.FUNCTION
+        # An associated function (`Q10::from_int(5)`) carries a METHOD symbol but
+        # has no receiver, so it lowers as an ordinary direct call. Without this
+        # it falls to the indirect path and the callee is emitted as a value load.
+        is_direct_call = (isinstance(call_expr.func, HIRIdentifier)
+                          and call_expr.func.symbol.kind in (SymbolKind.FUNCTION,
+                                                             SymbolKind.METHOD))
         is_indirect_call = not is_direct_call
 
         if is_direct_call:

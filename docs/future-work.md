@@ -332,6 +332,6 @@ Two small deliberate restrictions, each easy to lift but each needing a decision
 
 `#[cfg(snes)]` parses on an impl method and is then ignored — both arms of a `#[cfg(snes)]`/`#[cfg(nes)]` pair are built. Conditional compilation is applied to top-level declarations only, and `impl` blocks themselves take no attributes either.
 
-**Why deferred**: found while porting `stdlib/q10_type.r65` to a newtype. It forced `q10_mul` to stay a free function rather than becoming a `Q10` method, since it touches SNES multiply registers — a workable outcome, so nothing was blocked.
+**Why deferred**: found while porting `stdlib/q10_type.r65` to a newtype. It forces `q10_mul` to stay a free function rather than becoming a `Q10` method, since it touches SNES multiply registers — a workable outcome, so nothing is blocked.
 
 **Approach if revisited**: run `_should_include_declaration` over `impl.methods` in `_declare_impl`/`_build_impl`, and allow `attribute*` on `impl_decl` in the grammar so a whole block can be gated at once. Silently dropping an attribute is the bad part — rejecting `#[cfg]` on a method would be better than today's behaviour even without support.

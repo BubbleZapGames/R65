@@ -165,6 +165,19 @@ class ExpressionBuilder:
         elif isinstance(expr, ast.FunctionCall):
             from r65.compiler.builtins import BuiltinRegistry
 
+            # Associated function: `Q10::from_int(5)`. Parses as a call on a
+            # `Name::member` path, and resolves to the same mangled symbol an
+            # `impl` method gets — it is an ordinary function namespaced by the
+            # type, with no receiver.
+            if isinstance(expr.func, ast.EnumVariantExpr):
+                mangled = f"{expr.func.enum_name}__{expr.func.variant_name}"
+                assoc = self.symbol_table.lookup(mangled)
+                if assoc is not None and assoc.kind == SymbolKind.METHOD:
+                    func = hir.HIRIdentifier(name=mangled, symbol=assoc,
+                                             source_loc=expr.func.source_loc)
+                    args = [self.build_expression(a) for a in expr.args]
+                    return hir.HIRFunctionCall(func=func, args=args, source_loc=src_loc)
+
             # Newtype construction: `TileId(x)` is a retype, not a call, so it
             # desugars to the same node an `as` cast uses and MIR never sees it.
             # It is *checked* more strictly than a cast — see `newtype_construct`.

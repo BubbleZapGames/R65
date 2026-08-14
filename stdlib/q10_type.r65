@@ -19,8 +19,8 @@
 //
 //   fn update() {
 //       // Create fixed-point values
-//       let player_x: Q10 = q10_from_int(100);  // 100.0
-//       VELOCITY = q10_from(0, 32);             // 0.5 (32/64)
+//       let player_x: Q10 = Q10::from_int(100);  // 100.0
+//       VELOCITY = Q10::from(0, 32);            // 0.5 (32/64)
 //
 //       // Addition and comparison are inherited from i16
 //       let next: Q10 = player_x + VELOCITY;
@@ -47,6 +47,16 @@ const Q10_1_64TH: Q10 = 1;
 const Q10_FRAC_MASK: i16 = 0x3F;
 
 impl Q10 {
+    // Whole number to Q10.6
+    fn from_int(n: i16) -> Q10 {
+        return Q10(n << 6);
+    }
+
+    // Whole and fractional parts to Q10.6, where `f` is in 1/64 units (0-63)
+    fn from(n: i16, f: i16) -> Q10 {
+        return Q10((n << 6) | (f & Q10_FRAC_MASK));
+    }
+
     // Integer part, rounding toward negative infinity
     fn to_int(self) -> i16 {
         return self.0 >> 6;
@@ -64,16 +74,6 @@ impl Q10 {
         }
         return self;
     }
-}
-
-// Whole number to Q10.6
-fn q10_from_int(n: i16) -> Q10 {
-    return Q10(n << 6);
-}
-
-// Whole and fractional parts to Q10.6, where `f` is in 1/64 units (0-63)
-fn q10_from(n: i16, f: i16) -> Q10 {
-    return Q10((n << 6) | (f & Q10_FRAC_MASK));
 }
 
 // Multiply two Q10.6 values: result = (a * b) >> 6
