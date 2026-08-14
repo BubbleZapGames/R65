@@ -118,6 +118,31 @@ class TestQ10Conversions:
             ExpectedState(memory={0x7E0010: [3, 0]}))
         assert result.success, f"Failures: {result.failures}"
 
+    def test_to_int_floors_negatives(self, e2e):
+        """`>>` is a logical shift for signed types too, so a bare `self.0 >> 6`
+        shifted the sign bit down and turned -2.0 into 1022."""
+        result = e2e.run(
+            program("OUT = Q10(0 - 128).to_int();",
+                    statics="#[zeropage(0x10)]\nstatic mut OUT: i16;"),
+            ExpectedState(memory={0x7E0010: raw(-2)}))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_to_int_floors_rather_than_truncating(self, e2e):
+        """-1.5 floors to -2; truncation would give -1."""
+        result = e2e.run(
+            program("OUT = Q10(0 - 96).to_int();",
+                    statics="#[zeropage(0x10)]\nstatic mut OUT: i16;"),
+            ExpectedState(memory={0x7E0010: raw(-2)}))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_to_frac_of_a_negative(self, e2e):
+        """Fraction is x - floor(x), so -1.5 has fraction 0.5 (raw 32)."""
+        result = e2e.run(
+            program("OUT = Q10(0 - 96).to_frac();",
+                    statics="#[zeropage(0x10)]\nstatic mut OUT: i16;"),
+            ExpectedState(memory={0x7E0010: raw(32)}))
+        assert result.success, f"Failures: {result.failures}"
+
     def test_to_frac(self, e2e):
         """The fractional part of 1.5 is 32/64."""
         result = e2e.run(
@@ -164,6 +189,122 @@ class TestQ10InheritedOperators:
             program("if Q10::from_int(0 - 2) < Q10(0) { OUT = 1; } else { OUT = 2; }",
                     statics="#[zeropage(0x10)]\nstatic mut OUT: u8;"),
             ExpectedState(memory={0x7E0010: 1}))
+        assert result.success, f"Failures: {result.failures}"
+
+
+class TestQ10Round:
+    """Nearest whole number, ties up — contrast with to_int, which floors."""
+
+    def _round(self, e2e, raw_value, expected):
+        result = e2e.run(
+            program(f"OUT = Q10({raw_value}).round();",
+                    statics="#[zeropage(0x10)]\nstatic mut OUT: i16;"),
+            ExpectedState(memory={0x7E0010: raw(expected)}))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_below_half_rounds_down(self, e2e):
+        self._round(e2e, 31, 0)          # 0.484
+
+    def test_exactly_half_rounds_up(self, e2e):
+        self._round(e2e, 32, 1)          # 0.5
+
+    def test_one_and_a_half(self, e2e):
+        self._round(e2e, 96, 2)          # 1.5
+
+    def test_just_below_one_and_a_half(self, e2e):
+        self._round(e2e, 95, 1)          # 1.484
+
+    def test_negative_half_rounds_toward_positive(self, e2e):
+        self._round(e2e, "0 - 32", 0)    # -0.5 -> 0, ties go up
+
+    def test_negative_one_and_a_half(self, e2e):
+        self._round(e2e, "0 - 96", -1)   # -1.5 -> -1
+
+    def test_just_past_negative_one_and_a_half(self, e2e):
+        self._round(e2e, "0 - 97", -2)   # -1.516
+
+    def test_whole_values_are_unchanged(self, e2e):
+        self._round(e2e, 192, 3)
+
+    def test_differs_from_to_int(self, e2e):
+        """The pair that motivates having both: 1.5 floors to 1, rounds to 2."""
+        result = e2e.run(
+            program("FLOORED = Q10(96).to_int();\nROUNDED = Q10(96).round();",
+                    statics=("#[zeropage(0x10)]\nstatic mut FLOORED: i16;\n"
+                             "#[zeropage(0x12)]\nstatic mut ROUNDED: i16;")),
+            ExpectedState(memory={0x7E0010: raw(1), 0x7E0012: raw(2)}))
+        assert result.success, f"Failures: {result.failures}"
+
+
+LIMITS_LITERAL = "Q10(0), Q10(64)"
+
+
+class TestQ10Clamp:
+    """`clamp!` is a method macro yielding a value, not mutating its receiver."""
+
+    LIMITS = "Q10(0 - 64), Q10(64)"
+
+    def _clamp(self, e2e, start, expected):
+        result = e2e.run(
+            program(f"OUT = Q10({start}).clamp!({self.LIMITS});"),
+            ExpectedState(memory={0x7E0010: raw(expected)}))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_below_range_is_raised(self, e2e):
+        self._clamp(e2e, "0 - 500", -64)
+
+    def test_above_range_is_lowered(self, e2e):
+        self._clamp(e2e, 500, 64)
+
+    def test_inside_range_is_untouched(self, e2e):
+        self._clamp(e2e, 32, 32)
+
+    def test_exactly_on_the_bounds(self, e2e):
+        self._clamp(e2e, "0 - 64", -64)
+        self._clamp(e2e, 64, 64)
+
+    def test_clamps_a_local(self, e2e):
+        result = e2e.run(program(
+            "let v: Q10 = Q10(900);\nOUT = v.clamp!(Q10(0), Q10(128));"),
+            ExpectedState(memory={0x7E0010: raw(128)}))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_reassigns_its_own_receiver(self, e2e):
+        """The idiomatic in-place use, now written explicitly."""
+        result = e2e.run(program(
+            f"OUT = Q10(500);\nOUT = OUT.clamp!({self.LIMITS});"),
+            ExpectedState(memory={0x7E0010: raw(64)}))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_composes_in_a_larger_expression(self, e2e):
+        """A value, so it can feed arithmetic directly."""
+        result = e2e.run(program(
+            f"OUT = Q10(500).clamp!({self.LIMITS}) + Q10(1);"),
+            ExpectedState(memory={0x7E0010: raw(65)}))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_receiver_is_evaluated_once(self, e2e):
+        """`self` is substituted textually, so naming it three times would call
+        a function receiver three times. The block binds it once."""
+        result = e2e.run(f'''{PRELUDE}
+            #[zeropage(0x10)] static mut OUT: Q10;
+            #[zeropage(0x20)] static mut CALLS: u8;
+            fn source() -> Q10 {{ CALLS = CALLS + 1; return Q10(500); }}
+            #[entry]
+            fn main() {{
+                CALLS = 0;
+                OUT = source().clamp!(Q10(0 - 64), Q10(64));
+            }}
+        ''', ExpectedState(memory={0x7E0010: raw(64), 0x7E0020: 1}))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_inside_a_loop(self, e2e):
+        result = e2e.run(program(
+            "OUT = Q10(0);\nN = 0;\n"
+            f"while N < 10 {{ OUT = (OUT + 16).clamp!({LIMITS_LITERAL}); N = N + 1; }}",
+            statics=("#[zeropage(0x10)]\nstatic mut OUT: Q10;\n"
+                     "#[zeropage(0x12)]\nstatic mut N: u8;")),
+            ExpectedState(memory={0x7E0010: raw(64), 0x7E0012: 10}))
         assert result.success, f"Failures: {result.failures}"
 
 

@@ -33,6 +33,9 @@
 //
 //       // Interpolate a quarter of the way from here to the target
 //       player_x = Q10::lerp(player_x, TARGET_X, Q10(16));
+//
+//       // Keep it on screen
+//       player_x = player_x.clamp!(Q10(0), SCREEN_RIGHT);
 //   }
 //
 // Scaling multiply is `q10_mul`, not `*`: `a * b` on two Q10 values would be a
@@ -63,14 +66,39 @@ impl Q10 {
         return Q10((n << 6) | ((f as i16) & Q10_FRAC_MASK));
     }
 
-    // Integer part, rounding toward negative infinity
+    // Integer part, rounding toward negative infinity (floor).
+    //
+    // The negative branch is not decoration: `>>` is a logical shift for signed
+    // types too (see docs/operators.md), so a bare `self.0 >> 6` shifts the sign
+    // bit down and turns -2.0 into 1022. Floor of a negative is
+    // -ceil(|x| / 64), hence the +63 before shifting the magnitude.
     fn to_int(self) -> i16 {
+        if self.0 < 0 {
+            return 0 - (((0 - self.0) + 63) >> 6);
+        }
         return self.0 >> 6;
     }
 
     // Fractional part, in 1/64 units (0-63)
     fn to_frac(self) -> i16 {
         return self.0 & Q10_FRAC_MASK;
+    }
+
+    // Nearest whole number, ties rounding up (toward positive infinity).
+    // Differs from `to_int`, which floors: 1.5 rounds to 2 but floors to 1,
+    // and -1.5 rounds to -1 but floors to -2. Screen positions usually want
+    // this one; tile indices usually want `to_int`.
+    //
+    // Same signed-shift correction as `to_int` — this is floor(x + 0.5).
+    //
+    // Precondition: values above 511.48 (raw 32735) overflow the +32 bias and
+    // come back negative. The top of the Q10 range has no room for it.
+    fn round(self) -> i16 {
+        let biased: i16 = self.0 + 32;
+        if biased < 0 {
+            return 0 - (((0 - biased) + 63) >> 6);
+        }
+        return biased >> 6;
     }
 
     // Linear interpolation from `a` toward `b`. `t` of Q10_ONE yields `b`
@@ -100,6 +128,29 @@ impl Q10 {
             return Q10(0 - self.0);
         }
         return self;
+    }
+
+    // Constrain a value to [$lo, $hi], yielding the result.
+    //
+    //     VELOCITY = VELOCITY.clamp!(Q10(0 - 256), Q10(256));
+    //     let y: Q10 = player_y.clamp!(Q10(0), SCREEN_BOTTOM);
+    //
+    // A block expression, so it expands inline with no call. The receiver is
+    // bound once inside the block rather than read once per comparison — `self`
+    // is substituted textually, so naming it three times would evaluate the
+    // receiver three times.
+    //
+    // The binding is `_q10_clamp` rather than something plainer because R65
+    // macros are not hygienic: a common name would capture a caller's variable.
+    macro_rules! clamp($lo:expr, $hi:expr) {
+        {
+            let _q10_clamp: Q10 = self;
+            if _q10_clamp < $lo {
+                $lo
+            } else {
+                if _q10_clamp > $hi { $hi } else { _q10_clamp }
+            }
+        }
     }
 }
 
