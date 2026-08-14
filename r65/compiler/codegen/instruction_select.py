@@ -1471,7 +1471,7 @@ class InstructionSelector:
                         temp_loc = PhysicalLocation(kind=LocationKind.SCRATCH, scratch_addr=temp_addr.value, size=1)
                         self._emit_op(operation, temp_loc)
                     else:
-                        # No scratch available - use push/pop pattern
+                        # No scratch available - use push/pop pattern.
                         if right_loc.hw_register == 'B':
                             self._access_b_value_in_a()
                             self._emit_implied(Opcode.PHA, "Push B (via A) for temp")
@@ -1480,7 +1480,14 @@ class InstructionSelector:
                             self._emit_implied(Opcode.PHA, "Push A for temp")
                         temp_loc = PhysicalLocation(kind=LocationKind.STACK, stack_offset=1, size=1)
                         self._emit_op(operation, temp_loc)
-                        self._emit_implied(Opcode.PLA, "Restore A")
+                        # The pushed byte still has to come off the stack, but a
+                        # bare PLA would land in A — which now holds the result,
+                        # not the operand. Overwrite the slot with the result
+                        # first, so the pull restores the result and balances the
+                        # stack in one go. (The PLX/PLY path below needs no such
+                        # care: pulling an index register cannot disturb A.)
+                        self._emit_op('STA', temp_loc, "Park result in the temp slot")
+                        self._emit_implied(Opcode.PLA, "Reclaim temp, result in A")
                 elif right_loc.hw_register in ['X', 'Y']:
                     # X/Y don't support stack-relative for STX/STY
                     # Try scratch first, fall back to push/pop
