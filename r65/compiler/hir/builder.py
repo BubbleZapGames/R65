@@ -1796,25 +1796,41 @@ class HIRBuilder:
         return target_is_newtype
 
     def _validate_self_register_conflict(self, impl, method, params, self_binding):
-        """Reject a parameter that binds the register holding a by-value `self`.
+        """Reject a parameter that binds the register a by-value `self` occupies.
 
-        `_validate_no_duplicate_register_bindings` would also catch this, but its
-        message talks about two parameters — and `self` is not one the author
+        `self` rides in A, so neither A nor B is available to a parameter: B is
+        the accumulator's high byte, not a register of its own. Sharing either
+        with `self` is an entanglement the author did not ask for, and codegen
+        routes B/X/Y argument setup *through* A, so it is also a live hazard.
+
+        `_validate_no_duplicate_register_bindings` catches the A case too, but
+        its message talks about two parameters — and `self` is not one the author
         wrote a binding for, so the conflict needs naming directly.
         """
         if not isinstance(self_binding, hir.RegisterBinding):
             return
         reg = self_binding.register_name
+        # A and B are one physical register; `self` in A claims both.
+        blocked = {reg, 'B'} if reg == 'A' else {reg}
+
         for param in params[1:]:
-            if (isinstance(param.binding, hir.RegisterBinding)
-                    and param.binding.register_name == reg):
-                raise HIRError(
-                    f"parameter '{param.name}' of '{impl.struct_name}::{method.name}' "
-                    f"binds {reg}, which holds 'self'",
-                    source_loc=method.source_loc,
-                    hint=f"a newtype method receives 'self' by value in {reg}; "
-                         f"bind '{param.name}' to X or Y, or pass it on the stack"
-                )
+            if not isinstance(param.binding, hir.RegisterBinding):
+                continue
+            bound = param.binding.register_name
+            if bound not in blocked:
+                continue
+            if bound == reg:
+                conflict = f"binds {reg}, which holds 'self'"
+            else:
+                conflict = (f"binds B, which is the high byte of A — "
+                            f"and A holds 'self'")
+            raise HIRError(
+                f"parameter '{param.name}' of '{impl.struct_name}::{method.name}' "
+                f"{conflict}",
+                source_loc=method.source_loc,
+                hint=f"a newtype method receives 'self' by value in {reg}; "
+                     f"bind '{param.name}' to X or Y, or pass it on the stack"
+            )
 
     def _supertrait_closure(self, trait_name: str) -> List[str]:
         """Transitive supertraits of `trait_name`, de-duplicated, excluding itself.

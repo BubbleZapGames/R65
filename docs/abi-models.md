@@ -382,8 +382,12 @@ in-place form, which is why the compound-assignment operator traits
 
 Two consequences of binding `self` to `A`:
 
-- A parameter cannot also bind `A`. `fn m(self, x @ A: u8)` is an error naming
-  the conflict; bind `x` to `X`/`Y` or pass it on the stack.
+- **Neither `A` nor `B` is available to a parameter.** `B` is the accumulator's
+  high byte, not a register of its own, so `self` in `A` claims both. Both
+  `fn m(self, x @ A: u8)` and `fn m(self, x @ B: u8)` are errors naming the
+  conflict; bind `x` to `X`/`Y` or pass it on the stack. The restriction is
+  specific to a by-value `self` — a `*self` method is stack-passed and claims
+  neither register, and free functions may still bind `@ B` freely.
 - A 2-byte payload puts the method in **m16** on entry, exactly as `@ A: u16`
   does for a free function.
 

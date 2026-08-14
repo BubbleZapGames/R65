@@ -240,6 +240,37 @@ class TestSelfRegisterConflict:
             build_and_check(src)
         assert "bind 'x' to X or Y, or pass it on the stack" in exc.value.hint
 
+    def test_parameter_binding_b_is_rejected(self):
+        """B is the accumulator's high byte, not a register of its own, so
+        `self` in A claims it too."""
+        src = ("struct TileId(u8);\n"
+               "impl TileId { fn m(self, x @ B: u8) -> u8 { return x; } }\nfn main() {}")
+        with pytest.raises(HIRError, match="binds B, which is the high byte of A"):
+            build_and_check(src)
+
+    def test_b_rejection_offers_the_alternatives(self):
+        src = ("struct TileId(u8);\n"
+               "impl TileId { fn m(self, x @ B: u8) -> u8 { return x; } }\nfn main() {}")
+        with pytest.raises(HIRError) as exc:
+            build_and_check(src)
+        assert "bind 'x' to X or Y, or pass it on the stack" in exc.value.hint
+
+    def test_b_rejected_for_a_16_bit_payload_too(self):
+        src = ("struct Q10(i16);\n"
+               "impl Q10 { fn m(self, x @ B: u8) -> i16 { return self.0; } }\nfn main() {}")
+        with pytest.raises(HIRError, match="binds B"):
+            build_and_check(src)
+
+    def test_b_still_allowed_on_a_struct_method(self):
+        """The rule is about a by-value `self` owning A — a `*self` method is
+        stack-passed and claims neither register."""
+        build_and_check("struct P { x: u8 }\n"
+                        "impl P { fn m(*self, x @ B: u8) -> u8 { return x; } }\n"
+                        "fn main() {}")
+
+    def test_b_still_allowed_on_a_free_function(self):
+        build_and_check("fn f(a @ A: u8, x @ B: u8) -> u8 { return a + x; }\nfn main() {}")
+
     def test_index_register_binding_is_fine(self):
         build_and_check("struct TileId(u8);\n"
                         "impl TileId { fn m(self, x @ X: u16) -> u8 { return self.0; } }\n"
