@@ -325,6 +325,71 @@ existing single-arm macro behaving exactly as before.
 
 ---
 
+## Method Macros (in `impl` blocks)
+
+A macro declared inside an `impl` block is invoked on a receiver, and `self`
+inside the body is replaced by that receiver:
+
+```rust
+struct Sprite { x: u8, y: u8 }
+
+impl Sprite {
+    macro_rules! move_by($dx:expr, $dy:expr) {
+        self.x = self.x + $dx;
+        self.y = self.y + $dy;
+    }
+}
+
+PLAYER.move_by!(1, 2);      // -> PLAYER.x = PLAYER.x + 1; ...
+```
+
+Multiple arms work exactly as they do for free macros.
+
+### As a statement or as a value
+
+A method macro expands in either position, and the body decides which one it
+fits. A body made of statements is used for its effect:
+
+```rust
+impl Q10 {
+    macro_rules! clamp($lo:expr, $hi:expr) {
+        {
+            if self < $lo { self = $lo; }
+            if self > $hi { self = $hi; }
+        }
+    }
+}
+
+VELOCITY.clamp!(Q10(0 - 256), Q10(256));
+```
+
+A body that is a single expression — usually a
+[block expression](control-flow.md) — produces a value:
+
+```rust
+impl Sprite {
+    macro_rules! area() { { let w: u8 = self.x; w * 2 } }
+}
+
+let a: u8 = PLAYER.area!();
+OUT = PLAYER.area!() + 1;
+```
+
+Using a statement-bodied macro for its value is an error naming the macro:
+
+```rust
+OUT = PLAYER.move_by!(1, 2);
+// macro error: method macro 'move_by' does not produce a value, so it cannot
+// be used here
+```
+
+**Rules**: the receiver is substituted textually, so a body naming `self` more
+than once evaluates it that many times — pass a place, not a costly expression.
+Arms are selected by the receiver's type when it can be resolved, otherwise by
+macro name across all `impl` blocks; an ambiguous name is an error.
+
+---
+
 ## Expansion Rules
 
 ### Order of Expansion

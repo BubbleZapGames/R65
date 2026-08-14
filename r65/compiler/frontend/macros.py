@@ -343,6 +343,28 @@ class MacroExpander:
             # Expand user-defined macro to expression
             return self._expand_expression_invocation(expr.name, expr.args, expr.source_loc)
 
+        elif isinstance(expr, ast.MethodMacro):
+            # `receiver.name!(args)` used for its value rather than its effect.
+            return self._expand_method_macro_expr(expr)
+
+        elif isinstance(expr, ast.BlockExpression):
+            # `{ stmts; value }`. Not recursing here left any macro inside a
+            # block expression unexpanded, and it reached the HIR builder as an
+            # "Unknown expression type" — for free macros too, not just methods.
+            return replace(
+                expr,
+                statements=self._expand_statements(expr.statements),
+                final_expr=self._expand_expression(expr.final_expr),
+            )
+
+        elif isinstance(expr, ast.IfExpression):
+            return replace(
+                expr,
+                condition=self._expand_expression(expr.condition),
+                then_block=self._expand_expression(expr.then_block),
+                else_block=self._expand_expression(expr.else_block),
+            )
+
         elif isinstance(expr, ast.BinaryOp):
             left = self._expand_expression(expr.left)
             right = self._expand_expression(expr.right)
@@ -577,44 +599,75 @@ class MacroExpander:
             return f"[{self._type_to_source(t.element_type)}; {self._ast_to_source(t.size)}]"
         return str(t)
 
-    def _expand_method_macro(self, mm: ast.MethodMacro) -> List[ast.Statement]:
-        """Expand a method macro invocation: receiver.name!(args)."""
+    def _method_macro_as_plain(self, mm: ast.MethodMacro) -> MacroDefinition:
+        """The impl macro for `mm`, with `self` replaced by the receiver text.
+
+        Substitution is textual, so a body naming `self` more than once evaluates
+        the receiver that many times. Fine for a place; a caller passing a costly
+        expression should bind it first.
+        """
         receiver_text = self._ast_to_source(mm.receiver)
-
-        # Resolve which impl macro to use
         macro = self._resolve_impl_macro(mm.receiver, mm.name, mm.source_loc)
-
-        # Replace 'self' with receiver text in each arm's body tokens
-        temp_arms = [
-            MacroArmDef(
-                params=arm.params,
-                body_tokens=[receiver_text if t == 'self' else t for t in arm.body_tokens],
-            )
-            for arm in macro.arms
-        ]
-
-        # Build a temporary MacroDefinition with the substituted bodies
-        temp_macro = MacroDefinition(
+        return MacroDefinition(
             name=mm.name,
-            arms=temp_arms,
-            source_loc=macro.source_loc
+            arms=[
+                MacroArmDef(
+                    params=arm.params,
+                    body_tokens=[receiver_text if t == 'self' else t
+                                 for t in arm.body_tokens],
+                )
+                for arm in macro.arms
+            ],
+            source_loc=macro.source_loc,
         )
 
-        # Save the original macro, temporarily register this as a regular macro
-        old = self.macros.get(mm.name)
-        self.macros[mm.name] = temp_macro
+    def _with_method_macro_registered(self, mm: ast.MethodMacro, expand):
+        """Run `expand` with `mm`'s impl macro temporarily visible as a plain one.
+
+        The expansion machinery is keyed on plain macro names, so the
+        self-substituted definition is registered under the method's name for the
+        duration of the call and then removed again.
+        """
+        temp = self._method_macro_as_plain(mm)
+        previous = self.macros.get(mm.name)
+        self.macros[mm.name] = temp
         try:
-            expanded = self._expand_statement_invocation(
-                mm.name, mm.args, mm.source_loc
-            )
+            return expand()
         finally:
-            # Restore the original macro (or remove if it didn't exist)
-            if old is not None:
-                self.macros[mm.name] = old
+            if previous is not None:
+                self.macros[mm.name] = previous
             else:
                 del self.macros[mm.name]
 
-        return expanded
+    def _expand_method_macro_expr(self, mm: ast.MethodMacro) -> ast.Expression:
+        """Expand `receiver.name!(args)` in expression position.
+
+        The body has to be a single expression — commonly a block expression,
+        `{ let t = self.0; t + t }`. A body made of statements has no value to
+        yield and is rejected here rather than deeper in the parser.
+        """
+        def go():
+            try:
+                return self._expand_expression_invocation(
+                    mm.name, mm.args, mm.source_loc
+                )
+            except MacroError as exc:
+                raise MacroError(
+                    f"method macro '{mm.name}' does not produce a value, so it "
+                    f"cannot be used here",
+                    mm.source_loc,
+                ) from exc
+
+        return self._with_method_macro_registered(mm, go)
+
+    def _expand_method_macro(self, mm: ast.MethodMacro) -> List[ast.Statement]:
+        """Expand a method macro invocation in statement position."""
+        return self._with_method_macro_registered(
+            mm,
+            lambda: self._expand_statement_invocation(
+                mm.name, mm.args, mm.source_loc
+            ),
+        )
 
     def _expand_top_level_invocation(
         self,
