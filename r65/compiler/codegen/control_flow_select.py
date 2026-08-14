@@ -275,11 +275,16 @@ class ControlFlowInstructionSelector(BaseSelector):
             self._emit_value_based_branch(instr)
 
     def _is_signed_comparison(self) -> bool:
-        """Check if the last comparison was signed."""
+        """Check if the last comparison was signed.
+
+        A newtype answers for its payload — otherwise `struct Q10(i16)` would
+        branch with BCC/BCS and compare negatives as large unsigned values.
+        """
         if self.last_comparison_type is not None:
-            from r65.compiler.hir.types import BasicTypeInfo
-            if isinstance(self.last_comparison_type, BasicTypeInfo):
-                return self.last_comparison_type.name.startswith('i')
+            from r65.compiler.hir.types import BasicTypeInfo, strip_newtype
+            payload = strip_newtype(self.last_comparison_type)
+            if isinstance(payload, BasicTypeInfo):
+                return payload.name.startswith('i')
         return False
 
     # comparison kind -> (branch opcode, comment); each also emits BRA to false.
@@ -566,6 +571,9 @@ class ControlFlowInstructionSelector(BaseSelector):
             alias_tracker = getattr(self.current_function, 'alias_tracker', None)
             if alias_tracker:
                 a_binding_type = alias_tracker.get_register_binding_type('A')
+                if a_binding_type is not None:
+                    from r65.compiler.hir.types import strip_newtype
+                    a_binding_type = strip_newtype(a_binding_type)
                 if a_binding_type and hasattr(a_binding_type, 'name'):
                     if a_binding_type.name in ('u16', 'i16'):
                         # Entry function with u16 @ A binding - stay in m16 mode

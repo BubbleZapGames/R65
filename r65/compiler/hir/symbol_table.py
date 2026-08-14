@@ -20,6 +20,7 @@ class SymbolKind(Enum):
     PARAMETER = "parameter"
     LOCAL_VAR = "local_var"
     STRUCT = "struct"
+    NEWTYPE = "newtype"  # Single-field tuple struct wrapping a scalar
     ENUM = "enum"
     TYPE_ALIAS = "type_alias"
     ENUM_VARIANT = "enum_variant"

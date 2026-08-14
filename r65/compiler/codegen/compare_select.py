@@ -221,10 +221,16 @@ class CompareSelector(BaseSelector):
                 self._emit_instr(Opcode.PLA, comment="Restore A")
 
     def _is_signed_type(self) -> bool:
-        """Check if the current comparison type is signed (i8, i16)."""
+        """Check if the current comparison type is signed (i8, i16).
+
+        A newtype answers for its payload: `struct Q10(i16)` must compare with
+        BMI/BPL, not BCC/BCS.
+        """
         type_info = self.parent.last_comparison_type
         if type_info is not None:
             from r65.compiler.hir import BasicTypeInfo
+            from r65.compiler.hir.types import strip_newtype
+            type_info = strip_newtype(type_info)
             if isinstance(type_info, BasicTypeInfo):
                 return type_info.name.startswith('i')
         return False
@@ -234,6 +240,8 @@ class CompareSelector(BaseSelector):
         if type_info is None:
             return False
         from r65.compiler.hir import BasicTypeInfo
+        from r65.compiler.hir.types import strip_newtype
+        type_info = strip_newtype(type_info)
         if isinstance(type_info, BasicTypeInfo):
             return type_info.name in ('u16', 'i16')
         return False

@@ -2231,12 +2231,16 @@ class CallInstructionSelector(BaseSelector):
         callee_return_type = getattr(instr, 'callee_return_type', None)
         if callee_return_type is None:
             return [1] * len(instr.returns)
-        from r65.compiler.hir.types import MultiReturnTypeInfo, PointerTypeInfo
+        from r65.compiler.hir.types import MultiReturnTypeInfo, PointerTypeInfo, strip_newtype
         types = (callee_return_type.element_types
                  if isinstance(callee_return_type, MultiReturnTypeInfo)
                  else [callee_return_type])
         sizes = []
         for t in types:
+            # A newtype stringifies to its own name, so strip before the name
+            # test — otherwise a u8 newtype measures 2 bytes and loses the
+            # AND #$00FF zero-extend on an A->X/Y return transfer below.
+            t = strip_newtype(t)
             if isinstance(t, PointerTypeInfo):
                 sizes.append(3 if t.is_far else 2)
             else:

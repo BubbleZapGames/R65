@@ -96,9 +96,15 @@ struct Name {
 **Size**: Sum of field sizes
 **Alignment**: No requirement
 
-Tuple structs (`struct TileId(u8);`) are not supported — every field must be
-named. The compiler rejects the tuple form with a suggested named-field
-declaration.
+A struct with a single positional field is a [newtype](#newtypes), which is a
+different thing entirely — a scalar, not an aggregate. Two or more positional
+fields are rejected:
+
+```rust
+struct Point(u8, u16);
+// error: a newtype wraps exactly one field
+//   hint: give each field a name: 'struct Point { field0: u8, field1: u16 }'
+```
 
 #### Unions
 
@@ -116,6 +122,91 @@ union Name {
 **Tag**: None — no record of which field was last written
 
 See [unions.md](unions.md) for initialization rules and restrictions.
+
+#### Newtypes
+
+```rust
+struct TileId(u8);
+struct Q10(i16);
+```
+
+A newtype gives a scalar its own name in the type system while staying that
+scalar at runtime. It is **not an aggregate**: a `TileId` is one byte in a
+register, passed and returned by value, and its methods take `self` by value.
+
+**Layout**: Identical to the payload — a newtype adds nothing
+**Size**: The payload's size (1 or 2 bytes)
+**Payload**: `u8` `i8` `bool` `u16` `i16`, any enum, or any near pointer
+
+This is the opposite trade-off from a [type alias](#type-aliases), which is
+transparent and adds no safety, and from a single-field struct, which is nominal
+but must be passed by reference.
+
+```rust
+type q10 = i16;              // transparent: q10 + i16 type-checks
+struct Q10v { value: i16 }   // nominal, but passed as *Q10v
+struct Q10(i16);             // nominal AND free
+```
+
+**Rules**:
+
+- Payload must be a scalar of at most 2 bytes, so it fits in a register.
+- Values of the payload type flow **in** implicitly; a newtype never flows
+  **out** without an explicit `.0` or `as`.
+- Operators are inherited from the payload, and the result stays nominal.
+- Two different newtypes never mix, even with the same payload.
+- `.0` reads the payload and is read-only — assign the whole value instead.
+- `Newtype(x)` is checked like an assignment into the payload, so it rejects
+  exactly what `let t: Newtype = x;` rejects. `x as Newtype` is the cast, and
+  the only spelling that truncates.
+- Methods take `self` by value; see [abi-models.md](abi-models.md).
+- A newtype cannot implement a trait or `Clone` (see below).
+
+```rust
+let t: TileId = 5;        // OK: payload flows in
+let t = TileId(5);        // OK: same thing written explicitly
+let u: TileId = t + 1;    // OK: `+` inherited, result is TileId
+let b: bool = t < u;      // OK: comparisons yield bool
+
+let n: u8 = t;
+// error: type mismatch in let binding: expected u8, found TileId
+
+let n: u8 = t.0;          // OK: explicit unwrap
+let n: u8 = t as u8;      // OK: same, 0 cycles
+```
+
+Construction and casting differ only in strictness — both compile to nothing:
+
+```rust
+let t = TileId(300);
+// error: integer literal 300 does not fit in type u8 (valid range: 0 to 255)
+
+let t = 300 as TileId;    // OK: `as` truncates, as it does for any type
+```
+
+Distinct newtypes are incompatible even when their payloads match:
+
+```rust
+struct Q10(i16);
+struct Ticks(i16);
+
+let a: Q10 = 5;
+let b: Ticks = 6;
+let c = a + b;
+// error: operator '+' has mismatched types 'Q10' and 'Ticks'
+```
+
+**No traits.** Trait dispatch stores a TypeId byte at offset 0, which would
+overlap the payload — the same conflict that stops unions implementing traits.
+`Clone` is rejected for a different reason: a newtype is a scalar, so plain
+assignment already copies it.
+
+```rust
+impl Drawable for TileId { }
+// error: newtype 'TileId' cannot implement trait 'Drawable'
+
+let b: TileId = a;   // copying needs no impl
+```
 
 #### Enums
 
@@ -194,7 +285,7 @@ type Word = u16;
 type Callback = fn(u8) -> u8;
 ```
 
-Type aliases create alternate names for existing types. They are fully transparent to the type checker.
+Type aliases create alternate names for existing types. They are fully transparent to the type checker — `Word` and `u16` are the same type, and mixing them is not an error. For a name the type checker keeps *distinct*, use a [newtype](#newtypes).
 
 ---
 
@@ -337,6 +428,8 @@ The `as` keyword performs explicit type conversions:
 | `u16 as *T` | Integer to pointer |
 | `far *T as u16` | Far pointer truncated to 16-bit |
 | `Enum as u8/u16` | Enum to underlying integer |
+| `Newtype as T` | Newtype to its payload (0 cycles) |
+| `T as Newtype` | Payload to newtype, truncating if narrower |
 
 ### Pointer Auto-Dereference
 

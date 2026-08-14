@@ -125,6 +125,58 @@ class StructTypeInfo(TypeInfo):
 
 
 @dataclass
+class NewtypeTypeInfo(TypeInfo):
+    """Newtype: a nominal name for a register-sized scalar (`struct TileId(u8);`).
+
+    Deliberately *not* a StructTypeInfo. A newtype is a scalar everywhere below
+    the type checker — one or two bytes in a vreg — so it never meets the
+    aggregate machinery (pass-by-reference, struct decomposition, AggregateCopy)
+    and needs no special handling in MIR.
+
+    **The identifier is `newtype_name`, not `name`, on purpose.** Much of the
+    compiler asks machine questions by duck-typing — `hasattr(t, 'name')` then
+    `t.name in ('u16', 'i16')`, or `str(t) in ('u8', 'i8', 'bool')`. A newtype
+    carrying a plain `.name` answers those with its own name, which is never in
+    the expected set, so every such site silently concluded "8-bit" or "2 bytes"
+    and miscompiled instead of failing. Reading `.name` now raises, and because
+    it raises `TypeError` rather than `AttributeError` it propagates through
+    `hasattr` and `getattr(..., default)` too — so those sites break loudly at
+    author time. Call `strip_newtype` first; ask `size_bytes` for the width.
+    """
+    newtype_name: str
+    inner: TypeInfo
+    definition: Optional[Any] = None  # HIRNewtypeDecl, resolved during HIR
+
+    @property
+    def name(self):
+        raise TypeError(
+            f"NewtypeTypeInfo has no 'name' — reading it is almost always a "
+            f"machine-representation question that should be asked of the "
+            f"payload. Use strip_newtype(t) for the payload type, t.size_bytes "
+            f"for the width, or t.newtype_name for the nominal identity "
+            f"(newtype '{self.newtype_name}' wrapping '{self.inner}')."
+        )
+
+    @property
+    def size_bytes(self) -> int:
+        return self.inner.size_bytes
+
+    def __str__(self):
+        return self.newtype_name
+
+
+def strip_newtype(t: TypeInfo) -> TypeInfo:
+    """Unwrap a newtype to its payload type. Any other type passes through.
+
+    Use this in size, signedness, and mode predicates — anywhere the question is
+    about the machine representation rather than the nominal identity.
+    """
+    while isinstance(t, NewtypeTypeInfo):
+        t = t.inner
+    return t
+
+
+@dataclass
 class EnumTypeInfo(TypeInfo):
     """Enum type reference."""
     name: str
@@ -309,6 +361,9 @@ class TypeResolver:
 
         if symbol.kind.value == "struct":
             return StructTypeInfo(name=name, definition=symbol.definition, symbol=symbol)
+        elif symbol.kind.value == "newtype":
+            return NewtypeTypeInfo(newtype_name=name, inner=symbol.type_info,
+                                   definition=symbol.definition)
         elif symbol.kind.value == "enum":
             return EnumTypeInfo(name=name, definition=symbol.definition)
         elif symbol.kind.value == "trait":

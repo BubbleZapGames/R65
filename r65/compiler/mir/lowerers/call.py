@@ -318,9 +318,19 @@ class CallLowerer:
         # all other methods push self on the stack.
         self_param = func_decl.parameters[0]  # First parameter is self
         from r65.compiler.hir.types import PointerTypeInfo
+        from r65.compiler.hir.nodes import RegisterBinding
         _self_is_far = isinstance(self_param.param_type, PointerTypeInfo) and self_param.param_type.is_far
         _is_trait = getattr(func_decl, 'is_trait_method', False)
-        if _is_trait and _self_is_far:
+        if isinstance(self_param.binding, RegisterBinding):
+            # Newtype `self` by value: the payload rides in a register, so this is
+            # an ordinary register argument — no pointer, nothing on the stack.
+            args.append(Argument(
+                value=self_vreg,
+                mechanism=ArgumentMechanism.REGISTER,
+                location=HardwareRegister(self_param.binding.register_name),
+                param_type=self_param.param_type
+            ))
+        elif _is_trait and _self_is_far:
             args.append(Argument(
                 value=self_vreg,
                 mechanism=ArgumentMechanism.SELF_Y,

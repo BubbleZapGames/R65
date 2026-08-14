@@ -239,6 +239,23 @@ class StructDecl(Declaration):
 
 
 @dataclass
+class NewtypeDecl(Declaration):
+    """Newtype declaration: a nominal name for a register-sized scalar.
+
+    Example:
+        struct TileId(u8);
+        struct Q10(i16);
+
+    A newtype is nominal at compile time and an ordinary 1- or 2-byte value at
+    runtime — it is never an aggregate, so it passes in registers and its methods
+    take `self` by value. See `hir/types.py: NewtypeTypeInfo`.
+    """
+    name: str
+    inner_type: Type
+    doc: Optional[str] = None
+
+
+@dataclass
 class EnumVariant(ASTNode):
     """Variant in an enum."""
     name: str
@@ -268,6 +285,8 @@ class TraitMethod(ASTNode):
     params: List[Parameter]  # Parameters after self
     return_type: Optional[Union[Type, NeverType]]
     default_body: Optional['Block'] = None  # Present when the trait supplies a body
+    self_by_value: bool = False  # Bare `self` — always rejected for traits, see HIR builder
+    has_self: bool = True  # False for an associated fn declaring no self at all
 
 
 @dataclass
@@ -317,6 +336,8 @@ class ImplMethod(ASTNode):
     body: 'Block'
     is_const: bool = False
     doc: Optional[str] = None
+    self_by_value: bool = False  # True for bare `self` (newtypes only)
+    has_self: bool = True  # False for an associated fn declaring no self at all
 
 
 @dataclass
@@ -785,6 +806,13 @@ class FieldAccess(Expression):
     """Field access."""
     base: Expression
     field: str
+
+
+@dataclass
+class NewtypeFieldAccess(Expression):
+    """Positional field access: `t.0`. Only valid on a newtype, and only index 0."""
+    base: Expression
+    index: int
 
 
 @dataclass

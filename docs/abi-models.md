@@ -336,6 +336,60 @@ PLAYER1.y = PLAYER2.y;
 PLAYER1.health = PLAYER2.health;
 ```
 
+### Newtypes Are the Exception
+
+A [newtype](type-system.md#newtypes) is not an aggregate. Its payload is a
+scalar of at most two bytes, so there is nothing to copy that would not already
+fit in a register — it passes, returns, and assigns by value like the `u8` or
+`i16` it wraps, and rides in `A`/`X`/`Y` under every parameter mechanism.
+
+```rust
+struct TileId(u8);
+
+fn bump(t @ A: TileId) -> TileId { return t + 1; }   // register, 0 cycles
+fn combine(a: TileId, b: TileId) -> TileId { ... }   // stack, like two u8s
+```
+
+### `self` by Value
+
+Because a newtype fits in a register, its methods take **`self` by value**, and
+`self` is bound to the accumulator. Pointer self (`*self`) on a newtype is a
+compile error, and bare `self` on a struct or union is too — one self form per
+type.
+
+```rust
+struct TileId(u8);
+
+impl TileId {
+    fn raw(self) -> u8        { return self.0; }
+    fn bumped(self) -> TileId { return TileId(self.0 + 1); }
+}
+```
+
+`bumped` is the whole method — self arrives in `A` and the result leaves in `A`:
+
+```asm
+TileId__bumped:
+    INC A
+    RTS
+```
+
+`raw` is a retype of a value already in `A`, so it inlines away to nothing at
+the call site. Mutation is expressed by returning a new value; there is no
+in-place form, which is why the compound-assignment operator traits
+(`AddAssign` and friends) do not apply to newtypes — see
+[operator-overloading.md](operator-overloading.md).
+
+Two consequences of binding `self` to `A`:
+
+- A parameter cannot also bind `A`. `fn m(self, x @ A: u8)` is an error naming
+  the conflict; bind `x` to `X`/`Y` or pass it on the stack.
+- A 2-byte payload puts the method in **m16** on entry, exactly as `@ A: u16`
+  does for a free function.
+
+Unlike trait methods — which receive `*self` in `Y` and are never inlined —
+newtype methods are ordinary static-dispatch functions and remain inlinable.
+
 ---
 
 ## Register Preservation

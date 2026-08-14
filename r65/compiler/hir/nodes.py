@@ -274,6 +274,20 @@ class HIRStructDecl(HIRDeclaration):
 
 
 @dataclass
+class HIRNewtypeDecl(HIRDeclaration):
+    """Newtype declaration: `struct TileId(u8);`.
+
+    Carries no layout — a newtype *is* its payload at runtime. The node exists so
+    the declaration survives into the HIR program for diagnostics.
+    """
+    name: str = ""
+    inner_type: Any = None  # TypeInfo
+
+    # Symbol reference
+    symbol: Optional[Any] = None  # Will be Symbol
+
+
+@dataclass
 class HIREnumVariant(HIRNode):
     """Enum variant."""
     name: str = ""
@@ -597,9 +611,20 @@ class HIRUnaryOp(HIRExpression):
 
 @dataclass
 class HIRTypeCast(HIRExpression):
-    """Type cast (explicit conversion)."""
+    """Type cast (explicit conversion).
+
+    Also carries newtype payload access (`t.0`), which is a retype and nothing
+    more: `newtype_field` is set and `target_type` stays None until the type checker
+    fills it in from the operand's newtype. Both spellings lower identically —
+    equal-size casts emit a bare `Move` (`mir/lowerers/expression.py`).
+    """
     expr: Optional[HIRExpression] = None
     target_type: Any = None  # Will be TypeInfo
+    newtype_field: Optional[int] = None  # Set for `.N` payload access
+    # Set for `Newtype(x)`. Lowers exactly like a cast, but is *checked* like an
+    # assignment into the payload — so it rejects what `let t: Newtype = x;`
+    # rejects, and `as` stays the only spelling that truncates.
+    newtype_construct: bool = False
 
 
 @dataclass

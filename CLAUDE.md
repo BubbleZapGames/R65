@@ -174,6 +174,28 @@ Unions support inherent `impl` blocks but cannot implement traits (dispatch stor
 
 *(See [docs/unions.md](docs/unions.md) for complete union documentation)*
 
+### Newtypes
+
+A single-field tuple struct wrapping a register-sized scalar. Nominal at compile time, its payload at runtime — **not** an aggregate, so it passes and returns by value and its methods take `self` by value.
+
+```rust
+struct TileId(u8);
+struct Q10(i16);
+
+impl TileId {
+    fn raw(self) -> u8        { self.0 }          // self arrives in A
+    fn bumped(self) -> TileId { TileId(self.0 + 1) }
+}
+
+let t: TileId = 5;      // payload flows in implicitly
+let u: TileId = t + 1;  // operators inherited, result stays TileId
+let n: u8 = t.0;        // out only via '.0' or 'as' — 0 cycles
+```
+
+**Rules**: Payload must be a scalar of at most 2 bytes (`u8` `i8` `bool` `u16` `i16`, an enum, or a near pointer). Transparent in, opaque out — `let n: u8 = t;` is an error. Two different newtypes never mix. `.0` is read-only. Methods take bare `self` (pointer `*self` is an error, and bare `self` on a struct is too). Cannot implement traits or `Clone` — dispatch needs a TypeId byte at offset 0, and a scalar copies by assignment.
+
+*(See [docs/type-system.md](docs/type-system.md) and [docs/abi-models.md](docs/abi-models.md))*
+
 ### Volatile Semantics
 
 `#[hw]` variables are automatically volatile - every access goes to hardware. No caching, elimination, or reordering.
@@ -392,7 +414,7 @@ Hardware-aware operators with restrictions for expensive operations:
 - ❌ Generics
 - ❌ Error handling types (`Result`, `Option`, `panic!()`)
 - ❌ Advanced enums (data-carrying variants)
-- ❌ Tuple structs / newtypes (`struct TileId(u8);`) — use a named field
+- ❌ Multi-field tuple structs (`struct Pair(u8, u8);`) — use named fields; the single-field form is a newtype
 - ❌ Closures, async/await
 - ❌ Procedural macros
 - ❌ `#[derive(...)]` — write the `impl` explicitly; `impl Clone for T {}` (empty body) is the one compiler-generated trait

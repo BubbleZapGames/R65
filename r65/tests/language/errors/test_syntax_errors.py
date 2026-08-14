@@ -91,50 +91,49 @@ class TestUnsupportedSyntax:
                 parse(source)
 
 
-class TestTupleStructs:
-    """Tuple structs (newtypes) are unsupported and must say so by name."""
+class TestNewtypeArity:
+    """A newtype wraps exactly one field; every other arity is a parse error."""
 
-    def test_newtype_declaration_names_the_feature(self):
-        with pytest.raises(ParseError, match="tuple structs \\(newtypes\\) are not supported"):
-            parse("struct TileId(u8);")
+    def test_single_field_declares_a_newtype(self):
+        parse_succeeds("struct TileId(u8);")
 
-    def test_hint_suggests_a_named_field_of_the_same_type(self):
-        with pytest.raises(ParseError) as exc:
-            parse("struct TileId(u8);")
-        assert "struct TileId { value: u8 }" in exc.value.hint
+    def test_trailing_comma_is_still_a_newtype(self):
+        parse_succeeds("struct TileId(u8,);")
 
-    def test_multi_field_tuple_struct(self):
+    def test_doc_commented_newtype(self):
+        parse_succeeds("/// A tile index\nstruct TileId(u8);")
+
+    def test_field_access_parses(self):
+        parse_succeeds("fn f() { let a: u8 = x.0; }")
+
+    def test_two_fields_names_the_rule(self):
+        with pytest.raises(ParseError, match="a newtype wraps exactly one field"):
+            parse("struct Point(u8, u16);")
+
+    def test_multi_field_hint_names_each_field(self):
         with pytest.raises(ParseError) as exc:
             parse("struct Point(u8, u16);")
         assert "field0: u8, field1: u16" in exc.value.hint
 
+    def test_empty_field_list(self):
+        with pytest.raises(ParseError, match="a newtype wraps exactly one field"):
+            parse("struct Empty();")
+
     def test_hint_renders_compound_types(self):
         """The suggested replacement must itself be valid R65."""
         for source, expected in [
-            ("struct Buf([u8; 4]);", "value: [u8; 4]"),
-            ("struct Ref(far *u8);", "value: far *u8"),
-            ("struct Wrap(Other);", "value: Other"),
+            ("struct Buf([u8; 4], u8);", "field0: [u8; 4]"),
+            ("struct Ref(far *u8, u8);", "field0: far *u8"),
+            ("struct Wrap(Other, u8);", "field0: Other"),
         ]:
             with pytest.raises(ParseError) as exc:
                 parse(source)
             assert expected in exc.value.hint
         # Each suggestion parses as written
-        for decl in ["struct Buf { value: [u8; 4] }",
-                     "struct Ref { value: far *u8 }",
-                     "struct Wrap { value: Other }"]:
+        for decl in ["struct Buf { field0: [u8; 4], field1: u8 }",
+                     "struct Ref { field0: far *u8, field1: u8 }",
+                     "struct Wrap { field0: Other, field1: u8 }"]:
             parse_succeeds(decl)
-
-    def test_empty_tuple_struct(self):
-        with pytest.raises(ParseError, match="tuple structs"):
-            parse("struct Empty();")
-
-    def test_doc_commented_tuple_struct(self):
-        with pytest.raises(ParseError, match="tuple structs"):
-            parse("/// A tile index\nstruct TileId(u8);")
-
-    def test_tuple_field_access(self):
-        with pytest.raises(ParseError, match="tuple field access '.0' is not supported"):
-            parse("fn f() { let a: u8 = x.0; }")
 
     def test_named_field_access_still_works(self):
         parse_succeeds("fn f() { let a: u8 = x.value; }")

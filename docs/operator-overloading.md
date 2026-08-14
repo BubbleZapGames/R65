@@ -24,7 +24,7 @@ score += bonus;                    // identical generated code
 **Scope of this design (Tiers A + B):** compound-assignment operators
 (`+=`, `-=`, ...) and comparison operators (`==`, `<`, ...). Value-producing
 binary operators (`let c = a + b`) are deliberately **out of scope** — see
-[Why no `a + b`](#why-no-value-producing-a--b) and [Future Work](#future-work-tier-c).
+[Why no `a + b`](#why-no-value-producing-a--b) and [future-work.md](future-work.md).
 
 ---
 
@@ -44,7 +44,21 @@ single constraint dictates the whole design:
    thing the by-reference model forbids. We leave it out rather than bolt on a
    destination-passing mechanism that fights the language.
 
-3. **Zero cost.** Resolution is fully static (the operand types are known at
+3. **Newtypes sit outside all of this.** A
+   [newtype](type-system.md#newtypes) is not an aggregate, so it never reaches
+   the overload machinery: it inherits its payload's operators directly and
+   re-wraps the result (`TileId + 1` is a `TileId`), by value, with no impl and
+   no call. It also cannot implement these traits — they all take `*self`, and a
+   newtype has no pointer self.
+
+   The consequence worth noting is that a register-sized newtype *does* make
+   value-producing operators expressible — `let c = a * b` returns two bytes in
+   a register, which is exactly what Tier C was deferred for. Overloading them
+   for newtypes (so `Q10`'s multiply can mean `(a*b)>>6` rather than the
+   inherited integer one) is still future work; see
+   [future-work.md](future-work.md).
+
+4. **Zero cost.** Resolution is fully static (the operand types are known at
    compile time), so every overloaded operator lowers to a direct call. No jump
    tables, no `TypeId`, no layout change.
 
@@ -555,6 +569,8 @@ Tests: `tests/language/impl/test_lang_item_traits.py`,
 - `let c = a.clone()` for a type with a **manual** `clone_from` body is not yet
   supported (call `c.clone_from(&a)` explicitly); auto/array sugar works.
 - Value-producing operators (`let c = a + b`, unary `-a`) — Tier C, out of scope.
+  Newtypes get these for free from their payload, but cannot *override* them
+  (a newtype has no `*self`); see [future-work.md](future-work.md).
 - One operator impl per type (no heterogeneous rhs) — by design (no generics).
 
 ---

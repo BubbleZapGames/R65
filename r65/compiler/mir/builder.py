@@ -664,10 +664,12 @@ class MIRBuilder:
                 if not (isinstance(init_value, HardwareRegister) and init_value.name == hw_reg.name):
                     # Check if this is a u16 @ A binding that should keep m16 mode
                     persist_mode = False
+                    from r65.compiler.hir.types import strip_newtype
+                    bound_payload = strip_newtype(stmt.var_type) if stmt.var_type else None
                     if (stmt.binding.register_name == "A" and
-                        stmt.var_type and
-                        hasattr(stmt.var_type, 'name') and
-                        stmt.var_type.name in ('u16', 'i16')):
+                        bound_payload is not None and
+                        hasattr(bound_payload, 'name') and
+                        bound_payload.name in ('u16', 'i16')):
                         persist_mode = True
 
                     # Move to hardware register if not already there
@@ -1006,7 +1008,9 @@ class MIRBuilder:
         Returns:
             True if the struct can be decomposed into per-field vregs
         """
-        from r65.compiler.hir.types import StructTypeInfo, BasicTypeInfo, PointerTypeInfo, EnumTypeInfo
+        from r65.compiler.hir.types import (
+            StructTypeInfo, BasicTypeInfo, PointerTypeInfo, EnumTypeInfo, NewtypeTypeInfo
+        )
         if not isinstance(stmt.var_type, StructTypeInfo):
             return False
         struct_decl = stmt.var_type.definition
@@ -1021,9 +1025,11 @@ class MIRBuilder:
         total_size = sum(self._get_type_size(f.field_type) for f in struct_decl.fields)
         if total_size >= 16:
             return False
-        # All fields must be scalar (no arrays, no nested structs)
+        # All fields must be scalar (no arrays, no nested structs). A newtype is a
+        # scalar, so a field of one decomposes like the payload it wraps.
         for f in struct_decl.fields:
-            if not isinstance(f.field_type, (BasicTypeInfo, PointerTypeInfo, EnumTypeInfo)):
+            if not isinstance(f.field_type,
+                              (BasicTypeInfo, PointerTypeInfo, EnumTypeInfo, NewtypeTypeInfo)):
                 return False
         # Check address-of is not taken in the function body
         if self._symbol_address_taken(stmt.symbol):

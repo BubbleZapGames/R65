@@ -155,8 +155,33 @@ class ExpressionBuilder:
             target = self.type_resolver.resolve_type(expr.target_type)
             return hir.HIRTypeCast(expr=inner, target_type=target, source_loc=src_loc)
 
+        elif isinstance(expr, ast.NewtypeFieldAccess):
+            # `t.0` — a retype of the operand. The target type is unknown until
+            # the operand is typed, so the checker fills it in.
+            inner = self.build_expression(expr.base)
+            return hir.HIRTypeCast(expr=inner, target_type=None,
+                                   newtype_field=expr.index, source_loc=src_loc)
+
         elif isinstance(expr, ast.FunctionCall):
             from r65.compiler.builtins import BuiltinRegistry
+
+            # Newtype construction: `TileId(x)` is a retype, not a call, so it
+            # desugars to the same node an `as` cast uses and MIR never sees it.
+            # It is *checked* more strictly than a cast — see `newtype_construct`.
+            if isinstance(expr.func, ast.Identifier):
+                sym = self.symbol_table.lookup(expr.func.name)
+                if sym and sym.kind == SymbolKind.NEWTYPE:
+                    if len(expr.args) != 1:
+                        raise HIRError(
+                            f"newtype '{expr.func.name}' takes exactly 1 value, "
+                            f"got {len(expr.args)}",
+                            source_loc=src_loc,
+                            hint=f"write '{expr.func.name}(value)'")
+                    inner = self.build_expression(expr.args[0])
+                    target = self.type_resolver.resolve_named_type(expr.func.name)
+                    return hir.HIRTypeCast(expr=inner, target_type=target,
+                                           newtype_construct=True,
+                                           source_loc=src_loc)
 
             # Check if this is a method call (e.g., value.rotate_left(3) or array.len())
             if isinstance(expr.func, ast.FieldAccess):

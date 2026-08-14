@@ -47,17 +47,25 @@ class TypeConversionSelector(BaseSelector):
         Args:
             instr: TypeConvert instruction
         """
+        from r65.compiler.hir.types import strip_newtype
+
         src_operand = instr.source
         dest_loc = self.parent._get_operand_location(instr.dest)
 
+        # A conversion is about machine widths, so newtypes answer for their
+        # payload. Without this the size falls out of a *name* comparison below
+        # and any newtype would be taken for 2 bytes.
+        instr_source_type = strip_newtype(instr.source_type)
+        instr_target_type = strip_newtype(instr.target_type)
+
         # Handle pointer type conversions
-        if isinstance(instr.source_type, PointerTypeInfo) or isinstance(instr.target_type, PointerTypeInfo):
+        if isinstance(instr_source_type, PointerTypeInfo) or isinstance(instr_target_type, PointerTypeInfo):
             self._emit_pointer_conversion(instr, src_operand, dest_loc)
             return
 
         # Get type information
-        source_type = str(instr.source_type)
-        target_type = str(instr.target_type)
+        source_type = str(instr_source_type)
+        target_type = str(instr_target_type)
         source_size = 1 if source_type in ['u8', 'i8', 'bool'] else 2
         target_size = 1 if target_type in ['u8', 'i8', 'bool'] else 2
         source_signed = source_type.startswith('i')
@@ -329,8 +337,11 @@ class TypeConversionSelector(BaseSelector):
             src_operand: Source operand
             dest_loc: Destination location
         """
-        source_type = instr.source_type
-        target_type = instr.target_type
+        # Strip here too: select_type_convert stripped into locals, but this
+        # method re-reads the instruction, so a newtype would size by name.
+        from r65.compiler.hir.types import strip_newtype
+        source_type = strip_newtype(instr.source_type)
+        target_type = strip_newtype(instr.target_type)
 
         # Get sizes
         if isinstance(source_type, PointerTypeInfo):

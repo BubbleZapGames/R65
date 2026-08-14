@@ -14,7 +14,10 @@ from r65.compiler.hir import (
     SymbolKind, BasicTypeInfo, StructTypeInfo, NeverTypeInfo,
     HIRError,
 )
-from r65.compiler.hir.types import TypeInfo, FunctionTypeInfo, ArrayTypeInfo, PointerTypeInfo, TraitTypeInfo
+from r65.compiler.hir.types import (
+    TypeInfo, FunctionTypeInfo, ArrayTypeInfo, PointerTypeInfo, TraitTypeInfo,
+    NewtypeTypeInfo,
+)
 from r65.compiler.typeck.errors import TypeCheckError
 from r65.compiler.typeck.type_utils import TypeUtils
 from r65.compiler.typeck.processor_mode import ProcessorMode
@@ -70,7 +73,9 @@ class CallValidator:
             if isinstance(arg_type, NeverTypeInfo):
                 continue
 
-            if not TypeUtils.types_compatible(arg_type, param_type):
+            # Directional: an argument is assigned into the parameter, so a
+            # newtype parameter accepts its payload but not the reverse.
+            if not TypeUtils.assignable(arg_type, param_type):
                 hint = (f"parameter '{param_name}' expects type {param_type}"
                         if param_name else f"use cast if needed: (value as {param_type})")
                 raise TypeCheckError(
@@ -283,8 +288,14 @@ class CallValidator:
         receiver_is_pointer = False
         pointer_is_far = False
 
+        receiver_is_newtype = False
+
         if isinstance(receiver_type, StructTypeInfo):
             struct_name = receiver_type.name
+        elif isinstance(receiver_type, NewtypeTypeInfo):
+            # Method lookup is keyed on the nominal name.
+            struct_name = receiver_type.newtype_name
+            receiver_is_newtype = True
         elif isinstance(receiver_type, PointerTypeInfo):
             if isinstance(receiver_type.pointee_type, StructTypeInfo):
                 struct_name = receiver_type.pointee_type.name
@@ -345,6 +356,10 @@ class CallValidator:
         # Create address-of expression for the receiver (unless already a pointer)
         if receiver_is_pointer:
             self_arg = field_access.base
+        elif receiver_is_newtype:
+            # By-value self: pass the value itself. Taking its address is exactly
+            # what a newtype exists to avoid.
+            self_arg = field_access.base
         else:
             self_arg = HIRAddressOf(
                 operand=field_access.base,
@@ -368,7 +383,7 @@ class CallValidator:
 
         # Type check self argument
         self_param = func_decl.parameters[0]
-        if not TypeUtils.types_compatible(self_arg.expr_type, self_param.param_type):
+        if not TypeUtils.assignable(self_arg.expr_type, self_param.param_type):
             raise TypeCheckError(
                 f"self argument has wrong type: expected {self_param.param_type}, found {self_arg.expr_type}",
                 source_loc=expr.source_loc

@@ -13,7 +13,7 @@ from r65.compiler.hir import (
     HIRArrayIndex, HIRFieldAccess, HIRDereference, HIRAddressOf,
     HIRIdentifier,
 )
-from r65.compiler.hir.types import BasicTypeInfo, PointerTypeInfo
+from r65.compiler.hir.types import strip_newtype, BasicTypeInfo, PointerTypeInfo
 from r65.compiler.mir.nodes import (
     VirtualRegister, HardwareRegister, Immediate, MemoryLocation,
     Move, Load, LoadIndirect, BinaryOp, UnaryOp, TypeConvert, ToBool,
@@ -338,11 +338,17 @@ class ExpressionLowerer:
 
         result = self.ctx.alloc_vreg(target_type, "cast_result")
 
-        # Boolean conversions - check BEFORE size comparisons since bool is 1 byte
-        if str(target_type) == 'bool' and str(source_type) != 'bool':
+        # Boolean conversions - check BEFORE size comparisons since bool is 1 byte.
+        # Compare the payloads: a newtype stringifies to its own name, so
+        # `n as Flag` would skip normalization and store a non-canonical bool.
+        from r65.compiler.hir.types import strip_newtype
+        source_bool = str(strip_newtype(source_type)) == 'bool'
+        target_bool = str(strip_newtype(target_type)) == 'bool'
+
+        if target_bool and not source_bool:
             return self._lower_to_bool(source_operand, source_type, target_type)
 
-        if str(source_type) == 'bool' and str(target_type) != 'bool':
+        if source_bool and not target_bool:
             # bool -> integer: just move (0 or 1 value already correct)
             self.emit(Move(dest=result, source=source_operand, type_info=target_type))
             return result
@@ -965,9 +971,11 @@ class ExpressionLowerer:
                 # Ensure offset is u16 for pointer arithmetic (16-bit add).
                 # A u8 index used directly in a m16 ADC would read 2 bytes
                 # from a 1-byte stack slot, picking up junk in the high byte.
+                idx_payload = strip_newtype(offset_vreg.type_info) if isinstance(
+                    offset_vreg, VirtualRegister) else None
                 if (isinstance(offset_vreg, VirtualRegister) and
-                        isinstance(offset_vreg.type_info, BasicTypeInfo) and
-                        offset_vreg.type_info.name in ('u8', 'i8')):
+                        isinstance(idx_payload, BasicTypeInfo) and
+                        idx_payload.name in ('u8', 'i8')):
                     from r65.compiler.mir.nodes import TypeConvert
                     extended = self.ctx.alloc_vreg(BasicTypeInfo('u16'), f"idx_ext")
                     self.emit(TypeConvert(
@@ -1049,8 +1057,8 @@ class ExpressionLowerer:
             # Match the u8→u16 widening done on the static-array path: a m16
             # ADC against a 1-byte stack slot would read junk in the high byte.
             if (isinstance(offset_vreg, VirtualRegister) and
-                    isinstance(offset_vreg.type_info, BasicTypeInfo) and
-                    offset_vreg.type_info.name in ('u8', 'i8')):
+                    isinstance(strip_newtype(offset_vreg.type_info), BasicTypeInfo) and
+                    strip_newtype(offset_vreg.type_info).name in ('u8', 'i8')):
                 from r65.compiler.mir.nodes import TypeConvert
                 extended = self.ctx.alloc_vreg(BasicTypeInfo('u16'), "idx_ext")
                 self.emit(TypeConvert(

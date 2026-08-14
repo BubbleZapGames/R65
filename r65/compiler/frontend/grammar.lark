@@ -14,6 +14,7 @@ start: (DOC_INNER | DOC_BLOCK_INNER)* item*
      | static_decl
      | const_decl
      | struct_decl
+     | newtype_decl
      | union_decl
      | enum_decl
      | impl_decl
@@ -92,8 +93,10 @@ const_decl: doc_comment* CONST IDENT ":" type_expr "=" initializer_expr ";"
 
 // Struct declaration
 struct_decl: doc_comment* STRUCT IDENT "{" struct_field* "}"
-// Tuple structs / newtypes are unsupported; matched so the error names the feature
-           | doc_comment* STRUCT IDENT "(" (type_expr ("," type_expr)* ","?)? ")" ";"  -> struct_tuple_error
+// Newtype: a nominal name for a register-sized scalar
+newtype_decl: doc_comment* STRUCT IDENT "(" type_expr ","? ")" ";"
+// A newtype has exactly one field; matched so the error names the feature
+            | doc_comment* STRUCT IDENT "(" (type_expr ("," type_expr)+ ","?)? ")" ";"  -> newtype_arity_error
 // Union declaration — same field syntax as a struct; every field sits at offset 0
 union_decl: doc_comment* UNION IDENT "{" struct_field* "}"
 // Supports pointer fields: [far|near] *name: type
@@ -139,8 +142,10 @@ impl_method: doc_comment* attribute* CONST? FAR? FN IDENT "(" impl_param_list? "
 impl_param_list: self_param ("," param)* ","?
                | param_list
 
-// Self parameter: *self, far *self, or near *self
+// Self parameter: *self, far *self, or near *self — or bare `self` (by value,
+// newtypes only: the payload fits in a register, so there is nothing to point at)
 self_param: (FAR | NEAR)? STAR SELF
+          | SELF                     -> self_by_value
           | (FAR | NEAR)? AMPER SELF -> self_safe_ptr_error
 
 // Associated constant in impl block
@@ -376,6 +381,8 @@ lvalue: IDENT                                   -> lvalue_ident
       | REGISTER                                -> lvalue_register
       | postfix "[" expr "]"                    -> lvalue_array
       | postfix "." IDENT                       -> lvalue_field
+      // A newtype payload is read-only; matched so the error can say why
+      | postfix "." INTEGER                     -> lvalue_newtype_field_error
       | "*" unary                               -> lvalue_deref
 
 ?logical_or: logical_and
@@ -430,7 +437,8 @@ lvalue: IDENT                                   -> lvalue_ident
         | postfix "[" expr "]"                  -> array_index
         | postfix "." IDENT "!" "(" macro_args? ")"  -> method_macro
         | postfix "." IDENT                     -> field_access
-        | postfix "." INTEGER                   -> tuple_field_error
+        // Newtype payload access: `t.0`. Any other index is rejected in typeck.
+        | postfix "." INTEGER                   -> newtype_field_access
 
 arg_list: expr ("," expr)* ","?
 

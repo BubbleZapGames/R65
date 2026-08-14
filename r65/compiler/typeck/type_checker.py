@@ -22,7 +22,9 @@ from r65.compiler.hir import (
     RegisterLetBinding, ArrayTypeInfo, StructTypeInfo, EnumTypeInfo,
     HIRError,
 )
-from r65.compiler.hir.types import FunctionTypeInfo, PointerTypeInfo
+from r65.compiler.hir.types import (
+    FunctionTypeInfo, PointerTypeInfo, NewtypeTypeInfo, strip_newtype
+)
 from r65.compiler.typeck.processor_mode import ProcessorMode, ModeState, XModeState
 from r65.compiler.typeck.mode_tracker import ModeTracker
 from r65.compiler.typeck.cfg_builder import CFGBuilder
@@ -442,7 +444,13 @@ class TypeChecker:
         Raises:
             TypeCheckError: If types don't match
         """
-        if use_compatible:
+        # Newtypes are transparent in and opaque out, so the check has to know
+        # which side is the destination. Every caller here is assignment-shaped
+        # (let / static / const / assignment / if-arm / break value), so
+        # `expected_type` is always the place being written.
+        if isinstance(expected_type, NewtypeTypeInfo) or isinstance(actual_type, NewtypeTypeInfo):
+            types_match = TypeUtils.assignable(actual_type, expected_type)
+        elif use_compatible:
             types_match = TypeUtils.types_compatible(expected_type, actual_type)
         else:
             types_match = TypeUtils.types_equal(expected_type, actual_type)
@@ -1132,6 +1140,10 @@ class TypeChecker:
             # If type already set (e.g., from const evaluation), preserve it
             if expr.expr_type is not None:
                 return expr.expr_type
+            # A literal's range is a question about the payload, so a newtype
+            # context answers for what it wraps. Without this `let t: TileId = 300;`
+            # silently truncates where `let n: u8 = 300;` is an error.
+            context_type = strip_newtype(context_type) if context_type is not None else None
             # Overflow check: if context type is a specific integer type and no suffix,
             # verify the value fits the declared type range.
             if (context_type is not None and isinstance(context_type, BasicTypeInfo)
@@ -1403,8 +1415,19 @@ class TypeChecker:
         expr.expr_type = BasicTypeInfo('bool')
         return expr.expr_type
 
+    # Operators whose result is a value rather than a bool. A newtype operand
+    # makes the result that same newtype; comparisons still yield bool.
+    _VALUE_PRODUCING_OPS = ('+', '-', '*', '/', '%', '&', '|', '^', '<<', '>>')
+
     def check_binary_op(self, expr: HIRBinaryOp, context_type: Optional[TypeInfo] = None) -> TypeInfo:
         """Type check binary operation."""
+        # The destination type is consulted only for machine-width decisions
+        # (literal inference, and the shift-widening guard below), so a newtype
+        # destination answers for its payload. Leave it wrapped and the widening
+        # guard silently fails its `isinstance(..., BasicTypeInfo)` test, which
+        # computes `n << 2` in m8 and stores a stale high byte into 2 bytes.
+        if context_type is not None:
+            context_type = strip_newtype(context_type)
         # Propagate context type ONLY for shift operators — needed so `const X: u16 = 0 << 2`
         # infers `0` as u16. Do NOT propagate for arithmetic/bitwise (+, -, *, etc.) because
         # intermediate values commonly exceed the target type (e.g., `let x: u8 = 256 - 200`).
@@ -1415,6 +1438,51 @@ class TypeChecker:
         right_context = left_type if expr.op in ['==', '!=', '<', '<=', '>', '>='] else None
         right_type = self.check_expression(expr.right, right_context)
 
+        # A newtype inherits its payload's operators. Check the operation against
+        # the payload types, then re-wrap the result so it stays nominal:
+        # `TileId + 1` is a TileId, never a bare u8.
+        result_newtype = self._newtype_binop_result(expr, left_type, right_type)
+        if result_newtype is not None:
+            result = self._check_binary_op_typed(
+                expr, strip_newtype(left_type), strip_newtype(right_type), context_type)
+            if expr.op in self._VALUE_PRODUCING_OPS:
+                expr.expr_type = result_newtype
+                return result_newtype
+            return result
+
+        return self._check_binary_op_typed(expr, left_type, right_type, context_type)
+
+    def _newtype_binop_result(self, expr: HIRBinaryOp,
+                              left_type: TypeInfo, right_type: TypeInfo) -> Optional[TypeInfo]:
+        """The newtype an operator's result carries, or None if neither side is one.
+
+        `NT op NT` and `NT op <payload>` both yield NT. Two *different* newtypes
+        never mix — that is the opacity the type exists for.
+        """
+        left_nt = left_type if isinstance(left_type, NewtypeTypeInfo) else None
+        right_nt = right_type if isinstance(right_type, NewtypeTypeInfo) else None
+        if left_nt is None and right_nt is None:
+            return None
+
+        if (left_nt is not None and right_nt is not None
+                and left_nt.newtype_name != right_nt.newtype_name):
+            raise TypeCheckError(
+                f"operator '{expr.op}' has mismatched types '{left_nt}' and '{right_nt}'",
+                source_loc=expr.source_loc,
+                hint=f"newtypes never mix; unwrap one side explicitly "
+                     f"(e.g. '{right_nt}(lhs.0 {expr.op} rhs.0)')"
+            )
+
+        # `&&`/`||` are bool-only and never inherited.
+        if expr.op in ('&&', '||'):
+            return None
+
+        return left_nt or right_nt
+
+    def _check_binary_op_typed(self, expr: HIRBinaryOp, left_type: TypeInfo,
+                               right_type: TypeInfo,
+                               context_type: Optional[TypeInfo] = None) -> TypeInfo:
+        """Type check a binary operation given already-computed operand types."""
         operands_aggregate = (TypeUtils.is_aggregate_type(left_type)
                               or TypeUtils.is_aggregate_type(right_type))
 
@@ -1634,6 +1702,12 @@ class TypeChecker:
 
     def check_unary_op(self, expr: HIRUnaryOp, context_type: Optional[TypeInfo] = None) -> TypeInfo:
         """Type check unary operation."""
+        # As in check_binary_op, the destination is consulted only for literal
+        # width/signedness, so a newtype answers for its payload. Leave it
+        # wrapped and `let q: Q10 = -32768;` is rejected as not fitting i16 —
+        # a false rejection of the exact literal the escape hatch below exists for.
+        if context_type is not None:
+            context_type = strip_newtype(context_type)
         if expr.op == '!':
             # Logical NOT: operand must be bool (no context propagation needed)
             operand_type = self.check_expression(expr.operand)
@@ -1648,7 +1722,9 @@ class TypeChecker:
         elif expr.op == '~':
             # Bitwise NOT: propagate context type to operand
             operand_type = self.check_expression(expr.operand, context_type)
-            if not TypeUtils.is_integer_type(operand_type):
+            # A newtype inherits its payload's unary operators just as it does
+            # the binary ones; `expr_type` stays the newtype so `~t` is a TileId.
+            if not TypeUtils.is_integer_type(strip_newtype(operand_type)):
                 raise TypeCheckError(
                     f"bitwise NOT '~' requires integer operand, found {operand_type}",
                     source_loc=expr.operand.source_loc,
@@ -1672,7 +1748,7 @@ class TypeChecker:
                     expr.operand.expr_type = context_type
             # Negation: propagate context type to operand for proper literal typing
             operand_type = self.check_expression(expr.operand, context_type)
-            if not TypeUtils.is_integer_type(operand_type):
+            if not TypeUtils.is_integer_type(strip_newtype(operand_type)):
                 raise TypeCheckError(
                     f"negation '-' requires integer operand, found {operand_type}",
                     source_loc=expr.operand.source_loc,
@@ -1682,16 +1758,17 @@ class TypeChecker:
             # Only applies when the literal itself fits operand_type (so it's a
             # clean negation). Wide literals like -100000 flow through bitwise
             # masks in stdlib macros (I32!, U32!) and are handled downstream.
+            operand_payload = strip_newtype(operand_type)
             if (isinstance(expr.operand, HIRIntegerLiteral)
-                    and isinstance(operand_type, BasicTypeInfo)):
+                    and isinstance(operand_payload, BasicTypeInfo)):
                 from r65.compiler.typeck.type_utils import get_type_range, value_fits_type
-                range_info = get_type_range(operand_type.name)
-                if range_info is not None and value_fits_type(expr.operand.value, operand_type.name):
+                range_info = get_type_range(operand_payload.name)
+                if range_info is not None and value_fits_type(expr.operand.value, operand_payload.name):
                     neg_val = -expr.operand.value
                     if not (range_info[0] <= neg_val <= range_info[1]):
                         # Try signed promotion when no explicit context was given
                         promoted = False
-                        if context_type is None and operand_type.name in ('u8', 'u16'):
+                        if context_type is None and operand_payload.name in ('u8', 'u16'):
                             for signed_name in ('i8', 'i16'):
                                 signed_range = get_type_range(signed_name)
                                 if signed_range is not None and signed_range[0] <= neg_val <= signed_range[1]:
@@ -1701,7 +1778,7 @@ class TypeChecker:
                                     break
                         if not promoted:
                             raise TypeCheckError(
-                                f"integer literal {neg_val} does not fit in type {operand_type.name} "
+                                f"integer literal {neg_val} does not fit in type {operand_payload.name} "
                                 f"(valid range: {range_info[0]} to {range_info[1]})",
                                 source_loc=expr.source_loc,
                                 hint=f"use a signed type (i8/i16) for negative values"
@@ -1717,8 +1794,15 @@ class TypeChecker:
         return expr.expr_type
 
     def check_type_cast(self, expr: HIRTypeCast) -> TypeInfo:
-        """Type check explicit cast."""
+        """Type check explicit cast, newtype construction, or payload access."""
+        if expr.newtype_construct:
+            return self._check_newtype_construct(expr)
+
         source_type = self.check_expression(expr.expr)
+
+        if expr.newtype_field is not None:
+            return self._check_newtype_field(expr, source_type)
+
         target_type = expr.target_type
 
         if not TypeUtils.can_cast(source_type, target_type):
@@ -1730,6 +1814,54 @@ class TypeChecker:
 
         expr.expr_type = target_type
         return target_type
+
+    def _check_newtype_construct(self, expr: HIRTypeCast) -> TypeInfo:
+        """Type check `Newtype(x)`.
+
+        Checked as an assignment into the payload, not as a cast: `TileId(300)`
+        is rejected for the same reason `let t: TileId = 300;` is. Truncating
+        stays possible, but has to be spelled `300 as TileId` — one operation,
+        one meaning.
+        """
+        target_type = expr.target_type
+        payload = strip_newtype(target_type)
+
+        # Checking against the payload gives the literal its range check.
+        source_type = self.check_expression(expr.expr, payload)
+
+        if not TypeUtils.assignable(source_type, target_type):
+            raise TypeCheckError(
+                f"cannot make a '{target_type}' from '{source_type}'",
+                source_loc=expr.source_loc,
+                hint=f"'{target_type}' wraps '{payload}'; convert explicitly first "
+                     f"(value as {payload}), or cast the whole value "
+                     f"(value as {target_type}) to truncate"
+            )
+
+        expr.expr_type = target_type
+        return target_type
+
+    def _check_newtype_field(self, expr: HIRTypeCast, source_type: TypeInfo) -> TypeInfo:
+        """Type check `t.0`, filling in the retype the HIR builder left open."""
+        index = expr.newtype_field
+
+        if not isinstance(source_type, NewtypeTypeInfo):
+            raise TypeCheckError(
+                f"'{source_type}' is not a newtype, so it has no field '.{index}'",
+                source_loc=expr.source_loc,
+                hint="access struct and union fields by name (e.g. '.value')"
+            )
+
+        if index != 0:
+            raise TypeCheckError(
+                f"newtype '{source_type}' has only field '.0'",
+                source_loc=expr.source_loc,
+                hint=f"a newtype wraps exactly one value; write '{source_type.newtype_name}.0'"
+            )
+
+        expr.target_type = source_type.inner
+        expr.expr_type = source_type.inner
+        return source_type.inner
 
     def check_array_index(self, expr: HIRArrayIndex) -> TypeInfo:
         """Type check array indexing."""

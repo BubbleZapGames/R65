@@ -308,9 +308,12 @@ def compute_scaled_index(
     u8_type = BasicTypeInfo('u8')
     u16_type = BasicTypeInfo('u16')
 
+    from r65.compiler.hir.types import strip_newtype
+    idx_payload = strip_newtype(index_operand.type_info) if isinstance(
+        index_operand, VirtualRegister) else None
     if (isinstance(index_operand, VirtualRegister) and
-            isinstance(index_operand.type_info, BasicTypeInfo) and
-            index_operand.type_info.name in ('u8', 'i8')):
+            isinstance(idx_payload, BasicTypeInfo) and
+            idx_payload.name in ('u8', 'i8')):
         extended = ctx.alloc_vreg(u16_type, "idx_ext")
         emit(TypeConvert(
             dest=extended,

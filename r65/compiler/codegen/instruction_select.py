@@ -1837,6 +1837,10 @@ class InstructionSelector:
         Returns:
             True if 16-bit type (u16, i16, near pointer, or near function pointer)
         """
+        # Strip first: a newtype also has a `.name`, so the duck-typed check
+        # below would read `Q10` and conclude 8-bit.
+        from r65.compiler.hir.types import strip_newtype
+        type_info = strip_newtype(type_info)
         if hasattr(type_info, 'name'):
             return type_info.name in ('u16', 'i16')
         # Near pointers are 16-bit (far pointers are 24-bit)

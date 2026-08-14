@@ -520,6 +520,18 @@ class HIRBuilder:
             )
             self.symbol_table.declare(decl.name, symbol)
 
+        elif isinstance(decl, ast.NewtypeDecl):
+            inner_type = self.type_resolver.resolve_type(decl.inner_type)
+            self._validate_newtype_inner(decl.name, inner_type, decl.source_loc)
+            symbol = Symbol(
+                name=decl.name,
+                kind=SymbolKind.NEWTYPE,
+                definition=decl,
+                scope_id=0,
+                type_info=inner_type
+            )
+            self.symbol_table.declare(decl.name, symbol)
+
         elif isinstance(decl, ast.EnumDecl):
             # Create enum type symbol
             enum_symbol = Symbol(
@@ -593,6 +605,8 @@ class HIRBuilder:
             return self._build_const(decl)
         elif isinstance(decl, ast.StructDecl):
             return self._build_struct(decl)
+        elif isinstance(decl, ast.NewtypeDecl):
+            return self._build_newtype(decl)
         elif isinstance(decl, ast.EnumDecl):
             return self._build_enum(decl)
         elif isinstance(decl, ast.TypeAlias):
@@ -603,6 +617,36 @@ class HIRBuilder:
             return self._build_impl(decl)
         else:
             raise HIRError(f"Unknown declaration type: {type(decl).__name__}", source_loc=getattr(decl, 'source_loc', None))
+
+    # Payload types a newtype may wrap: scalars that fit in a register, so the
+    # value can ride in A/X/Y and `self` can be passed by value.
+    _NEWTYPE_SCALAR_KINDS = (BasicTypeInfo, EnumTypeInfo, PointerTypeInfo, FunctionTypeInfo)
+
+    def _validate_newtype_inner(self, name: str, inner: TypeInfo, source_loc):
+        """Reject newtype payloads that are not register-sized scalars."""
+        hint = (f"newtypes wrap a scalar of at most 2 bytes; "
+                f"use a struct with a named field: 'struct {name} {{ value: ... }}'")
+
+        if isinstance(inner, BasicTypeInfo) and inner.name == 'void':
+            raise HIRError(f"newtype '{name}' cannot wrap 'void'",
+                           source_loc=source_loc, hint=hint)
+
+        if isinstance(inner, NewtypeTypeInfo):
+            raise HIRError(
+                f"newtype '{name}' cannot wrap another newtype '{inner.newtype_name}'",
+                source_loc=source_loc,
+                hint=f"wrap the payload type directly: 'struct {name}({inner.inner});'")
+
+        if not isinstance(inner, self._NEWTYPE_SCALAR_KINDS):
+            raise HIRError(
+                f"newtype '{name}' wraps '{inner}', which is not a scalar",
+                source_loc=source_loc, hint=hint)
+
+        size = inner.size_bytes
+        if size > 2:
+            raise HIRError(
+                f"newtype '{name}' wraps '{inner}', which is {size} bytes",
+                source_loc=source_loc, hint=hint)
 
     def _resolve_include_asm_path(self, path: str) -> Optional[Path]:
         """Resolve an include_asm! path relative to the source file or -I paths."""
@@ -893,6 +937,12 @@ class HIRBuilder:
         if isinstance(expr, hir.HIRUnaryOp):
             return self._is_simple_expression(expr.operand, depth + 1)
 
+        # Cast with a simple operand: `x as u16`, and the newtype wrap/unwrap
+        # pair `TileId(v)` / `self.0`, which are pure retypes costing nothing.
+        # Without this a newtype accessor is a JSR to a bare RTS.
+        if isinstance(expr, hir.HIRTypeCast):
+            return self._is_simple_expression(expr.expr, depth + 1)
+
         return False
 
     def _is_trivial_getter_or_setter(self, body: hir.HIRBlock) -> bool:
@@ -976,9 +1026,12 @@ class HIRBuilder:
                 reg_name = param.binding.register_name
 
                 if reg_name == "A":
-                    # Check if A parameter is 16-bit
-                    if param.param_type and isinstance(param.param_type, BasicTypeInfo):
-                        if param.param_type.name in ('u16', 'i16'):
+                    # Check if A parameter is 16-bit. Mode is a question about the
+                    # machine width, so a newtype answers for its payload — miss
+                    # this and a 2-byte newtype in A silently runs in m8.
+                    a_type = strip_newtype(param.param_type) if param.param_type else None
+                    if isinstance(a_type, BasicTypeInfo):
+                        if a_type.name in ('u16', 'i16'):
                             entry_mode = ModeState.M16
                             a_param = param
                 elif reg_name == "B":
@@ -1082,8 +1135,11 @@ class HIRBuilder:
         if return_type is None:
             return ModeState.M8
 
-        if isinstance(return_type, BasicTypeInfo):
-            if return_type.name in ('u16', 'i16'):
+        # Machine width, so a newtype answers for its payload: a function
+        # returning `Q10` leaves the CPU in m16 exactly as `i16` does.
+        payload = strip_newtype(return_type)
+        if isinstance(payload, BasicTypeInfo):
+            if payload.name in ('u16', 'i16'):
                 return ModeState.M16
 
         return ModeState.M8
@@ -1182,8 +1238,13 @@ class HIRBuilder:
         if bound_type is None:
             return
 
-        if isinstance(bound_type, PointerTypeInfo):
-            if bound_type.is_far:
+        # A newtype is its payload in a register — that is the whole point of the
+        # type. `bound_type` stays unstripped so diagnostics name what was written.
+        is_newtype = isinstance(bound_type, NewtypeTypeInfo)
+        payload = strip_newtype(bound_type)
+
+        if isinstance(payload, PointerTypeInfo):
+            if payload.is_far:
                 raise HIRError(
                     f"{context.capitalize()} '{name}' bound to register {register_name} "
                     f"has type {bound_type}, but far pointers are 24-bit and cannot fit in any register",
@@ -1191,14 +1252,18 @@ class HIRBuilder:
                 )
             # Near pointers are 16-bit, treat like u16 for register validation
             type_name = 'u16'
-        elif not isinstance(bound_type, BasicTypeInfo):
+        elif is_newtype and isinstance(payload, EnumTypeInfo):
+            # Enums are a byte wide. A bare enum still cannot bind a register
+            # (unchanged), but a newtype over one is a value type by design.
+            type_name = 'u8'
+        elif not isinstance(payload, BasicTypeInfo):
             raise HIRError(
                 f"{context.capitalize()} '{name}' bound to register {register_name} "
                 f"must have a primitive type, got {bound_type}",
                 source_loc=None
             )
         else:
-            type_name = bound_type.name
+            type_name = payload.name
 
         # Define allowed types for each register
         register_allowed_types = {
@@ -1561,6 +1626,18 @@ class HIRBuilder:
 
         return hir_enum
 
+    def _build_newtype(self, decl: ast.NewtypeDecl) -> hir.HIRNewtypeDecl:
+        """Build HIR newtype declaration from AST."""
+        symbol = self.symbol_table.lookup(decl.name)
+        hir_newtype = hir.HIRNewtypeDecl(
+            name=decl.name,
+            inner_type=symbol.type_info,
+            symbol=symbol
+        )
+        # Point the symbol at the HIR definition, matching structs/aliases.
+        symbol.definition = hir_newtype
+        return hir_newtype
+
     def _build_type_alias(self, alias: ast.TypeAlias) -> hir.HIRTypeAlias:
         """Build HIR type alias from AST."""
         # Resolve aliased type
@@ -1589,10 +1666,28 @@ class HIRBuilder:
                 f"impl block for undefined struct: {impl.struct_name}",
                 source_loc=impl.source_loc
             )
-        if struct_symbol.kind != SymbolKind.STRUCT:
+        if struct_symbol.kind not in (SymbolKind.STRUCT, SymbolKind.NEWTYPE):
             raise HIRError(
                 f"impl block target '{impl.struct_name}' is not a struct",
                 source_loc=impl.source_loc
+            )
+
+        # A newtype has no room for a TypeId byte — the payload occupies every
+        # byte it has — so it can never be a dispatch target. Clone is redundant
+        # for the same reason: a newtype copies with a plain assignment.
+        if struct_symbol.kind == SymbolKind.NEWTYPE and impl.trait_name is not None:
+            if impl.trait_name == CLONE_TRAIT:
+                raise HIRError(
+                    f"newtype '{impl.struct_name}' cannot implement Clone",
+                    source_loc=impl.source_loc,
+                    hint="newtypes are copied by plain assignment: 'let b = a;'"
+                )
+            raise HIRError(
+                f"newtype '{impl.struct_name}' cannot implement trait "
+                f"'{impl.trait_name}'",
+                source_loc=impl.source_loc,
+                hint="trait dispatch stores a TypeId byte at offset 0, which would "
+                     "overlap the newtype's value; use a struct with a named field"
             )
 
         # Handle trait impl validation and registration
@@ -1651,6 +1746,69 @@ class HIRBuilder:
                 }
             )
             self.symbol_table.declare(method_key, method_info_symbol)
+
+    def _is_newtype(self, name: str) -> bool:
+        """True if `name` names a newtype."""
+        sym = self.symbol_table.lookup(name)
+        return sym is not None and sym.kind == SymbolKind.NEWTYPE
+
+    def _impl_self_is_by_value(self, impl, method) -> bool:
+        """Decide the self form for an impl method, rejecting the mismatched pairings.
+
+        One self form per type: a newtype is a value and always takes bare `self`;
+        everything else is addressed through `*self`.
+        """
+        target_is_newtype = self._is_newtype(impl.struct_name)
+        wrote_by_value = getattr(method, 'self_by_value', False)
+
+        # An associated function declares no self at all. One is still synthesized
+        # below (pre-existing behaviour), but there is no written form to disagree
+        # with, so neither check applies — it just follows the type's convention.
+        if not getattr(method, 'has_self', True):
+            return target_is_newtype
+
+        if target_is_newtype and not wrote_by_value:
+            ret = f" -> {impl.struct_name}" if method.return_type else ""
+            raise HIRError(
+                f"method '{impl.struct_name}::{method.name}' takes '*self', but "
+                f"'{impl.struct_name}' is a newtype",
+                source_loc=method.source_loc,
+                hint=f"newtype methods take 'self' by value: "
+                     f"'fn {method.name}(self){ret}' — return a new value instead of "
+                     f"mutating in place"
+            )
+
+        if wrote_by_value and not target_is_newtype:
+            raise HIRError(
+                f"method '{impl.struct_name}::{method.name}' takes 'self' by value, "
+                f"but '{impl.struct_name}' is not a newtype",
+                source_loc=method.source_loc,
+                hint=f"use '*self': 'fn {method.name}(*self, ...)' — structs and unions "
+                     f"are passed by reference"
+            )
+
+        return target_is_newtype
+
+    def _validate_self_register_conflict(self, impl, method, params, self_binding):
+        """Reject a parameter that binds the register holding a by-value `self`.
+
+        `_validate_no_duplicate_register_bindings` would also catch this, but its
+        message talks about two parameters — and `self` is not one the author
+        wrote a binding for, so the conflict needs naming directly.
+        """
+        if not isinstance(self_binding, hir.RegisterBinding):
+            return
+        reg = self_binding.register_name
+        for param in params[1:]:
+            if (isinstance(param.binding, hir.RegisterBinding)
+                    and param.binding.register_name == reg):
+                raise HIRError(
+                    f"parameter '{param.name}' of '{impl.struct_name}::{method.name}' "
+                    f"binds {reg}, which holds 'self'",
+                    source_loc=method.source_loc,
+                    hint=f"a newtype method receives 'self' by value in {reg}; "
+                         f"bind '{param.name}' to X or Y, or pass it on the stack"
+                )
 
     def _supertrait_closure(self, trait_name: str) -> List[str]:
         """Transitive supertraits of `trait_name`, de-duplicated, excluding itself.
@@ -2171,24 +2329,37 @@ class HIRBuilder:
         # `far *self` -> far, `*self` -> near.
         self_is_far = method.self_is_far
 
-        # Build self parameter
-        struct_type = StructTypeInfo(name=impl.struct_name)
-        self_ptr_type = PointerTypeInfo(pointee_type=struct_type, is_far=self_is_far)
+        # Build self parameter. A newtype takes `self` by value in the
+        # accumulator — the payload is one or two bytes, so there is nothing to
+        # point at and a trivial accessor costs nothing.
+        self_by_value = self._impl_self_is_by_value(impl, method)
+        if self_by_value:
+            self_type = self.type_resolver.resolve_named_type(impl.struct_name)
+            # An associated function declares no self; one is still synthesized
+            # (pre-existing) but must not claim a register. Binding it to A would
+            # make a 2-byte payload infer m16 entry — emitting a REP #$20 into,
+            # say, an #[interrupt] handler that takes no arguments at all.
+            self_binding = (hir.RegisterBinding(register_name='A')
+                            if getattr(method, 'has_self', True) else None)
+        else:
+            struct_type = StructTypeInfo(name=impl.struct_name)
+            self_type = PointerTypeInfo(pointee_type=struct_type, is_far=self_is_far)
+            self_binding = None  # Pointer self is stack-passed
 
         self_param_symbol = Symbol(
             name='self',
             kind=SymbolKind.PARAMETER,
             definition=method,
             scope_id=self.symbol_table.current_scope_id,
-            var_type=self_ptr_type,
+            var_type=self_type,
             is_mutable=True
         )
         self.symbol_table.declare('self', self_param_symbol)
 
         hir_self_param = hir.HIRParameter(
             name='self',
-            param_type=self_ptr_type,
-            binding=None,  # Self is always stack-passed
+            param_type=self_type,
+            binding=self_binding,
             symbol=self_param_symbol
         )
 
@@ -2197,6 +2368,12 @@ class HIRBuilder:
         for param in method.params:
             hir_param = self._build_parameter(param)
             hir_params.append(hir_param)
+
+        # Impl methods never ran this check — harmless while every self was a
+        # stack-passed pointer, but a by-value self occupies A, so a parameter
+        # binding A silently shares the register with it.
+        self._validate_self_register_conflict(impl, method, hir_params, self_binding)
+        self._validate_no_duplicate_register_bindings(hir_params, mangled_name)
 
         # Process body
         hir_body = self._build_block(method.body)

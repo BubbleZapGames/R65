@@ -7,7 +7,7 @@ from r65.compiler.hir import (
     FunctionTypeInfo, StructTypeInfo, EnumTypeInfo,
     NeverTypeInfo, RegisterTypeInfo
 )
-from r65.compiler.hir.types import TraitTypeInfo
+from r65.compiler.hir.types import TraitTypeInfo, NewtypeTypeInfo, strip_newtype
 
 
 # Valid ranges for integer types
@@ -90,6 +90,10 @@ class TypeUtils:
                 return False
             return TypeUtils.types_equal(t1.return_type, t2.return_type)
 
+        elif isinstance(t1, NewtypeTypeInfo):
+            # Nominal identity, so this reads `newtype_name` rather than `name`.
+            return t1.newtype_name == t2.newtype_name
+
         elif isinstance(t1, (StructTypeInfo, EnumTypeInfo, TraitTypeInfo)):
             return t1.name == t2.name
 
@@ -159,6 +163,31 @@ class TypeUtils:
         return False
 
     @staticmethod
+    def assignable(src: TypeInfo, dst: TypeInfo) -> bool:
+        """Check if a value of type `src` may be stored into a place of type `dst`.
+
+        Unlike `types_compatible`, this is **directional** — which matters only for
+        newtypes, whose whole purpose is to be transparent in and opaque out:
+
+            let t: TileId = 5;   // ok    — a u8 flows into the newtype
+            let n: u8 = t;       // error — a TileId does not flow back out
+
+        `types_compatible` is written and called symmetrically (some callers pass
+        (expected, actual), others (actual, expected)), so the newtype rule cannot
+        live there without leaking the second case through.
+        """
+        if isinstance(dst, NewtypeTypeInfo) or isinstance(src, NewtypeTypeInfo):
+            if TypeUtils.types_equal(src, dst):
+                return True
+            # Transparent in: the payload type (or anything assignable to it)
+            # may be written into the newtype. Never the reverse.
+            if isinstance(dst, NewtypeTypeInfo) and not isinstance(src, NewtypeTypeInfo):
+                return TypeUtils.assignable(src, dst.inner)
+            return False
+
+        return TypeUtils.types_compatible(src, dst)
+
+    @staticmethod
     def _struct_implements_trait(struct_name: str, trait_name: str) -> bool:
         """Check if a struct implements a trait by looking for dispatch symbols.
 
@@ -207,6 +236,7 @@ class TypeUtils:
     @staticmethod
     def get_integer_size(t: TypeInfo) -> Optional[int]:
         """Get size in bytes of integer type."""
+        t = strip_newtype(t)
         if isinstance(t, BasicTypeInfo):
             if t.name in ['u8', 'i8', 'bool']:
                 return 1
@@ -216,12 +246,18 @@ class TypeUtils:
 
     @staticmethod
     def is_signed(t: TypeInfo) -> bool:
-        """Check if integer type is signed."""
+        """Check if integer type is signed. Asks about the machine representation,
+        so a newtype answers for its payload."""
+        t = strip_newtype(t)
         return isinstance(t, BasicTypeInfo) and t.name in ['i8', 'i16']
 
     @staticmethod
     def is_aggregate_type(t: TypeInfo) -> bool:
-        """Check if type is an aggregate (array or struct) that cannot be passed by value."""
+        """Check if type is an aggregate (array or struct) that cannot be passed by value.
+
+        A newtype is never an aggregate — that is the point of giving it its own
+        TypeInfo rather than reusing StructTypeInfo.
+        """
         return isinstance(t, (ArrayTypeInfo, StructTypeInfo))
 
     @staticmethod
@@ -261,5 +297,17 @@ class TypeUtils:
             return True
         if TypeUtils.is_integer_type(from_type) and isinstance(to_type, EnumTypeInfo):
             return True
+
+        # Newtype: `as` is the explicit escape hatch in both directions. A newtype
+        # casts exactly where its payload does — `t as u8`, `n as TileId`.
+        if isinstance(from_type, NewtypeTypeInfo) or isinstance(to_type, NewtypeTypeInfo):
+            from_payload = strip_newtype(from_type)
+            to_payload = strip_newtype(to_type)
+            # Wrapping or unwrapping a payload of the same type is a pure retype.
+            # Needed for payloads `can_cast` has no widening rule for, such as an
+            # enum: `Facing(Direction::East)` casts Direction to Direction.
+            if TypeUtils.types_equal(from_payload, to_payload):
+                return True
+            return TypeUtils.can_cast(from_payload, to_payload)
 
         return False

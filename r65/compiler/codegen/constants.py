@@ -176,8 +176,13 @@ def get_return_registers(return_type, entry_m_mode=None):
 
 
 def _is_8bit_type(type_info) -> bool:
-    """Check if a type is an 8-bit type (u8 or i8)."""
-    from r65.compiler.hir.types import BasicTypeInfo
+    """Check if a type is an 8-bit type (u8 or i8).
+
+    Asks about the machine width, so a newtype answers for its payload — a u8
+    newtype in the second return slot must still pick the B register.
+    """
+    from r65.compiler.hir.types import BasicTypeInfo, strip_newtype
+    type_info = strip_newtype(type_info)
     if isinstance(type_info, BasicTypeInfo):
         return type_info.name in ('u8', 'i8', 'bool')
     return False

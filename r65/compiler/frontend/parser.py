@@ -511,40 +511,58 @@ class ASTBuilder(Transformer):
         return self._aggregate_decl(items, is_union=True)
 
     @v_args(tree=True)
-    def struct_tuple_error(self, tree):
-        """Error handler for tuple structs / newtypes: struct Name(u8);"""
+    def newtype_decl(self, tree):
+        """Newtype declaration: struct TileId(u8);"""
+        items = self._filter_tokens(tree.children, keep_types={'IDENT'})
+        doc, idx = self._collect_doc_comments(items, 0)
+        name = items[idx].value if isinstance(items[idx], LarkToken) else items[idx]
+        inner_type = items[idx + 1]
+        return ast.NewtypeDecl(
+            name=name,
+            inner_type=inner_type,
+            doc=doc,
+            source_loc=self._make_source_loc(tree.meta)
+        )
+
+    @v_args(tree=True)
+    def newtype_arity_error(self, tree):
+        """Error handler for a newtype with anything but one field: struct Pair(u8, u8);
+
+        The single-field form is the newtype and parses (see `newtype_decl`);
+        only two-or-more fields — and the empty form — land here.
+        """
         items = self._filter_tokens(tree.children, keep_types={'IDENT'})
         _, idx = self._collect_doc_comments(items, 0)
         name = items[idx].value if isinstance(items[idx], LarkToken) else items[idx]
         types = [item for item in items[idx + 1:] if not isinstance(item, LarkToken)]
 
-        # Single field is the newtype case — suggest one named field. Multiple
-        # fields get positional names the author can rename.
-        if len(types) == 1:
-            fields = f"value: {render_ast_type(types[0])}"
-        elif types:
+        # Give each positional field a name the author can rename.
+        if types:
             fields = ', '.join(
                 f"field{i}: {render_ast_type(t)}" for i, t in enumerate(types))
         else:
             fields = "value: <type>"
 
         raise ParseError(
-            "tuple structs (newtypes) are not supported in R65",
+            "a newtype wraps exactly one field",
             source_loc=self._make_source_loc(tree.meta),
             hint=f"give each field a name: 'struct {name} {{ {fields} }}'"
         )
 
     @v_args(tree=True)
-    def tuple_field_error(self, tree):
-        """Error handler for tuple field access: value.0"""
-        index = None
+    def newtype_field_access(self, tree):
+        """Newtype payload access: t.0"""
+        base = None
+        index = 0
         for item in tree.children:
             if isinstance(item, LarkToken) and item.type == 'INTEGER':
-                index = item.value
-        raise ParseError(
-            f"tuple field access '.{index}' is not supported in R65",
-            source_loc=self._make_source_loc(tree.meta),
-            hint="R65 has no tuple structs; access struct fields by name (e.g. '.value')"
+                index = int(item.value, 0)
+            elif not isinstance(item, LarkToken):
+                base = item
+        return ast.NewtypeFieldAccess(
+            base=base,
+            index=index,
+            source_loc=self._make_source_loc(tree.meta)
         )
 
     def _aggregate_decl(self, items, is_union: bool):
@@ -662,12 +680,16 @@ class ASTBuilder(Transformer):
 
         # Parameters (from impl_param_list)
         self_is_far = False
+        self_by_value = False
+        has_self = False
         params = []
         if idx < len(items):
             param_result = items[idx]
             if isinstance(param_result, tuple) and param_result[0] == 'impl_params':
                 self_is_far = param_result[1]
                 params = param_result[2]
+                self_by_value = param_result[3]
+                has_self = True
                 idx += 1
             elif isinstance(param_result, list):
                 # Regular param_list (no self)
@@ -693,6 +715,8 @@ class ASTBuilder(Transformer):
             body=body,
             is_const=is_const,
             doc=doc,
+            self_by_value=self_by_value,
+            has_self=has_self,
             source_loc=self._make_source_loc(tree.meta)
         )
 
@@ -701,9 +725,10 @@ class ASTBuilder(Transformer):
         # Check if first item is a self_param tuple
         if items and isinstance(items[0], tuple) and items[0][0] == 'self_param':
             self_is_far = items[0][1]
+            self_by_value = items[0][2]
             # Rest are regular parameters
             params = [item for item in items[1:] if isinstance(item, ast.Parameter)]
-            return ('impl_params', self_is_far, params)
+            return ('impl_params', self_is_far, params, self_by_value)
         else:
             # No self param - just regular parameters
             params = [item for item in items if isinstance(item, ast.Parameter)]
@@ -721,7 +746,11 @@ class ASTBuilder(Transformer):
                 elif item.type == 'NEAR':
                     is_far = False
 
-        return ('self_param', is_far)
+        return ('self_param', is_far, False)
+
+    def self_by_value(self, items):
+        """Bare `self` — by value, in a register. Newtypes only (checked in HIR)."""
+        return ('self_param', False, True)
 
     @v_args(tree=True)
     def self_safe_ptr_error(self, tree):
@@ -873,12 +902,16 @@ class ASTBuilder(Transformer):
 
         # Parameters (from trait_param_list)
         self_is_far = False
+        self_by_value = False
+        has_self = False
         params = []
         if idx < len(items):
             param_result = items[idx]
             if isinstance(param_result, tuple) and param_result[0] == 'impl_params':
                 self_is_far = param_result[1]
                 params = param_result[2]
+                self_by_value = param_result[3]
+                has_self = True
                 idx += 1
             elif isinstance(param_result, list):
                 params = param_result
@@ -903,6 +936,8 @@ class ASTBuilder(Transformer):
             params=params,
             return_type=return_type,
             default_body=default_body,
+            self_by_value=self_by_value,
+            has_self=has_self,
             source_loc=self._make_source_loc(tree.meta)
         )
 
@@ -911,8 +946,9 @@ class ASTBuilder(Transformer):
         # Reuse impl_param_list logic
         if items and isinstance(items[0], tuple) and items[0][0] == 'self_param':
             self_is_far = items[0][1]
+            self_by_value = items[0][2]
             params = [item for item in items[1:] if isinstance(item, ast.Parameter)]
-            return ('impl_params', self_is_far, params)
+            return ('impl_params', self_is_far, params, self_by_value)
         else:
             params = [item for item in items if isinstance(item, ast.Parameter)]
             return params
@@ -2458,6 +2494,23 @@ class ASTBuilder(Transformer):
         """Lvalue field access."""
         items = self._filter_tokens(items, keep_types={'IDENT'})
         return ast.FieldAccess(base=items[0], field=items[1].value if isinstance(items[1], LarkToken) else items[1])
+
+    @v_args(tree=True)
+    def lvalue_newtype_field_error(self, tree):
+        """Error handler for assigning to a newtype payload: v.0 = x"""
+        base = None
+        index = 0
+        for item in tree.children:
+            if isinstance(item, LarkToken) and item.type == 'INTEGER':
+                index = int(item.value, 0)
+            elif not isinstance(item, LarkToken):
+                base = item
+        name = base.name if isinstance(base, ast.Identifier) else "value"
+        raise ParseError(
+            f"a newtype payload is read-only, so '.{index}' cannot be assigned",
+            source_loc=self._make_source_loc(tree.meta),
+            hint=f"assign the whole value instead: '{name} = TypeName(x);'"
+        )
 
     def lvalue_deref(self, items):
         """Lvalue pointer dereference."""

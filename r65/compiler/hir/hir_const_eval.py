@@ -290,8 +290,9 @@ def _eval_binary_bool(expr, symbol_table: 'SymbolTable') -> Optional[bool]:
 
 def _get_type_mask(type_info) -> int:
     """Get bitmask for type size."""
-    from r65.compiler.hir.types import BasicTypeInfo
+    from r65.compiler.hir.types import BasicTypeInfo, strip_newtype
 
+    type_info = strip_newtype(type_info)
     if isinstance(type_info, BasicTypeInfo):
         if type_info.name in ('u8', 'i8', 'bool'):
             return 0xFF
