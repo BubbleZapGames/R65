@@ -395,6 +395,28 @@ add(x, y);  // ERROR: y is u16, parameter expects u8
 add(x, y as u8);  // OK: explicit cast
 ```
 
+### Return Type Checking
+
+**Rule**: `return` is assignment-shaped — each returned value must be assignable
+to the declared return type, and that type is the literal context
+
+```rust
+struct Q10(i16);
+
+fn a() -> i16 { let q: Q10 = 5; return q; }   // ERROR: returning 'Q10' from '-> i16'
+fn b() -> i16 { let q: Q10 = 5; return q.0; } // OK: explicit field access
+fn c() -> Q10 { let n: i16 = 5; return n; }   // OK: transparent in
+fn d() -> i8  { return 0xFF; }                // ERROR: 255 does not fit in i8
+fn e() -> i8  { return -1; }                  // OK
+```
+
+The same rule as assignment, so a newtype cannot launder itself back into its
+payload on the way out of a function, and an out-of-range literal is caught the
+way `let x: i8 = 0xFF;` already catches it.
+
+A multi-return signature checks each position against its own declared type. A
+`-> !` function and a bare `return;` have nothing to compare, and are unchecked.
+
 ### Pointer Type Checking
 
 **Rule**: Pointer types must match exactly

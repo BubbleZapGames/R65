@@ -915,8 +915,7 @@ class TypeChecker:
             self.check_expression(stmt.expr)
 
         elif isinstance(stmt, HIRReturnStmt):
-            for val in stmt.values:
-                self.check_expression(val)
+            self._check_return_statement(stmt)
 
         elif isinstance(stmt, HIRIfStmt):
             # Check condition
@@ -972,6 +971,45 @@ class TypeChecker:
         return (self._is_direct_clone(expr)
                 or isinstance(expr, (HIRArrayFillExpr, HIRArrayLiteralExpr,
                                      HIRStringLiteral, HIRStructLiteralExpr)))
+
+    def _check_return_statement(self, stmt: HIRReturnStmt):
+        """Type check `return`, comparing each value against the declared type.
+
+        Return is assignment-shaped — the value is stored into the return
+        register — so the comparison is `assignable(actual, declared)`. That
+        gives newtype opacity here for free, and stops a `u16` silently
+        narrowing on the way out of a `-> u8` function.
+
+        The declared type is also passed as context when checking each value, so
+        an out-of-range literal is caught the same way it is in a `let`.
+        """
+        func = self.current_function
+        declared = func.return_type if func is not None else None
+
+        if isinstance(declared, MultiReturnTypeInfo):
+            expected = list(declared.element_types)
+        elif declared is None or isinstance(declared, NeverTypeInfo):
+            expected = []
+        else:
+            expected = [declared]
+
+        for i, val in enumerate(stmt.values):
+            want = expected[i] if i < len(expected) else None
+            actual = self.check_expression(val, want)
+
+            if want is None or isinstance(actual, NeverTypeInfo):
+                continue
+            if TypeUtils.assignable(actual, want):
+                continue
+
+            where = f" (value {i + 1})" if len(expected) > 1 else ""
+            raise TypeCheckError(
+                f"returning '{actual}' from a function declared "
+                f"'-> {declared}'{where}",
+                source_loc=getattr(val, 'source_loc', stmt.source_loc),
+                hint=f"the return type is '{want}'; convert explicitly with "
+                     f"'as {want}' if the narrowing is intended"
+            )
 
     def check_let_statement(self, stmt: HIRLetStmt):
         """Type check let binding."""

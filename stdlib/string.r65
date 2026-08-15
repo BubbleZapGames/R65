@@ -55,7 +55,7 @@ far fn memset(dst: far *u8, value: u8, n: u16) {
 }
 
 // Compare n bytes of a and b.
-// Returns 0 if equal, 0xFF (-1) if a < b, 1 if a > b.
+// Returns 0 if equal, -1 if a < b, 1 if a > b.
 far fn memcmp(a: far *u8, b: far *u8, n: u16) -> i8 {
     let count: u16 = n;
     if count == 0 { return 0; }
@@ -63,7 +63,7 @@ far fn memcmp(a: far *u8, b: far *u8, n: u16) -> i8 {
     loop {
         let ca: u8 = a[i];
         let cb: u8 = b[i];
-        if ca < cb { return 0xFF; }
+        if ca < cb { return -1; }
         if ca > cb { return 1; }
         i++;
         if i >= count { break; }
@@ -130,13 +130,13 @@ far fn strcat(dst: far *u8, src: far *u8) -> u16 {
 }
 
 // Lexicographic comparison of two null-terminated strings.
-// Returns 0 if equal, 0xFF (-1) if a < b, 1 if a > b.
+// Returns 0 if equal, -1 if a < b, 1 if a > b.
 far fn strcmp(a: far *u8, b: far *u8) -> i8 {
     let mut i: u16 = 0;
     loop {
         let ca: u8 = a[i];
         let cb: u8 = b[i];
-        if ca < cb { return 0xFF; }
+        if ca < cb { return -1; }
         if ca > cb { return 1; }
         if ca == 0 { return 0; }
         i++;
