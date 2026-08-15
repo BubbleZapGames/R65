@@ -1,7 +1,10 @@
 # Copyright (c) 2026 Neutron Emulation, LLC. MIT licensed.
 """Tests for array types and literals."""
 
+import pytest
+
 from r65.compiler.frontend import ast
+from r65.compiler.typeck.type_checker import TypeChecker
 from r65.tests.language.common import parse_type, parse_static, parse_function, build_hir
 
 
@@ -173,3 +176,70 @@ class TestArrayLen:
         with pytest.raises(Exception) as exc_info:
             checker.check()
         assert "array" in str(exc_info.value).lower()
+
+
+class TestArrayLiteralElementTypes:
+    """Every element of an array literal is checked against the element type.
+
+    The first element used to only *infer* the element type. When the type came
+    from context that inference result was thrown away and the element was never
+    compared against it, so element 1 accepted anything — the one position a
+    newtype could launder itself through into an array of its payload.
+
+    Initializing from an array literal is assignment, so it now uses the same
+    rule as `let`. That closes the hole and, in the other direction, lets a
+    payload flow implicitly into an array of a newtype the way it already does
+    in a `let`.
+    """
+
+    NEWTYPES = "struct Q(i16);\nstruct Rot(i16);\n"
+
+    def check(self, body: str, decl: str = ""):
+        source = self.NEWTYPES + decl + "fn main() { " + body + " }"
+        TypeChecker(build_hir(source)).check()
+
+    @pytest.mark.parametrize("body,bad", [
+        ("let q: Q = 5; let a: [i16; 2] = [q, 2];", "Q"),
+        ("let q: Q = 5; let a: [i16; 2] = [q, q];", "Q"),
+        ("let r: Rot = 5; let a: [Q; 2] = [r, r];", "Rot"),
+    ])
+    def test_newtype_rejected_in_first_position(self, body, bad):
+        with pytest.raises(Exception) as exc:
+            self.check(body)
+        assert "Array element 1" in str(exc.value)
+        assert bad in str(exc.value)
+
+    def test_newtype_still_rejected_in_later_positions(self):
+        with pytest.raises(Exception) as exc:
+            self.check("let q: Q = 5; let a: [i16; 2] = [1, q];")
+        assert "Array element 2" in str(exc.value)
+
+    @pytest.mark.parametrize("body", [
+        "let a: [Q; 2] = [1, 2];",
+        "let q: Q = 5; let a: [Q; 2] = [q, 1];",
+        "let q: Q = 5; let a: [Q; 2] = [1, q];",
+        "let q: Q = 5; let a: [Q; 2] = [q, q];",
+    ])
+    def test_payload_flows_into_a_newtype_array(self, body):
+        """Transparent in — and `[1, 2]` used to fail on the *second* element."""
+        self.check(body)
+
+    @pytest.mark.parametrize("body", [
+        "let x: i8 = 1; let a: [u8; 2] = [x, 2];",
+        "let x: u8 = 1; let a: [i8; 2] = [x, 2];",
+        "let x: i16 = 1; let a: [u16; 2] = [x, 2];",
+        "let x: i8 = 1; let y: u8 = 2; let a = [x, y];",
+        "let a: [u8; 3] = [1, 2, 3];",
+    ])
+    def test_same_size_signed_unsigned_still_mix(self, body):
+        """The leniency the old element predicate existed to provide."""
+        self.check(body)
+
+    @pytest.mark.parametrize("body", [
+        "let a: [u8; 2] = [300, 2];",
+        "let a: [u8; 2] = [1, 300];",
+    ])
+    def test_literal_range_still_checked_in_both_positions(self, body):
+        with pytest.raises(Exception) as exc:
+            self.check(body)
+        assert "does not fit" in str(exc.value)

@@ -349,6 +349,28 @@ b = a as u16;   // Preferred: explicit cast makes intent clear
 
 **Non-integer types** require exact type matches (pointers, structs, enums).
 
+### Array Literal Element Checking
+
+**Rule**: Initializing from an array literal is assignment, so every element is
+checked against the element type with the assignment rule
+
+```rust
+struct Q10(i16);
+
+let a: [Q10; 2] = [1, 2];         // OK: payload flows in, as in a `let`
+let b: [u8; 2]  = [x_i8, 2];      // OK: same-size signed/unsigned still mix
+let c: [i16; 2] = [q, 2];         // ERROR: element 1 has type Q10, expected i16
+let d: [u8; 2]  = [300, 2];       // ERROR: 300 does not fit in u8
+```
+
+When the element type comes from context, the first element is checked like any
+other. Only when there is *no* context does the first element instead supply the
+inferred element type, and there is then nothing to check it against:
+
+```rust
+let e = [x_i8, y_u8];             // element type inferred as i8 from element 1
+```
+
 ### Implicit Integer Promotion in Expressions
 
 When binary operations have mixed-size integer operands, the compiler automatically inserts a widening cast:

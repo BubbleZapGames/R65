@@ -597,32 +597,21 @@ class TypeChecker:
 
         return None
 
-    def _are_compatible_element_types(self, type1: TypeInfo, type2: TypeInfo) -> bool:
+    def _check_array_element(self, index: int, elem, elem_type: TypeInfo,
+                             expected: TypeInfo):
+        """Check one array literal element against the array's element type.
+
+        Initializing from an array literal is assignment, so this is the same
+        rule as `let`: same-size signed/unsigned still mix freely, a payload
+        still flows implicitly into an array of a newtype, and a newtype does
+        not flow back out into an array of its payload.
         """
-        Check if two types are compatible for array elements.
-
-        Allows same-size signed/unsigned types to coexist:
-        - i8 and u8 are compatible (both 8-bit)
-        - i16 and u16 are compatible (both 16-bit)
-        """
-        if not isinstance(type1, BasicTypeInfo) or not isinstance(type2, BasicTypeInfo):
-            return False
-
-        name1, name2 = type1.name, type2.name
-
-        # Same type is always compatible
-        if name1 == name2:
-            return True
-
-        # 8-bit types are compatible
-        if name1 in ('i8', 'u8') and name2 in ('i8', 'u8'):
-            return True
-
-        # 16-bit types are compatible
-        if name1 in ('i16', 'u16') and name2 in ('i16', 'u16'):
-            return True
-
-        return False
+        if TypeUtils.assignable(elem_type, expected):
+            return
+        raise TypeCheckError(
+            f"Array element {index} has type {elem_type}, expected {expected}",
+            source_loc=elem.source_loc
+        )
 
     # ========================================================================
     # Main Type Checking
@@ -1357,22 +1346,23 @@ class TypeChecker:
                 expected_elem_type = context_type.element_type
 
             # Type check elements with context
-            elem_type = self.check_expression(expr.elements[0], expected_elem_type)
+            first_type = self.check_expression(expr.elements[0], expected_elem_type)
 
             # If we have expected type, use it; otherwise use inferred type
-            final_elem_type = expected_elem_type if expected_elem_type else elem_type
+            final_elem_type = expected_elem_type if expected_elem_type else first_type
 
-            # Type check remaining elements
+            # Element 1 is checked only when the element type came from context.
+            # With no context it *is* the inference source, so there is nothing
+            # to check it against. It used to be skipped in both cases, which
+            # made it the one position a newtype could launder itself through
+            # into an array of its payload.
+            if expected_elem_type is not None:
+                self._check_array_element(1, expr.elements[0], first_type,
+                                          final_elem_type)
+
             for i, elem in enumerate(expr.elements[1:], 2):
                 elem_type = self.check_expression(elem, final_elem_type)
-                # Allow i8/u8 mixing and i16/u16 mixing (same size, compatible)
-                if not TypeUtils.types_equal(final_elem_type, elem_type):
-                    # Check if they're compatible same-size types
-                    if not self._are_compatible_element_types(final_elem_type, elem_type):
-                        raise TypeCheckError(
-                            f"Array element {i} has type {elem_type}, expected {final_elem_type}",
-                            source_loc=elem.source_loc
-                        )
+                self._check_array_element(i, elem, elem_type, final_elem_type)
             array_type = ArrayTypeInfo(element_type=final_elem_type, size=len(expr.elements))
             expr.expr_type = array_type
             return array_type
