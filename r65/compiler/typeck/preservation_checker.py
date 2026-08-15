@@ -2,14 +2,16 @@
 """
 Register preservation validation.
 
-With auto-generated save/restore, this checker now only validates
-that invalid registers (B, PBR) are not in the preserves list.
-The actual register modifications are allowed since the compiler
-generates PHA/PLA, PHX/PLX, PHY/PLY, PHD/PLD, PHB/PLB automatically.
+With auto-generated save/restore, this checker validates that invalid
+registers (B, PBR) are not in the preserves list, and that A is not
+preserved by a function that returns a value. The actual register
+modifications are allowed since the compiler generates PHA/PLA, PHX/PLX,
+PHY/PLY, PHD/PLD, PHB/PLB automatically.
 """
 
 from r65.compiler.typeck.errors import *
 from r65.compiler.hir import *
+from r65.compiler.hir.types import BasicTypeInfo, NeverTypeInfo
 
 
 class PreservationChecker:
@@ -64,5 +66,31 @@ class PreservationChecker:
                     source_loc=self.func_decl.source_loc
                 )
 
+        # Preserving A and returning a value are the same register asking to
+        # hold two things. The epilogue's PLA runs after the body, so it
+        # restores the entry value straight over the result.
+        if 'A' in preserved_regs and self._returns_a_value():
+            raise TypeCheckError(
+                f"A cannot be in #[preserves(...)] on a function that returns a value\n"
+                f"  The first return value is passed in A, and the restore at exit\n"
+                f"  would overwrite it with the value A held on entry\n"
+                f"  Remove A from the preserves list, or drop the return value",
+                source_loc=self.func_decl.source_loc
+            )
+
         # Note: We no longer check for modifications since the compiler
         # automatically generates PHA/PLA, PHX/PLX, etc. for preserved registers
+
+    def _returns_a_value(self) -> bool:
+        """Whether this function hands a value back in a register.
+
+        The first return value always lands in A, whatever its type, so any
+        declared return type conflicts. A `-> !` function never reaches its
+        epilogue, so there is nothing to overwrite.
+        """
+        ret = self.func_decl.return_type
+        if ret is None or isinstance(ret, NeverTypeInfo):
+            return False
+        if isinstance(ret, BasicTypeInfo) and ret.name == 'void':
+            return False
+        return True

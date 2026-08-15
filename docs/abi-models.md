@@ -413,7 +413,25 @@ fn caller() {
 
 ### Preserves Attribute
 
-Functions declare which registers they preserve. The compiler automatically generates save/restore code:
+Functions declare which registers they preserve. The compiler automatically generates save/restore code.
+
+`A` cannot be preserved by a function that returns a value. The save/restore is a
+bracket around the whole body, so the restore runs *after* the result is in A:
+
+```rust
+#[preserves(A)]
+fn bump(v @ A: u8) -> u8 { return A + 1; }   // ERROR: A holds the return value
+```
+```asm
+bump:
+    PHA        ; preserve A
+    INC A      ; the result
+    PLA        ; restore A - overwrites the result
+    RTS
+```
+
+A void function may preserve A (it has no result to lose), as may a `-> !`
+function (it never reaches its epilogue).
 
 ```rust
 #[preserves(X, Y)]

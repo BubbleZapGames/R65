@@ -291,6 +291,8 @@ fn preserves_xy(value @ A: u8) -> u8 {
 ```
 
 **Valid**: `A`, `X`, `Y`, `STATUS`, `D`, `DBR`. **Invalid**: `B`, `PBR`, `S`.
+`A` is rejected on a function that returns a value — the result is passed in
+A, and the restore at exit would overwrite it.
 
 *(See [docs/register-allocation.md](docs/register-allocation.md) and [docs/abi-models.md](docs/abi-models.md))*
 
