@@ -175,6 +175,15 @@ class ABIModel(ABC):
         return stack_bytes_pushed
 
     @staticmethod
+    def _saved_value_size(arg) -> int:
+        """Size of the value as it sits in A, not of the parameter it feeds."""
+        from r65.compiler.codegen.type_utils import get_type_size
+        type_info = getattr(arg.value, 'type_info', None)
+        if type_info is not None:
+            return get_type_size(type_info)
+        return ABIModel._arg_size(arg)
+
+    @staticmethod
     def _arg_size(arg) -> int:
         from r65.compiler.codegen.type_utils import get_type_size
         if arg.param_type is not None:
@@ -254,6 +263,8 @@ class ABIModel(ABC):
             arg_loc = selector.parent._get_operand_location(arg.value)
 
             if arg_loc.is_hw('A') and a_clobbered and a_save_reg:
+                _force_accu_mode(
+                    selector, 16 if self._saved_value_size(arg) >= 2 else 8)
                 op = Opcode.TYA if a_save_reg == 'Y' else Opcode.TXA
                 selector._emit_implied(op, f"Restore A from {a_save_reg}")
 
@@ -294,36 +305,72 @@ class ABIModel(ABC):
             selector.emit_outgoing_stack_argument(arg, arg_loc, offsets[i])
 
     def _restore_a_from(self, selector, a_save_reg, a_param_is_16bit):
-        """Emit TYA/TXA to restore A, forcing m16 if the param is 16-bit."""
+        """Emit TYA/TXA to restore A, pinned to the width of the saved value.
+
+        TYA/TXA are M-sized, so the mode has to be right in both directions: too
+        wide and the restore drags B in behind A, too narrow and the high byte
+        is dropped.
+        """
         from r65.compiler.codegen.opcodes import Opcode
-        from r65.compiler.codegen.constants import M_FLAG
-        if a_param_is_16bit:
-            current_mode = selector.parent.emitter.get_accu_mode()
-            if current_mode != 16:
-                selector._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG,
-                                         "m16 for A restore from index reg")
-                selector.parent.emitter.emit_accu_mode(16)
+        _force_accu_mode(selector, 16 if a_param_is_16bit else 8)
         op = Opcode.TYA if a_save_reg == 'Y' else Opcode.TXA
         selector._emit_implied(op, f"Restore A from {a_save_reg} after stack arg setup")
 
+    def _pick_a_save(self, selector, ordered, locs, width):
+        """Where to park the '@ A' argument. See _RegASave / _StackASave.
+
+        TAY/TAX move index-width bits regardless of M, so a register save needs
+        no mode pinning when it opens — only when it restores.
+        """
+        from r65.compiler.mir.nodes import ArgumentMechanism
+
+        targets = {self._register_target_name(a) for a in ordered
+                   if a.mechanism == ArgumentMechanism.REGISTER}
+        sources = {l.hw_register for l in locs if l.is_hw()}
+
+        # Known gap: this asks only what the *arguments* use. A register that is
+        # live across the call for another reason can still be chosen — with a
+        # `#[preserves(Y)]` callee `_compute_hw_spills` skips the spill, so Y is
+        # live and unsaved. Pre-existing; needs liveness plumbed in from
+        # `select_call`.
+        for reg in ('Y', 'X'):
+            if reg in targets or reg in sources:
+                continue
+            if width == 16 and selector.parent.emitter.get_index_mode() != 16:
+                continue
+            return _RegASave(reg, width)
+
+        # Always available here: nothing in this pass moves SP, and every
+        # stack-relative source re-resolves against the tracker displacement.
+        return _StackASave(width)
+
     def _emit_other_args(self, selector, other_args, pre_arg_stack_adj):
-        """Emit non-stack args with WAR-hazard handling for scratch params.
+        """Emit non-stack args, keeping an A-resident value alive across them.
 
-        Sort order:
-          1. A-resident args that go to non-A targets — emit while A still holds
-             the source value (transfer/STA before other args' LDA clobbers it).
-          2. Everything else, per selector.arg_sort_key.
+        Two requirements drive the shape:
 
-        After ordering, scratch params are reordered for WAR hazards: if a
-        scratch param's source lives at another scratch param's target, the
-        reader must run before the writer. When that forces a non-A-resident
-        scratch param to precede an A-resident one, the non-A param is wrapped
-        in TAY/TYA so A survives.
+          R1  an argument whose *source* is A needs A intact when it is emitted.
+              There can be several (`f(v, v)`).
+          R2  the argument whose *target* is A needs A intact all the way to the
+              JSR — it emits nothing at all, so the value simply has to survive
+              everything else.
+
+        The SELF_Y load that `emit_call_args` runs after this also clobbers A,
+        but it cannot coexist with an `@ A` argument: SELF_Y is only produced for
+        trait methods (`mir/lowerers/call.py`), and trait methods reject register
+        bindings on their parameters outright.
+
+        R2 is why ordering cannot fix this on its own, and why this walks the
+        argument list once inserting a save/restore rather than partitioning by
+        mechanism: a partition emits every REGISTER argument before the bracket
+        opens, which is exactly where the clobber lives.
+
+        The ordering itself is unchanged and load-bearing — this decides only
+        where the bracket goes.
         """
         from r65.compiler.mir.nodes import ArgumentMechanism
         from r65.compiler.codegen.register_alloc import LocationKind
         from r65.compiler.codegen.opcodes import Opcode
-        from r65.compiler.codegen.constants import M_FLAG
 
         def is_a_resident_priority(arg):
             arg_loc = selector.parent._get_operand_location(arg.value)
@@ -333,114 +380,85 @@ class ABIModel(ABC):
                 return True
             return self._register_target_name(arg) != 'A'
 
-        sorted_other_args = sorted(other_args, key=selector.arg_sort_key)
-        sorted_other_args.sort(key=lambda a: 0 if is_a_resident_priority(a) else 1)
-
-        sorted_other_args, needs_a_save = self._reorder_scratch_params(
-            selector, sorted_other_args)
-
-        # Additional WAR case: a REGISTER A target whose source is already in A
-        # (the no-op case) coexists with SCRATCH_PARAM/VARIABLE args whose
-        # setup clobbers A. Mark scratch params so they get bracketed below.
-        def is_a_target_with_a_source(arg):
-            if arg.mechanism != ArgumentMechanism.REGISTER:
-                return False
-            if self._register_target_name(arg) != 'A':
-                return False
-            return selector.parent._get_operand_location(arg.value).is_hw('A')
-
-        if not needs_a_save:
-            a_in_place_arg = next(
-                (a for a in sorted_other_args if is_a_target_with_a_source(a)), None)
-            if a_in_place_arg is not None:
-                clobbers_a = any(
-                    a is not a_in_place_arg
-                    and a.mechanism in (ArgumentMechanism.SCRATCH_PARAM,
-                                        ArgumentMechanism.VARIABLE)
-                    for a in sorted_other_args
-                )
-                if clobbers_a:
-                    for a in sorted_other_args:
-                        if (a is not a_in_place_arg
-                                and a.mechanism == ArgumentMechanism.SCRATCH_PARAM):
-                            needs_a_save.add(a)
+        ordered = sorted(other_args, key=selector.arg_sort_key)
+        ordered.sort(key=lambda a: 0 if is_a_resident_priority(a) else 1)
+        ordered = self._reorder_scratch_params(selector, ordered)
 
         def adjust_loc(loc):
             if loc.kind == LocationKind.STACK and pre_arg_stack_adj != 0:
                 return selector.parent._offset_location(loc, pre_arg_stack_adj)
             return loc
 
-        if not needs_a_save:
-            for arg in sorted_other_args:
-                arg_loc = adjust_loc(selector.parent._get_operand_location(arg.value))
-                if arg.mechanism == ArgumentMechanism.REGISTER:
-                    selector.emit_register_argument(arg, arg_loc)
-                elif arg.mechanism == ArgumentMechanism.VARIABLE:
-                    selector.emit_variable_argument(arg, arg_loc)
-                elif arg.mechanism == ArgumentMechanism.SCRATCH_PARAM:
-                    selector.emit_scratch_param_argument(arg, arg_loc)
-            return
-
-        # WAR path: split, save A around the conflicting setups.
-        non_scratch = []
-        non_a_scratch = []
-        a_scratch = []
-        for arg in sorted_other_args:
-            if arg.mechanism != ArgumentMechanism.SCRATCH_PARAM:
-                non_scratch.append(arg)
-            elif selector.parent._get_operand_location(arg.value).is_hw('A'):
-                a_scratch.append(arg)
-            else:
-                non_a_scratch.append(arg)
-
-        for arg in non_scratch:
+        def emit(arg):
+            # Resolved late: a stack save shifts every stack-relative source.
             arg_loc = adjust_loc(selector.parent._get_operand_location(arg.value))
             if arg.mechanism == ArgumentMechanism.REGISTER:
                 selector.emit_register_argument(arg, arg_loc)
             elif arg.mechanism == ArgumentMechanism.VARIABLE:
                 selector.emit_variable_argument(arg, arg_loc)
+            elif arg.mechanism == ArgumentMechanism.SCRATCH_PARAM:
+                selector.emit_scratch_param_argument(arg, arg_loc)
 
-        # TAY transfers 16 bits in x16 mode regardless of M; TYA is M-sized,
-        # so if A holds a 16-bit value we must force m16 around the TYA.
-        war_a_is_16bit = False
-        for war_arg in sorted_other_args:
-            if war_arg.mechanism != ArgumentMechanism.REGISTER:
-                continue
-            if self._register_target_name(war_arg) != 'A':
-                continue
-            aloc = selector.parent._get_operand_location(war_arg.value)
-            if not aloc.is_hw('A'):
-                continue
-            if (war_arg.param_type is not None
-                    and self._arg_size(war_arg) == 2):
-                war_a_is_16bit = True
-                break
+        locs = [selector.parent._get_operand_location(a.value) for a in ordered]
+        a_idxs = [i for i, l in enumerate(locs) if l.is_hw('A')]
+        if not a_idxs:
+            for arg in ordered:
+                emit(arg)
+            return
 
-        if war_a_is_16bit:
-            cur = selector.parent.emitter.get_accu_mode()
-            if cur != 16:
-                selector._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG,
-                                         "m16 to preserve A across WAR save")
-                selector.parent.emitter.emit_accu_mode(16)
+        last = a_idxs[-1]
+        sink = (ordered[last].mechanism == ArgumentMechanism.REGISTER
+                and self._register_target_name(ordered[last]) == 'A')
+        span = len(ordered) if sink else last
+        clobbering = [j for j in range(span)
+                      if j != last
+                      and selector.arg_setup_clobbers_a(ordered[j], locs[j])]
 
-        selector._emit_implied(Opcode.TAY,
-                              "Save A (WAR hazard: non-A scratch before A-resident)")
+        if not clobbering:
+            for arg in ordered:
+                emit(arg)
+            return
 
-        for arg in non_a_scratch:
-            arg_loc = adjust_loc(selector.parent._get_operand_location(arg.value))
-            selector.emit_scratch_param_argument(arg, arg_loc)
+        # The width of the value sitting in A, which is not the same question
+        # as how wide the parameter it feeds is -- a u8 passed to a u16
+        # parameter still occupies one byte of A. Restoring the wrong width
+        # either drops the high byte or drags B back in with it.
+        width = 16 if self._saved_value_size(ordered[last]) >= 2 else 8
 
-        if war_a_is_16bit:
-            cur = selector.parent.emitter.get_accu_mode()
-            if cur != 16:
-                selector._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG,
-                                         "m16 for TYA WAR restore")
-                selector.parent.emitter.emit_accu_mode(16)
-        selector._emit_implied(Opcode.TYA, "Restore A (WAR hazard resolved)")
+        # Park A in B: `XBA` before the clobber, and the `@ B` argument's own
+        # closing `XBA` puts it back while delivering B — so the restore is
+        # free. Needs the B argument to be the only clobberer (nothing else may
+        # disturb B), to load from memory rather than from A (a bare `XBA` would
+        # not reload it), and an 8-bit value (in m16 B *is* its high half).
+        if width == 8 and sink and len(clobbering) == 1:
+            j = clobbering[0]
+            if (ordered[j].mechanism == ArgumentMechanism.REGISTER
+                    and self._register_target_name(ordered[j]) == 'B'
+                    and not locs[j].is_hw('A')):
+                _force_accu_mode(selector, 8)
+                selector._emit_implied(Opcode.XBA,
+                                       "Park '@ A' argument in B across setup")
+                for arg in ordered:
+                    emit(arg)
+                return
 
-        for arg in a_scratch:
-            arg_loc = adjust_loc(selector.parent._get_operand_location(arg.value))
-            selector.emit_scratch_param_argument(arg, arg_loc)
+        a_positions = set(a_idxs)
+        save = self._pick_a_save(selector, ordered, locs, width)
+        save.open(selector)
+        dirty = False
+        for i, arg in enumerate(ordered):
+            if sink and i == last:
+                continue                      # deferred past everything else
+            if i in a_positions and dirty:
+                save.close(selector, final=(i == last))
+                dirty = False
+            emit(arg)
+            if selector.arg_setup_clobbers_a(arg, locs[i]):
+                dirty = True
+        if sink:
+            if dirty:
+                save.close(selector, final=True)
+            emit(ordered[last])               # normally a no-op; that is the point
 
     def _emit_self_y(self, selector, self_y_arg):
         """Load Y (and DBR for far self) for a SELF_Y argument."""
@@ -458,10 +476,13 @@ class ABIModel(ABC):
         A must be emitted before B (read before write). Cycles fall back to
         original order.
 
-        Returns (reordered_args, needs_a_save) where needs_a_save is the set
-        of scratch-param argument objects that must be bracketed by TAY/TYA
-        because reordering moved a non-A-resident scratch param ahead of an
-        A-resident one. The caller emits the save/restore.
+        Returns the reordered argument list.
+
+        This used to also return the set of scratch params that reordering had
+        moved ahead of an A-resident one, for the caller to bracket in TAY/TYA.
+        `_emit_other_args` now derives clobber points directly from
+        `arg_setup_clobbers_a`, which covers those cases and every other
+        mechanism, so the analysis is gone.
         """
         from r65.compiler.mir.nodes import ArgumentMechanism
         from r65.compiler.codegen.register_alloc import LocationKind
@@ -476,7 +497,7 @@ class ABIModel(ABC):
             scratch_positions.append(pos)
 
         if len(all_scratch) <= 1:
-            return args, set()
+            return args
 
         # Map every byte of every scratch param's target back to its index.
         target_addrs = {}
@@ -499,15 +520,7 @@ class ABIModel(ABC):
                     must_precede.setdefault(i, set()).add(j)
 
         if not must_precede:
-            return args, set()
-
-        a_indices = {i for i, (_, is_a) in enumerate(all_scratch) if is_a}
-        non_a_before_a = set()
-        for i, deps in must_precede.items():
-            if i in a_indices:
-                continue
-            if any(j in a_indices for j in deps):
-                non_a_before_a.add(i)
+            return args
 
         # Topological sort (post-order DFS, then reverse).
         ordered = []
@@ -530,13 +543,6 @@ class ABIModel(ABC):
 
         reordered_scratch = [all_scratch[i][0] for i in ordered]
 
-        needs_a_save = set()
-        if non_a_before_a:
-            arg_to_idx = {id(a): i for i, (a, _) in enumerate(all_scratch)}
-            for arg in reordered_scratch:
-                if arg_to_idx[id(arg)] in non_a_before_a:
-                    needs_a_save.add(arg)
-
         # Slot the reordered scratch args back into their original positions
         # in the broader args list (non-scratch args stay where they were).
         result = []
@@ -547,7 +553,7 @@ class ABIModel(ABC):
                 result.append(next(scratch_iter))
             else:
                 result.append(arg)
-        return result, needs_a_save
+        return result
 
     def emit_trait_dispatch_args(self, selector, instr) -> int:
         """Emit trait dispatch arguments. Returns stack_bytes_pushed.
@@ -947,3 +953,77 @@ def abi_model_from_string(name: str) -> ABIModel:
         raise ValueError(
             f"Unknown ABI model: {name!r}. "
             f"Expected one of: {', '.join(sorted(_ABI_BY_NAME))}.")
+
+
+def _force_accu_mode(selector, bits):
+    """Pin the accumulator to `bits`, in whichever direction is needed.
+
+    The original restore only ever widened. Narrowing matters just as much: a
+    `TYA` executed in m16 writes 16 bits into A, and the high half *is* B —
+    which may be holding a `@ B` argument by then.
+    """
+    from r65.compiler.codegen.opcodes import Opcode
+    from r65.compiler.codegen.constants import M_FLAG
+    if selector.parent.emitter.get_accu_mode() == bits:
+        return
+    op = Opcode.REP_IMMEDIATE if bits == 16 else Opcode.SEP_IMMEDIATE
+    selector._emit_immediate(op, M_FLAG,
+                             f"m{bits} pinned for '@ A' argument save")
+    selector.parent.emitter.emit_accu_mode(bits)
+
+
+class _RegASave:
+    """Park A in an index register: TAY/TAX out, TYA/TXA back.
+
+    The transfer out moves index-width bits whatever M says, so only the
+    restore needs its mode pinned.
+    """
+
+    def __init__(self, reg, width):
+        self.reg = reg
+        self.width = width
+
+    def open(self, selector):
+        from r65.compiler.codegen.opcodes import Opcode
+        op = Opcode.TAY if self.reg == 'Y' else Opcode.TAX
+        selector._emit_implied(op, f"Save '@ A' argument in {self.reg}")
+
+    def close(self, selector, final=True):
+        from r65.compiler.codegen.opcodes import Opcode
+        _force_accu_mode(selector, self.width)
+        op = Opcode.TYA if self.reg == 'Y' else Opcode.TXA
+        selector._emit_implied(op, f"Restore '@ A' argument from {self.reg}")
+
+
+class _StackASave:
+    """Park A on the stack. PHA/PLA are M-sized, so both ends pin the mode.
+
+    The push is tracked, so stack-relative argument sources resolve against the
+    shifted displacement automatically — they must therefore be resolved after
+    open(), not before.
+    """
+
+    def __init__(self, width):
+        self.width = width
+        self.bytes = 2 if width == 16 else 1
+
+    def open(self, selector):
+        from r65.compiler.codegen.opcodes import Opcode
+        _force_accu_mode(selector, self.width)
+        selector._emit_implied(Opcode.PHA, "Save '@ A' argument (no free index register)")
+        selector.region_state.stack_tracker.push(self.bytes)
+
+    def close(self, selector, final=True):
+        from r65.compiler.codegen.opcodes import Opcode
+        _force_accu_mode(selector, self.width)
+        if not final:
+            # Needs three or more simultaneously A-resident arguments *and*
+            # both index registers taken. Not constructible today: `@ X`/`@ Y`
+            # parameters must be u16, so feeding them an 8-bit A-resident value
+            # takes an `as u16` cast, and the cast spills it to a frame slot --
+            # at which point it is no longer A-resident. Raise rather than
+            # invent a second PLA and unbalance the frame.
+            raise NotImplementedError(
+                "multiple restores from a stack-parked '@ A' argument")
+        selector._emit_implied(Opcode.PLA, "Restore '@ A' argument")
+        selector.region_state.stack_tracker.pop(self.bytes)

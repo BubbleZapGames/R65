@@ -165,6 +165,43 @@ fn all_register(a @ A: u8, b @ X: u16) { }
 
 **Reason**: Stack layout must be determined before register operations.
 
+### Argument Setup Preserves an A-Resident Value
+
+Setting up one argument can destroy another. A `@ B` argument reaches B through
+A (`LDA; XBA`), and a `@ X`/`@ Y` argument from memory or the stack does too
+(`LDA; TAX` — the 65816 has no stack-relative `LDX`/`LDY`). If the value being
+passed to the `@ A` parameter already lives in A, that value is gone.
+
+Ordering cannot fix it: the `@ A` argument emits *nothing* when the value is
+already in A, so the value has to survive every other argument's setup, and the
+`SELF_Y` load, all the way to the call. The compiler parks it and puts it back:
+
+```rust
+// stdlib: far fn mul8(multA @ A: u8, multB @ B: u8) -> u16
+fn scaled(v @ A: u8, k: u8) -> u16 { return mul8(v, k); }
+```
+```asm
+scaled:
+    XBA         ; park v in B
+    LDA $03,S   ; k
+    XBA         ; A = v, B = k -- restores A *and* delivers the B argument
+    JSR mul8
+```
+
+The parking place is chosen in this order, and costs nothing when no argument's
+setup would clobber A:
+
+| where | when | cost |
+|---|---|---|
+| **B** (`XBA` … `XBA`) | an 8-bit value, and a `@ B` argument is the only clobberer | free — the `@ B` argument's own `XBA` is the restore |
+| **Y**, then **X** | the register is neither an argument target nor an argument source | `TAY`/`TYA`, 4 cycles |
+| **stack** (`PHA`/`PLA`) | both index registers are taken | 7 cycles; stack-relative sources shift with the push automatically |
+
+`TAY`/`TAX` move index-width bits whatever the accumulator mode is, so only the
+restore needs its mode pinned — and it is pinned in **both** directions. A `TYA`
+executed in m16 writes 16 bits into A, and the high half *is* B, which by then
+holds a `@ B` argument.
+
 ### Zero-Cost Calls
 
 When arguments already match parameter aliases, the compiler emits no setup code:

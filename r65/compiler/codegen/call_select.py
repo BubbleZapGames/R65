@@ -1460,6 +1460,71 @@ class CallInstructionSelector(BaseSelector):
         else:
             self._emit_memory_to_register(arg_loc, target_reg)
 
+    def arg_setup_clobbers_a(self, arg, arg_loc) -> bool:
+        """Does emitting this argument destroy whatever is currently in A?
+
+        Mirrors the emitters below branch for branch. It lives here, next to
+        them, because it is a fact about the code they emit — the ABI models
+        that consume it are policy and should not have to know how a B argument
+        reaches B.
+
+        Erring towards True only costs a redundant save; erring towards False
+        silently miscompiles, so unmodelled shapes must answer True.
+        """
+        from r65.compiler.mir.nodes import ArgumentMechanism
+
+        if arg.mechanism == ArgumentMechanism.REGISTER:
+            target = (arg.location.name if hasattr(arg.location, 'name')
+                      else str(arg.location))
+
+            # emit_register_argument returns immediately when the value is
+            # already in its target register.
+            if arg_loc.is_hw(target):
+                return False
+
+            # Every branch of _emit_b_register_argument routes through A and
+            # ends in XBA. Note XBA is a *swap*: even an A-resident source is
+            # destroyed, because the old B lands in A.
+            if target == 'B':
+                return True
+
+            if target == 'A':
+                return True          # not already in A, so the load writes it
+
+            # X / Y. LDX/LDY #imm and TAX/TYX leave A alone; a stack source has
+            # no LDX sr,S so it becomes LDA + TAX/TAY.
+            if isinstance(arg.value, MIRImmediate):
+                return False
+            if arg_loc.is_hw():
+                return False
+            return arg_loc.kind == LocationKind.STACK
+
+        if arg.mechanism == ArgumentMechanism.VARIABLE:
+            # emit_variable_argument loads into A then stores; an A-resident
+            # source skips the load.
+            return not arg_loc.is_hw('A')
+
+        if arg.mechanism == ArgumentMechanism.SCRATCH_PARAM:
+            # The forwarding shortcut returns before emitting anything.
+            param_size = self._scratch_param_size(arg)
+            if (arg_loc.kind == LocationKind.SCRATCH
+                    and arg_loc.scratch_addr == arg.scratch_addr
+                    and (arg_loc.size or 0) >= param_size):
+                return False
+            return True
+
+        # STACK and SELF_Y both route through A. Not reached from the
+        # other-args pass, but the predicate should be total.
+        return True
+
+    def _scratch_param_size(self, arg) -> int:
+        from r65.compiler.codegen.type_utils import get_type_size
+        if arg.param_type is not None:
+            return get_type_size(arg.param_type)
+        if getattr(arg.value, 'type_info', None):
+            return get_type_size(arg.value.type_info)
+        return 1
+
     def _emit_b_register_argument(self, arg, arg_loc):
         """Emit B register argument (special handling)."""
         if isinstance(arg.value, MIRImmediate):
