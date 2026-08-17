@@ -196,7 +196,8 @@ def _promote_local_loop_counters(func: MIRFunction) -> int:
     so the register allocator places them in X/Y instead of stack slots.
 
     A local vreg is eligible if:
-    1. It is u16 (X/Y are always 16-bit)
+    1. It is at most 2 bytes (u8 or u16 — X/Y are always 16-bit, so a u8
+       counter rides in the low byte)
     2. It is a loop counter (incremented/decremented by 1 in loop body)
     3. It is NOT a parameter vreg (those are handled by _analyze_function)
     4. It is NOT already promoted
@@ -299,9 +300,9 @@ def _promote_local_loop_counters(func: MIRFunction) -> int:
         promoted += 1
 
     # Step 7: Register HIR-hinted loop counters that weren't promoted above.
-    # The HIR builder sets register_hint='X'/'Y' on for-loop counter vregs
-    # (including u8 ones), but only u16 vregs pass the size filter above.
-    # For u8 loop counters with existing hints, register them in
+    # The HIR builder sets register_hint='X'/'Y' on for-loop counter vregs, but
+    # some do not reach the promotion above (rejected by the compatibility
+    # check, or no register left). Register those with existing hints in
     # loop_promoted_hw_vregs so function_gen pre-allocates them to hardware
     # instead of creating unnecessary stack frame slots.
     for vreg_id in sorted(loop_counter_vregs):
@@ -337,6 +338,16 @@ def _enforce_index_clobber_safety(func: MIRFunction) -> int:
       clobber **both X and Y**. A counter pinned to either must be dropped — there
       is no safe index register. (Small AggregateCopy clones unroll to A-only
       moves and are safe; see AGGREGATE_COPY_UNROLL_MAX.)
+
+    Deliberately NOT covered: a StoreIndirect using ``(zp),Y`` addressing also
+    needs Y, but only for the duration of that one store, and often the index it
+    loads *is* the promoted counter (``PTR[i] = i``) — in which case pinning the
+    counter to Y is exactly right. Blanket-demoting on the presence of an
+    indexed indirect store would give that case up. The contention is instead
+    left to the register allocator, which declines the hint when the index is a
+    different value; the hint set here is advisory, not binding. Both outcomes
+    are pinned by TestCounterAsIndirectStoreSource
+    (tests/compiler/codegen/test_loop_promotion.py) and its emulator counterpart.
 
     Returns the number of hints rewritten.
     """
@@ -426,6 +437,9 @@ def _uses_compatible_with_hw(vreg_id: int, uses: list) -> bool:
     - BinaryOp with +1/-1 where vreg is left operand — emits INX/INY/DEX/DEY
     - Compare (as left or right) — emits CPX/CPY
     - Return (as return value) — emits TXA/TYA
+    - Store / StoreIndirect (as source) — both store paths test for a hardware
+      source before resolving anything as a memory operand, and route it
+      through A (_emit_store_from_reg, select_store_indirect).
     - CondBranch (as condition) — okay
     - Jump — okay
 
@@ -433,8 +447,6 @@ def _uses_compatible_with_hw(vreg_id: int, uses: list) -> bool:
     - BinaryOp with operations other than +1/-1 (shift, XOR, OR, etc.)
     - BinaryOp where vreg is right operand (needs memory operand for CMP/SBC/etc.)
     - UnaryOp — needs value in A
-    - Store (as source) — codegen resolves source as memory operand
-    - StoreIndirect (as source) — same issue
     - LoadIndirect (as dest) — result comes from A, not X/Y
     - Call/TraitDispatch (as argument value) — may need memory operand
     - TypeConvert, ToBool, Rotate — need value in A
@@ -476,12 +488,6 @@ def _uses_compatible_with_hw(vreg_id: int, uses: list) -> bool:
                 if isinstance(use.right, VirtualRegister) and use.right.register_hint:
                     # Other operand is also hw-promoted → can't resolve as memory
                     return False
-        elif isinstance(use, Store):
-            if isinstance(use.source, VirtualRegister) and use.source.id == vreg_id:
-                return False
-        elif isinstance(use, StoreIndirect):
-            if isinstance(use.source, VirtualRegister) and use.source.id == vreg_id:
-                return False
         elif isinstance(use, LoadIndirect):
             # LoadIndirect dest gets the result in A, not compatible with X/Y dest
             if isinstance(use.dest, VirtualRegister) and use.dest.id == vreg_id:

@@ -190,3 +190,109 @@ class TestTypeConvertDestNotPromoted:
 
     def test_compiles(self):
         compile_string(self.SOURCE)
+
+
+class TestCounterStoredToMemoryIsStillPromoted:
+    """A loop counter that is written to memory used to be refused promotion.
+
+    `_uses_compatible_with_hw` rejected any vreg used as the source of a Store,
+    on the grounds that codegen would resolve that source as a memory operand.
+    Both store paths test for a hardware source first and route it through A, so
+    the rejection bought nothing and cost the whole loop body -- a frame slot
+    reloaded on every iteration -- to save one transfer after the loop.
+
+    The rejection was also self-defeating: an `as u8` cast interposes a Move, so
+    the Store's source became the cast result rather than the counter, and the
+    counter was promoted anyway.
+    """
+
+    ARR = "#[ram]\nstatic mut ARR: [u8; 64];\n"
+
+    def source(self, ty: str, out: str) -> str:
+        return (self.ARR + out +
+                f"fn go() {{ let mut i: {ty} = 0;"
+                f" while i < 8 {{ ARR[i] = 1; i = i + 1; }} OUT = i; }}\n"
+                "#[entry]\nfn main() { go(); }")
+
+    def instrs(self, ty: str, out: str) -> list[str]:
+        return _instruction_lines(
+            _get_function_asm(compile_string(self.source(ty, out)), "go"))
+
+    @pytest.mark.parametrize("ty,out", [
+        ("u16", "#[zeropage(0x10)]\nstatic mut OUT: u16;\n"),
+        ("u8", "#[zeropage(0x10)]\nstatic mut OUT: u8;\n"),
+    ])
+    def test_counter_stays_in_an_index_register(self, ty, out):
+        emitted = self.instrs(ty, out)
+        assert any(i.startswith(('INX', 'INY')) for i in emitted), (
+            f"counter should increment in place: {emitted}")
+        assert any(i.startswith(('CPX', 'CPY')) for i in emitted), (
+            f"comparison should use the index register: {emitted}")
+
+    @pytest.mark.parametrize("ty,out", [
+        ("u16", "#[zeropage(0x10)]\nstatic mut OUT: u16;\n"),
+        ("u8", "#[zeropage(0x10)]\nstatic mut OUT: u8;\n"),
+    ])
+    def test_no_per_iteration_frame_traffic(self, ty, out):
+        """The point of promoting: the counter is not reloaded every iteration."""
+        emitted = self.instrs(ty, out)
+        assert not any(i.startswith('LDA') and ',S' in i.split(';')[0] for i in emitted), (
+            f"counter should not live in a frame slot: {emitted}")
+
+    def test_one_byte_destination_still_stores_one_byte(self):
+        """The interaction with the STX/STY width rule: now that this counter is
+        promoted, its store must not become a two-byte STX."""
+        emitted = self.instrs("u8", "#[zeropage(0x10)]\nstatic mut OUT: u8;\n")
+        assert not any(i.startswith(('STX', 'STY')) for i in emitted), (
+            f"a u8 destination must not be written with STX/STY: {emitted}")
+        assert any(i.startswith(('TXA', 'TYA')) for i in emitted), emitted
+
+    def test_two_byte_destination_stores_directly(self):
+        emitted = self.instrs("u16", "#[zeropage(0x10)]\nstatic mut OUT: u16;\n")
+        assert any(i.startswith(('STX', 'STY')) for i in emitted), (
+            f"a u16 destination should store directly: {emitted}")
+
+
+class TestCounterAsIndirectStoreSource:
+    """The other half of the relaxed guard: `StoreIndirect` with the counter as
+    source.
+
+    Riskier than a plain Store because `(zp),Y` addressing wants Y for the index
+    while a promoted counter also wants Y. When the index and the value are the
+    same variable that is harmless -- Y legitimately serves both. When they
+    differ, the contention has to be resolved rather than ignored.
+    """
+
+    DECL = ("#[zeropage(0x40)]\nstatic mut PTR: *u8;\n"
+            "#[lowram]\nstatic mut BUF: [u8; 32];\n"
+            "#[zeropage(0x50)]\nstatic mut K: u8;\n")
+
+    def instrs(self, body: str) -> list[str]:
+        src = (self.DECL + "#[entry]\nfn main() { PTR = &BUF; K = 0;"
+               " let mut i: u8 = 0; " + body + " }")
+        return _instruction_lines(_get_function_asm(compile_string(src), "main"))
+
+    def test_index_and_value_are_the_same_counter(self):
+        """`PTR[i] = i` — Y holds the counter and indexes with it, both correct."""
+        emitted = self.instrs("while i < 8 { PTR[i] = i; i = i + 1; }")
+        assert any(i.startswith('INY') for i in emitted), (
+            f"counter should stay in Y: {emitted}")
+        assert any(',Y' in i.split(';')[0] for i in emitted), (
+            f"the store should index through Y: {emitted}")
+
+    def test_index_and_value_differ(self):
+        """`PTR[K] = i` — the index needs Y, so the counter cannot also hold it.
+
+        Promotion may still set the hint; the register allocator is what resolves
+        the contention. This pins the *outcome* rather than the mechanism: the
+        emitted code must not use one Y for both roles.
+        """
+        emitted = self.instrs(
+            "while i < 8 { PTR[K] = i; i = i + 1; K = K + 2; }")
+        store = next(i for i, s in enumerate(emitted) if ',Y' in s.split(';')[0])
+        # Whatever loads Y for the index must be the last write to Y before the
+        # store -- an INY of a counter in between would corrupt the index.
+        y_writes = [s for s in emitted[:store]
+                    if s.startswith(('TAY', 'LDY', 'INY', 'DEY', 'PLY'))]
+        assert y_writes and y_writes[-1].startswith(('TAY', 'LDY')), (
+            f"Y must hold the index at the store, not a counter: {emitted}")
