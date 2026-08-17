@@ -486,6 +486,11 @@ macro_rules! format($target_buffer:ident, $format_string:literal, $($args:expr),
 //   }
 //
 // Types implementing ToString write their string representation into a
-// caller-provided buffer. The buffer must be large enough to hold the result
-// plus a null terminator. Returns characters written (excluding null).
+// caller-provided buffer and return the number of characters written.
+//
+// **No terminator is written.** The returned count is what delimits the string.
+// `format!` appends a single NUL once the whole result is assembled, so a
+// per-fragment terminator would be a redundant store one byte past the count
+// just returned — and would need a buffer byte the caller never asked for. A
+// direct caller wanting a C string writes the NUL itself at the returned offset.
 // ============================================================================

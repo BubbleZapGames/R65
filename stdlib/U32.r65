@@ -736,7 +736,6 @@ impl ToString for U32 {
         __u32_tostr_tmp.hi = self.hi;
         if __u32_tostr_tmp.hi == 0 && __u32_tostr_tmp.lo == 0 {
             buf[0 as u16] = 0x30;
-            buf[1 as u16] = 0;
             return 1;
         }
         let mut count: u8 = 0;
@@ -754,7 +753,6 @@ impl ToString for U32 {
             buf[j as u16] = __u32_tostr_digits[i as u16];
             j++;
         }
-        buf[count as u16] = 0;
         return count as u16;
     }
 }

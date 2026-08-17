@@ -22,15 +22,15 @@ F32_PATH     = STDLIB_DIR / "F32.r65"
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
-def read_str(cpu, lowram_addr, maxlen=16):
-    """Read null-terminated string from lowram; return as Python str."""
-    out = []
-    for i in range(maxlen):
-        b = cpu.memory.read(0x7E0000 + lowram_addr + i)
-        if b == 0:
-            break
-        out.append(chr(b))
-    return "".join(out)
+def read_exact(cpu, lowram_addr, n):
+    """Read exactly `n` bytes from lowram; return as Python str.
+
+    `to_string` writes no terminator -- the count it returns is what delimits
+    the string -- so scanning for a NUL would read whatever follows in the
+    buffer. Callers pass the expected length.
+    """
+    return "".join(chr(cpu.memory.read(0x7E0000 + lowram_addr + i))
+                   for i in range(n))
 
 
 def read_u16(cpu, lowram_addr):
@@ -69,6 +69,11 @@ U32_SOURCE = f"""
 
     #[entry]
     fn main() {{
+        // Sentinel-fill the buffers: to_string writes no terminator, so the byte
+        // at the returned count must still hold 0xFF afterwards.
+        let mut f: u16 = 0;
+        while f < 16 {{ BUF0[f] = 0xFF; BUF3[f] = 0xFF; f = f + 1; }}
+
         // 0
         VAL.lo = 0; VAL.hi = 0;
         let r0: u16 = VAL.to_string(&BUF0 as far *u8);
@@ -104,25 +109,32 @@ class TestU32ToString:
         return e2e.execute(rom, max_instructions=2_000_000)
 
     def test_zero(self, cpu):
-        assert read_str(cpu, 0x0300) == "0", "U32(0)"
+        assert read_exact(cpu, 0x0300, len("0")) == "0", "U32(0)"
 
     def test_zero_returns_1(self, cpu):
         assert read_u16(cpu, 0x0350) == 1, "to_string(0) returns 1"
 
+    def test_no_terminator_written(self, cpu):
+        """No NUL: the returned count delimits the string. The zero case takes an
+        early return and the 100 case the main digit loop -- a terminator was
+        removed from each, so both are checked."""
+        assert cpu.memory.read(0x7E0000 + 0x0300 + 1) == 0xFF, "U32(0) zero path"
+        assert cpu.memory.read(0x7E0000 + 0x0330 + 3) == 0xFF, "U32(100) main path"
+
     def test_one(self, cpu):
-        assert read_str(cpu, 0x0310) == "1", "U32(1)"
+        assert read_exact(cpu, 0x0310, len("1")) == "1", "U32(1)"
 
     def test_max(self, cpu):
-        assert read_str(cpu, 0x0320) == "4294967295", "U32(0xFFFFFFFF)"
+        assert read_exact(cpu, 0x0320, len("4294967295")) == "4294967295", "U32(0xFFFFFFFF)"
 
     def test_hundred(self, cpu):
-        assert read_str(cpu, 0x0330) == "100", "U32(100)"
+        assert read_exact(cpu, 0x0330, len("100")) == "100", "U32(100)"
 
     def test_hundred_returns_3(self, cpu):
         assert read_u16(cpu, 0x0352) == 3, "to_string(100) returns 3"
 
     def test_65536(self, cpu):
-        assert read_str(cpu, 0x0340) == "65536", "U32(65536)"
+        assert read_exact(cpu, 0x0340, len("65536")) == "65536", "U32(65536)"
 
 
 # ── I32 ToString ─────────────────────────────────────────────────────────────
@@ -146,6 +158,9 @@ I32_SOURCE = f"""
 
     #[entry]
     fn main() {{
+        let mut f: u16 = 0;
+        while f < 16 {{ BUF0[f] = 0xFF; BUF4[f] = 0xFF; f = f + 1; }}
+
         // 0
         VAL.lo = 0; VAL.hi = 0;
         VAL.to_string(&BUF0 as far *u8);
@@ -184,25 +199,29 @@ class TestI32ToString:
         return e2e.execute(rom, max_instructions=5_000_000)
 
     def test_zero(self, cpu):
-        assert read_str(cpu, 0x0300) == "0", "I32(0)"
+        assert read_exact(cpu, 0x0300, len("0")) == "0", "I32(0)"
+
+    def test_no_terminator_written(self, cpu):
+        assert cpu.memory.read(0x7E0000 + 0x0300 + 1) == 0xFF, "I32(0) zero path"
+        assert cpu.memory.read(0x7E0000 + 0x0340 + 3) == 0xFF, "I32(100) main path"
 
     def test_neg_one(self, cpu):
-        assert read_str(cpu, 0x0310) == "-1", "I32(-1)"
+        assert read_exact(cpu, 0x0310, len("-1")) == "-1", "I32(-1)"
 
     def test_int_max(self, cpu):
-        assert read_str(cpu, 0x0320) == "2147483647", "I32(INT_MAX)"
+        assert read_exact(cpu, 0x0320, len("2147483647")) == "2147483647", "I32(INT_MAX)"
 
     def test_int_min(self, cpu):
-        assert read_str(cpu, 0x0330) == "-2147483648", "I32(INT_MIN)"
+        assert read_exact(cpu, 0x0330, len("-2147483648")) == "-2147483648", "I32(INT_MIN)"
 
     def test_int_min_returns_11(self, cpu):
         assert read_u16(cpu, 0x0360) == 11, "to_string(INT_MIN) returns 11"
 
     def test_hundred(self, cpu):
-        assert read_str(cpu, 0x0340) == "100", "I32(100)"
+        assert read_exact(cpu, 0x0340, len("100")) == "100", "I32(100)"
 
     def test_neg_hundred(self, cpu):
-        assert read_str(cpu, 0x0350) == "-100", "I32(-100)"
+        assert read_exact(cpu, 0x0350, len("-100")) == "-100", "I32(-100)"
 
 
 # ── F32 ToString ─────────────────────────────────────────────────────────────
@@ -233,6 +252,9 @@ F32_SOURCE = f"""
 
     #[entry]
     fn main() {{
+        let mut f: u16 = 0;
+        while f < 16 {{ BUF0[f] = 0xFF; BUF1[f] = 0xFF; f = f + 1; }}
+
         // 0.0
         VAL.mant_lo = 0; VAL.exp_hi = 0;
         let r0: u16 = VAL.to_string(&BUF0 as far *u8);
@@ -271,22 +293,26 @@ class TestF32ToString:
         return e2e.execute(rom, max_instructions=5_000_000)
 
     def test_zero(self, cpu):
-        assert read_str(cpu, 0x0300) == "0.0", "F32(0.0)"
+        assert read_exact(cpu, 0x0300, len("0.0")) == "0.0", "F32(0.0)"
 
     def test_zero_returns_3(self, cpu):
         assert read_u16(cpu, 0x0360) == 3, "to_string(0.0) returns 3"
 
+    def test_no_terminator_written(self, cpu):
+        assert cpu.memory.read(0x7E0000 + 0x0300 + 3) == 0xFF, "F32(0.0) zero path"
+        assert cpu.memory.read(0x7E0000 + 0x0310 + 3) == 0xFF, "F32(1.0) main path"
+
     def test_one(self, cpu):
-        assert read_str(cpu, 0x0310) == "1.0", "F32(1.0)"
+        assert read_exact(cpu, 0x0310, len("1.0")) == "1.0", "F32(1.0)"
 
     def test_ten(self, cpu):
-        assert read_str(cpu, 0x0320) == "10.0", "F32(10.0)"
+        assert read_exact(cpu, 0x0320, len("10.0")) == "10.0", "F32(10.0)"
 
     def test_hundred(self, cpu):
-        assert read_str(cpu, 0x0330) == "100.0", "F32(100.0)"
+        assert read_exact(cpu, 0x0330, len("100.0")) == "100.0", "F32(100.0)"
 
     def test_pi(self, cpu):
-        assert read_str(cpu, 0x0340) == "3.14159", "F32(pi ~3.14159)"
+        assert read_exact(cpu, 0x0340, len("3.14159")) == "3.14159", "F32(pi ~3.14159)"
 
     def test_neg_42(self, cpu):
-        assert read_str(cpu, 0x0350) == "-42.0", "F32(-42.0)"
+        assert read_exact(cpu, 0x0350, len("-42.0")) == "-42.0", "F32(-42.0)"

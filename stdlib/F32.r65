@@ -840,7 +840,6 @@ impl ToString for F32 {
             buf[0 as u16] = '0' as u8;
             buf[1 as u16] = '.' as u8;
             buf[2 as u16] = '0' as u8;
-            buf[3 as u16] = 0;
             return 3;
         }
 
@@ -957,7 +956,6 @@ impl ToString for F32 {
             buf[pos as u16] = '0' as u8; pos++;
         }
 
-        buf[pos as u16] = 0;
         return pos as u16;
     }
 }
