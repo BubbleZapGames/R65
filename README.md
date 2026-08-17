@@ -577,7 +577,8 @@ r65x init --platform snes game  # Create new project
 | `stdlib/default_font.r65` | 2bpp font tileset for console |
 | `stdlib/I32.r65` | 32-bit signed integer arithmetic |
 | `stdlib/U32.r65` | 32-bit unsigned integer arithmetic |
-| `stdlib/Q10.r65` | Q10.6 fixed-point number type |
+| `stdlib/Q10.r65` | Q10.6 fixed-point number type (signed, 1/64) |
+| `stdlib/Q8.r65` | Q8.8 fixed-point number type (unsigned, 1/256) |
 | `stdlib/65816.r65` | CPU utility routines |
 | `stdlib/scratch_regs.r65` | Scratch register definitions for compiler |
 
