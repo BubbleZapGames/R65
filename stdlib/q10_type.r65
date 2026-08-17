@@ -7,7 +7,7 @@
 // The distinction is one-directional. A Q10 will not pass where an i16 is
 // wanted, and will not mix with another newtype — so a scaled value cannot
 // silently be consumed as a raw count. An i16 flowing the other way, *into* a
-// Q10, is still accepted: `q10_mul(raw, x)` compiles. Wrap deliberately at the
+// Q10, is still accepted: `x.mul(raw)` compiles. Wrap deliberately at the
 // point a raw number becomes a fixed-point one.
 //
 // Example usage:
@@ -31,6 +31,11 @@
 //       // Extract fractional part (0-63)
 //       let frac: i16 = player_x.to_frac();     // 0
 //
+//       // Scale by a fixed-point factor (NOT `*` or `/`, which are raw)
+//       player_x = player_x.mul(Q10::from(0, 32));   // halve it
+//       let ratio: Q10 = player_x.div(SCREEN_RIGHT); // 0.0 .. 1.0
+//       let step: Q10 = SPAN.div_u8(60);             // by a count: hardware, fast
+//
 //       // Interpolate a quarter of the way from here to the target
 //       player_x = Q10::lerp(player_x, TARGET_X, Q10(16));
 //
@@ -41,8 +46,9 @@
 //       let n: u16 = player_x.to_string(&BUF as far *u8);
 //   }
 //
-// Scaling multiply is `q10_mul`, not `*`: `a * b` on two Q10 values would be a
-// raw integer multiply, off by a factor of 64. It stays a named function
+// Scaling multiply and divide are `a.mul(b)` and `a.div(b)`, not `a * b` and
+// `a / b`: Q10 inherits those from i16, where the raw multiply lands 64x too
+// high and the raw divide cancels the scale entirely. They stay named methods
 // because the operator traits cannot yet be implemented for a newtype.
 //
 // `to_string` is likewise an inherent method rather than `impl ToString for Q10`,
@@ -109,12 +115,207 @@ impl Q10 {
         return biased >> 6;
     }
 
+    // Scaling multiply: result = (self * other) >> 6.
+    //
+    // This -- not `*`. Q10 inherits `*` from i16, which multiplies the raw
+    // values and lands 64x too high; the operator cannot be overloaded for a
+    // newtype, so the scaled form has to be a named call.
+    //
+    // Drives the SNES hardware 8x8 unit four times for the partial products.
+    // Requires: include!("lib/sneslib.r65")
+    #[cfg(snes)]
+    fn mul(self, other: Q10) -> Q10 {
+
+        // Unwrap once: each `.0` is free at runtime but materializes its own
+        // temporary, and this function is already frame-heavy.
+        let av: i16 = self.0;
+        let bv: i16 = other.0;
+
+        let mut ua: u16 = av as u16;
+        let mut ub: u16 = bv as u16;
+        let mut neg: u8 = 0;
+
+        if av < 0 {
+            ua = (0 - av) as u16;
+            neg = 1;
+        }
+        if bv < 0 {
+            ub = (0 - bv) as u16;
+            neg = neg ^ 1;
+        }
+
+        let a_lo: u8 = ua as u8;
+        let a_hi: u8 = (ua >> 8) as u8;
+        let b_lo: u8 = ub as u8;
+        let b_hi: u8 = (ub >> 8) as u8;
+
+        // p0 = a_lo * b_lo
+        WRMPYA = a_lo;
+        WRMPYB = b_lo;
+        NOP(4);
+        let mut p0: u16 = (RDMPYH as u16) << 8 | (RDMPYL as u16);
+
+        // p1 = a_lo * b_hi (a_lo still in WRMPYA)
+        WRMPYB = b_hi;
+        NOP(4);
+        let mut mid: u16 = (RDMPYH as u16) << 8 | (RDMPYL as u16);
+
+        // p2 = a_hi * b_lo
+        WRMPYA = a_hi;
+        WRMPYB = b_lo;
+        NOP(4);
+        mid = mid + ((RDMPYH as u16) << 8 | (RDMPYL as u16));
+
+        // p3 = a_hi * b_hi (a_hi still in WRMPYA)
+        WRMPYB = b_hi;
+        NOP(4);
+        let mut p3: u16 = (RDMPYH as u16) << 8 | (RDMPYL as u16);
+
+        // Accumulate 32-bit product as hi:lo
+        let lo: u16 = p0 + (mid << 8);
+        let mut hi: u16 = p3 + (mid >> 8);
+        if lo < p0 {
+            hi = hi + 1;
+        }
+
+        // Extract bits [6:21] of 32-bit product
+        let mut result: u16 = (lo >> 6) | (hi << 10);
+
+        if neg != 0 {
+            return Q10(0 - (result as i16));
+        }
+        return Q10(result as i16);
+    }
+
+    // Scaling divide: result = (self << 6) / other.
+    //
+    // This -- not `/`. Q10 inherits `/` from i16, which divides the raw values
+    // and cancels the scale, yielding a plain ratio 64x too small. (It is also
+    // restricted to power-of-two constants, so it cannot express this at all.)
+    //
+    // Software long division rather than the hardware unit: that unit divides a
+    // 16-bit dividend by an *8-bit* divisor, and this needs 22 dividend bits
+    // (`self << 6`) over a 16-bit divisor. So unlike `mul` there is no `snes`
+    // requirement -- it runs anywhere, at the cost of 22 shift-subtract steps.
+    //
+    // Truncates toward zero, as `mul` does: 1.0 / 3.0 is 21/64, not 22/64.
+    //
+    // Divide by zero saturates to +/-511.98 rather than looping, following the
+    // same "return the extreme" convention as math.r65's div8.
+    //
+    // Precondition: the true quotient must fit the Q10 range. 100.0 / 0.015625
+    // is 6400, far outside it, and wraps.
+    fn div(self, other: Q10) -> Q10 {
+        let av: i16 = self.0;
+        let bv: i16 = other.0;
+
+        let mut neg: u8 = 0;
+        let mut work: u16 = av as u16;
+        let mut ub: u16 = bv as u16;
+        if av < 0 {
+            work = (0 - av) as u16;
+            neg = 1;
+        }
+        if bv < 0 {
+            ub = (0 - bv) as u16;
+            neg = neg ^ 1;
+        }
+
+        if ub == 0 {
+            if neg != 0 {
+                return Q10(0 - 32767);
+            }
+            return Q10(32767);
+        }
+
+        // Restoring division over 22 bits: the 16 bits of |self|, then 6 more to
+        // put the quotient back on the Q10.6 scale. Once `work` has been shifted
+        // out it is zero, so those last six iterations feed in zero bits by
+        // themselves and need no separate loop.
+        //
+        // `rem` stays below `ub`, so `rem << 1` cannot exceed 65533 and every
+        // intermediate fits u16 -- which is what keeps this off the 32-bit path.
+        let mut rem: u16 = 0;
+        let mut quo: u16 = 0;
+        let mut i: u8 = 0;
+        while i < 22 {
+            rem = (rem << 1) | ((work >> 15) & 1);
+            work = work << 1;
+            quo = quo << 1;
+            if rem >= ub {
+                rem = rem - ub;
+                quo = quo + 1;
+            }
+            i = i + 1;
+        }
+
+        if neg != 0 {
+            return Q10(0 - (quo as i16));
+        }
+        return Q10(quo as i16);
+    }
+
+    // Divide by a plain integer count: result = self / d.
+    //
+    // Cheap, because dividing a fixed-point value by an integer *preserves the
+    // scale* -- (raw/64)/d is (raw/d)/64 -- so this is a straight 16/8 divide
+    // with no shifting, which is exactly the shape of the SNES divider. One
+    // hardware operation against the 22 shift-subtract steps of `div`.
+    //
+    // Reach for this whenever the divisor is a count rather than a scaled value:
+    // `total.div_u8(3)` to split three ways, `span.div_u8(60)` for per-frame.
+    // Use `div` when the divisor is itself a Q10.
+    //
+    // Cannot overflow: dividing by 1 or more only shrinks the magnitude, so
+    // unlike `div` and `round` there is no range precondition. `d` of 0
+    // saturates to +/-511.98, as `div` does.
+    //
+    // Truncates toward zero, as `mul` and `div` do.
+    //
+    // Requires: include!("lib/sneslib.r65")
+    #[cfg(snes)]
+    fn div_u8(self, d: u8) -> Q10 {
+        let av: i16 = self.0;
+        let mut mag: u16 = av as u16;
+        let mut neg: u8 = 0;
+        if av < 0 {
+            mag = (0 - av) as u16;
+            neg = 1;
+        }
+
+        if d == 0 {
+            if neg != 0 {
+                return Q10(0 - 32767);
+            }
+            return Q10(32767);
+        }
+
+        // The divider is unsigned, hence the magnitude/sign split above.
+        //
+        // The unit needs 16 machine cycles after the WRDIVB write. Six NOPs is
+        // 12 of them; the rest come from the `REP #$20` the compiler must place
+        // before the read, plus the LDA's own fetch. That REP is not incidental
+        // and can be relied on: `d` is u8 so the write forces m8, `RDDIV` is u16
+        // so the read forces m16, and something has to widen in between. Same
+        // accounting as math.r65's div16, which reads RDDIV the same way --
+        // div8 needs the full NOP(8) only because its 8-bit read has no REP.
+        WRDIV = mag;
+        WRDIVB = d;
+        NOP(6);
+        let quo: u16 = RDDIV;
+
+        if neg != 0 {
+            return Q10(0 - (quo as i16));
+        }
+        return Q10(quo as i16);
+    }
+
     // Linear interpolation from `a` toward `b`. `t` of Q10_ONE yields `b`
     // exactly, `t` of 0 yields `a`.
     //
     //     result = a + (b - a) * t
     //
-    // One multiply, not the two of `a*(1-t) + b*t`: q10_mul drives the hardware
+    // One multiply, not the two of `a*(1-t) + b*t`: `mul` drives the hardware
     // unit four times, so halving the multiplies outweighs the wider
     // intermediate range the two-multiply form would tolerate.
     //
@@ -127,7 +328,7 @@ impl Q10 {
     // Requires: include!("lib/sneslib.r65")
     #[cfg(snes)]
     fn lerp(a: Q10, b: Q10, t: Q10) -> Q10 {
-        return a + q10_mul(b - a, t);
+        return a + (b - a).mul(t);
     }
 
     // Absolute value
@@ -243,70 +444,4 @@ impl Q10 {
             }
         }
     }
-}
-
-// Multiply two Q10.6 values: result = (a * b) >> 6
-// Uses SNES hardware 8x8 multiply unit (4 partial products)
-// Requires: include!("lib/sneslib.r65")
-#[cfg(snes)]
-fn q10_mul(a @ A: Q10, b: Q10) -> Q10 {
-    // Unwrap once: each `.0` is free at runtime but materializes its own
-    // temporary, and this function is already frame-heavy.
-    let av: i16 = a.0;
-    let bv: i16 = b.0;
-
-    let mut ua: u16 = av as u16;
-    let mut ub: u16 = bv as u16;
-    let mut neg: u8 = 0;
-
-    if av < 0 {
-        ua = (0 - av) as u16;
-        neg = 1;
-    }
-    if bv < 0 {
-        ub = (0 - bv) as u16;
-        neg = neg ^ 1;
-    }
-
-    let a_lo: u8 = ua as u8;
-    let a_hi: u8 = (ua >> 8) as u8;
-    let b_lo: u8 = ub as u8;
-    let b_hi: u8 = (ub >> 8) as u8;
-
-    // p0 = a_lo * b_lo
-    WRMPYA = a_lo;
-    WRMPYB = b_lo;
-    NOP(4);
-    let mut p0: u16 = (RDMPYH as u16) << 8 | (RDMPYL as u16);
-
-    // p1 = a_lo * b_hi (a_lo still in WRMPYA)
-    WRMPYB = b_hi;
-    NOP(4);
-    let mut mid: u16 = (RDMPYH as u16) << 8 | (RDMPYL as u16);
-
-    // p2 = a_hi * b_lo
-    WRMPYA = a_hi;
-    WRMPYB = b_lo;
-    NOP(4);
-    mid = mid + ((RDMPYH as u16) << 8 | (RDMPYL as u16));
-
-    // p3 = a_hi * b_hi (a_hi still in WRMPYA)
-    WRMPYB = b_hi;
-    NOP(4);
-    let mut p3: u16 = (RDMPYH as u16) << 8 | (RDMPYL as u16);
-
-    // Accumulate 32-bit product as hi:lo
-    let lo: u16 = p0 + (mid << 8);
-    let mut hi: u16 = p3 + (mid >> 8);
-    if lo < p0 {
-        hi = hi + 1;
-    }
-
-    // Extract bits [6:21] of 32-bit product
-    let mut result: u16 = (lo >> 6) | (hi << 10);
-
-    if neg != 0 {
-        return Q10(0 - (result as i16));
-    }
-    return Q10(result as i16);
 }

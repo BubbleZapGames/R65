@@ -326,23 +326,28 @@ class TestQ10Abs:
 
 
 class TestQ10Mul:
-    """Scaling multiply via the SNES hardware 8x8 unit."""
+    """Scaling multiply via the SNES hardware 8x8 unit.
+
+    `a.mul(b)`, not `a * b` — Q10 inherits `*` from i16, which multiplies the raw
+    values and lands 64x too high. Was the free function
+    `q10_mul(a @ A: Q10, b: Q10)`; as a method `self` arrives in A, the same ABI.
+    """
 
     def test_mul_integers(self, e2e):
         """3.0 * 4.0 = 12.0 (192 * 256 -> 768)."""
-        result = e2e.run(program("OUT = q10_mul(Q10(192), Q10(256));"),
+        result = e2e.run(program("OUT = Q10(192).mul(Q10(256));"),
                          ExpectedState(memory={0x7E0010: [0x00, 0x03]}))
         assert result.success, f"Failures: {result.failures}"
 
     def test_mul_fractional(self, e2e):
         """1.5 * 2.0 = 3.0 (96 * 128 -> 192)."""
-        result = e2e.run(program("OUT = q10_mul(Q10(96), Q10(128));"),
+        result = e2e.run(program("OUT = Q10(96).mul(Q10(128));"),
                          ExpectedState(memory={0x7E0010: [192, 0]}))
         assert result.success, f"Failures: {result.failures}"
 
     def test_mul_larger_values(self, e2e):
         """100.0 * 5.0 = 500.0 (6400 * 320 -> 32000)."""
-        result = e2e.run(program("OUT = q10_mul(Q10(6400), Q10(320));"),
+        result = e2e.run(program("OUT = Q10(6400).mul(Q10(320));"),
                          ExpectedState(memory={0x7E0010: [0x00, 0x7D]}))
         assert result.success, f"Failures: {result.failures}"
 
@@ -355,7 +360,7 @@ class TestQ10Mul:
             #[entry]
             fn main() {{
                 let a: Q10 = Q10(0 - 128);
-                OUT = q10_mul(a, Q10(224));
+                OUT = a.mul(Q10(224));
             }}
         ''', ExpectedState(memory={0x7E0010: [0x40, 0xFE]}))
         assert result.success, f"Failures: {result.failures}"
@@ -370,19 +375,37 @@ class TestQ10Mul:
             fn main() {{
                 let a: Q10 = Q10(0 - 128);
                 let b: Q10 = Q10(0 - 224);
-                OUT = q10_mul(a, b);
+                OUT = a.mul(b);
             }}
         ''', ExpectedState(memory={0x7E0010: [0xC0, 0x01]}))
         assert result.success, f"Failures: {result.failures}"
 
     def test_mul_by_zero(self, e2e):
-        result = e2e.run(program("OUT = q10_mul(Q10(192), Q10(0));"),
+        result = e2e.run(program("OUT = Q10(192).mul(Q10(0));"),
                          ExpectedState(memory={0x7E0010: [0, 0]}))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_mul_two_fractions(self, e2e):
+        """0.5 * 0.5 = 0.25 — both operands below one."""
+        result = e2e.run(program("OUT = Q10(32).mul(Q10(32));"),
+                         ExpectedState(memory={0x7E0010: raw(16)}))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_mul_positive_by_negative(self, e2e):
+        """The mirror of test_mul_negative — the sign flip on the second operand."""
+        result = e2e.run(program("OUT = Q10(128).mul(Q10(0 - 32));"),
+                         ExpectedState(memory={0x7E0010: raw(-64)}))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_mul_underflows_toward_zero(self, e2e):
+        """0.5 * 1/64 falls below the 1/64 scale and truncates to zero."""
+        result = e2e.run(program("OUT = Q10(32).mul(Q10(1));"),
+                         ExpectedState(memory={0x7E0010: raw(0)}))
         assert result.success, f"Failures: {result.failures}"
 
     def test_mul_carry_path(self, e2e):
         """Large operands exercise the 32-bit accumulate carry."""
-        result = e2e.run(program("OUT = q10_mul(Q10(16384), Q10(128));"),
+        result = e2e.run(program("OUT = Q10(16384).mul(Q10(128));"),
                          ExpectedState(memory={0x7E0010: [0x00, 0x80]}))
         assert result.success, f"Failures: {result.failures}"
 
@@ -426,9 +449,18 @@ class TestQ10IsNominal:
         The newtype tracks the type of results; it does not force every call
         site to spell out the constructor.
         """
-        result = e2e.run(program("let raw: i16 = 192;\nOUT = q10_mul(raw, Q10(256));"),
+        result = e2e.run(program("let raw: i16 = 256;\nOUT = Q10(192).mul(raw);"),
                          ExpectedState(memory={0x7E0010: [0x00, 0x03]}))
         assert result.success, f"Failures: {result.failures}"
+
+    def test_a_raw_i16_cannot_be_the_receiver(self, e2e):
+        """Transparent-in applies to parameters, not to the receiver: method
+        lookup goes by the receiver's own type. Tighter than the free function
+        `q10_mul` was, and in the direction this library already argues for --
+        wrap deliberately where a raw number becomes a fixed-point one."""
+        result = e2e.run(program("let raw: i16 = 192;\nOUT = raw.mul(Q10(256));"),
+                         ExpectedState(memory={}))
+        assert not result.success, "expected a compile error, got none"
 
     def test_q10_does_not_mix_with_another_newtype(self, e2e):
         result = e2e.run(f'''{PRELUDE}
@@ -519,3 +551,170 @@ class TestQ10Lerp:
             }}
         ''', ExpectedState(memory={0x7E0010: raw(256)}))
         assert r.success, f"{r.error} {r.failures}"
+
+
+class TestQ10Div:
+    """Scaling divide: (self << 6) / other, by software long division.
+
+    `a.div(b)`, not `a / b` — Q10 inherits `/` from i16, which cancels the scale
+    and yields a ratio 64x too small (and only accepts power-of-two constants
+    anyway). Needs no `snes` cfg: the hardware divider takes an 8-bit divisor,
+    while this needs 22 dividend bits over a 16-bit one.
+    """
+
+    def _div(self, e2e, a: int, b: int, expected: int):
+        result = e2e.run(
+            program(f"let x: Q10 = Q10({a});\n"
+                    f"let y: Q10 = Q10({b});\n"
+                    f"OUT = x.div(y);"),
+            ExpectedState(memory={0x7E0010: raw(expected)}))
+        assert result.success, f"Q10({a}).div(Q10({b})): {result.failures}"
+
+    def test_by_one(self, e2e):
+        self._div(e2e, 192, 64, 192)               # 3.0 / 1.0 = 3.0
+
+    def test_identity(self, e2e):
+        self._div(e2e, 192, 192, 64)              # 3.0 / 3.0 = 1.0
+
+    def test_by_a_fraction_grows(self, e2e):
+        self._div(e2e, 128, 32, 256)              # 2.0 / 0.5 = 4.0
+
+    def test_yields_a_fraction(self, e2e):
+        self._div(e2e, 64, 128, 32)               # 1.0 / 2.0 = 0.5
+
+    def test_three_quarters(self, e2e):
+        self._div(e2e, 192, 256, 48)              # 3.0 / 4.0 = 0.75
+
+    def test_larger_operands(self, e2e):
+        """768 << 6 is 49152 — past 16 bits, so the wide dividend path matters."""
+        self._div(e2e, 768, 192, 256)             # 12.0 / 3.0 = 4.0
+
+    def test_zero_numerator(self, e2e):
+        self._div(e2e, 0, 192, 0)
+
+    def test_truncates_toward_zero(self, e2e):
+        """1.0 / 3.0 is 21.33/64, truncated to 21 — not rounded to 21.33."""
+        self._div(e2e, 64, 192, 21)
+
+    def test_negative_numerator(self, e2e):
+        self._div(e2e, -64, 128, -32)             # -1.0 / 2.0 = -0.5
+
+    def test_negative_divisor(self, e2e):
+        self._div(e2e, 64, -128, -32)             # 1.0 / -2.0 = -0.5
+
+    def test_both_negative(self, e2e):
+        self._div(e2e, -64, -128, 32)             # -1.0 / -2.0 = 0.5
+
+    def test_smallest_divisor(self, e2e):
+        """Dividing by 1/64 multiplies by 64: 4.0 / (1/64) = 256.0."""
+        self._div(e2e, 256, 1, 16384)
+
+    def test_divide_by_zero_saturates(self, e2e):
+        self._div(e2e, 192, 0, 32767)
+
+    def test_divide_by_zero_saturates_negative(self, e2e):
+        self._div(e2e, -192, 0, -32767)
+
+    def test_runtime_values_not_just_literals(self, e2e):
+        """Through statics, so nothing const-folds."""
+        result = e2e.run(f'''{PRELUDE}
+            #[zeropage(0x10)] static mut OUT: Q10;
+            #[zeropage(0x20)] static mut AV: Q10;
+            #[zeropage(0x22)] static mut BV: Q10;
+            #[entry]
+            fn main() {{
+                AV = Q10(0 - 768);
+                BV = Q10(96);
+                OUT = AV.div(BV);
+            }}
+        ''', ExpectedState(memory={0x7E0010: raw(-512)}))   # -12.0 / 1.5 = -8.0
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_round_trips_through_mul(self, e2e):
+        """`div` and `mul` check each other: 12.0 / 3.0 * 3.0 is exactly 12.0 for
+        operands that divide evenly, so a scale error in either would show."""
+        result = e2e.run(
+            program("let a: Q10 = Q10(768);\n"
+                    "let b: Q10 = Q10(192);\n"
+                    "OUT = a.div(b).mul(b);"),
+            ExpectedState(memory={0x7E0010: raw(768)}))
+        assert result.success, f"Failures: {result.failures}"
+
+
+class TestQ10DivU8:
+    """Divide by an integer count, via the SNES hardware divider.
+
+    Dividing a fixed-point value by an integer preserves the scale, so this is a
+    straight 16/8 divide with no shifting — one hardware operation against the 22
+    software steps `div` needs for a Q10 divisor.
+    """
+
+    def _div(self, e2e, a: int, d: int, expected: int):
+        result = e2e.run(
+            program(f"let x: Q10 = Q10({a});\nOUT = x.div_u8({d});"),
+            ExpectedState(memory={0x7E0010: raw(expected)}))
+        assert result.success, f"Q10({a}).div_u8({d}): {result.failures}"
+
+    def test_by_one_is_identity(self, e2e):
+        self._div(e2e, 768, 1, 768)
+
+    def test_exact(self, e2e):
+        self._div(e2e, 768, 3, 256)                # 12.0 / 3 = 4.0
+
+    def test_halves_a_fraction(self, e2e):
+        self._div(e2e, 64, 2, 32)                  # 1.0 / 2 = 0.5
+
+    def test_truncates_toward_zero(self, e2e):
+        """1.0 / 3 is 21.33/64, truncated to 21."""
+        self._div(e2e, 64, 3, 21)
+
+    def test_zero_numerator(self, e2e):
+        self._div(e2e, 0, 7, 0)
+
+    def test_largest_divisor(self, e2e):
+        """255 is the widest the 8-bit divisor takes; 32767/255 = 128.5 -> 128."""
+        self._div(e2e, 32767, 255, 128)
+
+    def test_dividend_above_the_signed_byte_range(self, e2e):
+        """The dividend is 16-bit even though the divisor is not."""
+        self._div(e2e, 16384, 4, 4096)             # 256.0 / 4 = 64.0
+
+    def test_negative(self, e2e):
+        self._div(e2e, -768, 3, -256)
+
+    def test_negative_truncates_toward_zero(self, e2e):
+        """-1.0 / 3 is -21.33/64; toward zero is -21, not -22."""
+        self._div(e2e, -64, 3, -21)
+
+    def test_by_zero_saturates(self, e2e):
+        self._div(e2e, 768, 0, 32767)
+
+    def test_by_zero_saturates_negative(self, e2e):
+        self._div(e2e, -768, 0, -32767)
+
+    def test_runtime_divisor(self, e2e):
+        """Through statics, so the divisor is not a folded constant."""
+        result = e2e.run(f'''{PRELUDE}
+            #[zeropage(0x10)] static mut OUT: Q10;
+            #[zeropage(0x20)] static mut AV: Q10;
+            #[zeropage(0x22)] static mut DV: u8;
+            #[entry]
+            fn main() {{
+                AV = Q10(0 - 1920);
+                DV = 6;
+                OUT = AV.div_u8(DV);
+            }}
+        ''', ExpectedState(memory={0x7E0010: raw(-320)}))   # -30.0 / 6 = -5.0
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_agrees_with_div(self, e2e):
+        """The two divides must give the same answer when the divisor is a whole
+        number — one goes through hardware, the other through 22 software steps."""
+        result = e2e.run(
+            program("let a: Q10 = Q10(768);\n"
+                    "OUT = a.div_u8(3);\n"
+                    "OUT2 = a.div(Q10::from_int(3));",
+                    statics=("#[zeropage(0x10)]\nstatic mut OUT: Q10;\n"
+                             "#[zeropage(0x12)]\nstatic mut OUT2: Q10;")),
+            ExpectedState(memory={0x7E0010: raw(256), 0x7E0012: raw(256)}))
+        assert result.success, f"Failures: {result.failures}"
