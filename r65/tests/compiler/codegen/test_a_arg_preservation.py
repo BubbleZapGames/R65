@@ -262,3 +262,52 @@ class TestSixteenBitAccumulator:
         modes = [s for s in instrs[:restore] if s.startswith(('REP', 'SEP'))]
         assert modes and modes[-1].startswith('REP'), (
             f"a 16-bit restore must run in m16: {instrs}")
+
+
+class TestPreservedRegisterNotUsedForParking:
+    """A `#[preserves(...)]` register must not be borrowed to park the argument.
+
+    `_compute_hw_spills` skips spilling exactly the registers the callee promised
+    to preserve, so a live value in one of them is sitting unsaved. Parking A
+    there destroys it *before* the JSR -- outside the scope of any promise the
+    callee can keep. The caller emits no PHY/PLY, and the callee faithfully
+    preserves a register that was already wrong on entry.
+    """
+
+    def source(self, preserves: str) -> str:
+        return f"""
+#[zeropage(0x20)]
+static mut OUT: u16;
+{preserves}
+far fn callee(a @ A: u8, p @ X: u16) -> u8 {{ X = 1; return a; }}
+fn caller(v @ A: u8, w: u16) -> u16 {{
+    Y = 0x1234;
+    let r: u8 = callee(v, w);
+    return Y;
+}}
+#[entry]
+fn main() {{ OUT = caller(7, 9); }}
+"""
+
+    def test_preserved_y_is_not_borrowed(self):
+        emitted = instrs_for(self.source("#[preserves(Y)]"))
+        assert 'TAY' not in emitted, (
+            f"Y is live and unspilled because the callee preserves it: {emitted}")
+
+    def test_without_the_attribute_y_is_still_used(self):
+        """The control. Without `#[preserves(Y)]` the caller spills Y itself
+        (PHY/PLY), so borrowing it is safe -- this pins the discrimination
+        rather than a blanket 'never use Y'."""
+        emitted = instrs_for(self.source(""))
+        assert 'TAY' in emitted, f"Y should still be usable here: {emitted}"
+        assert 'PHY' in emitted, f"...because the caller spills it: {emitted}"
+
+    def test_the_live_value_reaches_the_call_intact(self):
+        """Whatever parking place is chosen, nothing may write Y between the
+        LDY that sets it and the JSR."""
+        emitted = instrs_for(self.source("#[preserves(Y)]"))
+        call = next(i for i, s in enumerate(emitted) if s.startswith(('JSR', 'JSL')))
+        ldy = next(i for i, s in enumerate(emitted) if s.startswith('LDY'))
+        between = [s for s in emitted[ldy + 1:call]
+                   if s.startswith(('TAY', 'INY', 'DEY', 'PLY'))]
+        assert not between, f"Y clobbered before the call: {emitted}"

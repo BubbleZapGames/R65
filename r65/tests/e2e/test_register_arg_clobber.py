@@ -119,3 +119,31 @@ class TestSixteenBitAccumulator:
         result = e2e.run(program(decls, "OUT = go(300, 1000);"),
                          ExpectedState(memory={0x7E0020: [0x14, 0x05]}))
         assert result.success, f"Failures: {result.failures}"
+
+
+class TestPreservedRegisterSurvives:
+    """A value in a register the callee preserves must survive the call.
+
+    The caller emits no PHY/PLY for a `#[preserves(Y)]` callee -- it is relying
+    on the promise. Borrowing Y to park the `@ A` argument breaks that value
+    before the JSR ever happens, so the callee dutifully preserves the wrong
+    contents.
+    """
+
+    SRC = """
+#[zeropage(0x20)]
+static mut OUT: u16;
+#[preserves(Y)]
+far fn callee(a @ A: u8, p @ X: u16) -> u8 { X = 1; return a; }
+fn caller(v @ A: u8, w: u16) -> u16 {
+    Y = 0x1234;
+    let r: u8 = callee(v, w);
+    return Y;
+}
+#[entry]
+fn main() { OUT = caller(7, 9); }
+"""
+
+    def test_live_y_survives_argument_setup(self, e2e):
+        r = e2e.run(self.SRC, ExpectedState(memory={0x7E0020: [0x34, 0x12]}))
+        assert r.success, f"Failures: {r.failures}"

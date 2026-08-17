@@ -165,7 +165,11 @@ class ABIModel(ABC):
         if a_save_reg:
             self._restore_a_from(selector, a_save_reg, a_param_is_16bit)
 
-        self._emit_other_args(selector, other_args, pre_arg_stack_adj)
+        # The callee's preserved set is exactly what _compute_hw_spills skipped
+        # spilling, so it is exactly what may still hold an unsaved live value.
+        preserved = (set(instr.preserves_attr.registers)
+                     if instr.preserves_attr else frozenset())
+        self._emit_other_args(selector, other_args, pre_arg_stack_adj, preserved)
 
         self_y_arg = next(
             (a for a in instr.args if a.mechanism == ArgumentMechanism.SELF_Y), None)
@@ -316,11 +320,18 @@ class ABIModel(ABC):
         op = Opcode.TYA if a_save_reg == 'Y' else Opcode.TXA
         selector._emit_implied(op, f"Restore A from {a_save_reg} after stack arg setup")
 
-    def _pick_a_save(self, selector, ordered, locs, width):
+    def _pick_a_save(self, selector, ordered, locs, width, preserved=frozenset()):
         """Where to park the '@ A' argument. See _RegASave / _StackASave.
 
         TAY/TAX move index-width bits regardless of M, so a register save needs
         no mode pinning when it opens — only when it restores.
+
+        `preserved` is the callee's `#[preserves(...)]` set. Those registers must
+        not be used: `_compute_hw_spills` skips spilling them precisely because
+        the callee promised to restore them, so a live value in one is sitting
+        unsaved. Parking A there destroys it *before* the JSR, where no promise
+        the callee can keep applies. Every other register is either spilled,
+        dead, or inside an active clobber region whose start already saved it.
         """
         from r65.compiler.mir.nodes import ArgumentMechanism
 
@@ -328,13 +339,8 @@ class ABIModel(ABC):
                    if a.mechanism == ArgumentMechanism.REGISTER}
         sources = {l.hw_register for l in locs if l.is_hw()}
 
-        # Known gap: this asks only what the *arguments* use. A register that is
-        # live across the call for another reason can still be chosen — with a
-        # `#[preserves(Y)]` callee `_compute_hw_spills` skips the spill, so Y is
-        # live and unsaved. Pre-existing; needs liveness plumbed in from
-        # `select_call`.
         for reg in ('Y', 'X'):
-            if reg in targets or reg in sources:
+            if reg in targets or reg in sources or reg in preserved:
                 continue
             if width == 16 and selector.parent.emitter.get_index_mode() != 16:
                 continue
@@ -344,7 +350,8 @@ class ABIModel(ABC):
         # stack-relative source re-resolves against the tracker displacement.
         return _StackASave(width)
 
-    def _emit_other_args(self, selector, other_args, pre_arg_stack_adj):
+    def _emit_other_args(self, selector, other_args, pre_arg_stack_adj,
+                         preserved=frozenset()):
         """Emit non-stack args, keeping an A-resident value alive across them.
 
         Two requirements drive the shape:
@@ -443,7 +450,7 @@ class ABIModel(ABC):
                 return
 
         a_positions = set(a_idxs)
-        save = self._pick_a_save(selector, ordered, locs, width)
+        save = self._pick_a_save(selector, ordered, locs, width, preserved)
         save.open(selector)
         dirty = False
         for i, arg in enumerate(ordered):
