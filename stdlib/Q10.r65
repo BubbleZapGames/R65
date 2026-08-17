@@ -1,113 +1,122 @@
-// Q10.6 Fixed-Point Type Library
-// 16-bit signed: 10 integer bits (-512 to +511), 6 fractional bits (1/64 precision)
-//
-// Q10 is a newtype over i16: a distinct type at compile time, an ordinary
-// 16-bit value at runtime. The generated code is identical to using a bare i16.
-//
-// The distinction is one-directional. A Q10 will not pass where an i16 is
-// wanted, and will not mix with another newtype — so a scaled value cannot
-// silently be consumed as a raw count. An i16 flowing the other way, *into* a
-// Q10, is still accepted: `x.mul(raw)` compiles. Wrap deliberately at the
-// point a raw number becomes a fixed-point one.
-//
-// Example usage:
-//
-//   include!("lib/Q10.r65")
-//
-//   #[zeropage]
-//   static mut VELOCITY: Q10;
-//
-//   fn update() {
-//       // Create fixed-point values
-//       let player_x: Q10 = Q10::from_int(100);  // 100.0
-//       VELOCITY = Q10::from(0, 32);            // 0.5 (32/64)
-//
-//       // Addition and comparison are inherited from i16
-//       let next: Q10 = player_x + VELOCITY;
-//
-//       // Extract integer for screen position
-//       let screen_x: i16 = player_x.to_int();  // 100
-//
-//       // Extract fractional part (0-63)
-//       let frac: i16 = player_x.to_frac();     // 0
-//
-//       // Scale by a fixed-point factor (NOT `*` or `/`, which are raw)
-//       player_x = player_x.mul(Q10::from(0, 32));   // halve it
-//       let ratio: Q10 = player_x.div(SCREEN_RIGHT); // 0.0 .. 1.0
-//       let step: Q10 = SPAN.div_u8(60);             // by a count: hardware, fast
-//
-//       // Interpolate a quarter of the way from here to the target
-//       player_x = Q10::lerp(player_x, TARGET_X, Q10(16));
-//
-//       // Keep it on screen
-//       player_x = player_x.clamp!(Q10(0), SCREEN_RIGHT);
-//
-//       // Print it: "100.00", n = 6. No terminator is written.
-//       let n: u16 = player_x.to_string(&BUF as far *u8);
-//   }
-//
-// Scaling multiply and divide are `a.mul(b)` and `a.div(b)`, not `a * b` and
-// `a / b`: Q10 inherits those from i16, where the raw multiply lands 64x too
-// high and the raw divide cancels the scale entirely. They stay named methods
-// because the operator traits cannot yet be implemented for a newtype.
-//
-// `to_string` is likewise an inherent method rather than `impl ToString for Q10`,
-// for the same reason a newtype cannot implement any trait: dispatch stores a
-// TypeId byte at offset 0, which would overlap the value. `format!` resolves
-// `to_string` by name, so `format!("{s}", q)` still works — and statically.
+//! Q10.6 signed fixed-point (`Q10`) for the 65816.
+//!
+//! 16-bit signed: 10 integer bits (-512 to +511) and 6 fractional bits, so a
+//! precision of 1/64. `Q10` is a newtype over `i16` — a distinct type at compile
+//! time, an ordinary 16-bit value at runtime. The generated code is identical to
+//! using a bare `i16`.
+//!
+//! The distinction is one-directional. A `Q10` will not pass where an `i16` is
+//! wanted, and will not mix with another newtype, so a scaled value cannot
+//! silently be consumed as a raw count. An `i16` flowing the other way, *into* a
+//! `Q10`, is still accepted: `x.mul(raw)` compiles. Wrap deliberately at the
+//! point a raw number becomes a fixed-point one.
+//!
+//! Scaling multiply and divide are `a.mul(b)` and `a.div(b)`, not `a * b` and
+//! `a / b`: `Q10` inherits those from `i16`, where the raw multiply lands 64x too
+//! high and the raw divide cancels the scale entirely. They stay named methods
+//! because the operator traits cannot yet be implemented for a newtype.
+//!
+//! ```
+//! include!("lib/Q10.r65")
+//!
+//! #[zeropage] static mut VELOCITY: Q10;
+//!
+//! fn update() {
+//!     let player_x: Q10 = Q10::from_int(100);      // 100.0
+//!     VELOCITY = Q10::from(0, 32);                 // 0.5 (32/64)
+//!
+//!     let next: Q10 = player_x + VELOCITY;         // + and < come from i16
+//!     let screen_x: i16 = player_x.to_int();       // 100
+//!
+//!     player_x = player_x.mul(Q10::from(0, 32));   // halve it
+//!     player_x = Q10::lerp(player_x, TARGET_X, Q10(16));
+//!     player_x = player_x.clamp!(Q10(0), SCREEN_RIGHT);
+//! }
+//! ```
+//!
+//! See also `Q8` (unsigned, 8.8, finer scale) and `F32` (floating point).
 
+/// A Q10.6 signed fixed-point number (range `-512.0` to `511.984`).
+///
+/// Wraps an `i16` whose low 6 bits are the fraction. Construct one with
+/// `from_int`, `from`, or by wrapping a raw scaled value with `Q10(...)`.
 struct Q10(i16);
 
+/// `1.0` on the Q10.6 scale.
 const Q10_ONE: Q10 = 64;
+/// `0.5` on the Q10.6 scale.
 const Q10_HALF: Q10 = 32;
+/// The smallest representable step, `1/64`.
 const Q10_1_64TH: Q10 = 1;
 
-// Mask for the fractional bits. Plain i16 — it selects bits, it is not a value
-// on the Q10.6 scale.
+/// Mask selecting the six fractional bits.
+///
+/// Plain `i16` rather than `Q10`: it selects bits, it is not a value on the
+/// Q10.6 scale.
 const Q10_FRAC_MASK: i16 = 0x3F;
 
 impl Q10 {
-    // Whole number to Q10.6
+    /// Converts a whole number to Q10.6.
     fn from_int(n: i16) -> Q10 {
         return Q10(n << 6);
     }
 
-    // Whole and fractional parts to Q10.6, where `f` is in 1/64 units (0-63).
-    // `f` is u8 because a fractional numerator is never negative and never
-    // exceeds 63 — the narrower type rejects `Q10::from(1, -5)` outright rather
-    // than masking it into 59. Values above 63 still wrap, as the mask implies.
+    /// Builds a value from whole and fractional parts, `f` being in 1/64 units
+    /// (0-63).
+    ///
+    /// Values of `f` above 63 wrap into the fractional field.
     fn from(n: i16, f: u8) -> Q10 {
+        // `f` is u8 because a fractional numerator is never negative and never
+        // exceeds 63 — the narrower type rejects `Q10::from(1, -5)` outright
+        // rather than masking it into 59.
         return Q10((n << 6) | ((f as i16) & Q10_FRAC_MASK));
     }
 
-    // Integer part, rounding toward negative infinity (floor).
-    //
-    // The negative branch is not decoration: `>>` is a logical shift for signed
-    // types too (see docs/operators.md), so a bare `self.0 >> 6` shifts the sign
-    // bit down and turns -2.0 into 1022. Floor of a negative is
-    // -ceil(|x| / 64), hence the +63 before shifting the magnitude.
+    /// Returns the integer part, rounding toward negative infinity (floor).
+    ///
+    /// Contrast `round`, which rounds to nearest: -1.5 floors to -2 but rounds
+    /// to -1. Tile indices usually want this one.
     fn to_int(self) -> i16 {
+        // The negative branch is not decoration: `>>` is a logical shift for
+        // signed types too (see docs/operators.md), so a bare `self.0 >> 6`
+        // shifts the sign bit down and turns -2.0 into 1022. Floor of a negative
+        // is -ceil(|x| / 64), hence the +63 before shifting the magnitude.
         if self.0 < 0 {
             return 0 - (((0 - self.0) + 63) >> 6);
         }
         return self.0 >> 6;
     }
 
-    // Fractional part, in 1/64 units (0-63)
+    /// Returns the fractional part, in 1/64 units (0-63).
     fn to_frac(self) -> i16 {
         return self.0 & Q10_FRAC_MASK;
     }
 
-    // Nearest whole number, ties rounding up (toward positive infinity).
-    // Differs from `to_int`, which floors: 1.5 rounds to 2 but floors to 1,
-    // and -1.5 rounds to -1 but floors to -2. Screen positions usually want
-    // this one; tile indices usually want `to_int`.
-    //
-    // Same signed-shift correction as `to_int` — this is floor(x + 0.5).
-    //
-    // Precondition: values above 511.48 (raw 32735) overflow the +32 bias and
-    // come back negative. The top of the Q10 range has no room for it.
+    /// Returns the nearest whole number, ties rounding up toward positive
+    /// infinity.
+    ///
+    /// Contrast `to_int`, which floors: 1.5 rounds to 2 but floors to 1, and
+    /// -1.5 rounds to -1 but floors to -2. Screen positions usually want this
+    /// one.
+    ///
+    /// Exact across the whole range, including the top, where 511.984 rounds to
+    /// 512 rather than saturating — that value fits the `i16` return.
     fn round(self) -> i16 {
+        // This is floor(x + 0.5), with the same signed-shift correction to_int
+        // needs.
+        //
+        // Correct at the top of the range, where `self.0 + 32` overflows i16 —
+        // but only because two things line up, so leave them be:
+        //
+        //   * the signed `<` compiles to a V-aware comparison, so an overflowed
+        //     `biased` is still routed down the non-negative branch rather than
+        //     being read as the negative number its bit pattern resembles;
+        //   * `>>` is a logical shift, so that branch shifts the wrapped pattern
+        //     as unsigned — which is the true value, since `biased` peaks at
+        //     32799 and cannot reach 65536.
+        //
+        // Q8 needs a saturation guard here because it rounds into a u8, where
+        // 256 has nowhere to go.
         let biased: i16 = self.0 + 32;
         if biased < 0 {
             return 0 - (((0 - biased) + 63) >> 6);
@@ -115,14 +124,14 @@ impl Q10 {
         return biased >> 6;
     }
 
-    // Scaling multiply: result = (self * other) >> 6.
-    //
-    // This -- not `*`. Q10 inherits `*` from i16, which multiplies the raw
-    // values and lands 64x too high; the operator cannot be overloaded for a
-    // newtype, so the scaled form has to be a named call.
-    //
-    // Drives the SNES hardware 8x8 unit four times for the partial products.
-    // Requires: include!("lib/sneslib.r65")
+    /// Multiplies two scaled values: `(self * other) >> 6`.
+    ///
+    /// This, not `*` — `Q10` inherits `*` from `i16`, which multiplies the raw
+    /// values and lands 64x too high.
+    ///
+    /// Truncates toward zero. Uses the SNES hardware multiplier.
+    ///
+    /// Requires: `include!("lib/sneslib.r65")`
     #[cfg(snes)]
     fn mul(self, other: Q10) -> Q10 {
 
@@ -131,6 +140,8 @@ impl Q10 {
         let av: i16 = self.0;
         let bv: i16 = other.0;
 
+        // The multiplier is unsigned, so operate on magnitudes and reapply the
+        // sign at the end.
         let mut ua: u16 = av as u16;
         let mut ub: u16 = bv as u16;
         let mut neg: u8 = 0;
@@ -149,6 +160,9 @@ impl Q10 {
         let b_lo: u8 = ub as u8;
         let b_hi: u8 = (ub >> 8) as u8;
 
+        // Four 8x8 partial products. The unit needs 8 machine cycles after each
+        // WRMPYB write, which NOP(4) supplies.
+        //
         // p0 = a_lo * b_lo
         WRMPYA = a_lo;
         WRMPYB = b_lo;
@@ -171,14 +185,16 @@ impl Q10 {
         NOP(4);
         let mut p3: u16 = (RDMPYH as u16) << 8 | (RDMPYL as u16);
 
-        // Accumulate 32-bit product as hi:lo
+        // Accumulate the 32-bit product as hi:lo. `mid` can itself overflow u16,
+        // but only for operand pairs whose result already leaves the Q10 range.
         let lo: u16 = p0 + (mid << 8);
         let mut hi: u16 = p3 + (mid >> 8);
         if lo < p0 {
             hi = hi + 1;
         }
 
-        // Extract bits [6:21] of 32-bit product
+        // Bits [6:21] of the 32-bit product — the >> 6 that puts the result back
+        // on the Q10.6 scale.
         let mut result: u16 = (lo >> 6) | (hi << 10);
 
         if neg != 0 {
@@ -187,25 +203,25 @@ impl Q10 {
         return Q10(result as i16);
     }
 
-    // Scaling divide: result = (self << 6) / other.
-    //
-    // This -- not `/`. Q10 inherits `/` from i16, which divides the raw values
-    // and cancels the scale, yielding a plain ratio 64x too small. (It is also
-    // restricted to power-of-two constants, so it cannot express this at all.)
-    //
-    // Software long division rather than the hardware unit: that unit divides a
-    // 16-bit dividend by an *8-bit* divisor, and this needs 22 dividend bits
-    // (`self << 6`) over a 16-bit divisor. So unlike `mul` there is no `snes`
-    // requirement -- it runs anywhere, at the cost of 22 shift-subtract steps.
-    //
-    // Truncates toward zero, as `mul` does: 1.0 / 3.0 is 21/64, not 22/64.
-    //
-    // Divide by zero saturates to +/-511.98 rather than looping, following the
-    // same "return the extreme" convention as math.r65's div8.
-    //
-    // Precondition: the true quotient must fit the Q10 range. 100.0 / 0.015625
-    // is 6400, far outside it, and wraps.
+    /// Divides two scaled values: `(self << 6) / other`.
+    ///
+    /// This, not `/` — `Q10` inherits `/` from `i16`, which divides the raw
+    /// values and cancels the scale, yielding a plain ratio 64x too small. (It
+    /// is also restricted to power-of-two constants, so it cannot express this
+    /// at all.)
+    ///
+    /// Truncates toward zero, as `mul` does: 1.0 / 3.0 is 21/64, not 22/64.
+    /// Division by zero saturates to +/-511.984 rather than looping.
+    ///
+    /// Needs no hardware, unlike `mul` and `div_u8` — see the body for why.
+    ///
+    /// Precondition: the true quotient must fit the Q10 range. 100.0 / 0.015625
+    /// is 6400, far outside it, and wraps.
     fn div(self, other: Q10) -> Q10 {
+        // Software long division rather than the hardware unit: that unit
+        // divides a 16-bit dividend by an *8-bit* divisor, and this needs 22
+        // dividend bits (`self << 6`) over a 16-bit divisor. So there is no snes
+        // requirement, at the cost of 22 shift-subtract steps.
         let av: i16 = self.0;
         let bv: i16 = other.0;
 
@@ -235,6 +251,8 @@ impl Q10 {
         //
         // `rem` stays below `ub`, so `rem << 1` cannot exceed 65533 and every
         // intermediate fits u16 -- which is what keeps this off the 32-bit path.
+        // (Q8 has no such luck: its divisor may be a full u16, so it must carry
+        // a 17th remainder bit.)
         let mut rem: u16 = 0;
         let mut quo: u16 = 0;
         let mut i: u8 = 0;
@@ -255,24 +273,21 @@ impl Q10 {
         return Q10(quo as i16);
     }
 
-    // Divide by a plain integer count: result = self / d.
-    //
-    // Cheap, because dividing a fixed-point value by an integer *preserves the
-    // scale* -- (raw/64)/d is (raw/d)/64 -- so this is a straight 16/8 divide
-    // with no shifting, which is exactly the shape of the SNES divider. One
-    // hardware operation against the 22 shift-subtract steps of `div`.
-    //
-    // Reach for this whenever the divisor is a count rather than a scaled value:
-    // `total.div_u8(3)` to split three ways, `span.div_u8(60)` for per-frame.
-    // Use `div` when the divisor is itself a Q10.
-    //
-    // Cannot overflow: dividing by 1 or more only shrinks the magnitude, so
-    // unlike `div` and `round` there is no range precondition. `d` of 0
-    // saturates to +/-511.98, as `div` does.
-    //
-    // Truncates toward zero, as `mul` and `div` do.
-    //
-    // Requires: include!("lib/sneslib.r65")
+    /// Divides by a plain integer count: `self / d`.
+    ///
+    /// Reach for this whenever the divisor is a count rather than a scaled
+    /// value: `total.div_u8(3)` to split three ways, `span.div_u8(60)` for
+    /// per-frame. Use `div` when the divisor is itself a `Q10`.
+    ///
+    /// Much cheaper than `div` — one hardware operation against 22 software
+    /// steps — because dividing a fixed-point value by an integer preserves the
+    /// scale, leaving a straight 16/8 divide.
+    ///
+    /// Truncates toward zero. `d` of 0 saturates to +/-511.984, as `div` does.
+    /// Cannot overflow: dividing by 1 or more only shrinks the magnitude, so
+    /// unlike `div` and `round` there is no range precondition.
+    ///
+    /// Requires: `include!("lib/sneslib.r65")`
     #[cfg(snes)]
     fn div_u8(self, d: u8) -> Q10 {
         let av: i16 = self.0;
@@ -310,28 +325,28 @@ impl Q10 {
         return Q10(quo as i16);
     }
 
-    // Linear interpolation from `a` toward `b`. `t` of Q10_ONE yields `b`
-    // exactly, `t` of 0 yields `a`.
-    //
-    //     result = a + (b - a) * t
-    //
-    // One multiply, not the two of `a*(1-t) + b*t`: `mul` drives the hardware
-    // unit four times, so halving the multiplies outweighs the wider
-    // intermediate range the two-multiply form would tolerate.
-    //
-    // `t` is not clamped — above Q10_ONE it extrapolates past `b`, below zero
-    // past `a`. That is often what you want for easing; clamp at the call site
-    // if not.
-    //
-    // Precondition: `b - a` must fit the Q10 range (|b - a| < 512.0).
-    // Endpoints spanning more than the whole range wrap.
-    // Requires: include!("lib/sneslib.r65")
+    /// Interpolates linearly from `a` toward `b`, by `t`.
+    ///
+    /// `t` of `Q10_ONE` yields `b` exactly, `t` of 0 yields `a`. `t` is not
+    /// clamped: above `Q10_ONE` it extrapolates past `b`, below zero past `a`.
+    /// That is often what you want for easing; clamp at the call site if not.
+    ///
+    /// Precondition: `b - a` must fit the Q10 range (|b - a| < 512.0). Endpoints
+    /// spanning more than the whole range wrap.
+    ///
+    /// Requires: `include!("lib/sneslib.r65")`
     #[cfg(snes)]
     fn lerp(a: Q10, b: Q10, t: Q10) -> Q10 {
+        // a + (b - a) * t. One multiply, not the two of `a*(1-t) + b*t`: `mul`
+        // drives the hardware unit four times, so halving the multiplies
+        // outweighs the wider intermediate range the two-multiply form would
+        // tolerate.
         return a + (b - a).mul(t);
     }
 
-    // Absolute value
+    /// Returns the absolute value.
+    ///
+    /// Precondition: raw -32768 (exactly -512.0) negates to itself in 16 bits.
     fn abs(self) -> Q10 {
         if self.0 < 0 {
             return Q10(0 - self.0);
@@ -339,30 +354,27 @@ impl Q10 {
         return self;
     }
 
-    // Decimal text, two places after the point: "100.00", "-12.75", "0.02".
-    // Returns the character count. This is what `format!("{s}", q)` calls.
-    //
-    // Writes exactly that many bytes and **no terminator**: `format!` writes one
-    // itself once the whole string is assembled, so a per-fragment NUL would be
-    // a redundant store one byte past the returned length. A direct caller that
-    // wants a C string terminates it with the returned count.
-    //
-    // Note this differs from the U32/I32/F32 ToString impls, which do write a
-    // NUL.
-    //
-    // Q10 is a newtype, so this is an inherent method rather than
-    // `impl ToString for Q10`: trait dispatch stores a TypeId byte at offset 0,
-    // which would overlap the value. `format!` resolves `to_string` by name, so
-    // it finds this and calls it statically — no vtable, and `self` arrives in a
-    // register.
-    //
-    // Two places is lossy: the scale is 1/64 = 0.015625, so 0.984375 prints as
-    // "0.98". Exact output would need six places and a 32-bit multiply.
-    //
-    // `buf` needs 7 bytes for the widest result, "-511.98".
-    //
-    // Precondition: raw -32768 (exactly -512.0) negates to itself in 16 bits and
-    // prints as garbage. Same limit as `abs`.
+    /// Formats `self` as decimal text with two places, and returns the character
+    /// count: `"100.00"`, `"-12.75"`, `"0.02"`.
+    ///
+    /// Writes exactly that many bytes and **no terminator** — the returned count
+    /// delimits the string. A direct caller wanting a C string writes the NUL
+    /// itself at the returned offset.
+    ///
+    /// Two places is lossy: the scale is 1/64 = 0.015625, so 0.984375 prints as
+    /// "0.98". Exact output would need six places and a 32-bit multiply.
+    ///
+    /// This is what `format!("{s}", q)` calls. It is an inherent method rather
+    /// than `impl ToString for Q10` because a newtype cannot implement a trait —
+    /// dispatch stores a TypeId byte at offset 0, which would overlap the value.
+    /// `format!` resolves `to_string` by name, so it finds this and calls it
+    /// statically.
+    ///
+    /// # Parameters
+    /// - `buf` — destination, needing 7 bytes for the widest result, `"-511.98"`
+    ///
+    /// Precondition: raw -32768 (exactly -512.0) negates to itself in 16 bits and
+    /// prints as garbage. Same limit as `abs`.
     fn to_string(self, buf: far *u8) -> u16 {
         let mut n: u16 = 0;
         let mut v: i16 = self.0;
@@ -422,20 +434,24 @@ impl Q10 {
         return n;
     }
 
-    // Constrain a value to [$lo, $hi], yielding the result.
-    //
-    //     VELOCITY = VELOCITY.clamp!(Q10(0 - 256), Q10(256));
-    //     let y: Q10 = player_y.clamp!(Q10(0), SCREEN_BOTTOM);
-    //
-    // A block expression, so it expands inline with no call. The receiver is
-    // bound once inside the block rather than read once per comparison — `self`
-    // is substituted textually, so naming it three times would evaluate the
-    // receiver three times.
-    //
-    // The binding is `_q10_clamp` rather than something plainer because R65
-    // macros are not hygienic: a common name would capture a caller's variable.
+    /// Constrains a value to `[$lo, $hi]`, yielding the result.
+    ///
+    /// A block expression, so it expands inline with no call.
+    ///
+    /// # Example
+    /// ```
+    /// VELOCITY = VELOCITY.clamp!(Q10(0 - 256), Q10(256));
+    /// let y: Q10 = player_y.clamp!(Q10(0), SCREEN_BOTTOM);
+    /// ```
     macro_rules! clamp($lo:expr, $hi:expr) {
         {
+            // The receiver is bound once inside the block rather than read once
+            // per comparison — `self` is substituted textually, so naming it
+            // three times would evaluate the receiver three times.
+            //
+            // The binding is `_q10_clamp` rather than something plainer because
+            // R65 macros are not hygienic: a common name would capture a
+            // caller's variable.
             let _q10_clamp: Q10 = self;
             if _q10_clamp < $lo {
                 $lo

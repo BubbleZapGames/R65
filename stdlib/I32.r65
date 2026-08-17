@@ -759,9 +759,9 @@ impl I32 {
 
 /// Powers the `+=` operator — adds another `I32` into `self`, wrapping on overflow.
 impl AddAssign for I32 {
-    // Add: self += other (with overflow wrapping)
-    // Two's complement addition is identical to unsigned
     far fn add_assign(far *self, other: far *I32) {
+        // No sign handling: two's complement addition is bit-identical to the
+        // unsigned form.
         let s_lo: u16 = self.lo;
         let s_hi: u16 = self.hi;
         let o_lo: u16 = other.lo;
@@ -779,9 +779,9 @@ impl AddAssign for I32 {
 
 /// Powers the `-=` operator — subtracts another `I32` from `self`, wrapping on underflow.
 impl SubAssign for I32 {
-    // Subtract: self -= other (with underflow wrapping)
-    // Two's complement subtraction is identical to unsigned
     far fn sub_assign(far *self, other: far *I32) {
+        // No sign handling: two's complement subtraction is bit-identical to the
+        // unsigned form.
         let s_lo: u16 = self.lo;
         let s_hi: u16 = self.hi;
         let o_lo: u16 = other.lo;
@@ -799,9 +799,9 @@ impl SubAssign for I32 {
 
 /// Powers the `*=` operator — signed multiply of `self` by another `I32`, keeping the low 32 bits.
 impl MulAssign for I32 {
-    // Multiply: self *= other (32x32 -> 32, lower 32 bits only)
-    // Signed multiplication: track signs, multiply magnitudes, fix sign
     far fn mul_assign(far *self, other: far *I32) {
+        // Track the signs, multiply the magnitudes, then reapply — the shift-add
+        // core is unsigned.
         let mut negate_result: bool = false;
 
         // Determine if result should be negative (signs differ)
@@ -870,9 +870,9 @@ impl MulAssign for I32 {
 
 /// Powers the `/=` operator (rounds toward zero). A zero divisor sets `self` to `MIN_I32`.
 impl DivAssign for I32 {
-    // Divide: self /= other (rounds toward zero, returns MIN_I32 if other == 0)
-    // Signed division: track signs, divide magnitudes, fix sign
     far fn div_assign(far *self, other: far *I32) {
+        // Track the signs, divide the magnitudes, then reapply — the long-division
+        // core is unsigned.
         let o_lo: u16 = other.lo;
         let mut o_hi: u16 = other.hi;
 

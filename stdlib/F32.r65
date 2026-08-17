@@ -349,11 +349,15 @@ impl F32 {
     // Arithmetic Methods (all modify self in-place)
     // ========================================================================
 
-    // Internal addition core. Adds a mantissa/exponent pair to self.
-    // Both add() and sub() delegate to this.
-    // o_lo: other mantissa low 16 bits
-    // o_hi: other mantissa high byte (in low 8 bits of u16)
-    // o_exp: other exponent (biased)
+    /// Adds a mantissa/exponent pair into `self`.
+    ///
+    /// The shared core both `add_assign` and `sub_assign` delegate to; `sub`
+    /// negates the mantissa first.
+    ///
+    /// # Parameters
+    /// - `o_lo` — other mantissa, low 16 bits
+    /// - `o_hi` — other mantissa, high byte (in the low 8 bits)
+    /// - `o_exp` — other exponent, biased
     far fn add_raw(far *self, o_lo: u16, o_hi: u16, o_exp: u16) {
         let s_eh: u16 = self.exp_hi;
         let s_exp: u16 = s_eh >> 8;
@@ -443,7 +447,6 @@ impl F32 {
 
 /// Powers the `+=` operator — adds another `F32` into `self`.
 impl AddAssign for F32 {
-    // self += other
     far fn add_assign(far *self, other: far *F32) {
         let o_eh: u16 = other.exp_hi;
         let o_exp: u16 = o_eh >> 8;
@@ -454,7 +457,6 @@ impl AddAssign for F32 {
 
 /// Powers the `-=` operator — subtracts another `F32` from `self`.
 impl SubAssign for F32 {
-    // self -= other
     far fn sub_assign(far *self, other: far *F32) {
         let o_eh: u16 = other.exp_hi;
         let o_exp: u16 = o_eh >> 8;
@@ -469,8 +471,8 @@ impl SubAssign for F32 {
 
 /// Powers the `*=` operator — multiplies `self` by another `F32`.
 impl MulAssign for F32 {
-    // self *= other (SNES hardware multiply, 9 partial products)
     far fn mul_assign(far *self, other: far *F32) {
+        // Nine 8x8 partial products on the SNES hardware multiplier.
         let s_eh: u16 = self.exp_hi;
         let o_eh: u16 = other.exp_hi;
         let s_exp: u16 = s_eh >> 8;
@@ -597,13 +599,13 @@ impl MulAssign for F32 {
     }
 }
 
-/// Powers the `/=` operator. Divide-by-zero or overflow yields the maximum magnitude.
+/// Powers the `/=` operator. Divide-by-zero or overflow yields the maximum
+/// magnitude.
 impl DivAssign for F32 {
-    // self /= other
-    // Uses 23-iteration binary long division for full 23-bit quotient precision.
-    // Result exponent: r_exp = s_exp - o_exp + 128 (+ 1 if pre-norm halves dvnd).
-    // Returns max magnitude on divide-by-zero or overflow.
     far fn div_assign(far *self, other: far *F32) {
+        // Binary long division, 23 iterations for a full 23-bit quotient.
+        // Result exponent: r_exp = s_exp - o_exp + 128, plus 1 if the pre-norm
+        // step halves the dividend.
         let s_eh: u16 = self.exp_hi;
         let o_eh: u16 = other.exp_hi;
         let s_exp: u16 = s_eh >> 8;

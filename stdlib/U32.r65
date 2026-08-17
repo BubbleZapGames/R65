@@ -528,7 +528,6 @@ impl U32 {
 
 /// Powers the `+=` operator — adds another `U32` into `self`, wrapping on overflow.
 impl AddAssign for U32 {
-    // Add: self += other (with overflow wrapping)
     far fn add_assign(far *self, other: far *U32) {
         let s_lo: u16 = self.lo;
         let s_hi: u16 = self.hi;
@@ -547,7 +546,6 @@ impl AddAssign for U32 {
 
 /// Powers the `-=` operator — subtracts another `U32` from `self`, wrapping on underflow.
 impl SubAssign for U32 {
-    // Subtract: self -= other (with underflow wrapping)
     far fn sub_assign(far *self, other: far *U32) {
         let s_lo: u16 = self.lo;
         let s_hi: u16 = self.hi;
@@ -566,9 +564,9 @@ impl SubAssign for U32 {
 
 /// Powers the `*=` operator — multiplies `self` by another `U32`, keeping the low 32 bits.
 impl MulAssign for U32 {
-    // Multiply: self *= other (32x32 -> 32, lower 32 bits only)
-    // Software shift-and-add algorithm
     far fn mul_assign(far *self, other: far *U32) {
+        // Software shift-and-add: the hardware multiplier is 8x8, far too narrow
+        // to help here.
         let mut result_lo: u16 = 0;
         let mut result_hi: u16 = 0;
         let mut mcand_lo: u16 = self.lo;
@@ -614,9 +612,8 @@ impl MulAssign for U32 {
 
 /// Powers the `/=` operator. A zero divisor sets `self` to `0xFFFFFFFF`.
 impl DivAssign for U32 {
-    // Divide: self /= other (returns 0xFFFFFFFF if other == 0)
-    // Long division algorithm
     far fn div_assign(far *self, other: far *U32) {
+        // Restoring long division, one quotient bit per iteration.
         let o_lo: u16 = other.lo;
         let o_hi: u16 = other.hi;
 
