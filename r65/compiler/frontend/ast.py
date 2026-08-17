@@ -528,6 +528,7 @@ class ImplMacro(ASTNode):
     """
     name: str
     arms: List[MacroArm]
+    doc: Optional[str] = None
 
 
 @dataclass

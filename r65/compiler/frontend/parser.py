@@ -785,6 +785,7 @@ class ASTBuilder(Transformer):
         name = None
         params = []
         body_tokens = []
+        doc, _ = self._collect_doc_comments(items, 0)
 
         for item in items:
             if isinstance(item, LarkToken) and item.type == 'IDENT':
@@ -799,6 +800,7 @@ class ASTBuilder(Transformer):
         return ast.ImplMacro(
             name=name,
             arms=[ast.MacroArm(params=params, body_tokens=body_tokens)],
+            doc=doc,
             source_loc=self._make_source_loc(tree.meta)
         )
 
@@ -808,6 +810,7 @@ class ASTBuilder(Transformer):
         items = tree.children
         name = None
         arms = []
+        doc, _ = self._collect_doc_comments(items, 0)
 
         for item in items:
             if isinstance(item, LarkToken) and item.type == 'IDENT':
@@ -818,6 +821,7 @@ class ASTBuilder(Transformer):
         return ast.ImplMacro(
             name=name,
             arms=arms,
+            doc=doc,
             source_loc=self._make_source_loc(tree.meta)
         )
 

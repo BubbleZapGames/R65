@@ -131,8 +131,8 @@ impl_decl: doc_comment* IMPL IDENT "{" impl_item* "}"
           | impl_macro
 
 // Macro definition inside impl block (same syntax as top-level macro_rules!)
-impl_macro: MACRO_RULES "!" IDENT "(" macro_params? ")" macro_body          -> impl_macro_short
-          | MACRO_RULES "!" IDENT "{" macro_arm (";" macro_arm)* ";"? "}"   -> impl_macro_multi
+impl_macro: doc_comment* MACRO_RULES "!" IDENT "(" macro_params? ")" macro_body          -> impl_macro_short
+          | doc_comment* MACRO_RULES "!" IDENT "{" macro_arm (";" macro_arm)* ";"? "}"   -> impl_macro_multi
 
 // Method declaration in impl block
 // fn name(*self, ...) or fn name(far *self, ...) for explicit far self
