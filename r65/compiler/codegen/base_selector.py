@@ -12,12 +12,12 @@ Provides common functionality shared across all selector classes:
 from abc import ABC
 from typing import TYPE_CHECKING
 
-from r65.compiler.codegen.opcodes import Opcode
+from r65.compiler.codegen.opcodes import Opcode, STORE_MNEMONICS
 from r65.compiler.codegen.asm_nodes import Immediate, Address
 from r65.compiler.codegen.location_resolver import (
-    LocationResolver, StoreResolver, default_resolver
+    LocationResolver, default_resolver
 )
-from r65.compiler.codegen.register_alloc import PhysicalLocation
+from r65.compiler.codegen.register_alloc import PhysicalLocation, LocationKind
 
 if TYPE_CHECKING:
     from r65.compiler.codegen.instruction_select import InstructionSelector
@@ -133,28 +133,83 @@ class BaseSelector(ABC):
         opcode, operand = self._resolver.resolve_and_get_opcode(mnemonic, location)
         self._emit_instr(opcode, operand, comment)
 
-    def _emit_store(self, mnemonic: str, location: PhysicalLocation, comment: str = None):
-        """
-        Emit a store instruction, handling STX/STY limitations.
+    def _emit_store_from_reg(self, reg: str, dest_loc: PhysicalLocation,
+                             is_u16: bool, value_bytes: int,
+                             comment: str = None):
+        """Store hardware register `reg` to `dest_loc`, writing `value_bytes` bytes.
 
-        STX and STY have limited addressing mode support. This method
-        automatically applies workarounds when needed.
+        Two width parameters, because they answer different questions and are
+        not the same set:
 
-        Args:
-            mnemonic: Store mnemonic (STA, STX, STY)
-            location: Destination location
-            comment: Optional comment
+        `value_bytes` is the destination's true width, from the MIR node's
+        type_info. X and Y are unconditionally 16-bit in R65, so STX/STY always
+        write TWO bytes -- a 1-byte destination cannot use them at all, whatever
+        the addressing mode. This is the only thing value_bytes decides.
+
+        `is_u16` is the existing _is_16bit predicate, threaded through unchanged,
+        and drives only the accumulator width for a direct store from A. It is
+        False for a 2-byte struct and for 4-byte u32/f32, so collapsing the two
+        would quietly change the A path for those.
         """
-        if StoreResolver.needs_workaround(mnemonic, location):
-            # Transfer to A first, then use STA
-            transfer_op = StoreResolver.get_transfer_opcode(mnemonic)
-            self._emit_instr(transfer_op, comment=f"Transfer to A (no {mnemonic} with this addressing)")
-            opcode, operand = self._resolver.resolve_and_get_opcode('STA', location)
-            self._emit_instr(opcode, operand, comment)
-            self.parent._mark_a_modified()
+        from r65.compiler.codegen.errors import InstructionSelectionError
+
+        if reg == 'A':
+            if is_u16:
+                self.parent._ensure_m16_mode()
+            else:
+                # 8-bit store from A must ensure m8 to avoid a 16-bit STA
+                # (critical for write-twice PPU registers like BGnHOFS/BGnVOFS)
+                self.parent._ensure_m8_mode()
+            self._emit_load_store('STA', dest_loc, comment)
+            return
+
+        if reg == 'B':
+            # Goes through the XBA manager so the tracked state stays in sync,
+            # and so the access is pinned to m8.
+            self.parent._access_b_value_in_a()
+            self._emit_load_store('STA', dest_loc, comment)
+            self.parent._ensure_xba_state_normal("Restore A register")
+            return
+
+        if reg not in ('X', 'Y'):
+            raise InstructionSelectionError(
+                f"Cannot store from hardware register: {reg}",
+                source_loc=self.parent._current_source_loc)
+
+        # STX/STY store index-width bytes, and R65 is unconditionally x16. A
+        # 1-byte destination would take its neighbour with it, so it has to go
+        # through A regardless of addressing mode.
+        direct = (value_bytes == 2
+                  and self.parent._supports_addressing(STORE_MNEMONICS[reg], dest_loc))
+        if direct:
+            self._emit_load_store(STORE_MNEMONICS[reg], dest_loc, comment)
+            return
+
+        # Pin the accumulator BEFORE the transfer. TXA/TYA are M-sized: run in
+        # m16 the transfer copies 16 bits, which both widens the store and
+        # overwrites B with the index register's high byte.
+        if value_bytes == 2:
+            self.parent._ensure_m16_mode()
         else:
-            opcode, operand = self._resolver.resolve_and_get_opcode(mnemonic, location)
-            self._emit_instr(opcode, operand, comment)
+            self.parent._ensure_m8_mode()
+
+        # A may still hold something live (an '@ A' parameter used after this
+        # store). The mode is pinned above and unchanged until the pull, so the
+        # push and the pull are the same width and the frame balances.
+        a_is_live = not self.parent._hw_reg_is_free('A')
+        if a_is_live:
+            self._emit_instr(Opcode.PHA, comment="Save A (live value)")
+            if dest_loc.kind == LocationKind.STACK:
+                dest_loc = self.parent._offset_location(dest_loc, value_bytes)
+
+        self._emit_instr(Opcode.TXA if reg == 'X' else Opcode.TYA,
+                         comment=f"Transfer to A (no {STORE_MNEMONICS[reg]} with this addressing)")
+        self._emit_load_store('STA', dest_loc, comment)
+
+        if a_is_live:
+            self._emit_instr(Opcode.PLA, comment="Restore A (live value)")
+        else:
+            self.parent._mark_a_modified()
 
     def _emit_load_store(self, mnemonic: str, location: PhysicalLocation, comment: str = None):
         """Emit a load/store instruction using the parent's opcode selection.

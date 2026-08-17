@@ -202,6 +202,28 @@ restore needs its mode pinned — and it is pinned in **both** directions. A `TY
 executed in m16 writes 16 bits into A, and the high half *is* B, which by then
 holds a `@ B` argument.
 
+### Storing From an Index Register
+
+X and Y are unconditionally 16-bit in R65, so `STX`/`STY` write **two** bytes. A
+1-byte destination therefore cannot use them at all and is routed through the
+accumulator:
+
+```asm
+STY $10        ; WRONG for a u8 destination -- writes $10 and $11
+SEP #$20       ; the compiler emits this instead
+TYA            ; M-sized: copies only Y's low byte, leaving B alone
+STA $10
+```
+
+The accumulator is narrowed *before* the transfer, not after. `TYA` run in m16
+copies 16 bits, which both widens the following store and overwrites `B` with the
+index register's high byte.
+
+The same routing covers the addressing modes `STX`/`STY` lack — stack-relative,
+self-indexed (`STX addr,X`), and long — so a `#[ram]` destination works rather
+than failing to assemble. A genuine 2-byte value still stores directly, at no
+cost.
+
 ### Zero-Cost Calls
 
 When arguments already match parameter aliases, the compiler emits no setup code:

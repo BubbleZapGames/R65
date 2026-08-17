@@ -2286,7 +2286,7 @@ class CallInstructionSelector(BaseSelector):
             elif dest_loc.is_hw():
                 self._emit_return_register_transfer(source_reg, dest_loc.hw_register, return_size)
             else:
-                self._emit_return_store(source_reg, dest_loc)
+                self._emit_return_store(source_reg, dest_loc, return_size)
 
     def _get_return_value_sizes(self, instr: Call) -> List[int]:
         """Return per-return-value byte sizes (parallel to instr.returns).
@@ -2396,11 +2396,17 @@ class CallInstructionSelector(BaseSelector):
         else:
             self._emit_transfer(source_reg, dest_reg)
 
-    def _emit_return_store(self, source_reg: str, dest_loc):
-        """Store return value from register to memory."""
-        mnemonic = STORE_MNEMONICS.get(source_reg)
-        if mnemonic:
-            self.parent._emit_store(mnemonic, dest_loc)
+    def _emit_return_store(self, source_reg: str, dest_loc, return_size: int = 1):
+        """Store return value from register to memory.
+
+        Hardening rather than a fix: HIR already rejects a 1-byte return value
+        bound to X or Y (`hir/builder.py`: "does not fit return register X,
+        which holds 2 byte(s)"), so this cannot currently reach the width
+        hazard. Routing through the shared helper keeps it that way.
+        """
+        if source_reg in STORE_MNEMONICS:
+            self._emit_store_from_reg(source_reg, dest_loc,
+                                      return_size >= 2, return_size)
 
     # ========================================================================
     # Built-in Function Calls

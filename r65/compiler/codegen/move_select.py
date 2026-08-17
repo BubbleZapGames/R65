@@ -373,7 +373,13 @@ class MoveOperationSelector(BaseSelector):
         src_loc = self.parent._get_operand_location(src_operand)
 
         if src_loc.is_hw():
-            self._store_hw_register_to_memory(src_loc.hw_register, dest_loc, is_u16)
+            # Computed here rather than in the caller: get_type_size raises on a
+            # struct/trait type_info, and only the hardware-register path needs
+            # the width (a struct never lives in a register).
+            from r65.compiler.codegen.type_utils import get_type_size
+            value_bytes = get_type_size(instr.type_info) if instr.type_info else 1
+            self._emit_store_from_reg(src_loc.hw_register, dest_loc, is_u16,
+                                      value_bytes)
         elif is_far_ptr:
             # 3-byte far pointer copy
             self._emit_far_pointer_mem_to_mem(src_loc, dest_loc)
@@ -390,79 +396,3 @@ class MoveOperationSelector(BaseSelector):
     def _emit_far_pointer_mem_to_mem(self, src_loc, dest_loc):
         """Copy a 3-byte far pointer from source to destination."""
         self._emit_pointer_mem_copy(src_loc, dest_loc, 3)
-
-    def _store_hw_register_to_memory(self, src_reg: str, dest_loc, is_u16: bool):
-        """Store a hardware register to memory."""
-        if src_reg in STORE_MNEMONICS:
-            # Check for unsupported addressing modes for STX and STY
-            need_transfer_to_a = False
-
-            # STX and STY don't support stack-relative addressing
-            if src_reg in ('X', 'Y') and dest_loc.kind == LocationKind.STACK:
-                need_transfer_to_a = True
-
-            # STX doesn't support X-indexed addressing (can't use STX addr,X)
-            # STY doesn't support Y-indexed addressing (can't use STY addr,Y)
-            if src_reg == 'X' and dest_loc.index_register == 'X':
-                need_transfer_to_a = True
-            if src_reg == 'Y' and dest_loc.index_register == 'Y':
-                need_transfer_to_a = True
-
-            # For 16-bit stores from X/Y, we must transfer to A
-            if is_u16 and src_reg in ('X', 'Y'):
-                need_transfer_to_a = True
-
-            if need_transfer_to_a:
-                transfer_op = Opcode.TXA if src_reg == 'X' else Opcode.TYA
-
-                # Check if A contains a live value that needs to be preserved
-                # This can happen when A holds a parameter that's used later
-                a_is_live = not self.parent._hw_reg_is_free('A')
-                saved_a = False
-
-                if a_is_live:
-                    # Save A before clobbering it with the transfer
-                    # Use PHA to push current A value
-                    self._emit_instr(Opcode.PHA, comment="Save A (live value)")
-                    saved_a = True
-                    # Adjust stack-relative destination if needed
-                    if dest_loc.kind == LocationKind.STACK:
-                        # Stack moved down by 1 byte (8-bit mode) or 2 bytes (16-bit mode)
-                        # For now assume 8-bit mode before mode switch
-                        dest_loc = self.parent._offset_location(dest_loc, 1)
-
-                if is_u16 and src_reg in ('X', 'Y'):
-                    # 16-bit store: switch to 16-bit A, transfer, store both bytes
-                    self.parent._ensure_m16_mode()
-                    self._emit_instr(transfer_op, comment=f"Transfer to A (16-bit)")
-                    self._emit_load_store('STA', dest_loc)
-                    # Note: Do NOT switch back - mode will be restored when needed
-                else:
-                    self._emit_instr(transfer_op, comment=f"Transfer to A (no {STORE_MNEMONICS[src_reg]} with this addressing)")
-                    self._emit_load_store('STA', dest_loc)
-
-                if saved_a:
-                    # Restore A from stack
-                    # Need to be in 8-bit mode for PLA to restore just the low byte
-                    self.parent._ensure_m8_mode()
-                    self._emit_instr(Opcode.PLA, comment="Restore A (live value)")
-                else:
-                    self.parent._mark_a_modified()
-            else:
-                # 16-bit store from A: ensure m16 mode. After a u16 callee
-                # returns, A holds the 16-bit return value but the emitter
-                # may have already restored m8 (exit-mode restore runs before
-                # the result-Move is lowered). The high byte is preserved in
-                # B during m8, so REP #$20 makes it accessible again.
-                if is_u16 and src_reg == 'A':
-                    self.parent._ensure_m16_mode()
-                self._emit_load_store(STORE_MNEMONICS[src_reg], dest_loc)
-        elif src_reg == 'B':
-            # B register: use XBA to swap B into A, store, then XBA to restore
-            # XBA preserves both values (just swaps), so A is restored afterward
-            self._emit_instr(Opcode.XBA, comment="Swap B into A for store")
-            self._emit_load_store('STA', dest_loc)
-            self._emit_instr(Opcode.XBA, comment="Restore A and B")
-        else:
-            raise InstructionSelectionError(
-                f"Cannot move {'16-bit ' if is_u16 else ''}value from register {src_reg} to memory", source_loc=self.parent._current_source_loc)

@@ -248,7 +248,13 @@ class MemoryOperationSelector(BaseSelector):
         src_loc = self.parent._get_operand_location(instr.source)
 
         if src_loc.is_hw():
-            self._store_from_hardware_register(src_loc, dest_loc, is_u16)
+            # Computed here rather than in the caller: get_type_size raises on a
+            # struct/trait type_info, and only the hardware-register path needs
+            # the width (a struct never lives in a register).
+            from r65.compiler.codegen.type_utils import get_type_size
+            value_bytes = get_type_size(instr.type_info) if instr.type_info else 1
+            self._emit_store_from_reg(src_loc.hw_register, dest_loc, is_u16,
+                                      value_bytes)
         elif is_far_ptr:
             # 3-byte far pointer copy
             self._store_far_pointer(src_loc, dest_loc)
@@ -265,50 +271,6 @@ class MemoryOperationSelector(BaseSelector):
         # Far pointer copies are byte-by-byte, need 8-bit mode
         self._ensure_m8_mode()
         self._emit_pointer_mem_copy(src_loc, dest_loc, 3)
-
-    def _store_from_hardware_register(self, src_loc, dest_loc, is_u16: bool):
-        """Store from a hardware register to memory."""
-        reg = src_loc.hw_register
-
-        if reg == 'B':
-            # B register: swap to A, store, swap back
-            self.parent._access_b_value_in_a()
-            self._emit_load_store('STA', dest_loc)
-            self.parent._ensure_xba_state_normal("Restore A register")
-        elif reg not in STORE_MNEMONICS:
-            raise InstructionSelectionError(f"Cannot store from hardware register: {reg}", source_loc=self.parent._current_source_loc)
-        else:
-            # Check for unsupported addressing modes for STX and STY
-            need_transfer_to_a = False
-
-            # STX and STY don't support stack-relative addressing
-            if reg in ('X', 'Y') and dest_loc.kind == LocationKind.STACK:
-                need_transfer_to_a = True
-
-            # STX doesn't support X-indexed addressing (can't use STX addr,X)
-            # STY doesn't support Y-indexed addressing (can't use STY addr,Y)
-            if reg == 'X' and dest_loc.index_register == 'X':
-                need_transfer_to_a = True
-            if reg == 'Y' and dest_loc.index_register == 'Y':
-                need_transfer_to_a = True
-
-            if need_transfer_to_a:
-                transfer_op = Opcode.TXA if reg == 'X' else Opcode.TYA
-                self._emit_instr(transfer_op, comment=f"Transfer to A (no {STORE_MNEMONICS[reg]} with this addressing)")
-                self._emit_load_store('STA', dest_loc)
-                self.parent._mark_a_modified()
-            elif reg == 'A' and is_u16:
-                # 16-bit store from A register needs 16-bit mode
-                self._ensure_m16_mode()
-                self._emit_load_store('STA', dest_loc)
-                # Note: Do NOT switch back - mode will be restored when needed
-            elif reg == 'A' and not is_u16:
-                # 8-bit store from A must ensure m8 to avoid 16-bit STA
-                # (critical for write-twice PPU registers like BGnHOFS/BGnVOFS)
-                self._ensure_m8_mode()
-                self._emit_load_store('STA', dest_loc)
-            else:
-                self._emit_load_store(STORE_MNEMONICS[reg], dest_loc)
 
     def _store_function_pointer(self, func_ptr: FunctionPointer, dest_loc, type_info):
         """Store a function pointer address directly to memory."""

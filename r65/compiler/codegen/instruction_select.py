@@ -53,7 +53,7 @@ from r65.compiler.codegen.constants import (
     WRAM_BANK, WRAM_BANK2, WRAM_BANK_START, WRAM_BANK2_START
 )
 from r65.compiler.codegen.location_resolver import (
-    StoreResolver, default_resolver
+    default_resolver
 )
 from r65.compiler.codegen.selector_context import SelectorContext
 from r65.compiler.codegen.asm_nodes import Immediate, Address, StackOffset, Instruction as AsmInstruction
@@ -269,6 +269,23 @@ class InstructionSelector:
     # Opcode Selection Helpers
     # ========================================================================
 
+    def _supports_addressing(self, mnemonic: str, location) -> bool:
+        """Does `mnemonic` have an opcode for this location's addressing mode?
+
+        Asks _get_opcode_for_location, which is pure -- it computes, it does not
+        emit -- rather than re-deriving the mode, so this sees the same D=S /
+        SET_DBR / spill-offset adjustments the real store will. Reading
+        OPCODE_VARIANTS through that one path is why this replaces a
+        hand-maintained list of what STX/STY cannot do: such a list has to be
+        kept in sync with the opcode table, and had already drifted out of it.
+        """
+        from r65.compiler.codegen.errors import InstructionSelectionError
+        try:
+            self._get_opcode_for_location(mnemonic, location)
+            return True
+        except InstructionSelectionError:
+            return False
+
     def _get_opcode_for_location(self, mnemonic: str, location: PhysicalLocation) -> tuple[Opcode, Address | StackOffset]:
         """
         Get the appropriate Opcode variant and operand for a memory location.
@@ -379,20 +396,13 @@ class InstructionSelector:
         self.emitter.emit_instr(opcode, operand, comment, self._current_source_loc)
 
     def _emit_store(self, mnemonic: str, location: PhysicalLocation, comment: str = None):
-        """
-        Emit a store instruction with the appropriate addressing mode.
+        """Emit a store with the appropriate addressing mode.
 
-        Uses StoreResolver to handle STX/STY addressing mode limitations.
+        Every caller stores from A. Storing from an index register goes through
+        `_emit_store_from_reg`, which additionally knows that STX/STY write
+        index-width bytes and so cannot serve a 1-byte destination at all --
+        a question this method never asked.
         """
-        if StoreResolver.needs_workaround(mnemonic, location):
-            # Transfer to A first, then use STA
-            transfer_op = StoreResolver.get_transfer_opcode(mnemonic)
-            self.emitter.emit_instr(transfer_op, None, f"Transfer to A (no {mnemonic} with this addressing)", self._current_source_loc)
-            opcode, operand = self._get_opcode_for_location('STA', location)
-            self.emitter.emit_instr(opcode, operand, comment, self._current_source_loc)
-            self._mark_a_modified()
-            return
-
         opcode, operand = self._get_opcode_for_location(mnemonic, location)
         self.emitter.emit_instr(opcode, operand, comment, self._current_source_loc)
 

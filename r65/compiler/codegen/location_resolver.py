@@ -315,62 +315,6 @@ class LocationResolver:
 
 
 # ============================================================================
-# Store Instruction Handling
-# ============================================================================
-
-class StoreResolver:
-    """
-    Handles special cases for store instructions (STX, STY limitations).
-
-    65816 STX and STY have limited addressing modes:
-    - STX: No X-indexed, no stack-relative
-    - STY: No Y-indexed, no stack-relative
-
-    This class determines when a workaround is needed.
-    """
-
-    # Instructions with limited addressing mode support
-    LIMITED_STORES = {
-        'STX': {'blocked_index': 'X', 'transfer_to_a': Opcode.TXA},
-        'STY': {'blocked_index': 'Y', 'transfer_to_a': Opcode.TYA},
-    }
-
-    @classmethod
-    def needs_workaround(cls, mnemonic: str, location: PhysicalLocation) -> bool:
-        """
-        Check if a store instruction needs a workaround.
-
-        Args:
-            mnemonic: Store mnemonic (STX, STY, STA)
-            location: Destination location
-
-        Returns:
-            True if the store needs to go through A register
-        """
-        if mnemonic not in cls.LIMITED_STORES:
-            return False
-
-        limits = cls.LIMITED_STORES[mnemonic]
-
-        # Check stack-relative (not supported by STX/STY)
-        if location.kind == LocationKind.STACK:
-            return True
-
-        # Check self-indexed (e.g., STX addr,X)
-        if location.index_register == limits['blocked_index']:
-            return True
-
-        return False
-
-    @classmethod
-    def get_transfer_opcode(cls, mnemonic: str) -> Optional[Opcode]:
-        """Get the transfer-to-A opcode for a store instruction."""
-        if mnemonic in cls.LIMITED_STORES:
-            return cls.LIMITED_STORES[mnemonic]['transfer_to_a']
-        return None
-
-
-# ============================================================================
 # Singleton Instance
 # ============================================================================
 
