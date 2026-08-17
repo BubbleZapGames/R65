@@ -91,11 +91,23 @@ impl Q8 {
         return (self.0 & Q8_FRAC_MASK) as u8;
     }
 
-    // Nearest whole number, ties rounding up.
+    // Nearest whole number, ties rounding up, saturating at 255.
     //
-    // Precondition: values above 255.5 (raw 65408) overflow the +128 bias and
-    // wrap to a small number. The top half-step of the range has no room for it.
+    // 255.5 and above would round to 256, which the u8 return cannot hold and
+    // which the `+ 128` bias cannot even compute -- raw 65408 + 128 wraps to
+    // 127, so the unguarded form returns 0 for the very largest values. The
+    // guard converts that into the nearest representable answer.
+    //
+    // The threshold is exact: 65407 is the last raw value whose bias does not
+    // overflow, and it rounds to 255 by the normal path anyway.
+    //
+    // (Q10's `round` documents an overflow precondition instead of saturating.
+    // Its bias only overflows above 511.48, far less reachable than 255.5 is
+    // here.)
     fn round(self) -> u8 {
+        if self.0 >= 65408 {            // 255.5 -- would round to 256
+            return 255;
+        }
         return ((self.0 + 128) >> 8) as u8;
     }
 

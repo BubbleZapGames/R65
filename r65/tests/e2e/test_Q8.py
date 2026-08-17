@@ -6,9 +6,11 @@ End-to-end tests for the Q8.8 fixed-point library.
 fixed-point arithmetic is right, and that wrapping it in a distinct type costs
 nothing — values still live in two bytes and ride in registers.
 
-Unsigned, unlike Q10. That removes the sign handling from `mul` but adds two
+Unsigned, unlike Q10. That removes the sign handling from `mul` but adds three
 hazards these tests target: `b - a` wraps rather than going negative (see
-`lerp`), and a 1/256 fraction rounds up to a whole unit (see `to_string`).
+`lerp`), a 1/256 fraction rounds up to a whole unit that the integer part has no
+room for (see `to_string` and `round`), and a full-u16 divisor needs a 17-bit
+remainder (see `div`).
 """
 
 from pathlib import Path
@@ -104,7 +106,10 @@ class TestQ8Conversions:
 
 
 class TestQ8Round:
-    """Ties round up. No sign correction is needed — the payload is unsigned."""
+    """Ties round up, and the top of the range saturates rather than wrapping.
+
+    No sign correction is needed — the payload is unsigned.
+    """
 
     def _round(self, e2e, rawv, expected):
         r = e2e.run(program(f"let q: Q8 = Q8({rawv});\nOUT2 = q.round();",
@@ -125,6 +130,19 @@ class TestQ8Round:
     def test_differs_from_to_int(self, e2e):
         """1.75 rounds to 2 but truncates to 1."""
         self._round(e2e, 256 + 192, 2)
+
+    def test_last_value_that_rounds_normally(self, e2e):
+        """255.496 — the largest raw whose `+ 128` bias does not overflow."""
+        self._round(e2e, 65407, 255)
+
+    def test_saturates_rather_than_wrapping(self, e2e):
+        """255.5 would round to 256. Unguarded, `65408 + 128` wraps to 127 and
+        the shift yields 0 — the nastiest possible answer for the largest input.
+        """
+        self._round(e2e, 65408, 255)
+
+    def test_top_of_range_saturates(self, e2e):
+        self._round(e2e, 65535, 255)
 
 
 class TestQ8InheritedOperators:
