@@ -12,7 +12,7 @@ from r65.tests.e2e import ExpectedState
 
 STDLIB_DIR = Path(__file__).parent.parent.parent.parent / "stdlib"
 SNESLIB_PATH = STDLIB_DIR / "sneslib.r65"
-Q10_PATH = STDLIB_DIR / "q10_type.r65"
+Q10_PATH = STDLIB_DIR / "Q10.r65"
 
 PRELUDE = f'''
             include!("{SNESLIB_PATH}")

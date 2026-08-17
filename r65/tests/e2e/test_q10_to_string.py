@@ -19,7 +19,7 @@ _STDLIB = _Path(__file__).parent.parent.parent.parent / "stdlib"
 PRELUDE = (f'include!("{_STDLIB / "sneslib.r65"}")\n'
            f'include!("{_STDLIB / "math.r65"}")\n'
            f'include!("{_STDLIB / "string.r65"}")\n'
-           f'include!("{_STDLIB / "q10_type.r65"}")\n')
+           f'include!("{_STDLIB / "Q10.r65"}")\n')
 
 BUF = 0x7E2000
 

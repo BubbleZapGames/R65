@@ -12,7 +12,7 @@
 //
 // Example usage:
 //
-//   include!("lib/q10_type.r65")
+//   include!("lib/Q10.r65")
 //
 //   #[zeropage]
 //   static mut VELOCITY: Q10;
