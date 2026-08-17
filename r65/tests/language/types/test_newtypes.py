@@ -300,7 +300,7 @@ class TestNewtypeToStringViaFormat:
     # `format!` itself lives in stdlib/string.r65; the type checker's dispatch
     # happens on the `__fmt_str` call the macro expands to, so drive that
     # directly and keep this a unit test. The stdlib path is covered by
-    # r65/tests/e2e/test_q10_to_string.py.
+    # r65/tests/e2e/test_Q10_to_string.py.
     DECL = ("struct Tag(u8);\n"
             "#[ram]\nstatic mut BUF: [u8; 16];\n"
             "#[zeropage(0x30)]\nstatic mut N: u16;\n")
