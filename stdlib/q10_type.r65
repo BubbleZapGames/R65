@@ -36,11 +36,19 @@
 //
 //       // Keep it on screen
 //       player_x = player_x.clamp!(Q10(0), SCREEN_RIGHT);
+//
+//       // Print it: "100.00", n = 6. No terminator is written.
+//       let n: u16 = player_x.to_string(&BUF as far *u8);
 //   }
 //
 // Scaling multiply is `q10_mul`, not `*`: `a * b` on two Q10 values would be a
 // raw integer multiply, off by a factor of 64. It stays a named function
 // because the operator traits cannot yet be implemented for a newtype.
+//
+// `to_string` is likewise an inherent method rather than `impl ToString for Q10`,
+// for the same reason a newtype cannot implement any trait: dispatch stores a
+// TypeId byte at offset 0, which would overlap the value. `format!` resolves
+// `to_string` by name, so `format!("{s}", q)` still works — and statically.
 
 struct Q10(i16);
 
@@ -128,6 +136,89 @@ impl Q10 {
             return Q10(0 - self.0);
         }
         return self;
+    }
+
+    // Decimal text, two places after the point: "100.00", "-12.75", "0.02".
+    // Returns the character count. This is what `format!("{s}", q)` calls.
+    //
+    // Writes exactly that many bytes and **no terminator**: `format!` writes one
+    // itself once the whole string is assembled, so a per-fragment NUL would be
+    // a redundant store one byte past the returned length. A direct caller that
+    // wants a C string terminates it with the returned count.
+    //
+    // Note this differs from the U32/I32/F32 ToString impls, which do write a
+    // NUL.
+    //
+    // Q10 is a newtype, so this is an inherent method rather than
+    // `impl ToString for Q10`: trait dispatch stores a TypeId byte at offset 0,
+    // which would overlap the value. `format!` resolves `to_string` by name, so
+    // it finds this and calls it statically — no vtable, and `self` arrives in a
+    // register.
+    //
+    // Two places is lossy: the scale is 1/64 = 0.015625, so 0.984375 prints as
+    // "0.98". Exact output would need six places and a 32-bit multiply.
+    //
+    // `buf` needs 7 bytes for the widest result, "-511.98".
+    //
+    // Precondition: raw -32768 (exactly -512.0) negates to itself in 16 bits and
+    // prints as garbage. Same limit as `abs`.
+    fn to_string(self, buf: far *u8) -> u16 {
+        let mut n: u16 = 0;
+        let mut v: i16 = self.0;
+        if v < 0 {
+            buf[n] = 0x2D;                  // '-'
+            n = n + 1;
+            v = 0 - v;
+        }
+
+        // v is non-negative from here, so `>>` may be used directly — for a
+        // signed negative it would shift the sign bit down (see to_int).
+        let mut rem: i16 = v >> 6;
+        let mut digits: [u8; 5];
+        let mut count: u8 = 0;
+        // Divide by ten by repeated subtraction rather than calling div8: the
+        // integer part is at most 511, so this is a handful of iterations and it
+        // keeps this file free of the math.r65 dependency (and its snes cfg).
+        loop {
+            let mut q: i16 = 0;
+            loop {
+                if rem < 10 { break; }
+                rem = rem - 10;
+                q = q + 1;
+            }
+            digits[count as u16] = (rem as u8) + 0x30;
+            count = count + 1;
+            rem = q;
+            if rem == 0 { break; }
+        }
+        loop {
+            count = count - 1;
+            buf[n] = digits[count as u16];
+            n = n + 1;
+            if count == 0 { break; }
+        }
+
+        buf[n] = 0x2E;                      // '.'
+        n = n + 1;
+
+        // Hundredths = round(frac * 100 / 64), frac being in 1/64 units (0-63).
+        // `*` takes only power-of-two constants, so 100 is built from shifts:
+        // 64 + 32 + 4. The result is at most 98, never 100, so it can never
+        // carry into the integer part already written above.
+        let frac: i16 = v & Q10_FRAC_MASK;
+        let scaled: i16 = (frac << 6) + (frac << 5) + (frac << 2);
+        let mut r2: i16 = (scaled + 32) >> 6;
+        let mut tens: u8 = 0;
+        loop {
+            if r2 < 10 { break; }
+            r2 = r2 - 10;
+            tens = tens + 1;
+        }
+        buf[n] = tens + 0x30;
+        n = n + 1;
+        buf[n] = (r2 as u8) + 0x30;
+        n = n + 1;
+        return n;
     }
 
     // Constrain a value to [$lo, $hi], yielding the result.

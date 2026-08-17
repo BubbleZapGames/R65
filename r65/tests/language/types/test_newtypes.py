@@ -287,3 +287,43 @@ class TestComposition:
             impl Handle { fn get(self) -> u8 { return self.0.x; } }
             fn main() {}
         ''')
+
+
+class TestNewtypeToStringViaFormat:
+    """`format!("{s}", x)` resolves `to_string` by name, not by trait dispatch.
+
+    A newtype cannot `impl ToString` — the TypeId byte at offset 0 would overlap
+    its value — but it can carry an inherent `to_string`, and static resolution
+    finds it. That is strictly better here: no vtable, and `self` by value.
+    """
+
+    # `format!` itself lives in stdlib/string.r65; the type checker's dispatch
+    # happens on the `__fmt_str` call the macro expands to, so drive that
+    # directly and keep this a unit test. The stdlib path is covered by
+    # r65/tests/e2e/test_q10_to_string.py.
+    DECL = ("struct Tag(u8);\n"
+            "#[ram]\nstatic mut BUF: [u8; 16];\n"
+            "#[zeropage(0x30)]\nstatic mut N: u16;\n")
+
+    def check(self, extra: str):
+        src = (self.DECL + extra
+               + '#[entry]\nfn main() { let t: Tag = 5;'
+                 ' N = __fmt_str(&BUF as far *u8, t); }')
+        TypeChecker(HIRBuilder(source_file="t.r65").build_program(
+            parse(src, "t.r65"))).check()
+
+    def test_inherent_to_string_is_accepted(self):
+        self.check("impl Tag {\n"
+                   "    fn to_string(self, buf: far *u8) -> u16 { return 0; }\n"
+                   "}\n")
+
+    def test_error_names_the_inherent_form(self):
+        """Without the method, the hint must not suggest `impl ToString for` —
+        that is rejected outright for a newtype."""
+        with pytest.raises(TypeCheckError) as exc:
+            self.check("")
+        assert "newtype 'Tag' has no 'to_string'" in str(exc.value), str(exc.value)
+        hint = exc.value.hint or ""
+        assert "impl Tag {" in hint, f"hint should show the inherent form: {hint!r}"
+        assert "impl ToString for" not in hint, (
+            f"a newtype cannot implement the trait: {hint!r}")

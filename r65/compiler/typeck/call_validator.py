@@ -583,10 +583,20 @@ class CallValidator:
             if isinstance(et, BasicTypeInfo) and et.name == 'u8':
                 is_u8_string = True
 
-        # Detect struct (or pointer-to-struct)
+        # Detect struct (or pointer-to-struct), or a newtype.
+        #
+        # Resolution here is by name, not by trait dispatch, so a newtype works
+        # the same way even though it cannot implement ToString (a TypeId byte at
+        # offset 0 would overlap its value). Its inherent `to_string` is found by
+        # the same lookup and called statically -- which is what a newtype wants
+        # anyway: no vtable, and `self` arrives by value.
         struct_name: Optional[str] = None
+        is_newtype = False
         if isinstance(val_type, StructTypeInfo):
             struct_name = val_type.name
+        elif isinstance(val_type, NewtypeTypeInfo):
+            struct_name = val_type.newtype_name
+            is_newtype = True
         elif (isinstance(val_type, PointerTypeInfo)
               and isinstance(val_type.pointee_type, StructTypeInfo)):
             struct_name = val_type.pointee_type.name
@@ -608,6 +618,15 @@ class CallValidator:
         if struct_name is not None:
             method_sym = self.symbol_table.lookup(f'{struct_name}.to_string')
             if not method_sym or method_sym.kind != SymbolKind.METHOD:
+                if is_newtype:
+                    # A newtype cannot implement the trait, so point at the
+                    # inherent method it can have instead -- taking `self` by
+                    # value, as all newtype methods do.
+                    raise TypeCheckError(
+                        f"format {{s}}: newtype '{struct_name}' has no 'to_string' method",
+                        source_loc=expr.source_loc,
+                        hint=f"add: impl {struct_name} {{ fn to_string(self, buf: far *u8) -> u16 {{...}} }}"
+                    )
                 raise TypeCheckError(
                     f"format {{s}}: type '{struct_name}' does not implement ToString",
                     source_loc=expr.source_loc,
