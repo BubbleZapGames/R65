@@ -226,6 +226,27 @@ class TestQ10Round:
     def test_whole_values_are_unchanged(self, e2e):
         self._round(e2e, 192, 3)
 
+    def test_top_of_range_where_the_bias_overflows(self, e2e):
+        """511.98 + 0.5 does not fit i16, yet the answer is still exact.
+
+        It survives on two properties worth pinning: the signed `<` is V-aware,
+        so the overflowed value takes the non-negative branch, and `>>` is
+        logical, so that branch shifts the wrapped pattern as unsigned. 512 fits
+        the i16 return, so unlike Q8 there is nothing to saturate.
+        """
+        self._round(e2e, 32767, 512)
+
+    def test_first_value_whose_bias_overflows(self, e2e):
+        """511.5 is the boundary: the first raw where `+ 32` exceeds i16."""
+        self._round(e2e, 32736, 512)
+
+    def test_last_value_whose_bias_fits(self, e2e):
+        self._round(e2e, 32735, 511)
+
+    def test_bottom_of_range(self, e2e):
+        """-512.0 is the most negative Q10; `+ 32` cannot underflow."""
+        self._round(e2e, "0 - 32768", -512)
+
     def test_differs_from_to_int(self, e2e):
         """The pair that motivates having both: 1.5 floors to 1, rounds to 2."""
         result = e2e.run(
