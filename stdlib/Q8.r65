@@ -65,7 +65,8 @@ impl Q8 {
     ///
     /// `n` is `u8` because the integer part is 8 bits: 256 and above have no
     /// representation.
-    fn from_int(n: u8) -> Q8 {
+    #[inline(always)]
+    far fn from_int(n: u8) -> Q8 {
         return Q8((n as u16) << 8);
     }
 
@@ -74,7 +75,8 @@ impl Q8 {
     ///
     /// Both parameters are exactly the width of their field, so unlike Q10's
     /// `from` there is nothing to mask and no way to overflow either one.
-    fn from(n: u8, f: u8) -> Q8 {
+    #[inline(always)]
+    far fn from(n: u8, f: u8) -> Q8 {
         return Q8(((n as u16) << 8) | (f as u16));
     }
 
@@ -82,12 +84,14 @@ impl Q8 {
     ///
     /// Truncation and floor are the same thing here, the payload being unsigned —
     /// Q10's `to_int` needs a sign correction that this does not.
-    fn to_int(self) -> u8 {
+    #[inline(always)]
+    far fn to_int(self) -> u8 {
         return (self.0 >> 8) as u8;
     }
 
     /// Returns the fractional part, in 1/256 units (0-255).
-    fn to_frac(self) -> u8 {
+    #[inline(always)]
+    far fn to_frac(self) -> u8 {
         return (self.0 & Q8_FRAC_MASK) as u8;
     }
 
@@ -98,7 +102,8 @@ impl Q8 {
     /// 255.5 and above saturate, since they would round to 256, which the `u8`
     /// return cannot hold. (Q10 needs no such guard: it rounds into an `i16`,
     /// where the equivalent answer fits.)
-    fn round(self) -> u8 {
+    #[inline(always)]
+    far fn round(self) -> u8 {
         // The guard is not only about the return width — the `+ 128` bias cannot
         // even be computed up there. Raw 65408 + 128 wraps to 127, so the
         // unguarded form returns 0 for the very largest values.
@@ -120,7 +125,7 @@ impl Q8 {
     ///
     /// Requires: `include!("lib/sneslib.r65")`
     #[cfg(snes)]
-    fn mul(self, other: Q8) -> Q8 {
+    far fn mul(self, other: Q8) -> Q8 {
         // Simpler than Q10's: the operands are unsigned, so there is no magnitude
         // and sign to split out and reapply.
         // Unwrap once: each `.0` is free at runtime but materializes its own
@@ -184,7 +189,7 @@ impl Q8 {
     ///
     /// Precondition: the true quotient must fit the Q8 range. 100.0 / 0.00390625
     /// is 25600, far outside it, and wraps.
-    fn div(self, other: Q8) -> Q8 {
+    far fn div(self, other: Q8) -> Q8 {
         // Software long division rather than the hardware unit: that unit divides
         // a 16-bit dividend by an *8-bit* divisor, and this needs 24 dividend bits
         // (`self << 8`) over a 16-bit divisor. So there is no snes requirement, at
@@ -245,7 +250,7 @@ impl Q8 {
     ///
     /// Requires: `include!("lib/sneslib.r65")`
     #[cfg(snes)]
-    fn div_u8(self, d: u8) -> Q8 {
+    far fn div_u8(self, d: u8) -> Q8 {
         if d == 0 {
             return Q8(65535);
         }
@@ -271,7 +276,7 @@ impl Q8 {
     ///
     /// Requires: `include!("lib/sneslib.r65")`
     #[cfg(snes)]
-    fn lerp(a: Q8, b: Q8, t: Q8) -> Q8 {
+    far fn lerp(a: Q8, b: Q8, t: Q8) -> Q8 {
         // Both directions are written out because the payload is unsigned:
         // `b - a` would wrap when b < a, so the descending case interpolates
         // downward from `a` instead. Q10 needs only the one form, its payload
@@ -300,7 +305,7 @@ impl Q8 {
     ///
     /// # Parameters
     /// - `buf` — destination, needing 6 bytes for the widest result, `"255.99"`
-    fn to_string(self, buf: far *u8) -> u16 {
+    far fn to_string(self, buf: far *u8) -> u16 {
         // Truncation rather than rounding is forced: 1/256 steps reach 0.996,
         // which rounds to a full unit and would have to increment the integer
         // part — which at 255 has no room. Truncation caps the hundredths at 99

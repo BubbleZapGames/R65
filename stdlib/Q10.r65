@@ -57,7 +57,8 @@ const Q10_FRAC_MASK: i16 = 0x3F;
 
 impl Q10 {
     /// Converts a whole number to Q10.6.
-    fn from_int(n: i16) -> Q10 {
+    #[inline(always)]
+    far fn from_int(n: i16) -> Q10 {
         return Q10(n << 6);
     }
 
@@ -65,7 +66,8 @@ impl Q10 {
     /// (0-63).
     ///
     /// Values of `f` above 63 wrap into the fractional field.
-    fn from(n: i16, f: u8) -> Q10 {
+    #[inline(always)]
+    far fn from(n: i16, f: u8) -> Q10 {
         // `f` is u8 because a fractional numerator is never negative and never
         // exceeds 63 — the narrower type rejects `Q10::from(1, -5)` outright
         // rather than masking it into 59.
@@ -76,7 +78,8 @@ impl Q10 {
     ///
     /// Contrast `round`, which rounds to nearest: -1.5 floors to -2 but rounds
     /// to -1. Tile indices usually want this one.
-    fn to_int(self) -> i16 {
+    #[inline(always)]
+    far fn to_int(self) -> i16 {
         // The negative branch is not decoration: `>>` is a logical shift for
         // signed types too (see docs/operators.md), so a bare `self.0 >> 6`
         // shifts the sign bit down and turns -2.0 into 1022. Floor of a negative
@@ -88,7 +91,8 @@ impl Q10 {
     }
 
     /// Returns the fractional part, in 1/64 units (0-63).
-    fn to_frac(self) -> i16 {
+    #[inline(always)]
+    far fn to_frac(self) -> i16 {
         return self.0 & Q10_FRAC_MASK;
     }
 
@@ -101,7 +105,8 @@ impl Q10 {
     ///
     /// Exact across the whole range, including the top, where 511.984 rounds to
     /// 512 rather than saturating — that value fits the `i16` return.
-    fn round(self) -> i16 {
+    #[inline(always)]
+    far fn round(self) -> i16 {
         // This is floor(x + 0.5), with the same signed-shift correction to_int
         // needs.
         //
@@ -133,7 +138,7 @@ impl Q10 {
     ///
     /// Requires: `include!("lib/sneslib.r65")`
     #[cfg(snes)]
-    fn mul(self, other: Q10) -> Q10 {
+    far fn mul(self, other: Q10) -> Q10 {
 
         // Unwrap once: each `.0` is free at runtime but materializes its own
         // temporary, and this function is already frame-heavy.
@@ -217,7 +222,7 @@ impl Q10 {
     ///
     /// Precondition: the true quotient must fit the Q10 range. 100.0 / 0.015625
     /// is 6400, far outside it, and wraps.
-    fn div(self, other: Q10) -> Q10 {
+    far fn div(self, other: Q10) -> Q10 {
         // Software long division rather than the hardware unit: that unit
         // divides a 16-bit dividend by an *8-bit* divisor, and this needs 22
         // dividend bits (`self << 6`) over a 16-bit divisor. So there is no snes
@@ -289,7 +294,7 @@ impl Q10 {
     ///
     /// Requires: `include!("lib/sneslib.r65")`
     #[cfg(snes)]
-    fn div_u8(self, d: u8) -> Q10 {
+    far fn div_u8(self, d: u8) -> Q10 {
         let av: i16 = self.0;
         let mut mag: u16 = av as u16;
         let mut neg: u8 = 0;
@@ -336,7 +341,8 @@ impl Q10 {
     ///
     /// Requires: `include!("lib/sneslib.r65")`
     #[cfg(snes)]
-    fn lerp(a: Q10, b: Q10, t: Q10) -> Q10 {
+    #[inline(always)]
+    far fn lerp(a: Q10, b: Q10, t: Q10) -> Q10 {
         // a + (b - a) * t. One multiply, not the two of `a*(1-t) + b*t`: `mul`
         // drives the hardware unit four times, so halving the multiplies
         // outweighs the wider intermediate range the two-multiply form would
@@ -347,7 +353,8 @@ impl Q10 {
     /// Returns the absolute value.
     ///
     /// Precondition: raw -32768 (exactly -512.0) negates to itself in 16 bits.
-    fn abs(self) -> Q10 {
+    #[inline(always)]
+    far fn abs(self) -> Q10 {
         if self.0 < 0 {
             return Q10(0 - self.0);
         }
@@ -375,7 +382,7 @@ impl Q10 {
     ///
     /// Precondition: raw -32768 (exactly -512.0) negates to itself in 16 bits and
     /// prints as garbage. Same limit as `abs`.
-    fn to_string(self, buf: far *u8) -> u16 {
+    far fn to_string(self, buf: far *u8) -> u16 {
         let mut n: u16 = 0;
         let mut v: i16 = self.0;
         if v < 0 {
