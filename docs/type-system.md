@@ -160,7 +160,8 @@ struct Q10(i16);             // nominal AND free
   exactly what `let t: Newtype = x;` rejects. `x as Newtype` is the cast, and
   the only spelling that truncates.
 - Methods take `self` by value; see [abi-models.md](abi-models.md).
-- A newtype cannot implement a trait or `Clone` (see below).
+- A newtype may implement a trait for static dispatch, but cannot be a `*dyn`
+  target, and cannot implement `Clone` (see below).
 
 ```rust
 let t: TileId = 5;        // OK: payload flows in
@@ -196,14 +197,35 @@ let c = a + b;
 // error: operator '+' has mismatched types 'Q10' and 'Ticks'
 ```
 
-**No traits.** Trait dispatch stores a TypeId byte at offset 0, which would
-overlap the payload — the same conflict that stops unions implementing traits.
+**Traits, statically dispatched.** A newtype may implement a trait, and the
+receiver form follows the implementing type rather than the trait declaration —
+so a newtype implements a `*self`-declared trait with bare `self`.
+
+```rust
+trait Drawable { fn draw(*self); }
+
+impl Drawable for TileId {
+    fn draw(self) { }    // bare self: one self form per type
+}
+```
+
+What it cannot be is a **`*dyn` target**. Dynamic dispatch reads a TypeId byte
+at offset 0 of the pointee, and every byte a newtype has is payload — the same
+conflict that stops unions implementing traits, except that here it bites only
+at the cast, since that byte is injected only for traits actually used with
+`*dyn`.
+
+```rust
+let d: far *dyn Drawable = &T as far *dyn Drawable;
+// error: cannot form a '*dyn Drawable' over newtype 'TileId'
+```
+
 `Clone` is rejected for a different reason: a newtype is a scalar, so plain
 assignment already copies it.
 
 ```rust
-impl Drawable for TileId { }
-// error: newtype 'TileId' cannot implement trait 'Drawable'
+impl Clone for TileId { }
+// error: newtype 'TileId' cannot implement Clone
 
 let b: TileId = a;   // copying needs no impl
 ```

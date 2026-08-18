@@ -195,7 +195,7 @@ let u: TileId = t + 1;  // operators inherited, result stays TileId
 let n: u8 = t.0;        // out only via '.0' or 'as' — 0 cycles
 ```
 
-**Rules**: Payload must be a scalar of at most 2 bytes (`u8` `i8` `bool` `u16` `i16`, an enum, or a near pointer). Transparent in, opaque out — `let n: u8 = t;` is an error. Two different newtypes never mix. `.0` is read-only. Methods take bare `self` (pointer `*self` is an error, and bare `self` on a struct is too); `self` rides in A, so parameters may not bind `A` or `B` (B is A's high byte). Cannot implement traits or `Clone` — dispatch needs a TypeId byte at offset 0, and a scalar copies by assignment.
+**Rules**: Payload must be a scalar of at most 2 bytes (`u8` `i8` `bool` `u16` `i16`, an enum, or a near pointer). Transparent in, opaque out — `let n: u8 = t;` is an error. Two different newtypes never mix. `.0` is read-only. Methods take bare `self` (pointer `*self` is an error, and bare `self` on a struct is too); `self` rides in A, so parameters may not bind `A` or `B` (B is A's high byte). May implement a trait, but for static dispatch only — a newtype cannot be a `*dyn` target, since dispatch reads a TypeId byte at offset 0 and a newtype is all payload. `impl Clone` is rejected as redundant: a scalar copies by assignment.
 
 *(See [docs/type-system.md](docs/type-system.md) and [docs/abi-models.md](docs/abi-models.md))*
 
