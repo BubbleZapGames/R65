@@ -1259,12 +1259,47 @@ const SPC_BEGIN: u8 = 0xCC;
 
 
 // ============================================================================
-// CONSTANTS - RGB Color Masks (for 15-bit BGR colors)
+// COLOR - 15-bit BGR
 // ============================================================================
 
 const R_MASK: u16 = 0x001F;  // Red component (bits 0-4)
 const G_MASK: u16 = 0x03E0;  // Green component (bits 5-9)
 const B_MASK: u16 = 0x7C00;  // Blue component (bits 10-14)
+
+// A 15-bit BGR color, laid out the way CGRAM stores it: 0BBBBBGG GGGRRRRR.
+//
+// A newtype over u16, so it is a distinct type at compile time and an ordinary
+// 16-bit value at runtime. A raw u16 still flows in -- write_color!(0x7FFF)
+// keeps working -- but a Color will not flow back out without '.0' or 'as',
+// which is what stops one being handed to something that wants a different
+// kind of 16-bit number.
+struct Color(u16);
+
+impl Color {
+    const BLACK: Color = 0x0000;
+    const WHITE: Color = 0x7FFF;
+
+    // Build a Color from three components, each 0-31.
+    // Usage: let red = Color::rgb!(31, 0, 0);
+    //
+    // A macro rather than a function so the expression folds: constant
+    // components cost nothing at all, and a call with all three constant
+    // becomes a single LDA. Only the runtime components survive to the
+    // generated code.
+    macro_rules! rgb($r:expr, $g:expr, $b:expr) {
+        { Color(((($b) & 0x1F) << 10) | ((($g) & 0x1F) << 5) | (($r) & 0x1F)) }
+    }
+
+    // Component accessors, each 0-31.
+    // Usage: let r: u8 = backdrop.red!();
+    //
+    // Method macros rather than methods: each expands in place to a mask and a
+    // shift, where a by-value method would cost a call and a stack frame. Each
+    // body names 'self' once, so the receiver is evaluated once.
+    macro_rules! red()   { { (self.0 & R_MASK) as u8 } }
+    macro_rules! green() { { ((self.0 & G_MASK) >> 5) as u8 } }
+    macro_rules! blue()  { { ((self.0 & B_MASK) >> 10) as u8 } }
+}
 
 // ============================================================================
 // CONSTANTS - Background Tile Attribute Flags (for tilemap entries)
@@ -1332,7 +1367,9 @@ macro_rules! set_cgram_addr($index:expr) {
 }
 
 // Write 15-bit color to CGRAM
-// Usage: write_color!(0x7FFF);  // White
+// Usage: write_color!(0x7FFF);                  // White
+//        write_color!(Color::WHITE);            // same, named
+//        write_color!(Color::rgb!(31, 0, 0));   // red, by component
 macro_rules! write_color($color:expr) {
     A = $color as u16;
     CGDATA = A as u8;
@@ -1347,7 +1384,8 @@ macro_rules! write_rgb($r:literal, $g:literal, $b:literal) {
 }
 
 // Set backdrop (color 0) color
-// Usage: set_backdrop!(0x001F);  // Red backdrop
+// Usage: set_backdrop!(0x001F);                  // Red backdrop
+//        set_backdrop!(Color::rgb!(31, 0, 0));   // same, by component
 macro_rules! set_backdrop($color:expr) {
     CGADD = 0;
     A = $color as u16;
