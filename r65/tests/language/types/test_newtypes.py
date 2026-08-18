@@ -327,3 +327,144 @@ class TestNewtypeToStringViaFormat:
         assert "impl Tag {" in hint, f"hint should show the inherent form: {hint!r}"
         assert "impl ToString for" not in hint, (
             f"a newtype cannot implement the trait: {hint!r}")
+
+
+class TestNewtypeInMatch:
+    """`match` on a newtype, which used to crash the compiler.
+
+    `match_validator` had no newtype awareness at all: it read
+    `scrutinee_type.name` bare to decide whether a literal pattern could apply,
+    and `NewtypeTypeInfo.name` raises by design — so matching a newtype over a
+    primitive produced a `TypeError` out of the type checker rather than any
+    diagnostic. Matching over an *enum* payload was unaffected, taking a
+    different branch.
+
+    Exhaustiveness was a quieter second gap: its `isinstance` checks simply
+    missed `NewtypeTypeInfo`, so once the crash was gone a newtype match would
+    have been accepted without the wildcard its payload requires.
+    """
+
+    DECL = "struct Tid(u8);\nstruct W(u16);\nstruct Flag(bool);\nstruct Rot(i16);\n"
+
+    def check(self, body: str, decl: str = ""):
+        src = self.DECL + decl + "#[entry]\nfn main() { " + body + " }"
+        TypeChecker(HIRBuilder(source_file="t.r65").build_program(
+            parse(src, "t.r65"))).check()
+
+    @pytest.mark.parametrize("ty,val,pat", [
+        ("Tid", "1", "1"),
+        ("W", "1", "1"),
+        ("Rot", "0 - 1", "-1"),     # a negative literal *is* a pattern; only an
+                                    # expression like `0 - 1` is not
+    ])
+    def test_integer_literal_patterns(self, ty, val, pat):
+        """Literals reach a newtype's payload transparently here, as they do in
+        every other position that accepts one."""
+        self.check(f"let v: {ty} = {val}; match v {{ {pat} => {{ }}, _ => {{ }} }};")
+
+    def test_bool_payload(self):
+        self.check("let f: Flag = true; match f { true => { }, false => { } };")
+
+    def test_range_pattern(self):
+        self.check("let t: Tid = 1; match t { 1..5 => { }, _ => { } };")
+
+    def test_enum_payload_still_works(self):
+        """Unaffected by the bug — it never reached the bare `.name` read."""
+        self.check("let d: Dir = Way::N; match d { Way::N => { }, _ => { } };",
+                   decl="enum Way { N, S }\nstruct Dir(Way);\n")
+
+    def test_exhaustiveness_is_enforced(self):
+        """A newtype over an integer needs a wildcard, exactly as u8 does."""
+        with pytest.raises(TypeCheckError, match="Non-exhaustive"):
+            self.check("let t: Tid = 1; match t { 1 => { } };")
+
+    def test_exhaustiveness_names_the_newtype(self):
+        """The message should say what the reader wrote, not the payload."""
+        with pytest.raises(TypeCheckError) as exc:
+            self.check("let t: Tid = 1; match t { 1 => { } };")
+        assert "on Tid" in str(exc.value), str(exc.value)
+
+    def test_bool_payload_exhaustiveness(self):
+        with pytest.raises(TypeCheckError, match="missing patterns for false"):
+            self.check("let f: Flag = true; match f { true => { } };")
+
+    def test_mismatched_literal_still_rejected(self):
+        """The check must still reject, not merely stop crashing — and name the
+        newtype when it does."""
+        with pytest.raises(TypeCheckError) as exc:
+            self.check("let f: Flag = true; match f { 1 => { }, _ => { } };")
+        assert "Flag" in str(exc.value), str(exc.value)
+
+
+class TestNewtypeTraitImpls:
+    """A newtype may implement a trait, but only for static dispatch.
+
+    The blanket rejection this replaces cited the TypeId byte that dynamic
+    dispatch stores at offset 0 — but that byte is only injected for traits
+    actually used with `*dyn` (`builder.py`: "Traits used only for static
+    dispatch must not alter layout"), so it never applied to a statically
+    dispatched trait. The restriction now sits at the `*dyn` itself.
+
+    The two rarely meet in practice: a trait whose methods take `self` by value
+    can only be implemented by a newtype, and one taking `*self` only by a
+    struct, so a trait is naturally either dyn-able or newtype-able.
+    """
+
+    BASE = ("struct Tid(u8);\n"
+            "trait Bump { fn bump(self) -> u8; }\n"
+            "impl Bump for Tid { fn bump(self) -> u8 { return self.0 + 1; } }\n"
+            "#[lowram]\nstatic mut V: Tid;\n")
+
+    def check(self, body: str, decl: str = ""):
+        src = self.BASE + decl + "#[entry]\nfn main() { " + body + " }"
+        TypeChecker(HIRBuilder(source_file="t.r65").build_program(
+            parse(src, "t.r65"))).check()
+
+    def test_impl_is_accepted(self):
+        self.check("")
+
+    def test_method_is_callable(self):
+        self.check("let t: Tid = 1; OUT = t.bump();",
+                   decl="#[zeropage(0x30)]\nstatic mut OUT: u8;\n")
+
+    @pytest.mark.parametrize("cast", [
+        "&V as *dyn Bump",
+        "&V as far *dyn Bump",
+    ])
+    def test_dyn_cast_is_rejected(self, cast):
+        """An explicit cast must not be a way around the restriction — the
+        implicit coercion already declines, requiring a struct pointee."""
+        with pytest.raises(TypeCheckError) as exc:
+            self.check(f"let d: far *dyn Bump = {cast};")
+        assert "cannot form a '*dyn Bump' over newtype 'Tid'" in str(exc.value), str(exc.value)
+
+    def test_dyn_coercion_still_rejected(self):
+        with pytest.raises(TypeCheckError):
+            self.check("let d: *dyn Bump = &V;")
+
+    def test_clone_is_still_rejected(self):
+        """Redundant rather than impossible — a newtype copies by assignment."""
+        src = ("struct T2(u8);\nimpl Clone for T2 {}\n#[entry]\nfn main() { }")
+        with pytest.raises(HIRError, match="cannot implement Clone"):
+            TypeChecker(HIRBuilder(source_file="t.r65").build_program(
+                parse(src, "t.r65"))).check()
+
+    def test_pointer_self_still_rejected(self):
+        """A `*self` trait cannot be implemented by a newtype — that is an ABI
+        mismatch, not a dispatch one, and was already caught."""
+        src = ("struct T3(u8);\ntrait B3 { fn b(*self) -> u8; }\n"
+               "impl B3 for T3 { fn b(*self) -> u8 { return 1; } }\n"
+               "#[entry]\nfn main() { }")
+        with pytest.raises(HIRError, match="is a newtype"):
+            TypeChecker(HIRBuilder(source_file="t.r65").build_program(
+                parse(src, "t.r65"))).check()
+
+    def test_structs_still_dyn_dispatch(self):
+        """The relaxation must not disturb ordinary dynamic dispatch."""
+        src = ("trait Sh { fn go(*self) -> u8; }\nstruct Bx { x: u8 }\n"
+               "impl Sh for Bx { fn go(*self) -> u8 { return self.x; } }\n"
+               "#[lowram]\nstatic mut BB: Bx;\n"
+               "#[zeropage(0x30)]\nstatic mut OUT: u8;\n"
+               "#[entry]\nfn main() { let d: *dyn Sh = &BB; OUT = d.go(); }")
+        TypeChecker(HIRBuilder(source_file="t.r65").build_program(
+            parse(src, "t.r65"))).check()

@@ -330,24 +330,42 @@ class TestSelfFormMismatch:
 
 
 class TestNewtypeTraitImpls:
-    """A newtype has no spare byte for a TypeId, so it cannot be a dispatch target."""
+    """A newtype may implement a trait, but cannot be a dynamic dispatch target.
 
-    def test_trait_impl_rejected(self):
+    It has no spare byte for the TypeId that `*dyn` reads at offset 0 — but that
+    byte is only injected for traits actually used with `*dyn`, so it never stood
+    in the way of static dispatch. The restriction sits at the `*dyn` itself.
+
+    The impl's receiver form follows the implementing type rather than the trait
+    declaration (see `_impl_self_is_by_value`, "one self form per type"), so a
+    newtype implements a `*self`-declared trait with bare `self`.
+    """
+
+    def test_trait_impl_accepted(self):
         src = ("struct TileId(u8);\n"
                "trait Drawable { fn draw(*self); }\n"
                "impl Drawable for TileId { fn draw(self) {} }\n"
                "fn main() {}")
-        with pytest.raises(HIRError, match="cannot implement trait 'Drawable'"):
+        build_and_check(src)
+
+    def test_dyn_over_a_newtype_is_rejected(self):
+        src = ("struct TileId(u8);\n"
+               "trait Drawable { fn draw(self); }\n"
+               "impl Drawable for TileId { fn draw(self) {} }\n"
+               "#[lowram] static mut T: TileId;\n"
+               "fn main() { let d: far *dyn Drawable = &T as far *dyn Drawable; }")
+        with pytest.raises(Exception, match="cannot form a "):
             build_and_check(src)
 
-    def test_trait_impl_hint_explains_the_layout_conflict(self):
+    def test_dyn_rejection_hint_explains_the_layout_conflict(self):
         src = ("struct TileId(u8);\n"
-               "trait Drawable { fn draw(*self); }\n"
+               "trait Drawable { fn draw(self); }\n"
                "impl Drawable for TileId { fn draw(self) {} }\n"
-               "fn main() {}")
-        with pytest.raises(HIRError) as exc:
+               "#[lowram] static mut T: TileId;\n"
+               "fn main() { let d: far *dyn Drawable = &T as far *dyn Drawable; }")
+        with pytest.raises(Exception) as exc:
             build_and_check(src)
-        assert "TypeId byte at offset 0" in exc.value.hint
+        assert "TypeId byte at offset 0" in (exc.value.hint or "")
 
     def test_clone_impl_rejected(self):
         src = "struct TileId(u8);\nimpl Clone for TileId {}\nfn main() {}"

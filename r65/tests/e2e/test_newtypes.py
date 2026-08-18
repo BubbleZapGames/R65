@@ -10,6 +10,7 @@ unwrap is a silent miscompile rather than an error — these are the tests that
 catch that class.
 """
 
+import pytest
 from r65.tests.e2e import ExpectedState
 
 
@@ -321,3 +322,81 @@ class TestNewtypeMethods:
             }
         ''', ExpectedState(memory={0x7E0010: 0x80}))
         assert result.success, f"Failures: {result.failures}"
+
+
+class TestNewtypeMatch:
+    """`match` on a newtype, dispatching correctly on hardware.
+
+    The type checker used to crash before codegen ever saw one of these
+    (`match_validator` read `NewtypeTypeInfo.name`, which raises by design), so
+    the lowering had never actually been exercised. It turned out to be correct
+    already — these pin that.
+    """
+
+    SRC = '''
+struct Tid(u8);
+#[zeropage(0x10)] static mut OUT: u8;
+#[zeropage(0x12)] static mut IN: Tid;
+#[entry]
+fn main() {
+    IN = %d;
+    let t: Tid = IN;
+    match t {
+        1 => { OUT = 10; },
+        5 => { OUT = 50; },
+        _ => { OUT = 99; }
+    };
+}
+'''
+
+    @pytest.mark.parametrize("value,expected", [
+        (1, 10),      # first arm
+        (5, 50),      # later arm
+        (7, 99),      # wildcard
+    ])
+    def test_dispatches_through_the_wrapper(self, e2e, value, expected):
+        """Through a static, so the scrutinee is a runtime value rather than a
+        constant the folder could resolve."""
+        r = e2e.run(self.SRC % value,
+                    ExpectedState(memory={0x7E0010: expected}))
+        assert r.success, f"Tid({value}): {r.error} {r.failures}"
+
+    def test_range_pattern_dispatches(self, e2e):
+        src = '''
+struct Tid(u8);
+#[zeropage(0x10)] static mut OUT: u8;
+#[zeropage(0x12)] static mut IN: Tid;
+#[entry]
+fn main() {
+    IN = 3;
+    let t: Tid = IN;
+    match t { 1..5 => { OUT = 1; }, _ => { OUT = 0; } };
+}
+'''
+        r = e2e.run(src, ExpectedState(memory={0x7E0010: 1}))
+        assert r.success, f"{r.error} {r.failures}"
+
+
+class TestNewtypeTraitMethod:
+    """A trait method on a newtype, dispatched statically, on hardware.
+
+    Newtypes may implement traits now; only `*dyn` over one is rejected. Since
+    the type checker had never let such an impl through, the lowering had not
+    been exercised — this confirms `self` reaches the method by value as an
+    inherent method's would.
+    """
+
+    SRC = '''
+struct Tid(u8);
+trait Bump { fn bump(self) -> u8; }
+impl Bump for Tid { fn bump(self) -> u8 { return self.0 + 1; } }
+#[zeropage(0x10)] static mut OUT: u8;
+#[zeropage(0x12)] static mut IN: Tid;
+#[entry]
+fn main() { IN = 41; let t: Tid = IN; OUT = t.bump(); }
+'''
+
+    def test_static_dispatch(self, e2e):
+        """Through a static, so `self` is a runtime value."""
+        r = e2e.run(self.SRC, ExpectedState(memory={0x7E0010: 42}))
+        assert r.success, f"{r.error} {r.failures}"

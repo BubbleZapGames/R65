@@ -1833,6 +1833,8 @@ class TypeChecker:
 
         target_type = expr.target_type
 
+        self._reject_dyn_cast_of_newtype(expr, source_type, target_type)
+
         if not TypeUtils.can_cast(source_type, target_type):
             raise TypeCheckError(
                 f"cannot cast {source_type} to {target_type}",
@@ -1842,6 +1844,34 @@ class TypeChecker:
 
         expr.expr_type = target_type
         return target_type
+
+    def _reject_dyn_cast_of_newtype(self, expr, source_type, target_type):
+        """Reject `&newtype as *dyn Trait`.
+
+        Dynamic dispatch reads a TypeId byte at offset 0 of the pointee to select
+        an implementation. A newtype has no such byte — every byte it has is
+        payload — so a dyn pointer to one would dispatch on the value itself.
+
+        The implicit coercion already declines this, requiring a struct pointee,
+        but an explicit cast would otherwise walk straight past it. A newtype may
+        still implement the trait; only the dyn route is closed.
+        """
+        from r65.compiler.hir.types import TraitTypeInfo
+
+        if not (isinstance(target_type, PointerTypeInfo)
+                and isinstance(target_type.pointee_type, TraitTypeInfo)):
+            return
+        pointee = (source_type.pointee_type
+                   if isinstance(source_type, PointerTypeInfo) else source_type)
+        if not isinstance(pointee, NewtypeTypeInfo):
+            return
+        raise TypeCheckError(
+            f"cannot form a '*dyn {target_type.pointee_type.name}' over newtype "
+            f"'{pointee.newtype_name}'",
+            source_loc=expr.source_loc,
+            hint="dynamic dispatch reads a TypeId byte at offset 0, and a newtype "
+                 "is all payload; call the method directly on the newtype instead"
+        )
 
     def _check_newtype_construct(self, expr: HIRTypeCast) -> TypeInfo:
         """Type check `Newtype(x)`.

@@ -321,6 +321,21 @@ Worth noting that the *hard* part of Tier C is already gone. Value-producing ope
 
 **Approach if revisited**: extend the allowed-type table to accept `EnumTypeInfo` as `u8` unconditionally, and drop the newtype special case next to it.
 
+### Trait Implementations
+
+A newtype **may** implement a trait, for static dispatch only. Forming a `*dyn`
+over one is rejected at the cast: dynamic dispatch reads a TypeId byte at offset
+0 of the pointee, and a newtype is all payload.
+
+The earlier blanket rejection cited that same byte, but it is only injected for
+traits actually used with `*dyn` — a statically dispatched trait does not change
+layout, so the objection never applied there. In practice the two shapes rarely
+meet: a trait whose methods take `self` by value can only be implemented by a
+newtype, and one taking `*self` only by a struct.
+
+`impl Clone` stays rejected — redundant rather than impossible, since a newtype
+copies with a plain assignment.
+
 ### Deliberate Restrictions
 
 Two small deliberate restrictions, each easy to lift but each needing a decision first:

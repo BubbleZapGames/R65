@@ -13,7 +13,7 @@ from r65.compiler.hir import (
     HIROrPattern, BasicTypeInfo
 )
 from r65.compiler.hir.nodes import HIRStatement
-from r65.compiler.hir.types import TypeInfo, EnumTypeInfo
+from r65.compiler.hir.types import TypeInfo, EnumTypeInfo, strip_newtype
 from r65.compiler.typeck.errors import TypeCheckError
 from r65.compiler.typeck.type_utils import TypeUtils
 
@@ -125,9 +125,16 @@ class MatchValidator:
         for arm in expr.arms:
             collect_patterns(arm.pattern)
 
+        # Exhaustiveness is a question about the *values* a type can hold, so ask
+        # it of the payload — a newtype over u8 needs a wildcard just as u8 does.
+        # Without this the isinstance checks below simply miss it and the match is
+        # accepted unchecked. `scrutinee_type` is kept for the messages, which
+        # should name what the reader wrote.
+        payload_type = strip_newtype(scrutinee_type)
+
         # Check exhaustiveness based on scrutinee type
-        if isinstance(scrutinee_type, BasicTypeInfo):
-            if scrutinee_type.name == 'bool':
+        if isinstance(payload_type, BasicTypeInfo):
+            if payload_type.name == 'bool':
                 # Bool must cover both true and false
                 missing = []
                 if True not in covered_values:
@@ -139,7 +146,7 @@ class MatchValidator:
                         f"Non-exhaustive match: missing patterns for {', '.join(missing)}",
                         source_loc=expr.source_loc
                     )
-            elif scrutinee_type.name in ('u8', 'i8', 'u16', 'i16'):
+            elif payload_type.name in ('u8', 'i8', 'u16', 'i16'):
                 # Integer types need wildcard - too many values to enumerate
                 raise TypeCheckError(
                     f"Non-exhaustive match on {scrutinee_type}: "
@@ -165,13 +172,19 @@ class MatchValidator:
         Check if pattern is valid for scrutinee type.
         Returns True if pattern is a catch-all (wildcard or identifier).
         """
+        # Whether a literal can match is a machine-representation question, so ask
+        # the payload: a newtype over u8 matches integer literals, transparently
+        # in, like every other position that accepts one. Errors still name the
+        # newtype rather than the payload, which is what the reader wrote.
+        payload_type = strip_newtype(scrutinee_type)
+
         if isinstance(pattern, HIRLiteralPattern):
             # Literal must match scrutinee type
             if isinstance(pattern.value, bool):
-                if scrutinee_type.name != 'bool':
+                if payload_type.name != 'bool':
                     raise TypeCheckError(f"Cannot match bool literal against {scrutinee_type}", source_loc=pattern.source_loc)
             elif isinstance(pattern.value, int):
-                if scrutinee_type.name not in ('u8', 'i8', 'u16', 'i16'):
+                if payload_type.name not in ('u8', 'i8', 'u16', 'i16'):
                     raise TypeCheckError(f"Cannot match integer literal against {scrutinee_type}", source_loc=pattern.source_loc)
             return False
 
@@ -192,7 +205,7 @@ class MatchValidator:
 
         elif isinstance(pattern, HIRRangePattern):
             # Range pattern only matches integer types
-            if scrutinee_type.name not in ('u8', 'i8', 'u16', 'i16'):
+            if payload_type.name not in ('u8', 'i8', 'u16', 'i16'):
                 raise TypeCheckError(f"Cannot use range pattern against {scrutinee_type}", source_loc=pattern.source_loc)
             # Validate range is non-empty
             if pattern.inclusive:

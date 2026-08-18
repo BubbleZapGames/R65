@@ -1678,9 +1678,17 @@ class HIRBuilder:
                 source_loc=impl.source_loc
             )
 
-        # A newtype has no room for a TypeId byte — the payload occupies every
-        # byte it has — so it can never be a dispatch target. Clone is redundant
-        # for the same reason: a newtype copies with a plain assignment.
+        # A newtype may implement a trait, but only for static dispatch. `*dyn`
+        # reads a TypeId byte at offset 0 of the pointee, and a newtype has no
+        # such byte — every byte is payload — so forming a dyn pointer to one is
+        # rejected at the cast instead (type_checker.check_type_cast).
+        #
+        # In practice the two rarely meet: a trait whose methods take `self` by
+        # value can only be implemented by a newtype, and one taking `*self` only
+        # by a struct, so a trait is naturally either dyn-able or newtype-able.
+        #
+        # Clone stays rejected: it is redundant rather than impossible, since a
+        # newtype copies with a plain assignment.
         if struct_symbol.kind == SymbolKind.NEWTYPE and impl.trait_name is not None:
             if impl.trait_name == CLONE_TRAIT:
                 raise HIRError(
@@ -1688,13 +1696,6 @@ class HIRBuilder:
                     source_loc=impl.source_loc,
                     hint="newtypes are copied by plain assignment: 'let b = a;'"
                 )
-            raise HIRError(
-                f"newtype '{impl.struct_name}' cannot implement trait "
-                f"'{impl.trait_name}'",
-                source_loc=impl.source_loc,
-                hint="trait dispatch stores a TypeId byte at offset 0, which would "
-                     "overlap the newtype's value; use a struct with a named field"
-            )
 
         # Handle trait impl validation and registration
         if impl.trait_name is not None:
@@ -2103,7 +2104,14 @@ class HIRBuilder:
         # Assign TypeId only for traits used with *dyn (dynamic dispatch).
         # TypeId injection inserts __type_id: u8 at offset 0, changing struct layout.
         # Traits used only for static dispatch (direct method calls) must not alter layout.
-        if impl.trait_name in self._dyn_used_traits and impl.struct_name not in self._struct_type_ids:
+        # Never for a newtype: it has no byte to put one in, and no dispatch table
+        # entry can name it (see the dyn-cast rejection in the type checker).
+        impl_symbol = self.symbol_table.lookup(impl.struct_name)
+        is_newtype_impl = (impl_symbol is not None
+                           and impl_symbol.kind == SymbolKind.NEWTYPE)
+        if (impl.trait_name in self._dyn_used_traits
+                and not is_newtype_impl
+                and impl.struct_name not in self._struct_type_ids):
             type_id = self._next_type_id
             self._next_type_id += 1
             self._struct_type_ids[impl.struct_name] = type_id
