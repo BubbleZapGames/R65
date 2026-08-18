@@ -388,6 +388,42 @@ than once evaluates it that many times — pass a place, not a costly expression
 Arms are selected by the receiver's type when it can be resolved, otherwise by
 macro name across all `impl` blocks; an ambiguous name is an error.
 
+### Associated invocation
+
+`Type::name!(args)` invokes an impl macro without a receiver. A constructor has
+nothing to be invoked on — it builds the first value there is — so it names the
+`impl` block instead:
+
+```rust
+struct Color(u16);
+
+impl Color {
+    macro_rules! rgb($r:expr, $g:expr, $b:expr) {
+        { Color((($b & 0x1F) << 10) | (($g & 0x1F) << 5) | ($r & 0x1F)) }
+    }
+}
+
+let red = Color::rgb!(31, 0, 0);
+```
+
+Nothing is substituted, because there is no receiver. A body naming `self` is
+therefore an error rather than an expansion:
+
+```rust
+impl Color {
+    macro_rules! red() { { (self.0 & 0x1F) as u8 } }
+}
+
+let r = Color::red!();
+// macro error: macro 'Color::red' names 'self', but an associated invocation
+// has no receiver
+//   hint: invoke it on a value instead: 'value.red!(...)'
+```
+
+Naming the type is an exact request, so it never falls back to the by-name
+search across every `impl` block the way an unresolvable receiver does — an
+unknown macro reports what that `impl` does define.
+
 ---
 
 ## Expansion Rules

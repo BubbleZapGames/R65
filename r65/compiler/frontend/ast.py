@@ -565,13 +565,18 @@ class MacroInvocationStmtInner(Statement):
 
 @dataclass
 class MethodMacro(Expression):
-    """Method macro invocation: receiver.name!(args).
+    """Method macro invocation: receiver.name!(args), or Type::name!(args).
 
     Example: my_console.cprint!("Score: {u16}", score);
+
+    An associated invocation names the impl block directly (`Color::rgb!(31, 0,
+    0)`): it sets `type_name` and leaves `receiver` None. There is no receiver
+    to substitute, so a body naming `self` is rejected rather than expanded.
     """
-    receiver: Expression    # Parsed receiver AST (for type resolution)
-    name: str               # Macro name
-    args: List[str]         # Raw argument token strings
+    receiver: Optional[Expression]  # None for an associated invocation
+    name: str                       # Macro name
+    args: List[str]                 # Raw argument token strings
+    type_name: Optional[str] = None  # Set for Type::name!(args)
 
 
 # ============================================================================

@@ -2395,6 +2395,21 @@ class ASTBuilder(Transformer):
         )
 
     @v_args(tree=True)
+    def assoc_macro(self, tree):
+        """Associated macro invocation: Type::name!(args)"""
+        idents = [i for i in tree.children
+                  if isinstance(i, LarkToken) and i.type == 'IDENT']
+        args = next((i for i in tree.children if isinstance(i, list)), [])
+
+        return ast.MethodMacro(
+            receiver=None,
+            name=idents[1].value,
+            args=args,
+            type_name=idents[0].value,
+            source_loc=self._make_source_loc(tree.meta)
+        )
+
+    @v_args(tree=True)
     def type_cast(self, tree):
         """Type cast."""
         items = self._filter_tokens(tree.children)

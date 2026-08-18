@@ -532,16 +532,38 @@ class MacroExpander:
 
     def _resolve_impl_macro(
         self,
-        receiver: ast.Expression,
+        receiver: Optional[ast.Expression],
         name: str,
-        source_loc: Optional[SourceLocation]
+        source_loc: Optional[SourceLocation],
+        type_name: Optional[str] = None
     ) -> MacroDefinition:
-        """Find the right impl macro for a method macro invocation."""
+        """Find the right impl macro for a method macro invocation.
+
+        `type_name` is set when the invocation named the impl block itself
+        (`Color::rgb!(...)`). That is an exact request, so it never falls back to
+        the by-name search across every impl block the way an unresolvable
+        receiver does.
+        """
         # Try type-directed lookup first
-        struct_type = self._resolve_receiver_type(receiver)
+        struct_type = type_name if type_name is not None \
+            else self._resolve_receiver_type(receiver)
         if struct_type and struct_type in self._impl_macros:
             if name in self._impl_macros[struct_type]:
                 return self._impl_macros[struct_type][name]
+
+        if type_name is not None:
+            known = self._impl_macros.get(type_name)
+            if known is None:
+                raise MacroError(
+                    f"no impl block for '{type_name}' defines any macro",
+                    source_loc
+                )
+            raise MacroError(
+                f"no macro '{type_name}::{name}'",
+                source_loc,
+                hint=f"'impl {type_name}' defines: "
+                     f"{', '.join(sorted(known))}"
+            )
 
         # Fallback: search all impl macros by name
         matches = [(sname, m) for sname, macros in self._impl_macros.items()
@@ -599,6 +621,27 @@ class MacroExpander:
             return f"[{self._type_to_source(t.element_type)}; {self._ast_to_source(t.size)}]"
         return str(t)
 
+    def _assoc_macro_definition(self, mm: ast.MethodMacro) -> MacroDefinition:
+        """The impl macro for an associated invocation, `Type::name!(args)`.
+
+        Nothing is substituted: the invocation named the impl block, not a
+        value, so there is no receiver. A body naming `self` therefore has
+        nothing to bind and is rejected here — leaving it would expand to a bare
+        `self` and fail later as a parse error with no mention of the macro.
+        """
+        macro = self._resolve_impl_macro(
+            None, mm.name, mm.source_loc, type_name=mm.type_name
+        )
+        if any('self' in arm.body_tokens for arm in macro.arms):
+            raise MacroError(
+                f"macro '{mm.type_name}::{mm.name}' names 'self', but an "
+                f"associated invocation has no receiver",
+                mm.source_loc,
+                hint=f"invoke it on a value instead: "
+                     f"'value.{mm.name}!(...)'"
+            )
+        return macro
+
     def _method_macro_as_plain(self, mm: ast.MethodMacro) -> MacroDefinition:
         """The impl macro for `mm`, with `self` replaced by the receiver text.
 
@@ -606,6 +649,9 @@ class MacroExpander:
         the receiver that many times. Fine for a place; a caller passing a costly
         expression should bind it first.
         """
+        if mm.receiver is None:
+            return self._assoc_macro_definition(mm)
+
         receiver_text = self._ast_to_source(mm.receiver)
         macro = self._resolve_impl_macro(mm.receiver, mm.name, mm.source_loc)
         return MacroDefinition(

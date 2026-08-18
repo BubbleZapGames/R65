@@ -131,3 +131,56 @@ class TestMacrosNestedInBlockExpressions:
                "#[zeropage(0x11)]\nstatic mut OUT: u8;\n"
                "#[entry]\nfn main() { OUT = { setit!(7); OUT }; }")
         build_and_check(src)
+
+
+class TestAssociatedInvocation:
+    """`Type::name!(args)` invokes an impl macro with no receiver.
+
+    A constructor macro has nothing to be invoked on -- `Color::rgb!(31, 0, 0)`
+    builds the first value there is. The receiver form cannot express that, so
+    the invocation names the impl block instead and no substitution happens.
+    """
+
+    DECL = ("struct W(u8);\n"
+            "impl W {\n"
+            "    macro_rules! of($n:expr) { { W($n) } }\n"
+            "    macro_rules! zero() { { W(0) } }\n"
+            "    macro_rules! doubled() { { let t: u8 = self.0; t + t } }\n"
+            "}\n"
+            "#[zeropage(0x10)]\nstatic mut V: W;\n"
+            "#[zeropage(0x11)]\nstatic mut OUT: u8;\n")
+
+    def test_produces_a_value(self):
+        build_and_check(self.DECL + "#[entry]\nfn main() { V = W::of!(7); }")
+
+    def test_no_argument_form(self):
+        build_and_check(self.DECL + "#[entry]\nfn main() { V = W::zero!(); }")
+
+    def test_nested_in_a_macro_argument(self):
+        """The whole point of the multi-arg form: it survives being an argument."""
+        src = (self.DECL + "macro_rules! store($v:expr) { V = $v; }\n"
+               "#[entry]\nfn main() { store!(W::of!(7)); }")
+        build_and_check(src)
+
+    def test_receiver_form_still_works(self):
+        build_and_check(self.DECL + "#[entry]\nfn main() { OUT = V.doubled!(); }")
+
+    def test_body_naming_self_is_rejected(self):
+        """There is no receiver to bind, so expanding it would emit a bare `self`."""
+        with pytest.raises(MacroError, match="has no receiver"):
+            build_and_check(self.DECL + "#[entry]\nfn main() { OUT = W::doubled!(); }")
+
+    def test_unknown_macro_names_the_type(self):
+        with pytest.raises(MacroError, match="no macro 'W::nope'"):
+            build_and_check(self.DECL + "#[entry]\nfn main() { V = W::nope!(1); }")
+
+    def test_unknown_type_is_reported(self):
+        with pytest.raises(MacroError, match="no impl block for 'Missing'"):
+            build_and_check(self.DECL + "#[entry]\nfn main() { V = Missing::of!(1); }")
+
+    def test_enum_variant_path_still_parses(self):
+        """`Type::name!` shares its prefix with `Type::VARIANT`."""
+        src = ("enum Dir { North, East }\n"
+               "#[zeropage(0x11)]\nstatic mut OUT: u8;\n"
+               "#[entry]\nfn main() { OUT = Dir::East as u8; }")
+        build_and_check(src)

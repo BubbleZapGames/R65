@@ -458,6 +458,9 @@ arg_list: expr ("," expr)* ","?
          | CFG_FUNCTION "(" expr ")"             -> cfg_function_call
          | INCLUDE_BYTES "!" "(" STRING ")"      -> include_bytes_expr
          | IDENT "!" "(" macro_args? ")"         -> macro_invocation_expr
+         // Associated macro: Type::name!(args). Must precede enum_variant_expr,
+         // which shares the IDENT "::" IDENT prefix.
+         | IDENT "::" IDENT "!" "(" macro_args? ")"  -> assoc_macro
          | IDENT "::" IDENT                      -> enum_variant_expr
          | IDENT                                 -> identifier
          | SELF                                  -> self_identifier
