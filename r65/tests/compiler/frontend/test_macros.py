@@ -421,6 +421,54 @@ class TestMacroInvocationParsing:
         assert macro.args[0] == "X"
         assert macro.args[1] == "Y"
 
+class TestCommasInsideGroups:
+    """A comma inside brackets belongs to the nested call, not the macro.
+
+    `macro_args` splits on commas, so a nested call's commas used to end the
+    argument early: `f!(add(1, 2))` split into three pieces that reassembled
+    into `(1, 2)` and failed as a tuple literal. Balanced groups now admit
+    commas; the top-level split is unchanged.
+    """
+
+    def _args(self, source):
+        program = parse(source, "<test>")
+        func = program.items[-1]
+        return get_macro_invocation(func.body.statements[0]).args
+
+    def test_function_call_argument_stays_one_arg(self):
+        args = self._args("""
+        macro_rules! use_it($v:expr) { A = $v; }
+        fn add2(a: u8, b: u8) -> u8 { return a + b; }
+        fn main() { use_it!(add2(1, 2)); }
+        """)
+        assert len(args) == 1, args
+        assert "1" in args[0] and "2" in args[0]
+
+    def test_nested_macro_call_stays_one_arg(self):
+        args = self._args("""
+        macro_rules! sum($a:expr, $b:expr) { { ($a) + ($b) } }
+        macro_rules! use_it($v:expr) { A = $v; }
+        fn main() { use_it!(sum!(1, 2)); }
+        """)
+        assert len(args) == 1, args
+
+    def test_top_level_split_is_unchanged(self):
+        args = self._args("""
+        macro_rules! pair($a:expr, $b:expr) { A = $a + $b; }
+        fn add2(a: u8, b: u8) -> u8 { return a + b; }
+        fn main() { pair!(add2(1, 2), 3); }
+        """)
+        assert len(args) == 2, args
+        assert args[1] == "3"
+
+    def test_bracket_and_brace_groups(self):
+        args = self._args("""
+        macro_rules! use_it($v:expr) { A = $v; }
+        fn main() { use_it!([1, 2, 3]); }
+        """)
+        assert len(args) == 1, args
+
+
 # ============================================================================
 # Macro Expansion Tests
 # ============================================================================

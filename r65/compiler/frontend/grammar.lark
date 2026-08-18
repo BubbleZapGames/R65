@@ -223,14 +223,21 @@ macro_args: macro_arg ("," macro_arg)* ","?
 // A single macro argument - balanced tokens
 macro_arg: macro_arg_token+
 
+// A token inside a balanced group. Identical to macro_arg_token except that a
+// comma is allowed: within brackets a comma separates the arguments of a nested
+// call, not the arguments of the macro being invoked. Without this, `f(a, b)`
+// passed to a macro is split at the inner comma and the pieces reassemble into
+// something the parser reads as a tuple.
+?macro_arg_inner: macro_arg_token | ","
+
 macro_arg_token: IDENT | REGISTER | TYPE_NAME | INTEGER | STRING | BOOLEAN
                | KEYWORD | MACRO_VAR | INCLUDE | INCLUDE_BYTES | CONST | STATIC | LET | MUT | MACRO_RULES
                | FN | FAR | NEAR | IF | ELSE | LOOP | WHILE | MATCH | RETURN
                | BREAK | CONTINUE | ASM | STRUCT | UNION | ENUM | TYPE | AS | TRAIT | IMPL | SELF | FOR | IN | DYN
                | CFG | CFG_NOT
-               | "(" macro_arg_token* ")"    // Nested parens
-               | "[" macro_arg_token* "]"    // Nested brackets
-               | "{" macro_arg_token* "}"    // Nested braces
+               | "(" macro_arg_inner* ")"    // Nested parens
+               | "[" macro_arg_inner* "]"    // Nested brackets
+               | "{" macro_arg_inner* "}"    // Nested braces
                | "+" | "-" | "*" | "/" | "&" | "|" | "^" | "~" | "!"
                | "=" | "<" | ">" | "@" | "->" | "==" | "!=" | "<=" | ">="
                | "&&" | "||" | "<<" | ">>" | "++" | "--" | ";" | ":" | "." | "#"
