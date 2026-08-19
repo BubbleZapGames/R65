@@ -2302,18 +2302,26 @@ class TestFarFunctionInlining:
         checker = InlinabilityChecker(MIRProgram(functions=[callee]))
         assert checker.can_inline("with_dbr") is False
 
-    def test_far_with_far_ptr_stack_param_rejected(self):
-        """Far fns with far-pointer stack params rely on their prologue
-        to set DBR = ptr bank (via PHB/PLA/PLB or PHD/TSC/TCD), and the
-        body's `(d,S),Y` / `[dp],Y` indirect derefs depend on that
-        setup. Inlining removes the prologue but keeps the body —
-        miscompile risk. Reject until we emit equivalent DBR
-        management at the inline boundary. (This is what blocks put_str
-        from being inlined today.)"""
+    def test_far_with_far_ptr_stack_param_allowed(self):
+        """Far fns with far-pointer stack params are inlinable.
+
+        They were refused on the grounds that the body's `(d,S),Y` / `[dp],Y`
+        derefs depend on a prologue the inliner drops. They do not: codegen
+        picks the far-deref path from whichever caller the body lands in, and
+        both outcomes are bank-explicit — the per-access DBR path when the
+        caller has no far-ptr params of its own, and D=S long addressing when
+        it does (`_is_set_dbr_safe` vetoes SET_DBR once a deref goes through a
+        non-param pointer). See `_far_body_is_bank_safe` for the full argument
+        and `test_far_ptr_inline_banks.py` for the runtime proof.
+
+        The restriction was costing real work: every `#[inline(always)]`
+        method taking `far *self` — most of U32/I32/F32 — was silently
+        declining to inline.
+        """
         callee = _make_far_callee("has_far_ptr_arg", [Return(values=[])])
         callee.has_far_ptr_stack_params = True
         checker = InlinabilityChecker(MIRProgram(functions=[callee]))
-        assert checker.can_inline("has_far_ptr_arg") is False
+        assert checker.can_inline("has_far_ptr_arg") is True
 
     def test_far_inlining_crosses_bank_attr(self):
         """End-to-end: caller in bank 7 inlines a far callee defined in

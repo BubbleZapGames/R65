@@ -295,6 +295,20 @@ class InlinabilityChecker:
         - **WRAM Load/Store with bank-resolved address ≥ $010000**
           (storage_type='ram', address >= 0x010000): codegen always emits
           long addressing because the address is wider than 16 bits.
+        - **Far-pointer stack params.** These used to be refused, on the
+          grounds that the body's `(d,S),Y` / `[dp],Y` derefs depend on a
+          prologue the inliner drops. They do not: codegen picks the far-deref
+          path from the *caller* it ends up in, and both outcomes are
+          bank-explicit. A caller with no far-ptr params of its own gets
+          `_get_far_ptr_strategy() is None` and the per-access path, which
+          reads the bank byte from the pointer itself. A caller that does have
+          them sees a deref through a vreg that is not one of *its* params, so
+          `_is_set_dbr_safe` vetoes SET_DBR and forces D=S, whose `[dp],Y` is
+          indirect long and takes its bank from the pointer bytes. Both
+          analyses run after inlining (`codegen.py`), so they see the merged
+          body. Verified end to end: with this admitted, classickong's VRAM at
+          the end of a recorded playthrough is byte-identical and WRAM differs
+          only in dead stack below SP.
 
         Rejected:
 
@@ -324,18 +338,6 @@ class InlinabilityChecker:
         # reject for now.
         if func.mode_attr is not None and getattr(
                 func.mode_attr, 'databank', DataBankMode.NONE) != DataBankMode.NONE:
-            return False
-
-        # Far-pointer stack params force the codegen to emit a prologue
-        # bracket (PHB / set DBR from ptr bank / PLB, or PHD/TSC/TCD)
-        # that the body's `(d,S),Y` or `[dp],Y` indirect derefs depend on
-        # for DBR. Inlining removes the prologue but the body's
-        # addressing is still relative to that bank. Until we model the
-        # DBR setup at the inline boundary, refuse. (Concretely: this
-        # blocks put_str / put_num / similar utilities. Lifting it
-        # requires emitting MIR-level Push DBR / set DBR / Pull DBR
-        # around the inlined body — left for a follow-up.)
-        if func.has_far_ptr_stack_params:
             return False
 
         for block in func.blocks.values():

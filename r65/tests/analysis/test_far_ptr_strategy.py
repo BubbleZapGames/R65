@@ -180,3 +180,52 @@ class TestFnPtrOnlyStrategy:
         else:
             # Scratch pool insufficient — D=S decision applies.
             assert func.far_ptr_strategy in (None, FarPtrStrategy.D_EQUALS_S)
+
+
+class TestNonParamDerefVetoesSetDbr:
+    """A far deref through a pointer that is not one of this function's params
+    forces D=S, whatever the cost model would otherwise prefer.
+
+    This is what makes it safe to inline a far callee with a far-pointer stack
+    param into a caller that has one of its own. The spliced-in deref goes
+    through a vreg the caller never declared, so `_is_set_dbr_safe` vetoes
+    SET_DBR — and D=S reaches the pointer with `[dp],Y`, which is indirect long
+    and carries its own bank. Under SET_DBR it would have used the caller's DBR,
+    set to the caller's pointer bank, and read the wrong one.
+
+    The two cases differ only in the extra deref, so the control pins that the
+    cost model really does want SET_DBR here.
+    """
+
+    ZP_HEAVY = '''
+        #[zeropage(0x20)]
+        static mut ZP1: u8;
+        #[zeropage(0x21)]
+        static mut ZP2: u8;
+        #[zeropage(0x22)]
+        static mut ZP3: u8;
+        #[bank(1)]
+        static OTHER: [u8; 4] = "XY\\0";
+
+        far fn zp_heavy(s: far *u8) -> u8 {
+            ZP1 = 1;
+            ZP2 = 2;
+            ZP3 = 3;
+            ZP1 = ZP1 + ZP2 + ZP3;
+            %s
+            return *s;
+        }
+
+        #[entry]
+        fn main() { ZP1 = zp_heavy(&OTHER as far *u8); }
+    '''
+
+    def test_control_prefers_set_dbr(self):
+        """Zeropage-heavy body, single far-ptr param: SET_DBR wins the cost model."""
+        func = _strategy_for(self.ZP_HEAVY % "", "zp_heavy")
+        assert func.far_ptr_strategy == FarPtrStrategy.SET_DBR
+
+    def test_non_param_deref_forces_d_equals_s(self):
+        extra = "let other: u8 = *(&OTHER as far *u8);"
+        func = _strategy_for(self.ZP_HEAVY % extra, "zp_heavy")
+        assert func.far_ptr_strategy == FarPtrStrategy.D_EQUALS_S
