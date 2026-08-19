@@ -5,7 +5,7 @@ Compile-time constant expression evaluation for R65 HIR.
 Evaluates constant expressions at compile time (array sizes, enum values, etc.).
 """
 
-from typing import Any, Union
+from typing import Any, Optional, Union
 from r65.compiler.frontend import ast
 from r65.compiler.hir.errors import *
 from r65.compiler.errors import compiler_assert
@@ -337,6 +337,23 @@ class ConstEvaluator:
         else:
             raise HIRError(f"Unsupported unary operator in const expression: {op}", source_loc=expr.source_loc)
 
+    def _newtype_payload_name(self, type_name: str) -> Optional[str]:
+        """The payload type name if `type_name` names a newtype, else None.
+
+        Only scalar payloads answer: an enum or pointer payload has no const
+        cast of its own, and letting the caller keep the original name gives a
+        diagnostic that names what was written.
+        """
+        from r65.compiler.hir.symbol_table import SymbolKind
+        from r65.compiler.hir.types import BasicTypeInfo
+
+        symbol = self.symbol_table.lookup(type_name)
+        if symbol is None or symbol.kind != SymbolKind.NEWTYPE:
+            return None
+        if isinstance(symbol.type_info, BasicTypeInfo):
+            return symbol.type_info.name
+        return None
+
     def _eval_cast(self, expr: ast.TypeCast) -> Union[int, bool]:
         """Evaluate type cast."""
         value = self.eval(expr.expr)
@@ -344,6 +361,14 @@ class ConstEvaluator:
 
         if isinstance(target_type, ast.BasicType):
             type_name = target_type.name
+
+            # `x as Newtype` truncates exactly as `x as <payload>` does — a
+            # newtype is its payload at runtime, so there is no separate cast to
+            # perform. Rewriting the name here also keeps the diagnostic on an
+            # unsupported payload naming that payload.
+            payload_name = self._newtype_payload_name(type_name)
+            if payload_name is not None:
+                type_name = payload_name
 
             # Cast to integer types
             if type_name in ['u8', 'i8', 'u16', 'i16']:
@@ -396,8 +421,24 @@ class ConstEvaluator:
         if not func_name:
             raise HIRError("Only direct function calls allowed in const expressions", source_loc=expr.source_loc)
 
-        # Check if this is a const fn (user-defined)
         from r65.compiler.hir.symbol_table import SymbolKind
+
+        # `Newtype(x)` parses as a call but is a retype: the value is its own
+        # payload. Without this it reaches the const-fn check below and is
+        # rejected as "Function 'Color' is not a const fn" — naming a function
+        # the author never wrote, for the one spelling the docs recommend.
+        # Range-checking still happens in the type checker, on the HIR.
+        newtype = self.symbol_table.lookup(func_name)
+        if newtype is not None and newtype.kind == SymbolKind.NEWTYPE:
+            if len(expr.args) != 1:
+                raise HIRError(
+                    f"newtype '{func_name}' takes exactly 1 value, "
+                    f"got {len(expr.args)}",
+                    source_loc=expr.source_loc,
+                    hint=f"write '{func_name}(value)'")
+            return self.eval(expr.args[0])
+
+        # Check if this is a const fn (user-defined)
         symbol = self.symbol_table.lookup(func_name)
         if symbol and symbol.kind in (SymbolKind.FUNCTION, SymbolKind.METHOD):
             func_def = symbol.definition

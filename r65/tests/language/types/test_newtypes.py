@@ -468,3 +468,45 @@ class TestNewtypeTraitImpls:
                "#[entry]\nfn main() { let d: *dyn Sh = &BB; OUT = d.go(); }")
         TypeChecker(HIRBuilder(source_file="t.r65").build_program(
             parse(src, "t.r65"))).check()
+
+
+class TestNewtypeInConstContext:
+    """Construction and casts inside a `const` initializer.
+
+    The const evaluator runs on the AST, before the HIR builder desugars
+    `TileId(x)` into a retype, so both spellings reached the const-fn check and
+    were rejected — construction as "Function 'TileId' is not a const fn",
+    naming a function nobody wrote, and the cast as an unknown target type. A
+    `static` accepted both all along, as did the bare-payload form.
+    """
+
+    def test_construction(self):
+        build_and_check(NEWTYPES + "const T: TileId = TileId(7);\nfn main() {}")
+
+    def test_cast(self):
+        build_and_check(NEWTYPES + "const T: TileId = 7 as TileId;\nfn main() {}")
+
+    def test_payload_still_flows_in(self):
+        build_and_check(NEWTYPES + "const T: TileId = 7;\nfn main() {}")
+
+    def test_arithmetic_on_constructed_values(self):
+        build_and_check(
+            NEWTYPES + "const T: TileId = TileId(0x0F) | TileId(0x10);\nfn main() {}")
+
+    def test_construction_is_still_range_checked(self):
+        with pytest.raises(TypeCheckError, match="does not fit in type u8"):
+            build_and_check(NEWTYPES + "const T: TileId = TileId(300);\nfn main() {}")
+
+    def test_cast_truncates(self):
+        """`as` is the truncating spelling here too: 300 & 0xFF."""
+        hir_prog = build_and_check(
+            NEWTYPES + "const T: TileId = 300 as TileId;\nfn main() {}")
+        const = next(d for d in hir_prog.declarations
+                     if getattr(d, 'name', None) == 'T')
+        assert const.evaluated_value == 44, const.evaluated_value
+
+    def test_wrong_arity_is_rejected(self):
+        with pytest.raises(HIRError, match="takes exactly 1 value"):
+            build_and_check(NEWTYPES + "const T: TileId = TileId(1, 2);\nfn main() {}")
+
+
