@@ -203,6 +203,16 @@ class TestUnwrapping:
         with pytest.raises(TypeCheckError, match="is not a newtype"):
             build_and_check(src)
 
+    def test_cast_between_newtypes(self):
+        """`as` crosses the nominal boundary the implicit rules forbid.
+
+        Two newtypes never mix on their own, but `can_cast` compares payloads,
+        so the explicit spelling converts — and truncates, here from i16 to u8.
+        Pinned because it is the one exception to "newtypes never mix", and a
+        future change to `can_cast` should have to be deliberate.
+        """
+        build_and_check(in_main("let q: Q10 = 5; let t: TileId = q as TileId;"))
+
 
 class TestInheritedOperators:
     """Operators come from the payload; the result stays nominal."""

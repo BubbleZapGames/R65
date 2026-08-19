@@ -211,6 +211,15 @@ let c = a + b;
 // error: operator '+' has mismatched types 'Q10' and 'Ticks'
 ```
 
+That is the rule for values flowing implicitly. An `as` still converts between
+them, through the payloads, since `as` is the explicit escape hatch everywhere
+else in the language too:
+
+```rust
+let t: Ticks = a as Ticks;      // OK: same payload, nothing to truncate
+let u: TileId = a as TileId;    // OK: the i16 payload truncates to u8
+```
+
 **Traits, statically dispatched.** A newtype may implement a trait, and the
 receiver form follows the implementing type rather than the trait declaration —
 so a newtype implements a `*self`-declared trait with bare `self`.
@@ -510,6 +519,7 @@ The `as` keyword performs explicit type conversions:
 | `Enum as u8/u16` | Enum to underlying integer |
 | `Newtype as T` | Newtype to its payload (0 cycles) |
 | `T as Newtype` | Payload to newtype, truncating if narrower |
+| `Newtype as Newtype` | Through the payloads, truncating if narrower |
 
 ### Pointer Auto-Dereference
 
