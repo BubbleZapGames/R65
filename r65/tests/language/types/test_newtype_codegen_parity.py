@@ -179,9 +179,10 @@ CASES = {
 PAYLOADS = [("u8", "Byte"), ("i8", "Sbyte"), ("u16", "Word"), ("i16", "Sword")]
 
 # A few cases only render to *equivalent* programs at some widths. Returning a
-# `u8` local from a `-> u16` function is accepted (return types are unchecked),
-# but the newtype spelling `Word(a)` is a checked widening — so the two sources
-# genuinely differ at 16 bits. Restrict rather than weaken the comparison.
+# `u8` local from a `-> u16` function is an accepted widening, but the newtype
+# spelling `Word(a)` is a *checked* one — construction is assignment-shaped — so
+# the two sources genuinely differ at 16 bits. Restrict rather than weaken the
+# comparison.
 CASE_PAYLOADS = {
     # A 2-byte second return value cannot ride in B.
     "multi-return through the B slot": {"u8", "i8"},

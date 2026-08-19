@@ -1965,7 +1965,8 @@ class TypeChecker:
             raise TypeCheckError(
                 f"newtype '{source_type}' has only field '.0'",
                 source_loc=expr.source_loc,
-                hint=f"a newtype wraps exactly one value; write '{source_type.newtype_name}.0'"
+                hint="a newtype wraps exactly one value, so '.0' is the only "
+                     "field there is"
             )
 
         expr.target_type = source_type.inner

@@ -136,7 +136,9 @@ register, passed and returned by value, and its methods take `self` by value.
 
 **Layout**: Identical to the payload — a newtype adds nothing
 **Size**: The payload's size (1 or 2 bytes)
-**Payload**: `u8` `i8` `bool` `u16` `i16`, any enum, or any near pointer
+**Payload**: `u8` `i8` `bool` `u16` `i16`, any enum, or any near pointer —
+including a near function pointer (`fn(u8) -> u8`). A `far` pointer of
+either kind is 3 bytes and is rejected.
 
 This is the opposite trade-off from a [type alias](#type-aliases), which is
 transparent and adds no safety, and from a single-field struct, which is nominal
