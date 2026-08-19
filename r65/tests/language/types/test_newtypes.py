@@ -542,3 +542,30 @@ class TestImplConstantKeepsTheNewtype:
         build_and_check(self.DECL + "fn main() { let n: u16 = Color::RAW; }")
 
 
+class TestBoolPayloadInConditions:
+    """A bool payload does not flow out into a condition.
+
+    Consuming a value *as* a bool is the value flowing out, which needs `.0` —
+    the same rule that rejects `let b: bool = f;`. A pattern is not a consumer,
+    so `match` on the wrapper is unaffected. The error says which rule was hit.
+    """
+
+    DECL = "struct Flag(bool);\n#[zeropage(0x10)]\nstatic mut F: Flag;\n"
+
+    @pytest.mark.parametrize("body", [
+        "if F { }",
+        "while F { }",
+        "if !F { }",
+        "if F && true { }",
+    ])
+    def test_rejected_with_a_hint_naming_the_unwrap(self, body):
+        with pytest.raises(TypeCheckError) as exc:
+            build_and_check(self.DECL + f"fn main() {{ {body} }}")
+        assert "unwrap it with '.0'" in (exc.value.hint or ""), exc.value.hint
+
+    def test_unwrapped_condition_is_accepted(self):
+        build_and_check(self.DECL + "fn main() { if F.0 { } }")
+
+    def test_match_needs_no_unwrap(self):
+        build_and_check(
+            self.DECL + "fn main() { match F { true => { } false => { } }; }")

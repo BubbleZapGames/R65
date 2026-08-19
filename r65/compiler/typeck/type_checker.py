@@ -241,8 +241,26 @@ class TypeChecker:
         if not TypeUtils.is_boolean_type(expr_type):
             raise TypeCheckError(
                 f"{context} must be boolean, found {expr_type}",
-                source_loc=source_loc
+                source_loc=source_loc,
+                hint=self._bool_payload_hint(expr_type)
             )
+
+    @staticmethod
+    def _bool_payload_hint(expr_type: TypeInfo) -> Optional[str]:
+        """Hint for a newtype over `bool` used where a bool is wanted.
+
+        Consuming a value *as* a bool is the value flowing out, which a newtype
+        does not do implicitly — the same rule that rejects `let b: bool = f;`.
+        A pattern is not a consumer, so `match f { true => ... }` still works on
+        the wrapper; only the conditions need the unwrap, and the error should
+        say so rather than leave the reader guessing which rule they hit.
+        """
+        if not isinstance(expr_type, NewtypeTypeInfo):
+            return None
+        if str(strip_newtype(expr_type)) != 'bool':
+            return None
+        return (f"'{expr_type}' wraps a bool but does not flow out as one; "
+                f"unwrap it with '.0' (a 'match' on it needs no unwrap)")
 
     def _require_integer_type(self, expr_type: TypeInfo, context: str, source_loc=None):
         """
@@ -1743,7 +1761,8 @@ class TypeChecker:
                 raise TypeCheckError(
                     f"logical NOT '!' requires boolean operand, found {operand_type}",
                     source_loc=expr.operand.source_loc,
-                    hint="use comparison like (value != 0) to convert to bool"
+                    hint=(self._bool_payload_hint(operand_type)
+                          or "use comparison like (value != 0) to convert to bool")
                 )
             expr.expr_type = BasicTypeInfo('bool')
 

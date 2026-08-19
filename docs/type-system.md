@@ -162,6 +162,20 @@ struct Q10(i16);             // nominal AND free
 - Methods take `self` by value; see [abi-models.md](abi-models.md).
 - A newtype may implement a trait for static dispatch, but cannot be a `*dyn`
   target, and cannot implement `Clone` (see below).
+- A condition consumes a value **as** a bool, which is the value flowing out, so
+  a `bool` payload needs `.0` in `if`, `while`, `!`, `&&`, and `||`. A pattern
+  is not a consumer, so a `match` on the wrapper needs no unwrap.
+
+```rust
+struct Flag(bool);
+
+match f { true => { }, false => { } }   // OK: the value stays a Flag
+if f.0 { }                              // OK: unwrapped for the condition
+
+if f { }
+// error: If condition must be boolean, found Flag
+//   hint: 'Flag' wraps a bool but does not flow out as one; unwrap it with '.0'
+```
 
 ```rust
 let t: TileId = 5;        // OK: payload flows in
