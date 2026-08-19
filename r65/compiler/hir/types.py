@@ -228,8 +228,11 @@ class MultiReturnTypeInfo(TypeInfo):
         return sum(t.size_bytes for t in self.element_types)
 
     def __str__(self):
-        types_str = ", ".join(str(t) for t in self.element_types)
-        return f"({types_str})"
+        # No parentheses: a multi-return type is written `-> u8, u16`, and the
+        # parenthesized form this used to print is not something the language
+        # accepts — an error quoting it sent the reader to a spelling that does
+        # not parse.
+        return ", ".join(str(t) for t in self.element_types)
 
 
 @dataclass
