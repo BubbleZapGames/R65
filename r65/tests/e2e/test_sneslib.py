@@ -232,6 +232,95 @@ class TestSneslibColorMath:
         assert result.success, f"Failures: {result.failures}"
 
 
+class TestSneslibColorType:
+    """The `Color` newtype: construction, accessors, and the raw-u16 interop.
+
+    RGB15 is 0BBBBBGG GGGRRRRR, so red (31,0,0) is 0x001F, green 0x03E0 and
+    blue 0x7C00. `Color::rgb!` and the component accessors are method macros
+    rather than methods, so all of this folds at compile time when the
+    components are constant — these run the result to prove the folding is
+    right, not merely cheap.
+    """
+
+    def test_rgb_components_round_trip(self, e2e):
+        source = f'''
+            include!("{SNESLIB_PATH}")
+
+            #[zeropage(0x10)]
+            static mut RESULT: [u8; 6];
+
+            #[entry]
+            fn main() {{
+                let red = Color::rgb!(31, 0, 0);
+                let green = Color::rgb!(0, 31, 0);
+                let blue = Color::rgb!(0, 0, 31);
+
+                RESULT[0] = red.0 as u8;
+                RESULT[1] = (green.0 >> 8) as u8;
+                RESULT[2] = (blue.0 >> 8) as u8;
+
+                // Accessors recover the components they were built from.
+                let mixed = Color::rgb!(1, 2, 3);
+                RESULT[3] = mixed.red!();
+                RESULT[4] = mixed.green!();
+                RESULT[5] = mixed.blue!();
+            }}
+        '''
+        result = e2e.run(source, ExpectedState(memory={
+            0x7E0010: [0x1F, 0x03, 0x7C, 0x01, 0x02, 0x03]
+        }))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_runtime_components(self, e2e):
+        """The same arithmetic with a value the compiler cannot fold."""
+        source = f'''
+            include!("{SNESLIB_PATH}")
+
+            #[zeropage(0x10)]
+            static mut RESULT: [u8; 2];
+            #[zeropage(0x20)]
+            static mut LEVEL: u16;
+
+            #[entry]
+            fn main() {{
+                LEVEL = 31;
+                let c = Color::rgb!(LEVEL, 0, LEVEL);
+                RESULT[0] = c.red!();
+                RESULT[1] = c.blue!();
+            }}
+        '''
+        result = e2e.run(source, ExpectedState(memory={
+            0x7E0010: [31, 31]
+        }))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_constants_and_write_color(self, e2e):
+        """Color::WHITE through write_color!, which still takes a raw u16 too."""
+        source = f'''
+            include!("{SNESLIB_PATH}")
+
+            #[zeropage(0x10)]
+            static mut RESULT: [u8; 4];
+
+            #[entry]
+            fn main() {{
+                RESULT[0] = Color::WHITE.0 as u8;
+                RESULT[1] = (Color::WHITE.0 >> 8) as u8;
+                RESULT[2] = Color::BLACK.0 as u8;
+
+                // A Color and a bare u16 both reach CGDATA through the macro.
+                set_cgram_addr!(0);
+                write_color!(Color::BLACK);
+                write_color!(0x7FFF);
+                RESULT[3] = 1;
+            }}
+        '''
+        result = e2e.run(source, ExpectedState(memory={
+            0x7E0010: [0xFF, 0x7F, 0x00, 0x01]
+        }))
+        assert result.success, f"Failures: {result.failures}"
+
+
 class TestSneslibOamHelpers:
     """Test OAM helper functionality."""
 
