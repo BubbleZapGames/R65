@@ -178,6 +178,20 @@ class MatchValidator:
         # newtype rather than the payload, which is what the reader wrote.
         payload_type = strip_newtype(scrutinee_type)
 
+        # Only a scalar payload answers the `.name` questions below. A pointer,
+        # struct, or array scrutinee has no `.name` at all, so reading one threw
+        # an AttributeError out of the type checker instead of a diagnostic. A
+        # bare pointer could always reach this; a newtype over a near pointer is
+        # simply a second route to it.
+        if (not isinstance(payload_type, BasicTypeInfo)
+                and isinstance(pattern, (HIRLiteralPattern, HIRRangePattern))):
+            raise TypeCheckError(
+                f"cannot match on {scrutinee_type}",
+                source_loc=pattern.source_loc,
+                hint="match works on integers, bools, and enums; compare with "
+                     "'==' instead, or match on a field of the value"
+            )
+
         if isinstance(pattern, HIRLiteralPattern):
             # Literal must match scrutinee type
             if isinstance(pattern.value, bool):
