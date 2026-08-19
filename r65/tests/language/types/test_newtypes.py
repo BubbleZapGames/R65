@@ -510,3 +510,35 @@ class TestNewtypeInConstContext:
             build_and_check(NEWTYPES + "const T: TileId = TileId(1, 2);\nfn main() {}")
 
 
+class TestImplConstantKeepsTheNewtype:
+    """An associated constant folds to a literal, which used to drop its type.
+
+    `Color::WHITE` came back a bare u16: it flowed into any u16, mixed with
+    other newtypes, and did not answer to `.0`. The declared type is nominal, so
+    the fold has to carry it.
+    """
+
+    DECL = ("struct Color(u16);\nstruct Other(u16);\n"
+            "impl Color { const WHITE: Color = 0x7FFF; const RAW: u16 = 5; }\n")
+
+    def test_binds_to_the_newtype(self):
+        build_and_check(self.DECL + "fn main() { let c: Color = Color::WHITE; }")
+
+    def test_does_not_flow_out_to_the_payload(self):
+        with pytest.raises(TypeCheckError, match="expected u16, found Color"):
+            build_and_check(self.DECL + "fn main() { let n: u16 = Color::WHITE; }")
+
+    def test_does_not_mix_with_another_newtype(self):
+        with pytest.raises(TypeCheckError, match="expected Other, found Color"):
+            build_and_check(self.DECL + "fn main() { let o: Other = Color::WHITE; }")
+
+    def test_unwraps_with_field_access(self):
+        build_and_check(self.DECL + "fn main() { let n: u16 = Color::WHITE.0; }")
+
+    def test_inherits_operators(self):
+        build_and_check(self.DECL + "fn main() { let c: Color = Color::WHITE + 1; }")
+
+    def test_plain_constant_is_unaffected(self):
+        build_and_check(self.DECL + "fn main() { let n: u16 = Color::RAW; }")
+
+

@@ -11,7 +11,7 @@ from r65.compiler.frontend import ast
 
 from r65.compiler.hir import nodes as hir
 from r65.compiler.hir.symbol_table import Symbol, SymbolKind, ScopeKind
-from r65.compiler.hir.types import BasicTypeInfo, ArrayTypeInfo
+from r65.compiler.hir.types import BasicTypeInfo, ArrayTypeInfo, NewtypeTypeInfo
 from r65.compiler.hir.errors import HIRError
 
 
@@ -101,10 +101,19 @@ class ExpressionBuilder:
 
             if qualified_symbol and qualified_symbol.kind == SymbolKind.IMPL_CONST:
                 # Associated constant (e.g., Player::TYPE_ID, Player::WIDTH)
-                return hir.HIRIntegerLiteral(
+                literal = hir.HIRIntegerLiteral(
                     value=qualified_symbol.const_value,
                     source_loc=src_loc
                 )
+                # Folding to a bare literal drops the declared type, which for a
+                # newtype is the whole of its meaning: `Color::WHITE` would come
+                # back a u16, so it would flow into any u16 and would not answer
+                # to '.0'. Stamping the type keeps the constant as nominal as the
+                # declaration that named it. The checker honours a pre-set
+                # `expr_type` on a literal.
+                if isinstance(qualified_symbol.var_type, NewtypeTypeInfo):
+                    literal.expr_type = qualified_symbol.var_type
+                return literal
 
             # Otherwise resolve as enum variant
             enum_symbol = self.symbol_table.lookup(expr.enum_name)
