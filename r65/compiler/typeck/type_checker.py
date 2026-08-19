@@ -1000,6 +1000,8 @@ class TypeChecker:
         else:
             expected = [declared]
 
+        self._check_return_arity(stmt, expected, declared)
+
         for i, val in enumerate(stmt.values):
             want = expected[i] if i < len(expected) else None
             actual = self.check_expression(val, want)
@@ -1017,6 +1019,36 @@ class TypeChecker:
                 hint=f"the return type is '{want}'; convert explicitly with "
                      f"'as {want}' if the narrowing is intended"
             )
+
+    @staticmethod
+    def _check_return_arity(stmt: HIRReturnStmt, expected, declared):
+        """Reject `return` handing back the wrong number of values.
+
+        Only when both sides are non-empty. A bare `return;` is the documented
+        implicit-A form — the value is already in the register, so there is
+        nothing to count — and a `-> !` function has no declared type to count
+        against. Without the guard both would start failing.
+
+        Unchecked, the caller believes the signature: `let a, b = f();` against a
+        `return 1;` reads a register the callee never wrote.
+        """
+        if not stmt.values or not expected:
+            return
+        if len(stmt.values) == len(expected):
+            return
+
+        got, want = len(stmt.values), len(expected)
+        hint = (f"'-> {declared}' returns {want} values"
+                if got < want else
+                f"'-> {declared}' returns {want}, so drop the extra")
+        if got < want:
+            hint += "; a bare 'return;' returns whatever is already in A"
+        raise TypeCheckError(
+            f"returning {got} value{'s' if got != 1 else ''} from a function "
+            f"declared '-> {declared}', which returns {want}",
+            source_loc=stmt.source_loc,
+            hint=hint
+        )
 
     def check_let_statement(self, stmt: HIRLetStmt):
         """Type check let binding."""

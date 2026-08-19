@@ -91,3 +91,47 @@ class TestStillAccepted:
     def test_accepted(self, src):
         check(src + "\nfn main(){}")
 
+
+
+class TestReturnArity:
+    """`return` must hand back as many values as the signature promises.
+
+    Only the counted forms. A bare `return;` is the implicit-A form — the value
+    is already in the register, so there is nothing to count — and a `-> !`
+    function has no declared type to count against.
+
+    Unchecked, the caller believes the signature: `let a, b = f();` against a
+    `return 1;` reads a register the callee never wrote. The caller side already
+    rejects the mirror image (binding two names to a single-value call).
+    """
+
+    def test_too_few_values(self):
+        with pytest.raises(TypeCheckError, match="which returns 2"):
+            check("fn f() -> u8, u8 { return 1; }\nfn main() { }")
+
+    def test_too_many_values(self):
+        with pytest.raises(TypeCheckError, match="which returns 1"):
+            check("fn f() -> u8 { return 1, 2; }\nfn main() { }")
+
+    def test_error_quotes_a_spelling_that_parses(self):
+        """`-> u8, u8`, not the parenthesized form the language does not accept."""
+        with pytest.raises(TypeCheckError) as exc:
+            check("fn f() -> u8, u8 { return 1; }\nfn main() { }")
+        assert "'-> u8, u8'" in str(exc.value), str(exc.value)
+
+    def test_hint_points_at_the_implicit_a_form(self):
+        with pytest.raises(TypeCheckError) as exc:
+            check("fn f() -> u8, u8 { return 1; }\nfn main() { }")
+        assert "bare 'return;'" in (exc.value.hint or ""), exc.value.hint
+
+    def test_matching_arity_accepted(self):
+        check("fn f() -> u8, u16 { return 1, 2; }\nfn main() { }")
+
+    def test_bare_return_is_the_implicit_a_form(self):
+        check("fn f() -> u8 { A = 5; return; }\nfn main() { }")
+
+    def test_bare_return_from_a_multi_return_signature(self):
+        check("fn f() -> u8, u8 { A = 5; B = 6; return; }\nfn main() { }")
+
+    def test_never_returning_function_is_unchecked(self):
+        check("fn f() -> ! { loop { } }\nfn main() { }")
