@@ -371,11 +371,10 @@ impl Q10 {
     /// Two places is lossy: the scale is 1/64 = 0.015625, so 0.984375 prints as
     /// "0.98". Exact output would need six places and a 32-bit multiply.
     ///
-    /// This is what `format!("{s}", q)` calls. It is an inherent method rather
-    /// than `impl ToString for Q10` because a newtype cannot implement a trait —
-    /// dispatch stores a TypeId byte at offset 0, which would overlap the value.
-    /// `format!` resolves `to_string` by name, so it finds this and calls it
-    /// statically.
+    /// This is what `format!("{s}", q)` calls. `format!` resolves `to_string` by
+    /// name rather than by trait dispatch, so an inherent method is enough — an
+    /// `impl ToString for Q10` would compile, but would only add a vtable entry
+    /// nothing reads. The call is static either way.
     ///
     /// # Parameters
     /// - `buf` — destination, needing 7 bytes for the widest result, `"-511.98"`

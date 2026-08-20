@@ -304,9 +304,9 @@ p.px();
 - A subtrait may not redeclare a method or constant name already declared by any
   transitive supertrait (keeps dispatch unambiguous).
 - A trait and all its supertraits must share the same near/far calling convention.
-- Default method bodies are still not supported; a subtrait's own behavior lives in its
-  `impl` blocks (where `self` is the concrete type, so supertrait methods are callable
-  directly).
+- A subtrait's own behavior lives in its `impl` blocks (where `self` is the
+  concrete type, so supertrait methods are callable directly), or in a default
+  method body on the subtrait itself.
 
 ---
 

@@ -297,11 +297,10 @@ impl Q8 {
     /// The fraction is truncated, not rounded: 255/256 prints as `"0.99"`, not
     /// `"1.00"`. (Q10 rounds; see the body for why Q8 cannot.)
     ///
-    /// This is what `format!("{s}", q)` calls. It is an inherent method rather
-    /// than `impl ToString for Q8` because a newtype cannot implement a trait —
-    /// dispatch stores a TypeId byte at offset 0, which would overlap the value.
-    /// `format!` resolves `to_string` by name, so it finds this and calls it
-    /// statically.
+    /// This is what `format!("{s}", q)` calls. `format!` resolves `to_string` by
+    /// name rather than by trait dispatch, so an inherent method is enough — an
+    /// `impl ToString for Q8` would compile, but would only add a vtable entry
+    /// nothing reads. The call is static either way.
     ///
     /// # Parameters
     /// - `buf` — destination, needing 6 bytes for the widest result, `"255.99"`
