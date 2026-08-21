@@ -314,16 +314,17 @@ impl Q10 {
 
         // The divider is unsigned, hence the magnitude/sign split above.
         //
-        // The unit needs 16 machine cycles after the WRDIVB write. Six NOPs is
-        // 12 of them; the rest come from the `REP #$20` the compiler must place
+        // The unit needs 16 machine cycles after the WRDIVB write. Five NOPs is
+        // 10 of them; the rest come from the `REP #$20` the compiler must place
         // before the read, plus the LDA's own fetch. That REP is not incidental
         // and can be relied on: `d` is u8 so the write forces m8, `RDDIV` is u16
         // so the read forces m16, and something has to widen in between. Same
         // accounting as math.r65's div16, which reads RDDIV the same way --
-        // div8 needs the full NOP(8) only because its 8-bit read has no REP.
+        // div8 needs more only because its 8-bit read has no REP. Measured on
+        // Mesen: five is the minimum here, four gives wrong quotients.
         WRDIV = mag;
         WRDIVB = d;
-        NOP(6);
+        NOP(5);
         let quo: u16 = RDDIV;
 
         if neg != 0 {

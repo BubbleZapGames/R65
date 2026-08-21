@@ -178,11 +178,12 @@ far fn div16(dividend @ A: u16, divisor: u8) -> u16 {
     // Write divisor (starts division)
     WRDIVB = divisor;
 
-    // Wait 16 machine cycles for division to complete
-    // REP is 3 cycles, so we need 16 - 3 = 13 more cycles
-    // 6 NOPs = 12 cycles, plus the LDA below starts immediately
+    // The unit needs 16 machine cycles after the WRDIVB write. The REP is 3
+    // of them and five NOPs are 10 more; the last three come from the read's
+    // own operand fetch, which precedes its data cycle. Measured on Mesen:
+    // five is the minimum, four gives wrong quotients.
     STATUS.A16 = true;  // REP #$20 - switch back to 16-bit
-    NOP(6);
+    NOP(5);
 
     return RDDIV;
 }
@@ -199,8 +200,12 @@ far fn div8(dividend @ A: u8, divisor @ X: u16) -> u8 {
     // Write divisor
     WRDIVB = divisor;
 
-    // Wait 16 cycles
-    NOP(8);
+    // The unit needs 16 machine cycles after the WRDIVB write. Seven NOPs is
+    // 14 of them; the last two come from the read's own operand fetch, which
+    // precedes its data cycle no matter which addressing mode the compiler
+    // picks. Measured on Mesen: seven is the minimum, six gives wrong
+    // quotients, and the threshold does not move between SlowROM and FastROM.
+    NOP(7);
 
     // Read low byte of quotient only
     return RDDIVL;
@@ -219,9 +224,10 @@ far fn mod16(dividend @ A: u16, divisor: u8) -> u16 {
     // Write divisor (starts division)
     WRDIVB = divisor;
 
-    // Wait 16 machine cycles for division to complete
+    // Same 16-cycle accounting as div16 above: REP is 3, five NOPs are 10,
+    // and the read's operand fetch supplies the last three.
     STATUS.A16 = true;  // REP #$20 - switch back to 16-bit
-    NOP(6);
+    NOP(5);
 
     return RDMPY;
 }
@@ -237,8 +243,12 @@ far fn mod8(dividend @ A: u8, divisor @ X: u16) -> u8 {
     // Write divisor
     WRDIVB = divisor;
 
-    // Wait 16 cycles
-    NOP(8);
+    // The unit needs 16 machine cycles after the WRDIVB write. Seven NOPs is
+    // 14 of them; the last two come from the read's own operand fetch, which
+    // precedes its data cycle no matter which addressing mode the compiler
+    // picks. Measured on Mesen: seven is the minimum, six gives wrong
+    // quotients, and the threshold does not move between SlowROM and FastROM.
+    NOP(7);
 
     // Read remainder (low byte)
     return RDMPYL;

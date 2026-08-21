@@ -96,7 +96,10 @@ macro_rules! _hwdiv_step($remainder:expr) {
     A = $remainder;
     WRDIVH = A;
     WRDIVB = X;
-    NOP(8);
+    // 16 machine cycles after the WRDIVB write: seven NOPs is 14, and the
+    // read's own operand fetch supplies the rest. Measured on Mesen against
+    // U32::div_u8 -- six gives wrong quotients.
+    NOP(7);
 }
 
 // First hardware division step (remainder starts at 0)
@@ -106,7 +109,10 @@ macro_rules! _hwdiv_first() {
     WRDIVL = A;
     WRDIVH = 0;
     WRDIVB = X;
-    NOP(8);
+    // 16 machine cycles after the WRDIVB write: seven NOPs is 14, and the
+    // read's own operand fetch supplies the rest. Measured on Mesen against
+    // U32::div_u8 -- six gives wrong quotients.
+    NOP(7);
 }
 
 // ============================================================================
