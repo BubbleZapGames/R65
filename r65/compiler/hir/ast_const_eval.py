@@ -1067,8 +1067,11 @@ class ConstEvaluator:
                         # Compile it if needed (skip if currently being compiled — recursive)
                         if func_name not in self._compiled_const_fns and func_name not in self._compiling_const_fns:
                             self._compiled_const_fns[func_name] = self._compile_const_fn(func_def, func_name)
-                        args_str = ", ".join(self._transpile_expr(a) for a in expr.args)
-                        return f"_ns_['{func_name}']({args_str}, **_ns_)"
+                        # The trailing separator has to hang off the args, not
+                        # off `**_ns_`: a zero-arg callee would otherwise
+                        # transpile to `f(, **_ns_)`, a Python syntax error.
+                        args_str = "".join(f"{self._transpile_expr(a)}, " for a in expr.args)
+                        return f"_ns_['{func_name}']({args_str}**_ns_)"
                     else:
                         raise HIRError(
                             f"Cannot call '{func_name}' from const fn: "

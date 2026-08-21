@@ -189,6 +189,21 @@ class TestConstFnEvaluation:
         assert decls['QUAD'].evaluated_value == 12    # 3*2*2
         assert decls['XFORM'].evaluated_value == 13   # add_one(5)=6, 6*2=12, add_one(12)=13
 
+    def test_zero_arg_const_fn_called_from_const_fn(self):
+        """A callee with no parameters transpiles without a dangling separator."""
+        source = """
+        const fn base() -> u8 { return 5; }
+        const fn table() -> [u8; 3] { return [5, 6, 7]; }
+        const fn shifted() -> u8 { return base() + 1; }
+        const fn second() -> u8 { let t: [u8; 3] = table(); return t[1]; }
+        const SHIFTED: u8 = shifted();
+        const SECOND: u8 = second();
+        """
+        hir = build_hir(source)
+        decls = {d.name: d for d in hir.declarations if isinstance(d, HIRConstDecl)}
+        assert decls['SHIFTED'].evaluated_value == 6
+        assert decls['SECOND'].evaluated_value == 6
+
     def test_const_fn_called_in_multiple_consts(self):
         """Same const fn called from multiple const declarations."""
         source = """
