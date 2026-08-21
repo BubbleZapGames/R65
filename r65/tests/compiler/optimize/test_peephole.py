@@ -7,7 +7,8 @@ import pytest
 from r65.compiler.optimize.peephole import PeepholeOptimizer
 from r65.compiler.codegen.opcodes import Opcode
 from r65.compiler.codegen.asm_nodes import (
-    Instruction, Address, StackOffset, Label, RawAsm,
+    Instruction, Address, StackOffset, Label, RawAsm, Immediate,
+    ModeChange, Comment,
 )
 
 
@@ -212,3 +213,47 @@ class TestBranchOverBranchEliminationSelfLoopGuard:
         first = [n for n in result if isinstance(n, Instruction)][0]
         assert first.opcode == Opcode.BEQ
         assert first.operand.value == "elsewhere"
+
+
+class TestLoopModeSwitchHoistRetagsAnchor:
+    """Test _hoist_loop_mode_switches keeps the label's `.ACCU` anchor honest."""
+
+    @staticmethod
+    def _loop_nodes(*, before_anchor=()):
+        """A bottom-tested loop whose header carries a REP and an anchor."""
+        return [
+            Instruction(opcode=Opcode.SEP_IMMEDIATE, operand=Immediate(0x20)),
+            Label(name="loop"),
+            *before_anchor,
+            ModeChange(flag="ACCU", bits=8),
+            Instruction(opcode=Opcode.REP_IMMEDIATE, operand=Immediate(0x20)),
+            Instruction(opcode=Opcode.LDA_DP, operand=Address(0x10)),
+            Instruction(opcode=Opcode.INC),
+            Instruction(opcode=Opcode.STA_DP, operand=Address(0x10)),
+            Instruction(opcode=Opcode.BNE, operand=Address("loop")),
+        ]
+
+    def _hoist(self, nodes):
+        opt = PeepholeOptimizer()
+        return opt._hoist_loop_mode_switches(nodes)
+
+    def test_anchor_follows_the_hoisted_switch(self):
+        """REP moves above the label, so the label is now entered in m16."""
+        result = self._hoist(self._loop_nodes())
+        label_at = next(i for i, n in enumerate(result)
+                        if isinstance(n, Label) and n.name == "loop")
+        # The hoisted REP now precedes the label...
+        assert result[label_at - 1].opcode == Opcode.REP_IMMEDIATE
+        # ...and the anchor says m16, not the stale m8.
+        anchor = next(n for n in result[label_at:]
+                      if isinstance(n, ModeChange) and n.flag == "ACCU")
+        assert anchor.bits == 16
+
+    def test_anchor_found_past_a_comment(self):
+        """A comment between label and anchor must not hide it from the retag."""
+        result = self._hoist(
+            self._loop_nodes(before_anchor=(Comment(text="block entry"),))
+        )
+        anchor = next(n for n in result if isinstance(n, ModeChange)
+                      and n.flag == "ACCU")
+        assert anchor.bits == 16

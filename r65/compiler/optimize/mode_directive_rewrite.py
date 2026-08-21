@@ -27,12 +27,20 @@ stream, without the peephole passes needing to bookkeep them.
 
 from __future__ import annotations
 
+import re
+
 from typing import Dict, List, Optional, Set, Tuple
 
 from r65.compiler.codegen.asm_nodes import (
     AsmNode, BlankLine, Comment, Instruction, Label, ModeChange,
 )
 from r65.compiler.optimize.asm_mode_dataflow import compute_modes
+
+
+# Bare identifiers inside an operand, directive argument, or raw asm
+# blob. Over-approximating here is safe: a stray match only makes
+# `_reconcile_anchors_with_cfg` leave one more anchor untouched.
+_IDENTIFIER_RE = re.compile(r'[A-Za-z_][A-Za-z0-9_]*')
 
 
 # ---------------------------------------------------------------------------
@@ -137,6 +145,97 @@ def _classify_directives(
 # ---------------------------------------------------------------------------
 
 
+def _reconcile_anchors_with_cfg(
+    stripped: List[AsmNode],
+    stripped_is_anchor: List[bool],
+    entry_m: Dict[str, int],
+    entry_x: Dict[str, int],
+) -> None:
+    """Correct label anchors that the asm CFG contradicts, in place.
+
+    An anchored `.ACCU` is codegen's belief about the mode a block is
+    entered in, and `compute_modes` *freezes* the label to it — real
+    predecessor edges are ignored. That is exactly right for a function
+    entry, which the asm-level dataflow can only reach through a JSR/JSL
+    it does not model. It is wrong for an ordinary block label, whose
+    only predecessors are branches the dataflow can see: peephole may
+    have deleted the block-entry SEP/REP that made the anchor true (say,
+    because the next instruction overwrote it), leaving a stale hint
+    that would make WLA-DX size the block's immediates for a width the
+    CPU is not in.
+
+    So: run the dataflow with no seeds at all. Where it *proves* a
+    unique mode at an anchored label from in-file edges alone, that
+    proof wins and the anchor is rewritten to match. Where it proves
+    nothing — an unreachable label, or one only entered by a call — the
+    anchor stands.
+    """
+    from r65.compiler.codegen.asm_nodes import Directive, Instruction, RawAsm
+    from r65.compiler.codegen.opcodes import (
+        Opcode, BRANCH_OPCODES, JUMP_OPCODES,
+    )
+
+    # Only a branch or a jump is an edge `compute_modes` models. Every
+    # other way of naming a label — a JSR/JSL, a `#<label>` immediate
+    # loaded into a function pointer, a `.DW` jump-table entry — is an
+    # entry the dataflow cannot see, so the mode it arrives in is not
+    # constrained by the branches that also reach it. Leave those
+    # anchors alone.
+    #
+    # (Vector-table entries like `nmi_handler` are named only by the
+    # ROM header, so nothing in the stream mentions them at all; they
+    # are protected instead by the `is_reachable` test below, which is
+    # false for a label with no in-file edges.)
+    escaped: Set[str] = set()
+
+    def note_names(text: str) -> None:
+        escaped.update(_IDENTIFIER_RE.findall(text))
+
+    for node in stripped:
+        if isinstance(node, Instruction):
+            if node.opcode in BRANCH_OPCODES or node.opcode in JUMP_OPCODES:
+                continue
+            value = getattr(node.operand, 'value', None)
+            if isinstance(value, str):
+                note_names(value)
+        elif isinstance(node, Directive):
+            for arg in getattr(node, 'args', ()) or ():
+                if isinstance(arg, str):
+                    note_names(arg)
+        elif isinstance(node, RawAsm):
+            note_names(node.text)
+
+    cfg = compute_modes(stripped)
+
+    n = len(stripped)
+    for i, node in enumerate(stripped):
+        if not isinstance(node, Label) or node.name in escaped:
+            continue
+        if not cfg.is_reachable(i):
+            continue
+
+        proven_m = cfg.unique_mode_at(i)
+        proven_x = cfg.unique_x_mode_at(i)
+
+        j = i + 1
+        while j < n:
+            nj = stripped[j]
+            if _is_skippable(nj):
+                j += 1
+                continue
+            kind = _mode_directive_kind(nj)
+            if kind is None or not stripped_is_anchor[j]:
+                break
+            tag, bits = kind
+            if tag == 'ACCU' and proven_m is not None and proven_m != bits:
+                stripped[j] = ModeChange('ACCU', proven_m, nj.source_loc)
+                entry_m[node.name] = proven_m
+            elif tag == 'INDEX' and proven_x is not None and proven_x != bits:
+                stripped[j] = ModeChange('INDEX', proven_x, nj.source_loc)
+                entry_x[node.name] = proven_x
+            j += 1
+
+
 def normalize_mode_directives(nodes: List[AsmNode]) -> List[AsmNode]:
     """Reconcile ``.ACCU`` / ``.INDEX`` directives in ``nodes`` against
     the asm-mode dataflow.
@@ -181,6 +280,8 @@ def normalize_mode_directives(nodes: List[AsmNode]) -> List[AsmNode]:
             stripped.append(node)
             stripped_is_anchor.append(True)
         # else: mid-block directive → drop.
+
+    _reconcile_anchors_with_cfg(stripped, stripped_is_anchor, entry_m, entry_x)
 
     info = compute_modes(
         stripped,

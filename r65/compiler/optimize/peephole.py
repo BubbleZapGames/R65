@@ -80,6 +80,9 @@ MODIFIES_A_OPCODES: Set[Opcode] = LOAD_A_OPCODES | {
     Opcode.INC, Opcode.DEC,
     Opcode.TXA, Opcode.TYA, Opcode.PLA,
     Opcode.XBA,  # Exchanges A and B
+    # Block moves run A down to $FFFF and walk X/Y across the region —
+    # every register they touch comes out clobbered.
+    Opcode.MVN, Opcode.MVP,
 }
 
 # Transfer instructions (for redundant transfer elimination)
@@ -1586,14 +1589,16 @@ class PeepholeOptimizer:
                         '_INDIRECT_X' in name or
                         name in ('TXA', 'TXY', 'STX_DP', 'STX_ABSOLUTE',
                                  'STX_DP_Y', 'PHX', 'INX', 'DEX',
-                                 'CPX_IMMEDIATE', 'CPX_DP', 'CPX_ABSOLUTE'))
+                                 'CPX_IMMEDIATE', 'CPX_DP', 'CPX_ABSOLUTE',
+                                 'MVN', 'MVP'))
             else:  # Y
                 return (name.endswith('_Y') or name.endswith('_DP_Y') or
                         '_ABSOLUTE_Y' in name or '_INDIRECT_Y' in name or
                         '_INDIRECT_LONG_Y' in name or '_STACK_INDIRECT_Y' in name or
                         name in ('TYA', 'TYX', 'STY_DP', 'STY_ABSOLUTE',
                                  'STY_DP_X', 'PHY', 'INY', 'DEY',
-                                 'CPY_IMMEDIATE', 'CPY_DP', 'CPY_ABSOLUTE'))
+                                 'CPY_IMMEDIATE', 'CPY_DP', 'CPY_ABSOLUTE',
+                                 'MVN', 'MVP'))
 
         INC_TO_DEC = {
             Opcode.INX: Opcode.DEX, Opcode.INY: Opcode.DEY,
@@ -1823,6 +1828,7 @@ class PeepholeOptimizer:
         """
         from r65.compiler.codegen.asm_nodes import (
             Instruction, Immediate, Directive, Label, ModeChange, Address,
+            BlankLine, Comment,
         )
 
         M_FLAG = 0x20
@@ -1850,12 +1856,15 @@ class PeepholeOptimizer:
             if label_refs.get(label_name, 0) != 1:
                 continue
 
-            # Look for SEP/REP after label, skipping any inert mode-hint
-            # directives codegen / normalize emitted alongside it.
+            # Look for SEP/REP after label, skipping the inert nodes that
+            # can sit between the two — mode-hint directives, comments,
+            # blank lines. Same skip set as the anchor retag below, so a
+            # comment can't make one walk find the switch and the other
+            # miss it.
             j = i + 1
             sep_idx = None
             while j < len(nodes):
-                if isinstance(nodes[j], ModeChange):
+                if isinstance(nodes[j], (ModeChange, Comment, BlankLine)):
                     j += 1
                     continue
                 if isinstance(nodes[j], Instruction):
@@ -1922,6 +1931,32 @@ class PeepholeOptimizer:
         hoist_set = {h[1] for h in hoists}  # SEP/REP indices to remove
         insert_before = {h[0]: nodes[h[1]] for h in hoists}
 
+        # A label's first `.ACCU` is *anchored*: `normalize_mode_directives`
+        # preserves it and seeds the dataflow with it, because codegen knows
+        # things about block entry the asm-level dataflow can't see. Hoisting
+        # the switch above the label changes the mode the label is entered in,
+        # so the anchor has to move with it — otherwise the stale seed makes
+        # WLA-DX size the block's immediates for the wrong width.
+        # Walk to the anchor exactly the way `_classify_directives` does
+        # when it decides what counts as anchored — same skip set, or the
+        # two disagree about which directive is the seed and this retag
+        # silently misses it.
+        retag: dict[int, int] = {}
+        for label_idx, _sep_idx, target_mode in hoists:
+            j = label_idx + 1
+            while j < len(nodes):
+                nj = nodes[j]
+                if isinstance(nj, (Comment, BlankLine)):
+                    j += 1
+                    continue
+                if isinstance(nj, ModeChange):
+                    if nj.flag == 'ACCU':
+                        retag[j] = target_mode
+                        break
+                    j += 1
+                    continue
+                break
+
         optimized = []
         for i, node in enumerate(nodes):
             if i in insert_before:
@@ -1929,6 +1964,8 @@ class PeepholeOptimizer:
                 self.stats.redundant_mode_changes_eliminated += 1
             if i in hoist_set:
                 continue
+            if i in retag:
+                node = ModeChange('ACCU', retag[i], node.source_loc)
             optimized.append(node)
 
         return optimized
