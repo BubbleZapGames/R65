@@ -215,6 +215,124 @@ class TestBranchOverBranchEliminationSelfLoopGuard:
         assert first.operand.value == "elsewhere"
 
 
+class TestDeadModeChangeElimination:
+    """Test _eliminate_dead_mode_changes pass."""
+
+    def test_sep_killed_by_following_rep(self):
+        """SEP #$20; REP #$20 — the SEP is overwritten before anything reads P."""
+        nodes = [
+            Instruction(opcode=Opcode.SEP_IMMEDIATE, operand=Immediate(0x20)),
+            Instruction(opcode=Opcode.REP_IMMEDIATE, operand=Immediate(0x20)),
+            Instruction(opcode=Opcode.LDA_DP, operand=Address(0x10)),
+        ]
+        opt = PeepholeOptimizer()
+        result = opt.optimize(nodes)
+        assert [n.opcode for n in result if isinstance(n, Instruction)] == [
+            Opcode.REP_IMMEDIATE, Opcode.LDA_DP,
+        ]
+        assert opt.stats.dead_mode_changes_eliminated == 1
+
+    def test_partial_mask_not_eliminated(self):
+        """SEP #$30; REP #$20 leaves the x flag set — the SEP still matters."""
+        nodes = [
+            Instruction(opcode=Opcode.SEP_IMMEDIATE, operand=Immediate(0x30)),
+            Instruction(opcode=Opcode.REP_IMMEDIATE, operand=Immediate(0x20)),
+            Instruction(opcode=Opcode.LDA_DP, operand=Address(0x10)),
+        ]
+        opt = PeepholeOptimizer()
+        result = opt.optimize(nodes)
+        assert opt.stats.dead_mode_changes_eliminated == 0
+
+    def test_label_between_blocks_elimination(self):
+        """A label between the two switches means another path can observe the SEP."""
+        nodes = [
+            Instruction(opcode=Opcode.SEP_IMMEDIATE, operand=Immediate(0x20)),
+            Label(name="target"),
+            Instruction(opcode=Opcode.REP_IMMEDIATE, operand=Immediate(0x20)),
+            Instruction(opcode=Opcode.LDA_DP, operand=Address(0x10)),
+        ]
+        opt = PeepholeOptimizer()
+        opt.optimize(nodes)
+        assert opt.stats.dead_mode_changes_eliminated == 0
+
+    def test_instruction_between_blocks_elimination(self):
+        """An instruction between the switches runs in the mode the SEP set."""
+        nodes = [
+            Instruction(opcode=Opcode.SEP_IMMEDIATE, operand=Immediate(0x20)),
+            Instruction(opcode=Opcode.LDA_DP, operand=Address(0x10)),
+            Instruction(opcode=Opcode.REP_IMMEDIATE, operand=Immediate(0x20)),
+        ]
+        opt = PeepholeOptimizer()
+        opt.optimize(nodes)
+        assert opt.stats.dead_mode_changes_eliminated == 0
+
+
+class TestCarrySetupFoldedIntoRep:
+    """Test _fold_carry_setup_into_rep pass."""
+
+    def test_clc_folded_into_rep(self):
+        """REP #$20; TSC; CLC; ADC — REP #$21 clears carry for free."""
+        nodes = [
+            Instruction(opcode=Opcode.REP_IMMEDIATE, operand=Immediate(0x20)),
+            Instruction(opcode=Opcode.TSC),
+            Instruction(opcode=Opcode.CLC),
+            Instruction(opcode=Opcode.ADC_IMMEDIATE, operand=Immediate(0x0A)),
+            Instruction(opcode=Opcode.TCS),
+        ]
+        opt = PeepholeOptimizer()
+        result = opt.optimize(nodes)
+        instrs = [n for n in result if isinstance(n, Instruction)]
+        assert [n.opcode for n in instrs] == [
+            Opcode.REP_IMMEDIATE, Opcode.TSC, Opcode.ADC_IMMEDIATE, Opcode.TCS,
+        ]
+        assert instrs[0].operand.value == 0x21
+        assert instrs[2].operand.value == 0x0A
+        assert opt.stats.carry_ops_folded_into_rep == 1
+
+    def test_sec_folded_into_rep_with_borrow(self):
+        """REP #$20; TSC; SEC; SBC #$0A — carry-clear SBC needs one less."""
+        nodes = [
+            Instruction(opcode=Opcode.REP_IMMEDIATE, operand=Immediate(0x20)),
+            Instruction(opcode=Opcode.TSC),
+            Instruction(opcode=Opcode.SEC),
+            Instruction(opcode=Opcode.SBC_IMMEDIATE, operand=Immediate(0x0A)),
+            Instruction(opcode=Opcode.TCS),
+        ]
+        opt = PeepholeOptimizer()
+        result = opt.optimize(nodes)
+        instrs = [n for n in result if isinstance(n, Instruction)]
+        assert [n.opcode for n in instrs] == [
+            Opcode.REP_IMMEDIATE, Opcode.TSC, Opcode.SBC_IMMEDIATE, Opcode.TCS,
+        ]
+        assert instrs[0].operand.value == 0x21
+        assert instrs[2].operand.value == 0x09
+        assert opt.stats.carry_ops_folded_into_rep == 1
+
+    def test_sec_not_folded_when_operand_is_zero(self):
+        """SBC #$00 has no borrow-adjusted form — leave the SEC alone."""
+        nodes = [
+            Instruction(opcode=Opcode.REP_IMMEDIATE, operand=Immediate(0x20)),
+            Instruction(opcode=Opcode.TSC),
+            Instruction(opcode=Opcode.SEC),
+            Instruction(opcode=Opcode.SBC_IMMEDIATE, operand=Immediate(0x00)),
+        ]
+        opt = PeepholeOptimizer()
+        opt.optimize(nodes)
+        assert opt.stats.carry_ops_folded_into_rep == 0
+
+    def test_intervening_instruction_blocks_fold(self):
+        """Only a TSC may sit between the REP and the carry op."""
+        nodes = [
+            Instruction(opcode=Opcode.REP_IMMEDIATE, operand=Immediate(0x20)),
+            Instruction(opcode=Opcode.LDA_DP, operand=Address(0x10)),
+            Instruction(opcode=Opcode.CLC),
+            Instruction(opcode=Opcode.ADC_IMMEDIATE, operand=Immediate(0x0A)),
+        ]
+        opt = PeepholeOptimizer()
+        opt.optimize(nodes)
+        assert opt.stats.carry_ops_folded_into_rep == 0
+
+
 class TestLoopModeSwitchHoistRetagsAnchor:
     """Test _hoist_loop_mode_switches keeps the label's `.ACCU` anchor honest."""
 

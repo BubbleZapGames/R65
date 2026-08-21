@@ -8,7 +8,7 @@ redundant operations and improve code quality.
 Uses typed Opcode enum for efficient pattern matching without string parsing.
 """
 
-from typing import List, Tuple, TYPE_CHECKING, Set
+from typing import List, Optional, Tuple, TYPE_CHECKING, Set
 from dataclasses import dataclass
 
 from r65.compiler.codegen.opcodes import (
@@ -198,6 +198,8 @@ class OptimizationStats:
     redundant_transfers_eliminated: int = 0
     redundant_stack_ops_eliminated: int = 0
     redundant_mode_changes_eliminated: int = 0
+    dead_mode_changes_eliminated: int = 0
+    carry_ops_folded_into_rep: int = 0
     redundant_and_before_sep_eliminated: int = 0
     branch_over_branch_eliminated: int = 0
     branch_to_next_eliminated: int = 0
@@ -327,6 +329,8 @@ class PeepholeOptimizer:
             nodes = self._eliminate_redundant_transfers(nodes)
             nodes = self._eliminate_redundant_stack_ops(nodes)
             nodes = self._eliminate_redundant_mode_changes(nodes)
+            nodes = self._eliminate_dead_mode_changes(nodes)
+            nodes = self._fold_carry_setup_into_rep(nodes)
             nodes = self._eliminate_cross_block_mode_changes(nodes)
             nodes = self._eliminate_redundant_and_before_sep(nodes)
             nodes = self._eliminate_branch_over_branch(nodes)
@@ -877,6 +881,190 @@ class PeepholeOptimizer:
             optimized.append(node)
             i += 1
 
+        return optimized
+
+    def _eliminate_dead_mode_changes(self, nodes: List['AsmNode']) -> List['AsmNode']:
+        """Drop a SEP/REP whose every bit is rewritten by the next one.
+
+        `_eliminate_redundant_mode_changes` asks "is the CPU already in
+        the mode this switch asks for?" — a question about what comes
+        *before*. This pass asks the dual question: does anything ever
+        observe what this switch wrote? Codegen routinely emits a
+        block-entry mode restore straight into the block's own mode
+        requirement::
+
+            SEP #$20  ; REQUIRED: restore m8 mode for block
+            REP #$20  ; 16-bit A
+
+        The SEP is a 3-cycle, 2-byte no-op: nothing between the two
+        reads P, so every bit it set is immediately cleared again.
+
+        A switch at `i` is dead iff the next node that isn't a comment
+        or a `.ACCU`/`.INDEX` hint overwrites every bit `i` wrote —
+        another SEP/REP whose mask covers `i`'s, or a PLP/RTI, which
+        reload the whole of P from the stack. Anything else in between —
+        a real instruction, a label (which could be branched to), opaque
+        inline asm — makes the write observable and stops the rewrite.
+        """
+        from r65.compiler.codegen.asm_nodes import (
+            Instruction, Immediate, Comment, ModeChange, RawAsm,
+        )
+
+        ALL_FLAGS = 0xFF
+
+        def written_mask(node) -> Optional[int]:
+            """The P bits this node writes, or None if it isn't a SEP/REP.
+
+            Only SEP/REP are ever *candidates* for removal. PLP and RTI
+            also write P, but they pop it off the stack — dropping one
+            would leave the stack a byte deep.
+            """
+            if (isinstance(node, Instruction)
+                    and node.opcode in (Opcode.SEP_IMMEDIATE,
+                                        Opcode.REP_IMMEDIATE)
+                    and isinstance(node.operand, Immediate)
+                    and isinstance(node.operand.value, int)):
+                return node.operand.value
+            return None
+
+        def killed_mask(node) -> Optional[int]:
+            """The P bits this node overwrites regardless of their old value."""
+            if (isinstance(node, Instruction)
+                    and node.opcode in (Opcode.PLP, Opcode.RTI)):
+                # Both reload the whole of P from the stack, so they bury
+                # any SEP/REP standing in front of them.
+                return ALL_FLAGS
+            return written_mask(node)
+
+        n = len(nodes)
+        dead: Set[int] = set()
+        for i, node in enumerate(nodes):
+            mask = written_mask(node)
+            if mask is None:
+                continue
+
+            # Walk to the next node that can observe the flags.
+            j = i + 1
+            while j < n:
+                nj = nodes[j]
+                if isinstance(nj, (Comment, ModeChange)):
+                    j += 1
+                    continue
+                if isinstance(nj, RawAsm) and _rawasm_is_transparent(nj):
+                    j += 1
+                    continue
+                break
+            if j >= n:
+                continue
+
+            next_mask = killed_mask(nodes[j])
+            # A SEP and a REP write opposite values, so covering the
+            # mask is enough — whatever `i` wrote, `j` overwrites.
+            if next_mask is not None and mask & ~next_mask == 0:
+                dead.add(i)
+
+        if not dead:
+            return nodes
+
+        self.stats.dead_mode_changes_eliminated += len(dead)
+        return [node for i, node in enumerate(nodes) if i not in dead]
+
+    def _fold_carry_setup_into_rep(self, nodes: List['AsmNode']) -> List['AsmNode']:
+        """Fold the carry setup of a stack adjustment into its REP.
+
+        Every frame allocation and teardown switches to m16 first, so
+        there is always a REP sitting two instructions above the CLC or
+        SEC::
+
+            REP #$20    SEP -> m16          REP #$20
+            TSC                             TSC
+            CLC                             SEC
+            ADC #$0A                        SBC #$0A
+            TCS                             TCS
+
+        REP takes a bitmask, and bit 0 is the carry flag — so `REP #$21`
+        does the mode switch *and* clears carry in the same three cycles
+        the mode switch already cost. The add form then needs no CLC at
+        all. The subtract form wants carry set, which REP cannot do, but
+        borrowing is just an off-by-one: with carry clear `SBC #n`
+        subtracts n+1, so `SBC #(n-1)` lands on the same address.
+
+        Two cycles and one byte per stack adjustment, at both ends of
+        every function with a frame.
+
+        Only a TSC is tolerated between the REP and the carry op —
+        nothing else in these sequences, and it leaves carry alone. That
+        keeps the rewrite obviously safe: no instruction in the window
+        reads the carry we are now clearing early.
+        """
+        from r65.compiler.codegen.asm_nodes import (
+            Instruction, Immediate, Comment, ModeChange,
+        )
+
+        C_FLAG = 0x01
+
+        def skip_inert(i: int) -> int:
+            while i < len(nodes) and isinstance(nodes[i], (Comment, ModeChange)):
+                i += 1
+            return i
+
+        optimized: List = []
+        drop: Set[int] = set()
+        rewrite: dict = {}
+
+        for i, node in enumerate(nodes):
+            if (not isinstance(node, Instruction)
+                    or node.opcode != Opcode.REP_IMMEDIATE
+                    or not isinstance(node.operand, Immediate)
+                    or not isinstance(node.operand.value, int)
+                    or node.operand.value & C_FLAG):
+                continue
+
+            j = skip_inert(i + 1)
+            if (j < len(nodes) and isinstance(nodes[j], Instruction)
+                    and nodes[j].opcode == Opcode.TSC):
+                j = skip_inert(j + 1)
+            if j >= len(nodes) or not isinstance(nodes[j], Instruction):
+                continue
+
+            carry_op = nodes[j]
+            if carry_op.opcode == Opcode.CLC:
+                drop.add(j)
+            elif carry_op.opcode == Opcode.SEC:
+                k = skip_inert(j + 1)
+                if (k >= len(nodes) or not isinstance(nodes[k], Instruction)
+                        or nodes[k].opcode != Opcode.SBC_IMMEDIATE
+                        or not isinstance(nodes[k].operand, Immediate)
+                        or not isinstance(nodes[k].operand.value, int)
+                        or nodes[k].operand.value < 1):
+                    continue
+                drop.add(j)
+                borrowed = nodes[k]
+                rewrite[k] = Instruction(
+                    borrowed.opcode,
+                    Immediate(borrowed.operand.value - 1),
+                    borrowed.comment,
+                    borrowed.source_loc,
+                )
+            else:
+                continue
+
+            rewrite[i] = Instruction(
+                node.opcode,
+                Immediate(node.operand.value | C_FLAG),
+                (node.comment or '') + ' (carry cleared here)' if node.comment
+                else 'Mode switch, carry cleared',
+                node.source_loc,
+            )
+
+        if not drop:
+            return nodes
+
+        self.stats.carry_ops_folded_into_rep += len(drop)
+        for i, node in enumerate(nodes):
+            if i in drop:
+                continue
+            optimized.append(rewrite.get(i, node))
         return optimized
 
     def _eliminate_cross_block_mode_changes(self, nodes: List['AsmNode']) -> List['AsmNode']:
