@@ -326,3 +326,68 @@ class TestMathPipeline:
             0x7E0010: 30,
         }))
         assert result.success, f"Failures: {result.failures}"
+
+
+class TestMul8HardwareWrite:
+    """`mul8` writes both multiply registers with one 16-bit store.
+
+    WRMPYA ($4202) and WRMPYB ($4203) are adjacent, and mul8's ABI puts
+    multA in A and multB in B — so the 16-bit accumulator already holds
+    the word those registers want. Writing it as `WRMPYA = a; WRMPYB = b`
+    cost an extra store plus two XBAs to reach B and put A back; one
+    `REP #$20` + `STA $4202` does it in nine fewer cycles.
+
+    R65 cannot name the full 16-bit accumulator from m8 code, so the
+    store is inline asm. That leaves the CPU in m16 at the return, which
+    is what a `-> u16` function returns in anyway.
+    """
+
+    def test_products_across_the_range(self, e2e):
+        """Both operand bytes must land in the right register."""
+        source = f'''
+            include!("{SNESLIB_PATH}")
+            include!("{MATH_PATH}")
+
+            #[ram]
+            static mut OUT: [u16; 4];
+
+            #[entry]
+            fn main() {{
+                OUT[0] = mul8(7, 3);        // 21
+                OUT[1] = mul8(255, 255);    // 65025 - widest product
+                OUT[2] = mul8(200, 13);     // 2600
+                OUT[3] = mul8(1, 0);        // 0 - operands not swapped
+            }}
+        '''
+        result = e2e.run(source, ExpectedState(memory={
+            0x7E2000: [0x15, 0x00],
+            0x7E2002: [0x01, 0xFE],
+            0x7E2004: [0x28, 0x0A],
+            0x7E2006: [0x00, 0x00],
+        }))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_operands_are_not_transposed(self, e2e):
+        """A 16-bit store puts A at $4202 and B at $4203, not the reverse.
+
+        Multiplication commutes, so a swap hides in the product. Feed the
+        two operands through separately: mul8(a, 1) must be a.
+        """
+        source = f'''
+            include!("{SNESLIB_PATH}")
+            include!("{MATH_PATH}")
+
+            #[ram]
+            static mut OUT: [u16; 2];
+
+            #[entry]
+            fn main() {{
+                OUT[0] = mul8(37, 1);
+                OUT[1] = mul8(1, 37);
+            }}
+        '''
+        result = e2e.run(source, ExpectedState(memory={
+            0x7E2000: [37, 0x00],
+            0x7E2002: [37, 0x00],
+        }))
+        assert result.success, f"Failures: {result.failures}"

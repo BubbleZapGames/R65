@@ -19,13 +19,25 @@
 // Result: 16-bit widening product
 #[cfg(snes)]
 far fn mul8(multA @ A: u8, multB @ B: u8) -> u16 {
-    // Write multiplicand
-    WRMPYA = multA;
+    // WRMPYA ($4202) and WRMPYB ($4203) are adjacent, and the ABI has already
+    // put multA in A and multB in B -- so the 16-bit accumulator holds exactly
+    // the word those two registers want. One REP + STA writes both, where
+    // `WRMPYA = multA; WRMPYB = multB;` costs an extra store and two XBAs to
+    // reach B and put A back.
+    //
+    // This is inline asm because R65 has no way to name the full 16-bit
+    // accumulator from m8 code: `A` is the low byte, `B` the high one, and
+    // `A as u16` zero-extends -- which kills the very byte we want to store.
+    //
+    // Leaves the CPU in m16, which is what a `-> u16` function returns in
+    // anyway, so callers are unaffected. Do not add anything with an immediate
+    // operand between here and the return: the compiler still believes m8, so
+    // WLA-DX would size it for the wrong width.
+    asm!("REP #$20", "STA $4202");
 
-    // Write multiplier (starts multiplication)
-    WRMPYB = multB;
-
-    // Wait 8 machine cycles for multiplication to complete
+    // Wait 8 machine cycles for multiplication to complete. The 16-bit store
+    // writes $4203 on its last cycle, so the four NOPs plus the load's own
+    // fetch keep the result read clear of that window.
     NOP(4);
 
     // Return 16-bit result (RDMPY is u16, reads $4216-$4217 in m16)
