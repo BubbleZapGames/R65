@@ -14,6 +14,7 @@ from r65.compiler.hir import (
     HIRIntegerLiteral, HIRBooleanLiteral, HIRArrayLiteralExpr,
     HIRFunctionCall,
 )
+from r65.compiler.main import compile_string
 from r65.compiler.typeck import TypeChecker
 
 
@@ -519,3 +520,88 @@ class TestConstFnArrays:
         const TABLE: [u8; 4] = make_table();
         """
         build_and_typecheck(source)
+
+
+class TestConstFnNewtypes:
+    """Test const fn interaction with newtypes."""
+
+    def test_construction_in_body(self):
+        """`Newtype(x)` inside a const fn body is a retype, not a call."""
+        source = """
+        struct TileId(u8);
+        const fn make(n: u8) -> TileId { return TileId(n + 1); }
+        const T: TileId = make(5);
+        """
+        hir = build_hir(source)
+        decl = [d for d in hir.declarations if isinstance(d, HIRConstDecl) and d.name == 'T'][0]
+        assert decl.evaluated_value == 6
+
+    def test_payload_access_in_body(self):
+        """`t.0` inside a const fn body yields the payload."""
+        source = """
+        struct TileId(u8);
+        const fn raw(t: TileId) -> u8 { return t.0; }
+        const N: u8 = raw(TileId(7));
+        """
+        hir = build_hir(source)
+        decl = [d for d in hir.declarations if isinstance(d, HIRConstDecl) and d.name == 'N'][0]
+        assert decl.evaluated_value == 7
+
+    def test_payload_access_in_const_expr(self):
+        """`T.0` in a const declaration yields the payload."""
+        source = """
+        struct TileId(u8);
+        const T: TileId = TileId(7);
+        const N: u8 = T.0;
+        """
+        hir = build_hir(source)
+        decl = [d for d in hir.declarations if isinstance(d, HIRConstDecl) and d.name == 'N'][0]
+        assert decl.evaluated_value == 7
+
+    def test_newtype_array_return(self):
+        """Const fn returning an array of newtypes folds elementwise."""
+        source = """
+        struct TileId(u8);
+        const fn listed() -> [TileId; 3] { return [TileId(1), TileId(2), TileId(3)]; }
+        const fn filled() -> [TileId; 3] { return [TileId(7); 3]; }
+        const LISTED: [TileId; 3] = listed();
+        const FILLED: [TileId; 3] = filled();
+        """
+        hir = build_hir(source)
+        decls = {d.name: d for d in hir.declarations if isinstance(d, HIRConstDecl)}
+        assert decls['LISTED'].evaluated_value == [1, 2, 3]
+        assert decls['FILLED'].evaluated_value == [7, 7, 7]
+
+    def test_sixteen_bit_payload_element_width(self):
+        """A 16-bit payload emits two bytes per element, sign included."""
+        source = """
+        struct Q10(i16);
+        const fn table() -> [Q10; 3] { return [Q10(100), Q10(-2), Q10(400)]; }
+        static TABLE: [Q10; 3] = table();
+        """
+        asm = compile_string(source, "test.r65")
+        assert '.db $64, $00, $FE, $FF, $90, $01' in asm
+
+    def test_bad_payload_index_rejected(self):
+        """`.1` is rejected in both const positions — a newtype has only '.0'."""
+        with pytest.raises(HIRError, match=r"only field '\.0'"):
+            build_hir("""
+            struct TileId(u8);
+            const fn raw(t: TileId) -> u8 { return t.1; }
+            const N: u8 = raw(TileId(3));
+            """)
+        with pytest.raises(HIRError, match=r"only field '\.0'"):
+            build_hir("""
+            struct TileId(u8);
+            const T: TileId = TileId(7);
+            const N: u8 = T.1;
+            """)
+
+    def test_construction_arity_checked_in_body(self):
+        """A newtype takes exactly one value, inside a const fn body too."""
+        with pytest.raises(HIRError, match="takes exactly 1 value"):
+            build_hir("""
+            struct TileId(u8);
+            const fn make(n: u8) -> TileId { return TileId(n, 2); }
+            const T: TileId = make(1);
+            """)

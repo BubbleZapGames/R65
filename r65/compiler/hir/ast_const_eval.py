@@ -227,6 +227,11 @@ class ConstEvaluator:
                 )
             return base_val[expr.field]
 
+        elif isinstance(expr, ast.NewtypeFieldAccess):
+            # `T.0` is a retype, not a field load — see `_transpile_expr`.
+            self._check_newtype_field_index(expr)
+            return self.eval(expr.base)
+
         elif isinstance(expr, ast.ArrayIndex):
             array_val = self.eval(expr.array)
             index_val = self.eval(expr.index)
@@ -249,6 +254,45 @@ class ConstEvaluator:
 
         else:
             raise HIRError(f"Non-constant expression: {type(expr).__name__}", source_loc=getattr(expr, 'source_loc', None))
+
+    def _check_newtype_field_index(self, expr: ast.NewtypeFieldAccess) -> None:
+        """Reject `t.1` before it silently evaluates to the payload.
+
+        The type checker gives this diagnostic on the HIR, but const evaluation
+        runs first, so the check has to exist here too.
+        """
+        if expr.index != 0:
+            raise HIRError(
+                f"a newtype has only field '.0', not '.{expr.index}'",
+                source_loc=getattr(expr, 'source_loc', None),
+                hint="a newtype wraps exactly one value, so '.0' is the only "
+                     "field there is")
+
+    def _newtype_construct_arg(self, expr: ast.FunctionCall, func_name: str,
+                               symbol) -> Optional[ast.Expression]:
+        """The payload of a `Newtype(x)` call, or None if this is not one.
+
+        `Newtype(x)` parses as a call but is a retype: the value is its own
+        payload. Without this both const paths reach their const-fn check and
+        reject it as "Function 'Color' is not a const fn" — naming a function
+        the author never wrote, for the one spelling the docs recommend.
+        Range-checking still happens in the type checker, on the HIR.
+
+        Takes the already-resolved `symbol` so callers that go on to test for a
+        const fn do not look the name up twice.
+        """
+        from r65.compiler.hir.symbol_table import SymbolKind
+
+        if symbol is None or symbol.kind != SymbolKind.NEWTYPE:
+            return None
+
+        if len(expr.args) != 1:
+            raise HIRError(
+                f"newtype '{func_name}' takes exactly 1 value, "
+                f"got {len(expr.args)}",
+                source_loc=expr.source_loc,
+                hint=f"write '{func_name}(value)'")
+        return expr.args[0]
 
     def _eval_binary_op(self, expr: ast.BinaryOp) -> Union[int, bool, str]:
         """Evaluate binary operation."""
@@ -423,23 +467,13 @@ class ConstEvaluator:
 
         from r65.compiler.hir.symbol_table import SymbolKind
 
-        # `Newtype(x)` parses as a call but is a retype: the value is its own
-        # payload. Without this it reaches the const-fn check below and is
-        # rejected as "Function 'Color' is not a const fn" — naming a function
-        # the author never wrote, for the one spelling the docs recommend.
-        # Range-checking still happens in the type checker, on the HIR.
-        newtype = self.symbol_table.lookup(func_name)
-        if newtype is not None and newtype.kind == SymbolKind.NEWTYPE:
-            if len(expr.args) != 1:
-                raise HIRError(
-                    f"newtype '{func_name}' takes exactly 1 value, "
-                    f"got {len(expr.args)}",
-                    source_loc=expr.source_loc,
-                    hint=f"write '{func_name}(value)'")
-            return self.eval(expr.args[0])
+        symbol = self.symbol_table.lookup(func_name)
+
+        payload = self._newtype_construct_arg(expr, func_name, symbol)
+        if payload is not None:
+            return self.eval(payload)
 
         # Check if this is a const fn (user-defined)
-        symbol = self.symbol_table.lookup(func_name)
         if symbol and symbol.kind in (SymbolKind.FUNCTION, SymbolKind.METHOD):
             func_def = symbol.definition
             if func_def and hasattr(func_def, 'is_const') and func_def.is_const:
@@ -1018,9 +1052,15 @@ class ConstEvaluator:
                     args_str = ", ".join(self._transpile_expr(a) for a in expr.args)
                     return f"_ns_['{func_name}']({args_str})"
 
-                # Check if it's a const fn call
                 from r65.compiler.hir.symbol_table import SymbolKind
+
                 symbol = self.symbol_table.lookup(func_name)
+
+                payload = self._newtype_construct_arg(expr, func_name, symbol)
+                if payload is not None:
+                    return self._transpile_expr(payload)
+
+                # Check if it's a const fn call
                 if symbol and symbol.kind in (SymbolKind.FUNCTION, SymbolKind.METHOD):
                     func_def = symbol.definition
                     if func_def and hasattr(func_def, 'is_const') and func_def.is_const:
@@ -1079,6 +1119,12 @@ class ConstEvaluator:
         elif isinstance(expr, ast.FieldAccess):
             base = self._transpile_expr(expr.base)
             return f"{base}['{expr.field}']"
+
+        elif isinstance(expr, ast.NewtypeFieldAccess):
+            # `t.0` is a retype, not a field load: a newtype *is* its payload at
+            # compile time, so the payload is the operand's own value.
+            self._check_newtype_field_index(expr)
+            return self._transpile_expr(expr.base)
 
         elif isinstance(expr, ast.Dereference):
             raise HIRError("Pointer dereference is not supported in const fn", source_loc=expr.source_loc)
