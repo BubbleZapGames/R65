@@ -119,6 +119,57 @@ class HardwareRegAllocation:
     is_bound: bool = False                     # True if vreg has explicit binding (@ A)
 
 
+def group_interrupt_scratch_pushes(
+    scratches: List['ScratchRegister'],
+) -> List[Tuple[str, int]]:
+    """Split a scratch pool into the units an interrupt prologue pushes.
+
+    Returns ``(kind, address)`` pairs in push order, where kind is
+    ``'word'`` (one ``PEI``, two bytes of stack) or ``'byte'`` (an
+    ``LDA``/``PHA`` pair, one byte). The units cover every byte of every
+    scratch exactly once, so the caller can push them in order and pop
+    them in reverse and land back where it started.
+
+    ``PEI`` pushes the direct-page word at an address in a single
+    instruction, costs 6 cycles for the pair of bytes where ``LDA``/
+    ``PHA`` costs 6 cycles *per byte*, and never touches A. So bytes
+    travel in pairs wherever they can: within one scratch of any width,
+    and across two 1-byte scratches that happen to sit next to each
+    other, which is the usual pool layout.
+
+    Widths other than 1 and 2 are real — ``stdlib/scratch_regs.r65``
+    declares four 3-byte ``far *u8`` scratches — so the split is by byte
+    count rather than a per-size special case. An odd width ends in a
+    single ``'byte'`` unit for its last byte.
+
+    Both the prologue and the epilogue derive their sequence from this
+    function, so the pushes and the pops stay mirrored by construction.
+    """
+    units: List[Tuple[str, int]] = []
+    i = 0
+    n = len(scratches)
+    while i < n:
+        scratch = scratches[i]
+
+        # Two adjacent single-byte scratches ride together in one PEI.
+        if (scratch.size == 1 and i + 1 < n
+                and scratches[i + 1].size == 1
+                and scratches[i + 1].address == scratch.address + 1):
+            units.append(('word', scratch.address))
+            i += 2
+            continue
+
+        # Otherwise walk this scratch's own bytes two at a time.
+        offset = 0
+        while scratch.size - offset >= 2:
+            units.append(('word', scratch.address + offset))
+            offset += 2
+        if scratch.size - offset == 1:
+            units.append(('byte', scratch.address + offset))
+        i += 1
+    return units
+
+
 class ScratchRegisterPool:
     """
     Manages pool of scratch registers for temporary allocation.

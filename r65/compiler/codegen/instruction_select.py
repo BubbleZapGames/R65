@@ -23,7 +23,8 @@ from r65.compiler.mir.nodes import (
 )
 from r65.compiler.codegen.emitter import AssemblyEmitter
 from r65.compiler.codegen.register_alloc import (
-    RegisterAllocator, PhysicalLocation, LocationKind
+    RegisterAllocator, PhysicalLocation, LocationKind,
+    group_interrupt_scratch_pushes
 )
 from r65.compiler.codegen.memory_alloc import MemoryAllocator
 from r65.compiler.errors import InstructionSelectionError
@@ -1317,21 +1318,25 @@ class InstructionSelector:
         if not scratches:
             return
 
-        # Ensure m8 mode for PLA/STA of 1-byte scratches
-        self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "8-bit A for scratch restores")
+        # Pop in the exact mirror of the prologue's pushes. A word unit
+        # went on as one PEI, so it has to come off as one 16-bit PLA —
+        # hence the mode tracking: switch only where the width actually
+        # changes, and leave the body in m8 for whatever follows.
+        units = group_interrupt_scratch_pushes(scratches)
+        mode = None
+        for kind, address in reversed(units):
+            want = 16 if kind == 'word' else 8
+            if mode != want:
+                if want == 16:
+                    self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "16-bit A for scratch word restore")
+                else:
+                    self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "8-bit A for scratch restore")
+                mode = want
+            self._emit_implied(Opcode.PLA, f"Restore scratch ${address:02X}")
+            self.emitter.emit_instr(Opcode.STA_ABSOLUTE, Address(address))
 
-        # Restore in reverse order (LIFO)
-        for scratch in reversed(scratches):
-            if scratch.size == 1:
-                # 1-byte scratch: PLA / STA abs (already in m8)
-                self._emit_implied(Opcode.PLA, f"Restore scratch {scratch.name}")
-                self.emitter.emit_instr(Opcode.STA_ABSOLUTE, Address(scratch.address))
-            elif scratch.size == 2:
-                # 2-byte scratch: REP #$20 / PLA / STA abs / SEP #$20
-                self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "16-bit A for 2-byte scratch restore")
-                self._emit_implied(Opcode.PLA, f"Restore scratch {scratch.name}")
-                self.emitter.emit_instr(Opcode.STA_ABSOLUTE, Address(scratch.address))
-                self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "Restore 8-bit A")
+        if mode != 8:
+            self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "Restore 8-bit A")
 
     # ========================================================================
     # Helper Methods

@@ -141,6 +141,17 @@ def _emit_instruction(opcode: Opcode, operand: Operand | None) -> str:
             case _:
                 return f"{mnem} {operand}"
 
+    # PEI: Push Effective Indirect — WLA-DX wants the direct-page
+    # operand parenthesized, `PEI ($10)`.
+    if opcode == Opcode.PEI:
+        match operand:
+            case Immediate(value) | Address(value):
+                return f"{mnem} ({_format_value(value)})"
+            case None:
+                return mnem
+            case _:
+                return f"{mnem} ({operand})"
+
     # PEA: Push Effective Address — takes a 16-bit absolute operand
     if opcode == Opcode.PEA:
         if operand is not None:

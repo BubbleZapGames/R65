@@ -16,7 +16,7 @@ from r65.compiler.mir.nodes import (
 )
 from r65.compiler.codegen.emitter import AssemblyEmitter
 from r65.compiler.codegen.instruction_select import InstructionSelector
-from r65.compiler.codegen.register_alloc import ScratchRegisterPool, RegisterAllocator, PhysicalLocation, LocationKind
+from r65.compiler.codegen.register_alloc import ScratchRegisterPool, RegisterAllocator, PhysicalLocation, LocationKind, group_interrupt_scratch_pushes
 from r65.compiler.codegen.memory_alloc import MemoryAllocator
 from r65.compiler.codegen.type_utils import get_type_size
 from r65.compiler.codegen.constants import DEFAULT_STACK_UPPER, M_FLAG
@@ -1390,11 +1390,34 @@ class FunctionCodeGenerator:
             self._emit_instr(Opcode.PHD, comment="Save Direct Page")
         if save_all or 'DBR' in modified_regs:
             self._emit_instr(Opcode.PHB, comment="Save Data Bank")
+        # Reset D=0 before the mode switch, so the scratch pushes that
+        # follow can reach the pool through direct-page addressing. The
+        # interrupted code may have left D anywhere (D=S for far pointer
+        # stack params, say); PHD above saved it.
+        #
+        # `LDA #$0000` / `TCD` is 5 cycles to `PEA`/`PLD`'s 13, but it
+        # goes through A — so it needs both a saved A and the known m16
+        # the 16-bit PHA left us in. Without that, fall back to the
+        # mode-independent push/pull pair.
+        if self._interrupt_has_scratches:
+            if saves_a:
+                self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(0), "D = 0 for scratch DP access")
+                self._emit_instr(Opcode.TCD)
+            else:
+                self._emit_instr(Opcode.PEA, Immediate(0), "Push 0 for D reset")
+                self._emit_instr(Opcode.PLD, comment="D = 0 (safe for scratch DP access)")
         # SEP #$20 ensures m8 mode for the handler body. Skip only when nothing
         # is saved AND the body has no register-modifying instructions (e.g., just
         # BIT + RTI), since BIT is mode-independent and RTI restores P.
+        #
+        # A scratch pool forces the switch even for a body that modifies
+        # nothing. The saves that follow include an `LDA dp`/`PHA` for any
+        # scratch byte without a `PEI` partner, and that pushes one byte in
+        # m8 but two in m16 — while the epilogue always pulls back one. An
+        # interrupt fired from m16 code would then return through a stack
+        # left one byte deep.
         any_saved = save_all or bool(modified_regs)
-        if any_saved:
+        if any_saved or self._interrupt_has_scratches:
             self._emit_instr(Opcode.SEP_IMMEDIATE, Immediate(M_FLAG), "8-bit A for handler body")
             # Emit .ACCU 8 so WLA-DX tracks the mode correctly.
             # WLA-DX auto-tracks REP/SEP, so the preceding REP #$20 (for PHA)
@@ -1424,26 +1447,21 @@ class FunctionCodeGenerator:
         if not scratch_pool or not scratch_pool.scratches:
             return
 
-        # First, reset D=0 so DP addressing works correctly.
-        # The interrupted code may have D set to a non-zero value (e.g., D=S
-        # for far pointer params), making DP-relative reads go to wrong addresses.
-        # PHD was already done in register saves; now reset D to 0.
-        self._emit_instr(Opcode.PEA, Immediate(0), "Push 0 for D reset")
-        self._emit_instr(Opcode.PLD, comment="D = 0 (safe for scratch DP access)")
-
-        for scratch in scratch_pool.scratches:
-            if scratch.size == 1:
-                # 1-byte scratch: LDA dp / PHA (already in m8, D=0)
-                self._emit_instr(Opcode.LDA_DP, Address(scratch.address),
-                                f"Save scratch {scratch.name}")
+        # D was already reset to 0 by _emit_interrupt_register_saves, so
+        # the pool is reachable through direct-page addressing here.
+        #
+        # PEI pushes a direct-page word whatever the accumulator width
+        # is, and without going through A — so the whole save runs in
+        # the m8 the handler body wants, with no mode switching, at half
+        # the per-byte cost of LDA/PHA.
+        for kind, address in group_interrupt_scratch_pushes(scratch_pool.scratches):
+            if kind == 'word':
+                self._emit_instr(Opcode.PEI, Address(address),
+                                 f"Save scratch word ${address:02X}")
+            else:
+                self._emit_instr(Opcode.LDA_DP, Address(address),
+                                 f"Save scratch ${address:02X}")
                 self._emit_instr(Opcode.PHA)
-            elif scratch.size == 2:
-                # 2-byte scratch: REP #$20 / LDA dp / PHA / SEP #$20
-                self._emit_instr(Opcode.REP_IMMEDIATE, Immediate(M_FLAG), "16-bit A for 2-byte scratch save")
-                self._emit_instr(Opcode.LDA_DP, Address(scratch.address),
-                                f"Save scratch {scratch.name}")
-                self._emit_instr(Opcode.PHA)
-                self._emit_instr(Opcode.SEP_IMMEDIATE, Immediate(M_FLAG), "Restore 8-bit A")
 
     def _emit_frame_allocation(self, frame_size: int, force_direct_stack: bool = False):
         """
