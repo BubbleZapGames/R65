@@ -25,7 +25,7 @@ from r65.compiler.mir.nodes import (
 )
 from r65.compiler.mir.liveness import LivenessAnalyzer
 from r65.compiler.hir.unified_type_utils import get_unified_type_size
-from r65.compiler.codegen.type_utils import get_vreg_size
+from r65.compiler.codegen.type_utils import get_vreg_size, is_narrowing_convert
 
 from typing import TYPE_CHECKING as _TYPE_CHECKING
 if _TYPE_CHECKING:
@@ -777,6 +777,27 @@ class StackSlotAllocator:
                         if type(var) is VirtualRegister:
                             vreg_uses.setdefault(var.id, []).append(instr)
 
+                elif instr_type is TypeConvert:
+                    # A narrowing convert with its source already in A is just
+                    # `SEP #$20` — the byte it keeps is the one sitting in A's
+                    # low half. So its result lives in A and can coalesce, the
+                    # same as BankByte above.
+                    #
+                    # Widening is excluded: `_emit_widening_conversion` ends in
+                    # `STA dest_loc` plus extension writes to that location, and
+                    # has no A-destination path to fall into.
+                    if (type(instr.dest) is VirtualRegister
+                            and is_narrowing_convert(instr)):
+                        vreg_id = instr.dest.id
+                        if vreg_id not in vreg_defs:
+                            if get_vreg_size(instr.dest) == 1:
+                                vreg_defs[vreg_id] = [(instr, 'A')]
+
+                    uses = self.liveness_analyzer._get_uses(instr)
+                    for var in uses:
+                        if type(var) is VirtualRegister:
+                            vreg_uses.setdefault(var.id, []).append(instr)
+
                 elif instr_type is Call or instr_type is TraitDispatch:
                     # Call with exactly 1 return vreg: the return value is in A.
                     # Track as defined-in-A for coalescence (e.g., result = func()).
@@ -813,7 +834,10 @@ class StackSlotAllocator:
         # For ALU-def vregs (BinaryOp/UnaryOp/LoadIndirect), restrict to cases
         # where all uses are Return, Move, Compare, Store (as source), or as
         # the LEFT operand of a BinaryOp (chained arithmetic).
-        _alu_def_types = frozenset({BinaryOp, UnaryOp, LoadIndirect, Load, BankByte})
+        # TypeConvert appears here as a type, but only a narrowing one ever
+        # reaches this list — the def-collection loop above is what decides.
+        _alu_def_types = frozenset({BinaryOp, UnaryOp, LoadIndirect, Load, BankByte,
+                                    TypeConvert})
         candidates = []
         for vreg_id, defs in vreg_defs.items():
             if len(defs) != 1:
@@ -852,6 +876,15 @@ class StackSlotAllocator:
                     if (use_type is BinaryOp and
                         type(use.left) is VirtualRegister and
                         use.left.id == vreg_id):
+                        continue
+                    # A narrowing convert reads A and leaves its own result
+                    # there — the same read-then-redefine shape as BinaryOp-left
+                    # above, and with the source in A it emits nothing but the
+                    # `SEP #$20`.
+                    if (use_type is TypeConvert and
+                        is_narrowing_convert(use) and
+                        type(use.source) is VirtualRegister and
+                        use.source.id == vreg_id):
                         continue
                     if (use_type is Call and
                         any(type(a.value) is VirtualRegister and
@@ -982,7 +1015,8 @@ class StackSlotAllocator:
         self, vreg_id: int, hw_reg: str, coalesceable: Dict[VirtualRegister, str]
     ):
         """Mark a vreg as hw-coalesceable by finding its def instruction."""
-        _def_types = frozenset({Move, BinaryOp, UnaryOp, LoadIndirect, Load, BankByte})
+        _def_types = frozenset({Move, BinaryOp, UnaryOp, LoadIndirect, Load, BankByte,
+                                TypeConvert})
         for block in self.func.blocks.values():
             for instr in block.instructions:
                 instr_type = type(instr)
@@ -992,6 +1026,12 @@ class StackSlotAllocator:
                             coalesceable[instr.returns[0]] = hw_reg
                             return
                 elif instr_type in _def_types and type(instr.dest) is VirtualRegister:
+                    # Only a narrowing convert leaves its result in A. A
+                    # widening one never reaches here — it is not registered as
+                    # an A-def above, so it never becomes a candidate — but the
+                    # test is repeated rather than left to hold at a distance.
+                    if instr_type is TypeConvert and not is_narrowing_convert(instr):
+                        continue
                     if instr.dest.id == vreg_id:
                         coalesceable[instr.dest] = hw_reg
                         return
@@ -1250,7 +1290,9 @@ class StackSlotAllocator:
             # ALU ops route through A, clobbering it — UNLESS the dest is our vreg,
             # in which case the op re-defines our vreg and leaves its new value in A
             # (analogous to Store exception: our vreg's value stays in A).
-            if ((instr_type is BinaryOp or instr_type is UnaryOp or instr_type is BankByte) and
+            if ((instr_type is BinaryOp or instr_type is UnaryOp
+                 or instr_type is BankByte
+                 or (instr_type is TypeConvert and is_narrowing_convert(instr))) and
                 type(instr.dest) is VirtualRegister and
                 instr.dest.id == vreg_id):
                 return False

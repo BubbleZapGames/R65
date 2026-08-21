@@ -12,6 +12,7 @@ from r65.compiler.codegen.opcodes import Opcode
 from r65.compiler.codegen.asm_nodes import Immediate, Address
 from r65.compiler.codegen.base_selector import BaseSelector
 from r65.compiler.hir.types import PointerTypeInfo
+from r65.compiler.codegen.type_utils import convert_operand_widths
 
 
 class TypeConversionSelector(BaseSelector):
@@ -63,11 +64,12 @@ class TypeConversionSelector(BaseSelector):
             self._emit_pointer_conversion(instr, src_operand, dest_loc)
             return
 
-        # Get type information
+        # Get type information. The widths come from the shared helper so the
+        # register allocator, which has to predict which branch below runs
+        # before it can let a result live in A, asks exactly this question.
         source_type = str(instr_source_type)
         target_type = str(instr_target_type)
-        source_size = 1 if source_type in ['u8', 'i8', 'bool'] else 2
-        target_size = 1 if target_type in ['u8', 'i8', 'bool'] else 2
+        source_size, target_size = convert_operand_widths(instr)
         source_signed = source_type.startswith('i')
 
         # Case 1: Widening (8-bit -> 16-bit)
