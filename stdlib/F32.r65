@@ -524,30 +524,30 @@ impl MulAssign for F32 {
         let p_ll_hi: u16 = RDMPYH as u16;
 
         WRMPYB = o_m; NOP(4);
-        let p_lm: u16 = (RDMPYH as u16) << 8 | (RDMPYL as u16);
+        let p_lm: u16 = RDMPY;
 
         WRMPYB = o_h; NOP(4);
-        let p_lh: u16 = (RDMPYH as u16) << 8 | (RDMPYL as u16);
+        let p_lh: u16 = RDMPY;
 
         WRMPYA = s_m;
         WRMPYB = o_l; NOP(4);
-        let p_ml: u16 = (RDMPYH as u16) << 8 | (RDMPYL as u16);
+        let p_ml: u16 = RDMPY;
 
         WRMPYB = o_m; NOP(4);
-        let p_mm: u16 = (RDMPYH as u16) << 8 | (RDMPYL as u16);
+        let p_mm: u16 = RDMPY;
 
         WRMPYB = o_h; NOP(4);
-        let p_mh: u16 = (RDMPYH as u16) << 8 | (RDMPYL as u16);
+        let p_mh: u16 = RDMPY;
 
         WRMPYA = s_h;
         WRMPYB = o_l; NOP(4);
-        let p_hl: u16 = (RDMPYH as u16) << 8 | (RDMPYL as u16);
+        let p_hl: u16 = RDMPY;
 
         WRMPYB = o_m; NOP(4);
-        let p_hm: u16 = (RDMPYH as u16) << 8 | (RDMPYL as u16);
+        let p_hm: u16 = RDMPY;
 
         WRMPYB = o_h; NOP(4);
-        let p_hh: u16 = (RDMPYH as u16) << 8 | (RDMPYL as u16);
+        let p_hh: u16 = RDMPY;
 
         // Accumulate top 32 bits of the 48-bit product into res_hi:res_mid
         let mut carry_count: u16 = 0;

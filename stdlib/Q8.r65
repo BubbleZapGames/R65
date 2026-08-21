@@ -139,29 +139,31 @@ impl Q8 {
         let b_hi: u8 = (ub >> 8) as u8;
 
         // Four 8x8 partial products. The unit needs 8 machine cycles after each
-        // WRMPYB write, which NOP(4) supplies.
+        // WRMPYB write, which NOP(4) supplies. RDMPY is the u16 view of
+        // $4216/$4217, so each result is one 16-bit load rather than two byte
+        // reads glued back together with a shift and an OR.
         //
         // p0 = a_lo * b_lo
         WRMPYA = a_lo;
         WRMPYB = b_lo;
         NOP(4);
-        let mut p0: u16 = (RDMPYH as u16) << 8 | (RDMPYL as u16);
+        let mut p0: u16 = RDMPY;
 
         // p1 = a_lo * b_hi (a_lo still in WRMPYA)
         WRMPYB = b_hi;
         NOP(4);
-        let mut mid: u16 = (RDMPYH as u16) << 8 | (RDMPYL as u16);
+        let mut mid: u16 = RDMPY;
 
         // p2 = a_hi * b_lo
         WRMPYA = a_hi;
         WRMPYB = b_lo;
         NOP(4);
-        mid = mid + ((RDMPYH as u16) << 8 | (RDMPYL as u16));
+        mid = mid + RDMPY;
 
         // p3 = a_hi * b_hi (a_hi still in WRMPYA)
         WRMPYB = b_hi;
         NOP(4);
-        let mut p3: u16 = (RDMPYH as u16) << 8 | (RDMPYL as u16);
+        let mut p3: u16 = RDMPY;
 
         // Accumulate the 32-bit product as hi:lo. `mid` can itself overflow u16,
         // but only for operand pairs whose result already leaves the Q8 range.
