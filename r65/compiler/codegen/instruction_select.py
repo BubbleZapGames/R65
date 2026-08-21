@@ -1092,43 +1092,48 @@ class InstructionSelector:
         for _ in range(count):
             self._emit_implied(opcode)
 
-    def _emit_shift_left(self, right_operand, is_u16: bool):
-        """Emit left shift operation (A << count)."""
-        count = self._require_immediate(right_operand, "Shift")
+    def _emit_shift_by(self, count: int, is_u16: bool, left: bool):
+        """
+        Emit a constant-distance shift of A.
+
+        A 16-bit shift of 8 or more starts with XBA, which is the byte swap that
+        *is* a shift by 8, and then shifts the remainder. XBA plus the masking
+        AND costs 6 cycles and 4 bytes where the 8 shifts it replaces cost 16 and
+        8, so the substitution wins for every count it applies to.
+
+        The mask has to precede the residual shifts: XBA leaves the byte being
+        discarded in the other half of A, and the residual shifts would walk it
+        straight back into the result.
+        """
         bit_width = 16 if is_u16 else 8
+        opcode = Opcode.ASL if left else Opcode.LSR
 
         if count >= bit_width:
             self._emit_immediate(Opcode.LDA_IMMEDIATE, 0x00,
                 f"Shift by {count} >= {bit_width} bits = 0")
             return
 
-        # XBA optimization: shifting 16-bit value left by 8 is a byte swap + mask
-        # Much faster than 8 ASL instructions (~3 cycles vs ~16 cycles)
-        if is_u16 and count == 8:
-            self._emit_implied(Opcode.XBA, "Swap bytes (shift left 8)")
-            self._emit_immediate(Opcode.AND_IMMEDIATE, 0xFF00, "Clear low byte")
+        if is_u16 and count >= 8:
+            direction = "left" if left else "right"
+            self._emit_implied(Opcode.XBA, f"Swap bytes (shift {direction} 8)")
+            self._emit_immediate(
+                Opcode.AND_IMMEDIATE,
+                0xFF00 if left else 0x00FF,
+                "Clear low byte" if left else "Clear high byte")
+            self._emit_repeated_opcode(opcode, count - 8)
             return
 
-        self._emit_repeated_opcode(Opcode.ASL, count)
+        self._emit_repeated_opcode(opcode, count)
+
+    def _emit_shift_left(self, right_operand, is_u16: bool):
+        """Emit left shift operation (A << count)."""
+        count = self._require_immediate(right_operand, "Shift")
+        self._emit_shift_by(count, is_u16, left=True)
 
     def _emit_shift_right(self, right_operand, is_u16: bool):
         """Emit right shift operation (A >> count)."""
         count = self._require_immediate(right_operand, "Shift")
-        bit_width = 16 if is_u16 else 8
-
-        if count >= bit_width:
-            self._emit_immediate(Opcode.LDA_IMMEDIATE, 0x00,
-                f"Shift by {count} >= {bit_width} bits = 0")
-            return
-
-        # XBA optimization: shifting 16-bit value right by 8 is a byte swap + mask
-        # Much faster than 8 LSR instructions (~3 cycles vs ~16 cycles)
-        if is_u16 and count == 8:
-            self._emit_implied(Opcode.XBA, "Swap bytes (shift right 8)")
-            self._emit_immediate(Opcode.AND_IMMEDIATE, 0x00FF, "Clear high byte")
-            return
-
-        self._emit_repeated_opcode(Opcode.LSR, count)
+        self._emit_shift_by(count, is_u16, left=False)
 
     def _emit_multiply(self, right_operand, is_u16: bool):
         """Emit multiply by power of 2 using ASL instructions."""
@@ -1141,7 +1146,7 @@ class InstructionSelector:
                 f"Use mul() for general multiplication.",
                 source_loc=self._current_source_loc)
 
-        self._emit_repeated_opcode(Opcode.ASL, shift_count)
+        self._emit_shift_by(shift_count, is_u16, left=True)
 
     def _emit_divide(self, right_operand, is_u16: bool):
         """Emit divide by power of 2 using LSR instructions."""
@@ -1154,7 +1159,7 @@ class InstructionSelector:
                 f"Use div() for general division.",
                 source_loc=self._current_source_loc)
 
-        self._emit_repeated_opcode(Opcode.LSR, shift_count)
+        self._emit_shift_by(shift_count, is_u16, left=False)
 
     # ========================================================================
     # Control Flow (delegated to ControlFlowInstructionSelector)
