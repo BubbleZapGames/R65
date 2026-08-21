@@ -1,79 +1,22 @@
 # Outstanding codegen optimization issues
 
-Two items from Myself086's 2026-08-20 review of the disassembled
-`classickong.r65` ROM are still open. Both are real, both are confirmed
-against generated output — but neither is a peephole rewrite. Each needs
-a decision about *where* the fix belongs before it can be written.
+From Myself086's 2026-08-20 review of the disassembled `classickong.r65`
+ROM. Of the six items raised, five are fixed; what follows is the one
+that is still open, plus a smaller sub-issue found alongside it.
 
-The other four items from that review are fixed; see the peephole passes
-`_eliminate_dead_mode_changes` and `_fold_carry_setup_into_rep`, and the
-interrupt prologue in `codegen/function_gen.py`.
-
----
-
-## 1. `>> 8` on a u16 does not narrow to a high-byte load
-
-**Occurrences:** 65 `>> 8` / `>>= 8` sites across `stdlib/` and
-`classickong.r65/src/`.
-
-### What we emit
-
-For `HI = (W >> 8) as u8;` where `W: u16` lives at `$20`:
-
-```asm
-    REP #$20  ; 16-bit A
-    LDA $20
-    STA $01,S       ; spill W
-    XBA             ; Swap bytes (shift right 8)
-    AND #$FF        ; Clear high byte
-    STA $03,S       ; spill the shifted u16 temp
-    SEP #$20  ; 8-bit A
-    STA $05,S       ; spill the truncated u8 temp
-    STA $22         ; HI = ...
-```
-
-### What it should be
-
-```asm
-    LDA $21         ; the high byte, directly
-    STA $22
-```
-
-Two instructions instead of nine, and no mode switch at all when the
-surrounding block is already m8.
-
-### Why a peephole won't do it
-
-Two independent causes, and neither is visible at the asm level:
-
-1. **The shift can't see its source.** `_emit_shift_right`
-   (`codegen/instruction_select.py:1113`) is handed only the shift
-   count — it operates on whatever is in A and has no idea the value
-   came from a known address, so it cannot rewrite the load into
-   `LDA addr+1`. Recognising `Load(mem16) → Shr 8 → Trunc u8` has to
-   happen where all three nodes are visible, i.e. in MIR.
-
-2. **The `as u8` materializes a temp.** The 16-bit shifted value is
-   stored to a stack slot, then the low byte is stored to a *second*
-   slot, then to the destination. That is a separate lowering problem
-   from the shift and would still cost several instructions even if the
-   load were narrowed.
-
-An asm-level rewrite of `LDA <mem> / XBA / AND #$00FF` → `LDA <mem+1>`
-also has to prove B (the accumulator's hidden high byte) is dead across
-the rewrite, because `AND #$00FF` zeroes B and a narrowed load leaves it
-untouched. There is no B-liveness analysis at the peephole layer today.
-
-### Decision needed
-
-Fix in MIR lowering (pattern-match the shift-then-truncate chain and
-lower it to a byte load at `addr+1`), or add B-liveness to the peephole
-layer and do it there. MIR is the better home — it also gets at the temp
-spilling, which the peephole cannot touch.
+The `>> 8` narrowing item that used to head this file **has landed**, in two
+halves. When the word is in memory, `(mem16 >> 8) as u8` folds to a load of the
+high byte (`r65/compiler/optimize/byte_extract.py`). When it is already in a
+register, the fix turned out to be elsewhere entirely: `TypeConvert` was never
+registered as an A-coalescence def type in `codegen/slot_allocator.py`, so *every*
+narrowing cast spilled twice and allocated a frame. Registering it removed the
+spills, and with them gone the existing `AND`-before-`SEP` peephole could finally
+drop the mask. Entries are deleted rather than struck through; git history has
+the old text.
 
 ---
 
-## 2. Hardware multiply writes `$4202`/`$4203` a byte at a time
+## Hardware multiply writes `$4202`/`$4203` a byte at a time
 
 **Occurrences:** `stdlib/math.r65` `mul8` and `mul16`, plus the same
 pattern hand-written in `stdlib/Q8.r65`, `stdlib/Q10.r65`,

@@ -97,6 +97,16 @@ class ProgramCodeGenerator:
             if code_eliminated > 0:
                 print(f"Dead code elimination: {code_eliminated} block(s)/instruction(s) removed")
 
+            # Byte-extract lowering - fold `(mem16 >> 8) as u8` into a load
+            # of the high byte. Runs before inlining so callees shrink first:
+            # the folded form is what gets cloned into call sites, and the
+            # smaller body is a better inlining candidate.
+            from r65.compiler.optimize.byte_extract import ByteExtractOptimizer
+            byte_extract = ByteExtractOptimizer(verbose=False)
+            bytes_folded = byte_extract.optimize(mir_program)
+            if bytes_folded > 0:
+                print(f"Byte extraction: {bytes_folded} high-byte load(s) folded")
+
             # Far-to-near call optimization - convert far calls to near when
             # call graph shows all callers and callee are in the same bank
             # This saves 1 byte and 2 cycles per call (JSR vs JSL)
