@@ -18,6 +18,46 @@ GRAMMAR_PATH = Path(__file__).parent / "grammar.lark"
 with open(GRAMMAR_PATH) as f:
     GRAMMAR = f.read()
 
+# Options the LALR tables are built from. Named once so the cache and the
+# fallback cannot drift apart.
+_LARK_OPTIONS = dict(
+    parser='lalr',              # LALR is much faster than Earley
+    lexer='contextual',         # Contextual lexer for LALR
+    start='start',
+    keep_all_tokens=True,
+    propagate_positions=True,   # Enable source location tracking
+)
+
+# Deliberately *not* `grammar.lark_cache` — that belongs to lexer.py, which
+# builds the same grammar with different options. Lark keys a cache on the
+# options as well as the grammar, so sharing one file would make the two
+# invalidate each other on every run and both would rebuild every time.
+# Matches `*.lark_cache` in .gitignore.
+_CACHE_PATH = GRAMMAR_PATH.with_suffix(".parser.lark_cache")
+
+
+def _build_lark() -> Lark:
+    """Build the Lark parser, reusing serialized LALR tables when possible.
+
+    Constructing the tables costs ~0.6s, which dominated every compiler
+    invocation — and the e2e suite starts a fresh process per test, so the
+    in-process `Parser._lark_cache` never helped it. Loading them back is
+    ~0.05s. Lark invalidates the cache itself when the grammar or the options
+    change, so there is no staleness to manage here.
+    """
+    try:
+        return Lark(GRAMMAR, cache=str(_CACHE_PATH), **_LARK_OPTIONS)
+    except Exception:
+        # An installed package may sit on a read-only path, and a cache torn
+        # by a killed or concurrent writer will fail to load. Neither is a
+        # reason to refuse to compile. Drop a bad cache so the next run can
+        # rebuild it rather than silently paying the full cost forever.
+        try:
+            _CACHE_PATH.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return Lark(GRAMMAR, **_LARK_OPTIONS)
+
 
 def render_ast_type(node) -> str:
     """Render an AST type node back to source form, for use in error hints."""
@@ -2664,14 +2704,7 @@ class Parser:
     def __init__(self):
         """Initialize the parser."""
         if Parser._lark_cache is None:
-            Parser._lark_cache = Lark(
-                GRAMMAR,
-                parser='lalr',  # LALR is much faster than Earley
-                lexer='contextual',  # Contextual lexer for LALR
-                start='start',
-                keep_all_tokens=True,
-                propagate_positions=True  # Enable source location tracking
-            )
+            Parser._lark_cache = _build_lark()
         self.lark = Parser._lark_cache
 
     def parse(self, source: str, filename: str = "<input>",
