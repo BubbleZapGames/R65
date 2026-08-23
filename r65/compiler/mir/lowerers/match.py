@@ -7,7 +7,7 @@ Handles pattern matching with two strategies:
 - Conditional branch chain for sparse or complex patterns (O(n))
 """
 
-from typing import TYPE_CHECKING, Union, Dict, Optional, Tuple
+from typing import TYPE_CHECKING, Union, Dict, List, Optional, Tuple
 
 from r65.compiler.hir import (
     HIRMatchExpression,
@@ -78,17 +78,103 @@ class MatchLowerer:
         use_jump_table, min_val, max_val, value_to_arm = self._analyze_for_jump_table(expr)
 
         if use_jump_table:
+            # A LookupTable is a data read (`LDA table,X`), not a dispatch --
+            # it replaces the arm *bodies* as well as the tests, so it beats a
+            # chain at any size and is not subject to the dispatch cost model
+            # below.
             lut_info = self._analyze_for_lut(expr, min_val, max_val, value_to_arm)
             if lut_info is not None:
                 lut_values, default_value = lut_info
                 return self._lower_with_lut(expr, min_val, max_val, value_to_arm, lut_values, default_value)
-            return self._lower_with_jump_table(expr, min_val, max_val, value_to_arm)
-        else:
-            return self._lower_with_branches(expr)
+
+            # A jump table, by contrast, pays its full dispatch on every match
+            # while a chain pays only for the arms it walks.
+            num_arms = len(set(value_to_arm.values()))
+            if self._jump_table_beats_chain(num_arms):
+                return self._lower_with_jump_table(expr, min_val, max_val, value_to_arm)
+
+        return self._lower_with_branches(expr)
 
     # ========================================================================
     # Jump Table Analysis
     # ========================================================================
+
+    # Cycle costs of the two dispatch shapes, read off the emitted code and
+    # confirmed on Mesen (2026-08-22).
+    #
+    # A table dispatch is a bounds check, a scale, and an indirect jump:
+    #   LDA slot / SEC / SBC #min / BCC out / CMP #size / BCS out
+    #   REP #$20 / AND #$FF / ASL A / SEP #$20 / TAX / JMP (tbl,X)
+    _TABLE_DISPATCH_CYCLES = 33
+    # Every arm of a chain reloads the scrutinee and compares it. A pass that
+    # proved A still held it across the fall-through spine would drop the
+    # reload and make later arms cost 5 rather than 9 -- which would *raise*
+    # this break-even from ~7 arms to ~11. The two numbers are coupled: if
+    # such a pass lands, lower _CHAIN_NEXT_ARM_CYCLES to match.
+    _CHAIN_FIRST_ARM_CYCLES = 9     # LDA slot / CMP #imm / Bcc
+    _CHAIN_NEXT_ARM_CYCLES = 9      # LDA slot / CMP #imm / Bcc
+
+    def _jump_table_beats_chain(self, num_arms: int) -> bool:
+        """Whether a jump table is cheaper than a compare chain on average.
+
+        Without profile data, assume the taken arm is uniformly distributed,
+        so a chain walks about half its arms. That is a crude model and it is
+        wrong in a specific, common way: an idiomatic `match` puts the hot
+        "none/empty" case first, which favours the chain further. Erring
+        toward the chain is therefore the safer bias.
+
+        The previous rule -- three patterns -- chose a table where a chain
+        walked under two arms for ~18 cycles against the table's 33. Nothing
+        in classickong.r65 reached it until or-patterns became eligible, at
+        which point `particle_process` measured **100 cycles/frame slower**:
+        its four particle slots are usually `PART_TYPE_NONE`, the first arm.
+        """
+        if num_arms < 2:
+            return False
+        expected_arms_tested = (num_arms + 1) / 2
+        chain_cycles = (self._CHAIN_FIRST_ARM_CYCLES
+                        + self._CHAIN_NEXT_ARM_CYCLES * (expected_arms_tested - 1))
+        return chain_cycles > self._TABLE_DISPATCH_CYCLES
+
+    def _pattern_integer_values(self, pattern) -> Optional[List[int]]:
+        """The integer values `pattern` matches, for jump-table analysis.
+
+        Returns a list of values, an empty list for a catch-all, or None if
+        the pattern is not integer-valued and so rules the table out.
+
+        An or-pattern is just several values sharing one arm, which the table
+        already represents natively — `value_to_arm` is a plain value->arm
+        dict, and range patterns have always relied on that. Nesting is
+        allowed because the parser permits it; a catch-all inside an
+        or-pattern makes the whole alternation a catch-all.
+        """
+        if isinstance(pattern, HIRLiteralPattern):
+            # bool literals are not table-indexable.
+            if isinstance(pattern.value, bool) or not isinstance(pattern.value, int):
+                return None
+            return [pattern.value]
+        if isinstance(pattern, HIREnumPattern):
+            if not isinstance(pattern.variant_value, int):
+                return None
+            return [pattern.variant_value]
+        if isinstance(pattern, HIRRangePattern):
+            upper = pattern.end + 1 if pattern.inclusive else pattern.end
+            return list(range(pattern.start, upper))
+        if isinstance(pattern, (HIRWildcardPattern, HIRIdentifierPattern)):
+            return []
+        if isinstance(pattern, HIROrPattern):
+            if not pattern.patterns:
+                return None   # matches nothing; not a catch-all
+            values: List[int] = []
+            for sub in pattern.patterns:
+                sub_values = self._pattern_integer_values(sub)
+                if sub_values is None:
+                    return None
+                if not sub_values:
+                    return []   # a catch-all alternative swallows the arm
+                values.extend(sub_values)
+            return values
+        return None
 
     def _analyze_for_jump_table(self, expr: HIRMatchExpression) -> Tuple[bool, Optional[int], Optional[int], Optional[Dict[int, int]]]:
         """
@@ -103,25 +189,18 @@ class MatchLowerer:
         has_catchall = False
 
         for i, arm in enumerate(expr.arms):
-            if isinstance(arm.pattern, HIRLiteralPattern):
-                if isinstance(arm.pattern.value, int):
-                    pattern_values.append((arm.pattern.value, i))
-                else:
-                    # Non-integer literal (e.g., bool) - can't use jump table
-                    return (False, None, None, None)
-            elif isinstance(arm.pattern, HIREnumPattern):
-                # Enum patterns map to integer values
-                pattern_values.append((arm.pattern.variant_value, i))
-            elif isinstance(arm.pattern, HIRRangePattern):
-                upper = arm.pattern.end + 1 if arm.pattern.inclusive else arm.pattern.end
-                for v in range(arm.pattern.start, upper):
-                    pattern_values.append((v, i))
-            elif isinstance(arm.pattern, HIRWildcardPattern) or isinstance(arm.pattern, HIRIdentifierPattern):
-                has_catchall = True
-                # Keep track but don't add to pattern_values
-            else:
-                # Or-pattern or other complex pattern - skip jump table optimization
+            values = self._pattern_integer_values(arm.pattern)
+            if values is None:
+                # Not an integer-valued pattern (a bool literal, or something
+                # this analysis does not model) — no jump table.
                 return (False, None, None, None)
+            if not values:
+                # Wildcard / identifier: matches anything, so it is the
+                # default rather than a table entry.
+                has_catchall = True
+                continue
+            for value in values:
+                pattern_values.append((value, i))
 
         if not pattern_values:
             return (False, None, None, None)
@@ -133,25 +212,27 @@ class MatchLowerer:
         range_size = max_val - min_val + 1
         num_patterns = len(pattern_values)
 
-        # Heuristic: Use jump table if:
-        # 1. Range is not too large (< 256 entries for 8-bit index)
-        # 2. Density is good (>= 50% coverage)
-        # 3. We have at least 3 patterns (otherwise linear is fine)
+        # Feasibility: the table has to fit and be worth its ROM.
         MAX_JUMP_TABLE_SIZE = 128
         MIN_DENSITY = 0.5
-        MIN_PATTERNS = 3
 
         if range_size > MAX_JUMP_TABLE_SIZE:
             return (False, None, None, None)
 
         density = num_patterns / range_size
-        if density < MIN_DENSITY or num_patterns < MIN_PATTERNS:
+        if density < MIN_DENSITY:
+            return (False, None, None, None)
+
+        MIN_PATTERNS = 3
+        if num_patterns < MIN_PATTERNS:
             return (False, None, None, None)
 
         # Build value-to-arm-index mapping. `match` is first-match-wins, and
         # `pattern_values` is in arm order, so an earlier arm must keep the
         # value: assigning would hand it to the *last* arm that mentions it.
-        # Reachable through overlapping ranges (`1..=2` then `2..=3`).
+        # Overlap is reachable through a range (`1..=2` then `2..=3`) and,
+        # since or-patterns became table-eligible, through the far more
+        # natural `1 | 2` then `2 | 3`.
         value_to_arm = {}
         for value, arm_index in pattern_values:
             value_to_arm.setdefault(value, arm_index)

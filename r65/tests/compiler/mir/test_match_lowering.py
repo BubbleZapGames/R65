@@ -113,16 +113,30 @@ class TestJumpTableProperties:
     """Tests for JumpTable node properties when non-constant arms force JumpTable."""
 
     def test_non_constant_arm_uses_jump_table(self):
-        """Match with a non-constant arm body should use JumpTable, not LookupTable."""
+        """Match with a non-constant arm body should use JumpTable, not LookupTable.
+
+        Sized past the dispatch cost model's break-even so the choice under
+        test is JumpTable-vs-LookupTable rather than table-vs-chain; a short
+        match lowers to a compare chain regardless of arm-body constness.
+        """
         source = """
         #[ram]
-        static mut VALS: [u8; 3] = [10, 20, 30];
+        static mut VALS: [u8; 12] = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120];
 
         fn classify(val @ A: u8) -> u8 {
             let result: u8 = match val {
                 0 => VALS[0],
                 1 => VALS[1],
                 2 => VALS[2],
+                3 => VALS[3],
+                4 => VALS[4],
+                5 => VALS[5],
+                6 => VALS[6],
+                7 => VALS[7],
+                8 => VALS[8],
+                9 => VALS[9],
+                10 => VALS[10],
+                11 => VALS[11],
                 _ => 0
             };
             return result;
@@ -252,7 +266,12 @@ class TestLookupTableSelection:
         assert lut.default_value == 0
 
     def test_non_constant_arm_falls_back_to_jump_table(self):
-        """One non-constant arm body forces fallback to JumpTable."""
+        """One non-constant arm body forces fallback to JumpTable.
+
+        Sized past the dispatch cost model's break-even, so what is under
+        test is the LookupTable-to-JumpTable fallback rather than the
+        separate table-vs-chain decision.
+        """
         source = """
         fn identity(x @ A: u8) -> u8 { return x; }
 
@@ -261,6 +280,15 @@ class TestLookupTableSelection:
                 0 => 10,
                 1 => identity(20),
                 2 => 30,
+                3 => 40,
+                4 => 50,
+                5 => 60,
+                6 => 70,
+                7 => 80,
+                8 => 90,
+                9 => 100,
+                10 => 110,
+                11 => 120,
                 _ => 0
             };
             return result;

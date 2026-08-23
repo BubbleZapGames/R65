@@ -204,6 +204,15 @@ class TestLookupTableAssembly:
                 0 => 10,
                 1 => identity(20),
                 2 => 30,
+                3 => 30,
+                4 => 40,
+                5 => 50,
+                6 => 60,
+                7 => 70,
+                8 => 80,
+                9 => 90,
+                10 => 100,
+                11 => 110,
                 _ => 0
             };
             return result;
@@ -229,6 +238,15 @@ class TestJumpTableAssembly:
                 0 => identity(10),
                 1 => identity(20),
                 2 => identity(30),
+                3 => identity(30),
+                4 => identity(40),
+                5 => identity(50),
+                6 => identity(60),
+                7 => identity(70),
+                8 => identity(80),
+                9 => identity(90),
+                10 => identity(100),
+                11 => identity(110),
                 _ => 0
             };
             return result;
@@ -243,7 +261,13 @@ class TestJumpTableAssembly:
         assert "ASL" in func_asm, "Should emit ASL to multiply index by 2"
 
     def test_dw_entry_count(self):
-        """JumpTable should have correct number of .DW entries."""
+        """JumpTable should have correct number of .DW entries.
+
+        The arm counts in this file are past the dispatch cost model's
+        break-even (see `_jump_table_beats_chain`); a shorter match lowers to
+        a compare chain and emits no table at all, which is a different
+        decision from the one these tests cover.
+        """
         source = """
         fn identity(x @ A: u8) -> u8 { return x; }
 
@@ -254,6 +278,13 @@ class TestJumpTableAssembly:
                 2 => identity(30),
                 3 => identity(40),
                 4 => identity(50),
+                5 => identity(50),
+                6 => identity(60),
+                7 => identity(70),
+                8 => identity(80),
+                9 => identity(90),
+                10 => identity(100),
+                11 => identity(110),
                 _ => 0
             };
             return result;
@@ -263,7 +294,7 @@ class TestJumpTableAssembly:
         func_asm = get_function_asm_with_data(result, "classify")
 
         dw_count = func_asm.count(".DW")
-        assert dw_count == 5, f"Expected 5 .DW entries for 5-arm match, got {dw_count}"
+        assert dw_count == 12, f"Expected 12 .DW entries for 12-arm match, got {dw_count}"
 
 
 class TestBranchChainAssembly:
