@@ -148,10 +148,13 @@ class MatchLowerer:
         if density < MIN_DENSITY or num_patterns < MIN_PATTERNS:
             return (False, None, None, None)
 
-        # Build value-to-arm-index mapping
+        # Build value-to-arm-index mapping. `match` is first-match-wins, and
+        # `pattern_values` is in arm order, so an earlier arm must keep the
+        # value: assigning would hand it to the *last* arm that mentions it.
+        # Reachable through overlapping ranges (`1..=2` then `2..=3`).
         value_to_arm = {}
         for value, arm_index in pattern_values:
-            value_to_arm[value] = arm_index
+            value_to_arm.setdefault(value, arm_index)
 
         return (True, min_val, max_val, value_to_arm)
 
