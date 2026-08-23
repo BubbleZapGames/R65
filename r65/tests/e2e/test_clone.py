@@ -2,7 +2,7 @@
 """
 End-to-end tests for Clone (Slice 1).
 
-Verifies, on a real ROM via Mesen-GDB, that:
+Verifies, by assembling a ROM and running it in the bundled emulator, that:
 - an auto (bitwise) struct clone is an independent copy of its source,
 - array clone copies every byte,
 - in-place `clone_from` between statics copies bytes,
