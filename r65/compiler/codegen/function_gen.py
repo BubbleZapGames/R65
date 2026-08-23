@@ -1126,8 +1126,13 @@ class FunctionCodeGenerator:
                 if not getattr(mir_func, '_skip_dbr_inline', False):
                     # Save current DBR and set to function's bank
                     # Sequence: PHB, LDA #bank, PHA, PLB
+                    # bank_attr.bank_number is a WLA bank *index*; the 65816
+                    # bank *byte* is that index offset by the ROM base
+                    # (.BASE $80 for LoROM FastROM, $C0 for HiROM).
+                    dbr_bank = (getattr(self.emitter, 'rom_base', 0)
+                                + mir_func.bank_attr.bank_number)
                     self._emit_instr(Opcode.PHB, comment="Save current data bank")
-                    self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(mir_func.bank_attr.bank_number),
+                    self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(dbr_bank),
                                     "Load function's bank number")
                     self._emit_instr(Opcode.PHA, comment="Push bank number")
                     self._emit_instr(Opcode.PLB, comment="Set data bank register")
@@ -1226,6 +1231,16 @@ class FunctionCodeGenerator:
         self.emitter.emit_raw("SEI")   # Disable interrupts
         self.emitter.emit_raw("CLC")   # Clear carry for XCE
         self.emitter.emit_raw("XCE")   # Enter native mode
+
+        # FastROM: point DBR at the code bank so absolute ROM reads go through
+        # the fast $80-$BF mirror too, not just opcode fetch. This belongs here
+        # rather than in __fast_reset because that stub still runs with PBR=$00
+        # -- only after its JML is PBR the mirror bank. Hardware registers
+        # ($80:2100) and low RAM ($80:0000-1FFF) mirror as well, so absolute
+        # accesses to them are unaffected.
+        if getattr(self.emitter, 'fastrom', False):
+            self.emitter.emit_raw("PHK")   # Push program bank
+            self.emitter.emit_raw("PLB")   # DBR = PBR (fast mirror bank)
 
         # After XCE, set up x16 mode (always) and m16 mode (if requested)
         # X/Y are ALWAYS 16-bit in R65, so we always emit REP #$10

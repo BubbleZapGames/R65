@@ -1742,9 +1742,13 @@ class CallInstructionSelector(BaseSelector):
         if instr.mode_attr.databank != DataBankMode.CALLER:
             return False
 
-        # Caller manages DBR: save, set, call, restore
+        # Caller manages DBR: save, set, call, restore.
+        # bank_attr.bank_number is a WLA bank *index*; the 65816 bank *byte*
+        # adds the ROM base (.BASE $80 for LoROM FastROM, $C0 for HiROM).
+        callee_bank = (getattr(self.emitter, 'rom_base', 0)
+                       + instr.bank_attr.bank_number)
         self._emit_push('B', "Save current data bank (caller)")
-        self._emit_load_immediate('A', instr.bank_attr.bank_number, "Load callee's bank number")
+        self._emit_load_immediate('A', callee_bank, "Load callee's bank number")
         self._emit_push('A', "Push bank number")
         self._emit_pull('B', "Set data bank for callee")
         return True

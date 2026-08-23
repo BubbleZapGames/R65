@@ -20,6 +20,7 @@ from r65.compiler.codegen.constants import DEFAULT_STACK_LOWER, DEFAULT_STACK_UP
 from r65.compiler.codegen.debug_info import DebugInfoCollector
 from r65.compiler.codegen.debug_writer import Cc65DebugWriter
 from r65.compiler.codegen.address_calc import AddressCalculator
+from r65.compiler.errors import CodegenError
 # Note: Optimize imports are done lazily in generate() to avoid circular imports
 
 
@@ -174,16 +175,27 @@ class ProgramCodeGenerator:
 
         # Determine ROM type from snesrom_config
         is_hirom = False
+        is_fastrom = False
         if mir_program.snesrom_config:
             is_hirom = mir_program.snesrom_config.hirom or mir_program.snesrom_config.exhirom
+            is_fastrom = mir_program.snesrom_config.fastrom
 
         # Calculate minimum ROM size (power-of-2 banks and ROMSIZE value)
         # calculate_rom_size rounds up to power of 2 and enforces 256KB minimum
         rom_banks, self.romsize_value = calculate_rom_size(bank_count, is_hirom)
 
+        # LoROM FastROM relocates ROM labels into the $80-$BF mirror, which
+        # only covers the first 4MB. Refuse rather than silently wrapping.
+        if is_fastrom and not is_hirom and 0x80 + max_bank > 0xFF:
+            raise CodegenError(
+                f"fastrom needs bank ${0x80 + max_bank:02X} for bank {max_bank}, "
+                f"past the $80-$BF LoROM mirror; ROMs over 4MB cannot use fastrom"
+            )
+
         # Emit memory map with calculated bank count and ROM type
         rom_type = "hirom" if is_hirom else "lorom"
-        self.emitter.emit_memory_map(rom_type=rom_type, banks=rom_banks)
+        self.emitter.emit_memory_map(rom_type=rom_type, banks=rom_banks,
+                                     fastrom=is_fastrom)
 
         # Phase 1: Memory allocation
         self.allocator = MemoryAllocator()
@@ -313,6 +325,17 @@ class ProgramCodeGenerator:
             # successor.
             if bank_num == 0 and needs_empty_handler:
                 self.emitter.emit_empty_interrupt_handler()
+
+            # LoROM FastROM: the vector table is 16-bit and the CPU clears PB
+            # when it fires, so entry code runs from the slow $00-$3F mirror
+            # until a JML reloads PBR. Emit the stubs that do it here, inside
+            # the bank-0 window, for the same reason __empty_handler lives
+            # here: they must be reachable at a bank-$00 address.
+            if bank_num == 0 and is_fastrom and not is_hirom and needs_empty_handler:
+                nmi_h, irq_h, reset_h = self._find_vector_handlers(mir_program)
+                self.emitter.emit_lorom_fast_vector_trampolines(
+                    reset=reset_h, nmi=nmi_h, irq=irq_h
+                )
 
         # Phase 6.5: Trait dispatch tables (jump tables and wrapper functions)
         self._emit_trait_dispatch_tables(mir_program)
@@ -654,17 +677,13 @@ class ProgramCodeGenerator:
                 return True
         return False
 
-    def _emit_interrupt_vectors(self, mir_program: MIRProgram):
+    def _find_vector_handlers(self, mir_program: MIRProgram):
         """
-        Emit SNES ROM header and interrupt vector table.
+        Scan MIR functions for the labels the SNES vector table points at.
 
-        Scans functions for #[interrupt(vector)] attributes and
-        generates the SNES header and interrupt vector table.
-
-        Args:
-            mir_program: MIR program
+        Returns (nmi, irq, reset); any of them may be None. Reset is the
+        `#[entry]` function. BRK, COP and ABORT are not wired up yet.
         """
-        # Find interrupt handlers
         nmi_handler = None
         irq_handler = None
         reset_handler = None
@@ -683,6 +702,21 @@ class ProgramCodeGenerator:
             # Check for entry point (becomes reset vector)
             if func.is_entry:
                 reset_handler = func.name
+
+        return nmi_handler, irq_handler, reset_handler
+
+    def _emit_interrupt_vectors(self, mir_program: MIRProgram):
+        """
+        Emit SNES ROM header and interrupt vector table.
+
+        Scans functions for #[interrupt(vector)] attributes and
+        generates the SNES header and interrupt vector table.
+
+        Args:
+            mir_program: MIR program
+        """
+        # Find interrupt handlers
+        nmi_handler, irq_handler, reset_handler = self._find_vector_handlers(mir_program)
 
         # Check for missing NMI handler - this is a common oversight
         # Only warn if there's an entry point (i.e., this is a standalone program)
@@ -703,8 +737,10 @@ class ProgramCodeGenerator:
             # because the CPU reads vectors from bank $00 where only $8000-$FFFF
             # maps to ROM. Emit trampolines at $FF00+ for each handler.
             is_hirom = False
+            is_fastrom = False
             if mir_program.snesrom_config:
                 is_hirom = mir_program.snesrom_config.hirom or mir_program.snesrom_config.exhirom
+                is_fastrom = mir_program.snesrom_config.fastrom
 
             actual_nmi = nmi_handler
             actual_irq = irq_handler
@@ -713,7 +749,8 @@ class ProgramCodeGenerator:
                 self.emitter.emit_hirom_vector_trampolines(
                     reset=reset_handler,
                     nmi=nmi_handler,
-                    irq=irq_handler
+                    irq=irq_handler,
+                    fastrom=is_fastrom
                 )
                 if reset_handler:
                     actual_reset = "__hirom_reset"
@@ -721,6 +758,15 @@ class ProgramCodeGenerator:
                     actual_nmi = "__hirom_nmi"
                 if irq_handler:
                     actual_irq = "__hirom_irq"
+            elif is_fastrom:
+                # Stubs were emitted in the bank-0 window above; point the
+                # vectors at them so entry lands in the $80-$BF fast mirror.
+                if reset_handler:
+                    actual_reset = "__fast_reset"
+                if nmi_handler:
+                    actual_nmi = "__fast_nmi"
+                if irq_handler:
+                    actual_irq = "__fast_irq"
 
             # Emit SNES ROM header (use config from #[snesrom(...)] if present)
             self.emitter.emit_snes_header(
@@ -935,11 +981,15 @@ class ProgramCodeGenerator:
             # Output file offset (bank * bank_size for LoROM)
             ooffs = bank_num * bank_size
 
+            # Report the 65816 bank the CPU actually executes, not the WLA
+            # bank index: .BASE $80 (LoROM FastROM) / $C0 (HiROM) shifts it.
+            cpu_bank = getattr(self.emitter, 'rom_base', 0) + bank_num
+
             self.debug_info.add_segment(
                 name=f"BANK{bank_num}",
                 start=start,
                 size=bank_size,
-                bank=bank_num,
+                bank=cpu_bank,
                 ooffs=ooffs,
                 seg_type="ro"
             )

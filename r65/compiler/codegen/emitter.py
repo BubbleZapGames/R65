@@ -325,6 +325,17 @@ class AssemblyEmitter:
         # HiROM flag: when True, .BASE $C0 is emitted before ROM sections
         # and .BASE $00 before RAM sections so #: bank bytes resolve correctly.
         self.is_hirom: bool = False
+        # Base bank byte for ROM labels, emitted as `.BASE $xx` before each
+        # `.BANK`. WLA-DX resolves a label's bank as `.BASE + its ROM bank`
+        # (doc/asmdiv.rst), so this is what puts `:label`, `#:label`, `JSL`,
+        # `LDA.l` and `MVN` bank operands into the right 65816 bank:
+        #   $00 - LoROM SlowROM (banks $00-$3F); the historical default
+        #   $80 - LoROM FastROM (banks $80-$BF); MEMSEL only speeds up $80-$FF
+        #   $C0 - HiROM (banks $C0-$FF); already the FastROM-capable region
+        self.rom_base: int = 0x00
+        # True when #[snesrom(..., fastrom)] was given. Drives the MEMSEL
+        # write, the vector trampolines, and DBR=PBR in the entry prologue.
+        self.fastrom: bool = False
 
     # ========================================================================
     # Low-Level Node Emission
@@ -485,13 +496,16 @@ class AssemblyEmitter:
     # ========================================================================
 
     def emit_memory_map(self, rom_type: str = "lorom", banks: int = 1,
-                        has_wram_7f: bool = False):
+                        has_wram_7f: bool = False, fastrom: bool = False):
         """
         Emit WLA-DX memory map and ROM bank map.
 
         Args:
             rom_type: "lorom" (32KB banks) or "hirom" (64KB banks)
             banks: Number of ROM banks
+            fastrom: True when #[snesrom(..., fastrom)] was given. For LoROM
+                this moves ROM labels into the $80-$BF mirror, the only region
+                MEMSEL ($420D) actually speeds up. HiROM already sits at $C0+.
 
         Generated (LoROM):
             .MEMORYMAP
@@ -538,6 +552,13 @@ class AssemblyEmitter:
         # Store HiROM flag so emit_bank_directive and emit_ramsection
         # can emit the correct .BASE before each section.
         self.is_hirom = rom_type.lower() != "lorom"
+        if self.is_hirom:
+            # $C0-$FF is both the fully-ROM-mapped and the FastROM-capable
+            # HiROM region, so HiROM needs no separate fastrom base.
+            self.rom_base = 0xC0
+        else:
+            self.rom_base = 0x80 if fastrom else 0x00
+        self.fastrom = fastrom
 
     # ========================================================================
     # Bank Directives
@@ -547,15 +568,17 @@ class AssemblyEmitter:
         """
         Emit bank directive and origin.
 
-        For HiROM, emits .BASE $C0 so #: bank bytes resolve to $C0+
-        (where $0000-$FFFF all map to ROM).
+        Emits `.BASE $<rom_base>` first when a non-zero base is in effect, so
+        `:label` / `#:label` bank bytes resolve into the right 65816 bank:
+        $C0+ for HiROM (where $0000-$FFFF all map to ROM) and $80+ for LoROM
+        FastROM. A zero base emits nothing, keeping SlowROM output unchanged.
 
         Args:
             bank_num: Bank number
             slot: Slot number (usually 0)
         """
-        if self.is_hirom:
-            self.emit_directive(".BASE $C0")
+        if self.rom_base:
+            self.emit_directive(f".BASE ${self.rom_base:02X}")
         self.emit_directive(f".BANK {bank_num} SLOT {slot}")
         if bank_num not in self._used_banks:
             self.emit_directive(".ORG 0")
@@ -594,10 +617,10 @@ class AssemblyEmitter:
                 line += " " * padding + f"; {comment}"
             self.emit_directive(line)
         self.emit_directive(".ENDS")
-        # Reset .BASE so subsequent ROM bank labels get correct bank bytes.
-        # Without this, .BASE $7E persists and offsets all later :label
+        # Restore the ROM base so subsequent ROM bank labels get correct bank
+        # bytes. Without this, .BASE $7E persists and offsets all later :label
         # calculations (e.g., BANK 1 would resolve to $7F instead of $01).
-        self.emit_directive(".BASE $00")
+        self.emit_directive(f".BASE ${self.rom_base:02X}")
 
     # ========================================================================
     # Labels
@@ -897,7 +920,59 @@ class AssemblyEmitter:
         self.emit_instr(Opcode.RTI)
         self.emit_blank_line()
 
-    def emit_hirom_vector_trampolines(self, reset=None, nmi=None, irq=None):
+    def emit_lorom_fast_vector_trampolines(self, reset=None, nmi=None, irq=None):
+        """
+        Emit LoROM FastROM vector trampolines.
+
+        MEMSEL ($420D) only speeds up banks $80-$FF, but the CPU always fetches
+        interrupt vectors with PBR=$00, so entry code runs at SlowROM speed
+        until something reloads PBR. These stubs sit in bank $00 (where the
+        16-bit vector operand can reach them) and JML into the $80-$BF mirror,
+        whose bank byte comes from the `.BASE $80` in effect for ROM banks.
+
+        Emitted inside the bank-0 code window, so no .ORG and no reserved
+        space is needed - any bank-0 address works.
+
+        Generated:
+            __fast_reset: SEI / CLC / XCE / SEP #$20 / LDA #$01 / STA $420D
+                          JML main
+            __fast_nmi:   JML nmi_handler
+            __fast_irq:   JML irq_handler
+        """
+        self.emit_section_header("FastROM Vector Trampolines")
+
+        if reset:
+            self.emit_label("__fast_reset")
+            self.emit_instr(Opcode.SEI)
+            self.emit_instr(Opcode.CLC)
+            self.emit_instr(Opcode.XCE)
+            self.emit_memsel_write()
+            self.emit_raw(f"    JML {reset}")
+
+        if nmi:
+            self.emit_label("__fast_nmi")
+            self.emit_raw(f"    JML {nmi}")
+
+        if irq:
+            self.emit_label("__fast_irq")
+            self.emit_raw(f"    JML {irq}")
+
+        self.emit_blank_line()
+
+    def emit_memsel_write(self):
+        """
+        Emit the FastROM enable: MEMSEL ($420D) bit 0 = 1.
+
+        Forces m8 first because a reset stub runs before any mode is
+        established, and MEMSEL is an 8-bit register.
+        """
+        self.emit_raw("    SEP #$20")
+        self.emit_accu_mode(8)
+        self.emit_raw("    LDA #$01")
+        self.emit_raw("    STA $420D")
+
+    def emit_hirom_vector_trampolines(self, reset=None, nmi=None, irq=None,
+                                      fastrom: bool = False):
         """
         Emit HiROM interrupt vector trampolines at addresses >= $8000.
 
@@ -907,7 +982,7 @@ class AssemblyEmitter:
         ROM and jump to the real handlers via bank $C0.
 
         Generated at $FF00:
-            __hirom_reset: SEI / CLC / XCE / JML main
+            __hirom_reset: SEI / CLC / XCE / [MEMSEL] / JML main
             __hirom_nmi:   JML nmi_handler
             __hirom_irq:   JML irq_handler
         """
@@ -920,6 +995,8 @@ class AssemblyEmitter:
             self.emit_instr(Opcode.SEI)
             self.emit_instr(Opcode.CLC)
             self.emit_instr(Opcode.XCE)
+            if fastrom:
+                self.emit_memsel_write()
             self.emit_raw(f"    JML {reset}")
 
         if nmi:

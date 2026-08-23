@@ -2094,10 +2094,15 @@ fn init_ppu() {
 }
 
 // Initialize CPU registers
+//
+// MEMSEL ($420D) is deliberately not touched here. FastROM is driven by
+// #[snesrom(..., fastrom)], which makes the compiler place code in the
+// $80-$BF mirror and enable MEMSEL in the reset trampoline. Setting it
+// here would either be a no-op (code running from $00-$3F) or disagree
+// with the ROM header's speed bit.
 fn init_cpu() {
     NMITIMEN = 0;
     HDMAEN = 0;
-    MEMSEL = 1;
 }
 
 // Full SNES initialization
