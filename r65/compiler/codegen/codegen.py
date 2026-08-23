@@ -256,6 +256,15 @@ class ProgramCodeGenerator:
         # `00` bytes execute as BRK.)
         needs_empty_handler = self._program_needs_interrupt_vectors(mir_program)
 
+        # Guarantee a bank-0 window exists to hold it. A program whose
+        # functions all carry #[bank(n>0)] otherwise emits no bank 0 at all,
+        # and the vector table then references a __empty_handler that was
+        # never defined - wlalink rejects it with "Reference to an unknown
+        # label". Anything else that must be reachable at a bank-$00 address
+        # lands in this window too.
+        if needs_empty_handler:
+            functions_by_bank.setdefault(0, [])
+
         # Group include_asm! directives by bank for placement inside .BANK windows
         asm_includes_by_bank: Dict[int, List[Any]] = {}
         for inc in getattr(mir_program, 'asm_includes', []):
