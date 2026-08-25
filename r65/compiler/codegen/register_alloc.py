@@ -455,8 +455,16 @@ class RegisterAllocator:
             self.hw_allocs[hw_reg].is_bound = True
             return location
 
+        # A, X and Y hold at most two bytes, so a 24-bit value (far *T,
+        # far fn()) can never live in one. Skipping the hardware paths below
+        # lets it fall through to scratch or a stack slot, which is where a
+        # 3-byte local belongs. Explicit `@ A`-style bindings are validated in
+        # the frontend and so are left to raise there rather than silently
+        # landing somewhere else.
+        oversized_for_hw = get_vreg_size(vreg) > 2
+
         # Check if this vreg is hw-coalesceable (can stay in hardware register)
-        if self.slot_allocation and self.slot_allocation.hw_coalesceable:
+        if not oversized_for_hw and self.slot_allocation and self.slot_allocation.hw_coalesceable:
             hw_reg = self.slot_allocation.hw_coalesceable.get(vreg)
             if hw_reg:
                 location = PhysicalLocation(
@@ -483,7 +491,7 @@ class RegisterAllocator:
                 return location
 
         # Check for register hint (loop variables)
-        if vreg.register_hint in ('X', 'Y'):
+        if not oversized_for_hw and vreg.register_hint in ('X', 'Y'):
             hw_reg = vreg.register_hint
             hw_alloc = self.hw_allocs.get(hw_reg)
             if hw_alloc and hw_alloc.allocated_vreg is None:

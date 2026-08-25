@@ -336,3 +336,75 @@ class TestArrayOfStructs:
             }
         ''', ExpectedState(memory={0x7E0300: 100}))
         assert result.success, f"Failures: {result.failures}"
+
+
+class TestFarPointerFieldLoad:
+    """Loading a 3-byte value out of a struct field.
+
+    `select_load` had only a 16-bit and an 8-bit path, and `_is_16bit`
+    answers False for a far pointer, so a `far *T` field load fell into the
+    8-bit case and moved only the low byte — the high two bytes of the
+    destination kept whatever was there before. `far fn()` is 3 bytes too and
+    additionally truncated on the *store* side, which tested only
+    `PointerTypeInfo`.
+    """
+
+    def test_far_pointer_field_load_moves_all_three_bytes(self, e2e):
+        """`out = E.p` copies low, high and bank, not just low."""
+        result = e2e.run('''
+            struct Holder { p: far *u8, tag: u8 }
+
+            #[zeropage(0x10)]
+            static mut H: Holder;
+            #[zeropage(0x20)]
+            static mut out: far *u8;
+
+            #[entry]
+            fn main() {
+                H.p = 0x7E1234 as far *u8;
+                out = H.p;
+            }
+        ''', ExpectedState(memory={
+            0x7E0020: [0x34, 0x12, 0x7E],
+        }))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_far_pointer_field_load_indexed(self, e2e):
+        """Same, reached through an array element rather than a bare static."""
+        result = e2e.run('''
+            struct Holder { p: far *u8, tag: u8 }
+
+            #[zeropage(0x10)]
+            static mut ARR: [Holder; 2];
+            #[zeropage(0x20)]
+            static mut out: far *u8;
+
+            #[entry]
+            fn main() {
+                ARR[1].p = 0x7EABCD as far *u8;
+                out = ARR[1].p;
+            }
+        ''', ExpectedState(memory={
+            0x7E0020: [0xCD, 0xAB, 0x7E],
+        }))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_far_pointer_local_round_trip(self, e2e):
+        """A 24-bit local gets a 3-byte home (stack or scratch), never A/X/Y."""
+        result = e2e.run('''
+            #[zeropage(0x10)]
+            static mut src: far *u8;
+            #[zeropage(0x20)]
+            static mut out: far *u8;
+
+            #[entry]
+            fn main() {
+                src = 0x7E5678 as far *u8;
+                let p: far *u8 = src;
+                let q: far *u8 = p;
+                out = q;
+            }
+        ''', ExpectedState(memory={
+            0x7E0020: [0x78, 0x56, 0x7E],
+        }))
+        assert result.success, f"Failures: {result.failures}"

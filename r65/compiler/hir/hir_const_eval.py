@@ -290,7 +290,8 @@ def _eval_binary_bool(expr, symbol_table: 'SymbolTable') -> Optional[bool]:
 
 def _get_type_mask(type_info) -> int:
     """Get bitmask for type size."""
-    from r65.compiler.hir.types import BasicTypeInfo, strip_newtype
+    from r65.compiler.hir.types import (
+        BasicTypeInfo, FunctionTypeInfo, PointerTypeInfo, strip_newtype)
 
     type_info = strip_newtype(type_info)
     if isinstance(type_info, BasicTypeInfo):
@@ -298,4 +299,8 @@ def _get_type_mask(type_info) -> int:
             return 0xFF
         elif type_info.name in ('u16', 'i16'):
             return 0xFFFF
+    # A far pointer is 24-bit. Falling through to the 16-bit default drops the
+    # bank byte, which is how `0x7E1234 as far *u8` folded to $1234.
+    if isinstance(type_info, (PointerTypeInfo, FunctionTypeInfo)):
+        return 0xFFFFFF if getattr(type_info, 'is_far', False) else 0xFFFF
     return 0xFFFF  # Default to 16-bit

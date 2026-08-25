@@ -18,6 +18,21 @@ from r65.compiler.hir.types import PointerTypeInfo
 M_FLAG = 0x20  # Accumulator size (0=16-bit, 1=8-bit)
 
 
+def is_far_pointer_type(type_info) -> bool:
+    """True for the 3-byte pointer types: ``far *T`` and ``far fn()``.
+
+    Neither the 16-bit nor the 8-bit path can carry three bytes, and
+    ``_is_16bit`` answers False for both, so every caller that copies a
+    pointer has to ask this question explicitly or it silently moves only
+    the low byte.
+    """
+    from r65.compiler.hir.types import FunctionTypeInfo, strip_newtype
+    type_info = strip_newtype(type_info)
+    if isinstance(type_info, (PointerTypeInfo, FunctionTypeInfo)):
+        return getattr(type_info, 'is_far', False)
+    return False
+
+
 class MemoryOperationSelector(BaseSelector):
     """
     Handles memory operation instruction selection.
@@ -110,6 +125,20 @@ class MemoryOperationSelector(BaseSelector):
 
         src_loc = self.parent._get_operand_location(instr.source)
 
+        # A far pointer is 3 bytes. It fits neither path below, and
+        # _is_16bit() reports False for it, so without this branch it would
+        # fall into the 8-bit case and load only the low byte, leaving the
+        # high two bytes of the destination untouched.
+        if is_far_pointer_type(instr.type_info):
+            if dest_loc.is_hw():
+                raise InstructionSelectionError(
+                    f"cannot load a 3-byte far pointer into hardware register "
+                    f"{dest_loc.hw_register}",
+                    source_loc=self.parent._current_source_loc)
+            self._ensure_m8_mode()
+            self._emit_pointer_mem_copy(src_loc, dest_loc, 3)
+            return
+
         is_u16 = self.parent._is_16bit(instr.type_info)
 
         if is_u16:
@@ -155,8 +184,9 @@ class MemoryOperationSelector(BaseSelector):
         dest_loc = self.parent._get_operand_location(instr.dest)
         is_u16 = self.parent._is_16bit(instr.type_info)
 
-        # Check if this is a far pointer (3 bytes)
-        is_far_ptr = isinstance(instr.type_info, PointerTypeInfo) and instr.type_info.is_far
+        # Check if this is a far pointer (3 bytes) — `far fn()` as well as
+        # `far *T`, both of which are 3 bytes and neither 8- nor 16-bit.
+        is_far_ptr = is_far_pointer_type(instr.type_info)
 
         # SPECIAL CASE: Storing to B register
         if dest_loc.is_hw('B'):
@@ -165,7 +195,7 @@ class MemoryOperationSelector(BaseSelector):
 
         # SPECIAL CASE: Handle immediate values
         if isinstance(instr.source, MIRImmediate):
-            self._store_immediate(instr.source.value, dest_loc, is_u16)
+            self._store_immediate(instr.source.value, dest_loc, is_u16, is_far_ptr)
             return
 
         # SPECIAL CASE: Handle function pointers
@@ -197,8 +227,20 @@ class MemoryOperationSelector(BaseSelector):
                 self.parent._mark_a_modified()
                 self.parent._store_to_b_from_a()
 
-    def _store_immediate(self, value: int, dest_loc, is_u16: bool):
+    def _store_immediate(self, value: int, dest_loc, is_u16: bool,
+                         is_far_ptr: bool = False):
         """Store an immediate value to memory or hardware register."""
+        # A 3-byte constant pointer (`0x7E1234 as far *u8`) is neither 8- nor
+        # 16-bit, so without this it would fall through to the 8-bit branch
+        # and write only the low byte. Low word first, then the bank byte.
+        if is_far_ptr and not dest_loc.is_hw():
+            self.parent._emit_16bit_immediate_store(value & 0xFFFF, dest_loc)
+            self._ensure_m8_mode()
+            bank_loc = self._offset_location(dest_loc, 2)
+            self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate((value >> 16) & 0xFF))
+            self._emit_load_store('STA', bank_loc)
+            return
+
         # Special handling for hardware register A with 16-bit values
         if is_u16 and dest_loc.is_hw('A'):
             # Load 16-bit immediate into A - need 16-bit mode
