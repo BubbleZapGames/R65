@@ -1385,6 +1385,71 @@ class HIRBuilder:
                 hint="add 'mut' to make mutable, or remove attribute for ROM"
             )
 
+    def _validate_soa_static(self, static: ast.StaticDecl, var_type, storage_attr):
+        """Reject `#[soa]` on anything that cannot be split into field planes.
+
+        Everything checked here is answerable in pass 2 without the element's
+        field layout: the struct's own HIR declaration may not exist yet (a
+        `#[soa] static` may precede its `struct`), so nothing may touch
+        `size_bytes`. Layout-dependent work happens in the expansion pass.
+        """
+        from r65.compiler.frontend import ast as _ast
+
+        if not isinstance(var_type, ArrayTypeInfo):
+            raise HIRError(
+                f"#[soa] static '{static.name}' must be an array of structs",
+                source_loc=static.source_loc,
+                hint="#[soa] applies to `[Struct; N]`; it has no meaning for a scalar",
+            )
+
+        element = strip_newtype(var_type.element_type)
+        if not isinstance(element, StructTypeInfo):
+            raise HIRError(
+                f"#[soa] static '{static.name}' must have a struct element type, "
+                f"got '{var_type.element_type}'",
+                source_loc=static.source_loc,
+                hint="there is nothing to split apart unless the element has fields",
+            )
+
+        # `definition` is an ast.StructDecl until the struct's own pass-2 build
+        # replaces it, so accept either shape.
+        defn = None
+        if element.symbol is not None:
+            defn = getattr(element.symbol, 'definition', None)
+        if defn is None:
+            defn = element.definition
+        if defn is not None and getattr(defn, 'is_union', False):
+            raise HIRError(
+                f"#[soa] static '{static.name}' cannot have a union element type",
+                source_loc=static.source_loc,
+                hint="a union's fields overlay at offset 0; splitting them would "
+                     "destroy the aliasing that makes it a union",
+            )
+
+        if element.name in self._struct_type_ids:
+            raise HIRError(
+                f"#[soa] static '{static.name}' cannot have an element type that "
+                f"implements a trait",
+                source_loc=static.source_loc,
+                hint=f"dispatch reads a TypeId byte at the element's offset 0, and an "
+                     f"SoA element has no contiguous base; keep '{element.name}' arrays AoS",
+            )
+
+        if storage_attr is not None and storage_attr.storage_kind == StorageKind.HW:
+            raise HIRError(
+                f"#[soa] static '{static.name}' cannot use #[hw] storage",
+                source_loc=static.source_loc,
+                hint="hardware registers have a fixed layout the compiler does not place",
+            )
+
+        if static.initializer is not None:
+            raise HIRError(
+                f"#[soa] static '{static.name}' cannot have an initializer yet",
+                source_loc=static.source_loc,
+                hint="transposing an array literal into per-field tables is not "
+                     "implemented; leave it uninitialized for now",
+            )
+
     def _build_static(self, static: ast.StaticDecl) -> hir.HIRStaticDecl:
         """Build HIR static declaration from AST."""
         if static.is_extern:
@@ -1397,11 +1462,14 @@ class HIRBuilder:
 
         raw_storage_attr = None
         allow_lints = frozenset()
+        is_soa = False
         for attr in processed_attrs:
             if isinstance(attr, StorageAttribute):
                 raw_storage_attr = attr
             elif isinstance(attr, AllowAttribute):
                 allow_lints = attr.codes
+            elif isinstance(attr, SoaAttribute):
+                is_soa = True
 
         # Validate storage class based on mutability
         storage_attr = self._validate_static_storage(static, raw_storage_attr)
@@ -1431,6 +1499,9 @@ class HIRBuilder:
         elif static.initializer:
             initializer = self._build_expression(static.initializer)
 
+        if is_soa:
+            self._validate_soa_static(static, var_type, storage_attr)
+
         # Get static symbol
         static_symbol = self.symbol_table.lookup(static.name)
 
@@ -1458,6 +1529,7 @@ class HIRBuilder:
             storage_attr=storage_attr,
             bank_attr=bank_attr,
             allow_lints=allow_lints,
+            is_soa=is_soa,
             symbol=static_symbol,
             source_loc=static.source_loc
         )

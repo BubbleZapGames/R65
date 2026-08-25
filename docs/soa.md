@@ -522,14 +522,23 @@ Rejections land in `check_array_index`, `pointer_validator.check_addressof`
 ### S3 — desugar, funnel rewrite, X key. **Atomic.**
 
 **Synthesis runs as a third pass** over `hir_decls`, after the pass-2 loop
-closes (`hir/builder.py:246`) — not inside `_build_static`. If the
-`#[soa] static` precedes the `struct` in the file (legal, since
-`resolve_named_type` is lazy), `symbol.definition` is still an
-`ast.StructDecl` at `_build_static` time and `StructTypeInfo.size_bytes`
-(`hir/types.py:118`) raises `AttributeError`. After the pass-2 loop every
-`HIRStructDecl` definitively exists. Children go into
-`HIRProgram.declarations` — `.statics` is a read-only `@property`
+closes (`hir/builder.py:246`) — not inside `_build_static`. Children go
+into `HIRProgram.declarations`; `.statics` is a read-only `@property`
 (`hir/nodes.py:102`).
+
+The reason is *not* declaration order. A static cannot forward-reference
+its struct at all — pass 1 resolves the static's type eagerly, so
+`static mut POOL: [Enemy; 4];` above `struct Enemy` fails with
+"Undefined type: Enemy" with or without `#[soa]`. By the time
+`_build_static` runs, the struct's `HIRStructDecl` therefore always
+exists. The third pass earns its place for a different reason: it is the
+only point where the whole program is in hand, which matters for the
+checks that consult program-wide state, and it keeps layout work out of a
+function whose job is building one declaration.
+
+S1's restriction checks, by contrast, live in `_build_static`
+(`_validate_soa_static`) — every one of them is answerable without the
+element's field layout, so none touches `size_bytes`.
 
 Declaring symbols late is safe: nothing iterates the symbol table
 (`SymbolTable.declare` is a dict insert; every consumer uses `lookup`).

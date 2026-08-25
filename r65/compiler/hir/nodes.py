@@ -230,6 +230,12 @@ class HIRStaticDecl(HIRDeclaration):
     # Processed attributes
     storage_attr: Optional[Any] = None  # Will be StorageAttribute (None = ROM)
     bank_attr: Optional[Any] = None  # Will be BankAttribute (for ROM statics only)
+    # #[soa]: this static is laid out as one array per field of its element
+    # struct. The parent itself is allocated no bytes; see docs/soa.md.
+    is_soa: bool = False
+    # True for the per-field arrays SoA expansion synthesizes. They have no
+    # source location the user would recognise, so lint rules skip them.
+    is_synthetic: bool = False
     # Lint codes suppressed on this static via #[allow(...)]; "*" means all.
     allow_lints: frozenset = field(default_factory=frozenset)
 

@@ -77,6 +77,17 @@ class StorageAttribute(ProcessedAttribute):
     is_register: bool = False  # True if marked as scratch register with 'register' parameter
 
 
+@dataclass
+class SoaAttribute(ProcessedAttribute):
+    """#[soa] — lay a `static [Struct; N]` out as one array per field.
+
+    Carries no parameters; its whole effect is the layout flip, which
+    happens after the HIR declaration pass (the element struct may not be
+    built yet at the point the static is). See docs/soa.md.
+    """
+    pass
+
+
 # Bank attribute
 @dataclass
 class BankAttribute(ProcessedAttribute):
@@ -222,6 +233,8 @@ class AttributeProcessor:
                 processed.append(self._process_preserves(attr, context))
             elif attr.name in ['zeropage', 'lowram', 'ram', 'hw']:
                 processed.append(self._process_storage(attr, context))
+            elif attr.name == 'soa':
+                processed.append(self._process_soa(attr, context))
             elif attr.name == 'stack':
                 processed.append(self._process_stack(attr, context))
             elif attr.name == 'cfg':
@@ -349,6 +362,20 @@ class AttributeProcessor:
             name='preserves',
             registers=registers
         )
+
+    def _process_soa(self, attr: ast.Attribute, context: str) -> SoaAttribute:
+        """Process #[soa] attribute."""
+        if context not in ['static']:
+            raise HIRError(
+                "#[soa] attribute only valid on statics",
+                source_loc=attr.source_loc,
+            )
+        if attr.args:
+            raise HIRError(
+                "#[soa] takes no arguments",
+                source_loc=attr.source_loc,
+            )
+        return SoaAttribute(name='soa')
 
     def _process_storage(self, attr: ast.Attribute, context: str) -> StorageAttribute:
         """Process #[zeropage], #[lowram], #[ram], #[hw] attributes."""
