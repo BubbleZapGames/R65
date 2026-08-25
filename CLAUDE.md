@@ -68,6 +68,28 @@ static mut MESSAGE: [u8; 16] = "Hello, World!";  // String literal, zero-padded
 
 *(See [docs/array-bounds-checking.md](docs/array-bounds-checking.md) for design rationale)*
 
+### SoA Struct Arrays *(specified, not implemented)*
+
+`#[soa]` on a `static [Struct; N]` lays the array out as one array per
+field, so `arr[i].field` addresses `arr__field[i]` and the index is scaled
+by the *field* size rather than the element size — removing the stride
+multiply that costs ~57 cycles for elements over 16 bytes.
+
+```rust
+#[lowram]
+#[soa]
+static mut ENEMIES: [Enemy; 16];   // one [_; 16] array per field of Enemy
+
+ENEMIES[i].hp = 100;                // stride 1, no multiply
+```
+
+**Restrictions**: the element must be a plain struct (no `union`, no
+`*dyn`-used trait impl), and it has no contiguous base — so `&arr[i]`,
+`arr[i].method()`, and whole-element copies are rejected. Callers pass the
+index `i` instead of a reference.
+
+*(See [docs/soa.md](docs/soa.md) for the complete specification)*
+
 ### Character Literals
 
 Single-byte ASCII character literals produce u8 values:
@@ -496,6 +518,7 @@ r65x init --platform snes my_project  # Create test project
 - [Pointers and Memory Model](docs/pointers-memory.md)
 - [Type System](docs/type-system.md)
 - [Unions](docs/unions.md)
+- [SoA Struct Arrays](docs/soa.md)
 - [B Register](docs/b-register.md)
 - [STATUS Flags](docs/status-flags.md)
 - [Array Bounds Checking](docs/array-bounds-checking.md)
