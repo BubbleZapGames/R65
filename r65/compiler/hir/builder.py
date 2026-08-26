@@ -1506,6 +1506,14 @@ class HIRBuilder:
                     hint="hardware registers have a fixed layout the compiler "
                          "does not place",
                 )
+        if not decl.is_mut:
+            raise HIRError(
+                f"#[soa] static '{decl.name}' must be `static mut`",
+                source_loc=decl.source_loc,
+                hint="an immutable static is ROM, and a #[soa] static cannot "
+                     "carry an initializer — so it could only ever be undefined "
+                     "bytes; add 'mut'",
+            )
         if decl.initializer is not None:
             raise HIRError(
                 f"#[soa] static '{decl.name}' cannot have an initializer yet",

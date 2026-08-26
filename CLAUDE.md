@@ -96,10 +96,12 @@ A `#[soa]` struct backs **exactly one** static — that is what lets methods
 hard-code their plane addresses. A single instance (`static mut PLAYER:
 Player;`) desugars to a one-element array.
 
-**Restrictions**: no `union`, no newtype, no `#[hw]`, no `extern`, and no
-initializer yet. An element has no contiguous base, so `&arr[i]`, locals
-and parameters of the type, whole-element copies, `impl Clone`, and `*dyn`
-over an element are rejected. Static-dispatch trait impls work.
+**Restrictions**: must be `static mut`; no `union`, no newtype, no `#[hw]`,
+no `extern`, and no initializer yet. An element has no contiguous base, so
+`&arr[i]`, locals and parameters of the type, whole-element copies, `impl
+Clone`, and `*dyn` over an element are rejected. Static-dispatch trait
+impls work. Index a pool with a `u16` — a `u8` index needs an explicit
+`as u16` until implicit widening is fixed.
 
 *(See [docs/soa.md](docs/soa.md) for the complete documentation)*
 

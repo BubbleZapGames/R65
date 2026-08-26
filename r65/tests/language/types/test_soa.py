@@ -244,3 +244,20 @@ class TestSoaSelfRegisterConflict:
         assert "newtype" not in exc.value.hint
         # X is taken by self, so the hint must not offer it
         assert "A or Y" in exc.value.hint
+
+
+class TestSoaStorageMustBeMutable:
+    """An immutable `#[soa]` static could only ever be undefined ROM bytes."""
+
+    def test_immutable_soa_static_is_rejected(self):
+        msg = build_fails("""
+            #[soa] struct E { hp: u8 }
+            static POOL: [E; 4];
+        """)
+        assert "must be `static mut`" in msg
+
+    def test_mutable_soa_static_is_accepted(self):
+        build_hir("""
+            #[soa] struct E { hp: u8 }
+            #[lowram] static mut POOL: [E; 4];
+        """)
