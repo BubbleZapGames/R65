@@ -2374,7 +2374,13 @@ class MIRBuilder:
                 count_in_expr(expr.expr)
             elif isinstance(expr, HIRAssignment):
                 count_in_expr(expr.value)
-                # Don't count target - writing to param doesn't need reading it
+                # A bare identifier target is a pure write — `x = 5` does not
+                # read x. Any *compound* target does: `arr[i] = v` reads i,
+                # `*p = v` reads p, `p.f = v` reads p when p is a pointer. Miss
+                # those and the parameter is aliased to a raw hardware register
+                # that the address computation is then free to overwrite.
+                if not isinstance(expr.target, HIRIdentifier):
+                    count_in_expr(expr.target)
             elif isinstance(expr, HIRFunctionCall):
                 for arg in expr.args:
                     count_in_expr(arg)
@@ -2399,6 +2405,17 @@ class MIRBuilder:
                 count_in_expr(expr.condition)
                 count_in_expr(expr.then_block)
                 count_in_expr(expr.else_block)
+            elif isinstance(expr, HIRMatchExpression):
+                count_in_expr(expr.scrutinee)
+                for arm in expr.arms:
+                    # An arm body is an expression, or a statement when the arm
+                    # ends in control flow (return/break/continue).
+                    if isinstance(arm.body, HIRStatement):
+                        count_in_stmt(arm.body)
+                    else:
+                        count_in_expr(arm.body)
+            elif isinstance(expr, HIRLoopExpression):
+                count_in_block(expr.body)
 
         def count_in_stmt(stmt):
             """Recursively count parameter uses in a statement."""
@@ -2423,6 +2440,10 @@ class MIRBuilder:
             elif isinstance(stmt, HIRWhileStmt):
                 count_in_expr(stmt.condition)
                 count_in_block(stmt.body)
+            elif isinstance(stmt, HIRMultiLetStmt):
+                count_in_expr(stmt.initializer)
+            elif isinstance(stmt, HIRBlock):
+                count_in_block(stmt)
 
         def count_in_block(block):
             """Count parameter uses in a block."""
