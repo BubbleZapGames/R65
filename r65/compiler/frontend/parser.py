@@ -562,7 +562,7 @@ class ASTBuilder(Transformer):
         items = self._filter_tokens(tree.children, keep_types={'IDENT'})
         doc, idx = self._collect_doc_comments(items, 0)
         loc = self._make_source_loc(tree.meta)
-        attrs, idx = self._collect_leading_attributes(items, idx)
+        attrs, idx = self._collect_attributes(items, idx)
         self._reject_derive_on_type(attrs, items, idx, loc)
         name = items[idx].value if isinstance(items[idx], LarkToken) else items[idx]
         inner_type = items[idx + 1]
@@ -583,7 +583,7 @@ class ASTBuilder(Transformer):
         """
         items = self._filter_tokens(tree.children, keep_types={'IDENT'})
         _, idx = self._collect_doc_comments(items, 0)
-        _, idx = self._collect_leading_attributes(items, idx)
+        _, idx = self._collect_attributes(items, idx)
         name = items[idx].value if isinstance(items[idx], LarkToken) else items[idx]
         types = [item for item in items[idx + 1:] if not isinstance(item, LarkToken)]
 
@@ -620,21 +620,12 @@ class ASTBuilder(Transformer):
         """Build a StructDecl from struct_decl/union_decl children."""
         items = self._filter_tokens(items)
         doc, idx = self._collect_doc_comments(items, 0)
-        attrs, idx = self._collect_leading_attributes(items, idx)
+        attrs, idx = self._collect_attributes(items, idx)
         self._reject_derive_on_type(attrs, items, idx, source_loc)
         name = items[idx].value if isinstance(items[idx], LarkToken) else items[idx]
         fields = [item for item in items[idx + 1:] if isinstance(item, ast.StructField)]
         return ast.StructDecl(name=name, fields=fields, doc=doc, is_union=is_union,
                               attributes=attrs, source_loc=source_loc)
-
-    @staticmethod
-    def _collect_leading_attributes(items, idx: int):
-        """Consume the run of `ast.Attribute` nodes at *idx*; return (attrs, idx)."""
-        attrs = []
-        while idx < len(items) and isinstance(items[idx], ast.Attribute):
-            attrs.append(items[idx])
-            idx += 1
-        return attrs, idx
 
     def _reject_derive_on_type(self, attrs, items, idx, source_loc):
         """Reject `#[derive(...)]` on a type declaration, naming the type.
