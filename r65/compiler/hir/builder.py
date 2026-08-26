@@ -2121,9 +2121,20 @@ class HIRBuilder:
         """
         if not isinstance(self_binding, hir.RegisterBinding):
             return
+        # An associated function has no receiver: the register is not spoken
+        # for, and params[0] is an ordinary parameter rather than `self`. A
+        # binding is still built for it above, so without this the slice below
+        # both skips a real first parameter and blames a later one on a `self`
+        # that does not exist.
+        if not getattr(method, 'has_self', True):
+            return
         reg = self_binding.register_name
+        receiver = ("an #[soa] method receives 'self' as an element index"
+                    if reg == 'X' else "a newtype method receives 'self' by value")
         # A and B are one physical register; `self` in A claims both.
         blocked = {reg, 'B'} if reg == 'A' else {reg}
+        # Name the registers that are actually still free, not a fixed pair.
+        free = " or ".join(r for r in ('A', 'X', 'Y') if r not in blocked)
 
         for param in params[1:]:
             if not isinstance(param.binding, hir.RegisterBinding):
@@ -2140,8 +2151,8 @@ class HIRBuilder:
                 f"parameter '{param.name}' of '{impl.struct_name}::{method.name}' "
                 f"{conflict}",
                 source_loc=method.source_loc,
-                hint=f"a newtype method receives 'self' by value in {reg}; "
-                     f"bind '{param.name}' to X or Y, or pass it on the stack"
+                hint=f"{receiver} in {reg}; bind '{param.name}' to "
+                     f"{free}, or pass it on the stack"
             )
 
     def _supertrait_closure(self, trait_name: str) -> List[str]:

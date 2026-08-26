@@ -443,3 +443,32 @@ class TestMethodCallErrors:
                       "fn main() { let t: TileId = 5; let q: Q10 = 1; let u: TileId = t.plus(q); }")
         with pytest.raises(TypeCheckError, match="wrong type"):
             build_and_check(src)
+
+
+class TestAssociatedFnRegisterBindings:
+    """An associated function has no receiver, so no register is reserved.
+
+    The self-register conflict check assumed `params[0]` was always `self`
+    and scanned `params[1:]`. For an associated function that slice starts
+    at the *second* user parameter, so a later binding was blamed on a
+    `self` the function does not have.
+    """
+
+    def test_associated_fn_may_bind_the_self_register(self):
+        src = ("struct TileId(u8);\n"
+               "impl TileId { fn make(slot @ X: u16, kind @ A: u8) -> TileId "
+               "{ TileId(kind) } }\nfn main() {}")
+        build_and_check(src)
+
+    def test_associated_fn_may_bind_it_as_the_first_param(self):
+        src = ("struct TileId(u8);\n"
+               "impl TileId { fn make(kind @ A: u8) -> TileId { TileId(kind) } }\n"
+               "fn main() {}")
+        build_and_check(src)
+
+    def test_method_still_rejects_the_self_register(self):
+        src = ("struct TileId(u8);\n"
+               "impl TileId { fn m(self, x @ A: u8) -> u8 { return x; } }\n"
+               "fn main() {}")
+        with pytest.raises(HIRError, match="binds A, which holds 'self'"):
+            build_and_check(src)

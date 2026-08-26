@@ -189,3 +189,58 @@ class TestSoaLayout:
         """)
         assert set(planes) == {'PLAYER__hp', 'PLAYER__lives'}
         assert all(p.var_type.size == 1 for p in planes.values())
+
+
+class TestSoaSelfRegisterConflict:
+    """`self` occupies X for the whole body, so no parameter may bind it.
+
+    An *associated* function has no `self` at all, so the register is free
+    and nothing should be rejected.
+    """
+
+    POOL = """
+        #[soa] struct E { hp: u8 }
+        #[lowram] static mut POOL: [E; 4];
+    """
+
+    def test_method_param_binding_x_is_rejected(self):
+        msg = build_fails(self.POOL + """
+            impl E { fn f(self, s @ X: u16) { self.hp = 1; } }
+        """)
+        assert "binds X, which holds 'self'" in msg
+
+    def test_method_second_param_binding_x_is_rejected(self):
+        msg = build_fails(self.POOL + """
+            impl E { fn f(self, a @ A: u8, s @ X: u16) { self.hp = a; } }
+        """)
+        assert "binds X, which holds 'self'" in msg
+
+    def test_associated_fn_may_bind_x(self):
+        """No `self` exists, so X is not spoken for."""
+        build_hir(self.POOL + """
+            impl E { fn spawn(slot @ X: u16) { POOL[slot].hp = 1; } }
+        """)
+
+    def test_associated_fn_may_bind_x_as_a_later_param(self):
+        """The check must not assume params[0] is `self` when there is none."""
+        build_hir(self.POOL + """
+            impl E { fn spawn(kind @ A: u8, slot @ X: u16) { POOL[slot].hp = kind; } }
+        """)
+
+    def test_hint_names_the_right_feature(self):
+        """The hint explains which construct put `self` in that register."""
+        with pytest.raises(HIRError) as exc:
+            build_hir("""
+                struct TileId(u8);
+                impl TileId { fn f(self, other @ A: u8) -> u8 { self.0 } }
+            """)
+        assert "newtype" in exc.value.hint
+
+        with pytest.raises(HIRError) as exc:
+            build_hir(self.POOL + """
+                impl E { fn f(self, s @ X: u16) { self.hp = 1; } }
+            """)
+        assert "#[soa] method receives 'self' as an element index" in exc.value.hint
+        assert "newtype" not in exc.value.hint
+        # X is taken by self, so the hint must not offer it
+        assert "A or Y" in exc.value.hint
