@@ -2035,6 +2035,41 @@ class MIRBuilder:
             source_loc=getattr(array_expr, 'source_loc', None)
         )
 
+    @staticmethod
+    def _soa_plane_for(base_memloc, field_offset):
+        """The `(name, aos_offset, stride, child)` plane owning *field_offset*.
+
+        `peel_field_chain` hands the funnel a *summed* offset, so which
+        top-level field a chain started at is recovered by range: struct layout
+        is strictly packed with no zero-sized types, so exactly one plane's
+        [offset, offset+size) contains it. A union nested *inside* the element
+        still aliases correctly, which is why the union restriction is on the
+        element type alone.
+        """
+        symbol = getattr(base_memloc, 'symbol', None)
+        definition = getattr(symbol, 'definition', None) if symbol else None
+        planes = getattr(definition, 'soa_planes', None)
+        if not planes:
+            return None
+        for index, (name, offset, stride, child) in enumerate(planes):
+            nxt = planes[index + 1][1] if index + 1 < len(planes) else None
+            if offset <= field_offset and (nxt is None or field_offset < nxt):
+                return (name, offset, stride, child)
+        return None
+
+    def _soa_rebase(self, plane, base_memloc, field_offset, reuse_base_key):
+        """Point a field access at its SoA plane instead of the parent array."""
+        _name, aos_offset, stride, child = plane
+        plane_memloc = self.get_memory_location(child.symbol)
+        # The chain's residual offset within the plane's element, e.g. the `.y`
+        # of `POOL[i].pos.y` where `pos` is the plane.
+        residual = field_offset - aos_offset
+        # X now holds index * stride(field), not index * sizeof(element), so the
+        # reuse key must distinguish widths or a same-index access to a
+        # different-width field would reuse the wrong scaled value.
+        key = ('soa', reuse_base_key, stride) if reuse_base_key is not None else None
+        return plane_memloc, residual, stride, key
+
     def require_addressable_aggregate(self, symbol, expr):
         """Assert *symbol* has a memory location rather than per-field vregs.
 
@@ -2286,6 +2321,17 @@ class MIRBuilder:
         base_memloc, reuse_base_key = self.resolve_array_base_memloc(array_index_expr.array)
         struct_type = array_index_expr.expr_type  # element (struct) type of the array
         struct_size = self._get_type_size(struct_type)
+
+        # #[soa]: redirect to the plane that owns this field, and scale by the
+        # field rather than the element. Must run before anything reads
+        # base_memloc — the parent static is allocated no bytes, and
+        # get_memory_location does not fail on it, so a missed substitution
+        # reaches the assembler as an undefined symbol the user never wrote.
+        soa = self._soa_plane_for(base_memloc, field_offset)
+        if soa is not None:
+            base_memloc, field_offset, struct_size, reuse_base_key = self._soa_rebase(
+                soa, base_memloc, field_offset, reuse_base_key)
+
         index_operand = self.lower_expression(array_index_expr.index)
 
         if isinstance(index_operand, Immediate):

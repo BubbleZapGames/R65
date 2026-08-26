@@ -11,7 +11,7 @@ from enum import Enum
 
 from r65.compiler.frontend import ast
 from r65.compiler.frontend.ast import CfgCondition
-from r65.compiler.frontend.derive_compat import derive_hint
+from r65.compiler.frontend.derive_compat import derive_hint, derive_trait_names
 from r65.compiler.hir.errors import *
 
 
@@ -79,11 +79,12 @@ class StorageAttribute(ProcessedAttribute):
 
 @dataclass
 class SoaAttribute(ProcessedAttribute):
-    """#[soa] — lay a `static [Struct; N]` out as one array per field.
+    """#[soa] on a struct — every array of it is laid out as one plane per field.
 
-    Carries no parameters; its whole effect is the layout flip, which
-    happens after the HIR declaration pass (the element struct may not be
-    built yet at the point the static is). See docs/soa.md.
+    Carries no parameters. Its effects are the layout flip (applied to the
+    struct's backing static, after the HIR declaration pass) and the method
+    receiver form: an `#[soa]` struct's methods take `self` as an element
+    index rather than a pointer. See docs/soa.md.
     """
     pass
 
@@ -198,17 +199,9 @@ _UNSUPPORTED_RUST_ATTRS = {
 }
 
 
-def _derive_trait_names(attr: ast.Attribute) -> List[str]:
-    """Pull the trait names out of a `#[derive(A, B)]` attribute's arguments."""
-    names = []
-    for arg in attr.args:
-        value = arg.value
-        name = getattr(value, 'name', None) or (value if isinstance(value, str) else None)
-        if name:
-            names.append(str(name))
-        elif arg.name:
-            names.append(str(arg.name))
-    return names
+# Defined in `frontend` so the parser can use it too — types accept attributes
+# now, so `#[derive]` on a struct is caught there rather than as a parse failure.
+_derive_trait_names = derive_trait_names
 
 
 # =============================================================================
@@ -365,10 +358,13 @@ class AttributeProcessor:
 
     def _process_soa(self, attr: ast.Attribute, context: str) -> SoaAttribute:
         """Process #[soa] attribute."""
-        if context not in ['static']:
+        if context not in ['struct']:
             raise HIRError(
-                "#[soa] attribute only valid on statics",
+                "#[soa] attribute only valid on struct declarations",
                 source_loc=attr.source_loc,
+                hint="put it on the struct, not the static: "
+                     "`#[soa] struct Enemy { .. }` — every array of that struct "
+                     "is then laid out as one plane per field",
             )
         if attr.args:
             raise HIRError(

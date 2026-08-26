@@ -1,9 +1,11 @@
 # Copyright (c) 2026 Neutron Emulation, LLC. MIT licensed.
-"""Tests for the `#[soa]` struct-array attribute (slice S1).
+"""Tests for the `#[soa]` struct attribute.
 
-S1 lands the attribute and its restrictions only. `#[soa]` is otherwise
-inert: an accepted program still compiles to the array-of-structs layout,
-so these tests assert on acceptance and on diagnostics, not on codegen.
+`#[soa]` marks a *struct*: every array of that struct is laid out as one
+plane per field, and its methods take `self` as an element index rather
+than a pointer. Slice S1 lands the attribute and the restrictions that are
+answerable from the declaration alone; the layout flip and index-`self`
+methods come later.
 
 See docs/soa.md.
 """
@@ -11,7 +13,8 @@ See docs/soa.md.
 import pytest
 
 from r65.compiler.errors import HIRError
-from r65.tests.language.common import build_hir
+from r65.compiler.errors import ParseError
+from r65.tests.language.common import build_hir, parse_program
 
 
 def build_fails(source: str) -> str:
@@ -22,121 +25,167 @@ def build_fails(source: str) -> str:
 
 
 class TestSoaAccepted:
-    """Shapes `#[soa]` allows."""
+    def test_marks_the_struct(self):
+        program = build_hir("""
+            #[soa] struct Enemy { kind: u8, hp: u8 }
+            #[lowram] static mut POOL: [Enemy; 4];
+        """)
+        struct = next(d for d in program.declarations
+                      if getattr(d, 'name', None) == 'Enemy')
+        assert struct.is_soa
 
-    def test_plain_struct_array(self):
+    def test_plain_struct_is_not_soa(self):
         program = build_hir("""
             struct Enemy { kind: u8, hp: u8 }
-            #[lowram]
-            #[soa]
-            static mut POOL: [Enemy; 4];
+            #[lowram] static mut POOL: [Enemy; 4];
         """)
-        static = next(s for s in program.statics if s.name == "POOL")
-        assert static.is_soa
-        assert not static.is_synthetic
+        struct = next(d for d in program.declarations
+                      if getattr(d, 'name', None) == 'Enemy')
+        assert not struct.is_soa
 
-    def test_attribute_order_does_not_matter(self):
-        program = build_hir("""
-            struct Enemy { kind: u8, hp: u8 }
-            #[soa]
-            #[lowram]
-            static mut POOL: [Enemy; 4];
+    def test_field_access_still_compiles(self):
+        """S1 is inert — an accepted program keeps the array-of-structs layout."""
+        build_hir("""
+            #[soa] struct Enemy { kind: u8, hp: u8 }
+            #[lowram] static mut POOL: [Enemy; 4];
+            fn f() { POOL[1].hp = 3; }
         """)
-        assert next(s for s in program.statics if s.name == "POOL").is_soa
-
-    def test_absent_attribute_leaves_flag_clear(self):
-        program = build_hir("""
-            struct Enemy { kind: u8, hp: u8 }
-            #[lowram]
-            static mut POOL: [Enemy; 4];
-        """)
-        assert not next(s for s in program.statics if s.name == "POOL").is_soa
-
-    def test_static_dispatch_trait_impl_is_allowed(self):
-        """A trait never used as `*dyn` injects no TypeId, so layout is unchanged."""
-        program = build_hir("""
-            trait Tick { fn tick(*self); }
-            struct Enemy { kind: u8, hp: u8 }
-            impl Tick for Enemy { fn tick(*self) { self.hp = 0; } }
-            #[lowram]
-            #[soa]
-            static mut POOL: [Enemy; 4];
-        """)
-        assert next(s for s in program.statics if s.name == "POOL").is_soa
-
-    def test_impl_clone_is_allowed(self):
-        """Clone is a lang item; it never populates the TypeId table."""
-        program = build_hir("""
-            struct Enemy { kind: u8, hp: u8 }
-            impl Clone for Enemy {}
-            #[lowram]
-            #[soa]
-            static mut POOL: [Enemy; 4];
-        """)
-        assert next(s for s in program.statics if s.name == "POOL").is_soa
 
 
 class TestSoaRejected:
-    """Shapes that have no per-field layout, each with its own diagnostic."""
+    def test_union(self):
+        msg = build_fails("#[soa] union Pixel { raw: u16, bytes: [u8; 2] }")
+        assert "cannot apply to union 'Pixel'" in msg
 
-    def test_scalar_static(self):
-        msg = build_fails("#[soa] static mut POOL: u8;")
-        assert "must be an array of structs" in msg
+    def test_struct_with_no_fields(self):
+        msg = build_fails("#[soa] struct Empty { }")
+        assert "has no fields" in msg
 
-    def test_non_struct_element(self):
-        msg = build_fails("#[soa] static mut POOL: [u8; 4];")
-        assert "must have a struct element type" in msg
+    def test_on_a_newtype(self):
+        msg = build_fails("#[soa] struct TileId(u8);")
+        assert "only valid on struct declarations" in msg
 
-    def test_union_element(self):
-        msg = build_fails("""
-            union Pixel { raw: u16, bytes: [u8; 2] }
-            #[soa] static mut POOL: [Pixel; 4];
-        """)
-        assert "cannot have a union element type" in msg
-
-    def test_dyn_used_trait_element(self):
-        """A `*dyn` trait puts a TypeId byte at the element's offset 0."""
-        msg = build_fails("""
-            trait Tick { fn tick(*self); }
-            struct Enemy { kind: u8, hp: u8 }
-            impl Tick for Enemy { fn tick(*self) { self.hp = 0; } }
-            #[lowram] static mut E: Enemy;
-            #[soa] static mut POOL: [Enemy; 4];
-            fn use_it() { let d: *dyn Tick = &E as *dyn Tick; d.tick(); }
-        """)
-        assert "implements a trait" in msg
-
-    def test_hw_storage(self):
+    def test_on_a_static(self):
+        """The attribute moved to the struct; on a static it is an error."""
         msg = build_fails("""
             struct Enemy { kind: u8, hp: u8 }
-            #[hw(0x2100)] #[soa] static mut POOL: [Enemy; 4];
+            #[soa] #[lowram] static mut POOL: [Enemy; 4];
         """)
-        assert "cannot use #[hw] storage" in msg
-
-    def test_initializer_not_yet_supported(self):
-        msg = build_fails("""
-            struct Enemy { kind: u8, hp: u8 }
-            #[soa] static POOL: [Enemy; 2] = [
-                Enemy { kind: 1, hp: 2 },
-                Enemy { kind: 3, hp: 4 },
-            ];
-        """)
-        assert "cannot have an initializer" in msg
-
-    def test_extern_static(self):
-        msg = build_fails("""
-            struct Enemy { kind: u8, hp: u8 }
-            #[soa] extern static POOL: [Enemy; 4];
-        """)
-        assert "cannot have storage attributes" in msg
+        assert "only valid on struct declarations" in msg
 
     def test_on_a_function(self):
         msg = build_fails("#[soa] fn f() { }")
-        assert "only valid on statics" in msg
+        assert "only valid on struct declarations" in msg
 
     def test_takes_no_arguments(self):
-        msg = build_fails("""
-            struct Enemy { kind: u8, hp: u8 }
-            #[soa(4)] static mut POOL: [Enemy; 4];
-        """)
+        msg = build_fails("#[soa(4)] struct Enemy { kind: u8 }")
         assert "takes no arguments" in msg
+
+
+class TestTypeDeclarationAttributes:
+    """Types accept attributes now, so `#[derive]` is caught in the parser.
+
+    Previously `#[derive(...)] struct P` failed to *parse* and a heuristic
+    recovered the message. Now it parses, so the rejection has to be explicit
+    — and it can name the type, which the heuristic could only do by regex.
+    """
+
+    def test_derive_on_struct_names_the_type(self):
+        with pytest.raises(ParseError) as exc:
+            parse_program("#[derive(Clone)] struct Point { x: u8 }")
+        assert "#[derive(...)] is not supported" in str(exc.value)
+        assert "Point" in exc.value.hint
+
+    def test_derive_on_union_names_the_type(self):
+        with pytest.raises(ParseError) as exc:
+            parse_program("#[derive(Clone)] union Word { a: u8, b: u8 }")
+        assert "Word" in exc.value.hint
+
+    def test_derive_on_newtype_names_the_type(self):
+        with pytest.raises(ParseError) as exc:
+            parse_program("#[derive(Clone)] struct TileId(u8);")
+        assert "TileId" in exc.value.hint
+
+    def test_proc_macro_on_struct(self):
+        with pytest.raises(ParseError) as exc:
+            parse_program("#[proc_macro] struct Point { x: u8 }")
+        assert "procedural macros are not supported" in exc.value.hint
+
+    def test_cfg_on_struct_is_honoured(self):
+        """A `#[cfg]`d-out struct must actually be excluded, not silently kept."""
+        program = build_hir("#[cfg(never)] struct Gone { x: u8 }")
+        assert not any(getattr(d, 'name', None) == 'Gone'
+                       for d in program.declarations)
+
+    def test_cfg_on_struct_kept_when_true(self):
+        program = build_hir("struct Kept { x: u8 }")
+        assert any(getattr(d, 'name', None) == 'Kept'
+                   for d in program.declarations)
+
+    def test_newtype_arity_error_survives_attributes(self):
+        with pytest.raises(ParseError) as exc:
+            parse_program("struct Pair(u8, u8);")
+        assert "wraps exactly one field" in str(exc.value)
+
+
+class TestSoaLayout:
+    """The layout flip: one plane per field, parent allocated no bytes."""
+
+    def _planes(self, source):
+        program = build_hir(source)
+        return {d.name: d for d in program.declarations
+                if getattr(d, 'is_synthetic', False)}
+
+    def test_one_plane_per_field(self):
+        planes = self._planes("""
+            #[soa] struct Enemy { kind: u8, hp: u8 }
+            #[lowram] static mut POOL: [Enemy; 4];
+        """)
+        assert set(planes) == {'POOL__kind', 'POOL__hp'}
+        assert all(p.var_type.size == 4 for p in planes.values())
+
+    def test_parent_records_its_planes(self):
+        program = build_hir("""
+            #[soa] struct Enemy { kind: u8, hp: u8 }
+            #[lowram] static mut POOL: [Enemy; 4];
+        """)
+        parent = next(d for d in program.declarations if d.name == 'POOL')
+        assert [name for name, _, _, _ in parent.soa_planes] == ['kind', 'hp']
+        assert [offset for _, offset, _, _ in parent.soa_planes] == [0, 1]
+
+    def test_explicit_addresses_are_consecutive(self):
+        planes = self._planes("""
+            #[soa] struct E { hp: u8, x: u16 }
+            #[zeropage(0x40)] static mut POOL: [E; 4];
+        """)
+        assert planes['POOL__hp'].storage_attr.address == 0x40
+        # hp is 4 * 1 byte, so x starts 4 later
+        assert planes['POOL__x'].storage_attr.address == 0x44
+
+    def test_three_byte_field_is_padded_to_four(self):
+        """One byte of waste per element buys a shift instead of a shift-and-add."""
+        planes = self._planes("""
+            #[soa] struct Area { name: far *u8, exits: u8 }
+            #[zeropage(0x40)] static mut AREAS: [Area; 4];
+        """)
+        assert planes['AREAS__name'].soa_stride == 4
+        assert planes['AREAS__exits'].soa_stride == 1
+        # 4 elements * stride 4 = 16, so exits starts at 0x40 + 16
+        assert planes['AREAS__exits'].storage_attr.address == 0x50
+
+    def test_five_byte_field_is_not_padded(self):
+        """Reaching 8 would cost 3 bytes per element — past the one-byte rule."""
+        planes = self._planes("""
+            struct Five { a: u8, b: u16, c: u16 }
+            #[soa] struct Holder { five: Five, tag: u8 }
+            #[lowram] static mut H: [Holder; 4];
+        """)
+        assert planes['H__five'].soa_stride == 5
+
+    def test_single_instance_is_a_pool_of_one(self):
+        planes = self._planes("""
+            #[soa] struct Player { hp: u8, lives: u8 }
+            #[lowram] static mut PLAYER: Player;
+        """)
+        assert set(planes) == {'PLAYER__hp', 'PLAYER__lives'}
+        assert all(p.var_type.size == 1 for p in planes.values())

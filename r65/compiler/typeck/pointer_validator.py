@@ -44,6 +44,11 @@ class PointerValidator:
 
     def check_addressof(self, expr: HIRAddressOf) -> TypeInfo:
         """Type check address-of operator (&variable)."""
+        # Checked before the operand, so `&ARR[i]` reports the address-of
+        # problem rather than the generic whole-element one it would trip
+        # inside check_array_index.
+        self._reject_soa_addressof(expr)
+
         operand_type = self.check_expression(expr.operand)
 
         # Operand must be an lvalue (identifier, array index, or field access)
@@ -59,6 +64,34 @@ class PointerValidator:
         pointer_type = PointerTypeInfo(is_far=is_far, pointee_type=operand_type)
         expr.expr_type = pointer_type
         return expr.expr_type
+
+    @staticmethod
+    def _reject_soa_addressof(expr: HIRAddressOf) -> None:
+        """Refuse `&ARR` and `&ARR[i]` for a `#[soa]` array.
+
+        Neither has a single address: the array is stored as one plane per
+        field, so the whole array is not contiguous and an element is spread
+        across every plane. Callers pass the index instead.
+        """
+        from r65.compiler.typeck.type_utils import soa_static_of, soa_static_of_index
+
+        decl = soa_static_of(expr.operand)
+        if decl is not None:
+            raise TypeCheckError(
+                f"cannot take the address of #[soa] array '{decl.name}'",
+                source_loc=expr.source_loc,
+                hint="its fields live in separate arrays, so there is no single "
+                     "base address; index a field directly instead",
+            )
+
+        decl = soa_static_of_index(expr.operand)
+        if decl is not None:
+            raise TypeCheckError(
+                f"cannot take the address of an element of #[soa] array '{decl.name}'",
+                source_loc=expr.source_loc,
+                hint=f"an SoA element has no contiguous base; pass the index and "
+                     f"read `{decl.name}[i].field` at the use site",
+            )
 
     @staticmethod
     def _needs_far_pointer(operand: HIRExpression) -> bool:

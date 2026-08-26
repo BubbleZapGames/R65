@@ -30,6 +30,8 @@ class DeadStaticMut(LintRule):
     def visit_static_decl(self, decl: HIRStaticDecl, ctx: LintContext) -> None:
         if not decl.is_mutable or decl.symbol is None:
             return
+        if getattr(decl, 'is_synthetic', False):
+            return  # an #[soa] plane is referenced through its parent, never by name
         if decl.storage_attr is not None and decl.storage_attr.storage_kind == StorageKind.HW:
             return  # Hardware registers are not storage.
         self._declared[id(decl.symbol)] = (decl.name, decl.source_loc)

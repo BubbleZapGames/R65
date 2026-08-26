@@ -19,6 +19,67 @@ TYPE_RANGES = {
 }
 
 
+def soa_struct_of(type_info) -> Optional[str]:
+    """Name of the `#[soa]` struct *type_info* is, or is an array/pointer to.
+
+    Keyed on the *type* rather than on a static's flag: `#[soa]` marks the
+    struct, so a local, a parameter, a struct field and a pointer are all
+    reachable without any static involved. Reads through `StructTypeInfo.symbol`
+    so it answers the same whether `definition` is still the AST node (pass 1)
+    or already the HIR node (pass 2).
+    """
+    from r65.compiler.hir.types import ArrayTypeInfo, PointerTypeInfo, StructTypeInfo
+
+    seen = 0
+    while seen < 8:  # bounded: guards against a cyclic type graph
+        seen += 1
+        type_info = strip_newtype(type_info)
+        if isinstance(type_info, ArrayTypeInfo):
+            type_info = type_info.element_type
+            continue
+        if isinstance(type_info, PointerTypeInfo):
+            type_info = type_info.pointee_type
+            continue
+        break
+
+    if not isinstance(type_info, StructTypeInfo):
+        return None
+    symbol = getattr(type_info, 'symbol', None)
+    definition = getattr(symbol, 'definition', None) if symbol else None
+    if definition is None:
+        definition = getattr(type_info, 'definition', None)
+    return type_info.name if getattr(definition, 'is_soa', False) else None
+
+
+def soa_static_of(expr) -> Optional[object]:
+    """The `HIRStaticDecl` behind *expr* if it names a `#[soa]` static, else None.
+
+    Used by the diagnostics that want to name the pool. An SoA array is stored
+    as one plane per field, so it has no contiguous base address: everything
+    needing one — `&arr`, `&arr[i]`, a clone, a whole-element value — is
+    refused, and each refusal site asks this question. `arr[i].field` is the
+    one shape that works, and it never reaches here with the array alone.
+    """
+    from r65.compiler.hir.nodes import HIRIdentifier
+
+    if not isinstance(expr, HIRIdentifier):
+        return None
+    symbol = getattr(expr, 'symbol', None)
+    if symbol is None:
+        return None
+    definition = getattr(symbol, 'definition', None)
+    return definition if getattr(definition, 'is_soa', False) else None
+
+
+def soa_static_of_index(expr) -> Optional[object]:
+    """The `HIRStaticDecl` behind `ARR[i]` if `ARR` is a `#[soa]` static."""
+    from r65.compiler.hir.nodes import HIRArrayIndex
+
+    if not isinstance(expr, HIRArrayIndex):
+        return None
+    return soa_static_of(expr.array)
+
+
 def get_type_range(type_name: str) -> Optional[Tuple[int, int]]:
     """Get the valid (min, max) range for an integer type, or None if unknown."""
     return TYPE_RANGES.get(type_name)

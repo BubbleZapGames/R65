@@ -1,24 +1,32 @@
 # SoA Struct Arrays — `#[soa]`
 
-**Status: specified, not implemented.** This document is the design; see
-[Implementation Plan](#implementation-plan) for the slice ordering.
+**Status: implemented** (layout, methods, nested fields). Initializer
+transposition and `*dyn` over an SoA element are not yet supported; see
+[Known limits](#known-limits).
 
-`#[soa]` lays a `static [T; N]` out as parallel per-field arrays. The
-source keeps struct syntax and a single `N`; the compiler emits one array
-per field, so `arr[i].field` addresses `arr__field[i]` and the index is
-scaled by the *field* size instead of the *element* size.
+`#[soa]` marks a **struct**. Every array of that struct is laid out as one
+array per field — a *plane* — so `arr[i].field` addresses `arr__field[i]`
+and the index scales by the *field* size instead of the *element* size.
+The struct's methods take `self` as an element **index**, not a pointer,
+so `self.hp` is a single indexed access.
 
 ```rust
-struct Enemy { kind: u8, x: u8, y: u8, hp: u8 }
+#[soa]
+struct Enemy { kind: u8, hp: u8, x: u8, y: u8 }
+
+impl Enemy {
+    fn hurt(self) { self.hp = self.hp - 1; }
+}
 
 #[lowram]
-#[soa]
-static mut ENEMIES: [Enemy; 16];
+static mut POOL: [Enemy; 16];
 
-fn hurt(i @ X: u16) {
-    ENEMIES[i].hp = ENEMIES[i].hp - 1;   // stride 1, no multiply
-}
+POOL[i].hurt();          // -> Enemy__hurt(i), index in X
+POOL[i].hp = 100;        // -> STA POOL__hp,X — stride 1, no multiply
 ```
+
+A `#[soa]` struct backs **exactly one** static. That is what lets every
+method hard-code its plane addresses instead of carrying a base pointer.
 
 ---
 
@@ -85,44 +93,96 @@ power of two:
 
 ## Syntax
 
-`#[soa]` attaches to a `static` or `static mut` whose type is `[Struct; N]`.
+`#[soa]` attaches to a **struct declaration**:
 
 ```rust
-#[soa]                       static mut POOL: [Enemy; 16];      // auto RAM
-#[lowram] #[soa]             static mut POOL: [Enemy; 16];      // lowram
-#[zeropage(0x40)] #[soa]     static mut POOL: [Enemy; 8];       // explicit
-#[soa]                       static TABLE: [Area; 32] = [ ... ]; // ROM
+#[soa]
+struct Enemy { kind: u8, hp: u8 }
 ```
 
-Attribute order does not matter. `#[soa]` composes with `#[zeropage]`,
-`#[lowram]`, `#[ram]`, and `#[bank(n)]`. It does **not** compose with
-`#[hw]` or `extern static`.
-
-Access is unchanged from the AoS form:
+Every static of that struct is then SoA, whatever its storage class:
 
 ```rust
-ENEMIES[i].hp = 100;
-let k: u8 = ENEMIES[i].kind;
-ENEMIES[i].hp += 1;           // compound assignment works
-ENEMIES[i].pos.y = 8;         // nested inline aggregates work
+#[lowram]         static mut POOL: [Enemy; 16];   // lowram planes
+#[zeropage(0x40)] static mut POOL: [Enemy; 8];    // explicit, consecutive
+                  static mut POOL: [Enemy; 16];   // auto RAM
+                  static mut PLAYER: Player;      // pool of one
 ```
+
+`#[soa]` composes with `#[zeropage]`, `#[lowram]`, `#[ram]` and
+`#[bank(n)]` on the static. It does **not** compose with `#[hw]` or
+`extern static`, and a `#[soa]` struct may back only one static.
+
+A **single instance** desugars to a one-element array, so `PLAYER.hp` is
+`PLAYER[0].hp` and `PLAYER.heal()` passes index 0. Nothing downstream
+needs a singleton special case.
+
+Access is unchanged from the array-of-structs form:
+
+```rust
+POOL[i].hp = 100;
+let k: u8 = POOL[i].kind;
+POOL[i].hp += 1;              // compound assignment works
+POOL[i].pos.y = 8;            // nested inline aggregates work
+```
+
+---
+
+## Methods: `self` is an element index
+
+An `#[soa]` struct's methods take `self` **by value**, and that value is
+the element index. It arrives in **X**, which is where indexed addressing
+wants it, so a field access inside a method is a single instruction:
+
+```rust
+impl Enemy {
+    fn step(self) { self.x = self.x + 1; self.y = self.y + 2; }
+}
+```
+
+```asm
+Enemy__step:
+    LDA POOL__x,X
+    INC A
+    STA POOL__x,X
+    LDA POOL__y,X
+    CLC / ADC #$02
+    STA POOL__y,X
+    RTS
+```
+
+No pointer, no stack frame, no setup. `self` is an ordinary `u16`, so
+`if self == 0`, `other_fn(self)` and `POOL[self].hp` all work.
+
+Writing `*self` on an `#[soa]` method is an error — there is no address to
+take. This follows the same "one self form per type" rule as newtypes: a
+trait declared with `*self` is still implemented by an `#[soa]` struct with
+bare `self`.
+
+```rust
+trait Tick { fn tick(*self); }
+impl Tick for Enemy { fn tick(self) { self.hp = 0; } }   // index self
+```
+
+Register budget: `self` occupies X for the whole body, so an `#[soa]`
+method may not bind a parameter to `X`.
 
 ---
 
 ## Layout
 
-For `#[soa] static mut ENEMIES: [Enemy; 16]` over
-`struct Enemy { kind: u8, x: u16, hp: u8 }`, the compiler synthesizes one
-ordinary static per top-level field, in declaration order:
+For `#[soa] struct Enemy { kind: u8, x: u16, hp: u8 }` and
+`static mut POOL: [Enemy; 16];`, the compiler synthesizes one ordinary
+static per top-level field, in declaration order:
 
 | Synthesized static | Field type | Stride | Bytes |
 |---|---|---|---|
-| `ENEMIES__kind` | `u8` | 1 | 16 |
-| `ENEMIES__x` | `u16` | 2 | 32 |
-| `ENEMIES__hp` | `u8` | 1 | 16 |
+| `POOL__kind` | `u8` | 1 | 16 |
+| `POOL__x` | `u16` | 2 | 32 |
+| `POOL__hp` | `u8` | 1 | 16 |
 
 Each inherits the parent's storage attribute, bank, and mutability. **The
-parent occupies zero bytes** — it survives only so that `ENEMIES[i].hp`
+parent occupies zero bytes** — it survives only so that `POOL[i].hp`
 type-checks.
 
 ### Stride: rounded up when it costs at most one byte
@@ -141,11 +201,11 @@ stride(field) = 4  if sizeof(field) == 3      (far *T, far fn(), 3-byte aggregat
 The rule stops at one byte. A 5-byte field would need 3 bytes of padding
 to reach 8 (60% waste) and a 6-byte field 2 bytes (33%); neither is worth
 it for one `CLC`/`ADC` pair, so those keep the shift-and-add. See
-[Padded fields](#padded-fields) for the measured difference and
+[Padded fields](#stride-3-vs-stride-4-the-padding-rule) for the measured difference and
 [Codegen](#stride-3-vs-stride-4-the-padding-rule) for the emitted code.
 
-So for `struct Area { name: far *u8, exits: u8 }`, `#[soa] static AREAS:
-[Area; 32]` lays out:
+So for `#[soa] struct Area { name: far *u8, exits: u8 }` and
+`static AREAS: [Area; 32];`, the layout is:
 
 | Synthesized static | Field type | Stride | Bytes |
 |---|---|---|---|
@@ -165,9 +225,9 @@ RAM emission is ordinary `.RAMSECTION`:
 
 ```asm
 .RAMSECTION "lowram" BANK 0 SLOT 1
-    ENEMIES__kind dsb 16
-    ENEMIES__x    dsb 32
-    ENEMIES__hp   dsb 16
+    POOL__kind dsb 16
+    POOL__x    dsb 32
+    POOL__hp   dsb 16
 .ENDS
 ```
 
@@ -179,12 +239,13 @@ from the parent address:
 addr(field_k) = parent_address + Σ_{j<k}  N · stride(field_j)
 ```
 
-So `#[zeropage(0x40)] #[soa] static mut ENEMIES: [Enemy; 8]` puts
-`ENEMIES__kind` at `$40`, `ENEMIES__x` at `$48`, `ENEMIES__hp` at `$58`.
+So `#[zeropage(0x40)] static mut POOL: [Enemy; 8];` over a `#[soa]`
+`Enemy` puts
+`POOL__kind` at `$40`, `POOL__x` at `$48`, `POOL__hp` at `$58`.
 This keeps the memory map writable by hand and gives the hand-written
 parallel arrays a mechanical migration path.
 
-The `__` separator is not spellable in R65 source, so `ENEMIES__kind`
+The `__` separator is not spellable in R65 source, so `POOL__kind`
 cannot collide with a user identifier by accident. A deliberate collision
 is caught by the existing `Redefinition of '...'` error in
 `SymbolTable.declare`.
@@ -193,65 +254,73 @@ is caught by the existing `Redefinition of '...'` error in
 
 ## Restrictions
 
-An SoA element has no contiguous base address. Everything that needs one
-is rejected — at the **type checker**, with a diagnostic naming the
-source construct, never as a late allocation failure naming a synthesized
-symbol the user never wrote.
+An SoA element has no contiguous base address, so everything needing one is
+rejected — with a diagnostic naming the construct the author wrote, never a
+late allocation failure naming a synthesized plane.
 
 | Construct | Why it cannot work | Write instead |
 |---|---|---|
-| `&ENEMIES[i]` | The element's bytes are in 3 different arrays | Pass `i` |
-| `&ENEMIES` | Same, for the whole array | Name a field array |
-| `ENEMIES[i].method()` | Desugars to `&ENEMIES[i]` (`typeck/call_validator.py:358`) | Free fn taking `i` |
-| `let e = ENEMIES[i];` | Aggregate by value | Copy fields |
-| `ENEMIES.clone()` | Needs one contiguous block | Per-field copy |
-| element `impl`s a `*dyn` trait | Dispatch reads a TypeId byte at the element's offset 0 (`codegen/codegen.py:475`) | Keep AoS, or a type-switch |
-| element is a `union` | Fields overlay at offset 0; splitting them destroys the aliasing | Keep AoS |
-| `#[soa]` + `#[hw]` | Hardware registers are not an array the compiler places | — |
-| `#[soa]` + `extern static` | Placement is owned by the asm file | — |
+| `&POOL[i]` | The element's bytes are in one array per field | Pass the index `i` |
+| `&POOL` | Same, for the whole pool | Name a field plane |
+| `let e: Enemy;` | No contiguous value to hold | Hold a `u16` index |
+| `fn f(e: Enemy)` / `fn f(e: *Enemy)` | Nothing to pass or point at | Take the index |
+| `struct W { lead: Enemy }` | Would need a plane inside an aggregate | Store the index |
+| `E = POOL[i]` (whole element) | Aggregate by value | Copy the fields |
+| `POOL.clone()` | Needs one contiguous block | Copy per field |
+| `impl Clone for Enemy {}` | Clone means a contiguous byte copy | Copy the fields |
+| a second static of the type | Methods hard-code one pool's addresses | Merge the pools |
+| `#[soa] union U { .. }` | Fields overlay at offset 0 | Keep it a union |
+| `#[soa] struct T(u8);` | A newtype is a scalar, not an aggregate | — |
+| `#[soa]` with `#[hw]` | Hardware registers are not placed by the compiler | — |
+| `#[soa]` with `extern static` | Placement is owned by the asm file | — |
+| `fn m(*self)` on an SoA struct | No address to point at | `fn m(self)` |
+| an initializer on the static | Transposition not implemented yet | Assign at runtime |
 
-Two things that are **allowed** and worth stating explicitly, because the
-obvious guess is wrong:
+Three things that are **allowed**, because the obvious guess is wrong:
 
-- **`impl Clone for Enemy {}` is fine.** Lang-item impls route through
-  `_declare_lang_item_impl` (`hir/builder.py:1705`) and never populate
-  `_struct_type_ids`, so they inject no TypeId byte and do not change
-  layout. The restriction is on `*dyn`-used traits only —
-  `struct_name in _struct_type_ids` (`hir/builder.py:1540`) is the exact
-  test. `Enemy.clone()` on a *local* `Enemy` is unaffected; only
-  `ENEMIES.clone()` on the SoA array itself is rejected.
-- **An explicit address is fine**, per the layout rule above.
+- **Trait impls.** `impl Tick for Enemy { fn tick(self) }` works, with the
+  index receiver. The receiver form follows the implementing type, not the
+  trait declaration — the same rule newtypes use. Only `impl Clone` is
+  rejected, and only because Clone specifically means a contiguous copy.
+- **An explicit address**, per the layout rule above.
+- **Methods that take arguments**, and methods that call other methods on
+  `self` — `self.mark()` inside `self.kill()` passes the index straight
+  through.
 
-`&ENEMIES[i].field` — the address of a single *field*, which is
-well-defined under SoA — is **also rejected**, but only because it does
-not work for AoS either today (`mir/lowerers/expression.py:1124` requires
-an identifier base). Supporting it is a natural follow-up.
+`&POOL[i].field` — the address of a single *plane* element, which is
+well-defined under SoA — is also rejected, but only because it does not
+work for arrays of structs either (`mir/lowerers/expression.py` requires an
+identifier base). Supporting it is a natural follow-up.
 
 ### Migration note
 
-`&ARR[i]` **compiles today** for a non-SoA array, and `textadv` depends on
-it:
+An array of plain structs supports `&ARR[i]`, and `textadv` depends on it:
 
 ```rust
-let a: far *Area = &AREAS[CUR as u16] as far *Area;   // AoS only
+let a: far *Area = &AREAS[CUR as u16] as far *Area;   // not #[soa]
 ```
 
-Adding `#[soa]` to such an array is therefore a breaking change at that
-call site, by design. The rewrite is to index each field directly rather
-than take a pointer once and dereference it repeatedly — which is also
-what removes the stride multiply, so the two go together.
+Adding `#[soa]` to `Area` is therefore a breaking change at that call site,
+by design. The rewrite is to index each field directly rather than take a
+pointer once and dereference it repeatedly — which is also what removes the
+stride multiply, so the two go together.
 
 ---
 
-## Initializers
+## Initializers — not yet supported
 
-A ROM SoA table is written as an ordinary array literal and transposed at
-compile time:
+An initializer on a `#[soa]` static is currently rejected:
+
+```
+error: #[soa] static 'AREAS' cannot have an initializer yet
+hint: transposing an array literal into per-field tables is not
+      implemented; leave it uninitialized for now
+```
+
+The intended shape, when it lands, is one ROM table per plane:
 
 ```rust
-struct Area { id: u8, exits: u8, flags: u8 }
-
-#[soa]
+#[soa] struct Area { id: u8, exits: u8, flags: u8 }
 static AREAS: [Area; 3] = [
     Area { id: 0, exits: 3, flags: 0x01 },
     Area { id: 1, exits: 1, flags: 0x00 },
@@ -259,39 +328,16 @@ static AREAS: [Area; 3] = [
 ];
 ```
 
-emits three tables rather than one interleaved one:
-
 ```asm
 __AREAS__id_data:     .db $00, $01, $02
 __AREAS__exits_data:  .db $03, $01, $02
 __AREAS__flags_data:  .db $01, $00, $04
 ```
 
-For a `static mut` the same three tables are emitted and block-copied to
-RAM at `__init_start()`, one `BlockCopy` per field.
-
-A padded field emits its pad byte in the table, so the `.db` rows stay a
-power of two wide:
-
-```asm
-; static AREAS: [Area; 3] where Area { name: far *u8, exits: u8 }
-__AREAS__name_data:   .db $00,$80,$C0,$00,  $10,$80,$C0,$00,  $2A,$80,$C0,$00
-__AREAS__exits_data:  .db $03, $01, $02
-```
-
-**Supported**: an array literal whose every element is a struct literal of
-the element type, with every field present. Field order inside each
-literal does not matter.
-
-**Not supported** in this design:
-
-- **A non-scalar top-level field.** If a field is itself a struct or
-  array, its per-field literal has aggregate elements, which
-  `_extract_initializer_bytes` (`mir/lowerers/static_init.py`) does not
-  handle. Rejected with a diagnostic.
-- **The fill form `[Enemy { .. }; N]`.** This is a *parse* error today,
-  independent of SoA — the grammar does not accept a struct literal as the
-  repeated value. Nothing to transpose until that is fixed.
+The transposition itself is small — build one `HIRArrayLiteralExpr` per
+field and let the existing array-literal path run per plane. The cost is
+validation: struct-literal checking runs *after* the static is built, so
+either that check is duplicated or the transposition moves later.
 
 ---
 
@@ -306,7 +352,7 @@ emit.
 ### The target: stride 1
 
 ```asm
-; SoA — ENEMIES__health[i] = 1
+; SoA — POOL__health[i] = 1
 REP #$20
 LDA $00
 TAX
@@ -415,15 +461,35 @@ source, so there is nowhere to write a `_pad` field by hand.
 
 <a name="padded-fields"></a>
 
+### Measured against hand-written parallel arrays
+
+`rotor_raiders/src/muni.r65` keeps its munitions pool as eight parallel
+arrays, written that way specifically to dodge the stride multiply. Porting
+it to one `#[soa] struct` with a method is not a wash — it comes out ahead:
+
+| | index recomputations | instructions |
+|---|---|---|
+| eight hand-written arrays | 4 | 31 |
+| one `#[soa]` struct + method | 2 | 25 |
+
+Same body, same storage class, same four field updates. The difference is
+the X-reuse cache: `#[soa]` shares one scaled index across consecutive
+fields of equal width (`x_px` and `y` are both stride 2; `life` and `kind`
+are both stride 1), where the hand-written form recomputes for every array
+because each is a separate symbol with its own base.
+
+So the hand-written idiom is not a performance floor the feature has to
+match — it is a ceiling the feature clears.
+
 ### Index reuse in X — read this before choosing field types
 
 For AoS, X holds `i * sizeof(T)`, which is the same value for **every**
 field of an element, so consecutive accesses to one element share one X:
 
 ```rust
-ENEMIES[i].hp = 0;      // computes X
-ENEMIES[i].kind = 0;    // reuses X
-ENEMIES[i].y = 0;       // reuses X
+POOL[i].hp = 0;      // computes X
+POOL[i].kind = 0;    // reuses X
+POOL[i].y = 0;       // reuses X
 ```
 
 For SoA, X holds `i * sizeof(field)`. It is shared only among fields of
@@ -432,9 +498,9 @@ For SoA, X holds `i * sizeof(field)`. It is shared only among fields of
 mixed-width sequence recomputes X on every switch:
 
 ```rust
-ENEMIES[i].hp   = 0;    // u8  - X = i
-ENEMIES[i].x    = 0;    // u16 - X = i<<1, recompute
-ENEMIES[i].kind = 0;    // u8  - X = i, recompute again
+POOL[i].hp   = 0;    // u8  - X = i
+POOL[i].x    = 0;    // u16 - X = i<<1, recompute
+POOL[i].kind = 0;    // u8  - X = i, recompute again
 ```
 
 Consequences, in order of importance:
@@ -465,160 +531,69 @@ Consequences, in order of importance:
   with no padding at all, but costs the field its contiguous address and
   needs three loads to reassemble a pointer. The padding rule gets most of
   the benefit for one byte, so this is left out.
-- **`ENEMIES[i].coords[j]`** — an array field inside an SoA element — is
+- **`POOL[i].coords[j]`** — an array field inside an SoA element — is
   unsupported. It is already unsupported for AoS
   (`mir/builder.py:2030`), so this is not a new restriction.
-- **`asm!` cannot see the layout.** A bare `LDA ENEMIES,X` inside an
+- **`asm!` cannot see the layout.** A bare `LDA POOL,X` inside an
   `asm!` body is passed through verbatim (`hir/builder.py:2567` only
   substitutes const-evaluated `{name}` placeholders) and fails at WLA link
   with an undefined-symbol error. Name the field array instead.
 - **`size_of(Enemy)`** still returns the packed AoS sum. That number is no
   longer a stride, and using it as one is a bug.
+- **Initializers are rejected** — see above.
+- **`*dyn Trait` over an SoA element is rejected.** The intended design is
+  a packed `u16` handle (high byte TypeId, low byte index) plus a `TAX`
+  trampoline per implementor, since `JMP (table,X)` needs X for the table
+  and the callee needs X for the index. Static-dispatch traits work today
+  and cost nothing; this only affects `*dyn`.
+- **One pool per type.** Two entity pools that would naturally share a
+  struct must either be merged or declared as two structs.
 
 ---
 
-## Implementation plan
+## Implementation status
 
-Six slices; each compiles and is independently testable.
+| Landed | |
+|---|---|
+| `#[soa]` on the struct declaration | grammar, AST, parser, pass-1 validation |
+| One storage per type | binding discovered in pass 1 |
+| Single-instance desugar | `T` -> `[T; 1]`, index 0 |
+| Rejections | locals, params, fields, `&`, whole element, clone, `*self`, `#[hw]`, `extern` |
+| Index-`self` methods | `SelfForm.INDEX_IN_X`, receiver passes the index |
+| Plane synthesis | one static per field, parent allocated no bytes |
+| Funnel rewrite | plane substitution + stride scaling + X reuse key |
+| Nested chains | `POOL[i].pos.y`, including inside methods |
+| Lint | three per-rule guards (dead-static, naming, zeropage budget) |
 
-### S1 — attribute and restriction checks, no layout change
+| Not yet | |
+|---|---|
+| Initializer transposition | rejected with a diagnostic |
+| `*dyn` over an SoA element | packed handle + trampoline, designed not built |
 
-`#[soa]` parses today — the grammar's `attr_name: IDENT`
-(`frontend/grammar.lark:248-256`) is already generic, and it dies in
-exactly one place: the `else` branch of
-`AttributeProcessor.process_attributes` (`hir/attributes.py:250`).
+### Notes for whoever picks this up
 
-- Add `SoaAttribute` beside `StorageAttribute` (`hir/attributes.py:73`)
-  and a `_process_soa` branch to the dispatch at `hir/attributes.py:218`,
-  guarding `context == 'static'` the way `_process_storage:355` does.
-- Add `is_soa` and `is_synthetic` fields to `HIRStaticDecl`
-  (`hir/nodes.py:222`).
-- Validate: `[Struct; N]` shape, non-union element, element not in
-  `_struct_type_ids`, not `#[hw]`, not `extern`.
+**The base rewrite is the load-bearing trick.** `self.hp` and `PLAYER.hp`
+are rewritten to `POOL[self].hp` and `PLAYER[0].hp` in
+`hir/expression_builder.py`, *before* the type checker runs. That is why
+`self` can stay a plain `u16` with no new `TypeInfo`, and why all three
+receiver spellings collapse into one arm at the call site.
 
-`#[soa]` is otherwise inert; programs still compile AoS.
+**Substitute the plane memloc first.** In the MIR funnel the parent static
+is allocated no bytes, and `get_memory_location` does not fail on it — it
+hands back a location naming the parent, which reaches the assembler as an
+undefined symbol the author never wrote. The substitution must happen
+before anything reads `base_memloc`.
 
-*Tests*: new `r65/tests/language/types/test_soa.py` — one accept case plus
-one assertion per rejection.
+**The X reuse key is correctness, not optimization.** X holds
+`index * stride(field)`, so `POOL[i].hp` (u8) followed by `POOL[i].pos`
+(u16) must not reuse the cached value. The stride is folded into the key;
+position `[1]` stays the index symbol so cache invalidation still works.
 
-### S2 — type-checker rejections for the non-funnel uses
-
-Still AoS layout. This slice is what makes S3 safe.
-
-`check_array_index` (`typeck/type_checker.py:1976`) is on the *good* path
-too: `check_field_access` (`:2051`) type-checks its own base, so a blanket
-rejection there kills the only supported form. Use the existing one-shot
-flag idiom — `_clone_sugar_allowed` (`type_checker.py:1098, 2236`) is the
-model — set around the base check in `check_field_access` and consulted in
-`check_array_index`.
-
-Rejections land in `check_array_index`, `pointer_validator.check_addressof`
-(`:44`), the receiver `HIRAddressOf` synthesis
-(`call_validator.py:358-375`), and `_classify_clone`
-(`call_validator.py:214`).
-
-*Tests*: extend `test_soa.py`.
-
-### S3 — desugar, funnel rewrite, X key. **Atomic.**
-
-**Synthesis runs as a third pass** over `hir_decls`, after the pass-2 loop
-closes (`hir/builder.py:246`) — not inside `_build_static`. Children go
-into `HIRProgram.declarations`; `.statics` is a read-only `@property`
-(`hir/nodes.py:102`).
-
-The reason is *not* declaration order. A static cannot forward-reference
-its struct at all — pass 1 resolves the static's type eagerly, so
-`static mut POOL: [Enemy; 4];` above `struct Enemy` fails with
-"Undefined type: Enemy" with or without `#[soa]`. By the time
-`_build_static` runs, the struct's `HIRStructDecl` therefore always
-exists. The third pass earns its place for a different reason: it is the
-only point where the whole program is in hand, which matters for the
-checks that consult program-wide state, and it keeps layout work out of a
-function whose job is building one declaration.
-
-S1's restriction checks, by contrast, live in `_build_static`
-(`_validate_soa_static`) — every one of them is answerable without the
-element's field layout, so none touches `size_bytes`.
-
-Declaring symbols late is safe: nothing iterates the symbol table
-(`SymbolTable.declare` is a dict insert; every consumer uses `lookup`).
-
-- **Allocator**: skip `is_soa` parents in `allocate_all`
-  (`codegen/memory_alloc.py:496`), exactly as `is_extern` is skipped.
-- **Lint**: three false positives fire otherwise, since
-  `linter._walk_decl:138` visits every `HIRStaticDecl` —
-  **L005 `dead_static_mut`** (children are declared but only the parent is
-  ever read, so every field warns as dead),
-  **`naming_convention`** (`^[A-Z][A-Z0-9_]*$` vs `ENEMIES__kind`), and
-  **`zeropage_budget`** (parent and children both counted, so the budget
-  double-counts). Skip `is_synthetic` decls in `_walk_decl`, and skip
-  `is_soa` parents in `zeropage_budget._type_size:108`.
-- **Stride override**: `ArrayTypeInfo.size_bytes` (`hir/types.py:58-60`) is
-  `element_size * size`, which under-reports a padded plane (3·N, not
-  4·N). Carry the stride on the synthesized decl as `soa_stride` and read
-  it in exactly two places — the allocator's size computation
-  (`memory_alloc.get_type_size:73`) and the funnel's scale. Do **not**
-  change the child's declared element type: the load must stay a 3-byte
-  far-pointer load at offset 0 within a 4-byte slot.
-- **Funnel**: `emit_static_array_field_access` (`mir/builder.py:2248`) is
-  verifiably the sole entry point for `arr[i].field` reads and writes —
-  four callers (`expression.py:745, 776`; `assignment.py:330, 361`), and
-  compound assignment reuses the same target node
-  (`expression_builder.py:455`), so `+=` is covered for free. Substitute
-  the per-field memloc for `base_memloc` and pass `field_size` to
-  `compute_scaled_index`.
-- **X reuse key** — a **correctness prerequisite, not an optimization**.
-  With today's key `(base_key, id(index_sym))` (`mir/builder.py:2537`),
-  `ENEMIES[i].hp` (u8, X = `i`) followed by `ENEMIES[i].x` (u16, needs
-  `2i`) hits the cache and reads the wrong element. Fold the scale into
-  position `[0]` as `('soa', parent_key, field_size)`; position `[1]` must
-  stay the index symbol so `x_index_cache_invalidate_symbol` keeps working.
-
-*Tests*: a padded-stride case — a `far *u8` field, asserting the plane is
-`4*N` bytes and the scale is `ASL A / ASL A` — plus SoA mirrors of
-`TestArrayOfStructs::test_array_of_structs_write_read`
-(`r65/tests/e2e/test_structs_and_pointers.py:128`) and
-`test_large_struct_variable_index` (`:160`, the 18-byte case, where the
-`mul16` must vanish); new `r65/tests/compiler/mir/test_soa_x_reuse.py`
-asserting one `Move(X, …)` for consecutive same-width fields and two for
-mixed-width; lint regressions for all three rules above.
-
-### S4 — nested chains
-
-`peel_field_chain` hands the funnel only a *summed* offset, losing which
-top-level field the chain started at. Recover it by locating the field
-whose `[offset, offset + size)` half-open range contains the sum; the
-residual is the offset within the per-field element. Sound because
-`layout_fields` (`hir/unified_type_utils.py:120-129`) is strictly packed
-with no zero-sized types — and it correctly lets a *union field inside*
-the element alias, which is why the union restriction applies to the
-element type only.
-
-Both sides: `_lower_nested_field_access` (`expression.py:745`) and
-`_lower_nested_field_assignment` (`assignment.py:330`).
-
-*Tests*: extend `r65/tests/e2e/test_nested_field_access.py`.
-
-### S5 — initializer transposition
-
-Per top-level field, build an `HIRArrayLiteralExpr` of that field's
-initializers and let `_emit_array_literal_init`
-(`mir/lowerers/static_init.py:299`) run unchanged per child. The transpose
-itself is small; the cost is validation, since
-`struct_validator.check_struct_literal` runs *after* `_build_static` —
-another reason synthesis lives in a late pass. Scalar top-level fields
-only; reject nested aggregates.
-
-*Tests*: extend `test_soa.py` and the S3 e2e file.
-
-### S6 — port and measure
-
-Rewrite `rotor_raiders/src/muni.r65:49-58` as one `#[soa] static mut
-MUNI: [Muni; 16]` and diff the emitted assembly against the hand-written
-parallel arrays. This is the only test that proves the feature is worth
-having, and it is where mixed-width X thrashing would show up. If the
-diff is not a wash or better, S3's single-slot cache needs widening before
-the feature is worth recommending.
+**The X round trip did not materialize.** An earlier draft of this plan
+worried that an X-bound `self` would spill to a vreg at entry and reload
+per access. It does not: a straight-line method emits `LDA POOL__x,X` with
+zero setup. A spill appears only across a real `JSR`, where it is
+necessary because the callee may clobber X.
 
 ---
 

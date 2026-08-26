@@ -8,7 +8,7 @@ from pathlib import Path
 from lark import Lark, Transformer, Token as LarkToken, v_args
 from lark.exceptions import UnexpectedToken, UnexpectedCharacters, UnexpectedEOF, VisitError
 from r65.compiler.frontend import ast
-from r65.compiler.frontend.derive_compat import derive_hint
+from r65.compiler.frontend.derive_compat import derive_hint, derive_trait_names
 from r65.compiler.errors import ParseError, SourceLocation, get_source_line
 from typing import List
 
@@ -542,26 +542,36 @@ class ASTBuilder(Transformer):
         return ast.ConstDecl(name=name, const_type=const_type, value=value,
                              doc=doc, source_loc=self._make_source_loc(tree.meta))
 
-    def struct_decl(self, items):
+    @v_args(tree=True)
+    def struct_decl(self, tree):
         """Struct declaration."""
-        return self._aggregate_decl(items, is_union=False)
+        return self._aggregate_decl(
+            tree.children, is_union=False,
+            source_loc=self._make_source_loc(tree.meta))
 
-    def union_decl(self, items):
+    @v_args(tree=True)
+    def union_decl(self, tree):
         """Union declaration - same field syntax as a struct, overlaid layout."""
-        return self._aggregate_decl(items, is_union=True)
+        return self._aggregate_decl(
+            tree.children, is_union=True,
+            source_loc=self._make_source_loc(tree.meta))
 
     @v_args(tree=True)
     def newtype_decl(self, tree):
         """Newtype declaration: struct TileId(u8);"""
         items = self._filter_tokens(tree.children, keep_types={'IDENT'})
         doc, idx = self._collect_doc_comments(items, 0)
+        loc = self._make_source_loc(tree.meta)
+        attrs, idx = self._collect_leading_attributes(items, idx)
+        self._reject_derive_on_type(attrs, items, idx, loc)
         name = items[idx].value if isinstance(items[idx], LarkToken) else items[idx]
         inner_type = items[idx + 1]
         return ast.NewtypeDecl(
             name=name,
             inner_type=inner_type,
             doc=doc,
-            source_loc=self._make_source_loc(tree.meta)
+            attributes=attrs,
+            source_loc=loc
         )
 
     @v_args(tree=True)
@@ -573,6 +583,7 @@ class ASTBuilder(Transformer):
         """
         items = self._filter_tokens(tree.children, keep_types={'IDENT'})
         _, idx = self._collect_doc_comments(items, 0)
+        _, idx = self._collect_leading_attributes(items, idx)
         name = items[idx].value if isinstance(items[idx], LarkToken) else items[idx]
         types = [item for item in items[idx + 1:] if not isinstance(item, LarkToken)]
 
@@ -605,13 +616,53 @@ class ASTBuilder(Transformer):
             source_loc=self._make_source_loc(tree.meta)
         )
 
-    def _aggregate_decl(self, items, is_union: bool):
+    def _aggregate_decl(self, items, is_union: bool, source_loc=None):
         """Build a StructDecl from struct_decl/union_decl children."""
         items = self._filter_tokens(items)
         doc, idx = self._collect_doc_comments(items, 0)
+        attrs, idx = self._collect_leading_attributes(items, idx)
+        self._reject_derive_on_type(attrs, items, idx, source_loc)
         name = items[idx].value if isinstance(items[idx], LarkToken) else items[idx]
         fields = [item for item in items[idx + 1:] if isinstance(item, ast.StructField)]
-        return ast.StructDecl(name=name, fields=fields, doc=doc, is_union=is_union)
+        return ast.StructDecl(name=name, fields=fields, doc=doc, is_union=is_union,
+                              attributes=attrs, source_loc=source_loc)
+
+    @staticmethod
+    def _collect_leading_attributes(items, idx: int):
+        """Consume the run of `ast.Attribute` nodes at *idx*; return (attrs, idx)."""
+        attrs = []
+        while idx < len(items) and isinstance(items[idx], ast.Attribute):
+            attrs.append(items[idx])
+            idx += 1
+        return attrs, idx
+
+    def _reject_derive_on_type(self, attrs, items, idx, source_loc):
+        """Reject `#[derive(...)]` on a type declaration, naming the type.
+
+        Types accept attributes now (so `#[soa]` can reach a struct), which means
+        `#[derive(Clone)] struct Point` parses instead of failing. Without this
+        it would reach the HIR attribute processor, which has no type name to put
+        in the hint. The heuristic at `_check_derive_before_decl` still covers
+        `enum`/`trait`/`type`, which take no attributes.
+        """
+        for attr in attrs:
+            if attr.name not in ('derive', 'proc_macro', 'proc_macro_derive',
+                                 'proc_macro_attribute'):
+                continue
+            name = None
+            if idx < len(items):
+                name = (items[idx].value if isinstance(items[idx], LarkToken)
+                        else getattr(items[idx], 'name', None))
+            if attr.name == 'derive':
+                raise ParseError(
+                    "#[derive(...)] is not supported in R65",
+                    source_loc=attr.source_loc or source_loc,
+                    hint=derive_hint(derive_trait_names(attr), name))
+            raise ParseError(
+                f"#[{attr.name}] is not supported in R65",
+                source_loc=attr.source_loc or source_loc,
+                hint="procedural macros are not supported in R65 — use "
+                     "`macro_rules!` for declarative macros (see docs/macros.md)")
 
     def struct_field(self, items):
         """Struct field."""

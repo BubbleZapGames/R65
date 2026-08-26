@@ -236,6 +236,10 @@ class StructDecl(Declaration):
     fields: List[StructField]
     doc: Optional[str] = None
     is_union: bool = False
+    attributes: List['Attribute'] = field(default_factory=list)
+    # #[soa]: lay every array of this struct out as one plane per field, and
+    # give its methods an element index for `self`. See docs/soa.md.
+    is_soa: bool = False
 
 
 @dataclass
@@ -253,6 +257,7 @@ class NewtypeDecl(Declaration):
     name: str
     inner_type: Type
     doc: Optional[str] = None
+    attributes: List['Attribute'] = field(default_factory=list)
 
 
 @dataclass

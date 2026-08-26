@@ -10,7 +10,7 @@ from typing import Callable, Optional
 from r65.compiler.hir import (
     HIRFunctionCall, HIRMethodCall, HIRFunctionAddress, HIRFunctionDecl,
     HIRIdentifier, HIRArrayIndex, HIRIntegerLiteral, HIRFieldAccess,
-    HIRAddressOf,
+    HIRAddressOf, RegisterBinding,
     SymbolKind, BasicTypeInfo, StructTypeInfo, NeverTypeInfo,
     HIRError,
 )
@@ -192,6 +192,27 @@ class CallValidator:
 
         return expr.expr_type
 
+    @staticmethod
+    def _soa_index_receiver(field_access, expr, struct_name):
+        """The element-index expression for an `#[soa]` method receiver.
+
+        An `#[soa]` method takes `self` as an element index, so the receiver
+        must *be* an element. `POOL[i].m()` passes `i`; `PLAYER.m()` and
+        `self.m()` reach here already rewritten to that shape by
+        `ExpressionBuilder._soa_rewrite_base`, so the one arm covers all three.
+        """
+        from r65.compiler.hir.nodes import HIRArrayIndex
+
+        if not isinstance(field_access.base, HIRArrayIndex):
+            raise TypeCheckError(
+                f"method '{field_access.field_name}' on #[soa] struct "
+                f"'{struct_name}' needs an element",
+                source_loc=expr.source_loc,
+                hint=f"call it on one element of the pool, e.g. "
+                     f"`POOL[i].{field_access.field_name}()`",
+            )
+        return field_access.base.index
+
     def _try_clone_call(self, expr: HIRFunctionCall) -> Optional[TypeInfo]:
         """Resolve a Clone lang-item call: `a.clone()` or `dst.clone_from(&src)`.
 
@@ -203,10 +224,17 @@ class CallValidator:
         field_access = expr.func
         method_name = field_access.field_name
 
+        # `POOL[i].m()` — the receiver is an #[soa] element, which is legal
+        # exactly here. check_array_index refuses one otherwise, so grant the
+        # same one-shot permission check_field_access does for its own base.
+        previous_ok = getattr(self.type_checker, '_soa_element_ok', False)
+        self.type_checker._soa_element_ok = True
         try:
             receiver_type = self.check_expression(field_access.base)
         except TypeCheckError:
             return None
+        finally:
+            self.type_checker._soa_element_ok = previous_ok
 
         # Identify the aggregate type being cloned.
         receiver_is_pointer = isinstance(receiver_type, PointerTypeInfo)
@@ -281,10 +309,17 @@ class CallValidator:
 
         # Get the type of the receiver (e.g., PLAYER has type Player)
         # We need to check the type without throwing an error for missing field
+        # `POOL[i].m()` — the receiver is an #[soa] element, which is legal
+        # exactly here. check_array_index refuses one otherwise, so grant the
+        # same one-shot permission check_field_access does for its own base.
+        previous_ok = getattr(self.type_checker, '_soa_element_ok', False)
+        self.type_checker._soa_element_ok = True
         try:
             receiver_type = self.check_expression(field_access.base)
         except TypeCheckError:
             return None
+        finally:
+            self.type_checker._soa_element_ok = previous_ok
 
         # Determine struct name from receiver type
         struct_name = None
@@ -357,12 +392,24 @@ class CallValidator:
 
         # Transform: receiver.method(args) -> mangled_name(&receiver, args)
         # Create address-of expression for the receiver (unless already a pointer)
+        self_param = func_decl.parameters[0] if func_decl.parameters else None
+        self_is_index = (
+            self_param is not None
+            and isinstance(self_param.binding, RegisterBinding)
+            and self_param.binding.register_name == 'X'
+            and not receiver_is_pointer and not receiver_is_newtype
+        )
+
         if receiver_is_pointer:
             self_arg = field_access.base
         elif receiver_is_newtype:
             # By-value self: pass the value itself. Taking its address is exactly
             # what a newtype exists to avoid.
             self_arg = field_access.base
+        elif self_is_index:
+            # #[soa]: `self` is the element index, so pass the index rather than
+            # an address the element does not have.
+            self_arg = self._soa_index_receiver(field_access, expr, struct_name)
         else:
             self_arg = HIRAddressOf(
                 operand=field_access.base,

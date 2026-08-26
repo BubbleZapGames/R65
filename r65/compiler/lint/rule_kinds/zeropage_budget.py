@@ -60,6 +60,8 @@ class ZeropageBudget(LintRule):
         for decl in ctx.program.declarations:
             if not isinstance(decl, HIRStaticDecl):
                 continue
+            if getattr(decl, "soa_planes", None) is not None:
+                continue  # #[soa] parent holds no bytes; its planes are counted below
             storage = decl.storage_attr
             if storage is None or storage.storage_kind != StorageKind.ZEROPAGE:
                 continue
@@ -106,6 +108,9 @@ class ZeropageBudget(LintRule):
             )
 
     def _type_size(self, decl: HIRStaticDecl) -> int:
+        stride = getattr(decl, "soa_stride", None)
+        if stride is not None:
+            return stride * decl.var_type.size  # padded plane
         try:
             return decl.var_type.size_bytes
         except (AttributeError, NotImplementedError):

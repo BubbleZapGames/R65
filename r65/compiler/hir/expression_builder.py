@@ -39,6 +39,45 @@ class ExpressionBuilder:
         self.include_paths = include_paths
         # Callback to build statements (set by HIRBuilder after construction)
         self.statement_builder = None
+        # The static backing the `#[soa]` struct whose method body is being
+        # built, or None outside one. Set by HIRBuilder around _build_block.
+        self.soa_self_pool = None
+
+    def _soa_rewrite_base(self, base, src_loc):
+        """Turn an `#[soa]` field-access base into an explicit element index.
+
+        `#[soa]` has exactly one legal element shape — `POOL[i]` — so rewriting
+        the two implicit spellings into it here, before the type checker runs,
+        lets `self.hp` and `PLAYER.hp` reuse the whole `arr[i].field` path:
+        typecheck, the MIR funnel, the plane rewrite, compound assignment and
+        method receivers all work with no further special cases.
+
+          self     (inside an #[soa] method)  ->  POOL[self]
+          PLAYER   (a single-instance static) ->  PLAYER[0]
+
+        Anything else is returned unchanged.
+        """
+        if not isinstance(base, hir.HIRIdentifier):
+            return base
+
+        # `self` in an #[soa] method is the element index into the pool.
+        pool = self.soa_self_pool
+        if pool is not None and base.name == 'self':
+            return hir.HIRArrayIndex(
+                array=hir.HIRIdentifier(name=pool.name, symbol=pool, source_loc=src_loc),
+                index=base,
+                source_loc=src_loc,
+            )
+
+        # A single instance is a pool of one.
+        if getattr(getattr(base, 'symbol', None), 'soa_single', False):
+            return hir.HIRArrayIndex(
+                array=base,
+                index=hir.HIRIntegerLiteral(value=0, source_loc=src_loc),
+                source_loc=src_loc,
+            )
+
+        return base
 
     def build_expression(self, expr: ast.Expression) -> hir.HIRExpression:
         """Build HIR expression from AST."""
@@ -431,6 +470,7 @@ class ExpressionBuilder:
                     )
 
             # Normal field resolution happens in type checker
+            base = self._soa_rewrite_base(base, src_loc)
             return hir.HIRFieldAccess(base=base, field_name=expr.field, source_loc=src_loc)
 
         elif isinstance(expr, ast.Dereference):

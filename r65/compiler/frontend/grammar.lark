@@ -92,13 +92,13 @@ var_name: IDENT | REGISTER
 const_decl: doc_comment* CONST IDENT ":" type_expr "=" initializer_expr ";"
 
 // Struct declaration
-struct_decl: doc_comment* STRUCT IDENT "{" struct_field* "}"
+struct_decl: doc_comment* attribute* STRUCT IDENT "{" struct_field* "}"
 // Newtype: a nominal name for a register-sized scalar
-newtype_decl: doc_comment* STRUCT IDENT "(" type_expr ","? ")" ";"
+newtype_decl: doc_comment* attribute* STRUCT IDENT "(" type_expr ","? ")" ";"
 // A newtype has exactly one field; matched so the error names the feature
-            | doc_comment* STRUCT IDENT "(" (type_expr ("," type_expr)+ ","?)? ")" ";"  -> newtype_arity_error
+            | doc_comment* attribute* STRUCT IDENT "(" (type_expr ("," type_expr)+ ","?)? ")" ";"  -> newtype_arity_error
 // Union declaration — same field syntax as a struct; every field sits at offset 0
-union_decl: doc_comment* UNION IDENT "{" struct_field* "}"
+union_decl: doc_comment* attribute* UNION IDENT "{" struct_field* "}"
 // Supports pointer fields: [far|near] *name: type
 struct_field: doc_comment* (FAR | NEAR)? STAR? IDENT ":" type_expr ","?
             | (FAR | NEAR)? AMPER IDENT ":" type_expr ","?  -> struct_field_safe_ptr_error

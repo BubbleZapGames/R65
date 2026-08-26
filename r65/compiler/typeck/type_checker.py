@@ -28,7 +28,8 @@ from r65.compiler.hir.types import (
 from r65.compiler.typeck.processor_mode import ProcessorMode, ModeState, XModeState
 from r65.compiler.typeck.mode_tracker import ModeTracker
 from r65.compiler.typeck.cfg_builder import CFGBuilder
-from r65.compiler.typeck.type_utils import TypeUtils, value_fits_type
+from r65.compiler.typeck.type_utils import (
+    TypeUtils, soa_static_of, value_fits_type)
 from r65.compiler.typeck.operator_validator import OperatorValidator
 from r65.compiler.typeck.preservation_checker import PreservationChecker
 from r65.compiler.typeck.register_capabilities import (
@@ -83,6 +84,10 @@ class TypeChecker:
         # Maps local variables bound to registers (e.g., let x @ X = 10)
         self._register_aliases: dict[int, str] = {}
 
+        # One-shot permission for `ARR[i]` on a #[soa] array: set by
+        # check_field_access around its base, consumed by check_array_index.
+        self._soa_element_ok: bool = False
+
         # Set symbol table on TypeUtils for trait impl checking
         TypeUtils._symbol_table = self.symbol_table
 
@@ -112,6 +117,9 @@ class TypeChecker:
                 self.check_expression, lambda: self.current_mode,
                 lambda: self.current_function
             )
+            # Back-reference for the one-shot flags the two share
+            # (`_soa_element_ok`, set here and read in check_array_index).
+            self._call_validator.type_checker = self
         return self._call_validator
 
     @property
@@ -1975,6 +1983,22 @@ class TypeChecker:
 
     def check_array_index(self, expr: HIRArrayIndex) -> TypeInfo:
         """Type check array indexing."""
+        # Consume the one-shot permission before checking anything below, so it
+        # cannot leak into the index expression: in `ARR[OTHER[k]].hp` only the
+        # outer index is a field-access base, not the inner one.
+        element_ok = self._soa_element_ok
+        self._soa_element_ok = False
+
+        soa_decl = soa_static_of(expr.array)
+        if soa_decl is not None and not element_ok:
+            raise TypeCheckError(
+                f"cannot use a whole element of #[soa] array '{soa_decl.name}'",
+                source_loc=expr.source_loc,
+                hint="an SoA element is spread across one array per field, so it "
+                     "has no address and no contiguous value; read or write a "
+                     f"single field instead, e.g. `{soa_decl.name}[i].field`"
+            )
+
         base_type = self.check_expression(expr.array)
         index_type = self.check_expression(expr.index)
 
@@ -2050,7 +2074,15 @@ class TypeChecker:
 
     def check_field_access(self, expr: HIRFieldAccess) -> TypeInfo:
         """Type check field access."""
-        base_type = self.check_expression(expr.base)
+        # `ARR[i].field` is the only legal use of an #[soa] element, and this is
+        # the one place that shape is visible — check_array_index cannot see its
+        # own parent. Grant permission for the base alone; check_array_index
+        # consumes it immediately so it reaches nothing else.
+        self._soa_element_ok = True
+        try:
+            base_type = self.check_expression(expr.base)
+        finally:
+            self._soa_element_ok = False
 
         # Auto-dereference pointers for field access (like Rust's -> operator)
         # This allows `self.field` to work when self is *StructName

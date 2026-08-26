@@ -70,6 +70,8 @@ class NamingConvention(LintRule):
         for decl in ctx.program.declarations:
             if not isinstance(decl, self.target_class):
                 continue
+            if getattr(decl, "is_synthetic", False):
+                continue  # compiler-generated (#[soa] planes); the author named the parent
             name = getattr(decl, "name", None)
             if not name:
                 continue

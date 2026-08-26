@@ -8,10 +8,13 @@ from the `PartialEq`/`PartialOrd` lang items, and printing goes through
 `ToString`. This module turns a derive list into per-trait guidance so the error
 tells the author what to write instead of just what they cannot write.
 
-Lives in `frontend` because both the parser (types, which take no attributes in
-the grammar) and the HIR attribute processor (functions and statics, which do)
-need it, and `hir` may import `frontend` but not the reverse.
+Lives in `frontend` because both the parser and the HIR attribute processor
+need it, and `hir` may import `frontend` but not the reverse. The parser owns
+the type declarations (`struct`, `union`, newtype), which accept attributes so
+that `#[soa]` can reach a struct; the HIR processor owns functions and statics.
 """
+
+from typing import List
 
 # Trait name -> replacement line. `{T}` is the type being derived on.
 _EQUIVALENTS = {
@@ -78,3 +81,20 @@ def derive_hint(traits, type_name=None) -> str:
         )
         lines.append(f"    {name}: {replacement}")
     return "\n".join(lines)
+
+
+def derive_trait_names(attr) -> List[str]:
+    """Pull the trait names out of a `#[derive(A, B)]` attribute's arguments.
+
+    Takes an `ast.Attribute`; kept untyped to avoid importing `ast` into a
+    module the parser imports.
+    """
+    names = []
+    for arg in attr.args:
+        value = arg.value
+        name = getattr(value, 'name', None) or (value if isinstance(value, str) else None)
+        if name:
+            names.append(str(name))
+        elif arg.name:
+            names.append(str(arg.name))
+    return names

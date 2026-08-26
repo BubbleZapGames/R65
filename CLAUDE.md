@@ -68,27 +68,40 @@ static mut MESSAGE: [u8; 16] = "Hello, World!";  // String literal, zero-padded
 
 *(See [docs/array-bounds-checking.md](docs/array-bounds-checking.md) for design rationale)*
 
-### SoA Struct Arrays *(specified, not implemented)*
+### SoA Struct Arrays
 
-`#[soa]` on a `static [Struct; N]` lays the array out as one array per
-field, so `arr[i].field` addresses `arr__field[i]` and the index is scaled
-by the *field* size rather than the element size — removing the stride
-multiply that costs ~57 cycles for elements over 16 bytes.
+`#[soa]` on a **struct** lays every array of it out as one array per field,
+so `arr[i].field` addresses `arr__field[i]` and the index scales by the
+*field* size — removing the stride multiply that costs ~57 cycles for
+elements over 16 bytes. Its methods take `self` as an element **index** in
+X rather than a pointer, so a field access inside a method is one
+instruction.
 
 ```rust
-#[lowram]
 #[soa]
-static mut ENEMIES: [Enemy; 16];   // one [_; 16] array per field of Enemy
+struct Enemy { kind: u8, hp: u8 }
 
-ENEMIES[i].hp = 100;                // stride 1, no multiply
+impl Enemy {
+    fn hurt(self) { self.hp = self.hp - 1; }   // LDA POOL__hp,X ...
+}
+
+#[lowram]
+static mut POOL: [Enemy; 16];   // one [_; 16] plane per field
+
+POOL[i].hp = 100;               // stride 1, no multiply
+POOL[i].hurt();                 // passes the index
 ```
 
-**Restrictions**: the element must be a plain struct (no `union`, no
-`*dyn`-used trait impl), and it has no contiguous base — so `&arr[i]`,
-`arr[i].method()`, and whole-element copies are rejected. Callers pass the
-index `i` instead of a reference.
+A `#[soa]` struct backs **exactly one** static — that is what lets methods
+hard-code their plane addresses. A single instance (`static mut PLAYER:
+Player;`) desugars to a one-element array.
 
-*(See [docs/soa.md](docs/soa.md) for the complete specification)*
+**Restrictions**: no `union`, no newtype, no `#[hw]`, no `extern`, and no
+initializer yet. An element has no contiguous base, so `&arr[i]`, locals
+and parameters of the type, whole-element copies, `impl Clone`, and `*dyn`
+over an element are rejected. Static-dispatch trait impls work.
+
+*(See [docs/soa.md](docs/soa.md) for the complete documentation)*
 
 ### Character Literals
 

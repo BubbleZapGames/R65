@@ -9,6 +9,7 @@ Uses a two-pass algorithm:
 
 import copy
 import re
+from enum import Enum
 from typing import List, Union, Optional, Dict, Set
 from pathlib import Path
 from r65.compiler.frontend import ast
@@ -24,6 +25,13 @@ from r65.compiler.hir.errors import *
 from r65.compiler.hir.lang_items import (
     LANG_ITEM_TRAITS, CLONE_TRAIT, CLONE_METHOD, is_lang_item_trait,
 )
+
+
+class SelfForm(Enum):
+    """How a method receives its receiver. One form per type, not per method."""
+    POINTER = 'pointer'        # struct/union: `*self`, stack-passed (or SELF_Y)
+    VALUE_IN_A = 'value_in_a'  # newtype: the 1-2 byte payload rides in A
+    INDEX_IN_X = 'index_in_x'  # #[soa] struct: a u16 element index rides in X
 
 
 class HIRBuilder:
@@ -63,6 +71,10 @@ class HIRBuilder:
         # Trait dispatch tracking
         self._next_type_id = 1  # TypeId 0 is reserved (invalid/error)
         self._struct_type_ids: Dict[str, int] = {}  # struct_name -> type_id
+        # Names of `#[soa]` structs, and the single static that backs each.
+        # Both are populated in pass 1, so pass 2 sees them complete.
+        self._soa_structs: Set[str] = set()
+        self._soa_storage: Dict[str, Any] = {}  # struct name -> (Symbol, source_loc)
         self._trait_impls: Dict[str, List[str]] = {}  # trait_name -> [struct_name, ...] ordered by TypeId
         self._trait_impl_locs: Dict[tuple, Any] = {}  # (trait_name, struct_name) -> source_loc
         self._struct_trait_kind: Dict[str, str] = {}  # struct_name -> 'near' or 'far'
@@ -245,6 +257,11 @@ class HIRBuilder:
                 hir_decl = self._build_declaration(decl)
                 hir_decls.append(hir_decl)
 
+        # Third pass: expand every #[soa] static into one array per field. Runs
+        # after the loop above so every element struct's HIRStructDecl exists,
+        # and so the whole program is in hand.
+        self._expand_soa_statics(hir_decls)
+
         # Use pending snesrom config if it was set from an attribute
         if snesrom_config is None and self._pending_snesrom_config is not None:
             snesrom_config = self._pending_snesrom_config
@@ -420,7 +437,8 @@ class HIRBuilder:
         """
         # Get attributes from declaration (only these node types carry them)
         attributes = []
-        if isinstance(decl, (ast.FunctionDecl, ast.StaticDecl, ast.ImplMethod)):
+        if isinstance(decl, (ast.FunctionDecl, ast.StaticDecl, ast.ImplMethod,
+                             ast.StructDecl, ast.NewtypeDecl)):
             attributes = decl.attributes
 
         # Check for cfg attributes
@@ -477,6 +495,12 @@ class HIRBuilder:
                     source_loc=decl.source_loc,
                     hint="add ': Type' after the name, e.g., static NAME: u8 = ...;"
                 )
+            # A bare `#[soa]` struct static is a pool of one; wrap it before the
+            # symbol is built so every consumer sees the array form.
+            soa_single = (self._soa_element_of(var_type) is not None
+                          and not isinstance(var_type, ArrayTypeInfo))
+            if soa_single:
+                var_type = self._soa_wrap_single(var_type)
             symbol = Symbol(
                 name=decl.name,
                 kind=SymbolKind.STATIC_VAR,
@@ -485,6 +509,8 @@ class HIRBuilder:
                 var_type=var_type,
                 is_mutable=decl.is_mut
             )
+            symbol.soa_single = soa_single
+            self._bind_soa_storage(decl, var_type, symbol)
             self.symbol_table.declare(decl.name, symbol)
 
         elif isinstance(decl, ast.ConstDecl):
@@ -512,6 +538,12 @@ class HIRBuilder:
                     source_loc=decl.source_loc,
                     hint="a union's size is that of its largest field; with no fields it has no layout"
                 )
+            processed = self.attr_processor.process_attributes(
+                decl.attributes, context='struct')
+            decl.is_soa = any(isinstance(a, SoaAttribute) for a in processed)
+            if decl.is_soa:
+                self._validate_soa_struct(decl)
+                self._soa_structs.add(decl.name)
             symbol = Symbol(
                 name=decl.name,
                 kind=SymbolKind.STRUCT,
@@ -521,6 +553,9 @@ class HIRBuilder:
             self.symbol_table.declare(decl.name, symbol)
 
         elif isinstance(decl, ast.NewtypeDecl):
+            # Processed for the diagnostic only — a newtype is a scalar, so no
+            # attribute currently applies to one.
+            self.attr_processor.process_attributes(decl.attributes, context='newtype')
             inner_type = self.type_resolver.resolve_type(decl.inner_type)
             self._validate_newtype_inner(decl.name, inner_type, decl.source_loc)
             symbol = Symbol(
@@ -1148,6 +1183,8 @@ class HIRBuilder:
         """Build HIR parameter from AST."""
         # Resolve parameter type
         param_type = self.type_resolver.resolve_type(param.param_type)
+        self._reject_soa_type(param_type, 'parameter', param.name,
+                              getattr(param, 'source_loc', None))
 
         # Process binding
         binding = None
@@ -1385,69 +1422,227 @@ class HIRBuilder:
                 hint="add 'mut' to make mutable, or remove attribute for ROM"
             )
 
-    def _validate_soa_static(self, static: ast.StaticDecl, var_type, storage_attr):
-        """Reject `#[soa]` on anything that cannot be split into field planes.
+    def _soa_element_of(self, var_type):
+        """The `#[soa]` element `StructTypeInfo` of *var_type*, else None.
 
-        Everything checked here is answerable in pass 2 without the element's
-        field layout: the struct's own HIR declaration may not exist yet (a
-        `#[soa] static` may precede its `struct`), so nothing may touch
-        `size_bytes`. Layout-dependent work happens in the expansion pass.
+        Accepts both `[Enemy; N]` and a bare `Enemy` — a single instance is a
+        one-element pool (see `_soa_wrap_single`).
         """
-        from r65.compiler.frontend import ast as _ast
+        inner = var_type.element_type if isinstance(var_type, ArrayTypeInfo) else var_type
+        inner = strip_newtype(inner)
+        if not isinstance(inner, StructTypeInfo):
+            return None
+        return inner if self._type_is_soa(inner) else None
 
-        if not isinstance(var_type, ArrayTypeInfo):
+    def _type_is_soa(self, struct_type) -> bool:
+        """True if *struct_type* names a `#[soa]` struct.
+
+        Reads the name rather than the definition: `_soa_structs` is filled in
+        pass 1, whereas `Symbol.definition` is an `ast.StructDecl` in pass 1 and
+        an `HIRStructDecl` in pass 2, and callers run in both.
+        """
+        return getattr(struct_type, 'name', None) in self._soa_structs
+
+    def _soa_wrap_single_if_soa(self, var_type):
+        """Wrap *var_type* into `[T; 1]` only if it is a bare `#[soa]` struct."""
+        if isinstance(var_type, ArrayTypeInfo):
+            return var_type
+        if self._soa_element_of(var_type) is None:
+            return var_type
+        return self._soa_wrap_single(var_type)
+
+    @staticmethod
+    def _soa_wrap_single(var_type):
+        """Wrap a bare `#[soa]` struct type into a one-element array.
+
+        `static mut PLAYER: Player;` is a pool of one, so every downstream path
+        — plane synthesis, `PLAYER.hp`, `PLAYER.method()` — is the array path
+        with index 0, and none of them needs a singleton special case.
+
+        Returns a new type; never mutates the AST, which is shared with the
+        preprocessor and would otherwise be wrapped twice on a second build.
+        """
+        if isinstance(var_type, ArrayTypeInfo):
+            return var_type
+        return ArrayTypeInfo(element_type=var_type, size=1)
+
+    def _bind_soa_storage(self, decl: ast.StaticDecl, var_type, symbol):
+        """Record the single static backing a `#[soa]` struct, or reject a second.
+
+        Called from pass 1, where the struct is guaranteed already declared: a
+        static cannot forward-reference its type, because `resolve_type` above
+        is eager. So `_soa_structs` is complete for anything this can see.
+        """
+        element = self._soa_element_of(var_type)
+        if element is None:
+            return
+
+        previous = self._soa_storage.get(element.name)
+        if previous is not None:
+            prev_symbol, prev_loc = previous
             raise HIRError(
-                f"#[soa] static '{static.name}' must be an array of structs",
-                source_loc=static.source_loc,
-                hint="#[soa] applies to `[Struct; N]`; it has no meaning for a scalar",
+                f"#[soa] struct '{element.name}' is already stored by "
+                f"static '{prev_symbol.name}'",
+                source_loc=decl.source_loc,
+                hint="a #[soa] struct backs exactly one array — its methods index "
+                     "that array's field planes by an address fixed at compile "
+                     "time, so a second storage has nowhere to point; merge the "
+                     "pools, or drop #[soa] and write the parallel arrays by hand",
             )
 
-        element = strip_newtype(var_type.element_type)
-        if not isinstance(element, StructTypeInfo):
+        if decl.is_extern:
             raise HIRError(
-                f"#[soa] static '{static.name}' must have a struct element type, "
-                f"got '{var_type.element_type}'",
-                source_loc=static.source_loc,
-                hint="there is nothing to split apart unless the element has fields",
+                f"extern static '{decl.name}' cannot have #[soa] element type "
+                f"'{element.name}'",
+                source_loc=decl.source_loc,
+                hint="placement is owned by the included asm file, which has no "
+                     "way to express one array per field",
             )
-
-        # `definition` is an ast.StructDecl until the struct's own pass-2 build
-        # replaces it, so accept either shape.
-        defn = None
-        if element.symbol is not None:
-            defn = getattr(element.symbol, 'definition', None)
-        if defn is None:
-            defn = element.definition
-        if defn is not None and getattr(defn, 'is_union', False):
+        for attr in decl.attributes:
+            if attr.name == 'hw':
+                raise HIRError(
+                    f"#[soa] static '{decl.name}' cannot use #[hw] storage",
+                    source_loc=decl.source_loc,
+                    hint="hardware registers have a fixed layout the compiler "
+                         "does not place",
+                )
+        if decl.initializer is not None:
             raise HIRError(
-                f"#[soa] static '{static.name}' cannot have a union element type",
-                source_loc=static.source_loc,
-                hint="a union's fields overlay at offset 0; splitting them would "
-                     "destroy the aliasing that makes it a union",
-            )
-
-        if element.name in self._struct_type_ids:
-            raise HIRError(
-                f"#[soa] static '{static.name}' cannot have an element type that "
-                f"implements a trait",
-                source_loc=static.source_loc,
-                hint=f"dispatch reads a TypeId byte at the element's offset 0, and an "
-                     f"SoA element has no contiguous base; keep '{element.name}' arrays AoS",
-            )
-
-        if storage_attr is not None and storage_attr.storage_kind == StorageKind.HW:
-            raise HIRError(
-                f"#[soa] static '{static.name}' cannot use #[hw] storage",
-                source_loc=static.source_loc,
-                hint="hardware registers have a fixed layout the compiler does not place",
-            )
-
-        if static.initializer is not None:
-            raise HIRError(
-                f"#[soa] static '{static.name}' cannot have an initializer yet",
-                source_loc=static.source_loc,
+                f"#[soa] static '{decl.name}' cannot have an initializer yet",
+                source_loc=decl.source_loc,
                 hint="transposing an array literal into per-field tables is not "
                      "implemented; leave it uninitialized for now",
+            )
+
+        self._soa_storage[element.name] = (symbol, decl.source_loc)
+
+    @staticmethod
+    def _soa_stride(size: int) -> int:
+        """Bytes per element in a field plane.
+
+        Rounded up to a power of two when that costs at most one byte per
+        element: a 3-byte `far *T` scales by `ASL A / ASL A` instead of a spill,
+        a shift, a CLC and an ADC. A 5- or 6-byte field would need 3 or 2 bytes
+        of padding to reach 8, which is not worth one add, so it keeps the
+        shift-and-add.
+        """
+        return 4 if size == 3 else 8 if size == 7 else size
+
+    def _expand_soa_statics(self, hir_decls: list) -> None:
+        """Replace each `#[soa]` static's storage with one array per field.
+
+        The parent stays in the declaration list — type checking and the MIR
+        funnel both resolve through it — but is allocated no bytes; the planes
+        it points at hold the data.
+        """
+        planes_added = []
+        for decl in hir_decls:
+            if not isinstance(decl, hir.HIRStaticDecl) or not decl.is_soa:
+                continue
+
+            array_type = decl.var_type
+            element = strip_newtype(array_type.element_type)
+            struct_decl = element.symbol.definition if element.symbol else None
+            if not isinstance(struct_decl, hir.HIRStructDecl):
+                raise HIRError(
+                    f"#[soa] static '{decl.name}': element struct "
+                    f"'{element.name}' was never built",
+                    source_loc=decl.source_loc,
+                )
+
+            count = array_type.size
+            explicit = (decl.storage_attr.address
+                        if decl.storage_attr is not None else None)
+            planes = []
+            running = explicit
+            for field_decl in struct_decl.fields:
+                size = self._get_type_size(field_decl.field_type)
+                stride = self._soa_stride(size)
+                child = self._make_soa_plane(decl, field_decl, count, stride, running)
+                planes.append((field_decl.name, field_decl.offset, stride, child))
+                planes_added.append(child)
+                if running is not None:
+                    running += count * stride
+
+            decl.soa_planes = planes
+
+        hir_decls.extend(planes_added)
+
+    def _make_soa_plane(self, parent, field_decl, count, stride, address):
+        """Build one field plane of an `#[soa]` static, and declare its symbol."""
+        name = f"{parent.name}__{field_decl.name}"
+        plane_type = ArrayTypeInfo(element_type=field_decl.field_type, size=count)
+
+        storage_attr = parent.storage_attr
+        if storage_attr is not None:
+            storage_attr = StorageAttribute(
+                name=storage_attr.name,
+                storage_kind=storage_attr.storage_kind,
+                address=address,
+                is_register=False,
+            )
+
+        symbol = Symbol(
+            name=name,
+            kind=SymbolKind.STATIC_VAR,
+            definition=None,
+            scope_id=0,
+            var_type=plane_type,
+            is_mutable=parent.is_mutable,
+        )
+        child = hir.HIRStaticDecl(
+            name=name,
+            is_mutable=parent.is_mutable,
+            var_type=plane_type,
+            storage_attr=storage_attr,
+            bank_attr=parent.bank_attr,
+            is_synthetic=True,
+            soa_stride=stride,
+            symbol=symbol,
+            source_loc=parent.source_loc,
+        )
+        symbol.definition = child
+        self.symbol_table.declare(name, symbol)
+        return child
+
+    def _reject_soa_type(self, var_type, what: str, name: str, source_loc) -> None:
+        """Refuse a declaration whose type is (or contains) a `#[soa]` struct.
+
+        An SoA value exists only as an element of its pool — its bytes live in
+        one array per field, so there is nothing to copy into a local, push as
+        an argument, or embed in another aggregate. Callers pass the index.
+        """
+        from r65.compiler.typeck.type_utils import soa_struct_of
+
+        struct_name = soa_struct_of(var_type)
+        if struct_name is None:
+            return
+        raise HIRError(
+            f"{what} '{name}' cannot have #[soa] type '{struct_name}'",
+            source_loc=source_loc,
+            hint=f"an #[soa] value lives only as an element of its pool; hold the "
+                 f"element index instead, e.g. `let i: u16 = 0;`",
+        )
+
+    def _validate_soa_struct(self, decl: ast.StructDecl) -> None:
+        """Reject `#[soa]` on an aggregate that cannot be split into field planes.
+
+        Runs in pass 1 on the AST, so nothing here may consult field *types* —
+        they are not resolved yet. Type-dependent rules (a field of SoA type, a
+        second backing static) live with the declarations that can see them.
+        """
+        if decl.is_union:
+            raise HIRError(
+                f"#[soa] cannot apply to union '{decl.name}'",
+                source_loc=decl.source_loc,
+                hint="a union's fields overlay at offset 0; splitting them into "
+                     "separate arrays would destroy the aliasing that makes it a union",
+            )
+        if not decl.fields:
+            raise HIRError(
+                f"#[soa] struct '{decl.name}' has no fields",
+                source_loc=decl.source_loc,
+                hint="there is nothing to split into planes",
             )
 
     def _build_static(self, static: ast.StaticDecl) -> hir.HIRStaticDecl:
@@ -1462,14 +1657,11 @@ class HIRBuilder:
 
         raw_storage_attr = None
         allow_lints = frozenset()
-        is_soa = False
         for attr in processed_attrs:
             if isinstance(attr, StorageAttribute):
                 raw_storage_attr = attr
             elif isinstance(attr, AllowAttribute):
                 allow_lints = attr.codes
-            elif isinstance(attr, SoaAttribute):
-                is_soa = True
 
         # Validate storage class based on mutability
         storage_attr = self._validate_static_storage(static, raw_storage_attr)
@@ -1477,9 +1669,16 @@ class HIRBuilder:
         # Resolve type (or use inferred type from pass 1 for include_bytes!)
         if static.var_type is not None:
             var_type = self.type_resolver.resolve_type(static.var_type)
+            # Pass 1 wrapped a bare `#[soa]` struct into a one-element array;
+            # this re-resolves from the same AST, so wrap it again to match.
+            var_type = self._soa_wrap_single_if_soa(var_type)
         else:
             # Type was inferred in pass 1 - retrieve from symbol table
             var_type = self.symbol_table.lookup(static.name).var_type
+
+        # `is_soa` is derived from the element type, not from an attribute on the
+        # static — the attribute lives on the struct.
+        is_soa = self._soa_element_of(var_type) is not None
 
         # Reject include_bytes! on mutable (RAM) statics — no runtime copy support
         if isinstance(static.initializer, ast.IncludeBytesExpr) and static.is_mut:
@@ -1498,9 +1697,6 @@ class HIRBuilder:
             )
         elif static.initializer:
             initializer = self._build_expression(static.initializer)
-
-        if is_soa:
-            self._validate_soa_static(static, var_type, storage_attr)
 
         # Get static symbol
         static_symbol = self.symbol_table.lookup(static.name)
@@ -1609,7 +1805,11 @@ class HIRBuilder:
         # at offset 0 on top of field data, which is why unions cannot implement
         # traits (see _declare_trait_impl).
         hir_fields = []
-        has_type_id = not struct.is_union and struct.name in self._struct_type_ids
+        # An #[soa] element has no offset 0 to hold a TypeId — a *dyn handle
+        # over one carries the type in its high byte instead.
+        has_type_id = (not struct.is_union
+                       and not getattr(struct, 'is_soa', False)
+                       and struct.name in self._struct_type_ids)
 
         if has_type_id:
             # Insert synthetic __type_id: u8 field at offset 0
@@ -1630,6 +1830,7 @@ class HIRBuilder:
         )
 
         for field, field_type, offset in zip(struct.fields, field_types, offsets):
+            self._reject_soa_type(field_type, 'field', field.name, struct.source_loc)
             hir_fields.append(hir.HIRStructField(
                 name=field.name,
                 field_type=field_type,
@@ -1643,6 +1844,7 @@ class HIRBuilder:
             name=struct.name,
             fields=hir_fields,
             is_union=struct.is_union,
+            is_soa=getattr(struct, 'is_soa', False),
             symbol=struct_symbol
         )
 
@@ -1771,6 +1973,19 @@ class HIRBuilder:
 
         # Handle trait impl validation and registration
         if impl.trait_name is not None:
+            # Clone means a contiguous byte copy, which an #[soa] element is not:
+            # its bytes are spread one per plane. Other traits are fine — the
+            # receiver form follows the implementing type, so their methods take
+            # the element index like any other #[soa] method.
+            if (impl.trait_name == 'Clone'
+                    and impl.struct_name in self._soa_structs):
+                raise HIRError(
+                    f"#[soa] struct '{impl.struct_name}' cannot implement Clone",
+                    source_loc=impl.source_loc,
+                    hint="Clone copies a contiguous block, and an #[soa] element's "
+                         "bytes are spread across one array per field; copy the "
+                         "fields you need explicitly",
+                )
             # Compiler lang-item traits (Clone, operator traits) need no source
             # `trait` declaration and are static-dispatch only.
             if is_lang_item_trait(impl.trait_name):
@@ -1831,22 +2046,35 @@ class HIRBuilder:
         sym = self.symbol_table.lookup(name)
         return sym is not None and sym.kind == SymbolKind.NEWTYPE
 
-    def _impl_self_is_by_value(self, impl, method) -> bool:
-        """Decide the self form for an impl method, rejecting the mismatched pairings.
+    def _impl_self_form(self, impl, method) -> 'SelfForm':
+        """Decide the self form for an impl method, rejecting mismatched pairings.
 
-        One self form per type: a newtype is a value and always takes bare `self`;
-        everything else is addressed through `*self`.
+        One self form per type, never per method:
+
+          POINTER    struct/union — addressed through `*self`
+          VALUE_IN_A newtype      — the 1-2 byte payload rides in A
+          INDEX_IN_X #[soa]       — a u16 element index rides in X
+
+        The written form must agree with the type. A trait declared with `*self`
+        is still implemented by a newtype or an SoA struct with bare `self`: the
+        receiver form follows the implementing type, not the declaration.
         """
-        target_is_newtype = self._is_newtype(impl.struct_name)
+        if self._is_newtype(impl.struct_name):
+            form = SelfForm.VALUE_IN_A
+        elif impl.struct_name in self._soa_structs:
+            form = SelfForm.INDEX_IN_X
+        else:
+            form = SelfForm.POINTER
+
         wrote_by_value = getattr(method, 'self_by_value', False)
 
         # An associated function declares no self at all. One is still synthesized
         # below (pre-existing behaviour), but there is no written form to disagree
         # with, so neither check applies — it just follows the type's convention.
         if not getattr(method, 'has_self', True):
-            return target_is_newtype
+            return form
 
-        if target_is_newtype and not wrote_by_value:
+        if form is SelfForm.VALUE_IN_A and not wrote_by_value:
             ret = f" -> {impl.struct_name}" if method.return_type else ""
             raise HIRError(
                 f"method '{impl.struct_name}::{method.name}' takes '*self', but "
@@ -1857,7 +2085,18 @@ class HIRBuilder:
                      f"mutating in place"
             )
 
-        if wrote_by_value and not target_is_newtype:
+        if form is SelfForm.INDEX_IN_X and not wrote_by_value:
+            raise HIRError(
+                f"method '{impl.struct_name}::{method.name}' takes '*self', but "
+                f"'{impl.struct_name}' is #[soa]",
+                source_loc=method.source_loc,
+                hint=f"an #[soa] element has no address — its fields live in "
+                     f"separate arrays. Take 'self' by value: "
+                     f"'fn {method.name}(self, ...)'; inside the body 'self' is the "
+                     f"element index, so 'self.{'field'}' reads that element's plane"
+            )
+
+        if wrote_by_value and form is SelfForm.POINTER:
             raise HIRError(
                 f"method '{impl.struct_name}::{method.name}' takes 'self' by value, "
                 f"but '{impl.struct_name}' is not a newtype",
@@ -1866,7 +2105,7 @@ class HIRBuilder:
                      f"are passed by reference"
             )
 
-        return target_is_newtype
+        return form
 
     def _validate_self_register_conflict(self, impl, method, params, self_binding):
         """Reject a parameter that binds the register a by-value `self` occupies.
@@ -2439,11 +2678,29 @@ class HIRBuilder:
 
         # Build self parameter. A newtype takes `self` by value in the
         # accumulator — the payload is one or two bytes, so there is nothing to
-        # point at and a trivial accessor costs nothing.
-        self_by_value = self._impl_self_is_by_value(impl, method)
-        if self_by_value:
+        # point at and a trivial accessor costs nothing. An #[soa] struct takes
+        # an element index in X, which is where indexed addressing wants it.
+        self_form = self._impl_self_form(impl, method)
+        soa_pool = None
+        if self_form is SelfForm.VALUE_IN_A:
             self_type = self.type_resolver.resolve_named_type(impl.struct_name)
             self_binding = hir.RegisterBinding(register_name='A')
+        elif self_form is SelfForm.INDEX_IN_X:
+            stored = self._soa_storage.get(impl.struct_name)
+            if stored is None and has_self:
+                raise HIRError(
+                    f"#[soa] struct '{impl.struct_name}' has no static, so its "
+                    f"methods have no array to index",
+                    source_loc=method.source_loc,
+                    hint=f"declare one, e.g. "
+                         f"`#[lowram] static mut POOL: [{impl.struct_name}; 16];`",
+                )
+            soa_pool = stored[0] if stored else None
+            # A plain u16: `self` is genuinely an index, so `self == 0` and
+            # `other(self)` work. Field access never sees it — the base rewrite
+            # in ExpressionBuilder turns `self.f` into `POOL[self].f` first.
+            self_type = BasicTypeInfo(name='u16')
+            self_binding = hir.RegisterBinding(register_name='X')
         else:
             struct_type = StructTypeInfo(name=impl.struct_name)
             self_type = PointerTypeInfo(pointee_type=struct_type, is_far=self_is_far)
@@ -2478,8 +2735,15 @@ class HIRBuilder:
         self._validate_self_register_conflict(impl, method, hir_params, self_binding)
         self._validate_no_duplicate_register_bindings(hir_params, mangled_name)
 
-        # Process body
-        hir_body = self._build_block(method.body)
+        # Process body. `_soa_rewrite_base` reads this to turn `self.f` into
+        # `POOL[self].f`; restore rather than clear, so a future nested build
+        # cannot lose an outer pool.
+        previous_pool = self.expression_builder.soa_self_pool
+        self.expression_builder.soa_self_pool = soa_pool
+        try:
+            hir_body = self._build_block(method.body)
+        finally:
+            self.expression_builder.soa_self_pool = previous_pool
 
         # Add implicit return A if needed
         self._add_implicit_return(hir_body, method.return_type, interrupt_attr)
@@ -2692,6 +2956,7 @@ class HIRBuilder:
         var_type = None
         if let.var_type:
             var_type = self.type_resolver.resolve_type(let.var_type)
+            self._reject_soa_type(var_type, 'local', let.name, let.source_loc)
 
         # Process binding
         binding = None

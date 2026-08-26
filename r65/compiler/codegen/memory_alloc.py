@@ -70,6 +70,17 @@ class MemoryAllocator:
     # Size Calculation
     # ========================================================================
 
+    def _decl_size(self, static_decl) -> int:
+        """Bytes to reserve for a static.
+
+        An #[soa] field plane pads each element up to `soa_stride`, so its type
+        under-reports: a `[far *u8; N]` plane is `4*N` bytes, not `3*N`.
+        """
+        stride = getattr(static_decl, 'soa_stride', None)
+        if stride is not None:
+            return stride * static_decl.var_type.size
+        return self.get_type_size(static_decl.var_type)
+
     def get_type_size(self, type_info) -> int:
         """
         Get size in bytes for a type.
@@ -127,7 +138,7 @@ class MemoryAllocator:
         Raises:
             Exception: If address out of range or no space for auto-allocation
         """
-        size = self.get_type_size(static_decl.var_type)
+        size = self._decl_size(static_decl)
 
         if explicit_addr is not None:
             # Explicit address - use as-is, no collision check
@@ -255,7 +266,7 @@ class MemoryAllocator:
         Raises:
             Exception: If address out of range or no space for auto-allocation
         """
-        size = self.get_type_size(static_decl.var_type)
+        size = self._decl_size(static_decl)
 
         if explicit_addr is not None:
             # Explicit address - use as-is, no collision check
@@ -361,7 +372,7 @@ class MemoryAllocator:
         Raises:
             Exception: If address out of range or no space for auto-allocation
         """
-        size = self.get_type_size(static_decl.var_type)
+        size = self._decl_size(static_decl)
 
         if explicit_addr is not None:
             # Explicit address - use as-is, no collision check
@@ -421,7 +432,7 @@ class MemoryAllocator:
         Returns:
             AllocationInfo for the allocation
         """
-        size = self.get_type_size(static_decl.var_type)
+        size = self._decl_size(static_decl)
 
         alloc = AllocationInfo(
             symbol=symbol,
@@ -456,7 +467,7 @@ class MemoryAllocator:
             ROM allocations are handled differently - they're placed in
             the code section by the emitter. This just tracks the allocation.
         """
-        size = self.get_type_size(static_decl.var_type)
+        size = self._decl_size(static_decl)
 
         alloc = AllocationInfo(
             symbol=symbol,
@@ -496,6 +507,11 @@ class MemoryAllocator:
             if getattr(decl, 'is_extern', False):
                 # extern statics own their address in the included asm file —
                 # no allocation, no symbol_gen emission.
+                continue
+            if getattr(decl, 'soa_planes', None) is not None:
+                # #[soa] parent: the data lives in its field planes, which are
+                # separate decls in this same list. Allocating the parent too
+                # would reserve the bytes twice.
                 continue
             if decl.storage_attr and decl.storage_attr.address is not None:
                 explicit_decls.append(decl)

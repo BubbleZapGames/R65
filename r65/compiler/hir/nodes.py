@@ -236,6 +236,14 @@ class HIRStaticDecl(HIRDeclaration):
     # True for the per-field arrays SoA expansion synthesizes. They have no
     # source location the user would recognise, so lint rules skip them.
     is_synthetic: bool = False
+    # Parent only: [(field_name, aos_offset, stride, child_decl)] in declaration
+    # order. `aos_offset` is the field's offset in the packed layout, which is
+    # the key MIR inverts to find the owning plane of a folded field chain.
+    soa_planes: Optional[list] = None
+    # Child only: bytes per element in this plane. Normally the field's size,
+    # rounded up when that costs at most one byte (3 -> 4, 7 -> 8) so the index
+    # scales by a shift instead of a shift-and-add.
+    soa_stride: Optional[int] = None
     # Lint codes suppressed on this static via #[allow(...)]; "*" means all.
     allow_lints: frozenset = field(default_factory=frozenset)
 
@@ -274,6 +282,11 @@ class HIRStructDecl(HIRDeclaration):
     name: str = ""
     fields: List[HIRStructField] = field(default_factory=list)
     is_union: bool = False
+    # #[soa]: arrays of this struct are laid out as one plane per field, and its
+    # methods take `self` as an element index. Carried here as well as on the AST
+    # node because pass 2 replaces `Symbol.definition` with this one, and the SoA
+    # predicate has to answer the same on both. See docs/soa.md.
+    is_soa: bool = False
 
     # Symbol reference
     symbol: Optional[Any] = None  # Will be Symbol
