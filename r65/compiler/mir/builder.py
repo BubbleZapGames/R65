@@ -79,7 +79,6 @@ class MIRBuilder:
         # (id(array_symbol), id(index_symbol)) for which X is currently valid,
         # or None. Conservatively invalidated (block change, any X clobber,
         # write to the index variable).
-        self._x_index_cache: Optional[tuple] = None
 
         # ROM data section tracking for array literals
         self._rom_data_counter = 0
@@ -127,12 +126,17 @@ class MIRBuilder:
 
     @current_block.setter
     def current_block(self, value: Optional[BasicBlock]):
-        # The X-index reuse cache is only valid within a single basic block:
-        # crossing any block boundary (branch, loop header/latch, merge) means
-        # X may no longer hold the cached scaled index.
-        if value is not self.ctx.current_block:
-            self._x_index_cache = None
-        self.ctx.current_block = value
+        # One path for both routes into a block switch — `match` lowering calls
+        # ctx.set_current_block directly, so the invalidation cannot live here.
+        self.ctx.set_current_block(value)
+
+    @property
+    def _x_index_cache(self) -> Optional[tuple]:
+        return self.ctx.x_index_cache
+
+    @_x_index_cache.setter
+    def _x_index_cache(self, value: Optional[tuple]):
+        self.ctx.x_index_cache = value
 
     @property
     def cfg_builder(self) -> Optional[CFGBuilder]:

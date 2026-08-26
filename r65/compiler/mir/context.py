@@ -38,6 +38,11 @@ class LoweringContext:
 
     current_function: Optional[MIRFunction] = None
     current_block: Optional[BasicBlock] = None
+    # Scaled index cached in X, valid only within one basic block. Lives here
+    # rather than on MIRBuilder because block switches arrive by two routes —
+    # the builder's `current_block` setter and `set_current_block` below — and
+    # both have to invalidate it. See MIRBuilder.x_index_reuse_key.
+    x_index_cache: Optional[tuple] = None
     cfg_builder: Optional[CFGBuilder] = None
 
     # ========================================================================
@@ -125,7 +130,14 @@ class LoweringContext:
         self.current_function.exit_block_ids = self.cfg_builder.find_exit_blocks()
 
     def set_current_block(self, block: BasicBlock):
-        """Set the current block for instruction emission."""
+        """Set the current block for instruction emission.
+
+        Invalidates the X-index cache on a real change: crossing any block
+        boundary (branch, match arm, loop header/latch, merge) means X may no
+        longer hold the cached scaled index.
+        """
+        if block is not self.current_block:
+            self.x_index_cache = None
         self.current_block = block
 
     # ========================================================================
