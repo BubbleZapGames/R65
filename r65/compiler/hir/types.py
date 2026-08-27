@@ -181,9 +181,31 @@ class EnumTypeInfo(TypeInfo):
     """Enum type reference."""
     name: str
     definition: Optional[Any] = None  # Will be HIREnumDecl (resolved during HIR)
+    symbol: Optional[Any] = None  # Symbol table entry (definition is re-pointed in pass 2)
 
     @property
     def size_bytes(self) -> int:
+        """Width of the discriminant: 1 byte, or 2 once a variant exceeds 255.
+
+        Read from `HIREnumDecl.underlying_type`, which `_build_enum` infers from
+        the largest variant value. Prefer the symbol's definition over our own:
+        `resolve_named_type` may have captured an `ast.EnumDecl` in pass 1, and
+        the symbol is re-pointed at the HIR node in pass 2 — the same reason
+        `StructTypeInfo.size_bytes` looks through the symbol first.
+
+        Falls back to 1 only when no definition is reachable at all. That is the
+        u8 case for every enum the compiler can actually see; a site that builds
+        an `EnumTypeInfo` with neither definition nor symbol is the bug to fix,
+        not this default.
+        """
+        defn = None
+        if self.symbol is not None and getattr(self.symbol, 'definition', None) is not None:
+            defn = self.symbol.definition
+        elif self.definition is not None:
+            defn = self.definition
+        underlying = getattr(defn, 'underlying_type', None)
+        if underlying is not None:
+            return underlying.size_bytes
         return 1
 
     def __str__(self):
@@ -368,7 +390,7 @@ class TypeResolver:
             return NewtypeTypeInfo(newtype_name=name, inner=symbol.type_info,
                                    definition=symbol.definition)
         elif symbol.kind.value == "enum":
-            return EnumTypeInfo(name=name, definition=symbol.definition)
+            return EnumTypeInfo(name=name, definition=symbol.definition, symbol=symbol)
         elif symbol.kind.value == "trait":
             return TraitTypeInfo(name=name, definition=symbol.definition)
         elif symbol.kind.value == "type_alias":

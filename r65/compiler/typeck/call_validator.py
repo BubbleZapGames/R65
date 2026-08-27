@@ -16,7 +16,7 @@ from r65.compiler.hir import (
 )
 from r65.compiler.hir.types import (
     TypeInfo, FunctionTypeInfo, ArrayTypeInfo, PointerTypeInfo, TraitTypeInfo,
-    NewtypeTypeInfo,
+    NewtypeTypeInfo, EnumTypeInfo,
 )
 from r65.compiler.typeck.errors import TypeCheckError
 from r65.compiler.typeck.type_utils import TypeUtils
@@ -326,14 +326,27 @@ class CallValidator:
         receiver_is_pointer = False
         pointer_is_far = False
 
-        receiver_is_newtype = False
+        # A receiver whose `self` rides in A rather than being addressed: a
+        # newtype's payload, or an enum's discriminant. Both are register-sized
+        # values with nothing to point at.
+        receiver_by_value = False
 
         if isinstance(receiver_type, StructTypeInfo):
             struct_name = receiver_type.name
         elif isinstance(receiver_type, NewtypeTypeInfo):
             # Method lookup is keyed on the nominal name.
             struct_name = receiver_type.newtype_name
-            receiver_is_newtype = True
+            receiver_by_value = True
+        elif isinstance(receiver_type, EnumTypeInfo):
+            struct_name = receiver_type.name
+            # A fieldless enum is a value and rides in A. A tagged one has no
+            # contiguous element, so its receiver is the element index instead —
+            # the `self_is_index` path below, shared with #[soa].
+            definition = getattr(receiver_type, 'definition', None)
+            symbol = getattr(receiver_type, 'symbol', None)
+            if symbol is not None and getattr(symbol, 'definition', None) is not None:
+                definition = symbol.definition
+            receiver_by_value = not getattr(definition, 'is_tagged', False)
         elif isinstance(receiver_type, PointerTypeInfo):
             if isinstance(receiver_type.pointee_type, StructTypeInfo):
                 struct_name = receiver_type.pointee_type.name
@@ -397,14 +410,14 @@ class CallValidator:
             self_param is not None
             and isinstance(self_param.binding, RegisterBinding)
             and self_param.binding.register_name == 'X'
-            and not receiver_is_pointer and not receiver_is_newtype
+            and not receiver_is_pointer and not receiver_by_value
         )
 
         if receiver_is_pointer:
             self_arg = field_access.base
-        elif receiver_is_newtype:
+        elif receiver_by_value:
             # By-value self: pass the value itself. Taking its address is exactly
-            # what a newtype exists to avoid.
+            # what a newtype (or an enum's discriminant) exists to avoid.
             self_arg = field_access.base
         elif self_is_index:
             # #[soa]: `self` is the element index, so pass the index rather than

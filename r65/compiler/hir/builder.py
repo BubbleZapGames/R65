@@ -75,6 +75,21 @@ class HIRBuilder:
         # Both are populated in pass 1, so pass 2 sees them complete.
         self._soa_structs: Set[str] = set()
         self._soa_storage: Dict[str, Any] = {}  # struct name -> (Symbol, source_loc)
+        # Names of tagged enums, and the single static backing each. A tagged
+        # enum is planed exactly like a `#[soa]` struct — see docs/enums.md — so
+        # it carries the same one-static rule and the same storage validations.
+        self._tagged_enums: Set[str] = set()
+        self._enum_storage: Dict[str, Any] = {}  # enum name -> (Symbol, source_loc)
+        # Filled by `_setup_tagged_enums` between the passes.
+        self._enum_payloads: Dict[str, Dict[str, Any]] = {}  # enum -> variant -> StructTypeInfo
+        self._enum_payload_unions: Dict[str, Any] = {}  # enum -> HIRStructDecl
+        self._enum_planes: Dict[str, Any] = {}  # enum -> (tag Symbol, data Symbol)
+        # The expression builder answers the same questions while building
+        # bodies; share the objects rather than copying, so it always sees what
+        # passes 1 and 1.5 filled in.
+        self.expression_builder.enum_storage = self._enum_storage
+        self.expression_builder.tagged_enums = self._tagged_enums
+        self.expression_builder.enum_payloads = self._enum_payloads
         self._trait_impls: Dict[str, List[str]] = {}  # trait_name -> [struct_name, ...] ordered by TypeId
         self._trait_impl_locs: Dict[tuple, Any] = {}  # (trait_name, struct_name) -> source_loc
         self._struct_trait_kind: Dict[str, str] = {}  # struct_name -> 'near' or 'far'
@@ -217,6 +232,14 @@ class HIRBuilder:
         self._validate_trait_hierarchy()
         self._validate_supertrait_impls()
 
+        # Pass 1.5: resolve tagged enum payloads and declare their plane symbols.
+        # Between the passes on purpose. Payload resolution needs every struct
+        # declared, so it cannot run during pass 1 without forcing the payload
+        # struct to be written above the enum; and the plane symbols have to
+        # exist before pass 2 builds any function body, because that is where a
+        # `match` desugars into reads of those very planes.
+        self._setup_tagged_enums(ast_program)
+
         # Pass 2: Build HIR nodes with resolved references (filtered by cfg)
         hir_decls = []
         self.current_bank = 0  # Reset for second pass
@@ -260,6 +283,7 @@ class HIRBuilder:
         # Third pass: expand every #[soa] static into one array per field. Runs
         # after the loop above so every element struct's HIRStructDecl exists,
         # and so the whole program is in hand.
+        self._pad_enum_payloads()
         self._expand_soa_statics(hir_decls)
 
         # Use pending snesrom config if it was set from an attribute
@@ -495,11 +519,13 @@ class HIRBuilder:
                     source_loc=decl.source_loc,
                     hint="add ': Type' after the name, e.g., static NAME: u8 = ...;"
                 )
-            # A bare `#[soa]` struct static is a pool of one; wrap it before the
-            # symbol is built so every consumer sees the array form.
-            soa_single = (self._soa_element_of(var_type) is not None
-                          and not isinstance(var_type, ArrayTypeInfo))
-            if soa_single:
+            # A bare static of a planed type — a `#[soa]` struct or a tagged
+            # enum — is a pool of one; wrap it before the symbol is built so
+            # every consumer sees the array form.
+            planed_single = (not isinstance(var_type, ArrayTypeInfo)
+                             and (self._soa_element_of(var_type) is not None
+                                  or self._tagged_enum_of(var_type) is not None))
+            if planed_single:
                 var_type = self._soa_wrap_single(var_type)
             symbol = Symbol(
                 name=decl.name,
@@ -509,8 +535,9 @@ class HIRBuilder:
                 var_type=var_type,
                 is_mutable=decl.is_mut
             )
-            symbol.soa_single = soa_single
+            symbol.soa_single = planed_single
             self._bind_soa_storage(decl, var_type, symbol)
+            self._bind_enum_storage(decl, var_type, symbol)
             self.symbol_table.declare(decl.name, symbol)
 
         elif isinstance(decl, ast.ConstDecl):
@@ -568,6 +595,10 @@ class HIRBuilder:
             self.symbol_table.declare(decl.name, symbol)
 
         elif isinstance(decl, ast.EnumDecl):
+            # Recorded in pass 1 so a static declared later can ask whether its
+            # element type is planed, the way `_soa_structs` is.
+            if self._enum_is_tagged(decl):
+                self._tagged_enums.add(decl.name)
             # Create enum type symbol
             enum_symbol = Symbol(
                 name=decl.name,
@@ -578,22 +609,16 @@ class HIRBuilder:
             self.symbol_table.declare(decl.name, enum_symbol)
 
             # Declare variants in global scope with qualified names
-            current_value = 0
-            for variant in decl.variants:
-                if variant.value is not None:
-                    current_value = self.const_evaluator.eval(variant.value)
-
+            for variant, value in self._enum_discriminants(decl):
                 variant_symbol = Symbol(
                     name=f"{decl.name}::{variant.name}",
                     kind=SymbolKind.ENUM_VARIANT,
                     definition=variant,
                     scope_id=0,
-                    const_value=current_value
+                    const_value=value
                 )
                 # Store with qualified name for resolution
                 self.symbol_table.declare(f"{decl.name}::{variant.name}", variant_symbol)
-
-                current_value += 1
 
         elif isinstance(decl, ast.TypeAlias):
             # Resolve aliased type
@@ -1277,7 +1302,6 @@ class HIRBuilder:
 
         # A newtype is its payload in a register — that is the whole point of the
         # type. `bound_type` stays unstripped so diagnostics name what was written.
-        is_newtype = isinstance(bound_type, NewtypeTypeInfo)
         payload = strip_newtype(bound_type)
 
         if isinstance(payload, PointerTypeInfo):
@@ -1289,10 +1313,12 @@ class HIRBuilder:
                 )
             # Near pointers are 16-bit, treat like u16 for register validation
             type_name = 'u16'
-        elif is_newtype and isinstance(payload, EnumTypeInfo):
-            # Enums are a byte wide. A bare enum still cannot bind a register
-            # (unchanged), but a newtype over one is a value type by design.
-            type_name = 'u8'
+        elif isinstance(payload, EnumTypeInfo):
+            # An enum is an integer of its own width — a value type, like the
+            # newtype over one that used to be the only spelling accepted here.
+            # `self` in an enum method arrives in A this way, so bare enums must
+            # bind too; see docs/enums.md.
+            type_name = 'u16' if payload.size_bytes == 2 else 'u8'
         elif not isinstance(payload, BasicTypeInfo):
             raise HIRError(
                 f"{context.capitalize()} '{name}' bound to register {register_name} "
@@ -1444,10 +1470,15 @@ class HIRBuilder:
         return getattr(struct_type, 'name', None) in self._soa_structs
 
     def _soa_wrap_single_if_soa(self, var_type):
-        """Wrap *var_type* into `[T; 1]` only if it is a bare `#[soa]` struct."""
+        """Wrap *var_type* into `[T; 1]` only if it is a bare planed type.
+
+        A `#[soa]` struct or a tagged enum — both are pools, so a lone instance
+        is a pool of one and every downstream path stays the array path.
+        """
         if isinstance(var_type, ArrayTypeInfo):
             return var_type
-        if self._soa_element_of(var_type) is None:
+        if (self._soa_element_of(var_type) is None
+                and self._tagged_enum_of(var_type) is None):
             return var_type
         return self._soa_wrap_single(var_type)
 
@@ -1476,24 +1507,42 @@ class HIRBuilder:
         element = self._soa_element_of(var_type)
         if element is None:
             return
+        self._bind_planed_storage(
+            decl, symbol, element.name, self._soa_storage,
+            noun=f"#[soa] struct '{element.name}'",
+            static_noun="#[soa] static",
+            duplicate_hint="a #[soa] struct backs exactly one array — its methods "
+                           "index that array's field planes by an address fixed at "
+                           "compile time, so a second storage has nowhere to point; "
+                           "merge the pools, or drop #[soa] and write the parallel "
+                           "arrays by hand",
+        )
 
-        previous = self._soa_storage.get(element.name)
+    def _bind_planed_storage(self, decl: ast.StaticDecl, symbol, type_name: str,
+                             registry: dict, *, noun: str, static_noun: str,
+                             duplicate_hint: str) -> None:
+        """Record the single static backing a planed type, or reject a second.
+
+        Shared by `#[soa]` structs and tagged enums. Both split their storage
+        into planes addressed by a compile-time-fixed label, so both admit
+        exactly one backing static and both rule out the storage forms that
+        would leave the planes unplaced: `extern` (placement belongs to the asm
+        file), `#[hw]` (a fixed hardware layout), immutable (ROM with nothing to
+        put in it), and an initializer (transposing one into planes is not
+        implemented).
+        """
+        previous = registry.get(type_name)
         if previous is not None:
-            prev_symbol, prev_loc = previous
+            prev_symbol, _prev_loc = previous
             raise HIRError(
-                f"#[soa] struct '{element.name}' is already stored by "
-                f"static '{prev_symbol.name}'",
+                f"{noun} is already stored by static '{prev_symbol.name}'",
                 source_loc=decl.source_loc,
-                hint="a #[soa] struct backs exactly one array — its methods index "
-                     "that array's field planes by an address fixed at compile "
-                     "time, so a second storage has nowhere to point; merge the "
-                     "pools, or drop #[soa] and write the parallel arrays by hand",
+                hint=duplicate_hint,
             )
 
         if decl.is_extern:
             raise HIRError(
-                f"extern static '{decl.name}' cannot have #[soa] element type "
-                f"'{element.name}'",
+                f"extern static '{decl.name}' cannot have {noun} element type",
                 source_loc=decl.source_loc,
                 hint="placement is owned by the included asm file, which has no "
                      "way to express one array per field",
@@ -1501,28 +1550,55 @@ class HIRBuilder:
         for attr in decl.attributes:
             if attr.name == 'hw':
                 raise HIRError(
-                    f"#[soa] static '{decl.name}' cannot use #[hw] storage",
+                    f"{static_noun} '{decl.name}' cannot use #[hw] storage",
                     source_loc=decl.source_loc,
                     hint="hardware registers have a fixed layout the compiler "
                          "does not place",
                 )
         if not decl.is_mut:
             raise HIRError(
-                f"#[soa] static '{decl.name}' must be `static mut`",
+                f"{static_noun} '{decl.name}' must be `static mut`",
                 source_loc=decl.source_loc,
-                hint="an immutable static is ROM, and a #[soa] static cannot "
+                hint="an immutable static is ROM, and a planed static cannot "
                      "carry an initializer — so it could only ever be undefined "
                      "bytes; add 'mut'",
             )
         if decl.initializer is not None:
             raise HIRError(
-                f"#[soa] static '{decl.name}' cannot have an initializer yet",
+                f"{static_noun} '{decl.name}' cannot have an initializer yet",
                 source_loc=decl.source_loc,
-                hint="transposing an array literal into per-field tables is not "
+                hint="transposing an array literal into per-plane tables is not "
                      "implemented; leave it uninitialized for now",
             )
 
-        self._soa_storage[element.name] = (symbol, decl.source_loc)
+        registry[type_name] = (symbol, decl.source_loc)
+
+    def _tagged_enum_of(self, var_type):
+        """The tagged `EnumTypeInfo` of *var_type*, else None.
+
+        Accepts `[Shape; N]` and a bare `Shape` alike, mirroring
+        `_soa_element_of`: a single instance is a pool of one.
+        """
+        inner = var_type.element_type if isinstance(var_type, ArrayTypeInfo) else var_type
+        inner = strip_newtype(inner)
+        if not isinstance(inner, EnumTypeInfo):
+            return None
+        return inner if inner.name in self._tagged_enums else None
+
+    def _bind_enum_storage(self, decl: ast.StaticDecl, var_type, symbol) -> None:
+        """Record the single static backing a tagged enum, or reject a second."""
+        element = self._tagged_enum_of(var_type)
+        if element is None:
+            return
+        self._bind_planed_storage(
+            decl, symbol, element.name, self._enum_storage,
+            noun=f"tagged enum '{element.name}'",
+            static_noun="tagged enum static",
+            duplicate_hint="a tagged enum backs exactly one array — its methods "
+                           "index that array's tag and payload planes by an address "
+                           "fixed at compile time, so a second storage has nowhere "
+                           "to point; merge the pools",
+        )
 
     @staticmethod
     def _soa_stride(size: int) -> int:
@@ -1536,8 +1612,33 @@ class HIRBuilder:
         """
         return 4 if size == 3 else 8 if size == 7 else size
 
+    def _pad_enum_payloads(self) -> None:
+        """Round each payload union up to a power-of-two stride where it is cheap.
+
+        A 3-byte element scales by two ASLs; 3 itself needs a shift, a CLC and an
+        ADC. `_soa_stride` draws the same line for `#[soa]` field planes, and
+        padding a *union* takes one field, since its size is its largest member.
+
+        Runs in pass 3, the first point at which every payload struct is HIR and
+        so has a real size.
+        """
+        for union in self._enum_payload_unions.values():
+            natural = max(f.field_type.size_bytes for f in union.fields)
+            stride = self._soa_stride(natural)
+            if stride > natural:
+                union.fields.append(hir.HIRStructField(
+                    name='__pad',
+                    field_type=ArrayTypeInfo(element_type=BasicTypeInfo(name='u8'),
+                                             size=stride),
+                    offset=0))
+
     def _expand_soa_statics(self, hir_decls: list) -> None:
-        """Replace each `#[soa]` static's storage with one array per field.
+        """Replace each planed static's storage with one array per plane.
+
+        A `#[soa]` struct contributes one plane per field; a tagged enum
+        contributes exactly two, a tag plane and a payload plane. Both are laid
+        out identically from here down, which is the point — the plane, its
+        stride, its synthetic symbol and its allocation are one mechanism.
 
         The parent stays in the declaration list — type checking and the MIR
         funnel both resolve through it — but is allocated no bytes; the planes
@@ -1548,26 +1649,16 @@ class HIRBuilder:
             if not isinstance(decl, hir.HIRStaticDecl) or not decl.is_soa:
                 continue
 
-            array_type = decl.var_type
-            element = strip_newtype(array_type.element_type)
-            struct_decl = element.symbol.definition if element.symbol else None
-            if not isinstance(struct_decl, hir.HIRStructDecl):
-                raise HIRError(
-                    f"#[soa] static '{decl.name}': element struct "
-                    f"'{element.name}' was never built",
-                    source_loc=decl.source_loc,
-                )
-
-            count = array_type.size
+            count = decl.var_type.size
             explicit = (decl.storage_attr.address
                         if decl.storage_attr is not None else None)
             planes = []
             running = explicit
-            for field_decl in struct_decl.fields:
+            for field_decl, aos_offset in self._plane_fields(decl):
                 size = self._get_type_size(field_decl.field_type)
                 stride = self._soa_stride(size)
                 child = self._make_soa_plane(decl, field_decl, count, stride, running)
-                planes.append((field_decl.name, field_decl.offset, stride, child))
+                planes.append((field_decl.name, aos_offset, stride, child))
                 planes_added.append(child)
                 if running is not None:
                     running += count * stride
@@ -1575,6 +1666,45 @@ class HIRBuilder:
             decl.soa_planes = planes
 
         hir_decls.extend(planes_added)
+
+    def _plane_fields(self, decl: 'hir.HIRStaticDecl'):
+        """The `(field, aos_offset)` list *decl* splits into planes.
+
+        `aos_offset` is where the plane would start in a packed
+        array-of-structs layout. MIR inverts it by range to find the plane
+        owning a folded field chain, so the values only have to be ordered and
+        non-overlapping, which the packed layout guarantees.
+        """
+        element = strip_newtype(decl.var_type.element_type)
+        definition = element.symbol.definition if element.symbol else None
+
+        if isinstance(element, EnumTypeInfo):
+            if not isinstance(definition, hir.HIREnumDecl):
+                raise HIRError(
+                    f"tagged enum static '{decl.name}': enum '{element.name}' "
+                    f"was never built",
+                    source_loc=decl.source_loc,
+                )
+            # The tag leads so that a tag read is `LDA POOL__tag,X` with the raw
+            # index in X — no scaling — which is the whole reason for the split.
+            tag = hir.HIRStructField(
+                name='tag', field_type=definition.underlying_type, offset=0)
+            payload = definition.payload_union
+            data = hir.HIRStructField(
+                name='data',
+                field_type=StructTypeInfo(name=payload.name,
+                                          definition=payload,
+                                          symbol=payload.symbol),
+                offset=tag.field_type.size_bytes)
+            return [(tag, tag.offset), (data, data.offset)]
+
+        if not isinstance(definition, hir.HIRStructDecl):
+            raise HIRError(
+                f"#[soa] static '{decl.name}': element struct "
+                f"'{element.name}' was never built",
+                source_loc=decl.source_loc,
+            )
+        return [(f, f.offset) for f in definition.fields]
 
     def _make_soa_plane(self, parent, field_decl, count, stride, address):
         """Build one field plane of an `#[soa]` static, and declare its symbol."""
@@ -1590,14 +1720,23 @@ class HIRBuilder:
                 is_register=False,
             )
 
-        symbol = Symbol(
-            name=name,
-            kind=SymbolKind.STATIC_VAR,
-            definition=None,
-            scope_id=0,
-            var_type=plane_type,
-            is_mutable=parent.is_mutable,
-        )
+        # A tagged enum's planes were declared in pass 1.5 so function bodies
+        # could already name them; adopt that symbol rather than shadowing it,
+        # or the body and the allocation would refer to two different objects.
+        symbol = self.symbol_table.lookup(name)
+        if symbol is not None and symbol.definition is None:
+            symbol.var_type = plane_type
+            symbol.is_mutable = parent.is_mutable
+        else:
+            symbol = Symbol(
+                name=name,
+                kind=SymbolKind.STATIC_VAR,
+                definition=None,
+                scope_id=0,
+                var_type=plane_type,
+                is_mutable=parent.is_mutable,
+            )
+            self.symbol_table.declare(name, symbol)
         child = hir.HIRStaticDecl(
             name=name,
             is_mutable=parent.is_mutable,
@@ -1610,25 +1749,27 @@ class HIRBuilder:
             source_loc=parent.source_loc,
         )
         symbol.definition = child
-        self.symbol_table.declare(name, symbol)
         return child
 
     def _reject_soa_type(self, var_type, what: str, name: str, source_loc) -> None:
-        """Refuse a declaration whose type is (or contains) a `#[soa]` struct.
+        """Refuse a declaration whose type is (or contains) a planed type.
 
-        An SoA value exists only as an element of its pool — its bytes live in
-        one array per field, so there is nothing to copy into a local, push as
-        an argument, or embed in another aggregate. Callers pass the index.
+        A `#[soa]` struct or a tagged-enum value exists only as an element of
+        its pool — its bytes live in one array per plane, so there is nothing to
+        copy into a local, push as an argument, or embed in another aggregate.
+        Callers pass the index.
         """
         from r65.compiler.typeck.type_utils import soa_struct_of
 
-        struct_name = soa_struct_of(var_type)
-        if struct_name is None:
+        planed_name = soa_struct_of(var_type)
+        if planed_name is None:
             return
+        kind = ("tagged enum" if planed_name in self._tagged_enums
+                else "#[soa] type")
         raise HIRError(
-            f"{what} '{name}' cannot have #[soa] type '{struct_name}'",
+            f"{what} '{name}' cannot have {kind} '{planed_name}'",
             source_loc=source_loc,
-            hint=f"an #[soa] value lives only as an element of its pool; hold the "
+            hint=f"a planed value lives only as an element of its pool; hold the "
                  f"element index instead, e.g. `let i: u16 = 0;`",
         )
 
@@ -1677,16 +1818,19 @@ class HIRBuilder:
         # Resolve type (or use inferred type from pass 1 for include_bytes!)
         if static.var_type is not None:
             var_type = self.type_resolver.resolve_type(static.var_type)
-            # Pass 1 wrapped a bare `#[soa]` struct into a one-element array;
-            # this re-resolves from the same AST, so wrap it again to match.
+            # Pass 1 wrapped a bare planed type into a one-element array; this
+            # re-resolves from the same AST, so wrap it again to match.
             var_type = self._soa_wrap_single_if_soa(var_type)
         else:
             # Type was inferred in pass 1 - retrieve from symbol table
             var_type = self.symbol_table.lookup(static.name).var_type
 
-        # `is_soa` is derived from the element type, not from an attribute on the
-        # static — the attribute lives on the struct.
-        is_soa = self._soa_element_of(var_type) is not None
+        # `is_soa` — "this static is split into planes" — is derived from the
+        # element type, not from an attribute on the static. A `#[soa]` struct
+        # carries the attribute on the struct; a tagged enum is planed by virtue
+        # of having a payload variant at all.
+        is_soa = (self._soa_element_of(var_type) is not None
+                  or self._tagged_enum_of(var_type) is not None)
 
         # Reject include_bytes! on mutable (RAM) statics — no runtime copy support
         if isinstance(static.initializer, ast.IncludeBytesExpr) and static.is_mut:
@@ -1863,35 +2007,64 @@ class HIRBuilder:
 
         return hir_struct
 
+    @staticmethod
+    def _enum_is_tagged(enum: ast.EnumDecl) -> bool:
+        """True if any variant of *enum* carries a payload (an AST-level query)."""
+        return any(v.payload_type is not None for v in enum.variants)
+
+    def _enum_discriminants(self, enum: ast.EnumDecl):
+        """Yield `(variant, discriminant)` for every variant, in order.
+
+        Both passes need these numbers: pass 1 to declare `Enum::Variant`
+        symbols, pass 2 to build the HIR variants. They used to be walked twice
+        by two copies of the same loop, which is a correctness hazard the moment
+        the rule stops being "add one" — as it does for a tagged enum, where an
+        explicit discriminant is rejected outright.
+        """
+        tagged = self._enum_is_tagged(enum)
+        current = 0
+        for variant in enum.variants:
+            if variant.value is not None:
+                if tagged:
+                    raise HIRError(
+                        f"variant '{enum.name}::{variant.name}' cannot have an "
+                        f"explicit discriminant",
+                        source_loc=enum.source_loc,
+                        hint="a tagged enum numbers its variants from 0 so the tag "
+                             "indexes a jump table directly; drop the '= ...'",
+                    )
+                current = self.const_evaluator.eval(variant.value)
+            yield variant, current
+            current += 1
+
+    @staticmethod
+    def _discriminant_type(max_value: int) -> BasicTypeInfo:
+        """Width of a discriminant that has to hold *max_value*."""
+        return BasicTypeInfo(name='u8' if max_value <= 255 else 'u16')
+
     def _build_enum(self, enum: ast.EnumDecl) -> hir.HIREnumDecl:
         """Build HIR enum declaration from AST."""
         # Build variants with resolved values
         hir_variants = []
-        current_value = 0
         max_value = 0
 
-        for variant in enum.variants:
-            if variant.value is not None:
-                current_value = self.const_evaluator.eval(variant.value)
-
+        for variant, value in self._enum_discriminants(enum):
             # Get variant symbol
             variant_symbol = self.symbol_table.lookup(f"{enum.name}::{variant.name}")
 
+            payload_type = self._enum_payloads.get(enum.name, {}).get(variant.name)
+
             hir_variant = hir.HIREnumVariant(
                 name=variant.name,
-                value=current_value,
+                value=value,
+                payload_type=payload_type,
                 symbol=variant_symbol
             )
             hir_variants.append(hir_variant)
 
-            max_value = max(max_value, current_value)
-            current_value += 1
+            max_value = max(max_value, value)
 
-        # Infer underlying type (u8 or u16)
-        if max_value <= 255:
-            underlying_type = BasicTypeInfo(name='u8')
-        else:
-            underlying_type = BasicTypeInfo(name='u16')
+        underlying_type = self._discriminant_type(max_value)
 
         # Get enum symbol
         enum_symbol = self.symbol_table.lookup(enum.name)
@@ -1902,11 +2075,169 @@ class HIRBuilder:
             underlying_type=underlying_type,
             symbol=enum_symbol
         )
+        hir_enum.payload_union = self._enum_payload_unions.get(enum.name)
 
         # Update symbol to point to HIR definition (not AST)
         enum_symbol.definition = hir_enum
 
         return hir_enum
+
+    def _resolve_enum_payload(self, enum: ast.EnumDecl, variant: ast.EnumVariant):
+        """Resolve and validate a variant payload, which must name a plain struct.
+
+        The payload becomes a field of the synthetic payload union, so it has to
+        be something that can *be* a union field with a stable layout. Each
+        rejection below names why the type in particular cannot.
+        """
+        where = f"payload of '{enum.name}::{variant.name}'"
+        ast_type = variant.payload_type
+
+        if not isinstance(ast_type, ast.BasicType):
+            raise HIRError(
+                f"{where} must name a struct",
+                source_loc=enum.source_loc,
+                hint="an enum payload is a declared struct — arrays, pointers and "
+                     "type lists have no name to match on; wrap it in a struct",
+            )
+
+        # The same built-in set `TypeResolver.resolve_type` splits on.
+        if ast_type.name in ('u8', 'i8', 'u16', 'i16', 'u24', 'bool', 'void'):
+            raise HIRError(
+                f"{where} is '{ast_type.name}', not a struct",
+                source_loc=enum.source_loc,
+                hint=f"a payload must be a named struct so a pattern binding has "
+                     f"fields to reach; wrap it, e.g. "
+                     f"`struct {variant.name}Data {{ value: {ast_type.name} }}`",
+            )
+
+        symbol = self.symbol_table.lookup(ast_type.name)
+        if symbol is None:
+            raise HIRError(
+                f"{where} names undefined type '{ast_type.name}'",
+                source_loc=enum.source_loc,
+            )
+        if symbol.kind != SymbolKind.STRUCT:
+            kinds = {
+                SymbolKind.NEWTYPE: ("a newtype",
+                                     "a newtype is a scalar, so it has no fields to "
+                                     "reach through a pattern binding; use its payload "
+                                     "type in a struct"),
+                SymbolKind.ENUM: ("an enum",
+                                  "a nested tag has nowhere to live — the payload "
+                                  "plane holds bytes, not a second discriminant"),
+                SymbolKind.TRAIT: ("a trait", "traits are unsized"),
+            }
+            noun, hint = kinds.get(
+                symbol.kind, (f"a {symbol.kind.value}", "use a declared struct"))
+            raise HIRError(
+                f"{where} is {noun}, not a struct",
+                source_loc=enum.source_loc,
+                hint=hint,
+            )
+
+        struct_decl = symbol.definition
+        if getattr(struct_decl, 'is_union', False):
+            raise HIRError(
+                f"{where} is a union, not a struct",
+                source_loc=enum.source_loc,
+                hint="the payload plane is already a union across variants; "
+                     "overlaying a second one inside it hides which read is live",
+            )
+        if ast_type.name in self._soa_structs:
+            raise HIRError(
+                f"{where} is #[soa]",
+                source_loc=enum.source_loc,
+                hint="an #[soa] struct's bytes are spread one array per field, so "
+                     "it cannot sit contiguously inside a payload plane",
+            )
+
+        return self.type_resolver.resolve_named_type(ast_type.name)
+
+    def _setup_tagged_enums(self, ast_program) -> None:
+        """Resolve tagged enum payloads and declare their plane symbols.
+
+        Runs between the declaration pass and the body pass. See the call site
+        for why neither pass can host it.
+        """
+        for decl in ast_program.items:
+            if not isinstance(decl, ast.EnumDecl):
+                continue
+            if not self._should_include_declaration(decl):
+                continue
+            if decl.name not in self._tagged_enums:
+                continue
+
+            payloads = {}
+            for variant in decl.variants:
+                if variant.payload_type is not None:
+                    payloads[variant.name] = self._resolve_enum_payload(decl, variant)
+            self._enum_payloads[decl.name] = payloads
+            self._enum_payload_unions[decl.name] = self._build_enum_payload_union(
+                decl.name, payloads)
+
+        for enum_name, (pool_symbol, source_loc) in self._enum_storage.items():
+            self._declare_enum_planes(enum_name, pool_symbol, source_loc)
+
+    def _build_enum_payload_union(self, enum_name: str, payloads: dict) -> hir.HIRStructDecl:
+        """Synthesize the `Enum__Payload` union backing a tagged enum's data plane.
+
+        One field per payload variant, all at offset 0 — which is exactly a union,
+        so `layout_fields` computes the plane's element size with no new layout
+        code, and a payload access is an ordinary union-field access.
+
+        Sizes are deliberately *not* consulted here. This runs before pass 2, so
+        each payload struct's symbol still points at its AST node and asking for
+        a size would read AST field types. The stride rounding that needs a size
+        happens in `_pad_enum_payloads`, once every struct is HIR.
+        """
+        fields = [
+            hir.HIRStructField(name=name, field_type=payload_type, offset=0)
+            for name, payload_type in payloads.items()
+        ]
+        name = f"{enum_name}__Payload"
+        decl = hir.HIRStructDecl(name=name, fields=fields, is_union=True)
+        symbol = Symbol(name=name, kind=SymbolKind.STRUCT, definition=decl, scope_id=0)
+        decl.symbol = symbol
+        self.symbol_table.declare(name, symbol)
+        return decl
+
+    def _declare_enum_planes(self, enum_name: str, pool_symbol, source_loc) -> None:
+        """Declare the `POOL__tag` and `POOL__data` symbols for a tagged enum.
+
+        Only the symbols: the `HIRStaticDecl`s behind them are built in pass 3
+        by `_expand_soa_statics`, alongside every other plane. Declaring them
+        here is what lets a `match` in pass 2 desugar straight into ordinary
+        array indexing — the planes are plain statics, so nothing downstream
+        needs to know a tagged enum was involved.
+        """
+        count = pool_symbol.var_type.size
+        union = self._enum_payload_unions[enum_name]
+        # A tagged enum numbers its variants densely from 0 — explicit
+        # discriminants are rejected — so the largest is `count - 1` and the
+        # same rule `_build_enum` applies gives the same answer. Pass 3 restamps
+        # this from the built enum anyway; deriving it the one way keeps the two
+        # from ever disagreeing in between.
+        ast_enum = self.symbol_table.lookup(enum_name).definition
+        tag_elem = self._discriminant_type(len(ast_enum.variants) - 1)
+
+        planes = {}
+        for suffix, element_type in (
+            ('tag', tag_elem),
+            ('data', StructTypeInfo(name=union.name, definition=union,
+                                    symbol=union.symbol)),
+        ):
+            name = f"{pool_symbol.name}__{suffix}"
+            symbol = Symbol(
+                name=name,
+                kind=SymbolKind.STATIC_VAR,
+                definition=None,  # filled in by _expand_soa_statics
+                scope_id=0,
+                var_type=ArrayTypeInfo(element_type=element_type, size=count),
+                is_mutable=True,
+            )
+            self.symbol_table.declare(name, symbol)
+            planes[suffix] = symbol
+        self._enum_planes[enum_name] = planes
 
     def _build_newtype(self, decl: ast.NewtypeDecl) -> hir.HIRNewtypeDecl:
         """Build HIR newtype declaration from AST."""
@@ -1954,7 +2285,8 @@ class HIRBuilder:
                 f"impl block for undefined struct: {impl.struct_name}",
                 source_loc=impl.source_loc
             )
-        if struct_symbol.kind not in (SymbolKind.STRUCT, SymbolKind.NEWTYPE):
+        if struct_symbol.kind not in (SymbolKind.STRUCT, SymbolKind.NEWTYPE,
+                                      SymbolKind.ENUM):
             raise HIRError(
                 f"impl block target '{impl.struct_name}' is not a struct",
                 source_loc=impl.source_loc
@@ -1985,6 +2317,16 @@ class HIRBuilder:
             # its bytes are spread one per plane. Other traits are fine — the
             # receiver form follows the implementing type, so their methods take
             # the element index like any other #[soa] method.
+            if (impl.trait_name == 'Clone'
+                    and impl.struct_name in self._tagged_enums):
+                raise HIRError(
+                    f"tagged enum '{impl.struct_name}' cannot implement Clone",
+                    source_loc=impl.source_loc,
+                    hint="Clone copies a contiguous block, and a tagged enum "
+                         "element's bytes are split between the tag plane and the "
+                         "payload plane; write the variant you want instead, e.g. "
+                         "`POOL[i] = Enum::Variant(...)`",
+                )
             if (impl.trait_name == 'Clone'
                     and impl.struct_name in self._soa_structs):
                 raise HIRError(
@@ -2054,20 +2396,29 @@ class HIRBuilder:
         sym = self.symbol_table.lookup(name)
         return sym is not None and sym.kind == SymbolKind.NEWTYPE
 
+    def _is_enum(self, name: str) -> bool:
+        """True if `name` names an enum."""
+        sym = self.symbol_table.lookup(name)
+        return sym is not None and sym.kind == SymbolKind.ENUM
+
     def _impl_self_form(self, impl, method) -> 'SelfForm':
         """Decide the self form for an impl method, rejecting mismatched pairings.
 
         One self form per type, never per method:
 
           POINTER    struct/union — addressed through `*self`
-          VALUE_IN_A newtype      — the 1-2 byte payload rides in A
+          VALUE_IN_A newtype, enum — the 1-2 byte payload rides in A
           INDEX_IN_X #[soa]       — a u16 element index rides in X
 
         The written form must agree with the type. A trait declared with `*self`
         is still implemented by a newtype or an SoA struct with bare `self`: the
         receiver form follows the implementing type, not the declaration.
         """
-        if self._is_newtype(impl.struct_name):
+        if impl.struct_name in self._tagged_enums:
+            # A tagged enum element has no address — its bytes are split across
+            # the tag and payload planes — so `self` is the index, as for #[soa].
+            form = SelfForm.INDEX_IN_X
+        elif self._is_newtype(impl.struct_name) or self._is_enum(impl.struct_name):
             form = SelfForm.VALUE_IN_A
         elif impl.struct_name in self._soa_structs:
             form = SelfForm.INDEX_IN_X
@@ -2084,30 +2435,38 @@ class HIRBuilder:
 
         if form is SelfForm.VALUE_IN_A and not wrote_by_value:
             ret = f" -> {impl.struct_name}" if method.return_type else ""
+            noun = "enum" if self._is_enum(impl.struct_name) else "newtype"
+            article = "an" if noun == "enum" else "a"
             raise HIRError(
                 f"method '{impl.struct_name}::{method.name}' takes '*self', but "
-                f"'{impl.struct_name}' is a newtype",
+                f"'{impl.struct_name}' is {article} {noun}",
                 source_loc=method.source_loc,
-                hint=f"newtype methods take 'self' by value: "
+                hint=f"{noun} methods take 'self' by value: "
                      f"'fn {method.name}(self){ret}' — return a new value instead of "
                      f"mutating in place"
             )
 
         if form is SelfForm.INDEX_IN_X and not wrote_by_value:
+            tagged = impl.struct_name in self._tagged_enums
+            what = "a tagged enum" if tagged else "#[soa]"
+            why = ("a tagged enum element has no address — its tag and payload "
+                   "live in separate arrays"
+                   if tagged else
+                   "an #[soa] element has no address — its fields live in "
+                   "separate arrays")
             raise HIRError(
                 f"method '{impl.struct_name}::{method.name}' takes '*self', but "
-                f"'{impl.struct_name}' is #[soa]",
+                f"'{impl.struct_name}' is {what}",
                 source_loc=method.source_loc,
-                hint=f"an #[soa] element has no address — its fields live in "
-                     f"separate arrays. Take 'self' by value: "
+                hint=f"{why}. Take 'self' by value: "
                      f"'fn {method.name}(self, ...)'; inside the body 'self' is the "
-                     f"element index, so 'self.{'field'}' reads that element's plane"
+                     f"element index"
             )
 
         if wrote_by_value and form is SelfForm.POINTER:
             raise HIRError(
                 f"method '{impl.struct_name}::{method.name}' takes 'self' by value, "
-                f"but '{impl.struct_name}' is not a newtype",
+                f"but '{impl.struct_name}' is not a newtype or enum",
                 source_loc=method.source_loc,
                 hint=f"use '*self': 'fn {method.name}(*self, ...)' — structs and unions "
                      f"are passed by reference"
@@ -2530,11 +2889,12 @@ class HIRBuilder:
         return bool(getattr(definition, 'is_union', False))
 
     def _reject_union_trait_impl(self, impl: ast.ImplDecl):
-        """Unions cannot implement traits.
+        """Unions and tagged enums cannot implement traits.
 
         Dynamic dispatch injects a `__type_id: u8` at offset 0 to identify the
-        concrete type, and in a union offset 0 is live field data — the TypeId and
-        the fields would alias. Inherent `impl` blocks are fine; they add no layout.
+        concrete type. In a union offset 0 is live field data, and a tagged enum
+        keeps its discriminant there — either way the TypeId and the data would
+        alias. Inherent `impl` blocks are fine; they add no layout.
         """
         if self._is_union(impl.struct_name):
             raise HIRError(
@@ -2542,6 +2902,15 @@ class HIRBuilder:
                 source_loc=impl.source_loc,
                 hint="trait dispatch stores a __type_id byte at offset 0, which would "
                      "overlap union field data; use an inherent `impl` block instead"
+            )
+        if impl.struct_name in self._tagged_enums:
+            raise HIRError(
+                f"tagged enum '{impl.struct_name}' cannot implement trait "
+                f"'{impl.trait_name}'",
+                source_loc=impl.source_loc,
+                hint="trait dispatch stores a __type_id byte at offset 0, which is "
+                     "where a tagged enum keeps its discriminant; match on the "
+                     "variant in an inherent `impl` block instead"
             )
 
     def _instantiate_default_method(self, trait_method: ast.TraitMethod) -> ast.ImplMethod:
@@ -2705,10 +3074,13 @@ class HIRBuilder:
             self_type = self.type_resolver.resolve_named_type(impl.struct_name)
             self_binding = hir.RegisterBinding(register_name='A')
         elif self_form is SelfForm.INDEX_IN_X:
-            stored = self._soa_storage.get(impl.struct_name)
+            tagged = impl.struct_name in self._tagged_enums
+            registry = self._enum_storage if tagged else self._soa_storage
+            stored = registry.get(impl.struct_name)
             if stored is None and has_self:
+                what = "tagged enum" if tagged else "#[soa] struct"
                 raise HIRError(
-                    f"#[soa] struct '{impl.struct_name}' has no static, so its "
+                    f"{what} '{impl.struct_name}' has no static, so its "
                     f"methods have no array to index",
                     source_loc=method.source_loc,
                     hint=f"declare one, e.g. "
@@ -2754,15 +3126,22 @@ class HIRBuilder:
         self._validate_self_register_conflict(impl, method, hir_params, self_binding)
         self._validate_no_duplicate_register_bindings(hir_params, mangled_name)
 
-        # Process body. `_soa_rewrite_base` reads this to turn `self.f` into
-        # `POOL[self].f`; restore rather than clear, so a future nested build
+        # Process body. `_soa_rewrite_base` reads `soa_self_pool` to turn
+        # `self.f` into `POOL[self].f`, and the match desugar reads
+        # `enum_self_pool` to turn `match self` into a read of the tag plane at
+        # index `self`. Restore rather than clear, so a future nested build
         # cannot lose an outer pool.
+        tagged_self = impl.struct_name in self._tagged_enums
         previous_pool = self.expression_builder.soa_self_pool
-        self.expression_builder.soa_self_pool = soa_pool
+        previous_enum_pool = self.expression_builder.enum_self_pool
+        self.expression_builder.soa_self_pool = None if tagged_self else soa_pool
+        self.expression_builder.enum_self_pool = (
+            (impl.struct_name, soa_pool) if tagged_self and soa_pool else None)
         try:
             hir_body = self._build_block(method.body)
         finally:
             self.expression_builder.soa_self_pool = previous_pool
+            self.expression_builder.enum_self_pool = previous_enum_pool
 
         # Add implicit return A if needed
         self._add_implicit_return(hir_body, method.return_type, interrupt_attr)
@@ -2859,6 +3238,9 @@ class HIRBuilder:
             return self._build_multi_let(stmt)
 
         elif isinstance(stmt, ast.ExprStmt):
+            constructed = self.expression_builder.build_enum_construction(stmt.expr)
+            if constructed is not None:
+                return constructed
             return hir.HIRExprStmt(expr=self._build_expression(stmt.expr), source_loc=stmt.source_loc)
 
         elif isinstance(stmt, ast.ReturnStmt):

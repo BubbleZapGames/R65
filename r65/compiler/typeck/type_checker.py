@@ -1253,8 +1253,15 @@ class TypeChecker:
             return expr.expr_type
 
         elif isinstance(expr, HIREnumVariantExpr):
-            # Enum variant has its enum type
-            expr.expr_type = EnumTypeInfo(name=expr.enum_name)
+            # Enum variant has its enum type. Carry the symbol: without it the
+            # type has no variant list, so exhaustiveness checking silently
+            # no-ops and the discriminant width falls back to one byte.
+            symbol = self.symbol_table.lookup(expr.enum_name)
+            expr.expr_type = EnumTypeInfo(
+                name=expr.enum_name,
+                definition=symbol.definition if symbol else None,
+                symbol=symbol,
+            )
             return expr.expr_type
 
         elif isinstance(expr, HIRIdentifier):

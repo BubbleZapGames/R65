@@ -271,8 +271,7 @@ class TestComposition:
                         "fn main() { let t: TileId = f(); }")
 
     def test_enum_payload_round_trip(self):
-        """An enum payload wraps, unwraps, and binds a register — unlike a bare
-        enum, which cannot bind one."""
+        """An enum payload wraps, unwraps, and binds a register."""
         build_and_check('''
             enum Direction { North, East }
             struct Facing(Direction);
@@ -285,10 +284,16 @@ class TestComposition:
             }
         ''')
 
-    def test_bare_enum_still_cannot_bind_a_register(self):
-        """Unchanged behaviour — the newtype carve-out must not leak."""
-        with pytest.raises(HIRError, match="must have a primitive type"):
-            build_and_check("enum Direction { North }\nfn f(d @ A: Direction) {}\nfn main() {}")
+    def test_bare_enum_binds_a_register(self):
+        """A bare enum binds a register too — the newtype is no longer the only
+        spelling that does.
+
+        This used to be rejected, so a newtype over an enum was the documented
+        workaround (docs/future-work.md). Enum methods forced the question: `self`
+        in `impl Direction` is a bare enum arriving in A, so the restriction had
+        to go rather than grow a special case.
+        """
+        build_and_check("enum Direction { North }\nfn f(d @ A: Direction) {}\nfn main() {}")
 
     def test_pointer_payload_derefs_through_zero(self):
         build_and_check('''

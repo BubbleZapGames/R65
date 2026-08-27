@@ -1284,7 +1284,7 @@ The compiler automatically selects the best code generation strategy:
 - **Jump table**: When patterns are dense but bodies aren't constant, emits an indexed jump table (JMP (addr,X)) for O(1) dispatch
 - **Branch chain**: For sparse patterns or few arms, emits a sequential comparison chain
 
-Range patterns expand to individual values for density analysis and can trigger table optimizations. However, or-patterns (`a | b`) currently cause a fallback to branch chains — they skip table optimization.
+Range patterns expand to individual values for density analysis and can trigger table optimizations. Or-patterns (`a | b`) do too: `_pattern_integer_values` flattens their alternatives into the same value list (`mir/lowerers/match.py`), and first-match-wins is preserved because overlapping values keep the earliest arm.
 
 **Assembly Mapping** (branch chain):
 ```rust

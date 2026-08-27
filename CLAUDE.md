@@ -178,13 +178,54 @@ static BUFFER: [u8; tile_offset(0, 8)] = [0; tile_offset(0, 8)];
 
 ### Enums, Structs, and Unions
 
-**Enums**: C-style with explicit or auto-increment values. No data-carrying variants.
+**Enums**: two kinds. A *fieldless* enum is a named integer constant with explicit or auto-increment values, one byte wide (two once a variant exceeds 255). A *tagged* enum carries a declared struct per variant.
 
 ```rust
 enum Direction { North = 0, East, South, West }
 let dir = Direction::North;
 let value: u8 = dir as u8;
 ```
+
+Both take `impl` blocks, and the receiver follows the layout. A fieldless enum
+is a value, so `self` is the discriminant in `A`:
+
+```rust
+impl Direction {
+    fn opposite(self) -> Direction { match self { ... } }
+}
+```
+
+A **tagged** enum stores its pool split into a tag plane and a payload plane, so
+reading a tag is `LDA POOL__tag,X` with no stride multiply. An element has no
+contiguous base, so `self` is an element **index** in `X` and a payload pattern
+binds a *view* of the pool rather than a copy:
+
+```rust
+struct Circle { r: u8 }
+enum Shape { Empty, C(Circle) }
+
+#[lowram]
+static mut POOL: [Shape; 16];      // POOL__tag: [u8;16], POOL__data: [_;16]
+
+impl Shape {
+    fn area(self) -> u8 {           // self is the index, in X
+        match self {
+            Shape::C(c) => c.r,     // c views POOL__data[self].C
+            Shape::Empty => 0,
+        }
+    }
+}
+
+POOL[i] = Shape::C(Circle { r: 5 });   // tag store + payload stores
+```
+
+**Restrictions**: a payload names a declared struct (no inline fields, no tuple
+variants); a tagged enum backs exactly one `static mut` and takes no
+initializer, so write an element before matching it; no locals, parameters,
+`&POOL[i]`, `impl Clone`, or traits (the TypeId byte and the tag both want
+offset 0); no `= n` on a tagged enum's variants.
+
+*(See [docs/enums.md](docs/enums.md) for the complete documentation)*
 
 **Structs**: Packed (no padding), fields in declaration order. No methods (use free functions).
 
@@ -455,7 +496,6 @@ Hardware-aware operators with restrictions for expensive operations:
 - ❌ Lifetimes and borrowing
 - ❌ Generics
 - ❌ Error handling types (`Result`, `Option`, `panic!()`)
-- ❌ Advanced enums (data-carrying variants)
 - ❌ Multi-field tuple structs (`struct Pair(u8, u8);`) — use named fields; the single-field form is a newtype
 - ❌ Closures, async/await
 - ❌ Procedural macros
@@ -533,6 +573,7 @@ r65x init --platform snes my_project  # Create test project
 - [Pointers and Memory Model](docs/pointers-memory.md)
 - [Type System](docs/type-system.md)
 - [Unions](docs/unions.md)
+- [Enums and Tagged Enums](docs/enums.md)
 - [SoA Struct Arrays](docs/soa.md)
 - [B Register](docs/b-register.md)
 - [STATUS Flags](docs/status-flags.md)

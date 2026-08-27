@@ -104,8 +104,11 @@ struct_field: doc_comment* (FAR | NEAR)? STAR? IDENT ":" type_expr ","?
             | (FAR | NEAR)? AMPER IDENT ":" type_expr ","?  -> struct_field_safe_ptr_error
 
 // Enum declaration
+// A variant is either a unit variant (with an optional explicit discriminant)
+// or carries a payload naming a previously-declared struct. See docs/enums.md.
 enum_decl: doc_comment* ENUM IDENT "{" enum_variant ("," enum_variant)* ","? "}"
 enum_variant: var_name ("=" expr)?
+            | var_name "(" type_expr ")"  -> enum_variant_payload
 
 // Trait declaration
 // Optional supertraits: trait Sub: Super1 + Super2 { ... }
@@ -369,6 +372,7 @@ pattern_int: "-"? INTEGER
 pattern_literal: INTEGER | BOOLEAN | CHAR_LITERAL
 pattern_neg_literal: "-" INTEGER
 pattern_enum: IDENT "::" IDENT
+            | IDENT "::" IDENT "(" IDENT ")"   -> pattern_enum_payload
 pattern_wildcard: "_"
 pattern_ident: IDENT
 
@@ -447,7 +451,13 @@ lvalue: IDENT                                   -> lvalue_ident
         // Newtype payload access: `t.0`. Any other index is rejected in typeck.
         | postfix "." INTEGER                   -> newtype_field_access
 
-arg_list: expr ("," expr)* ","?
+// A struct literal is allowed as an argument. Inside parentheses `Name {` can
+// only begin one — the `IDENT "{"` ambiguity that keeps struct literals out of
+// general expression position is with a *block*, which cannot appear here.
+// Tagged enum construction relies on it: `POOL[i] = Shape::C(Circle { r: 5 });`
+arg_list: arg ("," arg)* ","?
+?arg: struct_literal_expr
+    | expr
 
 // Note: struct_literal_expr is NOT in primary to avoid IDENT "{" ambiguity.
 // Struct literals are only allowed in specific initializer contexts (after =).

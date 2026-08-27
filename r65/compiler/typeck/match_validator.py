@@ -93,8 +93,31 @@ class MatchValidator:
         if not has_wildcard:
             self._check_match_exhaustiveness(expr, scrutinee_type)
 
+        # Every arm of a tagged enum match must name that enum. The scrutinee is
+        # its tag plane by now, so nothing else would notice a foreign variant —
+        # it would compile to a comparison against an unrelated discriminant.
+        if expr.tagged_enum is not None:
+            self._check_arms_name_enum(expr, expr.tagged_enum)
+
         expr.expr_type = result_type
         return result_type
+
+    def _check_arms_name_enum(self, expr: HIRMatchExpression, enum_name: str):
+        """Reject an arm naming a different enum than the one being matched."""
+        def check(pattern):
+            if isinstance(pattern, HIREnumPattern):
+                if pattern.enum_name != enum_name:
+                    raise TypeCheckError(
+                        f"pattern names enum '{pattern.enum_name}', but the value "
+                        f"being matched is a '{enum_name}'",
+                        source_loc=pattern.source_loc
+                    )
+            elif isinstance(pattern, HIROrPattern):
+                for subpat in pattern.patterns:
+                    check(subpat)
+
+        for arm in expr.arms:
+            check(arm.pattern)
 
     def _check_match_exhaustiveness(self, expr: HIRMatchExpression, scrutinee_type: TypeInfo):
         """
@@ -124,6 +147,12 @@ class MatchValidator:
 
         for arm in expr.arms:
             collect_patterns(arm.pattern)
+
+        # A tagged enum's scrutinee is its tag plane, so it *looks* like a plain
+        # u8 here. Ask the enum instead: the values it can hold are its variants.
+        if expr.tagged_enum is not None:
+            self._check_enum_variants_covered(expr, expr.tagged_enum, covered_variants)
+            return
 
         # Exhaustiveness is a question about the *values* a type can hold, so ask
         # it of the payload — a newtype over u8 needs a wildcard just as u8 does.
@@ -157,15 +186,24 @@ class MatchValidator:
         elif isinstance(scrutinee_type, EnumTypeInfo):
             # Enum must cover all variants
             if scrutinee_type.definition:
-                all_variants = {v.name for v in scrutinee_type.definition.variants}
-                missing = all_variants - covered_variants
-                if missing:
-                    missing_list = ', '.join(sorted(missing))
-                    raise TypeCheckError(
-                        f"Non-exhaustive match on {scrutinee_type.name}: "
-                        f"missing patterns for {missing_list}",
-                        source_loc=expr.source_loc
-                    )
+                self._check_enum_variants_covered(
+                    expr, scrutinee_type.name, covered_variants,
+                    definition=scrutinee_type.definition)
+
+    def _check_enum_variants_covered(self, expr, enum_name, covered, definition=None):
+        """Every variant of *enum_name* must appear among *covered*."""
+        if definition is None:
+            symbol = TypeUtils._symbol_table.lookup(enum_name)
+            definition = symbol.definition if symbol else None
+        if definition is None:
+            return
+        missing = {v.name for v in definition.variants} - covered
+        if missing:
+            raise TypeCheckError(
+                f"Non-exhaustive match on {enum_name}: "
+                f"missing patterns for {', '.join(sorted(missing))}",
+                source_loc=expr.source_loc
+            )
 
     def _check_pattern(self, pattern, scrutinee_type: TypeInfo) -> bool:
         """

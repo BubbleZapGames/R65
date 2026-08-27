@@ -20,7 +20,12 @@ TYPE_RANGES = {
 
 
 def soa_struct_of(type_info) -> Optional[str]:
-    """Name of the `#[soa]` struct *type_info* is, or is an array/pointer to.
+    """Name of the planed type *type_info* is, or is an array/pointer to.
+
+    A *planed* type is a `#[soa]` struct or a tagged enum: both store their
+    bytes as one array per plane, so neither has a contiguous element to copy,
+    address, or hold in a local. Every site that refuses one asks this question,
+    so both kinds are answered here rather than at each caller.
 
     Keyed on the *type* rather than on a static's flag: `#[soa]` marks the
     struct, so a local, a parameter, a struct field and a pointer are all
@@ -28,7 +33,8 @@ def soa_struct_of(type_info) -> Optional[str]:
     so it answers the same whether `definition` is still the AST node (pass 1)
     or already the HIR node (pass 2).
     """
-    from r65.compiler.hir.types import ArrayTypeInfo, PointerTypeInfo, StructTypeInfo
+    from r65.compiler.hir.types import (ArrayTypeInfo, PointerTypeInfo,
+                                        StructTypeInfo, EnumTypeInfo)
 
     seen = 0
     while seen < 8:  # bounded: guards against a cyclic type graph
@@ -42,12 +48,20 @@ def soa_struct_of(type_info) -> Optional[str]:
             continue
         break
 
-    if not isinstance(type_info, StructTypeInfo):
+    if not isinstance(type_info, (StructTypeInfo, EnumTypeInfo)):
         return None
     symbol = getattr(type_info, 'symbol', None)
     definition = getattr(symbol, 'definition', None) if symbol else None
     if definition is None:
         definition = getattr(type_info, 'definition', None)
+    if isinstance(type_info, EnumTypeInfo):
+        # Asked of the variants rather than of `HIREnumDecl.is_tagged`, because
+        # this runs during HIR building too, where an enum declared below the
+        # code referring to it still has its AST node here. Both nodes carry
+        # `payload_type` per variant, so the question has one answer either way.
+        variants = getattr(definition, 'variants', None) or []
+        tagged = any(getattr(v, 'payload_type', None) is not None for v in variants)
+        return type_info.name if tagged else None
     return type_info.name if getattr(definition, 'is_soa', False) else None
 
 
@@ -214,12 +228,15 @@ class TypeUtils:
             if t1.name in int_types and t2.name in int_types:
                 return True
 
-        # Enum to/from integer compatibility
-        # Enums are compatible with u8 (their underlying type)
-        if isinstance(t1, EnumTypeInfo) and isinstance(t2, BasicTypeInfo) and t2.name == 'u8':
-            return True
-        if isinstance(t2, EnumTypeInfo) and isinstance(t1, BasicTypeInfo) and t1.name == 'u8':
-            return True
+        # Enum to/from integer compatibility. An enum is an integer of its own
+        # width, so it pairs with the integer type that matches — u8 for the
+        # common case, u16 once a variant exceeds 255. Hardcoding 'u8' here left
+        # a wide enum incompatible with the only type that can hold it.
+        int_types = {'u8', 'i8', 'u16', 'i16'}
+        for enum_t, other in ((t1, t2), (t2, t1)):
+            if isinstance(enum_t, EnumTypeInfo) and isinstance(other, BasicTypeInfo):
+                if other.name in int_types:
+                    return True
 
         return False
 

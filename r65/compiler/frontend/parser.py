@@ -704,6 +704,16 @@ class ASTBuilder(Transformer):
         value = items[1] if len(items) > 1 else None
         return ast.EnumVariant(name=name, value=value)
 
+    def enum_variant_payload(self, items):
+        """Enum variant carrying a payload: `C(Circle)`.
+
+        The payload type is validated in the HIR builder, not here — it has to
+        name a declared struct, and nothing at parse time knows what is declared.
+        """
+        items = self._filter_tokens(items)
+        name = items[0].value if isinstance(items[0], LarkToken) else items[0]
+        return ast.EnumVariant(name=name, value=None, payload_type=items[1])
+
     @v_args(tree=True)
     def impl_decl(self, tree):
         """Impl block declaration: impl StructName { methods and constants }
@@ -2303,6 +2313,12 @@ class ASTBuilder(Transformer):
         )
         value = self._parse_integer(int_token.value)
         return ast.LiteralPattern(value=-value)
+
+    def pattern_enum_payload(self, items):
+        """Enum pattern binding a payload: `Shape::C(c)`."""
+        items = self._filter_tokens(items)
+        return ast.EnumPattern(enum_name=str(items[0]), variant_name=str(items[1]),
+                               binding=str(items[2]))
 
     def pattern_enum(self, items):
         """Enum variant pattern."""

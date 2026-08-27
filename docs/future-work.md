@@ -263,14 +263,6 @@ Worth noting that the *hard* part of Tier C is already gone. Value-producing ope
 
 **Approach if revisited**: lands with the far-pointer return ABI. Relax the size check in `hir/builder.py::_validate_newtype_inner` once a 3-byte value has a defined register triple.
 
-### Register Bindings for Bare Enums
-
-`_validate_register_binding_type` (`hir/builder.py`) maps a near pointer to `u16` so it can bind `A`/`X`/`Y`, but rejects a bare enum with "must have a primitive type". Newtypes over enums are allowed through as `u8` because a newtype is a value type by design; a plain `enum Direction` still cannot bind a register, which is why every test passes enums as `dir @ A: u8` and casts at the call site.
-
-**Why deferred**: relaxing it for bare enums is a language-wide change to the register-binding rules, not a newtype one, and nothing forced the question.
-
-**Approach if revisited**: extend the allowed-type table to accept `EnumTypeInfo` as `u8` unconditionally, and drop the newtype special case next to it.
-
 ### Deliberate Restrictions
 
 Two small deliberate restrictions, each easy to lift but each needing a decision first:

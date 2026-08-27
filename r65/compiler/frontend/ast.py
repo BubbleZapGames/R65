@@ -262,9 +262,17 @@ class NewtypeDecl(Declaration):
 
 @dataclass
 class EnumVariant(ASTNode):
-    """Variant in an enum."""
+    """Variant in an enum.
+
+    A variant is either a *unit* variant, optionally with an explicit
+    discriminant (`North = 0`), or carries a *payload* naming a declared struct
+    (`C(Circle)`). The two are exclusive: an enum with any payload variant is a
+    tagged enum, whose discriminants are always assigned densely from 0 so the
+    tag stays usable as a jump-table index. See `hir/builder.py: _build_enum`.
+    """
     name: str
     value: Optional[Expression]  # None for auto-increment
+    payload_type: Optional[Type] = None  # Set for `Variant(StructName)`
 
 
 @dataclass
@@ -878,9 +886,15 @@ class LiteralPattern(Pattern):
 
 @dataclass
 class EnumPattern(Pattern):
-    """Enum variant pattern (e.g., State::Idle)."""
+    """Enum variant pattern (e.g., `State::Idle`, or `Shape::C(c)`).
+
+    `binding` names the payload of a tagged enum's variant. It is not a copy:
+    the name resolves to the payload plane's element, so `c.r` reads the pool
+    directly. See docs/enums.md.
+    """
     enum_name: str
     variant_name: str
+    binding: Optional[str] = None
 
 
 @dataclass

@@ -311,6 +311,8 @@ class HIREnumVariant(HIRNode):
     """Enum variant."""
     name: str = ""
     value: int = 0  # Explicit or auto-incremented (resolved during HIR)
+    # StructTypeInfo of the payload, or None for a unit variant.
+    payload_type: Optional[Any] = None
 
     # Symbol reference
     symbol: Optional[Any] = None  # Will be Symbol
@@ -318,13 +320,27 @@ class HIREnumVariant(HIRNode):
 
 @dataclass
 class HIREnumDecl(HIRDeclaration):
-    """Enum declaration."""
+    """Enum declaration.
+
+    Two shapes share this node. A *fieldless* enum (every variant unit) is a
+    plain integer constant of `underlying_type`. A *tagged* enum — one with at
+    least one payload variant — is stored SoA-style as two planes, and
+    `payload_union` is the synthetic union holding one field per payload variant
+    that gives the data plane its element type. See docs/enums.md.
+    """
     name: str = ""
     variants: List[HIREnumVariant] = field(default_factory=list)
     underlying_type: Optional[Any] = None  # Inferred u8/u16 (will be TypeInfo)
+    # Synthetic `Enum__Payload` union, or None for a fieldless enum.
+    payload_union: Optional['HIRStructDecl'] = None
 
     # Symbol reference
     symbol: Optional[Any] = None  # Will be Symbol
+
+    @property
+    def is_tagged(self) -> bool:
+        """True if any variant carries a payload."""
+        return any(v.payload_type is not None for v in self.variants)
 
 
 @dataclass
@@ -730,6 +746,11 @@ class HIREnumPattern(HIRPattern):
     enum_name: str = ""
     variant_name: str = ""
     variant_value: Optional[int] = None  # Resolved during HIR building
+    # Tagged enums only: the name a payload pattern binds (`Shape::C(c)`), and
+    # its symbol. The symbol carries `enum_payload_alias`, so every use of the
+    # name expands to the pool element rather than reading a local copy.
+    binding: Optional[str] = None
+    binding_symbol: Optional[Any] = None
 
 
 @dataclass
@@ -804,3 +825,8 @@ class HIRMatchExpression(HIRExpression):
     """Match expression."""
     scrutinee: Optional[HIRExpression] = None  # Expression being matched
     arms: List[HIRMatchArm] = field(default_factory=list)
+    # Name of the tagged enum being matched, if any. The scrutinee has already
+    # been rewritten to a read of that enum's tag plane, so it types as a plain
+    # integer — this is what tells the type checker to check variant coverage
+    # rather than demand a wildcard the way it does for any other integer.
+    tagged_enum: Optional[str] = None
