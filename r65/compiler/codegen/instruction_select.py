@@ -1781,6 +1781,17 @@ class InstructionSelector:
         """
         Create new location offset from given location.
 
+        Byte *offset* of an indexed location is still indexed: `label,X` offset
+        by 2 is `label+2,X`, not `label+2`. Dropping `index_register` here made
+        every byte after the first read element 0 of the array — so a multi-byte
+        value at `arr[i]` was assembled from one byte of element i and the rest
+        of element 0, with no diagnostic. A 3-byte `far *T` field in an indexed
+        struct is the case that surfaced it (see docs/pointers-memory.md), but
+        every byte-wise access to an indexed multi-byte value was affected.
+
+        `LocationResolver.offset_location` is the same computation over the full
+        location size; this one narrows to a single byte for byte-wise emission.
+
         Args:
             location: Base location
             offset: Byte offset
@@ -1792,21 +1803,24 @@ class InstructionSelector:
             return PhysicalLocation(
                 kind=LocationKind.SCRATCH,
                 scratch_addr=location.scratch_addr + offset,
-                size=1
+                size=1,
+                index_register=location.index_register
             )
         elif location.kind == LocationKind.MEMORY:
             if location.memory_addr is not None:
                 return PhysicalLocation(
                     kind=LocationKind.MEMORY,
                     memory_addr=location.memory_addr + offset,
-                    size=1
+                    size=1,
+                    index_register=location.index_register
                 )
             elif location.memory_label is not None:
                 # Label-based location - create new location with offset applied to label
                 return PhysicalLocation(
                     kind=LocationKind.MEMORY,
                     memory_label=f"{location.memory_label}+{offset}",
-                    size=1
+                    size=1,
+                    index_register=location.index_register
                 )
             else:
                 # Get all attributes for debugging

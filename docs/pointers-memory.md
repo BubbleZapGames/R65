@@ -265,6 +265,22 @@ How pointers map to 65816 instructions:
 
 All indirect addressing modes require the pointer to be in zero-page or on the stack. Pointers in RAM cannot be used for indirect addressing without first loading into zero-page.
 
+### Multi-byte fields at a runtime index
+
+A `far *T` is three bytes and is moved a byte at a time, so reading one out of
+`arr[i]` emits three loads. All three are indexed — `arr,X`, `arr+1,X`,
+`arr+2,X` — because byte *n* of an indexed location is still indexed.
+
+This is worth stating because getting it wrong is invisible. `_offset_location`
+(`codegen/instruction_select.py`) once dropped the index register when building
+the location for bytes 1 and 2, so a pointer at `arr[i]` was assembled from one
+byte of element `i` and two bytes of element 0. Nothing diagnosed it, the
+emitted code looked ordinary, and it only misbehaved for a non-zero index — and
+then only when the two candidate addresses differed outside their low byte.
+
+A `u16` field is unaffected: it loads in one 16-bit `LDA abs,X` and never goes
+byte-wise.
+
 ## Memory Storage Classes
 
 Storage class is determined by mutability and attributes:
