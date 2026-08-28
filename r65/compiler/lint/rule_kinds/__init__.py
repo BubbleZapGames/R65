@@ -18,6 +18,7 @@ from r65.compiler.lint.rule_kinds import (
     forbidden_instruction,
     forbidden_value_at_register,
     naming_convention,
+    power_of_two_arrays,
     reachability_forbidden_access,
     require_attribute,
     zeropage_budget,
@@ -38,6 +39,7 @@ KINDS: Dict[str, KindFactory] = {
     naming_convention.KIND_NAME: naming_convention.from_config,
     call_depth_limit.KIND_NAME: call_depth_limit.from_config,
     zeropage_budget.KIND_NAME: zeropage_budget.from_config,
+    power_of_two_arrays.KIND_NAME: power_of_two_arrays.from_config,
 }
 
 
