@@ -152,7 +152,9 @@ self_param: (FAR | NEAR)? STAR SELF
           | (FAR | NEAR)? AMPER SELF -> self_safe_ptr_error
 
 // Associated constant in impl block
-impl_const: CONST IDENT ":" type_expr "=" expr ";"
+// Same initializer form as a top-level `const`: an associated constant may
+// be a struct or array literal, not only a scalar expression.
+impl_const: CONST IDENT ":" type_expr "=" initializer_expr ";"
 
 // Type alias
 type_alias: TYPE IDENT "=" type_expr ";"

@@ -66,6 +66,40 @@ class TestImplBlockParsing:
         assert impl_decl.constants[0].name == "MAX_HEALTH"
         assert impl_decl.constants[1].name == "MIN_HEALTH"
 
+    def test_impl_constant_may_be_a_struct_literal(self):
+        """An associated constant takes the same initializer forms a top-level
+        `const` does. The grammar had it on plain `expr`, which excludes a
+        struct literal — so a per-type record of constants had to be written as
+        a free-standing `static` in ROM and reached through a pointer, where a
+        `const` folds to an immediate at every use."""
+        source = """
+            struct Stats { speed: u16, hp: u8, pad: u8 }
+            struct Tank { reload: u8 }
+            impl Tank {
+                const BASE: Stats = Stats { speed: 128, hp: 25, pad: 0 };
+            }
+        """
+        program = parse(source, "test.r65")
+        impl_decl = program.items[2]
+        assert impl_decl.constants[0].name == "BASE"
+
+    def test_impl_constant_struct_field_folds_to_an_immediate(self):
+        from r65.compiler.main import compile_string
+        asm = compile_string("""
+            struct Stats { speed: u16, hp: u8, pad: u8 }
+            struct Tank { reload: u8 }
+            struct Van { rank: u8 }
+            impl Tank { const BASE: Stats = Stats { speed: 0x1234, hp: 25, pad: 0 }; }
+            impl Van  { const BASE: Stats = Stats { speed: 0x5678, hp: 12, pad: 0 }; }
+            #[zeropage(0x40)] static mut o: u16;
+            #[zeropage(0x44)] static mut h: u8;
+            #[entry]
+            fn main() { o = Tank::BASE.speed; h = Van::BASE.hp; }
+        """, "test.r65")
+        assert "LDA #$1234" in asm, asm     # folded, not loaded from a table
+        assert "LDA #$0C" in asm, asm
+        assert "__BASE" not in asm, asm     # and no ROM storage emitted for it
+
     def test_impl_method_with_params(self):
         """impl method with additional parameters parses."""
         source = """
