@@ -809,13 +809,24 @@ class MemoryOperationSelector(BaseSelector):
             size=2
         )
 
-        # Spill the pointer from hardware register to scratch
+        # Spill the pointer from hardware register to scratch.
+        #
+        # X and Y are 16 bits whatever the accumulator is doing (x16 always), so
+        # STX/STY write both bytes on their own. A does not: `STA` in m8 writes
+        # the low byte and leaves the high byte of the scratch stale, which
+        # silently turns the pointer into a wild address. A near pointer
+        # returned from a call arrives in A with the caller already switched
+        # back to m8, so this is the common path, not a corner.
         if ptr_loc.hw_register == 'X':
             self._emit_instr(Opcode.STX_DP, Address(scratch_addr), "Spill X pointer to scratch")
         elif ptr_loc.hw_register == 'Y':
             self._emit_instr(Opcode.STY_DP, Address(scratch_addr), "Spill Y pointer to scratch")
         elif ptr_loc.hw_register == 'A':
+            was_m8 = self.parent.emitter.get_accu_mode() == 8
+            self._ensure_m16_mode()
             self._emit_instr(Opcode.STA_DP, Address(scratch_addr), "Spill A pointer to scratch")
+            if was_m8:
+                self._ensure_m8_mode()
         else:
             raise InstructionSelectionError(f"Cannot spill pointer from hardware register {ptr_loc.hw_register}", source_loc=self.parent._current_source_loc)
 

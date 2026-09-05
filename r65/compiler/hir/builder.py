@@ -1184,8 +1184,25 @@ class HIRBuilder:
         Infer exit mode from function return type.
 
         Rules:
-        - If return type is u16/i16 (returns in A register) -> m16 exit
+        - If the value returned in A is two bytes wide -> m16 exit
         - Otherwise -> m8 exit (default)
+
+        The question is the *machine width* of what lands in A, not the
+        spelling of the type:
+
+        - a newtype answers for its payload, so returning `Q10` leaves the CPU
+          in m16 exactly as `i16` does;
+        - a near pointer and a near `fn()` pointer are two bytes and ride in A
+          like any other 16-bit value. Answering m8 for them made the epilogue
+          `SEP #$20` and move a single byte, so the pointer's high byte was
+          dropped on the way out and the caller — which reads this same field
+          through `callee_exit_m_mode` — stored one byte on the way in. The far
+          forms are three bytes and are rejected by the type checker before
+          this matters;
+        - an enum is one byte until a variant exceeds 255, and two after.
+
+        A multi-return keeps m8: its values are mapped to A/B/X/Y by
+        `get_return_registers`, which owns that decision.
 
         Args:
             return_type: Function return type (or None for void)
@@ -1194,15 +1211,16 @@ class HIRBuilder:
             ModeState for function exit (M8 or M16)
         """
         from r65.compiler.typeck.processor_mode import ModeState
+        from r65.compiler.hir.types import (EnumTypeInfo, FunctionTypeInfo,
+                                            PointerTypeInfo)
 
         if return_type is None:
             return ModeState.M8
 
-        # Machine width, so a newtype answers for its payload: a function
-        # returning `Q10` leaves the CPU in m16 exactly as `i16` does.
         payload = strip_newtype(return_type)
-        if isinstance(payload, BasicTypeInfo):
-            if payload.name in ('u16', 'i16'):
+        if isinstance(payload, (BasicTypeInfo, PointerTypeInfo, FunctionTypeInfo,
+                                EnumTypeInfo)):
+            if payload.size_bytes == 2:
                 return ModeState.M16
 
         return ModeState.M8
