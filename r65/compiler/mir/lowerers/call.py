@@ -318,9 +318,15 @@ class CallLowerer:
         # Create argument list with self as first argument
         args = []
 
-        # Self parameter: trait methods with far *self use SELF_Y mechanism
-        # (callee does PHB+PHY at entry expecting Y=addr, DBR=bank);
-        # all other methods push self on the stack.
+        # Self parameter: a trait method takes `self` in Y — that is the trait
+        # ABI, and the callee reads its fields off Y whether the pointer is near
+        # or far (a far one also wants the bank in DBR, which
+        # `_emit_self_y` handles). Anything else pushes self on the stack.
+        #
+        # This used to require `far` as well, so a *directly* called near trait
+        # method had its receiver pushed while the callee read Y — it ran on
+        # whatever Y happened to hold. Only the `*dyn` path was correct, because
+        # its dispatcher loads Y itself.
         self_param = func_decl.parameters[0]  # First parameter is self
         from r65.compiler.hir.types import PointerTypeInfo
         from r65.compiler.hir.nodes import RegisterBinding
@@ -335,7 +341,7 @@ class CallLowerer:
                 location=HardwareRegister(self_param.binding.register_name),
                 param_type=self_param.param_type
             ))
-        elif _is_trait and _self_is_far:
+        elif _is_trait:
             args.append(Argument(
                 value=self_vreg,
                 mechanism=ArgumentMechanism.SELF_Y,

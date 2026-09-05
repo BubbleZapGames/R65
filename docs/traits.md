@@ -96,6 +96,32 @@ trait Drawable {
 - Only primitive types: `u8`, `u16`, `i8`, `i16`, `bool`
 - No arrays or pointers in associated constants
 
+These three rules are about a constant declared in a **trait**. An **inherent**
+`impl` takes the same initializer forms a top-level `const` does, including a
+struct literal — which is how a per-type record of constants is written:
+
+```rust
+struct UnitBase { speed: u16, width: u16, tile: u8, max_hp: u8 }
+
+struct Tank { reload: u8 }
+struct Van  { rank: u8 }
+
+impl Tank {
+    const BASE: UnitBase = UnitBase { speed: 128, width: 24, tile: 38, max_hp: 25 };
+}
+impl Van {
+    const BASE: UnitBase = UnitBase { speed: 192, width: 24, tile: 42, max_hp: 12 };
+}
+
+let s: u16 = Tank::BASE.speed;      // LDA #$0080 — folded, no storage emitted
+```
+
+A field of such a constant folds to an immediate at the use site. Nothing is
+emitted for the record itself, so this costs less than the `static` + pointer
+form it replaces: no ROM table, no pointer to spill, no indirect load. A match
+whose arms each read one column of a different kind's `BASE` is therefore an
+all-constant match, and lowers to a lookup table.
+
 **Implementing associated constants**:
 
 ```rust

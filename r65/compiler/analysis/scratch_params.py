@@ -31,6 +31,15 @@ def _is_eligible_for_any_promotion(func: MIRFunction, address_taken: Set[str]) -
         return False  # Function pointer callers can't honor scratch ABI
     if func.is_recursive:
         return False  # Scratch DP slots are non-reentrant
+    if func.is_trait_method:
+        # A trait method is reached through `TraitDispatch`, and
+        # `_update_call_sites` cannot rewrite those args: the dispatch has no
+        # static callee, so it does not know which implementation it will land
+        # in or where that one would want its parameters. Promoting the callee
+        # anyway changes its ABI without the call site: the dispatcher pushes
+        # the argument on the stack and the callee reads a scratch address
+        # nobody wrote. Same reason the inliner refuses trait methods.
+        return False
     # D=S moves DP onto the stack, leaving scratch DP addresses inaccessible
     if func.has_far_ptr_stack_params and not _is_set_dbr_safe(func):
         return False

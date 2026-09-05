@@ -488,6 +488,11 @@ def compile_string(source: str, filename: str = "<string>", abi_model=None,
     program = parse(source, filename)
     program = preprocess(program, filename, include_paths=include_paths or [])
     program = expand_macros(program)
+
+    # Same built-in traits the CLI injects; without this any source with an
+    # `impl ToString for ...` fails here but compiles under r65c.
+    _inject_builtin_traits(program)
+
     builder = HIRBuilder(source_file=filename, cfg_evaluator=cfg_evaluator,
                          include_paths=include_paths or [])
     hir_program = builder.build_program(program)

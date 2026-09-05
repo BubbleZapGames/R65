@@ -857,3 +857,148 @@ class TestTraitInheritance:
             0x7E0290: [1, 2, 3, 4, 5, 0, 0, 0],
         }))
         assert result.success, f"Failures: {result.failures}"
+
+
+class TestTraitMethodArguments:
+    """A dispatched trait method must read its arguments where the dispatcher
+    put them.
+
+    `analyze_scratch_params` promoted a callee's stack parameter into a
+    zero-page scratch register, but `_update_call_sites` cannot rewrite a
+    `TraitDispatch`: the dispatch has no static callee, so it does not know
+    which implementation it will land in. The callee's ABI changed without the
+    call site — the dispatcher pushed the argument and the callee read a
+    scratch address nobody had written, so the method ran on whatever happened
+    to be in that register.
+    """
+
+    def test_dispatched_method_receives_its_argument(self, e2e):
+        result = e2e.run('''
+            #[zeropage(0x16, register)]
+            static mut SCRATCH0: u16;
+            #[zeropage(0x18, register)]
+            static mut SCRATCH1: u16;
+
+            trait Pick { fn at(*self, i: u16) -> u16; }
+
+            struct Low { r: u8 }
+            struct High { r: u8 }
+
+            static TBL: [u16; 4] = [10, 11, 12, 13];
+
+            impl Pick for Low  { fn at(*self, i: u16) -> u16 { return TBL[i]; } }
+            impl Pick for High { fn at(*self, i: u16) -> u16 { return TBL[i] + 100; } }
+
+            static LOW: Low = Low { r: 0 };
+            static HIGH: High = High { r: 0 };
+            static TAB: [*dyn Pick; 2] = [&LOW as *dyn Pick, &HIGH as *dyn Pick];
+
+            #[zeropage(0x40)]
+            static mut OUT: [u16; 2];
+            #[zeropage(0x50)]
+            static mut k: u16;
+
+            #[entry]
+            fn main() {
+                k = 0;
+                OUT[0] = TAB[k].at(3);      // 13
+                k = 1;
+                OUT[1] = TAB[k].at(2);      // 112
+            }
+        ''', ExpectedState(memory={0x7E0040: [0x0D, 0x00, 0x70, 0x00]}))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_argument_survives_an_unrelated_scratch_user(self, e2e):
+        """The old bug read whatever the caller had last left in the scratch
+        register, so it only showed up when that was not the argument."""
+        result = e2e.run('''
+            #[zeropage(0x16, register)]
+            static mut SCRATCH0: u16;
+            #[zeropage(0x18, register)]
+            static mut SCRATCH1: u16;
+
+            trait Pick { fn at(*self, i: u16) -> u16; }
+            struct Low { r: u8 }
+            static TBL: [u16; 4] = [10, 11, 12, 13];
+            impl Pick for Low { fn at(*self, i: u16) -> u16 { return TBL[i]; } }
+            static LOW: Low = Low { r: 0 };
+            static TAB: [*dyn Pick; 1] = [&LOW as *dyn Pick];
+
+            #[zeropage(0x40)]
+            static mut OUT: u16;
+
+            fn noise(a: u16) -> u16 { return a + 1; }
+
+            #[entry]
+            fn main() {
+                let n: u16 = noise(0x0777);     // leaves 0x0777 in a scratch slot
+                OUT = TAB[0].at(1) + n;         // 11 + 0x0778
+            }
+        ''', ExpectedState(memory={0x7E0040: [0x83, 0x07]}))
+        assert result.success, f"Failures: {result.failures}"
+
+
+class TestDirectTraitMethodCall:
+    """A trait method called directly takes `self` in Y, like the dispatched one.
+
+    `is_trait_method` means the callee reads its fields off Y — that is the
+    trait ABI, near pointer or far. The call lowering only produced the `SELF_Y`
+    argument when `*self` was *far*, so a directly called near trait method had
+    its receiver pushed on the stack while the callee read Y, and it ran on
+    whatever Y happened to hold. Dispatching through `*dyn` hid it, because that
+    dispatcher loads Y itself.
+
+    In rotor_raiders this surfaced as a unit's record pointer coming back wrong
+    and the ROM reading uninitialised zero page.
+    """
+
+    def test_near_self_reaches_the_callee(self, e2e):
+        result = e2e.run('''
+            #[zeropage(0x16, register)]
+            static mut SCRATCH0: u16;
+
+            struct Point { x: u16, y: u16 }
+            trait Get { fn get(*self) -> u16; }
+            impl Get for Point { fn get(*self) -> u16 { return self.y; } }
+
+            #[lowram]
+            static mut P: Point;
+            #[zeropage(0x40)]
+            static mut OUT: u16;
+
+            #[entry]
+            fn main() {
+                P.x = 0x1111;
+                P.y = 0x2222;
+                let q: *Point = &P as *Point;
+                OUT = q.get();
+            }
+        ''', ExpectedState(memory={0x7E0040: [0x22, 0x22]}))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_receiver_is_not_a_stale_y(self, e2e):
+        """Y is loaded with something else first, so a caller that forgets to
+        set it reads that instead of the receiver."""
+        result = e2e.run('''
+            #[zeropage(0x16, register)]
+            static mut SCRATCH0: u16;
+
+            struct Point { x: u16, y: u16 }
+            trait Get { fn get(*self) -> u16; }
+            impl Get for Point { fn get(*self) -> u16 { return self.y; } }
+
+            #[lowram]
+            static mut P: Point;
+            #[zeropage(0x40)]
+            static mut OUT: u16;
+
+            #[entry]
+            fn main() {
+                P.x = 0x1111;
+                P.y = 0x3344;
+                Y = 0x0700;                 // a plausible-looking wrong address
+                let q: *Point = &P as *Point;
+                OUT = q.get();
+            }
+        ''', ExpectedState(memory={0x7E0040: [0x44, 0x33]}))
+        assert result.success, f"Failures: {result.failures}"
