@@ -8,7 +8,9 @@ class UnusedParam(LintRule):
     """Warn when a function parameter is never read in the body.
 
     Sister rule to L002 ``unused_binding``, but operates on parameter
-    symbols. Names starting with ``_`` are exempt — same convention as L002.
+    symbols. Names starting with ``_`` are exempt — same convention as L002 —
+    and so is ``self``, which the calling convention requires whether or not
+    the body reads it.
 
     For register-bound parameters (``param @ A: u8``), the symbol named
     ``param`` is what users reference in the body. If the user reads ``A``
@@ -33,6 +35,14 @@ class UnusedParam(LintRule):
             if param.symbol is None:
                 continue
             if param.name.startswith("_"):
+                continue
+            if param.name == "self":
+                # A receiver is the calling convention's, not the author's: a
+                # method takes `self` whether or not the body reads it, and it
+                # cannot be renamed to `_self` the way the hint suggests. An
+                # implementation that answers with a constant — `fn base(*self)
+                # -> *UnitBase { return &TANK_BASE; }` — is a normal shape, not
+                # an oversight.
                 continue
             loc = param.source_loc or func.source_loc
             self._declared[id(param.symbol)] = (param.name, loc)

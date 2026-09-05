@@ -26,6 +26,7 @@ class DeadStaticMut(LintRule):
         )
         self._declared: dict = {}  # id(symbol) -> (name, source_loc)
         self._read: set = set()     # id(symbol)
+        self._planes: dict = {}     # id(parent symbol) -> [id(plane symbol), ...]
 
     def visit_static_decl(self, decl: HIRStaticDecl, ctx: LintContext) -> None:
         if not decl.is_mutable or decl.symbol is None:
@@ -35,6 +36,15 @@ class DeadStaticMut(LintRule):
         if decl.storage_attr is not None and decl.storage_attr.storage_kind == StorageKind.HW:
             return  # Hardware registers are not storage.
         self._declared[id(decl.symbol)] = (decl.name, decl.source_loc)
+        # A planed parent — an `#[soa]` struct pool or a tagged enum pool — is
+        # never named in a read: `POOL[i].hp` and `match POOL[i]` are both
+        # rewritten to read a plane, so only the synthetic child appears in an
+        # expression. Reading any plane is reading the pool.
+        if decl.soa_planes:
+            self._planes[id(decl.symbol)] = [
+                id(child.symbol) for (_name, _off, _stride, child) in decl.soa_planes
+                if child.symbol is not None
+            ]
 
     def visit_identifier(self, expr: HIRIdentifier, ctx: LintContext) -> None:
         if expr.symbol is not None:
@@ -42,7 +52,8 @@ class DeadStaticMut(LintRule):
 
     def finalize(self, ctx: LintContext) -> None:
         for sym_id, (name, loc) in self._declared.items():
-            if sym_id not in self._read:
+            planes = self._planes.get(sym_id, ())
+            if sym_id not in self._read and not any(p in self._read for p in planes):
                 ctx.emit(
                     code=self.code,
                     message=f"`static mut {name}` is written but never read",
@@ -51,3 +62,4 @@ class DeadStaticMut(LintRule):
                 )
         self._declared = {}
         self._read = set()
+        self._planes = {}
