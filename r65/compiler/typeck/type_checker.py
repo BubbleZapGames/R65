@@ -1998,6 +1998,20 @@ class TypeChecker:
 
         soa_decl = soa_static_of(expr.array)
         if soa_decl is not None and not element_ok:
+            # A tagged enum is planed the same way and lands here too, but it
+            # has no fields to steer the author towards — what it has is a tag
+            # and a payload, reachable by `match` and by a cast to an integer.
+            element = getattr(soa_decl.var_type, 'element_type', soa_decl.var_type)
+            if isinstance(element, EnumTypeInfo):
+                raise TypeCheckError(
+                    f"cannot use a whole element of tagged enum array "
+                    f"'{soa_decl.name}'",
+                    source_loc=expr.source_loc,
+                    hint="a tagged enum element is a tag plus a payload in two "
+                         "separate planes, with no contiguous value; `match "
+                         f"{soa_decl.name}[i]` to reach the payload, or "
+                         f"`{soa_decl.name}[i] as u8` for the discriminant"
+                )
             raise TypeCheckError(
                 f"cannot use a whole element of #[soa] array '{soa_decl.name}'",
                 source_loc=expr.source_loc,

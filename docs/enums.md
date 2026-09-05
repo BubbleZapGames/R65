@@ -130,13 +130,51 @@ An element's bytes are split across two arrays, so there is nothing to copy,
 address, or hold. These are all rejected:
 
 - a local or parameter of the enum type
-- a field of the enum type in another aggregate
+- a field of the enum type in a **plain** struct — see below for the `#[soa]`
+  case, which is allowed
 - `&POOL[i]`
 - `impl Clone`
 - `impl Trait for` — dispatch stores a TypeId byte at offset 0, which is where
   the discriminant lives. This is the union restriction, for the same reason.
 
 Pass the element **index** instead — that is what a method receives.
+
+### A field of an `#[soa]` struct
+
+A tagged enum *may* be a field of an `#[soa]` struct. The outer static splits
+into planes anyway, so the enum contributes its own two rather than needing a
+contiguous form:
+
+```rust
+struct Body { x: u16, hp: u8 }
+
+#[soa]
+struct Thing { body: Body, shape: Shape }
+
+#[lowram]
+static mut things: [Thing; 8];
+//  -> things__body:        [Body; 8]
+//  -> things__shape__tag:  [u8; 8]              stride 1
+//  -> things__shape__data: [Shape__Payload; 8]
+```
+
+Every property survives: the tag read is still `LDA things__shape__tag,X` off a
+raw index, `match things[i].shape` and `things[i].shape = Shape::C(..)` reach
+those planes, `things[i].shape as u8` is the discriminant, and a method takes
+the *outer* array's index as its receiver — `things[i].shape.area()`.
+
+What this buys is the shape both Rust and R65 push you toward when every variant
+would otherwise carry the same fields: put the shared state **beside** the
+union, not inside it. `things[i].body.hp` is then a plain plane access needing
+no match, where a `body` inside each variant would need one to reach.
+
+A plain (non-`#[soa]`) struct still rejects the field. There the enum would have
+to be contiguous — a tag byte with the payload inline — which puts the element
+stride multiply back on every tag read, the cost the plane split exists to
+remove.
+
+The enum still backs exactly one storage: either a static of its own or one
+`#[soa]` field, not both.
 
 ### Construction
 
@@ -193,6 +231,48 @@ match POOL[i] {
 }
 
 Shape::C | Shape::Empty => 1,           // fine — no binding
+```
+
+### The discriminant as a value
+
+An element has no contiguous value, so a cast of one is not a conversion — it
+is a read of the tag plane, and that is all it compiles to:
+
+```rust
+let k: u16 = POOL[i] as u16;    // LDA POOL__tag,X  (+ AND #$FF to widen)
+let j: u8  = POOL[i] as u8;     // LDA POOL__tag,X
+```
+
+This is what makes a **per-kind table** the natural way to hold constants that
+vary by variant. One row per variant, addressed by the element's own tag:
+
+```rust
+struct Row { speed: u16, hp: u8, pad: u8 }      // 4 bytes: index scales by two ASLs
+
+static ROWS: [Row; 3] = [
+    Row { speed:   0, hp:  0, pad: 0 },         // Shape::Empty
+    Row { speed: 128, hp: 25, pad: 0 },         // Shape::C
+    Row { speed: 192, hp: 12, pad: 0 },         // Shape::R
+];
+
+let speed = ROWS[POOL[i] as u16].speed;
+```
+
+The row order is the variant order, and nothing checks that for you — a test
+that asserts one column per variant is what catches a mis-ordered table.
+
+The alternative, a `match self` per column, generates a lookup table *per
+method* and pays a call to reach it. One table of rows costs a shift and an
+indexed load, and reads as a table.
+
+Only an integer target is a tag read. `POOL[i] as *u8` is still refused, as is
+a bare `POOL[i]`, and the diagnostic points at both spellings that do work:
+
+```
+error: cannot use a whole element of tagged enum array 'POOL'
+hint: a tagged enum element is a tag plus a payload in two separate planes,
+      with no contiguous value; `match POOL[i]` to reach the payload, or
+      `POOL[i] as u8` for the discriminant
 ```
 
 ### Methods

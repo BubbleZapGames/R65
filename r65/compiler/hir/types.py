@@ -114,8 +114,14 @@ class StructTypeInfo(TypeInfo):
         elif self.definition is not None:
             defn = self.definition
         if defn is not None and hasattr(defn, 'fields'):
-            from r65.compiler.hir.unified_type_utils import layout_fields
-            sizes = [f.field_type.size_bytes for f in defn.fields]
+            from r65.compiler.hir.unified_type_utils import (layout_fields,
+                                                             get_unified_type_size)
+            # Through the unified helper, not `f.field_type.size_bytes`: a
+            # struct sized while its definition is still the AST node has AST
+            # field types, which carry no `size_bytes`. That happens as soon as
+            # one struct has a field of another — sizing the outer one reaches
+            # the inner one before pass 2 has replaced its definition.
+            sizes = [get_unified_type_size(f.field_type) for f in defn.fields]
             _, total = layout_fields(sizes, getattr(defn, 'is_union', False))
             return total
         raise HIRError(f"Cannot determine size of struct '{self.name}': no definition", source_loc=None)

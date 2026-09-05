@@ -200,8 +200,17 @@ class CallValidator:
         must *be* an element. `POOL[i].m()` passes `i`; `PLAYER.m()` and
         `self.m()` reach here already rewritten to that shape by
         `ExpressionBuilder._soa_rewrite_base`, so the one arm covers all three.
+
+        `POOL[i].field.m()` is the fourth: a tagged enum that is a field of an
+        `#[soa]` element is still reached by the outer array's index, and its
+        planes are the pool's nested ones. The index is the same `i`.
         """
-        from r65.compiler.hir.nodes import HIRArrayIndex
+        from r65.compiler.hir.nodes import HIRArrayIndex, HIRFieldAccess
+
+        base = field_access.base
+        if (isinstance(base, HIRFieldAccess)
+                and isinstance(getattr(base, 'base', None), HIRArrayIndex)):
+            return base.base.index
 
         if not isinstance(field_access.base, HIRArrayIndex):
             raise TypeCheckError(

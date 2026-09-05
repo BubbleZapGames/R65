@@ -201,3 +201,155 @@ class TestSingleInstance:
             0x7E0040: [0x6B],
         }))
         assert result.success, f"Failures: {result.failures}"
+
+
+class TestDiscriminantCast:
+    """The tag read back as an integer, and used to index a per-kind table.
+
+    This is the roster pattern: one row of constants per variant, addressed by
+    the element's own discriminant, with no dispatch and no per-column match.
+    """
+
+    def test_ids_round_trip(self, e2e):
+        result = e2e.run(SHAPES + '''
+            #[zeropage(0x40)]
+            static mut OUT: [u8; 3];
+
+            #[entry]
+            fn main() {
+                POOL[0] = Shape::R(Rect { w: 1, h: 2 });
+                POOL[1] = Shape::Empty;
+                POOL[2] = Shape::C(Circle { r: 3 });
+                OUT[0] = POOL[0] as u8;
+                OUT[1] = POOL[1] as u8;
+                OUT[2] = POOL[2] as u8;
+            }
+        ''', ExpectedState(memory={0x7E0040: [0x02, 0x00, 0x01]}))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_indexes_a_per_kind_table(self, e2e):
+        """A row per variant in ROM, read through the tag. The `Rect` row is at
+        index 2 because `Shape::R` is the third variant."""
+        result = e2e.run(SHAPES + '''
+            struct Row { speed: u16, hp: u8, pad: u8 }
+            static ROWS: [Row; 3] = [
+                Row { speed: 0x1111, hp: 0x10, pad: 0 },
+                Row { speed: 0x2222, hp: 0x20, pad: 0 },
+                Row { speed: 0x3333, hp: 0x30, pad: 0 },
+            ];
+
+            #[zeropage(0x40)]
+            static mut SPEED: u16;
+            #[zeropage(0x42)]
+            static mut HP: u8;
+
+            fn look(i: u16) {
+                let k: u16 = POOL[i] as u16;
+                SPEED = ROWS[k].speed;
+                HP = ROWS[k].hp;
+            }
+
+            #[entry]
+            fn main() {
+                POOL[0] = Shape::Empty;
+                POOL[1] = Shape::R(Rect { w: 0, h: 0 });
+                look(0);
+                look(1);
+            }
+        ''', ExpectedState(memory={
+            0x7E0040: [0x33, 0x33],    # ROWS[2].speed — the R row
+            0x7E0042: [0x30],
+        }))
+        assert result.success, f"Failures: {result.failures}"
+
+
+class TestNestedInSoaStruct:
+    """A tagged enum as a field of an `#[soa]` element, on the hardware.
+
+    This is the layout that lets shared state sit beside the union instead of
+    inside every variant: `things[i].body.hp` is a plain plane access needing no
+    match, while `things[i].shape` still reaches the tag and payload planes.
+    """
+
+    SOURCE = '''
+        struct Circle { r: u8 }
+        struct Rect { w: u8, h: u8 }
+        enum Shape { Empty, C(Circle), R(Rect) }
+
+        struct Body { x: u16, hp: u8, pad: u8 }
+
+        #[soa]
+        struct Thing { body: Body, shape: Shape }
+
+        #[zeropage(0x10)]
+        static mut things: [Thing; 4];
+    '''
+
+    def test_both_halves_round_trip(self, e2e):
+        result = e2e.run(self.SOURCE + '''
+            #[zeropage(0x40)]
+            static mut OUT: [u8; 4];
+
+            #[entry]
+            fn main() {
+                things[1].body.x = 0x1234;
+                things[1].body.hp = 25;
+                things[1].shape = Shape::R(Rect { w: 0x40, h: 0x41 });
+
+                things[2].body.hp = 12;
+                things[2].shape = Shape::C(Circle { r: 0x5A });
+
+                OUT[0] = things[1].body.hp;              // no match needed
+                OUT[1] = match things[1].shape { Shape::R(r) => r.h, _ => 0 };
+                OUT[2] = things[2].body.hp;
+                OUT[3] = things[2].shape as u8;          // the discriminant
+            }
+        ''', ExpectedState(memory={0x7E0040: [25, 0x41, 12, 0x01]}))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_a_payload_binding_writes_through_to_the_pool(self, e2e):
+        result = e2e.run(self.SOURCE + '''
+            #[zeropage(0x40)]
+            static mut OUT: u8;
+
+            fn bump(i: u16) {
+                match things[i].shape {
+                    Shape::C(c) => { c.r = c.r + 1; }
+                    _ => {}
+                };
+            }
+
+            #[entry]
+            fn main() {
+                things[3].shape = Shape::C(Circle { r: 0x10 });
+                bump(3);
+                bump(3);
+                OUT = match things[3].shape { Shape::C(c) => c.r, _ => 0 };
+            }
+        ''', ExpectedState(memory={0x7E0040: [0x12]}))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_method_over_the_nested_pool(self, e2e):
+        result = e2e.run(self.SOURCE + '''
+            impl Shape {
+                fn area(self) -> u8 {
+                    return match self {
+                        Shape::C(c) => c.r,
+                        Shape::R(r) => r.w,
+                        Shape::Empty => 0xFF,
+                    };
+                }
+            }
+
+            #[zeropage(0x40)]
+            static mut OUT: [u8; 2];
+
+            #[entry]
+            fn main() {
+                things[0].shape = Shape::C(Circle { r: 0x44 });
+                things[2].shape = Shape::Empty;
+                OUT[0] = things[0].shape.area();
+                OUT[1] = things[2].shape.area();
+            }
+        ''', ExpectedState(memory={0x7E0040: [0x44, 0xFF]}))
+        assert result.success, f"Failures: {result.failures}"

@@ -51,7 +51,7 @@ class ExpressionBuilder:
         # above or below the code that matches on it. Reading the enum's
         # `definition` instead would depend on that order, because it is still
         # the AST node until `_build_enum` runs.
-        self.enum_storage = {}    # enum name -> (pool Symbol, source_loc)
+        self.enum_storage = {}    # enum name -> (pool Symbol, source_loc, prefix)
         self.tagged_enums = set()  # names of tagged enums
         self.enum_payloads = {}   # enum name -> variant name -> StructTypeInfo
 
@@ -233,8 +233,11 @@ class ExpressionBuilder:
             return hir.HIRUnaryOp(op=expr.op, operand=operand, source_loc=src_loc)
 
         elif isinstance(expr, ast.TypeCast):
-            inner = self.build_expression(expr.expr)
             target = self.type_resolver.resolve_type(expr.target_type)
+            tag = self._tagged_enum_tag_cast(expr, target, src_loc)
+            if tag is not None:
+                return tag
+            inner = self.build_expression(expr.expr)
             return hir.HIRTypeCast(expr=inner, target_type=target, source_loc=src_loc)
 
         elif isinstance(expr, ast.NewtypeFieldAccess):
@@ -575,12 +578,66 @@ class ExpressionBuilder:
                     return enum_name, scrutinee.index
             return None
 
+        # POOL[i].field — the enum is a field of an `#[soa]` element, so the
+        # element is still reached by index and the planes are the pool's
+        # nested ones. The index is the outer array's, exactly as above.
+        if isinstance(scrutinee, ast.FieldAccess):
+            base = getattr(scrutinee, 'base', None)
+            if isinstance(base, ast.ArrayIndex) and isinstance(base.array, ast.Identifier):
+                enum_name = self._nested_tagged_enum(base.array.name,
+                                                     scrutinee.field)
+                if enum_name is not None:
+                    return enum_name, base.index
+            return None
+
         if isinstance(scrutinee, ast.Identifier):
             if scrutinee.name == 'self' and self.enum_self_pool is not None:
                 return self.enum_self_pool[0], scrutinee
             enum_name = self._tagged_enum_static(scrutinee.name)
             if enum_name is not None:
                 return enum_name, ast.IntegerLiteral(value=0, source_loc=loc)
+        return None
+
+    def _tagged_enum_tag_cast(self, expr: ast.TypeCast, target, loc):
+        """`POOL[i] as u8` -> a read of the tag plane, else None.
+
+        A tagged enum element has no contiguous value, so a cast of one is not a
+        conversion of anything — it is a read of the discriminant, which is the
+        tag plane's byte. That is the same rewrite `match` performs on the same
+        spelling (`_tagged_match_target`), stopping at the load:
+
+            LDA POOL__tag,X
+
+        A wider target keeps the ordinary explicit u8 -> u16 widening on top,
+        which is the path that zero-extends correctly. A non-integer target is
+        left alone, so `POOL[i] as *u8` still hits the planed-value rejection in
+        the type checker.
+        """
+        if not isinstance(target, BasicTypeInfo) or target.name == 'bool':
+            return None
+        tagged = self._tagged_match_target(expr.expr)
+        if tagged is None:
+            return None
+        enum_name, index_ast = tagged
+        tag = self._enum_plane_access(enum_name, 'tag', index_ast, loc)
+        if target.name == 'u8':
+            return tag
+        return hir.HIRTypeCast(expr=tag, target_type=target, source_loc=loc)
+
+    def _nested_tagged_enum(self, pool_name: str, field_name: str):
+        """The tagged enum reached by `pool_name[i].field_name`, else None.
+
+        Answered from the storage registry rather than the struct definition:
+        the registry already records which pool and which field back each
+        tagged enum, and it is filled before any body is built, so this gives
+        the same answer whichever order the declarations appear in.
+        """
+        symbol = self.symbol_table.lookup(pool_name)
+        if symbol is None:
+            return None
+        for enum_name, (pool_symbol, _loc, prefix) in self.enum_storage.items():
+            if pool_symbol is symbol and prefix == f"{field_name}__":
+                return enum_name
         return None
 
     def _tagged_enum_static(self, name: str):
@@ -603,8 +660,8 @@ class ExpressionBuilder:
         can be built during pass 2 — so the result needs no further special
         handling anywhere downstream.
         """
-        pool_symbol, _loc = self.enum_storage[enum_name]
-        plane_symbol = self.symbol_table.lookup(f"{pool_symbol.name}__{plane}")
+        pool_symbol, _loc, prefix = self.enum_storage[enum_name]
+        plane_symbol = self.symbol_table.lookup(f"{pool_symbol.name}__{prefix}{plane}")
         return hir.HIRArrayIndex(
             array=hir.HIRIdentifier(name=plane_symbol.name, symbol=plane_symbol,
                                     source_loc=loc),
@@ -706,18 +763,21 @@ class ExpressionBuilder:
         A struct literal is written field by field — there is no temporary to
         build first. Anything else names an existing aggregate, which is copied
         the way any struct assignment is.
+
+        A field that is itself a struct literal recurses, so
+        `Unit::Tank(Tank { inst: UnitInstance { hp: 5 }, reload: 0 })` writes
+        `slot.inst.hp` directly. Emitting `slot.inst = UnitInstance { .. }` for
+        the inner one instead would be an aggregate assignment, which a bare
+        `=` refuses — the whole point of writing the payload in place is that
+        there is no aggregate to assign.
         """
         if isinstance(payload, ast.StructLiteralExpr):
-            return [
-                hir.HIRExprStmt(
-                    expr=hir.HIRAssignment(
-                        target=hir.HIRFieldAccess(base=slot, field_name=field.name,
-                                                  source_loc=loc),
-                        value=self.build_expression(field.value),
-                        source_loc=loc),
-                    source_loc=loc)
-                for field in payload.fields
-            ]
+            statements = []
+            for field in payload.fields:
+                target = hir.HIRFieldAccess(base=slot, field_name=field.name,
+                                            source_loc=loc)
+                statements.extend(self._store_payload(target, field.value, loc))
+            return statements
         return [hir.HIRExprStmt(
             expr=hir.HIRAssignment(target=slot,
                                    value=self.build_expression(payload),

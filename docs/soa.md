@@ -266,6 +266,7 @@ late allocation failure naming a synthesized plane.
 | `let e: Enemy;` | No contiguous value to hold | Hold a `u16` index |
 | `fn f(e: Enemy)` / `fn f(e: *Enemy)` | Nothing to pass or point at | Take the index |
 | `struct W { lead: Enemy }` | Would need a plane inside an aggregate | Store the index |
+| — | *but* a field may be a **tagged enum**: it contributes its own tag and payload planes (`POOL__kind__tag`, `POOL__kind__data`) — see [enums.md](enums.md) | — |
 | `E = POOL[i]` (whole element) | Aggregate by value | Copy the fields |
 | `POOL.clone()` | Needs one contiguous block | Copy per field |
 | `impl Clone for Enemy {}` | Clone means a contiguous byte copy | Copy the fields |

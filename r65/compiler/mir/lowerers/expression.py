@@ -1122,6 +1122,29 @@ class ExpressionLowerer:
                 ))
             return result
 
+        # &ARR[i].field — the element's address plus the field's offset.
+        # `&ARR[i]` already has a lowering that knows how to scale the index and
+        # fold a symbolic base, so reuse it rather than repeating that here.
+        # This is the case `docs/soa.md` lists as a natural follow-up, and it is
+        # what lets a tagged enum's payload binding be a method receiver: `t`
+        # expands to `POOL__data[i].Variant`, so `t.method()` needs the address
+        # of a field of an array element.
+        if isinstance(field_access.base, HIRArrayIndex):
+            element_addr = HIRAddressOf(operand=field_access.base,
+                                        expr_type=expr.expr_type,
+                                        source_loc=expr.source_loc)
+            base_vreg = self._lower_addressof_array_index(element_addr)
+            result = self.ctx.alloc_vreg(
+                expr.expr_type, f"addr_of_elem_{field_access.field_name}")
+            if field_offset == 0:
+                self.emit(Move(dest=result, source=base_vreg,
+                               type_info=expr.expr_type))
+            else:
+                self.emit(BinaryOp(dest=result, op='+', left=base_vreg,
+                                   right=Immediate(field_offset),
+                                   type_info=expr.expr_type))
+            return result
+
         # &static_var.field — compute static address + offset
         if not isinstance(field_access.base, HIRIdentifier):
             raise MIRLoweringError(

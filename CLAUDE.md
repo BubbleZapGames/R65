@@ -219,9 +219,18 @@ impl Shape {
 POOL[i] = Shape::C(Circle { r: 5 });   // tag store + payload stores
 ```
 
+The discriminant reads back as an integer — `POOL[i] as u8` is one `LDA
+POOL__tag,X` — so per-variant constants belong in a table indexed by it rather
+than in a `match self` per column:
+
+```rust
+let speed: u16 = ROWS[POOL[i] as u16].speed;
+```
+
 **Restrictions**: a payload names a declared struct (no inline fields, no tuple
 variants); a tagged enum backs exactly one `static mut` and takes no
-initializer, so write an element before matching it; no locals, parameters,
+initializer, so write an element before matching it; it may be a field of an
+`#[soa]` struct (contributing its two planes) but not of a plain one; no locals, parameters,
 `&POOL[i]`, `impl Clone`, or traits (the TypeId byte and the tag both want
 offset 0); no `= n` on a tagged enum's variants.
 

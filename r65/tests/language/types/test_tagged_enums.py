@@ -206,8 +206,125 @@ class TestNoContiguousElement:
                     r"parameter 's' cannot have tagged enum 'Shape'")
 
     def test_struct_field_rejected(self):
+        """In a plain array-of-structs the enum would need a contiguous form —
+        a tag byte with the payload inline — which puts the element stride
+        multiply back on every tag read."""
         build_fails(POOL + "struct Holder { s: Shape }\nfn main() {}",
                     r"field 's' cannot have tagged enum 'Shape'")
+
+
+class TestNestedInSoaStruct:
+    """A tagged enum may be a field of an `#[soa]` struct.
+
+    The outer static splits into planes anyway, so the enum contributes its own
+    two rather than needing a contiguous form: `units__kind__tag` keeps its
+    stride of 1 and the tag read stays `LDA plane,X` off a raw index. This is
+    what lets the common state sit *beside* the union instead of inside every
+    variant, which is the layout both Rust and R65 push you toward.
+    """
+
+    SOURCE = """
+    struct Circle { r: u8 }
+    enum Shape { Empty, C(Circle) }
+
+    struct Body { x: u16, hp: u8, pad: u8 }
+
+    #[soa]
+    struct Thing { body: Body, shape: Shape }
+
+    #[lowram]
+    static mut things: [Thing; 8];
+    """
+
+    def test_the_field_is_accepted(self):
+        build(self.SOURCE + "fn main() {}")
+
+    def test_the_enum_contributes_two_planes(self):
+        prog = build(self.SOURCE + "fn main() {}")
+        names = [name for name, _off, _stride, _child
+                 in statics(prog)['things'].soa_planes]
+        assert names == ['body', 'shape__tag', 'shape__data']
+
+    def test_plane_offsets_stay_ordered_and_disjoint(self):
+        """`_soa_plane_for` picks a plane by which range contains the summed
+        field offset, so the pair must not sit on top of the field after it."""
+        prog = build(self.SOURCE + "fn main() {}")
+        offsets = [off for _n, off, _s, _c in statics(prog)['things'].soa_planes]
+        assert offsets == sorted(offsets)
+        assert len(set(offsets)) == len(offsets)
+        assert offsets[1] + 1 == offsets[2]        # tag is one byte, payload next
+
+    def test_tag_plane_strides_by_one(self):
+        prog = build(self.SOURCE + "fn main() {}")
+        planes = {name: (stride, child)
+                  for name, _off, stride, child in statics(prog)['things'].soa_planes}
+        assert planes['shape__tag'][0] == 1
+
+    def test_a_standalone_static_as_well_is_rejected(self):
+        build_fails(self.SOURCE + "#[lowram] static mut more: [Shape; 4];\nfn main() {}",
+                    r"backs both 'Thing.shape' and a static of its own")
+
+
+class TestNestedAccess:
+    """Reaching the nested element: match, construct, cast and method call."""
+
+    def _asm(self, body: str) -> str:
+        from r65.compiler.main import compile_string
+        return compile_string(TestNestedInSoaStruct.SOURCE + body, "test.r65")
+
+    def test_construction_writes_both_planes(self):
+        asm = self._asm("""
+            #[zeropage(0x40)] static mut i: u16;
+            #[entry]
+            fn main() { i = 2; things[i].shape = Shape::C(Circle { r: 7 }); }
+        """)
+        assert "STA $0220,X" in asm, asm      # things__shape__tag
+        assert "STA $0228,X" in asm, asm      # things__shape__data
+
+    def test_match_reads_the_nested_tag_plane(self):
+        asm = self._asm("""
+            #[zeropage(0x40)] static mut o: u8;
+            #[zeropage(0x42)] static mut i: u16;
+            #[entry]
+            fn main() {
+                i = 1;
+                things[i].shape = Shape::Empty;
+                o = match things[i].shape { Shape::C(c) => c.r, Shape::Empty => 9 };
+            }
+        """)
+        assert "LDA $0220,X" in asm, asm
+
+    def test_the_sibling_field_needs_no_match(self):
+        """The whole point: shared state is reachable without discriminating."""
+        asm = self._asm("""
+            #[zeropage(0x40)] static mut o: u8;
+            #[zeropage(0x42)] static mut i: u16;
+            #[entry]
+            fn main() { i = 3; things[i].body.hp = 25; o = things[i].body.hp; }
+        """)
+        assert "CMP" not in asm.split("\nmain:")[1].split("__SCMP")[0], asm
+
+    def test_method_takes_the_outer_index(self):
+        asm = self._asm("""
+            impl Shape {
+                fn radius(self) -> u8 {
+                    return match self { Shape::C(c) => c.r, Shape::Empty => 0 };
+                }
+            }
+            #[zeropage(0x40)] static mut o: u8;
+            #[entry]
+            fn main() { things[2].shape = Shape::Empty; o = things[2].shape.radius(); }
+        """)
+        assert "LDX #$02" in asm, asm
+        assert "LDA $0220,X" in asm, asm
+
+    def test_discriminant_cast(self):
+        asm = self._asm("""
+            #[zeropage(0x40)] static mut o: u16;
+            #[entry]
+            fn main() { things[0].shape = Shape::Empty; o = things[0].shape as u16; }
+        """)
+        assert "LDA $0220" in asm, asm
 
     def test_declared_after_the_code_that_uses_it(self):
         """Source order must not matter.
@@ -290,3 +407,82 @@ class TestConstruction:
         build_fails(POOL + "enum Other { A }\nfn f(i: u16) { POOL[i] = Other::A; }\n"
                            "fn main() {}",
                     r"cannot assign a 'Other' to a 'Shape' element")
+
+
+class TestDiscriminantCast:
+    """`POOL[i] as u8` is the tag plane's byte.
+
+    An element has no contiguous value, so a cast of one is not a conversion —
+    it is a read of the discriminant. That makes a tagged enum usable as the
+    index into a per-kind table, which is what the roster pattern needs.
+    """
+
+    def _fn(self, body: str, label: str, call: str) -> str:
+        from r65.compiler.main import compile_string
+        asm = compile_string(POOL + body + f"\nfn main() {{ {call} }}", "test.r65")
+        return asm[asm.index(f"\n{label}:"):].split("; ---")[0]
+
+    def test_u8_cast_is_a_bare_tag_read(self):
+        """One load off the tag plane, and nothing else — no bounds check and no
+        lookup table, which is what a `match` would have added."""
+        code = self._fn("#[zeropage(0x40)] static mut o: u8;\n"
+                        "fn id(i: u16) { o = POOL[i] as u8; }", "id", "id(0);")
+        assert "LDA $0200,X" in code, code       # POOL__tag,X
+        assert "CMP" not in code, code           # no match-style bounds check
+        assert "LUT" not in code, code
+
+    def test_u16_cast_widens_the_tag(self):
+        code = self._fn("#[zeropage(0x40)] static mut o: u16;\n"
+                        "fn id(i: u16) { o = POOL[i] as u16; }", "id", "id(0);")
+        assert "LDA $0200,X" in code, code
+        assert "AND #$FF" in code, code          # explicit zero-extension
+
+    def test_indexes_a_per_kind_table(self):
+        """The point of the cast: a table row per variant, addressed by the tag.
+
+        Read from the whole listing rather than one function, and give it a real
+        `#[entry]`: an uncalled function that reads a ROM array is dropped by
+        dead-function elimination, and a called-once one is inlined into main.
+        """
+        from r65.compiler.main import compile_string
+        asm = compile_string(POOL + "static SPEED: [u16; 3] = [0, 128, 192];\n"
+                             "#[zeropage(0x40)] static mut o: u16;\n"
+                             "fn look(i: u16) { o = SPEED[POOL[i] as u16]; }\n"
+                             "#[entry]\nfn main() { look(0); look(1); }", "test.r65")
+        assert "LDA $0200,X" in asm, asm
+        assert "__SPEED_data" in asm, asm
+
+    def test_cast_inside_a_method(self):
+        """`self` is the element index, so the tag still comes from the pool."""
+        code = self._fn("#[zeropage(0x40)] static mut o: u8;\n"
+                        "impl Shape { fn id(self) -> u8 { return POOL[self] as u8; } }",
+                        "Shape__id", "o = POOL[1].id();")
+        assert "LDA $0200,X" in code, code
+
+    def test_single_instance_reads_index_zero(self):
+        from r65.compiler.main import compile_string
+        asm = compile_string(SHAPES + "#[lowram] static mut SHAPE: Shape;\n"
+                             "#[zeropage(0x40)] static mut o: u8;\n"
+                             "fn main() { o = SHAPE as u8; }", "test.r65")
+        assert "LDA $0200\n" in asm or "LDA $0200 " in asm, asm
+
+    def test_non_integer_target_is_still_rejected(self):
+        """The cast is a tag read only where a tag is a sensible value; anything
+        else keeps the planed-value rejection."""
+        from r65.compiler.errors import TypeCheckError
+        from r65.compiler.main import compile_string
+        with pytest.raises(TypeCheckError,
+                           match=r"whole element of tagged enum array 'POOL'"):
+            compile_string(POOL + "fn f(i: u16) { let p: *u8 = POOL[i] as *u8; }\n"
+                                  "fn main() { f(0); }", "test.r65")
+
+    def test_rejection_names_the_cast(self):
+        """The hint for a planed enum cannot talk about fields — it has none."""
+        from r65.compiler.errors import TypeCheckError
+        from r65.compiler.main import compile_string
+        with pytest.raises(TypeCheckError) as exc:
+            compile_string(POOL + "#[zeropage(0x40)] static mut o: u8;\n"
+                                  "fn f(i: u16) { o = POOL[i]; }\nfn main() { f(0); }",
+                           "test.r65")
+        assert "POOL[i] as u8" in exc.value.hint
+        assert "match POOL[i]" in exc.value.hint

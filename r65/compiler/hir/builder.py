@@ -79,7 +79,10 @@ class HIRBuilder:
         # enum is planed exactly like a `#[soa]` struct — see docs/enums.md — so
         # it carries the same one-static rule and the same storage validations.
         self._tagged_enums: Set[str] = set()
-        self._enum_storage: Dict[str, Any] = {}  # enum name -> (Symbol, source_loc)
+        # enum name -> (pool Symbol, source_loc, plane prefix). The prefix is
+        # '' for a pool of the enum itself and 'field__' when the enum is a
+        # field of an #[soa] element, which is what names `units__kind__tag`.
+        self._enum_storage: Dict[str, Any] = {}
         # Filled by `_setup_tagged_enums` between the passes.
         self._enum_payloads: Dict[str, Dict[str, Any]] = {}  # enum -> variant -> StructTypeInfo
         self._enum_payload_unions: Dict[str, Any] = {}  # enum -> HIRStructDecl
@@ -1520,7 +1523,7 @@ class HIRBuilder:
 
     def _bind_planed_storage(self, decl: ast.StaticDecl, symbol, type_name: str,
                              registry: dict, *, noun: str, static_noun: str,
-                             duplicate_hint: str) -> None:
+                             duplicate_hint: str, prefix: str = None) -> None:
         """Record the single static backing a planed type, or reject a second.
 
         Shared by `#[soa]` structs and tagged enums. Both split their storage
@@ -1533,7 +1536,8 @@ class HIRBuilder:
         """
         previous = registry.get(type_name)
         if previous is not None:
-            prev_symbol, _prev_loc = previous
+            # A tagged enum's entry carries a third element, the plane prefix.
+            prev_symbol = previous[0]
             raise HIRError(
                 f"{noun} is already stored by static '{prev_symbol.name}'",
                 source_loc=decl.source_loc,
@@ -1571,7 +1575,10 @@ class HIRBuilder:
                      "implemented; leave it uninitialized for now",
             )
 
-        registry[type_name] = (symbol, decl.source_loc)
+        # A tagged enum's entry carries the plane-name prefix as well; an
+        # `#[soa]` struct's does not, and passes None.
+        registry[type_name] = ((symbol, decl.source_loc) if prefix is None
+                               else (symbol, decl.source_loc, prefix))
 
     def _tagged_enum_of(self, var_type):
         """The tagged `EnumTypeInfo` of *var_type*, else None.
@@ -1591,7 +1598,7 @@ class HIRBuilder:
         if element is None:
             return
         self._bind_planed_storage(
-            decl, symbol, element.name, self._enum_storage,
+            decl, symbol, element.name, self._enum_storage, prefix='',
             noun=f"tagged enum '{element.name}'",
             static_noun="tagged enum static",
             duplicate_hint="a tagged enum backs exactly one array — its methods "
@@ -1667,6 +1674,25 @@ class HIRBuilder:
 
         hir_decls.extend(planes_added)
 
+    def _planed_field_size(self, field_type) -> int:
+        """Bytes a field occupies in the packed layout the plane offsets index.
+
+        A tagged enum's `size_bytes` is its *discriminant* width — that is what
+        the tag plane wants — but as a field it stands for both of its planes,
+        tag and payload. Sizing it at the discriminant alone would put the next
+        field's offset on top of the payload plane's, and `_soa_plane_for`
+        picks a plane by which range contains the summed offset.
+        """
+        enum = self._tagged_enum_of(field_type)
+        if enum is not None:
+            definition = enum.symbol.definition if enum.symbol else enum.definition
+            payload = getattr(definition, 'payload_union', None)
+            if payload is not None:
+                return (definition.underlying_type.size_bytes
+                        + StructTypeInfo(name=payload.name, definition=payload,
+                                         symbol=payload.symbol).size_bytes)
+        return self._get_type_size(field_type)
+
     def _plane_fields(self, decl: 'hir.HIRStaticDecl'):
         """The `(field, aos_offset)` list *decl* splits into planes.
 
@@ -1685,18 +1711,7 @@ class HIRBuilder:
                     f"was never built",
                     source_loc=decl.source_loc,
                 )
-            # The tag leads so that a tag read is `LDA POOL__tag,X` with the raw
-            # index in X — no scaling — which is the whole reason for the split.
-            tag = hir.HIRStructField(
-                name='tag', field_type=definition.underlying_type, offset=0)
-            payload = definition.payload_union
-            data = hir.HIRStructField(
-                name='data',
-                field_type=StructTypeInfo(name=payload.name,
-                                          definition=payload,
-                                          symbol=payload.symbol),
-                offset=tag.field_type.size_bytes)
-            return [(tag, tag.offset), (data, data.offset)]
+            return self._enum_plane_pair(definition, '', 0)
 
         if not isinstance(definition, hir.HIRStructDecl):
             raise HIRError(
@@ -1704,7 +1719,45 @@ class HIRBuilder:
                 f"'{element.name}' was never built",
                 source_loc=decl.source_loc,
             )
-        return [(f, f.offset) for f in definition.fields]
+
+        planes = []
+        for f in definition.fields:
+            # A field that is itself a tagged enum contributes that enum's two
+            # planes rather than one of its own, named for the path that
+            # reaches it: `units__kind__tag` and `units__kind__data`. The list
+            # stays flat, so everything downstream — the stride rule, the
+            # synthetic symbol, the allocation — is the same mechanism it
+            # already was for a standalone pool.
+            nested = self._tagged_enum_of(f.field_type)
+            if nested is not None:
+                nested_defn = (nested.symbol.definition if nested.symbol
+                               else nested.definition)
+                planes.extend(self._enum_plane_pair(
+                    nested_defn, f"{f.name}__", f.offset))
+            else:
+                planes.append((f, f.offset))
+        return planes
+
+    def _enum_plane_pair(self, definition, prefix: str, base_offset: int):
+        """A tagged enum's `[(tag, offset), (data, offset)]`.
+
+        The tag leads so that a tag read is `LDA POOL__tag,X` with the raw index
+        in X — no scaling — which is the whole reason for the split. *prefix*
+        names the path when the enum is a field of the element rather than the
+        element itself, and *base_offset* is where that field starts in the
+        packed layout `_soa_plane_for` inverts by range.
+        """
+        tag = hir.HIRStructField(
+            name=f'{prefix}tag', field_type=definition.underlying_type,
+            offset=base_offset)
+        payload = definition.payload_union
+        data = hir.HIRStructField(
+            name=f'{prefix}data',
+            field_type=StructTypeInfo(name=payload.name,
+                                      definition=payload,
+                                      symbol=payload.symbol),
+            offset=base_offset + tag.field_type.size_bytes)
+        return [(tag, tag.offset), (data, data.offset)]
 
     def _make_soa_plane(self, parent, field_decl, count, stride, address):
         """Build one field plane of an `#[soa]` static, and declare its symbol."""
@@ -1764,13 +1817,22 @@ class HIRBuilder:
         planed_name = soa_struct_of(var_type)
         if planed_name is None:
             return
-        kind = ("tagged enum" if planed_name in self._tagged_enums
-                else "#[soa] type")
+        tagged = planed_name in self._tagged_enums
+        kind = "tagged enum" if tagged else "#[soa] type"
+        if what == 'field' and tagged:
+            # There is a way to have this field — the containing struct has to
+            # be planed too, so the enum can contribute its own two planes
+            # rather than needing a contiguous form inside an element.
+            hint = (f"mark the containing struct `#[soa]`: a tagged enum can be "
+                    f"a field of a planed element, where it contributes its tag "
+                    f"and payload planes")
+        else:
+            hint = ("a planed value lives only as an element of its pool; hold "
+                    "the element index instead, e.g. `let i: u16 = 0;`")
         raise HIRError(
             f"{what} '{name}' cannot have {kind} '{planed_name}'",
             source_loc=source_loc,
-            hint=f"a planed value lives only as an element of its pool; hold the "
-                 f"element index instead, e.g. `let i: u16 = 0;`",
+            hint=hint,
         )
 
     def _validate_soa_struct(self, decl: ast.StructDecl) -> None:
@@ -1977,12 +2039,21 @@ class HIRBuilder:
 
         field_types = [self.type_resolver.resolve_type(f.field_type) for f in struct.fields]
         offsets, _ = layout_fields(
-            [self._get_type_size(t) for t in field_types],
+            [self._planed_field_size(t) for t in field_types],
             struct.is_union
         )
 
         for field, field_type, offset in zip(struct.fields, field_types, offsets):
-            self._reject_soa_type(field_type, 'field', field.name, struct.source_loc)
+            # A tagged enum is allowed as a field of an `#[soa]` struct: the
+            # outer static splits into planes anyway, so the enum contributes
+            # its own two (see `_plane_fields`) and the tag read stays
+            # stride-1. In a plain array-of-structs it would have to be
+            # contiguous — a tag byte with the payload inline — which puts the
+            # element stride multiply back on every tag read, so it stays
+            # rejected there.
+            if not (struct.is_soa and self._tagged_enum_of(field_type) is not None):
+                self._reject_soa_type(field_type, 'field', field.name,
+                                      struct.source_loc)
             hir_fields.append(hir.HIRStructField(
                 name=field.name,
                 field_type=field_type,
@@ -2175,8 +2246,47 @@ class HIRBuilder:
             self._enum_payload_unions[decl.name] = self._build_enum_payload_union(
                 decl.name, payloads)
 
-        for enum_name, (pool_symbol, source_loc) in self._enum_storage.items():
-            self._declare_enum_planes(enum_name, pool_symbol, source_loc)
+        self._bind_nested_enum_storage(ast_program)
+
+        for enum_name, (pool_symbol, source_loc, prefix) in self._enum_storage.items():
+            self._declare_enum_planes(enum_name, pool_symbol, source_loc, prefix)
+
+    def _bind_nested_enum_storage(self, ast_program) -> None:
+        """Back a tagged enum that is a *field* of an `#[soa]` element.
+
+        Such an enum has no static of its own — the static is the containing
+        pool — so nothing in pass 1 registers it. Its planes are the pool's
+        nested ones, `units__kind__tag` and `units__kind__data`, which is what
+        the recorded prefix names.
+
+        Runs after pass 1 so every enum is known to be tagged and every
+        `#[soa]` static is bound, and before the plane symbols are declared
+        just above.
+        """
+        structs = {d.name: d for d in ast_program.items
+                   if isinstance(d, ast.StructDecl)}
+        for struct_name, (pool_symbol, source_loc) in self._soa_storage.items():
+            struct = structs.get(struct_name)
+            if struct is None:
+                continue
+            for field in struct.fields:
+                enum_name = getattr(field.field_type, 'name', None)
+                if enum_name not in self._tagged_enums:
+                    continue
+                previous = self._enum_storage.get(enum_name)
+                if previous is not None:
+                    raise HIRError(
+                        f"tagged enum '{enum_name}' backs both "
+                        f"'{struct_name}.{field.name}' and a static of its own",
+                        source_loc=source_loc,
+                        hint=f"a tagged enum backs exactly one array — its methods "
+                             f"index that array's planes by an address fixed at "
+                             f"compile time, so a second storage has nowhere to "
+                             f"point; drop the standalone `[{enum_name}; N]` static "
+                             f"and keep the field, or the other way round",
+                    )
+                self._enum_storage[enum_name] = (pool_symbol, source_loc,
+                                                 f"{field.name}__")
 
     def _build_enum_payload_union(self, enum_name: str, payloads: dict) -> hir.HIRStructDecl:
         """Synthesize the `Enum__Payload` union backing a tagged enum's data plane.
@@ -2201,7 +2311,8 @@ class HIRBuilder:
         self.symbol_table.declare(name, symbol)
         return decl
 
-    def _declare_enum_planes(self, enum_name: str, pool_symbol, source_loc) -> None:
+    def _declare_enum_planes(self, enum_name: str, pool_symbol, source_loc,
+                             prefix: str = '') -> None:
         """Declare the `POOL__tag` and `POOL__data` symbols for a tagged enum.
 
         Only the symbols: the `HIRStaticDecl`s behind them are built in pass 3
@@ -2226,7 +2337,7 @@ class HIRBuilder:
             ('data', StructTypeInfo(name=union.name, definition=union,
                                     symbol=union.symbol)),
         ):
-            name = f"{pool_symbol.name}__{suffix}"
+            name = f"{pool_symbol.name}__{prefix}{suffix}"
             symbol = Symbol(
                 name=name,
                 kind=SymbolKind.STATIC_VAR,
