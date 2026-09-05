@@ -362,15 +362,33 @@ def _enforce_index_clobber_safety(func: MIRFunction) -> int:
             return instr.count > AGGREGATE_COPY_UNROLL_MAX
         return False
 
+    def clobbers_y(instr) -> bool:
+        """True for an indirect access that loads Y with its own offset.
+
+        `(zp),Y` and `[zp],Y` put the field offset in Y — codegen emits
+        `LDY #offset` right before the access — so a counter pinned to Y does
+        not survive it. `index_register` marks the other shape, `PTR[i]`, where
+        the index the access wants in Y *is* a value the allocator places
+        there; that is the case the module docstring keeps, and pinning the
+        counter to Y is right for it.
+        """
+        return (isinstance(instr, (LoadIndirect, StoreIndirect))
+                and instr.index_register is None)
+
     x_only_blocks: Set[int] = set()   # tables: X clobbered, Y safe
+    y_only_blocks: Set[int] = set()   # pointer field access: Y clobbered, X safe
     xy_blocks: Set[int] = set()       # block moves / fills: X and Y clobbered
     for _header, body in loops:
         instrs = [instr for bid in body for instr in func.blocks[bid].instructions]
-        if any(clobbers_xy(instr) for instr in instrs):
+        has_table = any(isinstance(instr, (JumpTable, LookupTable)) for instr in instrs)
+        has_ptr_field = any(clobbers_y(instr) for instr in instrs)
+        if any(clobbers_xy(instr) for instr in instrs) or (has_table and has_ptr_field):
             xy_blocks |= body          # subsumes any table in the same loop
-        elif any(isinstance(instr, (JumpTable, LookupTable)) for instr in instrs):
+        elif has_table:
             x_only_blocks |= body
-    if not x_only_blocks and not xy_blocks:
+        elif has_ptr_field:
+            y_only_blocks |= body
+    if not x_only_blocks and not y_only_blocks and not xy_blocks:
         return 0
 
     all_vregs: Dict[int, VirtualRegister] = {}
@@ -390,6 +408,25 @@ def _enforce_index_clobber_safety(func: MIRFunction) -> int:
         if func.loop_promoted_hw_vregs.get(reg) is vreg:
             del func.loop_promoted_hw_vregs[reg]
         vreg.register_hint = None
+        rewritten += 1
+
+    # Y-only clobbered: relocate Y->X when free, else drop. The mirror of the
+    # X-only case below. Without this a counter kept in Y across a `p.field`
+    # read is reloaded by the region epilogue and then immediately destroyed by
+    # the `LDY #offset` the access emits — the loop counter stops advancing.
+    x_claimed_now = any(v.register_hint == 'X' for v in all_vregs.values())
+    for vid in sorted(_find_vregs_used_in_blocks(func, y_only_blocks)):
+        vreg = all_vregs.get(vid)
+        if vreg is None or vreg.register_hint != 'Y':
+            continue
+        if func.loop_promoted_hw_vregs.get('Y') is vreg:
+            del func.loop_promoted_hw_vregs['Y']
+        if not xy_blocks and not x_claimed_now:
+            vreg.register_hint = 'X'
+            x_claimed_now = True
+            func.loop_promoted_hw_vregs['X'] = vreg
+        else:
+            vreg.register_hint = None
         rewritten += 1
 
     # X-only clobbered: relocate X->Y when free, else drop. Only relocate when no
