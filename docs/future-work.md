@@ -277,3 +277,40 @@ Individual methods honour `#[cfg(...)]`, but an `impl` block as a whole cannot b
 **Why deferred**: per-method filtering covers the cases that came up (`Q10::lerp`, `q10_mul`), so what is left is ergonomics rather than capability.
 
 **Approach if revisited**: allow `attribute*` on `impl_decl` and fold the block's cfg into each method's, so an outer disable wins over an inner enable.
+
+---
+
+## Packaging Hazards
+
+Pre-existing global-state assumptions that a package system makes reachable. Each is fine in a single-author program and gets worse as package count grows. See [packaging-system.md](packaging-system.md) for the system these block.
+
+### Statics Are Never Dead-Code Eliminated
+
+`DeadFunctionEliminator` (`optimize/dead_function_elim.py`) prunes unreachable functions, but `MemoryAllocator.allocate_all` (`codegen/memory_alloc.py`) allocates every static in `mir_program.statics` regardless of reachability, and `symbol_gen.emit_all_definitions` emits every allocation. An unused static pulled in from a package still burns zeropage, RAM or ROM — so "pay for what you use" holds for code but not data.
+
+**Why deferred**: harmless when every static in the build was written by the author of the build. Packaging is what makes it cost real bytes, and the lint L005 `dead_static_mut` only warns for *mutable* statics that are written and never read.
+
+**Approach if revisited**: reachability over static reads/writes in MIR, seeded from the same entry points `_find_entry_points` already computes, then filter `mir_program.statics` before `allocate_all`. Care needed for `#[hw]` (never prune), `#[soa]` planes (prune as a group), and `include_bytes!` blobs referenced only from inline asm.
+
+### Explicit Addresses Are Not Collision-Checked
+
+`allocate_zeropage` takes an explicit `#[zeropage(0x40)]` address as-is with no overlap check (the comment at the site says so outright). Two packages hardcoding the same address overlap silently; only a stack-overlap warning (W006) exists.
+
+**Why deferred**: explicit addresses are usually deliberate hardware or ABI choices, and the auto-allocator already avoids reserved bytes. The single-author case rarely collides.
+
+**Approach if revisited**: record explicit ranges in the first allocation pass and error on overlap, with an opt-out attribute for the deliberate-aliasing case (unions over fixed addresses). Packages should prefer auto-allocation; `zeropage_budget` is the only current backstop.
+
+### Program-Wide Singletons
+
+Two constructs assume there is exactly one of them in the program, so a package cannot ship either for general use:
+
+- **`#[soa]` structs and tagged enums** back exactly one static program-wide (`hir/builder.py::_bind_planed_storage`) — that is what lets their methods hard-code plane addresses.
+- **`*dyn` TypeIds** come from a global counter assigned in declaration order (`hir/builder.py`), so adding a package shifts the TypeIds of everything declared after it.
+
+**Why deferred**: both are load-bearing for the codegen they enable — the SoA singleton is the reason a field access inside a method is one instruction, and stable TypeIds would need a mangling scheme the flat namespace does not have.
+
+**Approach if revisited**: for SoA, a per-static method instantiation (one copy of each method per backing static) trades ROM for the restriction. For TypeIds, hash the type name instead of counting, and check for collisions at build time.
+
+### `#[bank(n)]` Is Positional State
+
+Not deferred — this one must be fixed *with* the packaging work, and is recorded here only so the hazard is discoverable from this file. `#[bank(n)]` mutates a cursor over the flat declaration list, so an included file containing a bank directive silently rebanks everything after its include site. The fix is a bank restore at include boundaries in `Preprocessor._process_include`; see [packaging-system.md](packaging-system.md#correctness-fixes-packaging-depends-on).

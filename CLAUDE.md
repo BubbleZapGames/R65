@@ -594,6 +594,7 @@ r65x init --platform snes my_project  # Create test project
 - [Reserved Keywords](docs/reserved-keywords.md)
 - [Macros](docs/macros.md)
 - [SNES ROM Header](docs/snes-rom-header.md)
+- [Packaging System](docs/packaging-system.md)
 
 ### Code Generation
 - [Code Generation](docs/code-generation.md)

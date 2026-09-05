@@ -604,6 +604,7 @@ r65x init --platform snes game  # Create new project
 | [docs/interrupt-mode-transition.md](docs/interrupt-mode-transition.md) | Interrupt handler modes |
 | [docs/array-bounds-checking.md](docs/array-bounds-checking.md) | Array bounds design rationale |
 | [docs/reserved-keywords.md](docs/reserved-keywords.md) | Reserved keywords list |
+| [docs/packaging-system.md](docs/packaging-system.md) | Packages, `r65.toml`, and `r65pkg` |
 
 ## External References
 
