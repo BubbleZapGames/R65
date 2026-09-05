@@ -38,7 +38,8 @@ def convert_operand_widths(instr):
     different one. Newtypes are stripped first so they answer for their
     payload; anything else that is not a one-byte scalar counts as two.
     """
-    from r65.compiler.hir.types import PointerTypeInfo, strip_newtype
+    from r65.compiler.hir.types import (EnumTypeInfo, PointerTypeInfo,
+                                        strip_newtype)
 
     source_type = strip_newtype(instr.source_type)
     target_type = strip_newtype(instr.target_type)
@@ -47,8 +48,19 @@ def convert_operand_widths(instr):
         return None
 
     one_byte = ('u8', 'i8', 'bool')
-    return (1 if str(source_type) in one_byte else 2,
-            1 if str(target_type) in one_byte else 2)
+
+    def width(type_info):
+        # An enum is the one non-pointer type whose name says nothing about its
+        # width: a discriminant is one byte until a variant exceeds 255. The
+        # name test would call every enum two bytes, which makes `Dir as u16`
+        # look same-size and reach the "should not happen" branch. The MIR
+        # lowerer already sizes it correctly (`_get_type_size`), so this is the
+        # side that was disagreeing.
+        if isinstance(type_info, EnumTypeInfo):
+            return type_info.size_bytes
+        return 1 if str(type_info) in one_byte else 2
+
+    return (width(source_type), width(target_type))
 
 
 def is_narrowing_convert(instr) -> bool:
