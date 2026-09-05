@@ -522,3 +522,55 @@ class TestBranchInversion:
         assert invert_branch(Opcode.BPL) == Opcode.BMI
         assert invert_branch(Opcode.BVS) == Opcode.BVC
         assert invert_branch(Opcode.BVC) == Opcode.BVS
+
+
+class TestRawAsmDataDirectives:
+    """A data directive written as raw asm occupies bytes.
+
+    `Emitter.emit_directive` builds a `RawAsm` node, not a `Directive`, so the
+    inline lookup table a `match` emits — `.DW` entries placed right after the
+    `BRA` that jumps over them — is sized by `_raw_asm_size`. That treated
+    anything starting with `.` as zero bytes, so a branch spanning a table was
+    measured short and left as an 8-bit relative. WLA-DX then refused the
+    whole build:
+
+        FIX_REFERENCES: Too large distance (133 bytes ...) for a relative
+        8-bit reference
+
+    Reproduced in rotor_raiders once six per-kind lookup tables were inlined
+    into one loop body.
+    """
+
+    @pytest.mark.parametrize("text,expected", [
+        ("    .DW $0080", 2),
+        ("    .DB $05", 1),
+        ("    .DL $7E2000", 3),
+        ("    .DW $0000, $0080, $00C0", 6),
+        ("    .DSB 16", 16),
+        ("    .DSW 8", 16),
+        ("    .ACCU 16", 0),          # not data — a mode directive
+        ("    .INDEX 16", 0),
+    ])
+    def test_data_directive_sizes(self, text, expected):
+        assert BranchFixup._estimate_instruction_size(text.strip()) == expected
+
+    def test_branch_over_an_inline_table_is_made_long(self):
+        """A five-entry word table plus a little code is past the 127-byte
+        range; the table's 10 bytes are what tip it over."""
+        from r65.compiler.codegen.asm_nodes import RawAsm
+
+        nodes = [
+            Label("func"),
+            Instruction(Opcode.BCS, Address("target")),
+        ]
+        # 120 bytes of code: short of the limit on its own.
+        for _ in range(60):
+            nodes.append(Instruction(Opcode.LDA_ABSOLUTE, Address(0x1234)))
+        nodes.append(RawAsm("    .DW $0000\n    .DW $0080\n    .DW $00C0\n"
+                            "    .DW $0080\n    .DW $0040"))
+        nodes += [Label("target"), Instruction(Opcode.RTS)]
+
+        fixed, num_fixups = fixup_nodes(nodes)
+        assert num_fixups == 1, "the table's bytes must count toward the span"
+        assert any(isinstance(n, Instruction) and n.opcode == Opcode.JMP_ABSOLUTE
+                   for n in fixed)

@@ -301,15 +301,44 @@ class BranchFixup:
             size += self._estimate_instruction_size(code)
         return size
 
+    # Bytes per argument for the data directives that can appear in raw asm.
+    _DATA_DIRECTIVE_WIDTHS = {
+        '.DB': 1, '.BYTE': 1,
+        '.DW': 2, '.WORD': 2,
+        '.DL': 3, '.LONG': 3, '.FARADDR': 3,
+        '.DD': 4, '.DWORD': 4,
+    }
+
+    @staticmethod
+    def _data_directive_size(mnem: str, operand: str) -> int:
+        """Bytes emitted by a data directive written as raw asm text."""
+        width = BranchFixup._DATA_DIRECTIVE_WIDTHS.get(mnem)
+        if width is not None:
+            args = [a for a in operand.split(',') if a.strip()]
+            return len(args) * width
+        if mnem in ('.DSB', '.DSW'):
+            arg = operand.split(',')[0].strip()
+            try:
+                return int(arg, 0) * (2 if mnem == '.DSW' else 1)
+            except ValueError:
+                return 0
+        return 0
+
     @staticmethod
     def _estimate_instruction_size(code: str) -> int:
         """Estimate byte size of a single raw asm instruction."""
         parts = code.split(None, 1)
         mnem = parts[0].upper()
 
-        # Directives that aren't instructions
+        # A data directive occupies real bytes. `.DW`/`.DB` reach here rather
+        # than `_directive_size` because `Emitter.emit_directive` builds a
+        # `RawAsm` node, and a match lowered to a lookup table emits its table
+        # that way — inline, right after the `BRA` that jumps over it. Sizing
+        # those at zero under-counts every branch that spans a table, which
+        # WLA-DX then rejects with "Too large distance for a relative 8-bit
+        # reference" at link time.
         if mnem.startswith('.'):
-            return 0
+            return BranchFixup._data_directive_size(mnem, parts[1] if len(parts) > 1 else '')
 
         if len(parts) < 2:
             # Implied addressing (e.g., NOP, RTS, TAX, PHB, PLB)
