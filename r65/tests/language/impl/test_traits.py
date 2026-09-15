@@ -519,16 +519,14 @@ class TestTraitCodeGen:
         # Dispatch wrapper should load TypeId via Y-pointer: LDA $0000,Y
         assert "LDA $0000,Y" in asm
 
-    def test_main_calls_dispatch(self):
-        """Main function calls dispatch wrapper via JSR."""
-        source = """
+    _DISPATCH_SOURCE = """
             #[zeropage(0x10, register)]
             static mut SCRATCH0: u8;
             #[zeropage(0x12, register)]
             static mut SCRATCH1: u16;
             struct Player { x: u8 }
-            trait Drawable { fn draw(*self); }
-            impl Drawable for Player { fn draw(*self) { } }
+            trait Drawable { %s fn draw(*self); }
+            impl Drawable for Player { %s fn draw(*self) { } }
             #[zeropage]
             static mut PLAYER: Player;
             #[entry]
@@ -537,9 +535,53 @@ class TestTraitCodeGen:
                 p.draw();
             }
         """
-        asm = compile_to_asm(source)
+
+    def test_main_calls_dispatch(self):
+        """Trait methods are far by default: main reaches the dispatch
+        wrapper with JSL and the wrapper trampolines with JML."""
+        asm = compile_to_asm(self._DISPATCH_SOURCE % ("", ""))
+
+        assert "JSL Drawable__draw__dispatch" in asm
+        assert "JML Player__draw" in asm
+
+    def test_main_calls_near_dispatch(self):
+        """`near fn` opts a trait back into the JSR wrapper."""
+        asm = compile_to_asm(self._DISPATCH_SOURCE % ("near", "near"))
 
         assert "JSR Drawable__draw__dispatch" in asm
+        assert "JML" not in asm
+
+    def test_impl_method_must_match_trait_convention(self):
+        source = """
+            struct Player { x: u8 }
+            trait Drawable { fn draw(*self); }
+            impl Drawable for Player { near fn draw(*self) { } }
+        """
+        with pytest.raises(HIRError, match="is near but trait 'Drawable' declares it far"):
+            build_and_check(source)
+
+    def test_trait_cannot_mix_near_and_far(self):
+        source = """
+            trait T { fn a(*self); near fn b(*self); }
+        """
+        with pytest.raises(HIRError, match="mixes near and far methods"):
+            build_and_check(source)
+
+    def test_far_trait_method_called_through_near_pointer(self):
+        """The call convention and the self pointer are independent: a
+        (far) trait method taking `*self` accepts a near receiver."""
+        source = """
+            struct Player { x: u8 }
+            trait Drawable { fn draw(*self) -> u8; }
+            impl Drawable for Player { fn draw(*self) -> u8 { self.x } }
+            #[lowram]
+            static mut PLAYER: Player;
+            fn main() {
+                let p: *Player = &PLAYER;
+                A = p.draw();
+            }
+        """
+        build_and_check(source)
 
 
 class TestDynSyntax:
@@ -689,8 +731,8 @@ class TestTraitInheritance:
 
     def test_near_far_mismatch_fails(self):
         source = """
-            trait NearT { fn n(*self); }
-            trait FarT: NearT { far fn f(far *self); }
+            trait NearT { near fn n(*self); }
+            trait FarT: NearT { fn f(far *self); }
         """
         with pytest.raises(HIRError, match="same calling convention"):
             build_and_check(source)

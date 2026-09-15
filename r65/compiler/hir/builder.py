@@ -110,7 +110,7 @@ class HIRBuilder:
         self._struct_trait_kind: Dict[str, str] = {}  # struct_name -> 'near' or 'far'
         self._dyn_used_traits: Set[str] = set()  # trait names used with *dyn
         self._trait_supertraits: Dict[str, List[str]] = {}  # trait_name -> declared supertrait names
-        # Lang-item Clone impls: struct_name -> {'auto': bool, 'mangled': str|None, 'is_far': bool}
+        # Lang-item Clone impls: struct_name -> {'auto': bool, 'mangled': str|None}
         self._clone_impls: Dict[str, Dict[str, Any]] = {}
 
     def _process_snesrom_attribute(self, attr: ast.Attribute):
@@ -2895,12 +2895,26 @@ class HIRBuilder:
                             f"implement supertrait '{s}'",
                             source_loc=self._trait_impl_locs.get((trait_name, struct)))
 
-    @staticmethod
-    def _trait_far_kind(trait_ast) -> Optional[bool]:
-        """True if the trait's methods are far, False if near, None if it has no methods."""
+    def _trait_far_kind(self, trait_ast) -> Optional[bool]:
+        """True if the trait's methods are far, False if near, None if it has no methods.
+
+        A trait has one dispatch wrapper kind, so its methods must agree:
+        a `*dyn` call through a far wrapper reaches the implementor with a
+        3-byte return address, and a near implementor's `RTS` would pop
+        only two of them.
+        """
         if not trait_ast.methods:
             return None
-        return any(m.is_far for m in trait_ast.methods)
+        kinds = {m.is_far for m in trait_ast.methods}
+        if len(kinds) > 1:
+            near = sorted(m.name for m in trait_ast.methods if not m.is_far)
+            raise HIRError(
+                f"trait '{trait_ast.name}' mixes near and far methods "
+                f"(near: {', '.join(near)}); a trait must be entirely near or "
+                f"entirely far",
+                source_loc=self._trait_decl_loc(trait_ast.name),
+                hint="methods are far by default; mark every method 'near fn' or none")
+        return kinds.pop()
 
     def _trait_decl_loc(self, trait_name: str):
         """Source location of a trait declaration, if available."""
@@ -2924,17 +2938,13 @@ class HIRBuilder:
         if impl.trait_name != CLONE_TRAIT:
             self._reject_union_trait_impl(impl)
 
-        # Calling convention comes from the impl's own methods (no trait decl).
-        impl_is_far = any(m.is_far for m in impl.methods) if impl.methods else False
-
         if impl.trait_name == CLONE_TRAIT:
-            self._declare_clone_impl(impl, impl_is_far)
+            self._declare_clone_impl(impl)
 
         for method in impl.methods:
-            self._register_lang_item_method(impl.struct_name, method, impl_is_far,
-                                            impl.trait_name)
+            self._register_lang_item_method(impl.struct_name, method, impl.trait_name)
 
-    def _declare_clone_impl(self, impl: ast.ImplDecl, impl_is_far: bool):
+    def _declare_clone_impl(self, impl: ast.ImplDecl):
         """Validate and record a `Clone` impl. Empty body => auto bitwise copy."""
         for method in impl.methods:
             if method.name != CLONE_METHOD:
@@ -2953,7 +2963,6 @@ class HIRBuilder:
         info = {
             'auto': is_auto,
             'mangled': None if is_auto else f"{impl.struct_name}__{CLONE_METHOD}",
-            'is_far': impl_is_far,
         }
         self._clone_impls[impl.struct_name] = info
 
@@ -2969,12 +2978,10 @@ class HIRBuilder:
                 type_info={
                     'clone_auto': is_auto,
                     'clone_mangled': info['mangled'],
-                    'clone_is_far': impl_is_far,
                 }
             ))
 
-    def _register_lang_item_method(self, struct_name: str, method, impl_is_far: bool,
-                                   trait_name: str):
+    def _register_lang_item_method(self, struct_name: str, method, trait_name: str):
         """Register `Struct__method` + the `Struct.method` lookup symbol.
 
         Mirrors trait-impl method registration (without the `*dyn` dispatch-key,
@@ -2998,7 +3005,6 @@ class HIRBuilder:
                 type_info={
                     'struct_name': struct_name,
                     'mangled_name': mangled_name,
-                    'impl_is_far': impl_is_far,
                     'method_self_is_far': method.self_is_far,
                     'trait_name': trait_name,
                 }
@@ -3023,7 +3029,24 @@ class HIRBuilder:
         trait_ast = trait_symbol.definition  # ast.TraitDecl
 
         # Determine if trait methods are far or near
-        trait_is_far = any(m.is_far for m in trait_ast.methods) if trait_ast.methods else False
+        trait_is_far = bool(self._trait_far_kind(trait_ast))
+
+        # Each impl method must use the trait's calling convention: the
+        # dispatch wrapper is built per trait, but the impl's own RTS/RTL
+        # comes from the method as written.
+        trait_methods_by_name = {m.name: m for m in trait_ast.methods}
+        for method in impl.methods:
+            trait_method = trait_methods_by_name.get(method.name)
+            if trait_method is not None and method.is_far != trait_method.is_far:
+                kind = 'far' if method.is_far else 'near'
+                want = 'far' if trait_method.is_far else 'near'
+                raise HIRError(
+                    f"method '{method.name}' in impl '{impl.trait_name}' for "
+                    f"'{impl.struct_name}' is {kind} but trait '{impl.trait_name}' "
+                    f"declares it {want}",
+                    source_loc=method.source_loc,
+                    hint=("drop 'near' from the impl method" if trait_method.is_far
+                          else "declare it 'near fn' to match the trait"))
 
         # Validate near/far consistency for this struct
         kind = 'far' if trait_is_far else 'near'
@@ -3140,7 +3163,6 @@ class HIRBuilder:
                     type_info={
                         'struct_name': impl.struct_name,
                         'mangled_name': mangled_name,
-                        'impl_is_far': trait_is_far,
                         'method_self_is_far': method.self_is_far,
                         'trait_name': impl.trait_name
                     }
@@ -3320,9 +3342,9 @@ class HIRBuilder:
             bank_attr = BankAttribute(name='bank', bank_number=None)
             if not method.is_far:
                 raise HIRError(
-                    f"method '{impl.struct_name}::{method.name}' in auto-bank mode must be declared as 'far fn'",
+                    f"method '{impl.struct_name}::{method.name}' in auto-bank mode cannot be 'near fn'",
                     source_loc=method.source_loc,
-                    hint=f"use 'far fn {method.name}(...)' or place in explicit bank with #[bank(n)]"
+                    hint="drop 'near' (methods are far by default) or place it in an explicit bank with #[bank(n)]"
                 )
         else:
             bank_attr = BankAttribute(name='bank', bank_number=self.current_bank)
@@ -3461,9 +3483,10 @@ class HIRBuilder:
         returns_status_flag = self._detect_status_flag_return(hir_body)
 
         # Auto-detect trivial getters/setters and mark for inlining
-        # Only if not already marked and not a far/interrupt/entry method
+        # Only if not already marked and not an interrupt/entry method.
+        # Far methods qualify too: the inliner decides per call site whether
+        # the caller's bank makes the body safe to splice in.
         if (inline_attr is None and
-            not method.is_far and
             interrupt_attr is None and
             not is_entry and
             self._is_trivial_getter_or_setter(hir_body)):

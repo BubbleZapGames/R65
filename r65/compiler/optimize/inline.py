@@ -27,6 +27,7 @@ from r65.compiler.mir.nodes import (
 from r65.compiler.hir import RegisterBinding, VariableBinding
 from r65.compiler.hir.attributes import InlineMode
 from r65.compiler.analysis.loop_analysis import compute_block_nesting
+from r65.compiler.optimize.far_to_near import compute_auto_bank_num, effective_bank
 
 
 # Operand slots (keyed by (instr_type, field)) where codegen legally accepts an
@@ -151,9 +152,12 @@ class InlinabilityChecker:
     2. Not an interrupt handler
     3. Not the entry point
     4. No inline assembly (asm!())
-    5. If far: body must be bank-independent (see `_far_body_is_bank_safe`).
-       Far fns whose bodies only use far indirects, DP / zeropage, or
-       WRAM long-addressing can be inlined into any-bank callers.
+    5. If far and the caller is in another bank: body must be
+       bank-independent (see `_far_body_is_bank_safe`). Far fns whose
+       bodies only use far indirects, DP / zeropage, or WRAM
+       long-addressing can be inlined into any-bank callers; a same-bank
+       caller may inline any far fn, exactly as it would a near one.
+       Checked per (caller, callee) pair in `_bank_compatible`.
 
     Heuristics for inlining decisions:
     - Explicit inlining (always checked):
@@ -187,6 +191,9 @@ class InlinabilityChecker:
         # site. Cache invalidates implicitly when the program is mutated
         # because the inliner rebuilds the checker for each new run().
         self._cycle_cost_cache: Dict[str, int] = {}
+        # Where #[bank(auto)] code will land — needed to decide whether a
+        # far callee shares its caller's bank.
+        self._auto_bank_num = compute_auto_bank_num(mir_program)
         self._build_call_graph()
         self._compute_call_site_depths()
         self._find_recursive_functions()
@@ -425,16 +432,9 @@ class InlinabilityChecker:
         if func_name in self.recursive_functions:
             return False
 
-        # Far functions: allowed when the body is bank-independent, i.e.
-        # every instruction would produce the same bytes regardless of
-        # which PBR/DBR is active at runtime. The blanket "no far fn
-        # inlining" rule was overly conservative — many far utilities
-        # (string copy, indexed nametable write, etc.) only touch far
-        # pointers or WRAM via long addressing, both of which work
-        # unchanged in any caller's bank. The detailed safety check is
-        # in `_far_body_is_bank_safe`.
-        if func.is_far and not self._far_body_is_bank_safe(func):
-            return False
+        # Far functions are not rejected here: whether a far body can be
+        # spliced into a given caller depends on the caller's bank, so
+        # that check lives in `_bank_compatible`.
 
         # Not an interrupt handler
         if func.interrupt_attr is not None:
@@ -492,6 +492,11 @@ class InlinabilityChecker:
 
         return True
 
+    def _same_bank(self, caller: MIRFunction, callee: MIRFunction) -> bool:
+        """True iff both functions will be assembled into the same bank."""
+        return (effective_bank(caller, self._auto_bank_num)
+                == effective_bank(callee, self._auto_bank_num))
+
     def _bank_compatible(self, caller: MIRFunction, callee: MIRFunction) -> bool:
         """True iff the callee can be inlined into the caller without
         breaking same-bank label assumptions.
@@ -501,17 +506,20 @@ class InlinabilityChecker:
         from the caller's would assemble the body inside the caller's
         bank, breaking same-bank references the body relied on.
 
-        Far callees are exempt: cross-bank inlining is exactly the point
-        of relaxing the far-fn rule. `_far_body_is_bank_safe` has
-        already verified the body produces identical bytes in any bank.
+        A far callee in the caller's bank is no different from a near
+        one — the body assembles where it would have anyway — so it
+        inlines freely. Into another bank it may go only when
+        `_far_body_is_bank_safe` proves the body produces identical
+        bytes regardless of PBR/DBR. Methods are far by default, so
+        without the same-bank case every trivial getter would be stuck
+        behind the bank-safety check.
 
         Auto-banked callees (`bank_attr.is_auto`) are permitted for
         near callees too: the linker places them with the caller.
         """
         if callee.is_far:
-            # Body-level bank safety is enforced by _far_body_is_bank_safe;
-            # cross-bank is the whole point.
-            return True
+            return (self._same_bank(caller, callee)
+                    or self._far_body_is_bank_safe(callee))
         callee_bank = callee.bank_attr
         if callee_bank is None or callee_bank.is_auto:
             return True

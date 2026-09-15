@@ -381,7 +381,6 @@ class CallValidator:
             return None
 
         mangled_name = method_info.get('mangled_name')
-        impl_is_far = method_info.get('impl_is_far', False)
         method_self_is_far = method_info.get('method_self_is_far', False)
 
         # Look up the actual function declaration
@@ -393,9 +392,9 @@ class CallValidator:
             )
 
         # Check self pointer compatibility. Near/far is driven by the method's
-        # own self pointer (`far *self` vs `*self`); trait/lang-item methods may
-        # additionally carry it via their `far fn` calling convention.
-        expected_far_self = impl_is_far or method_self_is_far
+        # own self pointer (`far *self` vs `*self`), independently of whether
+        # the method itself is called with JSL or JSR.
+        expected_far_self = method_self_is_far
 
         # If receiver is a pointer, check far/near compatibility
         if receiver_is_pointer:

@@ -324,7 +324,7 @@ class ASTBuilder(Transformer):
     @v_args(tree=True)
     def function_decl(self, tree):
         """Function declaration."""
-        items = self._filter_tokens(tree.children, keep_types={'IDENT', 'MUT', 'FAR', 'CONST', 'INTEGER', 'STRING', 'BOOLEAN', 'REGISTER'})
+        items = self._filter_tokens(tree.children, keep_types={'IDENT', 'MUT', 'FAR', 'NEAR', 'CONST', 'INTEGER', 'STRING', 'BOOLEAN', 'REGISTER'})
 
         # Collect doc comments
         doc, idx = self._collect_doc_comments(items, 0)
@@ -335,8 +335,9 @@ class ASTBuilder(Transformer):
         # Check for const
         is_const, idx = self._take(items, idx, 'CONST')
 
-        # Check for far
-        is_far, idx = self._take(items, idx, 'FAR')
+        # Check for far (free functions are near by default; `near fn` is
+        # accepted as the explicit spelling of that default)
+        is_far, _is_near, idx = self._take_far_near(items, idx)
 
         name = items[idx]
         idx += 1
@@ -754,7 +755,7 @@ class ASTBuilder(Transformer):
     @v_args(tree=True)
     def impl_method(self, tree):
         """Method declaration in impl block."""
-        items = self._filter_tokens(tree.children, keep_types={'IDENT', 'FAR', 'CONST'})
+        items = self._filter_tokens(tree.children, keep_types={'IDENT', 'FAR', 'NEAR', 'CONST'})
 
         # Collect doc comments, then attributes
         doc, idx = self._collect_doc_comments(items, 0)
@@ -763,8 +764,9 @@ class ASTBuilder(Transformer):
         # Check for const
         is_const, idx = self._take(items, idx, 'CONST')
 
-        # Check for far fn
-        is_far, idx = self._take(items, idx, 'FAR')
+        # Methods are far by default; `near fn` opts out
+        _is_far, is_near, idx = self._take_far_near(items, idx)
+        is_far = not is_near
 
         # Method name
         name = items[idx].value if isinstance(items[idx], LarkToken) else items[idx]
@@ -993,12 +995,13 @@ class ASTBuilder(Transformer):
     @v_args(tree=True)
     def trait_method(self, tree):
         """Method signature in trait declaration (no body)."""
-        items = self._filter_tokens(tree.children, keep_types={'IDENT', 'FAR'})
+        items = self._filter_tokens(tree.children, keep_types={'IDENT', 'FAR', 'NEAR'})
 
         idx = 0
 
-        # Check for far fn
-        is_far, idx = self._take(items, idx, 'FAR')
+        # Trait methods are far by default; `near fn` opts out
+        _is_far, is_near, idx = self._take_far_near(items, idx)
+        is_far = not is_near
 
         # Method name
         name = items[idx].value if isinstance(items[idx], LarkToken) else items[idx]
@@ -1088,12 +1091,12 @@ class ASTBuilder(Transformer):
     @v_args(tree=True)
     def extern_fn_decl(self, tree):
         """Extern function declaration: `extern [far] fn name(...) -> ret;`"""
-        items = self._filter_tokens(tree.children, keep_types={'IDENT', 'FAR', 'INTEGER', 'STRING', 'BOOLEAN', 'REGISTER'})
+        items = self._filter_tokens(tree.children, keep_types={'IDENT', 'FAR', 'NEAR', 'INTEGER', 'STRING', 'BOOLEAN', 'REGISTER'})
 
         doc, idx = self._collect_doc_comments(items, 0)
         attrs, idx = self._collect_attributes(items, idx)
 
-        is_far, idx = self._take(items, idx, 'FAR')
+        is_far, _is_near, idx = self._take_far_near(items, idx)
 
         name = items[idx]
         idx += 1

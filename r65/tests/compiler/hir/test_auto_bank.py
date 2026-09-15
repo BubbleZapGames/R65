@@ -50,6 +50,34 @@ fn test() {}
 
         assert "auto-bank mode must be declared as 'far fn'" in str(exc_info.value)
 
+    def test_auto_bank_method_defaults_to_far(self):
+        """Methods are far by default, so a plain `fn` method is fine in
+        auto-bank mode; only an explicit `near fn` is rejected."""
+        code = '''
+struct P { x: u8 }
+#[bank(auto)]
+impl P {
+    fn get(*self) -> u8 { self.x }
+}
+'''
+        hir = HIRBuilder().build_program(parse(code))
+        impl = hir.declarations[1]
+        method = impl.methods[0]
+        assert method.name == 'P__get'
+        assert method.is_far
+        assert method.bank_attr.is_auto
+
+        code = '''
+struct P { x: u8 }
+#[bank(auto)]
+impl P {
+    near fn get(*self) -> u8 { self.x }
+}
+'''
+        with pytest.raises(HIRError) as exc_info:
+            HIRBuilder().build_program(parse(code))
+        assert "auto-bank mode cannot be 'near fn'" in str(exc_info.value)
+
     def test_auto_bank_far_function_succeeds(self):
         """Far functions in auto-bank mode should succeed."""
         code = '''

@@ -754,6 +754,37 @@ def test_far_function():
     print("✓ Far function test passed")
 
 
+def test_method_far_near_defaults():
+    """Methods are far unless spelled `near fn`; free fns are near
+    unless spelled `far fn`, and accept `near fn` as the explicit default."""
+    source = """
+    struct P { x: u8 }
+    trait T {
+        fn a(*self);
+        near fn b(*self);
+        far fn c(*self);
+    }
+    impl P {
+        fn a(*self) {}
+        near fn b(*self) {}
+        far fn c(far *self) {}
+    }
+    near fn free_near() {}
+    extern near fn ext_near();
+    """
+    program = parse(source)
+    trait = next(i for i in program.items if isinstance(i, ast.TraitDecl))
+    impl = next(i for i in program.items if isinstance(i, ast.ImplDecl))
+
+    assert [m.is_far for m in trait.methods] == [True, False, True]
+    assert [m.is_far for m in impl.methods] == [True, False, True]
+    assert [m.self_is_far for m in impl.methods] == [False, False, True]
+
+    free, ext = [i for i in program.items if isinstance(i, ast.FunctionDecl)]
+    assert (free.name, free.is_far) == ('free_near', False)
+    assert (ext.name, ext.is_far, ext.is_extern) == ('ext_near', False, True)
+
+
 def test_never_type():
     """Test parsing never type (!)."""
     source = """

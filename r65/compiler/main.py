@@ -138,7 +138,7 @@ def _inject_builtin_traits(program):
         name='ToString',
         methods=[
             TraitMethod(
-                is_far=False,
+                is_far=True,
                 name='to_string',
                 self_is_far=True,
                 params=[

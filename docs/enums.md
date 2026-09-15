@@ -532,7 +532,9 @@ Fireball__burn:
 
 The twelve-instruction pointer build is gone, and so is the `DBR:Y` body.
 Calling a trait method through a payload binding now costs exactly what
-calling an inherent method on the enum costs: one `JSR`.
+calling an inherent method on the enum costs: one `JSR` (methods are far
+by default, but a same-bank call is demoted to `JSR`/`RTS` at `-O1`; see
+[ABI Models](abi-models.md#methods-are-far-by-default)).
 
 Static dispatch only, as for any `#[soa]` implementor. `*dyn` over an SoA
 element is unchanged — designed, not built (see [soa.md](soa.md#known-limits)).

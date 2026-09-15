@@ -562,6 +562,48 @@ far fn auto_placed() { }
 far static DATA: [u8; 256] = [0; 256];
 ```
 
+### Methods Are Far by Default
+
+Free functions are near unless spelled `far fn`. Methods — in `impl`
+blocks and in `trait` declarations — are the other way round: a plain `fn`
+method is **far**, and `near fn` opts a method back into JSR/RTS.
+
+```rust
+impl Player {
+    fn heal(*self) { ... }          // JSL/RTL — callable from any bank
+    near fn tick(*self) { ... }     // JSR/RTS — same bank only
+}
+
+trait Drawable { fn draw(*self); }  // far trait; `near fn` makes it near
+```
+
+The calling convention and the self pointer are independent axes:
+`fn m(*self)` is a far call with a near self, `near fn m(far *self)` a near
+call with a far self. `far fn` is still accepted inside `impl` and means
+the same as the default.
+
+Why the default differs from free functions: a type's methods are called
+from wherever the type is used, which in a multi-bank ROM means from any
+bank, and `#[bank(auto)]` already required every method to be `far fn`.
+The stdlib and every example project were writing `far fn` on nearly
+every method. The cost is one byte and two cycles per call — and at `-O1`
+and above the `far_to_near` pass removes even that for any method whose
+direct callers all sit in its own bank, so a same-bank program compiles
+to exactly the JSR/RTS it did before. What the default does *not*
+demote is `*dyn` dispatch: a far trait's wrapper is `JSL` + `JML`
+trampolines (~20–25 cycles) against ~10–12 for a near trait, so a trait
+dispatched in a hot loop should say `near fn`. A trait's methods must all
+agree (the wrapper is built per trait), an impl method must match the
+trait's convention, and a `near fn` method is an error in `#[bank(auto)]`.
+
+Inlining follows the same rule: a far method in the caller's bank
+inlines exactly as a near one would (trivial getters and setters are
+still auto-`#[inline]`); only a *cross-bank* inline has to prove the
+body is bank-independent.
+
+Hand-written `asm!` that `JSR`s a method label must use `JSL` unless the
+method is `near fn`.
+
 ### Data Bank Register (DBR) Management
 
 Far functions can specify DBR handling via `#[mode(databank=...)]`:
@@ -614,6 +656,8 @@ Near functions can only call near functions in the **same bank**. JSR uses a 16-
 | 0 | 1 | `far fn` | Yes |
 | 1 | 0 | `fn` | **No** (compile error) |
 | Any | Any | `far fn` | Yes |
+| Any | Any | method `fn` (far by default) | Yes |
+| 0 | 1 | method `near fn` | **No** (compile error) |
 
 ---
 

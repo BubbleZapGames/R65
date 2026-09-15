@@ -2202,6 +2202,20 @@ def _make_far_callee(name: str, body_instrs):
     return func
 
 
+def _caller_in_bank(callee_name: str, bank):
+    """A caller for `callee_name` placed in `bank` (None = #[bank(auto)])."""
+    caller = create_caller_with_call(callee_name)
+    caller.bank_attr = BankAttribute(name='bank', bank_number=bank)
+    return caller
+
+
+def _cross_bank_compatible(callee) -> bool:
+    """Would the inliner splice `callee` (bank 0) into a bank-7 caller?"""
+    caller = _caller_in_bank(callee.name, 7)
+    checker = InlinabilityChecker(MIRProgram(functions=[caller, callee]))
+    return checker._bank_compatible(caller, callee)
+
+
 class TestFarFunctionInlining:
     """Tests for the relaxed far-fn rule."""
 
@@ -2249,8 +2263,7 @@ class TestFarFunctionInlining:
                          index_register='Y', type_info=BasicTypeInfo('u8')),
             Return(values=[out]),
         ])
-        checker = InlinabilityChecker(MIRProgram(functions=[callee]))
-        assert checker.can_inline("read_via_near_ptr") is False
+        assert _cross_bank_compatible(callee) is False
 
     def test_far_with_rom_load_rejected(self):
         """ROM data Load may be lowered as 3-byte absolute (DBR-relative);
@@ -2265,8 +2278,7 @@ class TestFarFunctionInlining:
             Load(dest=out, source=rom_loc, type_info=BasicTypeInfo('u8')),
             Return(values=[out]),
         ])
-        checker = InlinabilityChecker(MIRProgram(functions=[callee]))
-        assert checker.can_inline("read_rom") is False
+        assert _cross_bank_compatible(callee) is False
 
     def test_far_with_nested_near_call_rejected(self):
         """A near JSR in the body targets current PBR; after inlining
@@ -2277,8 +2289,7 @@ class TestFarFunctionInlining:
                  is_far=False),
             Return(values=[]),
         ])
-        checker = InlinabilityChecker(MIRProgram(functions=[callee]))
-        assert checker.can_inline("with_near_call") is False
+        assert _cross_bank_compatible(callee) is False
 
     def test_far_with_nested_far_call_allowed(self):
         """A nested JSL is bank-explicit (24-bit target), so it stays
@@ -2299,8 +2310,35 @@ class TestFarFunctionInlining:
         callee = _make_far_callee("with_dbr", [Return(values=[])])
         callee.mode_attr = ModeAttribute(name='mode',
                                          databank=DataBankMode.INLINE)
-        checker = InlinabilityChecker(MIRProgram(functions=[callee]))
-        assert checker.can_inline("with_dbr") is False
+        assert _cross_bank_compatible(callee) is False
+
+    def test_far_same_bank_inlines_like_near(self):
+        """Methods are far by default, so a far getter reading through a
+        near `*self` is the common shape. In the caller's own bank the
+        body assembles exactly where it would have anyway — no
+        bank-safety proof needed."""
+        ptr = VirtualRegister(id=0, type_info=BasicTypeInfo('u16'), hint='p')
+        out = VirtualRegister(id=1, type_info=BasicTypeInfo('u8'), hint='r')
+
+        def getter():
+            return _make_far_callee("P__x", [
+                LoadIndirect(dest=out, pointer=ptr, is_far=False,
+                             index_register='Y', type_info=BasicTypeInfo('u8')),
+                Return(values=[out]),
+            ])
+
+        def compatible(caller_bank, callee_bank):
+            callee = getter()
+            callee.bank_attr = BankAttribute(name='bank', bank_number=callee_bank)
+            caller = _caller_in_bank(callee.name, caller_bank)
+            checker = InlinabilityChecker(MIRProgram(functions=[caller, callee]))
+            return checker._bank_compatible(caller, callee)
+
+        assert compatible(0, 0) is True
+        assert compatible(3, 3) is True
+        assert compatible(None, None) is True   # both #[bank(auto)]
+        assert compatible(0, 3) is False
+        assert compatible(0, None) is False     # auto lands in bank >= 4, not 0
 
     def test_far_with_far_ptr_stack_param_allowed(self):
         """Far fns with far-pointer stack params are inlinable.

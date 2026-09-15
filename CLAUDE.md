@@ -429,6 +429,15 @@ far fn graphics_code() { }           // Callee manages DBR (PHB/PLB)
 
 **Call rules**: Near functions can only call near functions in same bank. Far functions callable from anywhere.
 
+**Methods are far by default**: a plain `fn` inside an `impl` or `trait` is a far (JSL/RTL) method; `near fn` opts it back to JSR/RTS (`far fn` is accepted and redundant). Free functions stay near by default. The self-pointer spelling (`*self` vs `far *self`) is a separate axis. At `-O1`+ the `far_to_near` pass demotes any method whose direct callers are all in its bank, so same-bank code still gets JSR/RTS; `*dyn` dispatch is not demoted (far dispatch ~20–25 cycles vs ~10–12), so hot dispatched traits should be `near fn`. A trait's methods must all agree, an impl method must match its trait, and `near fn` is an error in `#[bank(auto)]`.
+
+```rust
+impl Player {
+    fn heal(*self) { }          // far call, near self
+    near fn tick(*self) { }     // near call
+}
+```
+
 **Data bank modes** (via `#[mode(databank=...)]`):
 - `none` (default): No DBR management
 - `inline`: Callee saves/restores DBR and sets it to function's bank

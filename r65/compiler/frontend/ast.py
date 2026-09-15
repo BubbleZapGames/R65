@@ -288,11 +288,11 @@ class TraitMethod(ASTNode):
     """Method signature in a trait declaration, with an optional default body.
 
     Example:
-        fn draw(*self);
-        far fn render(far *self, offset @ X: u16);
+        fn draw(*self);                                 // far call (default)
+        near fn render(far *self, offset @ X: u16);     // near call, far self
         fn hide(*self) { self.visible = false; }   // default implementation
     """
-    is_far: bool
+    is_far: bool  # False only when declared `near fn`; trait methods are far by default
     name: str
     self_is_far: bool  # True if self param is `far *self`
     params: List[Parameter]  # Parameters after self
@@ -341,7 +341,7 @@ class ImplMethod(ASTNode):
         }
     """
     attributes: List[Attribute]
-    is_far: bool  # True if fn is declared far
+    is_far: bool  # False only when declared `near fn`; methods are far by default
     name: str
     self_is_far: bool  # True if self param is `far *self`
     params: List[Parameter]  # Parameters after self
@@ -369,15 +369,16 @@ class ImplConst(ASTNode):
 class ImplDecl(Declaration):
     """Impl block declaration.
 
-    Near/far is per-method, driven by each method's self pointer
-    (`*self` vs `far *self`) — there is no impl-level qualifier.
+    Two independent per-method axes, no impl-level qualifier:
+    - calling convention: far (JSL/RTL) by default, `near fn` for JSR/RTS
+    - self pointer: near `*self` by default, `far *self` for a far pointer
 
     Example:
         impl Player {
             const MAX_HEALTH: u8 = 100;
 
-            fn take_damage(*self, amount @ A: u8) { ... }  // near self
-            fn update(far *self) { ... }                   // far self
+            fn take_damage(*self, amount @ A: u8) { ... }  // far call, near self
+            near fn update(far *self) { ... }              // near call, far self
         }
 
         impl Drawable for Player {

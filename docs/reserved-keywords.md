@@ -91,8 +91,8 @@ Reserved by Rust for future use - we reserve them for compatibility:
 
 | Keyword | Purpose |
 |---------|---------|
-| `far` | Far function call (JSL/RTL) or far pointer type |
-| `near` | Near function call (JSR/RTS) or near pointer type |
+| `far` | Far function call (JSL/RTL) or far pointer type; the default for methods |
+| `near` | Near function call (JSR/RTS) or near pointer type; `near fn` opts a method out of the far default |
 
 ## Assembly Interop
 

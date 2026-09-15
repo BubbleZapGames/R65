@@ -77,6 +77,30 @@ class TestCrossBankCalls:
         assert error.hint is not None
         assert "far fn" in error.hint
 
+    def test_cross_bank_method_call_allowed_by_default(self):
+        """Methods are far by default, so a bank-1 caller may call a
+        bank-0 method; only a `near fn` method is bank-bound."""
+        source = """
+        struct P { x: u8 }
+        #[lowram]
+        static mut PP: P;
+        #[bank(0)]
+        impl P {
+            fn get(*self) -> u8 { self.x }
+            near fn get_near(*self) -> u8 { self.x }
+        }
+        #[bank(1)]
+        far fn bank1_func() {
+            let p: *P = &PP;
+            A = p.get();
+        }
+        """
+        typecheck(source)
+
+        with pytest.raises(TypeCheckError) as exc_info:
+            typecheck(source.replace("p.get()", "p.get_near()"))
+        assert "cannot call near function 'P__get_near'" in str(exc_info.value)
+
     def test_cross_bank_far_call_allowed(self):
         """Far functions can be called from any bank."""
         source = """

@@ -58,7 +58,7 @@ _reserved_keyword: KEYWORD
 doc_comment: DOC_OUTER | DOC_BLOCK_OUTER
 
 // Function declaration (function_body allows trailing expression for implicit returns)
-function_decl: doc_comment* attribute* CONST? FAR? FN IDENT "(" param_list? ")" return_type? function_body
+function_decl: doc_comment* attribute* CONST? (FAR | NEAR)? FN IDENT "(" param_list? ")" return_type? function_body
 
 // Function body: block with optional trailing expression (Rust-style implicit returns)
 function_body: "{" statement* "}"
@@ -117,8 +117,8 @@ trait_bounds: ":" IDENT ("+" IDENT)*
 ?trait_item: trait_method | trait_const
 // Ends in ';' for a required method, or a body block for a default implementation
 // (the body is copied into every impl that omits the method).
-trait_method: FAR? FN IDENT "(" trait_param_list ")" return_type? ";"
-            | FAR? FN IDENT "(" trait_param_list ")" return_type? function_body
+trait_method: (FAR | NEAR)? FN IDENT "(" trait_param_list ")" return_type? ";"
+            | (FAR | NEAR)? FN IDENT "(" trait_param_list ")" return_type? function_body
 trait_param_list: self_param ("," param)* ","?
 trait_const: CONST IDENT ":" type_expr ";"
 
@@ -139,7 +139,7 @@ impl_macro: doc_comment* MACRO_RULES "!" IDENT "(" macro_params? ")" macro_body 
 
 // Method declaration in impl block
 // fn name(*self, ...) or fn name(far *self, ...) for explicit far self
-impl_method: doc_comment* attribute* CONST? FAR? FN IDENT "(" impl_param_list? ")" return_type? function_body
+impl_method: doc_comment* attribute* CONST? (FAR | NEAR)? FN IDENT "(" impl_param_list? ")" return_type? function_body
 
 // Parameters for impl methods - self parameter comes first
 impl_param_list: self_param ("," param)* ","?
@@ -168,7 +168,7 @@ include_asm_stmt: INCLUDE_ASM "!" "(" STRING ")" ";"?
 
 // Extern function declaration - body-less; symbol resolved at link time
 // Defaults to all-clobbered; use #[preserves(...)] to opt into preservation
-extern_fn_decl: doc_comment* attribute* EXTERN FAR? FN IDENT "(" param_list? ")" return_type? ";"
+extern_fn_decl: doc_comment* attribute* EXTERN (FAR | NEAR)? FN IDENT "(" param_list? ")" return_type? ";"
 
 // Extern static declaration - data defined in an included asm file
 extern_static_decl: doc_comment* attribute* EXTERN STATIC MUT? IDENT ":" type_expr ";"
