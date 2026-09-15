@@ -251,6 +251,30 @@ class TestFarToNearOptimizer:
         assert converted == 0
         assert not near_func.is_far
 
+    def test_no_convert_trait_dispatch_target(self):
+        """A far trait implementor is entered via JML from the far
+        dispatch wrapper and must keep its RTL, even when its only direct
+        caller is in the same bank."""
+        impl = create_far_function("P__draw", bank=0)
+        caller = create_caller_in_bank("caller", "P__draw", bank=0,
+                                        is_entry=True, call_is_far=True)
+
+        program = MIRProgram(functions=[caller, impl])
+        program.trait_dispatch_info = {
+            'Drawable': {
+                'is_far': True,
+                'methods': ['draw'],
+                'implementors': [{'struct': 'P', 'type_id': 1,
+                                  'mangled': ['P__draw']}],
+            }
+        }
+
+        converted = FarToNearOptimizer(verbose=False).optimize(program)
+
+        assert converted == 0
+        assert impl.is_far, "Dispatch target must stay far"
+        assert caller.blocks[0].instructions[0].is_far
+
     def test_no_callers_not_converted(self):
         """Functions with no callers should NOT be converted (may be externally called)."""
         far_func = create_far_function("far_func", bank=0)

@@ -14,6 +14,9 @@ The optimization is safe when:
 1. All callers are in the same bank as the callee
 2. The function's address is never taken (no indirect calls)
 3. The function is not an interrupt handler (called by hardware from any context)
+4. The function is not a `*dyn` dispatch target — a far trait's dispatch
+   wrapper reaches its implementors through `JML` trampolines that
+   expect an `RTL`, and those edges are not `Call` instructions.
 """
 
 from typing import Dict, Set, List, Optional, Tuple
@@ -32,6 +35,40 @@ class FunctionBankInfo:
     is_interrupt: bool = False
     callers: Set[str] = field(default_factory=set)
     callees: Set[str] = field(default_factory=set)
+
+
+def compute_auto_bank_num(mir_program: MIRProgram) -> int:
+    """Return the bank that `#[bank(auto)]` functions will be placed in.
+
+    Mirrors the rule in `ProgramCodeGenerator._organize_functions_by_bank`:
+    auto-bank functions live in the bank above the highest explicit bank,
+    with a floor of bank 4. If the program has no auto-bank functions the
+    value isn't actually used; we still compute a consistent number so
+    callers can compare freely.
+    """
+    explicit_max = -1
+    for func in mir_program.functions:
+        if func.bank_attr and func.bank_attr.bank_number is not None:
+            if func.bank_attr.bank_number > explicit_max:
+                explicit_max = func.bank_attr.bank_number
+    return max(explicit_max + 1, 4)
+
+
+def effective_bank(func: MIRFunction, auto_bank_num: int) -> int:
+    """The bank a function's code will be assembled into.
+
+    - Explicit `#[bank(n)]` → bank n.
+    - `#[bank(auto)]` (bank_attr present, bank_number=None) → `auto_bank_num`,
+      the bank `_organize_functions_by_bank` parks auto-bank functions in.
+      Treating these as bank 0 silently mis-categorizes cross-bank calls as
+      same-bank.
+    - No bank attribute → bank 0 (the default placement).
+    """
+    if func.bank_attr is None:
+        return 0
+    if func.bank_attr.bank_number is not None:
+        return func.bank_attr.bank_number
+    return auto_bank_num
 
 
 class FarToNearOptimizer:
@@ -54,6 +91,9 @@ class FarToNearOptimizer:
         self.verbose = verbose
         self.func_map: Dict[str, MIRFunction] = {}
         self.bank_info: Dict[str, FunctionBankInfo] = {}
+        # Mangled names of every method reachable through a trait dispatch
+        # table. Filled in at the start of `optimize()`.
+        self._dispatch_targets: Set[str] = set()
         # Computed bank that auto-bank functions will land in. Filled in
         # at the start of `optimize()`. Mirrors the placement rule used
         # later by `ProgramCodeGenerator._organize_functions_by_bank`.
@@ -80,7 +120,8 @@ class FarToNearOptimizer:
         # parks auto-bank functions at `max(explicit_bank)+1`, floor 4,
         # so the JSR'd target ends up at a completely different address
         # from where the call points.
-        self._auto_bank_num = self._compute_auto_bank_num(mir_program)
+        self._auto_bank_num = compute_auto_bank_num(mir_program)
+        self._dispatch_targets = self._collect_dispatch_targets(mir_program)
 
         # Analyze all functions
         self._analyze_functions(mir_program)
@@ -97,48 +138,26 @@ class FarToNearOptimizer:
 
         return len(convertible)
 
-    def _compute_auto_bank_num(self, mir_program: MIRProgram) -> int:
-        """Return the bank that auto-bank functions will be placed in.
+    @staticmethod
+    def _collect_dispatch_targets(mir_program: MIRProgram) -> Set[str]:
+        """Return the mangled names of every trait-dispatch implementor.
 
-        Mirrors the rule in
-        `ProgramCodeGenerator._organize_functions_by_bank`:
-        auto-bank functions live in the bank above the highest explicit
-        bank, with a floor of bank 4. If the program has no auto-bank
-        functions this value isn't actually used; we still compute a
-        consistent number so the caller can compare freely.
+        A far trait's `T__m__dispatch` wrapper jumps into each implementor
+        with `JML`, so the implementor must still `RTL` even when every
+        *direct* caller sits in its own bank. Those dispatch edges never
+        appear as `Call` instructions, so the call-graph walk in
+        `_analyze_functions` can't see them; treat the targets as
+        externally referenced instead.
         """
-        explicit_max = -1
-        for func in mir_program.functions:
-            if func.bank_attr and func.bank_attr.bank_number is not None:
-                if func.bank_attr.bank_number > explicit_max:
-                    explicit_max = func.bank_attr.bank_number
-        return max(explicit_max + 1, 4)
+        targets: Set[str] = set()
+        for trait_info in (mir_program.trait_dispatch_info or {}).values():
+            for impl in trait_info.get('implementors', []):
+                targets.update(impl.get('mangled', []))
+        return targets
 
     def _get_function_bank(self, func: MIRFunction) -> int:
-        """
-        Get the effective bank number for a function.
-
-        - Explicit `#[bank(n)]` → bank n.
-        - `#[bank(auto)]` (bank_attr present, bank_number=None) → the
-          bank that `_organize_functions_by_bank` will place auto-bank
-          functions in (`max(explicit) + 1`, floor 4). Treating these
-          as bank 0 — the previous behavior — silently
-          mis-categorized cross-bank calls as same-bank and led the
-          optimizer to emit JSR to a callee that the codegen later
-          parks in a different bank.
-        - No bank attribute → bank 0 (the default placement).
-
-        Args:
-            func: The MIR function
-
-        Returns:
-            Bank number (0-255)
-        """
-        if func.bank_attr is None:
-            return 0
-        if func.bank_attr.bank_number is not None:
-            return func.bank_attr.bank_number
-        return self._auto_bank_num
+        """Effective bank number for a function; see `effective_bank`."""
+        return effective_bank(func, self._auto_bank_num)
 
     def _analyze_functions(self, mir_program: MIRProgram):
         """
@@ -241,6 +260,13 @@ class FarToNearOptimizer:
             if info.is_interrupt:
                 if self.verbose:
                     print(f"  Skip {func_name}: interrupt handler")
+                continue
+
+            # Skip *dyn dispatch targets (entered via JML from the far
+            # dispatch wrapper, which needs the RTL to stay)
+            if func_name in self._dispatch_targets:
+                if self.verbose:
+                    print(f"  Skip {func_name}: trait dispatch target")
                 continue
 
             # Skip if no callers (might be externally referenced)
