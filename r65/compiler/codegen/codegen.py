@@ -164,6 +164,17 @@ class ProgramCodeGenerator:
                 if unrolled_count > 0:
                     print(f"Loop unrolling: {unrolled_count} loop(s) unrolled")
 
+            # Memory-operand folding - read a single-use static directly in
+            # the ADC/SBC/AND/ORA/EOR/CMP that consumes it. Runs last so it
+            # sees inlined and unrolled bodies, and before register
+            # allocation so the deleted load no longer blocks the other
+            # operand from staying in A.
+            from r65.compiler.optimize.memory_operand import MemoryOperandFolder
+            operand_folder = MemoryOperandFolder(verbose=False)
+            operands_folded = operand_folder.optimize(mir_program)
+            if operands_folded > 0:
+                print(f"Memory-operand folding: {operands_folded} load(s) folded")
+
         # Emit file header and processor directives
         self.emitter.emit_file_header()
         self.emitter.emit_processor_directive()

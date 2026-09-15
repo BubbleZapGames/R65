@@ -1027,30 +1027,35 @@ OPCODE_VARIANTS: dict[str, dict[str, Opcode]] = {
         'DP': Opcode.ADC_DP, 'DP_X': Opcode.ADC_DP_X,
         'ABSOLUTE': Opcode.ADC_ABSOLUTE, 'ABSOLUTE_X': Opcode.ADC_ABSOLUTE_X,
         'ABSOLUTE_Y': Opcode.ADC_ABSOLUTE_Y,
+        'LONG': Opcode.ADC_LONG, 'LONG_X': Opcode.ADC_LONG_X,
         'STACK': Opcode.ADC_STACK, 'IMMEDIATE': Opcode.ADC_IMMEDIATE,
     },
     'SBC': {
         'DP': Opcode.SBC_DP, 'DP_X': Opcode.SBC_DP_X,
         'ABSOLUTE': Opcode.SBC_ABSOLUTE, 'ABSOLUTE_X': Opcode.SBC_ABSOLUTE_X,
         'ABSOLUTE_Y': Opcode.SBC_ABSOLUTE_Y,
+        'LONG': Opcode.SBC_LONG, 'LONG_X': Opcode.SBC_LONG_X,
         'STACK': Opcode.SBC_STACK, 'IMMEDIATE': Opcode.SBC_IMMEDIATE,
     },
     'AND': {
         'DP': Opcode.AND_DP, 'DP_X': Opcode.AND_DP_X,
         'ABSOLUTE': Opcode.AND_ABSOLUTE, 'ABSOLUTE_X': Opcode.AND_ABSOLUTE_X,
         'ABSOLUTE_Y': Opcode.AND_ABSOLUTE_Y,
+        'LONG': Opcode.AND_LONG, 'LONG_X': Opcode.AND_LONG_X,
         'STACK': Opcode.AND_STACK, 'IMMEDIATE': Opcode.AND_IMMEDIATE,
     },
     'ORA': {
         'DP': Opcode.ORA_DP, 'DP_X': Opcode.ORA_DP_X,
         'ABSOLUTE': Opcode.ORA_ABSOLUTE, 'ABSOLUTE_X': Opcode.ORA_ABSOLUTE_X,
         'ABSOLUTE_Y': Opcode.ORA_ABSOLUTE_Y,
+        'LONG': Opcode.ORA_LONG, 'LONG_X': Opcode.ORA_LONG_X,
         'STACK': Opcode.ORA_STACK, 'IMMEDIATE': Opcode.ORA_IMMEDIATE,
     },
     'EOR': {
         'DP': Opcode.EOR_DP, 'DP_X': Opcode.EOR_DP_X,
         'ABSOLUTE': Opcode.EOR_ABSOLUTE, 'ABSOLUTE_X': Opcode.EOR_ABSOLUTE_X,
         'ABSOLUTE_Y': Opcode.EOR_ABSOLUTE_Y,
+        'LONG': Opcode.EOR_LONG, 'LONG_X': Opcode.EOR_LONG_X,
         'STACK': Opcode.EOR_STACK, 'IMMEDIATE': Opcode.EOR_IMMEDIATE,
     },
     'BIT': {
@@ -1062,6 +1067,7 @@ OPCODE_VARIANTS: dict[str, dict[str, Opcode]] = {
         'DP': Opcode.CMP_DP, 'DP_X': Opcode.CMP_DP_X,
         'ABSOLUTE': Opcode.CMP_ABSOLUTE, 'ABSOLUTE_X': Opcode.CMP_ABSOLUTE_X,
         'ABSOLUTE_Y': Opcode.CMP_ABSOLUTE_Y,
+        'LONG': Opcode.CMP_LONG, 'LONG_X': Opcode.CMP_LONG_X,
         'STACK': Opcode.CMP_STACK, 'IMMEDIATE': Opcode.CMP_IMMEDIATE,
     },
     'CPX': {
