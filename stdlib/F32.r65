@@ -175,14 +175,14 @@ impl F32 {
 
     /// Copies `src` into `self`.
     #[inline(always)]
-    far fn copy(far *self, src: far *F32) {
+    fn copy(far *self, src: far *F32) {
         self.mant_lo = src.mant_lo;
         self.exp_hi = src.exp_hi;
     }
 
     /// Returns `true` if `self` is zero (its exponent byte is `0`).
     #[inline(always)]
-    far fn is_zero(far *self) -> bool {
+    fn is_zero(far *self) -> bool {
         if (self.exp_hi & 0xFF00) == 0 {
             return true;
         }
@@ -191,7 +191,7 @@ impl F32 {
 
     /// Returns `true` if `self` is negative (the mantissa sign bit is set).
     #[inline(always)]
-    far fn is_negative(far *self) -> bool {
+    fn is_negative(far *self) -> bool {
         if (self.exp_hi & 0x0080) != 0 {
             return true;
         }
@@ -205,7 +205,7 @@ impl F32 {
     /// Negates `self` in place, flipping the mantissa sign and preserving the
     /// exponent.
     #[inline(always)]
-    far fn neg(far *self) {
+    fn neg(far *self) {
         let eh: u16 = self.exp_hi;
         if (eh & 0xFF00) == 0 {
             return;
@@ -220,7 +220,7 @@ impl F32 {
 
     /// Replaces `self` with its absolute value (negates if negative).
     #[inline(always)]
-    far fn abs(far *self) {
+    fn abs(far *self) {
         if (self.exp_hi & 0x0080) != 0 {
             self.neg();
         }
@@ -234,7 +234,7 @@ impl F32 {
     ///
     /// # Parameters
     /// - `value` — the signed 16-bit integer to convert
-    far fn from_i16(far *self, value: u16) {
+    fn from_i16(far *self, value: u16) {
         if value == 0 {
             self.mant_lo = 0;
             self.exp_hi = 0;
@@ -279,7 +279,7 @@ impl F32 {
     /// # Returns
     /// The integer value. A magnitude `< 1.0` returns `0`; results outside the
     /// `i16` range are clamped to `-32768`/`32767`.
-    far fn to_i16(far *self) -> i16 {
+    fn to_i16(far *self) -> i16 {
         let eh: u16 = self.exp_hi;
         let mut exp: u16 = eh >> 8;
 
@@ -358,7 +358,7 @@ impl F32 {
     /// - `o_lo` — other mantissa, low 16 bits
     /// - `o_hi` — other mantissa, high byte (in the low 8 bits)
     /// - `o_exp` — other exponent, biased
-    far fn add_raw(far *self, o_lo: u16, o_hi: u16, o_exp: u16) {
+    fn add_raw(far *self, o_lo: u16, o_hi: u16, o_exp: u16) {
         let s_eh: u16 = self.exp_hi;
         let s_exp: u16 = s_eh >> 8;
 
@@ -447,7 +447,7 @@ impl F32 {
 
 /// Powers the `+=` operator — adds another `F32` into `self`.
 impl AddAssign for F32 {
-    far fn add_assign(far *self, other: far *F32) {
+    fn add_assign(far *self, other: far *F32) {
         let o_eh: u16 = other.exp_hi;
         let o_exp: u16 = o_eh >> 8;
         if o_exp == 0 { return; }
@@ -457,7 +457,7 @@ impl AddAssign for F32 {
 
 /// Powers the `-=` operator — subtracts another `F32` from `self`.
 impl SubAssign for F32 {
-    far fn sub_assign(far *self, other: far *F32) {
+    fn sub_assign(far *self, other: far *F32) {
         let o_eh: u16 = other.exp_hi;
         let o_exp: u16 = o_eh >> 8;
         if o_exp == 0 { return; }
@@ -471,7 +471,7 @@ impl SubAssign for F32 {
 
 /// Powers the `*=` operator — multiplies `self` by another `F32`.
 impl MulAssign for F32 {
-    far fn mul_assign(far *self, other: far *F32) {
+    fn mul_assign(far *self, other: far *F32) {
         // Nine 8x8 partial products on the SNES hardware multiplier.
         let s_eh: u16 = self.exp_hi;
         let o_eh: u16 = other.exp_hi;
@@ -602,7 +602,7 @@ impl MulAssign for F32 {
 /// Powers the `/=` operator. Divide-by-zero or overflow yields the maximum
 /// magnitude.
 impl DivAssign for F32 {
-    far fn div_assign(far *self, other: far *F32) {
+    fn div_assign(far *self, other: far *F32) {
         // Binary long division, 23 iterations for a full 23-bit quotient.
         // Result exponent: r_exp = s_exp - o_exp + 128, plus 1 if the pre-norm
         // step halves the dividend.
@@ -739,7 +739,7 @@ impl DivAssign for F32 {
 impl PartialOrd for F32 {
     /// Compares `self` with `other`, returning `1` if `self > other`, `0` if
     /// equal, or `-1` if `self < other`.
-    far fn cmp(far *self, other: far *F32) -> i8 {
+    fn cmp(far *self, other: far *F32) -> i8 {
         let s_eh: u16 = self.exp_hi;
         let o_eh: u16 = other.exp_hi;
         let s_exp: u16 = s_eh >> 8;
@@ -815,7 +815,7 @@ impl PartialOrd for F32 {
 // from cmp.
 
 /// Powers the equality operators (`==`, `!=`) by comparing the encoded values.
-impl PartialEq for F32 { far fn eq(far *self, other: far *F32) -> bool { return self.cmp(other) == 0; } }
+impl PartialEq for F32 { fn eq(far *self, other: far *F32) -> bool { return self.cmp(other) == 0; } }
 
 /// Enables `Clone` for `F32` — `let c = a.clone()` and `dst.clone_from(&src)` copy
 /// all four bytes. The empty body selects the compiler's automatic bitwise copy.

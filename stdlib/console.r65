@@ -65,7 +65,7 @@ impl Console {
 
     // Initialize console with tile attributes.
     // Defaults: cursor (0,0), area (0,0,32,28), tile_base 0, align left, VRAM mode.
-    far fn init(far *self, tile_attr: u16) {
+    fn init(far *self, tile_attr: u16) {
         self.tile_base = 0;
         self.tile_attr = tile_attr;
         self.cursor_x = 0;
@@ -84,7 +84,7 @@ impl Console {
     // ========================================================================
 
     // Set text area bounds and reset cursor to (0,0).
-    far fn set_area(far *self, x: u8, y: u8, w: u8, h: u8) {
+    fn set_area(far *self, x: u8, y: u8, w: u8, h: u8) {
         self.area_x = x;
         self.area_y = y;
         self.area_w = w;
@@ -94,35 +94,35 @@ impl Console {
     }
 
     // Set cursor position (relative to text area).
-    far fn set_cursor(far *self, x: u8, y: u8) {
+    fn set_cursor(far *self, x: u8, y: u8) {
         self.cursor_x = x;
         self.cursor_y = y;
     }
 
     // Set text alignment mode.
-    far fn set_align(far *self, align: u8) {
+    fn set_align(far *self, align: u8) {
         self.align = align;
     }
 
     // Change font tile base index.
-    far fn set_tile_base(far *self, base: u16) {
+    fn set_tile_base(far *self, base: u16) {
         self.tile_base = base;
     }
 
     // Change tile attribute bits.
-    far fn set_attr(far *self, attr: u16) {
+    fn set_attr(far *self, attr: u16) {
         self.tile_attr = attr;
     }
 
     // Set nametable buffer pointer and switch to buffer mode.
     // Buffer is a u16 nametable array; pass as far *u8 (e.g. &MY_NAMETABLE as far *u8).
-    far fn set_buffer(far *self, buf: far *u8) {
+    fn set_buffer(far *self, buf: far *u8) {
         self.buffer = buf;
         self.mode = ConsoleMode::Buffer;
     }
 
     // Set VRAM base word address and switch to VRAM mode.
-    far fn set_vram(far *self, addr: u16) {
+    fn set_vram(far *self, addr: u16) {
         self.vram_base = addr;
         self.mode = ConsoleMode::Vram;
     }
@@ -131,7 +131,7 @@ impl Console {
     // Caller must DMA the buffer to OAM during VBlank.
     // area_x/area_y are tile positions; pixel coords computed as *8.
     // area_w * area_h must not exceed 128 sprites.
-    far fn set_oam(far *self, buf: far *u8) {
+    fn set_oam(far *self, buf: far *u8) {
         self.buffer = buf;
         self.vram_base = 0;
         self.mode = ConsoleMode::Oam;
@@ -142,7 +142,7 @@ impl Console {
     // ========================================================================
 
     // Write a single character at the cursor position and advance cursor.
-    far fn putc(far *self, ch: u8) {
+    fn putc(far *self, ch: u8) {
         // Handle newline
         if ch == 0x0A {
             self.cursor_x = 0;
@@ -206,7 +206,7 @@ impl Console {
     }
 
     // Move cursor to start of next row.
-    far fn newline(far *self) {
+    fn newline(far *self) {
         self.cursor_x = 0;
         let mut cy: u8 = self.cursor_y + 1;
         if cy >= self.area_h {
@@ -217,7 +217,7 @@ impl Console {
 
     // Streaming write: walk null-terminated string, convert each ASCII char
     // to tile entry, write to buffer or VRAM. Supports \n (0x0A) as newline.
-    far fn print(far *self, str: far *u8) {
+    fn print(far *self, str: far *u8) {
         let s: far *u8 = str;
         let attr: u16 = self.tile_attr;
         let base: u16 = self.tile_base;
@@ -297,7 +297,7 @@ impl Console {
     }
 
     // Set cursor to (x, y) then print string.
-    far fn print_at(far *self, x: u8, y: u8, str: far *u8) {
+    fn print_at(far *self, x: u8, y: u8, str: far *u8) {
         self.cursor_x = x;
         self.cursor_y = y;
         self.print(str);
@@ -305,7 +305,7 @@ impl Console {
 
     // Alignment-aware print: compute starting X from alignment mode,
     // clear the current row, write string at computed offset, advance to next row.
-    far fn println(far *self, str: far *u8) {
+    fn println(far *self, str: far *u8) {
         let s: far *u8 = str;
         let attr: u16 = self.tile_attr;
         let base: u16 = self.tile_base;
@@ -460,7 +460,7 @@ impl Console {
     // ========================================================================
 
     // Fill entire text area with space tiles, reset cursor to (0,0).
-    far fn clear(far *self) {
+    fn clear(far *self) {
         let aw: u8 = self.area_w;
         let ah: u8 = self.area_h;
         let m: u8 = self.mode;
@@ -528,7 +528,7 @@ impl Console {
     }
 
     // Fill one row within the text area with space tiles.
-    far fn clear_row(far *self, row: u8) {
+    fn clear_row(far *self, row: u8) {
         let aw: u8 = self.area_w;
         let m: u8 = self.mode;
 
@@ -585,7 +585,7 @@ impl Console {
     // ========================================================================
 
     // Upload 2bpp font data to VRAM, with optional padding for 4bpp/8bpp tile formats.
-    far fn upload_font(far *self, vram_addr: u16, tile_base: u16, data: far *u8, num_tiles: u16, size_tile: TileSize) {
+    fn upload_font(far *self, vram_addr: u16, tile_base: u16, data: far *u8, num_tiles: u16, size_tile: TileSize) {
         self.tile_base = tile_base;
         VMAIN = VmainTrigger::High;
 

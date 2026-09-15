@@ -1234,9 +1234,9 @@ impl OamBuffer {
     }
 
     // Clear all sprites (Y=240) and zero the extended OAM bytes.
-    // Kept as `far fn` — body is a 128-iteration loop; inlining at the
+    // Not `#[inline]` — body is a 128-iteration loop; inlining at the
     // 8 call sites would add ~480 bytes for zero per-call benefit.
-    far fn clear(*self) {
+    fn clear(*self) {
         let mut p: *OamEntry = &self.sprites[0];
         for n in 0..128 {
             (*p).x = 0;

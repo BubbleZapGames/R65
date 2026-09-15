@@ -113,7 +113,7 @@ impl U32 {
 
     /// Copies `src` into `self`.
     #[inline(always)]
-    far fn copy(far *self, src: far *U32) {
+    fn copy(far *self, src: far *U32) {
         self.lo = src.lo;
         self.hi = src.hi;
     }
@@ -124,14 +124,14 @@ impl U32 {
     /// - `value` — the 16-bit value (passed in `X`; `A` is clobbered by the far
     ///   prologue, so `X` is used instead)
     #[inline(always)]
-    far fn from_u16(far *self, value @ X: u16) {
+    fn from_u16(far *self, value @ X: u16) {
         self.lo = X;
         self.hi = 0;
     }
 
     /// Returns the low 16 bits of `self`, truncating the high word.
     #[inline(always)]
-    far fn to_u16(far *self) -> u16 {
+    fn to_u16(far *self) -> u16 {
         return self.lo;
     }
 
@@ -151,7 +151,7 @@ impl U32 {
     /// SCORE.add_u16(points);
     /// ```
     #[inline(always)]
-    far fn add_u16(far *self, value @ A: u16) {
+    fn add_u16(far *self, value @ A: u16) {
         let s_lo: u16 = self.lo;
         let r_lo: u16 = s_lo + A;
         let mut r_hi: u16 = self.hi;
@@ -169,7 +169,7 @@ impl U32 {
     /// # Parameters
     /// - `value` — amount to subtract (passed in `A`)
     #[inline(always)]
-    far fn sub_u16(far *self, value @ A: u16) {
+    fn sub_u16(far *self, value @ A: u16) {
         let s_lo: u16 = self.lo;
         let r_lo: u16 = s_lo - A;
         let mut r_hi: u16 = self.hi;
@@ -187,7 +187,7 @@ impl U32 {
     ///
     /// # Parameters
     /// - `value` — multiplier (passed in `A`)
-    far fn mul_u16(far *self, value @ A: u16) {
+    fn mul_u16(far *self, value @ A: u16) {
         let mut mplier: u16 = A;
         let mut result_lo: u16 = 0;
         let mut result_hi: u16 = 0;
@@ -227,7 +227,7 @@ impl U32 {
     ///
     /// # Edge cases
     /// If `value` is `0`, `self` is set to `0xFFFFFFFF`.
-    far fn div_u16(far *self, value @ A: u16) {
+    fn div_u16(far *self, value @ A: u16) {
         if A == 0 {
             self.lo = 0xFFFF;
             self.hi = 0xFFFF;
@@ -285,7 +285,7 @@ impl U32 {
     ///
     /// # Edge cases
     /// If `value` is `0`, `self` is left unchanged.
-    far fn mod_u16(far *self, value @ A: u16) {
+    fn mod_u16(far *self, value @ A: u16) {
         if A == 0 {
             return;
         }
@@ -335,7 +335,7 @@ impl U32 {
     ///
     /// # Edge cases
     /// If `other` is `0`, `self` is left unchanged.
-    far fn mod(far *self, other: far *U32) {
+    fn mod(far *self, other: far *U32) {
         let o_lo: u16 = other.lo;
         let o_hi: u16 = other.hi;
 
@@ -401,7 +401,7 @@ impl U32 {
     ///
     /// # Parameters
     /// - `count` — number of bit positions (passed in `X`)
-    far fn shl(far *self, count @ X: u16) {
+    fn shl(far *self, count @ X: u16) {
         let mut lo: u16 = self.lo;
         let mut hi: u16 = self.hi;
         loop {
@@ -426,7 +426,7 @@ impl U32 {
     ///
     /// # Parameters
     /// - `count` — number of bit positions (passed in `X`)
-    far fn shr(far *self, count @ X: u16) {
+    fn shr(far *self, count @ X: u16) {
         let mut lo: u16 = self.lo;
         let mut hi: u16 = self.hi;
         loop {
@@ -466,7 +466,7 @@ impl U32 {
     /// # Edge cases
     /// If `divisor` is `0`, `self` is set to `0xFFFFFFFF` and `0` is returned.
     #[cfg(snes)]
-    far fn div_u8(far *self, divisor @ X: u16) -> u8 {
+    fn div_u8(far *self, divisor @ X: u16) -> u8 {
         let mut remainder: u8;
         let mut q3: u8;
         let mut q2: u8;
@@ -525,7 +525,7 @@ impl U32 {
     /// # Parameters
     /// - `divisor` — 8-bit divisor (passed in `X`)
     #[cfg(snes)]
-    far fn mod_u8(far *self, divisor @ X: u16) {
+    fn mod_u8(far *self, divisor @ X: u16) {
         let mut remainder: u8 = self.div_u8(X);
         self.lo = remainder as u16;
         self.hi = 0;
@@ -534,7 +534,7 @@ impl U32 {
 
 /// Powers the `+=` operator — adds another `U32` into `self`, wrapping on overflow.
 impl AddAssign for U32 {
-    far fn add_assign(far *self, other: far *U32) {
+    fn add_assign(far *self, other: far *U32) {
         let s_lo: u16 = self.lo;
         let s_hi: u16 = self.hi;
         let o_lo: u16 = other.lo;
@@ -552,7 +552,7 @@ impl AddAssign for U32 {
 
 /// Powers the `-=` operator — subtracts another `U32` from `self`, wrapping on underflow.
 impl SubAssign for U32 {
-    far fn sub_assign(far *self, other: far *U32) {
+    fn sub_assign(far *self, other: far *U32) {
         let s_lo: u16 = self.lo;
         let s_hi: u16 = self.hi;
         let o_lo: u16 = other.lo;
@@ -570,7 +570,7 @@ impl SubAssign for U32 {
 
 /// Powers the `*=` operator — multiplies `self` by another `U32`, keeping the low 32 bits.
 impl MulAssign for U32 {
-    far fn mul_assign(far *self, other: far *U32) {
+    fn mul_assign(far *self, other: far *U32) {
         // Software shift-and-add: the hardware multiplier is 8x8, far too narrow
         // to help here.
         let mut result_lo: u16 = 0;
@@ -618,7 +618,7 @@ impl MulAssign for U32 {
 
 /// Powers the `/=` operator. A zero divisor sets `self` to `0xFFFFFFFF`.
 impl DivAssign for U32 {
-    far fn div_assign(far *self, other: far *U32) {
+    fn div_assign(far *self, other: far *U32) {
         // Restoring long division, one quotient bit per iteration.
         let o_lo: u16 = other.lo;
         let o_hi: u16 = other.hi;
@@ -693,7 +693,7 @@ impl DivAssign for U32 {
 impl PartialOrd for U32 {
     /// Compares `self` with `other`, returning `1` if `self > other`, `0` if
     /// equal, or `-1` if `self < other`.
-    far fn cmp(far *self, other: far *U32) -> i8 {
+    fn cmp(far *self, other: far *U32) -> i8 {
         let s_hi: u16 = self.hi;
         let o_hi: u16 = other.hi;
         if s_hi > o_hi { A = 1; return A; }
@@ -715,7 +715,7 @@ impl PartialOrd for U32 {
 // methods *are* the implementation (no forwarders). PartialEq derives `==`/`!=`.
 
 /// Powers the equality operators (`==`, `!=`) by comparing all 32 bits.
-impl PartialEq for U32 { far fn eq(far *self, other: far *U32) -> bool { return self.cmp(other) == 0; } }
+impl PartialEq for U32 { fn eq(far *self, other: far *U32) -> bool { return self.cmp(other) == 0; } }
 
 /// Enables `Clone` for `U32` — `let c = a.clone()` and `dst.clone_from(&src)` copy
 /// all four bytes. The empty body selects the compiler's automatic bitwise copy.

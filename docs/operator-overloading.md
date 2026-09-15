@@ -63,8 +63,8 @@ single constraint dictates the whole design:
    tables, no `TypeId`, no layout change.
 
 This is not arbitrary: the stdlib already converged on exactly these shapes.
-`I32`/`U32`/`F32` arithmetic is mutate-in-place (`far fn add(far *self, other: far *I32)`
-== `self += other`) and comparison is `far fn cmp(far *self, other) -> i8`. Tier A+B
+`I32`/`U32`/`F32` arithmetic is mutate-in-place (`fn add(far *self, other: far *I32)`
+== `self += other`) and comparison is `fn cmp(far *self, other) -> i8`. Tier A+B
 overloading is just sugar over the API the stdlib already exposes.
 
 ---
@@ -95,7 +95,7 @@ nothing:
 
 ```rust
 impl AddAssign for I32 {
-    far fn add_assign(far *self, other: far *I32) {
+    fn add_assign(far *self, other: far *I32) {
         // self += other   (mutates the receiver)
     }
 }
@@ -122,10 +122,10 @@ current `cmp`.
 
 ```rust
 impl PartialEq for I32 {
-    far fn eq(far *self, other: far *I32) -> bool { /* ... */ }
+    fn eq(far *self, other: far *I32) -> bool { /* ... */ }
 }
 impl PartialOrd for I32 {
-    far fn cmp(far *self, other: far *I32) -> i8 { /* ... */ }
+    fn cmp(far *self, other: far *I32) -> i8 { /* ... */ }
 }
 ```
 
@@ -266,9 +266,9 @@ For a comparison `a OP b` (handled in `check_binary_op`):
   constant-shift rule (`operator_validator.py`). That validator is **skipped**
   when an operand is an aggregate, so `score *= factor` on an `I32` is legal even
   though `factor` is not a power of two.
-- **Far methods.** Operator methods may be `far fn` (as the stdlib's are). The
-  desugared call follows normal near/far call rules; `&var` on a RAM/banked
-  object yields the appropriate far pointer.
+- **Far methods.** Operator methods are far by default like every method
+  (`near fn` opts out). The desugared call follows normal near/far call
+  rules; `&var` on a RAM/banked object yields the appropriate far pointer.
 - **`!=` and ordering are derived.** Only `eq` and `cmp` are implemented; `!=`,
   `<=`, `>`, `>=` are synthesized from them. You cannot override `!=`
   independently of `==`.
@@ -283,11 +283,11 @@ For a comparison `a OP b` (handled in `check_binary_op`):
 
 ```rust
 // stdlib/I32.r65 — add these impls (bodies forward to existing methods):
-impl AddAssign  for I32 { far fn add_assign(far *self, other: far *I32) { self.add(other); } }
-impl SubAssign  for I32 { far fn sub_assign(far *self, other: far *I32) { self.sub(other); } }
-impl MulAssign  for I32 { far fn mul_assign(far *self, other: far *I32) { self.mul(other); } }
-impl PartialEq  for I32 { far fn eq(far *self, other: far *I32) -> bool { return self.cmp(other) == 0; } }
-impl PartialOrd for I32 { far fn cmp(far *self, other: far *I32) -> i8  { /* existing cmp */ } }
+impl AddAssign  for I32 { fn add_assign(far *self, other: far *I32) { self.add(other); } }
+impl SubAssign  for I32 { fn sub_assign(far *self, other: far *I32) { self.sub(other); } }
+impl MulAssign  for I32 { fn mul_assign(far *self, other: far *I32) { self.mul(other); } }
+impl PartialEq  for I32 { fn eq(far *self, other: far *I32) -> bool { return self.cmp(other) == 0; } }
+impl PartialOrd for I32 { fn cmp(far *self, other: far *I32) -> i8  { /* existing cmp */ } }
 ```
 
 ```rust
