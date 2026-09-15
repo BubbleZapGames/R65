@@ -244,6 +244,10 @@ class HIRStaticDecl(HIRDeclaration):
     # rounded up when that costs at most one byte (3 -> 4, 7 -> 8) so the index
     # scales by a shift instead of a shift-and-add.
     soa_stride: Optional[int] = None
+    # Child only: `(region_decl, byte_offset)` when this plane lies over the
+    # bytes of another plane instead of reserving its own — an `#[soa]`
+    # payload's field plane inside its enum's data region (docs/enums.md).
+    soa_overlay: Optional[tuple] = None
     # Lint codes suppressed on this static via #[allow(...)]; "*" means all.
     allow_lints: frozenset = field(default_factory=frozenset)
 

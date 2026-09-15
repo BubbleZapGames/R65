@@ -1,7 +1,8 @@
 # Enums
 
 **Status: implemented** — fieldless enums with methods, and tagged enums with
-struct payloads, index-`self` methods and payload-binding patterns.
+struct payloads, index-`self` methods, payload-binding patterns, and
+[`#[soa]` payloads](#soa-payloads) whose field planes overlay the data region.
 
 R65 has two kinds of enum. A **fieldless** enum is a named integer constant, the
 C-style enum the language has always had. A **tagged** enum carries data: each
@@ -335,6 +336,299 @@ a compare chain on the same cost model as any other match (see
 
 ---
 
+## `#[soa]` Payloads
+
+A payload struct may itself be `#[soa]`. The enum's data plane then stops being
+an array of union elements and becomes a **region** that every variant overlays
+with one plane per field — so an arm body, and the payload struct's own
+methods, index by the raw pool index with no scaling at all. This section gives
+the motivation, the layout, and the rules.
+
+### Motivation
+
+Take the shape the rest of this document builds toward — an `#[soa]` entity
+pool whose `kind` is a tagged enum, with per-kind state in the payloads and
+per-kind behaviour on the payload structs — written with *plain* payloads:
+
+```rust
+struct Fireball { heat: u8, phase: u8 }
+enum Kind { None, Barrel(Barrel), Fireball(Fireball), Spring, Boss(Boss) }
+
+#[soa]
+struct Enemy { kind: Kind, x: u8, y: u8, vx: i8, vy: i8, hp: u8 }
+#[lowram] static mut POOL: [Enemy; 16];
+
+impl Hazard for Fireball {
+    fn burn(*self) -> u8 { self.heat = self.heat + 1; return self.heat; }
+}
+
+impl Enemy {
+    fn update(self) {
+        match POOL[self].kind {
+            Kind::Fireball(f) => { f.phase = f.phase + 1; self.vy = -1; self.x = f.burn(); }
+            ...
+        };
+    }
+}
+```
+
+Everything on the shared planes is one indexed instruction. The payload is
+where the cost hides, in two places. Both listings are real `r65c` output.
+
+**The arm recomputes X on every switch between a payload field and a shared
+field.** The payload plane strides by 2 (the largest payload) while every
+shared plane strides by 1, so the single-slot X cache thrashes:
+
+```asm
+REP #$20            ; f.phase = f.phase + 1
+LDA $01,S           ;   reload self
+ASL A               ;   scale to payload stride
+TAX
+SEP #$20
+LDA $0211,X
+INC A
+STA $0211,X
+REP #$20            ; self.vy = -1
+LDA $01,S           ;   reload self again
+TAX
+SEP #$20
+LDA #$FF
+STA $0260,X
+```
+
+Thirteen instructions for two byte updates.
+
+**A method on the payload struct needs a pointer.** `f` is a view of the pool,
+but `Fireball::burn` takes `*self`, so the call site has to materialize an
+address — twelve instructions, repeated for every call in the arm, and the
+callee then reaches its fields through `DBR:Y`:
+
+```asm
+REP #$20
+LDA #$0230          ; #POOL__kind__data
+STA $03,S
+LDA $01,S           ; self
+ASL A
+STA $05,S
+LDA $03,S
+CLC
+ADC $05,S
+TAY
+SEP #$20
+JSR Fireball__burn  ; body: LDA $0000,Y / INC A / STA $0000,Y
+```
+
+This is the pointer-`self` cost that made traits unusable in classickong's
+enemy loop, arriving through the back door. `#[soa]` on the payload structs
+removes both.
+
+### Layout: every variant's planes overlay one region
+
+With `#[soa]` payloads the data plane is no longer an array of union elements.
+Each variant lays its fields out by the ordinary `#[soa]` formula — one plane
+per field, each padded 3→4 / 7→8 — and every variant starts at the same base:
+
+```
+addr(variant V, field k) = data_base + Σ_{j<k} N · stride(V.field_j)
+region size              = max over V of Σ_j N · stride(V.field_j)
+```
+
+The region can be larger than `N × max(packed payload)`: a variant with a
+`far *T` field pays one pad byte per element for that plane, exactly as an
+`#[soa]` struct would.
+
+For the enum above with `N = 16`:
+
+| Symbol | Bytes | Stride |
+|---|---|---|
+| `POOL__kind__tag` | `$0200` + 16 | 1 |
+| `POOL__kind__data` | `$0210` + 32 (region) | — |
+|   `POOL__kind__Barrel__rolling` | `$0210` + 16 | 1 |
+|   `POOL__kind__Fireball__heat` | `$0210` + 16 | 1 |
+|   `POOL__kind__Fireball__phase` | `$0220` + 16 | 1 |
+|   `POOL__kind__Boss__stage` | `$0210` + 16 | 1 |
+|   `POOL__kind__Boss__cooldown` | `$0220` + 16 | 1 |
+
+`Barrel::rolling`, `Fireball::heat` and `Boss::stage` are the same sixteen
+bytes. That is the union, transposed: element `i`'s payload bytes are still
+private to element `i`, they are just no longer adjacent. Reading a plane that
+belongs to a variant other than the one in the tag yields whatever the last
+variant left there — exactly the guarantee a union gives now, no weaker.
+
+Two variants whose fields differ in width overlay at different byte positions
+(a `u16` at plane offset 0 spans the bytes a sibling variant's two `u8` planes
+use). Nothing depends on where they land relative to each other, so this needs
+no rule.
+
+Unit variants contribute no planes. An enum whose payload variants are all
+`#[soa]` and all single-`u8` degenerates to one shared plane, which is what a
+hand-written parallel array would be.
+
+In the assembly the region is `POOL__kind__data` (allocated as before) and
+each variant plane is a bare `.DEFINE` at region + offset, under an "Overlay
+Planes" header — even in main RAM, where the region is a `.RAMSECTION` entry,
+since a section cannot give two names to the same bytes.
+
+### Access
+
+A payload binding still names a view; only what the view rewrites to changes.
+`f.phase` for an `#[soa]` variant rewrites to `POOL__kind__Fireball__phase[i]`
+— the same base-rewrite `impl Enemy` uses to turn `self.hp` into `POOL[self].hp`,
+applied one level down. So the arm above becomes:
+
+```asm
+INC POOL__kind__Fireball__phase,X     ; f.phase = f.phase + 1
+LDA #$FF
+STA POOL__vy,X                        ; self.vy = -1
+```
+
+X holds `self` for the whole arm, because every plane in reach — payload and
+shared — strides by 1. This is consequence 1 of the
+[X-reuse rule](soa.md#index-reuse-in-x--read-this-before-choosing-field-types):
+an all-`u8` element is a strict win.
+
+Construction is unchanged in shape — one tag store plus one store per field —
+but each field store goes to its own plane with the raw index:
+
+```rust
+POOL[i].kind = Kind::Fireball(Fireball { heat: 9, phase: 0 });
+// LDA #$02  STA POOL__kind__tag,X
+// LDA #$09  STA POOL__kind__Fireball__heat,X
+// STZ       POOL__kind__Fireball__phase,X
+```
+
+The payload must be a struct literal. `Kind::Fireball(TEMPLATE)` is rejected
+outright — there is no contiguous value to copy from — where a plain payload
+merely fails later as an aggregate assignment.
+
+`POOL[i].kind as u8`, `match`, exhaustiveness, the or-pattern rule and the
+per-kind table idiom are all untouched: they only ever read the tag.
+
+### Methods: the payload struct takes the pool index
+
+An `#[soa]` struct's methods already take `self` as an element index in X
+([soa.md](soa.md#methods-self-is-an-element-index)). For a payload struct that
+index is the **outer pool's** — the same `self` an `impl Kind` or `impl Enemy`
+method receives, because the payload planes are indexed by it:
+
+```rust
+#[soa] struct Fireball { heat: u8, phase: u8 }
+
+impl Hazard for Fireball {
+    fn burn(self) -> u8 { self.heat = self.heat + 1; return self.heat; }
+}
+
+Kind::Fireball(f) => { self.x = f.burn(); }
+```
+
+```asm
+JSR Fireball__burn          ; X already holds self — nothing to set up
+
+Fireball__burn:
+    INC POOL__kind__Fireball__heat,X
+    LDA POOL__kind__Fireball__heat,X
+    RTS
+```
+
+The twelve-instruction pointer build is gone, and so is the `DBR:Y` body.
+Calling a trait method through a payload binding now costs exactly what
+calling an inherent method on the enum costs: one `JSR`.
+
+Static dispatch only, as for any `#[soa]` implementor. `*dyn` over an SoA
+element is unchanged — designed, not built (see [soa.md](soa.md#known-limits)).
+
+### Rules
+
+**All or nothing.** Within one tagged enum, either every payload struct is
+`#[soa]` or none is. Mixing is an error:
+
+```rust
+#[soa] struct Fireball { heat: u8, phase: u8 }
+       struct Barrel   { rolling: u8 }
+
+enum Kind { Barrel(Barrel), Fireball(Fireball) }
+```
+
+```
+error: enum 'Kind' mixes #[soa] and plain payloads: 'Kind::Fireball' is #[soa],
+       'Kind::Barrel' is not
+hint: a tagged enum's data plane has one layout — either an array of union
+      elements or a set of overlaid field planes; mark every payload struct
+      #[soa], or none of them
+```
+
+The two layouts could coexist in the region — a plain payload is one
+element-strided slot, an `#[soa]` one a set of planes, and the region would
+simply be the larger — but then the enum's data plane has two stride
+disciplines, arm bodies pay a different index cost depending on which variant
+they matched, and a struct's `#[soa]`-ness is decided by whether it happens to
+be used elsewhere. One layout per enum keeps the cost model readable from the
+declaration. If one payload has to stay pointer-addressable (it also lives
+outside the pool), keep them all plain and accept the pointer path.
+
+**One storage, chained.** A `#[soa]` struct backs exactly one static. For a
+payload struct that static is *the enum's*: `Fireball` → payload of `Kind` →
+field of `Enemy` → `POOL`. Every link may appear once: a static of `Fireball`
+alongside the enum, or `Fireball` as the payload of a second variant or a
+second enum, is refused:
+
+```
+error: #[soa] struct 'Fireball' is the payload of 'Kind::Fireball' but is also
+       stored by static 'FIRE'
+error: #[soa] struct 'Fireball' is already the payload of 'Kind::Fireball'
+```
+
+**Every `#[soa]` restriction applies to the payload struct.** No locals, no
+parameters, no `&`, no `*self`, no whole-element copy, no `impl Clone`, no
+initializer on the pool. `POOL[i].kind = Kind::Fireball(TEMPLATE)` stays
+rejected — write the fields.
+
+**The receiver is the outer index.** `Fireball::burn` above only makes sense
+called on an element of `POOL`; there is no other Fireball. That coupling is
+what `#[soa]` means, and it is the same coupling `impl Kind` already has.
+
+### Known limits
+
+- **Mixed-width payload fields recompute X on width switches**, as for any
+  `#[soa]` struct. All-`u8` payloads — the common case for entity state — are
+  the intended target.
+- **A payload struct with an array or nested-aggregate field** inherits the
+  `#[soa]` limits for those (`POOL[i].coords[j]` unsupported; 5- and 6-byte
+  fields keep the shift-and-add).
+- **Region size is the max variant, not the sum**, so a variant with many
+  narrow fields and a variant with one wide field cost the same as they do
+  today. There is no per-variant opt-out of the overlay.
+
+### Implementation
+
+- **Validation** — `HIRBuilder._classify_enum_payloads` (`hir/builder.py`),
+  run from `_setup_tagged_enums` once every variant is resolved: the
+  all-or-nothing check, then the payload-struct registry
+  (`_payload_structs`) and the one-storage checks; the result is the value of
+  `_tagged_enums[name]`, whose key pass 1 already added.
+- **Planes** — `_declare_enum_planes` declares the per-variant field-plane
+  symbols in pass 1.5, so bodies can name them; `_pad_enum_payloads` pads the
+  `Enum__Payload` union to the region size; `_enum_plane_pair` appends the
+  overlay entries, which `_expand_soa_statics` synthesizes with
+  `soa_overlay = (region decl, byte offset)` and keeps *out* of the parent's
+  `soa_planes` so nothing counts them twice.
+- **Allocation** — `MemoryAllocator._allocate_overlay` (pass 3 of
+  `allocate_all`) gives each overlay its region's address plus the offset and
+  reserves nothing; `SymbolGenerator.emit_overlay_definitions` emits them as
+  `.DEFINE`s. `MIRBuilder.plane_stride` makes every static array-index site
+  honour a plane's padded `soa_stride` when the plane is reached by name.
+- **Rewrite** — `ExpressionBuilder._soa_payload_access` turns `f.field` and
+  `self.field` into `PLANE[i]` before the type checker; `build_enum_construction`
+  stores per plane; a payload struct's method body runs with `payload_self`
+  set and its `self` bound to the enum's pool.
+
+Tests: `r65/tests/language/types/test_tagged_enums.py` (`TestSoaPayloadPlanes`,
+`TestSoaPayloadRewrite`, and the rejections in `TestDeclaration`) and
+`r65/tests/e2e/test_tagged_enums.py` (`TestSoaPayloadLayout`,
+`TestSoaPayloadAccess`).
+
+---
+
 ## Known limits
 
 - **No initializers.** A tagged enum static cannot carry one — transposing an
@@ -344,8 +638,9 @@ a compare chain on the same cost model as any other match (see
   chain is first-match-wins so it falls through to the last arm, but neither is
   a substitute for initializing.
 - **One static per tagged enum type**, as for `#[soa]`.
-- **A payload must be a declared struct** — not a union, newtype, enum, `#[soa]`
-  struct, primitive, array or pointer.
+- **A payload must be a declared struct** — plain or `#[soa]`, but not mixed
+  within one enum (see [`#[soa]` Payloads](#soa-payloads)) — not a union,
+  newtype, enum, primitive, array or pointer.
 - **No `= n` on a tagged enum's variants.**
 - A payload cannot be copied in from an existing struct
   (`POOL[i] = Shape::C(TEMPLATE)`); write the fields.

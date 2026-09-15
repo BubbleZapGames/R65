@@ -491,6 +491,8 @@ class ExpressionLowerer:
         # Regular array indexing — resolve the array base (a bare static array
         # or an array that is a field of a statically-located struct).
         base_memloc, reuse_base_key = self.builder.resolve_array_base_memloc(expr.array)
+        element_size = self.builder.plane_stride(getattr(base_memloc, 'symbol', None),
+                                                 element_size)
         result = self.ctx.alloc_vreg(element_type, "array_elem")
 
         if isinstance(index_operand, Immediate):
@@ -930,6 +932,7 @@ class ExpressionLowerer:
         if isinstance(cursor, HIRIdentifier):
             array_symbol = cursor.symbol
             self.builder.get_memory_location(array_symbol)
+            element_size = self.builder.plane_stride(array_symbol, element_size)
         else:
             raise MIRLoweringError(
                 f"Address-of array index requires a static array or struct field, "

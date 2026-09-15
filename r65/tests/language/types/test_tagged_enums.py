@@ -84,14 +84,47 @@ class TestDeclaration:
         build_fails("enum Inner { A }\nenum E { X(Inner) }\nfn main() {}",
                     r"is an enum, not a struct")
 
-    def test_soa_payload_rejected(self):
-        """An #[soa] element's bytes are spread across planes, so it cannot sit
-        contiguously inside another plane."""
+    def test_soa_payload_accepted_when_every_payload_is_soa(self):
+        """An #[soa] payload is legal: the data plane becomes a region every
+        variant overlays with one plane per field (docs/enums.md)."""
+        prog = build("#[soa]\nstruct Sp { a: u8 }\n#[soa]\nstruct Sq { b: u8, c: u8 }\n"
+                     "enum E { None, X(Sp), Y(Sq) }\nfn main() {}")
+        assert prog.symbol_table.lookup("E").definition.is_tagged
+
+    def test_mixed_soa_and_plain_payloads_rejected(self):
+        """One data-plane layout per enum: either union elements or overlaid
+        planes, never both."""
+        build_fails(
+            "#[soa]\nstruct Sp { a: u8 }\nstruct Pl { a: u8 }\n"
+            "enum E { X(Sp), Y(Pl) }\nfn main() {}",
+            r"enum 'E' mixes #\[soa\] and plain payloads: 'E::X' is #\[soa\], "
+            r"'E::Y' is not")
+
+    def test_mixed_rejection_names_the_first_of_each_kind(self):
+        build_fails(
+            "#[soa]\nstruct Sp { a: u8 }\nstruct Pl { a: u8 }\n"
+            "enum E { None, A(Pl), B(Pl), C(Sp) }\nfn main() {}",
+            r"'E::C' is #\[soa\], 'E::A' is not")
+
+    def test_soa_payload_struct_with_its_own_static_rejected(self):
+        """A payload struct's one storage is the enum's pool."""
         build_fails(
             "#[soa]\nstruct Sp { a: u8 }\n"
             "#[lowram]\nstatic mut SPOOL: [Sp; 4];\n"
             "enum E { X(Sp) }\nfn main() {}",
-            r"is #\[soa\]")
+            r"'Sp' is the payload of 'E::X' but is also stored by static 'SPOOL'")
+
+    def test_soa_payload_struct_in_two_variants_rejected(self):
+        build_fails(
+            "#[soa]\nstruct Sp { a: u8 }\n"
+            "enum E { X(Sp), Y(Sp) }\nfn main() {}",
+            r"'Sp' is already the payload of 'E::X'")
+
+    def test_soa_payload_struct_in_two_enums_rejected(self):
+        build_fails(
+            "#[soa]\nstruct Sp { a: u8 }\n"
+            "enum E { X(Sp) }\nenum F { Z(Sp) }\nfn main() {}",
+            r"'Sp' is already the payload of 'E::X'")
 
     def test_explicit_discriminant_rejected(self):
         """A tagged enum numbers densely from 0 so the tag indexes a jump table."""
@@ -486,3 +519,160 @@ class TestDiscriminantCast:
                            "test.r65")
         assert "POOL[i] as u8" in exc.value.hint
         assert "match POOL[i]" in exc.value.hint
+
+
+SOA_KINDS = """
+#[soa] struct Barrel   { rolling: u8 }
+#[soa] struct Fireball { heat: u8, phase: u8 }
+#[soa] struct Boss     { stage: u8, cooldown: u8, target: far *u8 }
+enum Kind { None, Barrel(Barrel), Fireball(Fireball), Spring, Boss(Boss) }
+"""
+
+SOA_POOL = SOA_KINDS + """
+#[lowram]
+static mut POOL: [Kind; 8];
+"""
+
+
+class TestSoaPayloadPlanes:
+    """An all-#[soa] enum lays one plane per variant field over its data region.
+
+    See docs/enums.md, "#[soa] Payloads".
+    """
+
+    def test_tag_and_data_planes_stay_in_soa_planes(self):
+        """The overlays are reached by name only, so they are not in the parent's
+        offset-indexed plane list — that would double-count them."""
+        parent = statics(build(SOA_POOL + "fn main() {}"))["POOL"]
+        assert [(name, child.name) for name, _o, _s, child in parent.soa_planes] == [
+            ("tag", "POOL__tag"), ("data", "POOL__data")]
+
+    def test_region_is_sized_by_the_largest_variant_sum_of_strides(self):
+        """Boss is 1 + 1 + far pointer; the pointer plane pads 3 -> 4, so the
+        region is 6 per element, not the packed 5."""
+        decls = statics(build(SOA_POOL + "fn main() {}"))
+        assert decls["POOL__data"].soa_stride == 6
+
+    def test_one_overlay_plane_per_variant_field(self):
+        decls = statics(build(SOA_POOL + "fn main() {}"))
+        overlays = {name: d for name, d in decls.items() if d.soa_overlay is not None}
+        assert sorted(overlays) == [
+            "POOL__Barrel__rolling",
+            "POOL__Boss__cooldown", "POOL__Boss__stage", "POOL__Boss__target",
+            "POOL__Fireball__heat", "POOL__Fireball__phase",
+        ]
+        assert all(region.name == "POOL__data" for region, _ in
+                   (d.soa_overlay for d in overlays.values()))
+
+    def test_every_variant_starts_at_the_region_base(self):
+        """That is the union: Barrel::rolling, Fireball::heat and Boss::stage
+        are the same bytes."""
+        decls = statics(build(SOA_POOL + "fn main() {}"))
+        first = {v: decls[f"POOL__{v}__{f}"].soa_overlay[1]
+                 for v, f in (("Barrel", "rolling"), ("Fireball", "heat"), ("Boss", "stage"))}
+        assert first == {"Barrel": 0, "Fireball": 0, "Boss": 0}
+
+    def test_later_fields_follow_by_count_times_stride(self):
+        decls = statics(build(SOA_POOL + "fn main() {}"))
+        assert decls["POOL__Fireball__phase"].soa_overlay[1] == 8 * 1
+        assert decls["POOL__Boss__cooldown"].soa_overlay[1] == 8 * 1
+        assert decls["POOL__Boss__target"].soa_overlay[1] == 8 * 2
+
+    def test_overlay_plane_keeps_the_padded_stride(self):
+        decls = statics(build(SOA_POOL + "fn main() {}"))
+        assert decls["POOL__Boss__target"].soa_stride == 4
+        assert str(decls["POOL__Boss__target"].var_type) == "[far *u8; 8]"
+
+    def test_overlays_carry_no_explicit_address(self):
+        """The allocator derives an overlay's address from its region."""
+        decls = statics(build(SOA_KINDS + "#[zeropage(0x10)]\nstatic mut POOL: [Kind; 4];\n"
+                              "fn main() {}"))
+        assert decls["POOL__data"].storage_attr.address == 0x14
+        assert decls["POOL__Fireball__phase"].storage_attr.address is None
+        assert decls["POOL__Fireball__phase"].soa_overlay == (decls["POOL__data"], 4)
+
+    def test_as_a_field_of_an_soa_struct(self):
+        decls = statics(build(SOA_KINDS + "#[soa]\nstruct Enemy { kind: Kind, x: u8 }\n"
+                              "#[lowram]\nstatic mut E: [Enemy; 4];\nfn main() {}"))
+        assert decls["E__kind__Fireball__phase"].soa_overlay == (decls["E__kind__data"], 4)
+        assert [n for n, *_ in decls["E"].soa_planes] == ["kind__tag", "kind__data", "x"]
+
+    def test_plain_enum_has_no_overlays(self):
+        decls = statics(build(POOL + "fn main() {}"))
+        assert not any(d.soa_overlay for d in decls.values())
+
+
+class TestSoaPayloadRewrite:
+    """`f.field` and `self.field` become `PLANE[i]`; construction stores per plane."""
+
+    @staticmethod
+    def _function(source, name):
+        from r65.compiler.hir import nodes as hir
+        prog = build(source)
+        for decl in prog.declarations:
+            for fn in (decl.methods if isinstance(decl, hir.HIRImplDecl) else [decl]):
+                if isinstance(fn, hir.HIRFunctionDecl) and fn.name == name:
+                    return fn
+        raise KeyError(name)
+
+    def _body(self, source, name):
+        return self._function(source, name).body
+
+    @staticmethod
+    def _walk(node):
+        """Names of every static indexed anywhere under *node*."""
+        from r65.compiler.hir import nodes as hir
+        seen, done, stack = [], set(), [node]
+        while stack:
+            n = stack.pop()
+            if id(n) in done:
+                continue
+            done.add(id(n))
+            if isinstance(n, hir.HIRArrayIndex) and isinstance(n.array, hir.HIRIdentifier):
+                seen.append(n.array.name)
+            for v in vars(n).values():
+                for x in (v if isinstance(v, list) else [v]):
+                    if isinstance(x, hir.HIRNode):
+                        stack.append(x)
+        return seen
+
+    def test_binding_field_indexes_the_variant_plane(self):
+        body = self._body(SOA_POOL + """
+            fn f(i: u16) { match POOL[i] { Kind::Fireball(fb) => { fb.phase = fb.heat; } _ => {} }; }
+            fn main() {}""", "f")
+        planes = self._walk(body)
+        assert "POOL__Fireball__phase" in planes and "POOL__Fireball__heat" in planes
+        assert "POOL__data" not in planes
+
+    def test_construction_writes_the_tag_then_each_plane(self):
+        body = self._body(SOA_POOL + """
+            fn f() { POOL[2] = Kind::Fireball(Fireball { heat: 1, phase: 2 }); }
+            fn main() {}""", "f")
+        assert self._walk(body).count("POOL__data") == 0
+        assert set(self._walk(body)) >= {"POOL__tag", "POOL__Fireball__heat",
+                                         "POOL__Fireball__phase"}
+
+    def test_method_self_field_indexes_the_plane(self):
+        body = self._body(SOA_POOL + """
+            impl Fireball { fn cool(self) { self.heat = self.heat - 1; } }
+            fn main() {}""", "Fireball__cool")
+        assert set(self._walk(body)) == {"POOL__Fireball__heat"}
+
+    def test_method_self_is_the_pool_index(self):
+        fn = self._function(SOA_POOL + "impl Fireball { fn me(self) -> u16 { return self; } }\n"
+                            "fn main() {}", "Fireball__me")
+        assert str(fn.parameters[0].param_type) == "u16"
+        assert fn.parameters[0].binding.register_name == "X"
+
+    def test_payload_struct_method_needs_the_enum_pool(self):
+        """The hint names the enum's pool — a static of the struct itself would
+        be rejected as a second storage."""
+        with pytest.raises(HIRError, match=r"#\[soa\] struct 'Fireball' has no static") as info:
+            build(SOA_KINDS + "impl Fireball { fn cool(self) { self.heat = 0; } }\n"
+                  "fn main() {}")
+        assert "static mut POOL: [Kind; 16]" in info.value.hint
+
+    def test_copying_a_payload_in_is_rejected(self):
+        build_fails(SOA_POOL + "#[lowram]\nstatic mut T: u8;\n"
+                    "fn f() { POOL[0] = Kind::Barrel(T); }\nfn main() {}",
+                    r"payload of 'Kind::Barrel' must be a struct literal")

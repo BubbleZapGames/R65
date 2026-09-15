@@ -27,6 +27,12 @@ class AllocationInfo:
     storage_type: str  # 'zeropage', 'ram', 'rom', 'hw'
     is_explicit: bool  # True if user-specified address
     source_info: Optional[str] = None  # Source file:line for comments
+    # True for a plane laid over another allocation's bytes rather than
+    # reserving its own — an `#[soa]` payload's field plane inside its enum's
+    # data region. It shares the region's storage type for addressing, but is
+    # emitted as a bare `.DEFINE` so it never lands in a `.RAMSECTION` next to
+    # the bytes it overlays.
+    is_overlay: bool = False
 
 
 class MemoryAllocator:
@@ -502,6 +508,7 @@ class MemoryAllocator:
         # Separate explicit and auto declarations
         explicit_decls = []
         auto_decls = []
+        overlay_decls = []
 
         for decl in static_decls:
             if getattr(decl, 'is_extern', False):
@@ -512,6 +519,11 @@ class MemoryAllocator:
                 # #[soa] parent: the data lives in its field planes, which are
                 # separate decls in this same list. Allocating the parent too
                 # would reserve the bytes twice.
+                continue
+            if getattr(decl, 'soa_overlay', None) is not None:
+                # A plane over another plane's bytes: placed once the region it
+                # overlays has an address, below.
+                overlay_decls.append(decl)
                 continue
             if decl.storage_attr and decl.storage_attr.address is not None:
                 explicit_decls.append(decl)
@@ -525,6 +537,45 @@ class MemoryAllocator:
         # Pass 2: Auto-allocate remaining variables
         for decl in auto_decls:
             self._allocate_static(decl, explicit_addr=None)
+
+        # Pass 3: Overlays take their region's address plus an offset
+        for decl in overlay_decls:
+            self._allocate_overlay(decl)
+
+    def _allocate_overlay(self, static_decl: HIRStaticDecl) -> AllocationInfo:
+        """Place a plane over the bytes of an already-allocated region.
+
+        `soa_overlay` is `(region_decl, byte_offset)`. The plane reserves
+        nothing — the region already did — and inherits the region's storage
+        type so every addressing decision downstream treats it as the same kind
+        of memory. It must fit: a variant's planes never extend past the region,
+        which is sized by the largest variant, so a miss here is a compiler bug.
+        """
+        region_decl, offset = static_decl.soa_overlay
+        region = self.allocations.get(region_decl.symbol.name)
+        if region is None:
+            raise MemoryAllocationError(
+                f"overlay plane '{static_decl.symbol.name}' names region "
+                f"'{region_decl.symbol.name}', which was never allocated",
+                source_loc=None)
+        size = self._decl_size(static_decl)
+        if offset + size > region.size:
+            raise MemoryAllocationError(
+                f"overlay plane '{static_decl.symbol.name}' ({size} bytes at "
+                f"+{offset}) does not fit region '{region.symbol.name}' "
+                f"({region.size} bytes)",
+                source_loc=None)
+        alloc = AllocationInfo(
+            symbol=static_decl.symbol,
+            address=region.address + offset,
+            size=size,
+            storage_type=region.storage_type,
+            is_explicit=region.is_explicit,
+            source_info=None,
+            is_overlay=True,
+        )
+        self.allocations[static_decl.symbol.name] = alloc
+        return alloc
 
     def _allocate_static(self, static_decl: HIRStaticDecl, explicit_addr: Optional[int]):
         """
@@ -593,7 +644,12 @@ class MemoryAllocator:
         Returns:
             List of AllocationInfo objects
         """
-        return [a for a in self.allocations.values() if a.storage_type == storage_type]
+        return [a for a in self.allocations.values()
+                if a.storage_type == storage_type and not a.is_overlay]
+
+    def get_overlay_allocations(self) -> list[AllocationInfo]:
+        """Planes laid over other allocations, emitted as bare defines."""
+        return [a for a in self.allocations.values() if a.is_overlay]
 
     # ========================================================================
     # Address Query Utilities

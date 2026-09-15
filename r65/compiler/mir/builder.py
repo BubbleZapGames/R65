@@ -2036,6 +2036,20 @@ class MIRBuilder:
         )
 
     @staticmethod
+    def plane_stride(symbol, element_size: int) -> int:
+        """Bytes per element of the static *symbol*, honouring a padded plane.
+
+        An `#[soa]` field plane pads a 3- or 7-byte element to 4 or 8
+        (`soa_stride`), so its array type under-reports the stride. A plane
+        reached through its parent gets the stride from `soa_planes`; one
+        reached by name — an `#[soa]` payload's overlay plane, which the HIR
+        rewrite indexes directly — has only the decl to say so.
+        """
+        definition = getattr(symbol, 'definition', None) if symbol else None
+        stride = getattr(definition, 'soa_stride', None)
+        return stride if stride is not None else element_size
+
+    @staticmethod
     def _soa_plane_for(base_memloc, field_offset):
         """The `(name, aos_offset, stride, child)` plane owning *field_offset*.
 
@@ -2320,7 +2334,8 @@ class MIRBuilder:
         # statically-located struct (STRUCT.array_field[i].field).
         base_memloc, reuse_base_key = self.resolve_array_base_memloc(array_index_expr.array)
         struct_type = array_index_expr.expr_type  # element (struct) type of the array
-        struct_size = self._get_type_size(struct_type)
+        struct_size = self.plane_stride(getattr(base_memloc, 'symbol', None),
+                                        self._get_type_size(struct_type))
 
         # #[soa]: redirect to the plane that owns this field, and scale by the
         # field rather than the element. Must run before anything reads

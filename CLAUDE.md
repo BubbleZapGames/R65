@@ -227,6 +227,12 @@ than in a `match self` per column:
 let speed: u16 = ROWS[POOL[i] as u16].speed;
 ```
 
+Payload structs may themselves be `#[soa]` — all of them or none, never
+mixed. Each variant's fields then become planes laid over the enum's data
+region, so an arm body indexes them by the raw pool index, and the payload
+struct's own methods and trait impls take that index as `self`: `f.burn()`
+from a match arm is one `JSR` with X passed through, no pointer.
+
 **Restrictions**: a payload names a declared struct (no inline fields, no tuple
 variants); a tagged enum backs exactly one `static mut` and takes no
 initializer, so write an element before matching it; it may be a field of an

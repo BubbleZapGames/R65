@@ -52,8 +52,66 @@ class ExpressionBuilder:
         # `definition` instead would depend on that order, because it is still
         # the AST node until `_build_enum` runs.
         self.enum_storage = {}    # enum name -> (pool Symbol, source_loc, prefix)
-        self.tagged_enums = set()  # names of tagged enums
+        self.tagged_enums = {}    # tagged enum name -> all payloads are #[soa]
         self.enum_payloads = {}   # enum name -> variant name -> StructTypeInfo
+        self.payload_structs = {} # #[soa] struct name -> (enum name, variant name)
+        # Set around the body of a method on an `#[soa]` payload struct:
+        # `(enum name, variant name)`. `self` is then the pool index, and
+        # `self.field` reaches the variant's plane at that index.
+        self.payload_self = None
+
+    def _payload_field_names(self, enum_name: str, variant_name: str):
+        """The field names of *variant_name*'s payload struct, AST or HIR."""
+        payload_type = self.enum_payloads[enum_name][variant_name]
+        symbol = self.symbol_table.lookup(payload_type.name)
+        definition = getattr(symbol, 'definition', None)
+        return {f.name for f in getattr(definition, 'fields', ())}
+
+    def _soa_payload_plane(self, enum_name: str, variant_name: str,
+                           field_name: str, index_ast, loc):
+        """`POOL__kind__Variant__field[index]` for an all-`#[soa]` enum.
+
+        The variant's field planes are declared in pass 1.5 alongside tag and
+        data, so this is an ordinary indexed static by the time anything
+        downstream sees it — and it strides by the field, not the payload.
+        """
+        return self._enum_plane_access(
+            enum_name, f"{variant_name}__{field_name}", index_ast, loc)
+
+    def _soa_payload_access(self, expr: ast.FieldAccess, src_loc):
+        """`f.field` on an `#[soa]` payload -> the variant's plane, else None.
+
+        Two bases reach here: a payload binding `f` from a `match` arm, and
+        `self` inside a method on the payload struct. Both are the pool index
+        in disguise. A name that is not a field — a method — is left to the
+        ordinary path, which builds the `data[i].Variant.method` shape the
+        call validator already reads the index out of.
+        """
+        base = expr.base
+        if not isinstance(base, ast.Identifier):
+            return None
+
+        if base.name == 'self' and self.payload_self is not None:
+            enum_name, variant_name = self.payload_self
+            if expr.field not in self._payload_field_names(enum_name, variant_name):
+                return None
+            symbol = self.symbol_table.lookup('self')
+            index = lambda loc: hir.HIRIdentifier(name='self', symbol=symbol,
+                                                  source_loc=loc)
+            return self._soa_payload_plane(enum_name, variant_name, expr.field,
+                                           index, src_loc)
+
+        symbol = self.symbol_table.lookup(base.name)
+        alias = getattr(symbol, 'enum_payload_alias', None)
+        if alias is None:
+            return None
+        enum_name, index_ast, variant_name = alias
+        if not self.tagged_enums.get(enum_name, False):
+            return None
+        if expr.field not in self._payload_field_names(enum_name, variant_name):
+            return None
+        return self._soa_payload_plane(enum_name, variant_name, expr.field,
+                                       index_ast, src_loc)
 
     def _soa_rewrite_base(self, base, src_loc):
         """Turn an `#[soa]` field-access base into an explicit element index.
@@ -71,6 +129,21 @@ class ExpressionBuilder:
         """
         if not isinstance(base, hir.HIRIdentifier):
             return base
+
+        # `self` in a method on an #[soa] payload struct: the receiver of
+        # `self.m()` takes the same `data[self].Variant` shape a payload
+        # binding expands to, so the call validator finds the index the same
+        # way for both.
+        if self.payload_self is not None and base.name == 'self':
+            enum_name, variant_name = self.payload_self
+            symbol = base.symbol
+            index = lambda loc: hir.HIRIdentifier(name='self', symbol=symbol,
+                                                  source_loc=loc)
+            return hir.HIRFieldAccess(
+                base=self._enum_plane_access(enum_name, 'data', index, src_loc),
+                field_name=variant_name,
+                source_loc=src_loc,
+            )
 
         # `self` in an #[soa] method is the element index into the pool.
         pool = self.soa_self_pool
@@ -473,6 +546,10 @@ class ExpressionBuilder:
             except HIRError:
                 pass
 
+            plane = self._soa_payload_access(expr, src_loc)
+            if plane is not None:
+                return plane
+
             base = self.build_expression(expr.base)
 
             # Check for STATUS.Flag pattern
@@ -662,10 +739,13 @@ class ExpressionBuilder:
         """
         pool_symbol, _loc, prefix = self.enum_storage[enum_name]
         plane_symbol = self.symbol_table.lookup(f"{pool_symbol.name}__{prefix}{plane}")
+        # The index is an AST node to rebuild per use, or — for `self` in a
+        # payload struct's method, which has no AST — a factory of fresh HIR.
+        index = index_ast(loc) if callable(index_ast) else self.build_expression(index_ast)
         return hir.HIRArrayIndex(
             array=hir.HIRIdentifier(name=plane_symbol.name, symbol=plane_symbol,
                                     source_loc=loc),
-            index=self.build_expression(index_ast),
+            index=index,
             source_loc=loc,
         )
 
@@ -747,7 +827,24 @@ class ExpressionBuilder:
                 source_loc=loc),
             source_loc=loc)]
 
-        if payload is not None:
+        if payload is not None and self.tagged_enums.get(enum_name, False):
+            # No union slot to write into: each top-level field goes to its
+            # own plane at the raw index. Anything but a literal would need a
+            # contiguous source to copy from, which an #[soa] payload never has.
+            if not isinstance(payload, ast.StructLiteralExpr):
+                raise HIRError(
+                    f"payload of '{enum_name}::{variant_name}' must be a struct "
+                    f"literal",
+                    source_loc=loc,
+                    hint="an #[soa] payload is written one field per plane, so "
+                         "there is no whole value to copy in; write "
+                         f"`{enum_name}::{variant_name}({payload_type.name} {{ ... }})`",
+                )
+            for field in payload.fields:
+                target = self._soa_payload_plane(enum_name, variant_name,
+                                                 field.name, index_ast, loc)
+                statements.extend(self._store_payload(target, field.value, loc))
+        elif payload is not None:
             slot = hir.HIRFieldAccess(
                 base=self._enum_plane_access(enum_name, 'data', index_ast, loc),
                 field_name=variant_name,

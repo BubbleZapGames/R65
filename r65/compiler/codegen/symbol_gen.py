@@ -70,6 +70,36 @@ class SymbolDefinitionGenerator:
         self.emitter.emit_blank_line()
 
     # ========================================================================
+    # Overlay Definitions
+    # ========================================================================
+
+    def emit_overlay_definitions(self):
+        """
+        Emit planes that overlay another allocation's bytes.
+
+        An `#[soa]` payload's field planes sit inside its enum's data region
+        (docs/enums.md, "#[soa] Payloads"). They are always `.DEFINE`d — even in
+        main RAM, where the region itself is a `.RAMSECTION` entry — because a
+        `.RAMSECTION` lists bytes consecutively and cannot express two names for
+        the same ones.
+
+        Generated:
+            ; ============================================================================
+            ; Overlay Planes
+            ; ============================================================================
+            .DEFINE POOL__kind__Fireball__heat $0210  ; overlays POOL__kind__data+0
+        """
+        allocations = self.allocator.get_overlay_allocations()
+        if not allocations:
+            return
+        self.emitter.emit_section_header("Overlay Planes")
+        allocations.sort(key=lambda a: (a.address, a.symbol.name))
+        for alloc in allocations:
+            self.emitter.emit_define(alloc.symbol.name, alloc.address,
+                                     f"{alloc.size} bytes, overlay")
+        self.emitter.emit_blank_line()
+
+    # ========================================================================
     # Direct Page (Zero-Page) Definitions
     # ========================================================================
 
@@ -393,6 +423,7 @@ class SymbolDefinitionGenerator:
         self.emit_lowram_definitions()
         self.emit_hw_definitions()
         self.emit_ram_definitions()
+        self.emit_overlay_definitions()
 
         # ROM data with initializers
         self.emit_rom_data()

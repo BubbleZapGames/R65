@@ -353,3 +353,152 @@ class TestNestedInSoaStruct:
             }
         ''', ExpectedState(memory={0x7E0040: [0x44, 0xFF]}))
         assert result.success, f"Failures: {result.failures}"
+
+
+SOA_PAYLOADS = '''
+    #[soa] struct Barrel   { rolling: u8 }
+    #[soa] struct Fireball { heat: u8, phase: u8 }
+    #[soa] struct Boss     { stage: u8, cooldown: u8, target: far *u8 }
+    enum Kind { None, Barrel(Barrel), Fireball(Fireball), Spring, Boss(Boss) }
+
+    #[soa]
+    struct Enemy { kind: Kind, x: u8 }
+
+    #[zeropage(0x10)]
+    static mut POOL: [Enemy; 4];
+'''
+# Explicit layout, 4 elements. Tag plane at 0x10. The data region starts at
+# 0x14 and is sized by Boss: 1 + 1 + 4 (far pointer padded to a stride of 4)
+# = 6 bytes per element, 24 bytes, to 0x2B. `x` follows at 0x2C.
+#
+#   Barrel::rolling    0x14   (region + 0)
+#   Fireball::heat     0x14   (region + 0)
+#   Fireball::phase    0x18   (region + 4*1)
+#   Boss::stage        0x14
+#   Boss::cooldown     0x18
+#   Boss::target       0x1C   (region + 4*2), stride 4
+
+
+class TestSoaPayloadLayout:
+    """Every variant's field planes overlay the data region from its base."""
+
+    def test_planes_overlay_one_region(self, e2e):
+        result = e2e.run(SOA_PAYLOADS + '''
+            #[entry]
+            fn main() {
+                POOL[0].kind = Kind::Fireball(Fireball { heat: 0xA0, phase: 0xA1 });
+                POOL[1].kind = Kind::Boss(Boss { stage: 0xB0, cooldown: 0xB1, target: 0x7E1234 as far *u8 });
+                POOL[2].kind = Kind::Barrel(Barrel { rolling: 0xC0 });
+                POOL[3].kind = Kind::Spring;
+                POOL[3].x = 0xD3;
+            }
+        ''', ExpectedState(memory={
+            0x7E0010: [0x02, 0x04, 0x01, 0x03],          # tags
+            0x7E0014: [0xA0, 0xB0, 0xC0],                # plane 0: heat / stage / rolling
+            0x7E0018: [0xA1, 0xB1],                      # plane 1: phase / cooldown
+            0x7E0020: [0x34, 0x12, 0x7E],                # Boss::target[1] at 0x1C + 4
+            0x7E002F: [0xD3],                            # POOL__x[3]
+        }))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_rewriting_a_variant_reuses_the_bytes(self, e2e):
+        """Morphing element 0 from Fireball to Boss lands the new payload on the
+        same bytes — the region is a union, transposed."""
+        result = e2e.run(SOA_PAYLOADS + '''
+            #[entry]
+            fn main() {
+                POOL[0].kind = Kind::Fireball(Fireball { heat: 0xA0, phase: 0xA1 });
+                POOL[0].kind = Kind::Boss(Boss { stage: 0x55, cooldown: 0x66, target: 0 as far *u8 });
+            }
+        ''', ExpectedState(memory={
+            0x7E0010: [0x04],
+            0x7E0014: [0x55],
+            0x7E0018: [0x66],
+        }))
+        assert result.success, f"Failures: {result.failures}"
+
+
+class TestSoaPayloadAccess:
+    """A binding and a payload method both index the planes by the pool index."""
+
+    def test_binding_reads_and_writes_the_planes(self, e2e):
+        result = e2e.run(SOA_PAYLOADS + '''
+            #[zeropage(0x40)]
+            static mut OUT: u8;
+
+            fn tick(i: u16) {
+                match POOL[i].kind {
+                    Kind::Fireball(f) => { f.phase = f.phase + 1; OUT = f.heat; }
+                    Kind::Boss(b)     => { b.cooldown = b.cooldown - 1; }
+                    _ => {}
+                };
+            }
+
+            #[entry]
+            fn main() {
+                POOL[1].kind = Kind::Fireball(Fireball { heat: 0x77, phase: 0x10 });
+                POOL[2].kind = Kind::Boss(Boss { stage: 1, cooldown: 0x20, target: 0 as far *u8 });
+                tick(1);
+                tick(2);
+            }
+        ''', ExpectedState(memory={
+            0x7E0019: [0x11],    # Fireball::phase[1]
+            0x7E001A: [0x1F],    # Boss::cooldown[2]
+            0x7E0040: [0x77],
+        }))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_payload_method_and_trait_take_the_pool_index(self, e2e):
+        result = e2e.run(SOA_PAYLOADS + '''
+            trait Hazard { fn burn(*self) -> u8; }
+            impl Hazard for Fireball {
+                fn burn(self) -> u8 { self.heat = self.heat + 1; return self.heat; }
+            }
+            impl Fireball {
+                fn flicker(self) { self.phase = self.phase + 2; self.burn(); }
+            }
+
+            #[zeropage(0x40)]
+            static mut OUT: u8;
+
+            #[entry]
+            fn main() {
+                POOL[2].kind = Kind::Fireball(Fireball { heat: 0x30, phase: 0x40 });
+                match POOL[2].kind {
+                    Kind::Fireball(f) => { OUT = f.burn(); f.flicker(); }
+                    _ => {}
+                };
+            }
+        ''', ExpectedState(memory={
+            0x7E0016: [0x32],    # heat[2]: two burns
+            0x7E001A: [0x42],    # phase[2]: one flicker
+            0x7E0040: [0x31],    # first burn's return
+        }))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_standalone_pool(self, e2e):
+        """The enum as the pool's own element, not a field of an #[soa] struct."""
+        result = e2e.run('''
+            #[soa] struct P { a: u8, b: u8 }
+            #[soa] struct Q { c: u8 }
+            enum K { Z, P(P), Q(Q) }
+
+            #[zeropage(0x10)]
+            static mut KS: [K; 4];
+
+            impl P { fn bump(self) { self.b = self.b + self.a; } }
+
+            #[entry]
+            fn main() {
+                KS[3] = K::P(P { a: 2, b: 5 });
+                match KS[3] {
+                    K::P(p) => { p.bump(); }
+                    _ => {}
+                };
+            }
+        ''', ExpectedState(memory={
+            0x7E0013: [0x01],    # tag[3]: K::P
+            0x7E0017: [0x02],    # P::a[3] = region 0x14 + 3
+            0x7E001B: [0x07],    # P::b[3] = region 0x14 + 4 + 3
+        }))
+        assert result.success, f"Failures: {result.failures}"

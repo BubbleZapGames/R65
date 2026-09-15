@@ -267,6 +267,7 @@ late allocation failure naming a synthesized plane.
 | `fn f(e: Enemy)` / `fn f(e: *Enemy)` | Nothing to pass or point at | Take the index |
 | `struct W { lead: Enemy }` | Would need a plane inside an aggregate | Store the index |
 | — | *but* a field may be a **tagged enum**: it contributes its own tag and payload planes (`POOL__kind__tag`, `POOL__kind__data`) — see [enums.md](enums.md) | — |
+| — | *and* an `#[soa]` struct may be a **tagged enum's payload**, provided every payload of that enum is `#[soa]`: its fields become planes over the enum's data region and its methods take the pool index — see [enums.md, `#[soa]` Payloads](enums.md#soa-payloads) | — |
 | `E = POOL[i]` (whole element) | Aggregate by value | Copy the fields |
 | `POOL.clone()` | Needs one contiguous block | Copy per field |
 | `impl Clone for Enemy {}` | Clone means a contiguous byte copy | Copy the fields |
@@ -557,7 +558,9 @@ Consequences, in order of importance:
   and the callee needs X for the index. Static-dispatch traits work today
   and cost nothing; this only affects `*dyn`.
 - **One pool per type.** Two entity pools that would naturally share a
-  struct must either be merged or declared as two structs.
+  struct must either be merged or declared as two structs. An `#[soa]` struct
+  that is a tagged enum's payload has no pool of its own at all — the enum's
+  is its one storage.
 
 ---
 
