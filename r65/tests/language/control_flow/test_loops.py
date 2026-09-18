@@ -145,3 +145,23 @@ class TestForLoops:
         # Right side is literal 1
         assert isinstance(end_expr.right, hir.HIRIntegerLiteral)
         assert end_expr.right.value == 1
+
+    def test_for_loop_const_bound_folds_to_literal(self):
+        """`0..N` with a const N is the same loop as `0..8`: the bound is a
+        literal, so the u8 counter is compared against an immediate. Left as
+        a u16 identifier it would need a widening TypeConvert on the counter,
+        which is what keeps a loop counter out of X/Y."""
+        from r65.compiler.hir import nodes as hir
+        hir_prog = build_hir("""
+            const N: u16 = 8;
+            fn test() {
+                for i in 0..N {
+                    A = i as u8;
+                }
+            }
+        """)
+        block = hir_prog.functions[0].body.statements[0]
+        let_stmt, while_stmt = block.statements[0], block.statements[1]
+        assert let_stmt.var_type.name == 'u8'
+        assert isinstance(while_stmt.condition.right, hir.HIRIntegerLiteral)
+        assert while_stmt.condition.right.value == 8

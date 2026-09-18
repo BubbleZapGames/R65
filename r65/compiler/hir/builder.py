@@ -3931,13 +3931,19 @@ class HIRBuilder:
         # Enter a new scope for the for-loop block
         self.symbol_table.enter_scope(ScopeKind.BLOCK)
 
-        # Build start and end expressions
-        start_expr = self._build_expression(for_stmt.start)
-        end_expr = self._build_expression(for_stmt.end)
+        # Build start and end expressions. A bound that const-evaluates is
+        # folded to a literal here, so that `0..N` with `const N: u16 = 8`
+        # compares the u8 counter against an immediate rather than against a
+        # u16 identifier - the widening that would otherwise be inserted is
+        # a TypeConvert use of the counter, which disqualifies it from the
+        # X/Y loop promotion a literal `0..8` gets.
+        start_expr = self._fold_for_bound(for_stmt.start)
+        end_expr = self._fold_for_bound(for_stmt.end)
 
         # Determine loop variable type from range bounds
         # Try to const-evaluate both bounds to pick appropriate type
         loop_var_type = self._infer_for_loop_type(for_stmt.start, for_stmt.end, src_loc, for_stmt.inclusive)
+
 
         # Create symbol for loop variable (mutable, type inferred from range)
         loop_var_symbol = Symbol(
@@ -4076,6 +4082,13 @@ class HIRBuilder:
 
         # Default to u16 if nothing fits
         return BasicTypeInfo('u16')
+
+    def _fold_for_bound(self, expr: ast.Expression) -> hir.HIRExpression:
+        """Build a `for` range bound, as a literal when it is a constant."""
+        value = self._try_const_eval(expr)
+        if value is not None and not isinstance(expr, ast.IntegerLiteral):
+            return hir.HIRIntegerLiteral(value=value, source_loc=expr.source_loc)
+        return self._build_expression(expr)
 
     def _try_const_eval(self, expr: ast.Expression) -> Optional[int]:
         """Try to const-evaluate an expression, returning None if not possible."""

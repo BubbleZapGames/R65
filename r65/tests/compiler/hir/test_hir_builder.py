@@ -813,10 +813,14 @@ fn test() {
         func = hir.declarations[-1]
         block = func.body.statements[0]
         assert isinstance(block, HIRBlock)
-        # Let statement has START as initializer
+        # A constant bound is folded to its value, so the counter is
+        # compared against an immediate rather than a typed identifier.
         let_stmt = block.statements[0]
-        assert isinstance(let_stmt.initializer, HIRIdentifier)
-        assert let_stmt.initializer.name == "START"
+        assert isinstance(let_stmt.initializer, HIRIntegerLiteral)
+        assert let_stmt.initializer.value == 5
+        while_stmt = block.statements[1]
+        assert isinstance(while_stmt.condition.right, HIRIntegerLiteral)
+        assert while_stmt.condition.right.value == 15
 
     def test_for_loop_body_contains_increment(self):
         """Test for loop body ends with increment statement."""
