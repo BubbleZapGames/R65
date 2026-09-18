@@ -390,16 +390,12 @@ def format_error(message: str, source_loc: Optional[SourceLocation] = None,
         # Location pointer
         lines.append(f"  --> {source_loc}")
 
-        # Get the source line
+        # Get the source line. The location's own file comes first:
+        # source_text is the top-level file only, and an error inside an
+        # include!()d file would otherwise show that file's line N under the
+        # included file's line-N header.
         source_line = source_loc.source_line
-        if source_line is None and source_text is not None:
-            # Extract line from full source
-            source_lines = source_text.splitlines()
-            if 0 < source_loc.line <= len(source_lines):
-                source_line = source_lines[source_loc.line - 1]
         if source_line is None and source_loc.file_path:
-            # Fallback: read the file directly. Needed when the error is in
-            # an included file but source_text is the top-level file only.
             try:
                 with open(source_loc.file_path, 'r') as f:
                     file_lines = f.read().splitlines()
@@ -407,6 +403,11 @@ def format_error(message: str, source_loc: Optional[SourceLocation] = None,
                     source_line = file_lines[source_loc.line - 1]
             except OSError:
                 pass
+        if source_line is None and source_text is not None:
+            # In-memory source (`<input>` in tests, or a file that has gone).
+            source_lines = source_text.splitlines()
+            if 0 < source_loc.line <= len(source_lines):
+                source_line = source_lines[source_loc.line - 1]
 
         if source_line is not None:
             # Calculate the width needed for line numbers

@@ -265,3 +265,20 @@ include!("missing.r65")
         error = exc_info.value
         assert error.source_loc is not None
         assert "myfile.r65" in str(error.source_loc)
+
+    def test_snippet_comes_from_the_included_file(self, tmp_path):
+        """`format_error` is handed the top-level source; an error located in
+        an included file must still show *that* file's line, not the
+        top-level file's line of the same number."""
+        from r65.compiler.errors import SourceLocation, format_error
+
+        inc = tmp_path / "inc.r65"
+        inc.write_text("a\nb\nstatic POOL: [E; 2];\n")
+        top_source = "x\ny\nfn start() { main(); }\n"
+
+        loc = SourceLocation(file_path=str(inc), line=3, column=1,
+                             included_from=SourceLocation(
+                                 file_path=str(tmp_path / "top.r65"), line=1, column=1))
+        out = format_error("boom", source_loc=loc, source_text=top_source)
+        assert "static POOL: [E; 2];" in out
+        assert "fn start()" not in out
