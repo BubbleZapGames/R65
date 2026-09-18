@@ -247,7 +247,8 @@ class TestSoaSelfRegisterConflict:
 
 
 class TestSoaStorageMustBeMutable:
-    """An immutable `#[soa]` static could only ever be undefined ROM bytes."""
+    """An immutable `#[soa]` static with nothing in it could only ever be
+    undefined ROM bytes; with an initializer it is a ROM table per plane."""
 
     def test_immutable_soa_static_is_rejected(self):
         msg = build_fails("""
@@ -261,3 +262,103 @@ class TestSoaStorageMustBeMutable:
             #[soa] struct E { hp: u8 }
             #[lowram] static mut POOL: [E; 4];
         """)
+
+    def test_immutable_soa_static_with_initializer_is_accepted(self):
+        build_hir("""
+            #[soa] struct E { hp: u8 }
+            static POOL: [E; 2] = [E { hp: 1 }, E { hp: 2 }];
+        """)
+
+
+class TestSoaInitializer:
+    """An array literal on an `#[soa]` static transposes into one literal per
+    plane, so the ordinary array-literal path emits a table (or a block copy)
+    per field. The struct-literal checks it would otherwise miss run here."""
+
+    def _planes(self, source):
+        program = build_hir(source)
+        return {d.name: d for d in program.declarations
+                if getattr(d, 'is_synthetic', False)}
+
+    TABLE = """
+        #[soa] struct Area { id: u8, exits: u16, flags: u8 }
+        static AREAS: [Area; 3] = [
+            Area { id: 0, exits: 3, flags: 0x01 },
+            Area { id: 1, exits: 1, flags: 0x00 },
+            Area { id: 2, exits: 2, flags: 0x04 },
+        ];
+    """
+
+    def test_each_plane_gets_its_column(self):
+        planes = self._planes(self.TABLE)
+        ids = planes['AREAS__id'].initializer
+        assert [e.value for e in ids.elements] == [0, 1, 2]
+        exits = planes['AREAS__exits'].initializer
+        assert [e.value for e in exits.elements] == [3, 1, 2]
+        flags = planes['AREAS__flags'].initializer
+        assert [e.value for e in flags.elements] == [1, 0, 4]
+
+    def test_parent_keeps_no_initializer(self):
+        """The parent is allocated no bytes, so nothing may initialize it."""
+        program = build_hir(self.TABLE)
+        parent = next(d for d in program.declarations
+                      if getattr(d, 'name', None) == 'AREAS')
+        assert parent.initializer is None
+
+    def test_planes_inherit_rom_storage(self):
+        planes = self._planes(self.TABLE)
+        assert all(not p.is_mutable and p.storage_attr is None
+                   for p in planes.values())
+
+    def test_mutable_static_may_carry_one_too(self):
+        planes = self._planes("""
+            #[soa] struct E { hp: u8, x: u16 }
+            #[lowram] static mut POOL: [E; 2] = [E { hp: 1, x: 10 }, E { hp: 2, x: 20 }];
+        """)
+        assert [e.value for e in planes['POOL__x'].initializer.elements] == [10, 20]
+        assert all(p.is_mutable for p in planes.values())
+
+    def test_element_count_must_match(self):
+        msg = build_fails("""
+            #[soa] struct E { hp: u8 }
+            static POOL: [E; 3] = [E { hp: 1 }, E { hp: 2 }];
+        """)
+        assert "has 3 element(s) but its initializer has 2" in msg
+
+    def test_fill_is_rejected(self):
+        """A struct fill `[E { .. }; N]` does not parse; a scalar fill does,
+        and has no per-plane form."""
+        msg = build_fails("""
+            #[soa] struct E { hp: u8 }
+            static POOL: [E; 3] = [0; 3];
+        """)
+        assert "must be initialized with an array literal" in msg
+
+    def test_element_must_be_the_element_struct(self):
+        msg = build_fails("""
+            struct Other { hp: u8 }
+            #[soa] struct E { hp: u8 }
+            static POOL: [E; 1] = [Other { hp: 1 }];
+        """)
+        assert "element 0" in msg and "`E { .. }` literal" in msg
+
+    def test_unknown_field(self):
+        msg = build_fails("""
+            #[soa] struct E { hp: u8 }
+            static POOL: [E; 1] = [E { hp: 1, mp: 2 }];
+        """)
+        assert "Unknown field: E.mp" in msg
+
+    def test_missing_field(self):
+        msg = build_fails("""
+            #[soa] struct E { hp: u8, mp: u8 }
+            static POOL: [E; 1] = [E { hp: 1 }];
+        """)
+        assert "missing field(s) in struct literal: mp" in msg
+
+    def test_duplicate_field(self):
+        msg = build_fails("""
+            #[soa] struct E { hp: u8 }
+            static POOL: [E; 1] = [E { hp: 1, hp: 2 }];
+        """)
+        assert "field 'hp' initialized multiple times" in msg

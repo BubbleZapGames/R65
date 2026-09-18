@@ -96,8 +96,10 @@ A `#[soa]` struct backs **exactly one** static — that is what lets methods
 hard-code their plane addresses. A single instance (`static mut PLAYER:
 Player;`) desugars to a one-element array.
 
-**Restrictions**: must be `static mut`; no `union`, no newtype, no `#[hw]`,
-no `extern`, and no initializer yet. An element has no contiguous base, so
+**Restrictions**: no `union`, no newtype, no `#[hw]`, no `extern`; an
+initializer must be a full array literal (no fill), and an immutable static
+must have one — it is then one ROM table per field, the shape for a per-kind
+constant table indexed by a tag. An element has no contiguous base, so
 `&arr[i]`, locals and parameters of the type, whole-element copies, `impl
 Clone`, and `*dyn` over an element are rejected. Static-dispatch trait
 impls work. Index a pool with a `u16` — a `u8` index needs an explicit
@@ -147,7 +149,7 @@ asm!("PHP","WAI");        // Multiple instructions
 
 ### Macros
 
-Simplified `macro_rules!` syntax with 6 fragment types (`expr`, `ident`, `literal`, `ty`, `reg`, `tt`) and repetition (`$(...),*`). Single pattern per macro, no `=>` syntax, no hygiene.
+Simplified `macro_rules!` syntax with 6 fragment types (`expr`, `ident`, `literal`, `ty`, `reg`, `tt`) and repetition (`$(...),*`). A macro may have several `(pattern) => { body };` arms — the first arm matching on arity and fragment type wins — or use the single-arm shorthand `macro_rules! name(params) { body }`. Macros in an `impl` block are invoked as `value.name!()` or `Type::name!()`. No hygiene.
 
 ```rust
 macro_rules! inc_twice($reg:reg) { $reg++; $reg++; }
@@ -242,7 +244,7 @@ offset 0); no `= n` on a tagged enum's variants.
 
 *(See [docs/enums.md](docs/enums.md) for the complete documentation)*
 
-**Structs**: Packed (no padding), fields in declaration order. No methods (use free functions).
+**Structs**: Packed (no padding), fields in declaration order. Methods, associated functions and constants go in `impl` blocks (see *Cross-Bank Function Calls* for the far-by-default rule).
 
 ```rust
 struct Player { x: u8, y: u8, health: u16 }  // 4 bytes total
@@ -464,7 +466,7 @@ Vectors: `nmi`, `irq`, `brk`, `cop`, `abort`. Default `preserve=true`.
 Pointers use `*` in the type with optional `far`/`near`:
 
 ```rust
-let ptr: *u8 = 0x2000;            // Near (16-bit, current DBR)
+let ptr: *u8 = 0x2000 as *u8;     // Near (16-bit, current DBR)
 let far_ptr: far *u8 = addr;      // Far (24-bit)
 *ptr = 5;                          // Dereference
 ptr[Y] = 5;                        // Indexed

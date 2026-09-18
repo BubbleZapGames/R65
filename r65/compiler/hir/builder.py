@@ -1549,20 +1549,26 @@ class HIRBuilder:
                            "compile time, so a second storage has nowhere to point; "
                            "merge the pools, or drop #[soa] and write the parallel "
                            "arrays by hand",
+            allow_initializer=True,
         )
 
     def _bind_planed_storage(self, decl: ast.StaticDecl, symbol, type_name: str,
                              registry: dict, *, noun: str, static_noun: str,
-                             duplicate_hint: str, prefix: str = None) -> None:
+                             duplicate_hint: str, prefix: str = None,
+                             allow_initializer: bool = False) -> None:
         """Record the single static backing a planed type, or reject a second.
 
         Shared by `#[soa]` structs and tagged enums. Both split their storage
         into planes addressed by a compile-time-fixed label, so both admit
         exactly one backing static and both rule out the storage forms that
         would leave the planes unplaced: `extern` (placement belongs to the asm
-        file), `#[hw]` (a fixed hardware layout), immutable (ROM with nothing to
-        put in it), and an initializer (transposing one into planes is not
-        implemented).
+        file) and `#[hw]` (a fixed hardware layout).
+
+        An `#[soa]` struct's array literal transposes into one literal per
+        plane (`_transpose_soa_initializer`), so with *allow_initializer* the
+        static may carry one, and may then be immutable — a ROM table per
+        plane. A tagged enum takes no initializer, so its static must be
+        `static mut`: immutable, it could only ever be undefined bytes.
         """
         previous = registry.get(type_name)
         if previous is not None:
@@ -1589,20 +1595,24 @@ class HIRBuilder:
                     hint="hardware registers have a fixed layout the compiler "
                          "does not place",
                 )
-        if not decl.is_mut:
+        if decl.initializer is not None and not allow_initializer:
+            raise HIRError(
+                f"{static_noun} '{decl.name}' cannot have an initializer",
+                source_loc=decl.source_loc,
+                hint="a tagged enum has no literal form; leave the static "
+                     "uninitialized and write every element before matching on it",
+            )
+        if not decl.is_mut and decl.initializer is None:
             raise HIRError(
                 f"{static_noun} '{decl.name}' must be `static mut`",
                 source_loc=decl.source_loc,
-                hint="an immutable static is ROM, and a planed static cannot "
+                hint="an immutable static is ROM, so without an initializer it "
+                     "could only ever be undefined bytes; add 'mut', or give it "
+                     "an array literal to make it a ROM table per plane"
+                     if allow_initializer else
+                     "an immutable static is ROM, and a tagged enum static cannot "
                      "carry an initializer — so it could only ever be undefined "
                      "bytes; add 'mut'",
-            )
-        if decl.initializer is not None:
-            raise HIRError(
-                f"{static_noun} '{decl.name}' cannot have an initializer yet",
-                source_loc=decl.source_loc,
-                hint="transposing an array literal into per-plane tables is not "
-                     "implemented; leave it uninitialized for now",
             )
 
         # A tagged enum's entry carries the plane-name prefix as well; an
@@ -1700,6 +1710,7 @@ class HIRBuilder:
             count = decl.var_type.size
             explicit = (decl.storage_attr.address
                         if decl.storage_attr is not None else None)
+            columns = self._transpose_soa_initializer(decl)
             planes = []
             children = {}
             running = explicit
@@ -1717,6 +1728,11 @@ class HIRBuilder:
                     planes_added.append(child)
                     continue
                 child = self._make_soa_plane(decl, field_decl, count, stride, running)
+                if columns is not None:
+                    child.initializer = hir.HIRArrayLiteralExpr(
+                        elements=columns[field_decl.name],
+                        source_loc=decl.initializer.source_loc,
+                    )
                 children[field_decl.name] = child
                 planes.append((field_decl.name, aos_offset, stride, child))
                 planes_added.append(child)
@@ -1724,8 +1740,85 @@ class HIRBuilder:
                     running += count * stride
 
             decl.soa_planes = planes
+            # The planes now carry the data; the parent is allocated no bytes,
+            # so nothing may try to initialize it.
+            decl.initializer = None
 
         hir_decls.extend(planes_added)
+
+    def _transpose_soa_initializer(self, decl: 'hir.HIRStaticDecl'):
+        """Split an `#[soa]` static's array literal into one column per field.
+
+        `[E { a: 1, b: 2 }, E { a: 3, b: 4 }]` becomes `{a: [1, 3], b: [2, 4]}`;
+        each column then initializes that field's plane through the ordinary
+        array-literal path, which for a ROM static emits one table per plane
+        and for a RAM static one block copy per plane.
+
+        Struct-literal checking runs after the static is built and would see
+        only the columns, so the literal's shape is checked here: an element
+        per slot, each a literal of the element struct naming every field once.
+        (An unknown field name never gets this far — the expression builder
+        rejects it.) Field *values* are still type-checked against the plane's
+        element type downstream. Returns None when there is no initializer.
+        """
+        init = decl.initializer
+        if init is None:
+            return None
+        element = strip_newtype(decl.var_type.element_type)
+        if isinstance(element, EnumTypeInfo):
+            # `_bind_planed_storage` already refuses this; keep the invariant
+            # visible here rather than transposing a tag plane by accident.
+            raise HIRError(
+                f"tagged enum static '{decl.name}' cannot have an initializer",
+                source_loc=init.source_loc,
+            )
+        definition = element.symbol.definition
+        field_names = [f.name for f in definition.fields]
+        count = decl.var_type.size
+        loc = init.source_loc
+
+        if not isinstance(init, hir.HIRArrayLiteralExpr):
+            raise HIRError(
+                f"#[soa] static '{decl.name}' must be initialized with an "
+                f"array literal",
+                source_loc=loc,
+                hint=f"write one `{element.name} {{ .. }}` per element; a fill "
+                     f"`[.. ; N]` has no per-plane form yet",
+            )
+        if len(init.elements) != count:
+            raise HIRError(
+                f"#[soa] static '{decl.name}' has {count} element(s) but its "
+                f"initializer has {len(init.elements)}",
+                source_loc=loc,
+            )
+
+        columns = {name: [] for name in field_names}
+        for index, elem in enumerate(init.elements):
+            if (not isinstance(elem, hir.HIRStructLiteralExpr)
+                    or elem.struct_name != element.name):
+                raise HIRError(
+                    f"element {index} of #[soa] static '{decl.name}' must be a "
+                    f"`{element.name} {{ .. }}` literal",
+                    source_loc=getattr(elem, 'source_loc', loc),
+                )
+            seen = set()
+            for field_init in elem.fields:
+                if field_init.name in seen:
+                    raise HIRError(
+                        f"field '{field_init.name}' initialized multiple times",
+                        source_loc=elem.source_loc,
+                        hint="remove duplicate field initialization",
+                    )
+                seen.add(field_init.name)
+                columns[field_init.name].append(field_init.value)
+            missing = [name for name in field_names if name not in seen]
+            if missing:
+                raise HIRError(
+                    f"missing field(s) in struct literal: {', '.join(missing)}",
+                    source_loc=elem.source_loc,
+                    hint=f"add: {', '.join(missing)}",
+                )
+        return columns
 
     def _planed_field_size(self, field_type) -> int:
         """Bytes a field occupies in the packed layout the plane offsets index.

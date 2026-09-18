@@ -220,7 +220,7 @@ class TestStorageRestrictions:
         build_fails(
             SHAPES + "#[lowram]\nstatic mut POOL: [Shape; 1] = [Shape::Empty; 1];\n"
             "fn main() {}",
-            r"cannot have an initializer yet")
+            r"cannot have an initializer")
 
     def test_hw_storage_rejected(self):
         build_fails(SHAPES + "#[hw(0x2100)]\nstatic mut POOL: [Shape; 4];\nfn main() {}",

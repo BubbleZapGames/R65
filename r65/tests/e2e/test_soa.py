@@ -315,3 +315,76 @@ class TestSoaControlFlow:
             0x7E0016: [0x22, 0x22],   # a[3] at 0x10 + 3*2
         }))
         assert result.success, f"Failures: {result.failures}"
+
+
+class TestSoaInitializer:
+    """An array literal on an `#[soa]` static becomes one table per plane."""
+
+    def test_rom_table_reads_by_plane(self, e2e):
+        """Immutable: each column is a ROM table, read with the raw index
+        scaled by the *field* width — 2 for `exits`, 1 for the others."""
+        result = e2e.run('''
+            #[soa] struct Area { id: u8, exits: u16, flags: u8 }
+            static AREAS: [Area; 3] = [
+                Area { id: 0x10, exits: 3,      flags: 0x01 },
+                Area { id: 0x11, exits: 0x1234, flags: 0x00 },
+                Area { id: 0x12, exits: 2,      flags: 0x04 },
+            ];
+            #[zeropage(0x30)] static mut i: u16;
+            #[zeropage(0x32)] static mut exits: u16;
+            #[zeropage(0x34)] static mut id: u8;
+            #[zeropage(0x35)] static mut flags: u8;
+
+            #[entry]
+            fn main() {
+                i = 1;
+                exits = AREAS[i].exits;
+                id = AREAS[i].id;
+                flags = AREAS[2].flags;
+            }
+        ''', ExpectedState(memory={
+            0x7E0032: [0x34, 0x12],
+            0x7E0034: 0x11,
+            0x7E0035: 0x04,
+        }))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_padded_plane_is_padded_in_rom(self, e2e):
+        """A 3-byte field strides by 4, so its table must too or the index
+        walks off the data: element 1 is at +4, not +3."""
+        result = e2e.run('''
+            static NAME_A: [u8; 1] = [0xAA];
+            static NAME_B: [u8; 1] = [0xBB];
+            #[soa] struct Area { name: far *u8, id: u8 }
+            static AREAS: [Area; 2] = [
+                Area { name: &NAME_A as far *u8, id: 1 },
+                Area { name: &NAME_B as far *u8, id: 2 },
+            ];
+            #[zeropage(0x30)] static mut i: u16;
+            #[zeropage(0x32)] static mut out: u8;
+
+            #[entry]
+            fn main() {
+                i = 1;
+                let p: far *u8 = AREAS[i].name;
+                out = *p;
+            }
+        ''', ExpectedState(memory={0x7E0032: 0xBB}))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_ram_pool_is_copied_per_plane(self, e2e):
+        """Mutable: each column is block-copied into its plane at startup,
+        so the planes hold the transposed data before main runs."""
+        result = e2e.run('''
+            #[soa] struct E { hp: u8, pos: u16 }
+            #[zeropage(0x10)]
+            static mut POOL: [E; 2] = [E { hp: 0xA0, pos: 0x1122 },
+                                       E { hp: 0xA1, pos: 0x3344 }];
+
+            #[entry]
+            fn main() { }
+        ''', ExpectedState(memory={
+            0x7E0010: [0xA0, 0xA1],                 # POOL__hp
+            0x7E0012: [0x22, 0x11, 0x44, 0x33],     # POOL__pos
+        }))
+        assert result.success, f"Failures: {result.failures}"

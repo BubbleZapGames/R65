@@ -320,6 +320,12 @@ class StaticInitLowerer:
             element_size = 1  # Default to 1 byte
             element_type = None
 
+        # An #[soa] field plane pads a 3- or 7-byte element to its stride
+        # (`soa_stride`), so the table must too or the index would walk off
+        # the data.
+        stride = getattr(static_decl, 'soa_stride', None) or element_size
+        padding = [0] * (stride - element_size)
+
         # Extract constant values from all elements without emitting instructions
         data_bytes = []
         for elem in literal_expr.elements:
@@ -332,6 +338,7 @@ class StaticInitLowerer:
                     elem, element_size,
                     f"element of static array `{static_decl.name}`"
                 ))
+            data_bytes.extend(padding)
 
         # Create ROM data reference using variable name
         label = f"__{static_decl.name}_data"

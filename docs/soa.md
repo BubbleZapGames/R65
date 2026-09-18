@@ -277,7 +277,8 @@ late allocation failure naming a synthesized plane.
 | `#[soa]` with `#[hw]` | Hardware registers are not placed by the compiler | — |
 | `#[soa]` with `extern static` | Placement is owned by the asm file | — |
 | `fn m(*self)` on an SoA struct | No address to point at | `fn m(self)` |
-| an initializer on the static | Transposition not implemented yet | Assign at runtime |
+| `[E { .. }; N]` / `[0; N]` fill on the static | No per-plane form yet | Write the array literal out, or assign at runtime |
+| `static POOL: [E; N];` with no initializer | ROM with nothing in it | Add `mut`, or an array literal |
 
 Three things that are **allowed**, because the obvious guess is wrong:
 
@@ -310,37 +311,49 @@ stride multiply, so the two go together.
 
 ---
 
-## Initializers — not yet supported
+## Initializers
 
-An initializer on a `#[soa]` static is currently rejected:
-
-```
-error: #[soa] static 'AREAS' cannot have an initializer yet
-hint: transposing an array literal into per-field tables is not
-      implemented; leave it uninitialized for now
-```
-
-The intended shape, when it lands, is one ROM table per plane:
+An array literal on an `#[soa]` static is transposed into one literal per
+plane, and each plane then takes the ordinary array-literal path. On an
+immutable static that is one ROM table per field — the natural shape for a
+per-kind constant table indexed by a tag:
 
 ```rust
-#[soa] struct Area { id: u8, exits: u8, flags: u8 }
+#[soa] struct Area { id: u8, exits: u16, flags: u8 }
 static AREAS: [Area; 3] = [
     Area { id: 0, exits: 3, flags: 0x01 },
     Area { id: 1, exits: 1, flags: 0x00 },
     Area { id: 2, exits: 2, flags: 0x04 },
 ];
+
+let n: u16 = AREAS[i].exits;     // ASL A / TAX / LDA.l __AREAS__exits_data,X
 ```
 
 ```asm
 __AREAS__id_data:     .db $00, $01, $02
-__AREAS__exits_data:  .db $03, $01, $02
+__AREAS__exits_data:  .db $03, $00, $01, $00, $02, $00
 __AREAS__flags_data:  .db $01, $00, $04
 ```
 
-The transposition itself is small — build one `HIRArrayLiteralExpr` per
-field and let the existing array-literal path run per plane. The cost is
-validation: struct-literal checking runs *after* the static is built, so
-either that check is duplicated or the transposition moves later.
+Each column is read with the raw index scaled by the *field* width — a
+`u8` column with no scaling at all — where an array of plain structs
+scales by the element size and adds the field offset. A padded plane (a
+3-byte `far *T` at stride 4) is padded in ROM too, so the index and the
+table agree.
+
+On a `static mut` the same transposition runs and each plane is
+block-copied from its ROM column by `__init_start`, exactly as a plain
+array literal would be.
+
+The literal is checked at transposition — one element per slot, each a
+literal of the element struct naming every field once — because the
+struct-literal validator runs after the static is built and would only see
+the columns. Field values are type-checked against their plane's element
+type as usual. A fill `[.. ; N]` is still rejected: a struct fill does not
+parse, and a scalar fill has no per-plane meaning.
+
+A tagged enum static (docs/enums.md) has no literal form and still takes
+no initializer.
 
 ---
 
