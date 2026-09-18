@@ -283,13 +283,19 @@ def _promote_local_loop_counters(func: MIRFunction) -> int:
                 continue
 
         # Choose register: prefer X when vreg is used as array index
-        # (Move to HW X for indexed addressing), otherwise prefer Y.
-        prefers_x = _prefers_x_register(vreg_id, vreg_uses.get(vreg_id, []))
+        # (Move to HW X for indexed addressing), otherwise prefer Y. A
+        # loop that moves some *other* value into X - a scaled index
+        # (`X = Move %offset`) - would destroy a counter kept there, so
+        # such a counter must ride in Y and reach X by TYX when it indexes
+        # directly; with Y taken it stays on the stack.
+        x_taken_in_loop = _x_loaded_from_other(func, loop_blocks, vreg_id)
+        prefers_x = (not x_taken_in_loop and
+                     _prefers_x_register(vreg_id, vreg_uses.get(vreg_id, [])))
         if prefers_x and 'X' not in used_hints:
             hint = 'X'
         elif 'Y' not in used_hints:
             hint = 'Y'
-        elif 'X' not in used_hints:
+        elif 'X' not in used_hints and not x_taken_in_loop:
             hint = 'X'
         else:
             continue
@@ -450,6 +456,17 @@ def _enforce_index_clobber_safety(func: MIRFunction) -> int:
     return rewritten
 
 
+def _x_loaded_from_other(func: MIRFunction, loop_blocks: Set[int], vreg_id: int) -> bool:
+    """Does any loop block move a value other than *vreg_id* into X?"""
+    for bid in loop_blocks:
+        for instr in func.blocks[bid].instructions:
+            if (isinstance(instr, Move) and
+                    isinstance(instr.dest, HardwareRegister) and instr.dest.name == 'X' and
+                    not (isinstance(instr.source, VirtualRegister) and instr.source.id == vreg_id)):
+                return True
+    return False
+
+
 def _prefers_x_register(vreg_id: int, uses: list) -> bool:
     """
     Check if a loop counter vreg is used as an array index.
@@ -490,7 +507,7 @@ def _uses_compatible_with_hw(vreg_id: int, uses: list) -> bool:
     """
     for use in uses:
         if isinstance(use, BinaryOp):
-            # Only allow +1/-1 where our vreg is the left operand AND dest
+            # Allow +1/-1 where our vreg is the left operand AND dest
             # (this is the in-place increment/decrement that maps to INX/INY/DEX/DEY)
             if isinstance(use.left, VirtualRegister) and use.left.id == vreg_id:
                 is_inc_dec = (
@@ -500,7 +517,19 @@ def _uses_compatible_with_hw(vreg_id: int, uses: list) -> bool:
                     isinstance(use.dest, VirtualRegister) and
                     use.dest.id == vreg_id
                 )
-                if not is_inc_dec:
+                # Also allow the vreg as the left operand of an op whose
+                # result lands somewhere else, against an immediate: the
+                # index scaling of `arr16[i]` (`%t = i << 1`) is the common
+                # case. select_binary_op sources a hardware-register left
+                # operand through TXA/TYA and does the op in A, so the
+                # counter is only read. The dest must not be the counter,
+                # and the right side must not need a register of its own.
+                is_read_only_op = (
+                    isinstance(use.right, Immediate) and
+                    isinstance(use.dest, VirtualRegister) and
+                    use.dest.id != vreg_id
+                )
+                if not (is_inc_dec or is_read_only_op):
                     return False
             # Vreg as right operand of BinaryOp — needs memory operand resolution
             if isinstance(use.right, VirtualRegister) and use.right.id == vreg_id:

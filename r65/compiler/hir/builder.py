@@ -3944,6 +3944,13 @@ class HIRBuilder:
         # Try to const-evaluate both bounds to pick appropriate type
         loop_var_type = self._infer_for_loop_type(for_stmt.start, for_stmt.end, src_loc, for_stmt.inclusive)
 
+        # A counter that indexes an array is a u16 whatever its range: an
+        # index is 16 bits on this CPU, so a u8 counter would be widened at
+        # every `arr[i]` - a TypeConvert use that keeps it out of X/Y and
+        # costs a load, a mask and two mode switches per access instead of
+        # one transfer.
+        if loop_var_type.name == 'u8' and self._for_var_indexes_array(for_stmt):
+            loop_var_type = BasicTypeInfo('u16')
 
         # Create symbol for loop variable (mutable, type inferred from range)
         loop_var_symbol = Symbol(
@@ -4082,6 +4089,40 @@ class HIRBuilder:
 
         # Default to u16 if nothing fits
         return BasicTypeInfo('u16')
+
+    def _for_var_indexes_array(self, for_stmt: ast.ForStmt) -> bool:
+        """Does the loop body use the counter as an array index?
+
+        Walks the body's AST for `ArrayIndex` nodes whose index *is* the
+        counter, or is arithmetic over it (`arr[i + 1]`, `arr[i << 1]`).
+        A nested loop that rebinds the name shadows it and is not searched.
+        """
+        from dataclasses import fields, is_dataclass
+
+        name = for_stmt.variable
+
+        def mentions(expr) -> bool:
+            if isinstance(expr, ast.Identifier):
+                return expr.name == name
+            if isinstance(expr, ast.BinaryOp):
+                return mentions(expr.left) or mentions(expr.right)
+            if isinstance(expr, ast.UnaryOp):
+                return mentions(expr.operand)
+            return False
+
+        def walk(node) -> bool:
+            if isinstance(node, ast.ForStmt) and node is not for_stmt and node.variable == name:
+                return False
+            if isinstance(node, ast.ArrayIndex) and mentions(node.index):
+                return True
+            if isinstance(node, list):
+                return any(walk(n) for n in node)
+            if is_dataclass(node):
+                return any(walk(getattr(node, f.name)) for f in fields(node)
+                           if f.name != 'source_loc')
+            return False
+
+        return walk(for_stmt.body)
 
     def _fold_for_bound(self, expr: ast.Expression) -> hir.HIRExpression:
         """Build a `for` range bound, as a literal when it is a constant."""
