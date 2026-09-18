@@ -5,7 +5,7 @@
 R65 traits provide **TypeId-based dynamic dispatch** for polymorphism. Any struct implementing a trait automatically gets a `TypeId` byte inserted at offset 0, enabling heterogeneous collections while keeping dispatch fast and predictable.
 
 **Design Principles**:
-- No `dyn` keyword - bare trait name for pointers: `*Drawable`
+- Trait pointers are spelled `*dyn Trait` (`*dyn Drawable`); a bare `*Drawable` is an error
 - Automatic TypeId insertion at struct offset 0
 - Per-struct TypeId - same ID across all traits a struct implements
 - O(1) dispatch via compiler-generated jump tables
@@ -19,14 +19,14 @@ R65 traits provide **TypeId-based dynamic dispatch** for polymorphism. Any struc
 
 ```rust
 trait Drawable {
-    fn draw(*self, x @ X: u16, y @ Y: u16);
+    fn draw(*self, x: u16, y: u16);
     fn get_width(*self) -> u8;
 }
 ```
 
 **Rules**:
 - All methods must take `*self` as the first parameter
-- Methods can have additional parameters using standard R65 calling conventions
+- Additional parameters are stack-passed; register bindings (`x @ X: u16`) are rejected on trait methods because dispatch needs a uniform ABI
 - Methods can return values
 - No associated types
 
@@ -87,7 +87,7 @@ Traits can declare compile-time constants that implementors must define:
 trait Drawable {
     const WIDTH: u8;
     const HEIGHT: u8;
-    fn draw(*self, x @ X: u16, y @ Y: u16);
+    fn draw(*self, x: u16, y: u16);
 }
 ```
 
@@ -129,7 +129,7 @@ impl Drawable for Player {
     const WIDTH: u8 = 16;
     const HEIGHT: u8 = 24;
 
-    fn draw(*self, x @ X: u16, y @ Y: u16) {
+    fn draw(*self, x: u16, y: u16) {
         // Drawing logic
     }
 }
@@ -138,7 +138,7 @@ impl Drawable for Bullet {
     const WIDTH: u8 = 4;
     const HEIGHT: u8 = 4;
 
-    fn draw(*self, x @ X: u16, y @ Y: u16) { /* ... */ }
+    fn draw(*self, x: u16, y: u16) { /* ... */ }
 }
 ```
 
@@ -152,7 +152,7 @@ let w: u8 = Player::WIDTH;      // 16
 let h: u8 = Bullet::HEIGHT;     // 4
 
 // ERROR: Cannot access associated constant through trait pointer
-let obj: *Drawable = &player;
+let obj: *dyn Drawable = &player;
 let w: u8 = obj.WIDTH;          // Compile error!
 ```
 
@@ -228,7 +228,7 @@ struct Player {
 }
 
 impl Drawable for Player {
-    fn draw(*self, x @ X: u16, y @ Y: u16) {
+    fn draw(*self, x: u16, y: u16) {
         // Drawing logic
     }
 
@@ -257,7 +257,7 @@ struct Enemy {
 }
 
 impl Drawable for Enemy {
-    fn draw(*self, x @ X: u16, y @ Y: u16) { /* ... */ }
+    fn draw(*self, x: u16, y: u16) { /* ... */ }
     fn get_width(*self) -> u8 { return 8; }
 }
 
@@ -397,7 +397,7 @@ impl Drawable for Large { /* ... */ }  // 101 bytes with trait
 The `type_id()` method is available on any trait pointer and returns the underlying `__type_id` field:
 
 ```rust
-let obj: *Drawable = &player;
+let obj: *dyn Drawable = &player;
 let id: u8 = obj.type_id();     // Returns Player's TypeId (e.g., 1)
 ```
 
@@ -419,7 +419,7 @@ Bullet::TYPE_ID     // e.g., 3
 Use `type_id()` comparison to safely downcast from trait pointer to concrete type:
 
 ```rust
-fn handle_collision(obj: *Drawable) {
+fn handle_collision(obj: *dyn Drawable) {
     if obj.type_id() == Player::TYPE_ID {
         // Safe to downcast - we know it's a Player
         let player: *Player = obj as *Player;
@@ -445,7 +445,7 @@ If the cast is wrong, subsequent field accesses will read garbage or corrupt mem
 ### Pattern: Type Switch
 
 ```rust
-fn process_entity(e: *Entity) {
+fn process_entity(e: *dyn Entity) {
     let id: u8 = e.type_id();
 
     if id == Player::TYPE_ID {
@@ -477,13 +477,13 @@ fn process_entity(e: *Entity) {
 ### Near Trait Pointer
 
 ```rust
-*Drawable           // 2-byte pointer to any Drawable
+*dyn Drawable           // 2-byte pointer to any Drawable
 ```
 
 ### Far Trait Pointer
 
 ```rust
-far *Renderable     // 3-byte pointer to any Renderable
+far *dyn Renderable     // 3-byte pointer to any Renderable
 ```
 
 ### Creating Trait Pointers
@@ -492,39 +492,39 @@ far *Renderable     // 3-byte pointer to any Renderable
 let player = Player { x: 10, y: 20, health: 100 };
 
 // Cast concrete type to trait pointer
-let drawable: *Drawable = &player as *Drawable;
+let drawable: *dyn Drawable = &player as *dyn Drawable;
 
 // Direct assignment (type inferred from context)
-let d: *Drawable = &player;
+let d: *dyn Drawable = &player;
 ```
 
 ### Null Trait Pointers
 
 ```rust
 // Null check
-if ptr != 0 as *Drawable {
+if ptr != 0 as *dyn Drawable {
     ptr.draw(X, Y);
 }
 
 // Initialize to null
-let target: *Damageable = 0 as *Damageable;
+let target: *dyn Damageable = 0 as *dyn Damageable;
 ```
 
 ### Trait Pointers in Function Signatures
 
 ```rust
 // Parameter
-fn render(obj: *Drawable, x @ X: u16, y @ Y: u16) {
+fn render(obj: *dyn Drawable, x @ X: u16, y @ Y: u16) {
     obj.draw(X, Y);
 }
 
 // Return type
-fn find_enemy() -> *Drawable {
-    return &ENEMIES[0] as *Drawable;
+fn find_enemy() -> *dyn Drawable {
+    return &ENEMIES[0] as *dyn Drawable;
 }
 
 // Far trait parameter
-fn render_cross_bank(obj: far *Renderable) {
+fn render_cross_bank(obj: far *dyn Renderable) {
     obj.render();
 }
 ```
@@ -534,17 +534,17 @@ fn render_cross_bank(obj: far *Renderable) {
 ```rust
 // Array of trait pointers
 #[ram]
-static mut ENTITIES: [*Drawable; 32];
+static mut ENTITIES: [*dyn Drawable; 32];
 
 // Struct containing trait pointer
 struct Projectile {
     x: u8,
     y: u8,
-    target: *Damageable    // 2-byte near trait pointer
+    target: *dyn Damageable    // 2-byte near trait pointer
 }
 
 struct CrossBankRef {
-    renderer: far *Renderable  // 3-byte far trait pointer
+    renderer: far *dyn Renderable  // 3-byte far trait pointer
 }
 ```
 
@@ -561,15 +561,15 @@ static mut ENEMY: Enemy;
 
 // Initialize trait pointer to concrete instance
 #[ram]
-static mut CURRENT_TARGET: *Drawable = &PLAYER;
+static mut CURRENT_TARGET: *dyn Drawable = &PLAYER;
 
 // Array with compile-time initialization
 #[ram]
-static mut DRAW_LIST: [*Drawable; 4] = [
+static mut DRAW_LIST: [*dyn Drawable; 4] = [
     &PLAYER,
     &ENEMY,
-    0 as *Drawable,    // Null
-    0 as *Drawable
+    0 as *dyn Drawable,    // Null
+    0 as *dyn Drawable
 ];
 ```
 
@@ -577,14 +577,14 @@ static mut DRAW_LIST: [*Drawable; 4] = [
 - Target must be a `static` or `static mut` variable (not local)
 - Target struct must implement the trait
 - The `&` operator on a static yields a compile-time address
-- Type coercion from `*ConcreteType` to `*Trait` happens implicitly
+- Type coercion from `*ConcreteType` to `*dyn Trait` happens implicitly
 
 **Struct fields with trait pointer initializers**:
 
 ```rust
 struct GameState {
-    active_entity: *Drawable,
-    collision_target: *Damageable
+    active_entity: *dyn Drawable,
+    collision_target: *dyn Damageable
 }
 
 #[ram]
@@ -602,7 +602,7 @@ static mut STATE: GameState = GameState {
 static mut SPRITE: Sprite;
 
 #[ram]
-static mut RENDERER: far *Renderable = &SPRITE;
+static mut RENDERER: far *dyn Renderable = &SPRITE;
 ```
 
 **Code generation**:
@@ -628,7 +628,7 @@ DRAW_LIST_init:
 ### Calling Methods
 
 ```rust
-let obj: *Drawable = &player as *Drawable;
+let obj: *dyn Drawable = &player as *dyn Drawable;
 
 // Method call - dispatches via jump table
 obj.draw(X, Y);
@@ -705,7 +705,7 @@ Drawable__draw_table:
 ### Dispatch Code (Near)
 
 ```asm
-; obj.draw(X, Y) where obj is *Drawable
+; obj.draw(X, Y) where obj is *dyn Drawable
     LDA (obj)               ; Load TypeId from offset 0
     ASL A                   ; ×2 for 16-bit table entries
     TAX
@@ -727,7 +727,7 @@ Renderable__render_trampoline:
 ### Dispatch Code (Far)
 
 ```asm
-; obj.render() where obj is far *Renderable
+; obj.render() where obj is far *dyn Renderable
     LDA [obj]               ; Load TypeId (24-bit pointer)
     ASL A
     ASL A                   ; ×4 for JML instruction size
@@ -762,20 +762,20 @@ When creating a struct instance that has trait impls:
 
 ```rust
 #[ram]
-static mut ENTITIES: [*Entity; 32];
+static mut ENTITIES: [*dyn Entity; 32];
 
 fn update_all() {
     for i in 0..32 {
-        let e: *Entity = ENTITIES[i];
-        if e != 0 as *Entity {
+        let e: *dyn Entity = ENTITIES[i];
+        if e != 0 as *dyn Entity {
             e.update();
         }
     }
 }
 
-fn add_entity(e: *Entity) {
+fn add_entity(e: *dyn Entity) {
     for i in 0..32 {
-        if ENTITIES[i] == 0 as *Entity {
+        if ENTITIES[i] == 0 as *dyn Entity {
             ENTITIES[i] = e;
             return;
         }
@@ -786,15 +786,15 @@ fn add_entity(e: *Entity) {
 ### Factory Pattern
 
 ```rust
-fn spawn_enemy(enemy_type: u8, x: u8, y: u8) -> *Drawable {
+fn spawn_enemy(enemy_type: u8, x: u8, y: u8) -> *dyn Drawable {
     if enemy_type == 0 {
         GOOMBA.x = x;
         GOOMBA.y = y;
-        return &GOOMBA as *Drawable;
+        return &GOOMBA as *dyn Drawable;
     } else {
         KOOPA.x = x;
         KOOPA.y = y;
-        return &KOOPA as *Drawable;
+        return &KOOPA as *dyn Drawable;
     }
 }
 ```
@@ -803,16 +803,16 @@ fn spawn_enemy(enemy_type: u8, x: u8, y: u8) -> *Drawable {
 
 ```rust
 trait EventHandler {
-    fn on_collision(*self, other @ A: u8);
+    fn on_collision(*self, other: u8);
     fn on_destroy(*self);
 }
 
 #[ram]
-static mut COLLISION_HANDLER: *EventHandler;
+static mut COLLISION_HANDLER: *dyn EventHandler;
 
 fn trigger_collision(id @ A: u8) {
-    if COLLISION_HANDLER != 0 as *EventHandler {
-        COLLISION_HANDLER.on_collision(A);
+    if COLLISION_HANDLER != 0 as *dyn EventHandler {
+        COLLISION_HANDLER.on_collision(id);
     }
 }
 ```
@@ -822,17 +822,17 @@ fn trigger_collision(id @ A: u8) {
 ```rust
 trait Component {
     fn update(*self);
-    fn draw(*self, x @ X: u16, y @ Y: u16);
+    fn draw(*self, x: u16, y: u16);
 }
 
 struct GameObject {
     x: u8,
     y: u8,
-    component: *Component
+    component: *dyn Component
 }
 
 fn update_object(obj: *GameObject) {
-    if obj.component != 0 as *Component {
+    if obj.component != 0 as *dyn Component {
         obj.component.update();
     }
 }
@@ -927,11 +927,11 @@ Default method bodies **are** supported — see [Default Method Bodies](#default
 
 ```rust
 trait Drawable {
-    fn draw(*self, x @ X: u16, y @ Y: u16);
+    fn draw(*self, x: u16, y: u16);
 }
 
 impl Drawable for Player {
-    fn draw(*self, x @ X: u8, y @ Y: u8) { }  // ERROR
+    fn draw(*self, x: u8, y: u8) { }  // ERROR
 }
 ```
 
@@ -939,20 +939,20 @@ impl Drawable for Player {
 error: method signature does not match trait
   --> game.r65:15:5
    |
-15 |     fn draw(*self, x @ X: u8, y @ Y: u8) { }
-   |        ^^^^ expected `x @ X: u16`, found `x @ X: u8`
+15 |     fn draw(*self, x: u8, y: u8) { }
+   |        ^^^^ expected `x: u16`, found `x: u8`
 ```
 
 ### Missing Method
 
 ```rust
 trait Drawable {
-    fn draw(*self, x @ X: u16, y @ Y: u16);
+    fn draw(*self, x: u16, y: u16);
     fn get_width(*self) -> u8;
 }
 
 impl Drawable for Player {
-    fn draw(*self, x @ X: u16, y @ Y: u16) { }
+    fn draw(*self, x: u16, y: u16) { }
     // Missing get_width
 }
 ```
@@ -971,13 +971,13 @@ error: not all trait methods implemented
 trait Drawable {
     const WIDTH: u8;
     const HEIGHT: u8;
-    fn draw(*self, x @ X: u16, y @ Y: u16);
+    fn draw(*self, x: u16, y: u16);
 }
 
 impl Drawable for Player {
     const WIDTH: u8 = 16;
     // Missing HEIGHT
-    fn draw(*self, x @ X: u16, y @ Y: u16) { }
+    fn draw(*self, x: u16, y: u16) { }
 }
 ```
 
@@ -1014,7 +1014,7 @@ error: struct cannot implement both near and far traits
 ```rust
 // Define traits
 trait Drawable {
-    fn draw(*self, x @ X: u16, y @ Y: u16);
+    fn draw(*self, x: u16, y: u16);
 }
 
 trait Updatable {
@@ -1036,7 +1036,7 @@ struct Enemy {
 
 // Implement traits
 impl Drawable for Player {
-    fn draw(*self, x @ X: u16, y @ Y: u16) {
+    fn draw(*self, x: u16, y: u16) {
         // Draw player sprite
         draw_sprite(self.sprite_id, X, Y);
     }
@@ -1049,7 +1049,7 @@ impl Updatable for Player {
 }
 
 impl Drawable for Enemy {
-    fn draw(*self, x @ X: u16, y @ Y: u16) {
+    fn draw(*self, x: u16, y: u16) {
         // Draw enemy sprite
         draw_sprite(0x10, X, Y);
     }
@@ -1072,7 +1072,7 @@ static mut PLAYER: Player;
 static mut ENEMIES: [Enemy; 8];
 
 #[ram]
-static mut DRAW_LIST: [*Drawable; 16];
+static mut DRAW_LIST: [*dyn Drawable; 16];
 
 // Main loop
 fn game_update() {
@@ -1085,8 +1085,8 @@ fn game_update() {
 
     // Draw all entities via trait dispatch
     for i in 0..16 {
-        let d: *Drawable = DRAW_LIST[i];
-        if d != 0 as *Drawable {
+        let d: *dyn Drawable = DRAW_LIST[i];
+        if d != 0 as *dyn Drawable {
             d.draw(X, Y);
         }
     }
