@@ -232,9 +232,11 @@ class ABIModel(ABC):
             if not arg_loc.is_hw('A'):
                 continue
             a_in_other = True
-            if (arg.mechanism == ArgumentMechanism.REGISTER
-                    and arg.param_type is not None):
-                a_param_is_16bit = self._arg_size(arg) >= 2
+            # The restore is pinned to this width whatever the mechanism: a
+            # u16 scratch-promoted or variable-bound argument parked in Y
+            # and restored with an 8-bit TYA comes back with B's stale high
+            # byte, not its own.
+            a_param_is_16bit = self._arg_size(arg) >= 2
             break
 
         a_stack_needs_save = (
@@ -242,6 +244,8 @@ class ABIModel(ABC):
             and a_resident_stack_idx != len(stack_args) - 1
             and use_pha
         )
+        if not a_in_other and a_stack_needs_save:
+            a_param_is_16bit = self._arg_size(stack_args[a_resident_stack_idx]) >= 2
 
         if not (a_in_other or a_stack_needs_save):
             return None, a_param_is_16bit, a_resident_stack_idx
