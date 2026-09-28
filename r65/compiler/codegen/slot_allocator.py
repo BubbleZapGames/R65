@@ -547,12 +547,18 @@ class StackSlotAllocator:
                             # Remove the (now-redundant) Move
                             block.instructions.pop(i)
                             changed = True
+                            # Liveness is stale the moment src takes over
+                            # dest's uses: src's range now extends through
+                            # dest's, and the next Move in this same sweep
+                            # would test interference against the old,
+                            # shorter range. `let clip = g; let mut want =
+                            # 0; ... want = clip;` coalesced want into clip
+                            # that way, and want's `= 0` overwrote clip.
+                            # Recompute before looking at another Move.
+                            self.liveness_analyzer = LivenessAnalyzer(self.func)
+                            self.liveness_analyzer.analyze()
                             continue  # re-examine same index
                     i += 1
-            if changed:
-                # Liveness data is stale after replacement — recompute
-                self.liveness_analyzer = LivenessAnalyzer(self.func)
-                self.liveness_analyzer.analyze()
 
     def _has_other_defs(self, vreg: VirtualRegister, move_block_id: int,
                         move_idx: int) -> bool:

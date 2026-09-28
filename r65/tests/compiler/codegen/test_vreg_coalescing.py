@@ -128,3 +128,61 @@ class TestVregCoalescing:
 
         # After coalescing x → y, y should inherit x's hint
         assert y.register_hint == 'X'
+
+    def test_chained_coalesce_sees_fresh_liveness(self):
+        """A second Move in the same sweep must see the first coalesce's
+        effect on liveness.
+
+        `let clip = g; let mut want = 0; if c { want = clip; } else if
+        d { want = 64; } return want`: coalescing clip into g extends g's
+        range through clip's, so the later Move(want, clip) interferes
+        and must not be coalesced - or want's `= 0` overwrites clip.
+        """
+        u8 = BasicTypeInfo('u8')
+        alloc = VirtualRegisterAllocator()
+        g = alloc.alloc(u8, "g")
+        clip = alloc.alloc(u8, "clip")
+        want = alloc.alloc(u8, "want")
+        c = alloc.alloc(u8, "c")
+        r = alloc.alloc(u8, "r")
+
+        func = _make_func({
+            0: [
+                Move(dest=g, source=HardwareRegister('A'), type_info=u8),
+                Move(dest=clip, source=g, type_info=u8),   # g's only use
+                Move(dest=want, source=Immediate(0), type_info=u8),
+                Move(dest=c, source=HardwareRegister('X'), type_info=u8),
+                Compare(left=c, right=Immediate(5), comparison='>', type_info=u8),
+                CondBranch(condition=None, true_target=1, false_target=2, comparison='>'),
+            ],
+            1: [
+                Move(dest=want, source=clip, type_info=u8),
+                Jump(target=3),
+            ],
+            2: [
+                Compare(left=c, right=Immediate(9), comparison='>', type_info=u8),
+                CondBranch(condition=None, true_target=4, false_target=3, comparison='>'),
+            ],
+            3: [
+                BinaryOp(dest=r, op='+', left=want, right=Immediate(1), type_info=u8),
+                Return(values=[r]),
+            ],
+            4: [
+                Move(dest=want, source=Immediate(64), type_info=u8),
+                Jump(target=3),
+            ],
+        }, alloc)
+
+        sa = StackSlotAllocator(func)
+        result = sa.allocate()
+
+        # want must still exist with storage of its own, apart from g's
+        # (into which clip was folded).
+        assert want in result.register_to_slot or want in result.hw_coalesceable
+        if want in result.register_to_slot and g in result.register_to_slot:
+            assert result.get_offset(want) != result.get_offset(g)
+        # And block 0 must still initialise want to 0 somewhere other
+        # than g's location: the Move survives with its own dest.
+        inits = [i for i in func.blocks[0].instructions
+                 if isinstance(i, Move) and isinstance(i.source, Immediate)]
+        assert inits and inits[0].dest is not g
