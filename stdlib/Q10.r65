@@ -110,23 +110,23 @@ impl Q10 {
         // This is floor(x + 0.5), with the same signed-shift correction to_int
         // needs.
         //
-        // Correct at the top of the range, where `self.0 + 32` overflows i16 —
-        // but only because two things line up, so leave them be:
+        // Exact over the whole range, top included, with nothing overflowing
+        // a signed compare:
         //
-        //   * the signed `<` compiles to a V-aware comparison, so an overflowed
-        //     `biased` is still routed down the non-negative branch rather than
-        //     being read as the negative number its bit pattern resembles;
-        //   * `>>` is a logical shift, so that branch shifts the wrapped pattern
-        //     as unsigned — which is the true value, since `biased` peaks at
-        //     32799 and cannot reach 65536.
+        //   * from -32 up the rounded value is (x + 32) >> 6 with x + 32 >= 0,
+        //     done in u16 - it peaks at 32799, so the add cannot wrap, and
+        //     -32..-1 wrap to 0..31 and round to 0 as they should;
+        //   * below -32 x + 32 fits i16 and is negative, and the magnitude
+        //     path's `+ 63` peaks at 32799 too, which `>>` (a logical shift)
+        //     reads as the unsigned value it is.
         //
         // Q8 needs a saturation guard here because it rounds into a u8, where
         // 256 has nowhere to go.
-        let biased: i16 = self.0 + 32;
-        if biased < 0 {
+        if self.0 < -32 {
+            let biased: i16 = self.0 + 32;
             return 0 - (((0 - biased) + 63) >> 6);
         }
-        return biased >> 6;
+        return ((((self.0 as u16) + 32) >> 6) as i16);
     }
 
     /// Multiplies two scaled values: `(self * other) >> 6`.

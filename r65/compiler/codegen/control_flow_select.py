@@ -387,13 +387,13 @@ class ControlFlowInstructionSelector(BaseSelector):
         return False
 
     # Signed branches:
-    #   CMP/CPX/CPY are NON-DESTRUCTIVE — after the compare A still holds the
-    #   LHS, not (LHS - RHS). The "EOR #$80 on overflow then test N" idiom
-    #   only works when A holds the difference (e.g. via SBC), so it is wrong
-    #   here. Instead we use a control-flow-only pattern that leaves A alone:
-    #   the V flag tells us whether N was inverted by signed overflow, and we
-    #   pick BMI or BPL accordingly. Same correctness as `N XOR V`, no A
-    #   touch.
+    #   The compare leaves A holding the LHS, not (LHS - RHS), so the "EOR
+    #   #$80 on overflow then test N" idiom (which needs the difference in A)
+    #   is out. Instead a control-flow-only pattern picks BMI or BPL on V:
+    #   the V flag says whether N was inverted by signed overflow - `N XOR V`
+    #   with no A touch. That needs V from the subtraction itself, and
+    #   CMP/CPX/CPY never set V, so a signed compare is emitted as SEC/SBC
+    #   with A restored under PHP/PLP (CompareSelector._emit_signed_cmp).
 
     def _emit_less_than_branch(self, true_target: str, false_target: str, is_signed: bool):
         """Emit branch for < comparison."""

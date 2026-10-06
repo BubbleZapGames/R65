@@ -26,8 +26,24 @@ class CompareSelector(BaseSelector):
     # Emission Helpers
     # ========================================================================
 
-    def _emit_cmp(self, mnemonic: str, operand, is_immediate: bool):
-        """Emit a comparison instruction (CMP, CPX, CPY)."""
+    def _emit_cmp(self, mnemonic: str, operand, is_immediate: bool,
+                  a_is_scratch: bool = False):
+        """Emit a comparison instruction (CMP, CPX, CPY).
+
+        *a_is_scratch*: A was loaded only to make this compare, so a signed
+        compare may leave the difference in it rather than restoring.
+        """
+        if self._is_signed_type():
+            # The signed branches read N XOR V, and CMP/CPX/CPY do not set
+            # V - so a signed compare is a real subtraction instead.
+            if mnemonic in ('CPX', 'CPY'):
+                # No SBC on X/Y. Never emitted by the projects in tree
+                # (X/Y hold u16); TXA/TYA as the CPX fallback below does.
+                self.parent._ensure_m16_mode()
+                self._emit_instr(Opcode.TXA if mnemonic == 'CPX' else Opcode.TYA,
+                                 comment="Signed compare: X/Y to A for SBC")
+            self._emit_signed_cmp(operand, is_immediate, restore_a=not a_is_scratch)
+            return
         if is_immediate:
             opcode = getattr(Opcode, f"{mnemonic}_IMMEDIATE")
             self._emit_instr(opcode, operand)
@@ -75,6 +91,77 @@ class CompareSelector(BaseSelector):
                 opcode, op = self.parent._get_opcode_for_location(mnemonic, operand)
                 self._emit_instr(opcode, op)
 
+    def _emit_signed_cmp(self, operand, is_immediate: bool, restore_a: bool = True):
+        """
+        Signed compare of A against *operand*, leaving A unchanged unless
+        *restore_a* is False (A was loaded only for the compare).
+
+        CMP sets N, Z and C but never V, so the signed branches (which test
+        N XOR V) would read whatever V the previous arithmetic left - an
+        overflow anywhere before the compare inverts it. SBC sets V for
+        the subtraction itself:
+
+            SEC / SBC rhs     ; N, V, Z, C of lhs - rhs
+            PHP               ; keep them
+            CLC / ADC rhs     ; A = lhs again
+            PLP               ; flags back to the subtraction's
+
+        so the flags are the compare's and A still holds the left operand,
+        as callers that reuse it after a CMP expect. PHP moves S by one, so
+        a stack-relative rhs is one further away for the ADC. The rhs is
+        read twice; a hardware register is read once into scratch first.
+        When the compare loaded A itself, nothing reads it afterwards and
+        the restore (PHP..PLP, ~14 cycles) is skipped.
+        """
+        from r65.compiler.codegen.asm_nodes import StackOffset
+
+        # Against 0 nothing can overflow: V is 0, and N and Z are A's own,
+        # which a load has often set already. The signed branches use only
+        # N, V and Z.
+        if is_immediate and isinstance(operand, Immediate) and operand.value == 0:
+            if self.emitter.nz_valid_for != 'A':
+                self._emit_instr(Opcode.CMP_IMMEDIATE, operand)
+            self._emit_instr(Opcode.CLV, comment="Signed compare with 0: no overflow")
+            return
+
+        if (not is_immediate and not isinstance(operand, (Address, StackOffset))
+                and operand.kind == LocationKind.MEMORY
+                and getattr(operand, 'storage_type', None) == 'hw'):
+            temp_addr = self.parent._get_temp_address()
+            if temp_addr is None:
+                raise InstructionSelectionError(
+                    "Signed comparison against a hardware register needs a scratch "
+                    "register (the register must be read exactly once)",
+                    source_loc=self.parent._current_source_loc)
+            self._emit_instr(Opcode.PHA, comment="Signed compare: save lhs")
+            self._emit_load_store('LDA', operand)
+            self._emit_instr(Opcode.STA_DP, temp_addr, "Read hw register once")
+            self._emit_instr(Opcode.PLA, comment="Restore lhs")
+            operand = temp_addr
+
+        def arith(mnemonic: str, s_shift: int):
+            if is_immediate:
+                self._emit_instr(getattr(Opcode, f"{mnemonic}_IMMEDIATE"), operand)
+            elif isinstance(operand, Address):
+                self._emit_instr(getattr(Opcode, f"{mnemonic}_DP"), operand)
+            elif isinstance(operand, StackOffset):
+                self._emit_instr(getattr(Opcode, f"{mnemonic}_STACK"),
+                                 StackOffset(operand.offset + s_shift))
+            else:
+                opcode, op = self.parent._get_opcode_for_location(mnemonic, operand)
+                if s_shift and isinstance(op, StackOffset):
+                    op = StackOffset(op.offset + s_shift)
+                self._emit_instr(opcode, op)
+
+        self._emit_instr(Opcode.SEC, comment="Signed compare: lhs - rhs sets V")
+        arith('SBC', 0)
+        if not restore_a:
+            return
+        self._emit_instr(Opcode.PHP, comment="Keep the compare's flags")
+        self._emit_instr(Opcode.CLC)
+        arith('ADC', 1)
+        self._emit_instr(Opcode.PLP, comment="A = lhs, flags = lhs - rhs")
+
     def _emit_swapped_hw_compare(self, left_reg: str, is_16bit: bool):
         """
         Handle comparison when both operands are in hardware registers
@@ -95,8 +182,14 @@ class CompareSelector(BaseSelector):
             self._emit_instr(Opcode.TYA, comment="Transfer left (Y) to A")
         else:
             self._emit_instr(Opcode.TXA, comment="Transfer left (X) to A")
-        # Compare: A(left) - stack(right) = normal direction
-        self._emit_instr(Opcode.CMP_STACK, StackOffset(1), "Compare left vs right")
+        # Compare: A(left) - stack(right) = normal direction. A signed
+        # compare subtracts so V is set (CMP leaves it alone); A is
+        # overwritten by the cleanup below either way.
+        if self._is_signed_type():
+            self._emit_instr(Opcode.SEC)
+            self._emit_instr(Opcode.SBC_STACK, StackOffset(1), "Signed compare left vs right")
+        else:
+            self._emit_instr(Opcode.CMP_STACK, StackOffset(1), "Compare left vs right")
         # Save comparison flags
         self._emit_instr(Opcode.PHP, comment="Save comparison flags")
         if is_16bit:
@@ -328,7 +421,7 @@ class CompareSelector(BaseSelector):
         TXA, XBA, etc.).
 
         Only safe for unsigned types — signed ordered comparisons need
-        the V flag which only CMP/CPX/CPY sets.
+        the V flag, which only the signed compare's SBC sets.
         """
         return (
             is_immediate
@@ -353,11 +446,11 @@ class CompareSelector(BaseSelector):
             # Memory or virtual register - load to A and compare
             self._emit_load_store('LDA', left_loc)
             # LDA sets N/Z (tracked by emitter). For unsigned comparisons
-            # against 0, CMP #0 is redundant. For signed types, keep CMP
-            # because the standard signed branch codegen needs V flag.
+            # against 0, CMP #0 is redundant. Signed types still compare,
+            # because the signed branch codegen needs V from the SBC.
             if self._can_elide_cmp_zero('A', right_operand, is_immediate):
                 return
-            self._emit_cmp('CMP', right_operand, is_immediate)
+            self._emit_cmp('CMP', right_operand, is_immediate, a_is_scratch=True)
 
     def _emit_hw_register_comparison(self, left_loc, right_operand, is_immediate: bool):
         """Emit comparison for hardware register left operand."""

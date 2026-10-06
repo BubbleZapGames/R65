@@ -599,15 +599,32 @@ if a < b { }
 // [block code]
 // skip_block:
 
-// Signed comparison (complex - requires overflow handling)
+// Signed comparison: a real subtraction, since CMP never sets V
 if (a: i8) < (b: i8) { }
-// [More complex sequence to handle sign]
-// OR: JSR __cmp_signed_less
+// LDA a
+// SEC
+// SBC b          // N, V, Z of a - b
+// PHP            // keep them
+// CLC
+// ADC b          // A = a again, for code that reuses it
+// PLP
+// BVS v_set      // N XOR V: V=1 means N is inverted
+// BPL skip_block
+// BRA block
+// v_set: BMI skip_block
+// ...
+
+// Against 0 nothing overflows, so it is just the load (or CMP #0) and CLV.
 ```
+
+The flags are those of `a - b` computed in the operand width - the
+compare does not see whether `a` itself was produced by an addition that
+wrapped. `let s: i16 = x + 32; if s < 0` reads the wrapped `s`, as Rust's
+wrapping arithmetic would.
 
 **Performance**:
 - Unsigned: 4-6 cycles
-- Signed: 8-15 cycles or subroutine call
+- Signed: ~20 cycles (2 against 0)
 
 ---
 

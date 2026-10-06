@@ -229,10 +229,11 @@ class TestQ10Round:
     def test_top_of_range_where_the_bias_overflows(self, e2e):
         """511.98 + 0.5 does not fit i16, yet the answer is still exact.
 
-        It survives on two properties worth pinning: the signed `<` is V-aware,
-        so the overflowed value takes the non-negative branch, and `>>` is
-        logical, so that branch shifts the wrapped pattern as unsigned. 512 fits
-        the i16 return, so unlike Q8 there is nothing to saturate.
+        round adds the bias in u16 on the non-negative side, where it peaks at
+        32799 and cannot wrap. (It used to add in i16 and lean on the signed
+        `<` reading the add's stale overflow flag - a compiler bug, since
+        fixed.) 512 fits the i16 return, so unlike Q8 there is nothing to
+        saturate.
         """
         self._round(e2e, 32767, 512)
 
