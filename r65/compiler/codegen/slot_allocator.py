@@ -1281,6 +1281,13 @@ class StackSlotAllocator:
                         # clobber A.
                         if self.pre_allocated_hw.get(instr.source.id) == instr.dest.name:
                             return False
+                        # A source held in the *other* index register is a
+                        # TXY/TYX, which never touches A — the loop counter kept
+                        # in Y being copied to X for an `abs,X` access.
+                        if (self.pre_allocated_hw.get(instr.source.id) in ('X', 'Y') or
+                                (coalesced_id_to_hw is not None and
+                                 coalesced_id_to_hw.get(instr.source.id) in ('X', 'Y'))):
+                            return False
                         return True
                     return False  # LDX #imm or LDX addr don't clobber A
                 if instr.dest.name == 'B':

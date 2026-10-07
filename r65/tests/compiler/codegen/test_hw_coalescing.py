@@ -1094,3 +1094,40 @@ class TestNarrowerHintRejection:
             "Call return must NOT coalesce when live across a Call in a successor block"
 
 
+
+
+def _fn_asm(asm: str, name: str) -> str:
+    start = asm.index(f"\n{name}:")
+    end = asm.find("; ---", start)
+    return asm[start:end if end != -1 else None]
+
+
+class TestIndexTransferKeepsA:
+    """`X = Move counter` with the counter in Y is a TYX: A survives it."""
+
+    def test_loaded_value_stays_in_a_across_tyx(self):
+        """The u16 `pos` plane's scaled index needs X, so the counter lives in Y and
+        each byte-plane access copies it over with TYX. `e.glow + e.heat` used
+        to round-trip both operands through the stack around those copies."""
+        from r65.compiler.main import compile_string
+        asm = _fn_asm(compile_string('''
+            #[soa] struct Spark { heat: u8 }
+            #[soa] struct Ember { heat: u8, glow: u8 }
+            enum Fx { Off, S(Spark), E(Ember) }
+            #[soa] struct Particle { x: u8, pos: u16, fx: Fx }
+            #[lowram] static mut PARTS: [Particle; 8];
+            fn tick() {
+                for i in 0..8 {
+                    match PARTS[i].fx {
+                        Fx::S(s) => { s.heat = s.heat - 1; }
+                        Fx::E(e) => { e.glow = e.glow + e.heat; }
+                        Fx::Off => { PARTS[i].pos = PARTS[i].pos + 1; }   // scaled index -> X, counter -> Y
+                    };
+                }
+            }
+            #[entry]
+            fn main() { tick(); }
+        ''', "t.r65"), "tick")
+        assert "TYX" in asm, asm          # the shape under test: counter in Y
+        assert "Allocate frame" not in asm, asm
+        assert ",S" not in asm, asm
