@@ -769,3 +769,33 @@ class TestBindingUsedAfterRewrite:
 
     def test_rewriting_another_element_is_accepted(self):
         build(self._f("POOL[0].kind = Kind::Spring; OUT = fb.heat;"))
+
+
+class TestPayloadPlanesGroupedByStride:
+    """Only planes of the same stride overlay: a byte of the region belongs to
+    one element in every variant that uses it."""
+
+    def test_no_two_elements_share_a_byte(self):
+        prog = build('''
+            #[soa] struct Spark { heat: u8 }
+            #[soa] struct Ember { heat: u8, glow: u8 }
+            #[soa] struct Flare { pos: u16, life: u8 }
+            enum Fx { Off, S(Spark), E(Ember), F(Flare) }
+            #[lowram]
+            static mut FX: [Fx; 8];
+            fn main() {}
+        ''')
+        decls = statics(prog)
+        owner = {}          # region byte -> element index
+        for d in decls.values():
+            if not d.soa_overlay:
+                continue
+            region, offset = d.soa_overlay
+            stride = d.soa_stride
+            for elem in range(d.var_type.size):
+                for b in range(stride):
+                    byte = offset + elem * stride + b
+                    assert owner.setdefault(byte, elem) == elem, (
+                        f"{d.name}[{elem}] shares region byte {byte} with element {owner[byte]}")
+        # u8 lane: two planes (Ember's two fields); u16 lane: one plane.
+        assert decls['FX__data'].var_type.element_type.size_bytes == 2 * 1 + 1 * 2

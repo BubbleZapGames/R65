@@ -1673,14 +1673,11 @@ class HIRBuilder:
             natural = max(f.field_type.size_bytes for f in union.fields)
             if self._tagged_enums.get(enum_name, False):
                 # The data plane is a region every variant overlays with its
-                # field planes, so its per-element size is the largest
-                # variant's *sum of plane strides* — which can exceed the packed
-                # size, since each plane pads 3 -> 4 and 7 -> 8 on its own.
-                per_variant = {}
-                for variant, _field, ftype in self._soa_payload_fields(enum_name):
-                    per_variant[variant] = (per_variant.get(variant, 0)
-                                            + self._soa_stride(ftype.size_bytes))
-                stride = max(per_variant.values())
+                # field planes, grouped into one lane per stride so planes only
+                # overlay planes of their own stride — see _soa_payload_layout.
+                # Its per-element size can exceed the packed size, since each
+                # plane pads 3 -> 4 and 7 -> 8 on its own.
+                _offsets, stride = self._soa_payload_layout(enum_name)
             else:
                 stride = self._soa_stride(natural)
             if stride > natural:
@@ -1895,9 +1892,10 @@ class HIRBuilder:
 
         An all-`#[soa]` enum appends one entry per variant field, each carrying
         an overlay `(data plane name, element offset)`: the plane sits over the
-        data region at `count * element offset`, where the element offset is
-        the sum of the variant's earlier field strides — every variant starting
-        from the region base, which is what makes it a union.
+        data region at `count * element offset`, the offset coming from
+        `_soa_payload_layout` — variants overlay within one lane per stride,
+        which is what makes it a union without one element's payload landing
+        on another's.
         """
         tag = hir.HIRStructField(
             name=f'{prefix}tag', field_type=definition.underlying_type,
@@ -1912,15 +1910,13 @@ class HIRBuilder:
         planes = [(tag, tag.offset, None), (data, data.offset, None)]
 
         if self._tagged_enums.get(definition.name, False):
-            elem_offset = {}
+            offsets, _size = self._soa_payload_layout(definition.name)
             for variant, field_name, ftype in self._soa_payload_fields(definition.name):
                 plane = hir.HIRStructField(
                     name=f'{prefix}{variant}__{field_name}', field_type=ftype,
                     offset=data.offset)
                 planes.append((plane, data.offset,
-                               (data.name, elem_offset.get(variant, 0))))
-                elem_offset[variant] = (elem_offset.get(variant, 0)
-                                        + self._soa_stride(ftype.size_bytes))
+                               (data.name, offsets[(variant, field_name)])))
         return planes
 
     def _make_soa_plane(self, parent, field_decl, count, stride, address):
@@ -2469,6 +2465,40 @@ class HIRBuilder:
                          "standalone static or use a plain struct as the payload",
                 )
             self._payload_structs[struct_name] = (decl.name, variant_name)
+
+    def _soa_payload_layout(self, enum_name: str):
+        """`({(variant, field): element offset}, bytes per element)` for the region.
+
+        Every plane of the region has `count` elements of its own stride, so a
+        plane at element offset `o` puts element i at `count * o + i * stride`.
+        Two planes may share bytes only if they have the same stride *and* the
+        same offset — then element i of one is element i of the other. A wider
+        plane laid over narrower ones would put its element i on their elements
+        `2i` and `2i + 1`, so one element's payload would rewrite another's.
+
+        So the region is cut into lanes, one per stride, narrowest first. A
+        variant's k-th field of stride s sits at `lane(s) + k * s`, and lane s
+        is as wide as the variant with the most fields of that stride needs.
+        Variants still overlay — within each lane — so the region is the sum of
+        the per-stride maxima, at least the largest variant and usually equal.
+        """
+        fields = [(variant, name, self._soa_stride(ftype.size_bytes))
+                  for variant, name, ftype in self._soa_payload_fields(enum_name)]
+        per_lane: Dict[int, Dict[str, int]] = {}
+        for variant, _name, stride in fields:
+            counts = per_lane.setdefault(stride, {})
+            counts[variant] = counts.get(variant, 0) + 1
+        lane_base, running = {}, 0
+        for stride in sorted(per_lane):
+            lane_base[stride] = running
+            running += stride * max(per_lane[stride].values())
+
+        offsets, used = {}, {}
+        for variant, name, stride in fields:
+            k = used.get((variant, stride), 0)
+            used[(variant, stride)] = k + 1
+            offsets[(variant, name)] = lane_base[stride] + k * stride
+        return offsets, running
 
     def _soa_payload_fields(self, enum_name: str):
         """`[(variant, field name, field type)]` for an all-`#[soa]` enum.

@@ -473,16 +473,43 @@ removes both.
 
 With `#[soa]` payloads the data plane is no longer an array of union elements.
 Each variant lays its fields out by the ordinary `#[soa]` formula — one plane
-per field, each padded 3→4 / 7→8 — and every variant starts at the same base:
+per field, each padded 3→4 / 7→8 — and the variants overlay one region.
+
+Planes overlay only planes of their **own stride**. The region is cut into one
+lane per stride, narrowest first; a variant's k-th field of stride s sits k
+planes into lane s, and each lane is as wide as the variant with the most
+fields of that stride needs:
 
 ```
-addr(variant V, field k) = data_base + Σ_{j<k} N · stride(V.field_j)
-region size              = max over V of Σ_j N · stride(V.field_j)
+lane(s)                  = Σ_{t<s} t · max over V of #(V's fields of stride t)
+addr(variant V, field f) = data_base + N · (lane(stride f) + k · stride f)
+                           (f is V's k-th field of that stride)
+region size              = N · Σ_s s · max over V of #(V's fields of stride s)
 ```
 
-The region can be larger than `N × max(packed payload)`: a variant with a
-`far *T` field pays one pad byte per element for that plane, exactly as an
-`#[soa]` struct would.
+The lanes are what keep each element's bytes its own. A plane puts element i at
+`i · stride` from its base, so two planes of different strides laid from the
+same base would not agree on which element a byte belongs to: a `u16` plane's
+element `i` would cover the bytes a `u8` plane uses for elements `2i` and
+`2i + 1`, and writing one element's payload would rewrite two others'. Two
+planes of the same stride at the same offset agree on every byte.
+
+The region is at least as large as the largest variant, and larger when
+variants spread their fields over different strides: `{u8, u8}` and
+`{u16, u8}` need 2 + 2 bytes per element where either alone needs 3 or fewer.
+It can also exceed `N × max(packed payload)` because a `far *T` field pays one
+pad byte per element for its plane, exactly as an `#[soa]` struct would.
+
+Keeping the region small:
+
+- Variants share bytes only within a width, so widths spread across variants
+  each cost a lane of their own.
+- A wide value most variants carry belongs in the parent `#[soa]` struct beside
+  the enum (see [A field of an `#[soa]` struct](#a-field-of-an-soa-struct)),
+  not repeated in each payload.
+- When sharing matters more than raw-index access, use plain payloads: their
+  data plane is an ordinary union array, where variants of any width share
+  bytes, at the cost of scaling the index for every payload access.
 
 For the enum above with `N = 16`:
 
@@ -501,11 +528,6 @@ bytes. That is the union, transposed: element `i`'s payload bytes are still
 private to element `i`, they are just no longer adjacent. Reading a plane that
 belongs to a variant other than the one in the tag yields whatever the last
 variant left there — exactly the guarantee a union gives now, no weaker.
-
-Two variants whose fields differ in width overlay at different byte positions
-(a `u16` at plane offset 0 spans the bytes a sibling variant's two `u8` planes
-use). Nothing depends on where they land relative to each other, so this needs
-no rule.
 
 Unit variants contribute no planes. An enum whose payload variants are all
 `#[soa]` and all single-`u8` degenerates to one shared plane, which is what a

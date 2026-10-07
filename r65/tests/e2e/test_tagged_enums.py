@@ -643,3 +643,38 @@ class TestIndexEvaluatedOnce:
             0x7E0040: [0x01, 0x00],    # the second next() ran once too
         }))
         assert result.success, f"Failures: {result.failures}"
+
+
+class TestMixedWidthPayloadsArePrivate:
+    """An element's payload bytes belong to that element alone.
+
+    Variants overlay one data region, but a u16 plane strides by 2: laid from
+    the region base like the u8 planes, its element i covered the bytes the u8
+    planes use for elements 2i and 2i+1. Writing one element's payload then
+    rewrote other elements' payloads. Planes are now grouped by stride, so
+    only planes of the same stride overlay one another.
+    """
+
+    def test_wide_and_narrow_payloads_on_neighbours(self, e2e):
+        result = e2e.run('''
+            #[soa] struct Spark { heat: u8 }
+            #[soa] struct Ember { heat: u8, glow: u8 }
+            #[soa] struct Flare { pos: u16 }
+            enum Fx { Off, S(Spark), E(Ember), F(Flare) }
+            #[zeropage(0x10)]
+            static mut FX: [Fx; 4];
+            #[zeropage(0x60)]
+            static mut OUT: [u8; 4];
+
+            #[entry]
+            fn main() {
+                FX[1] = Fx::F(Flare { pos: 0x1234 });
+                FX[2] = Fx::S(Spark { heat: 5 });
+                FX[3] = Fx::E(Ember { heat: 7, glow: 9 });
+                OUT[0] = match FX[1] { Fx::F(f) => (f.pos >> 8) as u8, _ => 0 };
+                OUT[1] = match FX[1] { Fx::F(f) => f.pos as u8, _ => 0 };
+                OUT[2] = match FX[2] { Fx::S(s) => s.heat, _ => 0 };
+                OUT[3] = match FX[3] { Fx::E(e) => e.heat + e.glow, _ => 0 };
+            }
+        ''', ExpectedState(memory={0x7E0060: [0x12, 0x34, 5, 16]}))
+        assert result.success, f"Failures: {result.failures}"
