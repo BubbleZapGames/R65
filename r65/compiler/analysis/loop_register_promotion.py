@@ -53,6 +53,7 @@ def analyze_loop_promotion(mir_program: MIRProgram):
     # Y). Covers both promotion above and the HIR depth-1/2 for-loop X/Y hints.
     for func in mir_program.functions:
         _enforce_index_clobber_safety(func)
+        _enforce_live_range_clobber_safety(func)
 
     # Eliminate temp copies in ALL functions with loops, even if no
     # promotion happened. This collapses `%T = %V + 1; %V = Move %T`
@@ -450,6 +451,87 @@ def _enforce_index_clobber_safety(func: MIRFunction) -> int:
             vreg.register_hint = 'Y'
             y_claimed = True
             func.loop_promoted_hw_vregs['Y'] = vreg
+        else:
+            vreg.register_hint = None
+        rewritten += 1
+    return rewritten
+
+
+def _index_clobbers(instr) -> Set[str]:
+    """The index registers *instr*'s codegen overwrites: see
+    `_enforce_index_clobber_safety` for each case."""
+    if isinstance(instr, (BlockCopy, MemoryFill)):
+        return {'X', 'Y'}
+    if isinstance(instr, AggregateCopy) and instr.count > AGGREGATE_COPY_UNROLL_MAX:
+        return {'X', 'Y'}
+    if isinstance(instr, (JumpTable, LookupTable)):
+        return {'X'}
+    if isinstance(instr, (LoadIndirect, StoreIndirect)) and instr.index_register is None:
+        return {'Y'}
+    return set()
+
+
+def _enforce_live_range_clobber_safety(func: MIRFunction) -> int:
+    """Drop or move an X/Y hint whose vreg is live across a clobber anywhere.
+
+    `_enforce_index_clobber_safety` only looks inside loop bodies, but a
+    hinted vreg is placed in its register for its whole life. A counter that
+    outlives its loop - `exp` in F32::from_i16, decremented in the normalize
+    loop and stored through `self` after it - meets the `LDY #offset` of that
+    store with its value still in Y. Each hint is checked against every
+    clobbering instruction the vreg is used by or live after; an unsafe one
+    moves to the other index register if that is free and safe, else is
+    dropped.
+
+    Returns the number of hints rewritten.
+    """
+    clobbers = []
+    for block_id, block in func.blocks.items():
+        for idx, instr in enumerate(block.instructions):
+            regs = _index_clobbers(instr)
+            if regs:
+                clobbers.append((block_id, idx, instr, regs))
+    if not clobbers:
+        return 0
+
+    hinted: Dict[int, VirtualRegister] = {}
+    for block in func.blocks.values():
+        for instr in block.instructions:
+            for vreg in _get_vregs_from_instr(instr):
+                if vreg.register_hint in ('X', 'Y'):
+                    hinted[vreg.id] = vreg
+    if not hinted:
+        return 0
+
+    from r65.compiler.mir.liveness import InstructionLivenessAnalyzer
+    liveness = InstructionLivenessAnalyzer(func)
+
+    def unsafe(vreg, reg) -> bool:
+        for block_id, idx, instr, regs in clobbers:
+            if reg not in regs:
+                continue
+            if any(v.id == vreg.id for v in _get_vregs_from_instr(instr)):
+                return True
+            if liveness.is_live_after(vreg, block_id, idx):
+                return True
+        return False
+
+    rewritten = 0
+    for vid in sorted(hinted):
+        vreg = hinted[vid]
+        reg = vreg.register_hint
+        if not unsafe(vreg, reg):
+            continue
+        promoted = func.loop_promoted_hw_vregs.get(reg) is vreg
+        if promoted:
+            del func.loop_promoted_hw_vregs[reg]
+        other = 'X' if reg == 'Y' else 'Y'
+        claimed = (any(v.register_hint == other for v in hinted.values() if v is not vreg)
+                   or other in func.loop_promoted_hw_vregs)
+        if not claimed and not unsafe(vreg, other):
+            vreg.register_hint = other
+            if promoted:
+                func.loop_promoted_hw_vregs[other] = vreg
         else:
             vreg.register_hint = None
         rewritten += 1

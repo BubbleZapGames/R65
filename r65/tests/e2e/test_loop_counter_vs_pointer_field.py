@@ -59,3 +59,46 @@ class TestLoopCounterVersusPointerField:
             0x7E0042: [0x08],           # every element visited exactly once
         }))
         assert result.success, f"Failures: {result.failures}"
+
+
+class TestCounterOutlivesItsLoop:
+    """A counter still live after its loop meets a pointer store's `LDY #offset`.
+
+    The loop-body check above cannot see this: the store is after the loop,
+    but a promoted counter holds its register for its whole life, so the
+    `LDY #$00` of `p.a = v` replaced `e` before `p.b = e` read it. F32's
+    `from_i16` (exponent counted down by the normalize loop, written through
+    `self` after it) had this shape; it was hidden while nested `if`s were
+    misread as loops spanning the whole function.
+    """
+
+    def test_counter_survives_the_store(self, e2e):
+        result = e2e.run('''
+            struct Rec { a: u16, b: u16 }
+
+            #[lowram]
+            static mut R: Rec;
+            #[zeropage(0x40)]
+            static mut OUT: u16;
+
+            fn norm(p: *Rec, start: u16) {
+                let mut v: u16 = start;
+                let mut e: u16 = 151;
+                loop {
+                    if (v & 0x4000) != 0 { break; }
+                    v = v << 1;
+                    e = e - 1;
+                }
+                p.a = v;
+                p.b = e;
+            }
+
+            #[entry]
+            fn main() {
+                norm(&R as *Rec, 1);
+                OUT = R.b;
+            }
+        ''', ExpectedState(memory={
+            0x7E0040: [0x89, 0x00],     # 151 - 14 shifts
+        }))
+        assert result.success, f"Failures: {result.failures}"
