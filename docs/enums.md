@@ -231,6 +231,14 @@ match POOL[i] {
 }
 ```
 
+The view is of the element that was **matched**. Its index is read once: an
+index that could change — a static, an expression, a local the arms assign —
+is copied into a temporary first, so a side effect in it runs once and
+`i = i + 1` inside the arm does not move `c` to another element. (A plain
+local or a literal is read where it is used, at no cost.) A construction
+`POOL[f()] = Shape::C(..)` likewise evaluates `f()` once for the tag and all
+the payload stores.
+
 A match must cover every variant or carry a `_`. Coverage is checked against the
 variants, not against the tag's integer range, and an arm naming a different
 enum is rejected.

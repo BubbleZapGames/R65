@@ -5,6 +5,7 @@ Expression builder - builds HIR expressions from AST expressions.
 Extracted from HIRBuilder to improve modularity and reduce file size.
 """
 
+import dataclasses
 from typing import Optional
 from pathlib import Path
 from r65.compiler.frontend import ast
@@ -115,6 +116,125 @@ class ExpressionBuilder:
             return None
         return self._soa_payload_plane(enum_name, variant_name, expr.field,
                                        index_ast, src_loc)
+
+    def _index_is_stable(self, index_ast, assigned_names=frozenset()) -> bool:
+        """Whether *index_ast* can be re-read and still name the same element.
+
+        An index used for several planes — a construction's stores, a match's
+        tag read and every use of its payload binding — is rebuilt at each use.
+        That is free and correct only when re-reading it cannot change the
+        answer: a literal, a const, `self` (it cannot be assigned), or a local
+        that nothing in reach assigns. A static can change under a call, and
+        anything else may have side effects of its own.
+        """
+        if isinstance(index_ast, ast.IntegerLiteral):
+            return True
+        if not isinstance(index_ast, ast.Identifier):
+            return False
+        if index_ast.name == 'self':
+            return True
+        symbol = self.symbol_table.lookup(index_ast.name)
+        kind = getattr(symbol, 'kind', None)
+        if kind in (SymbolKind.CONST, SymbolKind.IMPL_CONST):
+            return True
+        return (kind in (SymbolKind.LOCAL_VAR, SymbolKind.PARAMETER)
+                and getattr(symbol, 'enum_payload_alias', None) is None
+                and index_ast.name not in assigned_names)
+
+    def _snapshot_index(self, index_ast, loc):
+        """`let __pool_idxN = <index>;` and an identifier naming it.
+
+        The let is built here, in the current scope, so the identifier resolves
+        wherever the index would have been rebuilt; its type is inferred from
+        the index.
+        """
+        self._enum_temp_counter += 1
+        name = f"__pool_idx{self._enum_temp_counter}"
+        symbol = Symbol(name=name, kind=SymbolKind.LOCAL_VAR, definition=None,
+                        scope_id=self.symbol_table.current_scope_id,
+                        var_type=None, is_mutable=False)
+        let = hir.HIRLetStmt(name=name, is_mutable=False, var_type=None,
+                             initializer=self.build_expression(index_ast),
+                             symbol=symbol, source_loc=loc)
+        self.symbol_table.declare(name, symbol)
+        return let, ast.Identifier(name=name, source_loc=loc)
+
+    def _snapshot_target_index(self, target, value, loc):
+        """`(let, target')` for a compound assignment's target, else (None, target).
+
+        The target is read and then written, so its index is evaluated twice.
+        That is only wrong when the two evaluations can differ: the index has a
+        call or an assignment of its own, or it reads something other than a
+        local and the value being combined makes a call that could change it.
+        Follows a field chain (`A[i].f.g`) down to the array index; the rebuilt
+        target names the snapshot in place of the index.
+        """
+        if isinstance(target, ast.FieldAccess):
+            snapshot, base = self._snapshot_target_index(target.base, value, loc)
+            if snapshot is None:
+                return None, target
+            return snapshot, dataclasses.replace(target, base=base)
+        if isinstance(target, ast.ArrayIndex):
+            index = target.index
+            volatile = (self._has_call_or_assignment(index)
+                        or (self._reads_nonlocal(index)
+                            and self._has_call_or_assignment(value)))
+            if volatile:
+                snapshot, index = self._snapshot_index(index, loc)
+                return snapshot, dataclasses.replace(target, index=index)
+        return None, target
+
+    @staticmethod
+    def _walk_ast(node):
+        stack = [node]
+        while stack:
+            n = stack.pop()
+            if isinstance(n, list):
+                stack.extend(n)
+            elif isinstance(n, ast.ASTNode):
+                yield n
+                stack.extend(v for v in vars(n).values()
+                             if isinstance(v, (list, ast.ASTNode)))
+
+    def _has_call_or_assignment(self, node) -> bool:
+        return any(isinstance(n, (ast.FunctionCall, ast.Assignment,
+                                  ast.CompoundAssignment, ast.MultiAssignment))
+                   for n in self._walk_ast(node))
+
+    def _reads_nonlocal(self, node) -> bool:
+        for n in self._walk_ast(node):
+            if isinstance(n, ast.Identifier) and n.name != 'self':
+                kind = getattr(self.symbol_table.lookup(n.name), 'kind', None)
+                if kind not in (SymbolKind.LOCAL_VAR, SymbolKind.PARAMETER,
+                                SymbolKind.CONST, SymbolKind.IMPL_CONST):
+                    return True
+        return False
+
+    @staticmethod
+    def _assigned_names(node) -> set:
+        """Names of the plain identifiers assigned anywhere under an AST *node*.
+
+        `i++` and `i += n` parse as compound assignments, so three node kinds
+        cover every way a local can change.
+        """
+        names, stack, seen = set(), [node], set()
+        while stack:
+            n = stack.pop()
+            if id(n) in seen:
+                continue
+            seen.add(id(n))
+            if isinstance(n, (ast.Assignment, ast.CompoundAssignment)):
+                if isinstance(n.target, ast.Identifier):
+                    names.add(n.target.name)
+            elif isinstance(n, ast.MultiAssignment):
+                names.update(t.name for t in n.targets if isinstance(t, ast.Identifier))
+            if isinstance(n, list):
+                stack.extend(n)
+            elif hasattr(n, '__dict__'):
+                for v in vars(n).values():
+                    if isinstance(v, (list, ast.ASTNode)):
+                        stack.append(v)
+        return names
 
     def _payload_self_ident(self, expr):
         """`self` in a payload struct's method, where it may appear, else None.
@@ -622,6 +742,14 @@ class ExpressionBuilder:
             return hir.HIRAssignment(target=target, value=value, source_loc=src_loc)
 
         elif isinstance(expr, ast.CompoundAssignment):
+            # The desugared target is lowered twice — read, then written — so an
+            # index that could change between the two is read once, first.
+            snapshot, target_ast = self._snapshot_target_index(expr.target, expr.value, src_loc)
+            if snapshot is not None:
+                assignment = self.build_expression(dataclasses.replace(expr, target=target_ast))
+                return hir.HIRBlockExpression(statements=[snapshot],
+                                              final_expr=assignment, source_loc=src_loc)
+
             # Desugar compound assignment: x += 5 becomes x = x + 5
             target = self.build_expression(expr.target)
             value = self.build_expression(expr.value)
@@ -810,6 +938,11 @@ class ExpressionBuilder:
             return None
         enum_name, index_ast = target
         loc = getattr(expr, 'source_loc', None)
+        # The tag and every payload field are separate stores, each rebuilding
+        # the index: one that could change between them is read once, first.
+        snapshot = None
+        if not self._index_is_stable(index_ast):
+            snapshot, index_ast = self._snapshot_index(index_ast, loc)
 
         value = expr.value
         payload = None
@@ -901,6 +1034,8 @@ class ExpressionBuilder:
         statements = self._stores_after_operands(stores, loc)
         self.symbol_table.exit_scope()
         statements.append(tag_store)
+        if snapshot is not None:
+            statements.insert(0, snapshot)
         return hir.HIRBlock(statements=statements, scope_id=scope_id, source_loc=loc)
 
     def _payload_stores(self, slot, payload: ast.Expression, slot_type, loc):
@@ -999,11 +1134,20 @@ class ExpressionBuilder:
         # A tagged enum scrutinee is really its tag: rewrite to a read of the
         # tag plane, and hand the arms the index so a payload binding can reach
         # the same element of the data plane.
+        loc = getattr(expr, 'source_loc', None)
         tagged = self._tagged_match_target(expr.scrutinee)
+        snapshot = None
         if tagged is not None:
             enum_name, index_ast = tagged
-            scrutinee = self._enum_plane_access(
-                enum_name, 'tag', index_ast, getattr(expr, 'source_loc', None))
+            # The tag read and every use of a payload binding rebuild the index,
+            # so one that could change — or has side effects — is read once.
+            # That also keeps a binding on the element that was matched. With no
+            # binding the tag read is the only use, and nothing is rebuilt.
+            binds = any(getattr(arm.pattern, 'binding', None) for arm in expr.arms)
+            if binds and not self._index_is_stable(index_ast,
+                                                   self._assigned_names(expr.arms)):
+                snapshot, index_ast = self._snapshot_index(index_ast, loc)
+            scrutinee = self._enum_plane_access(enum_name, 'tag', index_ast, loc)
         else:
             enum_name = index_ast = None
             scrutinee = self.build_expression(expr.scrutinee)
@@ -1028,9 +1172,13 @@ class ExpressionBuilder:
 
             arms.append(hir.HIRMatchArm(pattern=pattern, body=body, scope_id=scope_id))
 
-        return hir.HIRMatchExpression(scrutinee=scrutinee, arms=arms,
-                                      tagged_enum=enum_name,
-                                      source_loc=expr.source_loc)
+        match = hir.HIRMatchExpression(scrutinee=scrutinee, arms=arms,
+                                       tagged_enum=enum_name,
+                                       source_loc=expr.source_loc)
+        if snapshot is None:
+            return match
+        return hir.HIRBlockExpression(statements=[snapshot], final_expr=match,
+                                      source_loc=loc)
 
     def _declare_payload_binding(self, pattern: ast.EnumPattern, match_enum,
                                  match_index, loc):

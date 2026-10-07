@@ -550,3 +550,96 @@ class TestMorph:
             0x7E001A: [0xA0],    # Boss::cooldown[2] = the old heat
         }))
         assert result.success, f"Failures: {result.failures}"
+
+
+INDEX_ONCE = SOA_PAYLOADS + '''
+    #[zeropage(0x40)]
+    static mut CNT: u16;
+    #[zeropage(0x42)]
+    static mut OUT: u8;
+    #[zeropage(0x48)]
+    static mut ARR: [u8; 4];
+
+    fn next() -> u16 { CNT = CNT + 1; return CNT; }
+'''
+
+
+class TestIndexEvaluatedOnce:
+    """A pool index is read once, and a binding stays on the matched element.
+
+    The planes are separate arrays, so an index used for several of them must
+    not be re-evaluated per plane: a side effect would run again and each plane
+    could land on a different element. `next()` returns 1 on its first call.
+    """
+
+    def test_construction(self, e2e):
+        result = e2e.run(INDEX_ONCE + '''
+            #[entry]
+            fn main() {
+                CNT = 0;
+                POOL[next()].kind = Kind::Fireball(Fireball { heat: 0xA0, phase: 0xA1 });
+            }
+        ''', ExpectedState(memory={
+            0x7E0011: [0x02],          # tag[1]: Fireball
+            0x7E0015: [0xA0],          # Fireball::heat[1]
+            0x7E0019: [0xA1],          # Fireball::phase[1]
+            0x7E0040: [0x01, 0x00],    # next() ran once
+        }))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_match_binding(self, e2e):
+        result = e2e.run(INDEX_ONCE + '''
+            #[entry]
+            fn main() {
+                POOL[1].kind = Kind::Fireball(Fireball { heat: 3, phase: 4 });
+                POOL[2].kind = Kind::Fireball(Fireball { heat: 10, phase: 20 });
+                CNT = 0;
+                OUT = match POOL[next()].kind {
+                    Kind::Fireball(f) => f.heat + f.phase,
+                    _ => 0,
+                };
+            }
+        ''', ExpectedState(memory={
+            0x7E0042: [7],             # both fields from element 1
+            0x7E0040: [0x01, 0x00],
+        }))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_binding_survives_index_reassignment(self, e2e):
+        result = e2e.run(INDEX_ONCE + '''
+            #[entry]
+            fn main() {
+                POOL[1].kind = Kind::Fireball(Fireball { heat: 3, phase: 4 });
+                POOL[2].kind = Kind::Fireball(Fireball { heat: 10, phase: 20 });
+                let mut i: u16 = 1;
+                match POOL[i].kind {
+                    Kind::Fireball(f) => { i = i + 1; OUT = f.heat; }
+                    _ => {}
+                };
+                CNT = i;
+            }
+        ''', ExpectedState(memory={
+            0x7E0042: [3],             # element 1, the one matched
+            0x7E0040: [0x02, 0x00],
+        }))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_compound_assignment(self, e2e):
+        """Not SoA-specific: `a[f()] += n` evaluates the index once."""
+        result = e2e.run(INDEX_ONCE + '''
+            #[entry]
+            fn main() {
+                ARR[1] = 5;
+                ARR[2] = 9;
+                POOL[1].x = 7;
+                CNT = 0;
+                ARR[next()] += 1;
+                CNT = 0;
+                POOL[next()].x += 1;
+            }
+        ''', ExpectedState(memory={
+            0x7E0049: [6, 9],          # ARR[1] bumped, ARR[2] untouched
+            0x7E002D: [8],             # POOL__x[1]
+            0x7E0040: [0x01, 0x00],    # the second next() ran once too
+        }))
+        assert result.success, f"Failures: {result.failures}"
