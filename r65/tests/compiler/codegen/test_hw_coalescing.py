@@ -1102,6 +1102,55 @@ def _fn_asm(asm: str, name: str) -> str:
     return asm[start:end if end != -1 else None]
 
 
+class TestMergeValueInA:
+    """A value assigned at the end of each arm and read at the join stays in A.
+
+    Every arm of a `match` / `if` expression leaves its result in A and jumps to
+    the join. The single-def path rejected the vreg for having one def per arm,
+    so it went to a stack slot — and the slot alone forced a frame.
+    """
+
+    SOURCE = '''
+        struct Circle { r: u8 }
+        struct Rect   { w: u8, h: u8 }
+        enum Shape { Empty, C(Circle), R(Rect) }
+        #[lowram] static mut POOL: [Shape; 4];
+        #[zeropage] static mut OUT: u8;
+        #[zeropage] static mut OUT2: u8;
+    '''
+
+    def _compile(self, body):
+        from r65.compiler.main import compile_string
+        return compile_string(self.SOURCE + body + "\n#[entry]\nfn main() { get(1); }\n", "t.r65")
+
+    def test_match_result_needs_no_frame(self):
+        asm = _fn_asm(self._compile('''
+            fn get(i: u16) {
+                OUT = match POOL[i] {
+                    Shape::C(c) => c.r,
+                    Shape::R(r) => r.h,
+                    Shape::Empty => 0,
+                };
+            }'''), "get")
+        assert "Allocate frame" not in asm, asm
+        assert not any(l.strip().startswith("STA") and l.strip().endswith(",S")
+                       for l in asm.splitlines()), asm
+
+    def test_join_that_clobbers_a_first_still_spills(self):
+        """A store of another value in the join, before the use, reloads A —
+        the merge must keep its stack slot there."""
+        asm = _fn_asm(self._compile('''
+            fn get(i: u16) {
+                let v: u8 = match POOL[i] {
+                    Shape::C(c) => c.r,
+                    _ => 9,
+                };
+                OUT2 = 7;
+                OUT = v;
+            }'''), "get")
+        assert "Allocate frame" in asm, asm
+
+
 class TestIndexTransferKeepsA:
     """`X = Move counter` with the counter in Y is a TYX: A survives it."""
 

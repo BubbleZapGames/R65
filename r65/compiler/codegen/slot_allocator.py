@@ -21,7 +21,7 @@ from r65.compiler.mir.nodes import (
     Store, Load, BinaryOp, UnaryOp, TypeConvert, Compare, BitTest, Rotate,
     ToBool, LoadIndirect, StoreIndirect, StatusFlagRead, InlineAsm,
     TraitDispatch, RestoreRegister, SaveRegister,
-    CondBranch, JumpTable, LookupTable, BankByte,
+    CondBranch, JumpTable, LookupTable, BankByte, Immediate,
 )
 from r65.compiler.mir.liveness import LivenessAnalyzer
 from r65.compiler.hir.unified_type_utils import get_unified_type_size
@@ -866,40 +866,7 @@ class StackSlotAllocator:
             # - Call arg: codegen reads A for PHA/STA; emit_call_args ensures
             #   A-resident args are processed before other args clobber A.
             if type(def_instr) in _alu_def_types:
-                all_uses_safe = True
-                for use in uses:
-                    use_type = type(use)
-                    if use_type is Return or use_type is Move or use_type is Compare:
-                        continue
-                    if (use_type is Store and
-                        type(use.source) is VirtualRegister and
-                        use.source.id == vreg_id):
-                        continue
-                    if (use_type is StoreIndirect and
-                        type(use.source) is VirtualRegister and
-                        use.source.id == vreg_id):
-                        continue
-                    if (use_type is BinaryOp and
-                        type(use.left) is VirtualRegister and
-                        use.left.id == vreg_id):
-                        continue
-                    # A narrowing convert reads A and leaves its own result
-                    # there — the same read-then-redefine shape as BinaryOp-left
-                    # above, and with the source in A it emits nothing but the
-                    # `SEP #$20`.
-                    if (use_type is TypeConvert and
-                        is_narrowing_convert(use) and
-                        type(use.source) is VirtualRegister and
-                        use.source.id == vreg_id):
-                        continue
-                    if (use_type is Call and
-                        any(type(a.value) is VirtualRegister and
-                            a.value.id == vreg_id
-                            for a in use.args)):
-                        continue
-                    all_uses_safe = False
-                    break
-                if not all_uses_safe:
+                if not all(self._use_reads_a_in_place(use, vreg_id) for use in uses):
                     continue
 
             candidates.append((vreg_id, def_instr, hw_reg, uses))
@@ -942,7 +909,131 @@ class StackSlotAllocator:
 
             candidates = remaining
 
+        coalesceable.update(self._find_a_merge_vregs(coalesced_id_to_hw))
         return coalesceable
+
+    def _find_a_merge_vregs(self, coalesced_id_to_hw: Dict[int, str]) -> Dict[VirtualRegister, str]:
+        """Merge values that can live in A: one def per incoming arm, used at the join.
+
+        A `match` or `if` expression lowers to a vreg assigned at the end of each
+        arm and read in the block they all jump to. Every def leaves the value in
+        A, so when nothing after a def in its arm and nothing in the join before
+        the last use touches A, the vreg never needs a stack slot — and a
+        function whose only slot it was needs no frame. The single-def path
+        cannot see this shape: it rejects any vreg with more than one def.
+
+        The vreg must not be live out of the join, so no value flows around a
+        loop back into it. A predecessor of the join that defines nothing (a
+        match's no-arm fall-through) leaves the value undefined, in A or on the
+        stack alike.
+        """
+        defs: Dict[int, list] = {}
+        uses: Dict[int, list] = {}
+        vregs: Dict[int, VirtualRegister] = {}
+        for block_id, block in self.func.blocks.items():
+            for idx, instr in enumerate(block.instructions):
+                for var in self.liveness_analyzer._get_defs(instr):
+                    if type(var) is VirtualRegister:
+                        defs.setdefault(var.id, []).append((block_id, idx, instr))
+                        vregs[var.id] = var
+                for var in self.liveness_analyzer._get_uses(instr):
+                    if type(var) is VirtualRegister:
+                        uses.setdefault(var.id, []).append((block_id, idx, instr))
+
+        merged: Dict[VirtualRegister, str] = {}
+        liveness = self.liveness_analyzer.liveness
+        for vreg_id, def_list in defs.items():
+            vreg = vregs[vreg_id]
+            use_list = uses.get(vreg_id)
+            if (len(def_list) < 2 or not use_list or vreg_id in coalesced_id_to_hw
+                    or vreg_id in self.pre_allocated_hw
+                    or vreg in self.pre_allocated_vregs
+                    or get_vreg_size(vreg) > 2):
+                continue
+            join_blocks = {block_id for block_id, _, _ in use_list}
+            if len(join_blocks) != 1:
+                continue
+            join = join_blocks.pop()
+            if join not in liveness or vreg in liveness[join].live_out:
+                continue
+            if not all(self._use_reads_a_in_place(instr, vreg_id) for _, _, instr in use_list):
+                continue
+            if not self._merge_defs_leave_a(vreg_id, def_list, join, coalesced_id_to_hw):
+                continue
+            last_use = max(idx for _, idx, _ in use_list)
+            join_instrs = self.func.blocks[join].instructions
+            if any(self._clobbers_a(instr, vreg_id, coalesced_id_to_hw)
+                   for instr in join_instrs[:last_use]):
+                continue
+            merged[vreg] = 'A'
+            coalesced_id_to_hw[vreg_id] = 'A'
+        return merged
+
+    def _merge_defs_leave_a(self, vreg_id: int, def_list: list, join: int,
+                            coalesced_id_to_hw: Dict[int, str]) -> bool:
+        """Every def ends its own arm, puts the value in A, and A survives to the jump."""
+        for block_id, idx, instr in def_list:
+            block = self.func.blocks[block_id]
+            if block_id == join or list(block.successors) != [join]:
+                return False
+            instr_type = type(instr)
+            if instr_type is Move:
+                source = instr.source
+                if type(source) is VirtualRegister:
+                    if get_vreg_size(source) > 2:
+                        return False
+                elif type(source) is HardwareRegister:
+                    if source.name not in ('A', 'X', 'Y'):
+                        return False
+                elif type(source) is not Immediate:
+                    return False
+            elif instr_type not in (Load, BinaryOp, UnaryOp):
+                return False
+            if any(self._clobbers_a(later, vreg_id, coalesced_id_to_hw)
+                   for later in block.instructions[idx + 1:]):
+                return False
+        return True
+
+    @staticmethod
+    def _use_reads_a_in_place(use: Any, vreg_id: int) -> bool:
+        """Whether *use* reads the vreg straight from A without needing it elsewhere.
+
+        Move variants just read A (STA/TAX/TAY preserve A); a Store or
+        StoreIndirect of the vreg is an STA from A; Compare is CMP, which reads
+        A without modifying it; a BinaryOp's left operand is read before the op
+        overwrites A with its result; a narrowing convert reads A and leaves its
+        own result there; a Call argument is pushed or stored from A.
+        """
+        use_type = type(use)
+        if use_type is Return or use_type is Move or use_type is Compare:
+            return True
+        if (use_type is Store and
+            type(use.source) is VirtualRegister and
+            use.source.id == vreg_id):
+            return True
+        if (use_type is StoreIndirect and
+            type(use.source) is VirtualRegister and
+            use.source.id == vreg_id):
+            return True
+        if (use_type is BinaryOp and
+            type(use.left) is VirtualRegister and
+            use.left.id == vreg_id):
+            return True
+        # A narrowing convert reads A and leaves its own result
+        # there — the same read-then-redefine shape as BinaryOp-left
+        # above, and with the source in A it emits nothing but the
+        # `SEP #$20`.
+        if (use_type is TypeConvert and
+            is_narrowing_convert(use) and
+            type(use.source) is VirtualRegister and
+            use.source.id == vreg_id):
+            return True
+        if (use_type is Call and
+            any(type(a.value) is VirtualRegister and
+                a.value.id == vreg_id
+                for a in use.args)):
+            return True
+        return False
 
     def _find_return_sinkable_vregs(self) -> Dict[VirtualRegister, 'MemoryLocation']:
         """
