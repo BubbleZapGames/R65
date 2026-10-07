@@ -379,7 +379,7 @@ impl Hazard for Fireball {
 
 impl Enemy {
     fn update(self) {
-        match POOL[self].kind {
+        match self.kind {
             Kind::Fireball(f) => { f.phase = f.phase + 1; self.vy = -1; self.x = f.burn(); }
             ...
         };
@@ -554,6 +554,84 @@ by default, but a same-bank call is demoted to `JSR`/`RTS` at `-O1`; see
 Static dispatch only, as for any `#[soa]` implementor. `*dyn` over an SoA
 element is unchanged — designed, not built (see [soa.md](soa.md#known-limits)).
 
+### A payload's `self` is not a number
+
+The index travels in X, but in the source a payload method's `self` is an
+element of its variant and nothing else. A payload has no back-reference to
+the struct it sits in — as in Rust, where `impl Fireball { fn burn(&mut self) }`
+sees the `Fireball` and cannot name the `Enemy` around it — so the method may
+use `self` in exactly three ways:
+
+```rust
+self.heat           // its own field
+self.burn()         // its own method
+self as u16         // the pool index, asked for explicitly
+```
+
+Any other use is rejected: `POOL[self].x`, `helper(self)`, `self == 0`,
+`let i = self`.
+
+```
+error: 'self' in a method on #[soa] payload struct 'Fireball' is not a value
+hint: it is an element of 'Kind::Fireball', not an index: reach its own fields
+      as `self.field`; code that needs the parent's fields belongs in an impl
+      on the parent; write `self as u16` if the pool index itself is needed
+```
+
+So a kind's behaviour splits in two. The payload's own methods keep what
+touches only its own state; code that mixes the shared fields with the
+payload belongs on the **parent**. There `self.kind` is matched like any
+element and the binding is the payload — the R65 spelling of Rust's
+`let Kind::Fireball(f) = &mut self.kind else { return };` — so the parent can
+call the payload's methods and reach both kinds of field:
+
+```rust
+impl Fireball {
+    // Own state only: heat up, report the flicker phase.
+    fn process(self) -> u8 {
+        self.heat = self.heat + 1;
+        return self.phase;
+    }
+}
+
+impl Enemy {
+    fn burn(self) {
+        match self.kind {
+            Kind::Fireball(f) => {
+                self.x = self.x + f.process();  // shared plane, from the payload's tick
+                if f.heat > 9 {                 // the parent may read the binding too
+                    self.kind = Kind::Spring;   // change of kind
+                }
+            }
+            _ => {}
+        };
+    }
+}
+```
+
+Every access is still one `abs,X` instruction at the element index, and the
+payload call passes X straight through; the price of the shape is one tag test
+per call when the caller has already matched.
+
+So when the caller *has* already matched — a per-frame loop dispatching on the
+tag — put the mixing code in that arm, with the binding, instead of calling a
+parent method that matches again:
+
+```rust
+for i in 0..16 {
+    match POOL[i].kind {
+        Kind::Fireball(f) => {
+            POOL[i].x = POOL[i].x + f.process();
+            if f.heat > 9 { POOL[i].kind = Kind::Spring; }
+        }
+        ...
+    };
+}
+```
+
+One tag test per element, no call; the payload's own methods still hold its
+own state. classickong's `enemy_process` is this shape.
+
 ### Rules
 
 **All or nothing.** Within one tagged enum, either every payload struct is
@@ -602,7 +680,10 @@ rejected — write the fields.
 
 **The receiver is the outer index.** `Fireball::burn` above only makes sense
 called on an element of `POOL`; there is no other Fireball. That coupling is
-what `#[soa]` means, and it is the same coupling `impl Kind` already has.
+what `#[soa]` means, and it is the same coupling `impl Kind` already has. It
+is an implementation fact, not a handle: in the source `self` is the element,
+and reaching the parent from it is rejected (see
+[A payload's `self` is not a number](#a-payloads-self-is-not-a-number)).
 
 ### Known limits
 

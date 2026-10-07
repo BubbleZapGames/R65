@@ -116,6 +116,21 @@ class ExpressionBuilder:
         return self._soa_payload_plane(enum_name, variant_name, expr.field,
                                        index_ast, src_loc)
 
+    def _payload_self_ident(self, expr):
+        """`self` in a payload struct's method, where it may appear, else None.
+
+        Inside a method on an `#[soa]` payload struct `self` is an element of
+        its variant, not a number, so a bare `self` is rejected (see the
+        `ast.Identifier` branch). Two positions are exempt and build it here:
+        the base of `self.field` / `self.method()`, and `self as u16`, the
+        explicit way to ask for the pool index.
+        """
+        if (self.payload_self is None or not isinstance(expr, ast.Identifier)
+                or expr.name != 'self'):
+            return None
+        return hir.HIRIdentifier(name='self', symbol=self.symbol_table.lookup('self'),
+                                 source_loc=expr.source_loc)
+
     def _soa_rewrite_base(self, base, src_loc):
         """Turn an `#[soa]` field-access base into an explicit element index.
 
@@ -182,6 +197,19 @@ class ExpressionBuilder:
             return hir.HIRStringLiteral(value=expr.value, source_loc=src_loc)
 
         elif isinstance(expr, ast.Identifier):
+            if expr.name == 'self' and self.payload_self is not None:
+                enum_name, variant_name = self.payload_self
+                struct_name = self.enum_payloads[enum_name][variant_name].name
+                raise HIRError(
+                    f"'self' in a method on #[soa] payload struct '{struct_name}' "
+                    f"is not a value",
+                    source_loc=src_loc,
+                    hint=f"it is an element of '{enum_name}::{variant_name}', not an "
+                         f"index: reach its own fields as `self.field`; code that "
+                         f"needs the parent's fields belongs in an impl on the "
+                         f"parent; write `self as u16` if the pool index itself is "
+                         f"needed",
+                )
             # Resolve identifier
             symbol = self.symbol_table.lookup(expr.name)
             if not symbol:
@@ -313,7 +341,8 @@ class ExpressionBuilder:
             tag = self._tagged_enum_tag_cast(expr, target, src_loc)
             if tag is not None:
                 return tag
-            inner = self.build_expression(expr.expr)
+            inner = (self._payload_self_ident(expr.expr)
+                     or self.build_expression(expr.expr))
             return hir.HIRTypeCast(expr=inner, target_type=target, source_loc=src_loc)
 
         elif isinstance(expr, ast.NewtypeFieldAccess):
@@ -553,7 +582,8 @@ class ExpressionBuilder:
             if plane is not None:
                 return plane
 
-            base = self.build_expression(expr.base)
+            base = (self._payload_self_ident(expr.base)
+                    or self.build_expression(expr.base))
 
             # Check for STATUS.Flag pattern
             if isinstance(base, hir.HIRRegister) and base.name == 'STATUS':
@@ -668,6 +698,16 @@ class ExpressionBuilder:
                                                      scrutinee.field)
                 if enum_name is not None:
                     return enum_name, base.index
+            # self.field inside a method on that `#[soa]` struct — the same
+            # element, with `self` as the index. This is where code that needs
+            # both the shared fields and a payload belongs: a payload struct's
+            # own methods cannot reach the parent.
+            pool = self.soa_self_pool
+            if (pool is not None and isinstance(base, ast.Identifier)
+                    and base.name == 'self'):
+                enum_name = self._nested_tagged_enum(pool.name, scrutinee.field)
+                if enum_name is not None:
+                    return enum_name, base
             return None
 
         if isinstance(scrutinee, ast.Identifier):

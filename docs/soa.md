@@ -153,7 +153,10 @@ Enemy__step:
 ```
 
 No pointer, no stack frame, no setup. `self` is an ordinary `u16`, so
-`if self == 0`, `other_fn(self)` and `POOL[self].hp` all work.
+`if self == 0`, `other_fn(self)` and `POOL[self].hp` all work. That holds for
+an `#[soa]` struct's own methods; a struct that is a tagged enum's payload is
+stricter — its `self` is an element, not a number (see
+[enums.md](enums.md#a-payloads-self-is-not-a-number)).
 
 Writing `*self` on an `#[soa]` method is an error — there is no address to
 take. This follows the same "one self form per type" rule as newtypes: a

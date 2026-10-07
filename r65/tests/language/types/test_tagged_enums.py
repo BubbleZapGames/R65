@@ -659,10 +659,21 @@ class TestSoaPayloadRewrite:
         assert set(self._walk(body)) == {"POOL__Fireball__heat"}
 
     def test_method_self_is_the_pool_index(self):
-        fn = self._function(SOA_POOL + "impl Fireball { fn me(self) -> u16 { return self; } }\n"
+        fn = self._function(SOA_POOL + "impl Fireball { fn me(self) -> u16 { return self as u16; } }\n"
                             "fn main() {}", "Fireball__me")
         assert str(fn.parameters[0].param_type) == "u16"
         assert fn.parameters[0].binding.register_name == "X"
+
+    def test_parent_method_matches_its_own_payload(self):
+        """Code needing the shared fields lives on the parent: `match self.kind`
+        in an `#[soa]` struct's method reaches the same element's planes."""
+        body = self._body(SOA_POOL_IN_ENEMY + """
+            impl Enemy { fn hop(self) { match self.kind {
+                Kind::Fireball(f) => { self.x = f.heat; } _ => {} }; } }
+            fn main() {}""", "Enemy__hop")
+        # `self.x` is `POOL[self].x` here; MIR splits it onto POOL__x.
+        assert {"POOL", "POOL__kind__tag",
+                "POOL__kind__Fireball__heat"} <= set(self._walk(body))
 
     def test_payload_struct_method_needs_the_enum_pool(self):
         """The hint names the enum's pool — a static of the struct itself would
@@ -676,3 +687,46 @@ class TestSoaPayloadRewrite:
         build_fails(SOA_POOL + "#[lowram]\nstatic mut T: u8;\n"
                     "fn f() { POOL[0] = Kind::Barrel(T); }\nfn main() {}",
                     r"payload of 'Kind::Barrel' must be a struct literal")
+
+
+SOA_POOL_IN_ENEMY = SOA_KINDS + """
+#[soa]
+struct Enemy { x: u8, kind: Kind }
+#[lowram]
+static mut POOL: [Enemy; 16];
+"""
+
+
+class TestPayloadSelfIsNotAValue:
+    """In a payload struct's method `self` is an element, not a number.
+
+    A payload has no back-reference to its parent, so `POOL[self].x` reaching
+    the shared planes is rejected — that code belongs on the parent — along
+    with every other bare use. `self.field`, `self.method()` and the explicit
+    `self as u16` remain.
+    """
+
+    def _method(self, body):
+        return (SOA_POOL_IN_ENEMY + "fn helper(i: u16) {}\n"
+                "impl Fireball {\n fn tick(self) {}\n fn m(self) { " + body + " }\n}\n"
+                "fn main() {}")
+
+    @pytest.mark.parametrize("body", [
+        "POOL[self].x = 1;",
+        "helper(self);",
+        "let i: u16 = self;",
+        "if self == 0 { self.heat = 0; }",
+    ])
+    def test_bare_self_is_rejected(self, body):
+        with pytest.raises(HIRError, match=r"'self' in a method on #\[soa\] payload "
+                                           r"struct 'Fireball' is not a value") as info:
+            build(self._method(body))
+        assert "impl on the parent" in info.value.hint
+
+    @pytest.mark.parametrize("body", [
+        "self.heat = self.phase;",
+        "self.tick();",
+        "helper(self as u16);",
+    ])
+    def test_field_method_and_cast_are_allowed(self, body):
+        build(self._method(body))
