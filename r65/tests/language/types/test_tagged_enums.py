@@ -730,3 +730,42 @@ class TestPayloadSelfIsNotAValue:
     ])
     def test_field_method_and_cast_are_allowed(self, body):
         build(self._method(body))
+
+
+class TestBindingUsedAfterRewrite:
+    """Rewriting the matched element ends its binding.
+
+    The new variant's planes overlay the old one's, so a later read of the
+    binding would see the new variant's bytes as the old fields. Using the
+    binding inside the rewrite's own literal is fine: operands are read before
+    the first store.
+    """
+
+    def _f(self, arm):
+        return (SOA_POOL_IN_ENEMY + "#[zeropage] static mut OUT: u8;\n"
+                "fn f(i: u16) { match POOL[i].kind { Kind::Fireball(fb) => { "
+                + arm + " } _ => {} }; }\nfn main() {}")
+
+    def test_use_after_rewrite_is_rejected(self):
+        with pytest.raises(HIRError, match=r"binding 'fb' is used after its "
+                                           r"element was rewritten") as info:
+            build(self._f("POOL[i].kind = Kind::Spring; OUT = fb.heat;"))
+        assert "into a local before the rewrite" in info.value.hint
+
+    def test_use_after_rewrite_in_a_nested_block_is_rejected(self):
+        build_fails(self._f("if OUT == 0 { POOL[i].kind = Kind::Spring; } OUT = fb.phase;"),
+                    r"binding 'fb' is used after its element was rewritten")
+
+    def test_use_after_rewrite_through_self_is_rejected(self):
+        build_fails(SOA_POOL_IN_ENEMY + "#[zeropage] static mut OUT: u8;\n"
+                    "impl Enemy { fn m(self) { match self.kind { Kind::Fireball(fb) => {"
+                    " self.kind = Kind::Spring; OUT = fb.heat; } _ => {} }; } }\n"
+                    "fn main() {}",
+                    r"binding 'fb' is used after its element was rewritten")
+
+    def test_use_before_and_inside_the_rewrite_is_accepted(self):
+        build(self._f("OUT = fb.heat; "
+                      "POOL[i].kind = Kind::Barrel(Barrel { rolling: fb.phase });"))
+
+    def test_rewriting_another_element_is_accepted(self):
+        build(self._f("POOL[0].kind = Kind::Spring; OUT = fb.heat;"))

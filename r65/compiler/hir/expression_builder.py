@@ -1139,6 +1139,7 @@ class ExpressionBuilder:
         snapshot = None
         if tagged is not None:
             enum_name, index_ast = tagged
+            matched_index = index_ast
             # The tag read and every use of a payload binding rebuild the index,
             # so one that could change — or has side effects — is read once.
             # That also keeps a binding on the element that was matched. With no
@@ -1149,12 +1150,17 @@ class ExpressionBuilder:
                 snapshot, index_ast = self._snapshot_index(index_ast, loc)
             scrutinee = self._enum_plane_access(enum_name, 'tag', index_ast, loc)
         else:
-            enum_name = index_ast = None
+            enum_name = index_ast = matched_index = None
             scrutinee = self.build_expression(expr.scrutinee)
 
         # Build each arm
         arms = []
         for ast_arm in expr.arms:
+            binding = getattr(ast_arm.pattern, 'binding', None)
+            if enum_name is not None and binding:
+                self._check_binding_not_used_after_rewrite(
+                    binding, enum_name, matched_index, ast_arm.body)
+
             # Enter new scope for pattern bindings
             scope_id = self.symbol_table.enter_scope(ScopeKind.BLOCK)
 
@@ -1179,6 +1185,58 @@ class ExpressionBuilder:
             return match
         return hir.HIRBlockExpression(statements=[snapshot], final_expr=match,
                                       source_loc=loc)
+
+    def _check_binding_not_used_after_rewrite(self, binding, enum_name,
+                                              index_ast, body):
+        """Reject a use of *binding* after its element is rewritten in the arm.
+
+        A rewrite (`POOL[i].kind = K::Other(..)`) lays the new variant's planes
+        over the old one's, so the binding would read the new bytes as its own
+        fields. Walked in source order: the rewrite's own operands are read
+        before its first store, so a use inside the new variant's literal is
+        fine. A rewrite counts only when its index is provably the matched one
+        — the same name, literal or `self`. Conservative across branches: a
+        rewrite inside an `if` ends the binding for everything after the `if`.
+        """
+        def same_index(other):
+            if isinstance(index_ast, ast.IntegerLiteral):
+                return (isinstance(other, ast.IntegerLiteral)
+                        and other.value == index_ast.value)
+            return (isinstance(index_ast, ast.Identifier)
+                    and isinstance(other, ast.Identifier)
+                    and other.name == index_ast.name)
+
+        rewritten_at = None
+
+        def visit(node):
+            nonlocal rewritten_at
+            if isinstance(node, list):
+                for item in node:
+                    visit(item)
+                return
+            if not isinstance(node, ast.ASTNode):
+                return
+            if isinstance(node, ast.Identifier) and node.name == binding:
+                if rewritten_at is not None:
+                    raise HIRError(
+                        f"binding '{binding}' is used after its element was "
+                        f"rewritten (line {rewritten_at})",
+                        source_loc=node.source_loc,
+                        hint=f"the rewrite overlays the element's payload planes, "
+                             f"so '{binding}' no longer names its old fields; read "
+                             f"what you need into a local before the rewrite, or "
+                             f"use it in the new variant's literal",
+                    )
+                return
+            for value in vars(node).values():
+                if isinstance(value, (list, ast.ASTNode)):
+                    visit(value)
+            if isinstance(node, ast.Assignment) and rewritten_at is None:
+                target = self._tagged_match_target(node.target)
+                if target is not None and target[0] == enum_name and same_index(target[1]):
+                    rewritten_at = getattr(node.source_loc, 'line', '?')
+
+        visit(body)
 
     def _declare_payload_binding(self, pattern: ast.EnumPattern, match_enum,
                                  match_index, loc):

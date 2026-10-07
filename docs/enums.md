@@ -239,6 +239,30 @@ local or a literal is read where it is used, at no cost.) A construction
 `POOL[f()] = Shape::C(..)` likewise evaluates `f()` once for the tag and all
 the payload stores.
 
+Rewriting the matched element ends the binding. The new variant's planes
+overlay the old one's, so a later read of `c` would see the new bytes as
+`Circle` fields:
+
+```rust
+match POOL[i] {
+    Shape::C(c) => {
+        POOL[i] = Shape::R(Rect { w: c.r, h: 1 });   // fine: c read before the store
+        OUT = c.r;                                   // error: used after the rewrite
+    }
+    _ => {}
+}
+```
+
+```
+error: binding 'c' is used after its element was rewritten (line 3)
+hint: the rewrite overlays the element's payload planes, so 'c' no longer names
+      its old fields; read what you need into a local before the rewrite, or use
+      it in the new variant's literal
+```
+
+The check follows source order and is conservative across branches: a rewrite
+inside an `if` ends the binding for everything after the `if`.
+
 A match must cover every variant or carry a `_`. Coverage is checked against the
 variants, not against the tag's integer range, and an arm naming a different
 enum is rejected.
