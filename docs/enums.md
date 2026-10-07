@@ -191,6 +191,21 @@ POOL[i] = Shape::Empty;
 // STZ POOL__tag,X                  (tag only)
 ```
 
+Every operand is read before the first store, and the tag is written last.
+That is what makes rewriting an element as another variant built from its old
+payload safe — the new fields land on the bytes the old ones are read from:
+
+```rust
+match POOL[i] {
+    Shape::C(c) => { POOL[i] = Shape::R(Rect { w: 1, h: c.r }); }   // reads c.r first
+    _ => {}
+};
+```
+
+The last non-constant operand is stored straight from its evaluation; any
+earlier ones go through a temporary, so the common one-operand rewrite costs
+nothing extra.
+
 ### Matching
 
 `match` on an element dispatches on its tag. A payload pattern binds the payload

@@ -502,3 +502,51 @@ class TestSoaPayloadAccess:
             0x7E001B: [0x07],    # P::b[3] = region 0x14 + 4 + 3
         }))
         assert result.success, f"Failures: {result.failures}"
+
+
+class TestMorph:
+    """Rewriting an element as another variant built from its old payload.
+
+    The new payload's stores land on the bytes the old one's operands are read
+    from — union offset 0 for plain payloads, the overlaid planes for #[soa] —
+    so every operand must be read before the first store.
+    """
+
+    def test_plain_payload_reads_before_it_writes(self, e2e):
+        result = e2e.run(SHAPES + '''
+            #[entry]
+            fn main() {
+                POOL[1] = Shape::C(Circle { r: 0x42 });
+                match POOL[1] {
+                    Shape::C(c) => { POOL[1] = Shape::R(Rect { w: 0x11, h: c.r }); }
+                    _ => {}
+                };
+            }
+        ''', ExpectedState(memory={
+            0x7E0011: [0x02],            # tag[1]: R
+            0x7E0016: [0x11, 0x42],      # R.w, R.h = the old C.r
+        }))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_soa_payload_swaps_across_planes(self, e2e):
+        """Boss::stage overlays Fireball::heat and Boss::cooldown overlays
+        Fireball::phase, and each reads the other: one operand needs a
+        temporary whichever store goes first."""
+        result = e2e.run(SOA_PAYLOADS + '''
+            #[entry]
+            fn main() {
+                POOL[2].kind = Kind::Fireball(Fireball { heat: 0xA0, phase: 0xA1 });
+                match POOL[2].kind {
+                    Kind::Fireball(f) => {
+                        POOL[2].kind = Kind::Boss(Boss { stage: f.phase, cooldown: f.heat,
+                                                         target: 0 as far *u8 });
+                    }
+                    _ => {}
+                };
+            }
+        ''', ExpectedState(memory={
+            0x7E0012: [0x04],    # tag[2]: Boss
+            0x7E0016: [0xA1],    # Boss::stage[2] = the old phase
+            0x7E001A: [0xA0],    # Boss::cooldown[2] = the old heat
+        }))
+        assert result.success, f"Failures: {result.failures}"

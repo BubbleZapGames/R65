@@ -11,7 +11,8 @@ from r65.compiler.frontend import ast
 
 from r65.compiler.hir import nodes as hir
 from r65.compiler.hir.symbol_table import Symbol, SymbolKind, ScopeKind
-from r65.compiler.hir.types import BasicTypeInfo, ArrayTypeInfo, NewtypeTypeInfo, EnumTypeInfo
+from r65.compiler.hir.types import (BasicTypeInfo, ArrayTypeInfo, NewtypeTypeInfo,
+                                    EnumTypeInfo, StructTypeInfo, TypeInfo)
 from r65.compiler.hir.errors import HIRError
 
 
@@ -59,6 +60,8 @@ class ExpressionBuilder:
         # `(enum name, variant name)`. `self` is then the pool index, and
         # `self.field` reaches the variant's plane at that index.
         self.payload_self = None
+        # Numbers the temporaries a variant construction reads its operands into.
+        self._enum_temp_counter = 0
 
     def _payload_field_names(self, enum_name: str, variant_name: str):
         """The field names of *variant_name*'s payload struct, AST or HIR."""
@@ -819,14 +822,15 @@ class ExpressionBuilder:
                 hint=f"write `{enum_name}::{variant_name}` on its own",
             )
 
-        statements = [hir.HIRExprStmt(
+        tag_store = hir.HIRExprStmt(
             expr=hir.HIRAssignment(
                 target=self._enum_plane_access(enum_name, 'tag', index_ast, loc),
                 value=hir.HIRIntegerLiteral(value=variant_symbol.const_value,
                                             source_loc=loc),
                 source_loc=loc),
-            source_loc=loc)]
+            source_loc=loc)
 
+        stores = []
         if payload is not None and self.tagged_enums.get(enum_name, False):
             # No union slot to write into: each top-level field goes to its
             # own plane at the raw index. Anything but a literal would need a
@@ -843,19 +847,24 @@ class ExpressionBuilder:
             for field in payload.fields:
                 target = self._soa_payload_plane(enum_name, variant_name,
                                                  field.name, index_ast, loc)
-                statements.extend(self._store_payload(target, field.value, loc))
+                stores.extend(self._payload_stores(
+                    target, field.value, self._field_type(payload_type, field.name), loc))
         elif payload is not None:
             slot = hir.HIRFieldAccess(
                 base=self._enum_plane_access(enum_name, 'data', index_ast, loc),
                 field_name=variant_name,
                 source_loc=loc,
             )
-            statements.extend(self._store_payload(slot, payload, loc))
+            stores.extend(self._payload_stores(slot, payload, payload_type, loc))
 
-        return hir.HIRBlock(statements=statements, source_loc=loc)
+        scope_id = self.symbol_table.enter_scope(ScopeKind.BLOCK)
+        statements = self._stores_after_operands(stores, loc)
+        self.symbol_table.exit_scope()
+        statements.append(tag_store)
+        return hir.HIRBlock(statements=statements, scope_id=scope_id, source_loc=loc)
 
-    def _store_payload(self, slot, payload: ast.Expression, loc):
-        """Statements writing *payload* into the payload plane element *slot*.
+    def _payload_stores(self, slot, payload: ast.Expression, slot_type, loc):
+        """`[(slot, value AST, slot type)]`, one per leaf store of *payload*.
 
         A struct literal is written field by field — there is no temporary to
         build first. Anything else names an existing aggregate, which is copied
@@ -869,17 +878,81 @@ class ExpressionBuilder:
         there is no aggregate to assign.
         """
         if isinstance(payload, ast.StructLiteralExpr):
-            statements = []
+            stores = []
             for field in payload.fields:
                 target = hir.HIRFieldAccess(base=slot, field_name=field.name,
                                             source_loc=loc)
-                statements.extend(self._store_payload(target, field.value, loc))
-            return statements
-        return [hir.HIRExprStmt(
-            expr=hir.HIRAssignment(target=slot,
-                                   value=self.build_expression(payload),
-                                   source_loc=loc),
-            source_loc=loc)]
+                stores.extend(self._payload_stores(
+                    target, field.value, self._field_type(slot_type, field.name), loc))
+            return stores
+        return [(slot, payload, slot_type)]
+
+    def _field_type(self, struct_type, field_name: str):
+        """The resolved type of *struct_type*'s field, or None if unknown."""
+        name = getattr(struct_type, 'name', None) if isinstance(struct_type, StructTypeInfo) else None
+        symbol = self.symbol_table.lookup(name) if name else None
+        for f in getattr(getattr(symbol, 'definition', None), 'fields', ()):
+            if f.name == field_name:
+                ft = f.field_type
+                return ft if isinstance(ft, TypeInfo) else self.type_resolver.resolve_type(ft)
+        return None
+
+    def _stores_after_operands(self, stores, loc):
+        """The payload stores, ordered so every operand is read before any write.
+
+        The stores overwrite the element the operands may be reading: a variant
+        rebuilt from the one it replaces (`Rolling { anim: self.anim, .. }` from a
+        `Ladder`) reads a plane, or union bytes, that an earlier field store
+        has already overlaid. So every non-constant operand but the last is
+        evaluated into a temporary first, in source order; the last is stored
+        straight from its evaluation, since nothing has been written yet; then
+        the rest. The caller puts the tag store after all of them.
+
+        A constant needs no temporary, and an aggregate operand cannot have
+        one — it is copied in place, and is the payload's only store.
+        """
+        def is_const(value):
+            try:
+                self.const_evaluator.eval(value)
+                return True
+            except Exception:
+                return False
+
+        live = [k for k, (_slot, value, slot_type) in enumerate(stores)
+                if not is_const(value)
+                and not isinstance(slot_type, StructTypeInfo)]
+        hoisted = {k: None for k in live[:-1]
+                   if stores[k][2] is not None}
+
+        statements = []
+        for k in hoisted:
+            _slot, value, slot_type = stores[k]
+            self._enum_temp_counter += 1
+            name = f"__variant_arg{self._enum_temp_counter}"
+            symbol = Symbol(name=name, kind=SymbolKind.LOCAL_VAR, definition=None,
+                            scope_id=self.symbol_table.current_scope_id,
+                            var_type=slot_type, is_mutable=False)
+            self.symbol_table.declare(name, symbol)
+            statements.append(hir.HIRLetStmt(
+                name=name, is_mutable=False, var_type=slot_type,
+                initializer=self.build_expression(value), symbol=symbol,
+                source_loc=loc))
+            hoisted[k] = symbol
+
+        def store(k):
+            slot, value, _slot_type = stores[k]
+            symbol = hoisted.get(k)
+            built = (hir.HIRIdentifier(name=symbol.name, symbol=symbol, source_loc=loc)
+                     if symbol is not None else self.build_expression(value))
+            return hir.HIRExprStmt(
+                expr=hir.HIRAssignment(target=slot, value=built, source_loc=loc),
+                source_loc=loc)
+
+        first = live[-1] if live else None
+        if first is not None:
+            statements.append(store(first))
+        statements.extend(store(k) for k in range(len(stores)) if k != first)
+        return statements
 
     def _build_match_expression(self, expr: ast.MatchExpression) -> hir.HIRMatchExpression:
         """Build HIR match expression from AST."""
