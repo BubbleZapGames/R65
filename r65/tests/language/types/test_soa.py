@@ -362,3 +362,28 @@ class TestSoaInitializer:
             static POOL: [E; 1] = [E { hp: 1, hp: 2 }];
         """)
         assert "field 'hp' initialized multiple times" in msg
+
+
+class TestSoaFieldAddressRejected:
+    """`&POOL[i].field` has no meaningful address: the fields of consecutive
+    elements are adjacent, so a pointer to one would walk the plane, not the
+    element. It is rejected like `&POOL[i]` — it used to crash in codegen."""
+
+    SOURCE = """
+        #[soa] struct Fireball { heat: u8, phase: u8 }
+        enum Kind { None, Fireball(Fireball) }
+        #[soa] struct Enemy { x: u8, kind: Kind }
+        #[lowram] static mut POOL: [Enemy; 8];
+    """
+
+    @pytest.mark.parametrize("body", [
+        "fn t() { let p: *u8 = &POOL[1].x as *u8; *p = 4; }",
+        "fn t() { match POOL[1].kind { Kind::Fireball(f) => { let p: *u8 = &f.heat as *u8; *p = 1; } _ => {} }; }",
+        "impl Enemy { fn m(self) { let p: *u8 = &self.x as *u8; *p = 1; } }\nfn t() { POOL[1].m(); }",
+    ])
+    def test_rejected(self, body):
+        from r65.compiler.errors import TypeCheckError
+        from r65.compiler.main import compile_string
+        with pytest.raises(TypeCheckError,
+                           match=r"cannot take the address of a field of #\[soa\] array"):
+            compile_string(self.SOURCE + body + "\n#[entry]\nfn main() { t(); }\n", "t.r65")

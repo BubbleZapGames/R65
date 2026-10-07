@@ -93,6 +93,31 @@ class PointerValidator:
                      f"read `{decl.name}[i].field` at the use site",
             )
 
+        # `&POOL[i].field` (and `&self.field` in an #[soa] method, which is the
+        # same thing by the time it gets here), or a payload binding's field,
+        # already rewritten to its plane `PLANE[i]`. The address exists, but it
+        # is not the element's: the next byte is the next element's same field.
+        operand = expr.operand
+        while isinstance(operand, HIRFieldAccess):
+            operand = operand.base
+        pool = None
+        if operand is not expr.operand:
+            decl = soa_static_of_index(operand)
+            pool = decl.name if decl is not None else None
+        elif isinstance(operand, HIRArrayIndex):
+            plane = getattr(getattr(operand.array, 'symbol', None), 'definition', None)
+            if getattr(plane, 'is_synthetic', False) and getattr(plane, 'soa_stride', None):
+                pool = plane.name.split('__')[0]
+        if pool is not None:
+            raise TypeCheckError(
+                f"cannot take the address of a field of #[soa] array '{pool}'",
+                source_loc=expr.source_loc,
+                hint="consecutive bytes of a field plane are the same field of "
+                     "consecutive elements, so a pointer would walk the plane, not "
+                     f"the element; read or write `{pool}[i].field` directly, or "
+                     "copy it to a local",
+            )
+
     @staticmethod
     def _needs_far_pointer(operand: HIRExpression) -> bool:
         """

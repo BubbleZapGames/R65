@@ -266,6 +266,7 @@ late allocation failure naming a synthesized plane.
 |---|---|---|
 | `&POOL[i]` | The element's bytes are in one array per field | Pass the index `i` |
 | `&POOL` | Same, for the whole pool | Name a field plane |
+| `&POOL[i].field` | A plane's next byte is the *next element's* same field, so the pointer walks the plane, not the element | Read/write `POOL[i].field` directly, or copy it to a local |
 | `let e: Enemy;` | No contiguous value to hold | Hold a `u16` index |
 | `fn f(e: Enemy)` / `fn f(e: *Enemy)` | Nothing to pass or point at | Take the index |
 | `struct W { lead: Enemy }` | Would need a plane inside an aggregate | Store the index |
@@ -294,10 +295,12 @@ Three things that are **allowed**, because the obvious guess is wrong:
   `self` — `self.mark()` inside `self.kill()` passes the index straight
   through.
 
-`&POOL[i].field` — the address of a single *plane* element, which is
-well-defined under SoA — is also rejected, but only because it does not
-work for arrays of structs either (`mir/lowerers/expression.py` requires an
-identifier base). Supporting it is a natural follow-up.
+`&POOL[i].field` is rejected deliberately. The address is well-defined —
+one byte of one plane — but it is not the element's: `p + 1` is the same field
+of element `i + 1`, which is the opposite of what a field pointer means for an
+array of structs. The same check covers `&self.field` in an `#[soa]` method and
+a payload binding's field (`&f.heat`), which are the same thing by the time
+the type checker sees them.
 
 ### Migration note
 
