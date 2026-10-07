@@ -15,37 +15,76 @@ def find_loops(func: MIRFunction) -> List[Tuple[int, Set[int]]]:
     """
     Find natural loops via back-edge detection.
 
-    A back-edge is a jump whose target block_id <= source block_id.
+    A back-edge is a jump to a block that is still on the depth-first search
+    stack from the entry - an ancestor of the source. Block IDs are not a
+    substitute: they are handed out as the lowering asks for them, so an
+    outer `if`'s merge block is numbered before an inner `if`'s blocks, and
+    the inner one's jump to it goes to a lower ID without being a loop.
 
     Returns:
-        List of (header_block_id, body_block_ids) tuples.
+        List of (header_block_id, body_block_ids) tuples, in block order.
     """
+    back_edges = find_back_edges(func)
     loops = []
 
     for block_id, block in func.blocks.items():
-        if not block.instructions:
-            continue
-
         for instr in block.instructions:
-            target = None
             if isinstance(instr, Jump):
-                target = instr.target
+                targets = (instr.target,)
             elif isinstance(instr, CondBranch):
-                if instr.true_target <= block_id:
-                    target = instr.true_target
-                if instr.false_target <= block_id:
-                    body = _find_loop_body(func, instr.false_target, block_id)
-                    if body:
-                        loops.append((instr.false_target, body))
-                    if target is None:
-                        continue
-
-            if target is not None and target <= block_id:
-                body = _find_loop_body(func, target, block_id)
-                if body:
-                    loops.append((target, body))
+                targets = (instr.true_target, instr.false_target)
+            else:
+                continue
+            for target in targets:
+                if (block_id, target) in back_edges:
+                    loops.append((target, _find_loop_body(func, target, block_id)))
 
     return loops
+
+
+def find_back_edges(func: MIRFunction) -> Set[Tuple[int, int]]:
+    """`{(source, target)}` for every CFG edge whose target is a DFS ancestor.
+
+    The search starts at the entry block, then from any block it never
+    reached, so unreachable code is classified the same way.
+    """
+    state: Dict[int, int] = {}          # absent: unvisited, 1: on stack, 2: done
+    back_edges: Set[Tuple[int, int]] = set()
+
+    starts = [func.entry_block_id] + [bid for bid in func.blocks
+                                      if bid != func.entry_block_id]
+    for start in starts:
+        if start in state or start not in func.blocks:
+            continue
+        state[start] = 1
+        stack = [(start, iter(_successors(func.blocks[start])))]
+        while stack:
+            block_id, succs = stack[-1]
+            for succ in succs:
+                if succ not in func.blocks:
+                    continue
+                if state.get(succ) == 1:
+                    back_edges.add((block_id, succ))
+                elif succ not in state:
+                    state[succ] = 1
+                    stack.append((succ, iter(_successors(func.blocks[succ]))))
+                    break
+            else:
+                state[block_id] = 2
+                stack.pop()
+
+    return back_edges
+
+
+def _successors(block) -> List[int]:
+    """Branch targets of *block*: its recorded successors plus its jumps'."""
+    succs = list(block.successors)
+    for instr in block.instructions:
+        if isinstance(instr, Jump):
+            succs.append(instr.target)
+        elif isinstance(instr, CondBranch):
+            succs.extend((instr.true_target, instr.false_target))
+    return list(dict.fromkeys(succs))
 
 
 def _find_loop_body(func: MIRFunction, header: int, back_edge_source: int) -> Set[int]:

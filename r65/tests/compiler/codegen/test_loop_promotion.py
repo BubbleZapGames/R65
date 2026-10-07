@@ -296,3 +296,57 @@ class TestCounterAsIndirectStoreSource:
                     if s.startswith(('TAY', 'LDY', 'INY', 'DEY', 'PLY'))]
         assert y_writes and y_writes[-1].startswith(('TAY', 'LDY')), (
             f"Y must hold the index at the store, not a counter: {emitted}")
+
+
+class TestNestedIfIsNotALoop:
+    """Loop detection must not read a forward jump to a lower block ID as a loop.
+
+    Block IDs follow lowering order, so an outer `if`'s merge block is numbered
+    before the inner `if`'s blocks, and the inner one's jump to it goes to a
+    lower ID. Treated as a back-edge, that made the whole function a "loop":
+    `oy++` became a counter pinned to Y, and codegen failed on the load into
+    it ("Cannot resolve hardware register Y as memory operand") — classickong's
+    barrel update hit this.
+    """
+
+    SOURCE = """
+    #[lowram] static mut XS: [u8; 16];
+    #[lowram] static mut YS: [u8; 16];
+    #[lowram] static mut DX: [i8; 16];
+    #[lowram] static mut FRAME: u16;
+    far fn probe(x: u8, y: u16) -> u8 { return x; }
+    fn step(i: u16) {
+        let ox: u8 = XS[i];
+        let mut oy: u8 = YS[i];
+        if (FRAME & 1) == 0 {
+            oy++;
+            let floor: u8 = probe(ox + 8, oy + 14);
+            if (floor & 4) != 0 {
+                DX[i] = 0 - DX[i];
+            }
+        }
+        YS[i] = oy;
+    }
+    fn count(n: u16) {
+        let mut i: u16 = 0;
+        while i < n { YS[i] = 0; i = i + 1; }
+    }
+    """
+
+    def _loops(self, name):
+        from r65.compiler.frontend import parse, preprocess, expand_macros
+        from r65.compiler.hir import HIRBuilder
+        from r65.compiler.typeck import TypeChecker
+        from r65.compiler.mir import MIRBuilder
+        from r65.compiler.analysis.loop_analysis import find_loops
+        program = expand_macros(preprocess(parse(self.SOURCE, 't.r65'), 't.r65'))
+        hir = HIRBuilder(source_file='t.r65').build_program(program)
+        TypeChecker(hir).check()
+        mir = MIRBuilder().build_program(hir)
+        return find_loops(next(f for f in mir.functions if f.name == name))
+
+    def test_nested_if_has_no_loop(self):
+        assert self._loops('step') == []
+
+    def test_a_real_loop_is_still_found(self):
+        assert len(self._loops('count')) == 1

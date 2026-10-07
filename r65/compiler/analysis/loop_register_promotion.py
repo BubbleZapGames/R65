@@ -22,6 +22,7 @@ from r65.compiler.mir.nodes import (
 )
 from r65.compiler.hir.types import PointerTypeInfo
 from r65.compiler.codegen.type_utils import get_type_size
+from r65.compiler.analysis.loop_analysis import find_loops as _find_loops
 
 
 def analyze_loop_promotion(mir_program: MIRProgram):
@@ -709,74 +710,6 @@ def _demote_hw_vreg(func: MIRFunction, vreg: VirtualRegister, used_hints: set):
         entry_block.instructions.pop(move_idx)
         # Replace all uses of the promoted vreg back to the original param
         _replace_vregs(func, {vreg.id: original_param})
-
-
-def _find_loops(func: MIRFunction) -> List[Tuple[int, Set[int]]]:
-    """
-    Find natural loops via back-edge detection.
-
-    A back-edge is a Jump where target block_id <= source block_id.
-
-    Returns:
-        List of (header_block_id, set of block IDs in loop body)
-    """
-    loops = []
-
-    for block_id, block in func.blocks.items():
-        if not block.instructions:
-            continue
-
-        # Check terminator(s) for back-edges
-        for instr in block.instructions:
-            target = None
-            if isinstance(instr, Jump):
-                target = instr.target
-            elif isinstance(instr, CondBranch):
-                # Check both targets
-                if instr.true_target <= block_id:
-                    target = instr.true_target
-                if instr.false_target <= block_id:
-                    # Also check false target for back-edge
-                    body = _find_loop_body(func, instr.false_target, block_id)
-                    if body:
-                        loops.append((instr.false_target, body))
-                    if target is None:
-                        continue
-
-            if target is not None and target <= block_id:
-                body = _find_loop_body(func, target, block_id)
-                if body:
-                    loops.append((target, body))
-
-    return loops
-
-
-def _find_loop_body(func: MIRFunction, header: int, back_edge_source: int) -> Set[int]:
-    """
-    Find the natural loop body using reverse walk from back-edge source to header.
-
-    Returns:
-        Set of block IDs in the loop body (including header)
-    """
-    body = {header}
-    if header == back_edge_source:
-        return body  # Single-block loop
-
-    # Reverse walk from back_edge_source to header
-    worklist = [back_edge_source]
-    body.add(back_edge_source)
-
-    while worklist:
-        block_id = worklist.pop()
-        block = func.blocks.get(block_id)
-        if block is None:
-            continue
-        for pred_id in block.predecessors:
-            if pred_id not in body:
-                body.add(pred_id)
-                worklist.append(pred_id)
-
-    return body
 
 
 def _find_vregs_used_in_blocks(func: MIRFunction, block_ids: Set[int]) -> Set[int]:
