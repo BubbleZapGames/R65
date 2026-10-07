@@ -235,11 +235,16 @@ region, so an arm body indexes them by the raw pool index, and the payload
 struct's own methods and trait impls take that index as `self`: `f.burn()`
 from a match arm is one `JSR` with X passed through, no pointer.
 
+Payload methods see only their own fields (`POOL[self].x` is an error); mix
+parent and payload fields in the parent via `match self.kind`. Using a binding
+after rewriting its element is an error. Variants share bytes only with fields
+of the same width.
+
 **Restrictions**: a payload names a declared struct (no inline fields, no tuple
 variants); a tagged enum backs exactly one `static mut` and takes no
 initializer, so write an element before matching it; it may be a field of an
 `#[soa]` struct (contributing its two planes) but not of a plain one; no locals, parameters,
-`&POOL[i]`, `impl Clone`, or traits (the TypeId byte and the tag both want
+`&POOL[i]` or `&POOL[i].field`, `impl Clone`, or traits (the TypeId byte and the tag both want
 offset 0); no `= n` on a tagged enum's variants.
 
 *(See [docs/enums.md](docs/enums.md) for the complete documentation)*
