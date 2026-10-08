@@ -311,6 +311,7 @@ class FunctionCodeGenerator:
 
         # Emit function label
         self.emitter.emit_label(mir_func.name)
+        self.emitter.stack_depth = 0
 
         # Emit mode directives for WLA-DX assembler
         self._emit_mode_directives(mir_func)
@@ -326,6 +327,10 @@ class FunctionCodeGenerator:
         codegen_exit_modes = {}
         # Whether X == Y at each emitted block's exit (see emitter.x_equals_y).
         codegen_exit_x_equals_y = {}
+        # The stack depth and X's stack-slot contents at each emitted block's
+        # exit, and the depth each block was entered at (emitter.x_slot).
+        codegen_exit_slots = {}
+        entry_depth = {}
 
         for block_id in block_order:
             block = mir_func.blocks[block_id]
@@ -351,6 +356,15 @@ class FunctionCodeGenerator:
                 preds = getattr(block, 'predecessors', None) or []
                 self.emitter.x_equals_y = bool(preds) and all(
                     codegen_exit_x_equals_y.get(p, False) for p in preds)
+                # Stack depth carries over when the emitted predecessors agree;
+                # X's slot only when every predecessor is emitted and agrees.
+                exits = [codegen_exit_slots[p] for p in preds if p in codegen_exit_slots]
+                depths = {d for d, _x in exits}
+                if len(depths) == 1:
+                    self.emitter.stack_depth = depths.pop()
+                xs = {x for _d, x in exits}
+                if exits and len(exits) == len(preds) and len(xs) == 1:
+                    self.emitter.x_slot = xs.pop()
 
             # Determine if we need to force a mode switch at block entry.
             # This is needed when:
@@ -397,8 +411,12 @@ class FunctionCodeGenerator:
                                                force=force_mode,
                                                codegen_exit_modes=codegen_exit_modes)
 
+            entry_depth[block_id] = self.emitter.stack_depth
+
             # Emit instructions in block
-            for instr in block.instructions:
+            for idx, instr in enumerate(block.instructions):
+                instr_selector._next_instr = (block.instructions[idx + 1]
+                                              if idx + 1 < len(block.instructions) else None)
                 try:
                     instr_selector.select_instruction(instr)
                 except CodegenError as e:
@@ -408,6 +426,16 @@ class FunctionCodeGenerator:
             # Record this block's codegen exit mode
             codegen_exit_modes[block_id] = self.emitter.get_accu_mode()
             codegen_exit_x_equals_y[block_id] = self.emitter.x_equals_y
+            codegen_exit_slots[block_id] = (self.emitter.stack_depth, self.emitter.x_slot)
+            # A back edge into a block emitted earlier must leave the stack
+            # where that block assumed it: slot names there were computed
+            # from that depth.
+            for succ in getattr(block, 'successors', None) or []:
+                if succ in entry_depth and entry_depth[succ] != self.emitter.stack_depth:
+                    raise CodegenError(
+                        f"internal: stack depth {self.emitter.stack_depth} leaving "
+                        f"block {block_id} of {mir_func.name} disagrees with the "
+                        f"{entry_depth[succ]} block {succ} was emitted with")
 
         # Emit shared epilogue if function has multiple returns.
         # Each Return instruction branched here instead of emitting inline.

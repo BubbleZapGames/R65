@@ -139,6 +139,13 @@ class InstructionSelector:
         # Constant pointer map: vreg.id → known integer address (for inlined constant ptrs)
         self._vreg_const_map = self._build_vreg_const_map()
 
+        # The MIR instruction after the one being selected (set by the block
+        # loop), and one this selector has decided not to emit — see
+        # _skip_scaled_index_reload.
+        self._next_instr = None
+        self._skip_instr_id = None
+        self._vreg_reads = None
+
         # Dispatch table: map MIR instruction type → handler method
         # Built once per InstructionSelector instance; O(1) lookup vs O(n) isinstance chain
         self._dispatch = {
@@ -625,6 +632,12 @@ class InstructionSelector:
 
         nodes_before = len(self.emitter.nodes) if instr.comment else 0
 
+        if self._skip_instr_id is not None and id(instr) == self._skip_instr_id:
+            # Already accounted for: X holds the value this would load.
+            self._skip_instr_id = None
+            self._advance_instruction()
+            return
+
         handler = self._dispatch.get(type(instr))
         if handler:
             handler(instr)
@@ -731,6 +744,51 @@ class InstructionSelector:
             return True
         return False
 
+    def _vreg_read_count(self, vreg) -> int:
+        if self._vreg_reads is None:
+            from r65.compiler.mir.nodes import iter_operands, OperandRole
+            counts = {}
+            for block in self.current_function.blocks.values():
+                for ins in block.instructions:
+                    for _spec, v in iter_operands(ins, role=OperandRole.READ):
+                        if isinstance(v, VirtualRegister):
+                            counts[v.id] = counts.get(v.id, 0) + 1
+            self._vreg_reads = counts
+        return self._vreg_reads.get(vreg.id, 0)
+
+    def _skip_scaled_index_reload(self, instr: BinaryOp) -> bool:
+        """Skip `%t = %j << k; X = Move %t` when X already holds that value.
+
+        A u16 plane is indexed by `j << k`: `LDA j,S / ASL A ×k / TAX`. When
+        the emitter knows X already holds stack slot `j` shifted by k (an
+        earlier build of the same index, nothing written to X or the slot
+        since), both instructions are left out. `%t` must live in A and be read
+        only by that Move, so nothing else misses it.
+        """
+        nxt = self._next_instr
+        if not (instr.op == '<<' and isinstance(instr.right, MIRImmediate)
+                and isinstance(instr.left, VirtualRegister)
+                and isinstance(instr.dest, VirtualRegister)
+                and isinstance(nxt, Move)
+                and isinstance(nxt.dest, HardwareRegister) and nxt.dest.name == 'X'
+                and isinstance(nxt.source, VirtualRegister)
+                and nxt.source.id == instr.dest.id):
+            return False
+        if not self._is_16bit(instr.type_info) or self._vreg_read_count(instr.dest) != 1:
+            return False
+        if not self._get_operand_location(instr.dest).is_hw('A'):
+            return False
+        left_loc = self._get_operand_location(instr.left)
+        if left_loc.kind != LocationKind.STACK:
+            return False
+        opcode, operand = self._get_opcode_for_location('LDA', left_loc)
+        if opcode != Opcode.LDA_STACK:
+            return False
+        if self.emitter.x_slot != (self.emitter.slot_key(operand.offset), instr.right.value):
+            return False
+        self._skip_instr_id = id(nxt)
+        return True
+
     def select_binary_op(self, instr: BinaryOp):
         """
         Generate code for BinaryOp instruction.
@@ -740,6 +798,9 @@ class InstructionSelector:
         Args:
             instr: BinaryOp instruction
         """
+        if self._skip_scaled_index_reload(instr):
+            return
+
         op = instr.op
         is_u16 = self._is_16bit(instr.type_info)
 

@@ -324,6 +324,14 @@ class AssemblyEmitter:
         # TYX/TXY, cleared by anything that writes X or Y and at labels.
         # Lets a repeated TYX/TXY be skipped (see _update_xy_copy_tracking).
         self.x_equals_y: bool = False
+        # What A and X hold, as `(stack slot, left shift)`, or None. A slot is
+        # named by its offset minus the bytes pushed since the stack pointer was
+        # last set (`stack_depth`), so it stays the same slot as S moves. Lets
+        # an index reload that would give X the value it already has be
+        # skipped (see _update_slot_tracking).
+        self.a_slot = None
+        self.x_slot = None
+        self.stack_depth: int = 0
         # Track banks that have had data/code emitted to avoid .ORG 0 overlap
         self._used_banks: set = set()
         # HiROM flag: when True, .BASE $C0 is emitted before ROM sections
@@ -350,6 +358,7 @@ class AssemblyEmitter:
         self.nodes.append(node)
         if isinstance(node, (Instruction, RawAsm)):
             self.x_equals_y = False  # untracked code: assume X/Y changed
+            self.forget_slots()
 
     def emit_instr(self, opcode: Opcode, operand: Operand | None = None,
                    comment: str | None = None, source_loc: 'SourceLocation | None' = None):
@@ -365,12 +374,14 @@ class AssemblyEmitter:
         self.nodes.append(Instruction(opcode, operand, comment, source_loc))
         self._update_nz_tracking(opcode)
         self._update_xy_copy_tracking(opcode, operand)
+        self._update_slot_tracking(opcode, operand)
 
     def emit_raw(self, text: str):
         """Emit raw assembly text."""
         self.nodes.append(RawAsm(text))
         self.nz_valid_for = None  # Unknown effect on flags
         self.x_equals_y = False   # ...and on registers
+        self.forget_slots()
 
     def emit_directive(self, text: str):
         """
@@ -651,6 +662,8 @@ class AssemblyEmitter:
         self.nz_valid_for = None  # Labels are merge points; flags ambiguous
         self.x_equals_y = False   # re-established by the caller when every
                                   # predecessor agrees (function_gen block loop)
+        self.a_slot = None
+        self.x_slot = None
 
 
     # ========================================================================
@@ -714,6 +727,102 @@ class AssemblyEmitter:
             value = getattr(operand, 'value', None)
             if not isinstance(value, int) or value & 0x10:
                 self.x_equals_y = False
+
+    # ------------------------------------------------------------------
+    # Stack-slot contents of A and X
+    # ------------------------------------------------------------------
+
+    # Pushes/pulls by byte count; None = the accumulator / index width decides.
+    _PUSH_BYTES = {'PHA': None, 'PHX': 'x', 'PHY': 'x', 'PHP': 1, 'PHB': 1,
+                   'PHK': 1, 'PHD': 2, 'PEA': 2, 'PEI': 2, 'PER': 2}
+    _PULL_BYTES = {'PLA': None, 'PLX': 'x', 'PLY': 'x', 'PLP': 1, 'PLB': 1,
+                   'PLD': 2}
+    # Instructions that write memory.
+    _STORE_MNEMONICS = frozenset({'STA', 'STX', 'STY', 'STZ', 'INC', 'DEC',
+                                  'ASL', 'LSR', 'ROL', 'ROR', 'TSB', 'TRB'})
+    # Instructions that change A (beyond loads, handled first).
+    _A_WRITE_MNEMONICS = frozenset({'LDA', 'ADC', 'SBC', 'AND', 'ORA', 'EOR',
+                                    'TXA', 'TYA', 'PLA', 'XBA', 'TSC', 'TDC',
+                                    'INC', 'DEC', 'ASL', 'LSR', 'ROL', 'ROR'})
+
+    def forget_slots(self):
+        """Nothing is known about what A or X hold."""
+        self.a_slot = None
+        self.x_slot = None
+
+    def slot_key(self, offset: int) -> int:
+        """The stable name of the stack slot at `offset,S` right now."""
+        return offset - self.stack_depth
+
+    def _width(self, kind) -> int:
+        if kind == 'x':
+            return 1 if self._current_index_mode == 8 else 2
+        if kind is None:
+            return 1 if self._current_accu_mode == 8 else 2
+        return kind
+
+    def _update_slot_tracking(self, opcode: Opcode, operand):
+        """Track which stack slot (shifted left k times) A and X hold.
+
+        `LDA off,S` in 16-bit mode makes A the slot's value; `ASL A` in
+        16-bit mode shifts it; `TAX` hands it to X. Any other write to A or X
+        forgets it. A store that may reach the slot forgets both: one to the
+        slot itself, or any store through direct page or a pointer (a D=S
+        function addresses its stack slots through direct page). Absolute and
+        long stores name statics, which never live on the stack.
+        """
+        mn = mnemonic(opcode)
+        mode = addressing_mode(opcode)
+
+        # Stack depth: pushes and pulls move S under the slot offsets.
+        if mn in self._PUSH_BYTES:
+            self.stack_depth += self._width(self._PUSH_BYTES[mn])
+        elif mn in self._PULL_BYTES:
+            self.stack_depth -= self._width(self._PULL_BYTES[mn])
+        if mn in ('TCS', 'TXS'):
+            # S set outright (frame allocation): a new baseline.
+            self.stack_depth = 0
+            self.forget_slots()
+            return
+        if mn in ('JSR', 'JSL', 'RTS', 'RTL', 'RTI', 'BRK', 'COP', 'MVN', 'MVP',
+                  'XCE', 'PLP', 'TCD', 'PLD', 'WDM'):
+            self.forget_slots()
+            return
+
+        # Stores that may reach a tracked slot.
+        if mn in self._STORE_MNEMONICS and mode not in (None, 'ACCUMULATOR'):
+            if mode == 'STACK':
+                key = self.slot_key(operand.offset)
+                for attr in ('a_slot', 'x_slot'):
+                    held = getattr(self, attr)
+                    if held is not None and abs(held[0] - key) <= 1:
+                        setattr(self, attr, None)
+            elif not mode.startswith(('ABSOLUTE', 'LONG')):
+                self.forget_slots()
+
+        # A.
+        if opcode == Opcode.LDA_STACK and self._current_accu_mode == 16:
+            self.a_slot = (self.slot_key(operand.offset), 0)
+        elif opcode == Opcode.ASL and self._current_accu_mode == 16 and self.a_slot:
+            self.a_slot = (self.a_slot[0], self.a_slot[1] + 1)
+        elif opcode == Opcode.TAX:
+            # x16 TAX copies all of C; only a 16-bit load filled it.
+            self.x_slot = self.a_slot if self._current_index_mode == 16 else None
+        elif mn in self._A_WRITE_MNEMONICS and (mode in (None, 'ACCUMULATOR')
+                                                 or mn not in ('INC', 'DEC', 'ASL',
+                                                               'LSR', 'ROL', 'ROR')):
+            self.a_slot = None
+        elif mn == 'SEP':
+            value = getattr(operand, 'value', None)
+            if not isinstance(value, int) or value & 0x10:
+                self.x_slot = None   # x8 truncates X
+
+        # X written by anything but TAX.
+        if mn in self._XY_WRITE_MNEMONICS and opcode != Opcode.TAX and \
+                mn not in ('LDY', 'TAY', 'PLY', 'INY', 'DEY'):
+            self.x_slot = None
+        if opcode == Opcode.TYX:
+            self.x_slot = None
 
     def _update_nz_tracking(self, opcode: Opcode):
         """

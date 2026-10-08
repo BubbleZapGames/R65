@@ -197,6 +197,13 @@ class MoveOperationSelector(BaseSelector):
         # Handle stack-relative addressing: LDX/LDY don't support sr,S mode
         # Must go through A with transfer
         if hw_register in ('X', 'Y') and src_loc.kind == LocationKind.STACK:
+            # X already holds this slot's value (loaded from it earlier, with
+            # neither X nor the slot written since): nothing to do.
+            if hw_register == 'X' and is_u16:
+                opcode, operand = self.parent._get_opcode_for_location('LDA', src_loc)
+                if (opcode == Opcode.LDA_STACK and
+                        self.emitter.x_slot == (self.emitter.slot_key(operand.offset), 0)):
+                    return
             # For 16-bit values, we need to be in 16-bit A mode for the load/transfer
             if is_u16:
                 self.parent._ensure_m16_mode()
