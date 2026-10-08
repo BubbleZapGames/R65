@@ -1647,7 +1647,7 @@ class ASTBuilder(Transformer):
     def function_body(self, items):
         """Function body: same as block."""
         statements = [item for item in items if not isinstance(item, LarkToken)]
-        return ast.Block(statements=statements)
+        return ast.Block(statements=self._desugar_let_else(statements))
 
     @v_args(tree=True)
     def function_body_trailing(self, tree):
@@ -1667,13 +1667,52 @@ class ASTBuilder(Transformer):
             expr=trailing_expr,
             source_loc=trailing_expr.source_loc
         ))
-        return ast.Block(statements=statements)
+        return ast.Block(statements=self._desugar_let_else(statements))
 
     def block(self, items):
         """Block statement."""
         # Filter out brace tokens, keep only statement nodes
         statements = [item for item in items if not isinstance(item, LarkToken)]
-        return ast.Block(statements=statements)
+        return ast.Block(statements=self._desugar_let_else(statements))
+
+    @staticmethod
+    def _desugared_match(scrutinee, pattern, then_body, else_body, origin, loc):
+        """`match scrutinee { pattern => then_body, _ => else_body }`.
+
+        `if let`, `while let` and `let ... else` are all this match, so a
+        payload binding in *pattern* is the same view of the pool a hand-written
+        arm gets, with the same snapshot and rewrite checks.
+        """
+        return ast.MatchExpression(
+            scrutinee=scrutinee,
+            arms=[ast.MatchArm(pattern=pattern, body=then_body, source_loc=loc),
+                  ast.MatchArm(pattern=ast.WildcardPattern(source_loc=loc),
+                               body=else_body, source_loc=loc)],
+            origin=origin, source_loc=loc)
+
+    def _desugar_let_else(self, statements):
+        """Fold each `let P = e else { .. };` and what follows it into a match.
+
+        The bindings of P are in scope for the rest of the block, so the rest
+        of the block is P's arm: `match e { P => { rest }, _ => { else } }`.
+        """
+        for k, stmt in enumerate(statements):
+            if isinstance(stmt, ast.LetElseStmt):
+                loc = stmt.source_loc
+                rest = ast.Block(statements=self._desugar_let_else(statements[k + 1:]),
+                                 source_loc=loc)
+                match = self._desugared_match(stmt.scrutinee, stmt.pattern, rest,
+                                              stmt.else_block, 'let_else', loc)
+                return statements[:k] + [ast.ExprStmt(expr=match, source_loc=loc)]
+        return statements
+
+    @v_args(tree=True)
+    def let_else_stmt(self, tree):
+        """`let P = e else { .. };` — folded into a match by the enclosing block."""
+        pattern, scrutinee, else_block = self._filter_tokens(tree.children)
+        return ast.LetElseStmt(pattern=pattern, scrutinee=scrutinee,
+                               else_block=else_block,
+                               source_loc=self._make_source_loc(tree.meta))
 
     def single_pattern(self, items):
         """Single binding pattern: IDENT or IDENT @ binding"""
@@ -1878,6 +1917,38 @@ class ASTBuilder(Transformer):
         else_block = items[2] if len(items) > 2 else None
         return ast.IfStmt(condition=condition, then_block=then_block, else_block=else_block,
                          source_loc=self._make_source_loc(tree.meta))
+
+    @v_args(tree=True)
+    def if_let_stmt(self, tree):
+        """`if let P = e { .. } else ..` — `match e { P => { .. }, _ => else }`."""
+        items = self._filter_tokens(tree.children)
+        pattern, scrutinee, then_block = items[0], items[1], items[2]
+        else_block = items[3] if len(items) > 3 else None
+        loc = self._make_source_loc(tree.meta)
+        if else_block is None:
+            else_block = ast.Block(statements=[], source_loc=loc)
+        elif not isinstance(else_block, ast.Block):      # else if ...
+            else_block = ast.Block(statements=[else_block], source_loc=loc)
+        match = self._desugared_match(scrutinee, pattern, then_block, else_block,
+                                      'if_let', loc)
+        return ast.ExprStmt(expr=match, source_loc=loc)
+
+    @v_args(tree=True)
+    def while_let_stmt(self, tree):
+        """`'l: while let P = e { .. }` — `'l: loop { match e { P => { .. }, _ => break 'l } }`.
+
+        `continue` reaches the loop's top, so it re-tests e, as in Rust.
+        """
+        label = self._extract_label(tree.children)
+        pattern, scrutinee, body = self._filter_tokens(tree.children)
+        loc = self._make_source_loc(tree.meta)
+        match = self._desugared_match(scrutinee, pattern, body,
+                                      ast.BreakStmt(label=label, source_loc=loc),
+                                      'if_let', loc)
+        return ast.LoopStmt(
+            body=ast.Block(statements=[ast.ExprStmt(expr=match, source_loc=loc)],
+                           source_loc=loc),
+            label=label, source_loc=loc)
 
     def else_clause(self, items):
         """Else clause."""
@@ -2177,13 +2248,25 @@ class ASTBuilder(Transformer):
         items = self._filter_tokens(tree.children)
         if not items:
             raise ParseError("Empty block expression", self._make_source_loc(tree.meta))
-        final_expr = items[-1]
-        statements = list(items[:-1])
-        return ast.BlockExpression(
-            statements=statements,
-            final_expr=final_expr,
-            source_loc=self._make_source_loc(tree.meta)
-        )
+        return self._let_else_block_expr(list(items[:-1]), items[-1],
+                                         self._make_source_loc(tree.meta))
+
+    def _let_else_block_expr(self, statements, final_expr, loc):
+        """A block expression, with any `let ... else` folded as in a block.
+
+        The rest of the block — its value included — becomes P's arm, so the
+        match is the block's value and the else arm, which diverges, has none.
+        """
+        for k, stmt in enumerate(statements):
+            if isinstance(stmt, ast.LetElseStmt):
+                rest = self._let_else_block_expr(statements[k + 1:], final_expr, loc)
+                match = self._desugared_match(stmt.scrutinee, stmt.pattern, rest,
+                                              stmt.else_block, 'let_else',
+                                              stmt.source_loc)
+                return ast.BlockExpression(statements=statements[:k],
+                                           final_expr=match, source_loc=loc)
+        return ast.BlockExpression(statements=statements, final_expr=final_expr,
+                                   source_loc=loc)
 
     @v_args(tree=True)
     def if_expr(self, tree):
@@ -2207,6 +2290,13 @@ class ASTBuilder(Transformer):
             else_block=else_block,
             source_loc=self._make_source_loc(tree.meta)
         )
+
+    @v_args(tree=True)
+    def if_let_expr(self, tree):
+        """`if let P = e { a } else { b }` as a value — `match e { P => a, _ => b }`."""
+        pattern, scrutinee, then_block, else_block = self._filter_tokens(tree.children)
+        return self._desugared_match(scrutinee, pattern, then_block, else_block,
+                                     None, self._make_source_loc(tree.meta))
 
     @v_args(tree=True)
     def loop_expr(self, tree):
@@ -2259,7 +2349,8 @@ class ASTBuilder(Transformer):
     def match_arm_block(self, tree):
         """Statement-only block in match arm (no trailing expression)."""
         items = self._filter_tokens(tree.children)
-        return ast.Block(statements=list(items), source_loc=self._make_source_loc(tree.meta))
+        return ast.Block(statements=self._desugar_let_else(list(items)),
+                         source_loc=self._make_source_loc(tree.meta))
 
     def pattern_range(self, items):
         """Range pattern (e.g., 0..5 or 0..=5, supports negative bounds)."""
@@ -3101,14 +3192,6 @@ class Parser:
             if before.rstrip().endswith('='):
                 return ("closures are not supported in R65",
                         "use function pointers (fn() or far fn())")
-
-        # 'if let' / 'while let': unexpected token after 'if let' or 'while let'
-        if re.search(r'\bif\s+let\s*$', before):
-            return ("'if let' pattern matching is not supported in R65",
-                    "use 'if' with comparison operators or 'match'")
-        if re.search(r'\bwhile\s+let\s*$', before):
-            return ("'while let' pattern matching is not supported in R65",
-                    "use 'while' with comparison operators")
 
         # 'use' statement: 'use' was consumed as _reserved_keyword, error on following tokens
         # Detect by checking if 'use' appears earlier on the same line

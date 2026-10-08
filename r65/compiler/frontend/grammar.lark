@@ -290,6 +290,7 @@ block: "{" statement* "}"
           | break_stmt
           | continue_stmt
           | if_stmt
+          | let_else_stmt
           | loop_stmt
           | while_stmt
           | for_stmt
@@ -328,12 +329,24 @@ increment_stmt: lvalue PLUSPLUS ";"
 decrement_stmt: lvalue MINUSMINUS ";"
 
 if_stmt: IF expr block (ELSE else_clause)?
+       | IF LET pattern "=" expr block (ELSE else_clause)?  -> if_let_stmt
 else_clause: if_stmt | block
 
 // Note: identical to loop_expr but produces a different tree node;
 // loop_stmt is a statement, loop_expr is an initializer (see initializer_expr)
 loop_stmt: LABEL_DEF? LOOP block
 while_stmt: LABEL_DEF? WHILE expr block
+          | LABEL_DEF? WHILE LET pattern "=" expr block  -> while_let_stmt
+
+// let PATTERN = expr else { diverge }; — a bare IDENT pattern is excluded so
+// `let x = ...` stays a let_stmt (it would be irrefutable anyway)
+let_else_stmt: LET let_else_pattern "=" expr ELSE block ";"
+?let_else_pattern: let_else_primary ("|" let_else_primary)+  -> pattern_or
+                 | let_else_primary
+?let_else_primary: pattern_range
+                 | pattern_neg_literal
+                 | pattern_literal
+                 | pattern_enum
 for_stmt: LABEL_DEF? FOR IDENT IN expr (DOTDOT | DOTDOTEQ) expr block
 
 asm_stmt: ASM "!" "(" STRING ("," asm_arg)* ")" ";"
@@ -489,6 +502,7 @@ block_expr: "{" statement* expr "}"
 
 // If expression: if cond { expr } else { expr } (else required)
 if_expr: IF expr block_expr (ELSE (if_expr | block_expr))
+       | IF LET pattern "=" expr block_expr ELSE (if_expr | block_expr)  -> if_let_expr
 
 // Array expressions
 array_fill_expr: "[" expr ";" expr "]"          // [value; count] - e.g., [0; 256]

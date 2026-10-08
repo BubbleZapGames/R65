@@ -1276,6 +1276,41 @@ return match state {
 };
 ```
 
+### `if let`, `while let` and `let ... else`
+
+Each tests one pattern, and each is a two-arm `match` — the parser rewrites it
+before anything else runs, so it compiles to exactly the assembly of the match
+written by hand and costs one compare and a branch:
+
+| Source | Is |
+|---|---|
+| `if let P = e { a } else { b }` | `match e { P => { a } _ => { b } }` |
+| `'l: while let P = e { body }` | `'l: loop { match e { P => { body } _ => break 'l } }` |
+| `let P = e else { d }; rest` | `match e { P => { rest } _ => { d } }` |
+
+```rust
+if let Shape::C(c) = POOL[i] { c.r = c.r + 1; }     // writes the pool
+
+while let Shape::C(c) = POOL[i] { c.r = 0; i = i + 1; }
+
+fn width(i: u16) -> u8 {
+    let Shape::R(r) = POOL[i] else { return 0; };
+    r.w
+}
+```
+
+`P` is any match pattern, including an or-pattern; a payload binding in it is
+the same view of the pool a match arm gets (see
+[docs/enums.md](enums.md#matching)). `if let` also works as a value, where its
+`else` is required, and chains with `else if` / `else if let`. In a `while let`,
+`continue` re-tests `e`.
+
+`let ... else` puts the rest of the block in scope of `P`'s bindings, so its
+`else` block must **diverge**: end in `return`, `break`, `continue`, a `loop`
+with no `break` out of it, a call to a `-> !` function, or an `if`/`else` whose
+branches all do. Anything else is an error. Its pattern can't be a bare name —
+`let x = e` is an ordinary `let`.
+
 ### Optimization
 
 The compiler automatically selects the best code generation strategy:

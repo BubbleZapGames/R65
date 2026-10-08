@@ -221,6 +221,10 @@ impl Shape {
 POOL[i] = Shape::C(Circle { r: 5 });   // tag store + payload stores
 ```
 
+`if let Shape::C(c) = POOL[i] { .. }`, `while let` and `let Shape::C(c) =
+POOL[i] else { return; };` are each a two-arm `match`, the same view and the
+same code; a `let ... else` block must diverge.
+
 The discriminant reads back as an integer — `POOL[i] as u8` is one `LDA
 POOL__tag,X` — so per-variant constants belong in a table indexed by it rather
 than in a `match self` per column:

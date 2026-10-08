@@ -1178,13 +1178,63 @@ class ExpressionBuilder:
 
             arms.append(hir.HIRMatchArm(pattern=pattern, body=body, scope_id=scope_id))
 
+        if expr.origin == 'let_else' and not self._diverges(expr.arms[1].body):
+            raise HIRError(
+                "the 'else' block of 'let ... else' must not fall through",
+                source_loc=getattr(expr.arms[1].body, 'source_loc', None) or loc,
+                hint="end it with 'return', 'break', 'continue', a 'loop' or a "
+                     "call to a '-> !' function",
+            )
+
         match = hir.HIRMatchExpression(scrutinee=scrutinee, arms=arms,
                                        tagged_enum=enum_name,
+                                       origin=expr.origin,
                                        source_loc=expr.source_loc)
         if snapshot is None:
             return match
         return hir.HIRBlockExpression(statements=[snapshot], final_expr=match,
                                       source_loc=loc)
+
+    def _diverges(self, node) -> bool:
+        """Whether *node* (a statement) can never complete normally.
+
+        Syntactic and conservative: the last statement of a block must
+        return, break, continue, call a `-> !` function, loop with no break
+        out of it, or be an `if` whose branches all diverge.
+        """
+        if isinstance(node, (ast.ReturnStmt, ast.BreakStmt, ast.ContinueStmt)):
+            return True
+        if isinstance(node, ast.Block):
+            return bool(node.statements) and self._diverges(node.statements[-1])
+        if isinstance(node, ast.IfStmt):
+            return (node.else_block is not None and self._diverges(node.then_block)
+                    and self._diverges(node.else_block))
+        if isinstance(node, ast.LoopStmt):
+            return not self._breaks_out(node.body, node.label, nested=False)
+        if isinstance(node, ast.ExprStmt) and isinstance(node.expr, ast.FunctionCall):
+            func = node.expr.func
+            if isinstance(func, ast.Identifier):
+                symbol = self.symbol_table.lookup(func.name)
+                decl = getattr(symbol, 'definition', None)
+                return isinstance(getattr(decl, 'return_type', None), ast.NeverType)
+        return False
+
+    def _breaks_out(self, node, label, nested) -> bool:
+        """Whether a `break` inside *node* leaves the loop labelled *label*.
+
+        An unlabelled break counts only outside any inner loop (*nested*).
+        """
+        if isinstance(node, list):
+            return any(self._breaks_out(n, label, nested) for n in node)
+        if not isinstance(node, ast.ASTNode):
+            return False
+        if isinstance(node, ast.BreakStmt):
+            return (node.label is None and not nested) or (
+                label is not None and node.label == label)
+        inner = nested or isinstance(node, (ast.LoopStmt, ast.WhileStmt,
+                                            ast.ForStmt, ast.LoopExpression))
+        return any(self._breaks_out(v, label, inner) for v in vars(node).values()
+                   if isinstance(v, (list, ast.ASTNode)))
 
     def _check_binding_not_used_after_rewrite(self, binding, enum_name,
                                               index_ast, body):

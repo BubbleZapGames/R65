@@ -834,3 +834,6 @@ class HIRMatchExpression(HIRExpression):
     # integer — this is what tells the type checker to check variant coverage
     # rather than demand a wildcard the way it does for any other integer.
     tagged_enum: Optional[str] = None
+    # 'if_let' / 'let_else' when the parser desugared this match from
+    # `if let` / `while let` / `let ... else` (see ast.MatchExpression).
+    origin: Optional[str] = None

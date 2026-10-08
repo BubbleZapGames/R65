@@ -263,6 +263,17 @@ hint: the rewrite overlays the element's payload planes, so 'c' no longer names
 The check follows source order and is conservative across branches: a rewrite
 inside an `if` ends the binding for everything after the `if`.
 
+To test a single variant, `if let` is the same match with a `_ => {}` arm, and
+binds the same view; `while let` and `let ... else` follow suit (see
+[docs/control-flow.md](control-flow.md#if-let-while-let-and-let--else)):
+
+```rust
+if let Shape::C(c) = POOL[i] { c.r = c.r + 1; }
+
+let Shape::R(r) = POOL[i] else { return 0; };
+OUT = r.w;
+```
+
 A match must cover every variant or carry a `_`. Coverage is checked against the
 variants, not against the tag's integer range, and an arm naming a different
 enum is rejected.

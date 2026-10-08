@@ -170,26 +170,6 @@ class TestQuestionMarkErrors:
 
 
 # =============================================================================
-# if let / while let
-# =============================================================================
-
-class TestIfLetErrors:
-    """Test that if let / while let produce helpful errors."""
-
-    def test_if_let(self):
-        """if let x = ... should explain if let isn't supported."""
-        with pytest.raises(ParseError) as exc:
-            parse("fn test() { if let x = foo() { } }")
-        assert "if let" in str(exc.value).lower()
-
-    def test_while_let(self):
-        """while let x = ... should explain while let isn't supported."""
-        with pytest.raises(ParseError) as exc:
-            parse("fn test() { while let x = foo() { } }")
-        assert "while let" in str(exc.value).lower()
-
-
-# =============================================================================
 # &self in impl methods
 # =============================================================================
 

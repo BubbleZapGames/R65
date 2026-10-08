@@ -962,9 +962,28 @@ class LoopExpression(Expression):
 
 @dataclass
 class MatchExpression(Expression):
-    """Match expression."""
+    """Match expression.
+
+    `origin` is set when the parser desugared the match from `if let`,
+    `while let` or `let ... else` ('if_let' / 'let_else'). Such a match is a
+    statement, never a function's trailing value, and a 'let_else' match's
+    `_` arm must diverge.
+    """
     scrutinee: Expression  # Expression being matched
     arms: List[MatchArm]
+    origin: Optional[str] = None
+
+
+@dataclass
+class LetElseStmt(Statement):
+    """`let PATTERN = expr else { ... };` — only lives inside the parser.
+
+    The block that holds it folds it, and every statement after it, into a
+    match (see Parser._desugar_let_else), so no later pass sees this node.
+    """
+    pattern: Pattern
+    scrutinee: Expression
+    else_block: Block
 
 
 # ============================================================================

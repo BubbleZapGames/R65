@@ -4237,6 +4237,17 @@ class HIRBuilder:
 
         return result
 
+    @staticmethod
+    def _desugared_match(stmt) -> Optional[hir.HIRMatchExpression]:
+        """The match *stmt* holds, if the parser desugared it from `if let` or
+        `let ... else`; a snapshotted index wraps it in a block expression."""
+        expr = getattr(stmt, 'expr', None) if isinstance(stmt, hir.HIRExprStmt) else None
+        if isinstance(expr, hir.HIRBlockExpression):
+            expr = expr.final_expr
+        if isinstance(expr, hir.HIRMatchExpression) and expr.origin is not None:
+            return expr
+        return None
+
     def _add_implicit_return(self, hir_body: hir.HIRBlock, return_type, interrupt_attr=None):
         """Add implicit return A if function doesn't have explicit return.
 
@@ -4269,9 +4280,18 @@ class HIRBuilder:
         if isinstance(last_stmt, hir.HIRReturnStmt):
             return
 
+        # A match desugared from `if let` is a statement, like `if`: it falls
+        # through to the implicit return below. One from `let ... else` holds
+        # the rest of the body in its first arm (its other arm diverges), so
+        # that arm's tail is the function's tail.
+        desugared = self._desugared_match(last_stmt)
+        if desugared is not None:
+            if desugared.origin == 'let_else':
+                self._add_implicit_return(desugared.arms[0].body, return_type)
+                return
         # Trailing return expression: if the last statement is an ExprStmt
         # and the function has a return type, convert to return
-        if isinstance(last_stmt, hir.HIRExprStmt) and return_type is not None:
+        elif isinstance(last_stmt, hir.HIRExprStmt) and return_type is not None:
             if not isinstance(return_type, ast.NeverType):
                 hir_body.statements[-1] = hir.HIRReturnStmt(
                     values=[last_stmt.expr],
