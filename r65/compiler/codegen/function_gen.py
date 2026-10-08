@@ -1011,11 +1011,17 @@ class FunctionCodeGenerator:
         # Order: register saves -> scratch saves -> frame allocation -> mode setup -> body
         if mir_func.interrupt_attr:
             modified_regs = self._analyze_interrupt_modified_regs(mir_func)
-            mir_func.interrupt_modified_regs = modified_regs
             # Track if we have scratches — D must be saved/restored if so
             # (scratch save resets D=0, which clobbers interrupted code's D)
             self._interrupt_has_scratches = bool(
                 reg_alloc.scratch_pool and reg_alloc.scratch_pool.scratches)
+            # The pool is put back with PLA/STA (and an unpaired byte saved with
+            # LDA/PHA), so A changes even when the body never touches it — a
+            # body of nothing but `INC counter` would hand the interrupted
+            # code a scrambled A.
+            if self._interrupt_has_scratches and modified_regs is not None:
+                modified_regs = set(modified_regs) | {'A'}
+            mir_func.interrupt_modified_regs = modified_regs
             self._emit_interrupt_register_saves(modified_regs)
             self._emit_interrupt_scratch_saves(reg_alloc.scratch_pool)
 

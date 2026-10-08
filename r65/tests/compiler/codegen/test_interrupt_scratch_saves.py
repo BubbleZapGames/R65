@@ -82,6 +82,16 @@ def test_direct_page_reset_uses_the_accumulator_path():
     assert not re.search(r"^\s*PLD\b", handler.split("PEI", 1)[0], re.M)
 
 
+def test_a_is_saved_when_only_the_pool_uses_it():
+    """The pool is put back with PLA/STA, so A must be saved and restored even
+    when the body leaves A alone — or the interrupted code resumes with a
+    scrambled accumulator."""
+    handler = _handler_asm()
+    assert re.search(r"^\s*PHA\b", handler, re.M)              # ...but A is saved
+    pulls = re.findall(r"^\s*PLA\b", handler, re.M)
+    assert len(pulls) == 3                                       # two pool words + A
+
+
 WIDE_SOURCE = """
 #[zeropage(0x00, register)] static mut S0: u8;
 #[zeropage(0x01, register)] static mut S1: u8;
