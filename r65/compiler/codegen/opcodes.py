@@ -1023,6 +1023,15 @@ OPCODE_VARIANTS: dict[str, dict[str, Opcode]] = {
         'DP': Opcode.STZ_DP, 'DP_X': Opcode.STZ_DP_X,
         'ABSOLUTE': Opcode.STZ_ABSOLUTE, 'ABSOLUTE_X': Opcode.STZ_ABSOLUTE_X,
     },
+    # Memory read-modify-write: direct page / absolute only, X-indexed or not.
+    'INC': {
+        'DP': Opcode.INC_DP, 'DP_X': Opcode.INC_DP_X,
+        'ABSOLUTE': Opcode.INC_ABSOLUTE, 'ABSOLUTE_X': Opcode.INC_ABSOLUTE_X,
+    },
+    'DEC': {
+        'DP': Opcode.DEC_DP, 'DP_X': Opcode.DEC_DP_X,
+        'ABSOLUTE': Opcode.DEC_ABSOLUTE, 'ABSOLUTE_X': Opcode.DEC_ABSOLUTE_X,
+    },
     'ADC': {
         'DP': Opcode.ADC_DP, 'DP_X': Opcode.ADC_DP_X,
         'ABSOLUTE': Opcode.ADC_ABSOLUTE, 'ABSOLUTE_X': Opcode.ADC_ABSOLUTE_X,

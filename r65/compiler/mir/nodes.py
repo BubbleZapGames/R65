@@ -173,6 +173,30 @@ class Store(MIRInstruction):
 
 
 @dataclass
+class IncDecMemory(MIRInstruction):
+    """
+    Read-modify-write of a static or plane element by ±1, in place.
+
+    *location += delta
+
+    Emitted as INC/DEC on memory, which leaves A untouched and sets N/Z from
+    the result. Produced by `optimize/memory_incdec.py` from
+    `Load m; m ± 1; Store m`; only for locations INC/DEC can address (direct
+    page or absolute, optionally `,X`). When `sets_branch_flags` is True the
+    block's `== 0` / `!= 0` test of the new value was folded away and the
+    CondBranch that follows reads the Z flag this instruction leaves.
+    """
+    location: MemoryLocation
+    delta: int  # +1 or -1
+    type_info: Any  # TypeInfo for size (1 or 2 bytes)
+    sets_branch_flags: bool = False
+
+    def __repr__(self):
+        op = "+=" if self.delta > 0 else "-="
+        return f"{self.location} {op} 1 : {self.type_info}"
+
+
+@dataclass
 class LoadIndirect(MIRInstruction):
     """
     Load from memory through pointer (indirect addressing).
@@ -965,6 +989,7 @@ def _write_rr(f): return OperandSpec(f, _W, _SCALAR, True)
 OPERAND_SPECS: Dict[type, Tuple[OperandSpec, ...]] = {
     Load:           (_write_rr('dest'), _read_vr('source')),
     Store:          (_read_rr('source'),),
+    IncDecMemory:   (),  # location is a MemoryLocation; X is implicit, as for Load/Store
     LoadIndirect:   (_write_vr('dest'), _read_vr('pointer')),
     StoreIndirect:  (_read_rr('source'), _read_vr('pointer')),
     Move:           (_write_rr('dest'), _read_rr('source')),

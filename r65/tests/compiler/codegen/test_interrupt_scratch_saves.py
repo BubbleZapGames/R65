@@ -83,10 +83,11 @@ def test_direct_page_reset_uses_the_accumulator_path():
 
 
 def test_a_is_saved_when_only_the_pool_uses_it():
-    """The pool is put back with PLA/STA, so A must be saved and restored even
-    when the body leaves A alone — or the interrupted code resumes with a
-    scrambled accumulator."""
+    """The body (`COUNTER += 1`, an INC on memory) leaves A alone, but the pool
+    is put back with PLA/STA — so A must still be saved and restored, or the
+    interrupted code resumes with a scrambled accumulator."""
     handler = _handler_asm()
+    assert re.search(r"^\s*INC \$20\b", handler, re.M)       # the body leaves A alone
     assert re.search(r"^\s*PHA\b", handler, re.M)              # ...but A is saved
     pulls = re.findall(r"^\s*PLA\b", handler, re.M)
     assert len(pulls) == 3                                       # two pool words + A

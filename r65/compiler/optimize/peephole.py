@@ -206,7 +206,6 @@ class OptimizationStats:
     branch_threading_applied: int = 0
     tracked_loads_eliminated: int = 0
     identity_copies_eliminated: int = 0
-    memory_inc_dec_folded: int = 0
     loops_rotated: int = 0
     loop_invariant_loads_hoisted: int = 0
     count_down_loops: int = 0
@@ -321,7 +320,6 @@ class PeepholeOptimizer:
             # `nodes` list, so caches keyed on `id(nodes)` from the
             # previous iteration are stale and must not be reused.
             self._accu_mode_cache = None
-            nodes = self._fold_memory_inc_dec(nodes)
             nodes = self._eliminate_redundant_load_after_store(nodes)
             nodes = self._eliminate_identity_copies(nodes)
             nodes = self._eliminate_redundant_loads_tracked(nodes)
@@ -354,89 +352,6 @@ class PeepholeOptimizer:
         nodes = normalize_mode_directives(nodes)
 
         return nodes
-
-    def _fold_memory_inc_dec(self, nodes: List['AsmNode']) -> List['AsmNode']:
-        """
-        Fold load/add-1/store sequences into INC/DEC on memory.
-
-        Patterns (m8 mode, DP addressing):
-            LDA dp; CLC; ADC #$01; STA dp  →  INC dp  (same address)
-            LDA dp; SEC; SBC #$01; STA dp  →  DEC dp  (same address)
-
-        Also handles ABSOLUTE addressing. Skips volatile (hardware) addresses.
-        Only applies in m8 mode — INC/DEC on memory operate at the current
-        accumulator width, but the pattern we match (`LDA/CLC/ADC #1/STA`)
-        is the m8-specific shape; in m16 the codegen emits a different
-        sequence and folding here would change semantics.
-
-        Backed by the asm-mode dataflow for the m8 check. When the
-        dataflow can't prove m8 at the LDA (mode unknown or mixed),
-        the fold is conservatively skipped.
-        """
-        from r65.compiler.codegen.asm_nodes import Instruction, Directive, Address, Immediate as AsmImmediate
-        from r65.compiler.codegen.constants import DP_BOUNDARY
-        from r65.compiler.optimize.asm_mode_dataflow import compute_modes
-
-        info = compute_modes(nodes)
-
-        optimized: List = []
-        i = 0
-        n = len(nodes)
-        while i < n:
-            node = nodes[i]
-
-            if i + 3 >= n or not isinstance(node, Instruction):
-                optimized.append(node)
-                i += 1
-                continue
-
-            # Only fold when the dataflow proves m8 at this point.
-            if info.unique_mode_at(i) != 8:
-                optimized.append(node)
-                i += 1
-                continue
-
-            # Match: LDA addr; CLC; ADC #$01; STA addr (increment)
-            #    or: LDA addr; SEC; SBC #$01; STA addr (decrement)
-            n1 = nodes[i + 1]
-            n2 = nodes[i + 2]
-            n3 = nodes[i + 3]
-
-            if not (isinstance(n1, Instruction) and isinstance(n2, Instruction) and isinstance(n3, Instruction)):
-                optimized.append(node)
-                i += 1
-                continue
-
-            is_inc = (node.opcode in (Opcode.LDA_DP, Opcode.LDA_ABSOLUTE) and
-                      n1.opcode == Opcode.CLC and
-                      n2.opcode == Opcode.ADC_IMMEDIATE and
-                      isinstance(n2.operand, AsmImmediate) and n2.operand.value == 1 and
-                      n3.opcode in (Opcode.STA_DP, Opcode.STA_ABSOLUTE) and
-                      node.operand == n3.operand)
-
-            is_dec = (node.opcode in (Opcode.LDA_DP, Opcode.LDA_ABSOLUTE) and
-                      n1.opcode == Opcode.SEC and
-                      n2.opcode == Opcode.SBC_IMMEDIATE and
-                      isinstance(n2.operand, AsmImmediate) and n2.operand.value == 1 and
-                      n3.opcode in (Opcode.STA_DP, Opcode.STA_ABSOLUTE) and
-                      node.operand == n3.operand)
-
-            if (is_inc or is_dec) and not self._is_hardware_register(node.operand):
-                # Determine DP vs ABSOLUTE opcode
-                use_dp = node.opcode in (Opcode.LDA_DP,)
-                if is_inc:
-                    opcode = Opcode.INC_DP if use_dp else Opcode.INC_ABSOLUTE
-                else:
-                    opcode = Opcode.DEC_DP if use_dp else Opcode.DEC_ABSOLUTE
-                optimized.append(Instruction(opcode, node.operand,
-                                             comment=f"{'INC' if is_inc else 'DEC'} memory (folded)"))
-                i += 4
-                self.stats.memory_inc_dec_folded += 1
-            else:
-                optimized.append(node)
-                i += 1
-
-        return optimized
 
     def _rewrite_adjacent_pairs(self, nodes: List['AsmNode'], match) -> List['AsmNode']:
         """Scan for adjacent Instruction pairs and rewrite matches.

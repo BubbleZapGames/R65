@@ -12,7 +12,7 @@ if TYPE_CHECKING:
     from r65.compiler.codegen.function_gen import FunctionCodeGenerator
 from r65.compiler.mir.nodes import (
     MIRFunction, MIRInstruction,
-    Load, Store, LoadIndirect, StoreIndirect,
+    Load, Store, IncDecMemory, LoadIndirect, StoreIndirect,
     Move, Return, Jump, JumpTable, LookupTable, CondBranch, Call,
     BinaryOp, UnaryOp, Compare, BitTest, Rotate, SetMode, TypeConvert, ToBool,
     BankByte,
@@ -144,6 +144,7 @@ class InstructionSelector:
         self._dispatch = {
             Load: self.memory_selector.select_load,
             Store: self.memory_selector.select_store,
+            IncDecMemory: self.memory_selector.select_inc_dec_memory,
             LoadIndirect: self.memory_selector.select_load_indirect,
             StoreIndirect: self.memory_selector.select_store_indirect,
             Move: self.move_selector.select_move,

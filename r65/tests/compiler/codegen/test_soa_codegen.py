@@ -75,7 +75,8 @@ class TestIndexSelfMethod:
         body = asm[asm.index('Enemy__step:'):]
         body = body[:body.index('RTS')]
         # The plane bases: x at 0x40+2*8 = 0x50, y at 0x58.
-        assert 'LDA $50,X' in body, body
+        # `self.x = self.x + 1` is one read-modify-write on the plane.
+        assert 'INC $50,X' in body, body
         assert 'STA $58,X' in body, body
         # No stack frame: the receiver is a register-resident index.
         assert 'PHX' not in body and ',S' not in body, body
