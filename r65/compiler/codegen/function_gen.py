@@ -324,6 +324,8 @@ class FunctionCodeGenerator:
         # Track codegen exit modes per block to detect mode mismatches
         # between runtime predecessors (which may differ from emission order)
         codegen_exit_modes = {}
+        # Whether X == Y at each emitted block's exit (see emitter.x_equals_y).
+        codegen_exit_x_equals_y = {}
 
         for block_id in block_order:
             block = mir_func.blocks[block_id]
@@ -344,6 +346,11 @@ class FunctionCodeGenerator:
                     from r65.compiler.typeck.processor_mode import ModeState
                     accu_bits = 16 if block.entry_mode.m_mode == ModeState.M16 else 8
                     self.emitter.emit_accu_mode(accu_bits)
+                # X == Y holds at a join only if every predecessor has been
+                # emitted (a back-edge source has not) and left it holding.
+                preds = getattr(block, 'predecessors', None) or []
+                self.emitter.x_equals_y = bool(preds) and all(
+                    codegen_exit_x_equals_y.get(p, False) for p in preds)
 
             # Determine if we need to force a mode switch at block entry.
             # This is needed when:
@@ -400,6 +407,7 @@ class FunctionCodeGenerator:
 
             # Record this block's codegen exit mode
             codegen_exit_modes[block_id] = self.emitter.get_accu_mode()
+            codegen_exit_x_equals_y[block_id] = self.emitter.x_equals_y
 
         # Emit shared epilogue if function has multiple returns.
         # Each Return instruction branched here instead of emitting inline.

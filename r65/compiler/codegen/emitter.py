@@ -320,6 +320,10 @@ class AssemblyEmitter:
         # Track which register (if any) the N/Z flags currently reflect.
         # Used to elide redundant CMP/CPX/CPY #0 when flags are already valid.
         self.nz_valid_for: str | None = None  # 'A', 'X', 'Y', or None
+        # True while X and Y are known to hold the same value — set by
+        # TYX/TXY, cleared by anything that writes X or Y and at labels.
+        # Lets a repeated TYX/TXY be skipped (see _update_xy_copy_tracking).
+        self.x_equals_y: bool = False
         # Track banks that have had data/code emitted to avoid .ORG 0 overlap
         self._used_banks: set = set()
         # HiROM flag: when True, .BASE $C0 is emitted before ROM sections
@@ -344,6 +348,8 @@ class AssemblyEmitter:
     def emit(self, node: AsmNode):
         """Emit a single node."""
         self.nodes.append(node)
+        if isinstance(node, (Instruction, RawAsm)):
+            self.x_equals_y = False  # untracked code: assume X/Y changed
 
     def emit_instr(self, opcode: Opcode, operand: Operand | None = None,
                    comment: str | None = None, source_loc: 'SourceLocation | None' = None):
@@ -358,11 +364,13 @@ class AssemblyEmitter:
         """
         self.nodes.append(Instruction(opcode, operand, comment, source_loc))
         self._update_nz_tracking(opcode)
+        self._update_xy_copy_tracking(opcode, operand)
 
     def emit_raw(self, text: str):
         """Emit raw assembly text."""
         self.nodes.append(RawAsm(text))
         self.nz_valid_for = None  # Unknown effect on flags
+        self.x_equals_y = False   # ...and on registers
 
     def emit_directive(self, text: str):
         """
@@ -641,6 +649,8 @@ class AssemblyEmitter:
         label_name = label.rstrip(':')
         self.nodes.append(Label(label_name, source_loc))
         self.nz_valid_for = None  # Labels are merge points; flags ambiguous
+        self.x_equals_y = False   # re-established by the caller when every
+                                  # predecessor agrees (function_gen block loop)
 
 
     # ========================================================================
@@ -678,6 +688,32 @@ class AssemblyEmitter:
         'CLC', 'SEC', 'CLI', 'SEI', 'CLD', 'SED', 'CLV',
         'REP', 'SEP',  # Only affect M/X bits (#$20/#$10) in compiler usage
     })
+
+    # Mnemonics that write X or Y (or may, as a call or a bank move does).
+    _XY_WRITE_MNEMONICS = frozenset({
+        'LDX', 'LDY', 'TAX', 'TAY', 'TSX', 'PLX', 'PLY',
+        'INX', 'DEX', 'INY', 'DEY',
+        'JSR', 'JSL', 'RTS', 'RTL', 'RTI', 'BRK', 'COP',
+        'MVN', 'MVP', 'XCE', 'PLP',
+    })
+
+    def _update_xy_copy_tracking(self, opcode: Opcode, operand):
+        """Track whether X and Y hold the same value after *opcode*.
+
+        TYX/TXY make them equal; any write to either register ends it, as
+        does `SEP` with the X bit (x8 truncates both). Used to skip a TYX/TXY
+        that would copy a value X already has.
+        """
+        if opcode in (Opcode.TYX, Opcode.TXY):
+            self.x_equals_y = True
+            return
+        mn = mnemonic(opcode)
+        if mn in self._XY_WRITE_MNEMONICS:
+            self.x_equals_y = False
+        elif mn == 'SEP':
+            value = getattr(operand, 'value', None)
+            if not isinstance(value, int) or value & 0x10:
+                self.x_equals_y = False
 
     def _update_nz_tracking(self, opcode: Opcode):
         """

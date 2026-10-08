@@ -1663,6 +1663,11 @@ class InstructionSelector:
         # Direct transfers
         transfer_opcode = TRANSFER_OPCODES.get((src_reg, dest_reg))
 
+        # X already holds Y's value (an earlier TYX/TXY with neither written
+        # since): the copy would change nothing.
+        if transfer_opcode in (Opcode.TYX, Opcode.TXY) and self.emitter.x_equals_y:
+            return
+
         if transfer_opcode:
             # When transferring 8-bit A to 16-bit X/Y, the hidden B register
             # (high byte of the 16-bit accumulator C) may contain garbage from
