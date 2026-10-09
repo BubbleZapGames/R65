@@ -565,6 +565,8 @@ r65x init --platform snes my_project  # Create test project
 
 `./Mesen-GDB/bin/linux-x64/Release/mesen-gdb` is a SNES debugger for automated ROM testing. It supports batch mode with register/memory assertions, interactive GDB-style debugging, memory dumps, and trace logging. See [Mesen-GDB/CLAUDE.md](Mesen-GDB/CLAUDE.md) for full usage reference.
 
+For ROM tests as ordinary Python tests, use Mesen-GDB's `mesen_gdb.rom_driver` (`pip install -e Mesen-GDB/python`): chainable live input (`s.wait(200).left(20).downleft(50)`), memory by `.sym`/`.dbg` symbol name, named game states (`state("level1")`) cached as save states, and pytest `snes`/`state` fixtures. See [Mesen-GDB/python/README.md](Mesen-GDB/python/README.md).
+
 ## Directory Structure
 
 ```
