@@ -200,6 +200,7 @@ class HIRFunctionDecl(HIRDeclaration):
     interrupt_attr: Optional[Any] = None  # Will be InterruptAttribute
     inline_attr: Optional[Any] = None  # Will be InlineAttribute
     is_entry: bool = False
+    is_used: bool = False  # #[used]: kept though nothing calls it
     # Lint codes suppressed on this function via #[allow(...)]. The sentinel
     # "*" (attributes.ALLOW_ALL) means every code.
     allow_lints: frozenset = field(default_factory=frozenset)

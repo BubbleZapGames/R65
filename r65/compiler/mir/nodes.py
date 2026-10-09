@@ -1134,6 +1134,7 @@ class MIRFunction:
     interrupt_modified_regs: Optional[set] = None  # Set of hw reg names modified in handler body
     inline_attr: Optional[Any] = None       # InlineAttribute
     is_entry: bool = False
+    is_used: bool = False                   # #[used]: a dead-function-elimination root
     is_far: bool = False
     is_trait_method: bool = False  # True for trait impl methods (self passed in Y)
     is_recursive: bool = False  # True if function is in a recursive cycle

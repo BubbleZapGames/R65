@@ -470,6 +470,16 @@ Vectors: `nmi`, `irq`, `brk`, `cop`, `abort`. Default `preserve=true`.
 
 *(See [docs/interrupt-mode-transition.md](docs/interrupt-mode-transition.md))*
 
+### Uncalled Functions
+
+A function nothing calls is removed. `#[used]` keeps one for a caller the
+compiler cannot see - a debugger's `jump`, as a test that swaps a call does:
+
+```rust
+#[used]
+fn boot_harness() -> u8 { return MISSION_HARNESS; }
+```
+
 ### Pointer Types
 
 Pointers use `*` in the type with optional `far`/`near`:

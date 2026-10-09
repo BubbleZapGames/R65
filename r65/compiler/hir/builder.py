@@ -936,6 +936,7 @@ class HIRBuilder:
             interrupt_attr=interrupt_attr,
             inline_attr=inline_attr,
             is_entry=is_entry,
+            is_used=attrs['is_used'],
             allow_lints=attrs['allow'],
             symbol=func_symbol,
             returns_status_flag=returns_status_flag,
@@ -3638,6 +3639,7 @@ class HIRBuilder:
             interrupt_attr=interrupt_attr,
             inline_attr=inline_attr,
             is_entry=is_entry,
+            is_used=attrs['is_used'],
             symbol=method_symbol,
             returns_status_flag=returns_status_flag,
             entry_m_mode=entry_m_mode,
@@ -4210,7 +4212,7 @@ class HIRBuilder:
             processed_attrs: List of processed attributes
 
         Returns:
-            Dictionary with keys: mode, preserves, interrupt, is_entry
+            Dictionary with keys: mode, preserves, interrupt, is_entry, is_used
         """
         result = {
             'mode': None,
@@ -4218,6 +4220,7 @@ class HIRBuilder:
             'interrupt': None,
             'inline': None,
             'is_entry': False,
+            'is_used': False,
             'allow': frozenset(),
         }
 
@@ -4232,6 +4235,8 @@ class HIRBuilder:
                 result['inline'] = attr
             elif isinstance(attr, EntryAttribute):
                 result['is_entry'] = True
+            elif isinstance(attr, UsedAttribute):
+                result['is_used'] = True
             elif isinstance(attr, AllowAttribute):
                 result['allow'] = attr.codes
 

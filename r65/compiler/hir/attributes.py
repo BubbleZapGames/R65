@@ -128,6 +128,18 @@ class EntryAttribute(ProcessedAttribute):
     pass
 
 
+# Used attribute
+@dataclass
+class UsedAttribute(ProcessedAttribute):
+    """#[used] - keep a function nothing calls.
+
+    Dead-function elimination drops a function no live function calls; a
+    #[used] one is a root, like an entry point, so it stays in the ROM for
+    code the compiler cannot see to reach it - a debugger's `jump`, say.
+    """
+    pass
+
+
 # Inline attribute
 class InlineMode(Enum):
     """Inline attribute mode."""
@@ -238,6 +250,8 @@ class AttributeProcessor:
                 processed.append(self._process_interrupt(attr, context))
             elif attr.name == 'entry':
                 processed.append(self._process_entry(attr, context))
+            elif attr.name == 'used':
+                processed.append(self._process_used(attr, context))
             elif attr.name == 'inline':
                 processed.append(self._process_inline(attr, context))
             elif attr.name == 'allow':
@@ -503,6 +517,16 @@ class AttributeProcessor:
             raise HIRError(f"#[entry] does not accept arguments", source_loc=attr.source_loc)
 
         return EntryAttribute(name='entry')
+
+    def _process_used(self, attr: ast.Attribute, context: str) -> UsedAttribute:
+        """Process #[used] attribute."""
+        if context not in ['function']:
+            raise HIRError("#[used] attribute only valid on functions", source_loc=attr.source_loc)
+
+        if len(attr.args) > 0:
+            raise HIRError("#[used] does not accept arguments", source_loc=attr.source_loc)
+
+        return UsedAttribute(name='used')
 
     def _process_inline(self, attr: ast.Attribute, context: str) -> InlineAttribute:
         """Process #[inline], #[inline(always)], or #[inline(never)] attribute."""

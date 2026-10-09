@@ -3,7 +3,8 @@
 Dead Function Elimination.
 
 Removes functions that are never called from the program.
-Entry points (marked with #[entry]) and interrupt handlers are always kept.
+Entry points (marked with #[entry]), interrupt handlers and #[used]
+functions are always kept.
 """
 
 from typing import Set, List
@@ -17,7 +18,7 @@ class DeadFunctionEliminator:
     Eliminates unused functions from a MIR program.
 
     A function is considered "live" (not dead) if:
-    1. It is an entry point (is_entry=True)
+    1. It is an entry point (is_entry=True) or #[used]
     2. It is an interrupt handler (interrupt_attr is not None)
     3. It is called by another live function
     4. It is the initialization function (__init_start)
@@ -103,8 +104,8 @@ class DeadFunctionEliminator:
         entry_points = set()
 
         for func in functions:
-            # Entry function
-            if func.is_entry:
+            # Entry function, or one kept for code the compiler cannot see
+            if func.is_entry or func.is_used:
                 entry_points.add(func.name)
 
             # Interrupt handler

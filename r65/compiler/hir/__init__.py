@@ -221,6 +221,7 @@ __all__ = [
     'InterruptAttribute',
     'InterruptVector',
     'EntryAttribute',
+    'UsedAttribute',
     'AttributeProcessor',
 
     # Const evaluation

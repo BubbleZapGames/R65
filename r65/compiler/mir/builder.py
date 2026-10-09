@@ -280,6 +280,7 @@ class MIRBuilder:
             interrupt_attr=hir_func.interrupt_attr,
             inline_attr=hir_func.inline_attr,
             is_entry=hir_func.is_entry,
+            is_used=hir_func.is_used,
             is_far=hir_func.is_far,
             is_trait_method=hir_func.is_trait_method,
             entry_m_mode=hir_func.entry_m_mode,  # Inferred entry mode
