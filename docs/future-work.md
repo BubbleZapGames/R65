@@ -314,3 +314,29 @@ Two constructs assume there is exactly one of them in the program, so a package 
 ### `#[bank(n)]` Is Positional State
 
 Not deferred — this one must be fixed *with* the packaging work, and is recorded here only so the hazard is discoverable from this file. `#[bank(n)]` mutates a cursor over the flat declaration list, so an included file containing a bank directive silently rebanks everything after its include site. The fix is a bank restore at include boundaries in `Preprocessor._process_include`; see [packaging-system.md](packaging-system.md#correctness-fixes-packaging-depends-on).
+
+---
+
+## Parser
+
+### A `match` statement needs a `;` before the next statement
+
+`match` exists only as an expression (`match_expr`, reached through `primary`), so in statement position it is an `expr_stmt: expr ";"`. A `match` that is not the last thing in its block must therefore end in `};` — Rust lets a block-like expression stand as a statement with no `;`, and R65 rejects the Rust spelling:
+
+```rust
+far fn music_play(track: u8) {
+    match track {
+        0 => { music_load(&MUSIC_1 as far *u8); }
+        _ => { return; }
+    }
+    music_now = track;     // error: unexpected token 'music_now' — expected ;, }
+}
+```
+
+A trailing `match` (the last statement of a function or block) parses, because nothing follows it. `if` has no such problem: it has a statement form of its own (`if_stmt`), and `loop`/`while`/`for` are statements outright.
+
+**Why deferred**: the obvious fix — a `match_stmt: match_expr` alternative under `statement`, transformed to the same `ExprStmt` — does not build. The parser is LALR (`_LARK_OPTIONS`, `parser='lalr'`), and after a `match_expr` in statement position it cannot tell a statement that has ended from an expression that goes on, so Lark reports reduce/reduce collisions between `match_stmt` and `primary : match_expr` on `[`, `(`, `-`, `&` and `*` (each could index, call or operate on the match's value, or start the next statement), and on `}` (the match could be the block's tail value, `block_expr: "{" statement* expr "}"`). Resolving them is a restructuring of the statement/expression grammar, not a one-line rule. Found writing `rotor_raiders/src/sound.r65`, where `music_play` was restructured around it (the work after the match moved into the arms' callee).
+
+**Approach if revisited**: do what Rust's grammar does — a block-like expression at the start of a statement is a statement, and does not continue as an operand. In LALR terms: give statement position its own entry for block-like expressions (`match`, and blocks/`if` used as values) that is not reachable through `primary`, and split `expr_stmt` so the expression it starts with cannot itself begin with a block-like expression (`match x {..} - 1;` then needs parentheses, as `(match x {..}) - 1;` does in Rust). The `}` collision needs the same choice for `block_expr`'s tail: a `match` immediately before `}` is the tail value when the block is used as a value, so either the tail rule takes block-like expressions explicitly or the statement form is preferred and a value-producing tail is recognised after the fact (as Rust does when a block's last statement is a block-like expression with a type). Check: the grammar builds with no collisions, `match ...;` still parses, and a trailing match still yields the function's value.
+
+**Workaround today**: end the match with `};`, or move what follows into the arms (or a function the arms call).
