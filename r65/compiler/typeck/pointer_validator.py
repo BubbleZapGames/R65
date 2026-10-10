@@ -144,8 +144,13 @@ class PointerValidator:
         if isinstance(operand, HIRIdentifier):
             symbol = operand.symbol
         elif isinstance(operand, HIRArrayIndex):
-            # &array[i] — check the array's storage
+            # &p[i] through a pointer lives wherever p points, so it is as
+            # far as p is - a far pointer parameter's element is not in bank 0.
             base = operand.array
+            base_type = getattr(base, 'expr_type', None)
+            if isinstance(base_type, PointerTypeInfo):
+                return base_type.is_far
+            # &array[i] — check the array's storage
             if isinstance(base, HIRIdentifier):
                 symbol = base.symbol
             else:

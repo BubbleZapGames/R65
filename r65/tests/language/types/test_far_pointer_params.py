@@ -249,3 +249,42 @@ class TestCallHandlingWithFarPointers:
         assert len(mir.functions) == 2
         for func in mir.functions:
             assert func.has_far_ptr_stack_params is True
+
+
+class TestAddressOfThroughPointer:
+    """&p[i] where p is a pointer: p's value plus the scaled index, at runtime.
+
+    It used to fall into the static-array path, which asks codegen for the
+    address of p itself as an array symbol: "No allocation for symbol: data".
+    """
+
+    def test_far_pointer_param_element_is_far_and_offset(self):
+        """&data[2] through a far pointer: data + 2, carrying data's bank."""
+        from r65.compiler.main import compile_string
+
+        source = """
+            #[ram] static mut OUT: u16;
+            static BLOB: [u8; 8] = [1, 2, 3, 4, 5, 6, 7, 8];
+            far fn sink(p: far *u8) { OUT = p[0] as u16; }
+            fn load(data: far *u8) { sink(&data[2] as far *u8); }
+            #[entry]
+            fn main() -> ! { load(&BLOB as far *u8); loop {} }
+        """
+        asm = compile_string(source, "test.r65")
+        body = asm.split("\nload:")[1].split("RTS")[0]
+        assert "ADC #$02" in body, f"expected data + 2:\n{body}"
+        # The bank byte is data's own (stack slot), not a constant bank 0.
+        assert "LDA $0B,S" in body, f"expected data's bank byte carried over:\n{body}"
+
+    def test_near_pointer_variable_index_scales(self):
+        """&p[i] through a *u16 scales i by 2 before the add."""
+        from r65.compiler.main import compile_string
+
+        source = """
+            fn at(p: *u16, i @ Y: u16) -> *u16 { return &p[i]; }
+            #[entry]
+            fn main() -> ! { let q: *u16 = at(0x2000 as *u16, 3); loop {} }
+        """
+        asm = compile_string(source, "test.r65")
+        body = asm.split("\nat:")[1].split("RTS")[0]
+        assert "ASL" in body, f"expected i * 2:\n{body}"

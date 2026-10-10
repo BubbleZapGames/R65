@@ -907,7 +907,19 @@ class ExpressionLowerer:
         if (isinstance(array_expr, HIRFieldAccess) and
                 getattr(array_expr, 'auto_deref', False)):
             return self._lower_addressof_array_index_via_pointer(
-                expr, array_expr, array_index.index, element_size
+                expr, array_expr.base, array_expr.field_offset or 0,
+                array_index.index, element_size, array_expr.field_name
+            )
+
+        # Case 4: &p[index] — indexing a pointer itself (a parameter, a local,
+        # any pointer-valued expression). Its value is the base, known only
+        # at runtime; the element is the pointee. Without this it fell into
+        # the static-array path below and asked codegen for the pointer's
+        # *own* address as if it were an array symbol.
+        if isinstance(array_type, PointerTypeInfo):
+            return self._lower_addressof_array_index_via_pointer(
+                expr, array_expr, 0, array_index.index,
+                self.builder._get_type_size(array_type.pointee_type), "ptr"
             )
 
         # Cases 1 and 2 share the symbolic-base path. For a struct-field array,
@@ -1007,28 +1019,26 @@ class ExpressionLowerer:
         return result
 
     def _lower_addressof_array_index_via_pointer(
-        self, expr, field_access, index_expr, element_size
+        self, expr, base_expr, field_offset, index_expr, element_size, name
     ):
-        """Lower &ptr.field[index] — pointer-relative array address.
+        """Lower &ptr.field[index] or &ptr[index] — a pointer-relative address.
 
         Produces: base_ptr + field_offset + index * element_size, all at
         runtime, since the pointer's value is only known dynamically.
 
-        field_access is an auto-deref HIRFieldAccess whose .base lowers to a
-        pointer vreg. element_size comes from the array field's element type.
+        base_expr lowers to the pointer vreg: an auto-deref field access's
+        .base (field_offset its field's), or the indexed pointer itself
+        (field_offset 0). element_size is the size of what is indexed.
         """
         from r65.compiler.hir.types import BasicTypeInfo
 
-        field_offset = field_access.field_offset or 0
         ptr_type = expr.expr_type
 
-        result = self.ctx.alloc_vreg(
-            ptr_type, f"addr_of_{field_access.field_name}_elem"
-        )
+        result = self.ctx.alloc_vreg(ptr_type, f"addr_of_{name}_elem")
 
         # Lower base pointer once. Same lowering path that
         # _lower_addressof_field_access uses for &ptr.field.
-        base_ptr = self.builder.lower_expression(field_access.base)
+        base_ptr = self.builder.lower_expression(base_expr)
 
         index_operand = self.builder.lower_expression(index_expr)
 
