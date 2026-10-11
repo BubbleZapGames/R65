@@ -1178,7 +1178,7 @@ class ExpressionBuilder:
 
             arms.append(hir.HIRMatchArm(pattern=pattern, body=body, scope_id=scope_id))
 
-        if expr.origin == 'let_else' and not self._diverges(expr.arms[1].body):
+        if expr.origin == 'let_else' and not self.diverges(expr.arms[1].body):
             raise HIRError(
                 "the 'else' block of 'let ... else' must not fall through",
                 source_loc=getattr(expr.arms[1].body, 'source_loc', None) or loc,
@@ -1195,22 +1195,25 @@ class ExpressionBuilder:
         return hir.HIRBlockExpression(statements=[snapshot], final_expr=match,
                                       source_loc=loc)
 
-    def _diverges(self, node) -> bool:
+    def diverges(self, node) -> bool:
         """Whether *node* (a statement) can never complete normally.
 
         Syntactic and conservative: the last statement of a block must
         return, break, continue, call a `-> !` function, loop with no break
-        out of it, or be an `if` whose branches all diverge.
+        out of it, or be an `if` or `match` whose branches all diverge.
         """
         if isinstance(node, (ast.ReturnStmt, ast.BreakStmt, ast.ContinueStmt)):
             return True
         if isinstance(node, ast.Block):
-            return bool(node.statements) and self._diverges(node.statements[-1])
+            return bool(node.statements) and self.diverges(node.statements[-1])
         if isinstance(node, ast.IfStmt):
-            return (node.else_block is not None and self._diverges(node.then_block)
-                    and self._diverges(node.else_block))
+            return (node.else_block is not None and self.diverges(node.then_block)
+                    and self.diverges(node.else_block))
         if isinstance(node, ast.LoopStmt):
             return not self._breaks_out(node.body, node.label, nested=False)
+        if isinstance(node, ast.ExprStmt) and isinstance(node.expr, ast.MatchExpression):
+            arms = node.expr.arms
+            return bool(arms) and all(self.diverges(arm.body) for arm in arms)
         if isinstance(node, ast.ExprStmt) and isinstance(node.expr, ast.FunctionCall):
             func = node.expr.func
             if isinstance(func, ast.Identifier):

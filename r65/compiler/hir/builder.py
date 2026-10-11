@@ -878,7 +878,7 @@ class HIRBuilder:
         hir_body = self._build_block(func.body)
 
         # Add implicit return A if needed (but not for interrupt handlers)
-        self._add_implicit_return(hir_body, func.return_type, interrupt_attr)
+        self._add_implicit_return(hir_body, func.return_type, interrupt_attr, func.body)
 
         # Exit function scope
         self.symbol_table.exit_scope()
@@ -3587,7 +3587,7 @@ class HIRBuilder:
             self.expression_builder.payload_self = previous_payload_self
 
         # Add implicit return A if needed
-        self._add_implicit_return(hir_body, method.return_type, interrupt_attr)
+        self._add_implicit_return(hir_body, method.return_type, interrupt_attr, method.body)
 
         # Exit function scope
         self.symbol_table.exit_scope()
@@ -4253,13 +4253,15 @@ class HIRBuilder:
             return expr
         return None
 
-    def _add_implicit_return(self, hir_body: hir.HIRBlock, return_type, interrupt_attr=None):
+    def _add_implicit_return(self, hir_body: hir.HIRBlock, return_type, interrupt_attr=None,
+                             ast_body=None):
         """Add implicit return A if function doesn't have explicit return.
 
         Args:
             hir_body: HIR block (function body)
             return_type: AST return type (or None)
             interrupt_attr: Interrupt attribute if this is an interrupt handler
+            ast_body: The body's AST block, to see whether its tail diverges
         """
         # Interrupt handlers should not have implicit returns
         # They will get RTI (return from interrupt) instead
@@ -4283,6 +4285,13 @@ class HIRBuilder:
 
         # Check if last statement is already a return
         if isinstance(last_stmt, hir.HIRReturnStmt):
+            return
+
+        # A tail that never falls through — a `loop` with no break out, an
+        # if/else or match whose branches all return — needs no return after
+        # it. One would be unreachable `return A`, and A's u8 is no `-> bool`.
+        if (ast_body is not None and ast_body.statements
+                and self.expression_builder.diverges(ast_body.statements[-1])):
             return
 
         # A match desugared from `if let` is a statement, like `if`: it falls
