@@ -13,7 +13,7 @@ from r65.compiler.mir.nodes import (
     Jump, CondBranch, Return, ReturnFromInterrupt, Call,
     LoadIndirect, StoreIndirect, Rotate, BitTest, JumpTable, BankByte,
     Push, Pull, SaveRegister, RestoreRegister, InlineAsm, SetMode,
-    MemoryFill, BlockCopy, LookupTable, TraitDispatch,
+    MemoryFill, BlockCopy, LookupTable, TraitDispatch, MemoryLocation,
 )
 
 
@@ -61,6 +61,15 @@ _SIDE_EFFECT_FREE = frozenset({
     Move, Load, LoadIndirect, BinaryOp, UnaryOp,
     TypeConvert, ToBool, Rotate, SaveRegister,
 })
+
+
+def _reads_volatile(instr: MIRInstruction) -> bool:
+    """True for a read of a #[hw] location. The read is the side effect —
+    $2137 latches the H/V counters, $4211 acknowledges the timer IRQ — so
+    it stays even when nothing uses the value."""
+    source = getattr(instr, 'source', None)
+    return (type(instr) in (Load, Move) and isinstance(source, MemoryLocation)
+            and source.is_volatile)
 
 
 def _get_read_vreg_ids(instr: MIRInstruction) -> Set[int]:
@@ -220,7 +229,8 @@ class DeadCodeEliminator:
                     written = _get_written_vreg_id(instr)
                     if (written is not None and
                         written not in used and
-                        type(instr) in _SIDE_EFFECT_FREE):
+                        type(instr) in _SIDE_EFFECT_FREE and
+                        not _reads_volatile(instr)):
                         removed += 1
                     else:
                         new_instructions.append(instr)
