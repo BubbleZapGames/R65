@@ -93,6 +93,20 @@ class TestLoRomFastRom:
         # the raw handler must NOT be the vector target - it runs in bank $80
         assert "RESET main" not in asm
 
+    def test_every_handled_vector_gets_a_trampoline(self):
+        """BRK and COP ride the same stubs as NMI, each to its own handler."""
+        asm = compile_source(program(LOROM_FAST, extra="""
+#[interrupt(brk)]
+fn brk_handler() { COUNTER = 1; }
+
+#[interrupt(cop)]
+fn cop_handler() { COUNTER = 2; }
+"""))
+        assert "JML brk_handler" in asm and "JML cop_handler" in asm
+        assert "BRK __fast_brk" in asm
+        assert "COP __fast_cop" in asm
+        assert "ABORT __empty_handler" in asm
+
     def test_entry_sets_dbr_to_code_bank(self):
         """PHK/PLB so absolute ROM reads use the fast mirror too."""
         asm = compile_source(program(LOROM_FAST))
@@ -144,6 +158,15 @@ class TestHiRomFastRom:
         asm = compile_source(program(HIROM_FAST))
         assert ".BASE $C0" in asm
         assert ".BASE $80" not in asm
+
+    def test_cop_vector_gets_a_trampoline(self):
+        """Every handled vector needs one: a bank-$00 vector can't reach $C0."""
+        asm = compile_source(program(HIROM_FAST, extra="""
+#[interrupt(cop)]
+fn cop_handler() { COUNTER = 2; }
+"""))
+        assert "__hirom_cop:" in asm and "JML cop_handler" in asm
+        assert "COP __hirom_cop" in asm
 
     def test_uses_hirom_trampolines_with_memsel(self):
         asm = compile_source(program(HIROM_FAST))

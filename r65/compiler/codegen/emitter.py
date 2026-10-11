@@ -1065,7 +1065,7 @@ class AssemblyEmitter:
         self.emit_instr(Opcode.RTI)
         self.emit_blank_line()
 
-    def emit_lorom_fast_vector_trampolines(self, reset=None, nmi=None, irq=None):
+    def emit_lorom_fast_vector_trampolines(self, reset=None, **handlers):
         """
         Emit LoROM FastROM vector trampolines.
 
@@ -1077,6 +1077,9 @@ class AssemblyEmitter:
 
         Emitted inside the bank-0 code window, so no .ORG and no reserved
         space is needed - any bank-0 address works.
+
+        `handlers` maps a vector name (nmi, irq, brk, cop, abort) to its
+        handler label; each gets a `__fast_<vector>` stub.
 
         Generated:
             __fast_reset: SEI / CLC / XCE / SEP #$20 / LDA #$01 / STA $420D
@@ -1094,13 +1097,10 @@ class AssemblyEmitter:
             self.emit_memsel_write()
             self.emit_raw(f"    JML {reset}")
 
-        if nmi:
-            self.emit_label("__fast_nmi")
-            self.emit_raw(f"    JML {nmi}")
-
-        if irq:
-            self.emit_label("__fast_irq")
-            self.emit_raw(f"    JML {irq}")
+        for vector, handler in handlers.items():
+            if handler:
+                self.emit_label(f"__fast_{vector}")
+                self.emit_raw(f"    JML {handler}")
 
         self.emit_blank_line()
 
@@ -1116,8 +1116,8 @@ class AssemblyEmitter:
         self.emit_raw("    LDA #$01")
         self.emit_raw("    STA $420D")
 
-    def emit_hirom_vector_trampolines(self, reset=None, nmi=None, irq=None,
-                                      fastrom: bool = False):
+    def emit_hirom_vector_trampolines(self, reset=None, fastrom: bool = False,
+                                      **handlers):
         """
         Emit HiROM interrupt vector trampolines at addresses >= $8000.
 
@@ -1125,6 +1125,9 @@ class AssemblyEmitter:
         $8000-$FFFF maps to ROM. Code at .ORG 0 gets addresses $0000-$7FFF
         which are WRAM/IO in bank $00. These trampolines at $FF00+ sit in
         ROM and jump to the real handlers via bank $C0.
+
+        `handlers` maps a vector name (nmi, irq, brk, cop, abort) to its
+        handler label; each gets a `__hirom_<vector>` stub.
 
         Generated at $FF00:
             __hirom_reset: SEI / CLC / XCE / [MEMSEL] / JML main
@@ -1144,32 +1147,30 @@ class AssemblyEmitter:
                 self.emit_memsel_write()
             self.emit_raw(f"    JML {reset}")
 
-        if nmi:
-            self.emit_label("__hirom_nmi")
-            self.emit_raw(f"    JML {nmi}")
-
-        if irq:
-            self.emit_label("__hirom_irq")
-            self.emit_raw(f"    JML {irq}")
+        for vector, handler in handlers.items():
+            if handler:
+                self.emit_label(f"__hirom_{vector}")
+                self.emit_raw(f"    JML {handler}")
 
         self.emit_blank_line()
 
-    def emit_interrupt_vectors(self, nmi=None, irq=None, reset=None):
+    def emit_interrupt_vectors(self, nmi=None, irq=None, reset=None,
+                               brk=None, cop=None, abort=None):
         """
         Emit interrupt vector table using .SNESNATIVEVECTOR and .SNESEMUVECTOR.
 
-        Args:
-            nmi: NMI handler label (or None for __empty_handler)
-            irq: IRQ handler label (or None for __empty_handler)
-            reset: RESET handler label (or None for __empty_handler)
+        Each argument is a handler label, or None for __empty_handler. The
+        native table gets every handler; the emulation table only RESET and
+        IRQ/BRK, since a handler is compiled for native mode and the CPU
+        runs in emulation only until the reset code's XCE.
 
         Generated:
             .SNESNATIVEVECTOR
-              COP __empty_handler
-              BRK __empty_handler
-              ABORT __empty_handler
+              COP cop_handler
+              BRK brk_handler
+              ABORT abort_handler
               NMI nmi_handler
-              IRQ __empty_handler
+              IRQ irq_handler
             .ENDNATIVEVECTOR
 
             .SNESEMUVECTOR
@@ -1177,33 +1178,30 @@ class AssemblyEmitter:
               ABORT __empty_handler
               NMI __empty_handler
               RESET main
-              IRQBRK __empty_handler
+              IRQBRK irq_handler
             .ENDEMUVECTOR
         """
-        # Default to empty handler
-        nmi = nmi or "__empty_handler"
-        irq = irq or "__empty_handler"
-        reset = reset or "__empty_handler"
+        empty = "__empty_handler"
 
         # Native mode vectors (5 vectors, no UNUSED)
         self.emit_section_header("Interrupt Vectors (Native Mode)")
         self.emit_directive(".SNESNATIVEVECTOR")
-        self.emit_directive(f"COP {nmi}")
-        self.emit_directive(f"BRK __empty_handler")
-        self.emit_directive(f"ABORT __empty_handler")
-        self.emit_directive(f"NMI {nmi}")
-        self.emit_directive(f"IRQ {irq}")
+        self.emit_directive(f"COP {cop or empty}")
+        self.emit_directive(f"BRK {brk or empty}")
+        self.emit_directive(f"ABORT {abort or empty}")
+        self.emit_directive(f"NMI {nmi or empty}")
+        self.emit_directive(f"IRQ {irq or empty}")
         self.emit_directive(".ENDNATIVEVECTOR")
         self.emit_blank_line()
 
         # Emulation mode vectors (5 vectors, no UNUSED)
         self.emit_section_header("Interrupt Vectors (Emulation Mode)")
         self.emit_directive(".SNESEMUVECTOR")
-        self.emit_directive(f"COP __empty_handler")
-        self.emit_directive(f"ABORT __empty_handler")
-        self.emit_directive(f"NMI __empty_handler")
-        self.emit_directive(f"RESET {reset}")
-        self.emit_directive(f"IRQBRK {irq}")
+        self.emit_directive(f"COP {empty}")
+        self.emit_directive(f"ABORT {empty}")
+        self.emit_directive(f"NMI {empty}")
+        self.emit_directive(f"RESET {reset or empty}")
+        self.emit_directive(f"IRQBRK {irq or empty}")
         self.emit_directive(".ENDEMUVECTOR")
         self.emit_blank_line()
 

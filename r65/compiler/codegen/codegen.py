@@ -362,9 +362,9 @@ class ProgramCodeGenerator:
             # the bank-0 window, for the same reason __empty_handler lives
             # here: they must be reachable at a bank-$00 address.
             if bank_num == 0 and is_fastrom and not is_hirom and needs_empty_handler:
-                nmi_h, irq_h, reset_h = self._find_vector_handlers(mir_program)
+                handlers, reset_h = self._find_vector_handlers(mir_program)
                 self.emitter.emit_lorom_fast_vector_trampolines(
-                    reset=reset_h, nmi=nmi_h, irq=irq_h
+                    reset=reset_h, **handlers
                 )
 
         # Phase 6.5: Trait dispatch tables (jump tables and wrapper functions)
@@ -711,29 +711,23 @@ class ProgramCodeGenerator:
         """
         Scan MIR functions for the labels the SNES vector table points at.
 
-        Returns (nmi, irq, reset); any of them may be None. Reset is the
-        `#[entry]` function. BRK, COP and ABORT are not wired up yet.
+        Returns (handlers, reset): `handlers` maps each vector that has an
+        `#[interrupt(...)]` function — 'nmi', 'irq', 'brk', 'cop', 'abort'
+        — to its label; reset is the `#[entry]` function, or None.
         """
-        nmi_handler = None
-        irq_handler = None
+        handlers = {}
         reset_handler = None
 
         for func in mir_program.functions:
             if func.interrupt_attr:
                 # vector is an InterruptVector enum
-                vector = func.interrupt_attr.vector.value.lower()
-
-                if vector == 'nmi':
-                    nmi_handler = func.name
-                elif vector == 'irq':
-                    irq_handler = func.name
-                # Note: BRK, COP, ABORT not yet supported
+                handlers[func.interrupt_attr.vector.value.lower()] = func.name
 
             # Check for entry point (becomes reset vector)
             if func.is_entry:
                 reset_handler = func.name
 
-        return nmi_handler, irq_handler, reset_handler
+        return handlers, reset_handler
 
     def _emit_interrupt_vectors(self, mir_program: MIRProgram):
         """
@@ -746,11 +740,11 @@ class ProgramCodeGenerator:
             mir_program: MIR program
         """
         # Find interrupt handlers
-        nmi_handler, irq_handler, reset_handler = self._find_vector_handlers(mir_program)
+        handlers, reset_handler = self._find_vector_handlers(mir_program)
 
         # Check for missing NMI handler - this is a common oversight
         # Only warn if there's an entry point (i.e., this is a standalone program)
-        if reset_handler and not nmi_handler:
+        if reset_handler and 'nmi' not in handlers:
             self.warnings.append(
                 "No NMI interrupt handler defined. "
                 "The NMI fires every VBlank (~60Hz) and is typically used for game logic updates. "
@@ -758,7 +752,7 @@ class ProgramCodeGenerator:
             )
 
         # Emit SNES header and vectors if any handlers found
-        if nmi_handler or irq_handler or reset_handler:
+        if handlers or reset_handler:
             # The empty interrupt handler was already emitted into
             # bank 0 alongside the other bank-0 functions; see the
             # `needs_empty_handler` block in the bank-emission loop.
@@ -772,31 +766,25 @@ class ProgramCodeGenerator:
                 is_hirom = mir_program.snesrom_config.hirom or mir_program.snesrom_config.exhirom
                 is_fastrom = mir_program.snesrom_config.fastrom
 
-            actual_nmi = nmi_handler
-            actual_irq = irq_handler
-            actual_reset = reset_handler
+            # The vectors point at the handlers themselves, or at the
+            # trampolines into them: HiROM's at $FF00, or (LoROM FastROM)
+            # the stubs emitted in the bank-0 window above, so entry lands
+            # in the $80-$BF fast mirror.
+            prefix = None
             if is_hirom:
                 self.emitter.emit_hirom_vector_trampolines(
                     reset=reset_handler,
-                    nmi=nmi_handler,
-                    irq=irq_handler,
-                    fastrom=is_fastrom
+                    fastrom=is_fastrom,
+                    **handlers
                 )
-                if reset_handler:
-                    actual_reset = "__hirom_reset"
-                if nmi_handler:
-                    actual_nmi = "__hirom_nmi"
-                if irq_handler:
-                    actual_irq = "__hirom_irq"
+                prefix = "__hirom_"
             elif is_fastrom:
-                # Stubs were emitted in the bank-0 window above; point the
-                # vectors at them so entry lands in the $80-$BF fast mirror.
-                if reset_handler:
-                    actual_reset = "__fast_reset"
-                if nmi_handler:
-                    actual_nmi = "__fast_nmi"
-                if irq_handler:
-                    actual_irq = "__fast_irq"
+                prefix = "__fast_"
+            targets = {vector: f"{prefix}{vector}" if prefix else name
+                       for vector, name in handlers.items()}
+            actual_reset = reset_handler
+            if prefix and reset_handler:
+                actual_reset = f"{prefix}reset"
 
             # Emit SNES ROM header (use config from #[snesrom(...)] if present)
             self.emitter.emit_snes_header(
@@ -805,11 +793,7 @@ class ProgramCodeGenerator:
             )
 
             # Emit interrupt vectors
-            self.emitter.emit_interrupt_vectors(
-                nmi=actual_nmi,
-                irq=actual_irq,
-                reset=actual_reset
-            )
+            self.emitter.emit_interrupt_vectors(reset=actual_reset, **targets)
 
     def _emit_rom_data_table(self, rom_data):
         """Emit a single ROM data table (label + .db rows of 16 bytes)."""
