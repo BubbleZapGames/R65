@@ -85,6 +85,17 @@ MODIFIES_A_OPCODES: Set[Opcode] = LOAD_A_OPCODES | {
     Opcode.MVN, Opcode.MVP,
 }
 
+# What _hoist_loop_invariant_loads also has to treat as writing A: a call
+# returns its value in A (and its body may use A), and TSC/TDC load it. And
+# the width changes it may not hoist across - the immediate is sized for the
+# width where it stood, not where it would land.
+_HOIST_CLOBBERS_A: Set[Opcode] = {
+    Opcode.JSR, Opcode.JSR_INDIRECT_X, Opcode.JSL, Opcode.TSC, Opcode.TDC,
+}
+_HOIST_CHANGES_WIDTH: Set[Opcode] = {
+    Opcode.REP_IMMEDIATE, Opcode.SEP_IMMEDIATE, Opcode.PLP, Opcode.XCE,
+}
+
 # Transfer instructions (for redundant transfer elimination)
 TRANSFER_OPCODES: Set[Opcode] = {
     Opcode.TAX, Opcode.TAY, Opcode.TXA, Opcode.TYA,
@@ -1562,10 +1573,15 @@ class PeepholeOptimizer:
 
         Only applies when:
         - Exactly one LDA in the loop body (the invariant load)
-        - No other instruction in the loop modifies A
+        - No other instruction in the loop modifies A - a call counts (the
+          callee's return value comes back in A, and it may use A anyway),
+          as do TSC/TDC and any inline asm
         - The LDA is LDA_IMMEDIATE
+        - The loop never changes the accumulator's width (REP/SEP/PLP/XCE):
+          the immediate's size is the width where it was, and the hoisted
+          copy would run in whatever width the loop is entered in
         """
-        from r65.compiler.codegen.asm_nodes import Instruction, Label, Address
+        from r65.compiler.codegen.asm_nodes import Instruction, Label, Address, RawAsm
 
         # Find bottom-tested loops: label -> body -> BCC/BCS/BNE/BEQ label
         # Build label position map
@@ -1599,13 +1615,18 @@ class PeepholeOptimizer:
 
             for j in range(label_idx + 1, branch_idx + 1):
                 n = nodes[j]
+                if isinstance(n, RawAsm):
+                    other_a_mods = True        # inline asm: assume it touches A
+                    continue
                 if not isinstance(n, Instruction):
                     continue
                 body_instrs.append((j, n))
                 if n.opcode == Opcode.LDA_IMMEDIATE:
                     lda_positions.append(j)
-                elif n.opcode in MODIFIES_A_OPCODES:
+                elif n.opcode in MODIFIES_A_OPCODES or n.opcode in _HOIST_CLOBBERS_A:
                     other_a_mods = True
+                elif n.opcode in _HOIST_CHANGES_WIDTH:
+                    other_a_mods = True        # the immediate's width would not hold
 
             # Only hoist if exactly one LDA #imm and nothing else modifies A
             if len(lda_positions) == 1 and not other_a_mods:

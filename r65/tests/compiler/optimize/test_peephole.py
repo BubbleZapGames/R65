@@ -375,3 +375,50 @@ class TestLoopModeSwitchHoistRetagsAnchor:
         anchor = next(n for n in result if isinstance(n, ModeChange)
                       and n.flag == "ACCU")
         assert anchor.bits == 16
+
+
+class TestLoopInvariantLoadHoistGuards:
+    """_hoist_loop_invariant_loads moves an `LDA #imm` above a loop when
+    nothing else in the loop writes A. A call does - its return value comes
+    back in A - and a loop that switches the accumulator's width cannot
+    have its immediate moved to where the width differs. Both held in
+    `while step(0xFFFF) == 0 {}`: the 16-bit constant was hoisted above the
+    REP into 8-bit mode (WLA-DX: "Couldn't parse LDA"), and every pass but
+    the first passed the call's last return value instead of $FFFF."""
+
+    SRC = '''
+        #[zeropage(0x16, register)]
+        static mut SCRATCH0: u16;
+        #[zeropage(0x18, register)]
+        static mut SCRATCH1: u16;
+        #[lowram] static mut left: u16;
+        far fn step(budget: u16) -> u8 {
+            if left > budget { left = left - budget; return 0; }
+            left = 0;
+            return 1;
+        }
+        far fn finish() { while step(0xFFFF) == 0 {} }
+        #[entry] fn main() -> ! { left = 5; finish(); loop {} }
+    '''
+
+    def test_constant_argument_stays_in_a_loop_with_a_call(self):
+        from r65.compiler.main import compile_string
+        asm = compile_string(self.SRC, filename='<test>')
+        body = asm[asm.index('finish:'):]
+        body = body[:body.index(' step')]          # the call: JSR or JSL
+        label = body.index('finish__L1:')
+        load = body.index('LDA #$FFFF')
+        assert load > label, "the call's constant argument was hoisted out of the loop:\n" + body
+
+    def test_call_in_the_body_blocks_the_hoist(self):
+        loop = [
+            Label('L'),
+            Instruction(opcode=Opcode.LDA_IMMEDIATE, operand=Immediate(5)),
+            Instruction(opcode=Opcode.STA_DP, operand=Address(0x16)),
+            Instruction(opcode=Opcode.JSL, operand=Address('step')),
+            Instruction(opcode=Opcode.CMP_IMMEDIATE, operand=Immediate(0)),
+            Instruction(opcode=Opcode.BEQ, operand=Address('L')),
+        ]
+        opt = PeepholeOptimizer()
+        opt._hoist_loop_invariant_loads(loop)
+        assert opt.stats.loop_invariant_loads_hoisted == 0
