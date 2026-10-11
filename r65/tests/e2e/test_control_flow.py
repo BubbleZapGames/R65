@@ -489,6 +489,41 @@ class TestLoopExpression:
         }))
         assert result.success, f"Failures: {result.failures}"
 
+    def test_labeled_break_value_from_inner_loop(self, e2e):
+        """The only valued breaks sit in the inner loop and a match arm; they
+        used to be invisible, so the loop had "no break with a value"."""
+        result = e2e.run('''
+            #[zeropage(0x10)] static mut RESULT: u8;
+            #[zeropage(0x11)] static mut ROW: u8;
+            #[zeropage(0x12)] static mut KIND: u8;
+            #[zeropage(0x20)] static mut GRID: [u8; 16];
+
+            #[entry]
+            fn main() {
+                for i in 0..16 { GRID[i] = 0; }
+                GRID[9] = 7;                       // row 2, column 1
+                ROW = 0;
+                let col: u8 = 'outer: loop {
+                    let mut x: u8 = 0;
+                    loop {
+                        if GRID[(ROW * 4 + x) as u16] == 7 { break 'outer x; }
+                        x = x + 1;
+                        if x == 4 { break; }       // unlabeled: leaves the inner loop
+                    }
+                    ROW = ROW + 1;
+                };
+                KIND = 2;
+                let k: u8 = 'm: loop {
+                    match KIND { 0 => { break 'm 10; }, _ => { break 'm 20; } };
+                };
+                RESULT = col + k;
+            }
+        ''', ExpectedState(memory={
+            0x7E0010: 21,
+            0x7E0011: 2,
+        }))
+        assert result.success, f"Failures: {result.failures} {result.error}"
+
 
 class TestRecursion:
     """Test recursive function calls with stack parameters.

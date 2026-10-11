@@ -2513,38 +2513,47 @@ class TypeChecker:
         expr.expr_type = result_type
         return result_type
 
-    def _collect_break_types(self, block: HIRBlock, break_types: list, loop_label: Optional[str]):
-        """Collect types of break values from a block, skipping nested loops."""
-        for stmt in block.statements:
-            if isinstance(stmt, HIRBreakStmt):
-                # Only collect breaks targeting this loop (no label or matching label)
-                if stmt.label is None or stmt.label == loop_label:
-                    if stmt.value is not None:
-                        break_types.append(stmt.value.expr_type)
-                    else:
-                        raise TypeCheckError(
-                            "break in loop expression must have a value",
-                            source_loc=stmt.source_loc
-                        )
-            elif isinstance(stmt, HIRIfStmt):
-                self._collect_break_types(stmt.then_block, break_types, loop_label)
-                if stmt.else_block:
-                    if isinstance(stmt.else_block, HIRIfStmt):
-                        self._collect_break_types_from_if(stmt.else_block, break_types, loop_label)
-                    else:
-                        self._collect_break_types(stmt.else_block, break_types, loop_label)
-            elif isinstance(stmt, HIRBlock):
-                self._collect_break_types(stmt, break_types, loop_label)
-            # Skip nested loops (HIRWhileStmt) - their breaks belong to them
+    def _collect_break_types(self, node, break_types: list, loop_label: Optional[str],
+                             nested: bool = False):
+        """Collect the types of the break values that leave this loop.
 
-    def _collect_break_types_from_if(self, stmt: HIRIfStmt, break_types: list, loop_label: Optional[str]):
-        """Collect break types from an if statement chain."""
-        self._collect_break_types(stmt.then_block, break_types, loop_label)
-        if stmt.else_block:
-            if isinstance(stmt.else_block, HIRIfStmt):
-                self._collect_break_types_from_if(stmt.else_block, break_types, loop_label)
-            else:
-                self._collect_break_types(stmt.else_block, break_types, loop_label)
+        A break leaves it when it names its label, or is unlabeled and not
+        inside a nested loop (an unlabeled break there leaves the inner
+        loop). The walk goes everywhere a break can sit — if/else chains,
+        match arms, blocks, nested loops — but stops at a nested loop with
+        the same label, which shadows this one, and at declarations (a
+        struct literal points back at its struct).
+        """
+        from dataclasses import fields, is_dataclass
+        from r65.compiler.hir.nodes import (
+            HIRNode, HIRDeclaration, HIRWhileStmt as _While,
+            HIRLoopExpression as _LoopExpr,
+        )
+        if isinstance(node, list):
+            for item in node:
+                self._collect_break_types(item, break_types, loop_label, nested)
+            return
+        if not isinstance(node, HIRNode) or isinstance(node, HIRDeclaration):
+            return
+        if isinstance(node, HIRBreakStmt):
+            if node.label == loop_label if node.label is not None else not nested:
+                if node.value is None:
+                    raise TypeCheckError(
+                        "break in loop expression must have a value",
+                        source_loc=node.source_loc
+                    )
+                break_types.append(node.value.expr_type)
+            return
+        if isinstance(node, (_While, _LoopExpr)):
+            if loop_label is not None and node.label == loop_label:
+                return
+            nested = True
+        if not is_dataclass(node):
+            return
+        for f in fields(node):
+            child = getattr(node, f.name, None)
+            if isinstance(child, (HIRNode, list)):
+                self._collect_break_types(child, break_types, loop_label, nested)
 
     def _check_tuple_register_order(self, expr: HIRMultiAssignment):
         """
