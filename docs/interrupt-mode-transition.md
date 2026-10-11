@@ -1,4 +1,4 @@
-# Interrupt Handler Mode Transition - Implementation Complete
+# Interrupt Handler Mode Transition
 
 ## Design Decision
 
@@ -6,196 +6,68 @@
 
 ## Rationale
 
-1. **Interrupts fire from unknown mode**: An NMI/IRQ can occur while processor is in any mode (m8 or m16)
-2. **Handler needs specific mode**: Handler code expects to run in a known mode
-3. **Must restore original mode**: After handling interrupt, must return to interrupted code's mode
-4. **Automatic management**: Compiler generates PHP/PLP to save and restore the processor status
+1. **Interrupts fire from unknown mode**: an NMI/IRQ keeps the M and X flags of the code it interrupted, which may be m16 or (inside a `STATUS.XY16 = false` region) x8
+2. **Handler needs specific mode**: the body is compiled for m8/x16
+3. **Must restore original mode**: RTI pulls the P the CPU pushed, so the interrupted widths come back without a PHP/PLP pair
 
-## Implementation
-
-### 1. Automatic Mode Management
-
-Interrupt handlers automatically save and restore processor status:
-
-```rust
-// Interrupt handler - runs in default m8 mode
-// Compiler automatically generates PHP/PLP wrapper
-#[interrupt(nmi)]
-fn nmi_handler() {
-    // handler code runs in m8 mode
-}
-```
-
-**Note:** Interrupt handlers always run in the default m8/x16 mode. The compiler automatically generates the PHP (save status) at entry and PLP (restore status) at exit to preserve the interrupted code's mode.
-
-### 2. Entry Wrapper Generation
-
-Code generation emits register saves for interrupt handlers:
+## Entry Wrapper
 
 ```
-Push order: PHP, REP #$20, PHA (16-bit), PHX, PHY, PHD, PHB, SEP #$20
+REP #$30            ; 16-bit A and X/Y (REP #$10 when A is not saved)
+PHA                 ; full 16-bit A, hidden high byte included   } only the
+PHX / PHY / PHD / PHB                                            } registers the
+                                                                 } body writes
+[LDA #0 / TCD]      ; D = 0 when the scratch pool is saved
+SEP #$20            ; m8 for the body — always
+[scratch pool saves]
+[frame allocation]
 ```
 
-**Critical detail**: The 65816 has a hidden high byte of A (the "B accumulator") that is NOT preserved by PHA in m8 mode. The entry wrapper pushes PHP first, then forces 16-bit A with `REP #$20` before `PHA` to save the full 16-bit accumulator.
+The REP/SEP pair is unconditional. A body that writes no register still
+depends on the widths: `FRAME = FRAME + 1` folds to `INC FRAME`, a 16-bit
+increment when the NMI lands in m16 code, and a `BIT $4211` acknowledge
+reads two registers in m16. An index register left x8 would truncate X and
+Y in the body. Before this was fixed, the SEP was skipped whenever nothing
+was saved, so an `INC`-only handler ran at whatever width it interrupted.
 
-### 3. Exit Wrapper Generation
+### Which registers are saved
 
-Register restores in reverse order:
+`_analyze_interrupt_modified_regs` predicts the set from the MIR before the
+body is emitted (a call, `*dyn` dispatch, `asm!`, or a block fill/copy means
+all of them; a scratch pool forces A, since the pool is put back with
+PLA/STA). The prediction misses MIR nodes that reach a register only through
+their lowering — a `Store` of a constant goes through `LDA #imm`, so
+`V = 2` wrote A unsaved. After the body is emitted,
+`_reconcile_interrupt_saves` scans it (`interrupt_body_written_regs`) and, if
+it writes a register outside the predicted set, rebuilds the prologue's save
+run and every RTI's restore run for the larger set. The emitted code is the
+authority; the MIR scan only keeps the common case from being rebuilt.
+
+## Exit Wrapper
 
 ```
-Pop order: PLB, PLD, PLY, PLX, REP #$20, PLA (16-bit), PLP, RTI
+[frame deallocation: REP #$20 / TSC / CLC / ADC #n / TCS]
+[scratch pool restores]
+PLB / PLD / PLY / PLX     ; the saved registers, reverse order
+REP #$20 / PLA            ; when A was saved: full 16-bit restore
+RTI                       ; restores P, so the interrupted M/X widths
 ```
 
-PLP restores the original processor status including mode bits.
-
-### 4. New MIR Instructions
-
-Added `ReturnFromInterrupt` instruction:
-
-```python
-@dataclass
-class ReturnFromInterrupt(MIRInstruction):
-    """
-    Return from interrupt handler (RTI instruction).
-
-    Used only for interrupt handlers. Restores all CPU state including
-    processor status register (mode bits) and program counter.
-    """
-    def __repr__(self):
-        return "RTI"
-```
-
-## Generated Assembly Structure
-
-### Example Source
+## Example
 
 ```rust
 #[interrupt(nmi)]
 fn nmi_handler() {
-    A = 0x42;
-    FLAG = A;
-    return;
+    V = V + 1;      // folds to INC on memory: no register written
 }
 ```
-
-**Note:** Interrupt handlers automatically run in m8/x16 mode. The compiler generates all necessary mode management code.
-
-### Generated Assembly Structure
-
-```
-Entry wrapper:
-   PHP              ; Save STATUS first
-   REP #$20         ; Force 16-bit A
-   PHA              ; Save full 16-bit A (includes hidden high byte)
-   PHX              ; Save X
-   PHY              ; Save Y
-   PHD              ; Save D
-   PHB              ; Save DBR
-   SEP #$20         ; Restore 8-bit A for handler body
-
-Handler body:
-   LDA #$42         ; User code
-   STA FLAG
-
-Exit wrapper:
-   PLB              ; Restore DBR
-   PLD              ; Restore D
-   PLY              ; Restore Y
-   PLX              ; Restore X
-   REP #$20         ; 16-bit A for full restore
-   PLA              ; Restore full 16-bit A
-   PLP              ; Restore STATUS (restores original mode!)
-   RTI              ; Return from interrupt
-```
-
-### WLA-DX Assembly Output
 
 ```asm
 nmi_handler:
-    PHP                     ; Save STATUS first (before mode change)
-    REP #$20                ; Force 16-bit A to save full accumulator
-    PHA                     ; Save A (full 16-bit, includes hidden high byte)
-    PHX                     ; Save X
-    PHY                     ; Save Y
-    PHD                     ; Save D
-    PHB                     ; Save DBR (data bank)
-    SEP #$20                ; Restore 8-bit A for handler body
-
-    LDA #$42                ; Handler code
-    STA FLAG
-
-    PLB                     ; Restore DBR
-    PLD                     ; Restore D
-    PLY                     ; Restore Y
-    PLX                     ; Restore X
-    REP #$20                ; 16-bit A for restoring full accumulator
-    PLA                     ; Restore A (full 16-bit)
-    PLP                     ; Restore STATUS (restores original mode!)
-    RTI                     ; Return from interrupt
-```
-
-## Key Features
-
-### 1. **Automatic Mode Management** ✅
-
-Interrupt can fire in any mode, handler runs in default m8/x16 mode, original mode restored:
-
-```
-Main code running in m16 mode...
-    ↓
-Interrupt fires → NMI vector
-    ↓
-nmi_handler entry:
-    PHP             ; Save STATUS (m16 saved on stack)
-    REP #$20        ; Force 16-bit A to save full accumulator
-    PHA, PHX, PHY   ; Save registers (A saved as 16-bit)
-    PHD, PHB        ; Save D and DBR
-    SEP #$20        ; Force m8 mode for handler body
-    ↓
-Handler body runs in m8/x16 mode
-    ↓
-nmi_handler exit:
-    ...             ; Restore other registers
-    PLP             ; Restore STATUS (m16 restored!)
+    REP #$10        ; 16-bit X/Y
+    SEP #$20        ; 8-bit A — the INC is one byte whatever was interrupted
+    INC V
     RTI
-    ↓
-Main code continues in m16 mode (seamlessly!)
-```
-
-### 2. **Automatic Register Preservation** ✅
-
-All registers saved/restored automatically:
-- STATUS (including mode bits M and X)
-- A (accumulator)
-- X (index)
-- Y (index)
-- D (direct page)
-- DBR (data bank)
-
-### 3. **No Manual Save/Restore Needed** ✅
-
-User doesn't write preservation code:
-
-```rust
-// User writes clean handler code:
-#[interrupt(nmi)]
-fn nmi_handler() {
-    FRAME_COUNT = FRAME_COUNT + 1;
-    // No manual saves/restores!
-}
-
-// Compiler wraps with PHP/REP/PHA/PHX/PHY/PHD/PHB/SEP...PLB/PLD/PLY/PLX/REP/PLA/PLP/RTI
-```
-
-### 4. **Known Mode Established** ✅
-
-Handler runs in the default m8/x16 mode regardless of interrupted code's mode:
-
-```rust
-#[interrupt(nmi)]
-fn nmi_handler() {
-    A = 0x42;     // Always works in m8 mode, even if interrupted code was in m16 mode
-}
 ```
 
 ## Edge Cases Handled
@@ -208,11 +80,9 @@ All interrupt handlers run in the default m8/x16 mode:
 #[interrupt(nmi)]
 fn nmi_handler() {
     // Runs in m8/x16 mode (default)
-    // Gets full register preservation (PHP/PHA/.../PLP/RTI)
+    // Saves the registers the body writes; REP/SEP sets m8/x16
 }
 ```
-
-**Generated MIR:** Push/Pull wrappers with SEP #$20 to force m8 mode
 
 ### 2. **Interrupt Handler with Return Values**
 
@@ -293,7 +163,7 @@ fn nmi_handler() {
 
 **Mode management:** Automatic entry/exit wrapper
 **Knows incoming mode:** No (could be any mode)
-**Restoration:** Via PLP (restores whatever mode was interrupted)
+**Restoration:** Via RTI (restores whatever mode was interrupted)
 
 ## Benefits
 
@@ -340,6 +210,6 @@ fn nmi_handler() {
 
 ---
 
-**Last Updated:** 2026-01-01
+**Last Updated:** 2026-10-10
 **Implementation:** Complete
 **Testing:** Passing

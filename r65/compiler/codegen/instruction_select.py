@@ -1342,6 +1342,19 @@ class InstructionSelector:
         # Only restore registers that were actually saved (based on analysis).
         mir_func = self.current_function
         modified = getattr(mir_func, 'interrupt_modified_regs', None) if mir_func else None
+        # The run (restores + RTI) is recorded so the function generator can
+        # rebuild it if the emitted body writes a register `modified` left out.
+        start = len(self.emitter.nodes)
+        self.emit_interrupt_return(modified)
+        if mir_func is not None:
+            mir_func.interrupt_restore_runs.append(self.emitter.nodes[start:])
+
+    def emit_interrupt_return(self, modified):
+        """Pull the CPU registers the interrupt prologue pushed, then RTI.
+
+        `modified` is the saved set (None for all of them). Mirrors
+        FunctionGenerator._emit_interrupt_register_saves.
+        """
         restore_all = modified is None
         if restore_all or 'DBR' in modified:
             self._emit_implied(Opcode.PLB, "Restore Data Bank")

@@ -19,12 +19,58 @@ from r65.compiler.codegen.instruction_select import InstructionSelector
 from r65.compiler.codegen.register_alloc import ScratchRegisterPool, RegisterAllocator, PhysicalLocation, LocationKind, group_interrupt_scratch_pushes
 from r65.compiler.codegen.memory_alloc import MemoryAllocator
 from r65.compiler.codegen.type_utils import get_type_size
-from r65.compiler.codegen.constants import DEFAULT_STACK_UPPER, M_FLAG
-from r65.compiler.codegen.opcodes import Opcode, PUSH_OPCODES, PULL_OPCODES
-from r65.compiler.codegen.asm_nodes import Immediate, Address, StackOffset
+from r65.compiler.codegen.constants import DEFAULT_STACK_UPPER, M_FLAG, X_FLAG
+from r65.compiler.codegen.opcodes import Opcode, PUSH_OPCODES, PULL_OPCODES, mnemonic, addressing_mode
+from r65.compiler.codegen.asm_nodes import Immediate, Address, StackOffset, Instruction, RawAsm
 from r65.compiler.codegen.abi import ABIInfo, StackFrameLayout
 from r65.compiler.errors import CodegenError
 
+
+
+# Registers each mnemonic writes, for the interrupt save check. The shifts and
+# INC/DEC write A only in accumulator mode; elsewhere they write memory.
+_REG_WRITES = {
+    'LDA': {'A'}, 'ADC': {'A'}, 'SBC': {'A'}, 'AND': {'A'}, 'ORA': {'A'},
+    'EOR': {'A'}, 'TXA': {'A'}, 'TYA': {'A'}, 'PLA': {'A'}, 'XBA': {'A'},
+    'TSC': {'A'}, 'TDC': {'A'},
+    'LDX': {'X'}, 'TAX': {'X'}, 'TSX': {'X'}, 'TYX': {'X'}, 'INX': {'X'},
+    'DEX': {'X'}, 'PLX': {'X'},
+    'LDY': {'Y'}, 'TAY': {'Y'}, 'TXY': {'Y'}, 'INY': {'Y'}, 'DEY': {'Y'},
+    'PLY': {'Y'},
+    'TCD': {'D'}, 'PLD': {'D'},
+    'PLB': {'DBR'},
+    'MVN': {'A', 'X', 'Y', 'DBR'}, 'MVP': {'A', 'X', 'Y', 'DBR'},
+}
+_ACCUMULATOR_RMW = frozenset({'INC', 'DEC', 'ASL', 'LSR', 'ROL', 'ROR'})
+# Control leaves the handler: whatever runs there may write anything.
+_LEAVES = frozenset({'JSR', 'JSL', 'BRK', 'COP', 'WDM'})
+
+
+def interrupt_body_written_regs(nodes) -> 'set | None':
+    """The registers among A, X, Y, D, DBR the emitted nodes write.
+
+    None means all of them (the body calls out). Raw text is read by its
+    first word, so directives and labels write nothing.
+    """
+    written = set()
+    for node in nodes:
+        if isinstance(node, Instruction):
+            mn = mnemonic(node.opcode)
+            accumulator = addressing_mode(node.opcode) is None
+        elif isinstance(node, RawAsm):
+            parts = node.text.split(';', 1)[0].split(None, 1)
+            if not parts:
+                continue
+            mn = parts[0].upper()
+            accumulator = len(parts) == 1 or parts[1].strip().upper() == 'A'
+        else:
+            continue
+        if mn in _LEAVES:
+            return None
+        written |= _REG_WRITES.get(mn, set())
+        if mn in _ACCUMULATOR_RMW and accumulator:
+            written.add('A')
+    return written
 
 class FunctionCodeGenerator:
     """
@@ -443,6 +489,9 @@ class FunctionCodeGenerator:
             self.emitter.emit_label(shared_epilogue_label)
             self.emit_epilogue(mir_func, reg_alloc)
             instr_selector.control_flow_selector._emit_return_instruction()
+
+        if mir_func.interrupt_attr:
+            self._reconcile_interrupt_saves(mir_func, instr_selector)
 
         # Record region-spill high-water for the static stack-usage analyzer.
         # StackStateTracker.reset() runs per-block but the peak survives, so
@@ -1058,7 +1107,10 @@ class FunctionCodeGenerator:
             if self._interrupt_has_scratches and modified_regs is not None:
                 modified_regs = set(modified_regs) | {'A'}
             mir_func.interrupt_modified_regs = modified_regs
+            mir_func.interrupt_restore_runs = []
+            start = len(self.emitter.nodes)
             self._emit_interrupt_register_saves(modified_regs)
+            mir_func.interrupt_save_run = self.emitter.nodes[start:]
             self._emit_interrupt_scratch_saves(reg_alloc.scratch_pool)
 
         # For far self D=S path: push DBR (bank) and Y (addr) to stack BEFORE frame alloc
@@ -1428,16 +1480,26 @@ class FunctionCodeGenerator:
         (pushes full 16-bit A). This always saves both bytes of A regardless of
         what mode the CPU was in when the interrupt fired.
 
-        Order of pushes: PHP, [REP #$20], PHA(16-bit), PHX, PHY, PHD, PHB
-        (Corresponding pops in epilogue: PLB, PLD, PLY, PLX, [REP #$20], PLA(16-bit), PLP)
+        Order of pushes: REP #$30, [PHA(16-bit)], PHX, PHY, PHD, PHB, SEP #$20
+        (Corresponding pops in epilogue: PLB, PLD, PLY, PLX, [REP #$20, PLA(16-bit)])
+
+        An interrupt keeps the M and X flags of the code it interrupted, so
+        the handler cannot assume either width. The REP/SEP pair is
+        unconditional: even a body that touches no register (a bare
+        `INC counter`, a `BIT $4211`) reads or writes two bytes in m16, and
+        an index register left x8 would truncate X and Y in the body. RTI
+        puts the interrupted widths back.
         """
         save_all = modified_regs is None
         saves_a = save_all or 'A' in modified_regs
         # PHP is unnecessary — RTI restores P from the CPU-pushed stack frame.
         # PHA is only needed if the handler body modifies A.
         if saves_a:
-            self._emit_instr(Opcode.REP_IMMEDIATE, Immediate(M_FLAG), "Force 16-bit A to save full accumulator")
+            self._emit_instr(Opcode.REP_IMMEDIATE, Immediate(M_FLAG | X_FLAG),
+                             "16-bit A and X/Y: save the full registers")
             self._emit_instr(Opcode.PHA, comment="Save A (full 16-bit, includes hidden high byte)")
+        else:
+            self._emit_instr(Opcode.REP_IMMEDIATE, Immediate(X_FLAG), "16-bit X/Y for handler body")
         # Only save X, Y, D, DBR if actually modified by the handler body
         if save_all or 'X' in modified_regs:
             self._emit_instr(Opcode.PHX, comment="Save X")
@@ -1463,25 +1525,69 @@ class FunctionCodeGenerator:
             else:
                 self._emit_instr(Opcode.PEA, Immediate(0), "Push 0 for D reset")
                 self._emit_instr(Opcode.PLD, comment="D = 0 (safe for scratch DP access)")
-        # SEP #$20 ensures m8 mode for the handler body. Skip only when nothing
-        # is saved AND the body has no register-modifying instructions (e.g., just
-        # BIT + RTI), since BIT is mode-independent and RTI restores P.
-        #
-        # A scratch pool forces the switch even for a body that modifies
-        # nothing. The saves that follow include an `LDA dp`/`PHA` for any
-        # scratch byte without a `PEI` partner, and that pushes one byte in
-        # m8 but two in m16 — while the epilogue always pulls back one. An
-        # interrupt fired from m16 code would then return through a stack
-        # left one byte deep.
-        any_saved = save_all or bool(modified_regs)
-        if any_saved or self._interrupt_has_scratches:
-            self._emit_instr(Opcode.SEP_IMMEDIATE, Immediate(M_FLAG), "8-bit A for handler body")
-            # Emit .ACCU 8 so WLA-DX tracks the mode correctly.
-            # WLA-DX auto-tracks REP/SEP, so the preceding REP #$20 (for PHA)
-            # switched its internal state to 16-bit. The SEP #$20 switches it
-            # back, but we emit .ACCU 8 explicitly to be safe — WLA-DX's
-            # linear tracking can lose sync across branch targets.
-            self.emitter.emit_accu_mode(8)
+        # SEP #$20: m8 for the handler body, whatever width was interrupted.
+        # The scratch saves that follow depend on it too: an `LDA dp`/`PHA`
+        # for a scratch byte without a `PEI` partner pushes one byte in m8
+        # but two in m16, while the epilogue always pulls back one.
+        self._emit_instr(Opcode.SEP_IMMEDIATE, Immediate(M_FLAG), "8-bit A for handler body")
+        # Emit .ACCU 8 so WLA-DX tracks the mode correctly.
+        # WLA-DX auto-tracks REP/SEP, so the preceding REP #$20 (for PHA)
+        # switched its internal state to 16-bit. The SEP #$20 switches it
+        # back, but we emit .ACCU 8 explicitly to be safe — WLA-DX's
+        # linear tracking can lose sync across branch targets.
+        self.emitter.emit_accu_mode(8)
+
+    def _reconcile_interrupt_saves(self, mir_func: MIRFunction, instr_selector):
+        """Save every register the emitted handler actually writes.
+
+        The saved set comes from a MIR scan made before the body is emitted,
+        and some MIR nodes reach a register only through their lowering — a
+        `Store` of a constant loads it into A, so `V = 2` wrote A unsaved.
+        Here the emitted body is the authority: any register it writes
+        outside the saved set is added, and the prologue's save run and each
+        RTI's restore run are rebuilt for the larger set.
+        """
+        saved = mir_func.interrupt_modified_regs
+        if saved is None or not mir_func.interrupt_save_run:
+            return
+        nodes = self.emitter.nodes
+        save_run = mir_func.interrupt_save_run
+        start = next(i for i, n in enumerate(nodes) if n is save_run[0])
+        # The restore runs only pull what was saved; leave them out.
+        in_restores = {id(n) for run in mir_func.interrupt_restore_runs for n in run}
+        body = [n for n in nodes[start + len(save_run):] if id(n) not in in_restores]
+        written = interrupt_body_written_regs(body)
+        if written is None:
+            written = {'A', 'X', 'Y', 'D', 'DBR'}
+        if written <= saved:
+            return
+        new_saved = saved | written
+        mir_func.interrupt_modified_regs = new_saved
+
+        accu_mode = self.emitter.get_accu_mode()
+
+        def capture(emit):
+            outer = self.emitter.nodes
+            self.emitter.nodes = []
+            try:
+                emit()
+                return self.emitter.nodes
+            finally:
+                self.emitter.nodes = outer
+
+        # Rebuild back to front so the earlier positions stay valid.
+        runs = [save_run] + mir_func.interrupt_restore_runs
+        replacements = [capture(lambda: self._emit_interrupt_register_saves(new_saved))]
+        for _ in mir_func.interrupt_restore_runs:
+            replacements.append(capture(
+                lambda: instr_selector.emit_interrupt_return(new_saved)))
+        positions = [next(i for i, n in enumerate(nodes) if n is run[0]) for run in runs]
+        for pos, run, repl in sorted(zip(positions, runs, replacements), reverse=True,
+                                     key=lambda t: t[0]):
+            nodes[pos:pos + len(run)] = repl
+        mir_func.interrupt_save_run = replacements[0]
+        mir_func.interrupt_restore_runs = replacements[1:]
+        self.emitter.set_accu_mode_tracking(accu_mode)
 
     def _emit_interrupt_scratch_saves(self, scratch_pool: ScratchRegisterPool):
         """

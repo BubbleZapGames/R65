@@ -1132,6 +1132,10 @@ class MIRFunction:
     bank_attr: Optional[Any] = None         # BankAttribute
     interrupt_attr: Optional[Any] = None    # InterruptAttribute
     interrupt_modified_regs: Optional[set] = None  # Set of hw reg names modified in handler body
+    # Codegen: the emitted register-save run and each RTI's register-restore
+    # run, so they can be rebuilt once the body's real register writes are known.
+    interrupt_save_run: List[Any] = field(default_factory=list)
+    interrupt_restore_runs: List[List[Any]] = field(default_factory=list)
     inline_attr: Optional[Any] = None       # InlineAttribute
     is_entry: bool = False
     is_used: bool = False                   # #[used]: a dead-function-elimination root
