@@ -268,6 +268,27 @@ def _rawasm_is_transparent(node) -> bool:
     return False
 
 
+def _mode_switch_residue(node):
+    """What must stay of a SEP/REP once its M bit is known to be a no-op.
+
+    A switch can carry other flags with the M bit: `REP #$21` is the mode
+    switch plus the carry clear the frame setup folded into it, and
+    `REP #$30` also sets 16-bit X/Y. Dropping such a switch because A is
+    already the right width drops those too — an interrupt prologue lost
+    its carry clear that way and allocated its frame off by one. Returns
+    the replacement nodes: none for a bare `#$20`, CLC/SEC for carry
+    alone, else the switch without its M bit.
+    """
+    from r65.compiler.codegen.asm_nodes import Instruction, Immediate
+    rest = node.operand.value & ~0x20
+    if rest == 0:
+        return []
+    if rest == 0x01:
+        op = Opcode.CLC if node.opcode == Opcode.REP_IMMEDIATE else Opcode.SEC
+        return [Instruction(op, None, node.comment, node.source_loc)]
+    return [Instruction(node.opcode, Immediate(rest), node.comment, node.source_loc)]
+
+
 # ============================================================================
 # Peephole Optimizer
 # ============================================================================
@@ -801,6 +822,7 @@ class PeepholeOptimizer:
                 # `optimize()` strips and regenerates mid-block
                 # directives from the asm-mode dataflow.
                 self.stats.redundant_mode_changes_eliminated += 1
+                optimized.extend(_mode_switch_residue(node))
                 i += 1
                 continue
 
@@ -1083,11 +1105,13 @@ class PeepholeOptimizer:
                             new_nodes.append(node)  # the label
                             if accu_idx is not None:
                                 new_nodes.append(nodes[accu_idx])
-                            # Skip the SEP/REP itself. Any trailing
+                            # Skip the SEP/REP itself, keeping any flags
+                            # it set besides M. Any trailing
                             # `.ACCU` directive codegen paired with it
                             # is left untouched — the final
                             # `normalize_mode_directives` call rebuilds
                             # mid-block directives from the dataflow.
+                            new_nodes.extend(_mode_switch_residue(sep_rep))
                             i = sep_rep_idx + 1
                             self.stats.redundant_mode_changes_eliminated += 1
                             any_change = True
@@ -1991,16 +2015,13 @@ class PeepholeOptimizer:
                 if isinstance(nodes[j], (ModeChange, Comment, BlankLine)):
                     j += 1
                     continue
+                # Only a bare M switch moves: one that also sets carry
+                # or X would set it once instead of every iteration.
                 if isinstance(nodes[j], Instruction):
-                    if (nodes[j].opcode == Opcode.SEP_IMMEDIATE and
+                    if (nodes[j].opcode in (Opcode.SEP_IMMEDIATE,
+                                            Opcode.REP_IMMEDIATE) and
                             isinstance(nodes[j].operand, Immediate) and
-                            isinstance(nodes[j].operand.value, int) and
-                            nodes[j].operand.value & M_FLAG):
-                        sep_idx = j
-                    elif (nodes[j].opcode == Opcode.REP_IMMEDIATE and
-                            isinstance(nodes[j].operand, Immediate) and
-                            isinstance(nodes[j].operand.value, int) and
-                            nodes[j].operand.value & M_FLAG):
+                            nodes[j].operand.value == M_FLAG):
                         sep_idx = j
                 break
 

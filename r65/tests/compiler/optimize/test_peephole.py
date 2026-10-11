@@ -332,6 +332,37 @@ class TestCarrySetupFoldedIntoRep:
         opt.optimize(nodes)
         assert opt.stats.carry_ops_folded_into_rep == 0
 
+    def test_folded_carry_survives_redundant_mode_switch(self):
+        """Already in m16, `REP #$21` is redundant as a mode switch but its
+        carry clear is what `SBC #(n-1)` relies on — an interrupt prologue
+        (REP #$30 ... SEP #$20; frame setup) lost it and allocated its
+        frame one byte short whenever the interrupted code left carry set."""
+        nodes = [
+            Instruction(opcode=Opcode.REP_IMMEDIATE, operand=Immediate(0x30)),
+            Instruction(opcode=Opcode.PHA),
+            Instruction(opcode=Opcode.SEP_IMMEDIATE, operand=Immediate(0x20)),
+            Instruction(opcode=Opcode.REP_IMMEDIATE, operand=Immediate(0x20)),
+            Instruction(opcode=Opcode.TSC),
+            Instruction(opcode=Opcode.SEC),
+            Instruction(opcode=Opcode.SBC_IMMEDIATE, operand=Immediate(0x02)),
+            Instruction(opcode=Opcode.TCS),
+        ]
+        result = PeepholeOptimizer().optimize(nodes)
+        # Follow carry to the SBC: it must take exactly 2 off S.
+        carry = None
+        for n in result:
+            if not isinstance(n, Instruction):
+                continue
+            if n.opcode == Opcode.SBC_IMMEDIATE:
+                assert carry is not None, result
+                assert n.operand.value + (1 - carry) == 2, result
+                break
+            if n.opcode in (Opcode.CLC, Opcode.SEC):
+                carry = int(n.opcode == Opcode.SEC)
+            elif (n.opcode in (Opcode.REP_IMMEDIATE, Opcode.SEP_IMMEDIATE)
+                    and n.operand.value & 0x01):
+                carry = int(n.opcode == Opcode.SEP_IMMEDIATE)
+
 
 class TestLoopModeSwitchHoistRetagsAnchor:
     """Test _hoist_loop_mode_switches keeps the label's `.ACCU` anchor honest."""
