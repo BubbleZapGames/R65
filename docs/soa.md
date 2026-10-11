@@ -171,6 +171,36 @@ impl Tick for Enemy { fn tick(self) { self.hp = 0; } }   // index self
 Register budget: `self` occupies X for the whole body, so an `#[soa]`
 method may not bind a parameter to `X`.
 
+### Inlined on a constant element
+
+A method shared by a small fixed set of elements - a player and an enemy,
+`POOL[0]` and `POOL[1]` - is usually called on a constant. Marked
+`#[inline(always)]`, such a call compiles to the code a direct `POOL[0].f`
+does: the inliner substitutes the constant for `self`, and the
+constant-index pass (`optimize/const_index.py`, after inlining at `-O1`)
+rewrites every `POOL__f,X` whose X the block set to a known constant into
+the absolute `POOL__f+k`, then drops the X loads nothing reads any more.
+
+```rust
+impl Air {
+    #[inline(always)]
+    fn step(self) { if self.landed == 0 { self.x = self.x + 1; } }
+}
+P[1].step();          // LDA P__landed+1 / BNE / INC P__x+2 - no LDX, no ,X
+P[i].step();          // a variable element: the call, or POOL__f,X inlined
+```
+
+Not inlined, the method pays what an index method pays per call - the
+`JSR`, X reloaded at each switch between field widths (see
+[Index reuse in X](#index-reuse-in-x--read-this-before-choosing-field-types)),
+a frame for its locals - which on a per-frame routine of a game on its frame
+budget is measurable: rotor_raiders' shared airframe draw cost 14 ticks a
+minute of its stress run that way, and inlined it ran 21 faster than the two
+hand-written copies it replaced. The fold is block-local and conservative:
+it trusts X only across loads, stores, ALU ops, compares and branches, and
+deletes an X load only when a CFG liveness pass - in which a call, inline
+asm, a block move or a trait dispatch counts as reading X - finds it dead.
+
 ---
 
 ## Layout

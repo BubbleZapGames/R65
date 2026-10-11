@@ -146,3 +146,46 @@ class TestReceiverIndexWidening:
         body = asm[asm.index('main:'):]
         body = body[:body.index('__SCMP')]
         assert 'AND #$FF' not in body, "spurious widening for a u16 index:\n" + body
+
+
+class TestInlinedMethodOnConstantElement:
+    """An #[inline(always)] index method called on a constant element folds
+    to absolute addressing (optimize/const_index.py): the method shared by
+    every element costs what hand-written per-element code does."""
+
+    SRC = '''
+        #[soa] struct Air {{ x: u16, hp: u8, landed: u8 }}
+        #[zeropage(0x40)] static mut P: [Air; 2];
+        impl Air {{
+            #[inline(always)]
+            fn step(self) {{
+                if self.landed == 0 {{
+                    self.x = self.x + 1;
+                    self.hp = self.hp - 1;
+                }}
+            }}
+        }}
+        #[entry] fn main() {{ {calls} }}
+    '''
+
+    def body(self, calls):
+        asm = asm_for(self.SRC.format(calls=calls))
+        return asm[asm.index('main:'):]
+
+    def test_constant_element_reads_no_x(self):
+        body = self.body('P[1].step();')
+        assert 'Air__step' not in body, "expected the call inlined:\n" + body
+        assert ',X' not in body, "a constant element still indexed by X:\n" + body
+        assert 'LDX' not in body and 'TAX' not in body, "dead X load left:\n" + body
+
+    def test_constant_element_lands_at_its_offset(self):
+        body = self.body('P[1].step();')
+        # x is P__x (u16) at $40, element 1 at $42; landed (u8) at $46 + 1.
+        assert '$42' in body, body
+        assert '$47' in body, body
+
+    def test_variable_element_still_indexes(self):
+        asm = asm_for(self.SRC.format(calls='P[i].step();').replace(
+            '#[entry]', '#[zeropage] static mut i: u16;\n        #[entry]'))
+        body = asm[asm.index('main:'):]
+        assert ',X' in body, "a variable element lost its index:\n" + body

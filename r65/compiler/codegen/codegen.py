@@ -156,6 +156,16 @@ class ProgramCodeGenerator:
                 if func_eliminated2 > 0:
                     print(f"Post-inlining dead function elimination: {func_eliminated2} function(s) removed")
 
+            # Constant-index folding - an X-indexed access with a constant X
+            # becomes the absolute access, the X load dropped. What an inlined
+            # #[soa] method called on a constant element compiles to:
+            # `POOL[PLAYER].fly()` reads POOL__x_px, not POOL__x_px,X.
+            from r65.compiler.optimize.const_index import ConstIndexFolder
+            const_index = ConstIndexFolder(verbose=False)
+            indices_folded = const_index.optimize(mir_program)
+            if indices_folded > 0:
+                print(f"Constant-index folding: {indices_folded} access(es) made absolute")
+
             # Loop unrolling - fully unroll small static loops at -O2
             if opt_level >= 2:
                 from r65.compiler.optimize.loop_unroll import LoopUnroller

@@ -200,6 +200,46 @@ class TestSoaMethods:
         assert result.success, f"Failures: {result.failures}"
 
 
+class TestSoaInlinedConstantElement:
+    """An #[inline(always)] index method called on a constant element is
+    folded to absolute accesses (optimize/const_index.py); each element's
+    fields must still land in their own place, at every field width."""
+
+    def test_each_element_gets_its_own_fields(self, e2e):
+        result = e2e.run('''
+            #[soa] struct Air { x: u16, hp: u8, landed: u8 }
+
+            #[zeropage(0x10)]
+            static mut P: [Air; 2];
+
+            impl Air {
+                #[inline(always)]
+                fn set(self, x: u16, hp: u8) { self.x = x; self.hp = hp; self.landed = 0; }
+                #[inline(always)]
+                fn step(self) {
+                    if self.landed == 0 {
+                        self.x = self.x + 1;
+                        self.hp = self.hp - 1;
+                    }
+                }
+            }
+
+            #[entry]
+            fn main() {
+                P[0].set(0x1234, 0x50);
+                P[1].set(0x5678, 0x60);
+                P[1].landed = 1;
+                P[0].step();
+                P[1].step();
+            }
+        ''', ExpectedState(memory={
+            0x7E0010: [0x35, 0x12, 0x78, 0x56],   # P__x: [0x1235, 0x5678]
+            0x7E0014: [0x4F, 0x60],               # P__hp: element 1 landed, untouched
+            0x7E0016: [0x00, 0x01],               # P__landed
+        }))
+        assert result.success, f"Failures: {result.failures}"
+
+
 class TestSoaNestedFields:
     """A nested aggregate field becomes one plane of that aggregate.
 
