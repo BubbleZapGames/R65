@@ -91,6 +91,10 @@ class MIRBuilder:
         # Promoted aggregate locals: maps original symbol id -> synthetic static symbol
         # Cleared per-function in lower_function()
         self._promoted_locals: Dict[int, Any] = {}
+        # Per enclosing loop: {(id(symbol), stride): vreg} for a multi-index's
+        # inner index, scaled once in the loop's preheader (see
+        # _hoist_invariant_index_terms).
+        self._hoisted_index_terms: List[Dict[Any, Any]] = []
 
         # Decomposed struct locals: maps original symbol id -> dict of field_name -> VirtualRegister
         # Small flat structs are decomposed into per-field vregs instead of promoted to static storage
@@ -298,6 +302,7 @@ class MIRBuilder:
         self.cfg_builder = CFGBuilder(mir_func)
         self.symbol_to_vreg.clear()
         self.loop_stack.clear()
+        self._hoisted_index_terms.clear()
         self._promoted_locals.clear()
         self._decomposed_structs.clear()
 
@@ -1576,6 +1581,8 @@ class MIRBuilder:
         body_block = self.cfg_builder.new_block()
         exit_block = self.cfg_builder.new_block()
 
+        self._hoist_invariant_index_terms(expr.body)
+
         # Jump to header
         self.emit(Jump(target=header_block.block_id))
         self.cfg_builder.add_edge(self.current_block, header_block)
@@ -1590,6 +1597,7 @@ class MIRBuilder:
         self.loop_stack.append((header_block.block_id, exit_block.block_id, expr.label, result_vreg))
         self.lower_block(expr.body)
         self.loop_stack.pop()
+        self._hoisted_index_terms.pop()
 
         # Jump back to header (unless body ends with break/return)
         if not self._block_has_terminator():
@@ -1765,6 +1773,8 @@ class MIRBuilder:
         body_block = self.cfg_builder.new_block()
         exit_block = self.cfg_builder.new_block()
 
+        self._hoist_invariant_index_terms(stmt.body)
+
         # Jump from current block to header
         self.emit(Jump(target=header_block.block_id))
         self.cfg_builder.add_edge(self.current_block, header_block)
@@ -1786,6 +1796,7 @@ class MIRBuilder:
             self.emit(Jump(target=exit_block.block_id))
             self.cfg_builder.add_edge(header_block, exit_block)
             self.current_block = exit_block
+            self._hoisted_index_terms.pop()
             return
         elif stmt.condition:
             # while condition: conditional loop
@@ -1802,6 +1813,7 @@ class MIRBuilder:
         self.loop_stack.append((header_block.block_id, exit_block.block_id, stmt.label, None))
         self.lower_block(stmt.body)
         self.loop_stack.pop()
+        self._hoisted_index_terms.pop()
 
         # Jump back to header (unless body ends with break/return)
         if not self._block_has_terminator():
@@ -2094,8 +2106,14 @@ class MIRBuilder:
         u16 = BasicTypeInfo('u16')
         const = 0
         total = None
-        operands = [(last_index, last_operand, last_stride)] + [
-            (index, self.lower_expression(index), stride) for index, stride in terms]
+        operands = [(last_index, last_operand, last_stride)]
+        for index, stride in terms:
+            hoisted = self._hoisted_index_term(index, stride)
+            if hoisted is not None:
+                # Scaled once, before the loop: add it as it is.
+                operands.append((index, hoisted, 1))
+            else:
+                operands.append((index, self.lower_expression(index), stride))
         for index, operand, stride in operands:
             if isinstance(operand, Immediate):
                 const += operand.value * stride
@@ -2115,6 +2133,76 @@ class MIRBuilder:
                                    op='+', type_info=u16))
                 total = summed
         return const, total
+
+    def _hoisted_index_term(self, index, stride):
+        """The vreg holding *index* * *stride*, if a loop around this point
+        scaled it in its preheader, else None."""
+        if not isinstance(index, HIRIdentifier):
+            return None
+        key = (id(index.symbol), stride)
+        for hoisted in reversed(self._hoisted_index_terms):
+            if key in hoisted:
+                return hoisted[key]
+        return None
+
+    def _hoist_invariant_index_terms(self, body):
+        """Scale a loop's invariant inner indices once, before the loop.
+
+        Called with the current block the loop's preheader. For every
+        `T[i][j]` / `POOL[i].arr[j]` in *body* whose inner index `i` is a local
+        or parameter the body never defines, emits `i * stride` here and
+        records it, so sum_index_terms adds the vreg instead of rescaling `i`
+        on every pass. Always pushes a (possibly empty) frame; the loop
+        lowerer pops it.
+        """
+        from r65.compiler.mir.lowerers.multiply import compute_scaled_index
+        from r65.compiler.mir.nodes import Move
+
+        hoisted: Dict[Any, Any] = {}
+        defined, array_indices = set(), []
+        for node in _walk_hir(body):
+            if isinstance(node, HIRAssignment):
+                if isinstance(node.target, HIRIdentifier):
+                    defined.add(id(node.target.symbol))
+            elif isinstance(node, HIRMultiAssignment):
+                defined.update(id(t.symbol) for t in node.targets
+                               if isinstance(t, HIRIdentifier))
+            elif isinstance(node, HIRLetStmt):
+                defined.add(id(node.symbol))
+            elif isinstance(node, HIRMultiLetStmt):
+                defined.update(id(sym) for sym in node.symbols)
+            elif isinstance(node, HIRAddressOf):
+                if isinstance(node.operand, HIRIdentifier):
+                    defined.add(id(node.operand.symbol))
+            elif isinstance(node, HIRArrayIndex):
+                array_indices.append(node)
+
+        for node in array_indices:
+            try:
+                _memloc, _key, terms = self.resolve_array_base_memloc(node.array)
+            except MIRLoweringError:
+                continue
+            for index, stride in terms:
+                if not isinstance(index, HIRIdentifier):
+                    continue
+                symbol = index.symbol
+                key = (id(symbol), stride)
+                if (key in hoisted or id(symbol) in defined
+                        or self._hoisted_index_term(index, stride) is not None):
+                    continue
+                if symbol.kind == SymbolKind.LOCAL_VAR:
+                    if self.current_function.alias_tracker.get_alias(symbol):
+                        continue          # a `let x @ R`: nothing preserves it
+                elif symbol.kind != SymbolKind.PARAMETER:
+                    continue              # a static: a call may change it
+                operand = self.lower_expression(index)
+                if isinstance(operand, HardwareRegister):
+                    held = self.ctx.alloc_vreg(index.expr_type, 'idx')
+                    self.emit(Move(dest=held, source=operand, type_info=index.expr_type))
+                    operand = held
+                hoisted[key] = compute_scaled_index(operand, stride, index.expr_type,
+                                                    self.ctx, self.emit)
+        self._hoisted_index_terms.append(hoisted)
 
     def multi_index_memloc(self, base_memloc, terms, last_index, last_operand,
                            last_stride, extra_offset=0):
@@ -2878,3 +2966,26 @@ class MIRBuilder:
         from r65.compiler.hir.hir_const_eval import try_eval_const_bool
         symbol_table = self._hir_program.symbol_table if self._hir_program else None
         return try_eval_const_bool(expr, symbol_table)
+
+
+def _walk_hir(node):
+    """Every HIR node under *node*, *node* included.
+
+    Follows dataclass fields holding HIR nodes or lists of them; a Symbol is
+    not an HIR node, so a reference never leads back into a declaration.
+    """
+    import dataclasses
+    from r65.compiler.hir.nodes import HIRNode
+    stack = [node]
+    while stack:
+        current = stack.pop()
+        if isinstance(current, (list, tuple)):
+            stack.extend(current)
+            continue
+        if not isinstance(current, HIRNode):
+            continue
+        yield current
+        for f in dataclasses.fields(current):
+            value = getattr(current, f.name, None)
+            if isinstance(value, (HIRNode, list, tuple)):
+                stack.append(value)

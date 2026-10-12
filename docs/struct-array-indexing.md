@@ -175,7 +175,11 @@ variable index by its stride, sums them into X, and folds every constant index
 (and any field offset) into the address. An `#[soa]` field is rebased onto its
 plane on the way, so its term takes the plane's padded stride.
 
-Two variable indices cost one extra `CLC`/`ADC` over a single one. X reuse
+Two variable indices cost one extra `CLC`/`ADC` over a single one. An inner
+index that a loop never changes - a local or parameter the body does not
+assign, declare or take the address of - is scaled once, before the loop
+(`_hoist_invariant_index_terms`), so `for k in 0..N { T[i][k] }` adds a
+precomputed `i * stride` rather than rescaling `i` on every pass. X reuse
 across consecutive accesses (`x_index_reuse_key`) is off when more than the
 outermost index is involved, since X holds a sum. An element reached through
 a pointer index (`p[i].name[j]`) is not supported.

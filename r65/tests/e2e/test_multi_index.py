@@ -163,3 +163,73 @@ def test_an_element_reached_through_a_pointer_index_is_an_error():
             #[entry]
             fn main() { O = read(&ROWS, 1, 2); }
         ''', cfg_options=['snes'])
+
+
+# An inner index the loop never changes is scaled once, before the loop.
+
+ROW_SUM = '''
+    #[lowram(0x0300)]
+    static mut T: [[u8; 4]; 4];
+    #[zeropage(0x10)] static mut O: [u8; 3];
+
+    fn fill() {
+        let mut n: u8 = 1;
+        for i in 0..4 {
+            for j in 0..4 {
+                T[i][j] = n;
+                n = n + 1;
+            }
+        }
+    }
+
+    fn row_sum(i: u16) -> u8 {
+        let mut s: u8 = 0;
+        for j in 0..4 { s = s + T[i][j]; }
+        return s;
+    }
+
+    // `i` changes inside the loop, so it is rescaled every pass.
+    fn diagonal_sum(i: u16) -> u8 {
+        let mut s: u8 = 0;
+        let mut r: u16 = i;
+        for j in 0..4 {
+            s = s + T[r][j];
+            r = r + 1;
+        }
+        return s;
+    }
+
+    // `r` is declared in the loop, so it does not exist before it.
+    fn column_sum(j: u16) -> u8 {
+        let mut s: u8 = 0;
+        for k in 0..4 {
+            let r: u16 = 3 - k;
+            s = s + T[r][j];
+        }
+        return s;
+    }
+
+    #[entry]
+    fn main() {
+        fill();
+        O[0] = row_sum(2);
+        O[1] = diagonal_sum(0);
+        O[2] = column_sum(1);
+    }
+'''
+
+
+def test_an_invariant_inner_index_is_scaled_before_the_loop():
+    asm = compile_string(ROW_SUM, cfg_options=['snes']).splitlines()
+    start = asm.index('row_sum:')
+    body = asm[start:asm.index('    RTS', start)]
+    loop = next(n for n, line in enumerate(body) if line.startswith('row_sum__L'))
+    shifts = [n for n, line in enumerate(body) if line.strip() == 'ASL A']
+    assert shifts and max(shifts) < loop, "i * 4 is recomputed inside the loop"
+
+
+def test_hoisted_and_unhoisted_inner_indices(e2e):
+    """Row 2 is 9..12; the diagonal 1 + 6 + 11 + 16; column 1, bottom up,
+    14 + 10 + 6 + 2."""
+    result = e2e.run(ROW_SUM, ExpectedState(memory={0x7E0010: [42, 34, 32]}))
+    assert result.success, f"Failures: {result.failures}"
