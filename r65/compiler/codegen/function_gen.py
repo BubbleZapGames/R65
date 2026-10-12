@@ -679,9 +679,9 @@ class FunctionCodeGenerator:
         """
         from r65.compiler.typeck.processor_mode import ModeState
         from r65.compiler.mir.nodes import (
-            BinaryOp, UnaryOp, Compare, Return, TypeConvert, Call,
-            TraitDispatch, LoadIndirect, Load, Store, VirtualRegister,
-            Immediate as MIRImmediate,
+            BinaryOp, UnaryOp, Compare, LoadIndirect, Load, Store,
+            StoreIndirect, IncDecMemory, BitTest, Move, Jump, CondBranch,
+            VirtualRegister, Immediate as MIRImmediate,
         )
         from r65.compiler.codegen.type_utils import get_type_size
 
@@ -769,34 +769,39 @@ class FunctionCodeGenerator:
             # resolution uniformly.
             return _xy_register(instr.left) == dest_reg
 
+        # Deny by default: an instruction keeps the width only if it is known
+        # to. (An allow-list of known changers missed `INC $mem` in m16 - the
+        # `m = m + 1` fold - and left a loop header reading in 16-bit A.)
+        def _size(instr):
+            t = getattr(instr, 'type_info', None)
+            return get_type_size(t) if t else 0
+
         for instr in pred_block.instructions:
+            if isinstance(instr, (Jump, CondBranch)):
+                continue
+            if expected_is_m16:
+                # Every 8-bit operation SEPs; only branches are safe to skip.
+                return True
+            size = _size(instr)
             if isinstance(instr, BinaryOp):
-                if instr.type_info and get_type_size(instr.type_info) >= 2:
-                    if _binary_op_preserves_a_mode(instr):
-                        continue
-                    return True
-            elif isinstance(instr, UnaryOp):
-                if instr.type_info and get_type_size(instr.type_info) >= 2:
-                    # UnaryOp ops are '!', '~', '-' — none emit INX/INY.
-                    # Even with X/Y dest the codegen uses m16 arithmetic.
+                if size >= 2 and not _binary_op_preserves_a_mode(instr):
                     return True
             elif isinstance(instr, Compare):
-                if instr.type_info and get_type_size(instr.type_info) >= 2:
-                    # CPX/CPY: left is X or Y — no mode change
-                    if _is_xy(instr.left):
-                        continue
+                # CPX/CPY: left is X or Y - no mode change
+                if size >= 2 and not _is_xy(instr.left):
                     return True
-            elif isinstance(instr, Return):
-                return True  # May switch mode for return value
-            elif isinstance(instr, TypeConvert):
-                return True  # May involve mode changes
-            elif isinstance(instr, (Call, TraitDispatch)):
-                return True  # Callee may leave mode in any state
-            elif isinstance(instr, (LoadIndirect, Load, Store)):
-                # Check if the operation involves u16 types
-                if hasattr(instr, 'type_info') and instr.type_info:
-                    if get_type_size(instr.type_info) >= 2:
-                        return True
+            elif isinstance(instr, Move):
+                # LDX/LDY/TAX/TAY into an index register leave A's width.
+                if size >= 2 and not _is_xy(instr.dest):
+                    return True
+            elif isinstance(instr, (UnaryOp, Load, Store, LoadIndirect,
+                                    StoreIndirect, IncDecMemory, BitTest)):
+                if size >= 2:
+                    return True
+            else:
+                # Return, TypeConvert, calls, block moves, inline asm, status
+                # writes, tables, pushes and pulls: may leave either width.
+                return True
 
         return False  # Block is mode-preserving
 

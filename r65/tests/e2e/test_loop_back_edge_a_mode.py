@@ -162,3 +162,35 @@ class TestLoopBackEdgeAMode:
         # compilation of this idiom.
         assert func, "count not found in asm"
 
+
+def test_memory_increment_on_a_continue_loop_restores_m8(e2e):
+    """`W = W + 1` on a u16 folds to `REP #$20 / INC $mem` (494bf9f), and a
+    `continue` gives the header a second back edge. The back-edge check did
+    not count IncDecMemory as a width change, so the header ran in 16-bit A
+    and `KIND[i] == 0` read KIND[i] and KIND[i+1] together: zeros followed by
+    a non-zero were counted. Now the check is deny-by-default."""
+    from r65.tests.e2e import ExpectedState
+    result = e2e.run('''
+        #[zeropage(0x10)]
+        static mut W: u16;
+        #[zeropage(0x12)]
+        static mut KIND: [u8; 8];
+
+        fn count() {
+            let mut i: u16 = 0;
+            while i < 7 {
+                i = i + 1;
+                if KIND[i] == 0 { continue; }
+                W = W + 1;
+            }
+        }
+
+        #[entry]
+        fn main() {
+            KIND[0] = 0; KIND[1] = 0; KIND[2] = 5; KIND[3] = 0;
+            KIND[4] = 7; KIND[5] = 0; KIND[6] = 9; KIND[7] = 0;
+            W = 0;
+            count();
+        }
+    ''', ExpectedState(memory={0x7E0010: [3, 0]}))
+    assert result.success, f"Failures: {result.failures}"
