@@ -69,6 +69,10 @@ class CompareSelector(BaseSelector):
                     opcode = getattr(Opcode, f"{mnemonic}_DP")
                     self._emit_instr(opcode, Address(operand.stack_offset))
                 else:
+                    # CPX/CPY compare 16 bits (a u8 compare took TXA/TYA +
+                    # CMP in m8 before reaching here), so the A that stands
+                    # in for them below must be 16-bit too.
+                    self.parent._ensure_m16_mode()
                     # Load to temp via A, then compare with temp
                     temp_addr = self.parent._get_temp_address()
                     if temp_addr:
@@ -195,13 +199,17 @@ class CompareSelector(BaseSelector):
         if is_16bit:
             # PHA pushed 2 bytes + PHP pushed 1 byte = 3 bytes on stack.
             # Use m8 to pop individual bytes, then PLP restores m16 + flags.
+            # The emitter sizes each PLA by its tracked width, so it has to
+            # see this SEP, and the PLP that undoes it.
             self._emit_instr(Opcode.SEP_IMMEDIATE, Immediate(0x20), "m8 for cleanup")
+            self.parent.emitter.set_accu_mode_tracking(8)
             # Move saved P past the pushed right value
             self._emit_instr(Opcode.LDA_STACK, StackOffset(1), "Load saved P")
             self._emit_instr(Opcode.STA_STACK, StackOffset(3), "Move P past right")
             self._emit_instr(Opcode.PLA, comment="Pop old P position")
             self._emit_instr(Opcode.PLA, comment="Pop right byte")
             self._emit_instr(Opcode.PLP, comment="Restore flags and m16 mode")
+            self.parent.emitter.set_accu_mode_tracking(16)
         else:
             # PHA pushed 1 byte + PHP pushed 1 byte = 2 bytes on stack.
             # Move saved P past the pushed right value, then PLP.
