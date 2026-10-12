@@ -8,6 +8,7 @@ live across function calls that don't preserve them.
 
 import pytest
 from r65.compiler.main import compile_string
+from r65.compiler.errors import MIRLoweringError
 
 
 class TestHardwareRegisterSpilling:
@@ -167,8 +168,10 @@ class TestHardwareRegisterSpilling:
 
         assert not found_a_spill, "A should not be spilled for direct usage"
 
-    def test_a_register_spilled_when_bound(self):
-        """Test that A IS spilled when bound to a variable that's live across call."""
+    def test_a_alias_live_across_a_call_is_rejected(self):
+        """An `@ A` alias is not spilled across a call that overwrites A: it
+        compiled to `LDA #$05 / JSR clobbers_a / INC A`, returning 100, and
+        is now a compile error (mir/register_alias_check.py)."""
         source = """
         fn clobbers_a() {
             A = 99;
@@ -180,24 +183,8 @@ class TestHardwareRegisterSpilling:
             return x + 1;
         }
         """
-        result = compile_string(source, "test.r65")
-
-        # When A is bound to a variable, it should be spilled
-        # The vreg system handles this, so we check for PHA/PLA around the call
-        lines = result.split('\n')
-        in_func = False
-        found_a_spill = False
-        for line in lines:
-            if 'test_a_bound:' in line:
-                in_func = True
-            elif in_func and line.strip().startswith('RTS'):
-                break
-            elif in_func and ('PHA' in line or 'STA' in line) and 'Spill' in line:
-                found_a_spill = True
-
-        # Note: The exact mechanism may vary (PHA or STA to scratch)
-        # The key is that the value is preserved somehow
-        assert 'clobbers_a' in result  # Function exists
+        with pytest.raises(MIRLoweringError, match="'x' is bound to A"):
+            compile_string(source, "test.r65")
 
 
 class TestRegionBasedSpilling:

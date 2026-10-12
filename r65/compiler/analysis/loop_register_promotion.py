@@ -55,6 +55,7 @@ def analyze_loop_promotion(mir_program: MIRProgram):
     for func in mir_program.functions:
         _enforce_index_clobber_safety(func)
         _enforce_live_range_clobber_safety(func)
+        _enforce_alias_register_safety(func)
 
     # Eliminate temp copies in ALL functions with loops, even if no
     # promotion happened. This collapses `%T = %V + 1; %V = Move %T`
@@ -456,6 +457,51 @@ def _enforce_index_clobber_safety(func: MIRFunction) -> int:
             vreg.register_hint = None
         rewritten += 1
     return rewritten
+
+
+def _alias_registers(func: MIRFunction) -> Set[str]:
+    """X/Y named by a `let x @ X`/`@ Y` alias in *func*: its own aliases,
+    and any an inlined body brought in (their operands keep the tag)."""
+    tracker = func.alias_tracker
+    regs = {a.hardware_reg.name for a in tracker.aliases.values()} if tracker else set()
+    for block in func.blocks.values():
+        for instr in block.instructions:
+            for _, v in iter_operands(instr):
+                if isinstance(v, HardwareRegister) and v.alias is not None:
+                    regs.add(v.name)
+    return regs & {'X', 'Y'}
+
+
+def _enforce_alias_register_safety(func: MIRFunction) -> int:
+    """
+    Drop every X/Y loop-counter hint on a register a `let x @ X`/`@ Y` alias
+    names. The alias holds a value the counter would overwrite: a loop
+    between the alias and its last use, with its counter kept in that
+    register, made the alias read the counter's final value - and
+    mir/register_alias_check.py cannot see it, the counter being an
+    ordinary vreg until here. The counter falls back to the stack.
+
+    Returns the number of hints dropped.
+    """
+    regs = _alias_registers(func)
+    if not regs:
+        return 0
+    dropped = 0
+    seen: Set[int] = set()
+    for block in func.blocks.values():
+        for instr in block.instructions:
+            for vreg in _get_vregs_from_instr(instr):
+                if vreg.id in seen:
+                    continue
+                seen.add(vreg.id)
+                if vreg.register_hint in regs:
+                    if func.loop_promoted_hw_vregs.get(vreg.register_hint) is vreg:
+                        del func.loop_promoted_hw_vregs[vreg.register_hint]
+                    vreg.register_hint = None
+                    dropped += 1
+    for reg in regs:
+        func.loop_promoted_hw_vregs.pop(reg, None)
+    return dropped
 
 
 def _index_clobbers(instr) -> Set[str]:

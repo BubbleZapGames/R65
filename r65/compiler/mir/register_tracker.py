@@ -5,8 +5,8 @@ Register aliasing tracker for MIR.
 Tracks register aliases from HIR (`let x @ A = ...`) to enable zero-cost aliasing.
 """
 
-from dataclasses import dataclass
-from typing import Dict, Optional, Any
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Any, Tuple
 from r65.compiler.mir.nodes import *
 
 
@@ -42,6 +42,12 @@ class RegisterAliasTracker:
     def __init__(self):
         # Maps id(Symbol) → RegisterAlias (use id() since Symbol is not hashable)
         self.aliases: Dict[int, RegisterAlias] = {}
+        # Where an alias takes the register's current value without a Move
+        # (`let x @ A = A;`, `let y @ A = x;`, `x = y;`): (alias, block_id,
+        # instruction index the definition precedes, the alias read there or
+        # None, source_loc). A Move into the register carries the alias on
+        # its dest instead.
+        self.def_points: List[Tuple[RegisterAlias, int, int, Optional[RegisterAlias], Any]] = []
 
     def add_alias(self, symbol: Any, hw_reg: HardwareRegister, scope_id: int,
                   binding_type: Optional[Any] = None):
@@ -72,12 +78,28 @@ class RegisterAliasTracker:
             HardwareRegister if symbol is aliased, None otherwise
         """
         alias = self.aliases.get(id(symbol))
-        return alias.hardware_reg if alias else None
+        if alias is None:
+            return None
+        # A fresh operand tagged with the alias, so register_alias_check can
+        # tell this read (or, as a dest, this reassignment) from a bare use.
+        return HardwareRegister(alias.hardware_reg.name, alias=alias)
+
+    def record_def(self, symbol: Any, block_id: int, index: int,
+                   value: Any = None, source_loc: Any = None):
+        """Note that *symbol*'s alias takes its register's value before
+        instruction *index* of block *block_id*, no Move emitted. *value* is
+        what was assigned: when it is another alias's operand, that is a
+        read of it, checked there."""
+        alias = self.aliases.get(id(symbol))
+        if alias is not None:
+            read = getattr(value, 'alias', None)
+            self.def_points.append((alias, block_id, index, read, source_loc))
 
 
     def clear(self):
         """Clear all aliases (for new function)."""
         self.aliases.clear()
+        self.def_points.clear()
 
     def get_register_binding_type(self, register_name: str) -> Optional[Any]:
         """

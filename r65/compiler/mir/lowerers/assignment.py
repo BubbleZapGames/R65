@@ -205,9 +205,16 @@ class AssignmentLowerer:
         # Check if aliased to hardware register
         hw_reg = self.ctx.current_function.alias_tracker.get_alias(symbol)
         if hw_reg:
-            # Move to hardware register
+            # Move to hardware register; the tagged dest is the alias's new
+            # definition (register_alias_check). With the value already there,
+            # no Move: note the definition where it falls.
             if not (isinstance(value, HardwareRegister) and value.name == hw_reg.name):
                 self.emit(Move(dest=hw_reg, source=value, type_info=expr.expr_type))
+            else:
+                block = self.ctx.current_block
+                self.ctx.current_function.alias_tracker.record_def(
+                    symbol, block.block_id, len(block.instructions),
+                    value=value, source_loc=expr.source_loc)
             return hw_reg
 
         # Check if has explicit memory location

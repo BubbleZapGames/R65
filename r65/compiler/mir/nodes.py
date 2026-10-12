@@ -51,6 +51,10 @@ class HardwareRegister:
     (B is only valid in m8 mode)
     """
     name: str  # 'A', 'X', 'Y', 'B', 'STATUS', 'D', 'DBR', 'S'
+    # The `let x @ R` alias this operand reads or defines, or None for a bare
+    # register. Not part of equality: a tagged A is still A everywhere else.
+    # Read by mir/register_alias_check.py.
+    alias: Any = field(default=None, compare=False, repr=False)
 
     def __repr__(self):
         return self.name

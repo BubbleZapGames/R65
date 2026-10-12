@@ -29,6 +29,7 @@ from r65.compiler.mir.nodes import (
 
 from r65.compiler.mir.virtual_registers import VirtualRegisterAllocator
 from r65.compiler.mir.register_tracker import RegisterAliasTracker
+from r65.compiler.mir.register_alias_check import check_register_aliases
 from r65.compiler.mir.cfg import CFGBuilder
 from r65.compiler.mir.mode_tracker import reanalyze_function as _reanalyze_modes
 from r65.compiler.mir.builder_helpers import TypeSizeCalculator
@@ -224,12 +225,14 @@ class MIRBuilder:
         for decl in hir_program.declarations:
             if isinstance(decl, HIRFunctionDecl) and decl.body:
                 mir_func = self.lower_function(decl)
+                check_register_aliases(mir_func)
                 mir_functions.append(mir_func)
             # Also lower methods from impl blocks
             elif isinstance(decl, HIRImplDecl):
                 for method in decl.methods:
                     if method.body:
                         mir_func = self.lower_function(method)
+                        check_register_aliases(mir_func)
                         mir_functions.append(mir_func)
 
         # Create MIR program (keep HIR declarations for statics, etc.)
@@ -663,10 +666,19 @@ class MIRBuilder:
                 binding_type=stmt.var_type  # Track the type for mode optimization
             )
 
-            # If there's an initializer, load it into hardware register
+            # If there's an initializer, load it into hardware register. The
+            # Move's dest carries the alias (a definition, for
+            # register_alias_check); with no Move, the definition is noted
+            # where it falls.
+            hw_reg = self.current_function.alias_tracker.get_alias(stmt.symbol)
             if stmt.initializer:
                 init_value = self.lower_expression(stmt.initializer)
-                if not (isinstance(init_value, HardwareRegister) and init_value.name == hw_reg.name):
+                if isinstance(init_value, HardwareRegister) and init_value.name == hw_reg.name:
+                    self.current_function.alias_tracker.record_def(
+                        stmt.symbol, self.current_block.block_id,
+                        len(self.current_block.instructions),
+                        value=init_value, source_loc=stmt.source_loc)
+                else:
                     # Check if this is a u16 @ A binding that should keep m16 mode
                     persist_mode = False
                     from r65.compiler.hir.types import strip_newtype

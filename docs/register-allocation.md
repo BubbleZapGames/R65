@@ -297,6 +297,12 @@ fn example() {
 1. **Explicit hardware register aliases** (`let x @ A`)
    - Highest priority
    - Mandatory allocation
+   - Not preserved: the alias *is* the register, so code that overwrites
+     it before the alias's last use - an expression evaluated through A,
+     an array index loaded into X, a pointer access indexing with Y, a
+     call - is a compile error at the overwriting line
+     (`mir/register_alias_check.py`), not a spill. Loop promotion keeps
+     its counters off a register an `@ X`/`@ Y` alias names.
 
 2. **Explicit memory locations** (`#[zeropage(0x20)] static mut VAR`)
    - Fixed location
