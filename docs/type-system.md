@@ -430,6 +430,15 @@ let c: u16 = a + b;  // a is implicitly promoted to u16
 
 This applies to arithmetic, bitwise, and comparison operators.
 
+The same cast is inserted wherever a one-byte value is stored into a two-byte
+place: an assignment, a `let`, a `return`, a struct-literal field, an array-literal
+element, a newtype constructor, and an argument to a register-bound (`@ A`/`@ X`/`@ Y`)
+parameter. A `u8` zero-extends and an `i8` sign-extends, exactly as `as` would.
+Stack and variable-bound arguments, and moves into X/Y, are extended by the code
+generator instead. A bare register read (`A`) is not cast: it is the hardware value,
+which is what lets the implicit `A` return of a `-> u16` function carry a 16-bit
+result its `asm!` left there.
+
 ### Register Alias Type Checking
 
 **Rule**: Alias type must match current register type (determined by function's mode)

@@ -29,7 +29,7 @@ from r65.compiler.typeck.processor_mode import ProcessorMode, ModeState, XModeSt
 from r65.compiler.typeck.mode_tracker import ModeTracker
 from r65.compiler.typeck.cfg_builder import CFGBuilder
 from r65.compiler.typeck.type_utils import (
-    TypeUtils, soa_static_of, value_fits_type)
+    TypeUtils, soa_static_of, value_fits_type, widen_implicitly)
 from r65.compiler.typeck.operator_validator import OperatorValidator
 from r65.compiler.typeck.preservation_checker import PreservationChecker
 from r65.compiler.typeck.register_capabilities import (
@@ -1017,6 +1017,7 @@ class TypeChecker:
             if want is None or isinstance(actual, NeverTypeInfo):
                 continue
             if TypeUtils.assignable(actual, want):
+                stmt.values[i] = widen_implicitly(val, actual, want)
                 continue
 
             where = f" (value {i + 1})" if len(expected) > 1 else ""
@@ -1158,6 +1159,7 @@ class TypeChecker:
                     var_type, init_type, stmt.initializer,
                     "let binding", stmt.source_loc, use_compatible=True
                 )
+                stmt.initializer = widen_implicitly(stmt.initializer, init_type, var_type)
 
         # Aggregates are not copied by a bare `let x = <place>`. Only a fresh
         # literal or an explicit `.clone()` may initialize an aggregate local;
@@ -1424,10 +1426,13 @@ class TypeChecker:
             if expected_elem_type is not None:
                 self._check_array_element(1, expr.elements[0], first_type,
                                           final_elem_type)
+                expr.elements[0] = widen_implicitly(expr.elements[0], first_type,
+                                                    final_elem_type)
 
             for i, elem in enumerate(expr.elements[1:], 2):
                 elem_type = self.check_expression(elem, final_elem_type)
                 self._check_array_element(i, elem, elem_type, final_elem_type)
+                expr.elements[i - 1] = widen_implicitly(elem, elem_type, final_elem_type)
             array_type = ArrayTypeInfo(element_type=final_elem_type, size=len(expr.elements))
             expr.expr_type = array_type
             return array_type
@@ -1961,6 +1966,7 @@ class TypeChecker:
                      f"(value as {payload}), or cast the whole value "
                      f"(value as {target_type}) to truncate"
             )
+        expr.expr = widen_implicitly(expr.expr, source_type, payload)
 
         expr.expr_type = target_type
         return target_type
@@ -2378,6 +2384,10 @@ class TypeChecker:
             target_type, value_type, expr.value,
             "assignment", expr.source_loc, use_compatible=True
         )
+        # A move into X/Y already zero-extends a one-byte source in codegen,
+        # without the cast's round trip through memory.
+        if target_register not in ('X', 'Y'):
+            expr.value = widen_implicitly(expr.value, value_type, target_type)
 
         expr.expr_type = target_type
         return target_type

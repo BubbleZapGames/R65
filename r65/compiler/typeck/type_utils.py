@@ -94,6 +94,39 @@ def soa_static_of_index(expr) -> Optional[object]:
     return soa_static_of(expr.array)
 
 
+def widen_implicitly(expr, src_type, dst_type):
+    """*expr*, converted when a one-byte value is stored into a two-byte place.
+
+    `types_compatible` lets any integer flow into any other, but a u8 loaded in
+    m8 and stored after `REP #$20` carries whatever B held as its high byte. So
+    every assignment-shaped site wraps the value in the same `HIRTypeCast` an
+    explicit `as` builds: u8 zero-extends, i8 sign-extends. A literal is only
+    retyped. Anything else comes back unchanged.
+
+    A bare register read is left alone: `A` is typed u8 by default, but it is
+    the hardware value, and the implicit `A` return of a `-> u16` function
+    whose `asm!` left a 16-bit result relies on all of it reaching the caller.
+    """
+    from r65.compiler.hir import HIRTypeCast, HIRIntegerLiteral, HIRRegister
+
+    if isinstance(expr, HIRRegister):
+        return expr
+    src = strip_newtype(src_type)
+    dst = strip_newtype(dst_type)
+    if isinstance(src, EnumTypeInfo):
+        narrow = src.size_bytes == 1
+    else:
+        narrow = isinstance(src, BasicTypeInfo) and src.name in ('u8', 'i8')
+    if not (narrow and isinstance(dst, BasicTypeInfo) and dst.name in ('u16', 'i16')):
+        return expr
+    if isinstance(expr, HIRIntegerLiteral):
+        expr.expr_type = dst
+        return expr
+    cast = HIRTypeCast(expr=expr, target_type=dst, source_loc=getattr(expr, 'source_loc', None))
+    cast.expr_type = dst
+    return cast
+
+
 def get_type_range(type_name: str) -> Optional[Tuple[int, int]]:
     """Get the valid (min, max) range for an integer type, or None if unknown."""
     return TYPE_RANGES.get(type_name)

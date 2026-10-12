@@ -104,8 +104,7 @@ its struct literal), and an immutable static must have one — it is then one RO
 constant table indexed by a tag. An element has no contiguous base, so
 `&arr[i]`, locals and parameters of the type, whole-element copies, `impl
 Clone`, and `*dyn` over an element are rejected. Static-dispatch trait
-impls work. Index a pool with a `u16` — a `u8` index needs an explicit
-`as u16` until implicit widening is fixed.
+impls work.
 
 *(See [docs/soa.md](docs/soa.md) for the complete documentation)*
 

@@ -602,14 +602,6 @@ Consequences, in order of importance:
   with an undefined-symbol error. Name the field array instead.
 - **`size_of(Enemy)`** still returns the packed AoS sum. That number is no
   longer a stride, and using it as one is a bug.
-- **A `u8` index is not widened on a real call.** `P[i].m()` with `i: u8`
-  reaches the 16-bit X without a zero-extension, so X's high byte is
-  whatever `B` held. This is not specific to `#[soa]`: implicit `u8` ->
-  `u16` widening is only performed on the stack-argument path, so a plain
-  `o = i` (`o: u16`, `i: u8`) writes a stale high byte too. Until that is
-  fixed, **write `P[i as u16].m()`** — an explicit cast always widens
-  correctly. Pinned as a strict xfail in
-  `r65/tests/compiler/codegen/test_soa_codegen.py`.
 - **`*dyn Trait` over an SoA element is rejected.** The intended design is
   a packed `u16` handle (high byte TypeId, low byte index) plus a `TAX`
   trampoline per implementor, since `JMP (table,X)` needs X for the table

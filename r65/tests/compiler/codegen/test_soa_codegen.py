@@ -8,8 +8,6 @@ the index-`self` method body that motivates putting `self` in X.
 See docs/soa.md.
 """
 
-import pytest
-
 from r65.compiler.main import compile_string
 
 
@@ -110,14 +108,6 @@ class TestReceiverIndexWidening:
     BODY = ("self.a = t; self.b = t ^ 0x5A; self.c = t + 3; "
             "self.d = t | 0x10; t = t ^ 0x33; asm!(\"NOP\");")
 
-    @pytest.mark.xfail(
-        reason="implicit u8->u16 widening is not performed anywhere except the "
-               "stack-push path: `o = i` (u16 = u8) and any implicit narrow "
-               "argument to an @X/@Y param both leave the stale B register as "
-               "the high byte. Pre-existing and general — not specific to "
-               "#[soa]. Confirmed on the emulator: `B = 0x77; o = i;` writes "
-               "0x7705.",
-        strict=True)
     def test_u8_index_is_zero_extended_on_a_real_call(self):
         asm = asm_for(f'''
             #[soa] struct E {{ a: u8, b: u8, c: u8, d: u8 }}

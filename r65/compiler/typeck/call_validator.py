@@ -19,7 +19,7 @@ from r65.compiler.hir.types import (
     NewtypeTypeInfo, EnumTypeInfo,
 )
 from r65.compiler.typeck.errors import TypeCheckError
-from r65.compiler.typeck.type_utils import TypeUtils
+from r65.compiler.typeck.type_utils import TypeUtils, widen_implicitly
 from r65.compiler.typeck.processor_mode import ProcessorMode
 
 
@@ -83,6 +83,10 @@ class CallValidator:
                     source_loc=arg.source_loc if hasattr(arg, 'source_loc') else source_loc,
                     hint=hint
                 )
+            # A stack or variable-bound parameter is zero-extended by the
+            # call's codegen; a register one is not, so it takes the cast.
+            if not is_indirect and isinstance(param.binding, RegisterBinding):
+                args[i] = widen_implicitly(arg, arg_type, param_type)
 
             # Guard: passing far pointer to near pointer parameter silently drops
             # the bank byte. Require an explicit `as *T` cast.
@@ -459,6 +463,7 @@ class CallValidator:
                 f"self argument has wrong type: expected {self_param.param_type}, found {self_arg.expr_type}",
                 source_loc=expr.source_loc
             )
+        self_arg = widen_implicitly(self_arg, self_arg.expr_type, self_param.param_type)
 
         # Type check remaining arguments
         self._validate_arguments(expr.args, func_decl.parameters[1:], method_name, expr.source_loc)

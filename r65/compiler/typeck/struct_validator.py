@@ -9,7 +9,7 @@ from typing import Callable
 from r65.compiler.hir import HIRStructLiteralExpr, HIRStructDecl, SymbolKind, StructTypeInfo
 from r65.compiler.hir.types import TypeInfo
 from r65.compiler.typeck.errors import TypeCheckError
-from r65.compiler.typeck.type_utils import TypeUtils
+from r65.compiler.typeck.type_utils import TypeUtils, widen_implicitly
 
 
 class StructValidator:
@@ -99,6 +99,7 @@ class StructValidator:
                 expected_type, actual_type, field_init.value,
                 f"field '{field_init.name}'", expr.source_loc, use_compatible=True
             )
+            field_init.value = widen_implicitly(field_init.value, actual_type, expected_type)
 
         # A union literal names exactly one field — the other fields alias the same
         # bytes, so initializing two of them would be contradictory. A struct literal
