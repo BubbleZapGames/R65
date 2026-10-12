@@ -7,6 +7,7 @@ Uses a two-pass algorithm:
 2. Second pass: Build HIR nodes with resolved references
 """
 
+import dataclasses
 import copy
 import re
 from enum import Enum
@@ -4026,26 +4027,34 @@ class HIRBuilder:
             body_statements.append(self._build_statement(stmt))
 
         # Create increment: i = i + 1;
-        increment_expr = hir.HIRBinaryOp(
-            op='+',
-            left=hir.HIRIdentifier(
-                name=for_stmt.variable,
-                symbol=loop_var_symbol,
+        def increment_stmt():
+            return hir.HIRAssignment(
+                target=hir.HIRIdentifier(
+                    name=for_stmt.variable,
+                    symbol=loop_var_symbol,
+                    source_loc=src_loc
+                ),
+                value=hir.HIRBinaryOp(
+                    op='+',
+                    left=hir.HIRIdentifier(
+                        name=for_stmt.variable,
+                        symbol=loop_var_symbol,
+                        source_loc=src_loc
+                    ),
+                    right=hir.HIRIntegerLiteral(value=1, source_loc=src_loc),
+                    source_loc=src_loc
+                ),
                 source_loc=src_loc
-            ),
-            right=hir.HIRIntegerLiteral(value=1, source_loc=src_loc),
-            source_loc=src_loc
-        )
-        increment_stmt = hir.HIRAssignment(
-            target=hir.HIRIdentifier(
-                name=for_stmt.variable,
-                symbol=loop_var_symbol,
-                source_loc=src_loc
-            ),
-            value=increment_expr,
-            source_loc=src_loc
-        )
-        body_statements.append(increment_stmt)
+            )
+
+        # The increment ends the body, so a `continue` - which jumps to the
+        # loop's condition - would skip it and never advance the counter.
+        # Each one that targets this loop increments first.
+        body_statements = [
+            self._increment_before_continue(stmt, for_stmt.label, increment_stmt, False)
+            for stmt in body_statements
+        ]
+        body_statements.append(increment_stmt())
 
         # Create while body block
         while_body = hir.HIRBlock(
@@ -4073,6 +4082,36 @@ class HIRBuilder:
             statements=[let_stmt, while_stmt],
             source_loc=src_loc
         )
+
+    def _increment_before_continue(self, node, label, increment_stmt, inner: bool):
+        """Return *node* with every `continue` that targets the `for` loop being
+        built replaced by `{ i = i + 1; continue; }`.
+
+        An unlabeled `continue` targets it unless it sits in a nested loop
+        (*inner*); a labeled one targets it by its label from any depth. A
+        nested `for` was built first, so its own continues are already done.
+        Walks HIR statements and expressions by their fields, not into
+        declarations (a call's callee) or symbols.
+        """
+        if isinstance(node, hir.HIRContinueStmt):
+            if (node.label is None and not inner) or (node.label is not None and node.label == label):
+                return hir.HIRBlock(statements=[increment_stmt(), node], source_loc=node.source_loc)
+            return node
+        if not isinstance(node, (hir.HIRStatement, hir.HIRExpression, hir.HIRMatchArm)):
+            return node
+        if isinstance(node, (hir.HIRWhileStmt, hir.HIRLoopExpression)):
+            inner = True
+        for f in dataclasses.fields(node):
+            value = getattr(node, f.name)
+            if isinstance(value, list):
+                new = [self._increment_before_continue(v, label, increment_stmt, inner) for v in value]
+                if any(a is not b for a, b in zip(new, value)):
+                    setattr(node, f.name, new)
+            elif isinstance(value, (hir.HIRStatement, hir.HIRExpression, hir.HIRMatchArm)):
+                new = self._increment_before_continue(value, label, increment_stmt, inner)
+                if new is not value:
+                    setattr(node, f.name, new)
+        return node
 
     def _infer_for_loop_type(self, start: ast.Expression, end: ast.Expression, src_loc, inclusive: bool = False) -> TypeInfo:
         """Infer the appropriate type for a for loop variable based on range bounds.

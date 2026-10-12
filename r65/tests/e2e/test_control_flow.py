@@ -400,6 +400,93 @@ class TestForLoops:
         assert result.success, f"Failures: {result.failures}"
 
 
+class TestForLoopContinue:
+    """`continue` in a `for` loop. The loop desugars to a `while` with the
+    increment as the body's last statement, and `continue` jumps to the
+    condition - so it used to skip the increment and spin on the same element
+    forever. Each continue that targets the loop now increments first."""
+
+    def test_continue_advances_the_counter(self, e2e):
+        result = e2e.run('''
+            #[zeropage(0x10)]
+            static mut COUNT: u8;
+            #[zeropage(0x11)]
+            static mut KIND: [u8; 6];
+
+            #[entry]
+            fn main() {
+                KIND[0] = 1; KIND[1] = 0; KIND[2] = 1;
+                KIND[3] = 0; KIND[4] = 0; KIND[5] = 1;
+                COUNT = 0;
+                for i in 0..6 {
+                    if KIND[i] == 0 { continue; }
+                    COUNT = COUNT + 1;
+                }
+            }
+        ''', ExpectedState(memory={0x7E0010: 3}))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_continue_from_a_match_arm(self, e2e):
+        result = e2e.run('''
+            #[zeropage(0x10)]
+            static mut COUNT: u8;
+            #[zeropage(0x11)]
+            static mut KIND: [u8; 4];
+
+            #[entry]
+            fn main() {
+                KIND[0] = 0; KIND[1] = 2; KIND[2] = 0; KIND[3] = 2;
+                COUNT = 0;
+                for i in 0..4 {
+                    match KIND[i] {
+                        0 => continue,
+                        _ => {}
+                    };
+                    COUNT = COUNT + 1;
+                }
+            }
+        ''', ExpectedState(memory={0x7E0010: 2}))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_labeled_continue_advances_the_outer_counter(self, e2e):
+        """`continue 'outer` from the inner loop increments the outer
+        counter; the inner one restarts from 0."""
+        result = e2e.run('''
+            #[zeropage(0x10)]
+            static mut COUNT: u8;
+
+            #[entry]
+            fn main() {
+                COUNT = 0;
+                'outer: for i in 0..3 {
+                    for j in 0..3 {
+                        if j == 1 { continue 'outer; }
+                        COUNT = COUNT + 1;
+                    }
+                }
+            }
+        ''', ExpectedState(memory={0x7E0010: 3}))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_continue_in_an_inner_loop_leaves_the_outer_alone(self, e2e):
+        result = e2e.run('''
+            #[zeropage(0x10)]
+            static mut COUNT: u8;
+
+            #[entry]
+            fn main() {
+                COUNT = 0;
+                for i in 0..3 {
+                    for j in 0..4 {
+                        if j == 1 { continue; }
+                        COUNT = COUNT + 1;
+                    }
+                }
+            }
+        ''', ExpectedState(memory={0x7E0010: 9}))
+        assert result.success, f"Failures: {result.failures}"
+
+
 class TestInclusiveForLoops:
     """Test inclusive for loop (..) compilation and runtime."""
 
