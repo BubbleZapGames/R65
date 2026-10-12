@@ -165,6 +165,21 @@ The current implementation uses the Strategy Selection Algorithm above:
 
 The shift-and-add implementation is in `r65/compiler/mir/lowerers/multiply.py`, which is shared between expression and assignment lowerers.
 
+## Multi-Level Indexing
+
+An index into an element reached by another index - `T[i][j]`,
+`ROWS[i].name[j]`, an `#[soa]` field `POOL[i].arr[j]` - is one `abs,X` access.
+`resolve_array_base_memloc` returns the static base plus a list of
+`(index, stride)` terms for the inner indices; `multi_index_memloc` scales each
+variable index by its stride, sums them into X, and folds every constant index
+(and any field offset) into the address. An `#[soa]` field is rebased onto its
+plane on the way, so its term takes the plane's padded stride.
+
+Two variable indices cost one extra `CLC`/`ADC` over a single one. X reuse
+across consecutive accesses (`x_index_reuse_key`) is off when more than the
+outermost index is involved, since X holds a sum. An element reached through
+a pointer index (`p[i].name[j]`) is not supported.
+
 ## Code Locations
 
 - **Shared multiplication helpers:** `r65/compiler/mir/lowerers/multiply.py`

@@ -409,13 +409,21 @@ class AssignmentLowerer:
 
         # Resolve the array base — a bare static array or an array that is a
         # field of a statically-located struct (STRUCT.array_field[i] = x).
-        base_memloc, reuse_base_key = self.builder.resolve_array_base_memloc(array_index.array)
-        element_size = self.builder.plane_stride(getattr(base_memloc, 'symbol', None),
-                                                 element_size)
+        base_memloc, reuse_base_key, terms = self.builder.resolve_array_base_memloc(
+            array_index.array)
 
         # Lower index expression for array indexing
         index_operand = self.builder.lower_expression(array_index.index)
         index_type = array_index.index.expr_type  # Type of the index (u8 or u16)
+
+        if terms:
+            # `T[i][j] = v`: more than one index, summed into X.
+            elem_memloc = self.builder.multi_index_memloc(
+                base_memloc, terms, array_index.index, index_operand, element_size)
+            self.emit(Store(source=value, dest=elem_memloc, type_info=element_type))
+            return value
+        element_size = self.builder.plane_stride(getattr(base_memloc, 'symbol', None),
+                                                 element_size)
 
         # Calculate offset and create memory location
         if isinstance(index_operand, Immediate):

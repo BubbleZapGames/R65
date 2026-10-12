@@ -39,8 +39,7 @@ SOA_POOL = '''
 '''
 
 # The planes, in field order from the pool's address: `a`, then `arr` and
-# `p` each padded to a 4-byte stride, then `b`. (`POOL[i].arr[j]` is a 2-D
-# index, which the compiler does not take yet, so that plane is read whole.)
+# `p` each padded to a 4-byte stride, then `b`.
 SOA_PLANES = [1, 2,
               4, 5, 6, 0, 10, 11, 12, 0,
               7, 0x09, 0x08, 0, 13, 0x0F, 0x0E, 0,

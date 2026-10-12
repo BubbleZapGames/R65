@@ -490,10 +490,16 @@ class ExpressionLowerer:
 
         # Regular array indexing — resolve the array base (a bare static array
         # or an array that is a field of a statically-located struct).
-        base_memloc, reuse_base_key = self.builder.resolve_array_base_memloc(expr.array)
+        base_memloc, reuse_base_key, terms = self.builder.resolve_array_base_memloc(expr.array)
+        result = self.ctx.alloc_vreg(element_type, "array_elem")
+        if terms:
+            # `T[i][j]`: more than one index, summed into X.
+            elem_memloc = self.builder.multi_index_memloc(
+                base_memloc, terms, expr.index, index_operand, element_size)
+            self.emit(Load(dest=result, source=elem_memloc, type_info=element_type))
+            return result
         element_size = self.builder.plane_stride(getattr(base_memloc, 'symbol', None),
                                                  element_size)
-        result = self.ctx.alloc_vreg(element_type, "array_elem")
 
         if isinstance(index_operand, Immediate):
             return self._lower_constant_index(
@@ -922,6 +928,13 @@ class ExpressionLowerer:
                 self.builder._get_type_size(array_type.pointee_type), "ptr"
             )
 
+        # &T[i][j], &ROWS[i].name[j]: an element below the outermost index.
+        cursor = array_expr
+        while isinstance(cursor, HIRFieldAccess) and not getattr(cursor, 'auto_deref', False):
+            cursor = cursor.base
+        if isinstance(cursor, HIRArrayIndex):
+            return self._lower_addressof_multi_index(expr, element_size)
+
         # Cases 1 and 2 share the symbolic-base path. For a struct-field array,
         # walk the HIRFieldAccess chain summing field offsets so we end at the
         # bare identifier (the static symbol) plus a single folded offset. We
@@ -1016,6 +1029,38 @@ class ExpressionLowerer:
         # bogus pointer (e.g. for ROM arrays in banks other than 0).
         result.symbol = array_symbol
 
+        return result
+
+    def _lower_addressof_multi_index(self, expr: HIRAddressOf, element_size: int) -> VirtualRegister:
+        """Lower `&T[i][j]` / `&ROWS[i].name[j]`: the symbol, plus the folded
+        constant offset, plus the sum of every variable index scaled by its
+        stride (an `#[soa]` field resolves to its plane)."""
+        array_index = expr.operand
+        base_memloc, _key, terms = self.builder.resolve_array_base_memloc(array_index.array)
+        symbol = base_memloc.symbol
+        index_operand = self.builder.lower_expression(array_index.index)
+        const, total = self.builder.sum_index_terms(
+            terms, array_index.index, index_operand, element_size)
+
+        # resolve_array_base_memloc folds a known address into `address` and an
+        # unknown one into `offset`; either way, express it against the symbol.
+        if base_memloc.address is not None:
+            offset = base_memloc.address - self.builder.get_memory_location(symbol).address
+        else:
+            offset = base_memloc.offset
+        offset += const
+        addr_immediate = Immediate(offset)
+        addr_immediate.symbol = symbol
+        addr_immediate.symbol_offset = offset
+
+        result = self.ctx.alloc_vreg(expr.expr_type, f"addr_of_{symbol.name}_elem")
+        if total is None:
+            self.emit(Move(dest=result, source=addr_immediate, type_info=expr.expr_type))
+            return result
+        base_addr = self.ctx.alloc_vreg(expr.expr_type, f"base_addr_{symbol.name}")
+        self.emit(Move(dest=base_addr, source=addr_immediate, type_info=expr.expr_type))
+        self.emit(BinaryOp(dest=result, op='+', left=base_addr, right=total,
+                           type_info=expr.expr_type))
         return result
 
     def _lower_addressof_array_index_via_pointer(

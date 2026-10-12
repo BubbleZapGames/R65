@@ -394,9 +394,9 @@ literal there is rejected, the declared type not being an array.
 
 A field may itself be an aggregate - an array, a struct, a byte string -
 and its plane is filled from the literal's nested values, padded to the
-plane's stride. Such a plane is initialized but cannot yet be read by a
-nested index: `POOL[i].arr[j]` is a 2-D index, which the compiler does not
-take (`Array base must be a static array or struct field`).
+plane's stride. An array field is indexed as usual - `POOL[i].arr[j]`,
+or `self.arr[j]` in a method - and X takes `i * stride + j`, the stride
+being the plane's (padded) one.
 
 A tagged enum static (docs/enums.md) has no literal form and still takes
 no initializer.

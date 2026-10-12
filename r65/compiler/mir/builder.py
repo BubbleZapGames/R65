@@ -2005,7 +2005,7 @@ class MIRBuilder:
             )
 
     def resolve_array_base_memloc(self, array_expr):
-        """Resolve an array lvalue expression to (base_memloc, reuse_base_key).
+        """Resolve an array lvalue expression to (base_memloc, reuse_base_key, terms).
 
         Supports:
           - HIRIdentifier: a bare static array symbol.
@@ -2013,6 +2013,15 @@ class MIRBuilder:
             aggregate, e.g. STRUCT.array_field (including nested
             STRUCT.inner.array_field). The field offset is folded into the
             base memory location.
+          - HIRArrayIndex: an array that is itself an element, e.g. the
+            `T[i]` of `T[i][j]` or the `ROWS[i]` of `ROWS[i].name[j]`. Its
+            index cannot ride on a MemoryLocation, so it is returned as a
+            `(index_hir, stride)` term; the caller adds every term's scaled
+            index into X (see multi_index_memloc). An `#[soa]` field reached
+            this way (`POOL[i].arr`) is rebased onto its plane, and the term
+            takes the plane's stride.
+
+        terms is empty for the first two shapes, whose code is unchanged.
 
         reuse_base_key is a stable, hashable identity for the array base — the
         "array" half of an x-index reuse key (see x_index_reuse_key). It is
@@ -2028,7 +2037,7 @@ class MIRBuilder:
         if isinstance(array_expr, HIRIdentifier):
             sym = array_expr.symbol
             # id(sym) preserves the exact pre-existing top-level key.
-            return self.get_memory_location(sym), id(sym)
+            return self.get_memory_location(sym), id(sym), []
 
         if isinstance(array_expr, HIRFieldAccess) and not getattr(array_expr, 'auto_deref', False):
             field_offset = array_expr.field_offset
@@ -2037,15 +2046,102 @@ class MIRBuilder:
                     f"Field offset not computed for array field: {array_expr.field_name}",
                     source_loc=getattr(array_expr, 'source_loc', None)
                 )
-            base_memloc, base_key = self.resolve_array_base_memloc(array_expr.base)
+            base_memloc, base_key, terms = self.resolve_array_base_memloc(array_expr.base)
+            if isinstance(array_expr.base, HIRArrayIndex):
+                soa = self._soa_plane_for(base_memloc, field_offset)
+                if soa is not None:
+                    base_memloc, field_offset, stride, _ = self._soa_rebase(
+                        soa, base_memloc, field_offset, None)
+                    terms = terms[:-1] + [(terms[-1][0], stride)]
             offset_memloc = self._create_offset_memloc(
                 base_memloc, field_offset, base_memloc.symbol)
             reuse_base_key = ('field', base_key, field_offset) if base_key is not None else None
-            return offset_memloc, reuse_base_key
+            return offset_memloc, reuse_base_key, terms
+
+        if isinstance(array_expr, HIRArrayIndex):
+            from r65.compiler.hir.types import PointerTypeInfo
+            if (isinstance(array_expr.array.expr_type, PointerTypeInfo)
+                    or self.try_pointer_deref_array_base(array_expr.array) is not None):
+                raise MIRLoweringError(
+                    "indexing into an element reached through a pointer is not supported",
+                    source_loc=getattr(array_expr, 'source_loc', None)
+                )
+            base_memloc, _key, terms = self.resolve_array_base_memloc(array_expr.array)
+            stride = self._get_type_size(array_expr.expr_type)
+            if isinstance(array_expr.array, HIRIdentifier):
+                stride = self.plane_stride(array_expr.array.symbol, stride)
+            # X will hold a sum, which the single-index reuse cache cannot key.
+            return base_memloc, None, terms + [(array_expr.index, stride)]
 
         raise MIRLoweringError(
             f"Array base must be a static array or struct field, got: {type(array_expr)}",
             source_loc=getattr(array_expr, 'source_loc', None)
+        )
+
+    def sum_index_terms(self, terms, last_index, last_operand, last_stride):
+        """`Σ index*stride` over an array base's runtime terms (from
+        resolve_array_base_memloc) plus the outermost index *last_index*,
+        already lowered into *last_operand*.
+
+        Returns `(const, total)`: the constant indices folded to a byte count,
+        and a u16 operand holding the sum of the variable ones (None if every
+        index is constant).
+        """
+        from r65.compiler.mir.lowerers.multiply import compute_scaled_index
+        from r65.compiler.mir.nodes import BinaryOp, HardwareRegister, Immediate, Move
+        from r65.compiler.hir.types import BasicTypeInfo
+
+        u16 = BasicTypeInfo('u16')
+        const = 0
+        total = None
+        operands = [(last_index, last_operand, last_stride)] + [
+            (index, self.lower_expression(index), stride) for index, stride in terms]
+        for index, operand, stride in operands:
+            if isinstance(operand, Immediate):
+                const += operand.value * stride
+                continue
+            if isinstance(operand, HardwareRegister):
+                # Lowering the next index may go through this register.
+                held = self.ctx.alloc_vreg(index.expr_type, 'idx')
+                self.emit(Move(dest=held, source=operand, type_info=index.expr_type))
+                operand = held
+            scaled = compute_scaled_index(operand, stride, index.expr_type,
+                                          self.ctx, self.emit)
+            if total is None:
+                total = scaled
+            else:
+                summed = self.ctx.alloc_vreg(u16, 'idx_sum')
+                self.emit(BinaryOp(dest=summed, left=scaled, right=total,
+                                   op='+', type_info=u16))
+                total = summed
+        return const, total
+
+    def multi_index_memloc(self, base_memloc, terms, last_index, last_operand,
+                           last_stride, extra_offset=0):
+        """The MemoryLocation of `base + extra_offset + Σ index*stride`.
+
+        Constant indices fold into the address; the variable ones are summed
+        (sum_index_terms) and moved to X. With no variable index the location
+        is absolute.
+        """
+        from r65.compiler.mir.nodes import HardwareRegister, MemoryLocation, Move
+        from r65.compiler.hir.types import BasicTypeInfo
+
+        const, total = self.sum_index_terms(terms, last_index, last_operand, last_stride)
+        memloc = self._create_offset_memloc(base_memloc, const + extra_offset,
+                                            base_memloc.symbol)
+        if total is None:
+            return memloc
+        self.emit(Move(dest=HardwareRegister('X'), source=total,
+                       type_info=BasicTypeInfo('u16')))
+        self.x_index_cache_set(None)
+        return MemoryLocation(
+            storage_type=memloc.storage_type,
+            address=memloc.address,
+            symbol=memloc.symbol,
+            is_volatile=memloc.is_volatile,
+            index_register='X',
+            offset=memloc.offset,
         )
 
     @staticmethod
@@ -2345,10 +2441,12 @@ class MIRBuilder:
 
         # Static array base — a bare static array or an array field of a
         # statically-located struct (STRUCT.array_field[i].field).
-        base_memloc, reuse_base_key = self.resolve_array_base_memloc(array_index_expr.array)
+        base_memloc, reuse_base_key, terms = self.resolve_array_base_memloc(
+            array_index_expr.array)
         struct_type = array_index_expr.expr_type  # element (struct) type of the array
-        struct_size = self.plane_stride(getattr(base_memloc, 'symbol', None),
-                                        self._get_type_size(struct_type))
+        struct_size = self._get_type_size(struct_type)
+        if not terms:
+            struct_size = self.plane_stride(getattr(base_memloc, 'symbol', None), struct_size)
 
         # #[soa]: redirect to the plane that owns this field, and scale by the
         # field rather than the element. Must run before anything reads
@@ -2361,6 +2459,17 @@ class MIRBuilder:
                 soa, base_memloc, field_offset, reuse_base_key)
 
         index_operand = self.lower_expression(array_index_expr.index)
+
+        if terms:
+            # `T[i][j].field`: more than one index, summed into X.
+            field_memloc = self.multi_index_memloc(
+                base_memloc, terms, array_index_expr.index, index_operand,
+                struct_size, extra_offset=field_offset)
+            if is_load:
+                self.emit(Load(dest=dest, source=field_memloc, type_info=result_type))
+            else:
+                self.emit(Store(source=source, dest=field_memloc, type_info=result_type))
+            return dest if is_load else source
 
         if isinstance(index_operand, Immediate):
             # Constant index: compute the byte offset at compile time.

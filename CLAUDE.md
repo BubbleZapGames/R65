@@ -62,6 +62,8 @@ static mut BUFFER: [u8; 256] = [0; 256];
 static mut MESSAGE: [u8; 16] = "Hello, World!";  // String literal, zero-padded
 ```
 
+Arrays nest (`[[u8; 3]; 2]`, indexed `T[i][j]`), and an array field of an element indexes the same way (`ROWS[i].name[j]`).
+
 **Rules**: No runtime bounds checking (too expensive). Out-of-bounds is UB. String literals only in static array initializers; extended ASCII allowed, UTF-8 rejected. Add explicit `\0` for null termination.
 
 **Pass-by-reference only**: Arrays cannot be passed by value. Use pointer parameters.
