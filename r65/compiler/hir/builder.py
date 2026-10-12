@@ -1776,6 +1776,17 @@ class HIRBuilder:
         count = decl.var_type.size
         loc = init.source_loc
 
+        # A single instance (`static mut P: One`) is a pool of one, but it was
+        # declared as a struct, so it takes the struct literal.
+        if getattr(decl.symbol, 'soa_single', False):
+            if not isinstance(init, hir.HIRStructLiteralExpr):
+                raise HIRError(
+                    f"#[soa] static '{decl.name}' is a single `{element.name}`, "
+                    f"so it takes a `{element.name} {{ .. }}` literal",
+                    source_loc=loc,
+                )
+            init = hir.HIRArrayLiteralExpr(elements=[init], source_loc=loc)
+
         if not isinstance(init, hir.HIRArrayLiteralExpr):
             raise HIRError(
                 f"#[soa] static '{decl.name}' must be initialized with an "

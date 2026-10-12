@@ -97,8 +97,8 @@ hard-code their plane addresses. A single instance (`static mut PLAYER:
 Player;`) desugars to a one-element array.
 
 **Restrictions**: no `union`, no newtype, no `#[hw]`, no `extern`; an
-initializer must be a full array literal (no fill), and an immutable static
-must have one — it is then one ROM table per field, the shape for a per-kind
+initializer must be a full array literal (no fill; a single instance takes
+its struct literal), and an immutable static must have one — it is then one ROM table per field, the shape for a per-kind
 constant table indexed by a tag. An element has no contiguous base, so
 `&arr[i]`, locals and parameters of the type, whole-element copies, `impl
 Clone`, and `*dyn` over an element are rejected. Static-dispatch trait

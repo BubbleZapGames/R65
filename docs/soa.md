@@ -388,6 +388,16 @@ the columns. Field values are type-checked against their plane's element
 type as usual. A fill `[.. ; N]` is still rejected: a struct fill does not
 parse, and a scalar fill has no per-plane meaning.
 
+A single instance takes its own struct literal - `static mut PLAYER:
+Player = Player { .. };` - which is transposed as a pool of one; an array
+literal there is rejected, the declared type not being an array.
+
+A field may itself be an aggregate - an array, a struct, a byte string -
+and its plane is filled from the literal's nested values, padded to the
+plane's stride. Such a plane is initialized but cannot yet be read by a
+nested index: `POOL[i].arr[j]` is a 2-D index, which the compiler does not
+take (`Array base must be a static array or struct field`).
+
 A tagged enum static (docs/enums.md) has no literal form and still takes
 no initializer.
 
@@ -592,7 +602,6 @@ Consequences, in order of importance:
   with an undefined-symbol error. Name the field array instead.
 - **`size_of(Enemy)`** still returns the packed AoS sum. That number is no
   longer a stride, and using it as one is a bug.
-- **Initializers are rejected** — see above.
 - **A `u8` index is not widened on a real call.** `P[i].m()` with `i: u8`
   reaches the 16-bit X without a zero-extension, so X's high byte is
   whatever `B` held. This is not specific to `#[soa]`: implicit `u8` ->
@@ -629,7 +638,6 @@ Consequences, in order of importance:
 
 | Not yet | |
 |---|---|
-| Initializer transposition | rejected with a diagnostic |
 | `*dyn` over an SoA element | packed handle + trampoline, designed not built |
 
 ### Notes for whoever picks this up

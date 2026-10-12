@@ -114,10 +114,10 @@ class StaticInitLowerer:
 
             # Handle different initializer types
             if isinstance(initializer, HIRArrayFillExpr):
-                # Array fill: use MemoryFill instruction (loop-based)
-                # Note: ROM with fill expression doesn't make sense, but handle it
-                if not is_rom_storage:
-                    self._emit_array_fill_init(static_decl, mem_loc, initializer)
+                # Array fill: a MemoryFill loop for a constant scalar into
+                # RAM; a ROM table otherwise (see _emit_array_fill_init)
+                self._emit_array_fill_init(static_decl, mem_loc, initializer,
+                                           is_rom=is_rom_storage)
 
             elif isinstance(initializer, HIRArrayLiteralExpr):
                 # Array literal: create ROM data, copy to RAM only if not ROM
@@ -185,12 +185,20 @@ class StaticInitLowerer:
         self,
         static_decl: HIRStaticDecl,
         mem_loc: MemoryLocation,
-        fill_expr: HIRArrayFillExpr
+        fill_expr: HIRArrayFillExpr,
+        is_rom: bool = False
     ):
         """
         Emit MemoryFill instruction for array fill expression.
 
         Example: [0; 256] fills 256 elements with 0 using a loop.
+
+        A fill is a loop only for a constant scalar into RAM. A ROM static has
+        no loop to run - it needs its bytes in a table, or a read of it lands
+        wherever the RAM allocator would have put it - and an aggregate value
+        (`[[7; 2]; 3]`) is no single byte to store, so both become the same
+        table an array literal would, expanded element by element. (Both used
+        to be dropped: no data, and a fill value of 0.)
         """
         from r65.compiler.hir.types import ArrayTypeInfo
 
@@ -204,8 +212,14 @@ class StaticInitLowerer:
         # Get fill value - must be constant for efficient code gen
         # Extract constant value without emitting instructions
         fill_value = self._extract_constant_value(fill_expr.fill_value)
-        if fill_value is None:
-            fill_value = 0  # Fallback
+        if fill_value is None or is_rom:
+            expanded = HIRArrayLiteralExpr(
+                elements=[fill_expr.fill_value] * fill_expr.count,
+                source_loc=fill_expr.source_loc,
+            )
+            expanded.expr_type = getattr(fill_expr, 'expr_type', None)
+            self._emit_array_literal_init(static_decl, mem_loc, expanded, skip_copy=is_rom)
+            return
 
         self.emit(MemoryFill(
             dest=mem_loc,
@@ -268,10 +282,16 @@ class StaticInitLowerer:
         """
         Lower one static-initializer element to `size` little-endian bytes.
 
-        Accepts compile-time integers and `&IMMUTABLE_STATIC` address-of
-        expressions. Anything else is a hard error — silently substituting
-        zero here produces a ROM that links cleanly and misbehaves at runtime.
+        Accepts compile-time integers, `&IMMUTABLE_STATIC` address-of
+        expressions, and the aggregates built from them at any depth: a struct
+        literal, an array literal or fill, a string literal for a byte array.
+        Anything else is a hard error — silently substituting zero here
+        produces a ROM that links cleanly and misbehaves at runtime.
         """
+        aggregate = self._extract_aggregate_bytes(expr, size, what)
+        if aggregate is not None:
+            return aggregate
+
         value = self._extract_constant_value(expr)
         if value is not None:
             return [(value >> (i * 8)) & 0xFF for i in range(size)]
@@ -285,6 +305,49 @@ class StaticInitLowerer:
             f"immutable static",
             source_loc=self.builder._current_source_loc
         )
+
+    def _extract_aggregate_bytes(
+        self, expr: HIRExpression, size: int, what: str
+    ) -> Optional[List]:
+        """The `size` bytes of an aggregate initializer, or None if *expr* is
+        not one. A struct literal or string shorter than its slot (a union, a
+        short string) is zero-padded; anything that would overrun it, or an
+        array whose elements do not divide it, is an error rather than a
+        shifted table."""
+        if isinstance(expr, HIRStructLiteralExpr):
+            data = self._extract_struct_literal_bytes(expr)
+        elif isinstance(expr, HIRStringLiteral):
+            data = list(expr.processed_bytes)
+        elif isinstance(expr, (HIRArrayLiteralExpr, HIRArrayFillExpr)):
+            if isinstance(expr, HIRArrayFillExpr):
+                elements = [expr.fill_value] * expr.count
+            else:
+                elements = expr.elements
+            if not elements:
+                return [0] * size
+            from r65.compiler.hir.types import ArrayTypeInfo
+            expr_type = getattr(expr, 'expr_type', None)
+            if isinstance(expr_type, ArrayTypeInfo):
+                element_size = self.builder._get_type_size(expr_type.element_type)
+            else:
+                element_size = size // len(elements)
+            if element_size * len(elements) != size:
+                raise MIRLoweringError(
+                    f"{what} has {len(elements)} element(s), which do not fill "
+                    f"its {size} bytes",
+                    source_loc=getattr(expr, 'source_loc', None) or self.builder._current_source_loc
+                )
+            data = []
+            for elem in elements:
+                data.extend(self._extract_initializer_bytes(elem, element_size, what))
+        else:
+            return None
+        if len(data) > size:
+            raise MIRLoweringError(
+                f"{what} is {len(data)} bytes, more than its {size}",
+                source_loc=getattr(expr, 'source_loc', None) or self.builder._current_source_loc
+            )
+        return data + [0] * (size - len(data))
 
     def _extract_constant_value(self, expr: HIRExpression) -> Optional[int]:
         """
@@ -326,18 +389,15 @@ class StaticInitLowerer:
         stride = getattr(static_decl, 'soa_stride', None) or element_size
         padding = [0] * (stride - element_size)
 
-        # Extract constant values from all elements without emitting instructions
+        # Extract constant values from all elements without emitting
+        # instructions: scalars, and aggregates (struct, array, string) at
+        # any depth.
         data_bytes = []
         for elem in literal_expr.elements:
-            # Check if element is a struct literal
-            if isinstance(elem, HIRStructLiteralExpr):
-                struct_bytes = self._extract_struct_literal_bytes(elem)
-                data_bytes.extend(struct_bytes)
-            else:
-                data_bytes.extend(self._extract_initializer_bytes(
-                    elem, element_size,
-                    f"element of static array `{static_decl.name}`"
-                ))
+            data_bytes.extend(self._extract_initializer_bytes(
+                elem, element_size,
+                f"element of static array `{static_decl.name}`"
+            ))
             data_bytes.extend(padding)
 
         # Create ROM data reference using variable name
