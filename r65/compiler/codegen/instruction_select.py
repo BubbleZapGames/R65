@@ -2071,13 +2071,18 @@ class InstructionSelector:
 
         addr_lo = base_addr & WORD_MASK
 
-        # Block move: copy from addr to addr+1 for remaining bytes
+        # Block move: copy from addr to addr+1 for remaining bytes. MVN leaves
+        # DBR at the destination bank - $7E for WRAM, after which every
+        # absolute write to a hardware register lands in WRAM - so DBR is
+        # saved around it.
+        self.emitter.emit_instr(Opcode.PHB)
         self._emit_immediate(Opcode.REP_IMMEDIATE, MX_FLAGS, "16-bit A and index")
         self._emit_immediate(Opcode.LDA_IMMEDIATE, total_bytes - 2)  # MVN copies A+1 bytes
         self._emit_immediate(Opcode.LDX_IMMEDIATE, addr_lo)          # source
         self._emit_immediate(Opcode.LDY_IMMEDIATE, addr_lo + 1)      # dest = source + 1
         self.emitter.emit_instr(Opcode.MVN, BlockMove(bank, bank))
         self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "Restore 8-bit A")
+        self.emitter.emit_instr(Opcode.PLB)
 
     # Threshold in bytes above which zero fills use MVN self-copy
     _MVN_ZERO_FILL_THRESHOLD = 32
@@ -2161,10 +2166,12 @@ class InstructionSelector:
         Used for array literal expressions like [1, 2, 3, 4].
 
         Generated code:
+            PHB                   ; MVN sets DBR to the destination bank
             LDA #count-1          ; A = byte count - 1
             LDX #<source_addr     ; X = source low word
             LDY #<dest_addr       ; Y = dest low word
             MVN src_bank, dst_bank
+            PLB
 
         Note: MVN copies A+1 bytes from src_bank:X to dst_bank:Y.
 
@@ -2178,6 +2185,9 @@ class InstructionSelector:
         count = instr.count
 
         self.emitter.emit_comment(f"Block copy {count} bytes from ROM to RAM")
+
+        # MVN leaves DBR at the destination bank: save it around the move.
+        self.emitter.emit_instr(Opcode.PHB)
 
         # Set up for MVN: A = count - 1, X = source, Y = dest
         # For 16-bit index mode, we need REP #$10 first
@@ -2209,6 +2219,7 @@ class InstructionSelector:
 
         # Restore 8-bit A mode only; X/Y must remain 16-bit (x16 convention)
         self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "Restore 8-bit A")
+        self.emitter.emit_instr(Opcode.PLB)
 
     # Shared with loop-register-promotion (see mir/nodes.py): at/below this size an
     # unrolled LDA/STA copy beats the MVN block-move — fewer instructions and it
