@@ -84,3 +84,19 @@ def is_narrowing_convert(instr) -> bool:
 
     widths = convert_operand_widths(instr)
     return widths == (2, 1)
+
+
+def is_a_resident_convert(instr) -> bool:
+    """True for a TypeConvert whose result may live in A.
+
+    A narrowing convert is a bare `SEP #$20` there, and an unsigned widening
+    is `REP #$20 / AND #$00FF`. A signed widening is not: its sign extension
+    branches and writes the high byte through memory.
+    """
+    from r65.compiler.hir.types import strip_newtype
+
+    if is_narrowing_convert(instr):
+        return True
+    if convert_operand_widths(instr) != (1, 2):
+        return False
+    return not str(strip_newtype(instr.source_type)).startswith('i')

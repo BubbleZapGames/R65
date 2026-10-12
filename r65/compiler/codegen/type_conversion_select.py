@@ -97,6 +97,9 @@ class TypeConversionSelector(BaseSelector):
             dest_loc: Destination location
             source_signed: True if source is signed (requires sign extension)
         """
+        if not source_signed and self._emit_zero_extension_through_a(src_operand, dest_loc):
+            return
+
         # For unsigned zero-extension from memory/stack sources to memory/stack
         # destinations, use m16 AND #$00FF for a compact single-store approach.
         # This avoids mode-switching overhead (SEP/REP) of the byte-by-byte path.
@@ -149,6 +152,51 @@ class TypeConversionSelector(BaseSelector):
         else:
             # Zero extension for u8 -> u16
             self._emit_zero_extension(dest_loc)
+
+    def _emit_zero_extension_through_a(self, src_operand, dest_loc) -> bool:
+        """Zero-extend in m16 when the source or the result lives in A.
+
+        A result in A (`is_a_resident_convert` let it coalesce) is left there
+        in m16 with no store. A source already in A is masked in place and
+        stored with one 16-bit STA. Returns False for every other shape, which
+        the byte-wise path handles.
+        """
+        if isinstance(src_operand, MIRImmediate):
+            src_reg, src_loc = None, None
+        elif isinstance(src_operand, HardwareRegister):
+            src_reg, src_loc = src_operand.name, None
+        else:
+            src_loc = self.parent._get_operand_location(src_operand)
+            src_reg = src_loc.hw_register if src_loc.is_hw() else None
+
+        dest_in_a = dest_loc.is_hw('A')
+        if not dest_in_a and (src_reg != 'A' or dest_loc.is_hw()):
+            return False
+
+        if isinstance(src_operand, MIRImmediate):
+            self.parent._ensure_m16_mode()
+            self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(src_operand.value & 0xFF))
+        else:
+            if src_reg == 'B':
+                self.parent._access_b_value_in_a()
+            elif src_reg is None and src_loc.storage_type == 'hw':
+                # One byte only: a 16-bit read also reads the next I/O port,
+                # and some of those clear a flag when read.
+                self.parent._ensure_m8_mode()
+                self._emit_load_store('LDA', src_loc)
+                src_reg = 'A'
+            self.parent._ensure_m16_mode()
+            if src_reg == 'X':
+                self._emit_instr(Opcode.TXA, comment="Widen X to 16-bit")
+            elif src_reg == 'Y':
+                self._emit_instr(Opcode.TYA, comment="Widen Y to 16-bit")
+            elif src_reg is None:
+                self._emit_load_store('LDA', src_loc)
+            self._emit_instr(Opcode.AND_IMMEDIATE, Immediate(0x00FF),
+                             "Zero-extend u8 to u16")
+        if not dest_in_a:
+            self._emit_load_store('STA', dest_loc)
+        return True
 
     def _emit_sign_extension(self, dest_loc):
         """

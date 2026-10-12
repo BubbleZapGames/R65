@@ -19,9 +19,9 @@ frame and spilled twice:
 Codegen was already ready for it: `_emit_narrowing_conversion` has an
 A-destination path that emits a bare `SEP #$20` for `A = A as u8`.
 
-Widening is deliberately excluded — `_emit_widening_conversion` ends in
-`STA dest_loc` plus extension writes to that location and has no
-A-destination path, so its output must not change.
+An unsigned widening joined later, once `_emit_widening_conversion` had an
+A-destination path (`REP #$20 / AND #$00FF`). A signed one stays excluded:
+its sign extension branches and writes the high byte through memory.
 
 A knock-on effect worth pinning: with the spill gone, `AND #$00FF` and
 `SEP #$20` become adjacent, so the existing
@@ -48,10 +48,12 @@ far fn nocast(v @ A: u16) -> u16 { return v + 1; }
 far fn narrowed(v @ A: u16) -> u8 { return (v + 1) as u8; }
 far fn shifted(v @ A: u16) -> u8 { return ((v + 1) >> 8) as u8; }
 far fn widened(v @ A: u8) -> u16 { return v as u16; }
+far fn signed(v @ A: i8) -> i16 { return v as i16; }
 
 #[entry] fn main() {
     W = nocast(1); R = narrowed(2); R = shifted(3); W = widened(4);
     W = nocast(5); R = narrowed(6); R = shifted(7); W = widened(8);
+    W = signed(9) as u16; W = signed(10) as u16;
 }
 """
 
@@ -85,10 +87,44 @@ def test_unrelated_arithmetic_is_unaffected():
     assert ops == ["REP", "ADC"]
 
 
-def test_widening_still_stores_to_its_destination():
-    """Widening has no A-destination path; it must keep spilling as before."""
+def test_unsigned_widening_is_a_mask_in_a():
+    """`v as u16` with v in A widens in place and returns in A."""
     asm = _func_asm(SOURCE, "widened")
-    assert re.search(r"^\s*STA ", asm, re.M)
+    ops = re.findall(r"^\s*([A-Z]{3})\b", asm, re.M)
+    assert ops == ["REP", "AND"]
+
+
+def test_signed_widening_still_stores_to_its_destination():
+    """Sign extension has no A-destination path; it must keep spilling."""
+    asm = _func_asm(SOURCE, "signed")
+    assert re.search(r"^\s*STA \$[0-9A-F]+,S", asm, re.M)
+
+
+def test_a_computed_u8_widens_into_x_without_a_spill():
+    """`K + 1` into an `@X: u16` parameter, implicit or spelled `as u16`."""
+    asm = compile_string("""
+        #[zeropage(0x10)] static mut K: u8;
+        #[zeropage(0x12)] static mut O: u8;
+        #[inline(never)]
+        fn md(v @ A: u8, d @ X: u16) -> u8 { return v; }
+        #[entry] fn main() { O = md(3, K + 1); O = md(3, (K + 1) as u16); }
+    """, cfg_options=["snes"])
+    main = asm.split("\nmain:", 1)[1].split("__SCMP", 1)[0]
+    ops = re.findall(r"^\s*([A-Z]{3})\b", main, re.M)
+    assert ops.count("TAX") == 2
+    assert "Allocate frame" not in main
+    assert not re.search(r",S", main)
+
+
+def test_a_computed_u8_widens_into_memory_with_one_store():
+    asm = compile_string("""
+        #[zeropage(0x10)] static mut K: u8;
+        #[zeropage(0x12)] static mut W: u16;
+        #[entry] fn main() { W = K + 1; }
+    """, cfg_options=["snes"])
+    main = asm.split("\nmain:", 1)[1].split("__SCMP", 1)[0]
+    assert re.search(r"AND #\$FF.*\n\s*STA \$12\b", main)
+    assert not re.search(r",S", main)
 
 
 def test_source_in_a_with_uncoalesced_destination():
