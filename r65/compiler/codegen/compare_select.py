@@ -486,6 +486,11 @@ class CompareSelector(BaseSelector):
             self._emit_cmp('CMP', right_operand, is_immediate)
             # Note: Don't restore A since this is just a comparison
             # State is now SWAPPED (A=B, B=A)
+        elif reg in ('D', 'S', 'DBR', 'PBR'):
+            # No compare instruction reads these: bring the value into A,
+            # which a comparison may use as scratch, at its own width.
+            self.parent._emit_register_transfer(reg, 'A')
+            self._emit_cmp('CMP', right_operand, is_immediate, a_is_scratch=True)
         else:
             raise InstructionSelectionError(
                 f"Unsupported hardware register for comparison: {reg}", source_loc=self.parent._current_source_loc)

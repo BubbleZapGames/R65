@@ -1694,6 +1694,18 @@ class InstructionSelector:
                 self._emit_implied(Opcode.PHA, "Push A")
                 self._emit_implied(Opcode.PLB, "Pull to DBR")
                 return
+        # D and S are 16-bit: TDC/TCD/TSC/TCS move the whole C accumulator,
+        # so run them in m16 to keep the emitter's view of A in step.
+        # TSX/TXS are direct (x16); D with X/Y goes through A below.
+        if (src_reg, dest_reg) in (('D', 'A'), ('A', 'D'), ('S', 'A'), ('A', 'S')):
+            self._ensure_m16_mode()
+            self._emit_implied({('D', 'A'): Opcode.TDC, ('A', 'D'): Opcode.TCD,
+                                ('S', 'A'): Opcode.TSC, ('A', 'S'): Opcode.TCS
+                                }[(src_reg, dest_reg)])
+            return
+        if (src_reg, dest_reg) in (('S', 'X'), ('X', 'S')):
+            self._emit_implied(Opcode.TSX if src_reg == 'S' else Opcode.TXS)
+            return
         # Special handling for B register
         # B is always 8-bit, so transfers to/from 16-bit X/Y need zero-extension
         if src_reg == 'B' or dest_reg == 'B':
@@ -1754,11 +1766,16 @@ class InstructionSelector:
                                      "Zero-extend to 16-bit")
             self._emit_implied(transfer_opcode)
         else:
-            # Indirect transfer through A (e.g., X to Y)
-            if src_reg != 'A':
-                self._emit_register_transfer(src_reg, 'A')
-            if dest_reg != 'A':
-                self._emit_register_transfer('A', dest_reg)
+            # Indirect transfer through A (e.g., D to X). A pair that has A on
+            # one side and still found no route above has none at all;
+            # recursing would only ask for it again.
+            if 'A' in (src_reg, dest_reg):
+                from r65.compiler.codegen.errors import InstructionSelectionError
+                raise InstructionSelectionError(
+                    f"Cannot transfer {src_reg} to {dest_reg}",
+                    source_loc=self._current_source_loc)
+            self._emit_register_transfer(src_reg, 'A')
+            self._emit_register_transfer('A', dest_reg)
 
     def _emit_load_immediate_to_register(self, reg: str, value: int, is_u16: bool,
                                           persist_16bit_mode: bool = False):

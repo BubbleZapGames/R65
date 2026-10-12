@@ -1,0 +1,47 @@
+# Copyright (c) 2026 Neutron Emulation, LLC. MIT licensed.
+"""D, S, DBR and PBR read as values, and D/DBR restore from a local.
+
+None of them has a load or store instruction, so every read goes through A
+(TDC, TSC, PHB/PLA, PHK/PLA). Each used to fail: `let d = D;` crashed with a
+KeyError (the local was "kept in D"), `W = D;` had no store, a comparison
+had no route, `A = D;` and `D = W;` recursed forever, and `D = saved;`
+had no load.
+"""
+
+from r65.tests.e2e import ExpectedState
+
+
+def test_read_compare_and_restore(e2e):
+    result = e2e.run('''
+        // Absolute, not zeropage: with D moved, a direct-page store would
+        // land at D + offset.
+        #[lowram(0x0300)] static mut OUT: [u16; 4];
+        #[lowram(0x0308)] static mut BYTES: [u8; 4];
+
+        #[inline(never)]
+        fn probe() {
+            let saved = D;                      // a local read of D
+            D = 0x1234;
+            OUT[0] = D;                         // straight to memory
+            if D == 0x1234 { BYTES[0] = 1; }    // compared
+            D = saved;                          // restored from the local
+            OUT[1] = D;
+
+            let bank = DBR;
+            DBR = 0x7E;
+            BYTES[1] = DBR;
+            DBR = bank;
+            BYTES[2] = DBR;
+            BYTES[3] = PBR;
+        }
+
+        #[entry]
+        fn main() {
+            BYTES[0] = 0;
+            probe();
+        }
+    ''', ExpectedState(memory={
+        0x7E0300: [0x34, 0x12, 0x00, 0x00],    # D while set, then restored to 0
+        0x7E0308: [1, 0x7E, 0x00, 0x00],       # compare hit, DBR set/restored, PBR
+    }))
+    assert result.success, f"Failures: {result.failures} {result.error}"

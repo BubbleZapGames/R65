@@ -171,6 +171,10 @@ class BaseSelector(ABC):
             self.parent._ensure_xba_state_normal("Restore A register")
             return
 
+        if reg in ('D', 'S', 'DBR', 'PBR'):
+            self._emit_store_from_special_reg(reg, dest_loc, value_bytes, comment)
+            return
+
         if reg not in ('X', 'Y'):
             raise InstructionSelectionError(
                 f"Cannot store from hardware register: {reg}",
@@ -205,6 +209,54 @@ class BaseSelector(ABC):
         self._emit_instr(Opcode.TXA if reg == 'X' else Opcode.TYA,
                          comment=f"Transfer to A (no {STORE_MNEMONICS[reg]} with this addressing)")
         self._emit_load_store('STA', dest_loc, comment)
+
+        if a_is_live:
+            self._emit_instr(Opcode.PLA, comment="Restore A (live value)")
+        else:
+            self.parent._mark_a_modified()
+
+    def _emit_store_from_special_reg(self, reg: str, dest_loc: PhysicalLocation,
+                                     value_bytes: int, comment: str = None):
+        """Store D, S, DBR or PBR, none of which has a store instruction.
+
+        Each reaches memory through A: TDC/TSC copy all of D/S into C
+        whatever the M flag, and PHB/PHK push the bank byte for an m8 PLA.
+        The accumulator width is pinned to the destination before a live A
+        is saved, so the PHA and the PLA after the store match — and an S
+        read after that PHA has the push added back.
+        """
+        if reg in ('DBR', 'PBR'):
+            self.parent._ensure_m8_mode()
+            pushed = 1
+        elif value_bytes == 2:
+            self.parent._ensure_m16_mode()
+            pushed = 2
+        else:
+            self.parent._ensure_m8_mode()
+            pushed = 1
+
+        a_is_live = not self.parent._hw_reg_is_free('A')
+        if a_is_live:
+            self._emit_instr(Opcode.PHA, comment="Save A (live value)")
+            if dest_loc.kind == LocationKind.STACK:
+                dest_loc = self.parent._offset_location(dest_loc, pushed)
+
+        if reg == 'D':
+            self._emit_instr(Opcode.TDC, comment="D to A")
+        elif reg == 'S':
+            self._emit_instr(Opcode.TSC, comment="S to A")
+            if a_is_live:
+                self._emit_instr(Opcode.CLC)
+                self._emit_instr(Opcode.ADC_IMMEDIATE, Immediate(pushed),
+                                 "S as it was before saving A")
+        else:
+            self._emit_instr(Opcode.PHB if reg == 'DBR' else Opcode.PHK,
+                             comment=f"Push {reg}")
+            self._emit_instr(Opcode.PLA, comment=f"Pull {reg} to A")
+        self._emit_load_store('STA', dest_loc, comment)
+        if value_bytes == 2 and pushed == 1:
+            # A bank byte widened to u16: the high byte is zero.
+            self._emit_load_store('STZ', self.parent._offset_location(dest_loc, 1))
 
         if a_is_live:
             self._emit_instr(Opcode.PLA, comment="Restore A (live value)")

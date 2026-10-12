@@ -158,6 +158,13 @@ class MoveOperationSelector(BaseSelector):
             self._emit_instr(Opcode.TCD, comment="Set direct page")
             self.parent._mark_a_modified()
             # Note: Do NOT switch back - mode will be restored when needed
+        elif hw_register == 'DBR':
+            # Set data bank: no load instruction, so push the byte and PLB
+            self.parent._ensure_m8_mode()
+            self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(value & 0xFF))
+            self._emit_instr(Opcode.PHA)
+            self._emit_instr(Opcode.PLB, comment="Set data bank")
+            self.parent._mark_a_modified()
         else:
             raise InstructionSelectionError(f"Cannot load immediate into register {hw_register}", source_loc=self.parent._current_source_loc)
 
@@ -245,8 +252,45 @@ class MoveOperationSelector(BaseSelector):
         elif hw_register == 'B':
             self._emit_load_store('LDA', src_loc)
             self._emit_instr(Opcode.XBA, comment="Load into B register")
+        elif hw_register in ('D', 'S', 'DBR'):
+            self._load_memory_to_special_register(hw_register, src_loc)
         else:
             raise InstructionSelectionError(f"Cannot load into register {hw_register}", source_loc=self.parent._current_source_loc)
+
+    def _load_memory_to_special_register(self, hw_register: str, src_loc):
+        """Load D, S or DBR from memory — `D = saved;` restoring a local.
+
+        None has a load instruction, so the value goes through A: LDA then
+        TCD/TCS, or PHA/PLB for the bank byte. A live A is saved around it,
+        except for S: the PLA would pull from the new stack.
+        """
+        wide = hw_register != 'DBR'
+        if wide:
+            self.parent._ensure_m16_mode()
+        else:
+            self.parent._ensure_m8_mode()
+        a_is_live = not self.parent._hw_reg_is_free('A')
+        if a_is_live and hw_register == 'S':
+            raise InstructionSelectionError(
+                "Cannot set S from memory while A holds a live value: "
+                "the new stack would hide the saved A",
+                source_loc=self.parent._current_source_loc)
+        if a_is_live:
+            self._emit_instr(Opcode.PHA, comment="Save A (live value)")
+            if src_loc.kind == LocationKind.STACK:
+                src_loc = self.parent._offset_location(src_loc, 2 if wide else 1)
+        self._emit_load_store('LDA', src_loc)
+        if hw_register == 'D':
+            self._emit_instr(Opcode.TCD, comment="Set direct page")
+        elif hw_register == 'S':
+            self._emit_instr(Opcode.TCS, comment="Set stack pointer")
+        else:
+            self._emit_instr(Opcode.PHA)
+            self._emit_instr(Opcode.PLB, comment="Set data bank")
+        if a_is_live:
+            self._emit_instr(Opcode.PLA, comment="Restore A (live value)")
+        else:
+            self.parent._mark_a_modified()
 
     # ========================================================================
     # Function Pointer Handling

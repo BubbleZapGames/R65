@@ -706,7 +706,10 @@ class StackSlotAllocator:
                 if instr_type is Move:
                     if type(instr.dest) is VirtualRegister:
                         vreg_id = instr.dest.id
-                        if type(instr.source) is HardwareRegister:
+                        # Only A, B, X and Y can hold a value: a vreg read
+                        # from D, S, DBR or PBR lives in memory like any other.
+                        if (type(instr.source) is HardwareRegister
+                                and instr.source.name in ('A', 'B', 'X', 'Y')):
                             vreg_defs.setdefault(vreg_id, []).append((instr, instr.source.name))
                         else:
                             vreg_defs.setdefault(vreg_id, []).append((instr, None))
