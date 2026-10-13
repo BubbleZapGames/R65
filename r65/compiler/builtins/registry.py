@@ -15,8 +15,8 @@ class BuiltinKind(Enum):
     PROCESSOR_CONTROL = "processor_control"  # NOP
     ARITHMETIC = "arithmetic"                 # mul, div, mod
     SHIFT = "shift"                           # shl, shr
-    ROTATE = "rotate"                         # rotate_left, rotate_right
-    TYPE_INFO = "type_info"                   # size_of
+    TYPE_INFO = "type_info"                   # size_of, offset_of
+    CFG = "cfg"                               # cfg: folds to a bool during HIR build
     CONST_MATH = "const_math"                 # fixed_sin, fixed_cos, etc.
 
 
@@ -92,25 +92,7 @@ class BuiltinRegistry:
             description='Variable right shift'
         ),
 
-        # Rotate operations (2 parameters: value and constant count 1-8, returns value)
-        'rotate_left': BuiltinSignature(
-            name='rotate_left',
-            kind=BuiltinKind.ROTATE,
-            param_count=2,
-            returns_value=True,
-            description='Rotate left (constant count 1-8)',
-            instruction='ROL'
-        ),
-        'rotate_right': BuiltinSignature(
-            name='rotate_right',
-            kind=BuiltinKind.ROTATE,
-            param_count=2,
-            returns_value=True,
-            description='Rotate right (constant count 1-8)',
-            instruction='ROR'
-        ),
-
-        # Type information (const evaluation only, returns value)
+        # Type information (folded during HIR build; size_of falls back to typeck)
         'size_of': BuiltinSignature(
             name='size_of',
             kind=BuiltinKind.TYPE_INFO,
@@ -123,7 +105,7 @@ class BuiltinRegistry:
             kind=BuiltinKind.TYPE_INFO,
             param_count=2,
             returns_value=True,
-            description='Get byte offset of struct field'
+            description='Get byte offset of struct field (const evaluation only)'
         ),
         
         # Const math functions (compile-time only, for LUT generation)
@@ -203,7 +185,7 @@ class BuiltinRegistry:
         # Conditional compilation (1 parameter: cfg identifier/key-value, const evaluation only, returns boolean)
         'cfg': BuiltinSignature(
             name='cfg',
-            kind=BuiltinKind.TYPE_INFO,  # Reuse TYPE_INFO kind since it's const evaluation
+            kind=BuiltinKind.CFG,
             param_count=1,
             returns_value=True,
             description='Check if cfg condition is enabled (const evaluation only)'

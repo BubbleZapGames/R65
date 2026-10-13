@@ -55,6 +55,13 @@ static mut MSG: [u8; 16] = "Hello";
         assert mir.rom_data_sections[0].data[:5] == [72, 101, 108, 108, 111]
         assert mir.rom_data_sections[0].data[5:] == [0] * 11
 
+    def test_single_quote_escape(self):
+        """\\' decodes in a string as in a char literal."""
+        hir = type_check(r'''
+static MSG: [u8; 4] = "it\'s";
+''')
+        assert hir.declarations[0].initializer.processed_bytes == [105, 116, 39, 115]
+
     def test_immutable_string_literal(self):
         """Test string literal works with non-mutable static (implicit ROM)."""
         source = '''

@@ -2,8 +2,8 @@
 """
 A built-in call takes the argument count its registry entry declares.
 
-Nothing read the registry's counts, so `rotate_left(O)` reached codegen and
-crashed there on the missing argument.
+An argument count the registry does not allow is a type error, not a codegen
+crash on the missing argument.
 """
 
 import pytest
@@ -19,7 +19,7 @@ def check(body: str):
 
 
 @pytest.mark.parametrize("body, message", [
-    ("O = rotate_left(O);", "rotate_left() takes 2 argument(s), got 1"),
+    ("O = mul(O);", "mul() takes 2 argument(s), got 1"),
     ("NOP(1, 2);", "NOP() takes 0 to 1 argument(s), got 2"),
 ])
 def test_wrong_count_rejected(body, message):
@@ -28,6 +28,12 @@ def test_wrong_count_rejected(body, message):
     assert message in str(exc.value)
 
 
-@pytest.mark.parametrize("body", ["NOP();", "NOP(3);", "O = rotate_left(O, 1);"])
+@pytest.mark.parametrize("body", ["NOP();", "NOP(3);", "O = mul(O, 3);"])
 def test_declared_count_accepted(body):
     check(body)
+
+
+def test_rotate_is_a_method_not_a_builtin():
+    """`rotate_left` is only the method `v.rotate_left(n)`; a free call is undefined."""
+    with pytest.raises(Exception, match="rotate_left"):
+        check("O = rotate_left(O, 1);")

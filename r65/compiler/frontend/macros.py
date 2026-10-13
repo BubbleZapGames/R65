@@ -13,6 +13,7 @@ T = TypeVar('T')
 
 from r65.compiler.frontend import ast
 from r65.compiler.frontend.parser import parse
+from r65.compiler.frontend.tokens import decode_literal, ESCAPE_HINT
 from r65.compiler.errors import MacroError, SourceLocation
 from r65.compiler.registers import REGISTER_NAMES
 
@@ -56,11 +57,11 @@ class MacroExpander:
         self.warnings: List[str] = []
         self._expansion_depth = 0
         self._expanding: Set[str] = set()  # Track currently expanding macros
-        # The program's own item list (aliased, not copied): symbol!/format!
-        # look declarations up here, and format! appends its ROM literal
-        # statics, which reach the output only because _expand_declarations
-        # is iterating this same list.
+        # The program's items, for symbol!/format! declaration lookups
         self._program_items: List[ast.Declaration] = []
+        # Declarations macros add to the program (format!'s ROM literal
+        # statics), appended after the expanded items
+        self._injected_items: List[ast.Declaration] = []
         self._format_literal_counter = 0  # Unique ID for format string literal statics
         self._format_invocation_counter = 0  # Unique ID for format! invocations
 
@@ -147,16 +148,15 @@ class MacroExpander:
         Returns:
             A new program with macros expanded
         """
-        # Store program items for symbol! resolution
         self._program_items = program.items
 
         # First pass: collect all macro definitions
         self._collect_macros(program)
 
         # Second pass: expand macro invocations in all declarations
-        new_items = self._expand_declarations(program.items)
+        new_items = self._expand_declarations(program.items) + self._injected_items
 
-        return ast.Program(items=new_items, source_loc=program.source_loc)
+        return ast.Program(items=new_items, doc=program.doc, source_loc=program.source_loc)
 
     @staticmethod
     def _strip_arm_braces(body: List[str]) -> List[str]:
@@ -632,14 +632,13 @@ class MacroExpander:
 
         return self._invoke_macro(name, args, source_loc, parse_as_statements)
 
-    # Fragment-type classification sets (mirroring the lexer terminals;
-    # _INT_RE does not accept a type suffix such as `5u16`).
+    # Fragment-type classification sets (mirroring the lexer terminals)
     _REG_NAMES = REGISTER_NAMES
     _TYPE_NAMES = frozenset({'bool', 'u16', 'i16', 'u8', 'i8'})
     _BOOL_LITERALS = frozenset({'true', 'false'})
     _TY_PREFIXES = frozenset({'*', 'far', 'near', '[', 'fn'})
     _IDENT_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
-    _INT_RE = re.compile(r'^(0[xX][0-9A-Fa-f_]+|0[bB][01_]+|[0-9][0-9_]*)$')
+    _INT_RE = re.compile(r'^(0[xX][0-9A-Fa-f_]+|0[bB][01_]+|[0-9][0-9_]*)(u16|i16|u8|i8)?$')
 
     def _arg_matches_fragment(self, arg: str, frag: str) -> bool:
         """Check whether an argument token string satisfies a fragment type.
@@ -1149,18 +1148,19 @@ class MacroExpander:
             )
             if source_loc:
                 static_decl.source_loc = source_loc
-            self._program_items.append(static_decl)
+            self._injected_items.append(static_decl)
             return static_name
 
         for seg_type, seg_data in segments:
             if seg_type == 'literal':
                 text = seg_data['text']
-                byte_len = self._compute_literal_byte_length(text)
+                literal_bytes = self._literal_bytes(text, source_loc)
+                byte_len = len(literal_bytes)
                 if byte_len == 0:
                     continue
                 if byte_len <= self.FORMAT_LITERAL_INLINE_MAX:
                     # Inline immediate stores (direct in Phase A, *p in Phase B)
-                    for b in self._literal_to_bytes(text):
+                    for b in literal_bytes:
                         lines.append(f'{at_lvalue()} = {hex(b)};')
                         advance(1)
                 else:
@@ -1227,11 +1227,8 @@ class MacroExpander:
                 elif t == 's':
                     # __fmt_str() is dispatched by the type checker to strcpy (u8
                     # strings) or to_string (ToString impls) on the arg's type.
-                    # The `as u8` cast forces a mode switch that blocks
-                    # hw-coalescing the return into A (the pointer load below
-                    # would clobber it). String lengths >255 aren't expected.
                     enter_phase_b()
-                    lines.append(f'let {n}: u8 = __fmt_str({p}, {arg}) as u8;')
+                    lines.append(f'let {n}: u16 = __fmt_str({p}, {arg});')
                     lines.append(f'{p} = {p} + {n} as u16;')
                     var_idx += 1
                 elif t == 'i8' and f == 'd':
@@ -1430,71 +1427,13 @@ class MacroExpander:
                 source_loc
             )
 
-    def _compute_literal_byte_length(self, text: str) -> int:
-        """
-        Count the number of bytes a literal string will occupy after
-        escape sequence processing.
-
-        Args:
-            text: Raw literal text (with escape sequences in source form)
-
-        Returns:
-            Number of bytes
-        """
-        count = 0
-        i = 0
-        while i < len(text):
-            if text[i] == '\\':
-                # Escape sequence = 1 byte
-                i += 1
-                if i < len(text):
-                    if text[i] == 'x':
-                        i += 2  # skip two hex digits
-                    i += 1
-                count += 1
-            else:
-                count += 1
-                i += 1
-        return count
-
-    def _literal_to_bytes(self, text: str) -> list:
-        """
-        Convert literal text (with escape sequences) to a list of byte values.
-
-        Args:
-            text: Raw literal text (with escape sequences in source form)
-
-        Returns:
-            List of integer byte values
-        """
-        result = []
-        i = 0
-        while i < len(text):
-            if text[i] == '\\':
-                i += 1
-                if i < len(text):
-                    ch = text[i]
-                    if ch == 'n':
-                        result.append(0x0A)
-                    elif ch == 't':
-                        result.append(0x09)
-                    elif ch == 'r':
-                        result.append(0x0D)
-                    elif ch == '0':
-                        result.append(0x00)
-                    elif ch == '\\':
-                        result.append(0x5C)
-                    elif ch == 'x':
-                        if i + 2 < len(text):
-                            result.append(int(text[i + 1:i + 3], 16))
-                            i += 2
-                    else:
-                        result.append(ord(ch))
-                    i += 1
-            else:
-                result.append(ord(text[i]))
-                i += 1
-        return result
+    @staticmethod
+    def _literal_bytes(text: str, source_loc: Optional[SourceLocation]) -> List[int]:
+        """Byte values of a format! literal segment (escapes in source form)."""
+        try:
+            return decode_literal(text)
+        except ValueError as e:
+            raise MacroError(f"format!: {e}", source_loc, hint=ESCAPE_HINT)
 
     def _escape_format_literal(self, text: str) -> str:
         """
@@ -1553,7 +1492,7 @@ class MacroExpander:
 
         for seg_type, seg_data in segments:
             if seg_type == 'literal':
-                max_chars += self._compute_literal_byte_length(seg_data['text'])
+                max_chars += len(self._literal_bytes(seg_data['text'], source_loc))
             elif seg_type == 'specifier':
                 spec = seg_data
                 if spec['type'] == 'u8' and spec.get('format') == 'd':

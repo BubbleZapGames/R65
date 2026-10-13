@@ -384,18 +384,15 @@ def compile_source(source: str, filename: str, output_file: str = None,
         if verbose:
             log(f"  [7/9] Checking for unsafe recursion...")
         from r65.compiler.analysis import RecursionChecker
-        from r65.compiler.errors import get_diagnostics
         recursion_checker = RecursionChecker(mir_program)
         recursion_checker.check()
 
-        # Flush analysis warnings (e.g., address-taken functions with promoted locals)
-        analysis_diagnostics = get_diagnostics()
-        for diag in analysis_diagnostics.get_warnings():
+        # Address-taken functions with register/zero-page params or promoted locals
+        for diag in recursion_checker.diagnostics.get_warnings():
             code_prefix = f"{diag.code}: " if diag.code else ""
             print(f"warning: {code_prefix}{diag.message}", file=sys.stderr)
             if diag.hint:
                 print(f"  hint: {diag.hint}", file=sys.stderr)
-        analysis_diagnostics.clear()
 
         # Generate assembly. Pass output_file=None to defer disk writes until
         # after the stack-usage analyzer in step 9 has had a chance to fail.
@@ -471,11 +468,8 @@ def compile_string(source: str, filename: str = "<string>", abi_model=None,
     mir_builder = MIRBuilder(abi_kind=mir_abi_kind)
     mir_program = mir_builder.build_program(hir_program)
 
-    # Check for unsafe recursion
-    from r65.compiler.errors import get_diagnostics
-    recursion_checker = RecursionChecker(mir_program)
-    recursion_checker.check()
-    get_diagnostics().clear()  # Clear analysis warnings for test path
+    # Check for unsafe recursion (its warnings are not reported here)
+    RecursionChecker(mir_program).check()
 
     codegen = ProgramCodeGenerator()
     assembly = codegen.generate(mir_program, abi_model=abi_model)

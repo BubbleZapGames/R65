@@ -116,6 +116,18 @@ class TestReservedKeywordErrors:
             parse("super fn test() { }")
         assert "'super'" in str(exc.value)
 
+    def test_mod(self):
+        """mod foo; fails on the module name, which the hint must catch."""
+        with pytest.raises(ParseError) as exc:
+            parse("mod foo;")
+        assert "'mod' modules are not supported" in str(exc.value)
+
+    def test_expected_hint_lists_r65_keywords(self):
+        """Keywords R65 does have (for, in, ...) appear in the expected list."""
+        with pytest.raises(ParseError) as exc:
+            parse("fn f() { for i x }")
+        assert exc.value.hint == "expected: in"
+
 
 # =============================================================================
 # Generics

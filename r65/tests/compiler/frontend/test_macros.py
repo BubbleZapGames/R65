@@ -7,6 +7,7 @@ Tests macro definition parsing, invocation parsing, and macro expansion.
 import pytest
 from r65.compiler.frontend import parse, expand_macros, MacroError
 from r65.compiler.frontend.macros import MacroExpander
+from r65.compiler.frontend.tokens import decode_literal
 from r65.compiler.frontend import ast
 
 
@@ -244,6 +245,12 @@ class TestMultiArmMacros:
         assert isinstance(stmts[2].expr.target, ast.Identifier)
         assert stmts[2].expr.target.name == "foo"
         assert stmts[2].expr.value.value == 9
+
+    def test_suffixed_integer_is_literal(self):
+        """`5u16` matches $x:literal, as the lexer reads it as one integer."""
+        exp = MacroExpander()
+        assert exp._arg_matches_fragment("5u16", "literal")
+        assert exp._arg_matches_fragment("0xFFu8", "literal")
 
     def test_no_matching_arm_error(self):
         """An invocation matching no arm raises a MacroError listing the arms."""
@@ -1480,20 +1487,17 @@ class TestFormatStringParser:
 
     def test_compute_byte_length_simple(self):
         """Byte length of plain text."""
-        exp = self._get_expander()
-        assert exp._compute_literal_byte_length("Hello") == 5
+        assert len(decode_literal("Hello")) == 5
 
     def test_compute_byte_length_escapes(self):
         """Byte length counts escape sequences as 1 byte each."""
-        exp = self._get_expander()
-        assert exp._compute_literal_byte_length("A\\nB") == 3  # A, \n, B
-        assert exp._compute_literal_byte_length("\\x41") == 1  # \x41
-        assert exp._compute_literal_byte_length("\\\\") == 1   # \\
+        assert len(decode_literal("A\\nB")) == 3  # A, \n, B
+        assert len(decode_literal("\\x41")) == 1  # \x41
+        assert len(decode_literal("\\\\")) == 1   # \\
 
     def test_compute_byte_length_empty(self):
         """Byte length of empty string is 0."""
-        exp = self._get_expander()
-        assert exp._compute_literal_byte_length("") == 0
+        assert len(decode_literal("")) == 0
 
     def test_adjacent_specifiers(self):
         """Adjacent specifiers with no literal between them."""
@@ -1506,6 +1510,16 @@ class TestFormatStringParser:
 
 class TestFormatMacro:
     """Tests for format! macro expansion."""
+
+    def test_format_unknown_escape_rejected(self):
+        """An unknown escape in a format! literal is an error, as in any string."""
+        source = r'''
+        #[ram]
+        static mut BUF: [u8; 32] = [0; 32];
+        fn test() { __format!(BUF, "a\q"); }
+        '''
+        with pytest.raises(MacroError, match="Unknown escape sequence"):
+            expand_macros(parse(source, "<test>"))
 
     def test_format_literal_only(self):
         """format! with only literal text generates inline copy + null terminate."""
@@ -1936,28 +1950,24 @@ class TestFormatLiteralInlining:
 
     def test_literal_to_bytes_simple(self):
         """Plain ASCII text converts to byte values."""
-        exp = self._get_expander()
-        assert exp._literal_to_bytes("AB") == [0x41, 0x42]
+        assert decode_literal("AB") == [0x41, 0x42]
 
     def test_literal_to_bytes_escapes(self):
         """Escape sequences convert correctly."""
-        exp = self._get_expander()
-        assert exp._literal_to_bytes("\\n") == [0x0A]
-        assert exp._literal_to_bytes("\\t") == [0x09]
-        assert exp._literal_to_bytes("\\r") == [0x0D]
-        assert exp._literal_to_bytes("\\0") == [0x00]
-        assert exp._literal_to_bytes("\\\\") == [0x5C]
+        assert decode_literal("\\n") == [0x0A]
+        assert decode_literal("\\t") == [0x09]
+        assert decode_literal("\\r") == [0x0D]
+        assert decode_literal("\\0") == [0x00]
+        assert decode_literal("\\\\") == [0x5C]
 
     def test_literal_to_bytes_hex_escape(self):
         """\\xNN hex escapes convert correctly."""
-        exp = self._get_expander()
-        assert exp._literal_to_bytes("\\x41") == [0x41]
-        assert exp._literal_to_bytes("\\xFF") == [0xFF]
+        assert decode_literal("\\x41") == [0x41]
+        assert decode_literal("\\xFF") == [0xFF]
 
     def test_literal_to_bytes_mixed(self):
         """Mixed text and escapes convert correctly."""
-        exp = self._get_expander()
-        assert exp._literal_to_bytes("A\\nB") == [0x41, 0x0A, 0x42]
+        assert decode_literal("A\\nB") == [0x41, 0x0A, 0x42]
 
     def test_small_literal_inlines(self):
         """Short literals emit direct indexed immediate stores, no far pointer."""

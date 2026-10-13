@@ -56,11 +56,6 @@ class SourceLocation:
         """Check if this location is from an included file."""
         return self.included_from is not None
 
-    @property
-    def file(self) -> str:
-        """Alias for file_path."""
-        return self.file_path
-
 
 @dataclass
 class Diagnostic:
@@ -152,24 +147,6 @@ class DiagnosticCollector:
 
     def __iter__(self):
         return iter(self.diagnostics)
-
-
-# Global diagnostic collector for use across compilation phases
-_global_diagnostics: Optional['DiagnosticCollector'] = None
-
-
-def get_diagnostics() -> DiagnosticCollector:
-    """Get the global diagnostic collector, creating one if needed."""
-    global _global_diagnostics
-    if _global_diagnostics is None:
-        _global_diagnostics = DiagnosticCollector()
-    return _global_diagnostics
-
-
-def reset_diagnostics():
-    """Reset the global diagnostic collector."""
-    global _global_diagnostics
-    _global_diagnostics = DiagnosticCollector()
 
 
 class CompilerError(Exception):

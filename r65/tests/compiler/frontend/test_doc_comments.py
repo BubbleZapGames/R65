@@ -155,6 +155,12 @@ class TestInnerDocComments:
         program = parse('fn test() { }', '<test>')
         assert program.doc is None
 
+    def test_inner_doc_survives_preprocess_and_macros(self):
+        """The preprocessor and macro expander keep Program.doc."""
+        from r65.compiler.frontend import preprocess, expand_macros
+        program = expand_macros(preprocess(parse('//! Module\nfn test() { }', '<test>'), '<test>'))
+        assert program.doc == 'Module'
+
 
 class TestBlockDocComments:
     """Tests for /** */ and /*! */ block doc comments."""

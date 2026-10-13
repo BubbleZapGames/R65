@@ -9,7 +9,9 @@ from lark import Lark, Transformer, Token as LarkToken, v_args
 from lark.exceptions import UnexpectedToken, UnexpectedCharacters, UnexpectedEOF, VisitError
 from r65.compiler.frontend import ast
 from r65.compiler.frontend.derive_compat import derive_hint, derive_trait_names
-from r65.compiler.frontend.tokens import INTEGER_SUFFIXES
+from r65.compiler.frontend.tokens import (
+    split_integer_suffix, parse_integer, decode_literal, ESCAPE_HINT,
+)
 from r65.compiler.errors import ParseError, SourceLocation, get_source_line
 from typing import List
 
@@ -29,10 +31,7 @@ _LARK_OPTIONS = dict(
     propagate_positions=True,   # Enable source location tracking
 )
 
-# Deliberately *not* `grammar.lark_cache` — that belongs to lexer.py, which
-# builds the same grammar with different options. Lark keys a cache on the
-# options as well as the grammar, so sharing one file would make the two
-# invalidate each other on every run and both would rebuild every time.
+# Shared by the lexer (--dump-tokens), which lexes with this same instance.
 # Matches `*.lark_cache` in .gitignore.
 _CACHE_PATH = GRAMMAR_PATH.with_suffix(".parser.lark_cache")
 
@@ -101,7 +100,6 @@ class ASTBuilder(Transformer):
 
     def _make_source_loc(self, meta):
         """Create a SourceLocation from Lark meta info."""
-        from r65.compiler.hir.errors import SourceLocation
         if meta is None:
             return None
         return SourceLocation(
@@ -113,7 +111,6 @@ class ASTBuilder(Transformer):
 
     def _source_loc_from_token(self, token):
         """Create a SourceLocation from a LarkToken's line/column."""
-        from r65.compiler.hir.errors import SourceLocation
         if not isinstance(token, LarkToken):
             return None
         return SourceLocation(
@@ -122,31 +119,6 @@ class ASTBuilder(Transformer):
             column=getattr(token, 'column', 0) or 0,
             included_from=self.included_from,
         )
-
-    def _strip_integer_suffix(self, raw: str):
-        """Strip type suffix from integer literal string. Returns (digits, suffix)."""
-        for s in INTEGER_SUFFIXES:
-            if raw.endswith(s):
-                return raw[:-len(s)], s
-        return raw, None
-
-    def _parse_integer(self, value: str) -> int:
-        """Parse an integer literal."""
-        clean_value = value.replace('_', '')
-        try:
-            if clean_value.startswith('0x') or clean_value.startswith('0X'):
-                if len(clean_value) <= 2:
-                    raise ValueError(f"missing digits after {clean_value[:2]}")
-                return int(clean_value, 16)
-            elif clean_value.startswith('0b') or clean_value.startswith('0B'):
-                if len(clean_value) <= 2:
-                    raise ValueError(f"missing digits after {clean_value[:2]}")
-                return int(clean_value, 2)
-            else:
-                return int(clean_value, 10)
-        except ValueError as e:
-            # Raise ValueError, not ParseError - let the VisitError handler add source location
-            raise ValueError(f"invalid integer literal '{value}': {e}")
 
     def _take(self, items, idx, tok_type):
         """Consume items[idx] if it is a LarkToken of tok_type.
@@ -266,7 +238,6 @@ class ASTBuilder(Transformer):
         'await':    ("'await' is not supported in R65", "R65 has no async runtime"),
         'unsafe':   ("'unsafe' is not supported in R65", "all R65 code has direct hardware access; 'unsafe' is unnecessary"),
         'use':      ("'use' imports are not supported in R65", "use include!(\"file.r65\") for file inclusion"),
-        'extern':   ("'extern' is not supported in R65", "use #[hw(addr)] for hardware registers or asm!() for assembly"),
         'crate':    ("'crate' is not supported in R65", "use include!(\"file.r65\") for file inclusion"),
         'move':     ("'move' closures are not supported in R65", "use function pointers (fn() or far fn())"),
         'ref':      ("'ref' patterns are not supported in R65", "use raw pointers (*u8)"),
@@ -1137,27 +1108,17 @@ class ASTBuilder(Transformer):
 
     def stack_directive(self, items):
         """Stack directive: #[stack(lower, upper)]"""
-        items = self._filter_tokens(items, keep_types={'INTEGER'})
-        lower = int(items[0].value, 0)  # Parse with base detection (0x prefix)
-        upper = int(items[1].value, 0)
-        return ast.StackDirective(lower=lower, upper=upper)
+        lower, upper = self._filter_tokens(items, keep_types={'INTEGER'})
+        return ast.StackDirective(lower=parse_integer(lower.value),
+                                  upper=parse_integer(upper.value))
 
     def bank_directive(self, items):
         """Bank directive: #[bank(n)] or #[bank(auto)] - sets current ROM bank for following declarations."""
-        # Grammar uses AUTO_KEYWORD for "auto"
-        items = self._filter_tokens(items, keep_types={'INTEGER', 'AUTO_KEYWORD'})
-        if items:
-            token = items[0]
-            if isinstance(token, LarkToken):
-                if token.type == 'AUTO_KEYWORD':
-                    # #[bank(auto)] - automatic placement
-                    return ast.BankDirective(bank_number=None)
-                elif token.type == 'INTEGER':
-                    # #[bank(n)] - explicit bank number
-                    bank_number = int(token.value, 0)  # Parse with base detection (0x prefix)
-                    return ast.BankDirective(bank_number=bank_number)
-        # Default to bank 0 if something is wrong
-        return ast.BankDirective(bank_number=0)
+        # The grammar admits exactly one INTEGER or AUTO_KEYWORD.
+        (token,) = self._filter_tokens(items, keep_types={'INTEGER', 'AUTO_KEYWORD'})
+        if token.type == 'AUTO_KEYWORD':
+            return ast.BankDirective(bank_number=None)
+        return ast.BankDirective(bank_number=parse_integer(token.value))
 
     def snesrom_directive(self, items):
         """
@@ -2061,8 +2022,8 @@ class ASTBuilder(Transformer):
         """Integer literal."""
         items = tree.children
         raw = items[0].value
-        digits, suffix = self._strip_integer_suffix(raw)
-        value = self._parse_integer(digits)
+        digits, suffix = split_integer_suffix(raw)
+        value = parse_integer(digits)
         return ast.IntegerLiteral(value=value, suffix=suffix, source_loc=self._make_source_loc(tree.meta))
 
     @v_args(tree=True)
@@ -2078,40 +2039,29 @@ class ASTBuilder(Transformer):
         value = self._parse_char_content(inner, src_loc)
         return ast.IntegerLiteral(value=value, suffix='u8', source_loc=src_loc)
 
-    _CHAR_ESCAPES = {
-        '\\n': 10, '\\t': 9, '\\r': 13, '\\0': 0,
-        '\\\\': 92, "\\'": 39, '\\"': 34,
-    }
-
     def _parse_char_content(self, inner: str, src_loc) -> int:
-        """Parse character literal content, returning the byte value (0-255)."""
-        if inner.startswith('\\'):
-            # Hex escape: \xNN
-            if inner.startswith('\\x'):
-                return int(inner[2:], 16)
-            # Simple escape
-            if inner in self._CHAR_ESCAPES:
-                return self._CHAR_ESCAPES[inner]
-            raise ParseError(
-                f"invalid escape sequence in character literal: '{inner}'",
-                source_loc=src_loc,
-                hint=r"supported escapes: \n \t \r \0 \\ \' \" \xNN"
-            )
-        # Single character — must be 7-bit ASCII. Use \xNN escape for 128-255.
-        if len(inner) != 1:
-            raise ParseError(
-                f"character literal must be a single ASCII character",
-                source_loc=src_loc,
-                hint="UTF-8/Unicode not supported; use \\xNN escapes for bytes 0x80-0xFF"
-            )
-        code = ord(inner)
-        if code > 127:
-            raise ParseError(
-                f"character literal '{inner}' (U+{code:04X}) is not 7-bit ASCII",
-                source_loc=src_loc,
-                hint=f"use \\x{code:02X} escape for byte 0x{code:02X}, or \\xNN for any byte 0x80-0xFF"
-            )
-        return code
+        """Parse character literal content, returning the byte value (0-127, or 0-255 via \\xNN)."""
+        if not inner.startswith('\\'):
+            # A raw character must be 7-bit ASCII; \xNN spells 128-255.
+            if len(inner) != 1:
+                raise ParseError(
+                    f"character literal must be a single ASCII character",
+                    source_loc=src_loc,
+                    hint="UTF-8/Unicode not supported; use \\xNN escapes for bytes 0x80-0xFF"
+                )
+            code = ord(inner)
+            if code > 127:
+                raise ParseError(
+                    f"character literal '{inner}' (U+{code:04X}) is not 7-bit ASCII",
+                    source_loc=src_loc,
+                    hint=f"use \\x{code:02X} escape for byte 0x{code:02X}, or \\xNN for any byte 0x80-0xFF"
+                )
+        try:
+            (value,) = decode_literal(inner)
+        except ValueError as e:
+            raise ParseError(f"invalid character literal '{inner}': {e}",
+                             source_loc=src_loc, hint=ESCAPE_HINT)
+        return value
 
     @v_args(tree=True)
     def boolean(self, tree):
@@ -2348,7 +2298,7 @@ class ASTBuilder(Transformer):
             elif isinstance(item, int):
                 filtered.append(item)
             elif isinstance(item, LarkToken) and item.type == 'INTEGER':
-                filtered.append(self._parse_integer(item.value))
+                filtered.append(parse_integer(item.value))
         inclusive = range_op is not None and range_op.type == 'DOTDOTEQ'
         return ast.RangePattern(start=filtered[0], end=filtered[1], inclusive=inclusive)
 
@@ -2362,7 +2312,7 @@ class ASTBuilder(Transformer):
             t for t in tree.children
             if isinstance(t, LarkToken) and t.type == 'INTEGER'
         )
-        value = self._parse_integer(int_token.value)
+        value = parse_integer(int_token.value)
         return -value if has_neg else value
 
     def pattern_literal(self, items):
@@ -2370,7 +2320,7 @@ class ASTBuilder(Transformer):
         items = self._filter_tokens(items, keep_types={'INTEGER', 'BOOLEAN', 'CHAR_LITERAL'})
         token = items[0]
         if token.type == 'INTEGER':
-            value = self._parse_integer(token.value)
+            value = parse_integer(token.value)
         elif token.type == 'CHAR_LITERAL':
             raw = token.value
             if raw.startswith('b'):
@@ -2388,7 +2338,7 @@ class ASTBuilder(Transformer):
             t for t in tree.children
             if isinstance(t, LarkToken) and t.type == 'INTEGER'
         )
-        value = self._parse_integer(int_token.value)
+        value = parse_integer(int_token.value)
         return ast.LiteralPattern(value=-value)
 
     def pattern_enum_payload(self, items):
@@ -2592,70 +2542,34 @@ class ASTBuilder(Transformer):
         value = items[1]
         source_loc = self._make_source_loc(tree.meta)
 
-        if isinstance(lvalue, ast.Identifier):
-            target = lvalue
-        else:
-            target = lvalue
+        return ast.Assignment(target=lvalue, value=value, source_loc=source_loc)
 
-        return ast.Assignment(target=target, value=value, source_loc=source_loc)
+    # Compound assignment operator token -> binary operator
+    _COMPOUND_OPS = {
+        'PLUSEQUAL': '+',
+        'MINUSEQUAL': '-',
+        'STAREQUAL': '*',
+        'SLASHEQUAL': '/',
+        'AMPEREQUAL': '&',
+        'VBAREQUAL': '|',
+        'CIRCUMFLEXEQUAL': '^',
+        'LSHIFTEQUAL': '<<',
+        'RSHIFTEQUAL': '>>',
+    }
 
     @v_args(tree=True)
     def compound_assign(self, tree):
         """Compound assignment (+=, -=, etc.)."""
-        # Keep compound operator tokens
-        items = self._filter_tokens(tree.children, keep_types={
-            'PLUSEQUAL', 'MINUSEQUAL', 'STAREQUAL', 'SLASHEQUAL',
-            'AMPEREQUAL', 'VBAREQUAL', 'CIRCUMFLEXEQUAL', 'LSHIFTEQUAL', 'RSHIFTEQUAL'
-        })
-        lvalue = items[0]
-        # items[1] is the compound_op result (a token like PLUSEQUAL)
-        compound_op_token = items[1]
-        value = items[2]
-        source_loc = self._make_source_loc(tree.meta)
-
-        # Map compound operator token to binary operator
-        op_map = {
-            'PLUSEQUAL': '+',
-            'MINUSEQUAL': '-',
-            'STAREQUAL': '*',
-            'SLASHEQUAL': '/',
-            'AMPEREQUAL': '&',
-            'VBAREQUAL': '|',
-            'CIRCUMFLEXEQUAL': '^',
-            'LSHIFTEQUAL': '<<',
-            'RSHIFTEQUAL': '>>'
-        }
-
-        # Get the operator type
-        if isinstance(compound_op_token, LarkToken):
-            op_type = compound_op_token.type
-        else:
-            # It might be wrapped; extract the actual token type
-            op_type = str(compound_op_token)
-
-        operator = op_map.get(op_type, '+')  # Default to '+' if unknown
-
-        return ast.CompoundAssignment(target=lvalue, operator=operator, value=value, source_loc=source_loc)
-
-    def multi_assign(self, items):
-        """Multiple assignment for multiple return values (e.g., lo, hi = func())."""
-        items = self._filter_tokens(items)
-        # All items except the last are lvalues, the last is the value
-        targets = list(items[:-1])
-        value = items[-1]
-
-        return ast.MultiAssignment(targets=targets, value=value)
-
+        # compound_op has already reduced to its operator token
+        items = self._filter_tokens(tree.children, keep_types=self._COMPOUND_OPS.keys())
+        lvalue, op_token, value = items
+        return ast.CompoundAssignment(target=lvalue, operator=self._COMPOUND_OPS[op_token.type],
+                                      value=value, source_loc=self._make_source_loc(tree.meta))
 
     def compound_op(self, items):
-        """Compound operator."""
-        # Return the first token which is the compound operator
-        # Keep all compound operator tokens
-        items = self._filter_tokens(items, keep_types={
-            'PLUSEQUAL', 'MINUSEQUAL', 'STAREQUAL', 'SLASHEQUAL',
-            'AMPEREQUAL', 'VBAREQUAL', 'CIRCUMFLEXEQUAL', 'LSHIFTEQUAL', 'RSHIFTEQUAL'
-        })
-        return items[0]
+        """Compound operator: the operator token itself."""
+        (token,) = self._filter_tokens(items, keep_types=self._COMPOUND_OPS.keys())
+        return token
 
     def lvalue_ident(self, items):
         """Lvalue identifier."""
@@ -3087,26 +3001,28 @@ class Parser:
             'TYPE': 'type',
             'ASM': 'asm',
             'INCLUDE': 'include',
+            'INCLUDE_BYTES': 'include_bytes',
+            'INCLUDE_ASM': 'include_asm',
+            'MACRO_RULES': 'macro_rules',
+            'MATCH': 'match',
+            'FOR': 'for',
+            'IN': 'in',
+            'IMPL': 'impl',
+            'TRAIT': 'trait',
+            'SELF': 'self',
+            'DYN': 'dyn',
+            'EXTERN': 'extern',
+            'UNION': 'union',
             # Special
             '$END': 'end of file',
-        }
-
-        # Reserved Rust keywords that shouldn't appear in suggestions
-        # (they're in the grammar as reserved but aren't valid R65 syntax)
-        reserved_rust_keywords = {
-            'MATCH', 'FOR', 'IN', 'IMPL', 'TRAIT', 'WHERE', 'USE', 'PUB',
-            'CRATE', 'SELF', 'SELF_TYPE', 'SUPER', 'ASYNC', 'AWAIT', 'MOVE',
-            'REF', 'DYN', 'EXTERN', 'UNSAFE', 'ABSTRACT', 'BECOME', 'BOX',
-            'DO', 'FINAL', 'MACRO', 'OVERRIDE', 'PRIV', 'TYPEOF', 'UNSIZED',
-            'VIRTUAL', 'YIELD', 'TRY',
         }
 
         result = []
         for token in expected:
             if token in translations:
                 result.append(translations[token])
-            elif token in reserved_rust_keywords:
-                # Skip reserved Rust keywords
+            elif token == 'KEYWORD':
+                # The reserved-only Rust keywords (where, use, pub, ...)
                 continue
             elif token.startswith('__'):
                 # Skip internal rule names
@@ -3166,12 +3082,11 @@ class Parser:
             return ("'use' imports are not supported in R65",
                     "use include!(\"file.r65\") for file inclusion")
 
-        # 'mod' keyword (it's an IDENT, not KEYWORD, so start() won't catch it)
-        if token.type == 'IDENT' and token.value == 'mod':
-            stripped = before.strip()
-            if stripped == '' or stripped.endswith(';') or stripped.endswith('}'):
-                return ("'mod' modules are not supported in R65",
-                        "use include!(\"file.r65\") for file inclusion")
+        # 'mod foo': `mod` is not a keyword terminal, so the parser fails on the
+        # module name after it
+        if re.search(r'(?:^|[;}])\s*mod\s+$', before):
+            return ("'mod' modules are not supported in R65",
+                    "use include!(\"file.r65\") for file inclusion")
 
         # Struct literal with register name: S { x: 1 } where S is a register
         if token.value == '{' or (hasattr(token, 'type') and token.type == 'LBRACE'):

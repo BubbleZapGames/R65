@@ -100,7 +100,7 @@ def test_invalid_hex():
         tokens = tokenize(source)
         assert False, "Should have raised LexerError"
     except LexerError as e:
-        assert "Invalid hexadecimal" in e.message
+        assert "missing digits after 0x" in e.message
 
     print("✓ Invalid hex error test passed")
 
@@ -113,7 +113,7 @@ def test_invalid_binary():
         tokens = tokenize(source)
         assert False, "Should have raised LexerError"
     except LexerError as e:
-        assert "Invalid binary" in e.message
+        assert "missing digits after 0b" in e.message
 
     print("✓ Invalid binary error test passed")
 

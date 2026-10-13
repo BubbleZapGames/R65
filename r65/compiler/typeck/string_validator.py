@@ -11,6 +11,7 @@ from r65.compiler.hir import HIRStringLiteral, BasicTypeInfo
 from r65.compiler.hir.types import ArrayTypeInfo, PointerTypeInfo, TypeInfo
 from r65.compiler.typeck.errors import TypeCheckError
 from r65.compiler.codegen.bank_size import LOROM_BANK_SIZE
+from r65.compiler.frontend.tokens import decode_literal
 
 
 class StringValidator:
@@ -25,7 +26,7 @@ class StringValidator:
         with no context or a `*u8` context, an anonymous ROM array whose
         pointer takes the context's far-ness.
         Code points up to U+00FF are stored as that byte; anything above is rejected.
-        Escape sequences: \\n, \\t, \\r, \\0, \\\\, \\", \\x##
+        Escapes are decoded by frontend.tokens.decode_literal.
 
         Args:
             expr: String literal expression
@@ -98,7 +99,8 @@ class StringValidator:
         """
         Process a raw string into a list of byte values.
 
-        Handles escape sequences and validates Extended ASCII.
+        Decodes escapes, rejects characters above 0xFF, and checks the result
+        fits in one ROM bank.
 
         Args:
             raw_string: Raw string value (escape sequences not yet processed)
@@ -107,65 +109,10 @@ class StringValidator:
         Returns:
             List of integer byte values (0x00-0xFF)
         """
-        result = []
-        i = 0
-        while i < len(raw_string):
-            char = raw_string[i]
-
-            if char == '\\' and i + 1 < len(raw_string):
-                # Escape sequence
-                next_char = raw_string[i + 1]
-                if next_char == 'n':
-                    result.append(0x0A)  # newline
-                    i += 2
-                elif next_char == 't':
-                    result.append(0x09)  # tab
-                    i += 2
-                elif next_char == 'r':
-                    result.append(0x0D)  # carriage return
-                    i += 2
-                elif next_char == '0':
-                    result.append(0x00)  # null
-                    i += 2
-                elif next_char == '\\':
-                    result.append(0x5C)  # backslash
-                    i += 2
-                elif next_char == '"':
-                    result.append(0x22)  # double quote
-                    i += 2
-                elif next_char == 'x':
-                    # Hex escape: \x##
-                    if i + 3 >= len(raw_string):
-                        raise TypeCheckError(
-                            "Invalid hex escape sequence at end of string",
-                            source_loc=source_loc
-                        )
-                    hex_digits = raw_string[i + 2:i + 4]
-                    try:
-                        byte_val = int(hex_digits, 16)
-                        result.append(byte_val)
-                        i += 4
-                    except ValueError:
-                        raise TypeCheckError(
-                            f"Invalid hex escape sequence '\\x{hex_digits}'",
-                            source_loc=source_loc
-                        )
-                else:
-                    raise TypeCheckError(
-                        f"Unknown escape sequence '\\{next_char}'",
-                        source_loc=source_loc
-                    )
-            else:
-                # Regular character - validate Extended ASCII
-                code_point = ord(char)
-                if code_point > 255:
-                    raise TypeCheckError(
-                        f"Character '{char}' (U+{code_point:04X}) is not valid Extended ASCII. "
-                        f"Only characters 0x00-0xFF are allowed.",
-                        source_loc=source_loc
-                    )
-                result.append(code_point)
-                i += 1
+        try:
+            result = decode_literal(raw_string)
+        except ValueError as e:
+            raise TypeCheckError(str(e), source_loc=source_loc)
 
         # Validate that the string fits in a single ROM bank (LoROM = 32KB)
         if len(result) > LOROM_BANK_SIZE:

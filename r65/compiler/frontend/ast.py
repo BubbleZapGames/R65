@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Union, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from r65.compiler.hir.errors import SourceLocation
+    from r65.compiler.errors import SourceLocation
 
 
 # ============================================================================
@@ -55,7 +55,7 @@ class Type(ASTNode):
 class Program(ASTNode):
     """Top-level program node containing all declarations."""
     items: List[Declaration]
-    doc: Optional[str] = None  # Inner doc comments (//! and /*! */); parser-only, the preprocessor rebuilds Program without it
+    doc: Optional[str] = None  # Inner doc comments (//! and /*! */) of the main file
 
 
 # ============================================================================

@@ -2,121 +2,61 @@
 """
 Lexer for R65 programming language using Lark.
 
-Scans source code and produces a stream of tokens.
+Scans source code and produces a stream of tokens (for --dump-tokens), using
+the parser's own Lark instance.
 """
-from typing import List, Optional
-from pathlib import Path
-from lark import Lark, Token as LarkToken
+from typing import List
+from lark import Token as LarkToken
 from lark.exceptions import UnexpectedCharacters, UnexpectedToken
 from r65.compiler.frontend.tokens import *
+from r65.compiler.frontend.parser import Parser
 from r65.compiler.errors import SourceLocation, get_source_line
-
-
-# Load the grammar, using a pre-compiled cache when available.
-# The cache is invalidated automatically when the grammar file changes.
-GRAMMAR_PATH = Path(__file__).parent / "grammar.lark"
-_CACHE_PATH = GRAMMAR_PATH.with_suffix(".lark_cache")
-
-
-def _load_lark() -> Lark:
-    """Load the Lark parser, using a serialized cache if fresh."""
-    grammar_mtime = GRAMMAR_PATH.stat().st_mtime
-    if _CACHE_PATH.exists() and _CACHE_PATH.stat().st_mtime >= grammar_mtime:
-        with open(_CACHE_PATH, 'rb') as f:
-            return Lark.load(f)
-    with open(GRAMMAR_PATH) as f:
-        grammar = f.read()
-    lark = Lark(grammar, parser='lalr', lexer='contextual')
-    with open(_CACHE_PATH, 'wb') as f:
-        lark.save(f)
-    return lark
 
 
 class Lexer:
     """Lexical analyzer for R65 source code using Lark."""
 
-    # Cache compiled Lark parser - grammar is static so this is shared across instances
-    _lark_cache = None
-
     # Map Lark token types to our TokenType enum
     TOKEN_TYPE_MAP = {
-        # Keywords (explicit terminals in grammar)
+        # Keywords: one per keyword terminal in grammar.lark; KEYWORD covers
+        # the reserved-only names (where, use, pub, ...).
+        'INCLUDE_BYTES': TokenType.KEYWORD,
+        'INCLUDE_ASM': TokenType.KEYWORD,
+        'MACRO_RULES': TokenType.KEYWORD,
         'CONTINUE': TokenType.KEYWORD,
         'INCLUDE': TokenType.KEYWORD,
-        'INCLUDE_ASM': TokenType.KEYWORD,
         'RETURN': TokenType.KEYWORD,
         'STRUCT': TokenType.KEYWORD,
         'STATIC': TokenType.KEYWORD,
+        'EXTERN': TokenType.KEYWORD,
+        'UNION': TokenType.KEYWORD,
         'BREAK': TokenType.KEYWORD,
         'CONST': TokenType.KEYWORD,
         'WHILE': TokenType.KEYWORD,
+        'MATCH': TokenType.KEYWORD,
+        'TRAIT': TokenType.KEYWORD,
         'ENUM': TokenType.KEYWORD,
         'LOOP': TokenType.KEYWORD,
         'TYPE': TokenType.KEYWORD,
         'ELSE': TokenType.KEYWORD,
         'NEAR': TokenType.KEYWORD,
+        'IMPL': TokenType.KEYWORD,
+        'SELF': TokenType.KEYWORD,
         'LET': TokenType.KEYWORD,
         'MUT': TokenType.KEYWORD,
         'ASM': TokenType.KEYWORD,
         'FAR': TokenType.KEYWORD,
+        'FOR': TokenType.KEYWORD,
+        'DYN': TokenType.KEYWORD,
+        'CFG': TokenType.KEYWORD,
         'FN': TokenType.KEYWORD,
         'IF': TokenType.KEYWORD,
         'AS': TokenType.KEYWORD,
-
-        # Built-in function names (no grammar terminal: they lex as IDENT)
-        'NOP': TokenType.KEYWORD,
-        'MUL': TokenType.KEYWORD,
-        'DIV': TokenType.KEYWORD,
-        'MOD': TokenType.KEYWORD,
-        'SHL': TokenType.KEYWORD,
-        'SHR': TokenType.KEYWORD,
-        'ROTATE_LEFT': TokenType.KEYWORD,
-        'ROTATE_RIGHT': TokenType.KEYWORD,
-
-        # Keywords. IMPL, TRAIT, FOR, IN, MATCH, SELF, DYN and EXTERN are
-        # terminals; the other (Rust-reserved) names lex as KEYWORD.
-        'IMPL': TokenType.KEYWORD,
-        'TRAIT': TokenType.KEYWORD,
-        'FOR': TokenType.KEYWORD,
         'IN': TokenType.KEYWORD,
-        'MATCH': TokenType.KEYWORD,
-        'WHERE': TokenType.KEYWORD,
-        'USE': TokenType.KEYWORD,
-        'PUB': TokenType.KEYWORD,
-        'CRATE': TokenType.KEYWORD,
-        'SELF': TokenType.KEYWORD,
-        'SELF_TYPE': TokenType.KEYWORD,
-        'SUPER': TokenType.KEYWORD,
-        'ASYNC': TokenType.KEYWORD,
-        'AWAIT': TokenType.KEYWORD,
-        'MOVE': TokenType.KEYWORD,
-        'REF': TokenType.KEYWORD,
-        'DYN': TokenType.KEYWORD,
-        'EXTERN': TokenType.KEYWORD,
-        'UNSAFE': TokenType.KEYWORD,
-
-        # Strict reserved keywords
-        'ABSTRACT': TokenType.KEYWORD,
-        'BECOME': TokenType.KEYWORD,
-        'BOX': TokenType.KEYWORD,
-        'DO': TokenType.KEYWORD,
-        'FINAL': TokenType.KEYWORD,
-        'MACRO': TokenType.KEYWORD,
-        'OVERRIDE': TokenType.KEYWORD,
-        'PRIV': TokenType.KEYWORD,
-        'TYPEOF': TokenType.KEYWORD,
-        'UNSIZED': TokenType.KEYWORD,
-        'VIRTUAL': TokenType.KEYWORD,
-        'YIELD': TokenType.KEYWORD,
-        'TRY': TokenType.KEYWORD,
-
         'KEYWORD': TokenType.KEYWORD,
 
         # Literals
         'INTEGER': TokenType.INTEGER,
-        'DEC_INTEGER': TokenType.INTEGER,
-        'HEX_INTEGER': TokenType.INTEGER,
-        'BIN_INTEGER': TokenType.INTEGER,
         'BOOLEAN': TokenType.BOOLEAN,
         'STRING': TokenType.IDENTIFIER,  # Used for include!/asm!
 
@@ -177,60 +117,20 @@ class Lexer:
         """
         self.source = source
         self.filename = filename
-        if Lexer._lark_cache is None:
-            Lexer._lark_cache = _load_lark()
-        self.lark = Lexer._lark_cache
+        self.lark = Parser().lark
         self.tokens: List[Token] = []
-
-    def _parse_integer(self, value: str, line: int, column: int) -> int:
-        """Parse an integer literal (decimal, hex, or binary)."""
-        # Strip type suffix before parsing
-        for s in INTEGER_SUFFIXES:
-            if value.endswith(s):
-                value = value[:-len(s)]
-                break
-
-        # Remove underscores
-        clean_value = value.replace('_', '')
-
-        if value.startswith('0x') or value.startswith('0X'):
-            # Check if there are any digits after 0x
-            if len(clean_value) <= 2:  # Just "0x" or "0X"
-                raise LexerError(
-                    f"Invalid hexadecimal literal '{value}' - missing digits after 0x",
-                    line, column
-                )
-            return int(clean_value, 16)
-        elif value.startswith('0b') or value.startswith('0B'):
-            # Check if there are any digits after 0b
-            if len(clean_value) <= 2:  # Just "0b" or "0B"
-                raise LexerError(
-                    f"Invalid binary literal '{value}' - missing digits after 0b",
-                    line, column
-                )
-            return int(clean_value, 2)
-        else:
-            return int(clean_value, 10)
-
-    def _validate_identifier_not_register(self, identifier: str, line: int, column: int):
-        """
-        Validate identifier (a no-op).
-
-        Lowercase and mixed-case identifiers are valid variable names, even if they
-        match register names case-insensitively. Only uppercase names (A, B, X, Y,
-        STATUS, D, DBR, PBR, S) are treated as registers by the grammar.
-        """
-        # No validation needed - the grammar's REGISTER terminal only matches
-        # uppercase register names. All other identifiers are valid variable names.
-        pass
 
     def _convert_token(self, lark_token: LarkToken) -> Token:
         """Convert a Lark token to our Token type."""
         token_type = lark_token.type
 
         # Handle special cases
-        if token_type in ('DEC_INTEGER', 'HEX_INTEGER', 'BIN_INTEGER', 'INTEGER'):
-            value = self._parse_integer(lark_token.value, lark_token.line, lark_token.column)
+        if token_type == 'INTEGER':
+            digits, _ = split_integer_suffix(lark_token.value)
+            try:
+                value = parse_integer(digits)
+            except ValueError as e:
+                raise LexerError(str(e), lark_token.line, lark_token.column)
             return Token(TokenType.INTEGER, value, lark_token.line, lark_token.column)
 
         elif token_type == 'BOOLEAN':
@@ -260,52 +160,8 @@ class Lexer:
             return Token(our_type, lark_token.value, lark_token.line, lark_token.column)
 
     def _map_token_type(self, lark_type: str) -> TokenType:
-        """Map a Lark token type to our TokenType."""
-        if lark_type in self.TOKEN_TYPE_MAP:
-            return self.TOKEN_TYPE_MAP[lark_type]
-
-        # Handle operators and delimiters by their string value
-        operator_map = {
-            '+': TokenType.PLUS,
-            '-': TokenType.MINUS,
-            '*': TokenType.STAR,
-            '/': TokenType.SLASH,
-            '&': TokenType.AMPERSAND,
-            '|': TokenType.PIPE,
-            '^': TokenType.CARET,
-            '~': TokenType.TILDE,
-            '<<': TokenType.LSHIFT,
-            '>>': TokenType.RSHIFT,
-            '==': TokenType.EQ,
-            '!=': TokenType.NE,
-            '<': TokenType.LT,
-            '<=': TokenType.LE,
-            '>': TokenType.GT,
-            '>=': TokenType.GE,
-            '&&': TokenType.AND,
-            '||': TokenType.OR,
-            '!': TokenType.NOT,
-            '=': TokenType.ASSIGN,
-            '@': TokenType.AT,
-            '->': TokenType.ARROW,
-            '(': TokenType.LPAREN,
-            ')': TokenType.RPAREN,
-            '{': TokenType.LBRACE,
-            '}': TokenType.RBRACE,
-            '[': TokenType.LBRACKET,
-            ']': TokenType.RBRACKET,
-            ';': TokenType.SEMICOLON,
-            ':': TokenType.COLON,
-            ',': TokenType.COMMA,
-            '.': TokenType.DOT,
-            '#': TokenType.HASH,
-        }
-
-        if lark_type in operator_map:
-            return operator_map[lark_type]
-
-        # Default to identifier for unknown types
-        return TokenType.IDENTIFIER
+        """Map a Lark token type to our TokenType; unmapped types are IDENTIFIER."""
+        return self.TOKEN_TYPE_MAP.get(lark_type, TokenType.IDENTIFIER)
 
     def tokenize(self) -> List[Token]:
         """Tokenize the entire source code."""

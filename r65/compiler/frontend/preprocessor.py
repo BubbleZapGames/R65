@@ -67,7 +67,8 @@ class Preprocessor:
 
         try:
             expanded_items = self._expand_declarations(program.items, self.source_dir)
-            return ast.Program(items=expanded_items)
+            return ast.Program(items=expanded_items, doc=program.doc,
+                               source_loc=program.source_loc)
         finally:
             self._include_stack.pop()
 
