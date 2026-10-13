@@ -109,8 +109,8 @@ class TestStatementBodyRejected:
 
 
 class TestMacrosNestedInBlockExpressions:
-    """`_expand_expression` did not recurse into block or if expressions, so any
-    macro inside one survived to the HIR builder — free macros included."""
+    """A macro inside a block or if expression is expanded — free macros
+    included."""
 
     def test_free_macro_in_a_block_expression(self):
         src = ("macro_rules! inc($x:expr) { $x + 1 }\n"

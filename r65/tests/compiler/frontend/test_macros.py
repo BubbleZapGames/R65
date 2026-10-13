@@ -799,6 +799,23 @@ class TestMacroCompilation:
         # Should have INX three times from nested expansion
         assert assembly.count("INX") == 3
 
+    def test_compile_macro_in_trait_default_method(self):
+        """A trait default method body is expanded like any other body."""
+        from r65.compiler.main import compile_string
+
+        source = """
+        macro_rules! bump($reg:reg) { $reg++; }
+        struct P { x: u8 }
+        trait T { fn f(*self) { bump!(X); } }
+        impl T for P {}
+        #[ram]
+        static mut PP: P;
+        fn test() { PP.f(); }
+        """
+        assembly = compile_string(source)
+
+        assert assembly.count("INX") == 1
+
 
 # ============================================================================
 # Built-in stringify! Macro Tests  

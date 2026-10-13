@@ -6,7 +6,7 @@ Handles macro definition collection and invocation expansion.
 Works at the AST level, expanding macro invocations into AST nodes.
 """
 import re
-from dataclasses import replace
+from dataclasses import fields, replace
 from typing import Dict, List, Optional, Set, Tuple, Callable, TypeVar
 
 T = TypeVar('T')
@@ -187,266 +187,135 @@ class MacroExpander:
                     self._register_impl_macro(item.struct_name, macro)
 
     def _expand_declarations(self, items: List[ast.Declaration]) -> List[ast.Declaration]:
-        """Expand macro invocations in a list of declarations."""
-        result: List[ast.Declaration] = []
+        """Expand macro invocations in the program's item list.
 
+        Macro definitions are dropped (they were collected up front) and a
+        top-level invocation is replaced by the declarations it expands to;
+        every other item goes through `_expand_tree`.
+        """
+        result: List[ast.Declaration] = []
         for item in items:
             if isinstance(item, ast.MacroDecl):
-                # Skip macro definitions - they've been collected
                 continue
-            elif isinstance(item, ast.MacroInvocationStmt):
-                # Expand the macro invocation at top level
-                expanded = self._expand_top_level_invocation(
+            if isinstance(item, ast.MacroInvocationStmt):
+                result.extend(self._expand_top_level_invocation(
                     item.name, item.args, item.source_loc
-                )
-                result.extend(expanded)
-            elif isinstance(item, ast.FunctionDecl):
-                # Expand macros inside function body
-                new_item = self._expand_function(item)
-                result.append(new_item)
-            elif isinstance(item, ast.StaticDecl):
-                # Expand macros in static initializer
-                new_init = None
-                if item.initializer:
-                    new_init = self._expand_expression(item.initializer)
-                result.append(replace(item, initializer=new_init))
-            elif isinstance(item, ast.ConstDecl):
-                # Expand macros in const value
-                result.append(replace(item, value=self._expand_expression(item.value)))
-            elif isinstance(item, ast.ImplDecl):
-                # Expand macros inside impl method bodies
-                new_methods = [
-                    replace(method, body=self._expand_block(method.body))
-                    for method in item.methods
-                ]
-                new_constants = [
-                    replace(const, value=self._expand_expression(const.value))
-                    for const in item.constants
-                ]
-                # Impl macros are already collected; don't need to expand them
-                result.append(replace(item, methods=new_methods, constants=new_constants))
+                ))
             else:
-                # Keep other declarations as-is
-                result.append(item)
-
+                result.append(self._expand_tree(item))
         return result
 
-    def _expand_function(self, func: ast.FunctionDecl) -> ast.FunctionDecl:
-        """Expand macros inside a function body."""
-        # extern fn has no body — nothing to expand. replace() copies every
-        # field, so new FunctionDecl fields can't be silently dropped here.
-        new_body = self._expand_block(func.body) if func.body is not None else None
-        return replace(func, body=new_body)
+    # A macro definition holds its body as tokens, expanded at each use.
+    _UNEXPANDED_NODES = (ast.MacroDecl,)
 
-    def _expand_block(self, block: ast.Block) -> ast.Block:
-        """Expand macros inside a block."""
-        return replace(block, statements=self._expand_statements(block.statements))
+    # node class → its child field names (every init field but source_loc)
+    _child_field_cache: Dict[type, Tuple[str, ...]] = {}
 
-    def _expand_statements(self, statements: List[ast.Statement]) -> List[ast.Statement]:
-        """Expand macro invocations in a list of statements."""
-        result: List[ast.Statement] = []
+    @classmethod
+    def _child_fields(cls, node_type: type) -> Tuple[str, ...]:
+        names = cls._child_field_cache.get(node_type)
+        if names is None:
+            names = tuple(f.name for f in fields(node_type)
+                          if f.init and f.name != 'source_loc')
+            cls._child_field_cache[node_type] = names
+        return names
 
-        for stmt in statements:
-            if isinstance(stmt, ast.MacroInvocationStmtInner):
-                # Expand the macro invocation
-                expanded = self._expand_statement_invocation(
-                    stmt.name, stmt.args, stmt.source_loc
-                )
-                result.extend(expanded)
-            elif isinstance(stmt, ast.IfStmt):
-                new_stmt = self._expand_if(stmt)
-                result.append(new_stmt)
-            elif isinstance(stmt, ast.LoopStmt):
-                result.append(replace(stmt, body=self._expand_block(stmt.body)))
-            elif isinstance(stmt, ast.WhileStmt):
-                result.append(replace(
-                    stmt,
-                    condition=self._expand_expression(stmt.condition),
-                    body=self._expand_block(stmt.body),
-                ))
-            elif isinstance(stmt, ast.Block):
-                new_stmt = self._expand_block(stmt)
-                result.append(new_stmt)
-            elif isinstance(stmt, ast.LetStmt):
-                # Expand macros in let statement initializer
-                new_init = self._expand_expression(stmt.initializer) if stmt.initializer else None
-                result.append(replace(stmt, initializer=new_init))
-            elif isinstance(stmt, ast.MultiLetStmt):
-                new_init = self._expand_expression(stmt.initializer) if stmt.initializer else None
-                result.append(replace(stmt, initializer=new_init))
-            elif isinstance(stmt, ast.ExprStmt):
-                # Check if this is a macro invocation at statement level
-                if isinstance(stmt.expr, ast.MacroInvocation):
-                    # Expand as statements, not expression
-                    expanded = self._expand_statement_invocation(
-                        stmt.expr.name, stmt.expr.args, stmt.expr.source_loc
-                    )
-                    result.extend(expanded)
-                elif isinstance(stmt.expr, ast.MethodMacro):
-                    # Method macro invocation: receiver.name!(args)
-                    expanded = self._expand_method_macro(stmt.expr)
-                    result.extend(expanded)
-                else:
-                    # Expand macros in expression
-                    result.append(replace(stmt, expr=self._expand_expression(stmt.expr)))
-            elif isinstance(stmt, ast.ReturnStmt):
-                # Expand macros in return values
-                new_values = [self._expand_expression(v) for v in stmt.values]
-                result.append(replace(stmt, values=new_values))
-            elif isinstance(stmt, ast.ForStmt):
-                result.append(replace(
-                    stmt,
-                    start=self._expand_expression(stmt.start),
-                    end=self._expand_expression(stmt.end),
-                    body=self._expand_block(stmt.body),
-                ))
-            elif isinstance(stmt, ast.BreakStmt):
-                if stmt.value is not None:
-                    result.append(replace(stmt, value=self._expand_expression(stmt.value)))
-                else:
-                    result.append(stmt)
-            else:
-                # Keep other statements as-is
-                result.append(stmt)
+    def _expand_tree(self, node: ast.ASTNode) -> ast.ASTNode:
+        """Expand every macro invocation reachable from `node`.
 
-        return result
-
-    def _expand_expression(self, expr: ast.Expression) -> ast.Expression:
-        """Recursively expand macro invocations in an expression."""
-        if expr is None:
-            return None
-
-        if isinstance(expr, ast.MacroInvocation):
-            # Handle compile_error! - raises error at compile time
-            if expr.name == "compile_error":
-                msg = ' '.join(expr.args) if expr.args else "explicit compile error"
-                # Strip quotes if the message is a string literal
-                if msg.startswith('"') and msg.endswith('"'):
-                    msg = msg[1:-1]
-                raise MacroError(msg, expr.source_loc)
-            # Handle stringify! specially
-            if expr.name == "stringify":
-                return self._expand_stringify_expr(expr.args, expr.source_loc)
-            # Handle symbol! specially
-            if expr.name == "symbol":
-                return self._expand_symbol_expr(expr.args, expr.source_loc)
-            # Expand user-defined macro to expression
-            return self._expand_expression_invocation(expr.name, expr.args, expr.source_loc)
-
-        elif isinstance(expr, ast.MethodMacro):
+        The walk is generic over dataclass fields, so every node kind that can
+        hold a statement or an expression (trait default bodies, match arms,
+        block expressions, array sizes, ...) is covered without being named
+        here; only the invocation nodes themselves are special-cased. Returns
+        `node` itself when nothing below it changed, else a copy holding the
+        expanded children.
+        """
+        if isinstance(node, ast.MacroInvocation):
+            return self._expand_macro_expression(node)
+        if isinstance(node, ast.MethodMacro):
             # `receiver.name!(args)` used for its value rather than its effect.
-            return self._expand_method_macro_expr(expr)
+            return self._expand_method_macro_expr(node)
+        if isinstance(node, self._UNEXPANDED_NODES):
+            return node
 
-        elif isinstance(expr, ast.BlockExpression):
-            # `{ stmts; value }`: both parts can hold invocations.
-            return replace(
-                expr,
-                statements=self._expand_statements(expr.statements),
-                final_expr=self._expand_expression(expr.final_expr),
+        changes = {}
+        for name in self._child_fields(type(node)):
+            old = getattr(node, name)
+            new = self._expand_value(old)
+            if new is not old:
+                changes[name] = new
+        result = replace(node, **changes) if changes else node
+
+        # Compile-time string concatenation with the + operator
+        if (isinstance(result, ast.BinaryOp) and result.op == '+'
+                and isinstance(result.left, ast.StringLiteral)
+                and isinstance(result.right, ast.StringLiteral)):
+            return ast.StringLiteral(
+                value=result.left.value + result.right.value,
+                source_loc=result.source_loc
             )
+        return result
 
-        elif isinstance(expr, ast.IfExpression):
-            return replace(
-                expr,
-                condition=self._expand_expression(expr.condition),
-                then_block=self._expand_expression(expr.then_block),
-                else_block=self._expand_expression(expr.else_block),
-            )
+    def _expand_value(self, value):
+        """`_expand_tree` over one field value: a node, or a list or dict of them.
 
-        elif isinstance(expr, ast.BinaryOp):
-            left = self._expand_expression(expr.left)
-            right = self._expand_expression(expr.right)
-
-            # Compile-time string concatenation with + operator
-            if expr.op == '+' and isinstance(left, ast.StringLiteral) and isinstance(right, ast.StringLiteral):
-                return ast.StringLiteral(
-                    value=left.value + right.value,
-                    source_loc=expr.source_loc
-                )
-
-            return replace(expr, left=left, right=right)
-
-        elif isinstance(expr, ast.UnaryOp):
-            return replace(expr, operand=self._expand_expression(expr.operand))
-
-        elif isinstance(expr, ast.FunctionCall):
-            new_args = [self._expand_expression(arg) for arg in expr.args]
-            return replace(expr, func=self._expand_expression(expr.func), args=new_args)
-
-        elif isinstance(expr, ast.ArrayIndex):
-            return replace(
-                expr,
-                array=self._expand_expression(expr.array),
-                index=self._expand_expression(expr.index),
-            )
-
-        elif isinstance(expr, ast.FieldAccess):
-            return replace(expr, base=self._expand_expression(expr.base))
-
-        elif isinstance(expr, ast.TypeCast):
-            return replace(expr, expr=self._expand_expression(expr.expr))
-
-        elif isinstance(expr, ast.Dereference):
-            return replace(expr, pointer=self._expand_expression(expr.pointer))
-
-        elif isinstance(expr, ast.AddressOf):
-            return replace(expr, operand=self._expand_expression(expr.operand))
-
-        elif isinstance(expr, ast.ArrayLiteralExpr):
-            new_elements = [self._expand_expression(e) for e in expr.elements]
-            return replace(expr, elements=new_elements)
-
-        elif isinstance(expr, ast.ArrayFillExpr):
-            return replace(
-                expr,
-                value=self._expand_expression(expr.value),
-                count=self._expand_expression(expr.count),
-            )
-
-        elif isinstance(expr, ast.StructLiteralExpr):
-            new_fields = [
-                replace(field, value=self._expand_expression(field.value))
-                for field in expr.fields
-            ]
-            return replace(expr, fields=new_fields)
-
-        elif isinstance(expr, ast.MatchExpression):
-            new_arms = []
-            for arm in expr.arms:
-                # An arm body is an expression or a statement
-                # (Block/return/break/continue); a Block needs the statement walker.
-                if isinstance(arm.body, ast.Block):
-                    new_body = self._expand_block(arm.body)
+        A statement-position invocation can expand to several statements, so
+        within a list it is spliced in place of the invocation.
+        """
+        if isinstance(value, ast.ASTNode):
+            return self._expand_tree(value)
+        if isinstance(value, list):
+            result = []
+            changed = False
+            for item in value:
+                spliced = self._expand_statement_macro(item)
+                if spliced is not None:
+                    result.extend(spliced)
+                    changed = True
                 else:
-                    # Expressions, plus return/break/continue (which carry no
-                    # macros in practice) — pass through the expression path.
-                    new_body = self._expand_expression(arm.body)
-                new_arms.append(replace(arm, body=new_body))
-            return replace(
-                expr,
-                scrutinee=self._expand_expression(expr.scrutinee),
-                arms=new_arms,
+                    new = self._expand_value(item)
+                    changed = changed or new is not item
+                    result.append(new)
+            return result if changed else value
+        if isinstance(value, dict):
+            result = {k: self._expand_value(v) for k, v in value.items()}
+            changed = any(result[k] is not value[k] for k in value)
+            return result if changed else value
+        return value
+
+    def _expand_statement_macro(self, item) -> Optional[List[ast.Statement]]:
+        """The statements a statement-position invocation expands to, or None
+        when `item` is not one."""
+        if isinstance(item, ast.MacroInvocationStmtInner):
+            return self._expand_statement_invocation(
+                item.name, item.args, item.source_loc
             )
+        if isinstance(item, ast.ExprStmt):
+            if isinstance(item.expr, ast.MacroInvocation):
+                return self._expand_statement_invocation(
+                    item.expr.name, item.expr.args, item.expr.source_loc
+                )
+            if isinstance(item.expr, ast.MethodMacro):
+                return self._expand_method_macro(item.expr)
+        return None
 
-        elif isinstance(expr, ast.LoopExpression):
-            return replace(expr, body=self._expand_block(expr.body))
-
-        elif isinstance(expr, ast.Assignment):
-            return replace(
-                expr,
-                target=self._expand_expression(expr.target),
-                value=self._expand_expression(expr.value),
-            )
-
-        elif isinstance(expr, ast.CompoundAssignment):
-            return replace(
-                expr,
-                target=self._expand_expression(expr.target),
-                value=self._expand_expression(expr.value),
-            )
-
-        # Leaf expressions don't need transformation
-        return expr
+    def _expand_macro_expression(self, expr: ast.MacroInvocation) -> ast.Expression:
+        """Expand `name!(args)` in expression position."""
+        # Handle compile_error! - raises error at compile time
+        if expr.name == "compile_error":
+            msg = ' '.join(expr.args) if expr.args else "explicit compile error"
+            # Strip quotes if the message is a string literal
+            if msg.startswith('"') and msg.endswith('"'):
+                msg = msg[1:-1]
+            raise MacroError(msg, expr.source_loc)
+        # Handle stringify! specially
+        if expr.name == "stringify":
+            return self._expand_stringify_expr(expr.args, expr.source_loc)
+        # Handle symbol! specially
+        if expr.name == "symbol":
+            return self._expand_symbol_expr(expr.args, expr.source_loc)
+        # Expand user-defined macro to expression
+        return self._expand_expression_invocation(expr.name, expr.args, expr.source_loc)
 
     def _expand_expression_invocation(
         self,
@@ -467,7 +336,7 @@ class MacroExpander:
                     stmt = func.body.statements[0]
                     if isinstance(stmt, ast.LetStmt) and stmt.initializer:
                         # Recursively expand any nested macro invocations
-                        expanded_expr = self._expand_expression(stmt.initializer)
+                        expanded_expr = self._expand_tree(stmt.initializer)
                         # Override source_loc to point to invocation site
                         self._override_source_loc(expanded_expr, source_loc)
                         return expanded_expr
@@ -478,19 +347,6 @@ class MacroExpander:
             )
 
         return self._invoke_macro(name, args, source_loc, parse_as_expression)
-
-    def _expand_if(self, stmt: ast.IfStmt) -> ast.IfStmt:
-        """Expand macros inside an if statement."""
-        new_condition = self._expand_expression(stmt.condition)
-        new_then = self._expand_block(stmt.then_block)
-        new_else = None
-        if stmt.else_block:
-            if isinstance(stmt.else_block, ast.IfStmt):
-                new_else = self._expand_if(stmt.else_block)
-            else:
-                new_else = self._expand_block(stmt.else_block)
-
-        return replace(stmt, condition=new_condition, then_block=new_then, else_block=new_else)
 
     # =========================================================================
     # Impl (Method) Macros
@@ -724,12 +580,8 @@ class MacroExpander:
                     self.macros[item.name] = self._make_definition(
                         item.name, item.arms, item.source_loc
                     )
-                elif isinstance(item, ast.FunctionDecl):
-                    # Expand macros inside function bodies
-                    expanded_func = self._expand_function(item)
-                    result.append(expanded_func)
                 else:
-                    result.append(item)
+                    result.append(self._expand_tree(item))
 
             return result
 
@@ -771,7 +623,7 @@ class MacroExpander:
             if program.items and isinstance(program.items[0], ast.FunctionDecl):
                 func = program.items[0]
                 # Recursively expand any nested macro invocations
-                expanded_stmts = self._expand_statements(func.body.statements)
+                expanded_stmts = self._expand_value(func.body.statements)
                 # Override source_loc on expanded statements to point to invocation site
                 for stmt in expanded_stmts:
                     self._override_source_loc(stmt, source_loc)
@@ -1422,7 +1274,7 @@ class MacroExpander:
             program = parse(wrapped, "<format>")
             if program.items and isinstance(program.items[0], ast.FunctionDecl):
                 func = program.items[0]
-                expanded_stmts = self._expand_statements(func.body.statements)
+                expanded_stmts = self._expand_value(func.body.statements)
                 for stmt in expanded_stmts:
                     self._override_source_loc(stmt, source_loc)
                 return expanded_stmts
@@ -1940,10 +1792,9 @@ class MacroExpander:
 
     def _override_source_loc(self, node: ast.ASTNode, source_loc: Optional[SourceLocation]):
         """
-        Override source_loc on an AST node and its children to point to the macro invocation site.
-
-        This ensures expanded macro code has source_loc pointing to where the macro was called,
-        not where it was defined.
+        Point `node` and every node below it at the macro invocation site, so
+        expanded code reports where the macro was called, not where it was
+        defined. The walk follows the same dataclass fields as `_expand_tree`.
 
         Args:
             node: AST node to update
@@ -1952,70 +1803,17 @@ class MacroExpander:
         if source_loc is None:
             return
 
-        # Override this node's source_loc
-        if hasattr(node, 'source_loc'):
-            node.source_loc = source_loc
-
-        # Recursively process children based on node type
-        if isinstance(node, ast.ExprStmt):
-            self._override_source_loc(node.expr, source_loc)
-        elif isinstance(node, ast.LetStmt):
-            if node.initializer:
-                self._override_source_loc(node.initializer, source_loc)
-        elif isinstance(node, ast.IfStmt):
-            if node.condition:
-                self._override_source_loc(node.condition, source_loc)
-            if node.then_block:
-                self._override_source_loc(node.then_block, source_loc)
-            if node.else_block:
-                self._override_source_loc(node.else_block, source_loc)
-        elif isinstance(node, ast.WhileStmt):
-            if node.condition:
-                self._override_source_loc(node.condition, source_loc)
-            if node.body:
-                self._override_source_loc(node.body, source_loc)
-        elif isinstance(node, ast.LoopStmt):
-            if node.body:
-                self._override_source_loc(node.body, source_loc)
-        elif isinstance(node, ast.LoopExpression):
-            if node.body:
-                self._override_source_loc(node.body, source_loc)
-        elif isinstance(node, ast.BreakStmt):
-            if node.value:
-                self._override_source_loc(node.value, source_loc)
-        elif isinstance(node, ast.ForStmt):
-            if node.start:
-                self._override_source_loc(node.start, source_loc)
-            if node.end:
-                self._override_source_loc(node.end, source_loc)
-            if node.body:
-                self._override_source_loc(node.body, source_loc)
-        elif isinstance(node, ast.Block):
-            for stmt in node.statements:
-                self._override_source_loc(stmt, source_loc)
-        elif isinstance(node, ast.BinaryOp):
-            self._override_source_loc(node.left, source_loc)
-            self._override_source_loc(node.right, source_loc)
-        elif isinstance(node, ast.UnaryOp):
-            self._override_source_loc(node.operand, source_loc)
-        elif isinstance(node, ast.Assignment):
-            self._override_source_loc(node.target, source_loc)
-            self._override_source_loc(node.value, source_loc)
-        elif isinstance(node, ast.CompoundAssignment):
-            self._override_source_loc(node.target, source_loc)
-            self._override_source_loc(node.value, source_loc)
-        elif isinstance(node, ast.FunctionCall):
-            if node.func:
-                self._override_source_loc(node.func, source_loc)
-            for arg in node.args:
-                self._override_source_loc(arg, source_loc)
-        elif isinstance(node, ast.ArrayIndex):
-            self._override_source_loc(node.array, source_loc)
-            self._override_source_loc(node.index, source_loc)
-        elif isinstance(node, ast.FieldAccess):
-            self._override_source_loc(node.base, source_loc)
-        elif isinstance(node, ast.Dereference):
-            self._override_source_loc(node.pointer, source_loc)
+        pending = [node]
+        while pending:
+            value = pending.pop()
+            if isinstance(value, ast.ASTNode):
+                value.source_loc = source_loc
+                pending.extend(getattr(value, name)
+                               for name in self._child_fields(type(value)))
+            elif isinstance(value, list):
+                pending.extend(value)
+            elif isinstance(value, dict):
+                pending.extend(value.values())
 
 
 def expand_macros(program: ast.Program) -> ast.Program:

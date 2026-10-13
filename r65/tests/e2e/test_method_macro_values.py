@@ -80,7 +80,7 @@ class TestMethodMacroValues:
         assert r.success, f"Failures: {r.failures}"
 
     def test_free_macro_in_a_block_expression(self, e2e):
-        """Was silently unexpanded before `_expand_expression` recursed into blocks."""
+        """A free macro inside a block expression is expanded."""
         r = e2e.run('''
             macro_rules! inc($x:expr) { $x + 1 }
             #[zeropage(0x10)] static mut V: u8;

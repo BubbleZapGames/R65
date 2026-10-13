@@ -16,6 +16,7 @@ Advanced usage (for compiler development):
 """
 import sys
 import argparse
+from dataclasses import dataclass
 from pathlib import Path
 from r65.compiler.frontend import tokenize, parse, preprocess, expand_macros, LexerError, ParseError, PreprocessorError, MacroError, TokenType, ast
 from r65.compiler.hir import HIRBuilder, HIRError
@@ -69,13 +70,11 @@ def dump_ast(source: str, filename: str):
     print("=" * 80)
 
 
-def dump_hir(source: str, filename: str):
+def dump_hir(source: str, filename: str, cfg_options: list[str] = None,
+             include_paths: list[str] = None):
     """Dump HIR."""
-    program = parse(source, filename)
-    program = preprocess(program, filename)
-    program = expand_macros(program)
-    builder = HIRBuilder(source_file=filename)
-    hir_program = builder.build_program(program)
+    hir_program = run_frontend(source, filename, cfg_options=cfg_options,
+                               include_paths=include_paths, typecheck=False).hir_program
 
     print(f"HIR for {filename}:")
     print("=" * 80)
@@ -93,15 +92,11 @@ def dump_hir(source: str, filename: str):
     print("=" * 80)
 
 
-def dump_mir(source: str, filename: str):
+def dump_mir(source: str, filename: str, cfg_options: list[str] = None,
+             include_paths: list[str] = None):
     """Dump MIR."""
-    program = parse(source, filename)
-    program = preprocess(program, filename)
-    program = expand_macros(program)
-    builder = HIRBuilder(source_file=filename)
-    hir_program = builder.build_program(program)
-    type_checker = TypeChecker(hir_program)
-    type_checker.check()
+    hir_program = run_frontend(source, filename, cfg_options=cfg_options,
+                               include_paths=include_paths).hir_program
     mir_builder = MIRBuilder()
     mir_program = mir_builder.build_program(hir_program)
 
@@ -172,6 +167,107 @@ def _parse_lint_codes(values):
     return out
 
 
+@dataclass
+class FrontendResult:
+    """What run_frontend hands back: the HIR program and the warnings so far."""
+    hir_program: object
+    hir_warnings: list
+    typeck_warnings: list
+
+
+def run_frontend(source: str, filename: str, cfg_options: list[str] = None,
+                 include_paths: list[str] = None, typecheck: bool = True,
+                 log=None) -> FrontendResult:
+    """Parse, preprocess, expand macros, inject the built-in traits, build HIR
+    and (unless `typecheck` is False) type check.
+
+    Every path that needs a HIR program — compile_source, compile_string and
+    the dump / --stop-after paths — goes through here, so they all see the same
+    program. Errors propagate; callers report them with _exit_with_error.
+
+    Args:
+        cfg_options: cfg conditions (e.g. ['snes'])
+        include_paths: include search paths
+        log: called with a progress line before each phase (verbose mode)
+    """
+    include_paths = include_paths or []
+    cfg_evaluator = (CfgEvaluator.from_string_list(cfg_options)
+                     if cfg_options else None)
+    log = log or (lambda msg: None)
+
+    log("  [1/9] Parsing...")
+    program = parse(source, filename)
+
+    log("  [2/9] Preprocessing...")
+    program = preprocess(program, filename, include_paths=include_paths)
+
+    log("  [3/9] Expanding macros...")
+    program = expand_macros(program)
+    _inject_builtin_traits(program)
+
+    log("  [4/9] Building HIR...")
+    builder = HIRBuilder(source_file=filename, cfg_evaluator=cfg_evaluator,
+                         include_paths=include_paths)
+    hir_program = builder.build_program(program)
+
+    typeck_warnings = []
+    if typecheck:
+        log("  [5/9] Type checking...")
+        type_checker = TypeChecker(hir_program)
+        type_checker.check()
+        typeck_warnings = type_checker.warnings
+
+    return FrontendResult(hir_program, builder.warnings, typeck_warnings)
+
+
+# Diagnostic label per compiler error class, checked in order.
+_ERROR_LABELS = (
+    ((LexerError, ParseError), "error"),
+    (PreprocessorError, "preprocessor error"),
+    (MacroError, "macro error"),
+    (HIRError, "error"),
+    (TypeCheckError, "type error"),
+    (CodegenError, "codegen error"),
+    (MIRError, "MIR error"),
+)
+
+
+def _exit_with_error(e: Exception, source: str, verbose: bool = False):
+    """Print `e` with its source context and exit 1.
+
+    Every CLI path (compile, dumps, --stop-after) reports errors through here.
+    """
+    for classes, label in _ERROR_LABELS:
+        if isinstance(e, classes):
+            formatted = format_error(
+                e.message,
+                source_loc=e.source_loc,
+                source_text=source,
+                hint=getattr(e, 'hint', None),
+                error_type=label
+            )
+            print(f"\n{formatted}", file=sys.stderr)
+            sys.exit(1)
+
+    # Any other exception: use its source_loc if it carries one
+    source_loc = getattr(e, 'source_loc', None)
+    message = getattr(e, 'message', str(e))
+    if source_loc:
+        formatted = format_error(
+            message,
+            source_loc=source_loc,
+            source_text=source,
+            error_type="error"
+        )
+        print(f"\n{formatted}", file=sys.stderr)
+    else:
+        print(f"\nCompilation error: {e}", file=sys.stderr)
+    if verbose:
+        import traceback
+        traceback.print_exc(file=sys.stderr)
+    sys.exit(1)
+
+
 def compile_source(source: str, filename: str, output_file: str = None,
                    verbose: bool = False, quiet: bool = False, cfg_options: list[str] = None,
                    include_paths: list[str] = None, opt_level: int = 1, debug: bool = False,
@@ -204,61 +300,30 @@ def compile_source(source: str, filename: str, output_file: str = None,
         if not quiet:
             print(msg, file=sys.stderr)
 
-    # Normalize include paths
-    include_paths = include_paths or []
-    if verbose and include_paths:
-        log(f"  Include paths: {include_paths}")
-
-    # Create cfg evaluator if options provided
-    cfg_evaluator = None
-    if cfg_options:
-        cfg_evaluator = CfgEvaluator.from_string_list(cfg_options or [])
-        if verbose:
+    if verbose:
+        if include_paths:
+            log(f"  Include paths: {include_paths}")
+        if cfg_options:
             log(f"  Config with cfg options: {cfg_options}")
 
     try:
-        # Parse
         if verbose:
             log(f"Compiling {filename}...")
-            log(f"  [1/8] Parsing...")
-        program = parse(source, filename)
-
-        # Preprocess (expand includes)
-        if verbose:
-            log(f"  [2/8] Preprocessing...")
-        program = preprocess(program, filename, include_paths=include_paths)
-
-        # Expand macros
-        if verbose:
-            log(f"  [3/8] Expanding macros...")
-        program = expand_macros(program)
-
-        # Inject built-in trait declarations
-        _inject_builtin_traits(program)
-
-        # Build HIR
-        if verbose:
-            log(f"  [4/8] Building HIR...")
-        builder = HIRBuilder(source_file=filename, cfg_evaluator=cfg_evaluator, include_paths=include_paths)
-        hir_program = builder.build_program(program)
+        frontend = run_frontend(source, filename, cfg_options=cfg_options,
+                                include_paths=include_paths,
+                                log=log if verbose else None)
+        hir_program = frontend.hir_program
 
         # Print HIR warnings
-        if builder.warnings:
-            for warning in builder.warnings:
-                print(f"warning: {warning}", file=sys.stderr)
+        for warning in frontend.hir_warnings:
+            print(f"warning: {warning}", file=sys.stderr)
 
-        # Type check
-        if verbose:
-            log(f"  [5/8] Type checking...")
-        type_checker = TypeChecker(hir_program)
-        type_checker.check()
-
-        # Print warnings
-        if type_checker.warnings:
+        # Print type-check warnings
+        if frontend.typeck_warnings:
             log(f"\n{'=' * 80}")
-            log(f"Warnings ({len(type_checker.warnings)}):")
+            log(f"Warnings ({len(frontend.typeck_warnings)}):")
             log(f"{'=' * 80}")
-            for warning in type_checker.warnings:
+            for warning in frontend.typeck_warnings:
                 log(f"{warning}")
             log(f"{'=' * 80}\n")
 
@@ -266,7 +331,7 @@ def compile_source(source: str, filename: str, output_file: str = None,
         lint_had_denied = False
         if lint or lint_only:
             if verbose:
-                log(f"  [5.5/8] Linting...")
+                log(f"  [5.5/9] Linting...")
             from pathlib import Path
             from r65.compiler.lint import load_config, run_lint, LintConfigError
             allow_set = _parse_lint_codes(lint_allow)
@@ -380,95 +445,8 @@ def compile_source(source: str, filename: str, output_file: str = None,
         if lint_had_denied:
             sys.exit(1)
 
-    except (LexerError, ParseError) as e:
-        # Use format_error for nice display with source context
-        hint = getattr(e, 'hint', None)
-        formatted = format_error(
-            e.message,
-            source_loc=e.source_loc,
-            source_text=source,
-            hint=hint
-        )
-        print(f"\n{formatted}", file=sys.stderr)
-        sys.exit(1)
-    except PreprocessorError as e:
-        hint = getattr(e, 'hint', None)
-        formatted = format_error(
-            e.message,
-            source_loc=e.source_loc,
-            source_text=source,
-            hint=hint,
-            error_type="preprocessor error"
-        )
-        print(f"\n{formatted}", file=sys.stderr)
-        sys.exit(1)
-    except MacroError as e:
-        # Use format_error for macro errors with source context
-        hint = getattr(e, 'hint', None)
-        formatted = format_error(
-            e.message,
-            source_loc=e.source_loc,
-            source_text=source,
-            hint=hint,
-            error_type="macro error"
-        )
-        print(f"\n{formatted}", file=sys.stderr)
-        sys.exit(1)
-    except HIRError as e:
-        # Use format_error for HIR errors with source context
-        hint = getattr(e, 'hint', None)
-        formatted = format_error(
-            e.message,
-            source_loc=e.source_loc,
-            source_text=source,
-            hint=hint,
-            error_type="error"
-        )
-        print(f"\n{formatted}", file=sys.stderr)
-        sys.exit(1)
-    except TypeCheckError as e:
-        # Use format_error for type errors with source context
-        hint = getattr(e, 'hint', None)
-        formatted = format_error(
-            e.message,
-            source_loc=e.source_loc,
-            source_text=source,
-            hint=hint,
-            error_type="type error"
-        )
-        print(f"\n{formatted}", file=sys.stderr)
-        sys.exit(1)
-    except (MIRError, CodegenError) as e:
-        hint = getattr(e, 'hint', None)
-        error_type = "codegen error" if isinstance(e, CodegenError) else "MIR error"
-        formatted = format_error(
-            e.message,
-            source_loc=e.source_loc,
-            source_text=source,
-            hint=hint,
-            error_type=error_type
-        )
-        print(f"\n{formatted}", file=sys.stderr)
-        sys.exit(1)
     except Exception as e:
-        # Fallback: try to use format_error if exception has source_loc
-        source_loc = getattr(e, 'source_loc', None)
-        message = getattr(e, 'message', str(e))
-        if source_loc:
-            formatted = format_error(
-                message,
-                source_loc=source_loc,
-                source_text=source,
-                error_type="error"
-            )
-            print(f"\n{formatted}", file=sys.stderr)
-        else:
-            print(f"\nCompilation error: {e}", file=sys.stderr)
-        if verbose:
-            import traceback
-            traceback.print_exc(file=sys.stderr)
-        sys.exit(1)
-
+        _exit_with_error(e, source, verbose)
 
 def compile_string(source: str, filename: str = "<string>", abi_model=None,
                    cfg_options: list[str] = None, include_paths: list[str] = None) -> str:
@@ -487,23 +465,8 @@ def compile_string(source: str, filename: str = "<string>", abi_model=None,
     """
     from r65.compiler.analysis import RecursionChecker
 
-    cfg_evaluator = None
-    if cfg_options:
-        cfg_evaluator = CfgEvaluator.from_string_list(cfg_options)
-
-    program = parse(source, filename)
-    program = preprocess(program, filename, include_paths=include_paths or [])
-    program = expand_macros(program)
-
-    # Same built-in traits the CLI injects; without this any source with an
-    # `impl ToString for ...` fails here but compiles under r65c.
-    _inject_builtin_traits(program)
-
-    builder = HIRBuilder(source_file=filename, cfg_evaluator=cfg_evaluator,
-                         include_paths=include_paths or [])
-    hir_program = builder.build_program(program)
-    type_checker = TypeChecker(hir_program)
-    type_checker.check()
+    hir_program = run_frontend(source, filename, cfg_options=cfg_options,
+                               include_paths=include_paths).hir_program
     mir_abi_kind = abi_model.kind if abi_model else ABIKind.DEFAULT
     mir_builder = MIRBuilder(abi_kind=mir_abi_kind)
     mir_program = mir_builder.build_program(hir_program)
@@ -682,45 +645,30 @@ examples:
         print(f"Error reading file: {e}", file=sys.stderr)
         sys.exit(1)
 
-    # Handle debug dumps
+    frontend_opts = dict(cfg_options=args.cfg_options,
+                         include_paths=args.include_paths)
+
     try:
         if args.dump_tokens:
             dump_tokens(source, filename)
             return
 
-        if args.dump_ast:
+        if args.dump_ast or args.stop_after == 'parse':
             dump_ast(source, filename)
             return
 
-        if args.dump_hir:
-            dump_hir(source, filename)
+        if args.dump_hir or args.stop_after == 'hir':
+            dump_hir(source, filename, **frontend_opts)
             return
 
-        if args.dump_mir:
-            dump_mir(source, filename)
+        if args.dump_mir or args.stop_after == 'mir':
+            dump_mir(source, filename, **frontend_opts)
             return
 
-        # Handle stop-after
-        if args.stop_after == 'parse':
-            dump_ast(source, filename)
-            return
-        elif args.stop_after == 'hir':
-            dump_hir(source, filename)
-            return
-        elif args.stop_after == 'typecheck':
-            # Just run through typecheck and report success
-            program = parse(source, filename)
-            program = preprocess(program, filename)
-            program = expand_macros(program)
-            builder = HIRBuilder(source_file=filename)
-            hir_program = builder.build_program(program)
-            type_checker = TypeChecker(hir_program)
-            type_checker.check()
+        if args.stop_after == 'typecheck':
+            run_frontend(source, filename, **frontend_opts)
             if not args.quiet:
                 print(f"✓ Type checking succeeded for {filename}", file=sys.stderr)
-            return
-        elif args.stop_after == 'mir':
-            dump_mir(source, filename)
             return
 
         # Normal compilation
@@ -737,16 +685,10 @@ examples:
                        lint_allow=args.lint_allow, lint_deny=args.lint_deny,
                        lint_config_path=args.lint_config)
 
-    except (LexerError, ParseError, PreprocessorError, MacroError, HIRError, TypeCheckError) as e:
-        # These are already handled in dump/compile functions
-        raise
     except Exception as e:
-        print(f"Error: {e}", file=sys.stderr)
-        if args.verbose:
-            import traceback
-            traceback.print_exc(file=sys.stderr)
-        sys.exit(1)
-
+        # compile_source reports its own errors; this reports the dump and
+        # --stop-after paths' errors the same way.
+        _exit_with_error(e, source, args.verbose)
 
 if __name__ == '__main__':
     main()
