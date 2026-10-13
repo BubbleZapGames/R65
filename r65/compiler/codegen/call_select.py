@@ -302,7 +302,7 @@ class CallInstructionSelector(BaseSelector):
         if needs_d_management:
             self._emit_d_restore_before_call()
 
-        # Step 0.7b: SET_DBR: save ptr-bank DBR and set DBR to code bank for callee
+        # Step 0.7b: SET_DBR: save ptr-bank DBR and set DBR to the data bank for callee
         if needs_dbr_management:
             self._emit_dbr_save_before_call()
 
@@ -2430,17 +2430,17 @@ class CallInstructionSelector(BaseSelector):
     # ========================================================================
 
     def _emit_dbr_save_before_call(self):
-        """Save ptr-bank DBR and set DBR to code bank before a call.
+        """Save ptr-bank DBR and set DBR to the data bank before a call.
 
         Under SET_DBR strategy, DBR is set to the far pointer's bank.
-        Callees expect DBR to be the program bank ($00, or $80 under FastROM), so we
-        save DBR (PHB), push code bank (PHK), and pop it into DBR (PLB).
+        Callees expect DBR to be the data bank ($00, or $80 under FastROM), so we
+        save DBR (PHB) and load the data bank (Emitter.data_bank_load).
         """
         self._emit_instr(Opcode.PHB, comment="Save ptr-bank DBR before call")
         self.region_state.stack_tracker.push(1)
-        self._emit_instr(Opcode.PHK, comment="Push code bank")
-        self._emit_instr(Opcode.PLB, comment="Set DBR to code bank for callee")
-        # PHK pushes 1, PLB pops 1 — net zero for stack tracker
+        self.emitter.emit_data_bank_load("Set DBR to the data bank for callee",
+                                         self.parent._current_source_loc)
+        # The load's pushes and pulls balance — net zero for stack tracker
 
     def _emit_dbr_restore_after_call(self):
         """Restore ptr-bank DBR after a call returns."""

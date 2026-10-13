@@ -59,13 +59,25 @@ the code as well as set the header bit. For a LoROM build the compiler:
       JML nmi_handler
   ```
 
-- sets `DBR = PBR` (`PHK` / `PLB`) in the entry prologue, so absolute ROM data
-  reads use the fast mirror too, not just opcode fetch. Hardware registers
-  (`$80:2100`) and low RAM (`$80:0000-1FFF`) mirror into `$80-$BF` as well, so
-  absolute accesses to them are unaffected.
+- sets DBR to the data bank `$80` (`PHK` / `PLB`) in the entry prologue, so
+  absolute ROM data reads use the fast mirror too, not just opcode fetch.
+  Hardware registers (`$80:2100`) and low RAM (`$80:0000-1FFF`) mirror into
+  `$80-$BF` as well, so absolute accesses to them are unaffected.
 
 HiROM already assembles at `.BASE $C0`, which is the FastROM-capable region, so a
-HiROM build only gains the MEMSEL write.
+HiROM build gains the MEMSEL write and the same `$80` data bank (`PEA $8080` /
+`PLB` / `PLB` - PBR is `$C0`, which has no hardware registers or low RAM).
+
+### The data bank
+
+Outside a far-pointer or `databank` bracket, DBR holds the *data bank*: `$00`,
+or `$80` under FastROM. Code that has changed DBR (a far-self trait method, a
+function reading a far pointer through DBR before it calls out) puts the data
+bank back, never PBR: HiROM code runs in `$C0-$FF`, which maps no hardware
+registers or low RAM, and LoROM code past bank 0 would see its own bank's ROM
+at `$8000`. A `#[mode(databank=...)]` function sets DBR to its own bank, as
+asked; under HiROM that bank has no I/O, so its body should not touch
+hardware registers or low RAM.
 
 Measured on a ROM-fetch-heavy loop: 102 scanlines SlowROM vs 87 FastROM, ~15%
 faster. The theoretical ceiling is 25% (8 to 6 master cycles per access); real

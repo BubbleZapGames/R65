@@ -18,14 +18,16 @@ from r65.compiler.typeck.errors import TypeCheckError
 class PointerValidator:
     """Validates pointer operations."""
 
-    def __init__(self, check_expression_fn: Callable):
+    def __init__(self, check_expression_fn: Callable, hirom: bool = False):
         """
         Initialize with expression checker callback.
 
         Args:
             check_expression_fn: Function to type check expressions
+            hirom: The program is HiROM, so no ROM static is near
         """
         self.check_expression = check_expression_fn
+        self.hirom = hirom
 
     def check_dereference(self, expr: HIRDereference) -> TypeInfo:
         """Type check pointer dereference (*ptr)."""
@@ -59,7 +61,7 @@ class PointerValidator:
             )
 
         # Determine if far pointer is needed based on storage attribute
-        is_far = self._needs_far_pointer(expr.operand)
+        is_far = self._needs_far_pointer(expr.operand, self.hirom)
 
         pointer_type = PointerTypeInfo(is_far=is_far, pointee_type=operand_type)
         expr.expr_type = pointer_type
@@ -119,7 +121,7 @@ class PointerValidator:
             )
 
     @staticmethod
-    def _needs_far_pointer(operand: HIRExpression) -> bool:
+    def _needs_far_pointer(operand: HIRExpression, hirom: bool) -> bool:
         """
         Determine if taking address of operand requires a far pointer.
 
@@ -127,17 +129,21 @@ class PointerValidator:
         - #[ram] variables: stored in bank $7E ($7E2000-$7FFFFF)
         - ROM variables (immutable statics) outside bank 0: an explicit
           #[bank(n)] with n != 0, or #[bank(auto)] (placed at link time)
+        - every ROM variable under HiROM: ROM bank 0 is $C0:0000-$FFFF, and
+          the data bank ($00/$80) a near pointer reads through maps only its
+          upper half
         - an element reached through a far pointer
 
         Near pointers (16-bit) are sufficient for:
         - #[zeropage] variables: bank 0 ($0000-$00FF)
         - #[lowram] variables: bank 0 ($0000-$1FFF)
         - #[hw] variables: typically bank 0
-        - ROM variables in bank 0
+        - ROM variables in bank 0 under LoROM ($00:8000 / $80:8000)
         - Local variables: on the stack, which is always in bank 0
 
         Args:
             operand: The expression being addressed
+            hirom: The program is HiROM
 
         Returns:
             True if far pointer needed, False for near pointer
@@ -178,7 +184,7 @@ class PointerValidator:
             # ROM: bank_attr carries the #[bank] context; a bank number of
             # None is #[bank(auto)], which may land anywhere.
             bank_attr = static_decl.bank_attr
-            return bank_attr is not None and bank_attr.bank_number != 0
+            return hirom or (bank_attr is not None and bank_attr.bank_number != 0)
 
         if not isinstance(static_decl.storage_attr, StorageAttribute):
             return False

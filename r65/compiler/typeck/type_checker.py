@@ -120,7 +120,8 @@ class TypeChecker:
     def pointer_validator(self) -> PointerValidator:
         """Lazy initialization of pointer validator."""
         if self._pointer_validator is None:
-            self._pointer_validator = PointerValidator(self.check_expression)
+            self._pointer_validator = PointerValidator(self.check_expression,
+                                                       self.program.hirom)
         return self._pointer_validator
 
     def warn(self, message: str, source_loc=None):

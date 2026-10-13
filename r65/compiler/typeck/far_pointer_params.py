@@ -3,10 +3,10 @@
 Near-to-far promotion of pointer parameters.
 
 A `*T` parameter is near: 16 bits, read through the data bank. When any
-direct call passes it the address of something outside bank 0 (`&BUF` on a
-`#[ram]` static, a ROM static in another bank), a near pointer cannot reach
-the data, so the parameter is retyped to `far *T` for the whole program. Its
-other callers then pass a 24-bit pointer too, and the MIR builder takes the
+direct call passes it an address a near pointer cannot reach (`&BUF` on a
+`#[ram]` static, a ROM static in another bank or under HiROM; see
+PointerValidator._needs_far_pointer), the parameter is retyped to `far *T`
+for the whole program. Its other callers then pass a 24-bit pointer too, and the MIR builder takes the
 D=S path (indirect long addressing) for the function's dereferences.
 
 This is the one place type checking changes a declaration: it runs as an
@@ -80,7 +80,7 @@ def promote_far_pointer_params(program: HIRProgram) -> List[FarPromotion]:
                     inner_arg = inner_arg.expr
                 if not isinstance(inner_arg, HIRAddressOf):
                     continue
-                if not PointerValidator._needs_far_pointer(inner_arg.operand):
+                if not PointerValidator._needs_far_pointer(inner_arg.operand, program.hirom):
                     continue
                 if id(param) not in promoted_ids:
                     param.param_type = PointerTypeInfo(

@@ -13,7 +13,7 @@ from r65.compiler.mir.nodes import (
     Jump, CondBranch, TypeConvert, LoadIndirect, StoreIndirect, Push,
     MemoryFill, BlockCopy, InlineAsm, iter_operands,
 )
-from r65.compiler.codegen.emitter import AssemblyEmitter
+from r65.compiler.codegen.emitter import AssemblyEmitter, emit_node
 from r65.compiler.codegen.instruction_select import InstructionSelector
 from r65.compiler.codegen.register_alloc import ScratchRegisterPool, RegisterAllocator, PhysicalLocation, LocationKind, group_interrupt_scratch_pushes
 from r65.compiler.codegen.memory_alloc import MemoryAllocator
@@ -832,25 +832,27 @@ class FunctionCodeGenerator:
         # Stack layout after PHB+PHY: [PHY_lo, PHY_hi, PHB_bank] (3 bytes)
         #
         # After PHB saves the caller's hijacked DBR=self_bank, we reset DBR to
-        # the program bank for the body. D=S accesses self via [dp],Y indirect
+        # the data bank for the body. D=S accesses self via [dp],Y indirect
         # long (self bank encoded in the on-stack pointer), so DBR isn't needed
-        # for self. Resetting DBR to PBR makes nested far-fn calls (e.g.
-        # U32::div_u8 from U32::to_string) inherit a sane DBR — otherwise the
-        # hijacked DBR=$7E propagates and nested HW-register absolute writes
-        # (STA $4204) hit WRAM at $7E:4204 instead of the HW divider.
+        # for self. The data bank lets the body's absolute HW-register and
+        # low-RAM accesses, and nested far-fn calls (e.g. U32::div_u8 from
+        # U32::to_string), reach I/O — otherwise the hijacked DBR=$7E
+        # propagates and STA $4204 hits WRAM at $7E:4204 instead of the HW
+        # divider. (PBR is not a substitute: HiROM code runs in $C0-$FF,
+        # which has no I/O or low RAM.)
         # The saved byte is discarded with the frame by the return cleanup (no
         # PLB); the dispatching caller restores its own DBR.
         if mir_func.self_far_uses_d_equals_s:
             self._emit_instr(Opcode.PHB, comment="Save caller's DBR (was hijacked to self bank)")
             self._emit_instr(Opcode.PHY, comment="Push self address (Y = object addr)")
-            self._emit_instr(Opcode.PHK, comment="Push program bank")
-            self._emit_instr(Opcode.PLB, comment="Reset DBR=PBR for body (nested calls inherit sane DBR)")
+            self.emitter.emit_data_bank_load("Set DBR to the data bank for the body")
 
         # For far self FixedStack scratch path: copy self (Y addr + caller DBR bank)
         # into a 3-byte zeropage scratch slot. DP stays at 0 so other scratch
         # params/registers remain reachable via [dp] addressing.
         # Stack effect: PHB pushes 1 byte (discarded by the return cleanup, no
-        # PLB); STY/STA touch only zeropage. PHK+PLB then sets DBR=PB for the body.
+        # PLB); STY/STA touch only zeropage. DBR is then set to the data bank
+        # for the body, as on the D=S path.
         if mir_func.self_far_uses_scratch:
             scratch_addr = mir_func.self_scratch_addr
             assert scratch_addr is not None
@@ -861,8 +863,7 @@ class FunctionCodeGenerator:
                              comment="Load self bank byte (= caller DBR just pushed)")
             self._emit_instr(Opcode.STA_DP, Address(scratch_addr + 2),
                              comment=f"Store self bank to scratch ${scratch_addr + 2:02X}")
-            self._emit_instr(Opcode.PHK, comment="Push program bank")
-            self._emit_instr(Opcode.PLB, comment="Set DBR=PBR for body (nested calls inherit sane DBR)")
+            self.emitter.emit_data_bank_load("Set DBR to the data bank for the body")
 
         # Detect which hardware registers hold parameters.
         from r65.compiler.hir import RegisterBinding
@@ -1063,15 +1064,15 @@ class FunctionCodeGenerator:
         self.emitter.emit_raw("CLC")   # Clear carry for XCE
         self.emitter.emit_raw("XCE")   # Enter native mode
 
-        # FastROM: point DBR at the code bank so absolute ROM reads go through
-        # the fast $80-$BF mirror too, not just opcode fetch. This belongs here
-        # rather than in __fast_reset because that stub still runs with PBR=$00
-        # -- only after its JML is PBR the mirror bank. Hardware registers
-        # ($80:2100) and low RAM ($80:0000-1FFF) mirror as well, so absolute
-        # accesses to them are unaffected.
-        if getattr(self.emitter, 'fastrom', False):
-            self.emitter.emit_raw("PHK")   # Push program bank
-            self.emitter.emit_raw("PLB")   # DBR = PBR (fast mirror bank)
+        # Reset leaves DBR=$00. Under FastROM the data bank is $80, so absolute
+        # ROM reads go through the fast mirror too, not just opcode fetch;
+        # hardware registers ($80:2100) and low RAM ($80:0000-1FFF) mirror
+        # there as well. This belongs here rather than in the reset stub
+        # because that still runs with PBR=$00 -- only after its JML is PBR
+        # the code bank, which in LoROM is the data bank (PHK/PLB).
+        if self.emitter.data_bank != 0x00:
+            for opcode, operand in self.emitter.data_bank_load():
+                self.emitter.emit_raw(emit_node(Instruction(opcode, operand), indent=""))
 
         # After XCE, set up x16 mode (always) and m16 mode (if requested)
         # X/Y are ALWAYS 16-bit in R65, so we always emit REP #$10
@@ -1438,8 +1439,8 @@ class FunctionCodeGenerator:
 
         D=S path: PHB+PHY push far self pointer to stack, then D=S infrastructure
         provides [dp],Y indirect long addressing for self access. The prologue
-        then resets DBR to the program bank (PHK/PLB), so ROM/HW/calls see a
-        sane DBR.
+        then resets DBR to the data bank, so HW/low-RAM accesses and calls
+        see the DBR they expect.
         """
         if not mir_func.is_trait_method or not mir_func.self_y_vreg:
             return

@@ -356,8 +356,10 @@ class MoveOperationSelector(BaseSelector):
 
         # For ROM data, use the label name instead of numeric address
         # ROM data has a rom_label attribute set during MIR building
+        # Parenthesised so a `<`/`>` byte prefix applies to the sum: WLA-DX
+        # binds `>label + 2` as `(>label) + 2`.
         if has_rom_label:
-            addr_ref = f"{symbol.rom_label} + {offset}" if offset else symbol.rom_label
+            addr_ref = f"({symbol.rom_label} + {offset})" if offset else symbol.rom_label
         else:
             addr_ref = f"${alloc.address + offset:04X}"
 
@@ -376,10 +378,11 @@ class MoveOperationSelector(BaseSelector):
             self._emit_load_store('STA', dest_high)
             # Bank byte
             dest_bank = self.parent._offset_location(dest_loc, 2)
-            # Compute bank byte directly for numeric addresses (WLA-DX : operator
-            # doesn't always work correctly for numeric constants)
-            if hasattr(symbol, 'rom_label') and symbol.rom_label:
-                bank_ref = f":{addr_ref}"
+            # A label's bank is the bank byte (the static lies in one bank,
+            # so the offset never changes it); a numeric address's bank is
+            # computed here, as WLA-DX `:` is unreliable on constants.
+            if has_rom_label:
+                bank_ref = f":{symbol.rom_label}"
             else:
                 bank_byte = (alloc.address + offset) >> 16
                 bank_ref = f"${bank_byte:02X}"

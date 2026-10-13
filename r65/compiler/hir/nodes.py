@@ -81,6 +81,12 @@ class HIRProgram(HIRNode):
                 yield from decl.methods
 
     @property
+    def hirom(self) -> bool:
+        """The ROM uses HiROM (or ExHiROM) mapping."""
+        cfg = self.snesrom_config
+        return cfg is not None and (cfg.hirom or cfg.exhirom)
+
+    @property
     def functions(self) -> List['HIRFunctionDecl']:
         """Get all function declarations."""
         return self.get_declarations_by_type(HIRFunctionDecl)

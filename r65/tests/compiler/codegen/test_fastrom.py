@@ -17,6 +17,8 @@ from r65.compiler.typeck import TypeChecker
 from r65.compiler.mir import MIRBuilder
 from r65.compiler.codegen import ProgramCodeGenerator
 from r65.compiler.errors import CodegenError
+from r65.compiler.main import compile_string
+from r65.compiler.codegen.abi_model import ABI_FIXED_STACK
 
 
 def compile_source(source: str) -> str:
@@ -60,6 +62,7 @@ fn main() -> ! {{
 LOROM_FAST = '#[snesrom(name = "FAST", lorom, fastrom)]'
 LOROM_SLOW = '#[snesrom(name = "SLOW", lorom)]'
 HIROM_FAST = '#[snesrom(name = "HIFAST", hirom, fastrom)]'
+HIROM_SLOW = '#[snesrom(name = "HI", hirom)]'
 
 
 class TestLoRomFastRom:
@@ -233,3 +236,78 @@ def test_dbg_function_symbols_get_their_segment(header, tmp_path):
     main_sym = next(l for l in dbg.splitlines()
                     if l.startswith("sym") and 'name="main"' in l)
     assert "seg=0" in main_sym
+
+
+class TestDataBank:
+    """DBR outside a far-pointer bracket is the data bank ($00, or $80 under
+    FastROM), not PBR: HiROM code runs in $C0-$FF, which maps no I/O or low
+    RAM, and LoROM code past bank 0 sees its own bank's ROM at $8000."""
+
+    # A far-self trait method that writes a hardware register needs DBR set
+    # for its body.
+    FAR_SELF = """
+#[zeropage(0x10, register)] static mut SCRATCH0: u16;
+#[zeropage(0x12, register)] static mut SCRATCH1: u16;
+#[zeropage(0x14, register)] static mut SCRATCH2: u16;
+#[zeropage(0x16, register)] static mut SCRATCH3: u16;
+#[hw(0x4202)] static mut WRMPYA: u8;
+struct P { x: u8 }
+trait T { far fn put(far *self); }
+impl T for P { far fn put(far *self) { WRMPYA = self.x; } }
+#[ram] static mut OBJ: P = P { x: 1 };
+#[inline(never)]
+fn go(p: far *dyn T) { p.put(); }
+#[entry] fn main() { go(&OBJ); }
+"""
+
+    @staticmethod
+    def _body(asm: str, label: str) -> str:
+        return asm.split(f"\n{label}:", 1)[1].split("RTL", 1)[0]
+
+    @pytest.mark.parametrize("abi", [None, ABI_FIXED_STACK],
+                             ids=["d_equals_s", "fixedstack_scratch"])
+    def test_hirom_far_self_body_gets_data_bank(self, abi):
+        asm = compile_string(HIROM_SLOW + self.FAR_SELF, abi_model=abi)
+        body = self._body(asm, "P__put")
+        assert ("Push self address" in body) == (abi is None)
+        assert "PHK" not in body
+        assert "PEA $00\n" in body
+
+    def test_lorom_bank0_far_self_keeps_phk(self):
+        """In LoROM bank 0, PBR is the data bank: PHK/PLB is the cheap load."""
+        asm = compile_string(LOROM_FAST + self.FAR_SELF)
+        body = self._body(asm, "P__put")
+        assert "PHK" in body and "PEA" not in body
+
+    def test_lorom_call_from_bank1_restores_data_bank(self):
+        """A SET_DBR function in bank 1 hands its callee DBR=$00, not $01,
+        so a near pointer to bank-0 ROM still reads bank 0."""
+        asm = compile_string("""
+#[lowram] static mut RESULT: u8;
+#[zeropage] static mut Z0: u8;
+#[zeropage] static mut Z1: u8;
+#[zeropage] static mut Z2: u8;
+#[zeropage] static mut Z3: u8;
+static ARR: [u8; 4] = [5, 6, 7, 8];
+#[ram] static mut BUF: [u8; 4] = [1, 2, 3, 4];
+#[inline(never)]
+far fn rdn(q: *u8) { RESULT = *q; }
+#[entry] fn main() { f(&BUF[0]); }
+#[bank(1)]
+#[inline(never)]
+far fn f(p: far *u8) {
+    Z0 = p[0]; Z1 = p[1]; Z2 = Z0 + Z1; Z3 = Z2 + Z0; Z0 = Z3 + Z1; Z1 = Z0 + Z2;
+    Z2 = Z1 + Z3; Z3 = Z2 + Z1; Z0 = Z0 + Z3; Z1 = Z1 + Z0; Z2 = Z2 + Z1;
+    rdn(&ARR[1]);
+    Z3 = Z3 + Z2;
+}
+""", cfg_options=["snes"])
+        call = asm.split("Save ptr-bank DBR before call", 1)[1].split("JSL", 1)[0]
+        assert "PHK" not in call
+        assert "PEA $00" in call
+
+    def test_hirom_fastrom_entry_sets_data_bank(self):
+        asm = compile_source(program(HIROM_FAST))
+        main = asm.split("\nmain:", 1)[1]
+        assert "PEA $8080" in main
+        assert "PHK" not in main

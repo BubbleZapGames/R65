@@ -142,12 +142,15 @@ let zp_ptr: *u8 = &TEMP;              // Near — zeropage is bank 0
 let ram_ptr: far *u8 = &BUFFER;       // Far — RAM is bank $7E
 
 static ROM_TABLE: [u8; 16] = [0; 16];
-let rom_ptr: *u8 = &ROM_TABLE;        // Near — ROM in bank 0
+let rom_ptr: *u8 = &ROM_TABLE;        // Near — ROM in bank 0 (LoROM)
 ```
 
 The compiler infers near or far based on storage class:
 - `#[zeropage]`, `#[lowram]`, `#[hw]` → near pointer (16-bit, bank 0)
-- Immutable statics (ROM) in bank 0 → near pointer (16-bit)
+- Immutable statics (ROM) in bank 0 → near pointer (16-bit) under LoROM; far
+  under HiROM, whose ROM bank 0 is `$C0:0000-$FFFF` while a near pointer reads
+  through the data bank (`$00`/`$80`), which maps only its upper half
+- Immutable statics in any other bank → far pointer
 - `#[ram]`, and `static mut` with **no** storage attribute (defaults to `#[ram]`) → far pointer (24-bit, bank $7E)
 
 Cannot take address of register aliases (`&A` is an error). Only works on lvalues.

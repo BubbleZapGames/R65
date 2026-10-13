@@ -28,3 +28,34 @@ def test_rom_static_data_follows_its_bank():
     ''', cfg_options=["snes"])
     assert _bank_of(asm, "__Z_data") == 0
     assert _bank_of(asm, "__T_data") == 1
+
+
+FIELD_READER = '''
+    struct P { x: u8, y: u8 }
+    #[zeropage(0x10)] static mut R: u8;
+    #[inline(never)]
+    fn rd(q: far *u8) -> u8 { return *q; }
+    #[entry] fn main() { R = rd(&ROMP.y); }
+'''
+
+
+def test_far_address_with_offset_splits_the_sum():
+    """`>label + 1` is `(>label) + 1` to WLA-DX: the byte prefixes need the
+    sum parenthesised, and the bank byte is the label's own."""
+    asm = compile_string(FIELD_READER + '''
+        #[bank(1)]
+        static ROMP: P = P { x: 1, y: 2 };
+    ''', cfg_options=["snes"])
+    assert "LDA #<(__ROMP_data + 1)" in asm
+    assert "LDA #>(__ROMP_data + 1)" in asm
+    assert "#:__ROMP_data + 1" not in asm
+
+
+def test_hirom_rom_static_address_is_far():
+    """HiROM ROM bank 0 is $C0:0000-$FFFF; the data bank a near pointer reads
+    through maps only its upper half, so `&ROMP.y` carries its bank byte."""
+    asm = compile_string('#[snesrom(name = "HI", hirom)]' + FIELD_READER + '''
+        static ROMP: P = P { x: 1, y: 2 };
+    ''', cfg_options=["snes"])
+    assert "#:__ROMP_data" in asm
+    assert "Zero-extend bank byte" not in asm

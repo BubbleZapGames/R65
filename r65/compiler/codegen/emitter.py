@@ -344,8 +344,15 @@ class AssemblyEmitter:
         #   $C0 - HiROM (banks $C0-$FF); already the FastROM-capable region
         self.rom_base: int = 0x00
         # True when #[snesrom(..., fastrom)] was given. Drives the MEMSEL
-        # write, the vector trampolines, and DBR=PBR in the entry prologue.
+        # write, the vector trampolines, and the data bank below.
         self.fastrom: bool = False
+        # The data bank: what DBR holds outside a far-pointer or databank
+        # bracket, so absolute operands reach the hardware registers and low
+        # RAM. $00, or $80 under FastROM (the mirror MEMSEL speeds up); both
+        # map I/O and low RAM, which the HiROM code banks $C0-$FF do not.
+        self.data_bank: int = 0x00
+        # The 65816 bank of the code being emitted (`.BASE` + `.BANK`).
+        self.code_bank: int = 0x00
 
     # ========================================================================
     # Low-Level Node Emission
@@ -592,6 +599,26 @@ class AssemblyEmitter:
         else:
             self.rom_base = 0x80 if fastrom else 0x00
         self.fastrom = fastrom
+        self.data_bank = 0x80 if fastrom else 0x00
+        self.code_bank = self.rom_base
+
+    def data_bank_load(self) -> list:
+        """(opcode, operand) pairs that set DBR to the data bank without
+        touching a register: PHK/PLB when the code runs in the data bank,
+        else PEA of the bank twice and two PLBs."""
+        if self.code_bank == self.data_bank:
+            return [(Opcode.PHK, None), (Opcode.PLB, None)]
+        bank = self.data_bank
+        return [(Opcode.PEA, Immediate((bank << 8) | bank)),
+                (Opcode.PLB, None), (Opcode.PLB, None)]
+
+    def emit_data_bank_load(self, comment: str,
+                            source_loc: 'SourceLocation | None' = None):
+        """Emit data_bank_load(), with `comment` on its final PLB."""
+        ops = self.data_bank_load()
+        for i, (opcode, operand) in enumerate(ops):
+            self.emit_instr(opcode, operand,
+                            comment if i == len(ops) - 1 else None, source_loc)
 
     # ========================================================================
     # Bank Directives
@@ -613,6 +640,7 @@ class AssemblyEmitter:
         if self.rom_base:
             self.emit_directive(f".BASE ${self.rom_base:02X}")
         self.emit_directive(f".BANK {bank_num} SLOT {slot}")
+        self.code_bank = self.rom_base + bank_num
         if bank_num not in self._used_banks:
             self.emit_directive(".ORG 0")
             self._used_banks.add(bank_num)

@@ -319,14 +319,17 @@ LDA (<addr_offset>,S),Y     ; bare stack-relative-indexed-Y
 ```
 
 Per-call wrapper (the function's body is in the arg's bank, but callees expect
-their own DBR conventions, so each call site rebrackets DBR):
+DBR to be the data bank — $00, or $80 under FastROM — so each call site
+rebrackets DBR):
 ```
-PHB ; PHK ; PLB             ; DBR ← PBR before call
+PHB ; PHK ; PLB             ; DBR ← data bank before call (code in the data bank)
 JSR/JSL <callee>
 PLB                         ; restore arg's bank
 ```
 
-That extra PHB/PHK/PLB/PLB bracket is the 14*N_calls term in the cost model.
+Code outside the data bank (a LoROM bank past 0, or any HiROM bank, where PBR
+is $C0+) loads it with `PEA $dbdb ; PLB ; PLB` instead of `PHK ; PLB`.
+That extra bracket is the 14*N_calls term in the cost model (20 with the PEA).
 
 **Trade-offs**:
 
